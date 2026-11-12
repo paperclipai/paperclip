@@ -1,8 +1,8 @@
-import fs from "node:fs";
+import fs from "node:fs/promises";
 import path from "node:path";
 import {
   readProcessStartedAtMs,
-  readRunProcessTable,
+  readRunProcessTableAsync,
   RunProcessLineage,
   terminateRunMarkedProcesses,
   type RunDescendantTerminateResult,
@@ -35,56 +35,69 @@ function lineagePath(runId: string) {
   return path.resolve(lineageDir(), `${runId}.json`);
 }
 
-function saveLineage(lineage: RunProcessLineage) {
+async function saveLineage(lineage: RunProcessLineage) {
   const file = lineagePath(lineage.runId);
   if (!file) return;
   try {
-    fs.mkdirSync(lineageDir(), { recursive: true, mode: 0o700 });
+    await fs.mkdir(lineageDir(), { recursive: true, mode: 0o700 });
     const tmp = `${file}.${process.pid}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(lineage.toSnapshot()), { mode: 0o600 });
-    fs.renameSync(tmp, file);
+    await fs.writeFile(tmp, JSON.stringify(lineage.toSnapshot()), { mode: 0o600 });
+    await fs.rename(tmp, file);
   } catch (err) {
     logger.warn({ err, runId: lineage.runId }, "failed to save run process lineage");
   }
 }
 
-function loadLineage(runId: string) {
+async function loadLineage(runId: string) {
   const file = lineagePath(runId);
   if (!file) return null;
   try {
-    const lineage = RunProcessLineage.fromSnapshot(JSON.parse(fs.readFileSync(file, "utf8")));
+    const lineage = RunProcessLineage.fromSnapshot(JSON.parse(await fs.readFile(file, "utf8")));
     return lineage && lineage.runId === runId ? lineage : null;
   } catch {
     return null;
   }
 }
 
-function removeLineage(runId: string) {
+async function removeLineage(runId: string) {
   const file = lineagePath(runId);
   if (!file) return;
   try {
-    fs.rmSync(file, { force: true });
+    await fs.rm(file, { force: true });
   } catch {
     // Best effort; a stale file only adds identities that are checked again.
   }
 }
 
-function sampleTrackedRuns() {
+// All procfs and file work is asynchronous, and a sample never overlaps the
+// previous one, so a slow host or slow storage delays the next sample rather
+// than the server's other work.
+let sampleInFlight: Promise<void> | null = null;
+
+async function sampleTrackedRunsOnce() {
   if (trackedRuns.size === 0) return;
   try {
-    const table = readRunProcessTable();
-    for (const lineage of trackedRuns.values()) {
-      lineage.sample(table);
-      if (lineage.takeChanged()) saveLineage(lineage);
+    const table = await readRunProcessTableAsync();
+    for (const lineage of [...trackedRuns.values()]) {
+      await lineage.sampleAsync(table);
+      if (lineage.takeChanged() && trackedRuns.get(lineage.runId) === lineage) await saveLineage(lineage);
     }
   } catch (err) {
     logger.warn({ err }, "failed to sample run process lineage");
   }
 }
 
+function sampleTrackedRuns() {
+  if (sampleInFlight) return sampleInFlight;
+  sampleInFlight = sampleTrackedRunsOnce().finally(() => {
+    sampleInFlight = null;
+  });
+  return sampleInFlight;
+}
+
 function ensureSampler() {
   if (sampleTimer || trackedRuns.size === 0) return;
-  sampleTimer = setInterval(sampleTrackedRuns, sampleIntervalMs);
+  sampleTimer = setInterval(() => void sampleTrackedRuns(), sampleIntervalMs);
   sampleTimer.unref();
 }
 
@@ -117,17 +130,24 @@ export function forgetTrackedRunLineageForTests() {
  * Starts recording a local legacy run's processes. `rootPid` is the CLI the
  * adapter spawned. Safe to call more than once for the same run.
  */
-export function trackRunDescendants(input: { runId: string; rootPid?: number | null }) {
+export async function trackRunDescendants(input: { runId: string; rootPid?: number | null }) {
   try {
     let lineage = trackedRuns.get(input.runId);
     if (!lineage) {
-      lineage = loadLineage(input.runId) ?? new RunProcessLineage(input.runId);
+      lineage = new RunProcessLineage(input.runId);
       trackedRuns.set(input.runId, lineage);
+      const saved = await loadLineage(input.runId);
+      // Reaped while the saved file was read: do not track it again.
+      if (trackedRuns.get(input.runId) !== lineage) return;
+      if (saved) {
+        lineage = saved;
+        trackedRuns.set(input.runId, saved);
+      }
     }
     if (typeof input.rootPid === "number") lineage.addRoot(input.rootPid);
-    lineage.sample(readRunProcessTable());
-    if (lineage.takeChanged()) saveLineage(lineage);
     ensureSampler();
+    await lineage.sampleAsync(await readRunProcessTableAsync());
+    if (lineage.takeChanged() && trackedRuns.get(input.runId) === lineage) await saveLineage(lineage);
   } catch (err) {
     logger.warn({ err, runId: input.runId }, "failed to start run process lineage");
   }
@@ -182,10 +202,11 @@ export async function reapRunDescendants(input: {
   graceMs?: number;
   reason: string;
 }): Promise<RunDescendantTerminateResult | null> {
-  const lineage = trackedRuns.get(input.runId) ?? loadLineage(input.runId) ?? new RunProcessLineage(input.runId);
+  const tracked = trackedRuns.get(input.runId);
   trackedRuns.delete(input.runId);
   stopSamplerIfIdle();
   try {
+    const lineage = tracked ?? (await loadLineage(input.runId)) ?? new RunProcessLineage(input.runId);
     const exclusions = registeredServiceExclusions(await listLocalServiceRegistryRecords());
     const result = await terminateRunMarkedProcesses(input.runId, {
       lineage,
@@ -193,8 +214,8 @@ export async function reapRunDescendants(input: {
       excludePids: exclusions.pids,
       excludeProcessGroupIds: exclusions.processGroupIds,
     });
-    if (result.survivors.length === 0) removeLineage(input.runId);
-    else saveLineage(lineage);
+    if (result.survivors.length === 0) await removeLineage(input.runId);
+    else await saveLineage(lineage);
     if (result.found.length > 0) {
       const log = result.survivors.length > 0 ? logger.warn.bind(logger) : logger.info.bind(logger);
       log(
@@ -212,7 +233,6 @@ export async function reapRunDescendants(input: {
     }
     return result;
   } catch (err) {
-    saveLineage(lineage);
     logger.warn({ err, runId: input.runId, reason: input.reason }, "failed to reap run descendant processes");
     return null;
   }

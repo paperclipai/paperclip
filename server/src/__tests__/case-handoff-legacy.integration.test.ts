@@ -29,7 +29,7 @@ import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.j
 // platform without it; run-descendants tests cover the teardown itself.
 vi.mock("../services/heartbeat/run-descendant-reaper.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../services/heartbeat/run-descendant-reaper.js")>()),
-  trackRunDescendants: () => {},
+  trackRunDescendants: async () => {},
   reapRunDescendants: async () => null,
 }));
 
