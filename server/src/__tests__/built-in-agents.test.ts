@@ -346,7 +346,7 @@ describeEmbeddedPostgres("built-in agents", () => {
   it("provisions a non-default adapter with an empty config without inheriting the default adapter model", async () => {
     const companyId = await seedCompany({ requireApproval: false });
     const svc = builtInAgentService(db);
-    const created = await svc.ensure(companyId, "summarizer", { adapterType: "codex_local", adapterConfig: {} });
+    const created = await svc.ensure(companyId, "summarizer", { adapterType: "codex_local", adapterConfig: {}, runner: "legacy" });
     expect(created.agent?.adapterType).toBe("codex_local");
     const rows = await db.select().from(agents).where(eq(agents.companyId, companyId));
     expect(rows).toHaveLength(1);
