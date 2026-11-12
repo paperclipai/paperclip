@@ -1,4 +1,4 @@
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, sql, type SQL } from "drizzle-orm";
 import { heartbeatRunEvents, heartbeatRuns, issueComments, type Db } from "@paperclipai/db";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 
@@ -60,15 +60,18 @@ export async function recordTaskHistoryRead(db: Db, input: {
 }
 
 function historyReadDeliveredSql(companyId: string, issueId: string, agentId: string) {
-  return sql`exists (select 1 from ${heartbeatRuns} reading_run
-      join ${heartbeatRunEvents} history_read on history_read.run_id = reading_run.id
-      where reading_run.company_id = ${companyId} and reading_run.agent_id = ${agentId}
-        and reading_run.status = 'succeeded'
-        and (reading_run.native_issue_id = ${issueId} or reading_run.context_snapshot->>'issueId' = ${issueId})
-        and history_read.company_id = ${companyId}
-        and history_read.event_type = ${TASK_HISTORY_READ_EVENT}
-        and (history_read.payload->'comments'->>${issueComments.id}::text)::timestamptz
-          >= date_trunc('milliseconds', ${issueComments.updatedAt}))`;
+  const readBy = (binding: SQL) => sql`exists (select 1 from ${heartbeatRuns} reading_run
+      cross join lateral (select 1 from ${heartbeatRunEvents} history_read
+        where history_read.company_id = ${companyId} and history_read.run_id = reading_run.id
+          and history_read.event_type = ${TASK_HISTORY_READ_EVENT}
+          and (history_read.payload->'comments'->>${issueComments.id}::text)::timestamptz
+            >= date_trunc('milliseconds', ${issueComments.updatedAt})
+        limit 1) read_revision
+      where reading_run.company_id = ${companyId} and ${binding}
+        and reading_run.agent_id = ${agentId} and reading_run.status = 'succeeded'
+        and reading_run.finished_at >= date_trunc('milliseconds', ${issueComments.updatedAt}) offset 0)`;
+  return sql`(${readBy(sql`reading_run.native_issue_id = ${issueId}`)}
+    or ${readBy(sql`reading_run.context_snapshot->>'issueId' = ${issueId}`)})`;
 }
 
 /**

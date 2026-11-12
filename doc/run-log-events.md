@@ -1015,7 +1015,9 @@ person's comment counts as received when a run of the task's assignee succeeded
 after reading the comment's current revision. The comment's queued
 wake then neither reopens the finished task nor starts another turn. An edit
 after the read, or a read by a run that did not succeed, leaves the comment
-owed, so it is delivered once. A failure to write the event leaves the comment
+owed, so it is delivered once. The check reads only the assignee's succeeded
+runs of that task that finished at or after the comment's current revision,
+through the existing run-binding and `(company_id, run_id)` event indexes. A failure to write the event leaves the comment
 owed in the same way.
 
 ## Managed Agent File Save Receipts

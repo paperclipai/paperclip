@@ -805,17 +805,20 @@ describePostgres("saved intents while another run's accounting is pending", () =
   }, 180_000);
 
   it.each([
-    { outcome: "succeeded", edit: false, consumed: true },
-    { outcome: "succeeded", edit: true, consumed: false },
-    { outcome: "failed", edit: false, consumed: false },
-  ])("counts a mid-turn history read as delivery only for a run that $outcome on the read revision (edited: $edit)", async ({ outcome, edit, consumed }) => {
+    { outcome: "succeeded", edit: "none", consumed: true },
+    { outcome: "succeeded", edit: "during the run", consumed: false },
+    { outcome: "succeeded", edit: "after the run finished", consumed: false },
+    { outcome: "failed", edit: "none", consumed: false },
+  ])("counts a mid-turn history read as delivery only for a run that $outcome on the current revision (edited: $edit)", async ({ outcome, edit, consumed }) => {
     const f = await seedHeldComment();
     await runningNativeSource(f);
     await readHistoryDuringTurn(f);
-    if (edit) await db.update(issueComments).set({ body: "Edited after the read.", updatedAt: new Date(Date.now() + 500) })
+    const editComment = (at: number) => db.update(issueComments).set({ body: "Edited after the read.", updatedAt: new Date(at) })
       .where(eq(issueComments.id, f.commentId));
+    if (edit === "during the run") await editComment(Date.now() + 500);
     await db.update(heartbeatRuns).set({ status: outcome, finishedAt: new Date(Date.now() + 1_000),
       ...(outcome === "failed" ? { errorCode: "adapter_failed" } : {}) }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    if (edit === "after the run finished") await editComment(Date.now() + 60_000);
     const delivered = await deliveredQueuedCommentIds(db, { companyId: f.companyId, issueId: f.issueId, agentId: f.agentId,
       commentIds: [f.commentId] });
     expect(delivered.has(f.commentId)).toBe(consumed);
