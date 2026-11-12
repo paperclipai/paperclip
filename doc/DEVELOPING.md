@@ -1302,6 +1302,28 @@ the development server's unbundled module graph on each navigation. Browser
 assertion deadlines and retries remain unchanged. Use `pnpm dev` separately when
 verifying Vite/HMR behavior.
 
+The Agent Chat shared fixture restores its original instance experimental settings
+even when live-run cleanup fails. A failed cancellation still fails the test; it
+is not retried or ignored. Run
+`pnpm test:e2e tests/e2e/agent-chat-projects.spec.ts --grep "fixture restore"`
+to check both successful cancellation and an HTTP 500 response without leaking
+experimental settings into the following tests.
+The HTTP fixture uses Node's event and callback adapters for server listen/close,
+so it also typechecks under the E2E project's existing ES2023 library target.
+
+Preparation tracing tests distinguish live heartbeat phases from native historical
+replay by instrumentation scope. A forced slow-phase record checks the native
+`task.prepare` hierarchy while live phases retain their exact execution-attempt
+parent, trace and run identity checks.
+
+Plugin scheduling tests advance settlement to the coordinator's registered wake.
+They do not add a virtual second on every assertion retry while PostgreSQL reads
+are in flight. The cron-change regression also holds a real `plugin_jobs` table
+lock for three seconds and checks that the job runs only at its recomputed
+deadline. Run it with
+`pnpm --filter @paperclipai/server exec vitest run src/__tests__/plugin-scheduled-work.test.ts`.
+The idle-work assertion and its five-second wait remain unchanged.
+
 For normal issue work, start with the smallest targeted check that proves the change.
 Use the incremental command above and required final-revision CI for PR handoff.
 Run broad local checks when an unresolved risk or explicit qualification needs them.
@@ -1341,6 +1363,11 @@ lane runs Vitest directly. A test that passes only on a retry is still a flake.
 annotation for each such test, and a row to the step summary with the file, test,
 retry count and job. Fix a test that this reporter reports. Do not treat the
 retry as the fix. Playwright retries stay at zero.
+
+Heartbeat environment-inheritance tests await `drainActiveRunExecutions()` before
+asserting terminal state instead of treating a five-second poll as completion.
+Instance-wide environment names include the fixture UUID so a failed attempt
+cannot collide with the next attempt's unique-name constraint.
 
 #### Embedded Postgres template cache
 
