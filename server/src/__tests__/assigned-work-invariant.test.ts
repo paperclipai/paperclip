@@ -6,6 +6,7 @@ import {
   issueRecoveryActions, issueRelations, issues, issueThreadInteractions, nativeRunFinalizations,
 } from "@paperclipai/db";
 import { recoveryService } from "../services/recovery/service.js";
+import { heartbeatService } from "../services/heartbeat.js";
 import { assignedWorkSweep, ASSIGNED_WORK_CONTINUED_ACTION, ASSIGNED_WORK_REPAIRS_PER_MINUTE } from "../services/recovery/assigned-work-sweep.js";
 import { CONTINUATION_CAP } from "../services/recovery/assigned-work-invariant.js";
 import { recoveryPostgresSupport, startRecoveryPostgres } from "./helpers/recovery-postgres.js";
@@ -317,6 +318,40 @@ describePostgres("assigned-work invariant sweep", () => {
     expect(await sweep.checkIssue({ companyId: f.companyId, issueId })).toMatchObject({ outcome: "repaired" });
     expect(enqueueWakeup).toHaveBeenCalledTimes(3);
   }, 60_000);
+
+  it("with the real wake queue, a hold that defers the continuation leaves a violation that is retried no faster than the cap", async () => {
+    // Current master without a fresh-continuation fallback: the task's last
+    // run left a legacy reconciliation hold, so admission defers the ordinary
+    // continuation wake. Nothing pending is left behind, so it stays a
+    // violation, is retried with spacing, and never loops faster than the cap.
+    const f = await seedCompany();
+    const issueId = await f.issue();
+    const run = await f.run(issueId, { status: "failed", errorCode: "process_lost", livenessState: "failed" });
+    await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: issueId, kind: "active_run_watchdog",
+      status: "active", ownerType: "board", cause: "legacy_execution_requires_reconciliation", fingerprint: `legacy-execution:${run.id}`,
+      evidence: { runId: run.id, originalFailureCode: "process_lost" }, nextAction: "Reconcile the stopped run.", attemptCount: 1 });
+    const heartbeat = heartbeatService(db);
+    try {
+      const first = await heartbeat.checkAssignedWorkInvariant({ companyId: f.companyId, issueId });
+      expect(first).toMatchObject({ outcome: "enqueue_refused", verdict: { kind: "violation" } });
+      const queued = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
+        sqlTag`${heartbeatRuns.status} in ('queued', 'running', 'scheduled_retry')`));
+      expect(queued).toHaveLength(0);
+      const pending = await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, f.companyId),
+        sqlTag`${agentWakeupRequests.status} in ('queued', 'deferred_issue_execution', 'claimed')`));
+      expect(pending).toHaveLength(0);
+      const [entry] = await db.select().from(activityLog).where(and(eq(activityLog.entityId, issueId),
+        eq(activityLog.action, ASSIGNED_WORK_CONTINUED_ACTION)));
+      expect(entry.details).toMatchObject({ outcome: "not_started" });
+      // A second sweep right away is spaced, not another attempt.
+      expect(await heartbeat.checkAssignedWorkInvariant({ companyId: f.companyId, issueId }))
+        .toMatchObject({ outcome: "deferred_rate_limit", verdict: { kind: "violation" } });
+      expect(await db.select().from(activityLog).where(and(eq(activityLog.entityId, issueId),
+        eq(activityLog.action, ASSIGNED_WORK_CONTINUED_ACTION)))).toHaveLength(1);
+    } finally {
+      await heartbeat.drainActiveRunExecutions();
+    }
+  }, 120_000);
 
   it("stops scheduling a task once it leaves eligibility", async () => {
     const f = await seedCompany();
