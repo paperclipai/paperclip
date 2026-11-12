@@ -83,7 +83,7 @@ describe("release swap end-of-wave grade", () => {
     const capped = await finish({ db: busy, drainCapMs: 400, api: { get: async () => ({ status: "in_progress" }), post: async () => ({}) } as unknown as ReleaseSwapFinishInput["api"] });
     expect(Date.now() - started).toBeLessThan(5_000);
     expect(capped.events).toContain("release_swap_drained");
-    expect(capped.result.headline).toMatch(/^0 \/ 0 tasks completed without human action; 1 still running past the drain cap/);
+    expect(capped.result.headline).toMatch(/^0 \/ 0 tasks completed without human action; 1 still running at the drain cap/);
     expect(capped.result.pass).toBe(false);
   });
 

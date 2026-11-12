@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { rm } from "node:fs/promises";
 import { promisify } from "node:util";
 import type { ChaosApi } from "./api.js";
-import { PROBE_AGENT_CONCURRENCY, ReleaseSwapDriver, hireProbeAgents, homeCleanupPlugin, pgRunReader } from "./release-swap-driver.js";
+import { PREP_PROBE_CAP, PROBE_AGENT_CONCURRENCY, ReleaseSwapDriver, hireProbeAgents, homeCleanupPlugin, pgRunReader } from "./release-swap-driver.js";
 import type { ReleaseSwapOptions } from "./release-swap-schedule.js";
 import { waitForAgentsReady, type ChaosLab } from "./seed.js";
 import type { Timeline } from "./timeline.js";
@@ -11,8 +11,8 @@ import type { Db } from "../../packages/db/src/index.js";
 
 const run = promisify(execFile);
 
-export const DAYTONA_PROBE_SHAPE = { concurrency: 4, prepIntervalMs: 10_000, prepProbeCap: 4 };
-export const LOCAL_PROBE_SHAPE = { concurrency: PROBE_AGENT_CONCURRENCY, prepIntervalMs: 2_000, prepProbeCap: 10 };
+export const DAYTONA_PROBE_SHAPE = { concurrency: 4, prepIntervalMs: 20_000, prepProbeCap: 8 };
+export const LOCAL_PROBE_SHAPE = { concurrency: PROBE_AGENT_CONCURRENCY, prepIntervalMs: 2_000, prepProbeCap: PREP_PROBE_CAP };
 
 export async function diskUsageKb(directory: string): Promise<number | null> {
   try {

@@ -89,6 +89,7 @@ function liveOwner(task: GradeTaskInput): string | null {
   const stale = new Set(staleRuns(task).map(run => run.runId));
   const live = task.runs.find(run => LIVE_RUN.has(run.status) && !stale.has(run.runId));
   if (live) return `run ${live.runId} ${live.status}`;
+  if (task.now !== undefined) return null;
   if (task.queuedWakes > 0) return `${task.queuedWakes} queued wake(s)`;
   if (task.scheduledRetry && !stale.size) return "scheduled retry";
   const interruption = task.interruption;
@@ -127,11 +128,18 @@ export function gradeReleaseSwapTask(task: GradeTaskInput): TaskGrade {
     retry: retryOutcome(task), personReason: person, reason: namedReason(task, person) };
   const label = (value: TaskVerdict): FailureLabel | null => value === "needed_retry" ? "needed Retry"
     : value === "open_no_owner" || value === "cancelled" ? "nothing pending" : value === "blocked_non_person" ? "blocked for a non-person reason" : null;
-  const liveActivity = task.runs.filter(run => LIVE_RUN.has(run.status)).map(run => run.lastActivityAt ?? run.createdAt ?? null).filter((at): at is number => at !== null);
+  const staleIds = new Set(staleRuns(task).map(run => run.runId));
+  const liveActivity = task.runs.filter(run => LIVE_RUN.has(run.status) && !staleIds.has(run.runId)).map(run => run.lastActivityAt ?? run.createdAt ?? null).filter((at): at is number => at !== null);
   const lastActivityAgeMs = task.now !== undefined && liveActivity.length ? task.now - Math.max(...liveActivity) : null;
   const verdict = (value: TaskVerdict, detail: string): TaskGrade => ({ ...base, verdict: value, detail, label: label(value), lastActivityAgeMs });
   const stale = staleRuns(task);
-  const staleNote = stale.length ? `; ${stale.map(run => `run ${run.runId} ${run.status} with no activity for ${Math.round((task.now! - (run.lastActivityAt ?? run.createdAt ?? 0)) / 60_000)} min`).join(", ")}` : "";
+  const idle = task.now === undefined ? [] : [
+    ...stale.map(run => `run ${run.runId} ${run.status} with no activity for ${Math.round((task.now! - (run.lastActivityAt ?? run.createdAt ?? 0)) / 60_000)} min`),
+    ...(task.queuedWakes ? [`${task.queuedWakes} queued wake(s) never dispatched`] : []), ...(task.scheduledRetry ? ["a scheduled retry that never ran"] : []),
+    ...(task.interruption && (task.interruption.state === "working" || task.interruption.state === "retry_scheduled" || task.interruption.retryWait)
+      ? [`the board shows ${task.interruption.retryWait ? "a Retry waiting on the system" : task.interruption.state}`] : []),
+    ...(task.activeRecoveryOwner && task.activeRecoveryOwner !== "board" ? [`a ${task.activeRecoveryOwner} recovery action that made no progress`] : [])];
+  const staleNote = idle.length ? `; ${idle.join(", ")}` : "";
   if (task.retryClicks.length) {
     const retry = base.retry!;
     return verdict("needed_retry", `${retry.clicks} Retry click(s), ${retry.accepted} accepted; ${retry.worked === null ? "still running" : retry.worked ? "worked" : "did not work"}; now ${task.status}`);
@@ -246,6 +254,7 @@ export interface ReleaseSwapResult {
   byLabel: Record<string, number>;
   uncollected: number;
   stillRunning: number;
+  drainReason: "quiet" | "cap" | "cancelled" | null;
   retry: { tasks: number; worked: number; didNotWork: number; pending: number };
 }
 
@@ -256,7 +265,7 @@ export function retryLabel(grade: TaskGrade): string | null {
   return `needed Retry (${worked === true ? "click worked" : worked === false ? "click did not work" : "click result pending"})`;
 }
 
-export function summarizeGrades(grades: readonly TaskGrade[], uncollected = 0): ReleaseSwapResult {
+export function summarizeGrades(grades: readonly TaskGrade[], uncollected = 0, drainReason: "quiet" | "cap" | "cancelled" | null = null): ReleaseSwapResult {
   const byVerdict = { pass: 0, needed_retry: 0, open_no_owner: 0, blocked_non_person: 0, waiting_on_person: 0, still_working: 0, cancelled: 0 } as Record<TaskVerdict, number>;
   for (const grade of grades) byVerdict[grade.verdict] += 1;
   const byReason: Record<string, number> = {};
@@ -273,11 +282,12 @@ export function summarizeGrades(grades: readonly TaskGrade[], uncollected = 0): 
   const completedWithoutHuman = byVerdict.pass;
   const started = grades.length - byVerdict.still_working;
   const running = grades.filter(grade => grade.verdict === "still_working");
-  const ages = running.map(grade => grade.lastActivityAgeMs === null ? "?" : `${Math.round(grade.lastActivityAgeMs / 1000)} s`).join(", ");
-  const past = running.length ? `; ${running.length} still running past the drain cap, not counted (last activity ${ages} ago)` : "";
+  const ages = running.flatMap(grade => grade.lastActivityAgeMs === null ? [] : [`${Math.round(grade.lastActivityAgeMs / 1000)} s`]).join(", ");
+  const when = drainReason === "cap" ? "at the drain cap" : drainReason === "cancelled" ? "when the harness was interrupted" : "at the end-of-wave read";
+  const past = running.length ? `; ${running.length} still running ${when}, not counted${ages ? ` (last activity ${ages} ago)` : ""}` : "";
   const incomplete = uncollected ? ` (incomplete: ${uncollected} task(s) could not be read and are not counted)` : "";
   return { headline: `${completedWithoutHuman} / ${started} tasks completed without human action${past}${incomplete}`, completedWithoutHuman, started,
-    stillRunning: running.length,
+    stillRunning: running.length, drainReason,
     byVerdict, byReason, byLabel, uncollected, retry: { tasks: retried.length, worked: retried.filter(grade => grade.retry!.worked === true).length,
       didNotWork: retried.filter(grade => grade.retry!.worked === false).length, pending: retried.filter(grade => grade.retry!.worked === null).length } };
 }

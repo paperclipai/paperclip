@@ -105,7 +105,19 @@ describe("release swap task grade", () => {
     expect(gradeReleaseSwapTask({ ...stuck, runs: [{ ...stuck.runs[0]!, lastActivityAt: 1_500_000 }] }).verdict).toBe("still_working");
     const retry = gradeReleaseSwapTask({ ...stuck, scheduledRetry: true, runs: [failed, { ...stuck.runs[0]!, status: "queued" }] });
     expect(retry).toMatchObject({ verdict: "open_no_owner", label: "nothing pending" });
-    expect(gradeReleaseSwapTask({ ...stuck, scheduledRetry: true, runs: [failed] }).verdict).toBe("still_working");
+    expect(gradeReleaseSwapTask({ ...stuck, scheduledRetry: true, runs: [failed] }).verdict).toBe("open_no_owner");
+  });
+
+  it("uses one staleness threshold after the drain: a 6-minute-silent run or a queued wake alone is nothing pending", () => {
+    const now = 10_000_000;
+    const silent = gradeReleaseSwapTask(task({ status: "in_progress", now, staleAfterMs: 300_000,
+      runs: [{ runId: "r6", status: "running", errorCode: null, createdAt: 0, startedAt: 1, finishedAt: null, lastActivityAt: now - 360_000 }] }));
+    expect(silent).toMatchObject({ verdict: "open_no_owner", label: "nothing pending", lastActivityAgeMs: null });
+    expect(silent.detail).toContain("run r6 running with no activity for 6 min");
+    const wake = gradeReleaseSwapTask(task({ status: "todo", now, staleAfterMs: 300_000, runs: [failed], queuedWakes: 1 }));
+    expect(wake).toMatchObject({ verdict: "open_no_owner", label: "nothing pending" });
+    expect(wake.detail).toContain("1 queued wake(s) never dispatched");
+    expect(gradeReleaseSwapTask(task({ status: "todo", runs: [failed], queuedWakes: 1 })).verdict).toBe("still_working");
   });
 
   it("keeps a task still running past the drain cap out of the number and reports it with its last activity", () => {
@@ -113,8 +125,8 @@ describe("release swap task grade", () => {
       runs: [{ runId: "r5", status: "running", errorCode: null, createdAt: 0, startedAt: 1, finishedAt: null, lastActivityAt: 940_000 }] }));
     expect(running).toMatchObject({ verdict: "still_working", lastActivityAgeMs: 60_000, label: null });
     expect(running.detail).toContain("last activity 60 s ago");
-    expect(summarizeGrades([gradeReleaseSwapTask(task()), running])).toMatchObject({ started: 1, stillRunning: 1,
-      headline: "1 / 1 tasks completed without human action; 1 still running past the drain cap, not counted (last activity 60 s ago)" });
+    expect(summarizeGrades([gradeReleaseSwapTask(task()), running], 0, "cap")).toMatchObject({ started: 1, stillRunning: 1, drainReason: "cap",
+      headline: "1 / 1 tasks completed without human action; 1 still running at the drain cap, not counted (last activity 60 s ago)" });
   });
 
   it("says the number is incomplete when task views could not be read", () => {

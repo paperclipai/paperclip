@@ -44,11 +44,12 @@ async function waitUntil(at: number, cancelled: () => boolean): Promise<void> {
 }
 
 export const PROGRESS_WINDOW_MS = 5 * 60_000;
+export const progressWindowMs = (settleMs: number) => Math.min(settleMs, PROGRESS_WINDOW_MS);
 
 async function drainRuns(input: ReleaseSwapFinishInput, lastStop: number): Promise<{ reason: "quiet" | "cap" | "cancelled"; at: string; progressing: number }> {
   const settledAt = lastStop + input.settleMs;
   const capAt = Math.max(settledAt, lastStop + (input.drainCapMs ?? input.settleMs));
-  const window = Math.min(input.settleMs, PROGRESS_WINDOW_MS);
+  const window = progressWindowMs(input.settleMs);
   input.record("release_swap_settling", { settleUntil: new Date(settledAt).toISOString(), capAt: new Date(capAt).toISOString() });
   await waitUntil(settledAt, input.cancelled);
   for (;;) {
@@ -67,7 +68,7 @@ async function companyRuns(db: Client, companyId: string): Promise<Row[]> {
     `select r.id::text as "runId", r.issue_id::text as "issueId", r.status, r.error_code as "errorCode", left(r.error, 400) as error,
             floor(extract(epoch from r.created_at) * 1000) as "createdAt", floor(extract(epoch from r.started_at) * 1000) as "startedAt",
             floor(extract(epoch from r.finished_at) * 1000) as "finishedAt", ci.pid as "ownerPid",
-            floor(extract(epoch from greatest(r.updated_at, (select max(e.created_at) from heartbeat_run_events e where e.run_id = r.id))) * 1000) as "lastActivityAt"
+            floor(extract(epoch from coalesce((select max(e.created_at) from heartbeat_run_events e where e.run_id = r.id), r.started_at, r.created_at)) * 1000) as "lastActivityAt"
        from heartbeat_runs r left join native_run_finalizations f on f.run_id = r.id
        left join controller_instances ci on ci.boot_id = ${RUN_OWNER_BOOT_ID}
       where r.company_id::text = $1`, [companyId]) as Row[];
@@ -232,7 +233,7 @@ export async function finishReleaseSwap(input: ReleaseSwapFinishInput): Promise<
   const grades: TaskGrade[] = issues.filter(issue => !unreadable.includes(issue)).map(issue => {
     const id = String(issue.id);
     const current = views.get(id)!;
-    return gradeReleaseSwapTask({ now, staleAfterMs: input.settleMs, issueId: id, identifier: text(issue.identifier), title: String(issue.title), ...view(current),
+    return gradeReleaseSwapTask({ now, staleAfterMs: progressWindowMs(input.settleMs), issueId: id, identifier: text(issue.identifier), title: String(issue.title), ...view(current),
       runs: (runsByIssue.get(id) ?? []).map(run => ({ runId: String(run.runId), status: String(run.status), errorCode: text(run.errorCode),
         createdAt: num(run.createdAt), startedAt: num(run.startedAt), finishedAt: num(run.finishedAt), lastActivityAt: num(run.lastActivityAt) })),
       queuedWakes: wakes.get(id) ?? 0, retryClicks: clicks.get(id) ?? [], pendingApproval: person.approvals.has(id), pendingQuestion: person.questions.has(id) });
@@ -252,7 +253,7 @@ export async function finishReleaseSwap(input: ReleaseSwapFinishInput): Promise<
       .map(fact => fact.runId) }]);
   const metrics = swapMetrics(windows, facts, await firstEventsAfter(db, stops), waveEnd);
   const duplicates = await duplicateFacts(input, facts, waveEnd);
-  const result = summarizeGrades(grades, unreadable.length);
+  const result = summarizeGrades(grades, unreadable.length, drained.reason);
   const failed = runs.filter(run => ["failed", "timed_out", "interrupted"].includes(String(run.status)));
   const chains = await failureChains(db, failed.map(run => String(run.runId)));
   const failedRuns = failed.map(run => ({ runId: String(run.runId), issueId: text(run.issueId), status: String(run.status), errorCode: text(run.errorCode),

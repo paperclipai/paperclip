@@ -579,8 +579,9 @@ so state saved during swap N is resumed after swaps N+1 and N+2.
 - **The outgoing server starts runs** (`release-swap-driver.ts`, `release-swap-setup.ts`). The harness hires one
   probe agent per adapter, a copy of the seeded agent with its own concurrency (10 locally, 4 on Daytona), so
   probes never queue behind the workload. It creates small probe tasks (the A1 brief) for it through A's own port,
-  not the edge: one when B is spawned, then one every 2 s locally (10 s on Daytona, at most 10 or 4) and one when B
-  enters its startup recovery pass (`/api/ready` reports `recovering`) while B boots, and one timed so that its run
+  not the edge: one when B is spawned, then one every 2 s locally (20 s on Daytona, at most 40 or 8) and one when B
+  enters its startup recovery pass (`/api/ready` reports `recovering`) for as long as B boots, while the run sampler
+  reads every 500 ms, and one timed so that its run
   starts about 20 s before A's SIGTERM (the wake goes out 20 s plus the swap's measured wake-to-start latency
   early). Every 2 s from B's spawn
   until 60 s after A stopped, the harness samples the wave's runs and their owning controller's PID. Each swap
@@ -610,7 +611,9 @@ server has stopped (the first home holds the database and stays). Every swap rec
 **Grading** (`release-swap-grade.ts`, `release-swap-finish.ts`) runs once, after the last swap plus the settle
 period and a bounded drain: the grader waits until no started task has a queued or running run with activity in the
 last 5 minutes, or until the drain cap. A task still running at the cap is not counted in the number; the headline
-reports how many with the age of their last activity, and the wave fails. The single read then covers every task of the wave's company that had a run (probes and agent-created subtasks included), the
+reports how many with the age of their last activity, and the wave fails. The grade uses the same 5-minute threshold:
+after the drain, a run with no event for 5 minutes, a queued wake, a scheduled retry or a working notice with no
+progressing run behind it is not pending work, so the task is `nothing pending`. The single read then covers every task of the wave's company that had a run (probes and agent-created subtasks included), the
 way the board shows it:
 
 | Verdict | When |

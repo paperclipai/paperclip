@@ -98,9 +98,10 @@ const PREPARING_STAGES = new Set(["preparing", "dispatching", "dispatch"]);
 const LATE_WINDOW_MS = 60_000;
 const SAMPLE_MS = 2_000;
 const SAMPLE_TAIL_MS = 60_000;
+const BOOT_SAMPLE_MS = 500;
 export const SWAP_ABANDON_AFTER_MS = 15 * 60_000;
 export const PREP_INTERVAL_MS = 2_000;
-export const PREP_PROBE_CAP = 10;
+export const PREP_PROBE_CAP = 40;
 export const PROBE_AGENT_CONCURRENCY = 10;
 
 export function isPreparing(sample: RunSampleRow): boolean {
@@ -307,7 +308,8 @@ export class ReleaseSwapDriver {
         swap.sampleErrors += 1;
       }
       if (this.ended(swap) || (swap.stoppedAt !== null && Date.now() > swap.stoppedAt + SAMPLE_TAIL_MS)) break;
-      await delay(this.input.sampleMs ?? SAMPLE_MS);
+      const booting = swap.switchedAt === null && !swap.incomingPhases.some(phase => phase.phase === "ready");
+      await delay(this.input.sampleMs ?? (booting ? BOOT_SAMPLE_MS : SAMPLE_MS));
     }
     swap.evidence = swapEvidence(swap);
     this.input.record("release_swap_evidence", { swap: swap.index, faultId: swap.faultId, lateOk: swap.evidence.lateOk, prepOk: swap.evidence.prepOk,
