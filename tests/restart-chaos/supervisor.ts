@@ -42,7 +42,7 @@ import { isMultiServerFault, runMultiServerFault, type MultiServerKind, type Mul
 import { generationHome, nextRedeployIdentity, redeployEnvironment, redeployIdentity, redeployNodeArgs, redeployReceipt, type RedeployIdentity } from "./redeploy.js";
 import { startEdgeProxy, type EdgeProxy } from "./edge-proxy.js";
 import { ephemeralServerEnvironment } from "./ephemeral-server.js";
-import { CLASS_R_PRE_FAULT_DEADLINE_MS, classRRedeploys, isClassRFault, runPluginStall, waitForPluginActivation, type ClassRHooks } from "./class-r.js";
+import { CLASS_R_PRE_FAULT_DEADLINE_MS, classRRedeploys, isClassRFault, runPluginStall, stallAfterPluginActivation, type ClassRHooks } from "./class-r.js";
 
 /** First boot applies every migration; a loaded host can need longer (RESTART_CHAOS_HEALTH_TIMEOUT_MS). */
 const HEALTH_TIMEOUT_MS = (() => {
@@ -57,8 +57,7 @@ export const FAULT_SIGNAL: Record<FaultKind, FaultReceipt["signal"]> = { K1: "SI
   // MS1 leaves the primary alone; MS2 freezes it; MS3 stops it gracefully (multi-server.ts).
   MS1: "none", MS2: "SIGSTOP", MS3: "SIGTERM",
   // CR1 stops the server like K15; CR2 signals only the sandbox's provider (SIGTERM to the server with a hold);
-  // CR3 and CR5 stop the Daytona plugin worker, not the server; CR4 kills the server as K1 does, then stops the
-  // replacement's plugin worker (class-r.ts).
+  // CR3 and CR5 stop the Daytona plugin worker; CR4 kills the server, then stops the replacement's (class-r.ts).
   CR1: "SIGTERM", CR2: "none", CR3: "SIGSTOP", CR4: "SIGKILL", CR5: "SIGSTOP" };
 
 /** The checkout's commit, for the K14 receipt. */
@@ -226,10 +225,6 @@ export class ChaosSupervisor {
 
   serverLogOffset(): number {
     try { return statSync(this.paths.serverLogPath).size + this.log.writableLength; } catch { return 0; }
-  }
-
-  private serverLogSince(offset: number): string {
-    try { return readFileSync(this.paths.serverLogPath).subarray(offset).toString("utf8"); } catch { return ""; }
   }
 
   /** `extraEnvironment` is kept for every restart (e.g. the Daytona image's runnerd and provider pack paths). */
@@ -526,12 +521,10 @@ export class ChaosSupervisor {
       // `--k15-overlap-seconds`: the next deploy boots beside the old server; its hold is the overlap.
       else if (kind === "K15" && this.deployShape.overlap) await this.rollingRedeploy(previous, holdMs, receipt);
       else if (kind === "CR3" || kind === "CR5") {
-        // The server keeps running; its Daytona plugin worker is stopped for the hold (class-r.ts).
         const stall = await runPluginStall({ serverPid: previous.pid, holdMs, cancelled: () => this.shuttingDown,
           record: (event, data) => this.timeline.add(event, { faultId: receipt.faultId, ...data }) });
+        Object.assign(receipt, { stoppedAt: stall.frozenAt, restartedAt: stall.thawedAt });
         receipt.classR!.pluginStall = stall;
-        receipt.stoppedAt = stall.frozenAt;
-        receipt.restartedAt = stall.thawedAt;
         if (stall.error) throw new Error(stall.error);
         receipt.healthyAt = await this.waitForHealth(previous, receipt.phases);
       }
@@ -593,15 +586,8 @@ export class ChaosSupervisor {
             return;
           }
           receipt.healthyAt = await this.waitForHealth(replacement, receipt.phases);
-          if (kind === "CR4") {
-            const activation = await waitForPluginActivation({ timeoutMs: 120_000, cancelled: () => this.shuttingDown,
-              readLog: () => this.serverLogSince(receipt.serverLogOffsetAtStart) });
-            if (activation !== "activated") throw new Error(`CR4 found the replacement's plugin activation ${activation}`);
-            const stall = await runPluginStall({ serverPid: replacement.pid!, holdMs, cancelled: () => this.shuttingDown,
-              findWorkerWithinMs: 60_000, record: (event, data) => this.timeline.add(event, { faultId: receipt.faultId, ...data }) });
-            receipt.classR!.pluginStall = stall;
-            if (stall.error) throw new Error(stall.error);
-          }
+          if (kind === "CR4") await stallAfterPluginActivation({ into: receipt.classR!, serverPid: replacement.pid!, holdMs, cancelled: () => this.shuttingDown,
+            logPath: this.paths.serverLogPath, logOffset: receipt.serverLogOffsetAtStart, record: (event, data) => this.timeline.add(event, { faultId: receipt.faultId, ...data }) });
         },
         cancelled: () => this.shuttingDown,
         record: async progress => { outage = progress; },

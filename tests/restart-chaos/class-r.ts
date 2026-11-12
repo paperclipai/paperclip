@@ -28,6 +28,7 @@
  * Harness only: no product code changes. The one in-sandbox mutation is CR2's SIGKILL of the provider
  * process, run by a fixed script in sandboxes labelled with this wave's company and environment.
  */
+import { readFileSync } from "node:fs";
 import type { AdapterId, FaultKind, FaultReceipt, WaveOptions } from "./types.js";
 import { ProcessFreezer, descendantPids, readProcessTable, type ProcessRow } from "./time-faults.js";
 
@@ -247,6 +248,20 @@ export async function runPluginStall(input: {
       input.record("plugin_worker_thawed", { frozenMs: stall.thawedAt - stall.frozenAt });
     }
   }
+  return stall;
+}
+
+export async function stallAfterPluginActivation(input: {
+  serverPid: number; holdMs: number; cancelled: () => boolean; record: (event: string, data: Record<string, unknown>) => void;
+  logPath: string; logOffset: number; into: { pluginStall?: PluginStallRecord }; activationTimeoutMs?: number;
+}): Promise<PluginStallRecord> {
+  const activation = await waitForPluginActivation({ timeoutMs: input.activationTimeoutMs ?? 120_000, cancelled: input.cancelled,
+    readLog: () => { try { return readFileSync(input.logPath).subarray(input.logOffset).toString("utf8"); } catch { return ""; } } });
+  const stall = activation === "activated" ? await runPluginStall({ ...input, findWorkerWithinMs: 60_000 })
+    : { workerPid: null, command: null, frozenPids: [], frozenAt: null, thawedAt: null,
+      error: `The replacement's plugin activation ${activation}; CR4 stalls only an activated plugin` };
+  input.into.pluginStall = stall;
+  if (stall.error) throw new Error(stall.error);
   return stall;
 }
 
