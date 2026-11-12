@@ -41,7 +41,7 @@ import { issueTreeControlService } from "../issue-tree-control.js";
 import { COMPLETION_REVIEW_STAGE_REASON, completionReviewStageEntry } from "../issue-execution-policy.js";
 import { randomUUID } from "node:crypto";
 import { preserveNativeWorkspaceExportLease } from "./native-workspace-export-resume.js";
-import { and, desc, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agentWakeupRequests,
@@ -973,6 +973,18 @@ async function acceptedResponseDigestMatches(
   );
 }
 
+async function hasLaterAppliedStatusDecision(db: Db, input: {
+  companyId: string; issueId: string; decision: { decisionVersion: number };
+}) {
+  const [later] = await db.select({ id: statusDecisions.id }).from(statusDecisions).where(and(
+    eq(statusDecisions.companyId, input.companyId),
+    eq(statusDecisions.issueId, input.issueId),
+    eq(statusDecisions.applicationState, "applied"),
+    gt(statusDecisions.decisionVersion, input.decision.decisionVersion),
+  )).limit(1);
+  return Boolean(later);
+}
+
 /** Recover only the already accepted answer. Neither issue disposition nor
  * provider state is repaired here; an unsafe native session stays quarantined. */
 export async function repairCommittedNativeChatResponse(
@@ -1171,6 +1183,9 @@ async function recoverCommittedNativeChatResponseInScope(
         return true;
       }
       const conversation = isConversation(issue);
+      const blockedTaskReply = !conversation && result.reportedWorkDisposition === "blocked"
+        && terminal.reportedWorkDisposition === "blocked" && issue.status === "blocked"
+        && !(await hasLaterAppliedStatusDecision(tx, { ...input, decision }));
       // The turn is still the conversation's unsettled current turn. A held
       // turn keeps whatever status its gate committed; a finished turn
       // preserves in_progress.
@@ -1184,20 +1199,22 @@ async function recoverCommittedNativeChatResponseInScope(
         && run.contextSnapshot.conversationSessionGeneration === issue.conversationSessionGeneration;
       // A deferred ordinary-task review still needs its recorded final reply.
       // Publishing that reply must not resolve the interaction or the task.
-      if (
-        (!conversation || currentConversation) &&
-        run.status === "succeeded" &&
-        record(run.contextSnapshot).skipIssueComment !== true &&
+      const ordinaryTaskReply = (!conversation || currentConversation) &&
         !isExternalChatPresentationContext(run.contextSnapshot) &&
-        terminal.runTerminalState === "succeeded" &&
-        terminal.turnTerminalState === "completed" &&
         ((result.reportedWorkDisposition === "done" && terminal.reportedWorkDisposition === "done") ||
           (!conversation && result.reportedWorkDisposition === "needs_review" && terminal.reportedWorkDisposition === "needs_review") ||
           // A conversation turn can yield while an approval, an execution
           // stage or a blocker holds its task; it still answered the person.
-          (currentConversation && result.reportedWorkDisposition === "yielded" && terminal.reportedWorkDisposition === "yielded")) &&
-        (await resolveChatRunPresentationAuthorizationReason(tx, input)) === "internal_agent_write"
-      ) {
+          (currentConversation && result.reportedWorkDisposition === "yielded" && terminal.reportedWorkDisposition === "yielded"));
+      const taskReplyEligible = run.status === "succeeded" &&
+        record(run.contextSnapshot).skipIssueComment !== true &&
+        terminal.runTerminalState === "succeeded" &&
+        terminal.turnTerminalState === "completed" &&
+        (ordinaryTaskReply || blockedTaskReply);
+      const replyAuthorization = taskReplyEligible ? await resolveChatRunPresentationAuthorizationReason(tx, input) : null;
+      const externalChatReply = blockedTaskReply &&
+        isExternalChatPresentationContext(run.contextSnapshot, replyAuthorization === CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON);
+      if (taskReplyEligible && replyAuthorization && (blockedTaskReply || replyAuthorization === "internal_agent_write")) {
         const rows = await tx.select({ seq: heartbeatRunEvents.seq, payload: heartbeatRunEvents.payload })
           .from(heartbeatRunEvents).where(and(
             eq(heartbeatRunEvents.companyId, input.companyId),
@@ -1224,7 +1241,7 @@ async function recoverCommittedNativeChatResponseInScope(
             return candidate ? [candidate] : [];
           }),
         });
-        if (!finalAgentMessage) return false;
+        if (!finalAgentMessage && !blockedTaskReply) return false;
         const comments = await tx.select({ id: issueComments.id, body: issueComments.body, presentation: issueComments.presentation })
           .from(issueComments).where(and(
             eq(issueComments.companyId, input.companyId),
@@ -1241,6 +1258,7 @@ async function recoverCommittedNativeChatResponseInScope(
           interactionOwnsResponse: conversation && await hasChatRunOwnedProviderInteraction(tx, input),
           existingComment: findHeartbeatRunCompletionComment(comments, run.resultJson),
           finalAgentMessage,
+          preferFinalResponseOverExistingComment: externalChatReply,
         });
         if (resolved.decision.commentAction === "reuse" && typeof resolved.decision.commentId === "string") {
           // The reply is already on the task (for example, the live path wrote
@@ -1270,7 +1288,7 @@ async function recoverCommittedNativeChatResponseInScope(
         await notifyChatRunMilestones(tx, input);
         const comment = await issueService(db).addComment(input.issueId, resolved.text,
           { agentId: run.agentId, runId: run.id },
-          { authorizationReason: "internal_agent_write", completionReply: true }, tx);
+          { authorizationReason: replyAuthorization, completionReply: true }, tx);
         await tx.update(heartbeatRuns).set({
           resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({
             presentationDecision: { ...resolved.decision, commentId: comment.id,
