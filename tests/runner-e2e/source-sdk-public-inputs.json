@@ -387,7 +387,7 @@
     "packages/shared/src/types/document-annotation.ts": "7769a42f1ccd707a2259774e7fe6aa536b5d183f",
     "packages/shared/src/types/email.ts": "556ff6a0dcefa01eb704d6d00d3b191de81ff4dc",
     "packages/shared/src/types/environment.ts": "a380b9ce9d2d1763011e9adaa58615a3ef1e56c5",
-    "packages/shared/src/types/execution-continuation.ts": "545998e33ab18d38268558d1a367f4aa12c2d5d3",
+    "packages/shared/src/types/execution-continuation.ts": "5afe62afd227efa03ff847d8f73291c14707ab5b",
     "packages/shared/src/types/execution-projection.ts": "e72e641602b296f6d3e16d07700629df3039a7b1",
     "packages/shared/src/types/external-object.ts": "7a225e0f5a6777d449019a30530c858b753eb4c1",
     "packages/shared/src/types/feedback.ts": "c5eb31545c7f67c04ad9afd9db45a6b4774bcb35",
