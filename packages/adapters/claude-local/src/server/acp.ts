@@ -48,11 +48,6 @@ import {
   resolveRemoteClaudeToolShellPrefixPath,
 } from "./claude-config.js";
 import {
-  extractClaudeRetryNotBefore,
-  isClaudeProviderQuotaError,
-  isClaudeTransientUpstreamError,
-} from "./parse.js";
-import {
   buildAdapterTestTargetCheck,
   buildClaudeLoginRequiredHint,
   classifyThrownErrorClass,
@@ -60,7 +55,13 @@ import {
 } from "./probe-diagnostics.js";
 import { createWorkspaceRestoreTeardown } from "@paperclipai/adapter-utils/workspace-restore-teardown";
 import { buildLocalAdapterTestProbeEnv } from "./probe-env.js";
-import { detectClaudeLoginRequired, extractClaudeRetryNotBefore, isClaudeProviderQuotaError, parseClaudeStreamJson } from "./parse.js";
+import {
+  detectClaudeLoginRequired,
+  extractClaudeRetryNotBefore,
+  isClaudeProviderQuotaError,
+  isClaudeTransientUpstreamError,
+  parseClaudeStreamJson,
+} from "./parse.js";
 import { buildClaudeProbePermissionArgs, claudeSandboxPermissionEnv } from "./permissions.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
 import { resolveClaudeModel, SANDBOX_INSTALL_COMMAND } from "../index.js";
