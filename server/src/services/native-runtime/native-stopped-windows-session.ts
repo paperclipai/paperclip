@@ -158,9 +158,11 @@ export async function proveStoppedWindowsReadOnlySession(input: {
       message: "Stopped the exact orphan provider after verifying its closed read-only conversation.",
       payload: { processPid: process.processPid, stopped, threadId, providerTurnId: turnId } });
   }
+  // Match fs.promises.realpath, which expands 8.3 short names; the JS
+  // realpathSync keeps them, so a short TEMP path never compared equal.
   const unchanged = () => {
     try { return input.unchanged() && history!.sourceIsCurrent() && [...pids].every(absent) &&
-      realpathSync(input.cwd) === cwd && realpathSync(thread.cwd as string) === threadCwd; }
+      realpathSync.native(input.cwd) === cwd && realpathSync.native(thread.cwd as string) === threadCwd; }
     catch { return false; }
   };
   if (!unchanged()) return null;
