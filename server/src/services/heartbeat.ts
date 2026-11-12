@@ -4601,6 +4601,11 @@ export function heartbeatService(
         dependencies: reconcileResolvedDependencyWakes,
         locks: sweepStaleIssueLocks,
         watchdogs: reconcileTaskWatchdogs,
+        assignedWork: {
+          listSuspects: async (scope, cursor, limit) => recovery.assignedWork.listSuspects(
+            { ...scope, createdAfter: await getWorktreeExecutionCutoff() }, cursor, limit),
+          checkIssue: recovery.assignedWork.checkIssue,
+        },
         schedulingSuppressed: async () => (await getSchedulingSuppression(true)).suppressed,
       }, () => canRun() && readTaskDrain(new Date()) === null),
     registerRunDispatchWork: (coordinator: Parameters<typeof registerRunDispatchWork>[0], canRun: () => boolean) =>
@@ -4630,6 +4635,8 @@ export function heartbeatService(
     scheduleBoundedRetry,
 
     reconcileStrandedAssignedIssues,
+    checkAssignedWorkInvariant: recovery.assignedWork.checkIssue,
+    reportAssignedWorkInvariant: recovery.assignedWork.report,
     recoverPendingSessionGoalActions,
     recoverActiveSessionGoals,
 
