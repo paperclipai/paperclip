@@ -77,7 +77,7 @@ import { casesDisabledError } from "../cases-disabled.js";
 import { runnerApiCatalog, searchRunnerApi, withCompanyPagePaths } from "./runner-api-catalog.js";
 import { assertRunnerApiDispatchable, executeRunnerApi, validateRunnerApiCall, RUNNER_API_MAX_BYTES, type RunnerApiCall, type RunnerApiFile, type RunnerApiIo } from "./runner-api-client.js";
 import { finishPendingRunnerApiCaptureDeletes, markRunnerApiCaptureEvictions, runnerApiCaptureCleanupStalled, runnerApiCaptureUsageBytes } from "./runner-api-capture-retention.js";
-import { acquireRunnerApiResponseSlot, runnerApiCompanyCaptureMaxBytes, RUNNER_API_RESPONSE_MAX_BYTES, RUNNER_API_RESPONSE_RUN_MAX_BYTES, RunnerApiResponseLimitError } from "./runner-api-response-limits.js";
+import { acquireRunnerApiResponseSlot, RUNNER_API_RESPONSE_DEADLINE_MS, RunnerApiCaptureReservationReclaimedError, runnerApiCompanyCaptureMaxBytes, RUNNER_API_RESPONSE_MAX_BYTES, RUNNER_API_RESPONSE_RUN_MAX_BYTES, RunnerApiResponseLimitError } from "./runner-api-response-limits.js";
 import { and, desc, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -1506,13 +1506,26 @@ export class PaperclipRunnerToolAuthority {
         if (!reservationId) throw new Error("API response storage reservation is missing");
         const storage = this.binding.storage ?? getStorageService();
         storageAttempted = true;
-        const saved = await storage.putFile({ companyId: this.binding.companyId, namespace: caseId ? `cases/${caseId}/runner-api` : "runner-api", originalFilename: contentType.includes("json") ? "response.json" : "response.bin", contentType, ...(Buffer.isBuffer(bytes) ? { body: bytes } : { body: createReadStream(bytes.path), byteSize: bytes.byteSize, sha256: bytes.sha256 }) });
+        const saved = await storage.putFile({ companyId: this.binding.companyId, namespace: caseId ? `cases/${caseId}/runner-api` : "runner-api", originalFilename: contentType.includes("json") ? "response.json" : "response.bin", contentType, signal: AbortSignal.timeout(RUNNER_API_RESPONSE_DEADLINE_MS), ...(Buffer.isBuffer(bytes) ? { body: bytes } : { body: createReadStream(bytes.path), byteSize: bytes.byteSize, sha256: bytes.sha256 }) });
         const asset = await this.db.transaction(async tx => {
           await this.#lockApiCaptureCompany(tx as unknown as Db);
+          const [held] = await tx.select({ id: runnerApiResponseReservations.id }).from(runnerApiResponseReservations).where(and(
+            eq(runnerApiResponseReservations.id, reservationId!), eq(runnerApiResponseReservations.companyId, this.binding.companyId),
+            isNull(runnerApiResponseReservations.assetId))).for("update");
+          if (!held) throw new RunnerApiCaptureReservationReclaimedError();
           const asset = await assetService(tx as unknown as Db).create(this.binding.companyId, { ...saved, createdByAgentId: this.binding.agentId });
           await tx.update(runnerApiResponseReservations).set({ assetId: asset.id, reservedBytes: asset.byteSize }).where(and(eq(runnerApiResponseReservations.id, reservationId!), eq(runnerApiResponseReservations.companyId, this.binding.companyId)));
           return asset;
         }).catch(async error => {
+          if (error instanceof RunnerApiCaptureReservationReclaimedError) {
+            const removed = await storage.deleteObject(this.binding.companyId, saved.objectKey, { allVersions: true }).then(() => true, () => false);
+            if (!removed) {
+              await this.db.insert(runnerApiResponseReservations).values({ companyId: this.binding.companyId, runId: null,
+                reservedBytes: saved.byteSize, pendingDeleteObjectKey: saved.objectKey }).catch(() => undefined);
+            }
+            storageAttempted = false;
+            throw error;
+          }
           // A failed commit acknowledgement can still leave a committed
           // asset. A locking read waits out that transaction before proving
           // the reservation is unlinked and safe to compensate.

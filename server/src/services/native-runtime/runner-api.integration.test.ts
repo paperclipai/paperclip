@@ -1188,6 +1188,30 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     expect(result.message).not.toMatch(/operator|reservation|snapshot|quota/i);
   });
 
+  it("rejects and removes an upload that finishes after its reservation was reclaimed", async () => {
+    const fixture = await server.fixture();
+    await server.db.update(projects).set({ description: "x".repeat(32 * 1024) }).where(eq(projects.id, fixture.projectId));
+    const before = (await server.db.select({ id: assets.id }).from(assets).where(eq(assets.companyId, fixture.companyId))).length;
+    const putFile = server.storage.putFile.bind(server.storage);
+    let objectKey = "";
+    let uploadSignal: AbortSignal | undefined;
+    const spy = vi.spyOn(server.storage, "putFile").mockImplementationOnce(async input => {
+      uploadSignal = input.signal;
+      const saved = await putFile(input);
+      objectKey = saved.objectKey;
+      await server.db.delete(runnerApiResponseReservations).where(eq(runnerApiResponseReservations.companyId, fixture.companyId));
+      return saved;
+    });
+    try {
+      await expect(fixture.authority.execute({ tool: "call_api", callId: randomUUID(), arguments: {
+        operationId: "GET /api/projects/{id}", pathParams: { id: fixture.projectId },
+      } })).rejects.toThrow("expired before it could be stored");
+    } finally { spy.mockRestore(); }
+    expect(uploadSignal).toBeInstanceOf(AbortSignal);
+    expect((await server.db.select({ id: assets.id }).from(assets).where(eq(assets.companyId, fixture.companyId))).length).toBe(before);
+    expect((await server.storage.headObject(fixture.companyId, objectKey)).exists).toBe(false);
+  });
+
   it("releases stale reservations left by interrupted captures of finished runs", async () => {
     const fixture = await server.fixture();
     vi.stubEnv("PAPERCLIP_RUNNER_API_COMPANY_CAPTURE_MAX_BYTES", String(2 * RUNNER_API_RESPONSE_MAX_BYTES));
