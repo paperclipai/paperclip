@@ -1506,7 +1506,10 @@ function createSandboxEnvironmentDriver(
     if (input.pluginId) {
       const pinned = await resolvePluginSandboxProviderDriverById({ db, pluginId: input.pluginId, driverKey: input.provider });
       if (!pinned) return { state: "missing" as const, resolved: null };
-      if (pinned.plugin.status !== "ready") return { state: "not_ready" as const, resolved: pinned };
+      if (pinned.plugin.status !== "ready") {
+        return pluginWorkerManager?.requestActivationTimeoutRecovery?.(pinned.plugin)
+          ? { state: "worker_unavailable" as const, resolved: pinned } : { state: "not_ready" as const, resolved: pinned };
+      }
       if (!pluginWorkerManager?.isRunning(pinned.plugin.id)) return { state: "worker_unavailable" as const, resolved: pinned };
       return { state: "running" as const, resolved: pinned };
     }
@@ -1531,7 +1534,8 @@ function createSandboxEnvironmentDriver(
     }
 
     if (installed.plugin.status !== "ready") {
-      return { state: "not_ready" as const, resolved: installed };
+      return pluginWorkerManager?.requestActivationTimeoutRecovery?.(installed.plugin)
+        ? { state: "worker_unavailable" as const, resolved: installed } : { state: "not_ready" as const, resolved: installed };
     }
 
     if (!pluginWorkerManager) {
@@ -2694,6 +2698,14 @@ function createSandboxEnvironmentDriver(
     async resumeRunLease(input) {
       const pluginId = readString(input.lease.metadata?.pluginId);
       const providerKey = readString(input.lease.metadata?.provider);
+      if (input.lease.metadata?.sandboxProviderPlugin && pluginWorkerManager && pluginId && providerKey
+        && !pluginWorkerManager.isRunning(pluginId)) {
+        const plugin = await resolvePluginSandboxProviderDriverById({ db, pluginId, driverKey: providerKey });
+        if (plugin && (plugin.plugin.status === "ready" || pluginWorkerManager.requestActivationTimeoutRecovery?.(plugin.plugin))) {
+          throw new PluginWorkerUnavailableError({ pluginId, workerStatus: pluginWorkerManager.getWorker(pluginId)?.status ?? null,
+            message: `Sandbox provider "${providerKey}" is installed via plugin "${plugin.plugin.pluginKey}", but its worker is not running.` });
+        }
+      }
       if (!input.lease.metadata?.sandboxProviderPlugin || !pluginWorkerManager || !pluginId || !providerKey
         || !input.lease.providerLeaseId || input.lease.environmentId !== input.environment.id
         || !pluginWorkerVerifiesLifecycleMethod(pluginId, "environmentResumeLease")
