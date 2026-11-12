@@ -403,7 +403,11 @@ export function skillSourceService(db: Db) {
       const scan = staged && !override && !revoke ? staged
         : await scanGitHubSkills({ repositoryUrl: source.repositoryUrl, trackingRef: source.trackingRef, packageMode, ...(override ? { commitSha: override.commitSha } : {}) },
           reader, { signal: options.signal, securityOverrides: [override ?? (revoke ? null : source.securityOverride)] });
-      if (override) verifySecurityOverride(override, scan);
+      if (override) {
+        // A renamed or transferred repository resolves to a new URL; policy rules match that one.
+        if (scan.repositoryUrl !== source.repositoryUrl) await approveSecurityOverride(context, scan.repositoryUrl, override);
+        verifySecurityOverride(override, scan);
+      }
       const recorded = override ? recordedSecurityOverride(override, scan.securityFindings ?? [], context.actor.userId ?? null) : null;
       if (options.automatic) await settleAutomaticSkillWork(db, companyId, id, token,
         packageMode === 'repository' && (scan.packageMode === 'skills' || scan.repositorySubset) ? {} : scan);

@@ -126,6 +126,37 @@ describe.skipIf(!support.supported)('skill source security overrides', () => {
     expect(audit?.verdict).not.toBe('fail');
   });
 
+  it('keeps an approved repository file accepted when the installed skill is audited again', async () => {
+    const { companyId, result } = await setup(false);
+    const skillId = result.source.entries.find(entry => entry.path === 'skills/one/SKILL.md')?.skillId;
+    expect(skillId).toBeTruthy();
+    const audit = await companySkillService(db).auditSkill(companyId, skillId!);
+    expect(audit?.findings.filter(finding => finding.code === 'remote_fetch_exec'))
+      .toEqual([expect.objectContaining({ path: '.paperclip-repository/hooks/install.sh', severity: 'warning' })]);
+    expect(audit?.verdict).not.toBe('fail');
+  });
+
+  it('checks a refresh approval against the repository a renamed source now resolves to', async () => {
+    const { companyId, result, context } = await setup(false);
+    await db.update(companySkillSources).set({ repositoryUrl: 'https://github.com/acme/old-skills', fullName: 'acme/old-skills' })
+      .where(eq(companySkillSources.id, result.source.id));
+    const files = { 'skills/one/SKILL.md': md('one'), 'hooks/install.sh': hook };
+    const base = githubFixture(files, {}, first);
+    const renamed = (async (url: string, signal?: AbortSignal) => base(url.replace('/repos/acme/old-skills', '/repos/acme/skills'), signal)) as typeof base;
+    renamed.openSnapshot = base.openSnapshot;
+    const checked: string[] = [];
+    const service = skillSourceService(db);
+    const { revision } = await service.detail(companyId, result.source.id);
+    await expect(service.refresh(companyId, result.source.id, { ...context, read: () => renamed,
+      authorizeSecurityOverride: async ({ sourceLocator }) => {
+        checked.push(sourceLocator);
+        if (sourceLocator === 'https://github.com/acme/skills') throw forbidden('Skill policy denies security overrides for this repository.');
+      } }, { revision, selectedPaths: ['skills/one/SKILL.md'], excludedFolders: [],
+      securityOverride: { commitSha: first, reason: 'Maintained by our platform team.', trustFutureUpdates: false, files: [{ path: 'hooks/install.sh', sha256: hash(hook) }] } }))
+      .rejects.toMatchObject({ status: 403 });
+    expect(checked).toEqual(['https://github.com/acme/old-skills', 'https://github.com/acme/skills']);
+  });
+
   it('keeps approved files viewable in the saved source', async () => {
     const { companyId, service, context } = await setup(false);
     const preview = await service.preview(companyId, { repositoryUrl: 'https://github.com/acme/skills', packageMode: 'repository', commitSha: first,
