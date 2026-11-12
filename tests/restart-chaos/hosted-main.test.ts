@@ -10,7 +10,7 @@ import { hostedTarget } from "./hosted-guard.js";
 import { arrivalsDone, finalizeHosted, keepPolling, observedClicks } from "./hosted-main.js";
 import { hostedCompanyRuns, hostedIssues, runEvents, RUN_PAGE, ISSUE_PAGE, EVENT_PAGE } from "./hosted-readers.js";
 import { continuity } from "./hosted-release.js";
-import { setupHosted, statePath } from "./hosted-setup.js";
+import { cleanupHosted, setupHosted, statePath } from "./hosted-setup.js";
 import type { HostedTaskRecord } from "./hosted-workload.js";
 
 type Json = Record<string, any>;
@@ -88,6 +88,24 @@ describe("hosted run control", () => {
     expect(await finalizeHosted({ api, keep: false, label: "rc-x", dir, state: null, record: () => {} })).toMatchObject({ errors: [] });
     expect(writes).toEqual(["PATCH /api/agents/a1", "POST /api/agents/a1/terminate", "DELETE /api/agents/a1", "DELETE /api/secrets/s1", "PATCH /api/projects/p1"]);
     expect(await finalizeHosted({ api, keep: true, label: "rc-x", dir, state: null, record: () => {} })).toBeNull();
+  });
+  it("reports a cleanup read that failed instead of counting the object as removed", async () => {
+    const writes: string[] = [];
+    const unavailable = (route: string) => new ChaosApiError(503, `GET ${route} returned 503`);
+    const api = {
+      get: async <T>(route: string) => {
+        if (route.endsWith("/agents")) return [{ id: "a1", name: "RC rc-x opencode", status: "paused" }] as T;
+        if (route === "/api/agents/a1" || route.endsWith("/secrets")) throw unavailable(route);
+        return [] as T;
+      },
+      post: async <T>(route: string) => { writes.push(`POST ${route}`); return {} as T; },
+      patch: async <T>(route: string) => { writes.push(`PATCH ${route}`); return {} as T; },
+      delete: async (route: string) => { writes.push(`DELETE ${route}`); },
+    };
+    const report = await cleanupHosted({ api, label: "rc-x", companyId: "c1", state: null, record: () => {} });
+    expect(report.agentsRemoved).toBe(0);
+    expect(report.errors).toEqual([expect.stringMatching(/^remove agent a1: GET \/api\/agents\/a1 returned 503/), expect.stringMatching(/^read secrets: /)]);
+    expect(writes).toEqual(["PATCH /api/agents/a1"]);
   });
 });
 

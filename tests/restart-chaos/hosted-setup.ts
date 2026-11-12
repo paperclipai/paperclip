@@ -154,7 +154,10 @@ export interface CleanupReport {
 export const TERMINATE_WAIT_MS = 120_000;
 
 async function removeAgent(api: SetupApi, agentId: string, pollMs: number): Promise<void> {
-  const current = await api.get<Json>(`/api/agents/${agentId}`).catch(() => null);
+  const current = await api.get<Json>(`/api/agents/${agentId}`).catch(error => {
+    if (error instanceof ChaosApiError && error.status === 404) return null;
+    throw error;
+  });
   if (current === null) return;
   if (current.status !== "terminated") await api.post(`/api/agents/${agentId}/terminate`);
   for (const until = Date.now() + TERMINATE_WAIT_MS; ;) {
@@ -177,17 +180,20 @@ export async function cleanupHosted(input: { api: SetupApi; label: string; compa
   const attempt = async (what: string, action: () => Promise<unknown>) => {
     try { await action(); return true; } catch (error) { report.errors.push(`${what}: ${error instanceof Error ? error.message : String(error)}`.slice(0, 300)); return false; }
   };
+  const read = async (what: string, route: string): Promise<Json[]> => {
+    try { return await api.get<Json[]>(route); } catch (error) { report.errors.push(`${what}: ${error instanceof Error ? error.message : String(error)}`.slice(0, 300)); return []; }
+  };
   const agentPrefix = `RC ${label} `;
   const agents = (await api.get<Json[]>(`/api/companies/${companyId}/agents`)).filter(agent => String(agent.name).startsWith(agentPrefix));
   const stateIds = new Set(Object.values(input.state?.agents ?? {}).map(agent => agent!.id));
   const ours = agents.filter(agent => stateIds.size === 0 || stateIds.has(String(agent.id)));
   for (const agent of ours) {
     if (agent.status !== "terminated" && await attempt(`pause ${agent.id}`, () => api.patch(`/api/agents/${agent.id}`, { status: "paused" }))) report.agentsPaused += 1;
-    const runs = await api.get<Json[]>(`/api/companies/${companyId}/heartbeat-runs?agentId=${agent.id}&limit=1000`).catch(() => [] as Json[]);
+    const runs = await read(`read runs of ${agent.id}`, `/api/companies/${companyId}/heartbeat-runs?agentId=${agent.id}&limit=1000`);
     for (const run of runs.filter(run => run.agentId === agent.id && ["queued", "running", "scheduled_retry"].includes(String(run.status)))) {
       if (await attempt(`cancel run ${run.id}`, () => api.post(`/api/heartbeat-runs/${run.id}/cancel`))) report.runsCancelled += 1;
     }
-    const issues = await api.get<Json[]>(`/api/companies/${companyId}/issues?assigneeAgentId=${agent.id}&includeAgentCreatedTasks=true&limit=1000`).catch(() => [] as Json[]);
+    const issues = await read(`read tasks of ${agent.id}`, `/api/companies/${companyId}/issues?assigneeAgentId=${agent.id}&includeAgentCreatedTasks=true&limit=1000`);
     for (const issue of issues.filter(issue => issue.assigneeAgentId === agent.id && !issue.hiddenAt)) {
       if (await attempt(`archive task ${issue.id}`, () => api.patch(`/api/issues/${issue.id}`, { hiddenAt: new Date().toISOString() }))) report.tasksArchived += 1;
     }
@@ -195,12 +201,12 @@ export async function cleanupHosted(input: { api: SetupApi; label: string; compa
   for (const agent of ours) {
     if (await attempt(`remove agent ${agent.id}`, () => removeAgent(api, String(agent.id), input.terminatePollMs ?? 2_000))) report.agentsRemoved += 1;
   }
-  const secrets = (await api.get<Json[]>(`/api/companies/${companyId}/secrets`).catch(() => [] as Json[]))
+  const secrets = (await read("read secrets", `/api/companies/${companyId}/secrets`))
     .filter(secret => String(secret.name).startsWith(`restart-chaos ${label} `));
   for (const secret of secrets) {
     if (await attempt(`delete secret ${secret.id}`, () => api.delete(`/api/secrets/${secret.id}`, { allowNotFound: true }))) report.secretsDeleted += 1;
   }
-  const projects = (await api.get<Json[]>(`/api/companies/${companyId}/projects`).catch(() => [] as Json[])).filter(project => project.name === projectName(label) && !project.archivedAt);
+  const projects = (await read("read projects", `/api/companies/${companyId}/projects`)).filter(project => project.name === projectName(label) && !project.archivedAt);
   for (const project of projects) {
     if (await attempt(`archive project ${project.id}`, () => api.patch(`/api/projects/${project.id}`, { archivedAt: new Date().toISOString() }))) report.projectArchived = true;
   }
