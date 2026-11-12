@@ -368,6 +368,20 @@ it.skipIf(!gnuTar)("extracts interleaved read-only skill directories with GNU ta
     expect((await fs.stat(qa)).mode & 0o777).toBe(0o444);
     expect(await fs.readFile(path.join(target, "unrelated.txt"), "utf8")).toBe("keep me");
     expect((await fs.readdir(remoteDir)).filter((name) => name.startsWith(".paperclip-upload"))).toEqual([]);
+    // A repair that cannot finish still leaves the bundle sealed read-only.
+    const blocked = path.join(target, "references", "overview.md");
+    await fs.chmod(path.join(target, "references"), 0o755);
+    await fs.rm(blocked);
+    await fs.mkdir(blocked);
+    await fs.writeFile(path.join(blocked, "child"), "x");
+    await fs.chmod(path.join(target, "references"), 0o555);
+    await expect(performSyncIn({ sandbox: sandbox as never, remoteDir, timeoutSeconds: 30,
+      operations: [{ operationId: "blocked-skill-resume", files: [{ sourcePath: source, targetPath: target, kind: "directory", mode: 0o555 }] }] })).rejects.toThrow("syncIn extract");
+    for (const dir of ["references", "references/agents", "references/overview.md"]) {
+      expect((await fs.stat(path.join(target, dir))).mode & 0o222).toBe(0);
+    }
+    await fs.chmod(blocked, 0o700);
+    expect((await fs.readdir(remoteDir)).filter((name) => name.startsWith(".paperclip-upload"))).toEqual([]);
 
   } finally {
     for (const base of [source, target]) {

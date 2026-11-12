@@ -1131,7 +1131,9 @@ async function syncInDirectoryMapping(input: {
         // BSD archives may revisit a directory after its parent's files. Keep
         // GNU tar from restoring a read-only skill directory's mode before all
         // of its children are extracted; final permissions remain unchanged.
-        `tar -xf ${shellQuote(remoteTar)} --delay-directory-restore -C ${shellQuote(mapping.targetPath)} || { echo "extract failed"; exit 43; };`,
+        // A failed repair must not leave the read-only bundle writable.
+        `tar -xf ${shellQuote(remoteTar)} --delay-directory-restore -C ${shellQuote(mapping.targetPath)} || { ${immutable
+          ? `find ${shellQuote(mapping.targetPath)} -mindepth 1 -type d -exec chmod a-w {} + ; ` : ""}echo "extract failed"; exit 43; };`,
         `rm -f ${shellQuote(remoteTar)};`,
       ].join("\n");
       // `extractTarball` span: one round trip — re-check the path, `tar -xf`, and
