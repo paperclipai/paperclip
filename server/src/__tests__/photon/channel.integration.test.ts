@@ -703,7 +703,7 @@ describe("iMessage Photon channel control plane", () => {
     expect(secretSafe).not.toContain("private-line-token");
     expect(secretSafe).not.toContain('"projectSecret"');
   }, 30_000);
-  async function onlinePhotonEnrollment(activityFails = false) {
+  async function onlinePhotonEnrollment(activityFails = false, reEnrollment = false) {
     const home = await mkdtemp(path.join(tmpdir(), "photon-online-enrollment-"));
     const keys = ["PAPERCLIP_HOME", "PAPERCLIP_CONFIG", "PAPERCLIP_INSTANCE_ID", "PAPERCLIP_PUBLIC_URL",
       "PAPERCLIP_AUTH_PUBLIC_BASE_URL", "BETTER_AUTH_URL", "BETTER_AUTH_BASE_URL",
@@ -901,6 +901,37 @@ describe("iMessage Photon channel control plane", () => {
       expect(await state.read(PHOTON_EXTERNAL_STATE)).toEqual(retainedBeforeProof);
       expect(allocations).not.toHaveBeenCalled();
       expect(t.f.client.close).toHaveBeenCalledTimes(closeCalls);
+      if (reEnrollment) {
+        // The real public operation changes the SAME active on-disk identity to
+        // pending; the normal config getter must now hide the connector.
+        await request(listener).post("/api/tools/oauth/cloud-connector/enrollment").set("Connection", "close")
+          .send({ companyId }).expect(201);
+        const again = loadPaperclipCloudConnectorIdentity();
+        if (!again?.pending) throw new Error("Normal re-enrollment did not retain its pending owner");
+        expect(again).toMatchObject({ status: "pending", instanceId: recovered.binding.instanceId });
+        expect(cloudConnectors.paperclipCloudConnectorConfigFromEnv()).toBeNull();
+        const original = await state.read(PHOTON_EXTERNAL_STATE), operationCount = brokerOperations.length;
+        try {
+          const result = await t.service.reconcileProviderRuntimes();
+          expect(allocations, "pending connector identity must not construct duplicate local intake beside retained Cloud custody").not.toHaveBeenCalled();
+          expect(result).toMatchObject({ local: 0, failed: 1 });
+          expect(t.service.runtime.get(t.endpoint.id)).toBeNull();
+          expect(await state.read(PHOTON_EXTERNAL_STATE)).toEqual(original);
+          expect(brokerOperations).toHaveLength(operationCount);
+        } finally {
+          // Restore authority by the SAME public callback even when the causal
+          // assertion fails. No identity-file write or forged close is used.
+          await request(listener).get("/api/tools/oauth/cloud-connector/enrollment-callback").set("Connection", "close")
+            .query({ enrollment_id: "online-case", approval_code: "controlled-approval", state: again.pending.returnState }).expect(303);
+        }
+        expect(cloudConnectors.paperclipCloudConnectorConfigFromEnv()).toMatchObject({ instanceId: recovered.binding.instanceId });
+        expect(readPhotonExternalState(await state.read(PHOTON_EXTERNAL_STATE))).toMatchObject({
+          phase: "external", handoffId: recovered.handoffId, binding: recovered.binding, acceptedSequence: recovered.acceptedSequence });
+        // Normal current authority can be retried without replacing the old
+        // handoff or enrolling another Cloud receiver.
+        expect(await t.service.reconcileProviderRuntimes()).toMatchObject({ failed: 0 });
+        expect(brokerOperations.filter(operation => operation.kind === "enroll")).toHaveLength(1);
+      }
     } catch (error) { primary = { error }; }
     finally {
       const cleanup: unknown[] = [];
@@ -925,6 +956,8 @@ describe("iMessage Photon channel control plane", () => {
     () => onlinePhotonEnrollment(), 30_000);
   it("keeps the normal online Photon handoff hint after its activity write rolls back",
     () => onlinePhotonEnrollment(true), 30_000);
+  it("keeps retained Photon Cloud custody fenced during normal connector re-enrollment and restores its original handoff",
+    () => onlinePhotonEnrollment(false, true), 30_000);
   async function resumeOriginalHandoff(phase: "enrolling" | "joining", observeIdleRenewal = false) {
     const renew = vi.fn(async () => true);
     const signing = generateKeyPairSync("ed25519"), sealing = generateKeyPairSync("x25519");

@@ -152,11 +152,18 @@ export function createPhotonExternalRuntimeOwner(db: Db, options: {
   }
   async function reserveLocalRuntime(record: EndpointRecord, context: RuntimeContext, lease: { token: string }, config: ResolvedPhotonChatConfig): Promise<PhotonRuntimeAllocation | null> {
     await options.joinConstructionCleanup?.(record.endpoint.id);
+    if (record.endpoint.provider !== "imessage-photon") return null;
+    // Connector re-enrollment can temporarily hide its configuration. That is
+    // not evidence that this endpoint's original Cloud custody has retired.
+    const prior = await store.read({ companyId: record.endpoint.companyId, endpointId: record.endpoint.id });
     const subject = (record.endpoint.setup as InternalSetupState).photonExternalSubject, broker = options.broker();
-    if (!subject || !broker || record.endpoint.provider !== "imessage-photon") return null;
+    if (!subject || !broker) {
+      if (prior && prior.phase !== "retired")
+        throw conflict("Photon original handoff requires current connector authority before a local receiver");
+      return null;
+    }
     const identity: PhotonExternalIdentity = { companyId: record.endpoint.companyId, endpointId: record.endpoint.id,
       connectionId: record.endpoint.connectionId, runtimeGeneration: context.generation, credentialReferences: context.credentialFingerprint, subject };
-    const prior = await store.read(identity);
     if (prior && prior.phase !== "retired") {
       if (prior.phase === "external") {
         if (!await selected(record)) throw conflict("Photon prior external owner must retire before a replacement runtime");
