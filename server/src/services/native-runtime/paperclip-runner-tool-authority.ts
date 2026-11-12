@@ -76,7 +76,7 @@ import { badRequest, forbidden, notFound, HttpError } from "../../errors.js";
 import { casesDisabledError } from "../cases-disabled.js";
 import { runnerApiCatalog, searchRunnerApi, withCompanyPagePaths } from "./runner-api-catalog.js";
 import { assertRunnerApiDispatchable, executeRunnerApi, validateRunnerApiCall, RUNNER_API_MAX_BYTES, type RunnerApiCall, type RunnerApiFile, type RunnerApiIo } from "./runner-api-client.js";
-import { reclaimRunnerApiCaptureStorage, runnerApiCaptureUsageBytes } from "./runner-api-capture-retention.js";
+import { finishPendingRunnerApiCaptureDeletes, markRunnerApiCaptureEvictions, runnerApiCaptureUsageBytes } from "./runner-api-capture-retention.js";
 import { acquireRunnerApiResponseSlot, runnerApiCompanyCaptureMaxBytes, RUNNER_API_RESPONSE_MAX_BYTES, RUNNER_API_RESPONSE_RUN_MAX_BYTES, RunnerApiResponseLimitError } from "./runner-api-response-limits.js";
 import { and, desc, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -1538,42 +1538,38 @@ export class PaperclipRunnerToolAuthority {
 
   async #reserveApiResponseCapture() {
     const release = acquireRunnerApiResponseSlot(this.binding.companyId);
-    let id: string;
-    let evictedObjectKeys: string[] = [];
+    let id: string | undefined;
     try {
-      id = await this.db.transaction(async tx => {
-        await this.#lockApiCaptureCompany(tx as unknown as Db);
-        const locked = await this.#lockAuthorizedMutationContext(tx as unknown as Db);
-        const resultJson = record(locked.run.resultJson);
-        const used = resultJson.apiResponseCaptureBytes ?? 0;
-        if (typeof used !== "number" || !Number.isSafeInteger(used) || used < 0
-          || used + RUNNER_API_RESPONSE_MAX_BYTES > RUNNER_API_RESPONSE_RUN_MAX_BYTES) {
-          throw new RunnerApiResponseLimitError("api_response_capture_limit", "This run has insufficient capture budget (4 GiB per run). Read an existing asset or narrow the query.");
+      for (let attempt = 0; id === undefined; attempt++) {
+        id = await this.db.transaction(async tx => {
+          await this.#lockApiCaptureCompany(tx as unknown as Db);
+          const locked = await this.#lockAuthorizedMutationContext(tx as unknown as Db);
+          const resultJson = record(locked.run.resultJson);
+          const used = resultJson.apiResponseCaptureBytes ?? 0;
+          if (typeof used !== "number" || !Number.isSafeInteger(used) || used < 0
+            || used + RUNNER_API_RESPONSE_MAX_BYTES > RUNNER_API_RESPONSE_RUN_MAX_BYTES) {
+            throw new RunnerApiResponseLimitError("api_response_capture_limit", "This run has insufficient capture budget (4 GiB per run). Read an existing asset or narrow the query.");
+          }
+          const companyBytes = await runnerApiCaptureUsageBytes(tx as unknown as Db, this.binding.companyId);
+          const overBy = companyBytes + RUNNER_API_RESPONSE_MAX_BYTES - runnerApiCompanyCaptureMaxBytes();
+          if (Number.isSafeInteger(companyBytes) && companyBytes >= 0 && overBy > 0 && attempt === 0) {
+            const marked = await markRunnerApiCaptureEvictions(tx as unknown as Db, this.binding.companyId, overBy);
+            if (marked.releasedBytes >= overBy) return this.#insertApiCaptureReservation(tx as unknown as Db, resultJson, used);
+            return undefined;
+          }
+          if (!Number.isSafeInteger(companyBytes) || companyBytes < 0 || overBy > 0) {
+            throw new RunnerApiResponseLimitError("api_response_company_storage_limit", "Saved API responses for this company are using all of their storage, and none can be removed yet: they belong to runs that are still working, are attached to tasks, or are still being deleted. Read a saved response you already have, ask for less data, or try again in a few minutes.");
+          }
+          return this.#insertApiCaptureReservation(tx as unknown as Db, resultJson, used);
+        });
+        if (id === undefined) {
+          await finishPendingRunnerApiCaptureDeletes(this.db, this.binding.storage ?? getStorageService(), this.binding.companyId);
         }
-        let companyBytes = await runnerApiCaptureUsageBytes(tx as unknown as Db, this.binding.companyId);
-        const overBy = () => companyBytes + RUNNER_API_RESPONSE_MAX_BYTES - runnerApiCompanyCaptureMaxBytes();
-        if (Number.isSafeInteger(companyBytes) && companyBytes >= 0 && overBy() > 0) {
-          const reclaimed = await reclaimRunnerApiCaptureStorage(tx as unknown as Db, this.binding.companyId, overBy());
-          companyBytes -= reclaimed.reclaimedBytes;
-          evictedObjectKeys = reclaimed.evictedObjectKeys;
-        }
-        if (!Number.isSafeInteger(companyBytes) || companyBytes < 0 || overBy() > 0) {
-          throw new RunnerApiResponseLimitError("api_response_company_storage_limit", "Company API snapshot storage is fully held by runs that are still active. Read an existing asset, narrow the query, or retry after another active run finishes.");
-        }
-        // Reserve worst-case bytes durably before creating a temporary file.
-        // Interrupted/failed captures keep the reservation, preventing retry
-        // loops and process restarts from resetting this run's disk-I/O budget.
-        await tx.update(heartbeatRuns).set({ resultJson: { ...resultJson, apiResponseCaptureBytes: used + RUNNER_API_RESPONSE_MAX_BYTES } }).where(eq(heartbeatRuns.id, this.binding.runId));
-        const [reservation] = await tx.insert(runnerApiResponseReservations).values({ companyId: this.binding.companyId, runId: this.binding.runId, reservedBytes: RUNNER_API_RESPONSE_MAX_BYTES }).returning({ id: runnerApiResponseReservations.id });
-        return reservation.id;
-      });
+      }
     } catch (error) { release(); throw error; }
-    if (evictedObjectKeys.length) {
-      const storage = this.binding.storage ?? getStorageService();
-      await Promise.all(evictedObjectKeys.map(objectKey => storage.deleteObject(this.binding.companyId, objectKey).catch(() => undefined)));
-    }
+    const reservationId = id;
     let settled = false;
-    return { id, settle: async (completedBytes?: number, cleaned?: boolean, storageAttempted?: boolean) => {
+    return { id: reservationId, settle: async (completedBytes?: number, cleaned?: boolean, storageAttempted?: boolean) => {
       if (settled) return;
       settled = true;
       try {
@@ -1582,7 +1578,7 @@ export class PaperclipRunnerToolAuthority {
           // Reclaim a handled pre-storage failure only after disk cleanup.
           // Crashes, failed cleanup, and ambiguous storage failures keep their
           // reservation until company admission reclaims it after the run ends.
-          if (cleaned && !storageAttempted) await tx.delete(runnerApiResponseReservations).where(and(eq(runnerApiResponseReservations.id, id), isNull(runnerApiResponseReservations.assetId)));
+          if (cleaned && !storageAttempted) await tx.delete(runnerApiResponseReservations).where(and(eq(runnerApiResponseReservations.id, reservationId), isNull(runnerApiResponseReservations.assetId)));
           if (completedBytes === undefined) return;
           const [run] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, this.binding.runId), eq(heartbeatRuns.companyId, this.binding.companyId))).for("update");
           if (!run) return;
@@ -1593,6 +1589,12 @@ export class PaperclipRunnerToolAuthority {
         });
       } finally { release(); }
     } };
+  }
+
+  async #insertApiCaptureReservation(tx: Db, resultJson: Record<string, unknown>, used: number): Promise<string> {
+    await tx.update(heartbeatRuns).set({ resultJson: { ...resultJson, apiResponseCaptureBytes: used + RUNNER_API_RESPONSE_MAX_BYTES } }).where(eq(heartbeatRuns.id, this.binding.runId));
+    const [reservation] = await tx.insert(runnerApiResponseReservations).values({ companyId: this.binding.companyId, runId: this.binding.runId, reservedBytes: RUNNER_API_RESPONSE_MAX_BYTES }).returning({ id: runnerApiResponseReservations.id });
+    return reservation.id;
   }
 
   async #dotOwnsApiAsset(assetId: string): Promise<boolean> {

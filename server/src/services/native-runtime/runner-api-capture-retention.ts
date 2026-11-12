@@ -1,10 +1,13 @@
-import { and, asc, eq, inArray, isNull, lt, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNotNull, isNull, lt, sql } from "drizzle-orm";
 import { assets, runnerApiResponseReservations, type Db } from "@paperclipai/db";
+import type { StorageService } from "../../storage/types.js";
 import { RUNNER_API_RESPONSE_DEADLINE_MS } from "./runner-api-response-limits.js";
 
 const ACTIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const EVICTION_PAGE_SIZE = 200;
+const PENDING_DELETE_BATCH_SIZE = 50;
 export const STALE_CAPTURE_RESERVATION_MS = 2 * RUNNER_API_RESPONSE_DEADLINE_MS;
+export const CAPTURE_EVICTION_DELETE_TIMEOUT_MS = 30_000;
 
 function activeRunStatusList() {
   return sql.join(ACTIVE_RUN_STATUSES.map(status => sql`${status}`), sql`, `);
@@ -23,17 +26,18 @@ export async function runnerApiCaptureUsageBytes(tx: Db, companyId: string): Pro
   return Number(row?.bytes ?? 0);
 }
 
-export async function reclaimRunnerApiCaptureStorage(tx: Db, companyId: string, neededBytes: number, now = new Date()) {
-  const evictedObjectKeys: string[] = [];
+export async function markRunnerApiCaptureEvictions(tx: Db, companyId: string, neededBytes: number, now = new Date()) {
   const released = await tx.delete(runnerApiResponseReservations).where(and(
     eq(runnerApiResponseReservations.companyId, companyId),
     isNull(runnerApiResponseReservations.assetId),
+    isNull(runnerApiResponseReservations.pendingDeleteObjectKey),
     lt(runnerApiResponseReservations.createdAt, new Date(now.getTime() - STALE_CAPTURE_RESERVATION_MS)),
     sql`not exists (select 1 from heartbeat_runs run where run.id = ${runnerApiResponseReservations.runId}
       and run.status in (${activeRunStatusList()}))`,
   )).returning({ bytes: runnerApiResponseReservations.reservedBytes });
   let reclaimedBytes = released.reduce((sum, row) => sum + row.bytes, 0);
-  while (reclaimedBytes < neededBytes) {
+  let pendingBytes = 0;
+  while (reclaimedBytes + pendingBytes < neededBytes) {
     const candidates = await tx.select({ id: assets.id, objectKey: assets.objectKey, byteSize: assets.byteSize }).from(assets).where(and(
       eq(assets.companyId, companyId),
       sql`(${assets.objectKey} like ${`${companyId}/runner-api/%`}
@@ -48,15 +52,43 @@ export async function reclaimRunnerApiCaptureStorage(tx: Db, companyId: string, 
     )).orderBy(asc(assets.createdAt), asc(assets.id)).limit(EVICTION_PAGE_SIZE);
     const chosen: typeof candidates = [];
     for (const candidate of candidates) {
-      if (reclaimedBytes >= neededBytes) break;
+      if (reclaimedBytes + pendingBytes >= neededBytes) break;
       chosen.push(candidate);
-      reclaimedBytes += candidate.byteSize;
+      pendingBytes += candidate.byteSize;
     }
     if (chosen.length) {
       await tx.delete(assets).where(and(eq(assets.companyId, companyId), inArray(assets.id, chosen.map(candidate => candidate.id))));
-      evictedObjectKeys.push(...chosen.map(candidate => candidate.objectKey));
+      await tx.insert(runnerApiResponseReservations).values(chosen.map(candidate => ({
+        companyId, runId: null, assetId: null, reservedBytes: candidate.byteSize, pendingDeleteObjectKey: candidate.objectKey,
+      })));
     }
     if (candidates.length < EVICTION_PAGE_SIZE) break;
   }
-  return { reclaimedBytes, releasedReservations: released.length, evictedObjectKeys };
+  return { releasedBytes: reclaimedBytes, pendingBytes };
+}
+
+export async function finishPendingRunnerApiCaptureDeletes(db: Db, storage: StorageService, companyId: string,
+  timeoutMs = CAPTURE_EVICTION_DELETE_TIMEOUT_MS) {
+  const signal = AbortSignal.timeout(timeoutMs);
+  let deletedCount = 0;
+  let after: string | undefined;
+  while (!signal.aborted) {
+    const pending = await db.select({ id: runnerApiResponseReservations.id, objectKey: runnerApiResponseReservations.pendingDeleteObjectKey })
+      .from(runnerApiResponseReservations).where(and(
+        eq(runnerApiResponseReservations.companyId, companyId), isNotNull(runnerApiResponseReservations.pendingDeleteObjectKey),
+        after ? gt(runnerApiResponseReservations.id, after) : undefined,
+      )).orderBy(asc(runnerApiResponseReservations.id)).limit(PENDING_DELETE_BATCH_SIZE);
+    if (!pending.length) break;
+    after = pending[pending.length - 1].id;
+    const deleted = (await Promise.all(pending.map(row => storage.deleteObject(companyId, row.objectKey!, { signal })
+      .then(() => row.id, () => null)))).filter((id): id is string => id !== null);
+    if (deleted.length) {
+      await db.delete(runnerApiResponseReservations).where(and(
+        eq(runnerApiResponseReservations.companyId, companyId), inArray(runnerApiResponseReservations.id, deleted),
+      ));
+      deletedCount += deleted.length;
+    }
+    if (pending.length < PENDING_DELETE_BATCH_SIZE) break;
+  }
+  return deletedCount;
 }
