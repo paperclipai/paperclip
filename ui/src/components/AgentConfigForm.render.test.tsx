@@ -1134,6 +1134,23 @@ describe("AgentConfigForm environment selector", () => {
     expect(result.container.querySelector('[aria-label="Runner"]')).toBeNull();
   });
 
+  it.each(["codex_local", "claude_local"])("selects a pool from a directly configured %s agent without losing policy or workspace", async adapterType => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableNativeRunner: true });
+    const { harnessPoolsApi } = await import("../api/harness-pools");
+    const pools = vi.spyOn(harnessPoolsApi, "choices").mockResolvedValue([{ id: "chosen", name: "Claude first", revision: 1, enabled: true }]);
+    const source = { engine: "cli", cwd: "/existing-workspace", instructionsFilePath: "/agent/AGENTS.md", ...(adapterType === "codex_local" ? { dangerouslyBypassApprovalsAndSandbox: false } : { dangerouslySkipPermissions: false }) };
+    try {
+      const result = await renderForm([], { adapterType, adapterConfig: source, runtimeConfig: { aiConnection: { mode: "responsible_user", provider: adapterType === "codex_local" ? "openai" : "anthropic", method: "subscription" } } }, { showAdapterTypeField: true, wrapRouter: true }); roots.push(result.root);
+      await clickElement(result.container.querySelector('[aria-label="Harness"]'));
+      const pool = document.querySelector('[role="option"][data-value="pool"]'); expect(pool).toBeTruthy(); await clickElement(pool); await flushReact();
+      expect(result.onSave).not.toHaveBeenCalled();
+      const choice = result.container.querySelector<HTMLSelectElement>('[aria-label="Harness pool"]')!; expect(choice).toBeTruthy();
+      expect(result.container.querySelector('[aria-label="Connection"]')).toBeNull();
+      await act(async () => { choice.value = "chosen"; choice.dispatchEvent(new Event("change", { bubbles: true })); }); await clickByText(result.container, "Save");
+      expect(result.onSave).toHaveBeenCalledWith(expect.objectContaining({ adapterType: "paperclip_runner", runner: "paperclip", adapterConfig: expect.objectContaining({ ...source, provider: adapterType === "codex_local" ? "codex" : "acpx" }), runtimeConfig: expect.objectContaining({ aiConnection: undefined, harnessPool: { poolId: "chosen" } }) }));
+    } finally { pools.mockRestore(); }
+  });
+
   it("retains the native source policy when selecting Pool", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableNativeRunner: true });
     const { harnessPoolsApi } = await import("../api/harness-pools");

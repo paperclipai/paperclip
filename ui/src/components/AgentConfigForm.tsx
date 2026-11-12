@@ -1818,12 +1818,12 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 openAiDotEnabled={experimentalSettings?.enableOpenAiDot === true}
                 nativeRunnerEnabled={experimentalSettings?.enableNativeRunner === true}
                 poolEnabled={!isCreate && experimentalSettings?.enableNativeRunner === true}
-                poolEligible={adapterType === "paperclip_runner"}
+                poolEligible={adapterType === "paperclip_runner" || ["codex_local", "claude_local", "grok_local", "opencode_local"].includes(adapterType)}
                 museEnabled={experimentalSettings?.enableMuse === true && experimentalSettings?.enableNativeRunner === true}
                 onChange={(choice) => {
                   if (choice === "pool") {
-                    if (isCreate || adapterType !== "paperclip_runner") return;
-                    setOverlay(prev => ({ ...prev, adapterType: "paperclip_runner", runner: "paperclip", adapterConfig: { ...config, ...prev.adapterConfig, homeMode: undefined }, runtime: { ...prev.runtime, runtimeConfig: { ...selectedRuntime, aiConnection: undefined, harnessPool: { poolId: "" } } } }));
+                    if (isCreate) return;
+                    setOverlay(prev => ({ ...prev, adapterType: "paperclip_runner", runner: "paperclip", adapterConfig: { ...config, ...prev.adapterConfig, ...(adapterType !== "paperclip_runner" ? paperclipRunnerProfileForHarness(adapterType) : {}), homeMode: undefined }, runtime: { ...prev.runtime, runtimeConfig: { ...selectedRuntime, aiConnection: undefined, harnessPool: { poolId: "" } } } }));
                     return;
                   }
                   if (!isCreate) mark("runtime", "runtimeConfig", {
@@ -1899,7 +1899,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             </Field>
           )}
 
-          {!isCreate && adapterType !== "paperclip_runner" && experimentalSettings?.enableNativeRunner === true && <p className="text-sm text-muted-foreground">Upgrade this agent to Paperclip Runner before selecting a Pool harness.</p>}
           {isPoolHarness && selectedCompanyId && <Field label="Pool" hint="Shared harness, model and account configuration.">
             <NativeSelect aria-label="Harness pool" disabled={experimentalSettings?.enableNativeRunner !== true} value={harnessPoolId ?? ""} onChange={event => { if (!isCreate) mark("runtime", "runtimeConfig", { ...selectedRuntime, aiConnection: undefined, harnessPool: { poolId: event.target.value } }); }}>
               <option value="">Choose a pool</option>{harnessPools.data?.map(pool => <option key={pool.id} value={pool.id} disabled={!pool.enabled}>{pool.name}{pool.enabled ? "" : " (disabled)"}</option>)}
