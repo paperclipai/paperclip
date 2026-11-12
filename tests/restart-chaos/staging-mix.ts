@@ -63,7 +63,10 @@ export interface StagingMixArtifacts {
   followUpErrors: string[];
   retries: NonNullable<StagingMixRecord["retries"]>;
   comments?: Array<{ body: string; runId: string | null }>;
+  commentsUnreadable?: boolean;
 }
+
+export const DUPLICATE_CHECKS: ReadonlySet<string> = new Set(["rounds_once", "done_comment_once", "completion_once", "subtasks_once", "subtask_rounds_once"]);
 
 export const STAGING_MIX_ARG_OPTIONS = {
   workload: { type: "string" },
@@ -412,10 +415,12 @@ export function gradeStagingMix(nonce: string, task: StagingMixTask, artifacts: 
   const checks: OracleResult["checks"] = [
     { name: "issue_done", ok: artifacts.issueStatus === "done", detail: `status=${artifacts.issueStatus ?? "unknown"}` },
     { name: "ledger_rounds_verified", ok: own.verified, detail: own.detail },
+    { name: "done_comment_posted", ok: doneComments >= 1, detail: `comments=${doneComments}` },
     { name: "rounds_once", ok: own.duplicates === 0, detail: `duplicates=${own.duplicates}` },
-    { name: "done_comment_once", ok: doneComments === 1, detail: `comments=${doneComments}` },
-    { name: "completion_once", ok: completionRuns.length <= 1,
-      detail: completionRuns.length > 1 ? `duplicate completion: runs ${completionRuns.map(id => id.slice(0, 8)).join(", ")} each reported completion` : `runs=${completionRuns.length}` },
+    { name: "done_comment_once", ok: doneComments <= 1, detail: `comments=${doneComments}` },
+    artifacts.stagingMix?.commentsUnreadable ? { name: "completion_once", ok: false, detail: "unreadable: the task's comments could not be read" }
+      : { name: "completion_once", ok: completionRuns.length <= 1,
+        detail: completionRuns.length > 1 ? `duplicate completion: runs ${completionRuns.map(id => id.slice(0, 8)).join(", ")} each reported completion` : `runs=${completionRuns.length}` },
   ];
   if (task.followUpAfterMs !== null) {
     const errors = artifacts.stagingMix?.followUpErrors ?? [];
@@ -427,16 +432,20 @@ export function gradeStagingMix(nonce: string, task: StagingMixTask, artifacts: 
       detail: `posted ${new Date(followUp.at).toISOString()}${followUp.inOverlap ? " in overlap" : ""}` });
   }
   if (task.subtasks > 0) {
-    checks.push({ name: "subtasks_once", ok: children.length === task.subtasks, detail: `subtasks=${children.length}/${task.subtasks}` });
+    checks.push({ name: "subtasks_once", ok: children.length <= task.subtasks, detail: `subtasks=${children.length}/${task.subtasks}` });
+    let childDuplicates = 0;
     for (let part = 1; part <= task.subtasks; part += 1) {
       const nonceOf = childNonce(nonce, part);
       const child = children.filter(candidate => (candidate.title ?? "").includes(nonceOf));
-      const result = verifyLedger(nonceOf, SUBTASK_ROUNDS, child[0]?.documents.ledger);
+      const results = child.map(candidate => ({ candidate, result: verifyLedger(nonceOf, SUBTASK_ROUNDS, candidate.documents.ledger) }));
+      const best = results.find(entry => entry.candidate.status === "done" && entry.result.verified) ?? results[0];
+      childDuplicates += results.reduce((sum, entry) => sum + entry.result.duplicates, 0);
       const lastHash = expectedRoundHash(nonceOf, SUBTASK_ROUNDS);
-      checks.push({ name: `subtask_${part}_done`, ok: child.length === 1 && child[0]!.status === "done" && result.verified && result.duplicates === 0,
-        detail: child.length ? `status=${child[0]!.status} ${result.detail}` : "missing" });
+      checks.push({ name: `subtask_${part}_done`, ok: Boolean(best && best.candidate.status === "done" && best.result.verified),
+        detail: best ? `status=${best.candidate.status} ${best.result.detail}` : "missing" });
       checks.push({ name: `parent_read_subtask_${part}`, ok: (ledger ?? "").includes(childLine(part, lastHash)), detail: childLine(part, lastHash) });
     }
+    checks.push({ name: "subtask_rounds_once", ok: childDuplicates === 0, detail: `duplicates=${childDuplicates}` });
   }
   return { verdict: checks.every(check => check.ok) ? "pass" : "fail", checks };
 }
@@ -561,8 +570,8 @@ export function bannerShownMs(banner: RetryBanner, now: number): number {
   return banner.shownMs + (banner.visibleSince === null ? 0 : now - banner.visibleSince);
 }
 
-export async function collectStagingMixArtifacts(api: Pick<ChaosApi, "get">, issueId: string, record: TaskRecord): Promise<StagingMixArtifacts> {
-  const rows = await api.get<Array<{ body?: string; authorAgentId?: string | null; createdByRunId?: string | null }>>(`/api/issues/${issueId}/comments`).catch(() => null);
+export function collectStagingMixArtifacts(record: TaskRecord, rows: ReadonlyArray<{ body?: unknown; authorAgentId?: unknown; createdByRunId?: unknown }> | null): StagingMixArtifacts {
   return { followUp: record.stagingMix?.followUp ?? null, followUpErrors: record.stagingMix?.followUpErrors ?? [], retries: record.stagingMix?.retries ?? [],
-    ...(rows ? { comments: rows.filter(row => row.authorAgentId).map(row => ({ body: String(row.body ?? ""), runId: row.createdByRunId ?? null })) } : {}) };
+    ...(rows ? { comments: rows.filter(row => row.authorAgentId).map(row => ({ body: String(row.body ?? ""), runId: typeof row.createdByRunId === "string" ? row.createdByRunId : null })) }
+      : { commentsUnreadable: true }) };
 }

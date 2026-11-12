@@ -31,6 +31,7 @@ export interface ReleaseSwapFinishInput {
   record: (kind: string, data: Record<string, unknown>) => void;
   pollMs?: number;
   drainCapMs?: number;
+  onView?: (issueId: string, issue: Json | null, at: number) => void;
 }
 
 type Client = Pick<Db, "$client">;
@@ -200,6 +201,7 @@ export async function finishReleaseSwap(input: ReleaseSwapFinishInput): Promise<
         const left = deadline - Date.now();
         views.set(id, left <= 0 ? { status: "unreadable", error: "view deadline passed" }
           : await input.api.get<Json>(`/api/issues/${id}`, Math.min(10_000, left)).catch(error => ({ status: "unreadable", error: String(error) })));
+        input.onView?.(id, views.get(id)!, Date.now());
       }
     }));
   };

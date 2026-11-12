@@ -698,10 +698,15 @@ export class TaskObserver {
       canRetry: sample.interruption?.canRetry ?? false, retried: Boolean(this.record.retry) });
   }
 
-  async retryAfterSettle(sample: TaskSample, now: number): Promise<void> {
+  reopen(now: number): void {
     this.done = false;
     this.record.restAt = null;
     this.record.timedOut = false;
+    this.record.deadlineAt = now + RETRY_BUDGET_MS;
+  }
+
+  async retryAfterSettle(sample: TaskSample, now: number): Promise<void> {
+    this.reopen(now);
     await this.boardRetry(sample, now);
     this.record.deadlineAt = now + RETRY_BUDGET_MS;
   }
@@ -1043,7 +1048,7 @@ export class TaskObserver {
       const document = await this.api.get<Json>(`/api/issues/${issueId}/documents/${key}`).catch(() => null);
       documents[key] = typeof document?.body === "string" ? document.body : null;
     }
-    const comments = await this.api.get<Json[]>(`/api/issues/${issueId}/comments`).catch(() => []);
+    const comments = await this.api.get<Json[]>(`/api/issues/${issueId}/comments`).catch(() => null);
     const workspacePath = await this.workspacePath();
     const snapshotPath = this.record.preFaultWorkspacePath ?? workspacePath;
     if (snapshotPath && this.record.preFaultFiles) {
@@ -1101,7 +1106,7 @@ export class TaskObserver {
         status: String(run.status), errorCode: run.errorCode ?? null, createdAt: run.createdAt ?? null, finishedAt: run.finishedAt ?? null }))).catch(() => []),
       ...(this.journey ? { journey: await this.journey.collect(issueId).finally(() => this.journey!.close()) } : {}),
       ...(this.plan.workload === "H2" ? { handoff: await this.collectHandoff(issueId, issue) } : {}),
-      ...(this.plan.stagingMix ? { stagingMix: await collectStagingMixArtifacts(this.api, issueId, this.record) } : {}),
+      ...(this.plan.stagingMix ? { stagingMix: collectStagingMixArtifacts(this.record, comments) } : {}),
     };
   }
 

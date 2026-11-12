@@ -145,7 +145,7 @@ export class StagingMixRun {
 
   async retryAfterSettle(observers: readonly RetryStageObserver[], api: Pick<ChaosApi, "get">, cancelled: () => boolean): Promise<void> {
     if (this.mix.retryDuringWave) return;
-    await retryAfterSettleStage({ observers, api, settleUntil: this.settleUntil(), settleMs: this.mix.settleMinutes * 60_000, cancelled, note: this.note });
+    await retryAfterSettleStage({ observers, api, settleUntil: this.settleUntil(), cancelled, note: this.note });
   }
 
   mayLaunch(now: number, next: TaskPlan): boolean {

@@ -836,7 +836,7 @@ async function main(): Promise<number> {
         rules: Object.fromEntries(Object.entries(grade.rules).map(([id, rule]) => [id, rule.verdict])), T: grade.T.verdict,
         universal: Object.fromEntries(Object.entries(grade.universal ?? {}).map(([id, rule]) => [id, `${rule.verdict}${rule.enforced ? "" : " (warning)"}`])) });
     }
-    if (mix) await writeStagingMixResults({ waveDir, api, companyId: lab.companyId, tasks: launched, passed: new Map(lines.map(line => [line.taskId, line.pass])), timeline: timeline.entries })
+    if (mix) await writeStagingMixResults({ waveDir, api, companyId: lab.companyId, tasks: launched, timeline: timeline.entries })
       .catch(error => { harnessError ??= new Error(`Staging-mix results failed: ${String(error)}`); });
     // MS1–MS3: the cross-server invariant over the whole wave (multi-server.ts).
     if (faults.some(receipt => receipt.multiServer)) {

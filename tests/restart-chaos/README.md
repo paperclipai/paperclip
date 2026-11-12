@@ -1397,15 +1397,35 @@ own continuation is what gets measured. A task that shows a Retry banner is kept
 is recorded per task: when it first showed, how long it stayed, and the error code behind it, even when the task then
 finished by itself. A banner is a defect, because the product goal is that it never appears. After the settle
 (`--mix-settle-minutes`, default 15, after the last fault slot ends), each task that is still not done and still
-offers Retry gets one click (`staging_mix_retry_after_settle`), and the harness follows it to rest. When the release-swap
-cell drives the wave, its own end-of-wave pass makes that one click instead. Both paths use
-`shouldClickRetryAfterSettle` in `staging-mix-retry.ts`: never on a done task, a task waiting on a scheduled retry, or a
-task that was already clicked. So no task gets two clicks. `--mix-retry-during-wave` restores the old behaviour: Retries
+offers Retry gets one click (`staging_mix_retry_after_settle`). The harness follows the click to rest for up to 15 minutes,
+whatever the settle setting. A task that finished by itself during the settle is watched again until it rests, so its
+record is fresh before grading. When the release-swap cell drives the wave, its own end-of-wave pass makes that one
+click instead, and its issue reads also update the banner record. Both paths use `shouldClickRetryAfterSettle` in
+`staging-mix-retry.ts`, which never clicks:
+
+- a done task;
+- a task with a scheduled retry (`scheduledRetry`, state `retry_scheduled` or a `nextRetryAt`);
+- a task that was already clicked.
+
+So no task gets two clicks. `--mix-retry-during-wave` restores the old behaviour: Retries
 clicked during the wave, held until an overlap window as follow-ups are (`staging_mix_retry_in_overlap`).
 
-**Results.** `staging-mix-results.json` and the first lines of `SUMMARY.md` give three numbers, in this order:
-`completed hands-off / started`, `Retry banner shown: N tasks` and `Retry worked / Retry clicked`. A Retry counts as
-worked when the task is done at the end. The banner list follows, then one read of
+**Results.** `staging-mix-results.json` and the first lines of `SUMMARY.md` give four lines, in this order:
+
+1. `completed hands-off / started`.
+2. `duplicated side effects: N tasks`.
+3. `Retry banner shown: N tasks`.
+4. `Retry worked / Retry clicked`.
+
+A task counts as completed hands-off when all three hold, read from fresh data at the end of the wave:
+
+- its status is `done`;
+- every check of its deliverable passes (ledger rounds, DONE comment posted, follow-up delivered, subtasks);
+- nobody clicked Retry.
+
+A duplicated side effect (`rounds_once`, `done_comment_once`, `completion_once`, `subtasks_once`,
+`subtask_rounds_once`) is counted on the second line. It does not remove the task from the first line. A Retry counts as
+worked when the clicked task meets the same completion rule. The banner list follows, then one read of
 `GET /api/companies/:id/assigned-work-invariant` at the end of the wave: `violationCount`, `violations` by reason,
 `agentsWithStalledSlots` and `openTasks`.
 
@@ -1417,11 +1437,13 @@ not the status:
 | `issue_done` | the task is not `done` |
 | `ledger_rounds_verified` | a round is missing, ran under 80 s, or its hash differs from the harness's own computation (POSIX `cksum`, chained per tick) |
 | `rounds_once` | a round line appears twice (a tool ran again) |
-| `done_comment_once` | the comment whose whole body is `DONE-<nonce>` is missing or was posted twice; a summary that quotes the marker does not count |
-| `completion_once` | more than one run posted a comment that mentions `DONE-<nonce>` (a duplicate completion) |
+| `done_comment_posted` | no comment's whole body is `DONE-<nonce>`; a summary that quotes the marker does not count |
+| `done_comment_once` | that comment was posted more than once |
+| `completion_once` | more than one run posted a comment that mentions `DONE-<nonce>` (a duplicate completion), or the comments could not be read |
 | `follow_up_posted` | a planned follow-up was never posted (the detail lists the post errors) |
 | `follow_up_served` | a follow-up was posted during a run and the ledger lacks its line |
-| `subtasks_once`, `subtask_<k>_done`, `parent_read_subtask_<k>` | a parent created more or fewer than two subtasks, a subtask's ledger fails, or the parent did not report a subtask's last hash |
+| `subtask_<k>_done`, `parent_read_subtask_<k>` | a subtask is missing, not done or its ledger fails, or the parent did not report its last hash |
+| `subtasks_once`, `subtask_rounds_once` | a parent created more than two subtasks, or a subtask repeated a round |
 
 Duplicated side effects (a repeated round, comment or subtask) fail the task and show in the signature.
 
