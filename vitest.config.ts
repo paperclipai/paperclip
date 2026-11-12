@@ -27,6 +27,7 @@ export default defineConfig({
       "packages/adapters/pi-local",
       "packages/plugins/sdk",
       "packages/plugins/create-paperclip-plugin",
+      "packages/plugins/examples/plugin-ai-connection-router",
       "packages/plugins/sandbox-providers/daytona",
       "server",
       "ui",

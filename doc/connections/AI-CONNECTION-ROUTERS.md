@@ -87,6 +87,13 @@ Configuration and committed selection are recorded in activity records. Runs
 record the selected member/profile and override notes in the local run log and
 recovery context. These records stay in the instance database.
 
+Self-hosted instances can use the open-source reference router in
+`packages/plugins/examples/plugin-ai-connection-router`. It implements round
+robin, the `usage_aware` threshold, account-wide and same-model hard limits, pin
+waits and learned `provider_quota` cool-downs. It declares only
+`ai.connections.route`, `events.subscribe`, `plugin.state.read` and
+`plugin.state.write`. Its README lists the policy and its limits.
+
 Tests: `cd server && pnpm exec vitest run src/__tests__/ai-connection-router.test.ts`
 plus the existing AI connection, retry accounting, run-dispatch and UI suites.
 
