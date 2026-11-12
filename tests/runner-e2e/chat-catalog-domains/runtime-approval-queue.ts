@@ -6,7 +6,7 @@ import { pollUntil } from "../api.js";
 import { submitTaskReply } from "../user-actions.js";
 import { checks, type Entity } from "./internal-support.js";
 import { prepareRuntimeWorkerGate, readRuntimeTaskGate, releaseRuntimeWorker } from "./runtime-busy-worker.js";
-import { runtimeQueueCases } from "./runtime-queue.js";
+import { keyboardMoveQueuedMessageUp, runtimeQueueCases } from "./runtime-queue.js";
 import { runtimeDefinition, observeRuntime, runtimeObservation } from "./runtime-support.js";
 type PendingInputRun = { id?: string; status?: string; resultJson?: { nativeResult?: { reportedWorkDisposition?: string; continuation?: { kind?: string; idempotencyKey?: string };
   evidence?: Array<{ ref?: string }>; artifacts?: Array<{ ref?: string }> } } | null };
@@ -135,7 +135,7 @@ export const runtimeApprovalQueueCases = [runtimeDefinition("steering.approval-d
     humanId: session.user.id, ordinaryQueueOwned: true, ordinaryQueuedBeforeAnswer: true };
 }, gradeApprovalQueue, {
   setupPolicy: runtimeQueueCases[0]!.setupPolicy, verifySetup: runtimeQueueCases[0]!.verifySetup,
-  authentication: "human-session", expectedRunCount: 5, minimumRunCount: 4, attemptTimeoutMs: 900_000, oracleVersion: "paperclip.chat-catalog.runtime.approval-delivery.v7",
+  authentication: "human-session", expectedRunCount: 5, minimumRunCount: 4, attemptTimeoutMs: 900_000, oracleVersion: "paperclip.chat-catalog.runtime.approval-delivery.v8",
   sourceFiles: ["chat-catalog-domains/runtime-approval-queue.ts", "chat-catalog-domains/runtime-queue.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-support.ts", "chat-scenarios/steering.yaml"],
   async act(ctx, state) {
     const canonicalPhase = await pollUntil({ label: "Canonical naming answer guidance while real worker remains active", deadlineAt: Date.now() + 150_000,
@@ -188,7 +188,7 @@ export const runtimeApprovalQueueCases = [runtimeDefinition("steering.approval-d
     const movedIndex = wholeOrderBefore.indexOf(moved.comment.id), swapped = [...wholeOrderBefore];
     if (movedIndex > 0) [swapped[movedIndex - 1], swapped[movedIndex]] = [swapped[movedIndex]!, swapped[movedIndex - 1]!];
     const handle = ctx.input.page.getByRole("button", { name: `Reorder queued message: ${moved.comment.body}`, exact: true });
-    await handle.focus(); await handle.press("Space"); await handle.press("ArrowUp"); await handle.press("Space");
+    state.reorderRequest = await keyboardMoveQueuedMessageUp(ctx.input.page, handle);
     const ids = (q: IssueQueuedCommentQueue) => q.entries.map(row => row.comment.id).join();
     queue = await pollUntil({ label: "Real keyboard queue reorder persists without replaying the decision", deadlineAt: Date.now() + 15_000,
       load: () => ctx.input.api.get<IssueQueuedCommentQueue>(endpoint), accept: q => ids(q) === swapped.join() || ids(q) === wholeOrderBefore.join() })
