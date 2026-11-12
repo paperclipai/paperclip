@@ -530,9 +530,12 @@ The host is responsible for:
 - UI route registration
 
 An activation whose worker `initialize` call times out is transient. The host
-stops the worker, keeps the plugin `ready`, and retries the activation after 5,
-15, 45 and 120 seconds. While it retries, the plugin's `lastError` starts with
-`Activation timed out` and names the next retry. Runs that need the plugin see a
+removes the failed worker, keeps the plugin `ready`, and retries the activation
+after 5, 15, 45 and 120 seconds on the shared work scheduler. While it retries,
+the plugin's `lastError` starts with `Activation timed out` and names the next
+retry; a successful retry clears it. Status writes are conditional on the
+expected current status, so a disable or uninstall during a retry wins. Server
+shutdown cancels pending retries and waits for running ones. Runs that need the plugin see a
 worker that is not running, which setup retries within its bounded budget. After
 the last retry, the plugin becomes `error` with that same prefix. A run that
 needs the plugin then re-activates it on demand, at most once a minute. Any

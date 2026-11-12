@@ -1398,6 +1398,7 @@ export async function createApp(
   const shutdownAppServices = (): Promise<void> => {
     if (appServicesShutdown) return appServicesShutdown;
     appServicesShutdown = finishServiceShutdown(() => scheduler.stop(), async () => {
+      await loader.stopActivationTimeoutRecovery();
       await agentLifecycle.stop();
       unregisterMcpOwners();
       await publicMcpEvents?.stop();
