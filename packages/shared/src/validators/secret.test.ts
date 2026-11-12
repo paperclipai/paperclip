@@ -193,6 +193,55 @@ describe("secret validators", () => {
     ).toThrow(/origin-only HTTP\(S\) URL/i);
   });
 
+  it("accepts non-sensitive Infisical provider vault config", () => {
+    const parsed = createSecretProviderConfigSchema.parse({
+      provider: "infisical",
+      displayName: "Infisical prod",
+      config: {
+        siteUrl: " https://infisical.example.com/ ",
+        projectId: "6512a1b2c3d4e5f6a7b8c9d0",
+        environment: "prod",
+        secretPath: "/paperclip",
+      },
+    });
+    expect(parsed.status).toBeUndefined();
+
+    const payload = secretProviderConfigPayloadSchema.parse({
+      provider: "infisical",
+      config: { siteUrl: "https://infisical.example.com/", projectId: "proj", environment: "dev" },
+    });
+    if (payload.provider !== "infisical") throw new Error("Expected infisical provider payload");
+    expect(payload.config.siteUrl).toBe("https://infisical.example.com");
+  });
+
+  it("requires Infisical project and environment and rejects unsafe values", () => {
+    const base = { provider: "infisical", displayName: "Infisical" } as const;
+    expect(() =>
+      createSecretProviderConfigSchema.parse({ ...base, config: { environment: "prod" } }),
+    ).toThrow();
+    expect(() =>
+      createSecretProviderConfigSchema.parse({ ...base, config: { projectId: "proj" } }),
+    ).toThrow();
+    expect(() =>
+      createSecretProviderConfigSchema.parse({
+        ...base,
+        config: { projectId: "proj", environment: "prod", siteUrl: "https://infisical.example.com/api" },
+      }),
+    ).toThrow(/origin-only HTTP\(S\) URL/i);
+    expect(() =>
+      createSecretProviderConfigSchema.parse({
+        ...base,
+        config: { projectId: "proj", environment: "prod", secretPath: "/../etc" },
+      }),
+    ).toThrow(/Invalid Infisical secret path/);
+    expect(() =>
+      createSecretProviderConfigSchema.parse({
+        ...base,
+        config: { projectId: "proj", environment: "prod", clientSecret: "not-allowed" },
+      }),
+    ).toThrow(/cannot persist sensitive field: clientSecret/);
+  });
+
   it("validates AWS remote import preview and import payloads", () => {
     expect(
       remoteSecretImportPreviewSchema.parse({

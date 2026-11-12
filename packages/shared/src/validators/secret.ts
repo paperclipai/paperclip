@@ -308,11 +308,52 @@ export const vaultProviderConfigSchema = z.object({
   secretPathPrefix: optionalSafeShortText,
 }).strict();
 
+const infisicalSiteUrlSchema = z.preprocess(
+  (value) => typeof value === "string" ? value.trim() : value,
+  z.string().url().superRefine((value, ctx) => {
+    let url: URL;
+    try {
+      url = new URL(value);
+    } catch {
+      return;
+    }
+    const hasPath = url.pathname !== "" && url.pathname !== "/";
+    if (
+      (url.protocol !== "http:" && url.protocol !== "https:") ||
+      url.username ||
+      url.password ||
+      url.search ||
+      url.hash ||
+      hasPath
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Infisical site URL must be an origin-only HTTP(S) URL without credentials, path, query, or fragment",
+      });
+    }
+  }).transform((value) => new URL(value).origin),
+);
+
+export const infisicalProviderConfigSchema = z.object({
+  siteUrl: infisicalSiteUrlSchema.optional().nullable(),
+  projectId: z.string().trim().min(1).max(128).regex(/^[A-Za-z0-9_-]+$/, "Invalid Infisical project id"),
+  environment: z.string().trim().min(1).max(64).regex(/^[A-Za-z0-9_-]+$/, "Invalid Infisical environment slug"),
+  secretPath: z.string().trim().max(512)
+    .refine(
+      (value) => value.split("/").every((segment) =>
+        segment === "" || (/^[A-Za-z0-9_.-]+$/.test(segment) && segment !== "." && segment !== "..")),
+      "Invalid Infisical secret path",
+    )
+    .optional()
+    .nullable(),
+}).strict();
+
 export const secretProviderConfigPayloadSchema = z.discriminatedUnion("provider", [
   z.object({ provider: z.literal("local_encrypted"), config: localEncryptedProviderConfigSchema }),
   z.object({ provider: z.literal("aws_secrets_manager"), config: awsSecretsManagerProviderConfigSchema }),
   z.object({ provider: z.literal("gcp_secret_manager"), config: gcpSecretManagerProviderConfigSchema }),
   z.object({ provider: z.literal("vault"), config: vaultProviderConfigSchema }),
+  z.object({ provider: z.literal("infisical"), config: infisicalProviderConfigSchema }),
 ]);
 
 export const createSecretProviderConfigSchema = z.object({
