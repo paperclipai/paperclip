@@ -190,6 +190,12 @@ describe("resolveNativeRuntimeMode", () => {
     })).toThrow(expect.objectContaining({
       code: "paperclip_runner_opencode_model_invalid",
     }));
+    expect(() => resolveNativeRuntimeMode({
+      ...eligible,
+      adapterConfig: { provider: "opencode", model: "openrouter/test-model", dangerouslySkipPermissions: false },
+    })).toThrow(expect.objectContaining({
+      code: "agent_runner_config_incompatible",
+    }));
     for (const acpxAgent of ["unregistered-acpx-agent"]) {
       expect(() => resolveNativeRuntimeMode({
         ...eligible,

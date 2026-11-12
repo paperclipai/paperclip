@@ -1138,7 +1138,7 @@ describe("AgentConfigForm environment selector", () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableNativeRunner: true });
     const { harnessPoolsApi } = await import("../api/harness-pools");
     const pools = vi.spyOn(harnessPoolsApi, "choices").mockResolvedValue([{ id: "chosen", name: "Claude first", revision: 1, enabled: true }]);
-    const source = { engine: "cli", cwd: "/existing-workspace", instructionsFilePath: "/agent/AGENTS.md", ...(adapterType === "codex_local" ? { dangerouslyBypassApprovalsAndSandbox: false } : { dangerouslySkipPermissions: false }) };
+    const source = { engine: "cli", cwd: "/existing-workspace", instructionsFilePath: "/agent/AGENTS.md", ...(adapterType === "codex_local" ? { dangerouslyBypassApprovalsAndSandbox: false } : { dangerouslySkipPermissions: true }) };
     try {
       const result = await renderForm([], { adapterType, adapterConfig: source, runtimeConfig: { aiConnection: { mode: "responsible_user", provider: adapterType === "codex_local" ? "openai" : "anthropic", method: "subscription" } } }, { showAdapterTypeField: true, wrapRouter: true }); roots.push(result.root);
       await clickElement(result.container.querySelector('[aria-label="Harness"]'));
@@ -1149,6 +1149,20 @@ describe("AgentConfigForm environment selector", () => {
       await act(async () => { choice.value = "chosen"; choice.dispatchEvent(new Event("change", { bubbles: true })); }); await clickByText(result.container, "Save");
       expect(result.onSave).toHaveBeenCalledWith(expect.objectContaining({ adapterType: "paperclip_runner", runner: "paperclip", adapterConfig: expect.objectContaining({ ...source, provider: adapterType === "codex_local" ? "codex" : "acpx" }), runtimeConfig: expect.objectContaining({ aiConnection: undefined, harnessPool: { poolId: "chosen" } }) }));
     } finally { pools.mockRestore(); }
+  });
+
+  it.each([
+    ["claude_local", { dangerouslySkipPermissions: false }],
+    ["claude_local", { permissionMode: "deny-all" }],
+    ["opencode_local", { model: "openrouter/deepseek/deepseek-v4-flash-0731", dangerouslySkipPermissions: false }],
+  ] as const)("refuses Pool for a %s agent whose local permission rules Runner cannot keep: %j", async (adapterType, policy) => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableNativeRunner: true });
+    const result = await renderForm([], { adapterType, adapterConfig: { cwd: "/existing-workspace", ...policy } }, { showAdapterTypeField: true, wrapRouter: true }); roots.push(result.root);
+    await clickElement(result.container.querySelector('[aria-label="Harness"]'));
+    await clickElement(document.querySelector('[role="option"][data-value="pool"]')); await flushReact();
+    expect(result.container.querySelector('[aria-label="Harness pool"]')).toBeNull();
+    expect(result.container.querySelector('[role="alert"]')?.textContent).toContain("Pool cannot keep this harness's local permission rules");
+    expect(result.onSave).not.toHaveBeenCalled();
   });
 
   it("retains the native source policy when selecting Pool", async () => {

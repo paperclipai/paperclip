@@ -102,7 +102,12 @@ export function applyAiConnectionRouterTaskSettings(config: Record<string, unkno
   const sourceEngine = typeof sourcePolicyConfig.engine === "string" ? sourcePolicyConfig.engine.trim().toLowerCase() : "";
   const retainedEngine = switchingHarness && ["claude_local", "codex_local"].includes(configuredAdapterType ?? "") &&
     ["claude_local", "codex_local"].includes(targetAdapter ?? "") && ["cli", "acp"].includes(sourceEngine) ? { engine: sourceEngine } : {};
-  return { ...Object.fromEntries(Object.entries(config).filter(([key]) => !routedRuntimeKeys.has(key) && !(switchingHarness && harnessCommandKeys.has(key)))), ...retainedEngine, ...selection.runtimeConfig };
+  // Member search tuning replaces the agent's, but an agent that turned search
+  // off keeps it off: native Codex disables hosted search only from this false.
+  const searchDisabled = config.search === false || sourcePolicyConfig.search === false;
+  if (searchDisabled && selection.runtimeConfig.search === true)
+    throw unprocessable("Pool member cannot enable search that the agent turned off.", { code: "pool_execution_policy_incompatible" });
+  return { ...Object.fromEntries(Object.entries(config).filter(([key]) => !routedRuntimeKeys.has(key) && !(switchingHarness && harnessCommandKeys.has(key)))), ...retainedEngine, ...(searchDisabled ? { search: false } : {}), ...selection.runtimeConfig };
 }
 export class AiConnectionPoolExhausted extends Error {
   readonly code = "ai_connection_pool_exhausted";
