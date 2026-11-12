@@ -765,6 +765,11 @@ describe("IssueThreadInteractionCard", () => {
     expect(prompt?.querySelector('[data-markdown-image-reference]')).not.toBeNull();
     expect(prompt?.querySelector('img')).toBeNull();
     expect(host.querySelector('h2 .paperclip-markdown')).toBeNull();
+    if (presentationVariant === "coordinator-decision") {
+      const heading = host.querySelector('[data-decision-prompt]');
+      expect(heading?.getAttribute('role')).toBe('heading');
+      expect(heading?.getAttribute('aria-level')).toBe('2');
+    }
   });
 
   it("requires a revision note when the request confirmation payload asks for one", async () => {

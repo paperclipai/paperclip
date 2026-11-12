@@ -236,7 +236,7 @@ function CompactDecisionNote({ note }: { note: string | null }) {
 
 /** The ask on a compact decision: the largest text on the card (UI1). */
 function CompactDecisionAsk({ children }: { children: ReactNode }) {
-  return <div data-decision-prompt className="text-base font-medium text-foreground">{children}</div>;
+  return <div role="heading" aria-level={2} data-decision-prompt className="text-base font-medium text-foreground">{children}</div>;
 }
 
 /** The Needs You page's ready-made artifact row ("Plan · Open in sidebar ↗"). */
