@@ -1728,6 +1728,7 @@ export function routineService(
     assigneeAgentId?: string | null;
     idempotencyKey?: string | null;
     rejectIdempotencyReplay?: boolean;
+    replaySources?: ReadonlyArray<"schedule" | "manual" | "api" | "webhook">;
     routineIdempotency?: boolean;
     createdByRunId?: string | null;
     executionWorkspaceId?: string | null;
@@ -1840,7 +1841,7 @@ export function routineService(
             and(
               eq(routineRuns.companyId, input.routine.companyId),
               eq(routineRuns.routineId, input.routine.id),
-              eq(routineRuns.source, input.source),
+              inArray(routineRuns.source, [...(input.replaySources ?? [input.source])]),
               eq(routineRuns.idempotencyKey, input.idempotencyKey),
               idempotentRunId ? eq(routineRuns.id, idempotentRunId)
                 : input.trigger ? eq(routineRuns.triggerId, input.trigger.id) : isNull(routineRuns.triggerId),
@@ -2969,6 +2970,7 @@ export function routineService(
         projectWorkspaceId: input.projectWorkspaceId ?? null,
         assigneeAgentId: input.assigneeAgentId ?? null,
         idempotencyKey: input.idempotencyKey,
+        replaySources: actor?.agentId && input.source === "manual" ? ["manual", "api"] : undefined,
         executionWorkspaceId: input.executionWorkspaceId ?? null,
         executionWorkspacePreference: input.executionWorkspacePreference ?? null,
         executionWorkspaceSettings:

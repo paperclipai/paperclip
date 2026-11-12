@@ -1198,6 +1198,18 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(serialized).not.toContain("runtimeConfig");
   });
 
+  it("returns an agent's earlier api receipt when the same agent retries its key as a manual run", async () => {
+    const { routine, svc, agentId } = await seedFixture();
+    await db.update(routines).set({ concurrencyPolicy: "always_enqueue" }).where(eq(routines.id, routine.id));
+    const earlier = await svc.runRoutine(routine.id, { source: "api", idempotencyKey: "agent-retry" }, { agentId });
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, earlier.linkedIssueId!));
+    const retry = await svc.runRoutine(routine.id, { source: "manual", idempotencyKey: "agent-retry" }, { agentId });
+    expect(retry.id).toBe(earlier.id);
+    expect(await db.select().from(routineRuns).where(eq(routineRuns.routineId, routine.id))).toHaveLength(1);
+    const board = await svc.runRoutine(routine.id, { source: "manual", idempotencyKey: "agent-retry" }, { userId: "operator" });
+    expect(board.id).not.toBe(earlier.id);
+  });
+
   it("versions responsibility transfers and uses the new person only for future automatic tasks", async () => {
     const { companyId, routine, svc } = await seedFixture();
     const userId = "new-responsible-person";
