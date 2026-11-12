@@ -358,6 +358,10 @@ export async function hasNativeRunnerCheckpoint(db: Pick<Db, "select">, binding:
   return row !== undefined;
 }
 
+/** Recovery history dispositions of a restart claim that took a run over. */
+const NATIVE_RESTART_CLAIM_DISPOSITIONS = ["reattach_existing_runner", "reattach_remote_runner",
+  "resume_dead_runner", "bootstrap_incomplete"] as const;
+
 export async function listExpiredNativeRunnerAuthorities(db: Db, now: Date, runIds: string[]): Promise<string[]> {
   if (!runIds.length) return [];
   // The caller supplies the finite expired active-run inventory. Return all of
@@ -379,8 +383,16 @@ export async function listExpiredNativeRunnerAuthorities(db: Db, now: Date, runI
         // just after its claim), and a follow-up may carry its predecessor's
         // Runner identity. Without it nothing but a later server boot would
         // look at the run again. The restart claim still proves the takeover.
-        and(eq(nativeRunFinalizations.recoveryState, "awaiting_runner_reattach"),
-          sql`${nativeRunFinalizations.recoveryHistory} -> -1 ->> 'disposition' = 'restart_suspended'`))));
+        // It stays eligible through ownership waits (the departing server may
+        // still be alive at the first look) until a claim follows the handoff.
+        and(inArray(nativeRunFinalizations.recoveryState, ["awaiting_runner_reattach", "awaiting_evidence"]),
+          sql`exists (select 1 from jsonb_array_elements(coalesce(${nativeRunFinalizations.recoveryHistory}, '[]'::jsonb))
+            with ordinality as handoff(item, ordinal)
+            where handoff.item ->> 'disposition' = 'restart_suspended'
+              and not exists (select 1 from jsonb_array_elements(${nativeRunFinalizations.recoveryHistory})
+                with ordinality as later(item, ordinal)
+                where later.ordinal > handoff.ordinal and later.item ->> 'disposition' in (${sql.join(
+                  NATIVE_RESTART_CLAIM_DISPOSITIONS.map(disposition => sql`${disposition}`), sql`, `)})))`))));
   return rows.map(row => row.runId);
 }
 

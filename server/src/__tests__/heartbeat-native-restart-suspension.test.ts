@@ -10,7 +10,9 @@ import { issueRoutes } from "../routes/issues.js";
 import { errorHandler } from "../middleware/error-handler.js";
 import { createStorageService } from "../storage/service.js";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
-import { waitForCondition } from "./helpers/native-restart-fixture.js";
+import { processAlive, waitForCondition } from "./helpers/native-restart-fixture.js";
+import { readProcessStartedAt } from "../services/hot-restart.js";
+import { spawn } from "node:child_process";
 import { requestTaskRetry } from "../services/task-retry.js";
 import type { HeartbeatServiceOptions } from "../services/heartbeat.js";
 import type { NativeRunIdentity, NativeSession, PrpEvent } from "@paperclipai/paperclip-runner";
@@ -505,6 +507,34 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
       expect(resumed).toHaveBeenCalled();
       const [owner] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
       expect(owner.controllerBootId).not.toBe(oldBootId);
+    }, 90_000);
+
+    it("keeps a handed-off run eligible while the departing server is still alive, and re-adopts it once it exits", async () => {
+      const f = await seedOverlapRun("OVERLAP-EARLY-SWEEP");
+      // The departing server's process: alive in this PID space until it exits.
+      const departing = spawn("sleep", ["60"], { stdio: "ignore" });
+      try {
+        const departingStartedAt = await readProcessStartedAt(departing.pid!);
+        await claimThenShutDown(f);
+        await f.db.update(nativeRunFinalizations).set({ controllerPid: departing.pid!,
+          controllerProcessStartedAt: departingStartedAt ? new Date(departingStartedAt) : null })
+          .where(eq(nativeRunFinalizations.runId, f.runId));
+        const resumed = vi.fn(() => { throw new Error("re-adopted run reached provider dispatch"); });
+        const newServer = heartbeatService(f.db, { nativeSessionBackendFactory: resumed });
+        try {
+          // The notification of the handoff arrives before the old server exits.
+          await newServer.reapOrphanedRuns();
+          await newServer.drainActiveRunExecutions();
+          expect(resumed).not.toHaveBeenCalled();
+          expect(await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))
+            .toEqual([expect.objectContaining({ controllerBootId: oldBootId, recoveryState: "awaiting_evidence" })]);
+
+          departing.kill("SIGKILL");
+          await waitForCondition("the departing server to exit", () => !processAlive(departing.pid!));
+          await newServer.reapOrphanedRuns();
+        } finally { await newServer.drainActiveRunExecutions(); }
+        expect(resumed).toHaveBeenCalled();
+      } finally { departing.kill("SIGKILL"); }
     }, 90_000);
 
     it("re-adopts a handed-off run that an older release already marked ownership-unverified", async () => {
