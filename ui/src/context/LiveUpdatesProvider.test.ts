@@ -250,9 +250,6 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.issues.comments("chat-1") });
     client.clear();
   });
-  // Chat eval cohorts 5 and 5b (cases.case-history, tasks.ambiguous-task): finalization saved the reply after the run's
-  // terminal status, logged no comment_added, then settled the chat with issue.updated. The open chat never fetched the
-  // reply; the run's transcript events no longer reach a page once the run has ended.
   it("fetches the open chat's saved comments when its conversation is updated, and not for other tasks", () => {
     const client = new QueryClient();
     client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
@@ -262,7 +259,6 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     client.setQueryData(queryKeys.agentChats.detail("company-1", "user-1", "agent-1"), chat);
     client.setQueryData(queryKeys.issues.detail("chat-1"), chat);
     const invalidate = vi.spyOn(client, "invalidateQueries");
-    // The settle update is a system actor's, which defers detail and activity refetches for the visible task.
     const deliver = (path: string, entityId: string, action: string) => __liveUpdatesTestUtils.invalidateActivityQueries(client, "company-1",
       { entityType: "issue", entityId, action, actorType: "system", actorId: "system" }, { userId: "user-1", agentId: null }, { pathname: path, isForegrounded: true });
     const commentCalls = (ref: string) => invalidate.mock.calls.filter(([arg]) => JSON.stringify((arg as { queryKey?: unknown }).queryKey) === JSON.stringify(queryKeys.issues.comments(ref)));
@@ -273,7 +269,6 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     expect(commentInvalidations("chat-1")).toBe(0);
     deliver("/PAP/chats/agent-1", "chat-1", "issue.updated");
     expect(commentInvalidations("chat-1")).toBe(1);
-    // The open chat's comments query refetches now, not only when it next becomes active.
     expect((commentCalls("chat-1")[0]![0] as { refetchType?: string }).refetchType).toBeUndefined();
     client.clear();
   });

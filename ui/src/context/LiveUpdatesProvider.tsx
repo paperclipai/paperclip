@@ -1720,10 +1720,6 @@ function invalidateActivityQueries(
           },
         });
       }
-      // Run finalization can save a turn's reply after the run's terminal
-      // status was published, without a comment_added activity. It then
-      // settles the conversation, which logs issue.updated, so the open
-      // conversation fetches its saved comments on that update.
       const visibleConversation = !!options?.pathname && action === "issue.updated"
         && (() => {
           const context = resolveVisibleIssueRouteContext(queryClient, options.pathname!, { isForegrounded: options.isForegrounded });
@@ -1739,7 +1735,6 @@ function invalidateActivityQueries(
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(ref), ...invalidationOptions });
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(ref), ...invalidationOptions });
         if (action === "issue.comment_added" || action === "issue.conversation_session_started" || visibleConversation) {
-          // A settled conversation's reply is not in the visible thread yet, so fetch it actively.
           queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(ref), ...(visibleConversation ? undefined : invalidationOptions) });
         }
         if (action?.startsWith("issue.attachment_") || action?.startsWith("issue.work_product_")) {
