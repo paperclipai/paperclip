@@ -3892,8 +3892,13 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       { name: "a first attempt", alreadyRetried: false },
       { name: "a run that was already the last automatic retry", alreadyRetried: true },
     ])("continues $name that a replaced server left preparing, in the restart lane", async ({ alreadyRetried }) => {
+      // The replaced server stamped its process on the claim. It is in another
+      // container and has no live server lease, so it is not proven alive.
+      const bootId = randomUUID();
       const fixture = await seedInterruptibleRun({ alreadyRetried, owner: "replaced_server",
-        adapterType: "paperclip_runner", executionStage: "preparing" });
+        adapterType: "paperclip_runner", executionStage: "preparing", controllerBootId: bootId,
+        controllerProcess: { bootId, pid: 3, hostHash: "replaced-server-container",
+          processStartedAt: new Date(Date.now() - 60 * 60_000).toISOString() } });
 
       await Promise.all([heartbeatService(db).reapOrphanedRuns(), heartbeatService(db).reapOrphanedRuns()]);
 

@@ -22,7 +22,7 @@ import {
   pendingCleanupMetadataObjectSql,
   recoveredOrphanFirstAttemptSql,
 } from "../environment-cleanup-state.js";
-import { currentControllerProcess } from "../controller-process-identity.js";
+import { currentControllerProcess, readControllerProcess } from "../controller-process-identity.js";
 import { writeEnvironmentCleanup } from "../environment-cleanup-notifications.js";
 import { startNativeSessionExecutionLeaseRenewal, type NativeExecutionLeaseRenewal } from "../native-runtime/native-execution-lease.js";
 import type { WorkspaceWorkers } from "../plugin-workspaces.js";
@@ -2707,8 +2707,10 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         // bound only. Other adapters keep the failure budget: a spent one
         // holds them for reconciliation (legacyExecutionNeedsReconciliation).
         // A setup that a restart stopped before dispatch did no provider work,
-        // so it continues in the same lane whatever the adapter.
-        !(controllerReplaced && (conversationContinuationEligible || restartInterruptedBeforeDispatch)
+        // so it continues in the same lane whatever the adapter, when the row
+        // names its owner process (isReplacedPreparation).
+        !(controllerReplaced && (conversationContinuationEligible
+          || restartInterruptedBeforeDispatch && readControllerProcess(run.controllerProcess) !== null)
           ? serverRestartBudgetSpent(run, now) : failedRunRetryBudgetSpent(run)) &&
         ((tracksLegacyLocalChild &&
           (!!run.processPid || !!run.processGroupId)) ||
