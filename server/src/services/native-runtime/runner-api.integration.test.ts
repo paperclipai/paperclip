@@ -1145,6 +1145,24 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     expect(await server.db.select().from(runnerApiResponseReservations).where(eq(runnerApiResponseReservations.companyId, fixture.companyId))).toEqual([]);
   });
 
+  it("retries earlier pending deletes before evicting more snapshots", async () => {
+    const fixture = await server.fixture();
+    vi.stubEnv("PAPERCLIP_RUNNER_API_COMPANY_CAPTURE_MAX_BYTES", String(2 * RUNNER_API_RESPONSE_MAX_BYTES));
+    const stored = await server.storage.putFile({ companyId: fixture.companyId, namespace: "runner-api", originalFilename: "response.json",
+      contentType: "application/json", body: Buffer.from("{}") });
+    await server.db.insert(runnerApiResponseReservations).values({ companyId: fixture.companyId, runId: null,
+      reservedBytes: RUNNER_API_RESPONSE_MAX_BYTES, pendingDeleteObjectKey: stored.objectKey });
+    const [survivor] = await server.db.insert(assets).values({ companyId: fixture.companyId, provider: "local_disk",
+      objectKey: `${fixture.companyId}/runner-api/survivor`, contentType: "text/plain", byteSize: RUNNER_API_RESPONSE_MAX_BYTES / 2,
+      sha256: "survivor", createdByAgentId: fixture.agentId, createdAt: new Date(Date.now() - 86_400_000) }).returning();
+    await server.db.update(projects).set({ description: "x".repeat(32 * 1024) }).where(eq(projects.id, fixture.projectId));
+    expect(await fixture.authority.execute({ tool: "call_api", callId: randomUUID(), arguments: {
+      operationId: "GET /api/projects/{id}", pathParams: { id: fixture.projectId },
+    } })).toMatchObject({ ok: true });
+    expect((await server.db.select({ id: assets.id }).from(assets).where(eq(assets.companyId, fixture.companyId))).map(row => row.id)).toContain(survivor.id);
+    expect((await server.storage.headObject(fixture.companyId, stored.objectKey)).exists).toBe(false);
+  });
+
   it("releases stale reservations left by interrupted captures of finished runs", async () => {
     const fixture = await server.fixture();
     vi.stubEnv("PAPERCLIP_RUNNER_API_COMPANY_CAPTURE_MAX_BYTES", String(2 * RUNNER_API_RESPONSE_MAX_BYTES));

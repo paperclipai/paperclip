@@ -36,7 +36,11 @@ export async function markRunnerApiCaptureEvictions(tx: Db, companyId: string, n
       and run.status in (${activeRunStatusList()}))`,
   )).returning({ bytes: runnerApiResponseReservations.reservedBytes });
   let reclaimedBytes = released.reduce((sum, row) => sum + row.bytes, 0);
-  let pendingBytes = 0;
+  const [pending] = await tx.select({ bytes: sql<string>`coalesce(sum(${runnerApiResponseReservations.reservedBytes}), 0)` })
+    .from(runnerApiResponseReservations).where(and(
+      eq(runnerApiResponseReservations.companyId, companyId), isNotNull(runnerApiResponseReservations.pendingDeleteObjectKey),
+    ));
+  let pendingBytes = Number(pending?.bytes ?? 0);
   while (reclaimedBytes + pendingBytes < neededBytes) {
     const candidates = await tx.select({ id: assets.id, objectKey: assets.objectKey, byteSize: assets.byteSize }).from(assets).where(and(
       eq(assets.companyId, companyId),
