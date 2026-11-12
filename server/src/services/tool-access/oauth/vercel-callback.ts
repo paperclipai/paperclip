@@ -2,7 +2,7 @@ import { writeToolConnectionHealthChange } from "../../tool-connection-health-no
 import { connectionActorUserId } from "../actor.js";
 import { vercelConnectHttpError, vercelCredentialFor, vercelConnectResourcesFor } from "../vercel-credentials.js";
 import type { ActorInfo } from "../types.js";
-import { connectionMethodForConnection, projectedConnectionHeaders } from "../connection-methods.js";
+import { connectionMethodForConnection } from "../connection-methods.js";
 import { emitConnectionUpdated } from "../../connector-telemetry.js";
 import { and, eq, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -224,7 +224,6 @@ export function createVercelOAuthCallback(db: Db, dependencies: Dependencies) {
       enableAllByDefault: true,
       skipDefaultProfileSync: true,
       credentialHeaders: {
-        ...projectedConnectionHeaders(connection),
         [credential.headerName]: `${credential.headerPrefix ?? ""}${token.token}`,
       },
     });

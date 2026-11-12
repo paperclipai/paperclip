@@ -3290,6 +3290,120 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(health.connection.healthStatus).toBe("ok");
   });
 
+  it("sends secret-backed credentials with approved static policy headers on catalog discovery and health checks", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const secrets = secretService(db);
+    const values = {
+      clientId: `softone-client-${randomUUID()}`,
+      clientSecret: `softone-secret-${randomUUID()}`,
+      token: `softone-token-${randomUUID()}`,
+    };
+    const secretIds: Record<keyof typeof values, string> = {
+      clientId: "",
+      clientSecret: "",
+      token: "",
+    };
+    for (const [name, value] of Object.entries(values)) {
+      const secret = await secrets.create(company.id, {
+        name: `SoftOne ${name} ${randomUUID()}`,
+        key: `softone.${name}.${randomUUID()}`,
+        provider: "local_encrypted",
+        value,
+      });
+      secretIds[name as keyof typeof values] = secret.id;
+    }
+    const observed: Headers[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      observed.push(new Headers(init?.headers));
+      return mcpHttpResponse({
+        jsonrpc: "2.0",
+        id: "paperclip-catalog-refresh",
+        result: {
+          tools: [{ name: "get_customer", annotations: { readOnlyHint: true } }],
+        },
+      });
+    });
+
+    const connection = await service.createConnection(company.id, connectionInput({
+      name: "SoftOne",
+      transport: "mcp_remote",
+      authKind: "api_key",
+      config: {
+        url: "https://softone.example.test/mcp",
+        headerPolicy: {
+          staticHeaders: [
+            { name: "x-softone-app", value: "paperclip" },
+            { name: "x-client-id", value: "static-must-not-win" },
+            { name: "content-type", value: "text/plain" },
+          ],
+          metadata: { forward: ["agent_id", "gateway_session_id"] },
+        },
+      },
+      enabled: true,
+      status: "active",
+      credentialRefs: [
+        {
+          name: "credentials.clientId",
+          secretId: secretIds.clientId,
+          version: "latest",
+          placement: "header",
+          key: "X-Client-Id",
+          prefix: null,
+        },
+        {
+          name: "credentials.clientSecret",
+          secretId: secretIds.clientSecret,
+          version: "latest",
+          placement: "header",
+          key: "X-Client-Secret",
+          prefix: null,
+        },
+        {
+          name: "credentials.authorization",
+          secretId: secretIds.token,
+          version: "latest",
+          placement: "header",
+          key: "Authorization",
+          prefix: "Bearer ",
+        },
+      ],
+    }));
+
+    const expectManagedHeaders = (headers: Headers) => {
+      expect(headers.get("authorization")).toBe(`Bearer ${values.token}`);
+      expect(headers.get("x-client-id")).toBe(values.clientId);
+      expect(headers.get("x-client-secret")).toBe(values.clientSecret);
+      expect(headers.get("x-softone-app")).toBe("paperclip");
+      expect(headers.get("content-type")).toBe("application/json");
+      expect(headers.get("x-paperclip-agent-id")).toBeNull();
+      expect(headers.get("x-paperclip-gateway-session-id")).toBeNull();
+    };
+
+    const refresh = await service.refreshCatalog(connection.id, {
+      actorType: "user",
+      actorId: "board",
+    });
+    expect(refresh.discoveredCount).toBe(1);
+    expect(observed).toHaveLength(1);
+    expectManagedHeaders(observed[0]!);
+
+    const health = await service.checkHealth(connection.id);
+    expect(health.connection.healthStatus).toBe("ok");
+    expect(observed).toHaveLength(2);
+    expectManagedHeaders(observed[1]!);
+
+    await service.refreshCatalog(
+      connection.id,
+      { actorType: "user", actorId: "board" },
+      { credentialHeaders: { Authorization: "Bearer freshly-exchanged" } },
+    );
+    expect(observed).toHaveLength(3);
+    expect(observed[2]!.get("authorization")).toBe("Bearer freshly-exchanged");
+    expect(observed[2]!.get("x-softone-app")).toBe("paperclip");
+    expect(observed[2]!.get("content-type")).toBe("application/json");
+  });
+
   it.each(
     [
       { sourceTemplateKey: "anthropic", connectionMethodKey: "api-key" },
@@ -6260,8 +6374,9 @@ describeEmbeddedPostgres("tool access service", () => {
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
       .mockImplementation(async (_url, init) => {
-        const headers = init?.headers as Record<string, string>;
-        expect(headers.Authorization).toBe("Bearer imported-token");
+        expect(new Headers(init?.headers).get("authorization")).toBe(
+          "Bearer imported-token",
+        );
         return mcpHttpResponse(catalogResponse([
               {
                 name: "kv_get",
@@ -6928,7 +7043,7 @@ describeEmbeddedPostgres("tool access service", () => {
       "https://api.dittowords.com/v2/mcp",
       expect.objectContaining({
         headers: expect.objectContaining({
-          Authorization: "token ditto-test-secret",
+          authorization: "token ditto-test-secret",
         }),
       }),
     );
@@ -6968,14 +7083,14 @@ describeEmbeddedPostgres("tool access service", () => {
       { actorType: "user", actorId: "board" },
     );
 
-    expect(fetchMock).toHaveBeenCalledWith(
-      "https://www.superagent.sh/mcp",
-      expect.objectContaining({
-        headers: expect.objectContaining({
-          Authorization: "Bearer sk_live_test-secret",
-        }),
-      }),
-    );
+    expect(
+      fetchMock.mock.calls.some(
+        ([url, init]) =>
+          String(url) === "https://www.superagent.sh/mcp" &&
+          new Headers(init?.headers).get("authorization") ===
+            "Bearer sk_live_test-secret",
+      ),
+    ).toBe(true);
     expect(result.connection).toMatchObject({
       authKind: "api_key",
       config: {
@@ -7367,15 +7482,12 @@ describeEmbeddedPostgres("tool access service", () => {
       { actorType: "user", actorId: "board" },
     );
 
-    expect(fetchMock).toHaveBeenCalledWith(
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
       "https://mcp.posthog.com/mcp?readonly=true&features=insights%2Cerror_tracking&tools=query_insight&mode=tools",
-      expect.objectContaining({
-        headers: expect.objectContaining({
-          Authorization: "Bearer phx_test-secret",
-          "x-posthog-project-id": "12345",
-        }),
-      }),
     );
+    const posthogHeaders = new Headers(fetchMock.mock.calls[0]?.[1]?.headers);
+    expect(posthogHeaders.get("authorization")).toBe("Bearer phx_test-secret");
+    expect(posthogHeaders.get("x-posthog-project-id")).toBe("12345");
     expect(result.connection).toMatchObject({
       authKind: "api_key",
       config: {
@@ -7432,20 +7544,71 @@ describeEmbeddedPostgres("tool access service", () => {
       { actorType: "user", actorId: "board" },
     );
 
-    expect(fetchMock).toHaveBeenCalledWith(
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
       "https://mcp.posthog.com/mcp?mode=tools",
-      expect.objectContaining({
-        headers: expect.objectContaining({
-          Authorization: "Bearer phx_test-secret",
-        }),
-      }),
     );
-    expect(fetchMock.mock.calls[0]?.[1]?.headers).not.toHaveProperty(
-      "x-posthog-project-id",
-    );
+    const posthogHeaders = new Headers(fetchMock.mock.calls[0]?.[1]?.headers);
+    expect(posthogHeaders.get("authorization")).toBe("Bearer phx_test-secret");
+    expect(posthogHeaders.get("x-posthog-project-id")).toBeNull();
     expect(result.connection.config).toMatchObject({
       methodConfig: { readOnly: false, mode: "tools" },
     });
+  });
+
+  it("keeps projected PostHog headers authoritative over approved static policy headers on catalog refresh", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const fetchMock = mockToolsList([
+      { name: "query_insight", annotations: { readOnlyHint: true } },
+    ]);
+    const connected = await service.connectGalleryApp(
+      company.id,
+      {
+        galleryKey: "posthog",
+        connectionMethodKey: "mcp-api-key",
+        credentialValues: { "credentials.authorization": "phx_test-secret" },
+        configValues: { projectId: "12345", mode: "tools" },
+      },
+      { actorType: "user", actorId: "board" },
+    );
+    const [row] = await db
+      .select()
+      .from(toolConnections)
+      .where(eq(toolConnections.id, connected.connectionId));
+    await db
+      .update(toolConnections)
+      .set({
+        config: {
+          ...row!.config,
+          headerPolicy: {
+            staticHeaders: [
+              { name: "x-posthog-region", value: "eu" },
+              { name: "X-PostHog-Project-Id", value: "static-must-not-win" },
+            ],
+          },
+        },
+      })
+      .where(eq(toolConnections.id, connected.connectionId));
+
+    await service.refreshCatalog(connected.connectionId, {
+      actorType: "user",
+      actorId: "board",
+    });
+
+    const headers = new Headers(fetchMock.mock.calls.at(-1)?.[1]?.headers);
+    expect(headers.get("authorization")).toBe("Bearer phx_test-secret");
+    expect(headers.get("x-posthog-project-id")).toBe("12345");
+    expect(headers.get("x-posthog-region")).toBe("eu");
+
+    await service.refreshCatalog(
+      connected.connectionId,
+      { actorType: "user", actorId: "board" },
+      { credentialHeaders: { Authorization: "Bearer refreshed-posthog-token" } },
+    );
+    const refreshedHeaders = new Headers(fetchMock.mock.calls.at(-1)?.[1]?.headers);
+    expect(refreshedHeaders.get("authorization")).toBe("Bearer refreshed-posthog-token");
+    expect(refreshedHeaders.get("x-posthog-project-id")).toBe("12345");
+    expect(refreshedHeaders.get("x-posthog-region")).toBe("eu");
   });
 
   it("stores approved class-3 credential refs on thin tool connections", async () => {
@@ -10930,12 +11093,8 @@ describeEmbeddedPostgres("tool access service", () => {
               : "personal-refresh-token"));
         }
         if (href === "https://mcp.slack.com/mcp") {
-          expect(init?.headers).toEqual(
-            expect.objectContaining({
-              Authorization: expect.stringMatching(
-                /^Bearer personal-access-token(?:-2)?$/,
-              ),
-            }),
+          expect(new Headers(init?.headers).get("authorization")).toMatch(
+            /^Bearer personal-access-token(?:-2)?$/,
           );
           return mcpHttpResponse(catalogResponse([
                 {
@@ -11839,9 +11998,7 @@ describeEmbeddedPostgres("tool access service", () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
       const href = String(url);
       if (href === "https://narrow.example.test/mcp") {
-        const authorization = (init?.headers as Record<string, string>)?.[
-          "Authorization"
-        ];
+        const authorization = new Headers(init?.headers).get("authorization");
         if (!authorization) {
           return {
             ok: false,
@@ -12574,10 +12731,8 @@ describeEmbeddedPostgres("tool access service", () => {
         });
       }
       if (href === "https://mcp.notion.com/mcp") {
-        expect(init?.headers).toEqual(
-          expect.objectContaining({
-            Authorization: "Bearer notion-choice-access",
-          }),
+        expect(new Headers(init?.headers).get("authorization")).toBe(
+          "Bearer notion-choice-access",
         );
         return mcpHttpResponse(catalogResponse([
               { name: "notion-search", annotations: { readOnlyHint: true } },
@@ -12805,8 +12960,8 @@ describeEmbeddedPostgres("tool access service", () => {
             } as Response;
           }
           if (href === "https://mcp.slack.com/mcp") {
-            expect(init?.headers).toEqual(
-              expect.objectContaining({ Authorization: "Bearer access-token" }),
+            expect(new Headers(init?.headers).get("authorization")).toBe(
+              "Bearer access-token",
             );
             return mcpHttpResponse(catalogResponse([
                   {
@@ -13294,10 +13449,8 @@ describeEmbeddedPostgres("tool access service", () => {
         } as Response;
       }
       if (href === "https://mcp.slack.com/mcp") {
-        expect(init?.headers).toEqual(
-          expect.objectContaining({
-            Authorization: "Bearer bound-access-token",
-          }),
+        expect(new Headers(init?.headers).get("authorization")).toBe(
+          "Bearer bound-access-token",
         );
         return mcpHttpResponse(catalogResponse([
               { name: "search_messages", annotations: { readOnlyHint: true } },
@@ -13573,10 +13726,8 @@ describeEmbeddedPostgres("tool access service", () => {
           href ===
           "https://mcp.supabase.com/mcp?project_ref=abcdefghijklmnopqrst&read_only=true&features=database"
         ) {
-          expect(init?.headers).toEqual(
-            expect.objectContaining({
-              Authorization: "Bearer supabase-access-token",
-            }),
+          expect(new Headers(init?.headers).get("authorization")).toBe(
+            "Bearer supabase-access-token",
           );
           return mcpHttpResponse(catalogResponse([
                 { name: "list_tables", annotations: { readOnlyHint: true } },
@@ -14746,8 +14897,8 @@ describeEmbeddedPostgres("tool access service", () => {
     const mcpCalls = fetchCalls.filter(
       ([url]) => String(url) === "https://mcp.slack.com/mcp",
     );
-    expect(mcpCalls.at(-1)?.[1]?.headers).toEqual(
-      expect.objectContaining({ Authorization: "Bearer new-access-token" }),
+    expect(new Headers(mcpCalls.at(-1)?.[1]?.headers).get("authorization")).toBe(
+      "Bearer new-access-token",
     );
     const [connection] = await db
       .select()
@@ -15090,10 +15241,8 @@ describeEmbeddedPostgres("tool access service", () => {
           } as Response;
         }
         if (href === "https://m2m.example.test/mcp") {
-          expect(init?.headers).toEqual(
-            expect.objectContaining({
-              Authorization: "Bearer m2m-access-token",
-            }),
+          expect(new Headers(init?.headers).get("authorization")).toBe(
+            "Bearer m2m-access-token",
           );
           return mcpHttpResponse(catalogResponse([
                 { name: "machine_read", annotations: { readOnlyHint: true } },
@@ -16562,13 +16711,12 @@ describeEmbeddedPostgres("tool access service", () => {
       { actorType: "user", actorId: "board" },
     );
 
-    expect(fetchMock).toHaveBeenCalledWith(
-      "https://links.example.test/actions",
-      expect.objectContaining({
-        headers: expect.objectContaining({
-          Authorization: "Bearer link-secret",
-        }),
-      }),
+    const linkCall = fetchMock.mock.calls.find(
+      ([url]) => String(url) === "https://links.example.test/actions",
+    );
+    expect(linkCall).toBeTruthy();
+    expect(new Headers(linkCall?.[1]?.headers).get("authorization")).toBe(
+      "Bearer link-secret",
     );
     expect(connect.connection).toMatchObject({
       status: "draft",
@@ -17162,10 +17310,8 @@ describeEmbeddedPostgres("tool access service", () => {
         } as Response;
       }
       if (href === "https://generic.example.test/mcp") {
-        expect(init?.headers).toEqual(
-          expect.objectContaining({
-            Authorization: "Bearer generic-access-token",
-          }),
+        expect(new Headers(init?.headers).get("authorization")).toBe(
+          "Bearer generic-access-token",
         );
         return mcpHttpResponse(catalogResponse([
               { name: "read_generic", annotations: { readOnlyHint: true } },
@@ -17488,13 +17634,12 @@ describeEmbeddedPostgres("tool access service", () => {
     );
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(fetchMock).toHaveBeenCalledWith(
-      PUBLIC_MCP_FIXTURE_URL,
-      expect.objectContaining({
-        headers: expect.objectContaining({
-          Authorization: "Bearer zap-secret",
-        }),
-      }),
+    const fixtureCall = fetchMock.mock.calls.find(
+      ([url]) => String(url) === PUBLIC_MCP_FIXTURE_URL,
+    );
+    expect(fixtureCall).toBeTruthy();
+    expect(new Headers(fixtureCall?.[1]?.headers).get("authorization")).toBe(
+      "Bearer zap-secret",
     );
     expect(connect.connection).toMatchObject({
       status: "draft",
