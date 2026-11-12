@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { chmod, writeFile, symlink, mkdir, open } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { and, eq } from "drizzle-orm";
-import { agents, agentApiKeys, agentWakeupRequests, assets, authUsers, documents, heartbeatRuns, issues, projects, routineDocuments, routineRevisions, routines, runnerApiResponseReservations, companySkills, companySkillVersions, companySkillTestRuns, companyMemberships, principalPermissionGrants, budgetPolicies, companies } from "@paperclipai/db";
+import { agents, agentApiKeys, agentWakeupRequests, assets, authUsers, issueAttachments, documents, heartbeatRuns, issues, projects, routineDocuments, routineRevisions, routines, runnerApiResponseReservations, companySkills, companySkillVersions, companySkillTestRuns, companyMemberships, principalPermissionGrants, budgetPolicies, companies } from "@paperclipai/db";
 import { initializeRunIdentity } from "../run-identity.js";
 import { beforeAll, afterAll, beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import * as nativeSetupReadiness from "./setup-readiness.js";
@@ -1055,27 +1055,81 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     expect(await call()).toMatchObject({ ok: false, error: "api_response_capture_limit" });
   });
 
-  it("counts old snapshots and other-run reservations against the company quota, and reclaims deletions", async () => {
+  it("evicts the oldest finished snapshots instead of blocking a read when the company quota is full", async () => {
     const fixture = await server.fixture();
     vi.stubEnv("PAPERCLIP_RUNNER_API_COMPANY_CAPTURE_MAX_BYTES", String(2 * RUNNER_API_RESPONSE_MAX_BYTES));
-    const [oldSnapshot] = await server.db.insert(assets).values({ companyId: fixture.companyId, provider: "local_disk",
-      objectKey: `${fixture.companyId}/runner-api/old-snapshot`, contentType: "text/plain", byteSize: RUNNER_API_RESPONSE_MAX_BYTES,
-      sha256: "old-snapshot", createdByAgentId: fixture.agentId }).returning();
-    const [reservation] = await server.db.insert(runnerApiResponseReservations).values({ companyId: fixture.companyId, runId: null, reservedBytes: RUNNER_API_RESPONSE_MAX_BYTES }).returning();
+    const stored = await server.storage.putFile({ companyId: fixture.companyId, namespace: "runner-api", originalFilename: "response.json",
+      contentType: "application/json", body: Buffer.from("{}") });
+    const [oldest] = await server.db.insert(assets).values({ ...stored, companyId: fixture.companyId, byteSize: RUNNER_API_RESPONSE_MAX_BYTES,
+      createdByAgentId: fixture.agentId, createdAt: new Date(Date.now() - 2 * 86_400_000) }).returning();
+    const finishedRunId = randomUUID();
+    await server.db.insert(heartbeatRuns).values({ id: finishedRunId, companyId: fixture.companyId, agentId: fixture.agentId,
+      status: "succeeded", runtimeMode: "native", nativeIssueId: fixture.blockerId, contextSnapshot: { issueId: fixture.blockerId } });
+    const [newer] = await server.db.insert(assets).values({ companyId: fixture.companyId, provider: "local_disk",
+      objectKey: `${fixture.companyId}/runner-api/newer-snapshot`, contentType: "text/plain", byteSize: RUNNER_API_RESPONSE_MAX_BYTES / 2,
+      sha256: "newer-snapshot", createdByAgentId: fixture.agentId, createdAt: new Date(Date.now() - 86_400_000) }).returning();
+    await server.db.insert(runnerApiResponseReservations).values({ companyId: fixture.companyId, runId: finishedRunId, assetId: newer.id, reservedBytes: newer.byteSize });
     await server.db.update(projects).set({ description: "x".repeat(32 * 1024) }).where(eq(projects.id, fixture.projectId));
-    // A fresh authority instance cannot reset reservations from another run/process.
     const authority = new PaperclipRunnerToolAuthority(server.db, fixture);
-    const call = () => authority.execute({ tool: "call_api", callId: randomUUID(), arguments: {
+    const result: any = await authority.execute({ tool: "call_api", callId: randomUUID(), arguments: {
       operationId: "GET /api/projects/{id}", pathParams: { id: fixture.projectId },
     } });
-    expect(await call()).toMatchObject({ ok: false, error: "api_response_company_storage_limit" });
-    await server.db.delete(assets).where(eq(assets.id, oldSnapshot.id));
-    const first: any = await call();
-    expect(first).toMatchObject({ ok: true });
-    expect(await call()).toMatchObject({ ok: false, error: "api_response_company_storage_limit" });
-    await server.db.delete(assets).where(eq(assets.id, first.artifact.artifactId));
-    expect(await server.db.select().from(runnerApiResponseReservations).where(eq(runnerApiResponseReservations.companyId, fixture.companyId))).toEqual([expect.objectContaining({ id: reservation.id })]);
+    expect(result).toMatchObject({ ok: true });
+    const remaining = await server.db.select({ id: assets.id }).from(assets).where(eq(assets.companyId, fixture.companyId));
+    expect(remaining.map(row => row.id)).not.toContain(oldest.id);
+    expect(remaining.map(row => row.id)).toContain(newer.id);
+    expect(remaining.map(row => row.id)).toContain(result.artifact.artifactId);
+    expect((await server.storage.headObject(fixture.companyId, oldest.objectKey)).exists).toBe(false);
+  });
+
+  it("releases stale reservations left by interrupted captures of finished runs", async () => {
+    const fixture = await server.fixture();
+    vi.stubEnv("PAPERCLIP_RUNNER_API_COMPANY_CAPTURE_MAX_BYTES", String(2 * RUNNER_API_RESPONSE_MAX_BYTES));
+    const finishedRunId = randomUUID();
+    await server.db.insert(heartbeatRuns).values({ id: finishedRunId, companyId: fixture.companyId, agentId: fixture.agentId,
+      status: "failed", runtimeMode: "native", nativeIssueId: fixture.blockerId, contextSnapshot: { issueId: fixture.blockerId } });
+    const longAgo = new Date(Date.now() - 3_600_000);
+    await server.db.insert(runnerApiResponseReservations).values([
+      { companyId: fixture.companyId, runId: null, reservedBytes: RUNNER_API_RESPONSE_MAX_BYTES, createdAt: longAgo },
+      { companyId: fixture.companyId, runId: finishedRunId, reservedBytes: RUNNER_API_RESPONSE_MAX_BYTES, createdAt: longAgo },
+    ]);
+    await server.db.update(projects).set({ description: "x".repeat(32 * 1024) }).where(eq(projects.id, fixture.projectId));
+    const call = () => fixture.authority.execute({ tool: "call_api", callId: randomUUID(), arguments: {
+      operationId: "GET /api/projects/{id}", pathParams: { id: fixture.projectId },
+    } });
     expect(await call()).toMatchObject({ ok: true });
+    expect(await call()).toMatchObject({ ok: true });
+    const reservations = await server.db.select().from(runnerApiResponseReservations).where(eq(runnerApiResponseReservations.companyId, fixture.companyId));
+    expect(reservations.every(row => row.runId === fixture.runId && row.assetId)).toBe(true);
+  });
+
+  it("keeps snapshots of active runs, attached snapshots, and in-flight reservations when the company quota is full", async () => {
+    const fixture = await server.fixture();
+    vi.stubEnv("PAPERCLIP_RUNNER_API_COMPANY_CAPTURE_MAX_BYTES", String(2 * RUNNER_API_RESPONSE_MAX_BYTES));
+    const activeRunId = randomUUID();
+    await server.db.insert(heartbeatRuns).values({ id: activeRunId, companyId: fixture.companyId, agentId: fixture.agentId,
+      status: "running", runtimeMode: "native", nativeIssueId: fixture.blockerId, contextSnapshot: { issueId: fixture.blockerId } });
+    const longAgo = new Date(Date.now() - 86_400_000);
+    const [held] = await server.db.insert(assets).values({ companyId: fixture.companyId, provider: "local_disk",
+      objectKey: `${fixture.companyId}/runner-api/active-run-snapshot`, contentType: "text/plain", byteSize: RUNNER_API_RESPONSE_MAX_BYTES / 2,
+      sha256: "active-run-snapshot", createdByAgentId: fixture.agentId, createdAt: longAgo }).returning();
+    await server.db.insert(runnerApiResponseReservations).values([
+      { companyId: fixture.companyId, runId: activeRunId, assetId: held.id, reservedBytes: held.byteSize },
+      { companyId: fixture.companyId, runId: null, reservedBytes: RUNNER_API_RESPONSE_MAX_BYTES / 2 },
+    ]);
+    const [attached] = await server.db.insert(assets).values({ companyId: fixture.companyId, provider: "local_disk",
+      objectKey: `${fixture.companyId}/runner-api/attached-snapshot`, contentType: "text/plain", byteSize: RUNNER_API_RESPONSE_MAX_BYTES / 2,
+      sha256: "attached-snapshot", createdByAgentId: fixture.agentId, createdAt: longAgo }).returning();
+    await server.db.insert(issueAttachments).values({ companyId: fixture.companyId, issueId: fixture.issueId, assetId: attached.id });
+    await server.db.update(projects).set({ description: "x".repeat(32 * 1024) }).where(eq(projects.id, fixture.projectId));
+    const result: any = await fixture.authority.execute({ tool: "call_api", callId: randomUUID(), arguments: {
+      operationId: "GET /api/projects/{id}", pathParams: { id: fixture.projectId },
+    } });
+    expect(result).toMatchObject({ ok: false, error: "api_response_company_storage_limit" });
+    expect(result.message).not.toMatch(/operator/i);
+    const remaining = await server.db.select({ id: assets.id }).from(assets).where(eq(assets.companyId, fixture.companyId));
+    expect(remaining.map(row => row.id)).toEqual(expect.arrayContaining([held.id, attached.id]));
+    expect(await server.db.select().from(runnerApiResponseReservations).where(eq(runnerApiResponseReservations.companyId, fixture.companyId))).toHaveLength(2);
   });
 
   it("keeps company storage reserved after an ambiguous upload failure", async () => {

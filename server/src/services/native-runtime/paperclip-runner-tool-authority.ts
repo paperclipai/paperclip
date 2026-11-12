@@ -76,6 +76,7 @@ import { badRequest, forbidden, notFound, HttpError } from "../../errors.js";
 import { casesDisabledError } from "../cases-disabled.js";
 import { runnerApiCatalog, searchRunnerApi, withCompanyPagePaths } from "./runner-api-catalog.js";
 import { assertRunnerApiDispatchable, executeRunnerApi, validateRunnerApiCall, RUNNER_API_MAX_BYTES, type RunnerApiCall, type RunnerApiFile, type RunnerApiIo } from "./runner-api-client.js";
+import { reclaimRunnerApiCaptureStorage, runnerApiCaptureUsageBytes } from "./runner-api-capture-retention.js";
 import { acquireRunnerApiResponseSlot, runnerApiCompanyCaptureMaxBytes, RUNNER_API_RESPONSE_MAX_BYTES, RUNNER_API_RESPONSE_RUN_MAX_BYTES, RunnerApiResponseLimitError } from "./runner-api-response-limits.js";
 import { and, desc, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -1538,6 +1539,7 @@ export class PaperclipRunnerToolAuthority {
   async #reserveApiResponseCapture() {
     const release = acquireRunnerApiResponseSlot(this.binding.companyId);
     let id: string;
+    let evictedObjectKeys: string[] = [];
     try {
       id = await this.db.transaction(async tx => {
         await this.#lockApiCaptureCompany(tx as unknown as Db);
@@ -1548,21 +1550,15 @@ export class PaperclipRunnerToolAuthority {
           || used + RUNNER_API_RESPONSE_MAX_BYTES > RUNNER_API_RESPONSE_RUN_MAX_BYTES) {
           throw new RunnerApiResponseLimitError("api_response_capture_limit", "This run has insufficient capture budget (4 GiB per run). Read an existing asset or narrow the query.");
         }
-        // One company lock covers all runs/processes. Stored assets include
-        // snapshots from before reservations existed; attached reservations
-        // are excluded so completed snapshots are counted exactly once.
-        const [usage] = await tx.select({ bytes: sql<string>`
-          coalesce((select sum(${assets.byteSize}) from ${assets}
-            where ${assets.companyId} = ${this.binding.companyId}
-              and (${assets.objectKey} like ${`${this.binding.companyId}/runner-api/%`}
-                or exists (select 1 from ${runnerApiResponseReservations} capture
-                  where capture.asset_id = ${assets.id} and capture.company_id = ${this.binding.companyId}))), 0)
-          + coalesce((select sum(${runnerApiResponseReservations.reservedBytes}) from ${runnerApiResponseReservations}
-            where ${runnerApiResponseReservations.companyId} = ${this.binding.companyId}
-              and ${runnerApiResponseReservations.assetId} is null), 0)` }).from(heartbeatRuns).where(eq(heartbeatRuns.id, this.binding.runId));
-        const companyBytes = Number(usage.bytes);
-        if (!Number.isSafeInteger(companyBytes) || companyBytes < 0 || companyBytes + RUNNER_API_RESPONSE_MAX_BYTES > runnerApiCompanyCaptureMaxBytes()) {
-          throw new RunnerApiResponseLimitError("api_response_company_storage_limit", "Company API snapshot storage quota is exhausted. Read an existing asset or ask the operator to remove old snapshots or increase the quota.");
+        let companyBytes = await runnerApiCaptureUsageBytes(tx as unknown as Db, this.binding.companyId);
+        const overBy = () => companyBytes + RUNNER_API_RESPONSE_MAX_BYTES - runnerApiCompanyCaptureMaxBytes();
+        if (Number.isSafeInteger(companyBytes) && companyBytes >= 0 && overBy() > 0) {
+          const reclaimed = await reclaimRunnerApiCaptureStorage(tx as unknown as Db, this.binding.companyId, overBy());
+          companyBytes -= reclaimed.reclaimedBytes;
+          evictedObjectKeys = reclaimed.evictedObjectKeys;
+        }
+        if (!Number.isSafeInteger(companyBytes) || companyBytes < 0 || overBy() > 0) {
+          throw new RunnerApiResponseLimitError("api_response_company_storage_limit", "Company API snapshot storage is fully held by runs that are still active. Read an existing asset, narrow the query, or retry after another active run finishes.");
         }
         // Reserve worst-case bytes durably before creating a temporary file.
         // Interrupted/failed captures keep the reservation, preventing retry
@@ -1572,6 +1568,10 @@ export class PaperclipRunnerToolAuthority {
         return reservation.id;
       });
     } catch (error) { release(); throw error; }
+    if (evictedObjectKeys.length) {
+      const storage = this.binding.storage ?? getStorageService();
+      await Promise.all(evictedObjectKeys.map(objectKey => storage.deleteObject(this.binding.companyId, objectKey).catch(() => undefined)));
+    }
     let settled = false;
     return { id, settle: async (completedBytes?: number, cleaned?: boolean, storageAttempted?: boolean) => {
       if (settled) return;
@@ -1581,7 +1581,7 @@ export class PaperclipRunnerToolAuthority {
           await this.#lockApiCaptureCompany(tx as unknown as Db);
           // Reclaim a handled pre-storage failure only after disk cleanup.
           // Crashes, failed cleanup, and ambiguous storage failures keep their
-          // reservation until an operator reconciles the possible orphan data.
+          // reservation until company admission reclaims it after the run ends.
           if (cleaned && !storageAttempted) await tx.delete(runnerApiResponseReservations).where(and(eq(runnerApiResponseReservations.id, id), isNull(runnerApiResponseReservations.assetId)));
           if (completedBytes === undefined) return;
           const [run] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, this.binding.runId), eq(heartbeatRuns.companyId, this.binding.companyId))).for("update");
