@@ -92,19 +92,46 @@ export function leadApiCalls(events: readonly Record<string, unknown>[]): LeadAp
 const COMPANY_COST_SEGMENTS = ["summary", "by-agent", "by-agent-model", "by-provider", "by-biller", "by-project", "data-quality"];
 export interface SavedAccountingTarget { companyId?: string; task?: Pick<Entity, "id" | "identifier">; originalRunId?: string;
   /** Run-record reads the reading run itself cites in its saved result, as `GET /api/heartbeat-runs/<runId>`. */
-  citedRunReads?: readonly string[] }
+  citedRunReads?: readonly string[];
+  /** Run records this reading run saved with `saveResponse`, read back from the product's saved asset. */
+  savedRunRecords?: readonly SavedRunRecord[] }
+/** A `call_api` read saved with `saveResponse` becomes a company asset that the product logs as
+ * `asset.created` by the reading run. Its saved content names the record actually read. */
+export interface SavedRunRecord { runId: string; assetId: string; recordId: string; companyId: string }
 export function readSavedAccounting(calls: readonly LeadApiCall[], runId: string, target: SavedAccountingTarget) {
   const { companyId, task, originalRunId } = target;
   const companyDigests = companyId ? apiReadDigests(COMPANY_COST_SEGMENTS.map(segment => ({ operationId: `GET /api/companies/{companyId}/costs/${segment}`,
-    pathParams: recordParams("companyId", companyId), queries: [{ period: "all" }, { period: "month" }] }))) : new Set<string>();
+    // runnerApiUrl fills companyId from the run's company when the call omits it, so that form reads the same report.
+    pathParams: [...recordParams("companyId", companyId), undefined], queries: [{ period: "all" }, { period: "month" }] }))) : new Set<string>();
   const taskDigests = task ? apiReadDigests([{ operationId: "GET /api/issues/{id}/cost-summary", pathParams: recordParams("id", task.id, task.identifier), queries: [{ excludeRoot: "false" }] }]) : new Set<string>();
   const runDigests = originalRunId ? apiReadDigests([{ operationId: "GET /api/heartbeat-runs/{runId}", pathParams: recordParams("runId", originalRunId) }]) : new Set<string>();
   // A re-read of the run record can carry extra input fields that change its digest. It still counts when the reading
   // run's own saved result names exactly that read of the original run; a read of any other run does not.
   const originalRunCited = !!originalRunId && (target.citedRunReads ?? []).some(ref => ref === `GET /api/heartbeat-runs/${originalRunId}`);
+  // The input digest covers every field the model sent (e.g. saveResponse), so a valid re-read can have an
+  // unlisted digest. A response the run saved is bound by its content instead: the saved run record is the original run.
+  const originalRunSaved = !!originalRunId && (target.savedRunRecords ?? []).some(saved => saved.runId === runId
+    && saved.recordId === originalRunId && (!companyId || saved.companyId === companyId));
   return calls.some(call => call.runId === runId && call.ok && call.status >= 200 && call.status < 300
     && (companyDigests.has(call.digest) || taskDigests.has(call.digest)
-      || call.operationId === "GET /api/heartbeat-runs/{runId}" && (runDigests.has(call.digest) || originalRunCited)));
+      || call.operationId === "GET /api/heartbeat-runs/{runId}" && (runDigests.has(call.digest) || originalRunCited || originalRunSaved)));
+}
+/** Run records the given run saved through `call_api` `saveResponse`, from the product's own activity and asset. */
+export async function savedRunRecordReads(ctx: ChatCatalogContext, runId: string, agentId: string): Promise<SavedRunRecord[]> {
+  const companyId = ctx.input.fixtures.company.id;
+  const activity = await ctx.input.api.get<Array<{ action?: string; entityId?: string; runId?: string | null; agentId?: string | null; details?: Record<string, unknown> | null }>>(
+    `/api/companies/${companyId}/activity?limit=1000`);
+  const saved: SavedRunRecord[] = [];
+  for (const row of activity.filter(row => row.action === "asset.created" && row.runId === runId && row.agentId === agentId
+    && row.details?.source === "runner.call_api" && typeof row.entityId === "string").slice(0, 10)) {
+    const body = await ctx.input.api.bytes(`/api/assets/${row.entityId}/content`).catch(() => undefined);
+    if (!body || body.byteLength > 4_194_304) continue;
+    let record: Record<string, unknown>; try { record = objectRecord(JSON.parse(body.toString("utf8"))); } catch { continue; }
+    // A heartbeat run record: its own id, company, agent and status.
+    if (typeof record.id === "string" && typeof record.companyId === "string" && typeof record.agentId === "string" && typeof record.status === "string")
+      saved.push({ runId, assetId: row.entityId!, recordId: record.id, companyId: record.companyId });
+  }
+  return saved;
 }
 /** `GET /api/heartbeat-runs/<runId>` reads a run cites as its own verification or evidence. */
 export function citedRunReads(run: { resultJson?: unknown } | undefined) {
@@ -149,15 +176,22 @@ export function gradeAccounting(value: unknown) {
     c.add("independent-scoped-week-ledger", o.state.receiptOrigin === "public-imported-synthetic-fixture" && totals?.length === 2 && totals[0]?.costCents === 137 && totals[1]?.costCents === 263
       && projects?.find(row => row.projectId === entity(o.state, "project").id)?.costCents === 400 && typeof o.state.weekFrom === "string" && typeof o.state.weekTo === "string",
       "Two explicitly imported synthetic USD API receipts total $4 in Launch's declared week, independently excluding the other-project and prior-week distractors; these are not live campaign/provider charges.");
-    // Requested facts (the per-agent dollars, the Launch total and the supporting receipt links) are
-    // graded from the reply; incomplete accounting is graded structurally: the reply must point at the
-    // record whose cost is unresolved (its task link or identifier, or the run) and must not give that
-    // record a zero dollar amount. Words such as "subscription" or "incomplete" are not required.
+    // Requested facts (the per-agent dollars, the Launch total and the supporting receipt links) are setup
+    // literals graded from the reply. The incomplete accounting is graded structurally, never by wording: the
+    // reply points at the record whose cost is unresolved (its rendered link, task identifier or run id), and a
+    // chat run actually read that record's saved accounting (its cost summary, its run record, or an unranged
+    // company cost report) before answering. A reply's "$0.00" is not matched: "unknown, not $0.00" is correct.
     c.add("actual-agent-breakdown-and-incomplete-total", /Morgan[\s\S]{0,120}(?:\$|USD\s*)?1\.37/i.test(o.reply) && /Riley[\s\S]{0,120}(?:\$|USD\s*)?2\.63/i.test(o.reply)
       && /(?:\$|USD\s*)4\.00/.test(o.reply)
-      && unresolvedRecordIdentifiedNotFree(o.reply, o.state.preflightTask as Entity | undefined, String(o.state.originalRunId ?? ""))
+      && unresolvedRecordIdentified(o, o.state.preflightTask as Entity | undefined, String(o.state.originalRunId ?? ""))
       && hasLink(o, "issues", entity(o.state, "morganReceiptTask")) && hasLink(o, "issues", entity(o.state, "rileyReceiptTask")),
-      "The actual answer breaks down the recorded scoped API dollars by real agent with supporting records, and points at the unresolved usage record without giving it a $0 amount.");
+      "The actual answer breaks down the recorded scoped API dollars by real agent with supporting records, and points at the record whose usage is unresolved.");
+    const calls = Array.isArray(o.state.leadApiCalls) ? o.state.leadApiCalls as LeadApiCall[] : undefined;
+    const savedRunRecords = Array.isArray(o.state.savedRunRecords) ? o.state.savedRunRecords as SavedRunRecord[] : [];
+    c.add("unresolved-record-read-from-saved-accounting", !!calls && o.runs.some(run => run.agentId === o.leadId && run.status === "succeeded"
+      && readSavedAccounting(calls, run.id, { companyId: o.companyId, task: o.state.preflightTask as Entity | undefined, originalRunId: String(o.state.originalRunId ?? ""),
+        citedRunReads: citedRunReads(run), savedRunRecords })),
+      "A chat run read the unresolved record's saved accounting through a product cost projection instead of inferring or inventing its cost.");
   } else if (o.scenarioId === "budgets-costs.repair-cost-recording") {
     c.add("real-human-saved-cost-retry", quality?.runs.some(row => row.runId === before?.id && row.reason === "retryable") === true && o.state.agentRetryStatus === 403
       && o.state.humanRetryHttpStatus === 200 && typeof o.state.retryAccounted === "boolean" && o.state.retryReceiptVisible === true
@@ -179,7 +213,8 @@ export function gradeAccounting(value: unknown) {
     // saved accounting: the post-retry run must read it through a product cost projection.
     const calls = Array.isArray(o.state.leadApiCalls) ? o.state.leadApiCalls as LeadApiCall[] : undefined;
     const preflight = o.state.preflightTask as Entity | undefined;
-    c.add("post-retry-reply-reads-saved-accounting", !!calls && !!finalRun && readSavedAccounting(calls, finalRun.id, { companyId: o.companyId, task: preflight, originalRunId: String(o.state.originalRunId ?? ""), citedRunReads: citedRunReads(finalRun) }),
+    const savedRunRecords = Array.isArray(o.state.savedRunRecords) ? o.state.savedRunRecords as SavedRunRecord[] : [];
+    c.add("post-retry-reply-reads-saved-accounting", !!calls && !!finalRun && readSavedAccounting(calls, finalRun.id, { companyId: o.companyId, task: preflight, originalRunId: String(o.state.originalRunId ?? ""), citedRunReads: citedRunReads(finalRun), savedRunRecords }),
       "After the human retry, the chat run reads the saved cost projections before explaining whether the cost is recorded or still unresolved.");
     const initialIds = Array.isArray(o.state.initialReplyCommentIds) ? o.state.initialReplyCommentIds as string[] : [];
     c.add("initial-guidance-links-saved-cost-retry", initialIds.length > 0 && costsPageLinked(o, initialIds),
@@ -206,6 +241,15 @@ async function observeAccounting(ctx: ChatCatalogContext, state: Record<string, 
     state.issueCosts = await Promise.all(["morganReceiptTask", "rileyReceiptTask"].map(key => ctx.input.api.get<IssueCostSummary>(`/api/issues/${entity(state, key).id}/cost-summary`)));
     state.projectCosts = await ctx.input.api.get<CostByProject[]>(`/api/companies/${ctx.input.fixtures.company.id}/costs/by-project?from=${encodeURIComponent(String(state.weekFrom))}&to=${encodeURIComponent(String(state.weekTo))}`);
   }
+  if (ctx.scenario.id.endsWith("spend-breakdown")) {
+    const calls: LeadApiCall[] = []; const saved: SavedRunRecord[] = [];
+    for (const run of (await ctx.allRuns()).filter(row => row.agentId === ctx.input.fixtures.agent.id)) {
+      const events = await collectRunEvents<Record<string, unknown>>(afterSeq => ctx.input.api.get(`/api/heartbeat-runs/${run.id}/events?afterSeq=${afterSeq}&limit=1000`));
+      calls.push(...leadApiCalls(events.map(row => ({ ...row, runId: row.runId ?? run.id }))));
+      saved.push(...await savedRunRecordReads(ctx, run.id, ctx.input.fixtures.agent.id));
+    }
+    state.leadApiCalls = calls; state.savedRunRecords = saved;
+  }
   if (ctx.scenario.id.endsWith("repair-cost-recording") && state.finalReplyRunId) {
     const comments = await ctx.input.api.get<IssueComment[]>(`/api/issues/${ctx.issue()!.id}/comments?order=asc`);
     state.finalReply = comments.filter(row => row.authorAgentId === ctx.input.fixtures.agent.id && row.createdByRunId === state.finalReplyRunId).map(row => row.body ?? "").join("\n");
@@ -215,6 +259,7 @@ async function observeAccounting(ctx: ChatCatalogContext, state: Record<string, 
       calls.push(...leadApiCalls(events.map(row => ({ ...row, runId: row.runId ?? run.id }))));
     }
     state.leadApiCalls = calls;
+    state.savedRunRecords = await savedRunRecordReads(ctx, String(state.finalReplyRunId), ctx.input.fixtures.agent.id);
   }
   return observeIdentity(ctx, state);
 }
@@ -248,7 +293,7 @@ export const accountingIdentityCases: readonly ChatCatalogCase[] = [
     }
     await ctx.input.api.patch(`/api/issues/${ctx.issue()!.id}`, { description: `The requested reporting week is ${weekFrom} through ${weekTo} (UTC). Launch contains imported synthetic metered-API receipt tasks ${morganReceiptTask.identifier} (Morgan) and ${rileyReceiptTask.identifier} (Riley), plus actual completed native run ${state.originalRunId} with unresolved saved usage. Imported fixture receipts are not live provider/campaign billing. Other-project and earlier-week charges must be excluded; native subscription usage/fees are separate.` });
     return { ...state, riley, morganReceiptTask, rileyReceiptTask, weekFrom, weekTo, importedReceiptIds: receipts, receiptOrigin: "public-imported-synthetic-fixture" };
-  }, gradeAccounting, { authentication: "human-session", oracleVersion: "paperclip.chat-catalog.spend-breakdown.structural.v3", sourceFiles: sources, expectedRunCount: 2, attemptTimeoutMs: 600_000, observe: observeAccounting, verifyResult: verifyAccountingLink, verifySetup: verifyUnresolvedSetup,
+  }, gradeAccounting, { authentication: "human-session", oracleVersion: "paperclip.chat-catalog.spend-breakdown.structural.v4", sourceFiles: [...sources, "chat-catalog-domains/api-read-receipts.ts", "run-observations.ts"], expectedRunCount: 2, attemptTimeoutMs: 600_000, observe: observeAccounting, verifyResult: verifyAccountingLink, verifySetup: verifyUnresolvedSetup,
     setupPolicy: { funding: "standard", readiness: "all-ready", invariantCheckIds: ["genuine-unresolved-saved-native-usage"] } }),
   identityDefinition("budgets-costs.repair-cost-recording", async ctx => {
     try {
@@ -257,7 +302,7 @@ export const accountingIdentityCases: readonly ChatCatalogCase[] = [
       return { ...state };
     } catch (error) { const fault = accountingFaults.get(ctx.input.fixtures.company.id); accountingFaults.delete(ctx.input.fixtures.company.id); await fault?.close(); throw error; }
   }, gradeAccounting, {
-    authentication: "human-session", oracleVersion: "paperclip.chat-catalog.repair-cost-recording.structural.v4", sourceFiles: repairSources,
+    authentication: "human-session", oracleVersion: "paperclip.chat-catalog.repair-cost-recording.structural.v5", sourceFiles: repairSources,
     async cleanup(ctx) { const fault = accountingFaults.get(ctx.input.fixtures.company.id); accountingFaults.delete(ctx.input.fixtures.company.id); await fault?.close(); }, expectedRunCount: 3, expectedHumanMessageCount: 2, attemptTimeoutMs: 780_000, observe: observeAccounting, verifyResult: verifyAccountingLink, verifySetup: verifyUnresolvedSetup,
     setupPolicy: { funding: "standard", readiness: "all-ready", invariantCheckIds: ["genuine-unresolved-saved-native-usage"] },
     async act(ctx, state) {
@@ -301,11 +346,15 @@ export const accountingIdentityCases: readonly ChatCatalogCase[] = [
 
 /** The reply identifies the record whose usage has no settled cost (its task by link or identifier,
  * or its run id), and no line or sentence that names it states a zero amount for it. */
-export function unresolvedRecordIdentifiedNotFree(reply: string, record: Entity | undefined, runId: string): boolean {
+/** The reply points at the unresolved record: a rendered link to its task or run, or its identifier or run id written out. */
+export function unresolvedRecordIdentified(o: { reply: string; links: string[]; origin: string }, record: Entity | undefined, runId: string): boolean {
   const keys = [record?.identifier, record?.id, runId || undefined, runId ? runId.slice(0, 8) : undefined].filter((key): key is string => typeof key === "string" && key.length > 0);
   if (!keys.length) return false;
-  const names = (segment: string) => keys.some(key => new RegExp(`(?<![\\w-])${key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w-])`).test(segment));
-  const segments = reply.split(/\n|(?<=[.!?])\s+/).filter(segment => names(segment));
-  // Only a stated $0 amount for the record fails; words such as "free" are not graded.
-  return segments.length > 0 && !segments.some(segment => /(?:\$|USD\s*)0(?:\.0+)?(?![.\d]*[1-9])/i.test(segment));
+  const linked = o.links.some(href => {
+    try {
+      const parts = new URL(href, o.origin).pathname.split("/").filter(Boolean).map(decodeURIComponent);
+      return parts.some((part, index) => index > 0 && (parts[index - 1] === "issues" && [record?.id, record?.identifier].includes(part) || parts[index - 1] === "runs" && part === runId));
+    } catch { return false; }
+  });
+  return linked || keys.some(key => new RegExp(`(?<![\\w-])${key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w-])`).test(o.reply));
 }

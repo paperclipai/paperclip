@@ -34,7 +34,8 @@ describe("catalog oracle contract", () => {
     // gateways-profiles.create-gateway and rotate-token: agents keep delegated gateway/token authority and never receive token values.
     // instance-operations.instance-settings retargeted from the removed Agent Chat toggle (always on since #19360) to the Cases experiment.
     // execution-environments.choose-capable-target: the second computer is a saved SSH target advertised for Claude Code but never tested.
-    expect(chatCatalogInventoryDigest).toBe("4d056e4916ecb3b8108b6304aaaa820f2fb5829518e0ce7e0c7174519da39025");
+    // questions-and-approvals.necessary-question: the answer may shape the saved deliverable as well as the brief.
+    expect(chatCatalogInventoryDigest).toBe("9a619ae82ff1aaa6a63b723b57c791adfe37e6ab438acc45431fef75c8611dcd");
     for (const implementation of chatCatalogCases) expect(chatCatalogScenarios.some(row => row.id === implementation.scenarioId)).toBe(true);
   });
 });

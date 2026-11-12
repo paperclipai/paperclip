@@ -91,11 +91,14 @@ function ambiguousTask(): ChatCatalogCase {
     await verifyDistinctTaskFixtures(ctx, [t, otherTask]);
     return { project: p, task: t, otherProject, otherTask };
   });
-  return { ...base, oracleVersion: "paperclip.chat-catalog.internal.ambiguous-task.v2", sourceFiles: [...base.sourceFiles, "chat-catalog-domains/internal-distinct-fixtures.ts", "chat-linked-question.ts"], expectedRunCount: 2, expectedHumanMessageCount: 2, attemptTimeoutMs: 420_000,
+  return { ...base, oracleVersion: "paperclip.chat-catalog.internal.ambiguous-task.v3", sourceFiles: [...base.sourceFiles, "chat-catalog-domains/internal-distinct-fixtures.ts", "chat-linked-question.ts", "chat-catalog-domains/identity-support.ts", "chat-rendered-links.ts"], expectedRunCount: 2, expectedHumanMessageCount: 2, attemptTimeoutMs: 420_000,
     async act(ctx, state) {
-      const plain = await pollUntil({ label: "Task ambiguity clarification", deadlineAt: Date.now() + 150_000,
+      await pollUntil({ label: "Task ambiguity clarification", deadlineAt: Date.now() + 150_000,
         load: () => observeInternal(ctx, state), accept: o => o.runs.length === 1 && o.runs.every(row => row.status === "succeeded")
           && ctx.issue()?.conversationState === "waiting" });
+      // The finished run and waiting chat precede the saved reply's render; capture its links only after it renders.
+      await waitForTurnReplyLinks(ctx);
+      const plain = await observeInternal(ctx, state);
       const first = await observeLinkedTaskQuestion(ctx, state, plain);
       state.clarification = { ...first, state: structuredClone(state) };
       await ctx.input.evidence("chat-catalog-task-clarification.json", state.clarification);
@@ -130,3 +133,4 @@ function ambiguousTask(): ChatCatalogCase {
 }
 import { observeInternal } from "./internal-support.js";
 import { pollUntil } from "../api.js";
+import { waitForTurnReplyLinks } from "./identity-support.js";

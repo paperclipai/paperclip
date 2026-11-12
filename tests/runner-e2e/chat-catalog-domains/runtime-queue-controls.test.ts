@@ -11,6 +11,7 @@ function valid() {
       queueAfter: { ...before, entries: [{ ...before.entries[1]!, position: 0, comment: { ...before.entries[1]!.comment,
         body: "Make the website blue. Keep the existing note about accessible labels. Preserve the human note." } }, { ...before.entries[0]!, position: 1 }] },
       queryReply: "Your pending red request is in the Website queue. Open its message menu, edit the full request to blue, then move it first.",
+      queryLinks: ["/COM/issues/website"], queueAtReply: structuredClone(before),
       agentEditStatus: 403, agentOrderStatus: 403, concurrentStatus: 409, concurrentErrorVisible: true, concurrentSaveRetained: true,
       dispatchedStatus: 409, dispatchedWarningVisible: true, originalCommentStillReadable: true, nativeDeliveryBound: true, queueEmptyAfterDelivery: true,
       consumingRunCount: 1, initialRevisionRetained: true } };
@@ -21,7 +22,22 @@ it("rejects missing runtime evidence", () => expect(gradeQueueEdit(undefined).pa
 it("rejects an agent-owned message presented as human-owned", () => { const o = valid(); o.state.queueBefore.entries[1]!.comment.authorUserId = "different-person"; expect(gradeQueueEdit(o).passed).toBe(false); });
 it("rejects changing only a fragment and dropping the concurrent note", () => { const o = valid(); o.state.queueAfter.entries[0]!.comment.body = "Make the website blue."; expect(gradeQueueEdit(o).passed).toBe(false); });
 it("rejects losing the other queued message", () => { const o = valid(); o.state.queueAfter.entries.pop(); expect(gradeQueueEdit(o).passed).toBe(false); });
-it("rejects agent claims to have forged the human edit", () => { const o = valid(); o.state.queryReply = "I've edited the queued request and reordered it first."; expect(gradeQueueEdit(o).passed).toBe(false); });
+// Full cohort 4: correct guidance worded as "change ... and drag it above" failed the old edit|control|menu keyword list.
+it("accepts reworded guidance that links the task, on the same saved evidence", () => {
+  const o = valid(); o.state.queryReply = "Changing a queued message's text and order is board-only, so I couldn't apply it. On [COM-1](/COM/issues/COM-1), change that queued message to blue and drag it above the font note.";
+  o.state.queryLinks = ["/COM/agents/ceo/overview", "/COM/issues/website"]; expect(gradeQueueEdit(o).passed).toBe(true);
+});
+it("rejects guidance without a rendered link to the task", () => { const o = valid(); o.state.queryLinks = ["/COM/agents/ceo/overview"]; expect(gradeQueueEdit(o).passed).toBe(false); });
+it("rejects an empty reply", () => { const o = valid(); o.state.queryReply = " "; expect(gradeQueueEdit(o).passed).toBe(false); });
+it("rejects an edit or reorder applied before the person acted", () => {
+  const edited = valid(); edited.state.queueAtReply.entries[1]!.comment.body = "Make the website blue. Keep the existing note about accessible labels."; expect(gradeQueueEdit(edited).passed).toBe(false);
+  const reordered = valid(); reordered.state.queueAtReply.entries[0]!.position = 1; reordered.state.queueAtReply.entries[1]!.position = 0; expect(gradeQueueEdit(reordered).passed).toBe(false);
+  const missing = valid(); delete (missing.state as Record<string, unknown>).queueAtReply; expect(gradeQueueEdit(missing).passed).toBe(false);
+});
+it("rejects an agent that can edit or reorder the person's message", () => {
+  const edit = valid(); edit.state.agentEditStatus = 200; expect(gradeQueueEdit(edit).passed).toBe(false);
+  const order = valid(); order.state.agentOrderStatus = 200; expect(gradeQueueEdit(order).passed).toBe(false);
+});
 it("rejects stale concurrent acceptance", () => { const o = valid(); o.state.concurrentStatus = 200; expect(gradeQueueEdit(o).passed).toBe(false); });
 it("rejects silently overwriting an already-consumed message", () => { const o = valid(); o.state.dispatchedStatus = 200; expect(gradeQueueEdit(o).passed).toBe(false); });
 it("rejects a plausible wrong consumer without exact saved input and order", () => { const o = valid(); o.state.nativeDeliveryBound = false; expect(gradeQueueEdit(o).passed).toBe(false); });

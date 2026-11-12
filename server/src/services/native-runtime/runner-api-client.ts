@@ -89,6 +89,15 @@ export function validateRunnerApiCall(value: unknown, context: RunnerApiContext)
  * Callers that reserve a mutation receipt must run this before the reservation.
  */
 export function assertRunnerApiDispatchable(operation: RunnerApiOperation, input: RunnerApiCall, receivedKeys: readonly string[]): void {
+  assertBodyPresent(operation, input, receivedKeys);
+  // Like saveResponse, responseText is a GET read option. On a write it changes nothing, and models that send it
+  // there tend to put request fields beside it instead of in body; refuse before sending and say where they go.
+  if (operation.method !== "GET" && receivedKeys.includes("responseText")) {
+    throw badRequest(`This request was not sent: responseText applies only to GET reads and never carries request fields. Resend ${operation.operationId} once without responseText, with its request fields in body${requestFieldHint(operation)}.`);
+  }
+}
+
+function assertBodyPresent(operation: RunnerApiOperation, input: RunnerApiCall, receivedKeys: readonly string[]): void {
   if (input.body !== undefined || input.files?.length || !operation.requestBody?.required) return;
   // A PATCH without a body succeeds as a no-op that reads like a completed
   // update. A POST or PUT without a body whose schema names required fields
