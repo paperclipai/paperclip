@@ -27,7 +27,8 @@ export type ContinuationReadiness =
   | { mode: "resume_stopped_native_workspace"; retryIntentId: string; sourceRunId: string; workspaceId: string; cwd: string }
   | { mode: "reuse_issue_workspace"; retryIntentId: string; sourceRunId: string; workspaceId: string; cwd: string | null }
   | { mode: "fresh_isolated_workspace"; retryIntentId: string; sourceRunId: string; retainedSourceIds: string[] };
-const freshReadinessSchema = z.discriminatedUnion("mode", [z.object({
+/** Workspace selections a Retry receipt records and its continuation can carry. */
+export const freshReadinessSchema = z.discriminatedUnion("mode", [z.object({
   mode: z.literal("fresh_isolated_workspace"), retryIntentId: z.string().uuid(),
   sourceRunId: z.string().uuid(), retainedSourceIds: z.array(z.string().uuid()),
 }), z.object({
@@ -312,6 +313,31 @@ async function stoppedNativeContinuationWorkspace(db: Db, source: typeof heartbe
     sourceRunId: source.id, workspaceId: bound.id, cwd: parsed.data.workspaceCwd };
 }
 
+/** An automatic continuation of a fresh-workspace Retry attempt that a shutdown
+ * stopped before provider work prepares the same attempt. Its own admission
+ * receipt (`admitExplicitContinuationRetry`) records the selection; the run's
+ * context must still name the same parent and Retry. */
+async function readCarriedRetryReadiness(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect,
+  "id" | "companyId" | "contextSnapshot">, issueId: string): Promise<ContinuationReadiness | null> {
+  const explicit = run.contextSnapshot?.explicitUserContinuation as Record<string, unknown> | undefined;
+  if (!explicit || typeof explicit.previousRunId !== "string" || typeof explicit.taskRetryRequestId !== "string") return null;
+  const [receipt] = await db.select({ evidence: issueRecoveryActions.evidence }).from(issueRecoveryActions).where(and(
+    eq(issueRecoveryActions.companyId, run.companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
+    eq(issueRecoveryActions.cause, "explicit_user_continuation_retry"), eq(issueRecoveryActions.fingerprint, run.id),
+    eq(issueRecoveryActions.status, "resolved"),
+    sql`${issueRecoveryActions.evidence}#>>'{explicitUserContinuation,runId}' = ${run.id}`,
+    sql`${issueRecoveryActions.evidence}#>'{explicitUserContinuation,automaticRetry,readiness}' is not null`,
+  )).limit(1);
+  const authorization = receipt?.evidence.explicitUserContinuation as Record<string, unknown> | undefined;
+  const automaticRetry = authorization?.automaticRetry as Record<string, unknown> | undefined;
+  const parsed = freshReadinessSchema.safeParse(automaticRetry?.readiness);
+  if (!parsed.success || automaticRetry?.sourceRunId !== explicit.previousRunId
+    || authorization?.previousRunId !== explicit.previousRunId
+    || authorization?.taskRetryRequestId !== explicit.taskRetryRequestId
+    || parsed.data.retryIntentId !== explicit.taskRetryRequestId) return null;
+  return parsed.data;
+}
+
 /** Preparation trusts the committed admission receipt, not a raw wake payload. */
 export async function readFreshWorkspaceReadiness(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect,
   "id" | "companyId" | "agentId" | "issueId" | "nativeIssueId" | "contextSnapshot" | "runtimeMode" | "runnerProfileJson">): Promise<ContinuationReadiness | null> {
@@ -345,6 +371,8 @@ export async function readFreshWorkspaceReadiness(db: Db, run: Pick<typeof heart
     sql`${issueRecoveryActions.evidence}->>'runId' = ${issueRecoveryActions.evidence}#>>'{explicitUserContinuation,readiness,sourceRunId}'`,
   )).limit(1);
   if (!action) {
+    const carried = await readCarriedRetryReadiness(db, run, issueId);
+    if (carried) return carried;
     const [wake] = await db.select().from(agentWakeupRequests).where(and(
       eq(agentWakeupRequests.companyId, run.companyId), eq(agentWakeupRequests.agentId, run.agentId),
       eq(agentWakeupRequests.runId, run.id), eq(agentWakeupRequests.reason, "task_retry"),

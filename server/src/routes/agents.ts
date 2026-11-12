@@ -165,7 +165,7 @@ import type { AdapterAuthSignal, AdapterAuthSignalResponse, CodexAccountBindingC
 import { adapterSettingsService } from "../services/adapter-settings.js";
 import { skillVersionSelectionMap } from "../services/runtime-skill-selections.js";
 import { isFixedClaudeOAuthBinding, secretService } from "../services/secrets.js";
-import { authorizationDeniedDetails } from "../services/authorization.js";
+import { authorizationDeniedDetails, issueReadSqlCondition } from "../services/authorization.js";
 import { providerTraceStore } from "../services/provider-trace-store.js";
 import { AGENT_TERMINATED_STOP_REASON } from "../services/governance-pause-stop.js";
 import {
@@ -4173,6 +4173,7 @@ export function agentRoutes(
     const issuesSvc = issueService(db);
     const recoveryActionsSvc = issueRecoveryActionService(db);
     const rows = await issuesSvc.list(req.actor.companyId, {
+      readCondition: await issueReadSqlCondition(db, req.actor),
       assigneeAgentId: req.actor.agentId,
       status: "todo,in_progress,blocked",
       includeRoutineExecutions: true,
@@ -4222,13 +4223,24 @@ export function agentRoutes(
     const query = agentMineInboxQuerySchema.parse(req.query);
     const issuesSvc = issueService(db);
     const rows = await issuesSvc.list(req.actor.companyId, {
+      readCondition: await issueReadSqlCondition(db, req.actor),
       touchedByUserId: query.userId,
       inboxArchivedByUserId: query.userId,
       status: query.status,
       limit: ISSUE_LIST_DEFAULT_LIMIT,
     });
+    const decisions = await access.decideReads(req.actor, rows.map((issue) => ({
+      type: "issue" as const,
+      companyId: issue.companyId,
+      issueId: issue.id,
+      projectId: issue.projectId,
+      parentIssueId: issue.parentId,
+      assigneeAgentId: issue.assigneeAgentId,
+      assigneeUserId: issue.assigneeUserId,
+      status: issue.status,
+    })));
 
-    res.json(rows);
+    res.json(rows.filter((_, index) => decisions[index]?.allowed));
   });
 
   router.get("/agents/:id/identity", async (req, res) => {

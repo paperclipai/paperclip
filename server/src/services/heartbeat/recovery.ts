@@ -46,6 +46,8 @@ import {
   proveLegacyController,
   revokeExpiredLegacyControllerWithState,
 } from "../legacy-controller-lease.js";
+import { proveOwnerGone } from "../owner-proof.js";
+import { preparingControllerOwnerStamp } from "../native-runtime/native-owner-stamps.js";
 import { remoteTerminationReceipt } from "../remote-execution-termination.js";
 import { readEnvironmentStopFailure, type PluginEnvironmentStopFailure } from "@paperclipai/plugin-sdk";
 import { runUsedConversationAdapter } from "../conversation-continuation.js";
@@ -2378,12 +2380,33 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         scope.companyId ? eq(heartbeatRuns.companyId, scope.companyId) : undefined,
         scope.runId ? eq(heartbeatRuns.id, scope.runId) : undefined));
 
+    // Between runtime selection and the executor's claim, a native run's
+    // coordinator names no controller and holds no lease, and its legacy lease
+    // is stopped. Two servers serve together during every upgrade: a run the
+    // other server is preparing is not ours to recover or to mark unverified.
+    // Its recorded server process proves the owner alive. The run stays with
+    // that owner until the owner claims it, stops (then it is recovered like
+    // any run whose controller is gone), or does not claim it within the grace.
+    const preparingOwnerAlive = new Set<string>();
+    for (const { run, nativeCoordinatorPhase, nativeControllerBootId, nativeLeaseOwner } of activeRuns) {
+      if (run.runtimeMode !== "native" || nativeCoordinatorPhase !== "observed" || nativeControllerBootId
+        || nativeLeaseOwner || activeRunExecutions.has(run.id) || runningProcesses.has(run.id)) continue;
+      const owner = readControllerProcess(run.controllerProcess);
+      if (!owner || owner.bootId === legacyControllerBootId) continue;
+      const preparingSince = (run.nativePhaseUpdatedAt ?? run.updatedAt).getTime();
+      const ownerClaimsBy = preparingSince + LEGACY_LIVE_OWNER_SETTLE_GRACE_MS;
+      if (now.getTime() >= ownerClaimsBy) continue;
+      if ((await proveOwnerGone(preparingControllerOwnerStamp(owner))).verdict !== "alive") continue;
+      preparingOwnerAlive.add(run.id);
+      scope.onDeferredDeadline?.(Math.min(ownerClaimsBy, Date.now() + 30_000));
+    }
+
     // Reuse the orphan sweep's active-run inventory. Only an expired, untracked
     // controller creates recovery work; idle sweeps add no checkpoint query.
     const expiredNativeRunIds = activeRuns.filter(({ run, nativeCoordinatorPhase, nativeControllerLeaseExpiresAt }) =>
       run.runtimeMode === "native" && nativeCoordinatorPhase === "observed"
       && (!nativeControllerLeaseExpiresAt || nativeControllerLeaseExpiresAt <= now)
-      && !isNativeRunnerOwnershipHeld(run)
+      && !isNativeRunnerOwnershipHeld(run) && !preparingOwnerAlive.has(run.id)
       && !activeRunExecutions.has(run.id) && !runningProcesses.has(run.id),
     ).map(({ run }) => run.id);
     const earlyStartupRunIds = activeRuns.filter(row => expiredNativeRunIds.includes(row.run.id) &&
@@ -2393,6 +2416,10 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     if (remoteRecoveryRunIds.size) {
       const recovery = await recoverNativeRunsAfterRestart(now, [...remoteRecoveryRunIds]);
       for (const claim of recovery.claims) resumedRunIds.add(claim.runId);
+      // An ownership wait without its own retry (the departing server is
+      // still alive) is looked at again; the run stays listed until a claim.
+      if (recovery.dispositions.some(entry => entry.kind === "awaiting_evidence" && !entry.retryAt))
+        scope.onDeferredDeadline?.(Date.now() + 30_000);
     }
 
     const monitorIssueIds = [
@@ -2444,6 +2471,8 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       // Native recovery owns these dispositions. Its writes happened after this
       // inventory was read; do not reap or overwrite them using the old row.
       if (remoteRecoveryRunIds.has(run.id)) continue;
+      // Another live server is still preparing this run (see above).
+      if (preparingOwnerAlive.has(run.id)) continue;
       // Authentication timeout requires an explicit ownership resolution, not
       // repeated reattachment or a process-gone guess on subsequent sweeps.
       if (isNativeRunnerOwnershipHeld(run)) continue;
