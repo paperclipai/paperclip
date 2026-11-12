@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { IssueWorkMode } from "@paperclipai/shared";
 import { Check, ClipboardList, MessageCircleQuestion, Lock, Paperclip, Plus, Target, X, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useTx } from "@/i18n/tx";
 import { useMobileEntityPickerViewportStyle } from "@/hooks/useMobileEntityPickerViewportStyle";
 import { workModeMetaFor } from "@/lib/work-mode-meta";
 import { Dialog, DialogClose, DialogContent, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
@@ -33,6 +34,7 @@ export function ComposerAddMenu({
   mode, onModeChange, onAttachFile, attachDisabled, onGoal, privacy, disabled, mobile: mobileProp, triggerTestId, menuTestId,
 }: ComposerAddMenuProps) {
   const [open, setOpen] = useState(false);
+  const tx = useTx();
   const mobileViewportStyle = useMobileEntityPickerViewportStyle();
   const goalFocusRef = useRef(false);
   const [narrow, setNarrow] = useState(() => typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia(MOBILE_SHELL_QUERY).matches);
@@ -54,14 +56,14 @@ export function ComposerAddMenu({
       { id: "composer-add-ask", label: "Ask mode", detail: "Answer without changes", Icon: MessageCircleQuestion, select: () => onModeChange(mode === "ask" ? "standard" : "ask"), selected: mode === "ask" },
     ] : []),
   ];
-  const trigger = <button type="button" aria-label="Add to composer" aria-keyshortcuts={onModeChange ? "Meta+Period Control+Period Shift+Tab" : undefined}
+  const trigger = <button type="button" aria-label={tx("Add to composer")} aria-keyshortcuts={onModeChange ? "Meta+Period Control+Period Shift+Tab" : undefined}
     disabled={disabled} data-testid={triggerTestId}
     className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50">
     <Plus className="size-4" aria-hidden />
   </button>;
   const content = (action: typeof actions[number]) => <>
     <action.Icon className="size-4 shrink-0 text-muted-foreground" aria-hidden />
-    <span className="flex min-w-0 flex-1 items-baseline gap-2"><span>{action.label}</span>{action.detail ? <span className="truncate text-xs text-muted-foreground">{action.detail}</span> : null}</span>
+    <span className="flex min-w-0 flex-1 items-baseline gap-2"><span>{tx(action.label)}</span>{action.detail ? <span className="truncate text-xs text-muted-foreground">{tx(action.detail)}</span> : null}</span>
     {action.selected ? <Check className="size-4 shrink-0 text-muted-foreground" aria-hidden /> : null}
   </>;
   if (mobile) return <Dialog open={open} onOpenChange={setOpen}>
@@ -70,8 +72,8 @@ export function ComposerAddMenu({
       onCloseAutoFocus={(event) => { if (goalFocusRef.current) { event.preventDefault(); goalFocusRef.current = false; } }}
       className="composer-mobile-dialog flex flex-col translate-y-0 gap-0 overflow-hidden p-0 md:translate-y-0">
       <div className="flex shrink-0 items-center gap-2 px-3 py-2">
-        <DialogTitle className="min-w-0 flex-1 text-sm font-medium">Add</DialogTitle>
-        <DialogClose asChild><button type="button" aria-label="Close Add menu" className="grid size-11 place-items-center rounded-md text-muted-foreground hover:bg-accent"><X className="size-4" /></button></DialogClose>
+        <DialogTitle className="min-w-0 flex-1 text-sm font-medium">{tx("Add")}</DialogTitle>
+        <DialogClose asChild><button type="button" aria-label={tx("Close Add menu")} className="grid size-11 place-items-center rounded-md text-muted-foreground hover:bg-accent"><X className="size-4" /></button></DialogClose>
       </div>
       <div className="min-h-0 overflow-y-auto overscroll-contain p-2 pt-0">{actions.map((action) => <button key={action.id} type="button" disabled={action.disabled} data-testid={action.id}
         onClick={() => { goalFocusRef.current = action.id === "composer-add-goal"; action.select(); setOpen(false); }}
@@ -84,7 +86,7 @@ export function ComposerAddMenu({
     <DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
     <DropdownMenuContent side="top" align="start" sideOffset={8} data-testid={menuTestId}
       className="w-(--sz-300px) rounded-xl p-1.5 shadow-sm">
-      <div className="px-2 py-1 text-xs text-muted-foreground">Add</div>
+      <div className="px-2 py-1 text-xs text-muted-foreground">{tx("Add")}</div>
       {actions.map((action) => <DropdownMenuItem key={action.id} onSelect={action.select} disabled={action.disabled} data-testid={action.id}>
         {content(action)}
       </DropdownMenuItem>)}
@@ -101,39 +103,43 @@ interface ComposerModeChipProps {
 }
 
 export function ComposerModeChip({ mode, onRemove, disabled, testId, mobile = false }: ComposerModeChipProps) {
+  const tx = useTx();
   if (mode === "standard") return null;
   const meta = workModeMetaFor(mode);
   const Icon = meta.icon;
+  const removeLabel = mode === "ask" ? "Remove Ask mode" : "Remove Plan mode";
   return <button type="button" onClick={onRemove} disabled={disabled || !onRemove}
-    aria-label={`Remove ${meta.label}`} data-pending-work-mode={mode} data-testid={testId}
+    aria-label={tx(removeLabel)} data-pending-work-mode={mode} data-testid={testId}
     className={cn("inline-flex h-8 shrink-0 items-center rounded-full border text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50", mobile ? "gap-1 px-2" : "gap-1 px-2 sm:gap-1.5 sm:px-2.5", meta.classes.chip)}>
     <Icon className="size-3.5" aria-hidden />
-    <span className={mobile ? "sr-only" : "max-sm:sr-only"}>{meta.label}</span>
+    <span className={mobile ? "sr-only" : "max-sm:sr-only"}>{tx(meta.label)}</span>
     <X className="size-3.5" aria-hidden />
   </button>;
 }
 
 export function ComposerPrivacyChip({ inherited, onRemove, disabled }: { inherited?: string; onRemove: () => void; disabled?: boolean }) {
+  const tx = useTx();
   const [hintOpen, setHintOpen] = useState(false);
   const explanation = inherited ?? "Only you and people you share with can read this task";
+  const explanationLabel = tx(explanation);
   return <TooltipProvider><Tooltip open={hintOpen} onOpenChange={setHintOpen}>
     <TooltipTrigger asChild>
       <span className="inline-flex shrink-0" role={inherited ? "button" : undefined}
-        tabIndex={inherited ? 0 : undefined} aria-label={inherited ? explanation : undefined}
+        tabIndex={inherited ? 0 : undefined} aria-label={inherited ? explanationLabel : undefined}
         onClick={inherited ? (event) => { event.preventDefault(); setHintOpen(true); } : undefined}
         onKeyDown={inherited ? (event) => {
           if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setHintOpen(true); }
         } : undefined}>
-        <button type="button" onClick={onRemove} aria-label={inherited ? "Private task" : "Remove private task"}
-          title={explanation}
+        <button type="button" onClick={onRemove} aria-label={tx(inherited ? "Private task" : "Remove private task")}
+          title={explanationLabel}
           disabled={disabled || Boolean(inherited)} data-testid="composer-private-chip"
           className="inline-flex h-8 shrink-0 items-center gap-1 rounded-full border border-border bg-muted px-2 text-xs font-medium text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50">
           <Lock className="size-3.5" aria-hidden />
-          <span className="max-sm:sr-only">Private</span>
+          <span className="max-sm:sr-only">{tx("Private")}</span>
           {!inherited ? <X className="size-3.5" aria-hidden /> : null}
         </button>
       </span>
     </TooltipTrigger>
-    <TooltipContent className="max-w-xs">{explanation}</TooltipContent>
+    <TooltipContent className="max-w-xs">{explanationLabel}</TooltipContent>
   </Tooltip></TooltipProvider>;
 }

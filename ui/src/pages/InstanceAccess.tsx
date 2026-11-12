@@ -9,9 +9,11 @@ import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { Card } from "@/components/ui/card";
 import { companyDirectoryQueryOptions, useAccountIdentity } from "@/api/companies-query";
 import { useToast } from "@/context/ToastContext";
+import { useTx } from "@/i18n/tx";
 import { queryKeys } from "@/lib/queryKeys";
 
 export function InstanceAccess() {
+  const tx = useTx();
   const { userId: accountUserId, settled: accountSettled } = useAccountIdentity();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToast();
@@ -101,12 +103,12 @@ export function InstanceAccess() {
     !accountSettled ||
     (usersQuery.isSuccess && (companiesQuery.isPending || companiesView.kind === "reconnecting"))
   ) {
-    return <div className="text-sm text-muted-foreground">Loading instance access…</div>;
+    return <div className="text-sm text-muted-foreground">{tx("Loading instance access…")}</div>;
   }
 
   if (usersView.kind === "error") {
     if (usersView.errorKind === "forbidden") {
-      return <div className="text-sm text-destructive">Instance admin access is required to manage users.</div>;
+      return <div className="text-sm text-destructive">{tx("Instance admin access is required to manage users.")}</div>;
     }
     return (
       <QueryErrorState
@@ -136,22 +138,22 @@ export function InstanceAccess() {
       <div className="space-y-3">
         <div className="flex items-center gap-2">
           <Shield className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-lg font-semibold">Instance Access</h1>
+          <h1 className="text-lg font-semibold">{tx("Instance Access")}</h1>
         </div>
         <p className="max-w-3xl text-sm text-muted-foreground">
-          Search users, manage instance-admin status, and control which organizations they can access.
+          {tx("Search users, manage instance-admin status, and control which organizations they can access.")}
         </p>
       </div>
 
       <div className="grid gap-6 lg:grid-cols-(--gtc-34)">
         <Card className="block space-y-4 p-4">
           <label className="block space-y-2 text-sm">
-            <span className="font-medium">Search users</span>
+            <span className="font-medium">{tx("Search users")}</span>
             <input
               className="w-full rounded-md border border-border bg-background px-3 py-2"
               value={search}
               onChange={(event) => setSearch(event.target.value)}
-              placeholder="Search by name or email"
+              placeholder={tx("Search by name or email")}
             />
           </label>
           <div className="space-y-2">
@@ -185,9 +187,9 @@ export function InstanceAccess() {
 
         <Card className="block space-y-4 p-5">
           {!selectedUserId ? (
-            <div className="text-sm text-muted-foreground">Select a user to inspect instance access.</div>
+            <div className="text-sm text-muted-foreground">{tx("Select a user to inspect instance access.")}</div>
           ) : userAccessQuery.isLoading || userAccessView.kind === "reconnecting" ? (
-            <div className="text-sm text-muted-foreground">Loading user access…</div>
+            <div className="text-sm text-muted-foreground">{tx("Loading user access…")}</div>
           ) : userAccessView.kind === "error" ? (
             <QueryErrorState
               error={userAccessQuery.error}
@@ -217,9 +219,9 @@ export function InstanceAccess() {
 
               <div className="space-y-3">
                 <div>
-                  <h2 className="text-sm font-semibold">Organization access</h2>
+                  <h2 className="text-sm font-semibold">{tx("Organization access")}</h2>
                   <p className="text-sm text-muted-foreground">
-                    Toggle organization membership for this user. New access defaults to an active operator membership.
+                    {tx("Toggle organization membership for this user. New access defaults to an active operator membership.")}
                   </p>
                 </div>
                 <div className="grid gap-3 md:grid-cols-2">
@@ -257,7 +259,7 @@ export function InstanceAccess() {
               </div>
 
               <div className="space-y-2">
-                <h2 className="text-sm font-semibold">Current memberships</h2>
+                <h2 className="text-sm font-semibold">{tx("Current memberships")}</h2>
                 <div className="space-y-2">
                   {(userAccessQuery.data?.companyAccess ?? []).map((membership) => (
                     <div

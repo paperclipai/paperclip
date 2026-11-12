@@ -5,6 +5,7 @@ import { ArrowUpRight, Check, MessageSquare, RotateCcw, X } from "lucide-react";
 import { api, detachInflightGet } from "@/api/client";
 import { Link } from "@/lib/router";
 import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
+import { useTx } from "@/i18n/tx";
 import { CoordinatorRelativeTime } from "./CoordinatorRelativeTime";
 import { Button } from "@/components/ui/button";
 
@@ -35,11 +36,12 @@ export function useCoordinatorChatDecisionReceipts(issueId: string | null, conve
 }
 
 export function CoordinatorChatDecisionReceipt({ receipt }: { receipt: DecisionHistoryItem }) {
+  const tx = useTx();
   const Icon = receipt.outcome === "answered" ? MessageSquare : receipt.outcome === "changes_requested" ? RotateCcw : receipt.outcome === "rejected" ? X : Check;
   return <Link to={receipt.href} className="coordinator-decision-receipt" data-testid="coordinator-chat-decision-receipt">
     <Icon className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
     <span className="min-w-0 flex-1">
-      <span className="block truncate text-sm font-medium">{receipt.label}</span>
+      <span className="block truncate text-sm font-medium">{tx(receipt.label)}</span>
       <span className="block truncate text-xs text-muted-foreground"><span className="font-mono">{receipt.issueIdentifier ?? receipt.issueId}</span> · {receipt.title}</span>
     </span>
     <CoordinatorRelativeTime value={receipt.resolvedAt} className="shrink-0 text-xs text-muted-foreground" />

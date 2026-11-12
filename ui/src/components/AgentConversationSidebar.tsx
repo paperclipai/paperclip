@@ -7,6 +7,7 @@ import { AgentChatPicker } from "@/components/AgentChatPicker";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { useTx } from "@/i18n/tx";
 import { Link, useNavigate } from "@/lib/router";
 import { agentRouteRef, cn } from "@/lib/utils";
 
@@ -41,6 +42,7 @@ const contactRowClassName = "agent-pin-row agent-contact-pin-row group/agent-pin
 /** Searchable navigation for one conversation per agent. */
 export function AgentConversationSidebar({ agents, existingChatAgentIds, availableAgents = agents, activeId, previews = {}, unreadAgentIds = [], unreadMessageCounts, loading = false, error, onRetry, initialSearch = "", onSelect, onBrowse, onAddChat, historyLoading, historyError, onRetryHistory, onCreateAgent, renderAgentAction, pinnedAgentIds = NO_PINNED_AGENTS, onReorderPins }: AgentConversationSidebarProps) {
   const navigate = useNavigate();
+  const tx = useTx();
   const [pickerOpen, setPickerOpen] = useState(false);
   const [search, setSearch] = useState(initialSearch);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -116,7 +118,7 @@ export function AgentConversationSidebar({ agents, existingChatAgentIds, availab
       {onCreateAgent && !loading && !error && <button type="button" onClick={onCreateAgent}
         className="flex min-w-0 items-center gap-3 rounded-md px-2.5 py-3 text-left hover:bg-accent/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
         <span aria-hidden className="flex size-10 shrink-0 items-center justify-center"><span className="agent-contact-create flex size-8 items-center justify-center bg-muted"><Plus className="size-5 text-foreground" /></span></span>
-        <span className="text-sm font-medium">Create a new agent</span>
+        <span className="text-sm font-medium">{tx("Create a new agent")}</span>
       </button>}
     </div>
     {onBrowse && <div className="shrink-0 px-3 py-4">

@@ -11,6 +11,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { Badge } from "@/components/ui/badge";
 import { describeError } from "@/api/errors";
+import { useTx } from "@/i18n/tx";
 
 const inviteRoleOptions = [
   {
@@ -48,6 +49,7 @@ function isInviteHistoryRow(value: unknown): value is Awaited<ReturnType<typeof 
 
 /** The Invites tab of the Members page (extracted from the former standalone Invites page). */
 export function InvitesSection() {
+  const tx = useTx();
   const { selectedCompanyId } = useCompany();
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
@@ -153,16 +155,16 @@ export function InvitesSection() {
   });
 
   if (!selectedCompanyId) {
-    return <div className="text-sm text-muted-foreground">Select an organization to manage invites.</div>;
+    return <div className="text-sm text-muted-foreground">{tx("Select an organization to manage invites.")}</div>;
   }
 
   if (invitesQuery.isLoading || invitesView.kind === "reconnecting") {
-    return <div className="text-sm text-muted-foreground">Loading invites…</div>;
+    return <div className="text-sm text-muted-foreground">{tx("Loading invites…")}</div>;
   }
 
   if (invitesView.kind === "error") {
     if (invitesView.errorKind === "forbidden") {
-      return <div className="text-sm text-destructive">You do not have permission to manage organization invites.</div>;
+      return <div className="text-sm text-destructive">{tx("You do not have permission to manage organization invites.")}</div>;
     }
     return (
       <QueryErrorState
@@ -178,20 +180,19 @@ export function InvitesSection() {
   return (
     <div className="max-w-6xl space-y-8">
       <p className="max-w-3xl text-sm text-muted-foreground">
-        Invite people to request access to this organization. New invite links are copied to your clipboard when they are
-        generated.
+        {tx("Invite people to request access to this organization. New invite links are copied to your clipboard when they are generated.")}
       </p>
 
       <section className="space-y-4 rounded-xl border border-border p-5">
         <div className="space-y-1">
-          <h2 className="text-sm font-semibold">Invite a person</h2>
+          <h2 className="text-sm font-semibold">{tx("Invite a person")}</h2>
           <p className="text-sm text-muted-foreground">
-            Generate a human invite link and choose the default access it should request.
+            {tx("Generate a human invite link and choose the default access it should request.")}
           </p>
         </div>
 
         <fieldset className="space-y-3">
-          <legend className="text-sm font-medium">Choose a role</legend>
+          <legend className="text-sm font-medium">{tx("Choose a role")}</legend>
           <div className="rounded-xl border border-border">
             {inviteRoleOptions.map((option, index) => {
               const checked = humanRole === option.value;
@@ -210,15 +211,15 @@ export function InvitesSection() {
                   />
                   <span className="min-w-0 space-y-1">
                     <span className="flex flex-wrap items-center gap-2">
-                      <span className="text-sm font-medium">{option.label}</span>
+                      <span className="text-sm font-medium">{tx(option.label)}</span>
                       {option.value === "operator" ? (
                         <Badge variant="outline" className="border-border text-muted-foreground">
                           Default
                         </Badge>
                       ) : null}
                     </span>
-                    <span className="block max-w-2xl text-sm text-muted-foreground">{option.description}</span>
-                    <span className="block text-sm text-foreground">{option.gets}</span>
+                    <span className="block max-w-2xl text-sm text-muted-foreground">{tx(option.description)}</span>
+                    <span className="block text-sm text-foreground">{tx(option.gets)}</span>
                   </span>
                 </label>
               );
@@ -227,34 +228,34 @@ export function InvitesSection() {
         </fieldset>
 
         <div className="rounded-lg border border-border px-4 py-3 text-sm text-muted-foreground">
-          Each invite link is single-use. Human invitees get the selected role immediately after sign-in; agent invites still create a join request for approval.
+          {tx("Each invite link is single-use. Human invitees get the selected role immediately after sign-in; agent invites still create a join request for approval.")}
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
           <Button onClick={() => createInviteMutation.mutate()} disabled={createInviteMutation.isPending}>
             {createInviteMutation.isPending ? "Creating…" : "Create invite"}
           </Button>
-          <span className="text-sm text-muted-foreground">Invite history below keeps the audit trail.</span>
+          <span className="text-sm text-muted-foreground">{tx("Invite history below keeps the audit trail.")}</span>
         </div>
 
         {latestInviteUrl ? (
           <div className="space-y-3 rounded-lg border border-border px-4 py-4">
             <div className="space-y-1">
               <div className="flex items-center justify-between gap-3">
-                <div className="text-sm font-medium">Latest invite link</div>
+                <div className="text-sm font-medium">{tx("Latest invite link")}</div>
                 {latestInviteCopied ? (
                   <div className="inline-flex items-center gap-1 text-xs font-medium text-foreground">
                     <Check className="h-3.5 w-3.5" />
-                    Copied
+                    {tx("Copied")}
                   </div>
                 ) : null}
               </div>
               <div className="text-sm text-muted-foreground">
-                This URL includes the current Paperclip domain returned by the server.
+                {tx("This URL includes the current Paperclip domain returned by the server.")}
               </div>
             </div>
             <label className="block space-y-1">
-              <span className="sr-only">Latest invite URL</span>
+              <span className="sr-only">{tx("Latest invite URL")}</span>
               <input
                 ref={latestInviteInputRef}
                 readOnly
@@ -262,7 +263,7 @@ export function InvitesSection() {
                 onFocus={(event) => event.currentTarget.select()}
                 onClick={(event) => event.currentTarget.select()}
                 className="w-full rounded-md border border-border bg-muted/60 px-3 py-2 text-sm text-foreground outline-none transition-colors selection:bg-primary selection:text-primary-foreground focus:border-ring"
-                aria-label="Latest invite URL"
+                aria-label={tx("Latest invite URL")}
               />
             </label>
             <div className="flex flex-wrap gap-2">
@@ -286,19 +287,19 @@ export function InvitesSection() {
       <section className="rounded-xl border border-border">
         <div className="flex flex-wrap items-center justify-between gap-4 px-5 py-4">
           <div className="space-y-1">
-            <h2 className="text-sm font-semibold">Invite history</h2>
+            <h2 className="text-sm font-semibold">{tx("Invite history")}</h2>
             <p className="text-sm text-muted-foreground">
-              Review invite status, audience, inviter, and any linked join request.
+              {tx("Review invite status, audience, inviter, and any linked join request.")}
             </p>
           </div>
           <Link to="/inbox/requests" className="text-sm underline underline-offset-4">
-            Open join request queue
+            {tx("Open join request queue")}
           </Link>
         </div>
 
         {inviteHistory.length === 0 ? (
           <div className="border-t border-border px-5 py-8 text-sm text-muted-foreground">
-            No invites have been created for this organization yet.
+            {tx("No invites have been created for this organization yet.")}
           </div>
         ) : (
           <div className="border-t border-border">
@@ -306,12 +307,12 @@ export function InvitesSection() {
               <table className="min-w-full text-left text-sm">
                 <thead>
                   <tr className="border-b border-border">
-                    <th className="px-5 py-3 font-medium text-muted-foreground">State</th>
-                    <th className="px-5 py-3 font-medium text-muted-foreground">For</th>
-                    <th className="px-5 py-3 font-medium text-muted-foreground">Invited by</th>
-                    <th className="px-5 py-3 font-medium text-muted-foreground">Created</th>
-                    <th className="px-5 py-3 font-medium text-muted-foreground">Join request</th>
-                    <th className="px-5 py-3 text-right font-medium text-muted-foreground">Action</th>
+                    <th className="px-5 py-3 font-medium text-muted-foreground">{tx("State")}</th>
+                    <th className="px-5 py-3 font-medium text-muted-foreground">{tx("For")}</th>
+                    <th className="px-5 py-3 font-medium text-muted-foreground">{tx("Invited by")}</th>
+                    <th className="px-5 py-3 font-medium text-muted-foreground">{tx("Created")}</th>
+                    <th className="px-5 py-3 font-medium text-muted-foreground">{tx("Join request")}</th>
+                    <th className="px-5 py-3 text-right font-medium text-muted-foreground">{tx("Action")}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -322,7 +323,7 @@ export function InvitesSection() {
                           {formatInviteState(invite.state)}
                         </Badge>
                       </td>
-                      <td className="px-5 py-3 align-top">{formatInviteAudience(invite)}</td>
+                      <td className="px-5 py-3 align-top">{formatInviteAudience(invite, tx)}</td>
                       <td className="px-5 py-3 align-top">
                         <div>{invite.invitedByUser?.name || invite.invitedByUser?.email || "Unknown inviter"}</div>
                         {invite.invitedByUser?.email && invite.invitedByUser.name ? (
@@ -335,7 +336,7 @@ export function InvitesSection() {
                       <td className="px-5 py-3 align-top">
                         {invite.relatedJoinRequestId ? (
                           <Link to="/inbox/requests" className="underline underline-offset-4">
-                            Review request
+                            {tx("Review request")}
                           </Link>
                         ) : (
                           <span className="text-muted-foreground">—</span>
@@ -383,8 +384,13 @@ function formatInviteState(state: "active" | "accepted" | "expired" | "revoked")
   return state.charAt(0).toUpperCase() + state.slice(1);
 }
 
-function formatInviteAudience(invite: Awaited<ReturnType<typeof accessApi.listInvites>>["invites"][number]) {
-  if (invite.allowedJoinTypes === "agent") return "Agent";
-  if (invite.allowedJoinTypes === "both") return invite.humanRole ? `Human or agent · ${invite.humanRole}` : "Human or agent";
-  return invite.humanRole ?? "Human";
+function formatInviteAudience(
+  invite: Awaited<ReturnType<typeof accessApi.listInvites>>["invites"][number],
+  tx: (text: string) => string,
+) {
+  if (invite.allowedJoinTypes === "agent") return tx("Agent");
+  if (invite.allowedJoinTypes === "both") {
+    return invite.humanRole ? `${tx("Human or agent")} · ${invite.humanRole}` : tx("Human or agent");
+  }
+  return invite.humanRole ?? tx("Human");
 }

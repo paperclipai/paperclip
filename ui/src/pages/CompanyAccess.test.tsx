@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/api/client";
+import { LOCALE_STORAGE_KEY } from "@/i18n/preference";
 import { queryKeys } from "@/lib/queryKeys";
 import { CompanyAccess, CompanyAccessLegacyRoute } from "./CompanyAccess";
 
@@ -499,6 +500,84 @@ describe("CompanyAccess", () => {
     await act(async () => {
       root.unmount();
     });
+  });
+
+  it("reads member labels from the Russian dictionary", async () => {
+    localStorage.setItem(LOCALE_STORAGE_KEY, "ru");
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    try {
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <CompanyAccess />
+          </QueryClientProvider>,
+        );
+      });
+      await flushReact();
+      await flushReact();
+
+      expect(container.textContent).toContain("Участники компании");
+      expect(container.textContent).toContain("Ожидающие вступления людей");
+      expect(container.textContent).toContain("Одобрить человека");
+      expect(container.textContent).toContain("Отклонить человека");
+      expect(container.textContent).toContain("Владелец");
+      expect(container.textContent).toContain("Оператор");
+      expect(container.textContent).not.toContain("Organization Members");
+      expect(container.textContent).not.toContain("Pending human joins");
+
+      const editButton = Array.from(container.querySelectorAll("button")).find(
+        (button) => button.textContent === "Изменить",
+      );
+      expect(editButton).toBeTruthy();
+      await act(async () => {
+        editButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await flushReact();
+
+      expect(document.body.textContent).toContain("Изменить участника");
+      expect(document.body.textContent).toContain("Обновите роль в компании и статус участия для Codex Coder.");
+      expect(document.body.textContent).toContain("Приостановлен");
+      expect(document.body.textContent).toContain("Сохранить участника");
+    } finally {
+      localStorage.removeItem(LOCALE_STORAGE_KEY);
+      await act(async () => {
+        root.unmount();
+      });
+    }
+  });
+
+  it("reads the advanced permissions fallback from the Russian dictionary", async () => {
+    localStorage.setItem(LOCALE_STORAGE_KEY, "ru");
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    try {
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <CompanyAccessLegacyRoute />
+          </QueryClientProvider>,
+        );
+      });
+      await flushReact();
+
+      expect(container.textContent).toContain("Дополнительные права");
+      expect(container.textContent).toContain("Дополнительные права недоступны");
+      expect(container.textContent).toContain("Открыть участников");
+      expect(container.textContent).toContain("Открыть приглашения");
+      expect(container.textContent).toContain("Paperclip");
+      expect(container.textContent).not.toContain("Advanced Permissions");
+      expect(container.textContent).not.toContain("Open Members");
+    } finally {
+      localStorage.removeItem(LOCALE_STORAGE_KEY);
+      await act(async () => {
+        root.unmount();
+      });
+    }
   });
 });
 

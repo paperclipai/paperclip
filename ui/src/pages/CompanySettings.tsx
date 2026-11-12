@@ -18,6 +18,7 @@ import { companiesApi } from "../api/companies";
 import { accessApi } from "../api/access";
 import { assetsApi } from "../api/assets";
 import { describeError } from "@/api/errors";
+import { useTx } from "@/i18n/tx";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { NativeSelect } from "@/components/ui/select";
@@ -47,6 +48,7 @@ export function CompanySettings() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const toastActions = useOptionalToastActions();
+  const tx = useTx();
   const cloud = useCloudInstance();
   // Managed instances derive the task ID prefix from the company name, so a
   // rename here also renumbers the existing task IDs.
@@ -251,7 +253,7 @@ export function CompanySettings() {
   if (!selectedCompany) {
     return (
       <div className="text-sm text-muted-foreground">
-        No organization selected. Select an organization from the switcher above.
+        {tx("No organization selected. Select an organization from the switcher above.")}
       </div>
     );
   }
@@ -267,13 +269,13 @@ export function CompanySettings() {
     <div className="max-w-6xl space-y-8">
       <div className="flex items-center gap-2">
         <SlidersHorizontal className="h-5 w-5 text-muted-foreground" />
-        <h1 className="text-lg font-semibold">General</h1>
+        <h1 className="text-lg font-semibold">{tx("General")}</h1>
       </div>
 
       {/* General */}
       <div className="max-w-2xl space-y-4">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          General
+          {tx("General")}
         </div>
         <div className="space-y-3">
           <Field label="Organization name" hint="The display name for your organization.">
@@ -285,8 +287,7 @@ export function CompanySettings() {
             />
             {isCloudManaged && (
               <p className="mt-1 text-xs text-muted-foreground">
-                Renaming can change this company's task ID prefix. Existing task IDs are
-                renumbered and old task links stop resolving.
+                {tx("Renaming can change this company's task ID prefix. Existing task IDs are renumbered and old task links stop resolving.")}
               </p>
             )}
           </Field>
@@ -298,7 +299,7 @@ export function CompanySettings() {
               className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
               type="text"
               value={description}
-              placeholder="Optional organization description"
+              placeholder={tx("Optional organization description")}
               onChange={(e) => setDescription(e.target.value)}
             />
           </Field>
@@ -308,7 +309,7 @@ export function CompanySettings() {
       {/* Appearance */}
       <div className="max-w-2xl space-y-4">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          Appearance
+          {tx("Appearance")}
         </div>
         <div className="space-y-3">
           <div className="flex items-start gap-4">
@@ -354,7 +355,7 @@ export function CompanySettings() {
                     </span>
                   )}
                   {logoUploadMutation.isPending && (
-                    <span className="text-xs text-muted-foreground">Uploading logo...</span>
+                    <span className="text-xs text-muted-foreground">{tx("Uploading logo...")}</span>
                   )}
                 </div>
               </Field>
@@ -374,7 +375,7 @@ export function CompanySettings() {
             {generalMutation.isPending ? "Saving..." : "Save changes"}
           </Button>
           {generalMutation.isSuccess && (
-            <span className="text-xs text-muted-foreground">Saved</span>
+            <span className="text-xs text-muted-foreground">{tx("Saved")}</span>
           )}
           {generalMutation.error && (
             <span className="text-xs text-destructive">
@@ -387,7 +388,7 @@ export function CompanySettings() {
       {/* Hiring */}
       <div className="max-w-2xl space-y-4" data-testid="company-settings-team-section">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          Hiring
+          {tx("Hiring")}
         </div>
         <div>
           <ToggleField
@@ -458,12 +459,11 @@ export function CompanySettings() {
       {/* Danger Zone */}
       <div className="space-y-4">
         <div className="text-xs font-medium text-destructive uppercase tracking-wide">
-          Danger Zone
+          {tx("Danger Zone")}
         </div>
         <div className="space-y-3 bg-destructive/5 px-4 py-4">
           <p className="text-sm text-muted-foreground">
-            Archive this organization to hide it from the sidebar. This persists in
-            the database.
+            {tx("Archive this organization to hide it from the sidebar. This persists in the database.")}
           </p>
           <div className="flex items-center gap-2">
             <Button
