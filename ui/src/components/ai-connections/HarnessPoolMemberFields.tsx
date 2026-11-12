@@ -62,15 +62,15 @@ export function HarnessPoolMemberFields({ companyId, member, readOnly, onChange 
     finally { setRefreshing(false); }
   }
 
-  return <fieldset disabled={readOnly} className="space-y-3">
+  return <fieldset disabled={readOnly} className="@container min-w-0">
+    <HarnessPoolRuntimeFields key={`${member.harness.type}-${member.runner ?? "historical"}`} member={member} companyId={companyId} onChange={onChange} harnessFields={
     <Field label="Harness">
       <AdapterTypeDropdown value={adapter} disabledTypes={disabledTypes} allowedTypes={allowedTypes}
         onChange={next => {
           const type = (Object.keys(harnessAdapters) as Array<keyof typeof harnessAdapters>).find(type => harnessAdapters[type] === next);
           if (type && next !== adapter) { setRefreshError(undefined); onChange({ harness: { type }, connection: undefined, model: "", effort: undefined, adapterConfig: undefined }); }
         }} />
-    </Field>
-    <HarnessPoolRuntimeFields key={`${member.harness.type}-${member.runner ?? "historical"}`} member={member} companyId={companyId} onChange={onChange} />
+    </Field>} accountFields={<>
     <AiConnectionField key={adapter} companyId={companyId} agentName="this pool member" adapterType={adapter}
       value={member.connection} model={member.model} readOnly={readOnly} explicitAccount
       onChange={binding => {
@@ -97,5 +97,6 @@ export function HarnessPoolMemberFields({ companyId, member, readOnly, onChange 
       {(effortOptions.length > 1 || member.effort) && <ThinkingEffortDropdown value={member.effort ?? ""} options={effortOptions}
         onChange={effort => onChange({ effort: effort || undefined })} open={effortOpen} onOpenChange={setEffortOpen} />}
     </>}
+    </>} />
   </fieldset>;
 }

@@ -11,6 +11,7 @@ type Props = {
   section?: AdapterConfigSection;
   advancedFields?: ReactNode;
   showAdvanced?: boolean;
+  showSectionTitles?: boolean;
   includeTimeouts?: boolean;
   schemaKeys?: readonly string[];
   bordered?: boolean;
@@ -26,15 +27,15 @@ function RuntimeFields({ fieldProps, section }: Pick<Props, "fieldProps"> & { se
 }
 
 /** Shared provider fields and disclosure chrome for agent and pool settings. */
-export function AgentRuntimeConfigSections({ fieldProps, section, advancedFields, showAdvanced = false, includeTimeouts = false, schemaKeys, bordered, children }: Props) {
+export function AgentRuntimeConfigSections({ fieldProps, section, advancedFields, showAdvanced = false, showSectionTitles = true, includeTimeouts = false, schemaKeys, bordered, children }: Props) {
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [policyOpen, setPolicyOpen] = useState(false);
   if (!section) {
     const policyKeys = new Set(["lifecycleMode", "idleTimeoutMs", "mode", "warmHandleIdleMs", "timeoutSec", "graceSec", "codexPermissionMode"]);
     const hasConfiguration = !fieldProps.allowedConfigKeys || [...fieldProps.allowedConfigKeys].some(key => !policyKeys.has(key));
     return <div className="space-y-3">
-      {hasConfiguration && <section className="space-y-3"><h3 className="text-sm font-medium">Configuration</h3><AgentRuntimeConfigSections fieldProps={fieldProps} section="configuration" showAdvanced={showAdvanced} advancedFields={advancedFields} /></section>}
-      <section className="space-y-3"><h3 className="text-sm font-medium">Run Policy</h3><AgentRuntimeConfigSections fieldProps={fieldProps} section="runPolicy" includeTimeouts /></section>
+      {hasConfiguration && <section className="space-y-3">{showSectionTitles && <h3 className="text-sm font-medium">Configuration</h3>}<AgentRuntimeConfigSections fieldProps={fieldProps} section="configuration" showAdvanced={showAdvanced} advancedFields={advancedFields} /></section>}
+      <section className="space-y-3">{showSectionTitles && <h3 className="text-sm font-medium">Run Policy</h3>}<AgentRuntimeConfigSections fieldProps={fieldProps} section="runPolicy" includeTimeouts /></section>
     </div>;
   }
   if (section === "configuration") return <>

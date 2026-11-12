@@ -65,6 +65,23 @@ beforeEach(() => {
 });
 afterEach(() => { flushSync(() => root.unmount()); client.clear(); host.remove(); });
 
+it("groups harness and account fields separately from runtime settings in the shared agent panels", async () => {
+  await mount({ ...draft(), runner: "legacy", adapterConfig: { engine: "cli" } });
+  const identity = host.querySelector('[data-config-section="adapter"]')!;
+  const runtime = host.querySelector('[data-config-section="configuration"]')!;
+  expect(identity).toBeTruthy(); expect(runtime).toBeTruthy();
+  for (const label of ["Harness", "Runner", "Connection", "Model", "Thinking effort"]) {
+    expect(identity.querySelector(`[aria-label="${label}"]`), label).toBeTruthy();
+    expect(runtime.querySelector(`[aria-label="${label}"]`), label).toBeNull();
+  }
+  expect(runtime.querySelector('[aria-label="Execution engine"]')).toBeTruthy();
+  expect(identity.querySelector('[aria-label="Execution engine"]')).toBeNull();
+  expect(host.querySelectorAll('[data-agent-tile]')).toHaveLength(2);
+  expect([...host.querySelectorAll("h3")].map(heading => heading.textContent)).not.toContain("Configuration");
+  await expandPolicy();
+  expect(runtime.querySelector('[aria-label="Timeout (sec)"]')).toBeTruthy();
+});
+
 it("uses the account and model selectors, resets stale model/effort on account change and scopes discovery", async () => {
   await mount(); await open("Connection");
   expect(document.body.textContent).not.toContain("Responsible user’s default");

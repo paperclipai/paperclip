@@ -1,4 +1,4 @@
-import { Plus, Search, X } from "lucide-react";
+import { ArrowDown, ArrowUp, Plus, Search, Trash2, X } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { BUILTIN_AI_FAILOVER_ROUTER_KEY, harnessPoolConfigSchema, type HarnessPool, type HarnessPoolConfigV2 } from "@paperclipai/shared";
@@ -50,7 +50,7 @@ export function HarnessPoolSettings({ companyId }: { companyId: string }) {
     setDraft(current => { if (!current) return current; const members = [...current.members]; [members[index], members[index + delta]] = [members[index + delta]!, members[index]!]; return { ...current, members }; });
   }
   const loadError = accounts.error ?? pools.error ?? legacy.error;
-  return <section className="max-w-6xl space-y-4" aria-label="Harness pools">
+  return <section className="space-y-4" aria-label="Harness pools">
     <div className="space-y-2"><h1 className="text-lg font-semibold">Pools</h1><p className="text-sm text-muted-foreground">Manage shared harness settings and fallback order for your agents.</p></div>
     {loadError ? <p role="alert" className="text-sm text-destructive">{describeError(loadError).body} <Button variant="outline" onClick={() => { void accounts.refetch(); void pools.refetch(); void legacy.refetch(); }}>Retry</Button></p> : accounts.isPending || (allowed && pools.isPending) ? <p>Loading pools…</p> : !allowed ? <p className="text-sm text-muted-foreground">Connection management permission is required.</p> : <>
       <div className="flex min-h-(--sz-480px) flex-col md:flex-row">
@@ -79,15 +79,21 @@ export function HarnessPoolSettings({ companyId }: { companyId: string }) {
       </aside>
       <div className="min-w-0 flex-1 py-5 md:pl-6">
       {!draft && <p className="text-sm text-muted-foreground">Select a pool to edit, or add a pool.</p>}
-      {draft && <div className="space-y-4 rounded-lg border border-border p-4">
+      {draft && <div className="space-y-6">
         <label className="block space-y-2"><span className="text-sm">Pool name</span><Input aria-label="Pool name" value={draft.name} onChange={event => setDraft({ ...draft, name: event.target.value })} disabled={busy} /></label>
         <label className="flex items-center gap-2 text-sm"><Checkbox checked={draft.enabled} disabled={busy} onCheckedChange={checked => setDraft({ ...draft, enabled: checked === true })} />Enabled</label>
-        <div className="space-y-3">{draft.members.map((member, index) => <div key={member.id} className="space-y-2 rounded-md border border-border p-3">
-          <h3 className="text-sm font-medium">Member {index + 1}</h3>
+        <div className="space-y-6">{draft.members.map((member, index) => <section key={member.id} data-pool-member={member.id} aria-labelledby={`pool-member-${member.id}`} className="space-y-3">
+          <header className="flex items-center justify-between gap-3">
+            <h3 id={`pool-member-${member.id}`} className="text-sm font-medium">Member {index + 1}</h3>
+            <div className="flex items-center gap-1">
+              <Button variant="ghost" size="icon-sm" aria-label="Move up" title="Move up" disabled={busy || index === 0} onClick={() => move(index, -1)}><ArrowUp aria-hidden="true" className="size-4" /></Button>
+              <Button variant="ghost" size="icon-sm" aria-label="Move down" title="Move down" disabled={busy || index === draft.members.length - 1} onClick={() => move(index, 1)}><ArrowDown aria-hidden="true" className="size-4" /></Button>
+            </div>
+          </header>
           <HarnessPoolMemberFields companyId={companyId} member={member} readOnly={busy} onChange={patch => { if (!busy) updateMember(member.id, patch); }} />
           {editing && <p className="text-xs text-muted-foreground">{inspection.data?.members[member.id]?.reason ?? "Availability not checked"}{inspection.data?.members[member.id]?.retryAt && <> · until {new Date(inspection.data.members[member.id]!.retryAt!).toLocaleString()}</>}</p>}
-          <div className="flex gap-2"><Button variant="outline" disabled={busy || index === 0} onClick={() => move(index, -1)}>Move up</Button><Button variant="outline" disabled={busy || index === draft.members.length - 1} onClick={() => move(index, 1)}>Move down</Button><Button variant="outline" disabled={busy} onClick={() => setDraft({ ...draft, members: draft.members.filter(item => item.id !== member.id) })}>Remove member</Button></div>
-        </div>)}</div>
+          <footer className="flex justify-end"><Button variant="ghost" className="text-destructive hover:bg-destructive/10 hover:text-destructive" disabled={busy} onClick={() => setDraft({ ...draft, members: draft.members.filter(item => item.id !== member.id) })}><Trash2 aria-hidden="true" className="size-4" />Remove member</Button></footer>
+        </section>)}</div>
         <Button variant="outline" disabled={busy || draft.members.length >= 100} onClick={() => setDraft({ ...draft, members: [...draft.members, { id: crypto.randomUUID(), harness: { type: "codex" }, runner: "paperclip", model: "" }] })}>Add member</Button>
         {editing && <><p className="text-sm text-muted-foreground">Used by: {inspection.data ? inspection.data.usedBy.map(agent => agent.name).join(", ") || "No agents" : inspection.error ? "Inspection unavailable" : "Loading affected agents…"}</p>{inspection.error && <p role="alert" className="text-sm text-destructive">{describeError(inspection.error).body} <Button variant="outline" onClick={() => void inspection.refetch()}>Retry inspection</Button></p>}</>}
         <div className="flex items-center justify-between gap-2"><Button variant="outline" disabled={busy} onClick={() => { setDraft(undefined); setEditing(undefined); }}>Cancel</Button><Button disabled={busy} onClick={() => void action(async () => { const config = harnessPoolConfigSchema.parse(draft); const saved = await harnessPoolsApi.save(companyId, { id: editing?.id, expectedRevision: editing?.revision, config }); setEditing(saved); setDraft(config); await refresh(); })}>{busy ? "Saving…" : "Save pool"}</Button></div>

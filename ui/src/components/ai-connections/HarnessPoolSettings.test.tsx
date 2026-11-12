@@ -13,6 +13,36 @@ vi.mock("@/api/ai-connections", () => ({ aiConnectionsApi: { list: mocks.account
 vi.mock("@/api/ai-connection-pools", () => ({ aiConnectionPoolsApi: { list: mocks.legacy } }));
 afterEach(() => vi.clearAllMocks());
 async function settle() { for(let i=0;i<8;i++) { await new Promise(resolve=>setTimeout(resolve,0)); flushSync(()=>{}); } }
+
+it("places icon reorder actions beside the member name and removal in its footer", async () => {
+  const members = [crypto.randomUUID(), crypto.randomUUID()].map(id => ({ id, harness: { type: "codex" }, runner: "legacy", adapterConfig: { engine: "cli" }, model: "smart-a" }));
+  const pool = { id: crypto.randomUUID(), companyId: "company", revision: 2, name: "Actions", schemaVersion: 2, kind: "harness_pool", enabled: true, mode: "failover", members };
+  mocks.pools.mockResolvedValue([pool]); mocks.legacy.mockResolvedValue([]);
+  mocks.accounts.mockResolvedValue({ canManageConnections: true, connections: [] });
+  mocks.inspect.mockResolvedValue({ members: {}, usedBy: [] });
+  const host = document.createElement("div"); document.body.append(host); const root = createRoot(host);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  try {
+    flushSync(() => root.render(<QueryClientProvider client={client}><TooltipProvider><HarnessPoolSettings companyId="company" /></TooltipProvider></QueryClientProvider>)); await settle();
+    flushSync(() => host.querySelector<HTMLButtonElement>('[aria-label="Actions · 2 members"]')!.click()); await settle();
+    const cards = () => [...host.querySelectorAll<HTMLElement>('section[data-pool-member]')];
+    const first = cards()[0]!;
+    const header = first.querySelector("header")!;
+    expect(header.querySelector("h3")?.textContent).toBe("Member 1");
+    const up = header.querySelector<HTMLButtonElement>('[aria-label="Move up"]')!;
+    const down = header.querySelector<HTMLButtonElement>('[aria-label="Move down"]')!;
+    expect(up.disabled).toBe(true); expect(down.disabled).toBe(false);
+    expect(up.textContent).toBe(""); expect(down.textContent).toBe("");
+    expect(up.querySelector("svg")).toBeTruthy(); expect(down.querySelector("svg")).toBeTruthy();
+    flushSync(() => down.click());
+    expect(cards().map(card => card.dataset.poolMember)).toEqual([members[1]!.id, members[0]!.id]);
+    const remove = cards()[0]!.querySelector<HTMLButtonElement>("footer button")!;
+    expect(remove.textContent).toBe("Remove member"); expect(remove.classList).toContain("text-destructive");
+    flushSync(() => remove.click());
+    expect(cards().map(card => card.dataset.poolMember)).toEqual([members[0]!.id]);
+    expect(mocks.save).not.toHaveBeenCalled();
+  } finally { flushSync(() => root.unmount()); client.clear(); host.remove(); }
+});
 it("creates a named pool with ordered models on the same account and leaves other pools intact", async () => {
   const account = { id: crypto.randomUUID(), grantId: crypto.randomUUID(), companyId: "company", status: "connected", name: "Shared Codex", ownership: "shared", provider: "openai", method: "api_key" };
   mocks.pools.mockResolvedValue([]); mocks.legacy.mockResolvedValue([]); mocks.inspect.mockResolvedValue({ members: {}, usedBy: [] });

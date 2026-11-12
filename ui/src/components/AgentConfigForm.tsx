@@ -1,3 +1,4 @@
+import { AgentConfigPanel, agentConfigPanelClassName } from "./HarnessConfigPanels";
 import { AdapterTypeDropdown, ModelDropdown, ThinkingEffortDropdown, ExperimentalBadge, harnessThinkingEffortOptions } from "./HarnessConfigControls";
 export { AdapterTypeDropdown, ModelDropdown } from "./HarnessConfigControls";
 import { Link } from "@/lib/router";
@@ -351,7 +352,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const panels = props.sectionLayout === "panels";
   const cards = props.sectionLayout === "cards" || panels;
   const cardBody = panels
-    ? "space-y-3 rounded-lg bg-(--agent-detail-tile) p-(--agent-detail-module-inset)"
+    ? agentConfigPanelClassName
     : "border border-border rounded-lg p-4 space-y-3";
   const untitled = (key: string) => panels && props.sectionTitles?.[key] === "";
   const showAdapterTypeField = props.showAdapterTypeField ?? true;
@@ -1781,7 +1782,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             </Button>
           )}
         </div>}
-        <div data-agent-tile={panels ? "" : undefined} className={cn(cards ? cardBody : "px-4 pb-3 space-y-3")}>
+        <AgentConfigPanel panel={panels} className={cn(cards ? cardBody : "px-4 pb-3 space-y-3")}>
           {showAdapterTypeField && isGrokBotRunner && (
             <Field label="Harness" hint={help.adapterType}>
               <div className="inline-flex items-center gap-1.5">
@@ -2053,7 +2054,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 </>
               )}
           </>)}
-        </div>
+        </AgentConfigPanel>
 
       </div>
 
@@ -2064,7 +2065,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             ? (untitled("configuration") ? null : <h3 className="text-sm font-medium mb-3">Configuration</h3>)
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Configuration</div>
           }
-          <div data-agent-tile={panels ? "" : undefined} className={cn(cards ? cardBody : "px-4 pb-3 space-y-3")}>
+          <AgentConfigPanel panel={panels} className={cn(cards ? cardBody : "px-4 pb-3 space-y-3")}>
               {!isCreate && typeof config.bootstrapPromptTemplate === "string" && config.bootstrapPromptTemplate && (
                 <>
                   <Field label="Bootstrap prompt (legacy)" hint={help.bootstrapPrompt}>
@@ -2161,7 +2162,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 </>
               } />
 
-          </div>
+          </AgentConfigPanel>
         </div>
       )}
 
