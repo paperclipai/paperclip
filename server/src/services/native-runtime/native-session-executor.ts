@@ -16663,6 +16663,29 @@ async function createRunnerdBackendWithinSessionClaim(
   const restartableBootstrapState = (state: { incompleteReason: string | null; notSuspendedRunId?: string | null }) =>
     (state.incompleteReason === "not_suspended" || state.incompleteReason === "provider_unopened")
     && provenOwnBootstrapRestart(state.notSuspendedRunId);
+  /**
+   * A controller detached mid-bootstrap can stop after staging launch files
+   * into the session root but before launching its Runner. The launch writes
+   * the process identity marker before the Runner starts, and the Runner
+   * writes its state file, so a real session root holding neither never had a
+   * Runner and no provider work. Only the caller's same-run claim, granted
+   * after the previous controller's lease ended, may act on this.
+   */
+  const remoteBootstrapNeverLaunchedRunner = async (): Promise<boolean> => {
+    if (!remoteCommandRunner || !remoteSessionRoot || !remoteStateDirectory) return false;
+    const probe = await remoteCommandRunner.execute({
+      command: "sh",
+      args: ["-c",
+        // An archived authority epoch holds a real session's Runner state, so
+        // any Runner state or launch marker anywhere under the root fails closed.
+        'set -eu; test -d "$1" && test ! -L "$1" || exit 1; for path in "$2" "$3" "$1/authority-epochs"; do if test -e "$path" || test -L "$path"; then exit 1; fi; done; found=$(find "$1" \\( -name runner-state.json -o -name runner-process.identity \\) -print); test -z "$found"',
+        "paperclip-runner-unlaunched-bootstrap", remoteSessionRoot,
+        posix.join(remoteStateDirectory, "runner-state.json"), posix.join(remoteStateDirectory, "runner-process.identity")],
+      bypassSession: true,
+      timeoutMs: 10_000,
+    }).catch(() => null);
+    return probe?.exitCode === 0 && !probe.timedOut;
+  };
   const inspectOwnUnpreparedBootstrap = async (): Promise<string | null> => {
     const runId = input.execution.binding.runId;
     if (!remoteCommandRunner || !remoteStateDirectory || archivedRotationRunnerStatePath
@@ -16670,6 +16693,11 @@ async function createRunnerdBackendWithinSessionClaim(
       || harnessBackupCandidates(root).some(candidate => existsSync(resolve(candidate, "manifest.json")))) return null;
     const runnerState = await readRemoteRunnerState({ runner: remoteCommandRunner, stateDirectory: remoteStateDirectory })
       .then(record, () => null);
+    if (!runnerState && await remoteBootstrapNeverLaunchedRunner()) {
+      recordRemoteBootstrapRestartProof(runId, "absent_confirmed");
+      await input.onLog?.("stdout", "[paperclip-runner] The interrupted bootstrap never started its runner; restarting the bootstrap.\n");
+      return provenOwnBootstrapRestart(runId) ? runId : null;
+    }
     if (!runnerState || runnerState.runnerInstanceId !== input.runnerInstanceId || runnerState.runId !== runId
       || runnerState.normalizedSessionId !== nativeSessionKey(input.execution)
       || typeof runnerState.lifecycle !== "string" || runnerState.lifecycle === "suspended") return null;
