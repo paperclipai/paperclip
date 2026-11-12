@@ -1,0 +1,34 @@
+/** Static imports here are for offline owner calibration/metadata only. The
+ * production descriptor registry must retain per-area lazy module dispatch. */
+export { appPermissionExternalCases } from "./external-app-permissions.js";
+export { teamExternalCases } from "./external-teams.js";
+export { secretExternalCases } from "./external-secrets.js";
+export { gatewayExternalCases } from "./external-gateways-profiles.js";
+export { connectionSetupExternalCases } from "./external-connection-setup.js";
+export { assistantConnectionExternalCases } from "./external-assistant-connections.js";
+export { chatChannelExternalCases } from "./external-chat-channels.js";
+export { appCatalogExternalCases } from "./external-app-catalog.js";
+export { pluginExternalCases } from "./external-plugins.js";
+export { assistantDeviceExternalCases } from "./external-assistant-device.js";
+export { gatewayClientExternalCases } from "./external-gateway-client.js";
+export { pluginInstallExternalCases } from "./external-plugin-install.js";
+export { mcpFailureExternalCases } from "./external-mcp-failure.js";
+export { assistantConsentExternalCases } from "./external-assistant-consent.js";
+export { notionReadExternalCases } from "./external-notion-read.js";
+export { secureKeyExternalCases } from "./external-secure-key.js";
+export { teamInstallExternalCases } from "./external-team-install.js";
+export { teamConfigureExternalCases } from "./external-team-configure.js";
+export { gatewayRotationExternalCases } from "./external-gateway-rotation.js";
+export { notionAssignmentExternalCases } from "./external-notion-assignment.js";
+export { appTestExternalCases } from "./external-app-test.js";
+export { notionAudienceExternalCases } from "./external-notion-audience.js";
+export { notionRevocationExternalCases } from "./external-notion-revocation.js";
+export { scopedAssistantExternalCases } from "./external-assistant-scoped.js";
+export { pluginToolExternalCases } from "./external-plugin-tool.js";
+export { providerChoiceExternalCases } from "./external-provider-choice.js";
+export { companySecretExternalCases } from "./external-company-secret.js";
+export { profileDefinitionExternalCases } from "./external-profile-definition.js";
+export { slackThreadExternalCases } from "./external-slack-thread.js";
+export { wrongResolverExternalCases } from "./external-wrong-resolver.js";
+export { personalRevokeExternalCases } from "./external-assistant-revoke.js";
+export { secretProposalExternalCases } from "./external-secret-proposal.js";

@@ -1,3 +1,5 @@
+import { assertAgentInteraction } from "./agent-interaction-policy.js";
+import { currentPluginInteractionOrigin } from "./plugin-interaction-context.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { notifyApprovalWork } from "./approval-work-notifications.js";
 import { notifyDecisionTargetIssueRemoval } from "./decision-targets.js";
@@ -156,10 +158,18 @@ async function resolveRoutineResponsibleUserId(db: Db, companyId: string, actorU
 
 type Actor = {
   agentId?: string | null;
+  agentCompanyId?: string;
   userId?: string | null;
   actorResponsibleUserId?: string | null;
   runId?: string | null;
 };
+
+export const AGENT_UNAUTHENTICATED_WEBHOOK_ERROR =
+  "Agents can only create authenticated webhook triggers. Use signingMode \"bearer\" (the default) or a signed mode such as \"hmac_sha256\". If the sender cannot authenticate its requests, ask a person to choose an unauthenticated webhook on the board.";
+
+function assertAgentWebhookAuthenticated(actor: Actor, signingMode: string | null | undefined) {
+  if (actor.agentId && signingMode === "none") throw forbidden(AGENT_UNAUTHENTICATED_WEBHOOK_ERROR);
+}
 type RoutineRow = typeof routines.$inferSelect;
 type RoutineTriggerRow = typeof routineTriggers.$inferSelect;
 
@@ -970,6 +980,10 @@ export function routineService(
       restoredFromRevisionId?: string | null;
     } = {},
   ) {
+    const pluginOrigin = currentPluginInteractionOrigin();
+    if (pluginOrigin) actor = { ...actor, agentId: pluginOrigin.agentId, userId: null, runId: pluginOrigin.runId };
+    await assertAgentInteraction(executor, { companyId: routine.companyId, actorAgentId: actor.agentId, actorCompanyId: actor.agentCompanyId,
+      operation: "assign", targetAgentId: routine.assigneeAgentId, parentIssueId: routine.parentIssueId, lock: true });
     const snapshot = await buildRoutineRevisionSnapshot(executor, routine);
     const nextRevisionNumber = routine.latestRevisionId ? routine.latestRevisionNumber + 1 : 1;
     const now = new Date();
@@ -1792,6 +1806,23 @@ export function routineService(
       await tx.execute(
         sql`select id from ${routines} where ${routines.id} = ${input.routine.id} and ${routines.companyId} = ${input.routine.companyId} for update`,
       );
+      const revisionActor = input.source !== "manual" && input.routine.latestRevisionId
+        ? await tx.select({ agentId: routineRevisions.createdByAgentId, userId: routineRevisions.createdByUserId })
+          .from(routineRevisions).where(and(eq(routineRevisions.companyId, input.routine.companyId),
+            eq(routineRevisions.routineId, input.routine.id), eq(routineRevisions.id, input.routine.latestRevisionId)))
+          .then(rows => rows[0]) : undefined;
+      const sourceRunActor = input.createdByRunId ? await tx.select({ agentId: heartbeatRuns.agentId })
+        .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.routine.companyId), eq(heartbeatRuns.id, input.createdByRunId)))
+        .then(rows => rows[0]?.agentId ?? null) : null;
+      const interactionActorAgentId = currentPluginInteractionOrigin()?.agentId ?? input.actor?.agentId ?? sourceRunActor
+        ?? (input.actor?.userId ? null : revisionActor ? revisionActor.agentId
+          : input.routine.updatedByAgentId ?? (input.routine.updatedByUserId ? null : input.routine.createdByAgentId));
+      const interactionActorCompanyId = interactionActorAgentId ? await tx.select({ companyId: agents.companyId }).from(agents)
+        .where(eq(agents.id, interactionActorAgentId)).then(rows => rows[0]?.companyId) : undefined;
+      await assertAgentInteraction(tx, { companyId: input.routine.companyId, actorAgentId: interactionActorAgentId,
+        actorCompanyId: interactionActorCompanyId,
+        operation: "assign", targetAgentId: assigneeAgentId, parentIssueId: input.routine.parentIssueId,
+        texts: [title, description ?? ""], lock: true });
 
       if (input.trigger && (input.source === "webhook" || input.source === "schedule")) {
         const currentTrigger = await txDb.select().from(routineTriggers).where(eq(routineTriggers.id, input.trigger.id)).then((rows) => rows[0]);
@@ -1975,7 +2006,9 @@ export function routineService(
           reason: "issue_assigned",
           mutation: "create",
           contextSource: "routine.dispatch",
-          requestedByActorType: input.source === "schedule" ? "system" : undefined,
+          requestedByActorType: interactionActorAgentId ? "agent" : input.actor?.userId ? "user" : input.source === "schedule" ? "system" : undefined,
+          requestedByActorId: interactionActorAgentId ?? input.actor?.userId ?? null,
+          requestedByActorCompanyId: interactionActorCompanyId,
           rethrowOnError: true,
         });
         const updated = await finalizeRun(createdRun.id, {
@@ -2236,6 +2269,9 @@ export function routineService(
       }
       const createdRoutine = await db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
+        await assertAgentInteraction(tx, { companyId, actorAgentId: actor.agentId, actorCompanyId: actor.agentCompanyId, operation: "assign",
+          targetAgentId: input.assigneeAgentId, parentIssueId: input.parentIssueId,
+          texts: [input.title, input.description ?? ""], lock: true });
         await notifyDeliveryWork(txDb, DELIVERY_QUEUES.routineSchedules);
         const [created] = await txDb
           .insert(routines)
@@ -2350,6 +2386,13 @@ export function routineService(
           .where(eq(routines.id, id))
           .then((rows) => rows[0] ?? null);
         if (!locked) return null;
+        await assertAgentInteraction(tx, { companyId: locked.companyId, actorAgentId: actor.agentId, actorCompanyId: actor.agentCompanyId, operation: "assign",
+          targetAgentId: patch.assigneeAgentId === undefined ? locked.assigneeAgentId : patch.assigneeAgentId,
+          parentIssueId: patch.parentIssueId === undefined ? locked.parentIssueId : patch.parentIssueId,
+          texts: [
+            ...(patch.title !== undefined && patch.title !== locked.title ? [patch.title] : []),
+            ...(patch.description !== undefined && patch.description !== locked.description ? [patch.description ?? ""] : []),
+          ], lock: true });
         previousResponsibleUserId = locked.responsibleUserId;
 
         if (patch.baseRevisionId && patch.baseRevisionId !== locked.latestRevisionId) {
@@ -2501,6 +2544,7 @@ export function routineService(
       }
 
       if (input.kind === "webhook") {
+        assertAgentWebhookAuthenticated(actor, input.signingMode);
         publicId = crypto.randomBytes(12).toString("hex");
         const created = await createWebhookSecret(routine.companyId, routine.id, actor);
         secretId = created.secret.id;
@@ -2587,8 +2631,17 @@ export function routineService(
 
       const result = await db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
-        await notifyDeliveryWork(txDb, DELIVERY_QUEUES.routineSchedules);
         await tx.execute(sql`select id from ${routines} where ${routines.id} = ${existing.routineId} for update`);
+        const current = await txDb
+          .select({ signingMode: routineTriggers.signingMode })
+          .from(routineTriggers)
+          .where(eq(routineTriggers.id, id))
+          .then((rows) => rows[0] ?? null);
+        if (!current) return null;
+        if (existing.kind === "webhook" && current.signingMode !== "none") {
+          assertAgentWebhookAuthenticated(actor, patch.signingMode);
+        }
+        await notifyDeliveryWork(txDb, DELIVERY_QUEUES.routineSchedules);
         const [updated] = await txDb
           .update(routineTriggers)
           .set({
@@ -2599,7 +2652,7 @@ export function routineService(
             cronExpression,
             timezone,
             nextRunAt,
-            signingMode: patch.signingMode === undefined ? existing.signingMode : patch.signingMode,
+            signingMode: patch.signingMode === undefined ? current.signingMode : patch.signingMode,
             replayWindowSec: patch.replayWindowSec === undefined ? existing.replayWindowSec : patch.replayWindowSec,
             updatedByAgentId: actor.agentId ?? null,
             updatedByUserId: actor.userId ?? null,
@@ -2743,10 +2796,8 @@ export function routineService(
       const snapshot = routineRevisionSnapshotSchema.parse(targetRevision.snapshot) as RoutineRevisionSnapshotV1;
       const routineSnapshot = snapshot.routine;
       await assertRestorableAssignee(existingRoutine.companyId, routineSnapshot.assigneeAgentId, actor);
-
       const result = await db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
-        await notifyDeliveryWork(txDb, DELIVERY_QUEUES.routineSchedules);
         await tx.execute(sql`select id from ${routines} where ${routines.id} = ${existingRoutine.id} for update`);
         const locked = await txDb
           .select()
@@ -2761,9 +2812,16 @@ export function routineService(
         }
 
         const currentTriggers = await txDb
-          .select({ id: routineTriggers.id })
+          .select({ id: routineTriggers.id, signingMode: routineTriggers.signingMode })
           .from(routineTriggers)
           .where(and(eq(routineTriggers.companyId, locked.companyId), eq(routineTriggers.routineId, locked.id)));
+        const unauthenticatedTriggerIds = new Set(currentTriggers.filter((trigger) => trigger.signingMode === "none").map((trigger) => trigger.id));
+        for (const trigger of snapshot.triggers) {
+          if (trigger.kind === "webhook" && !unauthenticatedTriggerIds.has(trigger.id)) {
+            assertAgentWebhookAuthenticated(actor, trigger.signingMode);
+          }
+        }
+        await notifyDeliveryWork(txDb, DELIVERY_QUEUES.routineSchedules);
         const currentTriggerIds = new Set(currentTriggers.map((trigger) => trigger.id));
         const missingWebhookTriggers = snapshot.triggers
           .filter((trigger) => trigger.kind === "webhook" && !currentTriggerIds.has(trigger.id));

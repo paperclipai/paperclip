@@ -1,5 +1,5 @@
 import { environmentTaskResultSchema } from "@paperclipai/plugin-sdk";
-import type { PluginTaskCredentialWritebackBinding } from "./plugin-task-credential-writeback.js";
+import type { ManagedAiCredentialWritebackBinding } from "./managed-ai-credential-writeback.js";
 import { OPENROUTER_ATTRIBUTION_HEADERS, openRouterClaudeHeaders } from "@paperclipai/shared/openrouter-attribution";
 import { createHash } from "node:crypto";
 import { HttpError, unprocessable } from "../errors.js";
@@ -104,7 +104,7 @@ export async function assertManagedAiProjectAuth(
   config: Record<string, unknown>,
   provider: AiConnectionBinding["provider"],
   target?: AdapterExecutionTarget | null,
-  adapterType?: string,
+  options: { adapterType?: string; deferRunnerTaskCapabilityCheck?: boolean } = {},
 ) {
   const extraArgs = [
     ...(Array.isArray(config.extraArgs) ? config.extraArgs : []),
@@ -124,6 +124,7 @@ export async function assertManagedAiProjectAuth(
       { code: "ai_connection_incompatible" },
     );
   }
+  const adapterType = options.adapterType;
   const harness = adapterType ? aiRoutingHarness(adapterType, config.provider, config.acpxAgent) : undefined;
   const authProvider = harness === "claude_local" ? "anthropic" : harness === "codex_local" ? "openai" : provider;
   const files =
@@ -135,6 +136,7 @@ export async function assertManagedAiProjectAuth(
   const pattern =
     "apiKeyHelper|AWS_ENDPOINT_URL(_BEDROCK(_RUNTIME)?)?|ANTHROPIC_BASE_URL|ANTHROPIC_BEDROCK_BASE_URL|CLAUDE_CODE_USE_[A-Z_]+|ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|CLAUDE_CODE_OAUTH_TOKEN|OPENAI_API_KEY|model_provider[[:space:]]*=|env_key[[:space:]]*=|experimental_bearer_token|cli_auth_credentials_store";
   if (target?.kind === "remote" && target.transport === "sandbox" && target.runnerTask && files.length) {
+    if (options.deferRunnerTaskCapabilityCheck) return;
     const description = environmentTaskResultSchema.parse(await target.runnerTask({ kind: "describe" }));
     if (description.kind !== "description" || description.projectAuthCheckVersion !== 1) {
       throw unprocessable("The plugin environment cannot validate managed project authentication", { code: "ai_connection_incompatible" });
@@ -610,9 +612,9 @@ export async function prepareManagedAiRuntime(
     return {
       sessionIdentity,
       ...(retainedCleanupScope ? { retainedCleanupScope } : {}),
-      ...(subscriptionFile && input.binding.provider === "openai" && credentialRef && freshness ? {
+      ...(subscriptionFile && (input.binding.provider === "openai" || input.binding.provider === "xai") && credentialRef && freshness ? {
         credentialWriteback: { grantId: selection.grant.id, secretId: credentialRef.secretId, sessionEpoch: freshness.epoch,
-          versionSelector: credentialRef.versionSelector ?? "latest" } satisfies PluginTaskCredentialWritebackBinding,
+          versionSelector: credentialRef.versionSelector ?? "latest" } satisfies ManagedAiCredentialWritebackBinding,
       } : {}),
       config: {
         ...input.config,

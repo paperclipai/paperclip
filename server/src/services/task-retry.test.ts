@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agents, agentWakeupRequests, chatConversations, chatEndpoints, companies, budgetPolicies, costEvents, createDb, type Db, environmentLeases, environments, executionWorkspaces, executionWorkspaceSnapshots, workspaceOperations, heartbeatRunEvents, heartbeatRuns, issueComments, issues, approvals, issueApprovals, issueRecoveryActions, nativeRunFinalizations, toolApplications, toolConnections, toolInvocations, applyPendingMigrations } from "@paperclipai/db";
+import { agents, agentWakeupRequests, chatActions, chatConversations, chatEndpoints, companies, budgetPolicies, costEvents, createDb, type Db, environmentLeases, environments, executionWorkspaces, executionWorkspaceSnapshots, workspaceOperations, heartbeatRunEvents, heartbeatRuns, issueComments, issues, approvals, issueApprovals, issueRecoveryActions, nativeRunFinalizations, toolApplications, toolConnections, toolInvocations, applyPendingMigrations } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { priorRecoveryApiReceipt, unresolvedRecoveryToolInvocation } from "./recovery-effect-receipts.js";
 import { requestTaskRetry } from "./task-retry.js";
@@ -19,6 +19,8 @@ import { taskRetryRunAncestry } from "./recovery-run-ancestry.js";
 import { hasVerifiedWorkspaceRepair } from "./workspace-recovery-receipt.js";
 import { isInterruptedNativePreparation } from "./cancelled-native-startup.js";
 import { isPreDispatchExecutionWaitVerified } from "./pre-dispatch-execution-wait.js";
+import { legacyControllerBootId } from "./legacy-controller-lease.js";
+import { currentControllerProcessStamp } from "./controller-process-identity.js";
 
 describe("durable task Retry admission", () => {
   let postgres: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -191,6 +193,112 @@ describe("durable task Retry admission", () => {
       expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.parent.id))).toHaveLength(0);
       expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.input.issueId)))
         .toHaveLength(0);
+    });
+  // Production shape (staging upgrades): a person's Retry admitted a run that was
+  // still preparing, with no provider work started, when the upgrade stopped its
+  // server gracefully. The interruption is not a failure and the Retry already
+  // authorized this work, so recovery continues it with no new click.
+  async function seedPreparingRetryAdmittedRun() {
+    const f = await seedFailedRetryAdmittedRun();
+    const [parent] = await db.update(heartbeatRuns).set({ status: "running", errorCode: null, finishedAt: null,
+      controllerBootId: legacyControllerBootId, controllerProcess: currentControllerProcessStamp(),
+      controllerLeaseExpiresAt: sql`clock_timestamp() + interval '1 minute'`,
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+    }).where(eq(heartbeatRuns.id, f.parent.id)).returning();
+    return { ...f, parent };
+  }
+  const successorsOf = (runId: string) => db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId));
+  it("continues a Retry-admitted run that a graceful shutdown stopped while it was preparing", async () => {
+    const f = await seedPreparingRetryAdmittedRun();
+    const drained = await heartbeatService(db).drainRunningRunsForShutdown("SIGTERM", new Date(), [f.parent.id]);
+    expect(drained.interruptedRunIds).toEqual([f.parent.id]);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.parent.id)))[0])
+      .toMatchObject({ status: "interrupted", errorCode: "server_shutdown_interrupted" });
+    const successors = await successorsOf(f.parent.id);
+    // The uncharged preparation lane: due at once, no failure retry spent.
+    expect(successors).toEqual([expect.objectContaining({ status: "scheduled_retry",
+      scheduledRetryReason: "interrupted_preparation", scheduledRetryAttempt: 1 })]);
+    expect(drained.retryRunIds).toEqual([successors[0]!.id]);
+    expect(successors[0]!.contextSnapshot?.executionRetryAccounting).toMatchObject({ failureRetries: 0, interruptedPreparations: 1 });
+    expect(successors[0]!.contextSnapshot?.explicitUserContinuation).toEqual({
+      previousRunId: f.parent.id, commentId: null, taskRetryRequestId: f.retryRequestId });
+    // The continuation holds the task's claim, and dispatch accepts it from its own receipt.
+    expect((await db.select().from(issues).where(eq(issues.id, f.input.issueId)))[0]!.executionRunId).toBe(successors[0]!.id);
+    await expect(dispatchRun(f.input, successors[0]!)).resolves.toMatchObject({ interruptedRunId: f.parent.id });
+    // The replacement servers' own sweeps reuse the one continuation.
+    await Promise.all([heartbeatService(db).reconcileStrandedAssignedIssues({ companyId: f.input.companyId }),
+      heartbeatService(db).scheduleBoundedRetry(f.parent.id)]);
+    expect(await successorsOf(f.parent.id)).toEqual([expect.objectContaining({ id: successors[0]!.id })]);
+  });
+  // Tasks a release without this fix already refused: the refusal released the
+  // task's claim and left it in progress with no run. The periodic sweep admits
+  // them now, once, with no manual step.
+  async function seedRefusedShutdownContinuation(chained = false) {
+    const f = await seedPreparingRetryAdmittedRun();
+    let interruptedId = f.parent.id;
+    if (chained) {
+      // The person's Retry run failed transiently first; its automatic retry
+      // (with its own receipt) is the run the shutdown stopped.
+      await db.update(heartbeatRuns).set({ status: "failed", errorCode: "remote_workspace_restore_failed", finishedAt: f.now })
+        .where(eq(heartbeatRuns.id, f.parent.id));
+      const first = await heartbeatService(db).scheduleBoundedRetry(f.parent.id, { now: f.now, delayMs: 0 });
+      if (first.outcome !== "scheduled") throw new Error(`automatic retry not scheduled: ${first.outcome}`);
+      interruptedId = first.run.id;
+    }
+    const finishedAt = new Date(Date.now() - 60_000);
+    const [parent] = await db.update(heartbeatRuns).set({ status: "interrupted", errorCode: "server_shutdown_interrupted",
+      error: "Interrupted by graceful server shutdown (SIGTERM)", startedAt: finishedAt, finishedAt,
+      runtimeMode: "legacy", executionStage: "preparing", controllerLeaseExpiresAt: null, controllerBootId: randomUUID(),
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+    }).where(eq(heartbeatRuns.id, interruptedId)).returning();
+    await db.update(issues).set({ status: "in_progress", executionRunId: null, executionLockedAt: null })
+      .where(eq(issues.id, f.input.issueId));
+    return { ...f, parent };
+  }
+  it.each([{ chained: false, name: "Retry run" }, { chained: true, name: "automatic retry of a Retry run" }])(
+    "continues a task an earlier release left waiting after refusing its shutdown continuation: $name", async ({ chained }) => {
+      const f = await seedRefusedShutdownContinuation(chained);
+      const scope = { companyId: f.input.companyId };
+      await Promise.all([heartbeatService(db).reconcileStrandedAssignedIssues(scope),
+        heartbeatService(db).reconcileStrandedAssignedIssues(scope)]);
+      const successors = await successorsOf(f.parent.id);
+      expect(successors).toEqual([expect.objectContaining({ status: "scheduled_retry",
+        scheduledRetryReason: "interrupted_preparation" })]);
+      expect(successors[0]!.contextSnapshot?.explicitUserContinuation).toEqual({
+        previousRunId: f.parent.id, commentId: null, taskRetryRequestId: f.retryRequestId });
+      // The released claim passes to the continuation, as on the shutdown path.
+      expect((await db.select().from(issues).where(eq(issues.id, f.input.issueId)))[0]!.executionRunId).toBe(successors[0]!.id);
+      await expect(dispatchRun(f.input, successors[0]!)).resolves.toMatchObject({ interruptedRunId: f.parent.id });
+    });
+  it.each(["provider_work_started", "no_bootstrap_proof", "operator_interrupt", "claimed_by_other_run", "reassigned",
+    "superseded", "wrong_actor", "cancelled_task"] as const)(
+    "does not continue a shutdown-interrupted Retry run without its original authority: %s", async kind => {
+      const f = await seedRefusedShutdownContinuation();
+      if (kind === "provider_work_started" || kind === "no_bootstrap_proof") await db.update(heartbeatRuns).set({
+        resultJson: kind === "no_bootstrap_proof" ? {} : { executionRecovery: { kind: "bootstrap", providerWorkStarted: true } },
+      }).where(eq(heartbeatRuns.id, f.parent.id));
+      if (kind === "operator_interrupt") await db.update(heartbeatRuns).set({ errorCode: "operator_interrupted" })
+        .where(eq(heartbeatRuns.id, f.parent.id));
+      if (kind === "claimed_by_other_run") {
+        const [other] = await db.insert(heartbeatRuns).values({ companyId: f.input.companyId, agentId: f.parent.agentId,
+          status: "failed", finishedAt: f.parent.finishedAt, createdAt: new Date(f.parent.createdAt.getTime() - 1000),
+          contextSnapshot: { issueId: f.input.issueId } }).returning();
+        await db.update(issues).set({ executionRunId: other.id }).where(eq(issues.id, f.input.issueId));
+      }
+      if (kind === "reassigned") await db.update(issues).set({ assigneeAgentId: null }).where(eq(issues.id, f.input.issueId));
+      if (kind === "cancelled_task") await db.update(issues).set({ status: "cancelled" }).where(eq(issues.id, f.input.issueId));
+      if (kind === "superseded") await db.insert(heartbeatRuns).values({ companyId: f.input.companyId, agentId: f.parent.agentId,
+        status: "succeeded", contextSnapshot: { issueId: f.input.issueId }, createdAt: new Date() });
+      if (kind === "wrong_actor") await db.update(agentWakeupRequests).set({ requestedByActorId: "other-user" })
+        .where(eq(agentWakeupRequests.id, f.retryRequestId));
+      const [parent] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.parent.id));
+      const result = await heartbeatService(db).scheduleBoundedRetry(parent.id, { now: new Date() });
+      expect(result.outcome).not.toBe("scheduled");
+      expect(await successorsOf(f.parent.id)).toHaveLength(0);
+      expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.input.issueId)))
+        .toHaveLength(0);
+      expect((await db.select().from(issues).where(eq(issues.id, f.input.issueId)))[0]!.executionRunId)
+        .toEqual(kind === "claimed_by_other_run" ? expect.any(String) : null);
     });
   async function seedRefusedRetry() {
     const input = await seed();
@@ -935,6 +1043,95 @@ describe("durable task Retry admission", () => {
     expect(failure).toMatchObject({ status: 409, details: { code: "task_retry_busy", retryable: true } });
     expect(calls).toBe(10);
     expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, input.companyId))).toHaveLength(0);
+  });
+
+  const refusedExactChatReplay = (reason?: string) => async (tx: Db, scope: { companyId: string; issueId: string; failedRunId: string }) => {
+    const [endpoint] = await tx.select().from(chatEndpoints).where(eq(chatEndpoints.companyId, scope.companyId));
+    await tx.insert(chatActions).values({ companyId: scope.companyId, endpointId: endpoint.id, kind: "failed_run_retry",
+      status: "issued", providerActionId: randomUUID(), payload: { issueId: scope.issueId, failedRunId: scope.failedRunId } });
+    throw new HttpError(409, "refused", { code: "chat_failed_run_retry_not_authorized", ...(reason ? { reason } : {}) });
+  };
+
+  it.each([undefined, "accepted_result_without_new_input", "prior_result_publication", "source_authorization"])(
+    "continues a connected task from saved work when its exact chat request cannot be repeated: %s", async reason => {
+      const input = await seedChatTask();
+      const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, input.observedRunId));
+      await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: input.issueId, source: "issue.monitor",
+        wakeReason: "issue_monitor_due" } }).where(eq(heartbeatRuns.id, source.id));
+      const receipt = await requestTaskRetry({ ...input, actorSource: "local_implicit", prepareChatRetry: refusedExactChatReplay(reason) });
+      expect(receipt).toMatchObject({ accepted: true, stale: false, observedRunId: source.id });
+      expect(receipt.chatActionId).toBeUndefined();
+      expect(await db.select().from(chatActions).where(eq(chatActions.companyId, input.companyId))).toHaveLength(0);
+      const [intent] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.requestId!));
+      expect(intent).toMatchObject({ status: "deferred_issue_execution", reason: "task_retry", requestedByActorId: input.actorId,
+        payload: { issueId: input.issueId, taskRetry: { sourceRunId: source.id, actorId: input.actorId } } });
+      expect((intent.payload!.taskRetry as Record<string, unknown>).chatActionId).toBeUndefined();
+      await db.update(agents).set({ runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } }).where(eq(agents.id, source.agentId));
+      await db.insert(heartbeatRuns).values({ companyId: input.companyId, agentId: source.agentId, status: "running" });
+      await heartbeatService(db).resumeTaskRetry(input.companyId, receipt.requestId!);
+      const queued = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId),
+        eq(heartbeatRuns.status, "queued")));
+      expect(queued).toHaveLength(1);
+      expect(queued[0].contextSnapshot).toMatchObject({ issueId: input.issueId, previousRunId: source.id,
+        taskRetryRequestId: receipt.requestId, forceFreshSession: true, responsibleUserId: input.actorId });
+      expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.requestId!)))[0])
+        .toMatchObject({ status: "coalesced", runId: queued[0].id });
+    });
+
+  it.each(["person", "automatic"] as const)(
+    "continues a person's saved board turn on a connected task from saved work without replaying it: %s", async initiator => {
+      const input = await seedChatTask();
+      const [source] = await db.update(heartbeatRuns).set({ runtimeMode: "legacy", errorCode: "adapter_failed",
+        error: "Provider stopped", responsibleUserId: input.actorId, sessionIdAfter: "provider-session",
+        contextSnapshot: { issueId: input.issueId, source: "issue.comment.reopen", wakeCommentId: randomUUID() } })
+        .where(eq(heartbeatRuns.id, input.observedRunId)).returning();
+      let calls = 0;
+      const request = { ...input, actorSource: "local_implicit" as const,
+        ...(initiator === "automatic" ? { initiatedBy: "restart_recovery" as const } : {}),
+        prepareChatRetry: async () => { calls += 1; return { actionId: randomUUID() }; } };
+      if (initiator === "automatic") {
+        await expect(requestTaskRetry(request)).rejects.toMatchObject({ status: 409,
+          details: { code: "chat_failed_run_retry_not_authorized", reason: "saved_board_message_not_replayable" } });
+        expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, input.companyId))).toHaveLength(0);
+        expect(calls).toBe(0);
+        return;
+      }
+      const receipt = await requestTaskRetry(request);
+      expect(receipt).toMatchObject({ accepted: true, stale: false, observedRunId: source.id });
+      expect(receipt.chatActionId).toBeUndefined();
+      expect(calls).toBe(0);
+      const [intent] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.requestId!));
+      const taskRetry = intent.payload!.taskRetry as Record<string, unknown>;
+      expect(taskRetry).toMatchObject({ sourceRunId: source.id, actorId: input.actorId });
+      expect(taskRetry.chatActionId).toBeUndefined();
+      expect(taskRetry.boardMessageOrigin).toBeUndefined();
+      await db.update(agents).set({ runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } }).where(eq(agents.id, source.agentId));
+      await db.insert(heartbeatRuns).values({ companyId: input.companyId, agentId: source.agentId, status: "running" });
+      await heartbeatService(db).resumeTaskRetry(input.companyId, receipt.requestId!);
+      const queued = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId),
+        eq(heartbeatRuns.status, "queued")));
+      expect(queued).toHaveLength(1);
+      expect(queued[0].contextSnapshot).toMatchObject({ previousRunId: source.id, taskRetryRequestId: receipt.requestId,
+        forceFreshSession: true, responsibleUserId: input.actorId });
+      expect(queued[0].contextSnapshot?.boardMessageRetry).toBeUndefined();
+      expect(queued[0].contextSnapshot?.wakeCommentId).toBeUndefined();
+    });
+
+  it("continues a person's Retry on a connected task when no chat retry owner is available", async () => {
+    const input = await seedChatTask();
+    const receipt = await requestTaskRetry({ ...input, actorSource: "local_implicit" });
+    expect(receipt).toMatchObject({ accepted: true, chatActionId: undefined });
+    const automatic = await seedChatTask();
+    await expect(requestTaskRetry({ ...automatic, initiatedBy: "provider_limit_reset" })).rejects.toMatchObject({ status: 409 });
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, automatic.companyId))).toHaveLength(0);
+  });
+
+  it("keeps an automatic Retry from continuing a connected task without the exact chat request", async () => {
+    const input = await seedChatTask();
+    await expect(requestTaskRetry({ ...input, initiatedBy: "restart_recovery", prepareChatRetry: refusedExactChatReplay() }))
+      .rejects.toMatchObject({ status: 409, details: { code: "chat_failed_run_retry_not_authorized" } });
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, input.companyId))).toHaveLength(0);
+    expect(await db.select().from(chatActions).where(eq(chatActions.companyId, input.companyId))).toHaveLength(0);
   });
 
   it("does not retry an authorization denial", async () => {

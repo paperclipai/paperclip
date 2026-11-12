@@ -17,13 +17,13 @@ describe("managed Claude project routing", () => {
         await writeFile(path.join(root, ".claude", filename), JSON.stringify({ env: { [key]: "override" } }));
         for (const engine of ["cli", "CLI", " cli ", "acp"]) {
           for (const provider of ["anthropic", "openrouter"] as const) {
-            await expect(assertManagedAiProjectAuth({ cwd: root, engine }, provider, undefined, "claude_local")).rejects.toThrow("conflict");
+            await expect(assertManagedAiProjectAuth({ cwd: root, engine }, provider, undefined, { adapterType: "claude_local" })).rejects.toThrow("conflict");
           }
         }
         await unlink(path.join(root, ".claude", filename));
       }
       await writeFile(path.join(root, ".claude", "settings.json"), JSON.stringify({ permissions: { deny: ["Read(secret)"] } }));
-      await expect(assertManagedAiProjectAuth({ cwd: root, engine: "CLI" }, "openrouter", undefined, "claude_local")).resolves.toBeUndefined();
+      await expect(assertManagedAiProjectAuth({ cwd: root, engine: "CLI" }, "openrouter", undefined, { adapterType: "claude_local" })).resolves.toBeUndefined();
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 });

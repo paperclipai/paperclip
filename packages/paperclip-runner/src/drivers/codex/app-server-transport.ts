@@ -3,7 +3,7 @@ import type { DurableRecoveryIdentity } from "../../contracts/durable-recovery.j
 import type { NativeTurnControlCapabilities } from "../../contracts/types.js";
 import type { NativeRunRuntimeGrant } from "../../contracts/runtime-context.js";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import type { HarnessRuntimeRequestResolution } from "../../contracts/harness-driver.js";
+import type { HarnessRuntimeRequestResolution, HarnessSession } from "../../contracts/harness-driver.js";
 import { githubCredentialEnvironment } from "../../github-credential-environment.js";
 import { redactCodexDiagnostic } from "./diagnostic-redaction.js";
 
@@ -37,7 +37,9 @@ export type CodexServerRequestHandler = (
 ) => Promise<Record<string, unknown>>;
 
 export interface CodexAppServerTransport {
+  settleCancelledTurn?: HarnessSession["settleCancelledTurn"];
   supportsTurnReasoning?(): boolean;
+  downloadAttachment?: HarnessSession["downloadAttachment"];
   /** Runner-owned live capability projection; absent on native Codex transports. */
   turnControlCapabilities?(): NativeTurnControlCapabilities | null;
   request(
@@ -74,7 +76,9 @@ export interface CodexAppServerTransport {
    * Close the provider transport. The optional reason is controller-owned
    * diagnostic context; transports must not forward it to the provider.
    */
-  close(reason?: string): Promise<void>;
+  close(reason?: string, options?: { retainUnsettledRemoteRunner?: boolean }): Promise<void>;
+  /** After close: the runner settled and its process exit was observed. */
+  runnerExitConfirmed?(): boolean;
   /** Return the confirmed released source, or false when active use was not released. */
   release?(): Promise<DurableRecoveryIdentity | false>;
   /** Relinquish controller authority while leaving durable runner work alive. */

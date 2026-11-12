@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, useEffect, type ReactNode } from "react";
+import { act, useEffect, type ComponentProps, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BreadcrumbProvider, useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -24,8 +24,8 @@ vi.mock("@/hooks/useAgentChatNavigation", () => ({
 
 vi.mock("@/lib/router", () => ({
   useNavigate: () => navigate,
-  Link: ({ children, className, to }: { children: ReactNode; className?: string; to: string }) => (
-    <a className={className} href={to}>{children}</a>
+  Link: ({ children, to, ...props }: ComponentProps<"a"> & { to: string }) => (
+    <a {...props} href={to}>{children}</a>
   ),
 }));
 
@@ -62,12 +62,16 @@ function TaskBreadcrumbs({
   taskDetailLayout = false,
   identifier = "PAP-16679",
   sourceHref = "/issues",
+  parentTitle,
+  title = "Hire your first engineer and create a hiring plan",
 }: {
   onOpen?: () => void;
   panelControl?: { open: boolean; onToggle: () => void };
   taskDetailLayout?: boolean;
   identifier?: string;
   sourceHref?: string;
+  parentTitle?: string;
+  title?: string;
 }) {
   const {
     setBreadcrumbs,
@@ -78,8 +82,9 @@ function TaskBreadcrumbs({
   useEffect(() => {
     setBreadcrumbs([
       { label: "Tasks", href: sourceHref },
+      ...(parentTitle ? [{ label: parentTitle, href: "/issues/PAP-120" }] : []),
       {
-        label: "Hire your first engineer and create a hiring plan",
+        label: title,
         identifier,
         leading: "status",
       },
@@ -104,6 +109,8 @@ function TaskBreadcrumbs({
     setBreadcrumbToolbar,
     setBreadcrumbs,
     sourceHref,
+    parentTitle,
+    title,
   ]);
 
   return <BreadcrumbBar taskDetailLayout={taskDetailLayout} />;
@@ -234,7 +241,8 @@ describe("BreadcrumbBar", () => {
     expect(container.querySelector('a[href="/TES/issues"]')).toBeNull();
     const identifier = container.querySelector('[data-slot="task-title-identifier"]');
     expect(identifier?.textContent).toBe("TES-3");
-    expect(identifier?.previousElementSibling?.textContent).toBe("Hire your first engineer and create a hiring plan");
+    expect(identifier?.previousElementSibling?.textContent).toBe("Hire your first engineer and create a hiring pl…");
+    expect(identifier?.previousElementSibling?.getAttribute("title")).toBe("Hire your first engineer and create a hiring plan");
     expect(identifier?.previousElementSibling?.className).toContain("truncate");
     expect(container.querySelector('button[aria-label="Open sidebar"]')).not.toBeNull();
   });
@@ -259,6 +267,39 @@ describe("BreadcrumbBar", () => {
     expect(onOpen).toHaveBeenCalledOnce();
   });
 
+  it.each([false, true])("keeps the parent linked beside the current task (mobile=%s)", async (mobile) => {
+    viewport.isMobile = mobile;
+    await act(async () => root.render(
+      <BreadcrumbProvider><TaskBreadcrumbs taskDetailLayout parentTitle="Prepare the engineering team" /></BreadcrumbProvider>,
+    ));
+    const parent = container.querySelector<HTMLAnchorElement>('a[href="/issues/PAP-120"]');
+    expect(parent?.textContent).toBe("Prepare the engineering team");
+    expect(parent?.querySelector('[data-slot="task-title-identifier"]')).toBeNull();
+    expect(parent?.getAttribute("aria-label")).toBe("Prepare the engineering team");
+    expect(container.querySelector('[aria-current="page"]')?.textContent).toContain("PAP-16679");
+    if (mobile) {
+      expect(container.querySelector('a[href="/issues"]')).toBeNull();
+      expect(parent?.textContent).not.toContain("PAP-120");
+    }
+  });
+
+  it.each([false, true])("caps each task breadcrumb at 48 characters and preserves full names (mobile=%s)", async (mobile) => {
+    viewport.isMobile = mobile;
+    const parentTitle = "Plan the engineering team and hiring process for the next product launch";
+    const title = "🚀".repeat(60);
+    await act(async () => root.render(
+      <BreadcrumbProvider><TaskBreadcrumbs taskDetailLayout parentTitle={parentTitle} title={title} /></BreadcrumbProvider>,
+    ));
+    const parent = container.querySelector<HTMLAnchorElement>('a[href="/issues/PAP-120"]');
+    const page = container.querySelector('[aria-current="page"]');
+    expect(parent?.textContent).toContain(`${Array.from(parentTitle).slice(0, 47).join("")}…`);
+    expect(parent?.title).toBe(parentTitle);
+    const label = page?.querySelector('[title]');
+    expect(label?.textContent).toBe(`${"🚀".repeat(47)}…`);
+    expect(label?.getAttribute("title")).toBe(title);
+    expect(page?.getAttribute("aria-label")).toContain(title);
+  });
+
   it("appends the task identifier to the task title in the task-detail header", async () => {
     await act(async () => {
       root.render(
@@ -276,7 +317,7 @@ describe("BreadcrumbBar", () => {
     expect(identifier?.closest(".relative")?.className).toContain("h-(--sz-60px)");
 
     const title = Array.from(container.querySelectorAll("span"))
-      .find((element) => element.textContent === "Hire your first engineer and create a hiring plan");
+      .find((element) => element.getAttribute("title") === "Hire your first engineer and create a hiring plan");
     const tasksLink = container.querySelector<HTMLAnchorElement>('a[href="/issues"]');
     const header = tasksLink?.closest(".relative");
     expect(header?.classList).toContain("px-4");

@@ -119,6 +119,29 @@ describe("opencode remote environment diagnostics", () => {
     },
   );
 
+  it.each(["Missing Authentication header", "User not found."])(
+    "reports a provider 401 as missing authentication, not a generic failure (%s)", async message => {
+      const successfulProbe = await runAdapterExecutionTargetProcess.getMockImplementation()!();
+      runAdapterExecutionTargetProcess.mockResolvedValueOnce({ ...successfulProbe, exitCode: 1, stderr: "",
+        stdout: JSON.stringify({ type: "error", sessionID: "session-1", error: { name: "APIError",
+          data: { message, statusCode: 401, isRetryable: false, responseHeaders: { "access-control-expose-headers": "WWW-Authenticate" } } } }) });
+      const result = await testEnvironment({ companyId: "company-1", adapterType: "paperclip_runner",
+        config: { model: "openrouter/deepseek/deepseek-v4-flash-0731", env: { XDG_CONFIG_HOME: configHome } } });
+      expect(result.status).toBe("warn");
+      expect(result.checks.map(check => [check.code, check.level])).toContainEqual(["opencode_hello_probe_auth_required", "warn"]);
+      expect(result.checks.some(check => check.level === "error")).toBe(false);
+    },
+  );
+
+  it.each([500, 429])("keeps other provider statuses a generic probe failure (%s)", async statusCode => {
+    const successfulProbe = await runAdapterExecutionTargetProcess.getMockImplementation()!();
+    runAdapterExecutionTargetProcess.mockResolvedValueOnce({ ...successfulProbe, exitCode: 1, stderr: "",
+      stdout: JSON.stringify({ type: "error", error: { name: "APIError", data: { message: "Upstream error", statusCode } } }) });
+    const result = await testEnvironment({ companyId: "company-1", adapterType: "paperclip_runner",
+      config: { model: "openrouter/deepseek/deepseek-v4-flash-0731", env: { XDG_CONFIG_HOME: configHome } } });
+    expect(result.checks).toContainEqual(expect.objectContaining({ code: "opencode_hello_probe_failed", level: "error" }));
+  });
+
   it("gives each concurrent native probe its own OpenCode data directory", async () => {
     vi.stubEnv("HOME", "/host/user");
     vi.stubEnv("XDG_DATA_HOME", "/host/user/.local/share");

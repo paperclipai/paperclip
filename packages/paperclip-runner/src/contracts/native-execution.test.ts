@@ -1,6 +1,7 @@
 import { nativeTaskConstraints } from "../backends/runtime-context.js";
 import { createHash } from "node:crypto";
 import { QUALIFIED_ACPX_PROFILES } from "../drivers/acpx/qualified-profiles.js";
+import { QUALIFIED_ACPX_VERSION } from "../drivers/acpx/generated-profiles.js";
 import { describe, expect, it } from "vitest";
 
 import { buildNativeModelEnvelope, parseNativeExecutionInput, NATIVE_EXECUTION_INPUT_SCHEMA, NATIVE_EXECUTION_INPUT_SCHEMA_V6, NATIVE_EXECUTION_INPUT_SCHEMA_V7, NATIVE_EXECUTION_INPUT_SCHEMA_V9, NATIVE_EXECUTION_INPUT_SCHEMA_V10, type NativeExecutionInputV1 } from "./native-execution.js";
@@ -394,7 +395,7 @@ describe("NativeExecutionInputV1", () => {
       profile: {
         driverKind: "acpx_runtime",
         protocolVersion: 1,
-        acpxVersion: "0.13.1",
+        acpxVersion: "0.22.0",
         agent: "pi",
         agentProfileVersion,
         agentServerPackage: "pi-acp",
@@ -448,6 +449,37 @@ describe("NativeExecutionInputV1", () => {
     const parsed = parseNativeExecutionInput({ ...input, session: { ...input.session, driverKind: "acpx_runtime" }, provider });
     expect(parsed.provider).toEqual(provider);
     expect(parseNativeExecutionInput(parsed)).toEqual(parsed);
+  });
+
+  it("decodes a Claude input saved under ACPX 0.13.1 as the current qualified profile", () => {
+    const savedProfile = {
+      agent: "claude",
+      driverKind: "acpx_runtime",
+      acpxVersion: "0.13.1",
+      commandDigest: "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
+      protocolVersion: 1,
+      agentServerPackage: "@agentclientprotocol/claude-agent-acp",
+      agentServerVersion: "0.73.0",
+      agentProfileVersion: 1,
+      agentRuntimePackage: "@anthropic-ai/claude-agent-sdk",
+      agentRuntimeVersion: "0.3.286",
+    };
+    const saved = {
+      ...input,
+      session: { ...input.session, driverKind: "acpx_runtime" },
+      provider: {
+        kind: "acpx", agent: "claude", model: "claude-opus-5-5",
+        permissionPolicy: "interactive", profile: savedProfile,
+      },
+    };
+    const parsed = parseNativeExecutionInput(saved);
+    expect(parsed.provider).toEqual({ ...saved.provider, profile: { ...savedProfile, acpxVersion: QUALIFIED_ACPX_VERSION } });
+    expect(parseNativeExecutionInput(parsed)).toEqual(parsed);
+    for (const acpxVersion of ["0.13.0", "0.21.9", "0.23.0", "", null, 13]) {
+      expect(() => parseNativeExecutionInput({
+        ...saved, provider: { ...saved.provider, profile: { ...savedProfile, acpxVersion } },
+      })).toThrow("qualified ACPX v1 profile");
+    }
   });
 
   it.each([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40] as const)("decodes closed Copilot profile history at version %s without admitting a future version", (agentProfileVersion) => {
@@ -664,7 +696,7 @@ describe("native task context ownership", () => {
     { driverKind: "opencode_server", provider: { kind: "opencode", model: "openrouter/deepseek/deepseek-v4-flash-0731", permissionMode: "deny" } },
     { driverKind: "acpx_runtime", provider: {
       kind: "acpx", agent: "pi", model: "openrouter/deepseek/deepseek-v4-flash-0731", permissionMode: "deny-all",
-      profile: { driverKind: "acpx_runtime", protocolVersion: 1, acpxVersion: "0.13.1", agent: "pi", agentProfileVersion: 1,
+      profile: { driverKind: "acpx_runtime", protocolVersion: 1, acpxVersion: "0.22.0", agent: "pi", agentProfileVersion: 1,
         agentServerPackage: "pi-acp", agentServerVersion: "0.0.33", agentRuntimePackage: "@earendil-works/pi-coding-agent",
         agentRuntimeVersion: "0.84.2", commandDigest: `sha256:${"a".repeat(64)}` },
     } },
@@ -700,7 +732,7 @@ describe("native task context ownership", () => {
     const current = currentInput();
     const provider = {
       kind: "acpx", agent: "codex", model: "gpt-5.6-sol", permissionMode: "approve-all", mode: "architect",
-      profile: { driverKind: "acpx_runtime", protocolVersion: 1, acpxVersion: "0.13.1", agent: "codex", agentProfileVersion: 3,
+      profile: { driverKind: "acpx_runtime", protocolVersion: 1, acpxVersion: "0.22.0", agent: "codex", agentProfileVersion: 3,
         agentServerPackage: "@agentclientprotocol/codex-acp", agentServerVersion: "1.6.2",
         agentRuntimePackage: "@openai/codex", agentRuntimeVersion: "0.160.0", commandDigest: `sha256:${"a".repeat(64)}` },
     };

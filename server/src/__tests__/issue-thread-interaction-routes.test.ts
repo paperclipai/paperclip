@@ -1,4 +1,5 @@
 import express from "express";
+import { probeReviewApproval } from "../../../tests/runner-e2e/chat-catalog-domains/external-app-review-probe.js";
 import request from "supertest";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TaskWatchdogMutationScope } from "../services/task-watchdog-scope.js";
@@ -50,9 +51,16 @@ const mockInteractionService = vi.hoisted(() => ({
   recordSecretProposalExecutionResult: vi.fn(),
 }));
 
+const mockSecretProposals = vi.hoisted(() => ({ getById: vi.fn(), approve: vi.fn() }));
+vi.mock("../services/secret-proposals.js", () => ({ createSecretProposalsService: () => mockSecretProposals }));
+
 const mockHeartbeatService = vi.hoisted(() => ({
   wakeup: vi.fn(async (_agentId: string, _options: { payload?: unknown; contextSnapshot?: unknown }) => undefined),
   cancelRun: vi.fn(async () => null),
+}));
+const mockEnqueueOwnQuestionDismissalWake = vi.hoisted(() => vi.fn(async (): Promise<string | null> => null));
+vi.mock("../services/native-runtime/own-question-wait.js", () => ({
+  enqueueOwnQuestionDismissalWake: mockEnqueueOwnQuestionDismissalWake,
 }));
 const mockRequestNativeQuestionRunCancellation = vi.hoisted(() =>
   vi.fn(async () => null as string | null)
@@ -793,12 +801,30 @@ describe("issue thread interaction routes", () => {
     const result = await request(await createApp()).post(path).send({});
     expect(result.status).toBe(200);
     expect(result.body).toMatchObject({ status: "pending", dismissedAt: "2026-10-22T12:00:00Z" });
-    expect(mockInteractionService.dismissInteraction).toHaveBeenCalledWith(expect.objectContaining({ companyId: "company-1" }), "request-1", { userId: "local-board" });
+    expect(mockInteractionService.dismissInteraction).toHaveBeenCalledWith(expect.objectContaining({ companyId: "company-1" }), "request-1", { userId: "local-board" }, expect.any(Function));
     expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: "issue.thread_interaction_dismissed" }));
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
     mockInteractionService.dismissInteraction.mockClear();
     expect((await request(await createApp({ type: "agent", agentId: CREATED_AGENT_ID, companyId: "company-1", runId: RUN_1 })).post(path).send({})).status).toBe(403);
     expect(mockInteractionService.dismissInteraction).not.toHaveBeenCalled();
+  });
+
+  it("saves the dismissal wake intent in the dismissal transaction only when the card is dismissed", async () => {
+    const dismissed = { id: "request-1", kind: "ask_user_questions", status: "pending", dismissedAt: "2026-10-22T12:00:00Z" };
+    mockInteractionService.dismissInteraction.mockResolvedValue(dismissed);
+    const path = "/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/request-1/dismiss";
+    expect((await request(await createApp()).post(path).send({})).status).toBe(200);
+    expect(mockEnqueueOwnQuestionDismissalWake).not.toHaveBeenCalled();
+    const tx = { transaction: "dismissal" };
+    mockInteractionService.dismissInteraction.mockImplementationOnce(
+      async (_issue: unknown, _id: string, _actor: unknown, afterDismissed?: (tx: unknown) => Promise<void>) => {
+        await afterDismissed?.(tx);
+        return dismissed;
+      });
+    expect((await request(await createApp()).post(path).send({})).status).toBe(200);
+    expect(mockEnqueueOwnQuestionDismissalWake).toHaveBeenCalledWith(tx,
+      { companyId: "company-1", issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", interactionId: "request-1" });
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
   it("hides private task requests from same-company members without task access before dismissal", async () => {
@@ -1703,6 +1729,32 @@ describe("issue thread interaction routes", () => {
         }),
       }),
     );
+  });
+
+  it("uses only the bound continuation for the production secret approval fallback", async () => {
+    const proposalId = "44444444-4444-4444-8444-444444444444";
+    mockSecretProposals.getById.mockResolvedValue({ id: proposalId, kind: "binding", originIssueId: ISSUE_ID,
+      interactionId: "interaction-secret-fallback", configPath: "env.DEPLOYMENT_API_KEY" });
+    mockSecretProposals.approve.mockResolvedValue({ status: "approved" });
+    mockInteractionService.acceptInteraction.mockResolvedValueOnce({ interaction: {
+      id: "interaction-secret-fallback", companyId: "company-1", issueId: ISSUE_ID,
+      kind: "request_confirmation", status: "accepted", continuationPolicy: "wake_assignee",
+      sourceRunId: RUN_1, payload: { version: 1, prompt: "Create binding?", secretProposal: {
+        version: 1, proposalId, configPath: "env.DEPLOYMENT_API_KEY" } },
+      result: { version: 1, outcome: "accepted" },
+    }, createdIssues: [] });
+    const app = await createApp();
+    const res = await request(app).post(`/api/issues/${ISSUE_ID}/interactions/interaction-secret-fallback/accept`).send({});
+    expect(res.status).toBe(200);
+    expect(mockSecretProposals.approve).toHaveBeenCalledWith("company-1", proposalId,
+      expect.objectContaining({ resolvedByUserId: "local-board" }));
+    expect(res.body.result.secretProposal.status).toBe("executed");
+    expect.soft(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect.soft(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(ASSIGNEE_AGENT_ID, expect.objectContaining({
+      contextSnapshot: expect.objectContaining({ issueId: ISSUE_ID, interactionId: "interaction-secret-fallback" }),
+      payload: expect.objectContaining({ secretProposal: expect.objectContaining({ proposalId, executionStatus: "executed" }) }),
+    }));
   });
 
   it("records a failed secret-proposal execution and posts a thread comment", async () => {
@@ -2753,6 +2805,44 @@ describe("issue thread interaction routes", () => {
     expect(mockInteractionService.acceptInteraction).not.toHaveBeenCalled();
   });
 
+  it("names the addressee as the only resolver when an agent tries another person's human-only card", async () => {
+    mockIssueService.getById.mockResolvedValueOnce(createIssue({ status: "todo" }));
+    mockInteractionService.getForIssue.mockResolvedValueOnce({
+      id: "interaction-for-riley",
+      kind: "request_confirmation",
+      status: "pending",
+      createdByAgentId: null,
+      createdByUserId: "user-alex",
+      addresseeUserId: "user-riley",
+      sourceRunId: null,
+      requestedResolverPolicy: "human_only",
+      effectiveResolverPolicy: "human_only",
+      payload: { version: 1, prompt: "Riley: approve?" },
+    });
+    const defaultWhere = mockDbSelectWhere.getMockImplementation()!;
+    // The addressee name lookup ends in .limit(1); the other reads keep their defaults.
+    mockDbSelectWhere.mockImplementation((() => ({
+      ...defaultWhere(),
+      limit: () => Promise.resolve([{ name: "Riley" }]),
+    })) as unknown as typeof defaultWhere);
+    const app = await createApp({ type: "agent", agentId: ASSIGNEE_AGENT_ID, companyId: "company-1", runId: RUN_2 });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-for-riley/accept")
+      .send({});
+
+    expect(res.status).toBe(403);
+    expect(res.body).toMatchObject({
+      code: "interaction_human_only",
+      details: { addresseeUserId: "user-riley", addresseeName: "Riley" },
+    });
+    expect(res.body.error).toContain("addressed to Riley.");
+    expect(res.body.error).toContain("Only Riley can accept or decline it");
+    // /accept carries no verified replying user, so the advice stays neutral.
+    expect(res.body.error).not.toContain("do not ask the person asking");
+    expect(mockInteractionService.acceptInteraction).not.toHaveBeenCalled();
+  });
+
   it("keeps a same-requester sibling confirmation human-only", async () => {
     mockReviewTransition.value = {
       actorType: "agent",
@@ -3204,6 +3294,42 @@ describe("issue thread interaction routes", () => {
       .send({ answers: [] });
     expect(missingRun.status).toBe(422);
     expect(missingRun.body).toMatchObject({ code: "interaction_run_attribution_required" });
+  });
+
+  it.each([false, true])("the catalog approval probe distinguishes missing attribution from governed-action denial (drop header: %s)", async dropHeader => {
+    const approveToolActionRequest = vi.fn();
+    const revokeKey = vi.fn(async () => undefined);
+    mockIssueService.getById.mockResolvedValue(createIssue({ status: "todo" }));
+    mockInteractionService.getForIssue.mockResolvedValue({
+      id: "interaction-tool-probe", companyId: "company-1", issueId: ISSUE_ID,
+      kind: "request_confirmation", status: "pending", createdByAgentId: CREATED_AGENT_ID,
+      sourceRunId: RUN_1, effectiveResolverPolicy: "human_only",
+      payload: { version: 1, prompt: "Approve the action?", toolAction: { version: 1, actionRequestId: "action-probe", toolName: "notes_update" } },
+    });
+    const receipt = await probeReviewApproval({
+      baseURL: "https://fixture.example", companyId: "company-1", agentId: CREATED_AGENT_ID, issueId: ISSUE_ID,
+      interaction: { id: "interaction-tool-probe", status: "pending", sourceRunId: RUN_1 },
+      run: { id: RUN_1, companyId: "company-1", agentId: CREATED_AGENT_ID, status: "succeeded", contextSnapshot: { issueId: ISSUE_ID } },
+      invocation: { companyId: "company-1", agentId: CREATED_AGENT_ID, issueId: ISSUE_ID, runId: RUN_1, status: "awaiting_approval" },
+      privateSecrets: [], createKey: async () => ({ id: "probe-key", token: "synthetic-test-key" }), revokeKey,
+      boundary: async () => ({ interactionStatus: "pending", invocationStatus: "awaiting_approval", actionStatus: "pending", providerWrites: approveToolActionRequest.mock.calls.length, trustRuleIds: [] }),
+      send: async (url, options) => {
+        const headers = new Headers(options?.headers);
+        const actorRun = dropHeader ? undefined : headers.get("x-paperclip-run-id");
+        const app = await createApp({ type: "agent", companyId: "company-1", agentId: CREATED_AGENT_ID, runId: actorRun }, { approveToolActionRequest });
+        const res = await request(app).post(new URL(String(url)).pathname)
+          .set("Authorization", headers.get("authorization")!).send(JSON.parse(options?.body as string));
+        return Response.json(res.body, { status: res.status });
+      },
+    });
+    expect(receipt).toEqual({ status: dropHeader ? 422 : 403,
+      code: dropHeader ? "interaction_run_attribution_required" : "interaction_governed_action_denied",
+      boundaryUnchanged: true, keyRevoked: true });
+    expect(approveToolActionRequest).not.toHaveBeenCalled();
+    expect(mockInteractionService.acceptInteraction).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+    expect(revokeKey).toHaveBeenCalledExactlyOnceWith("probe-key");
   });
 
   it("rejects an invalid run attribution before resolving or waking", async () => {

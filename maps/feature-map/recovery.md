@@ -64,6 +64,14 @@ and the [disconnect recovery journey](../../tests/e2e/disconnect-write-recovery.
 
 ### `source-task`
 
+A Native run held for unknown controller process space remains blocked even
+after its lease expires. A company owner, company administrator, or instance
+administrator can record separate original-host controller and provider/tool stop confirmations with reviewed
+action outcomes through the existing task recovery card. Recording containment
+does not replay work. After normal settlement/cleanup, use a separate ordinary
+Retry; stale authority or unresolved cleanup must keep it blocked. This candidate
+path is source-only pending its focused real-owner qualification.
+
 Open the affected task from Tasks, Inbox/Blocked, search, or a direct task link.
 Observe one working, backoff, failed or waiting-for-user state. Use Retry after
 an infrastructure failure. No process or file certification is required.

@@ -3,6 +3,7 @@ import { QueryClient, QueryObserver } from "@tanstack/react-query";
 import {
   createCoalescingQueryClient,
   createInvalidationBatcher,
+  createLaneRoutingBatcher,
   excludingQueryKeys,
 } from "./query-invalidation-batcher";
 
@@ -117,6 +118,77 @@ describe("createInvalidationBatcher", () => {
     batcher.schedule({ queryKey: ["a"] });
     batcher.flush();
     expect(client.invalidateQueries).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("createInvalidationBatcher with minimum spacing", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("flushes a quiet lane after the batch interval and spaces a busy lane", () => {
+    const { client } = fakeClient();
+    const batcher = createInvalidationBatcher(client, 300, { minSpacingMs: 5000 });
+    batcher.schedule({ queryKey: ["issues", "c1"] });
+    vi.advanceTimersByTime(300);
+    expect(client.invalidateQueries).toHaveBeenCalledTimes(1);
+    // A continuous stream after that flush waits for the spacing window.
+    for (let elapsed = 0; elapsed < 4500; elapsed += 500) {
+      batcher.schedule({ queryKey: ["issues", "c1"] });
+      vi.advanceTimersByTime(500);
+    }
+    expect(client.invalidateQueries).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(500);
+    expect(client.invalidateQueries).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns to the batch interval once the spacing window has passed", () => {
+    const { client } = fakeClient();
+    const batcher = createInvalidationBatcher(client, 300, { minSpacingMs: 5000 });
+    batcher.schedule({ queryKey: ["a"] });
+    vi.advanceTimersByTime(300);
+    vi.advanceTimersByTime(10_000);
+    batcher.schedule({ queryKey: ["a"] });
+    vi.advanceTimersByTime(300);
+    expect(client.invalidateQueries).toHaveBeenCalledTimes(2);
+  });
+
+  it("never drops an invalidation scheduled during the spacing window", async () => {
+    const { client, calls } = fakeClient();
+    const batcher = createInvalidationBatcher(client, 300, { minSpacingMs: 5000 });
+    batcher.schedule({ queryKey: ["a"] });
+    vi.advanceTimersByTime(300);
+    const pending = batcher.schedule({ queryKey: ["b"] });
+    await vi.advanceTimersByTimeAsync(5000);
+    await pending;
+    expect(calls).toEqual([{ queryKey: ["a"] }, { queryKey: ["b"] }]);
+  });
+});
+
+describe("createLaneRoutingBatcher", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("routes ambient keys to the spaced lane and every other filter to the fast lane", () => {
+    const { client, calls } = fakeClient();
+    const batcher = createLaneRoutingBatcher(
+      createInvalidationBatcher(client, 300),
+      createInvalidationBatcher(client, 300, { minSpacingMs: 5000 }),
+      (queryKey) => queryKey[0] === "issues" && queryKey[1] === "c1",
+    );
+    batcher.schedule({ queryKey: ["issues", "c1"] });
+    vi.advanceTimersByTime(300);
+    batcher.schedule({ queryKey: ["issues", "c1", "summaries"] });
+    batcher.schedule({ queryKey: ["issues", "detail", "t1"] });
+    batcher.schedule({});
+    vi.advanceTimersByTime(300);
+    // The detail and key-less filters do not wait behind the ambient spacing.
+    expect(calls).toEqual([{ queryKey: ["issues", "c1"] }, { queryKey: ["issues", "detail", "t1"] }, {}]);
+    vi.advanceTimersByTime(5000);
+    expect(calls.at(-1)).toEqual({ queryKey: ["issues", "c1", "summaries"] });
+    batcher.schedule({ queryKey: ["issues", "c1"] });
+    batcher.dispose();
+    vi.advanceTimersByTime(10_000);
+    expect(calls).toHaveLength(4);
   });
 });
 
