@@ -4064,7 +4064,7 @@
       "chat-catalog-domains/internal-task-creation.ts",
       "lost-send.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.internal.v1",
+    "oracleVersion": "paperclip.chat-catalog.internal.project-work.v2",
     "coverageGaps": [],
     "expectedRunCount": 3,
     "minimumRunCount": 1,
@@ -5407,7 +5407,7 @@
       "chat-catalog-domains/integrator-status-cards.ts",
       "chat-scenarios/status-cards.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.status-card.other-authors.v2",
+    "oracleVersion": "paperclip.chat-catalog.status-card.other-authors.v3",
     "expectedRunCount": 5,
     "minimumRunCount": 2,
     "expectedHumanMessageCount": 1,
@@ -5711,7 +5711,7 @@
       "registered-artifact.ts",
       "chat-scenarios/task-coordination.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.runtime-delegation.v4",
+    "oracleVersion": "paperclip.chat-catalog.runtime-delegation.v5",
     "coverageGaps": [],
     "expectedRunCount": 4,
     "setupHumanMessageCount": 1,
@@ -5976,7 +5976,7 @@
       "chat-catalog-domains/identity-auth.ts",
       "chat-catalog-domains/identity-support.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.internal.v1",
+    "oracleVersion": "paperclip.chat-catalog.internal.private-task.v2",
     "coverageGaps": [],
     "expectedRunCount": 3,
     "minimumRunCount": 2,

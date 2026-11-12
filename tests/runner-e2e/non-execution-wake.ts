@@ -16,6 +16,21 @@ export function isReassignedUnstartedWake(run: {
     && run.resultJson.timeoutSource === "stale_queued_run_gate" && run.resultJson.timeoutFired === false;
 }
 
+/** A queued run the server retired because its task changed assignee before any
+ * provider work: either the dispatch gate found the queued wake stale
+ * (`issue_assignee_changed`), or the reassignment stopped it while it was still
+ * bootstrapping (`issue_reassigned`, stop confirmed, provider work not started). */
+export function isAssigneeChangedUnstartedRun(run: {
+  status?: unknown; errorCode?: unknown; startedAt?: unknown; nativeIssueId?: unknown;
+  logStore?: unknown; logRef?: unknown; resultJson?: Record<string, unknown>;
+}) {
+  if (run.status !== "cancelled" || run.startedAt !== null || run.logStore != null || run.logRef != null) return false;
+  if (isReassignedUnstartedWake(run)) return true;
+  const result = run.resultJson, recovery = object(result?.executionRecovery);
+  return run.errorCode === "issue_reassigned" && run.nativeIssueId == null && result?.reassignmentStopConfirmed === true
+    && recovery?.kind === "bootstrap" && recovery.providerWorkStarted === false;
+}
+
 /** A terminal issue may make a queued wake obsolete before provider admission. */
 export function isTerminalUnstartedWake(
   run: Record<string, unknown>,
