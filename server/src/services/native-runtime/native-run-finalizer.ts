@@ -1848,6 +1848,7 @@ export async function finalizeNativeRun(input: {
                 gateId: governanceGate.id,
               }
             : undefined,
+        externalChatResponseTurn: externalChatResponseWaitAuthorization !== "not_applicable",
         failpoint: input.failpoint,
       });
       crashPoint("native.finalize.after_decision_before_projection");

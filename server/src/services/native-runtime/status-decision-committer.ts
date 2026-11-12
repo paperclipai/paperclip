@@ -1691,6 +1691,7 @@ export async function commitNativeStatusDecision(input: {
     resultId: string;
     gateId: string;
   };
+  externalChatResponseTurn?: boolean;
 }) {
   if (input.decision.reasonCode === null) {
     throw new Error("native_status_reason_code_required");
@@ -2112,7 +2113,7 @@ export async function commitNativeStatusDecision(input: {
       }
     }
     let renewedReview: Awaited<ReturnType<typeof prepareNativeReviewRenewal>> = null;
-    if (!input.reviewResponsePresentation && !isConversation(issue) && input.decision.statusAction === "in_review" &&
+    if (!input.reviewResponsePresentation && !input.externalChatResponseTurn && !isConversation(issue) && input.decision.statusAction === "in_review" &&
         input.decision.effects.some(effect => effect.kind === "create_interaction" && effect.gate?.kind === "interaction")) {
       const [reviewOwnerRun] = await tx.select({ agentId: heartbeatRuns.agentId }).from(heartbeatRuns)
         .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId)));
