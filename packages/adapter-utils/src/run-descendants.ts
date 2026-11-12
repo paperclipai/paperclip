@@ -110,6 +110,11 @@ export interface RunProcessTable {
   /** Clock ticks since boot when the table was read. */
   nowTicks: number;
   procRoot: string;
+  /**
+   * Order in which table reads started. A lineage does not let an older table
+   * forget processes that a newer table already recorded.
+   */
+  seq?: number;
 }
 
 const MAX_RUN_ID_LENGTH = 256;
@@ -237,6 +242,8 @@ function markerNeedle(runId: string) {
   return Buffer.from(`\0${RUN_ID_ENV_MARKER}=${runId}\0`);
 }
 
+let tableReadSeq = 0;
+
 function identityKey(identity: RunProcessIdentity) {
   return `${identity.pid}:${identity.startTime}`;
 }
@@ -245,7 +252,7 @@ function identityKey(identity: RunProcessIdentity) {
 export function readRunProcessTable(opts: Pick<RunDescendantScanOptions, "procRoot"> = {}): RunProcessTable {
   const procRoot = opts.procRoot ?? "/proc";
   const entries = new Map<number, ProcEntry>();
-  const table = { entries, nowTicks: readNowTicks(procRoot), procRoot };
+  const table = { entries, nowTicks: readNowTicks(procRoot), procRoot, seq: ++tableReadSeq };
   if (!isSupported()) return table;
   const uid = process.getuid!();
   let names: string[];
@@ -284,6 +291,7 @@ export async function readRunProcessTableAsync(
 ): Promise<RunProcessTable> {
   const procRoot = opts.procRoot ?? "/proc";
   const entries = new Map<number, ProcEntry>();
+  const seq = ++tableReadSeq;
   let nowTicks = Number.MAX_SAFE_INTEGER;
   try {
     const seconds = Number.parseFloat((await fsp.readFile(`${procRoot}/uptime`, "utf8")).split(/\s+/)[0] ?? "");
@@ -291,7 +299,7 @@ export async function readRunProcessTableAsync(
   } catch {
     // Keep the open-ended bound.
   }
-  const table = { entries, nowTicks, procRoot };
+  const table = { entries, nowTicks, procRoot, seq };
   if (!isSupported()) return table;
   const uid = process.getuid!();
   let names: string[];
@@ -333,6 +341,7 @@ export class RunProcessLineage {
   // and an exec'd process that was already recorded stays recorded.
   private markerCache = new Map<string, boolean>();
   private changed = false;
+  private lastTableSeq = 0;
 
   constructor(runId: string, entries: Iterable<RunLineageEntry> = []) {
     this.runId = runId;
@@ -381,6 +390,21 @@ export class RunProcessLineage {
     const changed = this.changed;
     this.changed = false;
     return changed;
+  }
+
+  /** Adds the processes another lineage of the same run recorded, for example a saved one. */
+  absorb(other: RunProcessLineage) {
+    if (other.runId !== this.runId) return;
+    for (const [key, entry] of other.recorded) {
+      const existing = this.recorded.get(key);
+      if (!existing) {
+        this.recorded.set(key, { ...entry });
+        this.changed = true;
+      } else if (entry.leader && !existing.leader) {
+        existing.leader = true;
+        this.changed = true;
+      }
+    }
   }
 
   /** Records a known run process, for example the CLI the adapter spawned. */
@@ -481,13 +505,18 @@ export class RunProcessLineage {
     const isExcluded = (entry: ProcEntry) => excludedPids.has(entry.pid) || excludedGroups.has(entry.pgid);
 
     // Mark recorded processes that are gone, and drop the ones that can no
-    // longer explain a live process.
+    // longer explain a live process. Samples can overlap (the shared sampler,
+    // tracking and teardown each read their own table), so a table whose read
+    // started before one already applied only adds processes: it could lack a
+    // child that the newer table recorded.
+    const stale = typeof table.seq === "number" && table.seq < this.lastTableSeq;
+    if (typeof table.seq === "number" && !stale) this.lastTableSeq = table.seq;
     const liveSidOrGroup = new Set<number>();
     for (const entry of entries.values()) {
       liveSidOrGroup.add(entry.sid);
       liveSidOrGroup.add(entry.pgid);
     }
-    for (const [key, entry] of this.recorded) {
+    if (!stale) for (const [key, entry] of this.recorded) {
       const live = entries.get(entry.pid);
       if (live && live.startTime === entry.startTime) continue;
       if (!entry.leader || !liveSidOrGroup.has(entry.pid) || (live && live.startTime !== entry.startTime)) {
