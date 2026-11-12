@@ -564,7 +564,8 @@ describeEmbeddedPostgres("authorization service", () => {
       allowed: false,
       code: "RESPONSIBLE_USER_UNAUTHORIZED",
     });
-    expect(decision.explanation).toContain(`Responsible user ${responsibleUserId} is not authorized`);
+    expect(decision.explanation).toContain("The person this agent acts for is not allowed to do this");
+    expect(decision.explanation).not.toContain(responsibleUserId);
   });
 
   it("denies cross-company agent decisions before grant evaluation", async () => {
@@ -2574,6 +2575,47 @@ describeEmbeddedPostgres("authorization service", () => {
       action: "inbox:manage",
       resource: { type: "company", companyId: company.id },
     })).resolves.toMatchObject({ allowed: false, reason: "inbox_management_disabled" });
+  });
+
+  it("explains inbox denials without raw user or agent IDs", async () => {
+    const company = await createCompany(db, "InboxDenialWording");
+    const actorAgent = await createAgent(db, company.id);
+    const disabledUserId = await createUser(db);
+    const allowlistUserId = await createUser(db);
+    await db.insert(companyMemberships).values([disabledUserId, allowlistUserId].map((principalId) => ({
+      companyId: company.id,
+      principalType: "user" as const,
+      principalId,
+      status: "active" as const,
+      membershipRole: "operator" as const,
+    })));
+    await db.insert(userInboxAgentPolicies).values([
+      { companyId: company.id, userId: disabledUserId, mode: "disabled" as const },
+      { companyId: company.id, userId: allowlistUserId, mode: "allowlist" as const, allowedAgentIds: [] },
+    ]);
+    const decideFor = (userId: string) => authorizationService(db).decide({
+      actor: {
+        type: "agent" as const,
+        agentId: actorAgent.id,
+        companyId: company.id,
+        onBehalfOfUserId: userId,
+        source: "agent_jwt" as const,
+      },
+      action: "inbox:manage" as const,
+      resource: { type: "company" as const, companyId: company.id },
+    });
+
+    const disabled = await decideFor(disabledUserId);
+    const allowlist = await decideFor(allowlistUserId);
+    expect(disabled).toMatchObject({ allowed: false, reason: "inbox_management_disabled" });
+    expect(allowlist).toMatchObject({ allowed: false, reason: "inbox_agent_not_allowed" });
+    for (const decision of [disabled, allowlist]) {
+      expect(decision.explanation).not.toContain(disabledUserId);
+      expect(decision.explanation).not.toContain(allowlistUserId);
+      expect(decision.explanation).not.toContain(actorAgent.id);
+    }
+    expect(disabled.explanation).toBe("This person has turned off agent management of their inbox.");
+    expect(allowlist.explanation).toBe("This agent is not on the list of agents this person allows to manage their inbox.");
   });
 
   it("enforces responsible-user inbox allowlists", async () => {

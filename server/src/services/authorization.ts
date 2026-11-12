@@ -1017,7 +1017,7 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
       return deny({
         action: input.action,
         reason: "deny_missing_membership",
-        explanation: `${input.principalType} principal ${input.principalId} is not an active member of company ${input.companyId}.`,
+        explanation: input.principalType === "agent" ? "This agent is not an active member of this company." : "This user is not an active member of this company.",
       });
     }
 
@@ -2223,7 +2223,7 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
           return deny({
             action: input.action,
             reason: "deny_missing_membership",
-            explanation: `user principal ${input.actor.userId} is not an active member of company ${companyId}.`,
+            explanation: "This user is not an active member of this company.",
           });
         }
         if (
@@ -2265,7 +2265,7 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
           return deny({
             action: input.action,
             reason: "deny_missing_membership",
-            explanation: `user principal ${input.actor.userId} is not an active member of company ${companyId}.`,
+            explanation: "This user is not an active member of this company.",
           });
         }
         return deny({
@@ -2441,7 +2441,7 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
         return deny({
           action: input.action,
           reason: "deny_missing_membership",
-          explanation: `Inbox target user ${targetUserId} is not an active member of company ${companyId}.`,
+          explanation: "The person whose inbox was requested is not an active member of this company.",
         });
       }
 
@@ -2486,14 +2486,14 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
           return deny({
             action: input.action,
             reason: "inbox_management_disabled",
-            explanation: `Inbox management is disabled for user ${targetUserId}.`,
+            explanation: "This person has turned off agent management of their inbox.",
           });
         }
         if (policy?.mode === "allowlist" && !policy.allowedAgentIds.includes(actorAgentId)) {
           return deny({
             action: input.action,
             reason: "inbox_agent_not_allowed",
-            explanation: `Agent ${actorAgentId} is not allowed to manage user ${targetUserId}'s inbox.`,
+            explanation: "This agent is not on the list of agents this person allows to manage their inbox.",
           });
         }
         if (policy?.mode === "open" || policy?.mode === "allowlist") {
@@ -2531,14 +2531,14 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
         return deny({
           action: input.action,
           reason: "inbox_management_disabled",
-          explanation: `Inbox management is disabled for user ${targetUserId}.`,
+          explanation: "This person has turned off agent management of their inbox.",
         });
       }
       if (policy?.mode === "allowlist" && !policy.allowedAgentIds.includes(actorAgentId)) {
         return deny({
           action: input.action,
           reason: "inbox_agent_not_allowed",
-          explanation: `Agent ${actorAgentId} is not allowed to manage user ${targetUserId}'s inbox.`,
+          explanation: "This agent is not on the list of agents this person allows to manage their inbox.",
         });
       }
 
@@ -2822,7 +2822,7 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
       : deny({
           action: input.action,
           reason: "deny_missing_membership",
-          explanation: `Responsible user ${responsibleUserId} is unavailable for company ${companyId}.`,
+          explanation: "The person this agent acts for is no longer an active member of this company.",
         });
 
     if (
@@ -2841,8 +2841,8 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
       code: denyCode,
       explanation:
         denyCode === "RESPONSIBLE_USER_UNAVAILABLE"
-          ? `Responsible user ${responsibleUserId} is unavailable for company ${companyId}.`
-          : `Responsible user ${responsibleUserId} is not authorized for ${input.action}: ${userDecision.explanation}`,
+          ? "The person this agent acts for is no longer an active member of this company."
+          : `The person this agent acts for is not allowed to do this: ${userDecision.explanation}`,
       grant: userDecision.grant,
     });
 
