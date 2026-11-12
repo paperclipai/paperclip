@@ -11,7 +11,7 @@ import { busyRuntimeWorker, releaseRuntimeWorker } from "./runtime-busy-worker.j
 import { keyboardMoveQueuedMessageUp, runtimeQueueCases } from "./runtime-queue.js";
 import { observeRuntime, runtimeDefinition, runtimeObservation } from "./runtime-support.js";
 
-const otherText = "Use a readable font with accessible labels.";
+export const otherText = "Use a readable font with accessible labels.";
 const redText = "Make the website red. Keep the existing note about accessible labels.";
 const blueText = "Make the website blue. Keep the existing note about accessible labels.";
 type State = Record<string, unknown>;

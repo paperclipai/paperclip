@@ -8,7 +8,7 @@ import { submitTaskReply } from "../user-actions.js";
 import { checks, hasLink, type Entity } from "./internal-support.js";
 import { probeAgentPermission, cleanupIdentityProbes } from "./identity-support.js";
 import { releaseRuntimeWorker } from "./runtime-busy-worker.js";
-import { humanQueuedRuntime, probeConsumedHumanQueue } from "./runtime-queue-controls.js";
+import { humanQueuedRuntime, otherText, probeConsumedHumanQueue } from "./runtime-queue-controls.js";
 import { runtimeQueueCases } from "./runtime-queue.js";
 import { runtimeDefinition, runtimeObservation, observeRuntime } from "./runtime-support.js";
 
@@ -31,6 +31,12 @@ export function markdownSections(body: string): MarkdownSection[] {
   });
   return sections;
 }
+export const keepFontText = "Keep the accessible-font requirement";
+const keptRequests = [otherText, keepFontText].map(text => text.toLowerCase().replace(/[.\s]+$/, ""));
+function keptRequestLine(line: string) {
+  const text = line.replace(/^(?:[-*+]|\d+[.)])\s+/, "").replace(/[*_`]/g, "").trim().toLowerCase();
+  return keptRequests.some(request => text.includes(request));
+}
 export function contactSectionRemoved(consumed: string, previous: string | undefined, final: string, label: string) {
   const carrying = markdownSections(consumed).filter(section => [section.heading, ...section.lines].some(line => line.includes(label)));
   const titled = carrying.filter(section => section.heading.includes(label));
@@ -38,14 +44,9 @@ export function contactSectionRemoved(consumed: string, previous: string | undef
   const added = carrying.filter(section => !earlier.has(section.heading)).sort((a, b) => a.lines.length - b.lines.length);
   const blocks = titled.length ? titled : added.slice(0, 1);
   if (!blocks.length) return false;
-  const finalLines = final.split(/\r?\n/), sections = markdownSections(final);
-  const firstHeading = finalLines.findIndex(line => /^#{1,6}\s/.test(line));
-  const groups = [finalLines.slice(0, firstHeading < 0 ? finalLines.length : firstHeading), ...sections.map(section => section.lines)].map(group => new Set(group.map(line => line.trim())));
-  return blocks.every(block => {
-    const substantive = [...new Set(block.lines.map(line => line.trim()).filter(line => line.length >= 20))];
-    return !sections.some(section => section.heading === block.heading)
-      && !groups.some(group => substantive.filter(line => group.has(line)).length * 2 > substantive.length);
-  });
+  const sections = markdownSections(final), finalLines = new Set(final.split(/\r?\n/).map(line => line.trim()));
+  return blocks.every(block => !sections.some(section => section.heading === block.heading)
+    && block.lines.map(line => line.trim()).filter(line => line.length >= 20 && !keptRequestLine(line)).every(line => !finalLines.has(line)));
 }
 export function documentContactRemoved(rows: ReadonlyArray<{ id: string; body?: string | null; createdByRunId?: string | null }>, latestRevisionId: unknown, consumerRunId: string, label: string) {
   const number = (row: object) => Number((row as { revisionNumber?: unknown }).revisionNumber);
@@ -109,7 +110,7 @@ export const runtimeDiscardCases = [runtimeDefinition("steering.discard-queued-m
     await ctx.input.capture("actual-human-contact-discard", "Only the eligible contact request has left the real task queue", "runtime-discard.png");
     // This new, explicit human request is a distinct later instruction. It
     // deliberately reaches normal native delivery before its cancellation.
-    const secondText = `I have changed my mind: add a contact section to the saved website plan, labelled ${ctx.input.nonce}. Keep the accessible-font requirement and finish this task.`;
+    const secondText = `I have changed my mind: add a contact section to the saved website plan, labelled ${ctx.input.nonce}. ${keepFontText} and finish this task.`;
     await submitTaskReply(ctx.input.page, secondText);
     const secondQueue = await pollUntil({ label: "Distinct human contact request genuinely queued", deadlineAt: Date.now() + 20_000,
       load: () => ctx.input.api.get<IssueQueuedCommentQueue>(queuePath), accept: q => q.entries.length === 2 && q.entries.some(row => row.comment.body === secondText) });

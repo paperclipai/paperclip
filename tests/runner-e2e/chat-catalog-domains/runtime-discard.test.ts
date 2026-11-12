@@ -87,11 +87,12 @@ it("broken: the contact section remains, renamed, emptied of its heading, or was
   expect(contactSectionRemoved(consumedPlan, initialPlan, consumedPlan.replace(`## Contact section (label: ${label})\n`, ""), label)).toBe(false);
   expect(contactSectionRemoved(`# Plan\n\nLabel ${label} only in the preamble.\n`, undefined, "# Plan\n", label)).toBe(false);
 });
-it("a long line the contact section shares with a kept section does not keep the removed section", () => {
-  const shared = "- Every field has a persistently visible, programmatically associated label.";
-  const consumed = `# Plan\n\n## Fonts\n\n- Readable base size of at least 16px.\n\n## Contact (${label})\n\n- Contact form with name, email and message fields.\n${shared}\n- Success and failure states are announced to assistive technology.\n`;
+it("a line the person asked to keep may stay when the rest of the contact section is gone", () => {
+  const consumed = `# Plan\n\n## Fonts\n\n- Readable base size of at least 16px.\n\n## Contact (${label})\n\n- **Label:** \`${label}\`\n- **Purpose:** give visitors a clear way to reach the site owner.\n- Contact form with name, email and message fields.\n- Use a readable font with accessible labels.\n### Accessibility requirements\n- Keep the accessible-font requirement for every form field.\n`;
   const previous = "# Plan\n\n## Fonts\n\n- Readable base size of at least 16px.\n";
-  expect(contactSectionRemoved(consumed, previous, `# Plan\n\n## Fonts\n\n- Readable base size of at least 16px.\n${shared}\n`, label)).toBe(true);
+  expect(contactSectionRemoved(consumed, previous, "# Plan\n\n## Fonts\n\n- Readable base size of at least 16px.\n- Use a readable font with accessible labels.\n- Keep the accessible-font requirement for every form field.\n", label)).toBe(true);
+  const trimmed = "# Plan\n\n## Fonts\n\n- Readable base size of at least 16px.\n\n## Reach us\n\n- **Purpose:** give visitors a clear way to reach the site owner.\n- Contact form with name, email and message fields.\n- Use a readable font with accessible labels.\n";
+  expect(contactSectionRemoved(consumed, previous, trimmed, label)).toBe(false);
   expect(contactSectionRemoved(consumed, previous, consumed.replace(`## Contact (${label})`, "## Reach us"), label)).toBe(false);
 });
 it("compares against the plan from before the consuming run first added the section, across its repeated saves", () => {
