@@ -2791,6 +2791,28 @@ describeEmbeddedPostgres("attention service", () => {
         .toBe("Resume when the outside reply arrives");
     });
 
+    it("names an invokable unblock owner that was never sent the request", async () => {
+      const { companyId, workerId } = await seedCompany("ATU");
+      const waitingId = await insertIssue({
+        companyId,
+        identifier: "ATU-1",
+        title: "Owner not yet told",
+        status: "blocked",
+        assigneeAgentId: workerId,
+        unblockDescriptor: { owner: { agentId: workerId }, action: "Resume when the outside reply arrives" },
+      });
+      const dependantId = await insertIssue({ companyId, identifier: "ATU-2", title: "Dependant", status: "blocked" });
+      await db.insert(issueRelations).values({ companyId, issueId: waitingId, relatedIssueId: dependantId, type: "blocks" });
+
+      const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+      const row = feed.items.find((item) => item.dedupKey === `blocker:${waitingId}`);
+
+      expect(row?.whyNow).toBe(
+        "Blocked; its unblock owner Worker has not been sent the request. "
+          + "Unblock step (Worker): Resume when the outside reply arrives. Blocks 1 task.",
+      );
+    });
+
     it("counts the union of blocked parents and explicitly blocked work", async () => {
       const { companyId, workerId } = await seedCompany("ATM");
       const parentId = await insertIssue({ companyId, identifier: "ATM-1", title: "Blocked parent", status: "blocked" });

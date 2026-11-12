@@ -1232,6 +1232,7 @@ type TerminalBlockerAgent = { name: string; status: string };
 type TerminalBlockerFacts = {
   status: string;
   monitorNextCheckAt: Date | null;
+  ownerNotified: boolean;
   assigneeAgent: TerminalBlockerAgent | null;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
@@ -1256,6 +1257,7 @@ async function terminalBlockerFactsMap(db: Db, companyId: string, issueIds: stri
     assigneeUserId: string | null;
     unblockDescriptor: IssueUnblockDescriptor | null;
     monitorNextCheckAt: Date | null;
+    blockedOwnerNotifiedAt: Date | null;
   }> = [];
   for (const chunk of chunkValues(ids, ATTENTION_GRAPH_QUERY_CHUNK_SIZE)) {
     rows.push(...await db
@@ -1266,6 +1268,7 @@ async function terminalBlockerFactsMap(db: Db, companyId: string, issueIds: stri
         assigneeUserId: issues.assigneeUserId,
         unblockDescriptor: issues.unblockDescriptor,
         monitorNextCheckAt: issues.monitorNextCheckAt,
+        blockedOwnerNotifiedAt: issues.blockedOwnerNotifiedAt,
       })
       .from(issues)
       .where(and(eq(issues.companyId, companyId), inArray(issues.id, chunk), readCondition)));
@@ -1291,6 +1294,7 @@ async function terminalBlockerFactsMap(db: Db, companyId: string, issueIds: stri
     facts.set(row.id, {
       status: row.status,
       monitorNextCheckAt: row.monitorNextCheckAt,
+      ownerNotified: row.blockedOwnerNotifiedAt !== null,
       assigneeAgentId: row.assigneeAgentId,
       assigneeAgent: row.assigneeAgentId ? agentById.get(row.assigneeAgentId) ?? null : null,
       assigneeUserId: row.assigneeUserId,
@@ -1320,8 +1324,13 @@ const TERMINAL_BLOCKER_UNASSIGNED_CAUSE = "Has no assignee.";
 function terminalBlockerCause(facts: TerminalBlockerFacts | undefined, now: number) {
   if (!facts) return "No live owner, run, or wake path.";
   switch (facts.status) {
-    case "blocked":
+    case "blocked": {
+      const owner = facts.unblockOwner;
+      if (owner?.kind === "agent" && owner.agent && isAgentStatusInvokable(owner.agent.status) && !facts.ownerNotified) {
+        return `Blocked; its unblock owner ${owner.agent.name} has not been sent the request.`;
+      }
       return "Blocked with no open blocker, pending request, or invokable unblock owner.";
+    }
     case "cancelled":
       return "Cancelled while open work still depends on it.";
     case "in_review":
