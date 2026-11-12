@@ -15,6 +15,7 @@ export interface GradeInterruption {
   canRetry: boolean;
   retryWait: boolean;
   userAction: string | null;
+  responsibility?: string | null;
   providerFailureCategory: string | null;
 }
 
@@ -50,6 +51,7 @@ export interface TaskGrade {
   status: string;
   retry: { clicks: number; accepted: number; worked: boolean | null } | null;
   personReason: PersonReason | null;
+  reason: string | null;
   failedRuns: string[];
 }
 
@@ -94,10 +96,22 @@ function retryOutcome(task: GradeTaskInput): TaskGrade["retry"] {
   return { clicks: task.retryClicks.length, accepted: accepted.length, worked };
 }
 
+function namedReason(task: GradeTaskInput, person: PersonReason | null): string | null {
+  if (person) return person;
+  const interruption = task.interruption;
+  if (interruption?.userAction) return `user action ${interruption.userAction}`;
+  if (interruption?.responsibility === "user") return `user responsibility, ${interruption.state}`;
+  if (interruption) return `interruption ${interruption.state}`;
+  if (task.executionBlocker) return "execution blocker";
+  if (task.activeRecoveryOwner) return `${task.activeRecoveryOwner} recovery action`;
+  return null;
+}
+
 export function gradeReleaseSwapTask(task: GradeTaskInput): TaskGrade {
   const failedRuns = task.runs.filter(run => FAILED_RUN.has(run.status)).map(run => run.runId);
+  const person = personReason(task);
   const base = { issueId: task.issueId, identifier: task.identifier, title: task.title, status: task.status, failedRuns,
-    retry: retryOutcome(task), personReason: personReason(task) };
+    retry: retryOutcome(task), personReason: person, reason: namedReason(task, person) };
   const verdict = (value: TaskVerdict, detail: string): TaskGrade => ({ ...base, verdict: value, detail });
   if (task.retryClicks.length) {
     const retry = base.retry!;
@@ -111,9 +125,9 @@ export function gradeReleaseSwapTask(task: GradeTaskInput): TaskGrade {
   const interruption = task.interruption;
   if (task.status === "blocked" || task.executionBlocker || task.activeRecoveryOwner === "board"
     || (interruption && (interruption.state === "failed" || interruption.state === "waiting_for_user"))) {
-    const why = interruption?.userAction ? `user action ${interruption.userAction}` : interruption ? `interruption ${interruption.state}`
-      : task.executionBlocker ? "execution blocker" : task.activeRecoveryOwner === "board" ? "board recovery action" : "blocked with no named reason";
-    return verdict("blocked_non_person", `${task.status}: ${why}`);
+    const why = base.reason ?? "blocked with no named reason";
+    const note = interruption?.responsibility === "user" ? " (the board asks a person, but this is not one of the grade's person reasons)" : "";
+    return verdict("blocked_non_person", `${task.status}: ${why}${note}`);
   }
   return verdict("open_no_owner", `${task.status} with no live run, no queued wake and no named reason`);
 }
@@ -194,10 +208,11 @@ export function overlappingRuns(runs: ReadonlyArray<SwapRunFact>, waveEnd: numbe
   const found: DuplicateFacts["overlappingRuns"] = [];
   for (const [issueId, list] of byIssue) {
     const sorted = [...list].sort((left, right) => left.startedAt! - right.startedAt!);
-    for (let index = 1; index < sorted.length; index += 1) {
-      const previous = sorted[index - 1]!;
-      const next = sorted[index]!;
-      if (next.startedAt! < (previous.finishedAt ?? waveEnd)) found.push({ issueId, runIds: [previous.runId, next.runId] });
+    const open: SwapRunFact[] = [];
+    for (const next of sorted) {
+      const still = open.filter(earlier => next.startedAt! < (earlier.finishedAt ?? waveEnd));
+      for (const earlier of still) found.push({ issueId, runIds: [earlier.runId, next.runId] });
+      open.splice(0, open.length, ...still, next);
     }
   }
   return found;
@@ -208,16 +223,22 @@ export interface ReleaseSwapResult {
   completedWithoutHuman: number;
   started: number;
   byVerdict: Record<TaskVerdict, number>;
+  byReason: Record<string, number>;
   retry: { tasks: number; worked: number; didNotWork: number; pending: number };
 }
 
 export function summarizeGrades(grades: readonly TaskGrade[]): ReleaseSwapResult {
   const byVerdict = { pass: 0, needed_retry: 0, open_no_owner: 0, blocked_non_person: 0, waiting_on_person: 0, still_working: 0, cancelled: 0 } as Record<TaskVerdict, number>;
   for (const grade of grades) byVerdict[grade.verdict] += 1;
+  const byReason: Record<string, number> = {};
+  for (const grade of grades) if (grade.verdict !== "pass") {
+    const key = `${grade.verdict}: ${grade.reason ?? "none"}`;
+    byReason[key] = (byReason[key] ?? 0) + 1;
+  }
   const retried = grades.filter(grade => grade.retry);
   const completedWithoutHuman = byVerdict.pass;
   return { headline: `${completedWithoutHuman} / ${grades.length} tasks completed without human action`, completedWithoutHuman, started: grades.length,
-    byVerdict, retry: { tasks: retried.length, worked: retried.filter(grade => grade.retry!.worked === true).length,
+    byVerdict, byReason, retry: { tasks: retried.length, worked: retried.filter(grade => grade.retry!.worked === true).length,
       didNotWork: retried.filter(grade => grade.retry!.worked === false).length, pending: retried.filter(grade => grade.retry!.worked === null).length } };
 }
 
@@ -228,6 +249,7 @@ export function releaseSwapMarkdown(result: ReleaseSwapResult, metrics: readonly
     result.headline,
     "",
     `Verdicts: ${Object.entries(result.byVerdict).filter(([, count]) => count).map(([verdict, count]) => `${verdict} ${count}`).join(", ") || "none"}.`,
+    `Reasons: ${Object.entries(result.byReason).map(([reason, count]) => `${reason} ${count}`).join("; ") || "none"}.`,
     `Retry: ${result.retry.tasks} task(s) needed it; worked ${result.retry.worked}, did not work ${result.retry.didNotWork}, still running ${result.retry.pending}.`,
     `Duplicates: ${duplicates.overlappingRuns.length} overlapping run pair(s), ${duplicates.doubleExecutors.length} double executor(s), `
       + `${duplicates.duplicateComments.length} duplicated agent comment(s), ${duplicates.duplicateChildren.length} duplicated subtask title(s).`,

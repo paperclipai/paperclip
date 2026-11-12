@@ -575,8 +575,11 @@ so state saved during swap N is resumed after swaps N+1 and N+2.
   until 60 s after A stopped, the harness samples the wave's runs and their owning controller's PID. Each swap
   records which runs A and B started during the overlap, whether the late probe's run was started by A within the
   60 s before its SIGTERM, and whether a run A started was still preparing (`execution_stage` `preparing` or
-  `dispatching`) while B's recovery pass ran. A run the product starts elsewhere is reported as a finding,
-  not forced.
+  `dispatching`) while B's recovery pass ran. The owner is the run's controller boot (`heartbeat_runs` for legacy
+  runs, `native_run_finalizations` for native runs). The recovery pass is the time B's `/api/ready` reports
+  `recovering`; a swap where that phase was never seen has no recovery evidence. A run the product starts
+  elsewhere is reported as a finding, not forced. A swap whose outgoing server is never stopped (B failed to
+  start, the wave ended, or the harness was interrupted) is marked abandoned, and its sampling stops.
 - **Plug-ins.** `ReleaseSwapDriver.plugins` is the per-swap hook list. Each plug-in sees every phase
   (`before_spawn`, `spawned`, `switched`, `stopping`, `stopped`); a plug-in that returns a checkout directory at
   `before_spawn` makes B (and every later server) run that build, for the mixed-version variant.
@@ -597,11 +600,12 @@ way the board shows it:
 | `pass` | Done, and nobody clicked Retry. Failed runs the system recovered from do not count against it. |
 | `needed_retry` | Retry was clicked, during the wave by the observer or now by the grader (the board's Retry button when the UI is served, else the same API call). The result says whether the click worked: accepted, then a later run succeeded or the task is done, checked again after another settle period. |
 | `open_no_owner` | To do or in progress with no live run, no queued wake and no named reason a person must act. |
-| `blocked_non_person` | Blocked, held by an execution blocker or a board recovery action, or interrupted, for a reason that is not a person's. |
-| `waiting_on_person` | Rests on approval, a question, a dependency, review, a usage-limit wait, budget or a shared credential. |
+| `blocked_non_person` | Blocked, held by an execution blocker or a board recovery action, or interrupted, for a reason that is not a person's. A board request such as `choose_model`, `assign_agent`, `resume` or `confirm_run_stopped` counts here: the board asks a person, but it is not one of the reasons below. |
+| `waiting_on_person` | Rests on approval or a question (pending records in the database), a dependency, review, a usage-limit wait, budget or a shared credential. |
 | `still_working` | Still has a live run, a queued wake, a scheduled retry or a system recovery action after the settle period. |
 
-Only `pass` counts as completed. The first line of `release-swap-summary.md` (also the top of `SUMMARY.md`) is
+Only `pass` counts as completed. Each grade names its reason, and the summary counts the non-passing tasks by
+verdict and reason, so a wave shows which failure each task rests in. The first line of `release-swap-summary.md` (also the top of `SUMMARY.md`) is
 the wave's one number: `<pass> / <started> tasks completed without human action`. The table under it gives per
 swap the runs that failed (`failed`, `timed_out`, `interrupted`) between that swap and the next, the runs that
 failed with a lost-ownership code while the outgoing server was still alive and owned them, and the time from

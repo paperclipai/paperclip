@@ -71,6 +71,16 @@ describe("release swap task grade", () => {
     }
   });
 
+  it("names a user-responsibility wait that is not a grade person reason and counts it by reason", () => {
+    const model = gradeReleaseSwapTask(task({ status: "blocked", runs: [failed],
+      interruption: interruption({ state: "waiting_for_user", userAction: "choose_model", responsibility: "user" }) }));
+    expect(model).toMatchObject({ verdict: "blocked_non_person", personReason: null, reason: "user action choose_model" });
+    expect(model.detail).toContain("not one of the grade's person reasons");
+    const question = gradeReleaseSwapTask(task({ status: "blocked", runs: [failed], pendingQuestion: true }));
+    expect(summarizeGrades([model, question, gradeReleaseSwapTask(task())]).byReason)
+      .toEqual({ "blocked_non_person: user action choose_model": 1, "waiting_on_person: question": 1 });
+  });
+
   it("publishes one number: tasks completed without human action over tasks started", () => {
     const grades = [task(), task({ issueId: "i2" }), task({ issueId: "i3", status: "todo", runs: [failed] }),
       task({ issueId: "i4", runs: [failed], retryClicks: [{ at: 0, accepted: true, via: "grader" }] })].map(gradeReleaseSwapTask);
@@ -104,6 +114,11 @@ describe("release swap per-swap numbers", () => {
     expect(second).toMatchObject({ failedRuns: ["late"], lostWhileOldAlive: [], nextEventP50Ms: 300 });
   });
 
+  it("finds a run nested inside a long earlier run, not only neighbours", () => {
+    expect(overlappingRuns([fact({ runId: "A", startedAt: 0, finishedAt: 100 }), fact({ runId: "B", startedAt: 10, finishedAt: 20 }),
+      fact({ runId: "C", startedAt: 30, finishedAt: 50 })], 1_000)).toEqual([{ issueId: "i", runIds: ["A", "B"] }, { issueId: "i", runIds: ["A", "C"] }]);
+  });
+
   it("finds two runs of one task executing at once", () => {
     expect(overlappingRuns([fact({ runId: "a", startedAt: 0, finishedAt: 100 }), fact({ runId: "b", startedAt: 50, finishedAt: 200 }),
       fact({ runId: "c", startedAt: 200, finishedAt: 300 }), fact({ runId: "d", issueId: "other", startedAt: 0, finishedAt: null })], 1_000))
@@ -117,7 +132,7 @@ describe("release swap overlap evidence", () => {
     incomingPhases: [{ phase: "starting", at: 500 }, { phase: "recovering", at: 2_000 }, { phase: "ready", at: 2_600 }],
     probes: [{ kind: "prep", adapter: "codex", nonce: "n", requestedAt: 100, createdAt: 200, issueId: "prep", identifier: null, error: null },
       { kind: "late", adapter: "codex", nonce: "m", requestedAt: 60_000, createdAt: 60_100, issueId: "late", identifier: "CHA-9", error: null }],
-    runs: {}, sampleErrors: 0, plugins: [], evidence: null });
+    runs: {}, sampleErrors: 0, plugins: [], abandoned: null, evidence: null });
   const row = (runId: string, issueId: string, at: number, status: string, ownerPid: number | null, executionStage: string | null, startedAt: number) =>
     ({ runId, issueId, createdAt: startedAt, startedAt, finishedAt: null, errorCode: null, at, status, ownerPid, executionStage, nativePhase: null, lastOutputSeq: 0 });
 
@@ -128,6 +143,14 @@ describe("release swap overlap evidence", () => {
     const evidence = swapEvidence(record);
     expect(evidence).toMatchObject({ lateRunId: "l1", lateStartedBy: "old", lateStartOffsetMs: -19_500, lateOk: true, prepRunIds: ["p1"], prepOk: true,
       startedByOld: ["p1", "l1"], startedByNew: [], findings: [] });
+  });
+
+  it("does not count the incoming server's boot as its recovery pass when no recovering phase was seen", () => {
+    const record = { ...swap(), incomingPhases: [{ phase: "starting", at: 500 }, { phase: "ready", at: 2_600 }] };
+    mergeRunSample(record.runs, row("p1", "prep", 1_000, "running", 10, "preparing", 900));
+    const evidence = swapEvidence(record);
+    expect(evidence).toMatchObject({ recoveryWindow: null, prepOk: false });
+    expect(evidence.findings).toContain("the incoming server's startup recovery pass was not observed (no `recovering` phase before `ready`)");
   });
 
   it("reports a finding instead of a pass when the new server took the runs", () => {

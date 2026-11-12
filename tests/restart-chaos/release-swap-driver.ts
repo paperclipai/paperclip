@@ -86,6 +86,7 @@ export interface SwapRecord {
   runs: Record<string, RunTrace>;
   sampleErrors: number;
   plugins: Array<{ name: string; phase: SwapPhase; error: string | null }>;
+  abandoned: string | null;
   evidence: SwapEvidence | null;
 }
 
@@ -97,6 +98,7 @@ const PREPARING_STAGES = new Set(["preparing", "dispatching", "dispatch"]);
 const LATE_WINDOW_MS = 60_000;
 const SAMPLE_MS = 2_000;
 const SAMPLE_TAIL_MS = 60_000;
+export const SWAP_ABANDON_AFTER_MS = 15 * 60_000;
 
 export function isPreparing(sample: RunSampleRow): boolean {
   if (sample.status !== "running") return false;
@@ -118,9 +120,8 @@ function startedBy(trace: RunTrace, swap: Pick<SwapRecord, "fromPid" | "toPid">)
 export function recoveryWindow(swap: Pick<SwapRecord, "incomingPhases" | "spawnedAt" | "switchedAt">): { from: number; to: number } | null {
   const recovering = swap.incomingPhases.find(phase => phase.phase === "recovering")?.at ?? null;
   const ready = swap.incomingPhases.find(phase => phase.phase === "ready")?.at ?? swap.switchedAt;
-  const from = recovering ?? swap.spawnedAt;
-  if (from === null || ready === null) return null;
-  return { from, to: Math.max(from, ready) };
+  if (recovering === null || ready === null) return null;
+  return { from: recovering, to: Math.max(recovering, ready) };
 }
 
 function preparationSpan(trace: RunTrace): { from: number; to: number } | null {
@@ -132,7 +133,7 @@ function preparationSpan(trace: RunTrace): { from: number; to: number } | null {
 
 export function swapEvidence(swap: SwapRecord): SwapEvidence {
   const traces = Object.values(swap.runs);
-  const findings: string[] = [];
+  const findings: string[] = swap.abandoned ? [`swap abandoned: ${swap.abandoned}`] : [];
   const windowStart = swap.spawnedAt ?? swap.requestedAt;
   const windowEnd = swap.stopRequestedAt ?? Number.POSITIVE_INFINITY;
   const startedInOverlap = traces.filter(trace => trace.startedAt !== null && trace.startedAt >= windowStart && trace.startedAt <= windowEnd);
@@ -154,7 +155,7 @@ export function swapEvidence(swap: SwapRecord): SwapEvidence {
     const span = preparationSpan(trace);
     return span !== null && span.from <= window.to && span.to >= window.from;
   }).map(trace => trace.runId) : [];
-  if (!window) findings.push("the incoming server's startup recovery window was not observed");
+  if (!window) findings.push("the incoming server's startup recovery pass was not observed (no `recovering` phase before `ready`)");
   else if (!prepRunIds.length) findings.push("no run of the outgoing server was seen in preparation during the incoming server's startup recovery");
   return { lateRunId: lateTrace?.runId ?? null, lateStartedBy, lateStartOffsetMs, lateOk, prepRunIds, prepOk: prepRunIds.length > 0,
     recoveryWindow: window, startedByOld, startedByNew, findings };
@@ -182,7 +183,9 @@ export interface ReleaseSwapDriverInput {
   agents: Partial<Record<AdapterId, { id: string }>>;
   reader: SwapRunReader;
   record: (kind: string, data: Record<string, unknown>) => void;
-  apiFor?: (baseUrl: string) => ChaosApi;
+  apiFor?: (baseUrl: string) => Pick<ChaosApi, "post">;
+  sampleMs?: number;
+  abandonAfterMs?: number;
 }
 
 export class ReleaseSwapDriver {
@@ -192,15 +195,17 @@ export class ReleaseSwapDriver {
   private current: SwapRecord | null = null;
   private background: Promise<unknown>[] = [];
   private probeCount = 0;
+  private closed = false;
 
   constructor(private readonly input: ReleaseSwapDriverInput) {}
 
   readonly hook = async (info: SwapPhaseInfo): Promise<string | void> => {
     let swap = this.current;
     if (info.phase === "before_spawn" || !swap) {
+      if (swap) this.abandon(swap, `a new swap (${info.faultId}) began before this one stopped the outgoing server`);
       swap = { index: this.swaps.length + 1, faultId: info.faultId, fromPid: info.fromPid, toPid: null, fromUrl: info.fromUrl, toUrl: null,
         serverRoot: null, requestedAt: info.at, spawnedAt: null, switchedAt: null, overlapEndsAt: null, stopRequestedAt: null, stoppedAt: null,
-        incomingPhases: [], probes: [], runs: {}, sampleErrors: 0, plugins: [], evidence: null };
+        incomingPhases: [], probes: [], runs: {}, sampleErrors: 0, plugins: [], abandoned: null, evidence: null };
       this.swaps.push(swap);
       this.current = swap;
     }
@@ -239,9 +244,9 @@ export class ReleaseSwapDriver {
     this.launchOpen = true;
     this.background.push((async () => {
       const latency = this.startLatency(swap) ?? 5_000;
-      const wait = swap.overlapEndsAt! - RELEASE_SWAP_LATE_LEAD_MS - latency - Date.now();
-      if (wait > 0) await delay(wait);
-      if (swap.stopRequestedAt === null) await this.probe(swap, "late");
+      for (let wait = swap.overlapEndsAt! - RELEASE_SWAP_LATE_LEAD_MS - latency - Date.now(); wait > 0 && !this.closed && swap.abandoned === null;
+        wait = swap.overlapEndsAt! - RELEASE_SWAP_LATE_LEAD_MS - latency - Date.now()) await delay(Math.min(1_000, wait));
+      if (swap.stopRequestedAt === null && swap.abandoned === null) await this.probe(swap, "late");
     })());
   }
 
@@ -253,9 +258,23 @@ export class ReleaseSwapDriver {
     return latencies.length ? latencies.sort((left, right) => left - right)[Math.floor(latencies.length / 2)]! : null;
   }
 
+  private ended(swap: SwapRecord): boolean {
+    if (swap.abandoned === null && swap.stoppedAt === null && Date.now() > swap.requestedAt + (this.input.abandonAfterMs ?? this.input.options.overlapMs + SWAP_ABANDON_AFTER_MS)) {
+      this.abandon(swap, "the outgoing server was not stopped within the swap's time bound (the incoming server failed or the harness stopped)");
+    }
+    return swap.abandoned !== null || (this.closed && (swap.stoppedAt === null || Date.now() > swap.stoppedAt + SAMPLE_TAIL_MS));
+  }
+
+  abandon(swap: SwapRecord, reason: string): void {
+    if (swap.abandoned !== null || swap.stoppedAt !== null) return;
+    swap.abandoned = reason;
+    if (this.current === swap) { this.current = null; this.launchOpen = false; }
+    this.input.record("release_swap_abandoned", { swap: swap.index, faultId: swap.faultId, reason });
+  }
+
   private async watchIncoming(swap: SwapRecord): Promise<void> {
     let prepProbes = 1;
-    while (swap.toUrl && swap.stopRequestedAt === null) {
+    while (swap.toUrl && swap.stopRequestedAt === null && !this.ended(swap)) {
       const phase = await fetch(`${swap.toUrl}/api/ready`, { signal: AbortSignal.timeout(1_000), cache: "no-store" })
         .then(async response => String(((await response.json()) as { status?: string }).status ?? response.status)).catch(() => "unreachable");
       const last = swap.incomingPhases[swap.incomingPhases.length - 1]?.phase;
@@ -277,8 +296,8 @@ export class ReleaseSwapDriver {
       } catch {
         swap.sampleErrors += 1;
       }
-      if (swap.stoppedAt !== null && Date.now() > swap.stoppedAt + SAMPLE_TAIL_MS) break;
-      await delay(SAMPLE_MS);
+      if (this.ended(swap) || (swap.stoppedAt !== null && Date.now() > swap.stoppedAt + SAMPLE_TAIL_MS)) break;
+      await delay(this.input.sampleMs ?? SAMPLE_MS);
     }
     swap.evidence = swapEvidence(swap);
     this.input.record("release_swap_evidence", { swap: swap.index, faultId: swap.faultId, lateOk: swap.evidence.lateOk, prepOk: swap.evidence.prepOk,
@@ -308,10 +327,23 @@ export class ReleaseSwapDriver {
     this.input.record("release_swap_probe", { swap: swap.index, kind, adapter, issueId: probe.issueId, identifier: probe.identifier, error: probe.error });
   }
 
-  async drain(): Promise<void> {
-    await Promise.allSettled(this.background);
+  async drain(cancelled: () => boolean = () => false): Promise<void> {
+    this.closed = true;
+    if (this.current) this.abandonIfStalled(this.current);
+    const settled = Promise.allSettled(this.background);
+    while (!cancelled()) {
+      const done = await Promise.race([settled.then(() => true), delay(1_000).then(() => false)]);
+      if (done) return;
+    }
+    for (const swap of this.swaps) this.abandon(swap, "the harness was interrupted");
+  }
+
+  private abandonIfStalled(swap: SwapRecord): void {
+    if (swap.stopRequestedAt === null) this.abandon(swap, "the wave finished before the swap stopped the outgoing server");
   }
 }
+
+export const RUN_OWNER_BOOT_ID = "coalesce(r.controller_boot_id::text, f.controller_boot_id, f.lease_holder->>'bootId')";
 
 export function pgRunReader(db: Db): SwapRunReader {
   const ms = (value: unknown) => value === null || value === undefined ? null : Number(value);
@@ -322,7 +354,8 @@ export function pgRunReader(db: Db): SwapRunReader {
                 floor(extract(epoch from r.created_at) * 1000) as "createdAt", floor(extract(epoch from r.started_at) * 1000) as "startedAt",
                 floor(extract(epoch from r.finished_at) * 1000) as "finishedAt", ci.pid as "ownerPid", r.execution_stage as "executionStage",
                 r.native_phase as "nativePhase", r.last_output_seq as "lastOutputSeq", floor(extract(epoch from clock_timestamp()) * 1000) as "at"
-           from heartbeat_runs r left join controller_instances ci on ci.boot_id = r.controller_boot_id::text
+           from heartbeat_runs r left join native_run_finalizations f on f.run_id = r.id
+           left join controller_instances ci on ci.boot_id = ${RUN_OWNER_BOOT_ID}
           where r.company_id::text = $1 and (r.created_at >= to_timestamp($2::double precision / 1000) or r.status in ('queued', 'running'))`,
         [companyId, since]) as Array<Record<string, unknown>>;
       return rows.map(row => ({ runId: String(row.runId), issueId: row.issueId === null ? null : String(row.issueId), status: String(row.status),
