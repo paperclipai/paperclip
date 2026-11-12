@@ -3575,6 +3575,7 @@ type IssueBlockerAttentionQueryRow = IssueBlockerAttentionNode & {
 };
 type IssueBlockerAttentionActivePathRow = {
   issueId: string | null;
+  agentId: string;
 };
 type IssueBlockerAttentionAgentRow = {
   id: string;
@@ -4207,6 +4208,7 @@ async function readIssueBlockerAttentionBatch(
     }
   }
 
+  const pendingWorkTargets: Array<{ issueId: string; agentId: string }> = [];
   for (const chunk of chunkList(nodeIds, ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE)) {
     const wakeRowsPromise: Promise<IssueBlockerAttentionActivePathRow[]> =
       dbOrTx
@@ -4214,6 +4216,7 @@ async function readIssueBlockerAttentionBatch(
           issueId: sql<
             string | null
           >`${agentWakeupRequests.payload} ->> 'issueId'`,
+          agentId: agentWakeupRequests.agentId,
         })
         .from(agentWakeupRequests)
         .leftJoin(
@@ -4242,7 +4245,9 @@ async function readIssueBlockerAttentionBatch(
         );
     const wakeRows = await wakeRowsPromise;
     for (const row of wakeRows) {
-      if (row.issueId) activeIssueIds.add(row.issueId);
+      if (!row.issueId) continue;
+      pendingWorkTargets.push({ issueId: row.issueId, agentId: row.agentId });
+      agentIds.add(row.agentId);
     }
   }
 
@@ -4268,7 +4273,7 @@ async function readIssueBlockerAttentionBatch(
       ));
     for (const row of runRows) {
       for (const id of new Set([row.issueId, row.provenanceIssueId])) {
-        if (id && evidenceNodes.get(id)?.assigneeAgentId === row.agentId) activeIssueIds.add(id);
+        if (id && evidenceNodes.get(id)?.assigneeAgentId === row.agentId) pendingWorkTargets.push({ issueId: id, agentId: row.agentId });
       }
     }
   }
@@ -4463,11 +4468,15 @@ async function readIssueBlockerAttentionBatch(
       .from(agents).where(and(eq(agents.companyId, companyId), inArray(agents.id, chunk))));
   }
   const agentsById = new Map(agentRows.map((agent) => [agent.id, agent]));
+  const agentCanRun = (agentId: string) => {
+    const agent = agentsById.get(agentId);
+    return agent?.companyId === companyId && BLOCKER_ATTENTION_INVOKABLE_AGENT_STATUSES.has(agent.status);
+  };
+  for (const target of pendingWorkTargets) {
+    if (agentCanRun(target.agentId)) activeIssueIds.add(target.issueId);
+  }
   for (const [issueId, ownerAgentId] of agentUnblockOwnerByIssueId) {
-    const owner = agentsById.get(ownerAgentId);
-    if (owner?.companyId === companyId && BLOCKER_ATTENTION_INVOKABLE_AGENT_STATUSES.has(owner.status)) {
-      explicitWaitingIssueIds.add(issueId);
-    }
+    if (agentCanRun(ownerAgentId)) explicitWaitingIssueIds.add(issueId);
   }
 
   type PathClassification = {
