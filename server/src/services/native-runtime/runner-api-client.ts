@@ -89,14 +89,21 @@ export function validateRunnerApiCall(value: unknown, context: RunnerApiContext)
  * Callers that reserve a mutation receipt must run this before the reservation.
  */
 export function assertRunnerApiDispatchable(operation: RunnerApiOperation, input: RunnerApiCall, receivedKeys: readonly string[]): void {
-  if (operation.method === "PATCH" && input.body === undefined && !input.files?.length && operation.requestBody?.required) {
-    // A PATCH without a body changes nothing but still returns success, which
-    // reads as a completed update. Name the missing argument instead.
-    throw badRequest(`This request was not sent: this PATCH requires body, a JSON object with the fields to change${patchFieldHint(operation)}. Received arguments: ${[...receivedKeys].sort().join(", ")}.`);
-  }
+  if (input.body !== undefined || input.files?.length || !operation.requestBody?.required) return;
+  // A PATCH without a body succeeds as a no-op that reads like a completed
+  // update. A POST or PUT without a body whose schema names required fields
+  // can only fail at the route. Name the missing argument before sending.
+  const schema = operation.requestBody.content?.["application/json"]?.schema as { required?: unknown } | undefined;
+  const requiresFields = Array.isArray(schema?.required) && schema.required.length > 0;
+  if (!(operation.method === "PATCH" || ((operation.method === "POST" || operation.method === "PUT") && requiresFields))) return;
+  const received = [...receivedKeys].sort();
+  const misplaced = received.filter(key => ["query", "responseText", "saveResponse"].includes(key));
+  throw badRequest(`This request was not sent: ${operation.operationId} requires body, a JSON object with the request fields${requestFieldHint(operation)}. `
+    + `Received arguments: ${received.join(", ")}. Resend with a top-level body argument: {"operationId": ${JSON.stringify(operation.operationId)}, "pathParams": {...}, "body": {...}}.`
+    + (misplaced.length ? ` ${misplaced.join(", ")} never carr${misplaced.length === 1 ? "ies" : "y"} request fields.` : ""));
 }
 
-function patchFieldHint(operation: RunnerApiOperation): string {
+function requestFieldHint(operation: RunnerApiOperation): string {
   const schema = operation.requestBody?.content?.["application/json"]?.schema as { properties?: Record<string, unknown> } | undefined;
   const fields = Object.keys(schema?.properties ?? {});
   if (!fields.length) return "";
