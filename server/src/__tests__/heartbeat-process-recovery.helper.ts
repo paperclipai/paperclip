@@ -3611,7 +3611,7 @@ describeEmbeddedPostgres(`heartbeat orphaned process recovery (part ${part}/4)`,
       cleanupPids.add(childPid);
       // The live server records the run's processes, then restarts: the CLI
       // is gone and only the saved lineage knows the unmarked child.
-      trackRunDescendants({ runId, rootPid: cliPid });
+      await trackRunDescendants({ runId, rootPid: cliPid });
       await exitCli();
       forgetTrackedRunLineageForTests();
       expect(isPidAlive(childPid)).toBe(true);
