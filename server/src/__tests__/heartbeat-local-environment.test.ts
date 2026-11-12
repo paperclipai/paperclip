@@ -107,6 +107,21 @@ function escapedDescendantCommand(pidFile: string, tail: string) {
   };
 }
 
+/**
+ * A process agent command that starts a detached server with a cleared
+ * environment (`setsid env -i`), so the server has no run marker and its own
+ * session, records its PID, works for a moment, then runs `tail`.
+ */
+function envClearedDescendantCommand(pidFile: string, tail: string) {
+  return {
+    command: "bash",
+    args: [
+      "-c",
+      `setsid env -i PATH=/usr/bin:/bin sleep 300 </dev/null >/dev/null 2>&1 & echo $! > '${pidFile}'; sleep 1; ${tail}`,
+    ],
+  };
+}
+
 describeEmbeddedPostgres("heartbeat local environment lifecycle", () => {
   let db!: ReturnType<typeof createDb>;
   let heartbeat!: ReturnType<typeof heartbeatService>;
@@ -329,6 +344,43 @@ describeEmbeddedPostgres("heartbeat local environment lifecycle", () => {
 
           const finished = await waitForRunToFinish(heartbeat, queued!.id);
           expect(finished?.status).toBe(scenario.status);
+          await heartbeat.drainActiveRunExecutions();
+
+          expect(await waitForProcessExit(escapedPid)).toBe(true);
+        } finally {
+          await rm(tempDir, { recursive: true, force: true });
+        }
+      }, 30_000);
+    }
+
+    for (const scenario of [
+      { name: "succeeds", tail: "exit 0", cancel: false },
+      { name: "is cancelled", tail: "exec sleep 300", cancel: true },
+    ] as const) {
+      it(`stops an environment-cleared detached descendant when the run ${scenario.name}`, async () => {
+        const tempDir = await mkdtemp(join(tmpdir(), "paperclip-run-descendant-"));
+        const pidFile = join(tempDir, "pid");
+        try {
+          const agentId = await seedProcessAgent({
+            ...envClearedDescendantCommand(pidFile, scenario.tail),
+            cwd: tempDir,
+            graceSec: 1,
+          });
+          const queued = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+          expect(queued).not.toBeNull();
+          const escapedPid = await readPidFile(pidFile);
+          escapedPids.add(escapedPid);
+          // Its environment carries no run marker.
+          await new Promise((resolve) => setTimeout(resolve, 200));
+          expect(readFileSync(`/proc/${escapedPid}/environ`, "utf8")).not.toContain("PAPERCLIP_RUN_ID");
+
+          if (scenario.cancel) {
+            await new Promise((resolve) => setTimeout(resolve, 1_200));
+            await heartbeat.cancelRun(queued!.id, "Operator Stop");
+          } else {
+            const finished = await waitForRunToFinish(heartbeat, queued!.id);
+            expect(finished?.status).toBe("succeeded");
+          }
           await heartbeat.drainActiveRunExecutions();
 
           expect(await waitForProcessExit(escapedPid)).toBe(true);
