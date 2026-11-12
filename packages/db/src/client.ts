@@ -1,11 +1,11 @@
 import { createHash } from "node:crypto";
-import { drizzle as drizzlePg } from "drizzle-orm/postgres-js";
 import { readFile, readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import postgres from "postgres";
 import { installDatabaseWorkSignals } from "./work-signals.js";
 import { installDatabaseResponseCapture } from "./response-capture.js";
 import { installPreparedQueries } from "./prepared-queries.js";
+import { drizzleWithLazyTransactionQueries } from "./lazy-transaction-queries.js";
 import * as schema from "./schema/index.js";
 
 const MIGRATIONS_FOLDER = fileURLToPath(new URL("./migrations", import.meta.url));
@@ -392,7 +392,7 @@ function createDbClient(url: string, resolved: DatabaseClientOptions, owner?: ob
   // postgres.js calls that error "write CONNECTION_CLOSED" too, so the
   // message cannot establish that replay is safe. Leave retries to callers
   // that know the complete operation is idempotent.
-  const db = installDatabaseWorkSignals(drizzlePg(sql, { schema }), owner);
+  const db = installDatabaseWorkSignals(drizzleWithLazyTransactionQueries(sql, schema), owner);
   installDatabaseResponseCapture(db, schema);
   dedicatedDbFactories.set(db, () => createDbClient(url, {
     ...resolved, maxConnections: 1, applicationName: "paperclip-workspace-finalization-lock",
@@ -648,6 +648,7 @@ const MIGRATIONS_WITH_TOP_LEVEL_STATEMENTS = new Set([
   "0460_workspace_activity_context_index.sql",
   "0461_created_from_legacy_origin_run_index.sql",
   "0470_heartbeat_runs_queued_created_index.sql",
+  "0472_runner_api_capture_pending_deletes.sql",
   "0469_zippy_photon.sql",
 
 

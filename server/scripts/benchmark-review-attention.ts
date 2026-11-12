@@ -6,20 +6,24 @@
  *   GET /api/companies/:companyId/issues              (the dashboard task list)
  *
  * For each request and each fixture size the script reports the statements
- * sent, the server time, the process CPU time, the time the main thread was
- * busy, the bytes allocated, and where a CPU profile of the handler puts the
- * time. With --baseline-ref it runs the pre-fix modules in a second process
- * against the same database and fails unless both versions return the same
- * summary counts, the same attention feed, the same task list and the same
- * review attention for every task in review.
+ * and transactions sent, the rows and the bytes that the database returned,
+ * the server time, the process CPU time, the time the main thread was busy,
+ * the bytes allocated, and where a CPU profile of the handler puts the time.
+ * With --baseline-ref it runs the pre-fix modules in a second process against
+ * the same database and fails unless both versions return the same summary
+ * counts, the same attention feed, the same task index, the same task list
+ * and the same review attention for every task in review.
  *
  *   pnpm --filter @paperclipai/server exec tsx scripts/benchmark-review-attention.ts \
- *     --baseline-ref=<pre-fix commit> --tasks=3000,9000 --agents=60
+ *     --baseline-ref=<pre-fix commit> --tasks=3000,9000 --agents=60 --company-sources
  *
  * Options: --tasks (comma-separated fixture sizes, default 3000,9000),
- * --agents (default 60), --rounds (default 3: each version runs in a new
- * process once per round, in alternating order), --samples (requests measured
- * per round, default 5), --cpu-profile-dir (keep the .cpuprofile files).
+ * --agents (default 60), --company-sources (add what the review fixture leaves
+ * out: budget policies, pull requests, plans, questions and failed runs),
+ * --rounds (default 3: each version runs in a new process once per round, in
+ * alternating order), --samples (requests measured per round, default 5),
+ * --cpu-profile-dir (keep the .cpuprofile files), --statement-log-dir (write
+ * every statement of one more request of each kind).
  */
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
@@ -35,6 +39,8 @@ import { Session } from "node:inspector/promises";
 import express from "express";
 import { and, desc, eq } from "drizzle-orm";
 import { createDb, issues } from "@paperclipai/db";
+import { meterDatabaseStatements } from "../src/__tests__/helpers/database-statement-meter.js";
+import { seedAttentionSummaryVolume } from "../src/__tests__/helpers/attention-summary-fixture.js";
 import { startEmbeddedPostgresTestDatabase } from "../src/__tests__/helpers/embedded-postgres.js";
 import { seedReviewAttentionFixture } from "../src/__tests__/helpers/review-attention-fixture.js";
 
@@ -44,13 +50,17 @@ const scriptPath = fileURLToPath(import.meta.url);
 const git = (...args: string[]) => execFileSync("git", args, { cwd: root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
 // The modules of the fix. The baseline process loads their pre-fix source;
 // every other module is the current tree in both processes.
-const modules = ["server/src/services/issues.ts", "server/src/services/recovery/issue-graph-liveness.ts"];
-// Functions of the review-attention read path, reported from the CPU profile
-// with the time spent in them and everything they call.
+const modules = ["server/src/services/issues.ts", "server/src/services/recovery/issue-graph-liveness.ts",
+  "server/src/services/attention.ts", "server/src/services/budgets.ts"];
+// Functions of the attention read path, reported from the CPU profile with the
+// time spent in them and everything they call.
 const profiledFunctions = ["listIssueReviewAttentionMap", "classifyIssueGraphLiveness", "classifyIssueReviewPaths",
   "reviewFinding", "ownerCandidatesForRecoveryIssue", "orderedInvokableAgents", "isInvokableAgent",
   "getAgentWorkEligibility", "getAgentOrgChainHealth", "listIssueBlockerAttentionMap", "listIssueBlockedInboxAttentionMap",
-  "filterIssuesForActor", "enrichAttentionItems"];
+  "filterIssuesForActor", "enrichAttentionItems", "readIssueBlockerAttentionBatch", "issueSummaryMap", "blockingIssueMap",
+  "blockedWorkCountMap", "resolveIssueAudienceContextMap", "syncItems", "materializeSeedSources", "withIssueLabels",
+  "lastActivityStatsForIssues", "blockedByMapForIssues", "decodeDatabaseTextPreview", "buildPolicySummary",
+  "attentionChangeFingerprint"];
 const round = (value: number, digits = 1) => Number(value.toFixed(digits));
 const median = (values: number[]) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)]!;
 // Bytes this process has allocated since it started, also the collected ones.
@@ -112,14 +122,7 @@ async function runArm() {
   const { issueService } = await import("../src/services/issues.js");
   const companyId = arg("company")!, userId = arg("user")!, samples = Number(arg("samples") ?? 5);
   const db = createDb(arg("database-url")!);
-  const client = db.$client as unknown as { unsafe: (query: string, ...rest: unknown[]) => unknown };
-  const unsafe = client.unsafe;
-  let statements = 0, sqlBytes = 0;
-  client.unsafe = function (this: unknown, query: string, ...rest: unknown[]) {
-    statements += 1;
-    sqlBytes += Buffer.byteLength(query);
-    return unsafe.call(this, query, ...rest);
-  };
+  const meter = meterDatabaseStatements(db, arg("database-url")!);
   let serverMs = 0;
   const app = express();
   app.use((req, res, next) => {
@@ -150,14 +153,24 @@ async function runArm() {
       const measured: Array<Record<string, number>> = [];
       for (let sample = 0; sample < samples; sample++) {
         globalThis.gc?.();
-        statements = 0; sqlBytes = 0;
+        const database = meter.read();
         const cpu = process.cpuUsage(), loop = performance.eventLoopUtilization();
         const allocated = allocatedBytes(), started = performance.now();
         await get(route);
-        const used = process.cpuUsage(cpu);
+        const used = process.cpuUsage(cpu), sent = meter.read();
         measured.push({ wallMs: performance.now() - started, serverMs, cpuMs: (used.user + used.system) / 1_000,
           mainThreadBusyMs: performance.eventLoopUtilization(loop).active,
-          allocatedMb: (allocatedBytes() - allocated) / 1_048_576, statements, sqlBytes });
+          allocatedMb: (allocatedBytes() - allocated) / 1_048_576, statements: sent.statements - database.statements,
+          transactions: sent.transactions - database.transactions, waits: sent.waits - database.waits,
+          rows: sent.rows - database.rows,
+          sqlBytes: sent.sqlBytes - database.sqlBytes, fetchedBytes: sent.bytesReceived - database.bytesReceived });
+      }
+      if (arg("statement-log")) {
+        meter.startLog();
+        await get(route);
+        await fs.writeFile(`${arg("statement-log")}.${name}.json`, JSON.stringify(meter.stopLog().map(statement => ({
+          ...statement, ms: round(statement.ms), sql: statement.sql.replace(/\s+/g, " ").slice(0, 400), sqlBytes: Buffer.byteLength(statement.sql),
+        })), null, 1));
       }
       const profiler = new Session();
       profiler.connect();
@@ -174,6 +187,7 @@ async function runArm() {
     // What both versions must agree on.
     const summary = JSON.parse((await get(requests.summary)).toString("utf8"));
     const feed = JSON.parse((await get("/attention?all=true")).toString("utf8"));
+    const taskIndex = JSON.parse((await get("/attention/tasks")).toString("utf8"));
     const taskList = JSON.parse((await get(requests.taskList)).toString("utf8")) as Array<{ status: string; reviewAttention?: { state: string } }>;
     const reviewRows = await db.select().from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.status, "in_review"))).orderBy(desc(issues.id));
@@ -186,7 +200,8 @@ async function runArm() {
         taskListRows: taskList.length, taskListReviews: taskList.filter(row => row.status === "in_review").length,
         reviewAttentionStates: states },
       digests: { summary: digest({ ...summary, generatedAt: null }), feed: digest({ ...feed, generatedAt: null }),
-        taskList: digest(taskList), reviewAttention: digest(reviewAttention) },
+        taskIndex: digest({ ...taskIndex, generatedAt: null }), taskList: digest(taskList),
+        reviewAttention: digest(reviewAttention) },
     })}`);
   } finally {
     await new Promise(resolve => server.close(resolve));
@@ -236,6 +251,7 @@ register(new URL("./hooks.mjs", import.meta.url), { data: ${JSON.stringify(redir
         // A second company with the same shapes, which no request may read.
         await seedReviewAttentionFixture(db, { tasks: Math.ceil(tasks / 5), agents: agentCount, prefix: "OTH" });
         const fixture = await seedReviewAttentionFixture(db, { tasks, agents: agentCount, prefix: "SYN" });
+        const companySources = process.argv.includes("--company-sources") ? await seedAttentionSummaryVolume(db, fixture) : null;
         await db.$client.unsafe("vacuum analyze");
         await db.$client.end({ timeout: 0 });
         const seedMs = Math.round(performance.now() - seedStarted);
@@ -250,7 +266,8 @@ register(new URL("./hooks.mjs", import.meta.url), { data: ${JSON.stringify(redir
               ...(arm === "baseline" ? ["--import", pathToFileURL(path.join(baselineDir!, "register.mjs")).href] : []),
               scriptPath, `--arm=${arm}`, `--database-url=${temporary.connectionString}`, `--company=${fixture.companyId}`,
               `--user=${fixture.userId}`, `--samples=${samples}`,
-              ...(arg("cpu-profile-dir") ? [`--cpu-profile=${path.join(arg("cpu-profile-dir")!, `${arm}-${tasks}`)}`] : [])],
+              ...(arg("cpu-profile-dir") ? [`--cpu-profile=${path.join(arg("cpu-profile-dir")!, `${arm}-${tasks}`)}`] : []),
+              ...(arg("statement-log-dir") ? [`--statement-log=${path.join(arg("statement-log-dir")!, `${arm}-${tasks}`)}`] : [])],
             { cwd: path.join(root, "server"), stdio: ["ignore", "pipe", "inherit"], env: { ...process.env, NODE_ENV: "production" } });
             let stdout = "";
             child.stdout.on("data", chunk => { stdout += chunk; });
@@ -265,7 +282,7 @@ register(new URL("./hooks.mjs", import.meta.url), { data: ${JSON.stringify(redir
         for (const output of Object.values(byArm).flat()) {
           assert.deepEqual(output.shape, first.shape, "Every run of both versions must return the same counts");
           assert.deepEqual(output.digests, first.digests,
-            "Every run of both versions must return the same summary, feed, task list and review attention");
+            "Every run of both versions must return the same summary, feed, task index, task list and review attention");
         }
         // The samples of every round of a version, and the profile of its last round.
         const summarize = (outputs: ArmOutput[]) => Object.fromEntries(Object.keys(first.results).map(name => {
@@ -274,7 +291,9 @@ register(new URL("./hooks.mjs", import.meta.url), { data: ${JSON.stringify(redir
           const last = outputs.at(-1)!.results[name]!;
           return [name, {
             route: last.route, responseBytes: last.responseBytes, statements: median(field("statements")),
-            sqlTextBytes: median(field("sqlBytes")),
+            transactions: median(field("transactions")), databaseWaits: median(field("waits")),
+            rowsFetched: median(field("rows")),
+            fetchedBytes: median(field("fetchedBytes")), sqlTextBytes: median(field("sqlBytes")),
             serverMs: { median: round(median(field("serverMs"))), min: round(Math.min(...field("serverMs"))) },
             cpuMs: { median: round(median(field("cpuMs"))), min: round(Math.min(...field("cpuMs"))) },
             mainThreadBusyMs: { median: round(median(field("mainThreadBusyMs"))), min: round(Math.min(...field("mainThreadBusyMs"))) },
@@ -282,7 +301,7 @@ register(new URL("./hooks.mjs", import.meta.url), { data: ${JSON.stringify(redir
           }];
         }));
         report[`tasks=${tasks}`] = {
-          fixture: { synthetic: true, ...fixture.counts, otherCompanyTasks: Math.ceil(tasks / 5), seedMs },
+          fixture: { synthetic: true, ...fixture.counts, companySources, otherCompanyTasks: Math.ceil(tasks / 5), seedMs },
           shape: first.shape,
           identicalResponses: byArm.baseline ? Object.keys(first.digests) : "no baseline",
           ...Object.fromEntries(Object.entries(byArm).map(([arm, outputs]) => [arm, summarize(outputs)])),

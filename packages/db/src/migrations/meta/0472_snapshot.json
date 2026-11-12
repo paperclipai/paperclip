@@ -1,5 +1,5 @@
 {
-  "id": "7e487b1f-9906-4ddf-945f-4d12e529b8f3",
+  "id": "77704cfc-2cbe-41de-9d2c-5225b8466646",
   "prevId": "671a422a-0b93-4155-b097-9d35a4fd2b2b",
   "version": "7",
   "dialect": "postgresql",
@@ -4699,7 +4699,7 @@
       "checkConstraints": {
         "ai_connection_defaults_provider_check": {
           "name": "ai_connection_defaults_provider_check",
-          "value": "\"ai_connection_defaults\".\"provider\" in ('anthropic','openai','openrouter','xai','google','github','antigravity')"
+          "value": "\"ai_connection_defaults\".\"provider\" in ('anthropic','openai','openrouter','xai','google','github')"
         },
         "ai_connection_defaults_method_check": {
           "name": "ai_connection_defaults_method_check",
@@ -5172,7 +5172,7 @@
       "checkConstraints": {
         "ai_provider_defaults_provider_check": {
           "name": "ai_provider_defaults_provider_check",
-          "value": "\"ai_provider_defaults\".\"provider\" in ('anthropic','openai','openrouter','xai','google','github','antigravity')"
+          "value": "\"ai_provider_defaults\".\"provider\" in ('anthropic','openai','openrouter','xai','google','github')"
         }
       },
       "isRLSEnabled": false
@@ -53686,6 +53686,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "pending_delete_object_key": {
+          "name": "pending_delete_object_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -53700,6 +53706,21 @@
           "columns": [
             {
               "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "runner_api_response_reservations_asset_idx": {
+          "name": "runner_api_response_reservations_asset_idx",
+          "columns": [
+            {
+              "expression": "asset_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"

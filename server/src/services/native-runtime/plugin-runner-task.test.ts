@@ -553,6 +553,18 @@ describe("plugin Runner release/resume facade", () => {
     ? { kind: "released", taskId: "task" }
     : { kind: "resume", taskId: "task", outcome: "resumed" });
 
+  it.each([true, false])("sends the current Claude credential only for session handoff (%s)", async sessionHandoff => {
+    const task = lifecycleTask();
+    const environment = { CLAUDE_CODE_OAUTH_TOKEN: "fixture-current-token" };
+    const owner = createPluginRunnerTaskOwner({ ...input("claude"), task, sessionHandoff,
+      credential: { type: "claude-env", environment } });
+    await expect(owner.resume(requirements.identity, "transient-ticket")).resolves.toBe("resumed");
+    expect(task).toHaveBeenCalledExactlyOnceWith({
+      kind: "resume", identity: requirements.identity, bootstrapTicket: "transient-ticket",
+      ...(sessionHandoff ? { handoffCredential: { accountIdentity: "selected-account", environment } } : {}),
+    }, { expectedTaskId: "task" });
+  });
+
   it.each(["codex", "claude"])("quiesces %s before release and closes only after its ACK", async harness => {
     const { task } = provider();
     const perform = task.getMockImplementation()!;

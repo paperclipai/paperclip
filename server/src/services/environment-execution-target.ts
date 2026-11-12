@@ -237,6 +237,7 @@ export async function resolveEnvironmentExecutionTarget(input: {
   leaseMetadata: Record<string, unknown> | null;
   lease?: EnvironmentLease | null;
   environmentRuntime?: EnvironmentRuntimeService | null;
+  signal?: AbortSignal;
   // The startup tracer for the provider-exec span. Defaults to the endpoint-
   // gated server tracer, which is a no-op when tracing is off. Tests inject a
   // recording tracer.
@@ -278,6 +279,7 @@ export async function resolveEnvironmentExecutionTarget(input: {
         const result = await runtime.task({ companyId: input.companyId, leaseId: lease.id,
           operation: environmentTaskOperationSchema.parse(operation),
           ...(context?.executionContext ? { executionContext: context.executionContext } : {}),
+          ...(input.signal ? { ownershipSignal: input.signal } : {}),
           ...(context?.expectedTaskId !== undefined ? { expectedTaskId: context.expectedTaskId } : {}) });
         if (result.kind === "description" && result.taskId !== acquisition.providerLeaseId) {
           acquisition.outcome = "replacement";

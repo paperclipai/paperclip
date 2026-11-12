@@ -16,6 +16,7 @@ import { parseTimeFaultOptions } from "./time-faults-config.js";
 import { parseStorageTrigger } from "./storage-trigger.js";
 import { parseNativeTrigger, parseNativeTriggerOutage } from "./native-trigger.js";
 import { parseRepeatedRestartOptions } from "./repeated-restarts.js";
+import { expandReleaseSwapArgs } from "./release-swap-schedule.js";
 import { daytonaRetainsSandboxes } from "./ttft-baseline-stats.js";
 import { PROVIDER_FAULT_KINDS, PROVIDER_FAULT_WORKLOADS, TOOL_COMPLETED_WORKLOADS, UNINTERRUPTED_PROVIDER_MESSAGES, isProviderFault, parseProviderDelays, parseProviderMessages, type ProviderFaultKind } from "./provider-faults.js";
 import { SESSION_FAULT_KINDS, SESSION_FAULT_WORKLOADS, isSessionFault, type SessionFaultKind } from "./session-faults.js";
@@ -93,7 +94,7 @@ function integer(raw: string | undefined, name: string, fallback: number, min: n
 
 export function parseCommand(argv: readonly string[], now = Date.now()): ParsedCommand {
   // Tolerate a forwarded literal `--` (for example from a package runner).
-  const args = argv[0] === "--" ? argv.slice(1) : [...argv];
+  const { args, releaseSwap } = expandReleaseSwapArgs(argv[0] === "--" ? argv.slice(1) : [...argv]);
   const { values } = parseArgs({
     args,
     strict: true,
@@ -420,6 +421,7 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
   if (values["storage-trigger"] !== undefined) options.storageTrigger = parseStorageTrigger(values["storage-trigger"], options);
   if (values["native-trigger"] !== undefined) options.nativeTrigger = parseNativeTrigger(values["native-trigger"], options);
   if (values["native-trigger-outage"] !== undefined) options.nativeTrigger = { ...options.nativeTrigger!, outageMs: parseNativeTriggerOutage(values["native-trigger-outage"], options) };
+  if (releaseSwap) options.releaseSwap = releaseSwap;
   return { mode: "wave", options: applyStagingMix(options, values), keep };
 }
 

@@ -6,6 +6,8 @@ import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import { pluginCapabilityValidator } from "./plugin-capability-validator.js";
 
 const segment = z.string().regex(/^[a-z][a-z0-9.-]{0,99}$/);
+const workerCredentialEnv = z.array(z.string().max(128).regex(/^[A-Z][A-Z0-9_]*_API_KEY$/))
+  .min(1).max(16).refine((names) => new Set(names).size === names.length, "Worker credential names must be distinct");
 export const distributionPluginCatalogSchema = z.object({
   schemaVersion: z.literal(1),
   plugins: z.array(z.object({
@@ -14,6 +16,7 @@ export const distributionPluginCatalogSchema = z.object({
     version: z.string().regex(/^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?(?:\+[a-zA-Z0-9.-]+)?$/),
     directory: segment,
     digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    workerCredentialEnv: workerCredentialEnv.optional(),
   }).strict()).max(100),
 }).strict();
 

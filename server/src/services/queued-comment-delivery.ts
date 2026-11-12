@@ -1,5 +1,6 @@
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, sql, type SQL } from "drizzle-orm";
 import { heartbeatRunEvents, heartbeatRuns, issueComments, type Db } from "@paperclipai/db";
+import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 
 /** The wake reason an inbound chat message records (see chat inbound wakeups). */
 export const EXTERNAL_CHAT_MESSAGE_WAKE_REASON = "External chat message received";
@@ -41,9 +42,65 @@ export async function deliveredQueuedCommentIds(tx: Pick<Db, "select">, input: {
             jsonb_build_object('id', ${issueComments.id}::text))
           or jsonb_path_exists(delivered_run.context_snapshot, '$.paperclipWake.messages[*] ? (@.id == $id)',
             jsonb_build_object('id', ${issueComments.id}::text)))))
-    or ${firstTurnDeliveredSql(companyId, issueId, input.agentId)})`,
+    or ${firstTurnDeliveredSql(companyId, issueId, input.agentId)}
+    or ${historyReadDeliveredSql(companyId, issueId, input.agentId)})`,
   ));
   return new Set(rows.map(row => row.id));
+}
+
+export const TASK_HISTORY_READ_EVENT = "task_history.read";
+
+export async function recordTaskHistoryRead(db: Db, input: {
+  companyId: string; agentId: string; runId: string; comments: ReadonlyArray<{ id: string; updatedAt: Date }>;
+}): Promise<void> {
+  if (input.comments.length === 0) return;
+  await appendHeartbeatRunEvent(db, { companyId: input.companyId, runId: input.runId, agentId: input.agentId,
+    eventType: TASK_HISTORY_READ_EVENT, stream: "system", level: "info",
+    payload: { comments: Object.fromEntries(input.comments.map(comment => [comment.id, comment.updatedAt.toISOString()])) } });
+}
+
+export async function taskHistoryReadsForRun(db: Pick<Db, "select">, input: { companyId: string; runId: string }): Promise<Array<{
+  commentId: string; readAt: Date; revision: Date;
+}>> {
+  const rows = await db.select({ readAt: heartbeatRunEvents.createdAt, payload: heartbeatRunEvents.payload })
+    .from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.companyId, input.companyId),
+      eq(heartbeatRunEvents.runId, input.runId), eq(heartbeatRunEvents.eventType, TASK_HISTORY_READ_EVENT)))
+    .orderBy(heartbeatRunEvents.seq);
+  const latest = new Map<string, { commentId: string; readAt: Date; revision: Date }>();
+  for (const row of rows) {
+    const comments = row.payload?.comments;
+    if (!comments || typeof comments !== "object" || Array.isArray(comments)) continue;
+    for (const [commentId, value] of Object.entries(comments as Record<string, unknown>)) {
+      const revision = typeof value === "string" ? new Date(value) : null;
+      if (revision && !Number.isNaN(revision.getTime())) latest.set(commentId, { commentId, readAt: row.readAt, revision });
+    }
+  }
+  return [...latest.values()];
+}
+
+export async function historyReadDeliveredCommentIds(tx: Pick<Db, "select">, input: {
+  companyId: string; issueId: string; agentId: string; commentIds: string[];
+}): Promise<Set<string>> {
+  if (input.commentIds.length === 0) return new Set();
+  const rows = await tx.select({ id: issueComments.id }).from(issueComments).where(and(
+    eq(issueComments.companyId, input.companyId), eq(issueComments.issueId, input.issueId),
+    inArray(issueComments.id, input.commentIds), historyReadDeliveredSql(input.companyId, input.issueId, input.agentId)));
+  return new Set(rows.map(row => row.id));
+}
+
+function historyReadDeliveredSql(companyId: string, issueId: string, agentId: string) {
+  const readBy = (binding: SQL) => sql`exists (select 1 from ${heartbeatRuns} reading_run
+      cross join lateral (select 1 from ${heartbeatRunEvents} history_read
+        where history_read.company_id = ${companyId} and history_read.run_id = reading_run.id
+          and history_read.event_type = ${TASK_HISTORY_READ_EVENT}
+          and (history_read.payload->'comments'->>${issueComments.id}::text)::timestamptz
+            >= date_trunc('milliseconds', ${issueComments.updatedAt})
+        limit 1) read_revision
+      where reading_run.company_id = ${companyId} and ${binding}
+        and reading_run.agent_id = ${agentId} and reading_run.status = 'succeeded'
+        and reading_run.finished_at >= date_trunc('milliseconds', ${issueComments.updatedAt}) offset 0)`;
+  return sql`(${readBy(sql`reading_run.native_issue_id = ${issueId}`)}
+    or ${readBy(sql`reading_run.context_snapshot->>'issueId' = ${issueId}`)})`;
 }
 
 /**

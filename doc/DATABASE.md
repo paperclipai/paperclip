@@ -2119,6 +2119,26 @@ register before writing, or they can remain unseen until the next startup or
 another notification. Tests should verify both the producer and its outer
 transaction boundary.
 
+## Relational queries inside transactions
+
+Drizzle builds one relational query builder for every schema table when it
+creates a database object, and it creates one for each transaction and each
+savepoint. With the Paperclip schema that is about 100 KB per transaction.
+`createDb` therefore opens transactions through a second Drizzle client on the
+same postgres.js client, created without the schema, and builds `tx.query` the
+first time a transaction reads it (`packages/db/src/lazy-transaction-queries.ts`).
+`db.query`, `tx.query`, and `tx._` keep their contents. `BEGIN`, `SAVEPOINT`,
+commit, rollback, and connection reservation remain Drizzle's and the driver's.
+
+Measure the cost of a transaction and a savepoint with the command below. It
+needs Node.js 25 or later, because Node.js 24 has no V8 allocation counter, and
+it stops with that message on an older runtime:
+
+```sh
+cd packages/db
+TSX_DISABLE_CACHE=1 node --expose-gc --import tsx scripts/benchmark-transaction-allocation.ts
+```
+
 ### Installed skill packages
 
 `company_skill_repository_snapshots` retains its identity and company/content-hash

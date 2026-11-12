@@ -17,6 +17,10 @@ const identity = { runnerInstanceId: "runner", environmentLeaseId: "lease", runI
   normalizedSessionId: "session", turnId: "turn", itemId: "item" };
 const release = { kind: "release", identity } as const;
 const resume = { kind: "resume", identity, bootstrapTicket: "fixture-ticket" } as const;
+const ownership = {
+  kind: "ensure_ownership", operationId: "9df4526f-36c5-4fba-9cf6-3c4fd317f531", identity,
+  sourceTaskId: "source-task", sourceGeneration: "source-generation", targetGeneration: "target-generation", policy: "reclaim_if_needed",
+} as const;
 const description = { kind: "description", taskId: "task", runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } };
 
 async function invoke(operation: unknown, handler: (params: PluginEnvironmentTaskParams) => Promise<PluginEnvironmentTaskResult>) {
@@ -87,6 +91,24 @@ describe("release and resume task contract", () => {
   it("passes known absence through RPC without treating it as a successful reservation", async () => {
     expect(await invoke(resume, async () => ({ kind: "resume", taskId: "task", outcome: "unavailable" })))
       .toMatchObject({ result: { kind: "resume", taskId: "task", outcome: "unavailable" } });
+  });
+
+  it("binds a declarative ownership response to the exact worker request", async () => {
+    for (const status of ["pending", "ready"] as const) {
+      const result = { kind: "ownership", status, taskId: "task", operationId: ownership.operationId,
+        targetGeneration: ownership.targetGeneration } as const;
+      expect(await invoke(ownership, async params => {
+        expect(params.operation).toEqual(ownership);
+        return result;
+      })).toMatchObject({ result });
+      for (const changes of [
+        { taskId: "another-task" },
+        { operationId: "1f083ad0-a357-4f14-ad46-e9df981845b5" },
+        { targetGeneration: "stale-generation" },
+      ]) {
+        expect(await invoke(ownership, async () => ({ ...result, ...changes }))).toHaveProperty("error");
+      }
+    }
   });
 
   it.each(["source mismatch", "claim conflict", "authentication failed", "transport timeout"])("keeps %s as an RPC error", async message => {

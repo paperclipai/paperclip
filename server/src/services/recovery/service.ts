@@ -33,6 +33,7 @@ import { externalConversationStateSql } from "../slack-conversation-state.js";
 import { isIssueReviewPathRecoveryRun } from "./review-path-recovery.js";
 import { escalateExhaustedIssueReviewPathRecovery } from "./review-path-recovery-escalation.js";
 import { executionRetryAccounting, INTERRUPTED_PREPARATION_RETRY_REASON } from "../execution-recovery-attempt.js";
+import { assignedWorkSweep } from "./assigned-work-sweep.js";
 import { isExplicitContinuationRetryClaim } from "../explicit-continuation-retry-claim.js";
 import {
   decideLegacyContinuation, legacyDispositionEpisode, legacyDispositionFingerprint,
@@ -6813,7 +6814,17 @@ export function recoveryService(
     return result;
   }
 
+  // The assigned-work invariant: the backstop that leaves no open assigned
+  // task with nothing running, nothing pending and no one else's move. The
+  // stranded sweep above still decides how a known failure resumes.
+  const assignedWork = assignedWorkSweep(db, {
+    enqueueWakeup: (agentId, opts) => deps.enqueueWakeup(agentId, opts),
+    liveRunExecutions: deps.liveRunExecutions,
+    settleLostRunProcess: deps.settleLostRunProcess,
+  });
+
   return {
+    assignedWork,
     buildRunOutputSilence,
     escalateStrandedRecoveryIssueInPlace,
     escalateStrandedAssignedIssue,

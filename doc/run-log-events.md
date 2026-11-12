@@ -1002,6 +1002,28 @@ creates no Telemetry or OpenTelemetry export.
 Neither wait consumes the provider-failure retry allowance. Each stops after 30
 deferrals, after which the run follows the normal failure path.
 
+## Task history reads
+
+When a native run reads its task's comments through `get_task_history`, the
+server writes one `task_history.read` event (`stream: "system"`, level `info`)
+to that run's log. Its payload has one field, `comments`, which maps each
+returned comment ID to that comment's `updatedAt` timestamp. It contains no comment bodies or
+author identifiers. The event creates no Telemetry or OpenTelemetry export.
+
+Per-comment delivery (`deliveredQueuedCommentIds`) reads this event. A
+person's comment counts as received when a run of the task's assignee succeeded
+after reading the comment's current revision. The comment's queued
+wake then neither reopens the finished task nor starts another turn. An edit
+after the read, or a read by a run that did not succeed, leaves the comment
+owed, so it is delivered once. The check reads only the assignee's succeeded
+runs of that task that finished at or after the comment's current revision,
+through the existing run-binding and `(company_id, run_id)` event indexes.
+A saved follow-up resumed after a remote Stop uses the same rule. A read by a
+run that did not succeed never counts. `taskHistoryReadsForRun` lists the
+comments one run read, with each read's time and the comment revision it saw,
+whatever the run's outcome. A failure to write the event leaves the comment
+owed in the same way.
+
 ## Managed Agent File Save Receipts
 
 The server writes `instruction_save` after managed file collection or a warm
