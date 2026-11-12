@@ -1010,6 +1010,7 @@ export async function createApp(
     },
   );
   runtimePluginLoader = loader;
+  workerManager.setActivationTimeoutRecovery?.(plugin => loader.requestActivationTimeoutRecovery(plugin));
   const browserUse = browserUseService(db, undefined,
     { cancelWorkForScope: heartbeatService(db, { pluginWorkerManager: workerManager }).cancelBudgetScopeWork },
     (session, run) => toolGateway.browserUseSessionAuthorized({ ...session, runId: run.heartbeatRunId, invocationId: run.invocationId }));
@@ -1400,6 +1401,7 @@ export async function createApp(
   const shutdownAppServices = (): Promise<void> => {
     if (appServicesShutdown) return appServicesShutdown;
     appServicesShutdown = finishServiceShutdown(() => scheduler.stop(), async () => {
+      await loader.stopActivationTimeoutRecovery();
       await agentLifecycle.stop();
       unregisterMcpOwners();
       await publicMcpEvents?.stop();
