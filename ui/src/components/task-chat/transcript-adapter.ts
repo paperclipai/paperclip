@@ -1384,12 +1384,39 @@ export function omitProgressRepeatedByResponseAcrossSegments(
       }
     }
   }
-  if (redundantSegmentIndex < 0) return segments;
+  if (redundantSegmentIndex < 0) return omitProgressComposingResponse(segments, normalizedResponse);
   return segments.map((items, segmentIndex) =>
     segmentIndex === redundantSegmentIndex
       ? items.filter((_, index) => index !== redundantIndex)
       : items,
   );
+}
+
+/**
+ * A runner can save one reply from several progress messages written after
+ * the last work tool (an answer, then a closing line after the completion
+ * call), joined by a blank line. When the latest progress messages compose the
+ * response exactly, the response bubble owns all of them.
+ */
+function omitProgressComposingResponse(
+  segments: readonly (readonly TaskChatItem[])[],
+  normalizedResponse: string,
+): readonly (readonly TaskChatItem[])[] {
+  const progress: Array<{ segmentIndex: number; index: number; text: string }> = [];
+  segments.forEach((items, segmentIndex) => items.forEach((item, index) => {
+    if (item.kind === "message" && item.interstitial && item.channel === "progress" && item.text.trim()) {
+      progress.push({ segmentIndex, index, text: item.text.trim() });
+    }
+  }));
+  for (let count = 2; count <= progress.length; count += 1) {
+    const tail = progress.slice(-count);
+    if (tail.map((part) => part.text).join("\n\n") !== normalizedResponse) continue;
+    const omitted = new Set(tail.map((part) => `${part.segmentIndex}:${part.index}`));
+    return segments.map((items, segmentIndex) =>
+      items.filter((_, index) => !omitted.has(`${segmentIndex}:${index}`)),
+    );
+  }
+  return segments;
 }
 
 /**
