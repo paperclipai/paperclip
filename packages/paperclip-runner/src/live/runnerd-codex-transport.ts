@@ -9644,7 +9644,7 @@ export function describeRunnerCommandStall(input: {
   commandId: string | undefined;
   connectedRunners: number;
   disconnectedForMs: number | null;
-  committedEvents: ReadonlyArray<{ sourceSeq: number; envelope?: { emittedAt?: unknown } }>;
+  committedEvents: ReadonlyArray<{ sourceSeq: number; envelope?: Record<string, unknown> }>;
   now: number;
 }): string {
   const target = input.commands.find(command => command.commandId === input.commandId);
@@ -9656,7 +9656,10 @@ export function describeRunnerCommandStall(input: {
     return Number.isFinite(issued) && (oldest === null || issued < oldest) ? issued : oldest;
   }, null);
   const last = input.committedEvents.at(-1);
-  const lastEmitted = typeof last?.envelope?.emittedAt === "string" ? Date.parse(last.envelope.emittedAt) : NaN;
+  // A committed event keeps the Runner's emission time inside its PRP payload.
+  const emittedAt = (last?.envelope?.payload as Record<string, unknown> | undefined)?.emittedAt
+    ?? last?.envelope?.emittedAt;
+  const lastEmitted = typeof emittedAt === "string" ? Date.parse(emittedAt) : NaN;
   const seconds = (ms: number) => `${Math.max(0, Math.round(ms / 1000))}s`;
   return [
     `runner ${input.connectedRunners > 0 ? "connected" : input.disconnectedForMs === null ? "never connected" : `disconnected ${seconds(input.disconnectedForMs)}`}`,

@@ -7019,7 +7019,7 @@ describe("a Runner command that gets no answer", () => {
           commands: [command(7, "semantic_tool.result", "pending", "2026-11-12T07:10:20.000Z"),
             command(8, "turn.steer", "completed", "2026-11-12T07:10:21.000Z"),
             command(9, "session.snapshot", "pending", "2026-11-12T07:12:58.000Z")],
-          committedEvents: [{ sourceSeq: 152, envelope: { emittedAt: "2026-11-12T07:10:27.000Z" } }] }) });
+          committedEvents: [{ sourceSeq: 152, envelope: { runId: "run-1", payload: { eventType: "item.completed", emittedAt: "2026-11-12T07:10:27.000Z" } } }] }) });
     } catch (error) { failure = error; }
     expect((failure as Error).message).toBe("provider_transport_failed: PRP command session.snapshot timed out "
       + "(runner connected; pending ahead 1 [semantic_tool.result] oldest 188s; last runner event seq 152 181s ago)");

@@ -8995,7 +8995,7 @@ export function nativeSessionFailureSourceCode(
   // before startup completes, and session.open precedes every prompt. The
   // outcome is unknown, so durable evidence (no provider event, no checkpoint)
   // still decides whether a same-run bootstrap retry is safe.
-  if (/^(?:runner_local_connect_failed|runner_direct_wss_failed|runner_ingress_unavailable): PRP command session\.open timed out$/.test(message)) {
+  if (/^(?:runner_local_connect_failed|runner_direct_wss_failed|runner_ingress_unavailable): PRP command session\.open timed out(?: \([^()]*\))?$/.test(message)) {
     return "provider_session_open_timeout";
   }
   // This process has no HTTP listener (graceful shutdown closes it first), so
