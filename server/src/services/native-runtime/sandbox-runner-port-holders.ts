@@ -116,10 +116,8 @@ export async function retireSandboxRunnerPortHolders(input: {
     timeoutMs: 15_000,
   }).catch(() => null);
   if (!listed || listed.exitCode !== 0 || listed.timedOut) {
-    await input.onLog?.("stderr",
-      `[paperclip-runner] Could not list other Runners on this sandbox (exit=${listed?.exitCode ?? "none"} timedOut=${listed?.timedOut ?? false}); launching as before.\n`)
-      .catch(() => undefined);
-    return [];
+    throw new NativePredecessorRetirementUnprovenError(null, input.providerLeaseId,
+      new Error(`runner_port_holder_inventory_unavailable: exit=${listed?.exitCode ?? "none"} timedOut=${listed?.timedOut ?? false}`));
   }
   const retired: string[] = [];
   for (const holder of parseSandboxRunnerHolders(listed.stdout)) {
