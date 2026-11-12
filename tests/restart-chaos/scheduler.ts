@@ -7,6 +7,7 @@ import { isTimeFault, timeFaultHoldMs } from "./time-faults-config.js";
 import { isMultiServerFault, multiServerHoldMs } from "./multi-server.js";
 import { isRepeatedRestartFault, planRestartSteps, type RestartStep } from "./repeated-restarts.js";
 import { k15HoldMs } from "./redeploy.js";
+import { CR5_FIRE_WINDOW_MS, classRHoldMs, isClassRFault } from "./class-r.js";
 import { K4_MIN_HOLD_MS, type AdapterId, type FaultKind, type ScheduledFault, type StormFault, type StormPlan, type TaskFaultKind, type TaskPlan, type TriggerId, type WavePlan, type WaveOptions, type WorkloadId } from "./types.js";
 import type { ReplayRef } from "./config.js";
 
@@ -81,8 +82,8 @@ const STORM_RESULT_FAULTS: readonly FaultKind[] = ["K1", "K2"];
  * A `result` task in a storm also fires its own K1 or K2 just after its run
  * accepts a result, the window of RC-30, RC-33 and RC-41.
  */
-function stormCellFaults(options: Pick<WaveOptions, "faults" | "stormMinutes" | "providerFaults" | "diskFullFaults" | "sessionFaults">, trigger: TriggerId): readonly TaskFaultKind[] {
-  if (!options.stormMinutes) return [...options.faults, ...(options.providerFaults ?? []), ...(options.diskFullFaults ?? []), ...(options.sessionFaults ?? [])];
+function stormCellFaults(options: Pick<WaveOptions, "faults" | "stormMinutes" | "providerFaults" | "diskFullFaults" | "sessionFaults" | "baseline">, trigger: TriggerId): readonly TaskFaultKind[] {
+  if (!options.stormMinutes) return [...options.faults, ...(options.providerFaults ?? []), ...(options.diskFullFaults ?? []), ...(options.sessionFaults ?? []), ...(options.baseline ? ["K0" as const] : [])];
   if (trigger === "time") return ["K13"];
   if (trigger !== "result") throw new Error(`A K13 storm fires on its own clock; --triggers ${trigger} does not combine with it (use time or result)`);
   const faults = options.faults.filter(fault => STORM_RESULT_FAULTS.includes(fault));
@@ -98,7 +99,7 @@ function pinnedFireAfterMs(faultAfterMs: number | undefined, drawn: number): num
   return faultAfterMs ?? drawn;
 }
 
-export function planTasks(options: Pick<WaveOptions, "seed" | "tasks" | "workloads" | "adapters" | "faults" | "triggers" | "stormMinutes" | "k4HoldMaxMs" | "k15HoldMs" | "tm1HoldMs" | "faultAfterMs" | "providerFaults" | "diskFullFaults" | "sessionFaults" | "rrGapMs">): TaskPlan[] {
+export function planTasks(options: Pick<WaveOptions, "seed" | "tasks" | "workloads" | "adapters" | "faults" | "triggers" | "stormMinutes" | "k4HoldMaxMs" | "k15HoldMs" | "tm1HoldMs" | "faultAfterMs" | "providerFaults" | "diskFullFaults" | "sessionFaults" | "rrGapMs" | "baseline" | "cr1HoldMs" | "cr2HoldMs" | "cr3StallMs">): TaskPlan[] {
   const rng = createRng(options.seed);
   const triggers = options.triggers?.length ? options.triggers : ["time" as const];
   for (const trigger of triggers) {
@@ -106,12 +107,16 @@ export function planTasks(options: Pick<WaveOptions, "seed" | "tasks" | "workloa
       throw new Error(`Trigger "${trigger}" needs workload ${TRIGGER_WORKLOAD[trigger] ?? "?"} in --workloads`);
     }
   }
+  if (options.faults.includes("CR5") && !triggers.includes("time")) {
+    throw new Error("CR5 stalls the plugin at launch on the time trigger; add time to --triggers");
+  }
   const cells: Array<{ workload: WorkloadId; adapter: AdapterId; fault: TaskFaultKind; trigger: TriggerId }> = [];
   // Same cell order as before storms took triggers, so a seed keeps its plan.
   const allowed = new Map(triggers.map(trigger => [trigger, stormCellFaults(options, trigger)]));
   const faults = [...new Set([...allowed.values()].flat())];
   for (const workload of options.workloads) for (const adapter of options.adapters) for (const fault of faults) {
     for (const trigger of triggers) {
+      if (fault === "CR5" && trigger !== "time") continue;
       if (triggerFitsWorkload(trigger, workload) && allowed.get(trigger)!.includes(fault)) cells.push({ workload, adapter, fault, trigger });
     }
   }
@@ -128,10 +133,11 @@ export function planTasks(options: Pick<WaveOptions, "seed" | "tasks" | "workloa
       index,
       ...cellRest,
       ...(trigger === "time" ? {} : { trigger, triggerDelayMs: rng.int(...TRIGGER_DELAY_RANGE_MS[trigger]) }),
-      fireAfterMs: cell.fault === "K13" ? 0 : pinnedFireAfterMs(options.faultAfterMs, rng.int(fireMin, fireMax)),
+      fireAfterMs: cell.fault === "K13" || cell.fault === "K0" ? 0 : cell.fault === "CR5" ? rng.int(...CR5_FIRE_WINDOW_MS) : pinnedFireAfterMs(options.faultAfterMs, rng.int(fireMin, fireMax)),
       holdMs: cell.fault === "K4" ? rng.int(...k4HoldRange(options.k4HoldMaxMs)) : isTimeFault(cell.fault) ? timeFaultHoldMs(cell.fault, rng.int, options.tm1HoldMs)
         : isMultiServerFault(cell.fault) ? multiServerHoldMs(cell.fault, rng.int)
-        : cell.fault === "K15" ? k15HoldMs(options.k15HoldMs, rng.int) : 0,
+        : cell.fault === "K15" ? k15HoldMs(options.k15HoldMs, rng.int)
+          : isClassRFault(cell.fault) ? classRHoldMs(cell.fault, options, rng.int) : 0,
       // Drawn only for RR tasks, so the plans of existing seeds do not change.
       ...(isRepeatedRestartFault(cell.fault) ? { restartSteps: planRestartSteps(cell.fault, rng.int, options.rrGapMs) } : {}),
       followUpAfterMs: definition.followUpWindowMs ? rng.int(definition.followUpWindowMs[0], definition.followUpWindowMs[1]) : null,
@@ -154,7 +160,9 @@ function replayMasks(source: readonly string[] | undefined, added: readonly stri
 
 export function planWave(waveId: string, options: WaveOptions, createdAt = new Date()): WavePlan {
   return { schema: "paperclip.restart-chaos.wave-plan/v1", waveId, seed: options.seed,
-    createdAt: createdAt.toISOString(), options, tasks: withProviderFaultRules(planTasks(options), options),
+    createdAt: createdAt.toISOString(), options, tasks: withProviderFaultRules(planTasks(options), options)
+      // `--long-turn-minutes` is part of each task's plan, so a replay keeps it.
+      .map(task => options.longTurnMinutes ? { ...task, longTurnMinutes: options.longTurnMinutes } : task),
     ...(options.stormMinutes ? { storm: planStorm(options.seed, options.stormMinutes, options.faults, options.k4HoldMaxMs, options.k15HoldMs) } : {}) };
 }
 

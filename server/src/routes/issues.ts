@@ -22,7 +22,8 @@ import { activityService } from "../services/activity.js";
 import { listIssueSummaries } from "../services/issue-summaries.js";
 import { listIssueStatusBlockerAttention } from "../services/issue-status-presentation.js";
 import { assertNoCaseHandoffMutation } from "../services/heartbeat/case-handoff-lifecycle.js";
-import { assertLegacyRunTaskOwnership } from "../legacy-run-task-ownership.js";
+import { assertHandedOffRunTaskOwnership } from "../run-task-ownership.js";
+import { recordNativeHumanSelfHandoff } from "../services/native-runtime/native-human-self-handoff.js";
 import { runRetainsIssueIdentity } from "../services/task-repository-acquisition.js";
 import { withConversationReadState } from "../services/agent-chat-read-state.js";
 import { markIssueReadSchema } from "@paperclipai/shared";
@@ -30,7 +31,7 @@ import { enqueueFastResponse } from "../services/fast-responses.js";
 import { hasRequiredWorkspaceRecovery, LEGACY_WORKSPACE_RECOVERY_SCHEMA } from "../services/workspace-restore-recovery-state.js";
 import { hasUnverifiedNativeWorkspaceFinalizationOwner } from "../services/native-runtime/native-workspace-finalization-recovery-state.js";
 import { monitorPoliciesEqual, applyActorMonitorScheduledBy, assertCanManageIssueMonitor, summarizeIssueMonitor } from "../services/issue-monitors.js";
-import type { IssuePrivacyConstraints } from "@paperclipai/shared";
+import type { IssuePrivacyConstraints, WithdrawIssueThreadInteraction } from "@paperclipai/shared";
 import { canActorReadHeartbeatRun } from "../services/heartbeat-run-privacy.js";
 import {
   childCreatedByRequest,
@@ -46,6 +47,7 @@ import { createIssueReadTiming } from "../services/issue-read-timing.js";
 import { createInboxMineTiming, type InboxMinePhaseDurations } from "../services/inbox-mine-timing.js";
 import { isNativeWorkspaceExportRepairCause } from "@paperclipai/shared";
 import { resumeNativeWorkspaceAfterOwnerStop } from "../services/native-runtime/native-workspace-owner-recovery.js";
+import { enqueueOwnQuestionDismissalWake } from "../services/native-runtime/own-question-wait.js";
 import { confirmNativeControllerStopped, NATIVE_CONTROLLER_HOST_UNVERIFIED } from "../services/native-runtime/native-controller-host-recovery.js";
 import { confirmOwnerGone, OWNER_UNPROVABLE_CAUSE } from "../services/recovery/owner-gone-attestation.js";
 import { OWNABLE_KINDS } from "../services/recovery/ownership-registry.js";
@@ -208,6 +210,7 @@ import type { StorageService } from "../storage/types.js";
 import { validate, validateIssueMutationBody } from "../middleware/validate.js";
 import * as serviceIndex from "../services/index.js";
 import { conversationDecisionReceiptsService } from "../services/conversation-decision-receipts.js";
+import { attentionHandledDetails, attentionHandledFor, type AttentionHandledFor } from "../services/attention-receipts.js";
 import {
   accessService,
   agentService,
@@ -2485,6 +2488,124 @@ function readSecretProposalContinuationContext(interaction: {
     instructions:
       "the binding was not created; inspect the failure comment and submit a fresh proposal after fixing the cause.",
   };
+}
+
+/**
+ * Withdraw a pending interaction and tell the agent: cancel a native question
+ * run that waits on it, log `issue.thread_interaction_withdrawn`, and queue the
+ * assignee's continuation wake. The issue route and the attention close
+ * endpoint (PAP-749 plan §2, Rule 6) share this one path. Callers authorize
+ * the actor first.
+ */
+export async function withdrawIssueThreadInteractionAndNotify(input: {
+  db: Db;
+  heartbeat: ReturnType<typeof heartbeatService>;
+  issue: {
+    id: string;
+    companyId: string;
+    assigneeAgentId: string | null;
+    status: string;
+  };
+  interactionId: string;
+  body: WithdrawIssueThreadInteraction;
+  actor: ReturnType<typeof getActorInfo>;
+  /** A person may withdraw a card that outlived its closed task. */
+  allowClosedIssueForHuman?: boolean;
+  /**
+   * Who the card was for, read before the withdraw (PAP-749 plan §6). Omitted:
+   * read here. `null`: the caller found no other person.
+   */
+  handledFor?: AttentionHandledFor | null;
+}) {
+  const { db, heartbeat, issue, actor } = input;
+  const handledFor = input.handledFor !== undefined
+    ? input.handledFor
+    : await attentionHandledFor(
+      db,
+      issue.companyId,
+      { sourceKind: "issue_thread_interaction", sourceId: input.interactionId },
+      actor.actorType === "user" ? actor.actorId : null,
+    );
+  let nativeRunId: string | null = null;
+  const interaction = await issueThreadInteractionService(db).withdrawInteraction(
+    issue,
+    input.interactionId,
+    input.body,
+    {
+      agentId: actor.agentId,
+      runId: actor.runId,
+      userId: actor.actorType === "user" ? actor.actorId : null,
+    },
+    {
+      allowClosedIssueForHuman: input.allowClosedIssueForHuman,
+      afterResolveInTransaction: async (tx, resolved) => {
+        if (resolved.kind !== "ask_user_questions") return;
+        nativeRunId = await requestNativeQuestionRunCancellation(
+          tx,
+          resolved,
+          {
+            kind: "interaction_withdrawn",
+            interactionId: resolved.id,
+          },
+        );
+      },
+    },
+  );
+  if (nativeRunId) {
+    try {
+      await heartbeat.cancelRun(
+        nativeRunId,
+        "Question withdrawn while waiting for operator input",
+        {
+          resultJson: {
+            withdrawnInteractionId: interaction.id,
+            withdrawnByActorType: actor.actorType,
+            withdrawnByActorId: actor.actorId,
+          },
+        },
+      );
+    } catch (err) {
+      logger.warn(
+        { err, runId: nativeRunId, interactionId: interaction.id },
+        "native question withdrawal cancellation deferred to recovery sweep",
+      );
+    }
+  }
+  await logActivity(db, {
+    companyId: issue.companyId,
+    actorType: actor.actorType,
+    actorId: actor.actorId,
+    agentId: actor.agentId,
+    runId: actor.runId,
+    agentApiKeyId: actor.agentApiKeyId,
+    action: "issue.thread_interaction_withdrawn",
+    entityType: "issue",
+    entityId: issue.id,
+    details: {
+      interactionId: interaction.id,
+      interactionKind: interaction.kind,
+      interactionStatus: interaction.status,
+      reason:
+        interaction.result && "reason" in interaction.result
+          ? (interaction.result.reason ?? null)
+          : null,
+      ...attentionHandledDetails(handledFor, "withdrawn", {
+        reason: interaction.result && "reason" in interaction.result ? interaction.result.reason : null,
+      }),
+    },
+  });
+
+  if (actor.agentId !== issue.assigneeAgentId) {
+    await queueResolvedInteractionContinuationWakeup({
+      db,
+      heartbeat,
+      issue,
+      interaction,
+      actor,
+      source: "issue.interaction.withdraw",
+    });
+  }
+  return interaction;
 }
 
 const REQUEST_ITEM_VERDICTS_WAKE_COALESCE_WINDOW_MS = 2_000;
@@ -5824,7 +5945,7 @@ export function issueRoutes(
     if (req.actor.source === "agent_jwt" && req.actor.runId &&
         issue.assigneeAgentId === null && issue.assigneeUserId) {
       const run = await heartbeat.getRun(req.actor.runId);
-      if (run?.agentId === actorAgentId) assertLegacyRunTaskOwnership(run, issue);
+      if (run?.agentId === actorAgentId) assertHandedOffRunTaskOwnership(run, issue);
     }
     // Task-watchdog runs receive a scoped *grant* to mutate issues inside the
     // watched subtree. This must be evaluated before the base assignee-ownership
@@ -7542,6 +7663,17 @@ export function issueRoutes(
     }
 
     return runToInterrupt?.status === "running" ? runToInterrupt : null;
+  }
+
+  async function resolveQueuedOutgoingAssigneeRun(issue: {
+    companyId: string;
+    assigneeAgentId: string | null;
+    executionRunId?: string | null;
+  }) {
+    if (!issue.executionRunId || !issue.assigneeAgentId) return null;
+    const run = await heartbeat.getRun(issue.executionRunId);
+    return run && run.status === "queued" && run.companyId === issue.companyId &&
+      run.agentId === issue.assigneeAgentId ? run : null;
   }
 
   type IssueQueueDb = Db | Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -15549,18 +15681,37 @@ export function issueRoutes(
           issueId: existing.id,
           agentId: existing.assigneeAgentId,
         });
-        const runToStopForReassignment = await resolveActiveIssueRun(existing);
+        const runToStopForReassignment = await resolveActiveIssueRun(existing) ??
+          await resolveQueuedOutgoingAssigneeRun(existing);
+        // The run handing its own task to a person finishes its turn instead of
+        // cancelling itself. Native and legacy alike: the reassignment clears
+        // the execution lock, the native tool binding and finalizer stop acting
+        // for a task the run no longer owns, and later REST mutations from the
+        // outgoing run are rejected (assertHandedOffRunTaskOwnership).
         const isHumanSelfHandoff =
           req.actor.type === "agent" &&
           req.actor.source === "agent_jwt" &&
           nextAssigneeAgentId === null &&
           typeof nextAssigneeUserId === "string" &&
           req.actor.agentId === existing.assigneeAgentId &&
-          runToStopForReassignment?.runtimeMode === "legacy" &&
+          (runToStopForReassignment?.runtimeMode === "legacy" || runToStopForReassignment?.runtimeMode === "native") &&
           runToStopForReassignment.id === req.actor.runId &&
           runToStopForReassignment.agentId === req.actor.agentId &&
           runToStopForReassignment.companyId === existing.companyId &&
           runToStopForReassignment.contextSnapshot?.issueId === existing.id;
+        // Record the native hand-off on the run before the task changes, so the
+        // run's terminal fence accepts the task it gave away. A failed update
+        // leaves the record unused: the fence also requires the person to own it.
+        if (isHumanSelfHandoff && runToStopForReassignment.runtimeMode === "native" &&
+            !await recordNativeHumanSelfHandoff(db, { companyId: existing.companyId, runId: runToStopForReassignment.id,
+              agentId: runToStopForReassignment.agentId, issueId: existing.id, assigneeUserId: nextAssigneeUserId as string })) {
+          // The run is no longer the running native run of this task: do not
+          // save an assignment its own terminal fence would then refuse.
+          throw conflict("The run handing off this task is no longer running it. Read the task again and retry.", {
+            code: "native_self_handoff_run_changed",
+            runId: runToStopForReassignment.id,
+          });
+        }
         if (runToStopForReassignment && !isHumanSelfHandoff) {
           let cancelled: Awaited<ReturnType<typeof heartbeat.cancelRun>> = null;
           try {
@@ -15569,6 +15720,7 @@ export function issueRoutes(
               "Cancelled before issue reassignment",
               {
                 errorCode: "issue_reassigned",
+                suppressImmediateRecovery: true,
                 resultJson: { reassignmentStopConfirmed: true, issueMutationStopId },
                 eventMessage: "run cancelled before issue reassignment",
                 eventPayload: { issueId: existing.id },
@@ -18434,6 +18586,13 @@ export function issueRoutes(
         throw unprocessable(
           "Remembered permission is only supported for tool reviews",
         );
+      // Who the card was for, read before the answer (PAP-749 plan §6).
+      const handledFor = await attentionHandledFor(
+        db,
+        issue.companyId,
+        { sourceKind: "issue_thread_interaction", sourceId: interactionId },
+        actor.actorType === "user" ? actor.actorId : null,
+      );
       const { interaction, createdIssues, continuationIssue } =
         await interactionSvc.acceptInteraction(issue, interactionId, req.body, {
           agentId: actor.agentId,
@@ -18617,6 +18776,9 @@ export function issueRoutes(
             interaction.kind === "suggest_tasks"
               ? (interaction.result?.skippedClientKeys?.length ?? 0)
               : 0,
+          // The receipt uses the history verb: an accepted card reads
+          // "Approved by @x", an answered one "Answered by @x" (PAP-767).
+          ...(interaction.status === "expired" ? {} : attentionHandledDetails(handledFor, interaction.status === "answered" ? "answered" : "approved")),
         },
       });
 
@@ -18739,6 +18901,13 @@ export function issueRoutes(
         res.json(await interactionSvc.getById(current.id));
         return;
       }
+      // Who the card was for, read before the answer (PAP-749 plan §6).
+      const handledFor = await attentionHandledFor(
+        db,
+        issue.companyId,
+        { sourceKind: "issue_thread_interaction", sourceId: interactionId },
+        actor.actorType === "user" ? actor.actorId : null,
+      );
       const interaction = await interactionSvc.rejectInteraction(
         issue,
         interactionId,
@@ -18783,6 +18952,8 @@ export function issueRoutes(
                   interaction.kind === "request_checkbox_confirmation"
                 ? (interaction.result?.reason ?? null)
                 : null,
+          // Reject and Revise… both record "Changes requested" (PAP-767).
+          ...(interaction.status === "expired" ? {} : attentionHandledDetails(handledFor, "changes_requested")),
         },
       });
 
@@ -18827,6 +18998,13 @@ export function issueRoutes(
       if (current.kind === "ask_user_questions") {
         await validateNativeQuestionResponseInput(current, req.body);
       }
+      // Who the card was for, read before the answer (PAP-749 plan §6).
+      const handledFor = await attentionHandledFor(
+        db,
+        issue.companyId,
+        { sourceKind: "issue_thread_interaction", sourceId: interactionId },
+        actor.actorType === "user" ? actor.actorId : null,
+      );
       const interaction = await interactionSvc.answerQuestions(
         issue,
         interactionId,
@@ -18865,6 +19043,7 @@ export function issueRoutes(
             interaction.kind === "ask_user_questions"
               ? (interaction.result?.answers?.length ?? 0)
               : 0,
+          ...(interaction.status === "answered" ? attentionHandledDetails(handledFor, "answered") : {}),
         },
       });
 
@@ -18908,6 +19087,13 @@ export function issueRoutes(
       const { interactionSvc, resolutionAuthorization } = authorizedResolution;
 
       const actor = getActorInfo(req);
+      // Who the card was for, read before the answer (PAP-749 plan §6).
+      const handledFor = await attentionHandledFor(
+        db,
+        issue.companyId,
+        { sourceKind: "issue_thread_interaction", sourceId: interactionId },
+        actor.actorType === "user" ? actor.actorId : null,
+      );
       const { interaction, newlyResolvedItemIds } =
         await interactionSvc.submitItemVerdicts(
           issue,
@@ -18955,6 +19141,8 @@ export function issueRoutes(
             interaction.kind === "request_item_verdicts"
               ? (interaction.result?.complete ?? false)
               : false,
+          // Only the verdict that completes the review closes the card.
+          ...(interaction.status === "answered" ? attentionHandledDetails(handledFor, "answered") : {}),
         },
       });
 
@@ -19005,82 +19193,14 @@ export function issueRoutes(
         return;
       await assertPendingReviewInteractionVerdictAllowed(req, issue, current);
 
-      const actor = getActorInfo(req);
-      let nativeRunId: string | null = null;
-      const interaction = await interactionSvc.withdrawInteraction(
+      const interaction = await withdrawIssueThreadInteractionAndNotify({
+        db,
+        heartbeat,
         issue,
         interactionId,
-        req.body,
-        {
-          agentId: actor.agentId,
-          runId: actor.runId,
-          userId: actor.actorType === "user" ? actor.actorId : null,
-        },
-        {
-          afterResolveInTransaction: async (tx, resolved) => {
-            if (resolved.kind !== "ask_user_questions") return;
-            nativeRunId = await requestNativeQuestionRunCancellation(
-              tx,
-              resolved,
-              {
-                kind: "interaction_withdrawn",
-                interactionId: resolved.id,
-              },
-            );
-          },
-        },
-      );
-      if (nativeRunId) {
-        try {
-          await heartbeat.cancelRun(
-            nativeRunId,
-            "Question withdrawn while waiting for operator input",
-            {
-              resultJson: {
-                withdrawnInteractionId: interaction.id,
-                withdrawnByActorType: actor.actorType,
-                withdrawnByActorId: actor.actorId,
-              },
-            },
-          );
-        } catch (err) {
-          logger.warn(
-            { err, runId: nativeRunId, interactionId: interaction.id },
-            "native question withdrawal cancellation deferred to recovery sweep",
-          );
-        }
-      }
-      await logActivity(db, {
-        companyId: issue.companyId,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-        agentId: actor.agentId,
-        runId: actor.runId,
-        agentApiKeyId: actor.agentApiKeyId,
-        action: "issue.thread_interaction_withdrawn",
-        entityType: "issue",
-        entityId: issue.id,
-        details: {
-          interactionId: interaction.id,
-          interactionKind: interaction.kind,
-          interactionStatus: interaction.status,
-          reason:
-            interaction.result && "reason" in interaction.result
-              ? (interaction.result.reason ?? null)
-              : null,
-        },
+        body: req.body,
+        actor: getActorInfo(req),
       });
-
-      if (actor.agentId !== issue.assigneeAgentId) {
-        await queueResolvedInteractionContinuationWakeup({
-          db,
-          heartbeat,
-          issue,
-          interaction,
-          actor,
-          source: "issue.interaction.withdraw",
-        });
-      }
       res.json(interaction);
     },
   );
@@ -19096,6 +19216,11 @@ export function issueRoutes(
       const interaction = await issueThreadInteractionService(db).dismissInteraction(
         issue, req.params.interactionId as string,
         { userId: actor.actorType === "user" ? actor.actorId : null },
+        async (tx) => {
+          await enqueueOwnQuestionDismissalWake(tx, {
+            companyId: issue.companyId, issueId: issue.id, interactionId: req.params.interactionId as string,
+          });
+        },
       );
       await logActivity(db, {
         companyId: issue.companyId, actorType: actor.actorType, actorId: actor.actorId,
@@ -19129,6 +19254,13 @@ export function issueRoutes(
       assertBoard(req);
 
       const actor = getActorInfo(req);
+      // Who the card was for, read before the skip (PAP-749 plan §6).
+      const handledFor = await attentionHandledFor(
+        db,
+        issue.companyId,
+        { sourceKind: "issue_thread_interaction", sourceId: interactionId },
+        actor.actorType === "user" ? actor.actorId : null,
+      );
       const interaction = await issueThreadInteractionService(
         db,
       ).skipInteraction(issue, interactionId, req.body, {
@@ -19155,6 +19287,9 @@ export function issueRoutes(
             interaction.result && "reason" in interaction.result
               ? (interaction.result.reason ?? null)
               : null,
+          ...attentionHandledDetails(handledFor, "skipped", {
+            reason: interaction.result && "reason" in interaction.result ? interaction.result.reason : null,
+          }),
         },
       });
 
@@ -19187,6 +19322,13 @@ export function issueRoutes(
       assertBoard(req);
 
       const actor = getActorInfo(req);
+      // Who the card was for, read before the cancel (PAP-749 plan §6).
+      const handledFor = await attentionHandledFor(
+        db,
+        issue.companyId,
+        { sourceKind: "issue_thread_interaction", sourceId: interactionId },
+        actor.actorType === "user" ? actor.actorId : null,
+      );
       let nativeRunId: string | null = null;
       const interaction = await issueThreadInteractionService(
         db,
@@ -19231,6 +19373,9 @@ export function issueRoutes(
             interaction.kind === "ask_user_questions"
               ? (interaction.result?.cancellationReason ?? null)
               : null,
+          ...attentionHandledDetails(handledFor, "withdrawn", {
+            reason: interaction.kind === "ask_user_questions" ? interaction.result?.cancellationReason : null,
+          }),
         },
       });
 

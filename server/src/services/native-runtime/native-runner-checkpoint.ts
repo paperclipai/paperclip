@@ -3,7 +3,7 @@ import { NATIVE_PREPARATION_FENCING_VERSION } from "./native-active-runs.js";
 import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
 import { and, eq, exists, gt, isNull, lte, inArray, notExists, or, sql } from "drizzle-orm";
 import { checkpointDb, heartbeatRuns, issues, nativeRunFinalizations, nativeRunnerCheckpoints, type Db } from "@paperclipai/db";
-import { inspectDurablePrpCheckpointHeader, inspectUnclaimedBootstrapCheckpoint, decodeDurablePrpCheckpoint, type DurablePrpCheckpoint, type DurablePrpControlPlane, type DurableRecoveryIdentity } from "../../vendor/paperclip-runner/index.js";
+import { inspectDurablePrpCheckpointHeader, inspectUnauthenticatedBootstrapCheckpoint, inspectUnclaimedBootstrapCheckpoint, decodeDurablePrpCheckpoint, type DurablePrpCheckpoint, type DurablePrpControlPlane, type DurableRecoveryIdentity } from "../../vendor/paperclip-runner/index.js";
 import { createLocalEncryptedCipher } from "../../secrets/local-encrypted-provider.js";
 import { legacyControllerBootId } from "../legacy-controller-lease.js";
 import { assertNativeSourceCheckpointConsumer, lockSourceRecoveryCoordinators } from "./native-source-recovery-ownership.js";
@@ -261,6 +261,24 @@ export async function loadNativeUnclaimedBootstrapCheckpoint(
   } catch { return null; }
 }
 
+export async function nativeRunnerNeverAuthenticated(
+  db: Pick<Db, "select">, binding: Binding,
+  identity: Pick<DurableRecoveryIdentity, "runId" | "normalizedSessionId" | "runnerInstanceId">,
+): Promise<boolean> {
+  try {
+    if (binding.runId !== identity.runId) return false;
+    const rows = await db.select().from(nativeRunnerCheckpoints).where(and(
+      eq(nativeRunnerCheckpoints.companyId, binding.companyId), eq(nativeRunnerCheckpoints.issueId, binding.issueId),
+      eq(nativeRunnerCheckpoints.runId, binding.runId))).limit(MAX_BOOTSTRAP_CHECKPOINT_COMMANDS + 3);
+    if (rows.length < 4 || rows.length > MAX_BOOTSTRAP_CHECKPOINT_COMMANDS + 2
+      || rows.reduce((bytes, row) => bytes + Buffer.byteLength(JSON.stringify(row.material)), 0)
+        > 2 * NATIVE_CHECKPOINT_INSPECTION_TOTAL_MAX_BYTES) return false;
+    const cipher = createLocalEncryptedCipher("read");
+    const records = new Map(rows.map(row => [row.part, decryptPart(cipher, binding, row.part, row.material)] as const));
+    return inspectUnauthenticatedBootstrapCheckpoint(records, identity);
+  } catch { return false; }
+}
+
 const BOOTSTRAP_CHECKPOINT_PARTS = new Set(["header", "cursor"]);
 const MAX_BOOTSTRAP_CHECKPOINT_COMMANDS = 8;
 /** Session-open events are few; a longer journal is never a bootstrap. */
@@ -340,6 +358,10 @@ export async function hasNativeRunnerCheckpoint(db: Pick<Db, "select">, binding:
   return row !== undefined;
 }
 
+/** Recovery history dispositions of a restart claim that took a run over. */
+const NATIVE_RESTART_CLAIM_DISPOSITIONS = ["reattach_existing_runner", "reattach_remote_runner",
+  "resume_dead_runner", "bootstrap_incomplete"] as const;
+
 export async function listExpiredNativeRunnerAuthorities(db: Db, now: Date, runIds: string[]): Promise<string[]> {
   if (!runIds.length) return [];
   // The caller supplies the finite expired active-run inventory. Return all of
@@ -355,7 +377,22 @@ export async function listExpiredNativeRunnerAuthorities(db: Db, now: Date, runI
         eq(nativeRunnerCheckpoints.issueId, nativeRunFinalizations.issueId),
         eq(nativeRunnerCheckpoints.companyId, nativeRunFinalizations.companyId)))),
         and(sql`${heartbeatRuns.runnerProfileJson}->'nativePreparationFencingVersion' = ${JSON.stringify(NATIVE_PREPARATION_FENCING_VERSION)}::jsonb`,
-          isNull(heartbeatRuns.processPid), isNull(heartbeatRuns.processGroupId), isNull(heartbeatRuns.processStartedAt)))));
+          isNull(heartbeatRuns.processPid), isNull(heartbeatRuns.processGroupId), isNull(heartbeatRuns.processStartedAt)),
+        // A graceful shutdown handed this run to the next controller. That
+        // handoff exists before any checkpoint (for example, a run stopped
+        // just after its claim), and a follow-up may carry its predecessor's
+        // Runner identity. Without it nothing but a later server boot would
+        // look at the run again. The restart claim still proves the takeover.
+        // It stays eligible through ownership waits (the departing server may
+        // still be alive at the first look) until a claim follows the handoff.
+        and(inArray(nativeRunFinalizations.recoveryState, ["awaiting_runner_reattach", "awaiting_evidence"]),
+          sql`exists (select 1 from jsonb_array_elements(coalesce(${nativeRunFinalizations.recoveryHistory}, '[]'::jsonb))
+            with ordinality as handoff(item, ordinal)
+            where handoff.item ->> 'disposition' = 'restart_suspended'
+              and not exists (select 1 from jsonb_array_elements(${nativeRunFinalizations.recoveryHistory})
+                with ordinality as later(item, ordinal)
+                where later.ordinal > handoff.ordinal and later.item ->> 'disposition' in (${sql.join(
+                  NATIVE_RESTART_CLAIM_DISPOSITIONS.map(disposition => sql`${disposition}`), sql`, `)})))`))));
   return rows.map(row => row.runId);
 }
 

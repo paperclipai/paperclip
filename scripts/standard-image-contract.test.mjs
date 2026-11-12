@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
-import { standardImageDigest, resolveStandardImageDigest } from "./standard-image-contract.mjs";
+import { standardImageDigest, resolveStandardImageDigest, verifiedImageDigests, assertIndexUsesVerifiedImages } from "./standard-image-contract.mjs";
 import { isNode24ImageTag } from "./node-image-policy.mjs";
 
 test("Node image policy accepts Node 24 major tags and exact security pins", () => {
@@ -90,4 +90,51 @@ test("optional lookup falls back only for a missing manifest", async () => {
     else await assert.rejects(lookup, /Registry lookup failed/);
     assert.equal(calls, status === 503 ? 5 : 1);
   }
+});
+
+const digestOf = bytes => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+const image = name => Buffer.from(JSON.stringify({ schemaVersion: 2, mediaType: "application/vnd.oci.image.manifest.v1+json", name }));
+// The build legs push by digest with provenance, so each leg digest is an index
+// of one platform image plus its attestation manifest. The merged standard
+// index names those same child digests.
+function legFixture() {
+  const amd64 = digestOf(image("amd64")), arm64 = digestOf(image("arm64"));
+  const attestation = arch => ({ platform: { os: "unknown", architecture: "unknown" }, digest: digestOf(image(`att-${arch}`)), size: 50,
+    annotations: { "vnd.docker.reference.type": "attestation-manifest" } });
+  const leg = (arch, digest) => index([{ platform: { os: "linux", architecture: arch }, digest, size: 100 }, attestation(arch)]);
+  const legs = new Map([[digestOf(leg("amd64", amd64)), leg("amd64", amd64)], [digestOf(leg("arm64", arm64)), leg("arm64", arm64)]]);
+  const standard = index([{ platform: { os: "linux", architecture: "arm64" }, digest: arm64, size: 100 }, attestation("arm64"),
+    { platform: { os: "linux", architecture: "amd64" }, digest: amd64, size: 100 }, attestation("amd64")]);
+  return { amd64, legs, standard };
+}
+
+test("signing requires every Linux image in the index to have passed a build-leg probe", () => {
+  const { amd64, legs, standard } = legFixture();
+  assert.doesNotThrow(() => assertIndexUsesVerifiedImages(standard, verifiedImageDigests(legs)));
+  const onlyArm = new Map([...legs].filter(([, bytes]) => !bytes.toString().includes(amd64)));
+  assert.throws(() => assertIndexUsesVerifiedImages(standard, verifiedImageDigests(onlyArm)), /linux\/amd64 image .* orphan-reaping probe/);
+  // A leg that pushed a bare image manifest verifies exactly that digest.
+  const bare = image("amd64");
+  assert.deepEqual([...verifiedImageDigests(new Map([[digestOf(bare), bare]]))], [digestOf(bare)]);
+  // Bytes must hash to the digest the leg reported.
+  assert.throws(() => verifiedImageDigests(new Map([[digestOf(bare), image("other")]])), /do not match their digest/);
+});
+
+test("lookup with verified digests reads each leg by digest and rejects an unprobed index", async () => {
+  const { legs, standard } = legFixture();
+  const expected = standardImageDigest(standard);
+  const requested = [];
+  const fetchImpl = async (url, options) => {
+    if (url.includes("/token?")) return Response.json({ token: "public-fixture" });
+    const reference = url.split("/manifests/")[1];
+    requested.push(reference);
+    if (reference.startsWith("sha-")) return new Response(standard, { headers: { "docker-content-digest": expected } });
+    assert.match(options.headers.accept, /image\.manifest\.v1\+json/);
+    return new Response(legs.get(reference), { headers: { "docker-content-digest": reference } });
+  };
+  const legDigests = [...legs.keys()];
+  assert.equal(await resolveStandardImageDigest("a".repeat(40), fetchImpl, { verifiedDigests: legDigests }), expected);
+  assert.deepEqual(requested, [`sha-${"a".repeat(40)}`, ...legDigests]);
+  await assert.rejects(resolveStandardImageDigest("a".repeat(40), fetchImpl, { verifiedDigests: legDigests.slice(0, 1) }), /orphan-reaping probe/);
+  await assert.rejects(resolveStandardImageDigest("a".repeat(40), fetchImpl, { verifiedDigests: [] }), /No build leg/);
 });

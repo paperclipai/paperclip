@@ -1,6 +1,7 @@
 import { RUNNER_REVISION_WAIT_RETRY_REASON } from "./runner-revision-mismatch.js";
 import { STORAGE_UNAVAILABLE_WAIT_RETRY_REASON } from "../storage/storage-unavailable.js";
 import { PROVIDER_ATTEMPT_CREDIT_GENERATION_LIMIT } from "./native-runtime/provider-attempt-outcome.js";
+import { AGENT_DIRECTORY_BUSY_RETRY_REASON } from "../modules/run-dispatch/index.js";
 
 /**
  * A preparation that a restart interrupted before any provider work started
@@ -11,11 +12,25 @@ import { PROVIDER_ATTEMPT_CREDIT_GENERATION_LIMIT } from "./native-runtime/provi
  */
 export const INTERRUPTED_PREPARATION_RETRY_REASON = "interrupted_preparation";
 export const INTERRUPTED_PREPARATION_RETRY_MAX_ATTEMPTS = PROVIDER_ATTEMPT_CREDIT_GENERATION_LIMIT;
+export const AGENT_DIRECTORY_WAIT_RETRY_REASON = AGENT_DIRECTORY_BUSY_RETRY_REASON;
+
+/**
+ * A run that ended only because its server process was replaced or restarted
+ * (a deploy's graceful shutdown, or a run found without its owner after a
+ * restart) did not fail. Its continuation never spends the failure budget. Its
+ * own bound stops a loop: at most SERVER_RESTART_RETRY_MAX_ATTEMPTS
+ * continuations inside one SERVER_RESTART_RETRY_WINDOW_MS window. A chain that
+ * is interrupted again after the window has passed starts a new window, so a
+ * long task survives several deploys a day.
+ */
+export const SERVER_RESTART_RETRY_REASON = "server_restart";
+export const SERVER_RESTART_RETRY_MAX_ATTEMPTS = 6;
+export const SERVER_RESTART_RETRY_WINDOW_MS = 60 * 60_000;
 
 /** Retry lanes that keep their own counter and never spend failures. */
 const UNCHARGED_RETRY_LANES: ReadonlySet<string> = new Set([
-  "workspace_busy", "ai_connection_busy", "ai_connection_pool_wait", RUNNER_REVISION_WAIT_RETRY_REASON,
-  INTERRUPTED_PREPARATION_RETRY_REASON, STORAGE_UNAVAILABLE_WAIT_RETRY_REASON,
+  "workspace_busy", "ai_connection_busy", "ai_connection_pool_wait", AGENT_DIRECTORY_WAIT_RETRY_REASON, RUNNER_REVISION_WAIT_RETRY_REASON,
+  INTERRUPTED_PREPARATION_RETRY_REASON, STORAGE_UNAVAILABLE_WAIT_RETRY_REASON, SERVER_RESTART_RETRY_REASON,
 ]);
 
 type RetryRun = {
@@ -37,6 +52,12 @@ export interface ExecutionRetryAccounting {
   interruptedPreparations?: number;
   /** Storage-outage waits in this chain, kept across intervening resource waits. Omitted while zero. */
   storageWaits?: number;
+  /** Agent-directory waits in this chain, kept across intervening resource waits. Omitted while zero. */
+  agentDirectoryWaits?: number;
+  /** Server-restart continuations in the current window. Omitted while zero. */
+  serverRestarts?: number;
+  /** Start of the current server-restart window (ISO time). Saved with serverRestarts. */
+  serverRestartWindowStartedAt?: string;
 }
 
 function count(value: unknown): number | null {
@@ -52,9 +73,15 @@ function savedAccounting(run: RetryRun): ExecutionRetryAccounting | null {
   if (saved.version !== 1 || failureRetries === null || maxTurnContinuations === null) return null;
   const interruptedPreparations = count(saved.interruptedPreparations) ?? 0;
   const storageWaits = count(saved.storageWaits) ?? 0;
+  const agentDirectoryWaits = count(saved.agentDirectoryWaits) ?? 0;
+  const serverRestarts = count(saved.serverRestarts) ?? 0;
+  const windowStartedAt = typeof saved.serverRestartWindowStartedAt === "string"
+    && Number.isFinite(Date.parse(saved.serverRestartWindowStartedAt)) ? saved.serverRestartWindowStartedAt : null;
   return { version: 1, failureRetries, maxTurnContinuations,
     ...(interruptedPreparations > 0 ? { interruptedPreparations } : {}),
-    ...(storageWaits > 0 ? { storageWaits } : {}) };
+    ...(storageWaits > 0 ? { storageWaits } : {}),
+    ...(agentDirectoryWaits > 0 ? { agentDirectoryWaits } : {}),
+    ...(serverRestarts > 0 && windowStartedAt ? { serverRestarts, serverRestartWindowStartedAt: windowStartedAt } : {}) };
 }
 
 function historicalFailureCount(run: RetryRun): number {
@@ -79,6 +106,8 @@ export function executionRetryAccounting(run: RetryRun): ExecutionRetryAccountin
     reason === INTERRUPTED_PREPARATION_RETRY_REASON ? count(run.scheduledRetryAttempt) ?? 0 : 0);
   const storageWaits = Math.max(saved?.storageWaits ?? 0,
     reason === STORAGE_UNAVAILABLE_WAIT_RETRY_REASON ? count(run.scheduledRetryAttempt) ?? 0 : 0);
+  const agentDirectoryWaits = Math.max(saved?.agentDirectoryWaits ?? 0,
+    reason === AGENT_DIRECTORY_WAIT_RETRY_REASON ? count(run.scheduledRetryAttempt) ?? 0 : 0);
   return {
     version: 1,
     failureRetries: Math.max(saved?.failureRetries ?? 0, saved && nonFailureLane ? 0 : historicalFailureCount(run)),
@@ -86,7 +115,23 @@ export function executionRetryAccounting(run: RetryRun): ExecutionRetryAccountin
       run.scheduledRetryReason === "max_turns_continuation" ? count(run.scheduledRetryAttempt) ?? 0 : 0),
     ...(interruptedPreparations > 0 ? { interruptedPreparations } : {}),
     ...(storageWaits > 0 ? { storageWaits } : {}),
+    ...(agentDirectoryWaits > 0 ? { agentDirectoryWaits } : {}),
+    ...(saved?.serverRestarts ? { serverRestarts: saved.serverRestarts,
+      serverRestartWindowStartedAt: saved.serverRestartWindowStartedAt } : {}),
   };
+}
+
+/** Server-restart continuations already spent in the window that is open at `now`. */
+export function serverRestartAttemptCount(run: RetryRun, now: Date): number {
+  const accounting = executionRetryAccounting(run);
+  const startedAt = Date.parse(accounting.serverRestartWindowStartedAt ?? "");
+  if (!accounting.serverRestarts || !Number.isFinite(startedAt)) return 0;
+  return now.getTime() - startedAt < SERVER_RESTART_RETRY_WINDOW_MS ? accounting.serverRestarts : 0;
+}
+
+/** True when another server-restart continuation would exceed the window's bound. */
+export function serverRestartBudgetSpent(run: RetryRun, now = new Date()): boolean {
+  return serverRestartAttemptCount(run, now) >= SERVER_RESTART_RETRY_MAX_ATTEMPTS;
 }
 
 /** Resource waits, repairs and productive continuations do not spend failures. */
@@ -97,6 +142,7 @@ export function executionFailureRetryCount(run: RetryRun): number {
 export function executionRetryAttemptCount(run: RetryRun, reason: string): number {
   if (reason === INTERRUPTED_PREPARATION_RETRY_REASON) return executionRetryAccounting(run).interruptedPreparations ?? 0;
   if (reason === STORAGE_UNAVAILABLE_WAIT_RETRY_REASON) return executionRetryAccounting(run).storageWaits ?? 0;
+  if (reason === AGENT_DIRECTORY_WAIT_RETRY_REASON) return executionRetryAccounting(run).agentDirectoryWaits ?? 0;
   if (UNCHARGED_RETRY_LANES.has(reason)) {
     return run.scheduledRetryReason === reason ? count(run.scheduledRetryAttempt) ?? 0 : 0;
   }
@@ -104,11 +150,18 @@ export function executionRetryAttemptCount(run: RetryRun, reason: string): numbe
   return reason === "max_turns_continuation" ? accounting.maxTurnContinuations : accounting.failureRetries;
 }
 
-export function accountingForScheduledRetry(run: RetryRun, reason: string, attempt: number): ExecutionRetryAccounting {
+export function accountingForScheduledRetry(run: RetryRun, reason: string, attempt: number, now = new Date()): ExecutionRetryAccounting {
   const accounting = executionRetryAccounting(run);
+  if (reason === SERVER_RESTART_RETRY_REASON) {
+    // Attempt 1 opens a new window; a later attempt stays in the open one.
+    if (attempt <= 1 || serverRestartAttemptCount(run, now) === 0) accounting.serverRestartWindowStartedAt = now.toISOString();
+    accounting.serverRestarts = attempt;
+    return accounting;
+  }
   if (reason === "max_turns_continuation") accounting.maxTurnContinuations = attempt;
   else if (reason === INTERRUPTED_PREPARATION_RETRY_REASON) accounting.interruptedPreparations = attempt;
   else if (reason === STORAGE_UNAVAILABLE_WAIT_RETRY_REASON) accounting.storageWaits = attempt;
+  else if (reason === AGENT_DIRECTORY_WAIT_RETRY_REASON) accounting.agentDirectoryWaits = attempt;
   else if (!UNCHARGED_RETRY_LANES.has(reason)) accounting.failureRetries = attempt;
   return accounting;
 }

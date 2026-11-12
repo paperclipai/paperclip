@@ -17,6 +17,11 @@ export function createOpenCodeFinishDiagnosticForwarder(send: (frame: Warning) =
       if (message.length > 2048) return;
       let value: Record<string, unknown>;
       try { value = JSON.parse(message); } catch { return; }
+      if (value && typeof value === "object" && !Array.isArray(value)
+        && value.schema === "paperclip.opencode.tool-delivery-diagnostic/v1") {
+        if (validToolDelivery(value)) emit(value);
+        return;
+      }
       if (!value || typeof value !== "object" || Array.isArray(value)
         || value.schema !== "paperclip.opencode.finish-input-diagnostic/v1"
         || typeof value.schemaSha256 !== "string" || !/^[a-f0-9]{64}$/.test(value.schemaSha256)) return;
@@ -38,4 +43,17 @@ export function createOpenCodeFinishDiagnosticForwarder(send: (frame: Warning) =
       }
     },
   };
+}
+
+const TOOL_DELIVERY_KEYS = "callIdSha256,handlerMs,outcome,schema,socketIdleMs,socketRequestIndex,written";
+// Delivery records carry only hashes, counters and timings. Reject anything
+// else so this channel cannot forward tool inputs or results.
+function validToolDelivery(value: Record<string, unknown>): boolean {
+  const count = (entry: unknown) => typeof entry === "number" && Number.isSafeInteger(entry) && entry >= 0;
+  return Object.keys(value).sort().join(",") === TOOL_DELIVERY_KEYS
+    && typeof value.callIdSha256 === "string" && /^[a-f0-9]{64}$/.test(value.callIdSha256)
+    && count(value.socketRequestIndex) && count(value.handlerMs)
+    && (value.socketIdleMs === null || count(value.socketIdleMs))
+    && typeof value.outcome === "string" && ["result", "error", "unanswered"].includes(value.outcome)
+    && typeof value.written === "boolean";
 }

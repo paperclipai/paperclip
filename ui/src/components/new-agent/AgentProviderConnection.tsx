@@ -93,11 +93,15 @@ export function AgentProviderConnection({
     setOpened(false);
     setAuthorizationUrl(null);
     setLoginPhase("preparing");
+    setLoginRequested(false);
   };
   const [methodChoice, setMethod] = useState<"subscription" | "api" | null>(managedAccount?.initialMethod === "api_key" ? "api" : managedAccount ? "subscription" : null);
   const [advanced, setAdvanced] = useState(false);
   // Connections already selected the provider before showing this step.
   const [opened, setOpened] = useState(Boolean(advancedConnection || managedAccount));
+  const [loginRequested, setLoginRequested] = useState(false);
+  const automaticComputer = requiresAgent && !agentId;
+  const awaitingLoginRequest = automaticComputer && !loginRequested;
   const [authorizationUrl, setAuthorizationUrl] = useState<string | null>(null);
   const [loginPhase, setLoginPhase] = useState<"preparing" | "ready" | "waiting" | "connecting">("preparing");
   const phaseBeforeSubmit = useRef<"ready" | "waiting">("ready");
@@ -370,7 +374,7 @@ export function AgentProviderConnection({
                   />
                 )}
               </OnboardingLoginCard>
-            ) : needsLogin ? (
+            ) : needsLogin ? !awaitingLoginRequest && (
               <AdapterLoginPanel
                 requiresAgent={requiresAgent}
                 agentId={agentId}
@@ -447,7 +451,7 @@ export function AgentProviderConnection({
           opened && needsLogin
             ? loginPhase === "waiting" ? adapterType === "codex_local" ? "Waiting for auth…" : "Waiting for code"
               : loginPhase === "connecting" ? "Connecting"
-              : `Sign in to ${provider}`
+              : automaticComputer && authorizationUrl ? `Continue to ${provider}` : `Sign in to ${provider}`
             : busy
             ? "Connecting"
             : method === "subscription" &&
@@ -468,16 +472,20 @@ export function AgentProviderConnection({
           // The saved-subscription chooser renders outside the opened section,
           // so reusing the visible choice must not wait for a tile click.
           (!opened && !(method === "subscription" && savedSubscription)) ||
-          (Boolean(needsLogin) && (!authorizationUrl || loginPhase !== "ready")) ||
+          (Boolean(needsLogin) && !awaitingLoginRequest && (!authorizationUrl || loginPhase !== "ready")) ||
           (method === "api" &&
             !apiKey.trim() &&
             !storedConnection &&
             !selectedKey)
         }
         loading={busy}
-        primaryIcon={opened && needsLogin ? loginPhase === "ready" ? "none" : "spinner" : undefined}
+        primaryIcon={opened && needsLogin && !awaitingLoginRequest ? loginPhase === "ready" ? "none" : "spinner" : undefined}
         onPrimary={() => {
           if (needsLogin) {
+            if (awaitingLoginRequest) {
+              setLoginRequested(true);
+              return;
+            }
             if (!authorizationUrl || loginPhase !== "ready") return;
             window.open(authorizationUrl, "_blank", "noreferrer,noopener");
             setLoginPhase("waiting");

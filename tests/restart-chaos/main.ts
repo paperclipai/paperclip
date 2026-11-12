@@ -8,7 +8,7 @@
  */
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -41,7 +41,9 @@ import { closeJourneyApps } from "./journey-driver.js";
 import { matrixMayLaunch, planMatrixWave } from "./journey-matrix.js";
 import { redeployWave } from "./redeploy.js";
 import { withT1CrossingCheck } from "./workloads.js";
-import { captureWaveRunnerLogs } from "./daytona-runner-logs.js";
+import { parseRecoveryStepReceipts, withRecoveryStepCheck } from "./recovery-step-faults.js";
+import { captureWaveRunnerLogs, executeInWaveSandboxes } from "./daytona-runner-logs.js";
+import { isClassRFault, killedPidsFromOutput, providerKillCommand, watchLabels, withClassRCheck, type ProviderKillRecord } from "./class-r.js";
 import { StormRun, TASK_FAULT_LOG, observedFaultSchedule, planWave, replayOnCurrentBuild, replayRecordFor, replayWave, type TaskFaultLog } from "./scheduler.js";
 import { chaosLifecycleOverrides, seedChaosLab } from "./seed.js";
 import { ChaosSupervisor } from "./supervisor.js";
@@ -50,6 +52,8 @@ import type { RestartStep } from "./repeated-restarts.js";
 import { isBrokenStdoutError, markTimelineEchoBroken, Timeline } from "./timeline.js";
 import { guardedRunnerOutputs, worktreeFingerprint } from "./wave-guard.js";
 import { checkCrossServer, readCrossServerEvidence } from "./multi-server.js";
+import { runnerBindFaultServerEnvironment, sessionFaultServerEnvironment } from "./session-faults.js";
+import { controllerLogNames, gradeWarmShutdown, isWarmWave, warmShutdownMarkdown, type WarmShutdownCleanup } from "./warm-shutdown.js";
 import type { FaultKind, FaultReceipt, OracleArtifacts, TriggerId, WavePlan } from "./types.js";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
@@ -243,6 +247,15 @@ async function main(): Promise<number> {
     timeline.add("db_pressure_stopped", { ...stats });
   };
   const violationKey = (violation: { rule: string; kind: string; recordId: string }) => `${violation.rule}:${violation.kind}:${violation.recordId}`;
+  // `--k15-overlap-seconds`, `--k15-fresh-home`: the staging deploy shape (redeploy.ts).
+  supervisor.deployShape = { overlap: plan.options.k15Overlap === true, freshHome: plan.options.k15FreshHome === true };
+  supervisor.ephemeralServer = plan.options.ephemeralServer === true;
+  // `--fail-recovery-step`: fail the nth hit of one recovery step once, after the wave's first restart fault.
+  const recoveryStepReceipts = path.join(waveDir, "recovery-step-receipts.jsonl");
+  if (plan.options.failRecoveryStep) {
+    supervisor.armRecoveryStepOnFirstFault(plan.options.failRecoveryStep, {
+      controlPath: path.join(supervisor.paths.temporaryRoot, "crash-point.control"), receiptPath: recoveryStepReceipts });
+  }
   if (crashPoint) {
     supervisor.crashPointHoldMs = plan.options.crashPointHoldMs ?? 0;
     supervisor.useCrashPointControl({ controlPath: path.join(supervisor.paths.temporaryRoot, "crash-point.control"),
@@ -251,10 +264,15 @@ async function main(): Promise<number> {
   let sweeper: DaytonaWaveSweeper | null = null;
   let sandboxSweep: DaytonaSweepResult | null = null;
   let runnerLogTarget: { companyId: string; environmentId: string } | null = null;
-  const captureRunnerLogs = async (label: string) => {
+  // CR1–CR3 get the class R hooks (class-r.ts). Every Daytona wave captures its sandboxes with the class R probe
+  // (daytona-runner-logs.ts): staging's Runner loss also reproduces with no fault at all (W2 re-wake).
+  const classRWave = plan.tasks.some(task => isClassRFault(task.fault) || (task.replayFaults?.some(fault => isClassRFault(fault.kind)) ?? false));
+  const sandboxEvidence = plan.options.env === "daytona";
+  const captureRunnerLogs = async (label: string, deadlineMs?: number) => {
     if (!runnerLogTarget) return;
     const capture = await captureWaveRunnerLogs({ apiKey: process.env.DAYTONA_API_KEY!, ...runnerLogTarget,
-      outDir: path.join(waveDir, "daytona-runner"), label, secrets: knownSecretValues() });
+      outDir: path.join(waveDir, "daytona-runner"), label, secrets: knownSecretValues(),
+      probe: "class_r", ...(deadlineMs ? { deadlineMs } : {}) });
     timeline.add("runner_logs_captured", { label: capture.label, error: capture.error,
       sandboxes: capture.sandboxes.map(sandbox => `${sandbox.id}:${sandbox.state ?? "?"}${sandbox.file ? ":probed" : ""}${sandbox.error ? `:error=${sandbox.error.slice(0, 120)}` : ""}`) });
   };
@@ -286,6 +304,8 @@ async function main(): Promise<number> {
   let diskFullSeam: DiskFullFaultSeam | null = null;
   let speedSection: string | null = null;
   let storageSection: string | null = null;
+  let warmShutdownSection: string | null = null;
+  let daytonaCleanup: WarmShutdownCleanup | null = null;
   let harnessError: unknown;
   process.on("uncaughtException", error => {
     if (isSocketTypeOfServiceRace(error)) { timeline.add("harness_socket_race_ignored", { error: String(error) }); return; }
@@ -307,6 +327,58 @@ async function main(): Promise<number> {
       .catch(error => ({ error: String(error) }));
     timeline.add("wave_spend", { spend });
     console.info(`Wave spend: ${JSON.stringify(spend)}`);
+  };
+  // CR2 and the class R watch read the task's latest run from the observers (set once they exist).
+  let classRObservers: TaskObserver[] = [];
+  const killTaskProvider = async (owned: { companyId: string; environmentId: string }, taskId: string): Promise<ProviderKillRecord> => {
+    const observer = classRObservers.find(candidate => candidate.plan.taskId === taskId);
+    const adapter = observer?.plan.adapter ?? "claude";
+    // The latest sample was taken just before the fault (snapshotBeforeFault); the server may already be down.
+    const runs = [...(observer?.record.samples ?? [])].reverse().find(sample => sample.runs?.length)?.runs ?? [];
+    const runId = runs.find(run => run.status === "running")?.id ?? null;
+    const record: ProviderKillRecord = { runId, adapter, at: Date.now(), sandboxId: null, killedPids: [], attempts: [], error: null };
+    if (!runId) record.error = "no running run for the task";
+    else {
+      const result = await executeInWaveSandboxes({ apiKey: process.env.DAYTONA_API_KEY!, ...owned, command: providerKillCommand(runId, adapter),
+        secrets: knownSecretValues(), done: attempt => attempt.exitCode === 0 || attempt.exitCode === 4 || attempt.exitCode === 5 });
+      record.attempts = result.attempts;
+      // Exit 0 is printed only when every selected provider process is confirmed gone.
+      const hit = result.attempts.find(attempt => attempt.exitCode === 0);
+      record.sandboxId = hit?.sandboxId ?? null;
+      record.killedPids = hit ? killedPidsFromOutput(hit.output) : [];
+      record.error = result.error ?? (hit ? null : result.attempts.some(attempt => attempt.exitCode === 5)
+        ? "a provider process survived the kill" : result.attempts.some(attempt => attempt.exitCode === 4)
+          ? "the run's Runner had no provider process" : "no sandbox runs a Runner for the run");
+    }
+    timeline.add("class_r_provider_killed", { taskId, runId, adapter, sandboxId: record.sandboxId, killedPids: record.killedPids, error: record.error,
+      attempts: record.attempts.map(attempt => `${attempt.sandboxId}:${attempt.exitCode ?? attempt.error?.slice(0, 80)}`) });
+    await writeFile(path.join(waveDir, "daytona-runner", `provider-kill-${taskId}-${record.at}.json`), `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 })
+      .catch(() => undefined);
+    return record;
+  };
+  // After a class R fault the controller is ready again; staging found the provider gone about 40 s later.
+  const watchClassR = async (receipt: FaultReceipt) => {
+    const readyAt = receipt.readyAt ?? Date.now();
+    for (const { label, atMs } of watchLabels(receipt.faultId)) {
+      const owner = classRObservers.find(candidate => candidate.plan.taskId === receipt.requestedBy);
+      // Keep watching through the staging window even after a fast rest; stop early only past it.
+      if (atMs > 60_000 && (owner?.done ?? true)) break;
+      if (interrupted) break;
+      const wait = readyAt + atMs - Date.now();
+      if (wait > 0) await delay(wait);
+      await captureRunnerLogs(label);
+      receipt.classR?.captures.push(label);
+    }
+  };
+  let sandboxWatchStopped = false;
+  const watchSandboxes = async (intervalMs: number) => {
+    const startedAt = Date.now();
+    while (!sandboxWatchStopped && !interrupted) {
+      const started = Date.now();
+      await captureRunnerLogs(`watch+${Math.round((started - startedAt) / 1000)}s`);
+      const wait = intervalMs - (Date.now() - started);
+      for (let left = wait; left > 0 && !sandboxWatchStopped && !interrupted; left -= 1_000) await delay(Math.min(1_000, left));
+    }
   };
   let faultFailures = 0;
   let faultsQueued = 0;
@@ -354,6 +426,8 @@ async function main(): Promise<number> {
     }
     if (plan.options.timeAgeMs) supervisor.timeAgeMs = plan.options.timeAgeMs;
     if (plan.options.rrStopOn) supervisor.rrStopOn = plan.options.rrStopOn;
+    Object.assign(serverEnvironment, sessionFaultServerEnvironment(plan.options.sessionFaults));
+    Object.assign(serverEnvironment, runnerBindFaultServerEnvironment(plan.options.runnerBindFault));
     await supervisor.start(serverEnvironment);
     // TM2/TM3 age the database; the observer and grader read run times back at their real times.
     const api: ChaosApi = new TimeShiftedApi(supervisor.baseUrl, supervisor.agingShifts);
@@ -371,10 +445,17 @@ async function main(): Promise<number> {
       onEnvironment: owned => {
         sweeper = new DaytonaWaveSweeper({ apiKey: process.env.DAYTONA_API_KEY!, companyId: owned.companyId, environmentId: owned.environmentId, api });
         // K15 on Daytona: the remote Runner's logs, identity and state while the controller is down (daytona-runner-logs.ts).
-        if (redeployWave(plan)) {
+        if (sandboxEvidence) {
           runnerLogTarget = { companyId: owned.companyId, environmentId: owned.environmentId };
-          supervisor.redeployEvidence = (faultId, phase) => captureRunnerLogs(`${faultId}-${phase}`);
+          if (redeployWave(plan)) supervisor.redeployEvidence = (faultId, phase) => captureRunnerLogs(`${faultId}-${phase}`);
+          // `--sandbox-watch-seconds`: capture on a clock too, for Runner exits that no fault announces (W2 re-wake).
+          if (plan.options.sandboxWatchMs) faultWork.push(watchSandboxes(plan.options.sandboxWatchMs));
         }
+        if (classRWave) supervisor.classR = {
+          capture: async (label, deadlineMs) => { await captureRunnerLogs(label, deadlineMs); return label; },
+          killProvider: requestedBy => killTaskProvider(owned, requestedBy),
+          watchAfterReady: receipt => { faultWork.push(watchClassR(receipt)); },
+        };
       } });
     spendTarget = { api, companyId: lab.companyId };
     // --db-pressure: contend with the wave's running run rows from outside the server (contention.ts).
@@ -388,6 +469,7 @@ async function main(): Promise<number> {
       : new BoardUi(supervisor.baseUrl, undefined, path.join(waveDir, "ui-retry-diagnostics"));
     const observers = plan.tasks.map(task => new TaskObserver(task, api, lab, timeline, supervisor, protectedRoots, board));
     for (const observer of observers) if (isDiskFullFault(observer.plan.fault)) observer.diskFullSeam = diskFullSeam;
+    classRObservers = observers;
     const pending = [...observers];
     const launched: TaskObserver[] = [];
     const active: TaskObserver[] = [];
@@ -622,10 +704,14 @@ async function main(): Promise<number> {
         }
       }
       for (let index = active.length - 1; index >= 0; index -= 1) {
-        if (active[index]!.done) { active.splice(index, 1); lastDoneAt = Date.now(); }
+        if (!active[index]!.done) continue;
+        // Daytona: the sandboxes as the task rests, before the product releases them (pass or fail).
+        if (runnerLogTarget) faultWork.push(captureRunnerLogs(`${active[index]!.plan.taskId}-rest`));
+        active.splice(index, 1); lastDoneAt = Date.now();
       }
       await delay(1_000);
     }
+    sandboxWatchStopped = true;
     await Promise.all(faultWork);
     if (storageTrigger) {
       const shortfall = storageTriggerShortfall(storageTrigger.finish(faults));
@@ -702,8 +788,14 @@ async function main(): Promise<number> {
       }
       // T1: a mid-tool fault only counts when one of the task's faults started while its loop ran (workloads.ts).
       // DF1 restarts nothing, so T1's mid-tool restart check does not apply; the disk-full check replaces it.
-      const toolOracle = isDiskFullFault(observer.plan.fault) ? withDiskFullCheck(oracle, observer.plan, observer.record)
+      const t1Oracle = isDiskFullFault(observer.plan.fault) ? withDiskFullCheck(oracle, observer.plan, observer.record)
         : withT1CrossingCheck(oracle, observer.plan, artifacts?.documents.brief, faults);
+      // `--fail-recovery-step`: the step failed in the replacement, and no attempt of the task failed (recovery-step-faults.ts).
+      const armedStep = faults.find(receipt => receipt.recoveryStep);
+      const stepOracle = withRecoveryStepCheck(t1Oracle, armedStep?.recoveryStep ? { faultId: armedStep.faultId, ...armedStep.recoveryStep } : null,
+        observer.record.faultIds, parseRecoveryStepReceipts(await readFile(recoveryStepReceipts, "utf8").catch(() => "")), artifacts?.runs ?? []);
+      // CR1–CR3: the task's own fault applied (CR2 killed a provider, CR3 stalled the plugin worker; class-r.ts).
+      const toolOracle = withClassRCheck(stepOracle, observer.plan, faults);
       const grade = gradeTask(observer.record, faults, observer.definition.budgetMs, toolOracle, universalByIssue ? {
         runMessages: allRunMessages, recoveryActions: universalByIssue.get(observer.record.issueId ?? "")?.recoveryActions ?? [] } : undefined);
       let evidence: string | null = null;
@@ -783,6 +875,7 @@ async function main(): Promise<number> {
     harnessError = error;
     timeline.add("harness_error", { error: error instanceof Error ? error.stack ?? error.message : String(error) });
   } finally {
+    sandboxWatchStopped = true;
     await stopPressure().catch(error => timeline.add("db_pressure_stop_failed", { error: String(error) }));
     // Best effort for an interrupted or failed wave; the server may already be down.
     if (supervisor.serverReady) await recordWaveSpend().catch(() => undefined);
@@ -795,6 +888,7 @@ async function main(): Promise<number> {
       sandboxSweep ??= await owned.sweep(0);
       // Cleanup only through Paperclip; the harness never changes a sandbox.
       const cleanup = await owned.cleanUp();
+      daytonaCleanup = cleanup;
       timeline.add("daytona_cleanup", cleanup);
       console.info(`Daytona R6 sweep: ${sandboxSweep.liveSandboxes.length} live, ${sandboxSweep.archivedSandboxes.length} archived after release, `
         + `${sandboxSweep.orphanSandboxes.length} orphaned, `
@@ -826,6 +920,17 @@ async function main(): Promise<number> {
         timeline.add("supervisor_stop_failed", { error: String(error) });
       }
     }
+    if (isWarmWave(plan.options)) {
+      const logDir = path.dirname(supervisor.paths.serverLogPath);
+      const controllerLogs = controllerLogNames(await readdir(logDir).catch(() => [] as string[]));
+      const serverLog = (await Promise.all(controllerLogs.map(name => readFile(path.join(logDir, name), "utf8").catch(() => "")))).join("\n");
+      const warmShutdown = gradeWarmShutdown({ cleanup: daytonaCleanup, serverLog });
+      timeline.add("warm_shutdown", { ...warmShutdown });
+      if (warmShutdown.verdict === "fail") anyFailure = true;
+      warmShutdownSection = warmShutdownMarkdown(warmShutdown);
+      await writeFile(path.join(waveDir, "warm-shutdown.json"), `${JSON.stringify(warmShutdown, null, 2)}\n`, { mode: 0o600 })
+        .catch(error => timeline.add("warm_shutdown_write_failed", { error: String(error) }));
+    }
     storageChaos?.stop();
     await credentialRotation?.settled();
     if (credentialRotation?.failures.length) harnessError ??= new Error(`ST5R credential rotation failed: ${credentialRotation.failures.join("; ")}`);
@@ -852,7 +957,7 @@ async function main(): Promise<number> {
     if (lines.length) {
       await appendLedger(resultsRoot, lines);
       const summary = await writeSummary(resultsRoot, plan.waveId);
-      await writeFile(path.join(waveDir, "SUMMARY.md"), [summary, speedSection, storageSection].filter(Boolean).join("\n"), { mode: 0o600 });
+      await writeFile(path.join(waveDir, "SUMMARY.md"), [summary, warmShutdownSection, speedSection, storageSection].filter(Boolean).join("\n"), { mode: 0o600 });
       console.info(`\n${summary}`);
     }
   }

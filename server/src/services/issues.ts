@@ -48,7 +48,7 @@ import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notificatio
 import { recordChatHandoff, recordAcceptedChatHandoff, lockAcceptedChatHandoffSource, recordChatCompletion, existingChatCompletionReply, acknowledgeChatCompletionReply } from "./chat-completion-delivery.js";
 import { mirrorSlackBoardComment, slackBoardReplyBindings } from "./slack-board-messages.js";
 import { agentRunWritesRevoked, assertAgentRunWriteAllowed } from "../agent-run-cancellation.js";
-import { assertLegacyRunTaskOwnership } from "../legacy-run-task-ownership.js";
+import { assertHandedOffRunTaskOwnership } from "../run-task-ownership.js";
 import { retryIdempotentDatabaseOperation } from "../database-retry.js";
 import { externalConversationStateSql, nonIdleSlackIssueCondition, resumeSlackConversation } from "./slack-conversation-state.js";
 import { documentService } from "./documents.js";
@@ -3047,7 +3047,8 @@ function unreadForUserCondition(companyId: string, userId: string) {
             OR ${issueComments.authorUserId} <> ${userId}
           )
           AND ${issueComments.createdAt} > ${myLastTouchAt}
-      ) OR ${pendingUserRequestCondition(companyId, userId, myLastRequestReadAt)})
+      ) OR ${pendingUserRequestCondition(companyId, userId, myLastRequestReadAt)}
+      OR ${withdrawnForUserCondition(companyId, userId, myLastRequestReadAt)})
     )
   `;
 }
@@ -3080,6 +3081,23 @@ function mineParticipationIssueIds(db: Db, companyId: string, userId: string) {
       .where(pendingUserRequestRowCondition(companyId, userId)),
   ).as("mine_participation_sources");
   return db.selectDistinct({ id: participationSources.id }).from(participationSources).as("mine_participants");
+}
+
+/**
+ * A different person withdrew a request on this task that was for this user
+ * after they last read it (PAP-749 plan §6, Rule 12): the task shows unread in
+ * their Mine list. Reads the receipt on the activity entry; no extra state.
+ */
+function withdrawnForUserCondition(companyId: string, userId: string, readAt: SQL) {
+  return sql<boolean>`EXISTS (
+    SELECT 1
+    FROM ${activityLog}
+    WHERE ${activityLog.companyId} = ${companyId}
+      AND (${activityLog.details} ->> 'handledForUserId') = ${userId}
+      AND ${activityLog.details} -> 'receipt' ->> 'outcome' = 'withdrawn'
+      AND ${activityLog.details} -> 'receipt' ->> 'issueId' = ${issues.id}::text
+      AND ${activityLog.createdAt} > ${readAt}
+  )`;
 }
 
 function inboxVisibleForUserCondition(companyId: string, userId: string) {
@@ -4728,6 +4746,23 @@ async function listIssueReviewAttentionMap(
   }
   if (reviewIssues.length === 0) return result;
 
+  const activeToolReviewContinuation = sql`lateral (
+    select continuation.id, continuation.run_id from ${agentWakeupRequests} continuation
+    where continuation.company_id = ${companyId}
+      and continuation.idempotency_key like 'tool-action-response:%'
+      and continuation.idempotency_key = 'tool-action-response:' || ${toolActionDeliveries.actionRequestId}::text
+      and continuation.status not in ('skipped', 'failed', 'cancelled')
+      and (
+        continuation.status in ('queued', 'deferred_issue_execution', 'claimed')
+        or exists (
+          select 1 from ${heartbeatRuns} continuation_run
+          where continuation_run.id = continuation.run_id
+            and continuation_run.company_id = ${companyId}
+            and continuation_run.status in ('queued', 'running')
+        )
+      )
+    limit 1
+  ) active_tool_review_continuation`;
   const [
     agentRows,
     activeRunRows,
@@ -4736,6 +4771,7 @@ async function listIssueReviewAttentionMap(
     approvalRows,
     recoveryActionRows,
     recoveryIssueRows,
+    toolReviewContinuationRows,
   ] = await Promise.all([
     dbOrTx
       .select({
@@ -4885,7 +4921,76 @@ async function listIssueReviewAttentionMap(
           notInArray(issues.status, ["done", "cancelled"]),
         ),
       ),
+    dbOrTx
+      .select({
+        id: toolActionDeliveries.actionRequestId,
+        companyId: toolActionDeliveries.companyId,
+        issueId: toolActionDeliveries.issueId,
+        agentId: toolActionRequests.requestedByAgentId,
+        status: sql<string>`'queued'`,
+        reason: sql<string>`'tool_action_review'`,
+        createdAt: toolActionDeliveries.createdAt,
+        continuationWakeId: sql<string | null>`active_tool_review_continuation.id`,
+        continuationRunId: sql<string | null>`active_tool_review_continuation.run_id`,
+      })
+      .from(toolActionDeliveries)
+      .innerJoin(
+        toolActionRequests,
+        and(
+          eq(toolActionRequests.id, toolActionDeliveries.actionRequestId),
+          eq(toolActionRequests.companyId, companyId),
+        ),
+      )
+      .innerJoin(
+        issueThreadInteractions,
+        and(
+          eq(issueThreadInteractions.id, toolActionDeliveries.interactionId),
+          eq(issueThreadInteractions.companyId, companyId),
+        ),
+      )
+      .innerJoin(
+        issues,
+        and(
+          eq(issues.id, toolActionDeliveries.issueId),
+          eq(issues.companyId, companyId),
+          eq(issues.assigneeAgentId, toolActionRequests.requestedByAgentId),
+        ),
+      )
+      .innerJoin(
+        agents,
+        and(
+          eq(agents.id, toolActionRequests.requestedByAgentId),
+          eq(agents.companyId, companyId),
+        ),
+      )
+      .leftJoin(activeToolReviewContinuation, sql`true`)
+      .where(
+        and(
+          eq(toolActionDeliveries.companyId, companyId),
+          inArray(toolActionRequests.issueId, reviewIds),
+          or(
+            and(
+              isNull(toolActionDeliveries.deliveredAt),
+              ne(issueThreadInteractions.status, "pending"),
+              notInArray(agents.status, ["paused", "terminated", "pending_approval"]),
+            ),
+            sql`active_tool_review_continuation.id is not null`,
+          ),
+        ),
+      ),
   ]);
+
+  const listedExecutionIds = new Set([
+    ...(wakeRows as Array<{ id: string }>).map((row) => row.id),
+    ...(activeRunRows as Array<{ id: string }>).map((row) => row.id),
+  ]);
+  const toolReviewContinuationPaths = toolReviewContinuationRows.filter((row: {
+    continuationWakeId: string | null;
+    continuationRunId: string | null;
+  }) =>
+    !(row.continuationWakeId && listedExecutionIds.has(row.continuationWakeId)) &&
+    !(row.continuationRunId && listedExecutionIds.has(row.continuationRunId)),
+  );
 
   const recoveryPaths = [
     ...(recoveryActionRows as Array<{
@@ -4943,7 +5048,7 @@ async function listIssueReviewAttentionMap(
     relations: [],
     agents: agentRows,
     activeRuns: activeRunRows,
-    queuedWakeRequests: wakeRows,
+    queuedWakeRequests: [...wakeRows, ...toolReviewContinuationPaths],
     pendingInteractions: interactionRows,
     pendingApprovals: approvalRows,
     externalResponseWaits: await readExternalReviewWaits(reviewIds),
@@ -5007,7 +5112,7 @@ async function listIssueReviewAttentionMap(
     ).map((row) => [row.id, row]),
   );
   const wakeReasonById = new Map(
-    (wakeRows as Array<{ id: string; reason: string | null }>).map((row) => [
+    ([...wakeRows, ...toolReviewContinuationPaths] as Array<{ id: string; reason: string | null }>).map((row) => [
       row.id,
       row.reason,
     ]),
@@ -11908,7 +12013,7 @@ export function issueService(db: Db) {
           const actorRun = await assertAgentRunWriteAllowed(tx, receiptExisting.companyId, {
             agentId: actorAgentId, runId: actorRunId, stopId: actorRunStopId,
           });
-          assertLegacyRunTaskOwnership(actorRun, receiptExisting);
+          assertHandedOffRunTaskOwnership(actorRun, receiptExisting);
         }
         if (blockedByIssueIds !== undefined) {
           await assertOnboardingFirstTaskDependenciesAllowed(tx as Db, {
@@ -12550,6 +12655,7 @@ export function issueService(db: Db) {
       agentId: string,
       expectedStatuses: string[],
       checkoutRunId: string | null,
+      options: { blockedState?: { lastStatusDecisionId: string; statusVersion: number } } = {},
     ) => {
       const issueCompany = await db
         .select({ companyId: issues.companyId })
@@ -12651,11 +12757,21 @@ export function issueService(db: Db) {
             status: "in_progress",
             startedAt: now,
             updatedAt: now,
+            ...(expectedStatuses.includes("blocked") ? {
+              unblockDescriptor: sql`case when ${issues.status} = 'blocked' then null else ${issues.unblockDescriptor} end`,
+              blockedTransitionAt: sql`case when ${issues.status} = 'blocked' then null else ${issues.blockedTransitionAt} end`,
+              blockedOwnerNotifiedAt: sql`case when ${issues.status} = 'blocked' then null else ${issues.blockedOwnerNotifiedAt} end`,
+            } : {}),
           })
           .where(
             and(
               eq(issues.id, id),
               inArray(issues.status, expectedStatuses),
+              options.blockedState ? or(
+                ne(issues.status, "blocked"),
+                and(eq(issues.lastStatusDecisionId, options.blockedState.lastStatusDecisionId),
+                  eq(issues.statusVersion, options.blockedState.statusVersion)),
+              ) : undefined,
               or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
               executionLockCondition,
             ),
