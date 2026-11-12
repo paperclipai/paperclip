@@ -258,14 +258,19 @@ export interface ReplacementPluginStallInput {
   logPath: string; logOffset: number; into: { pluginStall?: PluginStallRecord } | undefined; activationTimeoutMs?: number;
 }
 
+export const CR6_INITIALIZE_TIMEOUT_EVIDENCE = /RPC call \\?"initialize\\?" timed out/;
+
 export async function stallReplacementPlugin(input: ReplacementPluginStallInput & { afterActivation: boolean }): Promise<PluginStallRecord> {
+  const readLog = () => { try { return readFileSync(input.logPath).subarray(input.logOffset).toString("utf8"); } catch { return ""; } };
   const activation = input.afterActivation
-    ? await waitForPluginActivation({ timeoutMs: input.activationTimeoutMs ?? 120_000, cancelled: input.cancelled,
-      readLog: () => { try { return readFileSync(input.logPath).subarray(input.logOffset).toString("utf8"); } catch { return ""; } } })
+    ? await waitForPluginActivation({ timeoutMs: input.activationTimeoutMs ?? 120_000, cancelled: input.cancelled, readLog })
     : "activated";
   const stall = activation === "activated" ? await runPluginStall({ ...input, findWorkerWithinMs: 60_000 })
     : { workerPid: null, command: null, frozenPids: [], frozenAt: null, thawedAt: null,
       error: `The replacement's plugin activation ${activation}; CR4 stalls only an activated plugin` };
+  if (!input.afterActivation && stall.error === null && !CR6_INITIALIZE_TIMEOUT_EVIDENCE.test(readLog())) {
+    stall.error = "CR6 stopped the plugin worker after its initialize finished; no initialize timeout is in the replacement's log";
+  }
   if (input.into) input.into.pluginStall = stall;
   if (stall.error) throw new Error(stall.error);
   return stall;
@@ -274,8 +279,17 @@ export async function stallReplacementPlugin(input: ReplacementPluginStallInput 
 export async function withReplacementPluginStall(kind: FaultKind, input: ReplacementPluginStallInput,
   waitForHealth: () => Promise<number>): Promise<number> {
   if (kind !== "CR4" && kind !== "CR6") return waitForHealth();
-  const stall = stallReplacementPlugin({ ...input, afterActivation: kind === "CR4" }).then(() => null, (error: unknown) => error);
-  const healthyAt = await waitForHealth();
+  let healthFailed = false;
+  const stall = stallReplacementPlugin({ ...input, afterActivation: kind === "CR4", cancelled: () => healthFailed || input.cancelled() })
+    .then(() => null, (error: unknown) => error);
+  let healthyAt: number;
+  try {
+    healthyAt = await waitForHealth();
+  } catch (error) {
+    healthFailed = true;
+    await stall;
+    throw error;
+  }
   const failure = await stall;
   if (failure) throw failure;
   return healthyAt;
@@ -321,8 +335,11 @@ export interface ClassRRecord {
  * CR2 and CR3 only test something when their fault applied: a provider was killed, or the plugin worker was
  * stopped for the whole stall. A CR task without that fails `class_r_fault_applied`.
  */
+export const CR5_LATEST_STALL_START_MS = 5_000;
+
 export function withClassRCheck<T extends { verdict: "pass" | "fail"; checks: Array<{ name: string; ok: boolean; detail?: string }> }>(
-  oracle: T, plan: { taskId: string; fault: string }, faults: ReadonlyArray<{ requestedBy: string; kind: string; classR?: ClassRRecord; error: string | null }>): T {
+  oracle: T, plan: { taskId: string; fault: string },
+  faults: ReadonlyArray<{ requestedBy: string; kind: string; classR?: ClassRRecord; error: string | null; requestedAt?: number }>): T {
   if (!isClassRFault(plan.fault)) return oracle;
   const own = faults.filter(fault => fault.requestedBy === plan.taskId && fault.kind === plan.fault);
   let ok = own.length > 0 && own.every(fault => fault.error === null);
@@ -336,6 +353,11 @@ export function withClassRCheck<T extends { verdict: "pass" | "fail"; checks: Ar
     const stalls = own.map(fault => fault.classR?.pluginStall);
     ok &&= stalls.length > 0 && stalls.every(stall => stall?.frozenAt != null && stall.thawedAt != null);
     detail += `; stalled ${stalls.map(stall => stall?.frozenAt != null && stall.thawedAt != null ? `${stall.thawedAt - stall.frozenAt}ms` : `no(${stall?.error ?? "?"})`).join(",")}`;
+  }
+  if (plan.fault === "CR5") {
+    const delays = own.map(fault => (fault.classR?.pluginStall?.frozenAt ?? Infinity) - (fault.requestedAt ?? -Infinity));
+    ok &&= delays.every(delay => delay <= CR5_LATEST_STALL_START_MS);
+    detail += `; started ${delays.map(delay => Number.isFinite(delay) ? `${delay}ms` : "unknown").join(",")} after its launch-window time`;
   }
   const checks = [...oracle.checks, { name: "class_r_fault_applied", ok, detail }];
   return { ...oracle, checks, verdict: checks.every(check => check.ok) ? "pass" : "fail" };

@@ -513,7 +513,7 @@ export class ChaosSupervisor {
         receipt.classR = { kind, redeploy: redeploys, captures: [] };
         if (kind === "CR2" && holdMs > 0) receipt.signal = "SIGTERM";
         // The sandbox just before the fault, while the controller still holds it; the fault starts after it.
-        receipt.classR.captures.push(await this.classR.capture(`${receipt.faultId}-before`, CLASS_R_PRE_FAULT_DEADLINE_MS));
+        if (kind !== "CR5") receipt.classR.captures.push(await this.classR.capture(`${receipt.faultId}-before`, CLASS_R_PRE_FAULT_DEADLINE_MS));
         receipt.startedAt = Date.now();
       }
       if (kind === "TM1" || kind === "TM2") await this.freeze(kind, previous, holdMs, receipt);

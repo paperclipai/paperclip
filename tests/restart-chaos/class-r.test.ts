@@ -179,7 +179,7 @@ describe("CR3 stall", () => {
     expect(result).toBe(outcome);
   });
   it.each([
-    ["CR6", "stops the worker while the plugin activates", ["starting"], 1],
+    ["CR6", "stops the worker while the plugin activates", ["starting", 'err: "Worker initialize failed: RPC call \\"initialize\\" timed out after 15000ms"'], 1],
     ["CR4", "waits for the activation before it stops the worker", ["plugin-loader: loadAll complete"], 1],
     ["K1", "leaves the plugin alone", ["plugin-loader: loadAll complete"], 0],
   ] as const)("%s %s", async (kind, _what, log, frozen) => {
@@ -259,6 +259,41 @@ describe("class_r_fault_applied", () => {
     expect(graded.verdict).toBe("fail");
     expect(graded.checks.at(-1)!.detail).toContain("no running run");
   });
+  it("fails CR6 when the stopped worker had already finished initialize", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "class-r-cr6-evidence-"));
+    try {
+      const logPath = path.join(root, "server.log");
+      writeFileSync(logPath, "worker process started and initialized");
+      const into: { pluginStall?: { error: string | null } } = {};
+      await expect(withReplacementPluginStall("CR6", { serverPid: 10, holdMs: 0, cancelled: () => false, record: () => {}, logPath, logOffset: 0,
+        into: into as never, table: () => [{ pid: 10, ppid: 1, command: "node server" }, { pid: 11, ppid: 10, command: "node /x/daytona/dist/worker.js" }],
+        sleep: async () => {}, freezer: { freeze: () => [11], thaw: () => {} } } as never, async () => 1)).rejects.toThrow(/no initialize timeout/);
+      expect(into.pluginStall?.error).toMatch(/after its initialize finished/);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it("cancels and joins the replacement stall when the replacement never becomes healthy", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "class-r-health-"));
+    try {
+      const logPath = path.join(root, "server.log");
+      writeFileSync(logPath, "starting");
+      const freeze = vi.fn(() => [11]);
+      const startedAt = Date.now();
+      await expect(withReplacementPluginStall("CR4", { serverPid: 10, holdMs: 60_000, cancelled: () => false, record: () => {}, logPath, logOffset: 0,
+        activationTimeoutMs: 60_000, into: {}, sleep: (ms: number) => new Promise(resolve => setTimeout(resolve, Math.min(ms, 20))),
+        table: () => [], freezer: { freeze, thaw: () => {} } } as never, async () => { throw new Error("replacement never became healthy"); }))
+        .rejects.toThrow("replacement never became healthy");
+      expect(Date.now() - startedAt).toBeLessThan(5_000);
+      expect(freeze).not.toHaveBeenCalled();
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it("fails CR5 when its stall started after the launch window", () => {
+    const stall = { workerPid: 11, command: "node", frozenPids: [11], frozenAt: 10_000, thawedAt: 55_000, error: null };
+    const fault = (requestedAt: number) => [{ requestedBy: "t01", kind: "CR5", error: null, requestedAt, classR: classR({ kind: "CR5", pluginStall: stall }) }];
+    expect(withClassRCheck(oracle, { taskId: "t01", fault: "CR5" }, fault(8_000)).verdict).toBe("pass");
+    const late = withClassRCheck(oracle, { taskId: "t01", fault: "CR5" }, fault(-15_000));
+    expect(late.verdict).toBe("fail");
+    expect(late.checks.at(-1)!.detail).toContain("25000ms after its launch-window time");
+  });
   it("passes a CR3 task only when the stall ended", () => {
     const stall = { workerPid: 11, command: "node", frozenPids: [11], frozenAt: 1_000, thawedAt: 46_000, error: null };
     expect(withClassRCheck(oracle, { taskId: "t01", fault: "CR3" }, [{ requestedBy: "t01", kind: "CR3", error: null,
@@ -266,7 +301,7 @@ describe("class_r_fault_applied", () => {
   });
   it.each(["CR4", "CR5"])("passes a %s task only when its stall ended", fault => {
     const stall = { workerPid: 11, command: "node", frozenPids: [11], frozenAt: 1_000, thawedAt: 46_000, error: null };
-    const applied = withClassRCheck(oracle, { taskId: "t01", fault }, [{ requestedBy: "t01", kind: fault, error: null,
+    const applied = withClassRCheck(oracle, { taskId: "t01", fault }, [{ requestedBy: "t01", kind: fault, error: null, requestedAt: 1_000,
       classR: classR({ kind: fault as ClassRRecord["kind"], pluginStall: stall }) }]);
     expect(applied.verdict).toBe("pass");
     expect(applied.checks.at(-1)!.detail).toContain("45000ms");
