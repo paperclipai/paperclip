@@ -8678,7 +8678,7 @@ registry.registerPath({
   method: "post",
   path: "/api/issues/{id}/interactions/{interactionId}/resolve-from-comment",
   tags: ["issues"],
-  summary: "Record a user's conversational confirmation answer",
+  summary: "Record a user's conversational confirmation answer, including a decline of a card the person created",
   description: "An eligible active agent run resolves a confirmation on its own task using the latest user comment. Resolver permissions, target staleness and conversation reset boundaries remain enforced. Matching retries are idempotent. No new wake is scheduled.",
   request: {
     params: z.object({ id: z.string(), interactionId: z.string() }),
@@ -8760,7 +8760,7 @@ registry.registerPath({
   method: "post",
   path: "/api/issues/{id}/interactions/{interactionId}/withdraw",
   tags: ["issues"],
-  summary: "Withdraw a pending issue thread interaction",
+  summary: "Withdraw a pending issue thread interaction. For agents, withdraw is only for the agent's own obsolete card; to accept or decline a confirmation card on the person's explicit instruction, an agent records the person's comment with POST /api/issues/{id}/interactions/{interactionId}/resolve-from-comment when the card's resolver policy allows (not for question forms or governed approvals)",
   request: {
     params: z.object({ id: z.string(), interactionId: z.string() }),
     body: jsonBody(withdrawIssueThreadInteractionSchema),
@@ -11491,7 +11491,7 @@ registerCurrentRoute({
   method: "post",
   path: "/api/issues/{id}/interactions/{interactionId}/cancel",
   tags: ["issues"],
-  summary: "Cancel an issue question interaction (board users only; an agent withdraws its own pending card with POST /api/issues/{id}/interactions/{interactionId}/withdraw)",
+  summary: "Cancel an issue question interaction (board users only). Agents: POST /api/issues/{id}/interactions/{interactionId}/withdraw is only for the agent's own obsolete card; to accept or decline a confirmation card on the person's explicit instruction, an agent records the person's comment with POST /api/issues/{id}/interactions/{interactionId}/resolve-from-comment when the card's resolver policy allows (not for question forms or governed approvals)",
   body: cancelIssueThreadInteractionSchema,
 });
 
@@ -11514,7 +11514,7 @@ registerCurrentRoute({
   method: "post",
   path: "/api/issues/{id}/interactions/{interactionId}/withdraw",
   tags: ["issues"],
-  summary: "Withdraw a pending issue thread interaction",
+  summary: "Withdraw a pending issue thread interaction. For agents, withdraw is only for the agent's own obsolete card; to accept or decline a confirmation card on the person's explicit instruction, an agent records the person's comment with POST /api/issues/{id}/interactions/{interactionId}/resolve-from-comment when the card's resolver policy allows (not for question forms or governed approvals)",
   body: withdrawIssueThreadInteractionSchema,
 });
 
