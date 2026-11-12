@@ -34,6 +34,10 @@ describe("needsYouMentionedArtifact (PAP-775)", () => {
     expect(needsYouMentionedArtifact("/NEE/issues/NEE-12#document-%invalid")).toBeNull();
   });
 
+  it.each(["notes.pdf", "notes.txt", "clip.mp4", "Download file", undefined])("keeps unsupported attachment %s as a normal browser link", name => {
+    expect(needsYouMentionedArtifact("/api/attachments/att-1/content", name)).toBeNull();
+  });
+
   it("leaves every other link alone", () => {
     expect(needsYouMentionedArtifact("/NEE/issues/NEE-12")).toBeNull();
     expect(needsYouMentionedArtifact("https://example.com/issues/X-1#document-plan")).toBeNull();
@@ -81,6 +85,23 @@ describe("ApprovalResolver shared between a card and its side panel (PAP-775)", 
     expect(approvalsApi.approve).toHaveBeenCalledTimes(1);
     expect(approvalsApi.approve).toHaveBeenCalledWith("appr-1", "Looks right");
     await act(async () => resolveApprove({}));
+    client.clear();
+  });
+
+  it("opens the original attachment through a browser link instead of task navigation", async () => {
+    const onOpen = vi.fn();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => root.render(<QueryClientProvider client={client}>
+      <CoordinatorReviewPanel companyId="company" item={item} artifact={{ kind: "attachment", assetId: "image with spaces", name: "screenshot.png" }}
+        agentMap={new Map()} currentUserId="scott" onOpenTask={onOpen} onResolved={vi.fn()} />
+    </QueryClientProvider>));
+    await act(async () => container.querySelector("img")!.dispatchEvent(new Event("error")));
+    expect(container.querySelector("img")).toBeNull();
+    expect(container.textContent).toContain("This file cannot be previewed.");
+    const link = [...container.querySelectorAll<HTMLAnchorElement>("a")].find(entry => entry.textContent === "Open file");
+    expect(link?.getAttribute("href")).toBe("/api/attachments/image%20with%20spaces/content");
+    expect(link?.target).toBe("_blank");
+    expect(onOpen).not.toHaveBeenCalled();
     client.clear();
   });
 

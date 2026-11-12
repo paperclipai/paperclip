@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowUpRight, Loader2 } from "lucide-react";
 import type { Agent, AttentionItem } from "@paperclipai/shared";
@@ -13,6 +14,7 @@ import { ApprovalResolver } from "@/components/AttentionQueueRow";
 import { Button } from "@/components/ui/button";
 import { useQueryView } from "@/components/QueryView";
 import { MarkdownBody } from "@/components/MarkdownBody";
+import { isImageFilename } from "@/components/task-chat/task-chat-attachments";
 
 /** The document a card asks you to review, when it has one (a plan approval today). */
 export function attentionReviewDocumentKey(item: AttentionItem): string | null {
@@ -60,7 +62,7 @@ export function needsYouMentionedArtifact(href: string, name?: string | null): N
   const approval = url.pathname.match(/\/approvals\/([^/]+)\/?$/);
   if (approval) return { kind: "approval", approvalId: decodeURIComponent(approval[1]) };
   const attachment = url.pathname.match(/^\/api\/attachments\/([^/]+)\/content\/?$/);
-  if (attachment) return { kind: "attachment", assetId: decodeURIComponent(attachment[1]), name: name?.trim() || undefined };
+  if (attachment && name && isImageFilename(name.trim())) return { kind: "attachment", assetId: decodeURIComponent(attachment[1]), name: name.trim() };
   return null;
 }
 
@@ -140,11 +142,13 @@ function CoordinatorReviewPanelContent({ companyId, item, artifact, agentMap, cu
     <div className="min-h-0 flex-1">
       {artifact.kind === "document" ? <DocumentArtifact issueId={artifact.issueId} documentKey={artifact.key} label={label} revisionId={artifact.documentTarget?.revisionId} />
         : artifact.kind === "approval" ? <ApprovalArtifact approvalId={approvalId!} title={approvalId === item.subject.id ? item.subject.title : null} />
-          : artifact.kind === "attachment" ? <AttachmentArtifact assetId={artifact.assetId} name={label} />
+          : artifact.kind === "attachment" ? <AttachmentArtifact key={artifact.assetId} assetId={artifact.assetId} name={label} />
             : <ImagesArtifact item={item} />}
     </div>
-    {exactHref ? <button type="button" onClick={() => onOpenTask(exactHref)} className="flex max-w-full items-center gap-2 text-left text-sm text-muted-foreground hover:text-foreground">
-      <span className="shrink-0">{artifact.kind === "attachment" ? "Open file" : `Open in ${artifact.kind === "approval" && !task ? "approvals" : artifact.kind === "document" && !ownDocument ? artifact.issueId : task?.identifier ?? "task"}`}</span><ArrowUpRight className="size-4 shrink-0" />
+    {exactHref ? artifact.kind === "attachment" ? <a href={exactHref} target="_blank" rel="noreferrer" className="flex max-w-full items-center gap-2 text-left text-sm text-muted-foreground hover:text-foreground">
+      <span className="shrink-0">Open file</span><ArrowUpRight className="size-4 shrink-0" />
+    </a> : <button type="button" onClick={() => onOpenTask(exactHref)} className="flex max-w-full items-center gap-2 text-left text-sm text-muted-foreground hover:text-foreground">
+      <span className="shrink-0">{`Open in ${artifact.kind === "approval" && !task ? "approvals" : artifact.kind === "document" && !ownDocument ? artifact.issueId : task?.identifier ?? "task"}`}</span><ArrowUpRight className="size-4 shrink-0" />
     </button> : null}
     {/* The card's own actions, pinned to the bottom of the artifact. */}
     {/* Only the buttons the card itself offers (UX1). */}
@@ -186,9 +190,11 @@ function ApprovalArtifact({ approvalId, title }: { approvalId: string; title: st
 const attachmentUrl = (assetId: string) => `/api/attachments/${encodeURIComponent(assetId)}/content`;
 
 function AttachmentArtifact({ assetId, name }: { assetId: string; name: string }) {
+  const [previewFailed, setPreviewFailed] = useState(false);
   return <>
     <h2 className="mb-4 text-lg font-medium">{name}</h2>
-    <img src={attachmentUrl(assetId)} alt={name} className="w-full rounded-md border border-border bg-muted object-contain" />
+    {previewFailed ? <p className="text-sm text-muted-foreground">This file cannot be previewed. Open the original file below.</p>
+      : <img src={attachmentUrl(assetId)} alt={name} onError={() => setPreviewFailed(true)} className="w-full rounded-md border border-border bg-muted object-contain" />}
   </>;
 }
 

@@ -300,7 +300,7 @@ function QuestionFormForRequest({
   const [inputUploading, setInputUploading] = useState(false);
   const [error, setError] = useState<FormError | null>(null);
   const [attemptedQuestions, setAttemptedQuestions] = useState<Record<string, boolean>>({});
-  const promptRef = useRef<HTMLParagraphElement>(null);
+  const promptRef = useRef<HTMLDivElement>(null);
   const previousPage = useRef(page);
 
   useEffect(() => {
@@ -561,23 +561,13 @@ function QuestionFormForRequest({
             {question.header}
           </p>
         ) : null}
-        {decision ? (
-          <p ref={promptRef} tabIndex={-1} className={cn("text-(length:--text-compact) leading-5", promptStated && "sr-only")}>
-            <span id={`${id}-${question.id}-prompt`} className="font-medium text-foreground">
-              {questionSet.questions.length > 1 ? `${page + 1}. ` : ""}{question.prompt}
-            </span>
-            <span aria-hidden className="text-muted-foreground"> · {question.required ? "Required" : "Optional"}</span>
-          </p>
-        ) : (
-          <p
-            ref={promptRef}
-            tabIndex={-1}
-            id={`${id}-${question.id}-prompt`}
-            className="text-sm font-medium leading-5 text-foreground"
-          >
-            {question.prompt}
-          </p>
-        )}
+        <div ref={promptRef} tabIndex={-1} className={cn("leading-5", decision ? "text-(length:--text-compact)" : "text-sm", decision && promptStated && "sr-only")}>
+          <div id={`${id}-${question.id}-prompt`} className="flex items-start gap-1 font-medium text-foreground">
+            {decision && questionSet.questions.length > 1 ? <span>{page + 1}.</span> : null}
+            <MarkdownBody mediaMode="reference" linkIssueReferences={false} className={cn("min-w-0", decision && "text-(length:--text-compact)")}>{question.prompt}</MarkdownBody>
+          </div>
+          {decision ? <span aria-hidden className="text-muted-foreground"> · {question.required ? "Required" : "Optional"}</span> : null}
+        </div>
         {question.helpText ? (
           <p className="mt-1 text-xs leading-4 text-muted-foreground">
             {question.helpText}
