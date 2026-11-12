@@ -48,7 +48,8 @@ export async function settleUncertainIdentity<T>(step: () => Promise<T>, until: 
       const text = String(error);
       const transient = text.includes(UNCERTAIN_GROUP_IDENTITY)
         || (text.includes(INSPECTION_UNAVAILABLE) && ++inspectionFailures < INSPECTION_ATTEMPTS);
-      if (!transient || Date.now() >= until()) throw error;
+      const remaining = until() - Date.now();
+      if (!transient || remaining <= pollMs) throw error;
       await new Promise(resolve => setTimeout(resolve, pollMs));
     }
   }

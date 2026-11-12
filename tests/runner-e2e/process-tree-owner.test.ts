@@ -316,3 +316,40 @@ it.skipIf(process.platform === "win32")("reports why the process listing failed"
   expect(await readProcessTable(() => inspector, reason => reasons.push(reason))).toBeNull();
   expect(reasons).toEqual(["ps exited code=3 signal=null: listing unavailable"]);
 });
+
+it.skipIf(process.platform === "win32")("still falls back to the direct child when every process listing fails", async () => {
+  let reads = 0;
+  const signals: NodeJS.Signals[] = [];
+  const child = { pid: 100, exitCode: null as number | null, signalCode: null as NodeJS.Signals | null,
+    kill: (signal: NodeJS.Signals) => { signals.push(signal); child.signalCode = signal; return true; } };
+  const owner = createProcessTreeOwner(child as unknown as ChildProcess, {
+    readTable: async () => { reads += 1; return null; },
+    signalGroup: () => { throw new Error("must not signal an unobserved group"); },
+  });
+  try {
+    await expect(owner.observe()).rejects.toThrow("Could not inspect owned process identities");
+    reads = 0;
+    const started = Date.now();
+    await expect(stopOwnedProcessTree(child as unknown as ChildProcess, owner, 2_000, 500))
+      .rejects.toThrow("Owned tree cleanup incomplete: Error: Could not inspect owned process identities");
+    expect(reads).toBeGreaterThanOrEqual(3);
+    expect(signals).toEqual(["SIGTERM"]);
+    expect(Date.now() - started).toBeLessThan(1_000);
+  } finally { owner.stopObserving(); }
+});
+
+it.skipIf(process.platform === "win32")("does not re-read a failed process listing past the stop deadline", async () => {
+  let reads = 0;
+  const child = { pid: 100, exitCode: null as number | null, signalCode: null as NodeJS.Signals | null,
+    kill: (signal: NodeJS.Signals) => { child.signalCode = signal; return true; } };
+  const owner = createProcessTreeOwner(child as unknown as ChildProcess, {
+    readTable: async () => { reads += 1; return null; },
+    signalGroup: () => { throw new Error("must not signal an unobserved group"); },
+  });
+  try {
+    await expect(owner.observe()).rejects.toThrow("Could not inspect owned process identities");
+    reads = 0;
+    await expect(stopOwnedProcessTree(child as unknown as ChildProcess, owner, 50, 500)).rejects.toThrow("Owned tree cleanup incomplete");
+    expect(reads).toBe(1);
+  } finally { owner.stopObserving(); }
+});
