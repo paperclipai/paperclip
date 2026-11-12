@@ -39,6 +39,10 @@ export class PhotonUsefulClient<T extends { close(): Promise<void> | void }> {
       if (outcome === "obsolete") this.stopped = true;
     } else if (this.unrecordedDebt) { await this.recordDebt(); this.unrecordedDebt = false; }
   }
+  inspectIdle(): "none" | "present" | "unknown" {
+    if (this.failed || this.unrecordedDebt || this.closeReceipt) return "unknown";
+    return this.pending || this.client ? "present" : "none";
+  }
   hasUnrecordedCleanupDebt(): boolean { return this.unrecordedDebt || !!this.closeReceipt; }
   private enqueue<R>(action: () => Promise<R>): Promise<R> {
     this.pending += 1;

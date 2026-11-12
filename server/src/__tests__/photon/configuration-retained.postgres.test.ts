@@ -1,3 +1,6 @@
+import { readPhotonIdleIncomingProof } from "../../services/chat-channels/imessage-photon/idle-incoming.js";
+import { photonCoverageFingerprint } from "../../services/chat-channels/imessage-photon/idle-coverage.js";
+import { parseIdleCapabilities, type VerifiedIdleCapabilities } from "../../services/idle-incoming-wake-capability.js";
 import { randomUUID, generateKeyPairSync } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -1341,6 +1344,60 @@ describe.skipIf(!external)("Photon normal configuration and retained receiver au
       if (cleanup.length) throw new AggregateError([...(primary ? [primary.error] : []), ...cleanup], "normal retiring-receipt cleanup remains owned");
     }
     if (primary) throw primary.error;
+  });
+
+  it("Photon idle SQL proof matches current secret-reference authority and complete signed aggregate without allocating or mutating", async () => {
+    // Controlled signed-input/receiver-bound ports; actual service registration,
+    // same Runtime/adapter private idle inspection, SQL and normal authorizer.
+    // This is not the genuine signed Cloud/tenant transport proof (the original
+    // useful+quiet journey separately qualifies that production composition).
+    const c = await managedConfiguration(), control = photonFixture(); await c.reconstructExternal(control);
+    const runtime = c.runtime.get(c.endpoint.id); if (!runtime) throw new Error("normal sender runtime absent");
+    const adapter = runtime.getProviderAdapter(); if (!(adapter instanceof PhotonChatAdapter)) throw new Error("normal Photon adapter absent");
+    await adapter.drainUsefulClient();
+    const state = readPhotonExternalState(await c.state.read(PHOTON_EXTERNAL_STATE)); if (!state) throw new Error("normal retained handoff absent");
+    const ownerId = randomUUID(), generation = "d".repeat(64);
+    const broker = { version: 1 as const, instanceId: state.binding.instanceId, generation, count: 1,
+      bindingsFingerprint: photonCoverageFingerprint([{ binding: state.binding, handoffId: state.handoffId, subject: state.identity.subject, deliveredThrough: state.acceptedSequence }]) };
+    const caps = (value = broker) => parseIdleCapabilities({ incomingWake: { version: 1, ownerId, generation, routes: ["photon-broker-events-v1"], photonBroker: value } }) as VerifiedIdleCapabilities;
+    const budgetReads: number[] = [];
+    const proof = (value = broker, bound = true) => db.transaction(async tx => {
+      const started = Date.now(); let queries = 0;
+      const remaining = () => { const ms = 2000 - (Date.now() - started); if (ms <= 0) throw new Error("normalsharedtimebudget"); return ms; };
+      const result = await readPhotonIdleIncomingProof(tx, { capabilities: caps(value), identity: { instanceId: state.binding.instanceId, environment: state.binding.environment },
+        receiverOwner: db, receiverBound: bound, inspectionNow: Date.now(), remaining,
+        beforeRead: async () => { queries += 2; if (queries > 64) throw new Error("normalsharedquerybudget"); await tx.execute(sql`select set_config('statement_timeout', ${`${remaining()}ms`}, true)`); } });
+      budgetReads.push(queries); return result;
+    });
+    const allocations = vi.mocked(photonClients.createOwnedPhotonClient).mock.calls.length;
+    const [original] = await db.select().from(toolConnections).where(eq(toolConnections.id, c.connection.id));
+    if (!original) throw new Error("normal current connection absent");
+    try {
+      expect(await proof()).toEqual({ endpointIds: [c.endpoint.id], connectionIds: [c.connection.id] });
+      expect(budgetReads[0]).toBeGreaterThan(2); expect(budgetReads[0]).toBeLessThanOrEqual(64);
+      expect(await proof({ ...broker, count: 2 })).toBeUndefined();
+      expect(await proof({ ...broker, bindingsFingerprint: "e".repeat(64) })).toBeUndefined();
+      expect(await proof(broker, false)).toBeUndefined();
+      const [membership] = await db.select().from(companyMemberships).where(and(eq(companyMemberships.companyId, state.identity.companyId), eq(companyMemberships.principalId, state.identity.subject)));
+      if (!membership || membership.status !== "active") throw new Error("normal responsible-user authority absent");
+      try {
+        await db.update(companyMemberships).set({ status: "inactive" }).where(eq(companyMemberships.id, membership.id));
+        await expect(proof()).rejects.toMatchObject({ status: 403,
+          message: expect.stringMatching(/active.*membership/i), details: { reason: "deny_missing_membership" } });
+      } finally { await db.update(companyMemberships).set({ status: membership.status }).where(eq(companyMemberships.id, membership.id)); }
+      expect(await proof()).toEqual({ endpointIds: [c.endpoint.id], connectionIds: [c.connection.id] });
+      try {
+        await c.state.update(PHOTON_EXTERNAL_STATE, () => ({ ...state, acceptedSequence: (state.acceptedSequence ?? 0) + 1 }));
+        expect(await proof()).toBeUndefined(); // Same binding but a different accepted prefix cannot use the old signed custody tuple.
+      } finally { await c.state.update(PHOTON_EXTERNAL_STATE, () => state); }
+      expect(await proof()).toEqual({ endpointIds: [c.endpoint.id], connectionIds: [c.connection.id] });
+      if (!original.credentialSecretRefs.length) throw new Error("normal managed credential reference absent");
+      await db.update(toolConnections).set({ credentialSecretRefs: original.credentialSecretRefs.map((ref, i) => i ? ref : { ...ref, secretId: randomUUID() }) })
+        .where(eq(toolConnections.id, c.connection.id));
+      expect(await proof()).toBeUndefined(); // Current Appreference digest differs; no secret read or cross-domain hash equality.
+      expect(await c.state.read(PHOTON_EXTERNAL_STATE)).toEqual(state);
+      expect(photonClients.createOwnedPhotonClient).toHaveBeenCalledTimes(allocations);
+    } finally { await db.update(toolConnections).set({ credentialSecretRefs: original.credentialSecretRefs }).where(eq(toolConnections.id, c.connection.id)); }
   });
 
 });

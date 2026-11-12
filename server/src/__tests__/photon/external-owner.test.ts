@@ -1,3 +1,6 @@
+import type { Db } from "@paperclipai/db";
+import * as photonExternalStores from "../../services/chat-channels/imessage-photon/external-store.js";
+import { createPhotonExternalRuntimeOwner, photonExternalPhysicalIdle } from "../../services/chat-channels/imessage-photon/external-runtime.js";
 import { photonResourceProcessEnded } from "../../services/chat-channels/imessage-photon/resource-process.js";
 import type { ProcessProbe } from "../../services/owner-proof.js";
 import { randomUUID } from "node:crypto";
@@ -624,4 +627,67 @@ it("releases the exact sender only after its post-join callback accepts the rece
   await new Promise<void>(resolve => setImmediate(resolve));
   expect(queryObjects(CapturedSender, { format: "count" }), "accepted post-join sender receipt must release the Runtime").toBe(0);
   await resources.join(id); expect(shutdowns).toBe(2);
+});
+
+it("readonly useful inspection cannot certify initial channels, inflight actions or rejected close receipts", async () => {
+  let closeFails = false, receiptReady = false, releaseAction!: () => void;
+  const actionGate = new Promise<void>(resolve => { releaseAction = resolve; });
+  const initial = { close: vi.fn(async () => { if (closeFails) throw new Error("controlled close"); }) };
+  const create = vi.fn(() => initial), receipt = vi.fn(async () => { if (!receiptReady) throw new Error("controlled receipt"); });
+  const owner = new PhotonUsefulClient(create, initial, async () => {});
+  try {
+    expect(owner.inspectIdle()).toBe("present"); expect(create).not.toHaveBeenCalled(); expect(initial.close).not.toHaveBeenCalled();
+    await owner.drain(); await Promise.resolve(); expect(owner.inspectIdle()).toBe("none");
+    closeFails = true; const running = owner.run(async () => { await actionGate; return "known"; });
+    expect(owner.inspectIdle()).toBe("present"); releaseAction(); expect(await running).toBe("known");
+    expect(owner.inspectIdle()).toBe("unknown"); closeFails = false;
+    await expect(owner.drain(receipt)).rejects.toThrow("controlled receipt");
+    const calls = receipt.mock.calls.length; expect(owner.inspectIdle()).toBe("unknown"); expect(receipt).toHaveBeenCalledTimes(calls);
+    receiptReady = true; await owner.drain(); await Promise.resolve(); expect(owner.inspectIdle()).toBe("none");
+    expect(create).toHaveBeenCalledTimes(1);
+  } finally { releaseAction(); closeFails = false; receiptReady = true; await owner.close(); }
+});
+it("readonly Photon adapter inspection holds the actual pre-lazy initial client without allocating or draining", async () => {
+  const f = photonFixture();
+  try {
+    const before = f.client.close.mock.calls.length;
+    expect(f.adapter.inspectPhysicalIdle()).toBe("present"); expect(f.client.close).toHaveBeenCalledTimes(before);
+    await f.adapter.useExternalIntake(); expect(f.adapter.inspectPhysicalIdle()).toBe("none");
+  } finally { try { await f.adapter.disconnect(); } finally { f.allocation.mockRestore(); } }
+});
+
+it("pre-first-useful coldstart needs the positive original receiver receipt and actual clear construction lane, never runtime absence alone", async () => {
+  const f = fixture(), descriptor = { id: f.resourceId, closed: false, leaseDigest: photonHash("lease"),
+    controller: { bootId: "old", hostHash: "different-space", pid: 45678, processStartedAt: "2090-01-01T00:00:00.000Z" } };
+  await f.create().prepare({ identity, config, lease: { token: "lease" }, localResourceId: f.resourceId, localResource: descriptor });
+  const before = await f.read(); if (!before) throw new Error("normal original intent absent");
+  const db = {} as Db; let quiescent = true;
+  const store = vi.spyOn(photonExternalStores, "createPhotonExternalStore").mockReturnValue(f.store);
+  const owner = createPhotonExternalRuntimeOwner(db, { broker: () => undefined,
+    endpointRecord: async () => { throw new Error("inspection must not read SQL"); },
+    withReceiverLease: async () => { throw new Error("inspection must not acquire lease"); },
+    runtimeFor: async () => { throw new Error("inspection must not allocate"); }, context: () => undefined,
+    ownership: () => undefined, release: async () => { throw new Error("inspection must not release"); },
+    currentRuntime: () => null, runtimeQuiescent: () => quiescent, removeRuntime: async () => { throw new Error("inspection must not remove"); },
+    retainConstructionCleanup: () => { throw new Error("inspection must not replace cleanup"); },
+    config: async () => { throw new Error("inspection must not resolve credentials"); },
+    admit: async () => { throw new Error("inspection must not admit work"); }, notify: () => {} });
+  try {
+    expect(photonExternalPhysicalIdle(db, before)).toBe(false);
+    const joined = await f.reconcile(); expect(joined.phase).toBe("external"); expect(joined.localResource?.closed).toBe(true);
+    expect(joined.localClosureConfirmed).toBe(true); expect(joined.senderResource).toBeUndefined();
+    expect(photonExternalPhysicalIdle(db, joined)).toBe(true);
+    quiescent = false; expect(photonExternalPhysicalIdle(db, joined)).toBe(false); quiescent = true;
+    const unknown = { ...joined, senderResource: { ...descriptor, id: randomUUID() } };
+    expect(photonExternalPhysicalIdle(db, unknown)).toBe(false); expect(await f.read()).toEqual(joined);
+    expect(f.counts().joins).toBe(1);
+    const sender = {}, senderDescriptor = { ...descriptor, id: randomUUID() };
+    f.resources.attach(senderDescriptor.id, sender, async () => {});
+    const reserved = await f.create().reserveSender(identity, { token: "lease" }, senderDescriptor);
+    const closedSender = await f.create().confirmSenderClosed(reserved, senderDescriptor.id);
+    expect(closedSender.senderResource?.closed).toBe(true);
+    quiescent = false; expect(photonExternalPhysicalIdle(db, closedSender)).toBe(false);
+    quiescent = true; expect(photonExternalPhysicalIdle(db, closedSender)).toBe(true);
+    expect(await f.read()).toEqual(closedSender);
+  } finally { await owner.close(); store.mockRestore(); }
 });

@@ -110,6 +110,12 @@ export class PhotonChatAdapter implements Adapter<PhotonThread, PhotonMessage> {
     else await this.usefulClient?.drain();
   }
   hasUnrecordedUsefulClientDebt(): boolean { return this.usefulClient?.hasUnrecordedCleanupDebt() ?? false; }
+  inspectPhysicalIdle(): "none" | "present" | "unknown" {
+    if (this.disconnectRunning) return "unknown";
+    if (this.localClient || this.recovery || this.typing.size) return "present";
+    // A missing lazy owner is not evidence that the initial client was joined.
+    return this.usefulClient?.inspectIdle() ?? "unknown";
+  }
   private makeClient(): GrpcAdvancedIMessage {
     return createOwnedPhotonClient({ address: this.authentication.address, token: () => this.authentication.token(), tls: true,
       retry: false, autoIdempotency: false, timeout: 25_000,

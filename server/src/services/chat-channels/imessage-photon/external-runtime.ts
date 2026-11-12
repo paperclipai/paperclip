@@ -16,7 +16,7 @@ import { credentialFingerprint } from "../credential-fingerprint.js";
 import { createPhotonExternalStore, PHOTON_EXTERNAL_STATE } from "./external-store.js";
 import { createPhotonExternalOwner, PhotonLocalResources, type PhotonExternalBroker } from "./external-owner.js";
 import { photonResourceProcessEnded } from "./resource-process.js";
-import { readPhotonExternalState, parsePhotonExternalDelivery, photonHash, type PhotonExternalIdentity, type PhotonResourceDescriptor } from "./external-contract.js";
+import { readPhotonExternalState, parsePhotonExternalDelivery, photonHash, type PhotonExternalIdentity, type PhotonExternalState, type PhotonResourceDescriptor } from "./external-contract.js";
 import { currentControllerProcess, UNKNOWN_PROCESS_SPACE } from "../../controller-process-identity.js";
 import { randomUUID, createHash } from "node:crypto";
 
@@ -42,10 +42,14 @@ export type PhotonCloudDelivery = { id: string; event: string; createdAt: string
 export type PhotonRuntimeAllocation = { readonly kind: "receiver" | "sender"; readonly resourceId: string; readonly handoffId: string; readonly identity: Readonly<PhotonExternalIdentity>; readonly descriptor: Readonly<PhotonResourceDescriptor>; readonly context: RuntimeContext };
 export type PhotonSenderAllocation = PhotonRuntimeAllocation & { readonly kind: "sender" };
 type Ingress = (event: PhotonCloudDelivery) => Promise<void>;
-const ingress = new WeakMap<Db, Ingress>();
+type IngressOwner = { receive: Ingress; inspectIdle(state: PhotonExternalState): boolean };
+const ingress = new WeakMap<Db, IngressOwner>();
+export function photonExternalPhysicalIdle(db: Db, state: PhotonExternalState): boolean {
+  return ingress.get(db)?.inspectIdle(state) === true;
+}
 export async function dispatchPhotonCloudEvent(db: Db, event: PhotonCloudDelivery) {
   const owner = ingress.get(db); if (!owner) throw new Error("Photon normal authorized ingress is not ready");
-  await owner(event);
+  await owner.receive(event);
 }
 const stateKey = `photon:${createHash("sha256").update(PHOTON_EXTERNAL_STATE).digest("hex")}`;
 type PhotonReceiverScope = { kind: "endpoint" | "connection" | "company"; id: string };
@@ -92,6 +96,7 @@ export function createPhotonExternalRuntimeOwner(db: Db, options: {
   ownership(id: string): DiscordGatewayOwnership | undefined;
   release(ownership: DiscordGatewayOwnership): Promise<void>;
   currentRuntime(id: string): ChatEndpointRuntime | null;
+  runtimeQuiescent?(id: string): boolean;
   removeRuntime(id: string): Promise<boolean>;
   joinConstructionCleanup?(id: string): Promise<void>;
   retainConstructionCleanup(id: string, cleanup: () => Promise<void>): void;
@@ -612,8 +617,30 @@ export function createPhotonExternalRuntimeOwner(db: Db, options: {
     options.notify(endpointId);
     return { actionId, state: "scheduled" as const };
   }
-  ingress.set(db, receive);
-  return { configurationRuntimeFor, reserveLocalRuntime, attachLocalRuntime, reserveSenderRuntime, attachSenderRuntime, senderRuntimeClosed, runtimeConstructionAborted, reconcile, placement, senderDebt, retire, retained, cleanupFailure, retry, close() { if (ingress.get(db) === receive) ingress.delete(db); return Promise.all([...active.values()]).then(() => undefined); } };
+  const registration: IngressOwner = { receive, inspectIdle(state) {
+    if (active.has(state.identity.endpointId) || state.phase !== "external" || state.pending || state.failure || state.localResourceDebt) return false;
+    const runtime = options.currentRuntime(state.identity.endpointId);
+    // Durable closed resources need no live runtime, but an unknown allocation
+    // never becomes closed merely because its object is missing.
+    if (!runtime) {
+      if (options.runtimeQuiescent?.(state.identity.endpointId) !== true) return false;
+      if (state.senderResource?.closed === true) return true;
+      // The CURRENT handoff allocation ledger installs every sender descriptor
+      // before construction. An exact positively joined receiver plus an empty
+      // normal construction/retirement lane proves the pre-first-sender case;
+      // missing Runtime alone, missing receiver receipt or an open sender never do.
+      return state.senderResource === undefined && state.localResourceId !== null
+        && state.localResource?.id === state.localResourceId && state.localResource.closed === true && state.localClosureConfirmed === true;
+    }
+    const context = options.context(runtime), adapter = runtime.getProviderAdapter();
+    if (!context || context.endpointRuntime !== runtime || options.context(runtime) !== context
+      || runtime.companyId !== state.identity.companyId || runtime.endpointId !== state.identity.endpointId
+      || context.generation !== state.identity.runtimeGeneration || context.credentialFingerprint !== state.identity.credentialReferences
+      || !(adapter instanceof PhotonChatAdapter) || adapter.inspectPhysicalIdle() !== "none") return false;
+    return !state.senderResource || resources.owns(state.senderResource.id, runtime);
+  } };
+  ingress.set(db, registration);
+  return { configurationRuntimeFor, reserveLocalRuntime, attachLocalRuntime, reserveSenderRuntime, attachSenderRuntime, senderRuntimeClosed, runtimeConstructionAborted, reconcile, placement, senderDebt, retire, retained, cleanupFailure, retry, close() { if (ingress.get(db) === registration) ingress.delete(db); return Promise.all([...active.values()]).then(() => undefined); } };
 }
 
 /** Called by normal configuration SQL with its actual authorized actor. Existing

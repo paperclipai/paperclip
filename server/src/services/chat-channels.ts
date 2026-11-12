@@ -915,6 +915,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     withReceiverLease: (record, work) => withReceiverLease(record.endpoint, runtimeContextForRecord(record), ownership => work({ token: ownership.token })),
     endpointRecord, runtimeFor, context: instance => runtimeContexts.get(instance),
     ownership: id => discordGatewayOwnerships.get(id), currentRuntime: id => runtime.get(id),
+    runtimeQuiescent: id => !shuttingDown && !runtimeInitializations.has(id) && !runtime.hasUnsettledLifecycle(),
     release: ownership => stopDiscordGatewayOwnership(ownership, { removeRuntime: false, notifyStopped: false }),
     removeRuntime: async id => { runtimeVersions.delete(id); return runtime.removeEndpoint(id); },
     joinConstructionCleanup: id => runtime.joinPendingConstructionCleanup(id),
