@@ -5,7 +5,7 @@ import { expect, it, vi } from "vitest";
 import { OpenCodeServerDriver } from "./opencode-server-driver.js";
 import type { PrpEvent } from "../../protocol/replay-contract.js";
 
-it.each(["reply", "reply-no-finish", "reply-tool-finish", "two-turn-idle", "slow-native-tool", "idle-stall", "tool-idle-stall", "empty-again", "request-fails", "normal", "foreign-idle", "queued-tool", "reasoning-echo"] as const)("handles an empty OpenCode response: %s", async mode => {
+it.each(["reply", "reply-no-finish", "reply-tool-finish", "two-turn-idle", "slow-native-tool", "idle-stall", "tool-idle-stall", "empty-again", "request-fails", "normal", "foreign-idle", "queued-tool", "reasoning-echo", "reasoning-echo-text-first", "reasoning-echo-correction-matches"] as const)("handles an empty OpenCode response: %s", async mode => {
   const root = await mkdtemp(join(tmpdir(), "opencode-empty-response-"));
   const command = join(root, "fake-opencode.mjs");
   await copyFile(resolve("test/fixtures/fake-opencode-server.mjs"), command);
@@ -55,7 +55,16 @@ it.each(["reply", "reply-no-finish", "reply-tool-finish", "two-turn-idle", "slow
               return;
             }
           }
-          if (mode === "reasoning-echo" && number === 1) {
+          if (mode === "reasoning-echo-text-first" && number === 1) {
+            const reasoningPart = { id: "part-1-reasoning", messageID, sessionID, type: "reasoning", text: recordedReasoning, time: { start: 1 } };
+            emit({ type: "message.part.updated", properties: { sessionID, part: reasoningPart } });
+            emit({ type: "message.part.updated", properties: { sessionID, part: { id: "part-1-text", messageID, sessionID, type: "text", text: recordedReasoning, time: { start: 3, end: 4 } } } });
+            emit({ type: "message.part.updated", properties: { sessionID, part: { ...reasoningPart, time: { start: 1, end: 5 } } } });
+            emit({ type: "session.idle", properties: { sessionID } });
+            emit({ type: "session.status", properties: { sessionID, status: { type: "idle" } } });
+            return;
+          }
+          if ((mode === "reasoning-echo" || mode === "reasoning-echo-correction-matches") && number === 1) {
             const reasoningPart = { id: "part-1-reasoning", messageID, sessionID, type: "reasoning", text: recordedReasoning, time: { start: 1, end: 2 } };
             const echo = { id: "part-1-text", messageID, sessionID, type: "text", text: "", time: { start: 3 } };
             emit({ type: "message.part.updated", properties: { sessionID, part: reasoningPart } });
@@ -67,9 +76,9 @@ it.each(["reply", "reply-no-finish", "reply-tool-finish", "two-turn-idle", "slow
             emit({ type: "session.status", properties: { sessionID, status: { type: "idle" } } });
             return;
           }
-          const answer = mode === "normal" || mode === "foreign-idle" || mode === "queued-tool" || number === 2 && ["reply", "reply-no-finish", "reply-tool-finish", "two-turn-idle", "reasoning-echo"].includes(mode);
+          const answer = mode === "normal" || mode === "foreign-idle" || mode === "queued-tool" || number === 2 && ["reply", "reply-no-finish", "reply-tool-finish", "two-turn-idle", "reasoning-echo", "reasoning-echo-text-first", "reasoning-echo-correction-matches"].includes(mode);
           emit({ type: "message.part.updated", properties: { sessionID, part: { id: `part-${number}`, messageID,
-            type: answer ? "text" : "reasoning", text: answer ? "Here is the actual final answer." : "Synthetic reasoning must not become the answer.", time: { start: 1, end: 2 } } } });
+            type: answer ? "text" : "reasoning", text: answer ? (mode === "reasoning-echo-correction-matches" ? recordedReasoning : "Here is the actual final answer.") : "Synthetic reasoning must not become the answer.", time: { start: 1, end: 2 } } } });
           emit({ type: "session.idle", properties: { sessionID } });
           emit({ type: "session.status", properties: { sessionID, status: { type: "idle" } } });
         });
@@ -98,7 +107,7 @@ it.each(["reply", "reply-no-finish", "reply-tool-finish", "two-turn-idle", "slow
       return result;
     };
     const collected = collect();
-    const { turnId } = await session.startTurn({ message: { role: "user", text: "Answer the current request." }, reasoningMode: mode === "empty-again" || mode === "reply" || mode === "reasoning-echo" ? "default" : "disabled" });
+    const { turnId } = await session.startTurn({ message: { role: "user", text: "Answer the current request." }, reasoningMode: mode === "empty-again" || mode === "reply" || mode.startsWith("reasoning-echo") ? "default" : "disabled" });
     const completed = guard(collected, mode.endsWith("idle-stall") || mode === "slow-native-tool" ? 26_000 : 5_000);
     await vi.advanceTimersByTimeAsync(0);
     if (mode === "slow-native-tool") {
@@ -107,19 +116,19 @@ it.each(["reply", "reply-no-finish", "reply-tool-finish", "two-turn-idle", "slow
     }
     await vi.advanceTimersByTimeAsync(mode.endsWith("idle-stall") ? 20_001 : mode === "slow-native-tool" ? 1_999 : 5_001);
     const events = await completed;
-    const succeeds = ["reply", "reply-no-finish", "reply-tool-finish", "two-turn-idle", "slow-native-tool", "normal", "foreign-idle", "queued-tool", "reasoning-echo"].includes(mode);
+    const succeeds = ["reply", "reply-no-finish", "reply-tool-finish", "two-turn-idle", "slow-native-tool", "normal", "foreign-idle", "queued-tool", "reasoning-echo", "reasoning-echo-text-first", "reasoning-echo-correction-matches"].includes(mode);
     expect(events.at(-1)?.eventType).toBe(succeeds ? "turn.completed" : "turn.failed");
     expect(events.filter(event => event.eventType === "turn.started")).toHaveLength(1);
     expect(events.every(event => !event.turnId || event.turnId === turnId)).toBe(true);
     const final = events.filter(event => event.eventType === "item.completed" && event.payload.kind === "agentMessage" && event.payload.channel === "final");
-    expect(final.map(event => event.payload.text)).toEqual(succeeds ? ["Here is the actual final answer."] : []);
+    expect(final.map(event => event.payload.text)).toEqual(succeeds ? [mode === "reasoning-echo-correction-matches" ? recordedReasoning : "Here is the actual final answer."] : []);
     expect(prompts).toHaveLength(["normal", "foreign-idle", "queued-tool"].includes(mode) ? 1 : 2);
     if (prompts.length === 2) {
-      expect(prompts[0]!.variant).toBe(mode === "empty-again" || mode === "reply" || mode === "reasoning-echo" ? "paperclip-default" : "paperclip-no-reasoning");
+      expect(prompts[0]!.variant).toBe(mode === "empty-again" || mode === "reply" || mode.startsWith("reasoning-echo") ? "paperclip-default" : "paperclip-no-reasoning");
       expect(prompts[1]).toMatchObject({ providerID: prompts[0]!.providerID, modelID: prompts[0]!.modelID, system: prompts[0]!.system, variant: "paperclip-no-reasoning" });
       expect(JSON.stringify(prompts[1]!.parts)).toContain("Do not repeat completed actions");
     }
-    if (mode === "reasoning-echo") {
+    if (mode === "reasoning-echo" || mode === "reasoning-echo-text-first") {
       // The repeated reasoning never reaches the person, as progress or as the reply.
       const assistantText = events.filter(event => event.payload.kind === "agentMessage").map(event => String(event.payload.text ?? ""));
       expect(assistantText.join("")).not.toContain(recordedReasoning.slice(0, 20));
