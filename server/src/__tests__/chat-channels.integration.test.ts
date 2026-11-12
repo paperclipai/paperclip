@@ -65471,9 +65471,14 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           expect((await readHeartbeatRunsByCompanyId(companyId)).filter(run => run.retryOfRunId === f.runId)).toHaveLength(1);
         } else {
           expect([202, 409], JSON.stringify(response.body)).toContain(response.status);
-          if (response.status === 202) {
+          if (response.status === 202 && response.body.chatActionId) {
             const outcome = await f.service.processFailedChatRunRetry(response.body.chatActionId);
             expect(outcome.status).not.toBe("queued");
+          } else if (response.status === 202) {
+            const [intent] = await readAgentWakeupRequestsById(response.body.requestId);
+            expect(intent).toMatchObject({ reason: "task_retry", requestedByActorId: "owner-user",
+              payload: { issueId, taskRetry: { sourceRunId: f.runId } } });
+            expect((intent.payload!.taskRetry as Record<string, unknown>).chatActionId).toBeUndefined();
           }
           expect((await readHeartbeatRunsByCompanyId(companyId)).filter(run => run.retryOfRunId === f.runId)).toHaveLength(0);
         }
@@ -66290,7 +66295,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       }
       const response = await send();
       if (["principal_revoked", "accepted_result"].includes(mode)) {
-        expect(response.status).toBe(409);
+        expect(response.status, JSON.stringify(response.body)).toBe(202);
+        expect(response.body.chatActionId).toBeUndefined();
+        const [intent] = await readAgentWakeupRequestsById(response.body.requestId);
+        expect(intent).toMatchObject({ reason: "task_retry", requestedByActorId: "owner-user",
+          payload: { issueId, taskRetry: { sourceRunId: f.runId } } });
+        expect((intent.payload!.taskRetry as Record<string, unknown>).chatActionId).toBeUndefined();
       } else {
         expect(response.status).toBe(202);
         if (mode === "source_edited") await db.update(issueComments).set({ body: "Changed after Retry acceptance" }).where(eq(issueComments.id, String(f.action.payload.commentId)));
@@ -66378,11 +66388,26 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       const denySource = async (apply: () => Promise<unknown>, restore: () => Promise<unknown>, stale = false) => {
         try {
           await apply();
-          const denied = await request(app).post(`/api/issues/${issueId}/retry`).send({ idempotencyKey: randomUUID(), observedRunId: current!.id }).expect(stale ? 200 : 409);
-          if (stale) expect(denied.body).toMatchObject({ accepted: false, stale: true });
-          expect(await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
-            eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.reason, "task_retry")))).toHaveLength(0);
-        } finally { await restore(); }
+          const denied = await request(app).post(`/api/issues/${issueId}/retry`).send({ idempotencyKey: randomUUID(), observedRunId: current!.id }).expect(stale ? 200 : 202);
+          const retries = await db.select().from(agentWakeupRequests).where(and(
+            eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.reason, "task_retry")));
+          if (stale) {
+            expect(denied.body).toMatchObject({ accepted: false, stale: true });
+            expect(retries).toHaveLength(0);
+          } else {
+            expect(denied.body.chatActionId).toBeUndefined();
+            expect(retries).toHaveLength(1);
+            expect(retries[0]).toMatchObject({ id: denied.body.requestId, requestedByActorId: "owner-user",
+              payload: { issueId, taskRetry: { sourceRunId: current!.id } } });
+            const taskRetry = retries[0].payload!.taskRetry as Record<string, unknown>;
+            expect(taskRetry.boardMessageOrigin).toBeUndefined();
+            expect(taskRetry.chatActionId).toBeUndefined();
+          }
+        } finally {
+          await db.delete(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, companyId),
+            eq(agentWakeupRequests.reason, "task_retry")));
+          await restore();
+        }
       };
       await denySource(() => db.update(issueComments).set({ body: "Edited after acceptance", updatedAt: new Date() }).where(eq(issueComments.id, comment.id)),
         () => db.update(issueComments).set({ body: comment.body, updatedAt: sql`${issueComments.createdAt}` }).where(eq(issueComments.id, comment.id)));
@@ -66493,17 +66518,26 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       const [firstRetry] = await readHeartbeatRunsById(successor.id);
       const nextRequest = () => request(app).post(`/api/issues/${issueId}/retry`).send({
         idempotencyKey: randomUUID(), observedRunId: firstRetry.id });
+      const continueWithoutReplay = async () => {
+        const continued = await nextRequest().expect(202);
+        expect(continued.body.chatActionId).toBeUndefined();
+        const [intent] = await readAgentWakeupRequestsById(continued.body.requestId);
+        expect(intent).toMatchObject({ reason: "task_retry", requestedByActorId: "owner-user",
+          payload: { issueId, taskRetry: { sourceRunId: firstRetry.id } } });
+        expect((intent.payload!.taskRetry as Record<string, unknown>).boardMessageOrigin).toBeUndefined();
+        await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.id, intent.id));
+      };
       await db.update(heartbeatRuns).set({ sessionIdAfter: "contradictory-provider-session" }).where(eq(heartbeatRuns.id, firstRetry.id));
-      await nextRequest().expect(409);
+      await continueWithoutReplay();
       await db.update(heartbeatRuns).set({ sessionIdAfter: null }).where(eq(heartbeatRuns.id, firstRetry.id));
       await db.update(issueComments).set({ body: "Changed original accepted message", updatedAt: new Date() }).where(eq(issueComments.id, comment.id));
-      await nextRequest().expect(409);
+      await continueWithoutReplay();
       await db.update(issueComments).set({ body: comment.body, updatedAt: sql`${issueComments.createdAt}` }).where(eq(issueComments.id, comment.id));
       const [firstIntent] = await readAgentWakeupRequestsById(retry.id);
       await db.update(agentWakeupRequests).set({ payload: { ...firstIntent.payload,
         taskRetry: { ...(firstIntent.payload!.taskRetry as object), sourceRunId: firstRetry.id } } }).where(eq(agentWakeupRequests.id, firstIntent.id));
       await db.update(heartbeatRuns).set({ contextSnapshot: { ...firstRetry.contextSnapshot, previousRunId: firstRetry.id } }).where(eq(heartbeatRuns.id, firstRetry.id));
-      await nextRequest().expect(409);
+      await continueWithoutReplay();
       await db.update(agentWakeupRequests).set({ payload: firstIntent.payload }).where(eq(agentWakeupRequests.id, firstIntent.id));
       await db.update(heartbeatRuns).set({ contextSnapshot: firstRetry.contextSnapshot }).where(eq(heartbeatRuns.id, firstRetry.id));
       const second = await nextRequest().expect(202);
@@ -66544,7 +66578,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     }
   });
 
-  it("distinguishes an inherited GitHub requester from permission to replay a committed provider failure", async () => {
+  it("continues an inherited GitHub task from its recorded result instead of replaying the committed provider failure", async () => {
     const f = await failedChatRetryFixture("github", "42", true, false, true);
     try {
       const companyId = f.fixture.companyId, agentId = f.fixture.assignedAgentId, issueId = f.issue.id;
@@ -66593,19 +66627,30 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       app.use((req, _res, next) => { req.actor = boardActor(companyId); next(); });
       app.use("/api", issueRoutes(db, createStorageService().storage, { chatRunRetries: f.service }));
       app.use(errorHandler);
-      const denied = await request(app).post(`/api/issues/${issueId}/retry`).send({
+      const continued = await request(app).post(`/api/issues/${issueId}/retry`).send({
         idempotencyKey: input.idempotencyKey, observedRunId: input.observedRunId,
-      }).expect(409);
-      expect(denied.body).toMatchObject({ error: "This attempt already recorded a result. Send a new message on the task to continue from the saved work.",
-        details: { code: "chat_failed_run_retry_not_authorized", reason: "accepted_result_without_new_input" } });
-      // Isolate the later accepted-result guard using only owned fixture data.
-      // Resolving inherited provenance cannot by itself authorize replay.
+      }).expect(202);
+      expect(continued.body).toMatchObject({ accepted: true, stale: false, observedRunId: resumed!.id });
+      expect(continued.body.chatActionId).toBeUndefined();
+      const assertBoardContinuation = async (requestId: string) => {
+        const [intent] = await readAgentWakeupRequestsById(requestId);
+        expect(intent).toMatchObject({ reason: "task_retry", requestedByActorType: "user", requestedByActorId: "owner-user",
+          payload: { issueId, taskRetry: { sourceRunId: resumed!.id, actorId: "owner-user" } } });
+        expect((intent.payload!.taskRetry as Record<string, unknown>).chatActionId).toBeUndefined();
+        expect(await db.select().from(chatActions).where(and(eq(chatActions.companyId, companyId),
+          eq(chatActions.kind, "failed_run_retry")))).toHaveLength(0);
+        await db.update(agentWakeupRequests).set({ status: "failed", finishedAt: new Date() }).where(eq(agentWakeupRequests.id, requestId));
+      };
+      await assertBoardContinuation(continued.body.requestId);
+      // The later accepted-result guard also continues from the saved result
+      // instead of repeating the exact chat request.
       await db.update(heartbeatRuns).set({ contextSnapshot: { ...failedResume.contextSnapshot,
         source: "chat:github", wakeCommentId: f.action.payload.commentId, wakeCommentIds: [f.action.payload.commentId] } })
         .where(eq(heartbeatRuns.id, failedResume.id));
       try {
-        await expect(requestTaskRetry({ ...input, idempotencyKey: randomUUID() })).rejects.toMatchObject({ details: {
-          code: "chat_failed_run_retry_not_authorized", reason: "accepted_result_without_new_input" } });
+        const receipt = await requestTaskRetry({ ...input, idempotencyKey: randomUUID() });
+        expect(receipt).toMatchObject({ accepted: true, chatActionId: undefined });
+        await assertBoardContinuation(receipt.requestId!);
       } finally { await db.update(heartbeatRuns).set({ contextSnapshot: failedResume.contextSnapshot }).where(eq(heartbeatRuns.id, failedResume.id)); }
       expect((await readHeartbeatRunsByCompanyId(companyId)).filter(run => run.retryOfRunId === resumed!.id)).toHaveLength(0);
     } finally { await f.service.shutdown(); }
@@ -67164,9 +67209,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
                   } finally { unsubscribes.forEach(unsubscribe => unsubscribe()); }
                 }
                 if (mode !== "committed_board_existing" && mode !== "committed_board_existing_coalesced" && mode !== "committed_board_existing_identity_contended" && mode !== "committed_board_existing_identity_expired") {
-                  await expect(requestTaskRetry(nextInput)).rejects.toMatchObject({
-                    details: { code: "chat_failed_run_retry_not_authorized" },
-                  });
+                  const continued = await requestTaskRetry(nextInput);
+                  expect(continued).toMatchObject({ accepted: true, chatActionId: undefined });
+                  const [intent] = await readAgentWakeupRequestsById(continued.requestId!);
+                  expect(intent).toMatchObject({ reason: "task_retry", requestedByActorId: "owner-user",
+                    payload: { taskRetry: { sourceRunId: failed.id } } });
+                  expect((intent.payload!.taskRetry as Record<string, unknown>).chatActionId).toBeUndefined();
                   expect(await db.select().from(agentWakeupRequests).where(inArray(agentWakeupRequests.id, inputIds)).orderBy(asc(agentWakeupRequests.id)))
                     .toEqual(before);
                   return;
