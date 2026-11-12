@@ -809,8 +809,12 @@ const server = createServer(async (request, response) => {
         const answerBeforeFinishThenRewrite = String(parsedPrompt.message ?? "").includes("answer-before-finish-then-rewrite");
         const statusBeforeFinishThenAnswer = String(parsedPrompt.message ?? "").includes("status-before-finish-then-answer");
         const shortAnswerBeforeFinishThenReference = String(parsedPrompt.message ?? "").includes("short-answer-before-finish-then-reference");
-        const answerBeforeFinishText = shortAnswerBeforeFinishThenReference
+        const shortStatusBeforeFinishThenShortAnswer = String(parsedPrompt.message ?? "").includes("short-status-before-finish-then-short-answer");
+        const shortAnswerRepeatedAfterFinish = String(parsedPrompt.message ?? "").includes("short-answer-repeated-after-finish");
+        const answerBeforeFinishText = shortAnswerBeforeFinishThenReference || shortAnswerRepeatedAfterFinish
           ? "The result is 42."
+          : shortStatusBeforeFinishThenShortAnswer
+          ? "STATUS: Status card summary written successfully (revision 2)."
           : answerBeforeFinishThenRewrite
           ? "Work on [COM-1 Website task](/COM/issues/COM-1) stopped at 06:57 UTC, about 90 seconds after starting: its run's local runner process exited unexpectedly (`runnerd exited unexpectedly`), all 3 automatic recovery attempts were exhausted, and Paperclip marked the task **blocked** with cause `native_session_retry_exhausted`. The human-supplied website brief had also not arrived, so no brief document was saved.\n\nThe assignee, [Morgan the frontend engineer](/COM/agents/agent-morgan), is showing an error status. To resume, open COM-1 and use **Retry** on that task; it will recheck gates and preserve the failed attempt's evidence. Agents cannot retry it for you."
           : statusBeforeFinishThenAnswer
@@ -820,6 +824,10 @@ const server = createServer(async (request, response) => {
           : "Two inbox items need you: [COM-2](/COM/issues/COM-2) is blocked and [COM-1](/COM/issues/COM-1) is waiting for review.";
         const answerAfterFinishText = shortAnswerBeforeFinishThenReference
           ? "Answered above."
+          : shortAnswerRepeatedAfterFinish
+          ? "The result is 42."
+          : shortStatusBeforeFinishThenShortAnswer
+          ? "Updated the Launch blockers status card."
           : answerBeforeFinishThenRewrite
           ? "Work on [COM-1 Website task](/COM/issues/COM-1) stopped at 06:57 UTC, about 90 seconds after starting: its run's local runner process exited unexpectedly (`runnerd exited unexpectedly`), all 3 automatic recovery attempts were exhausted, and Paperclip marked the task **blocked** with cause `native_session_retry_exhausted`. The human-supplied website brief had also not arrived, so no brief was saved.\n\n[The assigned agent, Morgan,](https://example.invalid) is in an error state. To resume, open COM-1 and use **Retry** on that task; it rechecks gates and preserves the failed attempt's evidence. Agents cannot retry it for you."
           : statusBeforeFinishThenAnswer
@@ -1028,7 +1036,7 @@ const server = createServer(async (request, response) => {
               },
             },
           });
-        } else if (answerBeforeFinishThenReference || answerBeforeFinishThenRestatement || answerBeforeFinishThenRewrite || statusBeforeFinishThenAnswer) {
+        } else if (answerBeforeFinishThenReference || answerBeforeFinishThenRestatement || answerBeforeFinishThenRewrite || statusBeforeFinishThenAnswer || shortStatusBeforeFinishThenShortAnswer || shortAnswerRepeatedAfterFinish) {
           emit({
             type: "message.part.updated",
             id: "event-answer-before-finish",

@@ -2333,10 +2333,10 @@ class OpenCodeHarnessSession implements HarnessSession {
     // later message is the reply. The prose written between the last work tool
     // and that call stays in the reply only when the later message is a short
     // closing line that leans on it ("Answered above", "Commands above are
-    // ready"): one under half that prose's length, or any short line with no
-    // link of its own. A longer later message, or a short one carrying its own
-    // link, is the model's own answer: keeping the earlier prose too would save
-    // a planning note or a second copy of the answer.
+    // ready"): a short line with no link of its own that points back to it, or
+    // one under half that prose's length. A later message that repeats the
+    // prose, or any other later message, is the model's own answer: keeping the
+    // earlier prose too would save a planning note or a second copy.
     const candidatePreface =
       this.#semanticResultProviderMessageId !== null &&
       correlatedAfterResult.length === 0 &&
@@ -2345,8 +2345,11 @@ class OpenCodeHarnessSession implements HarnessSession {
         : [];
     const prefaceText = candidatePreface.map((part) => part.text.trim()).join("\n\n");
     const selectedText = selected.text.trim();
-    const closingReference = selectedText.length <= 80 && !/\]\(|https?:\/\//.test(selectedText);
-    const preface = selectedText.length * 2 < prefaceText.length || closingReference ? candidatePreface : [];
+    const normalized = (value: string) => value.replace(/\s+/g, " ").trim().toLowerCase();
+    const repeatsPreface = normalized(selectedText) === normalized(prefaceText);
+    const pointsBack = selectedText.length <= 120 && !/\]\(|https?:\/\//.test(selectedText)
+      && /\b(above|earlier|previous|preceding)\b/i.test(selectedText);
+    const preface = !repeatsPreface && (pointsBack || selectedText.length * 2 < prefaceText.length) ? candidatePreface : [];
     const text = preface.length
       ? [...preface, selected].map((part) => part.text.trim()).filter(Boolean).join("\n\n")
       : selected.text;

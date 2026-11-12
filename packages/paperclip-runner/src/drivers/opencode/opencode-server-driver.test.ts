@@ -3088,6 +3088,35 @@ describe("OpenCodeServerDriver", () => {
     await session.close({ reason: "test" });
   });
 
+  it.each([
+    ["short-status-before-finish-then-short-answer", "Updated the Launch blockers status card."],
+    ["short-answer-repeated-after-finish", "The result is 42."],
+  ])("saves only a short complete answer written after the completion call: %s", async (prompt, expected) => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-driver-"));
+    const workspace = await mkdtemp(join(tmpdir(), "paperclip-opencode-workspace-"));
+    roots.push(root, workspace);
+    const driver = new OpenCodeServerDriver({
+      model: "openrouter/deepseek/deepseek-v4-flash-0731",
+      runtimeDirectory: root,
+      command: fixture,
+      environment: { PATH: process.env.PATH, OPENROUTER_API_KEY: "fixture-key" },
+    });
+    const session = await driver.openSession({
+      runId: `run-${prompt}`,
+      normalizedSessionId: prompt,
+      workingDirectory: workspace,
+    });
+    await session.startTurn({ message: { role: "user", text: prompt } });
+    const events = await collectTurnEvents(session.events());
+    const finalMessages = events.filter(
+      (event) => event.eventType === "item.completed" && event.payload.kind === "agentMessage" && event.payload.channel === "final",
+    );
+    expect(finalMessages).toHaveLength(1);
+    expect(finalMessages[0]?.payload.text).toBe(expected);
+    await session.close({ reason: "test" });
+  });
+
   it("saves an answer once when the model restates it after the completion call", async () => {
     await chmod(fixture, 0o755);
     const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-driver-"));
