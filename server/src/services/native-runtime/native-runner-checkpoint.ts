@@ -3,7 +3,7 @@ import { NATIVE_PREPARATION_FENCING_VERSION } from "./native-active-runs.js";
 import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
 import { and, eq, exists, gt, isNull, lte, inArray, notExists, or, sql } from "drizzle-orm";
 import { checkpointDb, heartbeatRuns, issues, nativeRunFinalizations, nativeRunnerCheckpoints, type Db } from "@paperclipai/db";
-import { inspectDurablePrpCheckpointHeader, inspectUnclaimedBootstrapCheckpoint, decodeDurablePrpCheckpoint, type DurablePrpCheckpoint, type DurablePrpControlPlane, type DurableRecoveryIdentity } from "../../vendor/paperclip-runner/index.js";
+import { inspectDurablePrpCheckpointHeader, inspectUnauthenticatedBootstrapCheckpoint, inspectUnclaimedBootstrapCheckpoint, decodeDurablePrpCheckpoint, type DurablePrpCheckpoint, type DurablePrpControlPlane, type DurableRecoveryIdentity } from "../../vendor/paperclip-runner/index.js";
 import { createLocalEncryptedCipher } from "../../secrets/local-encrypted-provider.js";
 import { legacyControllerBootId } from "../legacy-controller-lease.js";
 import { assertNativeSourceCheckpointConsumer, lockSourceRecoveryCoordinators } from "./native-source-recovery-ownership.js";
@@ -259,6 +259,24 @@ export async function loadNativeUnclaimedBootstrapCheckpoint(
     const records = new Map(rows.map(row => [row.part, decryptPart(cipher, binding, row.part, row.material)] as const));
     return inspectUnclaimedBootstrapCheckpoint(records, identity);
   } catch { return null; }
+}
+
+export async function nativeRunnerNeverAuthenticated(
+  db: Pick<Db, "select">, binding: Binding,
+  identity: Pick<DurableRecoveryIdentity, "runId" | "normalizedSessionId" | "runnerInstanceId">,
+): Promise<boolean> {
+  try {
+    if (binding.runId !== identity.runId) return false;
+    const rows = await db.select().from(nativeRunnerCheckpoints).where(and(
+      eq(nativeRunnerCheckpoints.companyId, binding.companyId), eq(nativeRunnerCheckpoints.issueId, binding.issueId),
+      eq(nativeRunnerCheckpoints.runId, binding.runId))).limit(MAX_BOOTSTRAP_CHECKPOINT_COMMANDS + 3);
+    if (rows.length < 4 || rows.length > MAX_BOOTSTRAP_CHECKPOINT_COMMANDS + 2
+      || rows.reduce((bytes, row) => bytes + Buffer.byteLength(JSON.stringify(row.material)), 0)
+        > 2 * NATIVE_CHECKPOINT_INSPECTION_TOTAL_MAX_BYTES) return false;
+    const cipher = createLocalEncryptedCipher("read");
+    const records = new Map(rows.map(row => [row.part, decryptPart(cipher, binding, row.part, row.material)] as const));
+    return inspectUnauthenticatedBootstrapCheckpoint(records, identity);
+  } catch { return false; }
 }
 
 const BOOTSTRAP_CHECKPOINT_PARTS = new Set(["header", "cursor"]);

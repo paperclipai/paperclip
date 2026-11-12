@@ -11,7 +11,9 @@ import { getHeartbeatRunRuntimeStatus } from "../heartbeat-run-runtime-status.js
 import { createHeartbeatRunState } from "./run-state.js";
 import { heartbeatService } from "../heartbeat.js";
 import { createHeartbeatRunPreparation } from "./run-preparation.js";
-import { createHeartbeatLifecycle, persistHeartbeatRunProcessMetadata, type HeartbeatLifecycleDependencies } from "./run-lifecycle.js";
+import { createHeartbeatLifecycle, decorateHeartbeatRunRuntimeStatus, persistHeartbeatRunProcessMetadata, type HeartbeatLifecycleDependencies } from "./run-lifecycle.js";
+import { STORAGE_CREDENTIALS_REJECTED_HELD_MESSAGE, STORAGE_CREDENTIALS_REJECTED_MESSAGE, STORAGE_UNAVAILABLE_CODE,
+  STORAGE_UNAVAILABLE_HELD_MESSAGE, STORAGE_UNAVAILABLE_MESSAGE } from "../../storage/storage-unavailable.js";
 import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../delivery-work-notifications.js";
 
 vi.mock("../live-events.js", () => ({ publishLiveEvent: vi.fn() }));
@@ -50,6 +52,23 @@ describe("heartbeat lifecycle module boundary", () => {
     createHeartbeatLifecycle(database.db, deps);
     expect(database.access).not.toHaveBeenCalled();
     for (const callback of Object.values(deps)) if (vi.isMockFunction(callback)) expect(callback).not.toHaveBeenCalled();
+  });
+
+  // Rows saved by earlier releases can carry the storage retry promise
+  // under a code that no storage wait owns. They read truthfully after deploy,
+  // with no migration; a run a storage wait owns keeps its promise.
+  it.each([
+    ["an outage", STORAGE_UNAVAILABLE_MESSAGE, STORAGE_UNAVAILABLE_HELD_MESSAGE],
+    ["rejected credentials", STORAGE_CREDENTIALS_REJECTED_MESSAGE, STORAGE_CREDENTIALS_REJECTED_HELD_MESSAGE],
+  ])("reads a previously saved storage retry promise under native recovery truthfully (%s)", (_label, saved, expected) => {
+    const held = decorateHeartbeatRunRuntimeStatus({ id: "held-native-run", status: "failed",
+      errorCode: "native_continuation_requires_reconciliation", error: saved });
+    expect(held.error).toBe(expected);
+    const waiting = decorateHeartbeatRunRuntimeStatus({ id: "run-with-storage-wait", status: "failed",
+      errorCode: STORAGE_UNAVAILABLE_CODE, error: saved });
+    expect(waiting.error).toBe(saved);
+    const other = decorateHeartbeatRunRuntimeStatus({ id: "other", status: "failed", errorCode: "adapter_failed", error: "Adapter failed" });
+    expect(other.error).toBe("Adapter failed");
   });
 
   it("ignores absent wake requests without accessing the database", async () => {

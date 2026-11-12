@@ -1,3 +1,5 @@
+import { assertAgentInteraction } from "../services/agent-interaction-policy.js";
+import { assertQueuedCommentInteractionDelivery, recheckQueuedCommentInteractionDelivery } from "../services/agent-interaction-delivery.js";
 import { listStalledDependencies } from "../services/recovery/blocker-stall-wakeups.js";
 import { confirmMcpAttachmentCleanup, recordMcpAttachmentCleanup, type McpAttachmentCleanup } from "../services/public-mcp/upload-cleanup.js";
 import { notifyDeferredExecutionWork } from "../services/deferred-execution-notifications.js";
@@ -13,11 +15,15 @@ import { getHeartbeatRunReadDecisions, redactHeartbeatRunListRow } from "../serv
 import { taskInterruptionPresentation, taskInterruptionPresentations } from "../services/task-interruption-presentation.js";
 import { parseObject } from "../adapters/utils.js";
 import { prepareRestrictedWorkspaceRetry } from "../services/restricted-workspace-retry.js";
-import { issueSummariesQuerySchema, type IssueSummary } from "@paperclipai/shared";
+import { ISSUE_SUMMARIES_MAX_IDS, issueChatBootstrapQuerySchema, issueSummariesQuerySchema, type IssueSummary } from "@paperclipai/shared";
+import { readIssueChatBootstrapItems } from "../services/issue-chat-bootstrap.js";
+import { issueRunPresenceService } from "../services/issue-run-presence.js";
+import { activityService } from "../services/activity.js";
 import { listIssueSummaries } from "../services/issue-summaries.js";
 import { listIssueStatusBlockerAttention } from "../services/issue-status-presentation.js";
 import { assertNoCaseHandoffMutation } from "../services/heartbeat/case-handoff-lifecycle.js";
-import { assertLegacyRunTaskOwnership } from "../legacy-run-task-ownership.js";
+import { assertHandedOffRunTaskOwnership } from "../run-task-ownership.js";
+import { recordNativeHumanSelfHandoff } from "../services/native-runtime/native-human-self-handoff.js";
 import { runRetainsIssueIdentity } from "../services/task-repository-acquisition.js";
 import { withConversationReadState } from "../services/agent-chat-read-state.js";
 import { markIssueReadSchema } from "@paperclipai/shared";
@@ -25,7 +31,7 @@ import { enqueueFastResponse } from "../services/fast-responses.js";
 import { hasRequiredWorkspaceRecovery, LEGACY_WORKSPACE_RECOVERY_SCHEMA } from "../services/workspace-restore-recovery-state.js";
 import { hasUnverifiedNativeWorkspaceFinalizationOwner } from "../services/native-runtime/native-workspace-finalization-recovery-state.js";
 import { monitorPoliciesEqual, applyActorMonitorScheduledBy, assertCanManageIssueMonitor, summarizeIssueMonitor } from "../services/issue-monitors.js";
-import type { IssuePrivacyConstraints } from "@paperclipai/shared";
+import type { IssuePrivacyConstraints, WithdrawIssueThreadInteraction } from "@paperclipai/shared";
 import { canActorReadHeartbeatRun } from "../services/heartbeat-run-privacy.js";
 import {
   childCreatedByRequest,
@@ -38,13 +44,15 @@ import { setIssueTitle } from "../services/issue-title.js";
 import { setIssueTitleSchema } from "@paperclipai/shared";
 import { resolveConfirmationFromComment } from "../services/confirmation-comment-resolution.js";
 import { createIssueReadTiming } from "../services/issue-read-timing.js";
+import { createInboxMineTiming, type InboxMinePhaseDurations } from "../services/inbox-mine-timing.js";
 import { isNativeWorkspaceExportRepairCause } from "@paperclipai/shared";
 import { resumeNativeWorkspaceAfterOwnerStop } from "../services/native-runtime/native-workspace-owner-recovery.js";
+import { enqueueOwnQuestionDismissalWake } from "../services/native-runtime/own-question-wait.js";
 import { confirmNativeControllerStopped, NATIVE_CONTROLLER_HOST_UNVERIFIED } from "../services/native-runtime/native-controller-host-recovery.js";
 import { confirmOwnerGone, OWNER_UNPROVABLE_CAUSE } from "../services/recovery/owner-gone-attestation.js";
 import { OWNABLE_KINDS } from "../services/recovery/ownership-registry.js";
 import { retryNativeWorkspaceExport } from "../services/native-runtime/native-workspace-export-retry.js";
-import { deferredWakeJoinsFirstTurn, firstTurnClaimedCommentIds, firstTurnTakesAllQueuedComments, runAcceptsFirstTurnQueuedInput } from "../services/native-runtime/first-turn-queued-input.js";
+import { deferredWakeJoinsFirstTurn, firstTurnClaimedCommentIds, firstTurnQueuedCommentIds, firstTurnTakesAllQueuedComments, firstTurnWakeColumns, firstTurnWakeContextFields, firstTurnWakePayloadFields, runAcceptsFirstTurnQueuedInput } from "../services/native-runtime/first-turn-queued-input.js";
 import { reconstructNativeWorkspace, unreconciledNativeExportPredicate } from "../services/native-runtime/native-workspace-reconstruction.js";
 import { reconstructWorkspaceSchema } from "@paperclipai/shared";
 import { queuedInteractionId, readQueuedInteractionResponse, hasQueuedInteractionResponse, type QueuedInteractionResponse } from "../services/queued-interaction-response.js";
@@ -202,6 +210,7 @@ import type { StorageService } from "../storage/types.js";
 import { validate, validateIssueMutationBody } from "../middleware/validate.js";
 import * as serviceIndex from "../services/index.js";
 import { conversationDecisionReceiptsService } from "../services/conversation-decision-receipts.js";
+import { attentionHandledDetails, attentionHandledFor, type AttentionHandledFor } from "../services/attention-receipts.js";
 import {
   accessService,
   agentService,
@@ -223,6 +232,7 @@ import {
   issueService,
   type ActivityPublication,
   type IssueFilters,
+  type IssueListOptions,
   clampIssueListLimit,
   documentService,
   documentAnnotationService,
@@ -307,7 +317,6 @@ import { retainBacklogHumanAssignment } from "../services/human-directed-work.js
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
 import { shouldWakeAssigneeForIssueComment } from "../services/issue-comment-wakeup.js";
 import { createSecretProposalsService } from "../services/secret-proposals.js";
-import { notifySecretProposalResolution } from "../services/secret-proposal-notifications.js";
 import {
   renderOnboardingGreeting,
   ONBOARDING_GREETING_AUTHORIZATION_REASON,
@@ -2481,6 +2490,124 @@ function readSecretProposalContinuationContext(interaction: {
   };
 }
 
+/**
+ * Withdraw a pending interaction and tell the agent: cancel a native question
+ * run that waits on it, log `issue.thread_interaction_withdrawn`, and queue the
+ * assignee's continuation wake. The issue route and the attention close
+ * endpoint (PAP-749 plan §2, Rule 6) share this one path. Callers authorize
+ * the actor first.
+ */
+export async function withdrawIssueThreadInteractionAndNotify(input: {
+  db: Db;
+  heartbeat: ReturnType<typeof heartbeatService>;
+  issue: {
+    id: string;
+    companyId: string;
+    assigneeAgentId: string | null;
+    status: string;
+  };
+  interactionId: string;
+  body: WithdrawIssueThreadInteraction;
+  actor: ReturnType<typeof getActorInfo>;
+  /** A person may withdraw a card that outlived its closed task. */
+  allowClosedIssueForHuman?: boolean;
+  /**
+   * Who the card was for, read before the withdraw (PAP-749 plan §6). Omitted:
+   * read here. `null`: the caller found no other person.
+   */
+  handledFor?: AttentionHandledFor | null;
+}) {
+  const { db, heartbeat, issue, actor } = input;
+  const handledFor = input.handledFor !== undefined
+    ? input.handledFor
+    : await attentionHandledFor(
+      db,
+      issue.companyId,
+      { sourceKind: "issue_thread_interaction", sourceId: input.interactionId },
+      actor.actorType === "user" ? actor.actorId : null,
+    );
+  let nativeRunId: string | null = null;
+  const interaction = await issueThreadInteractionService(db).withdrawInteraction(
+    issue,
+    input.interactionId,
+    input.body,
+    {
+      agentId: actor.agentId,
+      runId: actor.runId,
+      userId: actor.actorType === "user" ? actor.actorId : null,
+    },
+    {
+      allowClosedIssueForHuman: input.allowClosedIssueForHuman,
+      afterResolveInTransaction: async (tx, resolved) => {
+        if (resolved.kind !== "ask_user_questions") return;
+        nativeRunId = await requestNativeQuestionRunCancellation(
+          tx,
+          resolved,
+          {
+            kind: "interaction_withdrawn",
+            interactionId: resolved.id,
+          },
+        );
+      },
+    },
+  );
+  if (nativeRunId) {
+    try {
+      await heartbeat.cancelRun(
+        nativeRunId,
+        "Question withdrawn while waiting for operator input",
+        {
+          resultJson: {
+            withdrawnInteractionId: interaction.id,
+            withdrawnByActorType: actor.actorType,
+            withdrawnByActorId: actor.actorId,
+          },
+        },
+      );
+    } catch (err) {
+      logger.warn(
+        { err, runId: nativeRunId, interactionId: interaction.id },
+        "native question withdrawal cancellation deferred to recovery sweep",
+      );
+    }
+  }
+  await logActivity(db, {
+    companyId: issue.companyId,
+    actorType: actor.actorType,
+    actorId: actor.actorId,
+    agentId: actor.agentId,
+    runId: actor.runId,
+    agentApiKeyId: actor.agentApiKeyId,
+    action: "issue.thread_interaction_withdrawn",
+    entityType: "issue",
+    entityId: issue.id,
+    details: {
+      interactionId: interaction.id,
+      interactionKind: interaction.kind,
+      interactionStatus: interaction.status,
+      reason:
+        interaction.result && "reason" in interaction.result
+          ? (interaction.result.reason ?? null)
+          : null,
+      ...attentionHandledDetails(handledFor, "withdrawn", {
+        reason: interaction.result && "reason" in interaction.result ? interaction.result.reason : null,
+      }),
+    },
+  });
+
+  if (actor.agentId !== issue.assigneeAgentId) {
+    await queueResolvedInteractionContinuationWakeup({
+      db,
+      heartbeat,
+      issue,
+      interaction,
+      actor,
+      source: "issue.interaction.withdraw",
+    });
+  }
+  return interaction;
+}
+
 const REQUEST_ITEM_VERDICTS_WAKE_COALESCE_WINDOW_MS = 2_000;
 
 function buildRequestItemVerdictsWakeIdempotencyKey(args: {
@@ -3040,7 +3167,7 @@ export const ISSUE_LIST_NEXT_OFFSET_HEADER = "X-Paperclip-Next-Offset";
 export const ISSUE_LIST_NEXT_AFTER_ID_HEADER = "X-Paperclip-Next-After-Id";
 
 type IssueListPreparedResponse =
-  | { kind: "inbox"; body: unknown }
+  | { kind: "inbox"; body: unknown; serverTimingPhases?: InboxMinePhaseDurations }
   | {
       kind: "compact";
       body: CompactIssue[];
@@ -3573,6 +3700,8 @@ export function issueRoutes(
   const recoveryActionsSvc = issueRecoveryActionService(db);
   const executionWorkspacesSvc = executionWorkspaceServiceDirect(db, { pluginWorkerManager: opts.pluginWorkerManager });
   const workProductsSvc = workProductService(db);
+  const activitySvc = activityService(db);
+  const issueRunPresence = issueRunPresenceService(db, { heartbeat, getAgentById: (id) => agentsSvc.getById(id) });
   const documentsSvc = documentService(db);
   const artifactReviewDocumentsSvc = artifactReviewDocumentService(db, storage);
   const companySkillsSvc = companySkillService(db);
@@ -3707,7 +3836,8 @@ export function issueRoutes(
 
   const issueDetailEtag = privateJsonEtag();
   router.use((req, res, next) => {
-    if (/^\/issues\/[^/]+(?:\/|$)/.test(req.path)) {
+    // The chat bootstrap is `no-store`: always a fresh body, never a 304.
+    if (/^\/issues\/[^/]+(?:\/|$)/.test(req.path) && !/^\/issues\/[^/]+\/chat-bootstrap\/?$/.test(req.path)) {
       issueDetailEtag(req, res, next);
       return;
     }
@@ -5261,7 +5391,8 @@ export function issueRoutes(
   function issueWriteDenialCodeForDecision(
     decision: Awaited<ReturnType<typeof decideIssueAccess>>,
   ): IssueWriteDenialCode {
-    if (decision.code)
+    if (decision.interactionDenial) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+    if (decision.code === "RESPONSIBLE_USER_UNAUTHORIZED" || decision.code === "RESPONSIBLE_USER_UNAVAILABLE")
       return issueWriteDenialCodeForResponsibleUserDenial(decision.code);
     if (
       decision.reason === "deny_low_trust_boundary" ||
@@ -5540,11 +5671,7 @@ export function issueRoutes(
       })
       .from(issueRows)
       .where(and(eq(issueRows.companyId, companyId), inArray(issueRows.id, uniqueIds)));
-    const decisions = await Promise.all(rows.map(async (row) => ({
-      id: row.id,
-      allowed: (await decideIssueAccess(req, row, "issue:read")).allowed,
-    })));
-    return new Set(decisions.filter((decision) => decision.allowed).map((decision) => decision.id));
+    return new Set((await filterIssuesForActor(req, rows)).map((row) => row.id));
   }
 
   function lockedIssueStub(issue: Pick<IssueRelationIssueSummary, "id" | "identifier">): IssueLockedStub {
@@ -5672,6 +5799,9 @@ export function issueRoutes(
   ) {
     if (!(await assertIssueReadAllowed(req, res, issue))) return false;
     if (req.actor.type !== "agent") return true;
+    await assertAgentInteraction(db, { companyId: issue.companyId, actorAgentId: req.actor.agentId,
+      operation: "comment", issueId: issue.id,
+      texts: [typeof req.body?.body === "string" ? req.body.body : "", typeof req.body?.comment === "string" ? req.body.comment : ""] });
     if (req.actor.runId) await assertNoCaseHandoffMutation(db, req.actor.runId, issue.id);
     const actorAgentId = req.actor.agentId;
     if (!actorAgentId) {
@@ -5737,12 +5867,24 @@ export function issueRoutes(
     return decision !== true && decision.reason === "allow_visible_issue_write";
   }
 
+  /**
+   * Keeps the tasks the actor may read. One batched authorization read decides
+   * all of them, so the number of statements does not grow with the number of
+   * tasks.
+   */
   async function filterIssuesForActor<
     T extends Parameters<typeof decideIssueAccess>[1],
   >(req: Request, rows: T[]) {
-    const decisions = await Promise.all(
-      rows.map((issue) => decideIssueAccess(req, issue, "issue:read")),
-    );
+    const decisions = await access.decideReads(req.actor, rows.map((issue) => ({
+      type: "issue" as const,
+      companyId: issue.companyId,
+      issueId: issue.id,
+      projectId: issue.projectId,
+      parentIssueId: issue.parentId,
+      assigneeAgentId: issue.assigneeAgentId,
+      assigneeUserId: issue.assigneeUserId,
+      status: issue.status,
+    })));
     return rows.filter((_, index) => decisions[index]?.allowed);
   }
 
@@ -5803,13 +5945,13 @@ export function issueRoutes(
     if (req.actor.source === "agent_jwt" && req.actor.runId &&
         issue.assigneeAgentId === null && issue.assigneeUserId) {
       const run = await heartbeat.getRun(req.actor.runId);
-      if (run?.agentId === actorAgentId) assertLegacyRunTaskOwnership(run, issue);
+      if (run?.agentId === actorAgentId) assertHandedOffRunTaskOwnership(run, issue);
     }
     // Task-watchdog runs receive a scoped *grant* to mutate issues inside the
     // watched subtree. This must be evaluated before the base assignee-ownership
     // boundary below: that boundary denies an agent mutating an issue owned by a
     // different agent, which is exactly the watchdog's primary job
-    // (SPEC-implementation §9.9 — comment, transition, reassign within the
+    // (`doc/TASK-WATCHDOG.md`, "Authority contract" — comment, transition, reassign within the
     // watched subtree). The watchdog scope can only widen access to the watched
     // subtree; downstream status-transition, assignment, recovery, and budget
     // guards in the route handlers still apply.
@@ -6234,9 +6376,10 @@ export function issueRoutes(
       });
     }
     // Resolving an interaction on another run's issue is a cross-issue mutation
-    // like a comment or a PATCH, so it consumes the same per-run budget (§9.3,
-    // §9.8.1). This runs last: company/resource access, run attribution,
-    // containment, and the audience decision have all already passed, and the
+    // like a comment or a PATCH, so it consumes the same per-run budget (see
+    // `doc/agent-permission-defaults.md`). This runs last: company/resource
+    // access, run attribution, containment, and the audience decision have all
+    // already passed, and the
     // terminal interaction mutation plus every child-task, continuation,
     // activity, tool, and wake side effect is still downstream. Same-issue
     // resolutions short-circuit inside the counter transaction and are not
@@ -7522,12 +7665,24 @@ export function issueRoutes(
     return runToInterrupt?.status === "running" ? runToInterrupt : null;
   }
 
+  async function resolveQueuedOutgoingAssigneeRun(issue: {
+    companyId: string;
+    assigneeAgentId: string | null;
+    executionRunId?: string | null;
+  }) {
+    if (!issue.executionRunId || !issue.assigneeAgentId) return null;
+    const run = await heartbeat.getRun(issue.executionRunId);
+    return run && run.status === "queued" && run.companyId === issue.companyId &&
+      run.agentId === issue.assigneeAgentId ? run : null;
+  }
+
   type IssueQueueDb = Db | Parameters<Parameters<Db["transaction"]>[0]>[0];
   type IssueQueueTx = Parameters<Parameters<Db["transaction"]>[0]>[0];
   type IssueQueueWake = typeof agentWakeupRequests.$inferSelect;
   type IssueQueueRun = typeof heartbeatRuns.$inferSelect;
   type IssueQueueState = {
-    wake: Pick<IssueQueueWake, "id" | "companyId" | "payload" | "status" | "runId">;
+    wake: Pick<IssueQueueWake, "id" | "companyId" | "payload" | "status" | "runId" | "agentId" | "reason"
+      | "requestedByActorType" | "requestedByActorId">;
     state: "deferred" | "queued";
     queueRun: Pick<IssueQueueRun, "runtimeMode"> | null;
     /** The receipt already read for an interaction wake, reused by the queue builder. */
@@ -7543,16 +7698,18 @@ export function issueRoutes(
       .select({
         id: agentWakeupRequests.id, companyId: agentWakeupRequests.companyId,
         status: agentWakeupRequests.status, runId: agentWakeupRequests.runId,
+        ...firstTurnWakeColumns,
         payload: sql<Record<string, unknown>>`jsonb_build_object(
+          ${firstTurnWakePayloadFields(agentWakeupRequests.payload)},
           'issueId', ${agentWakeupRequests.payload}->'issueId',
           'mutation', ${agentWakeupRequests.payload}->'mutation',
-          'interactionId', ${agentWakeupRequests.payload}->'interactionId',
           'interactionStatus', ${agentWakeupRequests.payload}->'interactionStatus',
           'externalChatContinuation', ${agentWakeupRequests.payload}->'externalChatContinuation',
           'executionWait', jsonb_build_object(
             'reason', ${agentWakeupRequests.payload}->'executionWait'->'reason',
             'message', ${agentWakeupRequests.payload}->'executionWait'->'message'),
           '_paperclipWakeContext', jsonb_build_object(
+            ${firstTurnWakeContextFields(agentWakeupRequests.payload)},
             'wakeCommentIds', ${agentWakeupRequests.payload}->'_paperclipWakeContext'->'wakeCommentIds',
             'forceFreshSession', ${agentWakeupRequests.payload}->'_paperclipWakeContext'->'forceFreshSession')
         )`,
@@ -7588,7 +7745,8 @@ export function issueRoutes(
       if (wake.status === "deferred_issue_execution") {
         if (isReceipt) {
           const response = await readReceipt();
-          if (response) receipt = { wake, state: "deferred", queueRun: null, response };
+          // A tool action's outcome is delivered, never listed (approve = run).
+          if (response && !response.toolActionOutcome) receipt = { wake, state: "deferred", queueRun: null, response };
           continue;
         }
         return { wake, state: "deferred", queueRun: null };
@@ -7610,7 +7768,7 @@ export function issueRoutes(
         .then((runRows) => runRows[0] ?? null);
       if (queueRun && isReceipt) {
         const response = await readReceipt();
-        if (response) receipt = { wake, state: "queued", queueRun, response };
+        if (response && !response.toolActionOutcome) receipt = { wake, state: "queued", queueRun, response };
       }
       else if (queueRun) return { wake, state: "queued", queueRun };
     }
@@ -7710,6 +7868,13 @@ export function issueRoutes(
     if (wake && queuedInteractionId(wake.payload)) {
       if (response?.source.requiresFreshSession) queue.steeringDisposition = "unsupported";
       queue.entries = response ? [{ comment: response.comment, source: response.source, position: 0, canEdit: false, canDiscard: false }] : [];
+    } else if (wake && queueState?.state === "deferred" && input.activeRun?.status === "running") {
+      // A starting run (a booting sandbox, say) cannot be steered yet, but its
+      // first turn takes these messages. The view shows them as sent.
+      const firstTurnCommentIds = await firstTurnQueuedCommentIds(input.executor, {
+        companyId: input.issue.companyId, issueId: input.issue.id, runId: input.activeRun.id, wake,
+      });
+      if (firstTurnCommentIds.length > 0) queue.firstTurnCommentIds = firstTurnCommentIds;
     }
     return queue;
   }
@@ -7776,7 +7941,11 @@ export function issueRoutes(
     if (
       !wake ||
       readObject(wake.payload).issueId !== input.issue.id ||
-      (queuedCommentIdsFromWakePayload(wake.payload).length === 0 && !queuedInteractionId(wake.payload))
+      (queuedCommentIdsFromWakePayload(wake.payload).length === 0 && !queuedInteractionId(wake.payload)) ||
+      // A tool action's outcome is never a message to steer, interrupt or discard.
+      (queuedInteractionId(wake.payload) &&
+        (await readQueuedInteractionResponse(input.tx as unknown as Db, input.issue.companyId, input.issue.id, wake.payload))
+          ?.toolActionOutcome)
     ) {
       throw conflict("The queued message is no longer pending", {
         code: "queued_comment_not_pending",
@@ -8566,13 +8735,13 @@ export function issueRoutes(
     }
     const parsed = issueSummariesQuerySchema.safeParse(req.query);
     if (!parsed.success) {
-      res.status(400).json({ error: "ids must be the only query parameter and contain one to five comma-separated UUIDs" });
+      res.status(400).json({ error: `ids must be the only query parameter and contain one to ${ISSUE_SUMMARIES_MAX_IDS} comma-separated UUIDs` });
       return;
     }
     const rows = await listIssueSummaries(db, companyId, parsed.data.ids, await issueReadSqlCondition(db, req.actor));
     const visible = await filterIssuesForActor(req, rows);
     // Blocked rows carry glyph-only blocker state so every task view resolves
-    // the same glyph (covered → "in queue") as the task pane. At most five IDs.
+    // the same glyph (covered → "in queue") as the task pane. At most ISSUE_SUMMARIES_MAX_IDS IDs.
     const blockerAttention = await listIssueStatusBlockerAttention(db, companyId, visible, async (ids) => new Set(
       (await filterIssuesForActor(req, await listIssueSummaries(db, companyId, ids, await issueReadSqlCondition(db, req.actor))))
         .map((row) => row.id),
@@ -8595,12 +8764,112 @@ export function issueRoutes(
     res.json(summaries);
   });
 
+  /** `GET /issues/:id?view=core`, shared with the chat bootstrap. */
+  async function readIssueCore<T extends Parameters<typeof documentsSvc.getIssueDocumentPayload>[0] & { id: string }>(
+    issue: T,
+    time: <R>(phase: "documents" | "work_products", read: () => Promise<R>) => Promise<R> = (_phase, read) => read(),
+  ) {
+    const [documentPayload, workProducts] = await Promise.all([
+      time("documents", () => documentsSvc.getIssueDocumentPayload(issue)),
+      time("work_products", () => workProductsSvc.listForIssue(issue.id)),
+    ]);
+    return { ...issue, ...documentPayload, workProducts };
+  }
+
+  /**
+   * What the task chat reads before its first frame, for up to ten tasks, in
+   * the exact shapes of the individual task endpoints. Read-only: no activity,
+   * no break-glass. Unreadable tasks are omitted like `/issues/summaries`.
+   */
+  router.get("/companies/:companyId/issues/chat-bootstrap", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (isTaskBridgeKeyActor(req)) {
+      res.status(403).json({ error: "Task bridge keys cannot use company-wide issue list APIs" });
+      return;
+    }
+    const parsed = issueChatBootstrapQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({ error: "ids must be the only query parameter and contain one to ten comma-separated task UUIDs or identifiers" });
+      return;
+    }
+    const items = await readIssueChatBootstrapItems({
+      companyId,
+      refs: parsed.data.ids,
+      resolve: (ref) => (isUuidLike(ref) ? svc.getById(ref) : svc.getByIdentifier(ref)),
+      filterReadable: (rows) => filterIssuesForActor(req, rows),
+      read: (issue) => readChatBootstrapPayload(req, issue),
+    });
+    res.setHeader("Cache-Control", "private, no-store");
+    res.json({ items });
+  });
+
+  /**
+   * The single-task chat bootstrap, for a hard load of a task URL before the
+   * page knows its company. The same item as the batch route; 404 when the
+   * task is missing or unreadable. Read-only and without break-glass. The
+   * issue-detail ETag middleware skips this path, so it is never a 304.
+   */
+  // `:ref`, not `:id`: the `id` param hook rewrites identifiers to UUIDs, and
+  // the item must echo the caller's reference.
+  router.get("/issues/:ref/chat-bootstrap", async (req, res) => {
+    const raw = (req.params.ref as string).trim();
+    const ref = isUuidLike(raw) ? raw.toLowerCase() : normalizeIssueReferenceIdentifier(raw);
+    if (!ref) {
+      res.status(404).json(issueNotFoundBody(req));
+      return;
+    }
+    const issue = await getAccessibleResource(req, res, getIssueById(req, ref), "Issue not found", issueNotFoundBody(req));
+    if (!issue) return;
+    if (!(await assertIssueReadAllowed(req, res, issue, { finalForAgents: true }))) return;
+    const payload = await readChatBootstrapPayload(req, issue);
+    res.setHeader("Cache-Control", "private, no-store");
+    res.json({ ref, ...payload });
+  });
+
+  /**
+   * One task's chat bootstrap payload, shared by the batch and single-task
+   * routes. Each field is the payload of the named single endpoint; the caller
+   * has already resolved the task and authorized the read.
+   */
+  async function readChatBootstrapPayload(req: Request, issue: NonNullable<Awaited<ReturnType<typeof svc.getById>>>) {
+    const viewerUserId = req.actor.type === "board" ? getActorInfo(req).actorId : null;
+    const [issueCore, recentCommentsAndFacts, recentActivity, recentRuns, interactions, attachments, liveRuns, activeRun] = await Promise.all([
+      readIssueCore(issue),
+      readRecentComments(issue).then(async (recentComments) => ({
+        recentComments,
+        // `/activity?view=comment-inputs` for the saved recent comments, as the chat requests them.
+        commentInputFacts: await activitySvc.inputFactsForIssue(
+          issue.companyId,
+          issue.id,
+          recentComments.comments.map((comment) => comment.id).sort(),
+        ),
+      })),
+      activitySvc.forIssue(issue.id, 50),
+      activitySvc.runsForIssue(issue.companyId, issue.id, viewerUserId, 2, undefined, { skipLivenessBackfill: true }),
+      issueThreadInteractionService(db).listForIssue(issue.id),
+      svc.listAttachments(issue.id).then((rows) => rows.map(withContentPath)),
+      issueRunPresence.liveRuns(issue),
+      issueRunPresence.activeRun(issue),
+    ]);
+    return {
+      issue: issueCore,
+      ...recentCommentsAndFacts,
+      recentActivity,
+      recentRuns,
+      interactions,
+      attachments,
+      liveRuns,
+      activeRun,
+    };
+  }
+
   async function prepareIssueListForActor(
     req: Request,
     companyId: string,
     listFilters: IssueFilters,
     view: string | undefined,
-    options: { reportPagination?: boolean } = {},
+    options: { reportPagination?: boolean; listOptions?: IssueListOptions } = {},
   ): Promise<IssueListPreparedResponse> {
     const compactView = view === "compact" || view === "index" || view === "rows";
     const canReadCompanyScope = await actorCanReadCompanyScope(req, companyId);
@@ -8614,6 +8883,7 @@ export function issueRoutes(
     const probedResult = await svc.list(
       companyId,
       pageLimit === null ? listFilters : { ...listFilters, limit: pageLimit + 1 },
+      options.listOptions,
     );
     const hasMore = pageLimit !== null && probedResult.length > pageLimit;
     const rawResult = hasMore ? probedResult.slice(0, pageLimit!) : probedResult;
@@ -8710,6 +8980,7 @@ export function issueRoutes(
 
   router.get("/companies/:companyId/inbox/mine", async (req, res) => {
     const startedAt = Date.now();
+    const timing = createInboxMineTiming();
     const companyId = req.params.companyId as string;
     assertBoard(req);
     assertCompanyAccess(req, companyId);
@@ -8719,35 +8990,34 @@ export function issueRoutes(
     }
     const userId = req.actor.userId;
     if (!userId) throw new HttpError(401, "A signed-in board user is required");
-    const readCondition = await issueReadSqlCondition(db, req.actor);
+    const readCondition = await timing.time("access", () => issueReadSqlCondition(db, req.actor));
     const listFilters: IssueFilters = {
-      readCondition, touchedByUserId: userId, inboxArchivedByUserId: userId,
+      readCondition, touchedByUserId: userId, touchedCandidates: "participation", inboxArchivedByUserId: userId,
       status: INBOX_MINE_ISSUE_STATUS_FILTER, listProjection: "index",
       sortField: "updated", sortDir: "desc", limit: 100,
       includeRoutineExecutions: true, includeLiveDescendantSummary: true,
     };
-    const readCompact = async (filters: IssueFilters, projection: "index" | "rows") => {
-      const prepared = await prepareIssueListForActor(req, companyId, filters, projection);
+    const readCompact = async (filters: IssueFilters, projection: "index" | "rows", listOptions?: IssueListOptions) => {
+      const prepared = await prepareIssueListForActor(req, companyId, filters, projection, { listOptions });
       if (prepared.kind !== "compact") throw new Error("Expected compact inbox rows");
       return prepared.body;
     };
     const requestKey = issueListRequestKey({ req, companyId, normalizedQuery: { view: "mine-snapshot" }, route: "GET /api/companies/:companyId/inbox/mine" });
     const coordinated = await coordinateIssueListGet({
       req, companyId, requestKey, allowTtlCache: false, retireOnCompanyChange: true, diagnostics: opts.issueListDiagnostics,
-      compute: async () => ({
-        kind: "inbox",
-        body: { userId, ...await readInboxMine({
-          loadIssues: () => readCompact(listFilters, "index"),
-          loadFailures: async () => {
+      compute: async () => {
+        const body = { userId, ...await readInboxMine({
+          loadIssues: () => timing.time("issues", () => readCompact(listFilters, "index", { timePhase: timing.listPhases })),
+          loadFailures: () => timing.time("failures", async () => {
             const permission = await access.decide({ actor: req.actor, action: "company_scope:read", resource: { type: "company", companyId } });
             if (!permission.allowed) throw new HttpError(403, "Run telemetry is outside this actor's authorization boundary");
             const runs = latestFailedRunsByAgent(await heartbeat.list(companyId, undefined, 200, { summary: true }));
             const decisions = await getHeartbeatRunReadDecisions(db, access, req.actor, runs);
             return runRedactions.redactForRuns(companyId, runs.map((run, index) => decisions[index] ? run : redactHeartbeatRunListRow(run)), getActorInfo(req).actorId);
-          },
-          loadContext: (ids, projection) => readCompact({
+          }),
+          loadContext: (ids, projection) => timing.time(projection === "index" ? "parents" : "failure_context", () => readCompact({
             readCondition, issueIds: ids, listProjection: projection, limit: 100, includeRoutineExecutions: true,
-          }, projection),
+          }, projection)),
           sourceError: (error, source) => {
             logger.warn({ err: error, companyId, source }, "inbox source read failed");
             return {
@@ -8756,11 +9026,16 @@ export function issueRoutes(
                 : source === "failures" ? "Could not load failed runs" : "Could not load task context",
             };
           },
-        }) },
-      }),
+        }) };
+        // Requests that coalesce onto this read report its phases too.
+        return { kind: "inbox" as const, body, serverTimingPhases: timing.phases() };
+      },
     });
     res.setHeader("Cache-Control", "private, no-store");
     res.setHeader("X-Paperclip-Request-Cache", coordinated.cacheStatus);
+    res.setHeader("Server-Timing", timing.header(
+      coordinated.response?.kind === "inbox" ? coordinated.response.serverTimingPhases : undefined,
+    ));
     if (!coordinated.response) {
       res.setHeader("Retry-After", String(coordinated.retryAfterSeconds ?? 1));
       res.status(429).json({ error: "Too many concurrent issue-list requests for this actor/client", retryAfterSeconds: coordinated.retryAfterSeconds ?? 1 });
@@ -9803,12 +10078,9 @@ export function issueRoutes(
     // projection before first paint, independently of slow recovery, workspace
     // and related-task enrichment. This never refreshes external providers.
     if (req.query.view === "core") {
-      const [documentPayload, workProducts] = await Promise.all([
-        timing.time("documents", () => documentsSvc.getIssueDocumentPayload(issue)),
-        timing.time("work_products", () => workProductsSvc.listForIssue(issue.id)),
-      ]);
+      const core = await readIssueCore(issue, timing.time);
       res.setHeader("Server-Timing", timing.header());
-      res.json({ ...issue, ...documentPayload, workProducts });
+      res.json(core);
       return;
     }
     const inboxArchiveFieldsPromise =
@@ -10126,7 +10398,14 @@ export function issueRoutes(
     // The receipt commits before dispatch. Maintenance redelivers it after a
     // crash or a lost response; this nudge only reduces perceived latency.
     const chatActionId = "chatActionId" in receipt ? receipt.chatActionId : undefined;
-    if (chatActionId) void opts.chatRunRetries?.processFailedChatRunRetry(chatActionId).catch(err =>
+    const finalizeRunId = "finalizeRunId" in receipt ? receipt.finalizeRunId : undefined;
+    if (finalizeRunId) {
+      // The saved result is applied again; no provider run starts. The
+      // result-commit worker repeats this if the process stops first.
+      const { refinalizeSavedNativeResult } = await import("../services/native-runtime/exhausted-finalization-retry.js");
+      void refinalizeSavedNativeResult(db, { companyId: issue.companyId, runId: finalizeRunId }).catch(err =>
+        logger.warn({ err, issueId: issue.id, runId: finalizeRunId }, "Saved result finalization remains queued"));
+    } else if (chatActionId) void opts.chatRunRetries?.processFailedChatRunRetry(chatActionId).catch(err =>
       logger.warn({ err, issueId: issue.id }, "Connected task Retry remains queued"));
     else if (receipt.accepted && receipt.requestId) void heartbeat.resumeTaskRetry(issue.companyId, receipt.requestId).catch(err =>
       logger.warn({ err, issueId: issue.id }, "Task Retry remains queued"));
@@ -12096,11 +12375,13 @@ export function issueRoutes(
         ? await workProductsSvc.update(
             existingRunAttachmentProduct.id,
             createInput,
+            actor.agentId,
           )
         : await workProductsSvc.createForIssue(
             issue.id,
             issue.companyId,
             createInput,
+            actor.agentId,
           );
       if (!product) {
         res.status(422).json({ error: "Invalid work product payload" });
@@ -12494,7 +12775,7 @@ export function issueRoutes(
       const product = await workProductsSvc.update(id, {
         ...patch,
         ...(sourceTrust ? { sourceTrust } : {}),
-      });
+      }, actor.agentId);
       if (!product) {
         res.status(404).json({ error: "Work product not found" });
         return;
@@ -12555,7 +12836,7 @@ export function issueRoutes(
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
     if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue)))
       return;
-    const removed = await workProductsSvc.remove(id);
+    const removed = await workProductsSvc.remove(id, req.actor.type === "agent" ? req.actor.agentId : null);
     if (!removed) {
       res.status(404).json({ error: "Work product not found" });
       return;
@@ -14437,12 +14718,21 @@ export function issueRoutes(
    * Conversation tasks are excluded: a conversation turn settles from its final
    * reply (nativeConversationReplyResult), not from a runner tool, so a reply
    * that moves the conversation to review still settles without the lock.
+   *
+   * The one status-shaped request a run must be able to send is the active
+   * review/approval participant's approval (`status: "done"` with its decision
+   * comment): no runner tool records a stage decision, so refusing it leaves
+   * the stage pending forever. With `allowStageApproval` the guard returns
+   * "defer_final_status" for that request instead of refusing it. The caller
+   * records the decision and keeps the task (and the run's lock) in review;
+   * the run's own paperclip_finish report then sets the final status.
    */
   async function assertNativeRunKeepsOwnExecutionLock(
     req: Request,
-    issue: { companyId: string; status: string; parentId: string | null; assigneeAgentId: string | null; assigneeUserId: string | null; checkoutRunId: string | null; executionRunId: string | null; conversationAgentId?: string | null; conversationUserId?: string | null },
+    issue: { companyId: string; status: string; parentId: string | null; assigneeAgentId: string | null; assigneeUserId: string | null; checkoutRunId: string | null; executionRunId: string | null; conversationAgentId?: string | null; conversationUserId?: string | null; executionState?: unknown },
     requestedStatus: unknown = req.body.status,
-  ) {
+    options: { allowStageApproval?: boolean } = {},
+  ): Promise<"defer_final_status" | undefined> {
     const runId = req.actor.type === "agent" ? req.actor.runId : null;
     if (!runId || !req.actor.agentId || req.actor.agentId !== issue.assigneeAgentId) return;
     if (runId !== issue.executionRunId && runId !== issue.checkoutRunId) return;
@@ -14455,6 +14745,10 @@ export function issueRoutes(
     const run = await heartbeat.getRun(runId);
     if (!run || run.runtimeMode !== "native" || run.status !== "running"
       || run.agentId !== req.actor.agentId || run.companyId !== issue.companyId) return;
+    if (options.allowStageApproval && requestedStatus === "done" && issue.status === "in_review" &&
+        activeExecutionParticipantAgentId(issue) === req.actor.agentId) {
+      return "defer_final_status";
+    }
     // A blocker that the dependency rules reject anyway keeps its specific
     // error; otherwise the run reports the block with paperclip_block.
     if (Array.isArray(req.body.blockedByIssueIds) && req.body.blockedByIssueIds.length > 0) {
@@ -14463,7 +14757,11 @@ export function issueRoutes(
         blockedByIssueIds: req.body.blockedByIssueIds, parentIssueId: issue.parentId,
       });
     }
-    throw conflict(
+    throw nativeRunStatusReportedByFinish(requestedStatus);
+  }
+
+  function nativeRunStatusReportedByFinish(requestedStatus: unknown) {
+    return conflict(
       "This run owns the task's execution, so it cannot change the task status directly; doing so would end its access to the task before it reports. " +
         "Report the outcome with paperclip_finish instead: reportedWorkDisposition \"needs_review\" for review, \"done\" when complete, or \"yielded\" with continuation.kind \"monitor\" to wait on a scheduled monitor. " +
         "Use paperclip_block for a blocker. Paperclip sets the task status from that report.",
@@ -14579,7 +14877,7 @@ export function issueRoutes(
       );
       if (!existing) return;
       if (!(await assertIssueReadAllowed(req, res, existing))) return;
-      await assertNativeRunKeepsOwnExecutionLock(req, existing);
+      const nativeStageApproval = await assertNativeRunKeepsOwnExecutionLock(req, existing, req.body.status, { allowStageApproval: true });
       if (req.body.expectedStatusVersion !== undefined && (
         existing.statusVersion !== req.body.expectedStatusVersion || existing.status !== "backlog"
       )) {
@@ -14623,7 +14921,9 @@ export function issueRoutes(
         );
         return;
       }
-      const issueMutationAccess = await assertAgentIssueMutationAllowed(
+      const commentOnlyUpdate = Boolean(req.body.comment) && Object.keys(req.body).every(key =>
+        ["comment", "commentClientRequestId", "attachmentIds", "onBehalfOfUserId"].includes(key));
+      const issueMutationAccess = commentOnlyUpdate ? await assertAgentIssueCommentAllowed(req, res, existing) : await assertAgentIssueMutationAllowed(
         req,
         res,
         existing,
@@ -14635,7 +14935,7 @@ export function issueRoutes(
         req.actor.type === "agent"
           ? issueWriteAuthorizationReason(
               req,
-              await decideIssueAccess(req, existing, "issue:mutate"),
+              await decideIssueAccess(req, existing, commentOnlyUpdate ? "issue:comment" : "issue:mutate"),
             )
           : issueWriteAuthorizationReason(req, true);
 
@@ -14669,6 +14969,17 @@ export function issueRoutes(
         onBehalfOfUserId: _requestedOnBehalfOfUserId,
         ...updateFields
       } = req.body;
+      if (commentBody && req.actor.type === "agent") {
+        await assertAgentInteraction(db, { companyId: existing.companyId, actorAgentId: req.actor.agentId,
+          operation: "comment", issueId: existing.id, texts: [commentBody] });
+      }
+      await assertAgentInteraction(db, { companyId: existing.companyId,
+        actorAgentId: req.actor.type === "agent" ? req.actor.agentId : null, operation: "mention", issueId: existing.id,
+        texts: [
+          ...(updateFields.title !== undefined && updateFields.title !== existing.title ? [updateFields.title] : []),
+          ...(updateFields.description !== undefined && updateFields.description !== existing.description ? [updateFields.description ?? ""] : []),
+        ],
+      });
       // Board users move tasks to any depth. An agent move into a child is
       // placed beside it, and an agent move of a task with children is skipped,
       // both with a notice instead of an error.
@@ -15130,6 +15441,18 @@ export function issueRoutes(
         throw unprocessable("Snapshot-guarded policy updates cannot change task status or ownership");
       }
       Object.assign(updateFields, transition.patch);
+      let deferredNativeStageApproval = false;
+      if (nativeStageApproval === "defer_final_status") {
+        // Only the final stage's approval is deferred. Anything else this
+        // request would do (an intermediate approval that hands the task to the
+        // next participant, or no decision at all) keeps the ordinary refusal.
+        const finalApproval = transition.decision?.outcome === "approved" && updateFields.status === "done" &&
+          (transition.patch.assigneeAgentId === undefined || transition.patch.assigneeAgentId === existing.assigneeAgentId) &&
+          transition.patch.assigneeUserId === undefined;
+        if (!finalApproval) throw nativeRunStatusReportedByFinish(req.body.status);
+        delete updateFields.status;
+        deferredNativeStageApproval = true;
+      }
 
       const nextStatus = updateFields.status ?? existing.status;
       if (updateFields.unblockDescriptor && nextStatus !== "blocked") {
@@ -15358,18 +15681,37 @@ export function issueRoutes(
           issueId: existing.id,
           agentId: existing.assigneeAgentId,
         });
-        const runToStopForReassignment = await resolveActiveIssueRun(existing);
+        const runToStopForReassignment = await resolveActiveIssueRun(existing) ??
+          await resolveQueuedOutgoingAssigneeRun(existing);
+        // The run handing its own task to a person finishes its turn instead of
+        // cancelling itself. Native and legacy alike: the reassignment clears
+        // the execution lock, the native tool binding and finalizer stop acting
+        // for a task the run no longer owns, and later REST mutations from the
+        // outgoing run are rejected (assertHandedOffRunTaskOwnership).
         const isHumanSelfHandoff =
           req.actor.type === "agent" &&
           req.actor.source === "agent_jwt" &&
           nextAssigneeAgentId === null &&
           typeof nextAssigneeUserId === "string" &&
           req.actor.agentId === existing.assigneeAgentId &&
-          runToStopForReassignment?.runtimeMode === "legacy" &&
+          (runToStopForReassignment?.runtimeMode === "legacy" || runToStopForReassignment?.runtimeMode === "native") &&
           runToStopForReassignment.id === req.actor.runId &&
           runToStopForReassignment.agentId === req.actor.agentId &&
           runToStopForReassignment.companyId === existing.companyId &&
           runToStopForReassignment.contextSnapshot?.issueId === existing.id;
+        // Record the native hand-off on the run before the task changes, so the
+        // run's terminal fence accepts the task it gave away. A failed update
+        // leaves the record unused: the fence also requires the person to own it.
+        if (isHumanSelfHandoff && runToStopForReassignment.runtimeMode === "native" &&
+            !await recordNativeHumanSelfHandoff(db, { companyId: existing.companyId, runId: runToStopForReassignment.id,
+              agentId: runToStopForReassignment.agentId, issueId: existing.id, assigneeUserId: nextAssigneeUserId as string })) {
+          // The run is no longer the running native run of this task: do not
+          // save an assignment its own terminal fence would then refuse.
+          throw conflict("The run handing off this task is no longer running it. Read the task again and retry.", {
+            code: "native_self_handoff_run_changed",
+            runId: runToStopForReassignment.id,
+          });
+        }
         if (runToStopForReassignment && !isHumanSelfHandoff) {
           let cancelled: Awaited<ReturnType<typeof heartbeat.cancelRun>> = null;
           try {
@@ -15378,6 +15720,7 @@ export function issueRoutes(
               "Cancelled before issue reassignment",
               {
                 errorCode: "issue_reassigned",
+                suppressImmediateRecovery: true,
                 resultJson: { reassignmentStopConfirmed: true, issueMutationStopId },
                 eventMessage: "run cancelled before issue reassignment",
                 eventPayload: { issueId: existing.id },
@@ -15556,10 +15899,13 @@ export function issueRoutes(
         const lockedPolicyChangeRequested =
           req.body.reviewPolicy !== undefined &&
           req.body.reviewPolicy !== lockedExisting.reviewPolicy;
+        // A deferred native approval is still a review verdict even though
+        // its status write is left to the run's finish report.
         const lockedReviewVerdictRequested =
           lockedExisting.status === "in_review" &&
           (updateFields.status === "done" ||
-            updateFields.status === "cancelled");
+            updateFields.status === "cancelled" ||
+            deferredNativeStageApproval);
         if (
           (lockedReviewVerdictRequested || lockedPolicyChangeRequested) &&
           lockedExisting.reviewPolicy != null &&
@@ -15659,11 +16005,13 @@ export function issueRoutes(
       const commentWithAdapterOverrides = Boolean(
         commentBody && updateFields.assigneeAdapterOverrides !== undefined,
       );
-      const transactionalCommentSourceTrust = commentAttachmentIds?.length || commentWithAdapterOverrides
+      const agentCommentUpdate = Boolean(commentBody && actor.actorType === "agent");
+      const transactionalCommentSourceTrust = commentAttachmentIds?.length || commentWithAdapterOverrides || agentCommentUpdate
         ? await sourceTrustForActorWrite(existing, actor)
         : undefined;
       const shouldUseTransactionalIssueUpdate =
         Boolean(commentAttachmentIds?.length) ||
+        agentCommentUpdate ||
         commentWithAdapterOverrides ||
         Boolean(decision) ||
         shouldRelayStop ||
@@ -15672,6 +16020,10 @@ export function issueRoutes(
       try {
         if (shouldUseTransactionalIssueUpdate) {
           issue = await db.transaction(async (tx) => {
+            if (agentCommentUpdate) await assertAgentInteraction(tx, {
+              companyId: existing.companyId, actorAgentId: actor.agentId,
+              operation: "comment", issueId: id, texts: [commentBody], lock: true,
+            });
             if (
               reviewPolicySensitiveMutationRequested &&
               !(await assertLockedReviewPolicyAllowsMutation(tx))
@@ -15679,7 +16031,7 @@ export function issueRoutes(
               return null;
             const updated = await updateIssue(tx);
             if (!updated) return null;
-            if (commentAttachmentIds?.length || commentWithAdapterOverrides) {
+            if (commentAttachmentIds?.length || commentWithAdapterOverrides || agentCommentUpdate) {
               // Adapter settings, reassignment, comment and upload binding commit together.
               // A failed comment or invalid receipt rolls back the issue update.
               transactionalComment = await svc.addComment(
@@ -16977,7 +17329,7 @@ export function issueRoutes(
     if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
     const attachments = await svc.listAttachments(id);
 
-    const issue = await svc.remove(id);
+    const issue = await svc.remove(id, req.actor.type === "agent" ? req.actor.agentId : null);
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
       return;
@@ -17251,19 +17603,22 @@ export function issueRoutes(
     res.json(result);
   });
 
-  router.get("/issues/:id/recent-comments", async (req, res) => {
-    const issue = await getAccessibleResource(req, res, getIssueById(req, req.params.id as string), "Issue not found");
-    if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
+  /** `GET /issues/:id/recent-comments`, shared with the chat bootstrap. */
+  async function readRecentComments(issue: {
+    id: string;
+    companyId: string;
+    description?: string | null;
+    conversationAgentId?: string | null;
+  }) {
     if (issue.conversationAgentId) {
       const recent = await svc.listComments(issue.id, { companyId: issue.companyId, order: "desc", limit: 21 });
       const comments = recent.slice(0, 20);
-      res.json(await runRedactions.redactForIssue(issue.companyId, issue.id, {
+      return runRedactions.redactForIssue(issue.companyId, issue.id, {
         comments,
         latestCommentId: comments[0]?.id ?? null,
         oldestCommentId: comments.at(-1)?.id ?? null,
         hasMore: recent.length > 20,
-      }));
-      return;
+      });
     }
     const [recent, human, firstInstruction] = await Promise.all([
       svc.listComments(issue.id, { companyId: issue.companyId, order: "desc", limit: 5 }),
@@ -17273,11 +17628,17 @@ export function issueRoutes(
         : svc.listComments(issue.id, { companyId: issue.companyId, order: "asc", limit: 1, humanOnly: true }),
     ]);
     const comments = [...new Map([...firstInstruction, ...human, ...recent.slice(0, 4)].map((comment) => [comment.id, comment])).values()];
-    res.json(await runRedactions.redactForIssue(issue.companyId, issue.id, {
+    return runRedactions.redactForIssue(issue.companyId, issue.id, {
       comments,
       latestCommentId: recent[0]?.id ?? null,
       hasMore: recent.length > 4,
-    }));
+    });
+  }
+
+  router.get("/issues/:id/recent-comments", async (req, res) => {
+    const issue = await getAccessibleResource(req, res, getIssueById(req, req.params.id as string), "Issue not found");
+    if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
+    res.json(await readRecentComments(issue));
   });
 
   router.get("/issues/:id/comments", async (req, res) => {
@@ -17576,6 +17937,10 @@ export function issueRoutes(
         eq(agentWakeupRequests.id, req.body.queueId), eq(agentWakeupRequests.companyId, issue.companyId),
       )).then(rows => rows[0]);
       const response = responseWake ? await readQueuedInteractionResponse(db, issue.companyId, issue.id, responseWake.payload) : null;
+      if (responseWake) await recheckQueuedCommentInteractionDelivery(db, {
+        companyId: issue.companyId, issueId: issue.id, agentId: responseWake.agentId,
+        commentId, queueId: responseWake.id,
+      });
       const steeringIdentity = await reserveSteeredIdentity(db, {
         companyId: issue.companyId,
         runId: req.body.targetRunId,
@@ -17720,6 +18085,10 @@ export function issueRoutes(
               code: "queued_response_requires_fresh_session",
             });
           }
+          await assertQueuedCommentInteractionDelivery(tx, {
+            companyId: issue.companyId, issueId: issue.id, agentId: locked.activeRun.agentId,
+            commentId, lock: true,
+          });
           steeringDeliveryAttempted = true;
           const acknowledgement =
             (await storedSteeringAcknowledgement(tx, steeringIdentity ?? {
@@ -18217,6 +18586,13 @@ export function issueRoutes(
         throw unprocessable(
           "Remembered permission is only supported for tool reviews",
         );
+      // Who the card was for, read before the answer (PAP-749 plan §6).
+      const handledFor = await attentionHandledFor(
+        db,
+        issue.companyId,
+        { sourceKind: "issue_thread_interaction", sourceId: interactionId },
+        actor.actorType === "user" ? actor.actorId : null,
+      );
       const { interaction, createdIssues, continuationIssue } =
         await interactionSvc.acceptInteraction(issue, interactionId, req.body, {
           agentId: actor.agentId,
@@ -18320,13 +18696,6 @@ export function issueRoutes(
                   proposal: lockedProposal,
                 }),
             });
-            await notifySecretProposalResolution({
-              proposal,
-              status: "approved",
-              userId: resolvedByUserId,
-              issues: svc,
-              heartbeat,
-            });
           }
           continuationInteraction =
             await interactionSvc.recordSecretProposalExecutionResult(
@@ -18407,6 +18776,9 @@ export function issueRoutes(
             interaction.kind === "suggest_tasks"
               ? (interaction.result?.skippedClientKeys?.length ?? 0)
               : 0,
+          // The receipt uses the history verb: an accepted card reads
+          // "Approved by @x", an answered one "Answered by @x" (PAP-767).
+          ...(interaction.status === "expired" ? {} : attentionHandledDetails(handledFor, interaction.status === "answered" ? "answered" : "approved")),
         },
       });
 
@@ -18529,6 +18901,13 @@ export function issueRoutes(
         res.json(await interactionSvc.getById(current.id));
         return;
       }
+      // Who the card was for, read before the answer (PAP-749 plan §6).
+      const handledFor = await attentionHandledFor(
+        db,
+        issue.companyId,
+        { sourceKind: "issue_thread_interaction", sourceId: interactionId },
+        actor.actorType === "user" ? actor.actorId : null,
+      );
       const interaction = await interactionSvc.rejectInteraction(
         issue,
         interactionId,
@@ -18573,6 +18952,8 @@ export function issueRoutes(
                   interaction.kind === "request_checkbox_confirmation"
                 ? (interaction.result?.reason ?? null)
                 : null,
+          // Reject and Revise… both record "Changes requested" (PAP-767).
+          ...(interaction.status === "expired" ? {} : attentionHandledDetails(handledFor, "changes_requested")),
         },
       });
 
@@ -18617,6 +18998,13 @@ export function issueRoutes(
       if (current.kind === "ask_user_questions") {
         await validateNativeQuestionResponseInput(current, req.body);
       }
+      // Who the card was for, read before the answer (PAP-749 plan §6).
+      const handledFor = await attentionHandledFor(
+        db,
+        issue.companyId,
+        { sourceKind: "issue_thread_interaction", sourceId: interactionId },
+        actor.actorType === "user" ? actor.actorId : null,
+      );
       const interaction = await interactionSvc.answerQuestions(
         issue,
         interactionId,
@@ -18655,6 +19043,7 @@ export function issueRoutes(
             interaction.kind === "ask_user_questions"
               ? (interaction.result?.answers?.length ?? 0)
               : 0,
+          ...(interaction.status === "answered" ? attentionHandledDetails(handledFor, "answered") : {}),
         },
       });
 
@@ -18698,6 +19087,13 @@ export function issueRoutes(
       const { interactionSvc, resolutionAuthorization } = authorizedResolution;
 
       const actor = getActorInfo(req);
+      // Who the card was for, read before the answer (PAP-749 plan §6).
+      const handledFor = await attentionHandledFor(
+        db,
+        issue.companyId,
+        { sourceKind: "issue_thread_interaction", sourceId: interactionId },
+        actor.actorType === "user" ? actor.actorId : null,
+      );
       const { interaction, newlyResolvedItemIds } =
         await interactionSvc.submitItemVerdicts(
           issue,
@@ -18745,6 +19141,8 @@ export function issueRoutes(
             interaction.kind === "request_item_verdicts"
               ? (interaction.result?.complete ?? false)
               : false,
+          // Only the verdict that completes the review closes the card.
+          ...(interaction.status === "answered" ? attentionHandledDetails(handledFor, "answered") : {}),
         },
       });
 
@@ -18795,82 +19193,14 @@ export function issueRoutes(
         return;
       await assertPendingReviewInteractionVerdictAllowed(req, issue, current);
 
-      const actor = getActorInfo(req);
-      let nativeRunId: string | null = null;
-      const interaction = await interactionSvc.withdrawInteraction(
+      const interaction = await withdrawIssueThreadInteractionAndNotify({
+        db,
+        heartbeat,
         issue,
         interactionId,
-        req.body,
-        {
-          agentId: actor.agentId,
-          runId: actor.runId,
-          userId: actor.actorType === "user" ? actor.actorId : null,
-        },
-        {
-          afterResolveInTransaction: async (tx, resolved) => {
-            if (resolved.kind !== "ask_user_questions") return;
-            nativeRunId = await requestNativeQuestionRunCancellation(
-              tx,
-              resolved,
-              {
-                kind: "interaction_withdrawn",
-                interactionId: resolved.id,
-              },
-            );
-          },
-        },
-      );
-      if (nativeRunId) {
-        try {
-          await heartbeat.cancelRun(
-            nativeRunId,
-            "Question withdrawn while waiting for operator input",
-            {
-              resultJson: {
-                withdrawnInteractionId: interaction.id,
-                withdrawnByActorType: actor.actorType,
-                withdrawnByActorId: actor.actorId,
-              },
-            },
-          );
-        } catch (err) {
-          logger.warn(
-            { err, runId: nativeRunId, interactionId: interaction.id },
-            "native question withdrawal cancellation deferred to recovery sweep",
-          );
-        }
-      }
-      await logActivity(db, {
-        companyId: issue.companyId,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-        agentId: actor.agentId,
-        runId: actor.runId,
-        agentApiKeyId: actor.agentApiKeyId,
-        action: "issue.thread_interaction_withdrawn",
-        entityType: "issue",
-        entityId: issue.id,
-        details: {
-          interactionId: interaction.id,
-          interactionKind: interaction.kind,
-          interactionStatus: interaction.status,
-          reason:
-            interaction.result && "reason" in interaction.result
-              ? (interaction.result.reason ?? null)
-              : null,
-        },
+        body: req.body,
+        actor: getActorInfo(req),
       });
-
-      if (actor.agentId !== issue.assigneeAgentId) {
-        await queueResolvedInteractionContinuationWakeup({
-          db,
-          heartbeat,
-          issue,
-          interaction,
-          actor,
-          source: "issue.interaction.withdraw",
-        });
-      }
       res.json(interaction);
     },
   );
@@ -18886,6 +19216,11 @@ export function issueRoutes(
       const interaction = await issueThreadInteractionService(db).dismissInteraction(
         issue, req.params.interactionId as string,
         { userId: actor.actorType === "user" ? actor.actorId : null },
+        async (tx) => {
+          await enqueueOwnQuestionDismissalWake(tx, {
+            companyId: issue.companyId, issueId: issue.id, interactionId: req.params.interactionId as string,
+          });
+        },
       );
       await logActivity(db, {
         companyId: issue.companyId, actorType: actor.actorType, actorId: actor.actorId,
@@ -18919,6 +19254,13 @@ export function issueRoutes(
       assertBoard(req);
 
       const actor = getActorInfo(req);
+      // Who the card was for, read before the skip (PAP-749 plan §6).
+      const handledFor = await attentionHandledFor(
+        db,
+        issue.companyId,
+        { sourceKind: "issue_thread_interaction", sourceId: interactionId },
+        actor.actorType === "user" ? actor.actorId : null,
+      );
       const interaction = await issueThreadInteractionService(
         db,
       ).skipInteraction(issue, interactionId, req.body, {
@@ -18945,6 +19287,9 @@ export function issueRoutes(
             interaction.result && "reason" in interaction.result
               ? (interaction.result.reason ?? null)
               : null,
+          ...attentionHandledDetails(handledFor, "skipped", {
+            reason: interaction.result && "reason" in interaction.result ? interaction.result.reason : null,
+          }),
         },
       });
 
@@ -18977,6 +19322,13 @@ export function issueRoutes(
       assertBoard(req);
 
       const actor = getActorInfo(req);
+      // Who the card was for, read before the cancel (PAP-749 plan §6).
+      const handledFor = await attentionHandledFor(
+        db,
+        issue.companyId,
+        { sourceKind: "issue_thread_interaction", sourceId: interactionId },
+        actor.actorType === "user" ? actor.actorId : null,
+      );
       let nativeRunId: string | null = null;
       const interaction = await issueThreadInteractionService(
         db,
@@ -19021,6 +19373,9 @@ export function issueRoutes(
             interaction.kind === "ask_user_questions"
               ? (interaction.result?.cancellationReason ?? null)
               : null,
+          ...attentionHandledDetails(handledFor, "withdrawn", {
+            reason: interaction.kind === "ask_user_questions" ? interaction.result?.cancellationReason : null,
+          }),
         },
       });
 
@@ -20943,7 +21298,7 @@ export function issueRoutes(
       );
     }
 
-    const removed = await svc.removeAttachment(attachmentId, { mcpCleanup });
+    const removed = await svc.removeAttachment(attachmentId, { mcpCleanup, actorAgentId: req.actor.type === "agent" ? req.actor.agentId : null });
     if (!removed) {
       res.status(404).json({ error: "Attachment not found" });
       return;

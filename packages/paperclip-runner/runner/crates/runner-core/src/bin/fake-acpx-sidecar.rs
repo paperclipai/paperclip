@@ -1,7 +1,10 @@
 use std::io::{self, BufRead, Write};
 use std::time::Duration;
 
-use paperclip_runner_core::generated_acpx_sidecar_contract::GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION;
+use paperclip_runner_core::generated_acpx_sidecar_contract::{
+    GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION, GENERATED_ACPX_TURN_DISPATCH_JOURNAL_FILE,
+    GENERATED_ACPX_TURN_DISPATCH_SCHEMA,
+};
 use serde_json::{json, Value};
 
 const PROJECTED_INPUT_PROVIDER_ID: &str = "input / réquest";
@@ -69,6 +72,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut source_run = String::new();
     let mut source_pending_completion: Option<String> = None;
     let mut source_goal_revision = 0_u64;
+    let mut runtime_directory: Option<std::path::PathBuf> = None;
+    // `--cancel-reply lost|late`: the provider stops its prompt, but the reply
+    // to turn.cancel is dropped, or written only before the next request.
+    let cancel_reply = args
+        .windows(2)
+        .find(|pair| pair[0] == "--cancel-reply")
+        .map(|pair| pair[1].clone());
+    let mut late_cancel_reply: Option<Value> = None;
+    // With --cancel-reply, a cancelled turn forgets its pending tool calls.
+    let mut cancel_retired_tools = false;
     let mut source_journal = if mode == "source-reconcile" {
         let path = args
             .windows(2)
@@ -115,6 +128,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .get("command")
             .and_then(Value::as_str)
             .ok_or("request command is missing")?;
+        if let Some(reply) = late_cancel_reply.take() {
+            write_json(&mut stdout, &reply)?;
+        }
         if command == "turn.start" {
             if let Some(fault) = args
                 .windows(2)
@@ -239,6 +255,47 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             {
                 response = json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,"id":id,"ok":false,
                     "error":{"code":"temporarily_unavailable","message":"Optional read is temporarily unavailable.","retryable":true}});
+            }
+            if command == "session.open" {
+                runtime_directory = request["params"]["runtimeDirectory"]
+                    .as_str()
+                    .map(std::path::PathBuf::from);
+            }
+            // Like the real runtime port: journal the turn, then its prompt
+            // dispatch, before the provider can see the prompt.
+            // `hang-before-dispatch` / `hang-after-dispatch` freeze the start
+            // on either side of that boundary without replying.
+            if command == "turn.start" {
+                if let Some(directory) = runtime_directory.as_ref() {
+                    let turn = request["params"]["turnId"].as_str().unwrap();
+                    let path = directory.join(GENERATED_ACPX_TURN_DISPATCH_JOURNAL_FILE);
+                    let record = |phase: &str| {
+                        format!(
+                            "{}\n",
+                            json!({"schema":GENERATED_ACPX_TURN_DISPATCH_SCHEMA,"turnId":turn,"phase":phase})
+                        )
+                    };
+                    let mut options = std::fs::OpenOptions::new();
+                    options.write(true).create(true).truncate(true);
+                    #[cfg(unix)]
+                    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+                    options
+                        .open(&path)?
+                        .write_all(record("received").as_bytes())?;
+                    if fault == "hang-before-dispatch" {
+                        loop {
+                            std::thread::sleep(std::time::Duration::from_secs(60));
+                        }
+                    }
+                    let mut journal = std::fs::OpenOptions::new().append(true).open(&path)?;
+                    journal.write_all(record("dispatched").as_bytes())?;
+                    // The runtime port fsyncs here; the fixture skips it to stay fast.
+                    if fault == "hang-after-dispatch" {
+                        loop {
+                            std::thread::sleep(std::time::Duration::from_secs(60));
+                        }
+                    }
+                }
             }
             if command == "session.open" && fault == "slow-open" {
                 std::thread::sleep(std::time::Duration::from_secs(10));
@@ -627,7 +684,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             | "suspend-wrong-ack"
             | "suspend-wrong-identity"
             | "suspend-missing-identity" => {
-                if command == "tool.resolve" && mode == "turns-tool-resolution-rejected" {
+                if command == "tool.resolve"
+                    && (mode == "turns-tool-resolution-rejected" || cancel_retired_tools)
+                {
                     write_json(
                         &mut stdout,
                         &json!({
@@ -665,6 +724,27 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 );
                 if command == "session.open" {
                     opened_identity = response.pointer("/result/identity").cloned();
+                }
+                if command == "turn.cancel" {
+                    if let Some(fault) = cancel_reply.as_deref() {
+                        write_turn_event(
+                            &mut stdout,
+                            next_sequence,
+                            "runtime.turn_terminal",
+                            "run-1",
+                            request
+                                .pointer("/params/turnId")
+                                .and_then(Value::as_str)
+                                .unwrap(),
+                            json!({"status":"interrupted"}),
+                        )?;
+                        next_sequence += 1;
+                        cancel_retired_tools = true;
+                        if fault == "late" {
+                            late_cancel_reply = Some(response);
+                        }
+                        continue;
+                    }
                 }
                 if command == "session.suspend" {
                     if let Some(delay_ms) = suspend_delay_ms {

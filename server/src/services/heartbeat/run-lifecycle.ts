@@ -209,6 +209,7 @@ import type { recoveryService } from "../recovery/index.js";
 import type { companySkillService } from "../company-skills.js";
 import type { budgetService, BudgetServiceHooks } from "../budgets.js";
 import type { issueTreeControlService } from "../issue-tree-control.js";
+import { presentStorageFailureMessage } from "../../storage/storage-unavailable.js";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
 
@@ -370,6 +371,8 @@ export function decorateHeartbeatRunRuntimeStatus<
 
   return {
     ...run,
+    // Saved runs from earlier releases may promise a storage retry no wait owns.
+    ...("error" in run ? { error: presentStorageFailureMessage(run as { error?: string | null; errorCode?: string | null }) } : {}),
     currentStatusMessage: currentStatus?.message ?? null,
     currentStatusUpdatedAt: currentStatus?.updatedAt ?? null,
     currentToolName: currentStatus?.currentToolName ?? null,
@@ -1224,7 +1227,15 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
     patch?: Partial<typeof heartbeatRuns.$inferInsert>,
     failureReport?: RunFailureReportOptions,
     cancellationCondition?: ReturnType<typeof nativeRetryCancellationCommitCondition>,
-    options?: { setupFailure: true },
+    options?: {
+      setupFailure?: true;
+      /**
+       * Write only while no native executor lease on the run is live. Locks the
+       * coordinator row first, the order the owner takes back a lapsed lease in
+       * (`lockNativeExecutionLeaseForReacquire`), so exactly one side wins.
+       */
+      onlyWhileNativeLeaseLapsed?: true;
+    },
   ) {
     // fromStatuses can name a terminal status as its own source (for example,
     // an idempotent "still failed" patch), so the write below is not always a
@@ -1276,6 +1287,11 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
             eq(nativeRunFinalizations.companyId, previousStatus.companyId),
             eq(nativeRunFinalizations.issueId, previousStatus.nativeIssueId)))
           .for("update");
+      } else if (options?.onlyWhileNativeLeaseLapsed && previousStatus) {
+        await writer.select({ runId: nativeRunFinalizations.runId }).from(nativeRunFinalizations)
+          .where(and(eq(nativeRunFinalizations.runId, runId),
+            eq(nativeRunFinalizations.companyId, previousStatus.companyId)))
+          .for("update");
       }
       return previousStatus && previousStatus.runtimeMode === "legacy" && isHeartbeatRunTerminalStatus(status)
         ? terminalizeLegacyExecution({
@@ -1317,6 +1333,11 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
                 ...(cancellationCondition ? [cancellationCondition] : []),
                 ...(isHeartbeatRunTerminalStatus(status)
                   ? [nativeRunnerOwnershipNotHeldCondition()]
+                  : []),
+                ...(options?.onlyWhileNativeLeaseLapsed
+                  ? [sql`not exists (select 1 from ${nativeRunFinalizations}
+                      where ${nativeRunFinalizations.runId} = ${heartbeatRuns.id}
+                        and ${nativeRunFinalizations.leaseExpiresAt} > clock_timestamp())`]
                   : []),
               ),
             )

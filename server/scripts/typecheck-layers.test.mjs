@@ -319,6 +319,38 @@ describe("typecheckLayers", () => {
     expect(status).toBe(1);
     expect(configs).toHaveLength(1);
   });
+
+  it.each([
+    ["SIGTERM", "below"],
+    ["SIGKILL", "cycle"],
+  ])("reports %s and the affected %s layer from a real compiler child", (signal, layer) => {
+    const root = serverFixture();
+    const bin = path.join(root, "node_modules", "typescript", "bin");
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(path.join(bin, "tsc"), `
+      const fs = require("node:fs");
+      fs.writeSync(1, "compiler stdout\\n");
+      fs.writeSync(2, "compiler stderr\\n");
+      if (process.argv[3].endsWith("tsconfig.${layer}.json")) {
+        process.kill(process.pid, ${JSON.stringify(signal)});
+      }
+    `);
+    const wrapper = new URL("./typecheck-layers.mjs", import.meta.url).href;
+
+    const result = spawnSync(process.execPath, ["--input-type=module", "-e", `
+      import { typecheckLayers } from ${JSON.stringify(wrapper)};
+      process.exitCode = typecheckLayers({ serverRoot: ${JSON.stringify(root)} });
+    `], { encoding: "utf8", timeout: 10_000 });
+
+    expect(result.error).toBeUndefined();
+    expect(result.signal).toBeNull();
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain("compiler stdout");
+    expect(result.stderr).toContain("compiler stderr");
+    expect(result.stderr).toContain(`typecheck:layers: ${layer}: compiler terminated by ${signal}`);
+    expect(result.stderr).toContain(`tsconfig.${layer}.json`);
+    expect(result.stdout).not.toContain("typecheck:layers: above");
+  });
 });
 
 describe("typecheckLayers with the real compiler", () => {

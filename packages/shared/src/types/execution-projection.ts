@@ -68,6 +68,7 @@ export const EXECUTION_RECONCILIATION_CAUSES = [
   "provider_failure_meaning_unverified",
   "provider_ownership_unverified",
   "native_provider_terminal_failed",
+  "native_governed_wait_settlement_pending",
   "native_event_replay_conflict",
   "native_session_cleanup_quarantined",
   "native_session_retry_exhausted",
@@ -123,6 +124,20 @@ export interface ExecutionReconciliation {
 export interface TaskInterruptionPresentation {
   providerFailure?: import("../provider-failure.generated.js").ProviderFailure;
   workspaceFailure?: { message: string };
+  /**
+   * A configured workspace setup command exited non-zero before the agent
+   * started (`setup_failed`). Bounded and redacted: the step, the configured
+   * command, its exit status and a short tail of its output.
+   */
+  setupFailure?: {
+    step: "workspace_provision" | "workspace_seed" | "workspace_runtime_provision";
+    command: string;
+    exitCode: number | null;
+    output: string | null;
+    message: string;
+  };
+  /** With `userAction: "choose_model"`: the configured model id the provider rejected. */
+  rejectedModel?: string;
   /** A persisted Retry admission wait, normalized to public text by the server. */
   retryWait?: { reason: string; message: string };
   intentId: string | null;

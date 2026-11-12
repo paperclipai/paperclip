@@ -4196,6 +4196,54 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       } finally { await coordinator.stop(); vi.useRealTimers(); }
     });
 
+    it("finds terminal GitHub responses by native issue binding before legacy run context", async () => {
+      const f = await toolReplyFixture();
+      const issueId = f.conversation.issueId!;
+      await db.update(heartbeatRuns).set({ status: "failed", updatedAt: new Date() }).where(eq(heartbeatRuns.id, f.run.id));
+      // Newer runs of the same agent that do not bind this issue: one is natively
+      // bound to another issue although its legacy context names this issue, and
+      // one names another issue in its context. Neither may hide the stopped run.
+      await db.insert(heartbeatRuns).values([
+        { companyId: f.companyId, agentId: f.assignedAgentId, status: "running", runtimeMode: "native",
+          nativeIssueId: randomUUID(), contextSnapshot: { issueId }, createdAt: new Date(Date.now() + 60_000) },
+        { companyId: f.companyId, agentId: f.assignedAgentId, status: "running",
+          contextSnapshot: { issueId: randomUUID() }, createdAt: new Date(Date.now() + 120_000) },
+      ]);
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      try {
+        await githubResponseCommentService(db, f.providerFetch).registerTerminalResponseWork(coordinator, () => true).ready;
+        await expect.poll(() => [...f.responseComments.values()][0]?.body, { timeout: 5000 }).toContain("stopped before completing");
+        await expect.poll(() => ({ next: coordinator.nextWakeAt(), active: idleWorkSnapshot().active }),
+          { timeout: 5000 }).toEqual({ next: null, active: 0 });
+        expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); }
+    });
+
+    it("keeps terminal GitHub responses waiting while a natively bound newer run is active", async () => {
+      const f = await toolReplyFixture();
+      const issueId = f.conversation.issueId!;
+      await db.update(heartbeatRuns).set({ status: "failed", updatedAt: new Date() }).where(eq(heartbeatRuns.id, f.run.id));
+      // The newer run binds this issue natively; its legacy context is ignored.
+      await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.assignedAgentId,
+        status: "running", runtimeMode: "native", nativeIssueId: issueId, contextSnapshot: { issueId: randomUUID() },
+        createdAt: new Date(Date.now() + 60_000) });
+      const baseline = f.responseWrites.length;
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      try {
+        await githubResponseCommentService(db, f.providerFetch).registerTerminalResponseWork(coordinator, () => true).ready;
+        await expect.poll(() => ({ next: coordinator.nextWakeAt(), active: idleWorkSnapshot().active }),
+          { timeout: 5000 }).toEqual({ next: null, active: 0 });
+        expect(f.responseWrites).toHaveLength(baseline);
+        const [action] = await db.select().from(chatActions).where(and(eq(chatActions.endpointId, f.endpoint.id),
+          eq(chatActions.kind, "github_response_comment")));
+        expect(action).toMatchObject({ status: "processed" });
+        expect(action.result?.final).not.toBe(true);
+        expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); }
+    });
+
     it("settles a deleted Board-origin request without starving unrelated terminal GitHub replies", async () => {
       const invalid = await toolReplyFixture();
       const valid = await toolReplyFixture();
@@ -11620,7 +11668,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await expect(resolveSlackTaskAuthority(db, binding)).resolves.toMatchObject({ slackUserId: "UBOARD" });
   });
 
-  it.each([false, true])("applies Slack mention settings to channel replies while exempting DMs (DM=%s)", async (isDM) => {
+  it.each([false, true])("allows Slack thread replies without mentions while exempting DMs (DM=%s)", async (isDM) => {
     const fixture = await seedCompany();
     const { callbacks, endpoint, service, wakeup } = await configuredSlackEndpoint(fixture);
     expect((await service.get(endpoint.id)).requireAtMention).toBe(false);
@@ -11634,29 +11682,23 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect(wakeup).toHaveBeenCalledTimes(2);
     expect((await service.update(endpoint.id, { requireAtMention: true })).requireAtMention).toBe(true);
     await send("7100.3", false, "subscribed_message");
-    expect(wakeup).toHaveBeenCalledTimes(isDM ? 3 : 2);
+    expect(wakeup).toHaveBeenCalledTimes(3);
     const [filtered] = await db.select().from(chatDeliveries).where(and(
       eq(chatDeliveries.endpointId, endpoint.id), eq(chatDeliveries.state, "filtered")));
-    if (isDM) {
-      expect(filtered).toBeUndefined();
-    } else {
-      expect(filtered.redactedError).toBe("Message did not @mention the bot");
-      expect(filtered.normalizedEvent).toMatchObject({ filtering: { contentRetained: false } });
-      expect(filtered.normalizedEvent).not.toHaveProperty("message.text");
-    }
+    expect(filtered).toBeUndefined();
     // Both Slack callback kinds can carry an explicit mention. Retries cannot
     // produce a second wakeup for the same provider message.
     await send("7100.4", true);
     await send("7100.4", true, "mention");
-    expect(wakeup).toHaveBeenCalledTimes(isDM ? 4 : 3);
+    expect(wakeup).toHaveBeenCalledTimes(4);
     const conversations = await readChatConversationsByEndpointId(endpoint.id);
     expect(conversations).toHaveLength(1);
     const comments = await readIssueCommentsByIssueId(conversations[0].issueId);
-    expect(comments).toHaveLength(isDM ? 4 : 3);
+    expect(comments).toHaveLength(4);
     expect(conversations[0].externalThreadId).toBe(thread.thread.id);
     await service.update(endpoint.id, { requireAtMention: false });
     await send("7100.5", false);
-    expect(wakeup).toHaveBeenCalledTimes(isDM ? 5 : 4);
+    expect(wakeup).toHaveBeenCalledTimes(5);
     if (isDM) {
       await service.update(endpoint.id, { requireAtMention: true, allowDirectMessages: false });
       await send("7100.6", false);
@@ -11664,7 +11706,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     }
   });
 
-  it.each([false, true])("rechecks queued Slack channel mentions but exempts DMs before drain (DM=%s)", async (isDM) => {
+  it.each([
+    { isDM: false, isReply: false },
+    { isDM: false, isReply: true },
+    { isDM: true, isReply: false },
+  ])("rechecks queued Slack channel roots but exempts replies and DMs (DM=$isDM, reply=$isReply)", async ({ isDM, isReply }) => {
     const fixture = await seedCompany();
     const { callbacks, endpoint, service, wakeup } = await configuredSlackEndpoint(fixture, {
       deferWebhookProcessing: true, scheduleDeferredWork: () => undefined,
@@ -11672,14 +11718,28 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const channelId = isDM ? "D-QUEUED-MENTION" : "C-QUEUED-MENTION";
     const thread = makeThread({ channelId, id: `slack:${channelId}:${isDM ? "" : "7300.1"}`, isDM });
     await deliverMessage({ callbacks, endpointId: endpoint.id, thread: thread.thread,
-      message: makeMessage({ id: "7300.1", text: "Start work" }), trigger: isDM ? "direct_message" : "subscribed_message" });
+      message: makeMessage({ id: "7300.1", text: "@maya start", mentioned: true }), trigger: isDM ? "direct_message" : "mention" });
+    const [starter] = await readChatDeliveriesByEndpointId(endpoint.id);
+    await db.update(chatDeliveries).set({ nextAttemptAt: new Date(0) }).where(eq(chatDeliveries.id, starter.id));
+    await service.processPendingDeliveries(25, starter.id);
+    expect(wakeup).toHaveBeenCalledTimes(1);
+    const nextThread = isReply || isDM ? thread.thread : makeThread({ channelId, id: `slack:${channelId}:7300.2` }).thread;
+    await deliverMessage({ callbacks, endpointId: endpoint.id, thread: nextThread,
+      message: makeMessage({ id: "7300.2", text: "Continue work" }), trigger: isDM ? "direct_message" : "subscribed_message" });
     await service.update(endpoint.id, { requireAtMention: true });
-    const [delivery] = await readChatDeliveriesByEndpointId(endpoint.id);
+    const delivery = (await readChatDeliveriesByEndpointId(endpoint.id)).find(row => row.id !== starter.id)!;
     await db.update(chatDeliveries).set({ nextAttemptAt: new Date(0) }).where(eq(chatDeliveries.id, delivery.id));
     await service.processPendingDeliveries(25, delivery.id);
-    expect(wakeup).toHaveBeenCalledTimes(isDM ? 1 : 0);
-    expect(await readChatConversationsByEndpointId(endpoint.id)).toHaveLength(isDM ? 1 : 0);
-    expect((await readChatDeliveriesById(delivery.id))[0].state).toBe(isDM ? "processed" : "filtered");
+    const allowed = isDM || isReply;
+    expect(wakeup).toHaveBeenCalledTimes(allowed ? 2 : 1);
+    expect(await readChatConversationsByEndpointId(endpoint.id)).toHaveLength(1);
+    const [result] = await readChatDeliveriesById(delivery.id);
+    expect(result.state).toBe(allowed ? "processed" : "filtered");
+    if (!allowed) {
+      expect(result.redactedError).toBe("Message did not @mention the bot");
+      expect(result.normalizedEvent).toMatchObject({ filtering: { contentRetained: false } });
+      expect(result.normalizedEvent).not.toHaveProperty("message.text");
+    }
   });
 
   it("snapshots channel workspace defaults on new tasks and preserves them on replies", async () => {
@@ -65413,9 +65473,14 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           expect((await readHeartbeatRunsByCompanyId(companyId)).filter(run => run.retryOfRunId === f.runId)).toHaveLength(1);
         } else {
           expect([202, 409], JSON.stringify(response.body)).toContain(response.status);
-          if (response.status === 202) {
+          if (response.status === 202 && response.body.chatActionId) {
             const outcome = await f.service.processFailedChatRunRetry(response.body.chatActionId);
             expect(outcome.status).not.toBe("queued");
+          } else if (response.status === 202) {
+            const [intent] = await readAgentWakeupRequestsById(response.body.requestId);
+            expect(intent).toMatchObject({ reason: "task_retry", requestedByActorId: "owner-user",
+              payload: { issueId, taskRetry: { sourceRunId: f.runId } } });
+            expect((intent.payload!.taskRetry as Record<string, unknown>).chatActionId).toBeUndefined();
           }
           expect((await readHeartbeatRunsByCompanyId(companyId)).filter(run => run.retryOfRunId === f.runId)).toHaveLength(0);
         }
@@ -66232,7 +66297,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       }
       const response = await send();
       if (["principal_revoked", "accepted_result"].includes(mode)) {
-        expect(response.status).toBe(409);
+        expect(response.status, JSON.stringify(response.body)).toBe(202);
+        expect(response.body.chatActionId).toBeUndefined();
+        const [intent] = await readAgentWakeupRequestsById(response.body.requestId);
+        expect(intent).toMatchObject({ reason: "task_retry", requestedByActorId: "owner-user",
+          payload: { issueId, taskRetry: { sourceRunId: f.runId } } });
+        expect((intent.payload!.taskRetry as Record<string, unknown>).chatActionId).toBeUndefined();
       } else {
         expect(response.status).toBe(202);
         if (mode === "source_edited") await db.update(issueComments).set({ body: "Changed after Retry acceptance" }).where(eq(issueComments.id, String(f.action.payload.commentId)));
@@ -66320,11 +66390,26 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       const denySource = async (apply: () => Promise<unknown>, restore: () => Promise<unknown>, stale = false) => {
         try {
           await apply();
-          const denied = await request(app).post(`/api/issues/${issueId}/retry`).send({ idempotencyKey: randomUUID(), observedRunId: current!.id }).expect(stale ? 200 : 409);
-          if (stale) expect(denied.body).toMatchObject({ accepted: false, stale: true });
-          expect(await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
-            eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.reason, "task_retry")))).toHaveLength(0);
-        } finally { await restore(); }
+          const denied = await request(app).post(`/api/issues/${issueId}/retry`).send({ idempotencyKey: randomUUID(), observedRunId: current!.id }).expect(stale ? 200 : 202);
+          const retries = await db.select().from(agentWakeupRequests).where(and(
+            eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.reason, "task_retry")));
+          if (stale) {
+            expect(denied.body).toMatchObject({ accepted: false, stale: true });
+            expect(retries).toHaveLength(0);
+          } else {
+            expect(denied.body.chatActionId).toBeUndefined();
+            expect(retries).toHaveLength(1);
+            expect(retries[0]).toMatchObject({ id: denied.body.requestId, requestedByActorId: "owner-user",
+              payload: { issueId, taskRetry: { sourceRunId: current!.id } } });
+            const taskRetry = retries[0].payload!.taskRetry as Record<string, unknown>;
+            expect(taskRetry.boardMessageOrigin).toBeUndefined();
+            expect(taskRetry.chatActionId).toBeUndefined();
+          }
+        } finally {
+          await db.delete(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, companyId),
+            eq(agentWakeupRequests.reason, "task_retry")));
+          await restore();
+        }
       };
       await denySource(() => db.update(issueComments).set({ body: "Edited after acceptance", updatedAt: new Date() }).where(eq(issueComments.id, comment.id)),
         () => db.update(issueComments).set({ body: comment.body, updatedAt: sql`${issueComments.createdAt}` }).where(eq(issueComments.id, comment.id)));
@@ -66435,17 +66520,26 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       const [firstRetry] = await readHeartbeatRunsById(successor.id);
       const nextRequest = () => request(app).post(`/api/issues/${issueId}/retry`).send({
         idempotencyKey: randomUUID(), observedRunId: firstRetry.id });
+      const continueWithoutReplay = async () => {
+        const continued = await nextRequest().expect(202);
+        expect(continued.body.chatActionId).toBeUndefined();
+        const [intent] = await readAgentWakeupRequestsById(continued.body.requestId);
+        expect(intent).toMatchObject({ reason: "task_retry", requestedByActorId: "owner-user",
+          payload: { issueId, taskRetry: { sourceRunId: firstRetry.id } } });
+        expect((intent.payload!.taskRetry as Record<string, unknown>).boardMessageOrigin).toBeUndefined();
+        await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.id, intent.id));
+      };
       await db.update(heartbeatRuns).set({ sessionIdAfter: "contradictory-provider-session" }).where(eq(heartbeatRuns.id, firstRetry.id));
-      await nextRequest().expect(409);
+      await continueWithoutReplay();
       await db.update(heartbeatRuns).set({ sessionIdAfter: null }).where(eq(heartbeatRuns.id, firstRetry.id));
       await db.update(issueComments).set({ body: "Changed original accepted message", updatedAt: new Date() }).where(eq(issueComments.id, comment.id));
-      await nextRequest().expect(409);
+      await continueWithoutReplay();
       await db.update(issueComments).set({ body: comment.body, updatedAt: sql`${issueComments.createdAt}` }).where(eq(issueComments.id, comment.id));
       const [firstIntent] = await readAgentWakeupRequestsById(retry.id);
       await db.update(agentWakeupRequests).set({ payload: { ...firstIntent.payload,
         taskRetry: { ...(firstIntent.payload!.taskRetry as object), sourceRunId: firstRetry.id } } }).where(eq(agentWakeupRequests.id, firstIntent.id));
       await db.update(heartbeatRuns).set({ contextSnapshot: { ...firstRetry.contextSnapshot, previousRunId: firstRetry.id } }).where(eq(heartbeatRuns.id, firstRetry.id));
-      await nextRequest().expect(409);
+      await continueWithoutReplay();
       await db.update(agentWakeupRequests).set({ payload: firstIntent.payload }).where(eq(agentWakeupRequests.id, firstIntent.id));
       await db.update(heartbeatRuns).set({ contextSnapshot: firstRetry.contextSnapshot }).where(eq(heartbeatRuns.id, firstRetry.id));
       const second = await nextRequest().expect(202);
@@ -66486,7 +66580,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     }
   });
 
-  it("distinguishes an inherited GitHub requester from permission to replay a committed provider failure", async () => {
+  it("continues an inherited GitHub task from its recorded result instead of replaying the committed provider failure", async () => {
     const f = await failedChatRetryFixture("github", "42", true, false, true);
     try {
       const companyId = f.fixture.companyId, agentId = f.fixture.assignedAgentId, issueId = f.issue.id;
@@ -66535,19 +66629,30 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       app.use((req, _res, next) => { req.actor = boardActor(companyId); next(); });
       app.use("/api", issueRoutes(db, createStorageService().storage, { chatRunRetries: f.service }));
       app.use(errorHandler);
-      const denied = await request(app).post(`/api/issues/${issueId}/retry`).send({
+      const continued = await request(app).post(`/api/issues/${issueId}/retry`).send({
         idempotencyKey: input.idempotencyKey, observedRunId: input.observedRunId,
-      }).expect(409);
-      expect(denied.body).toMatchObject({ error: "This attempt already recorded a result. Send a new message on the task to continue from the saved work.",
-        details: { code: "chat_failed_run_retry_not_authorized", reason: "accepted_result_without_new_input" } });
-      // Isolate the later accepted-result guard using only owned fixture data.
-      // Resolving inherited provenance cannot by itself authorize replay.
+      }).expect(202);
+      expect(continued.body).toMatchObject({ accepted: true, stale: false, observedRunId: resumed!.id });
+      expect(continued.body.chatActionId).toBeUndefined();
+      const assertBoardContinuation = async (requestId: string) => {
+        const [intent] = await readAgentWakeupRequestsById(requestId);
+        expect(intent).toMatchObject({ reason: "task_retry", requestedByActorType: "user", requestedByActorId: "owner-user",
+          payload: { issueId, taskRetry: { sourceRunId: resumed!.id, actorId: "owner-user" } } });
+        expect((intent.payload!.taskRetry as Record<string, unknown>).chatActionId).toBeUndefined();
+        expect(await db.select().from(chatActions).where(and(eq(chatActions.companyId, companyId),
+          eq(chatActions.kind, "failed_run_retry")))).toHaveLength(0);
+        await db.update(agentWakeupRequests).set({ status: "failed", finishedAt: new Date() }).where(eq(agentWakeupRequests.id, requestId));
+      };
+      await assertBoardContinuation(continued.body.requestId);
+      // The later accepted-result guard also continues from the saved result
+      // instead of repeating the exact chat request.
       await db.update(heartbeatRuns).set({ contextSnapshot: { ...failedResume.contextSnapshot,
         source: "chat:github", wakeCommentId: f.action.payload.commentId, wakeCommentIds: [f.action.payload.commentId] } })
         .where(eq(heartbeatRuns.id, failedResume.id));
       try {
-        await expect(requestTaskRetry({ ...input, idempotencyKey: randomUUID() })).rejects.toMatchObject({ details: {
-          code: "chat_failed_run_retry_not_authorized", reason: "accepted_result_without_new_input" } });
+        const receipt = await requestTaskRetry({ ...input, idempotencyKey: randomUUID() });
+        expect(receipt).toMatchObject({ accepted: true, chatActionId: undefined });
+        await assertBoardContinuation(receipt.requestId!);
       } finally { await db.update(heartbeatRuns).set({ contextSnapshot: failedResume.contextSnapshot }).where(eq(heartbeatRuns.id, failedResume.id)); }
       expect((await readHeartbeatRunsByCompanyId(companyId)).filter(run => run.retryOfRunId === resumed!.id)).toHaveLength(0);
     } finally { await f.service.shutdown(); }
@@ -67106,9 +67211,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
                   } finally { unsubscribes.forEach(unsubscribe => unsubscribe()); }
                 }
                 if (mode !== "committed_board_existing" && mode !== "committed_board_existing_coalesced" && mode !== "committed_board_existing_identity_contended" && mode !== "committed_board_existing_identity_expired") {
-                  await expect(requestTaskRetry(nextInput)).rejects.toMatchObject({
-                    details: { code: "chat_failed_run_retry_not_authorized" },
-                  });
+                  const continued = await requestTaskRetry(nextInput);
+                  expect(continued).toMatchObject({ accepted: true, chatActionId: undefined });
+                  const [intent] = await readAgentWakeupRequestsById(continued.requestId!);
+                  expect(intent).toMatchObject({ reason: "task_retry", requestedByActorId: "owner-user",
+                    payload: { taskRetry: { sourceRunId: failed.id } } });
+                  expect((intent.payload!.taskRetry as Record<string, unknown>).chatActionId).toBeUndefined();
                   expect(await db.select().from(agentWakeupRequests).where(inArray(agentWakeupRequests.id, inputIds)).orderBy(asc(agentWakeupRequests.id)))
                     .toEqual(before);
                   return;
@@ -78648,7 +78756,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       kind: "request_confirmation",
       status: "pending",
       effectiveResolverPolicy: "human_only",
-      createdByAgentId: null,
+      createdByAgentId: fixture.assignedAgentId,
       createdByUserId: null,
     });
     await db

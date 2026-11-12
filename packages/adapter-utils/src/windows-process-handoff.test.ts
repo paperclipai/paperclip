@@ -5,10 +5,22 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { runChildProcess, runningProcesses, signalRunningProcess } from "./server-utils.js";
-import { hasStoppedWindowsProcessJob, prepareWindowsProcessJob, recordWindowsProcessJobIdentity, settleWindowsProcessJob, spawnWindowsProcessJob } from "./windows-process-job.js";
+import { hasStoppedWindowsProcessJob, prepareWindowsProcessJob, recordWindowsProcessJobIdentity, settleWindowsProcessJob, spawnWindowsProcessJob, unwrapVerbatimCmdArgs } from "./windows-process-job.js";
 
 type ProcessIdentity = { processPid: number; processStartedAt: Date };
 const released = (identity: ProcessIdentity) => hasStoppedWindowsProcessJob(identity.processPid, identity.processStartedAt);
+
+describe("verbatim cmd.exe launches", () => {
+  it("hands the supervisor the command line without the launcher's outer quotes", () => {
+    expect(unwrapVerbatimCmdArgs(["/d", "/s", "/c", '""C:/tools/agent.cmd" --acp"'], true))
+      .toEqual(["/d", "/s", "/c", '"C:/tools/agent.cmd" --acp']);
+  });
+
+  it("leaves ordinary argv untouched", () => {
+    expect(unwrapVerbatimCmdArgs(["/d", "/s", "/c", '"x"'], false)).toEqual(["/d", "/s", "/c", '"x"']);
+    expect(unwrapVerbatimCmdArgs(["--acp", '"quoted"'], true)).toEqual(["--acp", '"quoted"']);
+  });
+});
 
 describe.skipIf(process.platform !== "win32")("Windows process handoff settlement", () => {
   it("waits for host identity persistence when a fast provider has already exited", async () => {
@@ -80,6 +92,18 @@ describe.skipIf(process.platform !== "win32")("Windows process handoff settlemen
     expect(child.exitCode).toBe(code);
     expect(released(identity)).toBe(true);
     await settleWindowsProcessJob(child);
+    expect(released(identity)).toBe(true);
+  });
+
+  it("settles a requested stop that the launcher escalates to SIGKILL", async () => {
+    const child = await spawnWindowsProcessJob(process.execPath, ["-e", "console.log('ready');setInterval(()=>{},1000)"], { stdio: ["ignore", "pipe", "pipe"] });
+    const identity = { processPid: child.pid!, processStartedAt: new Date() };
+    recordWindowsProcessJobIdentity(child, identity.processStartedAt.toISOString());
+    await new Promise(resolve => child.stdout!.once("data", resolve));
+    expect(child.kill("SIGTERM")).toBe(true);
+    expect(child.kill("SIGKILL")).toBe(true);
+    await settleWindowsProcessJob(child);
+    expect(child.signalCode).toBeNull();
     expect(released(identity)).toBe(true);
   });
 

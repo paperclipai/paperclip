@@ -155,7 +155,15 @@ function createNativeUsageReceiver(db: Db, input: NativeUsageDeliveryInput, sour
   let pending: UsageReceiptEnvelope | undefined;
   let chain = Promise.resolve();
   const capture = async (event: PrpEvent) => {
-    if (event.eventType !== "usage.reported" && event.eventType !== "turn.started" && !terminal.has(event.eventType)) return;
+    // A restore is journaled only for turn-reporting providers with an open
+    // turn, so a rebuilt receiver can close that turn as a lower bound.
+    // Receivers that predate it replay the receipt as an ignored event.
+    if (event.eventType === "session.resumed") {
+      // Never fail delivery for a lifecycle event: an unacknowledged event
+      // would replay without end. Another source's restore is not ours.
+      if (!turnAccounting || event.runId !== input.runId || event.sourceInstanceId !== input.runnerInstanceId
+        || (!turnAccounting.hasOpenTurn() && !accepted.has(event.sourceEventId))) return;
+    } else if (event.eventType !== "usage.reported" && event.eventType !== "turn.started" && !terminal.has(event.eventType)) return;
     if (event.runId !== input.runId || event.sourceInstanceId !== input.runnerInstanceId) throw new Error("native_usage_source_mismatch");
     const payload = event.payload as Record<string, unknown>;
     if (event.eventType === "usage.reported" && await captureLateUsageForOwner(db, input, event, payload)) return;

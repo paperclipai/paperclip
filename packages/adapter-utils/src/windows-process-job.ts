@@ -138,8 +138,11 @@ export function forceWindowsProcessJobStop(child: ChildProcess): boolean {
 export function requestWindowsProcessJobStop(child: ChildProcess, signal?: NodeJS.Signals | number): boolean {
   const job = child.pid ? ownedJobs.get(child.pid) : undefined;
   if (!job || job.child !== child || job.closed) return false;
-  if (signal === "SIGKILL") return forceWindowsProcessJobStop(child);
+  // A launcher such as ACPX escalates SIGTERM to SIGKILL after a short grace.
+  // The requested job stop already ends every process and is forced after
+  // WINDOWS_PROCESS_JOB_STOP_TIMEOUT_MS, so keep it to receive the settlement.
   if (job.stopRequested) return true;
+  if (signal === "SIGKILL") return forceWindowsProcessJobStop(child);
 
   let stop: ChildProcess;
   try {
@@ -162,9 +165,25 @@ export function hasStoppedWindowsProcessJob(pid: number, startedAt: Date): boole
   return Boolean(job?.settled && job.startedAt === startedAt.toISOString());
 }
 
+/**
+ * A launcher such as ACPX may hand over a prepared `cmd.exe /d /s /c "<line>"`
+ * with verbatim arguments. The supervisor quotes that payload itself, so take
+ * the line without its outer quotes; any other argv passes through unchanged.
+ */
+export function unwrapVerbatimCmdArgs(args: readonly string[], verbatim: boolean | undefined): string[] {
+  const payload = args[3];
+  if (verbatim && args.length === 4 && args[0] === "/d" && args[1] === "/s" && args[2] === "/c"
+    && payload.length >= 2 && payload.startsWith("\"") && payload.endsWith("\"")) {
+    return ["/d", "/s", "/c", payload.slice(1, -1)];
+  }
+  return [...args];
+}
+
 export async function spawnWindowsProcessJob(command: string, args: string[], options: SpawnOptions): Promise<ChildProcess> {
-  const job = await prepareWindowsProcessJob(command, args, String(options.cwd ?? process.cwd()), options.env ?? process.env);
-  const child = spawn(job.command, job.args, { ...options, env: job.env, shell: false, windowsHide: true });
+  const { windowsVerbatimArguments, ...spawnOptions } = options;
+  const job = await prepareWindowsProcessJob(command, unwrapVerbatimCmdArgs(args, windowsVerbatimArguments), String(spawnOptions.cwd ?? process.cwd()), spawnOptions.env ?? process.env);
+  // The supervisor's own argv is always quoted by Node, never passed verbatim.
+  const child = spawn(job.command, job.args, { ...spawnOptions, env: job.env, shell: false, windowsHide: true });
   if (child.pid) job.attach(child, new Date().toISOString());
   const kill = child.kill.bind(child);
   child.kill = signal => {
@@ -189,5 +208,9 @@ export function observeWindowsProcessJobIdentity(pid: number, launchedAt: string
 }
 
 export async function settleWindowsProcessJob(child: ChildProcess | undefined): Promise<void> {
-  if (child && (child.exitCode !== null || child.signalCode !== null)) await closingJobs.get(child);
+  if (!child) return;
+  const job = child.pid ? ownedJobs.get(child.pid) : undefined;
+  // A requested stop ends within the force timeout, so waiting for it is bounded.
+  const stopping = Boolean(job && job.child === child && job.stopRequested);
+  if (stopping || child.exitCode !== null || child.signalCode !== null) await closingJobs.get(child);
 }

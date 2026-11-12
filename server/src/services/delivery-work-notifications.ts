@@ -58,6 +58,7 @@ export const DELIVERY_QUEUES = {
   scheduledRetryCancellation: "scheduled-retry-cancellation",
   executionFinalization: "execution-finalization",
   workspaceRecovery: "workspace-recovery",
+  providerLimitResume: "provider-limit-resume",
   executionReplacement: "execution-replacement",
   executionContinuation: "execution-continuation",
   executionStatus: "execution-status",

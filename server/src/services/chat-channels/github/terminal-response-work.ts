@@ -21,6 +21,22 @@ export function registerGitHubTerminalResponseWork(
   const repositoryId = sql<string | null>`${chatEndpointResources.metadata}->>'providerRepositoryId'`;
   const number = sql<string | null>`substring(${chatConversations.externalThreadId}
     from '^github:[^:]+:(?:issue:)?([1-9][0-9]*)(?::rc:[1-9][0-9]*)?$')`;
+  // Status of the assigned agent's latest run bound to the issue, where a run's
+  // issue is coalesce(native_issue_id, context_snapshot->>'issueId'). The two
+  // precedence branches are disjoint and each uses an issue index, so a
+  // candidate does not walk (and detoast) the agent's whole run history.
+  const latestIssueRunStatus = sql<string | null>`select latest.status from (
+    (select r.status, r.created_at, r.id from ${heartbeatRuns} r
+      where r.company_id = ${chatActions.companyId} and r.native_issue_id = ${chatConversations.issueId}
+        and r.agent_id = ${chatEndpoints.assignedAgentId}
+      order by r.created_at desc, r.id desc limit 1)
+    union all
+    (select r.status, r.created_at, r.id from ${heartbeatRuns} r
+      where r.company_id = ${chatActions.companyId} and r.native_issue_id is null
+        and r.context_snapshot->>'issueId' = ${chatConversations.issueId}::text
+        and r.agent_id = ${chatEndpoints.assignedAgentId}
+      order by r.created_at desc, r.id desc limit 1)
+  ) latest order by latest.created_at desc, latest.id desc limit 1`;
   async function page(scope?: Scope, cursor?: string, actionId?: string) {
     return db.select({
       id: chatActions.id, companyId: chatActions.companyId, endpointId: chatActions.endpointId,
@@ -42,10 +58,7 @@ export function registerGitHubTerminalResponseWork(
       .where(and(eq(chatActions.kind, "github_response_comment"), eq(chatActions.status, "processed"),
         isNotNull(chatActions.deliveryId), isNotNull(chatEndpoints.assignedAgentId),
         sql`coalesce(${chatActions.result}->>'final', 'false') <> 'true'`,
-        sql`(${issues.status} = 'blocked' or (select r.status from ${heartbeatRuns} r
-          where r.company_id = ${chatActions.companyId} and r.agent_id = ${chatEndpoints.assignedAgentId}
-            and coalesce(r.native_issue_id::text, r.context_snapshot->>'issueId') = ${chatConversations.issueId}::text
-          order by r.created_at desc, r.id desc limit 1) in ('succeeded', 'failed', 'interrupted', 'timed_out', 'cancelled'))`,
+        sql`(${issues.status} = 'blocked' or (${latestIssueRunStatus}) in ('succeeded', 'failed', 'interrupted', 'timed_out', 'cancelled'))`,
         scope ? eq(chatActions.companyId, scope.companyId) : undefined,
         scope?.issueId ? eq(issues.id, scope.issueId) : undefined,
         scope?.conversationId ? eq(chatActions.conversationId, scope.conversationId) : undefined,
