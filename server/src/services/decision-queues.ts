@@ -420,9 +420,39 @@ export function decisionQueueService(db: Db) {
       }
     }
 
+    // Most calls find each match in its queue already. One read says which
+    // queues exist and which matches they hold, and only a seed with a queue
+    // or a member to add opens a transaction.
+    const memberKey = (sourceKind: string, sourceId: string) => `${sourceKind}:${sourceId}`;
+    const seeded = new Map<string, { seedRulesEnabled: boolean; members: Set<string> }>();
+    if (matches.size > 0) {
+      const rows = await db
+        .select({
+          key: decisionQueues.key,
+          seedRulesEnabled: decisionQueues.seedRulesEnabled,
+          sourceKind: decisionQueueItems.sourceKind,
+          sourceId: decisionQueueItems.sourceId,
+        })
+        .from(decisionQueues)
+        .leftJoin(decisionQueueItems, and(
+          eq(decisionQueueItems.queueId, decisionQueues.id),
+          eq(decisionQueueItems.companyId, companyId),
+          inArray(decisionQueueItems.sourceId, [...new Set([...matches.values()].flat().map(item => item.sourceId))]),
+        ))
+        .where(and(eq(decisionQueues.companyId, companyId), inArray(decisionQueues.key, [...matches.keys()])));
+      for (const row of rows) {
+        const queue = seeded.get(row.key) ?? { seedRulesEnabled: row.seedRulesEnabled, members: new Set<string>() };
+        if (row.sourceKind && row.sourceId) queue.members.add(memberKey(row.sourceKind, row.sourceId));
+        seeded.set(row.key, queue);
+      }
+    }
+
     for (const seed of DECISION_QUEUE_SEEDS) {
       const matchingItems = matches.get(seed.key) ?? [];
       if (matchingItems.length === 0) continue;
+      const queue = seeded.get(seed.key);
+      if (queue && (!queue.seedRulesEnabled
+        || matchingItems.every(item => queue.members.has(memberKey(item.sourceKind, item.sourceId))))) continue;
       await db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
         const insertedQueue = await txDb.insert(decisionQueues).values({
