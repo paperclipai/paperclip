@@ -163,6 +163,14 @@ type Actor = {
   actorResponsibleUserId?: string | null;
   runId?: string | null;
 };
+
+export const AGENT_UNAUTHENTICATED_WEBHOOK_ERROR =
+  "Agents can only create authenticated webhook triggers. Use signingMode \"bearer\" (the default) or a signed mode such as \"hmac_sha256\". If the sender cannot authenticate its requests, ask a person to choose an unauthenticated webhook on the board.";
+
+/** A person may choose an unauthenticated public webhook; an agent may not. */
+function assertAgentWebhookAuthenticated(actor: Actor, signingMode: string | null | undefined) {
+  if (actor.agentId && signingMode === "none") throw forbidden(AGENT_UNAUTHENTICATED_WEBHOOK_ERROR);
+}
 type RoutineRow = typeof routines.$inferSelect;
 type RoutineTriggerRow = typeof routineTriggers.$inferSelect;
 
@@ -2537,6 +2545,7 @@ export function routineService(
       }
 
       if (input.kind === "webhook") {
+        assertAgentWebhookAuthenticated(actor, input.signingMode);
         publicId = crypto.randomBytes(12).toString("hex");
         const created = await createWebhookSecret(routine.companyId, routine.id, actor);
         secretId = created.secret.id;
@@ -2594,6 +2603,9 @@ export function routineService(
     ): Promise<{ trigger: RoutineTrigger; revision: RoutineRevision } | null> => {
       const existing = await getTriggerById(id);
       if (!existing) return null;
+      if (existing.kind === "webhook" && existing.signingMode !== "none") {
+        assertAgentWebhookAuthenticated(actor, patch.signingMode);
+      }
 
       let nextRunAt = existing.nextRunAt;
       let cronExpression = existing.cronExpression;
@@ -2779,6 +2791,17 @@ export function routineService(
       const snapshot = routineRevisionSnapshotSchema.parse(targetRevision.snapshot) as RoutineRevisionSnapshotV1;
       const routineSnapshot = snapshot.routine;
       await assertRestorableAssignee(existingRoutine.companyId, routineSnapshot.assigneeAgentId, actor);
+      if (actor.agentId && snapshot.triggers.some(trigger => trigger.kind === "webhook" && trigger.signingMode === "none")) {
+        const unauthenticated = new Set(await db
+          .select({ id: routineTriggers.id })
+          .from(routineTriggers)
+          .where(and(eq(routineTriggers.companyId, existingRoutine.companyId), eq(routineTriggers.routineId, existingRoutine.id),
+            eq(routineTriggers.signingMode, "none")))
+          .then(rows => rows.map(row => row.id)));
+        for (const trigger of snapshot.triggers) {
+          if (trigger.kind === "webhook" && !unauthenticated.has(trigger.id)) assertAgentWebhookAuthenticated(actor, trigger.signingMode);
+        }
+      }
 
       const result = await db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
