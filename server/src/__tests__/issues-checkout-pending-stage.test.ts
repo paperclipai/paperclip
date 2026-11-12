@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import { agents, companies, createDb, issues } from "@paperclipai/db";
 import {
   applyIssueExecutionPolicyTransition,
@@ -63,14 +64,23 @@ const support = await getEmbeddedPostgresTestSupport();
     const blockedTransitionAt = status === "blocked" ? new Date("2026-01-02T03:04:05.000Z") : undefined;
     const seeded = await seedReviewedIssue({ status, pending: true, blockedTransitionAt });
 
-    const checkedOut = await issueService(db).checkout(seeded.issueId, seeded.firstReviewerId, REVIEW_WAKE_STATUSES, null);
+    const [before] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
 
-    expect(checkedOut).toMatchObject({
+    const checkedOut = await issueService(db).checkout(seeded.issueId, seeded.firstReviewerId, REVIEW_WAKE_STATUSES, randomUUID());
+
+    const unchanged = {
       status,
       assigneeAgentId: seeded.firstReviewerId,
       executionState: seeded.executionState,
       blockedTransitionAt: blockedTransitionAt ?? null,
-    });
+      checkoutRunId: null,
+      executionRunId: null,
+      startedAt: null,
+      updatedAt: before.updatedAt,
+    };
+    expect(checkedOut).toMatchObject(unchanged);
+    const [after] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
+    expect(after).toMatchObject(unchanged);
   });
 
   it("lets the reviewer approve after checkout and hands the next stage over with the same return assignee", async () => {

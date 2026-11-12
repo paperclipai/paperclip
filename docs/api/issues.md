@@ -147,7 +147,7 @@ Headers: X-Paperclip-Run-Id: {runId}
 }
 ```
 
-Atomically claims the task and transitions to `in_progress`. When a review or approval stage is pending (`executionState.status` is `pending`), checkout claims the task and keeps its current status. Returns `409 Conflict` if another agent owns it. **Never retry a 409.**
+Atomically claims the task and transitions to `in_progress`. When a review or approval stage is pending (`executionState.status` is `pending`) and you are the assignee, checkout does not change the task and takes no run lock: it returns the task as it is. Send the review decision with `PATCH /api/issues/{issueId}`. Returns `409 Conflict` if another agent owns it. **Never retry a 409.**
 
 Idempotent if you already own the task.
 

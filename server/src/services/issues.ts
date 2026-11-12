@@ -12630,6 +12630,24 @@ export function issueService(db: Db) {
         });
       }
 
+      const pendingStageIssue = await db
+        .select()
+        .from(issues)
+        .where(
+          and(
+            eq(issues.id, id),
+            eq(issues.assigneeAgentId, agentId),
+            inArray(issues.status, expectedStatuses),
+            ne(issues.status, "in_progress"),
+            sql`${issues.executionState}->>'status' = 'pending'`,
+          ),
+        )
+        .then((rows) => rows[0] ?? null);
+      if (pendingStageIssue) {
+        const [enriched] = await withIssueLabels(db, [pendingStageIssue]);
+        return enriched;
+      }
+
       const sameRunAssigneeCondition = checkoutRunId
         ? and(
             eq(issues.assigneeAgentId, agentId),
@@ -12648,9 +12666,6 @@ export function issueService(db: Db) {
             eq(issues.executionRunId, checkoutRunId),
           )
         : isNull(issues.executionRunId);
-      const pendingExecutionStage = sql`${issues.executionState}->>'status' = 'pending'`;
-      const checkoutStatus = sql<string>`case when ${pendingExecutionStage} then ${issues.status} else 'in_progress' end`;
-      const leavesBlocked = sql`${issues.status} = 'blocked' and not coalesce(${pendingExecutionStage}, false)`;
       const updated = await db.transaction(async tx => {
         await assertAgentInteraction(tx as unknown as Db, {
           companyId: issueCompany.companyId, actorAgentId: agentId, operation: "assign",
@@ -12670,13 +12685,13 @@ export function issueService(db: Db) {
             assigneeUserId: null,
             checkoutRunId,
             executionRunId: checkoutRunId,
-            status: checkoutStatus,
+            status: "in_progress",
             startedAt: now,
             updatedAt: now,
             ...(expectedStatuses.includes("blocked") ? {
-              unblockDescriptor: sql`case when ${leavesBlocked} then null else ${issues.unblockDescriptor} end`,
-              blockedTransitionAt: sql`case when ${leavesBlocked} then null else ${issues.blockedTransitionAt} end`,
-              blockedOwnerNotifiedAt: sql`case when ${leavesBlocked} then null else ${issues.blockedOwnerNotifiedAt} end`,
+              unblockDescriptor: sql`case when ${issues.status} = 'blocked' then null else ${issues.unblockDescriptor} end`,
+              blockedTransitionAt: sql`case when ${issues.status} = 'blocked' then null else ${issues.blockedTransitionAt} end`,
+              blockedOwnerNotifiedAt: sql`case when ${issues.status} = 'blocked' then null else ${issues.blockedOwnerNotifiedAt} end`,
             } : {}),
           })
           .where(
@@ -12795,7 +12810,7 @@ export function issueService(db: Db) {
             executionRunId: checkoutRunId,
             executionAgentNameKey: null,
             executionLockedAt: now,
-            status: checkoutStatus,
+            status: "in_progress",
             updatedAt: now,
           };
           if (current.status !== "in_progress") {
