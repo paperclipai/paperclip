@@ -463,6 +463,43 @@ linuxOnly("run descendant teardown", () => {
       });
     });
 
+    it("does not let an older table forget a child that a newer table recorded", async () => {
+      await withFixture(async (procRoot) => {
+        const runId = newRunId();
+        await writeFixtureProcess(procRoot, { ...leader, environ: `${RUN_ID_ENV_MARKER}=${runId}\0` });
+        const lineage = new RunProcessLineage(runId);
+        const older = readRunProcessTable({ procRoot });
+
+        // A child that cleared its environment and started its own session.
+        const child = { pid: 4_000_020, ppid: leader.pid, pgid: 4_000_020, sid: 4_000_020, startTime: 1_300 };
+        await writeFixtureProcess(procRoot, child);
+        const newer = readRunProcessTable({ procRoot });
+        expect(lineage.sample(newer).map((entry) => entry.pid).sort()).toEqual([leader.pid, child.pid]);
+        // The older read finishes last (overlapping samples).
+        lineage.sample(older);
+
+        // The leader exits and the child is reparented: only the record links it to the run.
+        await fs.rm(path.join(procRoot, String(leader.pid)), { recursive: true });
+        await writeFixtureProcess(procRoot, { ...child, ppid: 1 });
+        expect(lineage.sample(readRunProcessTable({ procRoot })).map((entry) => entry.pid)).toEqual([child.pid]);
+      });
+    });
+
+    it("absorbs a saved lineage of the same run without losing what it already recorded", async () => {
+      await withFixture(async (procRoot) => {
+        const runId = newRunId();
+        const child = { pid: 4_000_030, ppid: 1, pgid: 4_000_030, sid: 4_000_030, startTime: 1_400 };
+        await writeFixtureProcess(procRoot, leader);
+        await writeFixtureProcess(procRoot, child);
+        const lineage = new RunProcessLineage(runId, [{ pid: leader.pid, startTime: String(leader.startTime), leader: true }]);
+        lineage.absorb(new RunProcessLineage(runId, [{ pid: child.pid, startTime: String(child.startTime) }]));
+        lineage.absorb(new RunProcessLineage(newRunId(), [{ pid: 4_000_031, startTime: "1500" }]));
+        expect(lineage.takeChanged()).toBe(true);
+        expect(lineage.toSnapshot().entries.map((entry) => entry.pid).sort()).toEqual([leader.pid, child.pid]);
+        expect(lineage.sample(readRunProcessTable({ procRoot })).map((entry) => entry.pid).sort()).toEqual([leader.pid, child.pid]);
+      });
+    });
+
     it("does not own an excluded process group or a child of it", async () => {
       await withFixture(async (procRoot) => {
         const runId = newRunId();
