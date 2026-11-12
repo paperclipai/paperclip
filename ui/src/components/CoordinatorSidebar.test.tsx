@@ -8,6 +8,7 @@ import { buildPinnedNavigationItems, CoordinatorSidebar } from "./CoordinatorSid
 import { TooltipProvider } from "./ui/tooltip";
 import { coordinatorAttentionQueryKey, coordinatorAttentionSummaryQueryKey } from "@/lib/coordinator-attention";
 import { queryKeys } from "@/lib/queryKeys";
+import { formatDateTime } from "@/lib/utils";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const fixture = vi.hoisted(() => ({ attention: vi.fn(), summary: vi.fn(), openNewIssue: vi.fn(), openNewChat: vi.fn(), pathname: "/COO/issues", collapsed: false, userId: "reviewer", agents: [] as any[], chats: [] as any[], recentTasks: [] as Array<Record<string, unknown>>, projects: [] as Array<Record<string, unknown>>, projectTasks: vi.fn(), enableCases: false }));
@@ -64,6 +65,9 @@ describe("Coordinator task creation", () => {
     expect(container.querySelector('a[href="/chats/alex/chat-one"]')).not.toBeNull();
     expect(container.querySelector('a[href="/chats/alex/chat-two"]')).not.toBeNull();
     expect(container.querySelector('a[href="/chats/alex/chat-one"]')?.textContent).toContain("First chat");
+    const date = container.querySelector('a[href="/chats/alex/chat-one"] [data-slot="chat-recent-date"]');
+    expect(date?.className).toContain("font-mono");
+    expect(date?.textContent).toBe(formatDateTime("2026-10-20T12:00:00Z"));
     await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="All conversations"]')!.click());
     expect(document.querySelector('a[href="/chats/alex/old"]')).not.toBeNull();
     await act(async () => [...document.querySelectorAll("button")].find(button => button.textContent === "Create from history")!.click());

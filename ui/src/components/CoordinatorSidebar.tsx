@@ -211,7 +211,9 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
         {recents.map(item => item.kind === "task"
           ? <RecentTaskNavItem className="design-sidebar-item" key={item.id} task={item.task} label={item.task.title} iconNode={<StatusIcon {...taskStatusIconProps(item.task)} />} />
           : item.kind === "chat"
-            ? <SidebarNavItem className="design-sidebar-item" key={item.id} to={`/chats/${encodeURIComponent(agentRouteRef(item.agent))}/${item.id}`} label={`${item.chat.title} · ${item.agent.name} · ${formatDateTime(item.chat.createdAt ?? item.chat.updatedAt)}`} iconNode={<AgentAvatar agent={item.agent} size={16} />} />
+            ? <SidebarNavItem className="design-sidebar-item" key={item.id} to={`/chats/${encodeURIComponent(agentRouteRef(item.agent))}/${item.id}`} label={`${item.chat.title} · ${item.agent.name}`} iconNode={<AgentAvatar agent={item.agent} size={16} />}
+              trailing={<span data-slot="chat-recent-date" className="shrink-0 font-mono text-xs text-muted-foreground">{formatDateTime(item.chat.createdAt ?? item.chat.updatedAt)}</span>}
+              trailingLabel={formatDateTime(item.chat.createdAt ?? item.chat.updatedAt)} />
             : <ProjectRecent key={item.id} project={item.project} />)}
         </RecentNavigationList>
       </SidebarSection></div>}
