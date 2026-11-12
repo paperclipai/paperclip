@@ -532,8 +532,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
   type RecordOverlayGroup = "identity" | "adapterConfig" | "heartbeat" | "debug" | "runtime";
 
+  const displayedOriginals = new Map<string, unknown>();
+
   /** Read effective value: overlay if dirty, else original */
   function eff<T>(group: RecordOverlayGroup, field: string, original: T): T {
+    displayedOriginals.set(`${group}.${field}`, original);
     const o = overlay[group];
     if (field in o) return o[field] as T;
     return original;
@@ -541,10 +544,16 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
   /** Mark field dirty in overlay */
   function mark(group: RecordOverlayGroup, field: string, value: unknown) {
-    setOverlay((prev) => ({
-      ...prev,
-      [group]: { ...prev[group], [field]: value },
-    }));
+    const key = `${group}.${field}`;
+    setOverlay((prev) => {
+      const next = { ...prev[group] };
+      if (displayedOriginals.has(key) && overlayValuesEqual(value, displayedOriginals.get(key))) {
+        delete next[field];
+      } else {
+        next[field] = value;
+      }
+      return { ...prev, [group]: next };
+    });
   }
 
   function flushEnvironmentDraft() {
@@ -619,6 +628,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const runtimeConfig = !isCreate ? ((props.agent.runtimeConfig ?? {}) as Record<string, unknown>) : {};
   const heartbeat = !isCreate ? ((runtimeConfig.heartbeat ?? {}) as Record<string, unknown>) : {};
   const debug = !isCreate ? ((runtimeConfig.debug ?? {}) as Record<string, unknown>) : {};
+  displayedOriginals.set("runtime.runtimeConfig", { ...runtimeConfig, aiConnection: runtimeConfig.aiConnection });
 
   const adapterType = isCreate
     ? props.values.adapterType
@@ -1491,7 +1501,15 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     };
   }, [isCreate, overlay.heartbeat, runtimeConfig, val]);
   const effectiveHeartbeat = asObject(effectiveRuntimeConfig.heartbeat);
-  const maxTurnContinuation = asObject(effectiveHeartbeat.maxTurnContinuation);
+  const savedContinuation = asObject(heartbeat.maxTurnContinuation);
+  const continuationDefaults = {
+    ...savedContinuation,
+    enabled: asBoolean(savedContinuation.enabled, true),
+    maxAttempts: clampInteger(asFiniteNumber(savedContinuation.maxAttempts, MAX_TURN_CONTINUATION_DEFAULT_MAX_ATTEMPTS), 0, MAX_TURN_CONTINUATION_MAX_ATTEMPTS_CAP),
+    delayMs: clampInteger(asFiniteNumber(savedContinuation.delayMs, MAX_TURN_CONTINUATION_DEFAULT_DELAY_SEC * 1000) / 1000, 0, MAX_TURN_CONTINUATION_MAX_DELAY_SEC) * 1000,
+  };
+  const maxTurnContinuation = isCreate ? asObject(effectiveHeartbeat.maxTurnContinuation)
+    : eff("heartbeat", "maxTurnContinuation", continuationDefaults);
   const maxTurnContinuationEnabled = asBoolean(maxTurnContinuation.enabled, true);
   const maxTurnContinuationMaxAttempts = clampInteger(
     asFiniteNumber(maxTurnContinuation.maxAttempts, MAX_TURN_CONTINUATION_DEFAULT_MAX_ATTEMPTS),
@@ -1591,7 +1609,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     <div className="space-y-6">
       {showRunnerUpgrade && !runnerUpgraded ? (
         <div className="space-y-3 rounded-lg border border-border bg-muted/30 p-4">
-          <div className="flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-center">
+          <div className="agent-runner-upgrade flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-center">
             <div className="min-w-0 flex-1 space-y-1">
               <p className="text-sm font-medium">Upgrade to Paperclip Runner</p>
               <p className="text-sm text-muted-foreground">

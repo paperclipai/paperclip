@@ -163,6 +163,13 @@ type Actor = {
   actorResponsibleUserId?: string | null;
   runId?: string | null;
 };
+
+export const AGENT_UNAUTHENTICATED_WEBHOOK_ERROR =
+  "Agents can only create authenticated webhook triggers. Use signingMode \"bearer\" (the default) or a signed mode such as \"hmac_sha256\". If the sender cannot authenticate its requests, ask a person to choose an unauthenticated webhook on the board.";
+
+function assertAgentWebhookAuthenticated(actor: Actor, signingMode: string | null | undefined) {
+  if (actor.agentId && signingMode === "none") throw forbidden(AGENT_UNAUTHENTICATED_WEBHOOK_ERROR);
+}
 type RoutineRow = typeof routines.$inferSelect;
 type RoutineTriggerRow = typeof routineTriggers.$inferSelect;
 
@@ -2537,6 +2544,7 @@ export function routineService(
       }
 
       if (input.kind === "webhook") {
+        assertAgentWebhookAuthenticated(actor, input.signingMode);
         publicId = crypto.randomBytes(12).toString("hex");
         const created = await createWebhookSecret(routine.companyId, routine.id, actor);
         secretId = created.secret.id;
@@ -2623,8 +2631,17 @@ export function routineService(
 
       const result = await db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
-        await notifyDeliveryWork(txDb, DELIVERY_QUEUES.routineSchedules);
         await tx.execute(sql`select id from ${routines} where ${routines.id} = ${existing.routineId} for update`);
+        const current = await txDb
+          .select({ signingMode: routineTriggers.signingMode })
+          .from(routineTriggers)
+          .where(eq(routineTriggers.id, id))
+          .then((rows) => rows[0] ?? null);
+        if (!current) return null;
+        if (existing.kind === "webhook" && current.signingMode !== "none") {
+          assertAgentWebhookAuthenticated(actor, patch.signingMode);
+        }
+        await notifyDeliveryWork(txDb, DELIVERY_QUEUES.routineSchedules);
         const [updated] = await txDb
           .update(routineTriggers)
           .set({
@@ -2635,7 +2652,7 @@ export function routineService(
             cronExpression,
             timezone,
             nextRunAt,
-            signingMode: patch.signingMode === undefined ? existing.signingMode : patch.signingMode,
+            signingMode: patch.signingMode === undefined ? current.signingMode : patch.signingMode,
             replayWindowSec: patch.replayWindowSec === undefined ? existing.replayWindowSec : patch.replayWindowSec,
             updatedByAgentId: actor.agentId ?? null,
             updatedByUserId: actor.userId ?? null,
@@ -2779,10 +2796,8 @@ export function routineService(
       const snapshot = routineRevisionSnapshotSchema.parse(targetRevision.snapshot) as RoutineRevisionSnapshotV1;
       const routineSnapshot = snapshot.routine;
       await assertRestorableAssignee(existingRoutine.companyId, routineSnapshot.assigneeAgentId, actor);
-
       const result = await db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
-        await notifyDeliveryWork(txDb, DELIVERY_QUEUES.routineSchedules);
         await tx.execute(sql`select id from ${routines} where ${routines.id} = ${existingRoutine.id} for update`);
         const locked = await txDb
           .select()
@@ -2797,9 +2812,16 @@ export function routineService(
         }
 
         const currentTriggers = await txDb
-          .select({ id: routineTriggers.id })
+          .select({ id: routineTriggers.id, signingMode: routineTriggers.signingMode })
           .from(routineTriggers)
           .where(and(eq(routineTriggers.companyId, locked.companyId), eq(routineTriggers.routineId, locked.id)));
+        const unauthenticatedTriggerIds = new Set(currentTriggers.filter((trigger) => trigger.signingMode === "none").map((trigger) => trigger.id));
+        for (const trigger of snapshot.triggers) {
+          if (trigger.kind === "webhook" && !unauthenticatedTriggerIds.has(trigger.id)) {
+            assertAgentWebhookAuthenticated(actor, trigger.signingMode);
+          }
+        }
+        await notifyDeliveryWork(txDb, DELIVERY_QUEUES.routineSchedules);
         const currentTriggerIds = new Set(currentTriggers.map((trigger) => trigger.id));
         const missingWebhookTriggers = snapshot.triggers
           .filter((trigger) => trigger.kind === "webhook" && !currentTriggerIds.has(trigger.id));

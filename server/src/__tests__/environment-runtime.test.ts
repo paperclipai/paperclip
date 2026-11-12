@@ -1178,6 +1178,26 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     expect(offlineManager.call).not.toHaveBeenCalled();
   });
 
+  it("treats a sandbox plugin errored by activation timeouts as restarting while it re-activates", async () => {
+    const { companyId, environment, runId, pluginId } = await seedReusablePluginSandboxLease();
+    const input = { companyId, environment, issueId: null, heartbeatRunId: runId, persistedExecutionWorkspace: null };
+    await db.update(plugins).set({ status: "error", lastError: "Activation timed out after 4 retries: Worker initialize failed" })
+      .where(eq(plugins.id, pluginId));
+    const requestActivationTimeoutRecovery = vi.fn(() => true);
+    const manager = { isRunning: () => false, call: vi.fn(), requestActivationTimeoutRecovery } as unknown as PluginWorkerManager;
+    const refusal = await environmentRuntimeService(db, { pluginWorkerManager: manager, pluginWorkerReadyTimeoutMs: 0 })
+      .acquireRunLease(input).catch(error => error);
+    expect(refusal).toBeInstanceOf(PluginWorkerUnavailableError);
+    expect(requestActivationTimeoutRecovery).toHaveBeenCalledWith(expect.objectContaining({ id: pluginId, status: "error" }));
+
+    requestActivationTimeoutRecovery.mockReturnValue(false);
+    const terminal = await environmentRuntimeService(db, { pluginWorkerManager: manager, pluginWorkerReadyTimeoutMs: 0 })
+      .acquireRunLease(input).catch(error => error);
+    expect(terminal).not.toBeInstanceOf(PluginWorkerUnavailableError);
+    expect((terminal as Error).message).toContain("but that plugin is currently error");
+    expect(manager.call).not.toHaveBeenCalled();
+  });
+
   it("retains a successful reusable sandbox lease without stopping the provider resource", async () => {
     const { pluginId, runId, reusableLease } = await seedReusablePluginSandboxLease();
     const workerManager = {
@@ -4005,6 +4025,38 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     const error = await runtime.resumeRunLease({ environment: seeded.environment, lease }).catch(caught => caught);
     expect(error).toBeInstanceOf(Error);
     expect(error.name).toBe(name);
+    expect(call).toHaveBeenCalledOnce();
+  });
+
+  it.each(["ready", "error"] as const)("refuses an exact resume as a retryable stopped worker while the %s plugin re-activates", async status => {
+    const seeded = await seedReusablePluginSandboxLease("paperclip_runner");
+    const lease = (await environmentService(db).getLeaseById(seeded.reusableLease.id))!;
+    await db.update(plugins).set({ status, lastError: status === "error" ? "Activation timed out after 4 retries: initialize" : null })
+      .where(eq(plugins.id, seeded.pluginId));
+    const call = vi.fn();
+    const requestActivationTimeoutRecovery = vi.fn(() => true);
+    const workerManager = { isRunning: () => false, call, getWorker: () => undefined, requestActivationTimeoutRecovery } as unknown as PluginWorkerManager;
+    const error = await environmentRuntimeService(db, { pluginWorkerManager: workerManager, pluginWorkerResumeWaitMs: 50, pluginWorkerReadyPollMs: 5 })
+      .resumeRunLease({ environment: seeded.environment, lease }).catch(caught => caught);
+    expect(error).toBeInstanceOf(PluginWorkerUnavailableError);
+    expect(call).not.toHaveBeenCalled();
+    expect(requestActivationTimeoutRecovery).toHaveBeenCalledTimes(status === "error" ? 1 : 0);
+  });
+
+  it("resumes the exact lease once a re-activating plugin's worker comes back within the wait", async () => {
+    const seeded = await seedReusablePluginSandboxLease("paperclip_runner");
+    await environmentService(db).releaseLease(seeded.reusableLease.id, "released", { cleanupStatus: "success" });
+    const lease = (await environmentService(db).getLeaseById(seeded.reusableLease.id))!;
+    let checks = 0;
+    const call = vi.fn(async (_id: string, method: string) => {
+      if (method !== "environmentResumeLease") throw new Error("Only exact resume is permitted");
+      return { providerLeaseId: lease.providerLeaseId, metadata: { remoteCwd: "/workspace" } };
+    });
+    const workerManager = { isRunning: () => ++checks > 3, call,
+      getWorker: () => ({ supportedMethods: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] }),
+    } as unknown as PluginWorkerManager;
+    await expect(environmentRuntimeService(db, { pluginWorkerManager: workerManager, pluginWorkerResumeWaitMs: 5_000, pluginWorkerReadyPollMs: 5 })
+      .resumeRunLease({ environment: seeded.environment, lease })).resolves.toMatchObject({ providerLeaseId: lease.providerLeaseId });
     expect(call).toHaveBeenCalledOnce();
   });
 

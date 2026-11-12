@@ -39,6 +39,7 @@ export type CodexServerRequestHandler = (
 export interface CodexAppServerTransport {
   settleCancelledTurn?: HarnessSession["settleCancelledTurn"];
   supportsTurnReasoning?(): boolean;
+  downloadAttachment?: HarnessSession["downloadAttachment"];
   /** Runner-owned live capability projection; absent on native Codex transports. */
   turnControlCapabilities?(): NativeTurnControlCapabilities | null;
   request(

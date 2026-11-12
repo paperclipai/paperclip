@@ -1,6 +1,6 @@
 import { notifyLiveRunRecovery } from "./live-run-recovery-notifications.js";
 import { and, eq, gt, lte, sql } from "drizzle-orm";
-import { heartbeatRuns, livenessDb, type Db } from "@paperclipai/db";
+import { controllerLeaseDb, heartbeatRuns, type Db } from "@paperclipai/db";
 import type { LegacyControllerLeaseLossCause, LegacyControllerLeaseLossTiming } from "./run-cancellation.js";
 import { randomUUID } from "node:crypto";
 import {
@@ -110,19 +110,20 @@ function isStatementTimeout(error: unknown): boolean {
   return false;
 }
 
+type RenewalResult = { outcome: RenewalOutcome; issuedAt: number };
 type RenewalRequest = {
   target: RenewalTarget;
   statementTimeoutMs: number;
-  resolve(outcome: RenewalOutcome): void;
+  resolve(result: RenewalResult): void;
   reject(error: unknown): void;
 };
 type RenewalBatch = { pending: RenewalRequest[]; flushing: boolean };
 const renewalBatches = new WeakMap<object, RenewalBatch>();
 
-function renewThroughBatch(db: Db, target: RenewalTarget, statementTimeoutMs: number): Promise<RenewalOutcome> {
+function renewThroughBatch(db: Db, target: RenewalTarget, statementTimeoutMs: number): Promise<RenewalResult> {
   let batch = renewalBatches.get(db);
   if (!batch) renewalBatches.set(db, batch = { pending: [], flushing: false });
-  const outcome = new Promise<RenewalOutcome>((resolve, reject) => {
+  const outcome = new Promise<RenewalResult>((resolve, reject) => {
     batch.pending.push({ target, statementTimeoutMs, resolve, reject });
   });
   if (!batch.flushing) void flushRenewals(db, batch);
@@ -142,13 +143,15 @@ async function flushRenewals(db: Db, batch: RenewalBatch) {
       }
       try {
         const statementTimeoutMs = Math.min(...requests.map(request => request.statementTimeoutMs));
-        const outcomes = await livenessDb(db).transaction(async (tx) => {
+        let issuedAt = 0;
+        const outcomes = await controllerLeaseDb(db).transaction(async (tx) => {
+          issuedAt = Date.now();
           await tx.execute(sql`select set_config('statement_timeout', ${`${statementTimeoutMs}ms`}, true)`);
           return renewLegacyControllerLeasesInTransaction(tx as unknown as Db, [...targets.values()]);
         });
         for (const request of requests) {
           const sameCompany = targets.get(request.target.id)!.companyId === request.target.companyId;
-          request.resolve(sameCompany ? outcomes.get(request.target.id) ?? "rejected" : "rejected");
+          request.resolve({ outcome: sameCompany ? outcomes.get(request.target.id) ?? "rejected" : "rejected", issuedAt });
         }
       } catch (error) {
         for (const request of requests) request.reject(error);
@@ -351,13 +354,13 @@ export function watchLegacyControllerLease(
     // deadline is measured from that attempt rather than the first one.
     // Failed attempts are retried until the deadline aborts the controller:
     // the UPDATE is idempotent and still requires this controller's boot ID.
-    let attemptStartedAt = startedAt;
+    let renewedFrom = startedAt;
     const renew = async () => {
       for (;;) {
-        attemptStartedAt = Date.now();
         try {
-          const outcome = await renewThroughBatch(db, { id: run.id, companyId: run.companyId, stage },
+          const { outcome, issuedAt } = await renewThroughBatch(db, { id: run.id, companyId: run.companyId, stage },
             renewalStatementTimeoutMs);
+          renewedFrom = issuedAt;
           if (outcome !== "busy") return outcome === "renewed";
           await new Promise((resolve) => setTimeout(resolve, LEGACY_CONTROLLER_RENEWAL_BUSY_RETRY_DELAY_MS));
           if (stopped || controller.signal.aborted) return false;
@@ -389,7 +392,7 @@ export function watchLegacyControllerLease(
       lastRenewedAt = Date.now();
       renewalCount += 1;
       renewalFailed = false;
-      armDeadline(Math.max(0, LEGACY_CONTROLLER_LEASE_MS - (Date.now() - attemptStartedAt)));
+      armDeadline(Math.max(0, LEGACY_CONTROLLER_LEASE_MS - (Date.now() - renewedFrom)));
     }
   };
   const timer = setInterval(() => {

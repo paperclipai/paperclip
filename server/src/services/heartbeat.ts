@@ -16,6 +16,7 @@ import { registerProviderLimitResumeWork, type PrepareChatRetry } from "./native
 import { reconcileTaskChatRetryReceipts } from "./task-retry.js";
 import { registerIssueRecoveryWork } from "./recovery/work.js";
 import { registerRunDispatchWork } from "./heartbeat/dispatch-work.js";
+import { listUndispatchedQueuedRuns } from "./queued-run-dispatch-liveness.js";
 import { NATIVE_RETAINED_OWNER_WAIT } from "./native-runtime/native-controller-recovery.js";
 import { describeFailedAttachment } from "./native-runtime/remote-warm-session-recovery.js";
 import { createProviderLimitWait } from "./heartbeat/provider-limit-wait.js";
@@ -2973,8 +2974,13 @@ export function heartbeatService(
         appendRunEvent,
       });
       if (managedAiRuntime && aiBinding) {
-        try { await assertManagedAiProjectAuth({ ...resolvedConfig, cwd: executionWorkspace.cwd }, aiBinding.provider, executionTarget); }
-        catch (error) { throw classifyManagedProjectAuthFailure(error, agent.id); }
+        try {
+          await assertManagedAiProjectAuth({ ...resolvedConfig, cwd: executionWorkspace.cwd }, aiBinding.provider, executionTarget, {
+            deferRunnerTaskCapabilityCheck: agent.adapterType === "paperclip_runner" && !runOptions.nativeRestartRecovery,
+          });
+        } catch (error) {
+          throw classifyManagedProjectAuthFailure(error, agent.id);
+        }
       }
       const remoteExecution = realizationResult.remoteExecution;
       if (nativeChatWorkspaceScope && materializeNativeChatWorktree) {
@@ -4623,6 +4629,8 @@ export function heartbeatService(
         promoteDueScheduledRetries,
         nextScheduledRetryAt,
         resumeQueuedRunsAfterDrain,
+        listUndispatchedQueuedRuns: async scope => listUndispatchedQueuedRuns(db,
+          { ...scope, createdAfter: await getWorktreeExecutionCutoff() }),
         schedulingSuppressed: async () => (await getSchedulingSuppression(true)).suppressed,
       }, () => canRun() && readTaskDrain(new Date()) === null),
     promoteDueScheduledRetries,

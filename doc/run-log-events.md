@@ -31,6 +31,12 @@ or `provider_session`. Its state is `reused`, `fresh`, `unknown`, or
 `not_applicable`, and `evidence_missing`. No paths, identifiers, configuration
 values, or exception messages enter these fields.
 
+A restart's reattachment to a remote Runner resumes the run's own retained
+sandbox lease and never acquires another one. Its `environment` receipt is
+`reused` / `verified_reuse`. Earlier releases reported the lease's original
+acquisition there, so a reattachment to a sandbox the run created showed
+`fresh` / `created` although no sandbox was created.
+
 Provider-process receipts carry a cumulative `providerLaunchCount` for the run.
 `null` means unobserved; zero requires a physical launch observer. Direct ACPX
 processes count initial launches and respawns, including launches during retries.
@@ -440,6 +446,15 @@ none. `runnerSettled` is true only when the outbox is empty and no terminal deli
 provider cleanup or warm transition is pending. These fields explain how the runner
 stopped. The event is not recorded when a scheduled retry resumes a runner that
 exited after a settled suspension; see `doc/execution-semantics.md`.
+
+`native.interrupted_turn_outcome_unknown` (level `warn`) is recorded once on a
+failed run whose reattachment proved the Runner process gone
+(`process_verification` / `process_not_running`) while its last provider turn
+had no observed settlement, just before the server requests the automatic
+Retry. The payload holds the provider `turnId` (or `null`), the last turn event
+type, `replayed: false`, and the closed `runnerExit` fields `stage`, `reason`
+and `runnerLifecycle`. It names a turn whose outcome is unknown; the Retry's
+fresh session never replays it.
 
 For a prepared remote workspace interrupted before its first executor claim,
 that ledger records `remote_execution_never_claimed` with a

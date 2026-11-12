@@ -79,6 +79,7 @@ import {
 } from "@paperclipai/paperclip-runner";
 import { existsSync } from "node:fs";
 import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
+import { createServer as createNetServer } from "node:net";
 import { DatabaseSync } from "node:sqlite";
 import { nativeSha256 } from "./canonical.js";
 import { resolveRemoteProviderPackAuthority } from "./remote-provider-pack-authority.js";
@@ -1394,6 +1395,54 @@ describe("remote runner process supervision", () => {
       release();
       await handle.completion;
     }
+  });
+
+  it("holds the runner listen port once per runner before its first launch under the chaos bind fault", async () => {
+    vi.stubEnv("PAPERCLIP_TEST_RUNNER_BIND_FAULT", "first_launch");
+    onTestFinished(() => { vi.unstubAllEnvs(); });
+    const port = await new Promise<number>((resolvePort, reject) => {
+      const probe = createNetServer().listen(0, "127.0.0.1", () => {
+        const address = probe.address();
+        probe.close(() => typeof address === "object" && address ? resolvePort(address.port) : reject(new Error("no port")));
+      });
+    });
+    const execute = vi.fn(async (request: { args: string[] }) => {
+      if (request.args[2] === "paperclip-runner-test-bind-fault") {
+        return { exitCode: spawnSync("sh", request.args, { stdio: "ignore" }).status ?? 1, timedOut: false, stdout: "", stderr: "" };
+      }
+      return { exitCode: 1, timedOut: false, stdout: "", stderr: "" };
+    });
+    const onLog = vi.fn(async () => undefined);
+    const launcher = createRemoteRunnerProcessLauncher({
+      target: { kind: "remote", transport: "sandbox", environmentId: "environment", leaseId: "lease", remoteCwd: "/workspace" },
+      runner: { execute } as never,
+      remoteBinary: "/runtime/runnerd", processIdentityPath: "/runtime/identity",
+      stateDirectory: "/runtime", diagnosticsDirectory: "/runtime/diagnostics", runnerInstanceId: `runner-bind-fault-${randomUUID()}`,
+      onLog,
+    });
+    const spec = { command: "/controller/runnerd", args: ["--listen-address", "127.0.0.1", "--listen-port", String(port)],
+      cwd: "/controller", environment: {} };
+    await expect(launcher(spec).completion).rejects.toThrow("runner_remote_process_launch_failed");
+    const bindFailure = await new Promise<string | null>(resolveBind => {
+      const contender = createNetServer();
+      contender.once("error", (error: NodeJS.ErrnoException) => resolveBind(error.code ?? "error"));
+      contender.listen(port, "127.0.0.1", () => contender.close(() => resolveBind(null)));
+    });
+    expect(bindFailure).toBe("EADDRINUSE");
+    expect(onLog).toHaveBeenCalledWith("stderr", `[paperclip-runner] test bind fault armed on port ${port}\n`);
+    await expect(launcher(spec).completion).rejects.toThrow("runner_remote_process_launch_failed");
+    expect(execute.mock.calls.filter(([request]) => request.args[2] === "paperclip-runner-test-bind-fault")).toHaveLength(1);
+    expect(execute.mock.calls.map(([request]) => request.args[2])).toEqual([
+      "paperclip-runner-test-bind-fault", "paperclip-runner-launch", "paperclip-runner-launch"]);
+    const blockedLog = vi.fn(async () => undefined);
+    await expect(createRemoteRunnerProcessLauncher({
+      target: { kind: "remote", transport: "sandbox", environmentId: "environment", leaseId: "lease", remoteCwd: "/workspace" },
+      runner: { execute } as never,
+      remoteBinary: "/runtime/runnerd", processIdentityPath: "/runtime/identity",
+      stateDirectory: "/runtime", diagnosticsDirectory: "/runtime/diagnostics", runnerInstanceId: `runner-bind-fault-${randomUUID()}`,
+      onLog: blockedLog,
+    })(spec).completion).rejects.toThrow("runner_remote_process_launch_failed");
+    expect(blockedLog).toHaveBeenCalledWith("stderr", `[paperclip-runner] test bind fault failed on port ${port}\n`);
   });
 
   it("confirms no replacement process exists when staging fails before the launch RPC", async () => {
@@ -17692,7 +17741,8 @@ describe("runnerd provider runtime wiring", () => {
     }
   });
 
-  it.each(["codex", "opencode", "acpx"] as const)("uses a task-only %s driver without exposing Core paths or transferring the agent home", async (kind) => {
+  it.each([["codex", undefined], ["opencode", undefined], ["acpx", undefined], ["codex", "task"], ["codex", "previous-task"]] as const)(
+    "uses a task-only %s driver with a prior description for %s without exposing Core paths or transferring the agent home", async (kind, describedTask) => {
     const taskExecution = { ...execution, provider: kind === "codex" ? execution.provider
       : kind === "opencode" ? { kind, model: "openai/test", permissionMode: "deny" }
       : { kind, agent: "claude", model: "claude-sonnet-4-6", permissionMode: "deny-all", claudeEffort: "high" } } as NativeExecutionInput;
@@ -17705,12 +17755,16 @@ describe("runnerd provider runtime wiring", () => {
     const readWorkspaceFile = vi.fn(async () => Buffer.from("proof"));
     const release = vi.fn(async () => {}), resume = vi.fn(async () => "resumed" as const);
     const owner = vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner").mockReturnValue({ launcher, registration, driver, readWorkspaceFile, release, resume, isRetired: () => false, retireSupersededTask: async () => false, retiredBeforeClaim: () => false, credentialsUpdated: vi.fn(), rebind:vi.fn() });
+    const description = { kind: "description" as const, launchPreparationVersion: 1 as const, projectAuthCheckVersion: 1 as const,
+      releaseResumeVersion: 1 as const, ...(kind === "codex" ? { workspaceFileReadVersion: 1 as const } : {}),
+      taskId: "task", runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } };
     const task = vi.fn(async (operation: unknown) => {
       environmentTaskOperationSchema.parse(operation);
-      return { kind: "description", launchPreparationVersion: 1, projectAuthCheckVersion: 1, releaseResumeVersion: 1, ...(kind === "codex" ? { workspaceFileReadVersion: 1 } : {}), taskId: "task", runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } };
+      return description;
     });
     const target = { kind: "remote", transport: "sandbox", providerKey: "plugin", leaseId: "plugin-task-lease",
-      remoteCwd: "/unused", runnerTask: task, runnerTaskProjectIds: ["10000000-0000-4000-8000-000000000001"] } as const;
+      remoteCwd: "/unused", runnerTask: task, runnerTaskProjectIds: ["10000000-0000-4000-8000-000000000001"],
+      sandboxLeaseAcquisition: { outcome: "created", providerLeaseId: "task" } } as const;
     const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
     state.createBackend.mockClear(); state.createTransport.mockClear();
     try {
@@ -17718,6 +17772,7 @@ describe("runnerd provider runtime wiring", () => {
         .rejects.toThrow("runner_ingress_unavailable");
       await createRunnerdBackend({ db: leaseDb(execution, {}, {}, updates), execution: taskExecution, runnerInstanceId: "runner", runnerExecutionTarget: target,
         runnerIngressAuthorized: true,
+        ...(describedTask ? { pluginTaskDescription: { ...description, taskId: describedTask } } : {}),
         runnerEnvironment: { HOME: "/controller/private", PATH: "/controller/bin", OPENAI_API_KEY: "fixture-secret",
           PAPERCLIP_NATIVE_MCP_NAME: "assigned", PAPERCLIP_NATIVE_MCP_URL: "http://localhost/mcp/gateways/assigned-test",
           PAPERCLIP_NATIVE_MCP_TOKEN: "fixture-mcp-secret" } });
@@ -17740,7 +17795,7 @@ describe("runnerd provider runtime wiring", () => {
       for (const key of ["environment", "codexCommand", "codexArgs", "runnerRuntimePaths", "readRunnerState", "archiveExternalRunnerState"]) {
         expect(options).not.toHaveProperty(key);
       }
-      expect(task.mock.calls).toEqual([[{ kind: "describe" }]]);
+      expect(task.mock.calls).toEqual(describedTask === "task" ? [] : [[{ kind: "describe" }]]);
       expect(release).not.toHaveBeenCalled();
       expect(resume).not.toHaveBeenCalled();
       const binding = state.toolAuthorityDefinitions.mock.calls.at(-1)![0] as unknown as {
@@ -21078,9 +21133,13 @@ describe("runnerd provider runtime wiring", () => {
     ...["resumed", "replacement"].map(outcome => ({ outcome, scenario: "fresh", homeMode: "preconfigured" })),
     ...["interrupted_bootstrap", "interrupted_bootstrap_other_run", "interrupted_bootstrap_unproven", "interrupted_bootstrap_symlink_parent",
       "interrupted_bootstrap_unopened", "interrupted_bootstrap_unopened_unproven", "interrupted_bootstrap_unopened_other_run",
-      "interrupted_bootstrap_unopened_active_turn"]
+      "interrupted_bootstrap_unopened_active_turn", "interrupted_bootstrap_unprepared", "interrupted_bootstrap_unprepared_unproven",
+      "interrupted_bootstrap_unprepared_other_run", "interrupted_bootstrap_unprepared_suspended", "interrupted_bootstrap_unprepared_backup",
+      "interrupted_bootstrap_unprepared_unrecorded", "interrupted_bootstrap_unprepared_connected"]
       .map(scenario => ({ outcome: "resumed", scenario, homeMode: "isolated" })),
     { outcome: "created", scenario: "interrupted_bootstrap", homeMode: "isolated" },
+    { outcome: "created", scenario: "interrupted_bootstrap_unprepared", homeMode: "isolated" },
+    { outcome: "created", scenario: "interrupted_bootstrap_unprepared_unrecorded", homeMode: "isolated" },
     { outcome: "created", scenario: "interrupted_bootstrap_symlink_parent", homeMode: "isolated" },
     { outcome: "created", scenario: "interrupted_bootstrap_unopened", homeMode: "isolated" },
     { outcome: "created", scenario: "interrupted_bootstrap_unopened_active_turn", homeMode: "isolated" },
@@ -21128,6 +21187,13 @@ describe("runnerd provider runtime wiring", () => {
         try { execFileSync("sh", command.args, { stdio: "pipe" }); return { exitCode: 0, timedOut: false, stdout: "", stderr: "" }; }
         catch { return { exitCode: 1, timedOut: false, stdout: "", stderr: "" }; }
       }
+      if (command.args?.[1]?.includes("base64") && scenario.startsWith("interrupted_bootstrap_unprepared")
+        && command.args[1].includes("codex-provider-state.json")) return { exitCode: 1, timedOut: false, stdout: "", stderr: "" };
+      if (command.args?.[2] === "paperclip-runner-recovery-identity" && scenario === "interrupted_bootstrap_unprepared_unrecorded") return {
+        exitCode: 0, timedOut: false, stderr: "",
+        stdout: "exitednonce\n4242\n2026-11-12T00:32:10.725Z\nrunner-new-in-retained-workspace\nlinux:abcd-1234:100\n" };
+      if (command.args?.[2] === "paperclip-runner-recovery-check" && scenario === "interrupted_bootstrap_unprepared_unrecorded") return {
+        exitCode: 45, timedOut: false, stdout: "", stderr: "" };
       if (command.args?.[1]?.includes("base64") && scenario.startsWith("interrupted_bootstrap_unopened")
         && command.args[1].includes("codex-provider-state.json") && !command.args[1].includes("runner-state.json")) return {
         exitCode: 0, timedOut: false, stderr: "", stdout: Buffer.from(JSON.stringify({
@@ -21139,8 +21205,12 @@ describe("runnerd provider runtime wiring", () => {
         exitCode: 0, timedOut: false, stderr: "", stdout: Buffer.from(JSON.stringify({
           runnerInstanceId: "runner-new-in-retained-workspace", normalizedSessionId: execution.session.normalizedSessionId,
           runId: scenario.endsWith("_other_run") ? "previous-warm-run" : execution.binding.runId,
-          lifecycle: scenario.startsWith("interrupted_bootstrap_unopened") ? "suspended" : "ready",
-          outbox: [], pendingTerminalDelivery: null })).toString("base64"),
+          lifecycle: scenario.startsWith("interrupted_bootstrap_unopened") || scenario.endsWith("_suspended") ? "suspended"
+            : scenario.startsWith("interrupted_bootstrap_unprepared") ? "connecting" : "ready",
+          outbox: [], pendingTerminalDelivery: null,
+          ...(scenario.startsWith("interrupted_bootstrap_unprepared") ? { lastControllerCommandSeq: 0, reconnectCount: 0,
+            processedCommands: {}, lastConnectionProtocolVersion: scenario.endsWith("_connected") ? 2 : null,
+            environmentLeaseId: "lease-resumed", turnId: `turn-${execution.binding.runId}`, itemId: `item-${execution.binding.runId}` } : {}) })).toString("base64"),
       };
       if (command.args?.[1]?.includes("base64")) return {
         exitCode: 1, timedOut: false, stdout: "", stderr: "",
@@ -21227,15 +21297,18 @@ describe("runnerd provider runtime wiring", () => {
     if (scenario === "missing_control_plane") {
       await rm(join(options.stateDirectory!, "control-plane", "control-plane-state.json"));
     }
-    if (scenario === "backup_present") {
+    if (scenario === "backup_present" || scenario === "interrupted_bootstrap_unprepared_backup") {
       await mkdir(join(options.stateDirectory!, "failover-backups", "current"), { recursive: true });
       await writeFile(join(options.stateDirectory!, "failover-backups", "current", "manifest.json"), "{}");
     }
     if (["interrupted_bootstrap", "interrupted_bootstrap_other_run", "interrupted_bootstrap_symlink_parent",
-      "interrupted_bootstrap_unopened", "interrupted_bootstrap_unopened_other_run", "interrupted_bootstrap_unopened_active_turn"].includes(scenario)) {
+      "interrupted_bootstrap_unopened", "interrupted_bootstrap_unopened_other_run", "interrupted_bootstrap_unopened_active_turn",
+      "interrupted_bootstrap_unprepared", "interrupted_bootstrap_unprepared_other_run", "interrupted_bootstrap_unprepared_suspended",
+      "interrupted_bootstrap_unprepared_backup"].includes(scenario)) {
       noteRemoteBootstrapRestartProven(execution.binding.runId, "stopped");
     }
-    if (scenario === "interrupted_bootstrap" || scenario === "interrupted_bootstrap_unopened") {
+    if (scenario === "interrupted_bootstrap" || scenario === "interrupted_bootstrap_unopened" || scenario === "interrupted_bootstrap_unprepared"
+      || scenario === "interrupted_bootstrap_unprepared_unrecorded") {
       await expect(options.prepareExternalRunnerState()).resolves.toBeUndefined();
       const siblings = await readdir(dirname(sessionRoot));
       expect(siblings.filter(name => name.startsWith(`${basename(sessionRoot)}.bootstrap-restart-`))).toHaveLength(1);
@@ -21295,7 +21368,9 @@ describe("runnerd provider runtime wiring", () => {
       expect(remoteExecute.mock.calls.filter(([command]) => command.args?.[2] === "paperclip-runner-claim-unstarted-session")).toHaveLength(1);
     } else {
       await expect(options.prepareExternalRunnerState()).rejects.toThrow(
-        outcome === "replacement" ? "runner_harness_backup_unavailable" : "runner_harness_state_mismatch",
+        outcome === "replacement" ? "runner_harness_backup_unavailable"
+          : scenario.startsWith("interrupted_bootstrap_unprepared") ? "runner_harness_state_mismatch: resumed_unavailable"
+          : "runner_harness_state_mismatch",
       );
       expect(remoteExecute.mock.calls.some(([command]) => command.args?.[1]?.includes("install -d"))).toBe(false);
       expect(syncIn).not.toHaveBeenCalled();

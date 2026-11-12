@@ -410,6 +410,16 @@ describe("openapi routes", () => {
     for (const code of ["200", "401", "403"]) expect(operation.responses[code]).toBeDefined();
   });
 
+  // Full chat cohort 4: search_api listed the cancel route as open to agents, so an agent tried it and got 403.
+  it("documents question cancellation as board-only and points agents to withdraw", () => {
+    const spec = buildOpenApiSpec() as any;
+    const cancel = spec.paths["/api/issues/{id}/interactions/{interactionId}/cancel"].post;
+    expect(cancel["x-paperclip-authorization"]).toEqual({ actor: "board" });
+    expect(cancel.security).toEqual([{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }]);
+    expect(cancel.summary).toContain("POST /api/issues/{id}/interactions/{interactionId}/withdraw");
+    expect(spec.paths["/api/issues/{id}/interactions/{interactionId}/withdraw"].post["x-paperclip-authorization"]).toEqual({ actor: "board_or_agent" });
+  });
+
   it("documents the owned pending-question read as canonical attention items without client scope overrides", () => {
     const spec = buildOpenApiSpec() as any;
     const operation = spec.paths["/api/issues/{id}/pending-questions"].get;

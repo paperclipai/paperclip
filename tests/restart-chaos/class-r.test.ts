@@ -1,12 +1,18 @@
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { describe, expect, it, vi } from "vitest";
 import {
-  CR1_DEFAULT_HOLD_SECONDS, PROVIDER_KILL_SCRIPT, classRHoldMs, classRRedeploys, findDaytonaPluginWorker, killedPidsFromOutput,
-  parseClassROptions, providerKillCommand, runPluginStall, watchLabels, withClassRCheck, type ClassRRecord,
+  CR1_DEFAULT_HOLD_SECONDS, CR5_FIRE_WINDOW_MS, PROVIDER_KILL_SCRIPT, classRHoldMs, classRRedeploys, findDaytonaPluginWorker, killedPidsFromOutput,
+  parseClassROptions, providerKillCommand, runPluginStall, waitForPluginActivation, watchLabels, withReplacementPluginStall, withClassRCheck, type ClassRRecord,
 } from "./class-r.js";
 import { executeInWaveSandboxes } from "./daytona-runner-logs.js";
 import { parseCommand } from "./config.js";
 import { redeployWave } from "./redeploy.js";
-import { planTasks } from "./scheduler.js";
+import { planTasks, taskFaultSchedule } from "./scheduler.js";
+import { planMatrixTasks } from "./journey-matrix.js";
+import { FAULT_SIGNAL } from "./supervisor.js";
+import { withT1CrossingCheck } from "./workloads.js";
 import { CLASS_R_PROBE } from "./daytona-runner-logs.js";
 import type { WaveOptions } from "./types.js";
 
@@ -32,6 +38,8 @@ describe("class R options", () => {
   it("needs Daytona, its own fault for each option and no storm or crash point", () => {
     expect(() => parseClassROptions({ ...base, env: "local", faults: ["CR1"] }, {})).toThrow(/--env daytona/);
     expect(() => parseClassROptions({ ...base, faults: ["K15"] }, { cr1: "60" })).toThrow(/add CR1 to --faults/);
+    expect(() => parseClassROptions({ ...base, faults: ["K15"] }, { cr3: "60" })).toThrow(/add CR3, CR4, CR5 or CR6 to --faults/);
+    expect(parseClassROptions({ ...base, faults: ["CR4", "CR5"] }, { cr3: "50" })).toEqual({ cr3StallMs: [50_000, 50_000] });
     expect(() => parseClassROptions({ ...base, stormMinutes: 10, faults: ["CR1"] }, {})).toThrow(/storm/);
     expect(() => parseClassROptions({ ...base, faults: ["CR1", "MS1"] }, {})).toThrow(/MS1-MS3/);
     expect(parseClassROptions({ ...base, faults: ["K1"] }, {})).toEqual({});
@@ -49,6 +57,39 @@ describe("class R planning", () => {
   it("gives each cell its own hold", () => {
     const holds = Object.fromEntries(planTasks(options).map(task => [task.fault, task.holdMs]));
     expect(holds).toEqual({ CR1: 360_000, CR2: 0, CR3: 45_000 });
+  });
+  it("gives CR4 and CR5 the CR3 stall, and fires CR5 inside the launch window", () => {
+    const plans = planTasks({ ...options, faults: ["CR3", "CR4", "CR5"], cr3StallMs: [50_000, 50_000] });
+    expect(new Set(plans.map(task => task.holdMs))).toEqual(new Set([50_000]));
+    const launch = plans.filter(task => task.fault === "CR5");
+    expect(launch.length).toBeGreaterThan(0);
+    for (const task of launch) {
+      expect(task.fireAfterMs).toBeGreaterThanOrEqual(CR5_FIRE_WINDOW_MS[0]);
+      expect(task.fireAfterMs).toBeLessThanOrEqual(CR5_FIRE_WINDOW_MS[1]);
+    }
+    const matrix = planMatrixTasks({ ...options, faults: ["CR5"] }).filter(task => task.fault === "CR5");
+    expect(matrix.every(task => task.fireAfterMs >= CR5_FIRE_WINDOW_MS[0] && task.fireAfterMs <= CR5_FIRE_WINDOW_MS[1])).toBe(true);
+    expect(FAULT_SIGNAL.CR4).toBe("SIGKILL");
+    expect(FAULT_SIGNAL.CR5).toBe("SIGSTOP");
+    expect(classRRedeploys("CR4", 45_000)).toBe(false);
+  });
+  it("schedules every CR5 launch stall on the time trigger, whatever the workload's triggers", () => {
+    const launchWindow = (atMs: number) => atMs >= CR5_FIRE_WINDOW_MS[0] && atMs <= CR5_FIRE_WINDOW_MS[1];
+    const planned = planTasks({ ...options, workloads: ["T1", "B5"], faults: ["CR5"], triggers: ["tool", "time"], tasks: 8, faultAfterMs: 60_000 })
+      .filter(task => task.fault === "CR5");
+    expect(planned.length).toBe(8);
+    for (const task of planned) {
+      expect(task.trigger).toBeUndefined();
+      expect(taskFaultSchedule(task)).toEqual([{ kind: "CR5", holdMs: 45_000, atMs: task.fireAfterMs }]);
+      expect(launchWindow(task.fireAfterMs)).toBe(true);
+    }
+    const matrix = planMatrixTasks({ ...options, workloads: ["B5", "C1"], faults: ["CR5"], faultAfterMs: 60_000 }).filter(task => task.fault === "CR5");
+    expect(matrix.length).toBe(4);
+    for (const task of matrix) {
+      expect(taskFaultSchedule(task)).toEqual([{ kind: "CR5", holdMs: 45_000, atMs: task.fireAfterMs }]);
+      expect(launchWindow(task.fireAfterMs)).toBe(true);
+    }
+    expect(() => planTasks({ ...options, workloads: ["B5"], faults: ["CR5"], triggers: ["tool"] })).toThrow(/CR5 stalls the plugin at launch/);
   });
   it("draws a hold only for a range", () => {
     expect(classRHoldMs("CR1", { cr1HoldMs: [300_000, 420_000] }, () => 333_000)).toBe(333_000);
@@ -119,6 +160,44 @@ describe("CR3 stall", () => {
     expect(stall.thawedAt! - stall.frozenAt!).toBeGreaterThanOrEqual(30);
     expect(thawed).toEqual(["thaw"]);
   });
+  it("waits for a replacement's plugin worker to appear before it stops it", async () => {
+    let reads = 0;
+    const stall = await runPluginStall({ ...base, findWorkerWithinMs: 60_000, table: () => (++reads < 3 ? rows.slice(0, 1) : rows),
+      sleep: async () => { await new Promise(resolve => setTimeout(resolve, 1)); }, freezer: { freeze: () => [11], thaw: () => {} } });
+    expect(stall.error).toBeNull();
+    expect(stall.workerPid).toBe(11);
+    expect(reads).toBe(3);
+  });
+  it.each([
+    ["activated", ["starting", "plugin-loader: loadAll complete {\"succeeded\":1}"]],
+    ["failed", ["plugin-loader: failed to activate plugin", "plugin-loader: loadAll complete {\"succeeded\":0}"]],
+    ["timed_out", ["starting"]],
+  ] as const)("waits for the replacement's plugin activation before CR4 stalls it (%s)", async (outcome, lines) => {
+    let reads = 0;
+    const result = await waitForPluginActivation({ timeoutMs: outcome === "timed_out" ? 0 : 60_000, cancelled: () => false, sleep: async () => {},
+      readLog: () => lines.slice(0, ++reads).join("\n") });
+    expect(result).toBe(outcome);
+  });
+  it.each([
+    ["CR6", "stops the worker while the plugin activates", ["starting", 'err: "Worker initialize failed: RPC call \\"initialize\\" timed out after 15000ms"'], 1],
+    ["CR4", "waits for the activation before it stops the worker", ["plugin-loader: loadAll complete"], 1],
+    ["K1", "leaves the plugin alone", ["plugin-loader: loadAll complete"], 0],
+  ] as const)("%s %s", async (kind, _what, log, frozen) => {
+    const root = mkdtempSync(path.join(tmpdir(), "class-r-replacement-"));
+    try {
+      const logPath = path.join(root, "server.log");
+      writeFileSync(logPath, ["old boot: plugin-loader: loadAll complete", ...log].join("\n"));
+      const freeze = vi.fn(() => [11]);
+      const into: { pluginStall?: unknown } = {};
+      const healthyAt = await withReplacementPluginStall(kind, { ...base, holdMs: 0, logPath, logOffset: "old boot: plugin-loader: loadAll complete".length,
+        activationTimeoutMs: 0, into: into as never, freezer: { freeze, thaw: () => {} } } as never, async () => 1234);
+      expect(healthyAt).toBe(1234);
+      expect(freeze).toHaveBeenCalledTimes(frozen);
+      if (frozen) expect(into.pluginStall).toMatchObject({ workerPid: 11, error: null });
+      if (kind === "CR4") await expect(withReplacementPluginStall(kind, { ...base, holdMs: 0, logPath, logOffset: 10_000,
+        activationTimeoutMs: 0, into: {}, freezer: { freeze, thaw: () => {} } } as never, async () => 1)).rejects.toThrow(/activation timed_out/);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
   it("fails when the worker could not be stopped or is missing", async () => {
     const missed = await runPluginStall({ ...base, freezer: { freeze: () => [], thaw: () => {} } });
     expect(missed.error).toMatch(/could not stop/);
@@ -180,10 +259,60 @@ describe("class_r_fault_applied", () => {
     expect(graded.verdict).toBe("fail");
     expect(graded.checks.at(-1)!.detail).toContain("no running run");
   });
+  it("fails CR6 when the stopped worker had already finished initialize", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "class-r-cr6-evidence-"));
+    try {
+      const logPath = path.join(root, "server.log");
+      writeFileSync(logPath, "worker process started and initialized");
+      const into: { pluginStall?: { error: string | null } } = {};
+      await expect(withReplacementPluginStall("CR6", { serverPid: 10, holdMs: 0, cancelled: () => false, record: () => {}, logPath, logOffset: 0,
+        into: into as never, table: () => [{ pid: 10, ppid: 1, command: "node server" }, { pid: 11, ppid: 10, command: "node /x/daytona/dist/worker.js" }],
+        sleep: async () => {}, freezer: { freeze: () => [11], thaw: () => {} } } as never, async () => 1)).rejects.toThrow(/no initialize timeout/);
+      expect(into.pluginStall?.error).toMatch(/after its initialize finished/);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it("cancels and joins the replacement stall when the replacement never becomes healthy", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "class-r-health-"));
+    try {
+      const logPath = path.join(root, "server.log");
+      writeFileSync(logPath, "starting");
+      const freeze = vi.fn(() => [11]);
+      const startedAt = Date.now();
+      await expect(withReplacementPluginStall("CR4", { serverPid: 10, holdMs: 60_000, cancelled: () => false, record: () => {}, logPath, logOffset: 0,
+        activationTimeoutMs: 60_000, into: {}, sleep: (ms: number) => new Promise(resolve => setTimeout(resolve, Math.min(ms, 20))),
+        table: () => [], freezer: { freeze, thaw: () => {} } } as never, async () => { throw new Error("replacement never became healthy"); }))
+        .rejects.toThrow("replacement never became healthy");
+      expect(Date.now() - startedAt).toBeLessThan(5_000);
+      expect(freeze).not.toHaveBeenCalled();
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it("fails CR5 when its stall started after the launch window", () => {
+    const stall = { workerPid: 11, command: "node", frozenPids: [11], frozenAt: 10_000, thawedAt: 55_000, error: null };
+    const fault = (requestedAt: number) => [{ requestedBy: "t01", kind: "CR5", error: null, requestedAt, classR: classR({ kind: "CR5", pluginStall: stall }) }];
+    expect(withClassRCheck(oracle, { taskId: "t01", fault: "CR5" }, fault(8_000)).verdict).toBe("pass");
+    const late = withClassRCheck(oracle, { taskId: "t01", fault: "CR5" }, fault(-15_000));
+    expect(late.verdict).toBe("fail");
+    expect(late.checks.at(-1)!.detail).toContain("25000ms after its launch-window time");
+  });
   it("passes a CR3 task only when the stall ended", () => {
     const stall = { workerPid: 11, command: "node", frozenPids: [11], frozenAt: 1_000, thawedAt: 46_000, error: null };
     expect(withClassRCheck(oracle, { taskId: "t01", fault: "CR3" }, [{ requestedBy: "t01", kind: "CR3", error: null,
       classR: classR({ kind: "CR3", pluginStall: stall }) }]).checks.at(-1)!.detail).toContain("45000ms");
+  });
+  it.each(["CR4", "CR5"])("passes a %s task only when its stall ended", fault => {
+    const stall = { workerPid: 11, command: "node", frozenPids: [11], frozenAt: 1_000, thawedAt: 46_000, error: null };
+    const applied = withClassRCheck(oracle, { taskId: "t01", fault }, [{ requestedBy: "t01", kind: fault, error: null, requestedAt: 1_000,
+      classR: classR({ kind: fault as ClassRRecord["kind"], pluginStall: stall }) }]);
+    expect(applied.verdict).toBe("pass");
+    expect(applied.checks.at(-1)!.detail).toContain("45000ms");
+    const missing = withClassRCheck(oracle, { taskId: "t01", fault }, [{ requestedBy: "t01", kind: fault, error: null,
+      classR: classR({ kind: fault as ClassRRecord["kind"], pluginStall: { ...stall, frozenAt: null, thawedAt: null, error: "no worker" } }) }]);
+    expect(missing.verdict).toBe("fail");
+  });
+  it("does not require a CR5 launch stall to cross the T1 tool loop", () => {
+    const plan = { taskId: "t01", workload: "T1" as const, nonce: "n", fault: "CR5" };
+    expect(withT1CrossingCheck(oracle as never, plan, null, [])).toBe(oracle);
+    expect(withT1CrossingCheck(oracle as never, { ...plan, fault: "CR4" }, null, []).verdict).toBe("fail");
   });
   it("fails a CR task whose fault never fired, and leaves other tasks alone", () => {
     expect(withClassRCheck(oracle, { taskId: "t01", fault: "CR1" }, []).verdict).toBe("fail");

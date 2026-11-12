@@ -17,6 +17,7 @@ import { defaultCreateValues } from "./agent-config-defaults";
 import { buildNewAgentHirePayload } from "../lib/new-agent-hire-payload";
 import { ApiError } from "../api/client";
 import { aiConnectionsApi } from "../api/ai-connections";
+import * as ConnectionField from "./ai-connections/AiConnectionField";
 import { CodexLocalConfigFields } from "../adapters/codex-local/config-fields";
 import type { AdapterConfigFieldsProps } from "../adapters/types";
 import { buildClaudeLocalConfig } from "@paperclipai/adapter-claude-local/ui";
@@ -1308,6 +1309,54 @@ describe("AgentConfigForm environment selector", () => {
     expect(findButton(result.container, "Test")).toBeUndefined();
     expect(mockAgentsApi.adapterModels).not.toHaveBeenCalled();
     expect(mockAgentsApi.testEnvironment).not.toHaveBeenCalled();
+  });
+
+  it("clears dirty state when a runtime toggle is restored", async () => {
+    const dirty = vi.fn();
+    const result = await renderForm([], {}, { content: "configuration", onDirtyChange: dirty });
+    roots.push(result.root);
+    const toggle = result.container.querySelector<HTMLButtonElement>('[role="switch"]')!;
+    expect(toggle).toBeTruthy();
+    await act(async () => toggle.click());
+    await flushReact();
+    expect(dirty).toHaveBeenLastCalledWith(true);
+    await act(async () => toggle.click());
+    await flushReact();
+    expect(dirty).toHaveBeenLastCalledWith(false);
+  });
+
+  it.each([{}, { enabled: false, maxAttempts: 4, delayMs: 3000 }])("clears dirty state when continuation settings are restored (%j)", async saved => {
+    const dirty = vi.fn();
+    const result = await renderForm([], { runtimeConfig: { heartbeat: { maxTurnContinuation: saved } } }, { onDirtyChange: dirty });
+    roots.push(result.root);
+    await clickByText(result.container, "Advanced Run Policy");
+    const toggle = result.container.querySelector<HTMLButtonElement>('[aria-label="Continue after max-turn stop"]')!;
+    expect(toggle).toBeTruthy();
+    await act(async () => toggle.click());
+    await flushReact();
+    expect(dirty).toHaveBeenLastCalledWith(true);
+    await act(async () => toggle.click());
+    await flushReact();
+    expect(dirty).toHaveBeenLastCalledWith(false);
+  });
+
+  it("clears dirty state when the saved account binding is restored", async () => {
+    const binding = { mode: "responsible_user" as const, provider: "openai" as const, method: "api_key" as const };
+    const field = vi.spyOn(ConnectionField, "AiConnectionField").mockImplementation(({ onChange }) => <>
+      <button onClick={() => onChange({ ...binding, method: "subscription" })}>Other account</button>
+      <button onClick={() => onChange({ ...binding })}>Original account</button>
+    </>);
+    try {
+      const dirty = vi.fn();
+      const result = await renderForm([], { runtimeConfig: { aiConnection: binding } }, { onDirtyChange: dirty });
+      roots.push(result.root);
+      await act(async () => findButton(result.container, "Other account")!.click());
+      await flushReact();
+      expect(dirty).toHaveBeenLastCalledWith(true);
+      await act(async () => findButton(result.container, "Original account")!.click());
+      await flushReact();
+      expect(dirty).toHaveBeenLastCalledWith(false);
+    } finally { field.mockRestore(); }
   });
 
   it("promotes environment drafts through the page Save action and discards them through the page Discard action", async () => {

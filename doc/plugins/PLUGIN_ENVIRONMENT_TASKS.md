@@ -265,6 +265,7 @@ checks. Providers that omit the capability do not support predecessor recovery.
 ## Launch authentication validation
 
 Declare `projectAuthCheckVersion: 1` in `describe` for each native task launch.
+For a new task, Core reads this flag from the same description it uses to set up Runner.
 Core calls `check_project_auth` after preparation and before credential transfer.
 The request names the configuration ID, provider, and authorized project IDs.
 It contains no credential.

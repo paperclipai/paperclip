@@ -70,9 +70,9 @@ export function extractCompanyPrefixFromPath(pathname: string): string | null {
   const segments = pathname.split("/").filter(Boolean);
   if (segments.length === 0) return null;
   const first = segments[0]!.toLowerCase();
-  if (GLOBAL_ROUTE_ROOTS.has(first) || BOARD_ROUTE_ROOTS.has(first)) {
-    return null;
-  }
+  if (GLOBAL_ROUTE_ROOTS.has(first)) return null;
+  const companyTaskPath = first !== "issues" && segments[1]?.toLowerCase() === "issues";
+  if (BOARD_ROUTE_ROOTS.has(first) && !companyTaskPath) return null;
   return normalizeCompanyPrefix(segments[0]!);
 }
 

@@ -151,8 +151,12 @@ import {
   createApprovalSchema,
   resolveApprovalSchema,
   requestApprovalRevisionSchema,
+  cancelApprovalSchema,
   resubmitApprovalSchema,
   addApprovalCommentSchema,
+  // Attention
+  attentionCloseSchema,
+  attentionTransferSchema,
   // Cost / budget
   createCostEventSchema,
   createFinanceEventSchema,
@@ -1454,7 +1458,14 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "GET /api/companies/{companyId}/attention/history",
   "GET /api/companies/{companyId}/attention/summary",
   "GET /api/companies/{companyId}/attention/tasks",
+  "POST /api/companies/{companyId}/attention/{sourceKind}/{sourceId}/claim",
+  "POST /api/companies/{companyId}/attention/{sourceKind}/{sourceId}/close",
+  "POST /api/companies/{companyId}/attention/{sourceKind}/{sourceId}/transfer",
+  "POST /api/approvals/{id}/cancel",
   "POST /api/issues/{id}/interactions/{interactionId}/dismiss",
+  // Cancelling a question is board-only (routes/issues.ts rejects agent actors). Withdraw is not listed here: its
+  // route admits the card's creator agent and the task's assignee, so agents withdraw their own pending card there.
+  "POST /api/issues/{id}/interactions/{interactionId}/cancel",
   "POST /api/issues/{id}/retry",
   "GET /api/companies/{companyId}/prompt-injection-prevention",
   "PUT /api/companies/{companyId}/prompt-injection-prevention",
@@ -1550,7 +1561,6 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/issues/{id}/interactions/{interactionId}/reject",
   "POST /api/issues/{id}/interactions/{interactionId}/respond",
   "POST /api/issues/{id}/interactions/{interactionId}/skip",
-  "POST /api/issues/{id}/interactions/{interactionId}/withdraw",
   "POST /api/companies/{companyId}/tools/examples/{id}/smoke",
   "POST /api/agents/me/connections/{connectionId}/token",
   "GET /api/tools/oauth/callback",
@@ -3239,7 +3249,7 @@ registry.registerPath({
   path: "/api/agent-avatars/{version}/{palette}/{file}",
   tags: ["agents"],
   summary: "Render or retrieve a public preset agent portrait",
-  description: "On-demand PNG artwork; no agent or company lookup. Logical size determines face detail independently of density. Background defaults to transparent; paperclip-dark supplies the opaque Paperclip dark-mode background for Slack exports. Successful URLs are immutable for one year and return a content-derived ETag. Cache entries regenerate after deletion.",
+  description: "On-demand PNG artwork; no agent or company lookup. Logical size determines face detail independently of density. View defaults to front; portrait tilts the character upward and slightly to the side for larger card artwork. Background defaults to transparent; paperclip-dark supplies the opaque Paperclip dark-mode background for Slack exports. Successful URLs are immutable for one year and return a content-derived ETag. Cache entries regenerate after deletion.",
   request: {
     params: z.object({
       version: z.literal("cap-v1"),
@@ -3250,6 +3260,7 @@ registry.registerPath({
       size: z.enum(AGENT_AVATAR_SIZES.map(String)).optional().default("512"),
       scale: z.enum(["1", "2"]).optional().default("1"),
       background: z.enum(["transparent", "paperclip-dark"]).optional().default("transparent"),
+      view: z.enum(["front", "portrait"]).optional().default("front"),
     }).strict(),
   },
   responses: {
@@ -3957,7 +3968,7 @@ registry.registerPath({
   method: "put",
   path: "/api/agents/{id}/instructions-bundle/file",
   tags: ["agents"],
-  summary: "Upsert agent instructions file",
+  summary: "Save or rename a managed agent instructions file with a source hash guard",
   request: {
     params: z.object({ id: z.string() }),
     body: jsonBody(upsertAgentInstructionsFileSchema),
@@ -5983,6 +5994,20 @@ registry.registerPath({
 
 registry.registerPath({
   method: "post",
+  path: "/api/approvals/{id}/cancel",
+  tags: ["approvals"],
+  summary: "Withdraw an out-of-date approval",
+  description:
+    "Requires a board user. Cancels an open approval without a decision: it is never an approval, so the gate stays closed. Records the user and reason, writes approval.cancelled and wakes the requesting agent. Hire requests are rejected instead (422). 409 with code attention_already_closed when it was already resolved.",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(cancelApprovalSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "post",
   path: "/api/approvals/{id}/resubmit",
   tags: ["approvals"],
   summary: "Revise and resubmit a changes-requested approval",
@@ -6468,6 +6493,8 @@ registry.registerPath({
       includeDismissed: z.enum(["true", "false"]).optional(),
       archived: z.enum(["true", "false"]).optional(),
       all: z.enum(["true", "false"]).optional(),
+      view: z.enum(["mine", "unassigned", "company", "archived", "all"]).optional()
+        .describe("Audience slice (PAP-749). `all` (default) keeps the full feed; `viewCounts` and the For you badge `deskBadgeCount` ignore it. `mine` also returns `receipts`: what a different person did with your cards in the last 7 days. `archived` returns only the open cards you archived or snoozed for yourself, whatever their audience; `viewCounts.archived` counts them and is never in the badge. `viewCounts.all` counts the Everyone tab (every person's open cards, board members only) and is never in the badge."),
       activitySince: z.string().datetime().optional(),
       activityUntil: z.string().datetime().optional(),
       queue: z.string().min(1).optional(),
@@ -6484,6 +6511,13 @@ const attentionSummaryResponseSchema = z.object({
   generatedAt: z.string().datetime(),
   totalCount: z.number().int().nonnegative(),
   deskBadgeCount: z.number().int().nonnegative(),
+  viewCounts: z.object({
+    mine: z.number().int().nonnegative(),
+    unassigned: z.number().int().nonnegative(),
+    company: z.number().int().nonnegative(),
+    archived: z.number().int().nonnegative(),
+    all: z.number().int().nonnegative(),
+  }).strict(),
   countsBySourceKind: z.record(z.enum(ATTENTION_SOURCE_KINDS), z.number().int().nonnegative()),
 }).strict();
 
@@ -6501,6 +6535,68 @@ for (const [projection, responseSchema] of [
     responses: { 200: r.ok(responseSchema), 401: r.unauthorized, 403: r.forbidden },
   });
 }
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/attention/{sourceKind}/{sourceId}/claim",
+  tags: ["inbox"],
+  summary: "Claim an ownerless attention card",
+  description:
+    "Requires a board user with company access. Makes the caller the addressee of an ownerless card, so it leaves every other person's Unassigned pool and joins the caller's For you view. Placement only: the resolver policy still decides who may answer. Only issue_thread_interaction cards can be claimed (422 otherwise); a card already for another person or a runnable agent returns 409; claiming your own card again returns alreadyClaimed=true. Writes an attention.claimed activity entry.",
+  request: { params: z.object({ companyId: z.string(), sourceKind: z.string(), sourceId: z.string().uuid() }) },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/attention/{sourceKind}/{sourceId}/close",
+  tags: ["inbox"],
+  summary: "Close an attention card: withdraw, archive or snooze",
+  description:
+    "Requires a board user with company write access. mode=withdraw closes the request for everyone because it is out of date; it is never an approval. It runs the source's own withdraw (interactions, including on a closed task) or cancel (decisions, approvals except hire requests), which writes its own activity entry and tells the agent. mode=archive and mode=snooze hide the card for the caller only, until its content changes or until `until`; the source stays open. Cards without a request to withdraw (budget, review, blocker, recovery, failed run, agent error, join request) return 422 for withdraw with the control to use instead. 404 when the caller cannot see the card; 409 with code attention_already_closed and the resolver when someone else answered first. Writes one attention.closed activity entry.",
+  request: {
+    params: z.object({ companyId: z.string(), sourceKind: z.string(), sourceId: z.string().uuid() }),
+    body: jsonBody(attentionCloseSchema),
+  },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/attention/{sourceKind}/{sourceId}/transfer",
+  tags: ["inbox"],
+  summary: "Transfer an attention card to a different person",
+  description:
+    "Requires a board user with company write access. Routes the card to another person (\"Route to @x\"): they become its addressee, so it joins their For you view and only they may answer it. The new owner must be able to answer requests on the task (422 otherwise). Only issue_thread_interaction cards can be transferred (422 otherwise); chat questions stay with the person in the chat (422); a runnable agent's request or an answered card returns 409; routing to the current addressee returns alreadyTransferred=true. Writes an attention.transferred activity entry.",
+  request: {
+    params: z.object({ companyId: z.string(), sourceKind: z.string(), sourceId: z.string().uuid() }),
+    body: jsonBody(attentionTransferSchema),
+  },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
+});
 
 // ─── Decisions ──────────────────────────────────────────────────────────────
 
@@ -6510,18 +6606,22 @@ registry.registerPath({
   tags: ["inbox"],
   summary: "List recorded decisions visible to the current board user",
   description:
-    "Requires a board user with company access. Returns a DecisionHistoryPage with current task and decision audience access enforced. Only the declared filters are accepted. The default page size is 40, sorted newest first.",
+    "Requires a board user with company access. Returns a DecisionHistoryPage of closed interactions, decisions and approvals, with current task and decision audience access enforced. Only the declared filters are accepted. The default page size is 40, sorted newest first.",
   request: {
     params: z.object({ companyId: z.string() }),
     query: z.object({
       cursor: z.string().max(1000).optional(),
       limit: z.coerce.number().int().min(1).max(100).optional(),
       search: z.string().trim().max(200).optional(),
-      outcome: z.string().max(40).optional(),
+      outcome: z.string().max(40).optional()
+        .describe("Outcome filter: accepted, answered, rejected, decided, withdrawn, expired (time-outs and supersedes, not task closes), issue_closed (closed with task) or cancelled. Other values match the stored status."),
       agentId: z.string().uuid().optional(),
       projectId: z.string().uuid().optional(),
       sort: z.enum(["newest", "oldest"]).optional(),
       since: z.string().datetime().optional(),
+      handledForMe: z.enum(["true", "false"]).optional().describe("Only cards for you that a different person answered, withdrew or transferred."),
+      scope: z.enum(["mine", "all"]).optional()
+        .describe("Whose history (PAP-768). `mine` is \"Handled by me or for me\": what you answered, withdrew or transferred, what a different person handled for you, and cards whose audience is you (addressee or requester, else the task's chat user, human assignee or instigator). `all` (default) is every person's history. Outcome filters apply within either scope."),
     }).strict(),
   },
   responses: {
@@ -7260,6 +7360,7 @@ registry.registerPath({
           ),
         kind: z.enum(["dismiss", "snooze"]).optional(),
         snoozedUntil: z.string().datetime().optional(),
+        fingerprint: z.string().max(200).optional(),
       }),
     ),
   },
@@ -11391,7 +11492,7 @@ registerCurrentRoute({
   method: "post",
   path: "/api/issues/{id}/interactions/{interactionId}/cancel",
   tags: ["issues"],
-  summary: "Cancel an issue question interaction",
+  summary: "Cancel an issue question interaction (board users only; an agent withdraws its own pending card with POST /api/issues/{id}/interactions/{interactionId}/withdraw)",
   body: cancelIssueThreadInteractionSchema,
 });
 
@@ -11875,6 +11976,17 @@ registerCurrentRoute({
   method: "get", path: "/api/companies/{companyId}/observability", tags: ["agent-observability"],
   summary: "Read masked company agent export settings; board connection managers only",
   responses: { 200: r.ok(observabilitySettingsEnvelopeSchema), 401: r.unauthorized, 403: r.forbidden },
+});
+registerCurrentRoute({
+  method: "get", path: "/api/companies/{companyId}/observability/status", tags: ["agent-observability"],
+  summary: "Read whether the company's agent trace export (observability to an OTLP collector or Braintrust) is configured and enabled",
+  description: "Readable by the company's agents and members. Reports whether company agent trace export to an OpenTelemetry (OTLP) collector or Braintrust is configured, enabled, has saved credentials, and the result of its latest delivery test. It never returns the destination or any credential. "
+    + "Use it to answer what is saved for the company's trace export or test collector; agent configuration and company secrets do not hold these settings. Board connection managers change them in Company settings, Agent observability, at /<prefix>/company/settings.",
+  responses: { 200: r.ok(z.object({
+    configured: z.boolean(), enabled: z.boolean(), provider: z.enum(["otlp", "braintrust"]).nullable(),
+    credentialsConfigured: z.boolean(), updatedAt: z.string().datetime().nullable(),
+    lastTest: z.object({ status: z.enum(["accepted", "partial", "failed"]), finishedAt: z.string().datetime() }).strict().nullable(),
+  }).strict()), 401: r.unauthorized, 403: r.forbidden },
 });
 registerCurrentRoute({
   method: "put", path: "/api/companies/{companyId}/observability", tags: ["agent-observability"],

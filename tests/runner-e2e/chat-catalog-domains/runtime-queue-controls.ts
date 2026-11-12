@@ -5,8 +5,8 @@ import type { IssueQueuedCommentQueue } from "../../../packages/shared/src/types
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
 import { pollUntil } from "../api.js";
 import { submitTaskReply } from "../user-actions.js";
-import { checks, type Entity } from "./internal-support.js";
-import { probeAgentPermission, cleanupIdentityProbes } from "./identity-support.js";
+import { checks, hasLink, type Entity } from "./internal-support.js";
+import { probeAgentPermission, cleanupIdentityProbes, waitForTurnReplyLinks } from "./identity-support.js";
 import { busyRuntimeWorker, releaseRuntimeWorker } from "./runtime-busy-worker.js";
 import { runtimeQueueCases } from "./runtime-queue.js";
 import { observeRuntime, runtimeDefinition, runtimeObservation } from "./runtime-support.js";
@@ -56,9 +56,16 @@ export function gradeQueueEdit(value: unknown) {
   c.add("full-edited-text-and-first-position-persist", !!saved && saved.position === 0 && saved.comment.body === `${blueText} ${s.concurrentMarker}`
     && saved.comment.authorUserId === s.humanId && !saved.comment.authorAgentId && after.entries.length === 2
     && after.entries.some(row => row.comment.body === otherText && row.position === 1), "The same comment retains its author, the complete changed text, the concurrent human note and first position; the other message is intact.");
-  c.add("chat-guides-human-control-without-forging", /queue|pending|waiting/i.test(String(s.queryReply)) && /edit|control|menu|reorder|first/i.test(String(s.queryReply))
-    && !/I(?:'ve| have)? (?:already )?(?:edited|changed|reordered)/i.test(String(s.queryReply)) && s.agentEditStatus === 403 && s.agentOrderStatus === 403,
-  "The canonical reply identifies the human queue controls and the actual agent cannot impersonate the person's edits or reorder.");
+  // Graded on saved state and the rendered link, never wording ("change ... and drag it above" and "use Edit in its
+  // menu" are both correct guidance). The reply links the task whose queue holds the person's controls, the agent's
+  // own edit and reorder are refused, and at the reply the queue is exactly as the person left it: no edit applied.
+  const atReply = s.queueAtReply as IssueQueuedCommentQueue | undefined;
+  const unchangedAtReply = !!before && !!atReply && atReply.entries.length === before.entries.length && before.entries.every(old => atReply.entries.some(row =>
+    row.comment.id === old.comment.id && row.position === old.position && row.comment.body === old.comment.body && row.comment.authorUserId === old.comment.authorUserId && !row.comment.authorAgentId));
+  const replyLinks = Array.isArray(s.queryLinks) ? s.queryLinks as string[] : [];
+  c.add("chat-guides-human-control-without-forging", !!String(s.queryReply ?? "").trim() && !!s.task && hasLink({ ...o, links: replyLinks }, "issues", s.task as Entity)
+    && unchangedAtReply && s.agentEditStatus === 403 && s.agentOrderStatus === 403,
+  "The canonical reply links the task whose queue holds the person's controls, the actual agent cannot edit or reorder the person's message, and no edit was applied before the person acted.");
   c.add("concurrent-edit-rejects-stale-request-visibly", s.concurrentStatus === 409 && s.concurrentErrorVisible === true && s.concurrentSaveRetained === true,
     "An actual held old-revision human request loses to a real second-session edit and shows its conflict, retaining the winner's text.");
   c.add("dispatched-edit-is-visible-new-direction", s.dispatchedStatus === 409 && s.dispatchedWarningVisible === true && s.originalCommentStillReadable === true,
@@ -70,7 +77,9 @@ export function gradeQueueEdit(value: unknown) {
 }
 
 export const runtimeQueueControlCases = [runtimeDefinition("steering.edit-queued-message", ctx => humanQueuedRuntime(ctx), gradeQueueEdit, {
-  sourceFiles: ["chat-catalog-domains/runtime-queue-controls.ts", "chat-catalog-domains/runtime-queue.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-support.ts", "chat-catalog-domains/identity-support.ts", "chat-scenarios/steering.yaml"],
+  sourceFiles: ["chat-catalog-domains/runtime-queue-controls.ts", "chat-catalog-domains/runtime-queue.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-support.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-support.ts", "chat-rendered-links.ts", "chat-scenarios/steering.yaml"],
+  // v3: guidance graded on the task link, refused agent writes and the unchanged queue at the reply, not keywords.
+  oracleVersion: "paperclip.chat-catalog.edit-queued-message.structural.v3",
   authentication: "human-session", expectedRunCount: 3, attemptTimeoutMs: 720_000,
   setupPolicy: runtimeQueueCases[0]!.setupPolicy, verifySetup: runtimeQueueCases[0]!.verifySetup,
   async act(ctx, state) {
@@ -78,8 +87,11 @@ export const runtimeQueueControlCases = [runtimeDefinition("steering.edit-queued
       load: async () => { await ctx.refreshIssue(); return { source: ctx.issue(), runs: await ctx.allRuns() }; },
       accept: v => chatCatalogNativePhaseIsTimely(ctx) && (v.source?.conversationState === "waiting" && v.runs.length === 2 && v.runs.some(row => row.id === state.workerRunId && row.status === "running")
         && v.runs.some(row => row.agentId === ctx.input.fixtures.agent.id && row.status === "succeeded")) });
-    state.queryReply = (await observeRuntime(ctx, state)).reply; const source = ctx.input.page.url();
+    // The finished run and waiting chat precede the saved reply's render; read its links only after it renders.
+    await waitForTurnReplyLinks(ctx);
+    const answered = await observeRuntime(ctx, state); state.queryReply = answered.reply; state.queryLinks = answered.links; const source = ctx.input.page.url();
     const initial = await queue(ctx, state), targetId = String(state.targetId), mutation = `${endpoint(state)}/${targetId}`;
+    state.queueAtReply = initial;
     state.agentEditStatus = await probeAgentPermission(ctx, mutation, "PATCH", { queueId: initial.queueId, revision: initial.revision, body: blueText });
     state.agentOrderStatus = await probeAgentPermission(ctx, `${endpoint(state)}/order`, "PUT", { queueId: initial.queueId, revision: initial.revision, orderedCommentIds: initial.entries.map(row => row.comment.id).reverse() });
     await ctx.input.page.goto(taskUrl(ctx, state), { waitUntil: "domcontentloaded" });
