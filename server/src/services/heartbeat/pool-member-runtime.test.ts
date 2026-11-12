@@ -71,4 +71,12 @@ describe("pool member runtime settings", () => {
     if (acpxAgent) expect(() => check({ ...config, acpxAgent: "grok" })).toThrow("Cannot preserve");
     expect(() => check(config)).not.toThrow();
   });
+  it.each(["acp", "auto"])("rejects a restricted CLI source switching to target engine %s", engine => {
+    for (const scope of [{ filesystemScope: "workspace" }, { networkScope: "deny" }, { networkScope: "allowlist", networkAllowlist: ["example.test"] }]) {
+      const source = { engine: "cli", ...scope };
+      expect(() => assertPoolAdapterPolicyCompatible(source, "codex_local", "claude_local", { engine })).toThrow("Cannot preserve");
+      expect(() => assertPoolAdapterPolicyCompatible(source, "codex_local", "codex_local", { engine })).toThrow("Cannot preserve");
+      expect(() => assertPoolAdapterPolicyCompatible(source, "codex_local", "claude_local", {})).not.toThrow();
+    }
+  });
 });

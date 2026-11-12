@@ -1343,6 +1343,34 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect((await read(f.run.id)).resultJson).toEqual(resultJson);
   });
 
+  it.each([
+    ["claude_local", () => import("@paperclipai/adapter-claude-local/server")],
+    ["codex_local", () => import("@paperclipai/adapter-codex-local/server")],
+    ["gemini_local", () => import("@paperclipai/adapter-gemini-local/server")],
+    ["kimi_local", () => import("@paperclipai/adapter-kimi-local/server")],
+  ] as const)("persists the host engine bootstrap receipt from %s and releases its reservation", async (adapterType, load) => {
+    const f = await fixture({ costAccountingPending: true });
+    await db.update(agents).set({ adapterType }).where(eq(agents.id, f.agent.id));
+    f.agent.adapterType = adapterType;
+    await reserveRunBudget(db, f.run.companyId, f.run.id, null);
+    const { execute } = await load();
+    const originalVersion = process.version;
+    const onSpawn = vi.fn();
+    try {
+      Object.defineProperty(process, "version", { value: "v18.0.0" });
+      f.input.adapterResult = await execute({ config: { engine: "acp" }, onSpawn } as never);
+    } finally {
+      Object.defineProperty(process, "version", { value: originalVersion });
+    }
+    expect(onSpawn).not.toHaveBeenCalled();
+    await f.completion.completeRun(f.input);
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "adapter_engine_unavailable",
+      costAccountingPending: false, costAccountedAt: expect.any(Date),
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } });
+    const [hold] = await db.select().from(budgetReservations).where(eq(budgetReservations.runId, f.run.id));
+    expect(hold.state).toBe("released");
+  });
+
   it("keeps ordinary adapter pre-provider receipts outside setup-history checks", async () => {
     const f = await fixture({ runtimeMode: "native", costAccountingPending: true,
       runnerProfileJson: { nativeExecutionInput: { schema: "paperclip.native-execution-input.v1" } } });

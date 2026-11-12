@@ -547,6 +547,24 @@ describe("durable, authorized connection routing", () => {
     await expect(resolveCodexExecutionEngineForRun({ config, executionTarget: { kind: "local", workspaceRealization: { mode: "in_place" } } as never }))
       .resolves.toEqual({ engine: "cli", explicit: true });
   });
+  it("skips an ACP member and pins the CLI backup for a restricted CLI source", async () => {
+    const { harnessPoolService } = await import("../services/harness-pools.js");
+    const acp = { ...members[1]!, id: randomUUID() };
+    const cli = { ...members[0]!, id: randomUUID() };
+    const pool = await harnessPoolService(db).save(companyId, { config: {
+      schemaVersion: 2, kind: "harness_pool", name: randomUUID(), enabled: true, mode: "failover", members: [
+        { id: acp.id, harness: { type: "claude_code" }, runner: "legacy", connection: acp.binding, model: acp.profile.model, adapterConfig: { engine: "acp" } },
+        { id: cli.id, harness: { type: "codex" }, runner: "legacy", connection: cli.binding, model: cli.profile.model, adapterConfig: { engine: "cli" } },
+      ],
+    } }, "alice");
+    const taskKey = randomUUID();
+    const policy = { engine: "cli", filesystemScope: "workspace", networkScope: "deny" };
+    const selected = await resolve(pool.id, taskKey, { adapterType: "codex_local", sourceAdapterConfig: policy, skipUsageProbe: true });
+    expect(selected).toMatchObject({ memberId: cli.id, adapterType: "codex_local", runtimeConfig: { engine: "cli" } });
+    const [pin] = await db.select().from(aiConnectionTaskPins).where(and(eq(aiConnectionTaskPins.poolId, pool.id), eq(aiConnectionTaskPins.taskKey, taskKey)));
+    expect(pin?.selection.memberId).toBe(cli.id);
+    expect(applyAiConnectionRouterTaskSettings(policy, selected, "codex_local")).toMatchObject(policy);
+  });
   it("does not allocate an account that would weaken the source execution policy", async () => {
     const pool = await service().save(BUILTIN_AI_FAILOVER_ROUTER_KEY, { companyId, config: {
       name: randomUUID(), enabled: true, mode: "failover", thresholdPercent: 90, members: [members[1]!],

@@ -201,9 +201,7 @@ async function executeWithCleanup(ctx: AdapterExecutionContext): Promise<Adapter
       timedOut: false,
       errorCode: "adapter_engine_unavailable",
       errorMessage: engineSelection.unavailableReason,
-      resultJson: {
-        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
-      },
+      executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
     };
   }
   if (engineSelection.engine === "acp") {

@@ -16,8 +16,9 @@ describe("gemini engine availability", () => {
       exitCode: 1,
       errorCode: "adapter_engine_unavailable",
       errorMessage: expect.stringContaining("Node v18.0.0"),
-      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+      executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
     });
+    expect(result.resultJson?.executionRecovery).toBeUndefined();
     expect(result.errorMessage).toContain(process.execPath);
     expect(onSpawn).not.toHaveBeenCalled();
     const diagnostic = await testEnvironment({ config } as never);
