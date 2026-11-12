@@ -250,6 +250,28 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.issues.comments("chat-1") });
     client.clear();
   });
+  it("fetches the open chat's saved comments when its conversation is updated, and not for other tasks", () => {
+    const client = new QueryClient();
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    client.setQueryData(queryKeys.companies.list("user-1"), { companies: [{ id: "company-1", issuePrefix: "PAP" }], unauthorized: false });
+    client.setQueryData(queryKeys.agents.list("company-1"), [{ id: "agent-1", name: "Coder", urlKey: "coder" }]);
+    const chat = { id: "chat-1", companyId: "company-1", identifier: "PAP-1", assigneeAgentId: "agent-1" };
+    client.setQueryData(queryKeys.agentChats.detail("company-1", "user-1", "agent-1"), chat);
+    client.setQueryData(queryKeys.issues.detail("chat-1"), chat);
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    const deliver = (path: string, entityId: string, action: string) => __liveUpdatesTestUtils.invalidateActivityQueries(client, "company-1",
+      { entityType: "issue", entityId, action, actorType: "system", actorId: "system" }, { userId: "user-1", agentId: null }, { pathname: path, isForegrounded: true });
+    const commentCalls = (ref: string) => invalidate.mock.calls.filter(([arg]) => JSON.stringify((arg as { queryKey?: unknown }).queryKey) === JSON.stringify(queryKeys.issues.comments(ref)));
+    const commentInvalidations = (ref: string) => commentCalls(ref).length;
+    deliver("/PAP/chats/agent-1", "other-task", "issue.updated");
+    expect(commentInvalidations("other-task")).toBe(0);
+    deliver("/PAP/issues/PAP-9", "chat-1", "issue.updated");
+    expect(commentInvalidations("chat-1")).toBe(0);
+    deliver("/PAP/chats/agent-1", "chat-1", "issue.updated");
+    expect(commentInvalidations("chat-1")).toBe(1);
+    expect((commentCalls("chat-1")[0]![0] as { refetchType?: string }).refetchType).toBeUndefined();
+    client.clear();
+  });
   it.each(["ai_connection.default_changed", "ai_connection.reconnected", "connection_grant.revoked"])(
     "refreshes company AI account previews after %s", (action) => {
       const invalidateQueries = vi.fn();
