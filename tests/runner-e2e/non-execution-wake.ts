@@ -17,15 +17,18 @@ export function isReassignedUnstartedWake(run: {
 }
 
 /** A queued run the server retired because its task changed assignee before any
- * provider work: either the dispatch gate found the queued wake stale
- * (`issue_assignee_changed`), or the reassignment stopped it while it was still
- * bootstrapping (`issue_reassigned`, stop confirmed, provider work not started). */
+ * provider work: the dispatch gate found the queued wake stale
+ * (`issue_assignee_changed`), the new assignee's wake released the lock it held
+ * (`lock_released_on_reassignment`), or the reassignment stopped it while it was
+ * still bootstrapping (`issue_reassigned`, stop confirmed, provider work not started). */
 export function isAssigneeChangedUnstartedRun(run: {
   status?: unknown; errorCode?: unknown; startedAt?: unknown; nativeIssueId?: unknown;
   logStore?: unknown; logRef?: unknown; resultJson?: Record<string, unknown>;
 }) {
   if (run.status !== "cancelled" || run.startedAt !== null || run.logStore != null || run.logRef != null) return false;
   if (isReassignedUnstartedWake(run)) return true;
+  // The issue's new assignee claimed the execution lock that this queued run still held (heartbeat queue).
+  if (run.errorCode === "lock_released_on_reassignment" && run.nativeIssueId == null) return true;
   const result = run.resultJson, recovery = object(result?.executionRecovery);
   return run.errorCode === "issue_reassigned" && run.nativeIssueId == null && result?.reassignmentStopConfirmed === true
     && recovery?.kind === "bootstrap" && recovery.providerWorkStarted === false;

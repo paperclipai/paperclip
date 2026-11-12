@@ -151,10 +151,12 @@ describe("queued run retired by reassignment before it started (full cohort 3)",
   // tasks.private-task: the dispatch gate found the same kind of queued wake stale after the PATCH.
   const staleGate: ChatRun = { ...reassigned, id: "ceo-stale", errorCode: "issue_assignee_changed",
     resultJson: { stopReason: "issue_assignee_changed", timeoutFired: false, timeoutSource: "stale_queued_run_gate" } };
+  // Paid run 43143392360 (tasks.private-task): the new assignee's wake released the lock the queued run held.
+  const lockReleased: ChatRun = { ...reassigned, id: "ceo-lock", errorCode: "lock_released_on_reassignment", resultJson: undefined };
   const morgan: ChatRun = { ...worker, id: "morgan-run", createdAt: "2026-11-12T00:55:56.398Z" };
   const implementation = { expectedRunCount: 2, runPolicy: { kind: "source-settled-with-active-work" as const, maximumActiveWorkerRuns: 1 } };
   it("admits it, outside the provider-run bound, only when the new assignee ran on that task", () => {
-    for (const queued of [reassigned, staleGate]) {
+    for (const queued of [reassigned, staleGate, lockReleased]) {
       expect(chatCatalogReassignedQueuedRun(queued, scope.source)).toBe(true);
       const runs = [succeeded, queued, morgan];
       expect(chatCatalogSupersededQueuedRuns(runs, scope.source).map(run => run.id)).toEqual([queued.id]);
@@ -173,7 +175,8 @@ describe("queued run retired by reassignment before it started (full cohort 3)",
     for (const run of [{ ...reassigned, startedAt: "2026-11-12T00:55:20.000Z" }, { ...reassigned, logRef: "log" }, { ...reassigned, errorCode: "cancelled" },
       { ...reassigned, resultJson: { ...reassigned.resultJson, executionRecovery: { kind: "bootstrap", providerWorkStarted: true } } },
       { ...reassigned, resultJson: { stopReason: "cancelled" } }, { ...staleGate, resultJson: { stopReason: "issue_assignee_changed" } },
-      { ...reassigned, contextSnapshot: { issueId: "source" } }, { ...reassigned, status: "failed" }]) {
+      { ...reassigned, contextSnapshot: { issueId: "source" } }, { ...reassigned, status: "failed" },
+      { ...lockReleased, startedAt: "2026-11-12T00:55:20.000Z" }, { ...lockReleased, nativeIssueId: "task" }]) {
       expect(chatCatalogReassignedQueuedRun(run, scope.source)).toBe(false);
       expect(gradeChatCatalogRuns({ ...scope, implementation: { ...implementation, expectedRunCount: 3 }, runs: [succeeded, run, morgan] }).passed).toBe(false);
     }
