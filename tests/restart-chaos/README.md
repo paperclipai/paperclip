@@ -531,8 +531,10 @@ was still held by another Runner. The new Runner wrote `runner-state.json` (`lif
 bootstrap retry then found that partial session root and failed with `runner_harness_state_mismatch: resumed_unavailable`.
 `--runner-bind-fault` gives every server of the wave `PAPERCLIP_TEST_RUNNER_BIND_FAULT=first_launch` (honoured only
 with `NODE_ENV=test`): before a run's first Runner launch on that server, a short-lived process in the sandbox holds
-the Runner's listen port for 15 s. Every run then takes this path once per server generation, and the run must
-still finish without Retry. It needs `--env daytona`.
+the Runner's listen port for 15 s. The server waits until that listener has bound the port and writes
+`[paperclip-runner] test bind fault armed on port <n>` (or `failed`) to the run log, so a wave can count the runs that
+really took this path. Every run then takes it once per server generation, and the run must still finish without
+Retry. It needs `--env daytona`.
 
 ## Absolute symlink in the workspace (F1)
 

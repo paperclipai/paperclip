@@ -1405,16 +1405,17 @@ describe("remote runner process supervision", () => {
     });
     const execute = vi.fn(async (request: { args: string[] }) => {
       if (request.args[2] === "paperclip-runner-test-bind-fault") {
-        execFileSync("sh", request.args, { stdio: "ignore" });
-        return { exitCode: 0, timedOut: false, stdout: "", stderr: "" };
+        return { exitCode: spawnSync("sh", request.args, { stdio: "ignore" }).status ?? 1, timedOut: false, stdout: "", stderr: "" };
       }
       return { exitCode: 1, timedOut: false, stdout: "", stderr: "" };
     });
+    const onLog = vi.fn(async () => undefined);
     const launcher = createRemoteRunnerProcessLauncher({
       target: { kind: "remote", transport: "sandbox", environmentId: "environment", leaseId: "lease", remoteCwd: "/workspace" },
       runner: { execute } as never,
       remoteBinary: "/runtime/runnerd", processIdentityPath: "/runtime/identity",
       stateDirectory: "/runtime", diagnosticsDirectory: "/runtime/diagnostics", runnerInstanceId: `runner-bind-fault-${randomUUID()}`,
+      onLog,
     });
     const spec = { command: "/controller/runnerd", args: ["--listen-address", "127.0.0.1", "--listen-port", String(port)],
       cwd: "/controller", environment: {} };
@@ -1425,10 +1426,20 @@ describe("remote runner process supervision", () => {
       contender.listen(port, "127.0.0.1", () => contender.close(() => resolveBind(null)));
     });
     expect(bindFailure).toBe("EADDRINUSE");
+    expect(onLog).toHaveBeenCalledWith("stderr", `[paperclip-runner] test bind fault armed on port ${port}\n`);
     await expect(launcher(spec).completion).rejects.toThrow("runner_remote_process_launch_failed");
     expect(execute.mock.calls.filter(([request]) => request.args[2] === "paperclip-runner-test-bind-fault")).toHaveLength(1);
     expect(execute.mock.calls.map(([request]) => request.args[2])).toEqual([
       "paperclip-runner-test-bind-fault", "paperclip-runner-launch", "paperclip-runner-launch"]);
+    const blockedLog = vi.fn(async () => undefined);
+    await expect(createRemoteRunnerProcessLauncher({
+      target: { kind: "remote", transport: "sandbox", environmentId: "environment", leaseId: "lease", remoteCwd: "/workspace" },
+      runner: { execute } as never,
+      remoteBinary: "/runtime/runnerd", processIdentityPath: "/runtime/identity",
+      stateDirectory: "/runtime", diagnosticsDirectory: "/runtime/diagnostics", runnerInstanceId: `runner-bind-fault-${randomUUID()}`,
+      onLog: blockedLog,
+    })(spec).completion).rejects.toThrow("runner_remote_process_launch_failed");
+    expect(blockedLog).toHaveBeenCalledWith("stderr", `[paperclip-runner] test bind fault failed on port ${port}\n`);
   });
 
   it("confirms no replacement process exists when staging fails before the launch RPC", async () => {

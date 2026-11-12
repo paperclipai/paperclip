@@ -15079,7 +15079,7 @@ async function cleanupRemoteRunnerAfterIdentityFailure(input: {
 const injectedRunnerBindConflicts = new Set<string>();
 
 async function injectRunnerBindConflictForTest(runner: CommandManagedRuntimeRunner, runnerInstanceId: string,
-  args: readonly string[]): Promise<void> {
+  args: readonly string[], onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>): Promise<void> {
   if (process.env.NODE_ENV !== "test" || process.env.PAPERCLIP_TEST_RUNNER_BIND_FAULT !== "first_launch"
     || injectedRunnerBindConflicts.has(runnerInstanceId)) return;
   const option = (name: string) => args.includes(name) ? args[args.indexOf(name) + 1] ?? null : null;
@@ -15087,14 +15087,16 @@ async function injectRunnerBindConflictForTest(runner: CommandManagedRuntimeRunn
   const address = option("--listen-address") ?? "127.0.0.1";
   if (!port || !/^\d+$/.test(port)) return;
   injectedRunnerBindConflicts.add(runnerInstanceId);
-  await runner.execute({
+  const result = await runner.execute({
     command: "sh",
     args: ["-c",
-      'nohup node -e "const s = require(\'net\').createServer().listen(Number(process.argv[1]), process.argv[2], () => setTimeout(() => s.close(), 15000))" "$1" "$2" </dev/null >/dev/null 2>&1 & sleep 1',
+      'ready=$(mktemp); rm -f "$ready"; nohup node -e "const s = require(\'net\').createServer().listen(Number(process.argv[1]), process.argv[2], () => { require(\'fs\').writeFileSync(process.argv[3], \'\'); setTimeout(() => s.close(), 15000); })" "$1" "$2" "$ready" </dev/null >/dev/null 2>&1 & i=0; while [ ! -e "$ready" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done; test -e "$ready" && rm -f "$ready"',
       "paperclip-runner-test-bind-fault", port, address],
     bypassSession: true,
     timeoutMs: 10_000,
-  }).catch(() => undefined);
+  }).catch(() => null);
+  const armed = result?.exitCode === 0 && !result.timedOut;
+  await onLog?.("stderr", `[paperclip-runner] test bind fault ${armed ? "armed" : "failed"} on port ${port}\n`).catch(() => undefined);
 }
 
 export function createRemoteRunnerProcessLauncher(input: {
@@ -15235,7 +15237,7 @@ export function createRemoteRunnerProcessLauncher(input: {
       // into its own session instead; its own bounded diagnostics directory and
       // durable PRP state remain the authorities, and the controller monitors
       // the exact persisted process identity below.
-      await injectRunnerBindConflictForTest(runner, input.runnerInstanceId, remoteArgs);
+      await injectRunnerBindConflictForTest(runner, input.runnerInstanceId, remoteArgs, input.onLog);
       launchDispatched = true;
       const launchResult = await runner.execute({
         command: "sh",
