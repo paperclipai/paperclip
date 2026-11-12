@@ -87,7 +87,9 @@ export async function pickEnvironment(api: SetupApi, companyId: string, requeste
     if (!environments.some(environment => environment.id === requested)) throw new Error(`Environment ${requested} is not in company ${companyId}`);
     return requested;
   }
-  const remote = environments.filter(environment => environment.driver !== "local" && environment.status !== "archived");
+  const active = environments.filter(environment => environment.driver !== "local" && environment.status !== "archived");
+  const sandboxes = active.filter(environment => environment.driver === "sandbox");
+  const remote = sandboxes.length ? sandboxes : active;
   if (remote.length !== 1) {
     throw new Error(`Company ${companyId} has ${remote.length} sandbox environments (${remote.map(environment => `${environment.id} ${environment.driver}`).join(", ") || "none"}); `
       + "pass --hosted-environment <id>");

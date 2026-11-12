@@ -6,7 +6,7 @@ import { gradeHosted, releaseWindows } from "./hosted-grade.js";
 import {
   duplicateAgentComments, duplicateChildren, failureChain, hostedCompanyRuns, hostedIssues, issueViewFields, pendingPersonItems, runRow, startedIssues,
 } from "./hosted-readers.js";
-import { cleanupHosted } from "./hosted-setup.js";
+import { cleanupHosted, pickEnvironment } from "./hosted-setup.js";
 import { detectReleases } from "./hosted-release.js";
 
 type Json = Record<string, any>;
@@ -112,6 +112,14 @@ describe("hosted API readers", () => {
     expect(json.failedRuns.map((failed: Json) => [failed.runId, failed.release])).toEqual([["r2", 1], ["r3", 1]]);
     expect(graded.markdown).toContain("Unavailable over the API:");
     expect(releaseWindows(releases)[0]).toMatchObject({ index: 1, spawnedAt: 1_000, fromPid: null });
+  });
+
+  it("picks the company's sandbox environment over other remote drivers, or asks for one", async () => {
+    const both = fakeApi({ "/api/companies/c1/environments": [{ id: "local", driver: "local" }, { id: "computer", driver: "plugin" }, { id: "box", driver: "sandbox" }] });
+    expect(await pickEnvironment(both, "c1", null)).toBe("box");
+    expect(await pickEnvironment(both, "c1", "computer")).toBe("computer");
+    const two = fakeApi({ "/api/companies/c1/environments": [{ id: "a", driver: "sandbox" }, { id: "b", driver: "sandbox" }] });
+    await expect(pickEnvironment(two, "c1", null)).rejects.toThrow(/--hosted-environment/);
   });
 
   it("cleans up only what carries the run label: pauses and removes its agents, cancels their live runs, archives their tasks, deletes its secrets", async () => {
