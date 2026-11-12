@@ -2105,7 +2105,7 @@ describeEmbeddedPostgres("attention service", () => {
     const options = { userId: "board-user", actionableOnly: true };
     const feed = await svc.list(companyId, { ...options, all: true, allowUnscopedAll: true });
     expect(new Set(feed.items.map(item => item.subject.id))).toEqual(new Set([questionId, recoveryId, boardApprovalId]));
-    expect(feed.items.find(item => item.subject.id === boardApprovalId)).toMatchObject({ inlineResolvable: false, subject: { kind: "approval" } });
+    expect(feed.items.find(item => item.subject.id === boardApprovalId)).toMatchObject({ inlineResolvable: true, subject: { kind: "approval" } });
     expect(feed.totalCount).toBe(3);
     const summary = await svc.summary(companyId, options);
     const tasks = await svc.taskIndex(companyId, options);
