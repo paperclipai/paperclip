@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -18,6 +18,8 @@ import {
 import { resolvePaperclipInstanceRootForAdapter } from "@paperclipai/adapter-utils/server-utils";
 import { shellQuote } from "@paperclipai/adapter-utils/ssh";
 import { classifyThrownErrorClass, logSandboxProbeDiagnostic } from "./probe-diagnostics.js";
+import { resolveSharedClaudeConfigDir } from "./managed-profile-runtime.js";
+export { prepareManagedClaudePluginRuntime, resolveManagedClaudeRuntimeStateDir, resolveSharedClaudeConfigDir } from "./managed-profile-runtime.js";
 
 const SEEDED_SHARED_FILES = ["settings.json", "CLAUDE.md"] as const;
 
@@ -131,13 +133,6 @@ async function materializeSeedSnapshot(input: {
   return targetDir;
 }
 
-export function resolveSharedClaudeConfigDir(
-  env: NodeJS.ProcessEnv = process.env,
-): string {
-  const fromEnv = nonEmpty(env.CLAUDE_CONFIG_DIR);
-  return fromEnv ? path.resolve(fromEnv) : path.join(os.homedir(), ".claude");
-}
-
 export function resolveManagedClaudeConfigSeedDir(
   env: NodeJS.ProcessEnv,
   companyId?: string,
@@ -150,19 +145,6 @@ export function resolveManagedClaudeConfigSeedDir(
   return companyId
     ? path.resolve(instanceRoot, "companies", companyId, "claude-config-seed")
     : path.resolve(instanceRoot, "claude-config-seed");
-}
-
-export function resolveManagedClaudeRuntimeStateDir(
-  env: NodeJS.ProcessEnv,
-  companyId: string,
-  agentId: string,
-): string {
-  const instanceRoot = resolvePaperclipInstanceRootForAdapter({
-    homeDir: nonEmpty(env.PAPERCLIP_HOME) ?? undefined,
-    instanceId: nonEmpty(env.PAPERCLIP_INSTANCE_ID) ?? undefined,
-    env,
-  });
-  return path.join(instanceRoot, "companies", companyId, "agents", agentId, "claude-runtime");
 }
 
 export async function writePaperclipClaudeMcpConfig(input: {

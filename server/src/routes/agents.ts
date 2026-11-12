@@ -185,6 +185,7 @@ import {
 import {
   REDACTED_EVENT_VALUE,
   redactAgentAdapterConfig,
+  agentAdapterConfigDisplayDefaults,
   redactEventPayload,
 } from "../redaction.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
@@ -2971,12 +2972,15 @@ export function agentRoutes(
   ): T {
     if (!agent || typeof agent !== "object") return agent;
     // A raw row must not carry the server-only harness verification digest.
-    const { harnessVerifiedDigest: _digest, harnessVerifiedAt: _verifiedAt, ...publicAgent } = agent as Record<string, unknown>;
-    if (!agent.adapterConfig || typeof agent.adapterConfig !== "object") return publicAgent as T;
+    const publicAgent = { ...agent };
+    Reflect.deleteProperty(publicAgent, "harnessVerifiedDigest");
+    Reflect.deleteProperty(publicAgent, "harnessVerifiedAt");
+    if (!agent.adapterConfig || typeof agent.adapterConfig !== "object") return publicAgent;
     return {
       ...publicAgent,
       adapterConfig: redactAgentAdapterConfig(agent.adapterConfig as Record<string, unknown>),
-    } as T;
+      adapterConfigDefaults: agentAdapterConfigDisplayDefaults(agent.adapterConfig as Record<string, unknown>),
+    };
   }
 
   function redactAgentConfiguration(agent: Awaited<ReturnType<typeof svc.getById>>) {
@@ -2994,6 +2998,7 @@ export function agentRoutes(
       reportsTo: agent.reportsTo,
       adapterType: agent.adapterType,
       adapterConfig: redactAgentAdapterConfig(agent.adapterConfig),
+      adapterConfigDefaults: agentAdapterConfigDisplayDefaults(agent.adapterConfig),
       runtimeConfig: redactEventPayload(agent.runtimeConfig),
       permissions: agent.permissions,
       updatedAt: agent.updatedAt,

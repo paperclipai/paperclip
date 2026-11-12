@@ -2,6 +2,15 @@ diff --git a/dist/queue-owner-runtime-ucHvXJ33.js b/dist/queue-owner-runtime-ucH
 index dc63642..39e5ca6 100644
 --- a/dist/queue-owner-runtime-ucHvXJ33.js
 +++ b/dist/queue-owner-runtime-ucHvXJ33.js
+@@ -1255,7 +1255,7 @@ async function ensureCopilotAcpSupport(command, context) {
+ }
+ function buildClaudeCodeOptionsMeta(options, isolateUserSettings = false) {
+ 	const claudeCodeOptions = {};
+-	if (isolateUserSettings) claudeCodeOptions.settingSources = resolveClaudeCodeSettingSources();
++	if (isolateUserSettings) claudeCodeOptions.settingSources = resolveClaudeCodeSettingSources(options?.env);
+ 	if (options) assignClaudeCodeOptions(claudeCodeOptions, options);
+ 	const meta = {};
+ 	if (Object.keys(claudeCodeOptions).length > 0) meta.claudeCode = { options: claudeCodeOptions };
 @@ -1869,7 +1869,7 @@ function observeAcpStream(base, options) {
  		return options.suppressReplaySessionUpdates() && isSessionUpdateNotification(message);
  	};

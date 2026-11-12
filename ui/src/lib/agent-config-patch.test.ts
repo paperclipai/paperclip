@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { Agent } from "@paperclipai/shared";
 import { buildAgentUpdatePatch, type AgentConfigOverlay } from "./agent-config-patch";
 
@@ -59,6 +59,16 @@ function makeOverlay(patch?: Partial<AgentConfigOverlay>): AgentConfigOverlay {
 }
 
 describe("buildAgentUpdatePatch", () => {
+  it("keeps inherited Claude display defaults out of saved configuration", () => {
+    const agent = makeAgent();
+    agent.adapterConfigDefaults = { profileImportMode: "cache", transcriptRetentionEnabled: true, transcriptRetentionDays: 14 };
+    const patch = buildAgentUpdatePatch(agent, makeOverlay({ adapterConfig: { env: { PAPERCLIP_CLAUDE_PLUGIN_IMPORT_MODE: "off" } } }));
+    expect(patch).not.toHaveProperty("adapterConfigDefaults");
+    expect(patch.adapterConfig).not.toHaveProperty("profileImportMode");
+    expect(patch.adapterConfig).not.toHaveProperty("transcriptRetentionEnabled");
+    expect(patch.adapterConfig).not.toHaveProperty("transcriptRetentionDays");
+    expect(patch.adapterConfig).toMatchObject({ env: { PAPERCLIP_CLAUDE_PLUGIN_IMPORT_MODE: "off" } });
+  });
   it("merges the agent-scoped provider trace debug setting into runtime config", () => {
     const patch = buildAgentUpdatePatch(
       makeAgent(),
@@ -173,4 +183,18 @@ describe("buildAgentUpdatePatch", () => {
       desiredSkills: ["research", "code-review"],
     });
   });
+});
+
+it.each([0, -1, 1.5, NaN, Infinity])("blocks the Save callback for invalid retention days %s", days => {
+  const onSave = vi.fn();
+  expect(() => onSave(buildAgentUpdatePatch(makeAgent(), makeOverlay({
+    adapterConfig: { transcriptRetentionEnabled: false, transcriptRetentionDays: days },
+  })))).toThrow("positive integer");
+  expect(onSave).not.toHaveBeenCalled();
+});
+it("allows clearing retention days to restore the inherited default", () => {
+  const agent = makeAgent();
+  agent.adapterConfig.transcriptRetentionDays = 7;
+  expect(buildAgentUpdatePatch(agent, makeOverlay({ adapterConfig: { transcriptRetentionDays: undefined } })).adapterConfig)
+    .not.toHaveProperty("transcriptRetentionDays");
 });

@@ -1,4 +1,4 @@
-import { ADAPTER_AGNOSTIC_KEYS, type Agent } from "@paperclipai/shared";
+import { agentAdapterRuntimePolicySchema, ADAPTER_AGNOSTIC_KEYS, type Agent } from "@paperclipai/shared";
 
 export interface AgentConfigOverlay {
   runner?: import("@paperclipai/shared").AgentRunnerChoice;
@@ -45,7 +45,7 @@ export function buildAgentUpdatePatch(agent: Agent, overlay: AgentConfigOverlay)
             ...overlay.adapterConfig,
           };
 
-    patch.adapterConfig = omitUndefinedEntries(nextAdapterConfig);
+    patch.adapterConfig = agentAdapterRuntimePolicySchema.parse(omitUndefinedEntries(nextAdapterConfig));
     patch.replaceAdapterConfig = true;
   }
 

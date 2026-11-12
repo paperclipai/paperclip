@@ -34,6 +34,7 @@ export interface AdapterConfigFieldsProps {
   set: ((patch: Partial<CreateConfigValues>) => void) | null;
   /** Edit mode: original adapterConfig from agent */
   config: Record<string, unknown>;
+  displayDefaults?: Record<string, unknown>;
   /** Edit mode: read effective value */
   eff: <T>(group: "adapterConfig", field: string, original: T) => T;
   /** Edit mode: mark field dirty */
