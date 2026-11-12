@@ -715,6 +715,12 @@
       "provider": "Unikraft",
       "catalogVisible": true,
       "localAsset": "/brands/apps/unikraft.svg"
+    },
+    {
+      "slug": "gitlab",
+      "provider": "GitLab",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/gitlab.svg"
     }
   ]
 }

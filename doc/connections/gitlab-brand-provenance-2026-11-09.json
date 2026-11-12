@@ -1,0 +1,16 @@
+{
+ "retrievedAt": "2026-11-09",
+ "providers": [
+  {
+   "slug": "gitlab",
+   "provider": "GitLab",
+   "catalogVisible": true,
+   "localAsset": "/brands/apps/gitlab.svg",
+   "sourceUrl": "https://gitlab.com/gitlab-org/gitlab-svgs/-/raw/main/illustrations/gitlab_logo.svg",
+   "sourceContext": "https://gitlab.com/gitlab-org/gitlab-svgs (official GitLab SVG library, illustrations/gitlab_logo.svg)",
+   "retrievedAt": "2026-11-09",
+   "sha256": "f4c5c477c2f974565b4afd3036c0651a364d1d5f99bd065119e846d7d0701722",
+   "note": "Official GitLab tanuki; retained without modification. Same artwork serves light and dark frames."
+  }
+ ]
+}
