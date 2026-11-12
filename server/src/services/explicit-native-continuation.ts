@@ -1,3 +1,4 @@
+import { preservedResultHasStop } from "./native-runtime/preserved-native-result-finalization.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
 import { agentDirectoryPreparationWaitPredicate, isAgentDirectoryPreparationWait } from "./pre-dispatch-execution-evidence.js";
 import { assertDurableChatWakeupRequest, assertDurableChatWakeupReceipt, type DurableChatWakeupRequest } from "./durable-chat-wakeup.js";
@@ -17,7 +18,7 @@ import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { canContinueCancelledRun, userStopBoundaryAt } from "./run-cancellation.js";
 import { readQueuedInteractionResponse } from "./queued-interaction-response.js";
 import { isCancelledNativeStartup, isFailedNativePreparation, isFailedNativePreparationRetryAncestor } from "./cancelled-native-startup.js";
-import { hasNativeLocalProcessStop, hasHistoricalSuspendedNativeSession, nativeGatedRunNeverLaunched, nativeRunNeverLaunched, recordedLocalExecutionStopped, recordUnidentifiedLocalRunnerStop } from "./native-local-process-stop.js";
+import { releaseSettledNativeRunProcess, hasNativeLocalProcessStop, hasHistoricalSuspendedNativeSession, nativeGatedRunNeverLaunched, nativeRunNeverLaunched, recordedLocalExecutionStopped, recordUnidentifiedLocalRunnerStop } from "./native-local-process-stop.js";
 import { completeTerminatedLocalNativeSessionCleanup, completeTerminatedRemoteNativeSessionCleanup, nativeSessionCleanupBlock } from "../vendor/paperclip-runner/index.js";
 import { hasRecoveredCleanupStopReceipt, hasRemoteTerminationReceipt, remoteLeaseCleanupScope } from "./remote-execution-termination.js";
 import { z } from "zod";
@@ -482,15 +483,17 @@ export async function admitExplicitNativeContinuation(input: {
     if (cancelledStartup) cancelledStartupIds.add(run.id);
     if (run.runtimeMode !== "native" && !unusedAdmission && !legacyUserTurn && !cancelledStartup) return null;
     // A provider failure can finish the normal result/assessment commit path.
-    // Its accepted failed result is immutable history, not a live controller.
+    // A matching committed cancellation also remains history for a task Retry
+    // without a recorded Stop. Neither accepted result is a live controller.
     // Only a new user turn may pass this gate; the process/lease stop proofs
     // below remain mandatory and no previous action is automatically replayed.
-    const [committedFailure] = coordinator?.phase === "committed" && coordinator.resultId && run.status === "failed"
+    const committedCancelledRetry = Boolean(taskRetry && run.status === "cancelled" && !preservedResultHasStop(run.resultJson));
+    const [committedTerminalResult] = coordinator?.phase === "committed" && coordinator.resultId && (run.status === "failed" || committedCancelledRetry)
       ? await db.select({ id: nativeRunResults.id }).from(nativeRunResults).where(and(
           eq(nativeRunResults.companyId, companyId), eq(nativeRunResults.issueId, issueId),
           eq(nativeRunResults.runId, run.id), eq(nativeRunResults.id, coordinator.resultId),
           eq(nativeRunResults.schemaStatus, "accepted"),
-          sql`${nativeRunResults.resultJson}->'terminal'->>'runTerminalState' = 'failed'`,
+          sql`${nativeRunResults.resultJson}->'terminal'->>'runTerminalState' = ${run.status}`,
         )).limit(1)
       : [];
     // A terminal failure may retain a result accepted before checkpoint or
@@ -509,7 +512,7 @@ export async function admitExplicitNativeContinuation(input: {
     const preservedFailure = migratedSource?.issueId === issueId
       && migratedSource.unresolvedFinalization?.phase === coordinator?.phase;
     if (!cancelledStartup && coordinator && (
-        (coordinator.phase !== "terminal_failure" && !committedFailure && !preservedFailure) || coordinator.leaseOwner ||
+        (coordinator.phase !== "terminal_failure" && !committedTerminalResult && !preservedFailure) || coordinator.leaseOwner ||
         coordinator.failureDetail?.successorRunId)) return blocked("controller_settling",
           run.status === "cancelled" && !coordinator.leaseOwner
             ? "The cancelled run still needs verified cleanup. Your message is saved. Inspect the run and its environment for details."
@@ -534,6 +537,9 @@ export async function admitExplicitNativeContinuation(input: {
       if (!unusedAdmission && !cancelledStartup && !failedPreparation) {
         if (freshIntent && (run.processPid || run.processGroupId) && !await recordedLocalExecutionStopped(db, run))
           return blocked("process_identity_missing", "Paperclip is verifying that the previous session stopped.");
+        if (!input.dryRun && run.runtimeMode === "native" && !run.processPid && !run.processGroupId &&
+            !await hasNativeLocalProcessStop(db, companyId, run.id))
+          await releaseSettledNativeRunProcess(db, run.id);
         // A missing process identity is not evidence that a provider exited.
         if (!run.processPid && !run.processGroupId &&
             !await hasNativeLocalProcessStop(db, companyId, run.id) &&

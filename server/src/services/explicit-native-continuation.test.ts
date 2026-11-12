@@ -1,3 +1,4 @@
+import * as processIdentity from "./controller-process-identity.js";
 import { legacyControllerBootId } from "./legacy-controller-lease.js";
 import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
@@ -35,6 +36,15 @@ import { heartbeatService, persistHeartbeatRunProcessMetadata, type HeartbeatEnv
 import { getExecutionBlocker } from "./execution-blocker.js";
 import { createDurableChatWakeupRequest } from "./durable-chat-wakeup.js";
 import { recordNativeFinalizationFailure } from "./native-runtime/native-run-finalizer.js";
+function qualifiedProcessSpace() {
+  const actual = processIdentity.currentProcessSpaceHash();
+  if (actual !== "unknown") return { hash: actual, restore() {} };
+  const hash = "1".repeat(32);
+  const current = vi.spyOn(processIdentity, "currentProcessSpaceHash").mockReturnValue(hash);
+  const matches = vi.spyOn(processIdentity, "sameProcessSpace").mockImplementation(recorded => recorded === hash);
+  return { hash, restore() { current.mockRestore(); matches.mockRestore(); } };
+}
+
 const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_CONTINUATION_TEST_DATABASE_URL");
 const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("explicit native conversation continuation", () => {
@@ -2484,6 +2494,53 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
         expect(await getExecutionBlocker(db, f.companyId, f.issueId)).not.toBeNull();
       }
     });
+  it.each(["settled", "cleared identity", "mismatched result", "rejected result", "controller", "successor", "pending lease", "live process", "operator stop", "native stop", "missing stop"] as const)(
+    "task Retry retains a committed cancelled result and checks cleanup: %s", async scenario => {
+      const f = await seed(), contractId = randomUUID(), resultId = randomUUID(), requestId = randomUUID();
+      await db.insert(completionContracts).values({ id: contractId, companyId: f.companyId, issueId: f.issueId,
+        revision: 1, schemaVersion: "paperclip.completion-contract.v1", policyVersion: "test", risk: "standard",
+        completionAuthority: "server_arbiter", incompleteCriteriaPolicy: "preserve_non_terminal", contractJson: {},
+        canonicalSha256: contractId, createdByActorType: "system", createdByActorId: "test" });
+      await db.update(heartbeatRuns).set({ completionContractId: contractId, status: "cancelled",
+        processPid: scenario === "live process" ? process.pid : scenario === "missing stop" ? null : 999999999,
+        resultJson: scenario === "operator stop" ? { cancelledByUserId: "board" } : scenario === "native stop" ? { nativeCancellation: { requested: true } } : {},
+      }).where(eq(heartbeatRuns.id, f.sourceRunId));
+      await db.insert(nativeRunResults).values({ id: resultId, companyId: f.companyId, issueId: f.issueId,
+        runId: f.sourceRunId, completionContractId: contractId, serverFingerprint: resultId,
+        schemaStatus: scenario === "rejected result" ? "rejected" : "accepted", canonicalSha256: resultId,
+        resultJson: { terminal: { runTerminalState: scenario === "mismatched result" ? "failed" : "cancelled" } } });
+      await db.update(nativeRunFinalizations).set({ resultId, phase: "committed",
+        leaseOwner: scenario === "controller" ? "active-controller" : null,
+        failureDetail: scenario === "successor" ? { successorRunId: randomUUID() } : null,
+      }).where(eq(nativeRunFinalizations.runId, f.sourceRunId));
+      const space = scenario === "cleared identity" ? qualifiedProcessSpace() : null;
+      if (scenario === "cleared identity") {
+        await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.sourceRunId));
+        await db.update(heartbeatRuns).set({ processPid: null, processGroupId: null, processStartedAt: null,
+          processHostHash: space!.hash, runnerProfileJson: { sessionCheckpoint: { fixture: true } } }).where(eq(heartbeatRuns.id, f.sourceRunId));
+        await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId: f.sourceRunId, agentId: f.agentId,
+          eventType: PROCESS_IDENTITY_RECORDED, payload: { targetKind: "local", hostname: os.hostname(),
+            processPid: 999999999, processGroupId: null, processStartedAt: "2026-09-11T09:55:00.000Z" } });
+      }
+      if (scenario === "pending lease") await db.insert(environmentLeases).values({ companyId: f.companyId,
+        heartbeatRunId: f.sourceRunId, issueId: f.issueId, status: "pending_cleanup", provider: "local" });
+      await db.insert(agentWakeupRequests).values({ id: requestId, companyId: f.companyId, agentId: f.agentId,
+        source: "on_demand", triggerDetail: "manual", reason: "task_retry", status: "deferred_issue_execution",
+        requestedByActorType: "user", requestedByActorId: "board", payload: { issueId: f.issueId,
+          taskRetry: { schema: "paperclip.task-retry.v1", generationId: requestId, sourceRunId: f.sourceRunId,
+            actorId: "board", actorSource: "session", strategy: "evaluate" } } });
+      const result = await db.transaction(async tx => {
+        await tx.select().from(issues).where(eq(issues.id, f.issueId)).for("update");
+        return admitExplicitNativeContinuation({ ...f, db: tx as unknown as Db,
+          reason: "task_retry", commentId: null, taskRetryRequestId: requestId });
+      }).finally(() => space?.restore());
+      if (scenario === "settled" || scenario === "cleared identity") expect(result).toMatchObject({ previousRunId: f.sourceRunId, taskRetryRequestId: requestId });
+      else expect(result).toBeNull();
+      expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.sourceRunId)))[0])
+        .toMatchObject({ phase: "committed", resultId });
+      expect((await db.select().from(nativeRunResults).where(eq(nativeRunResults.id, resultId)))[0]).toBeDefined();
+    });
+
   async function seedResultBeforeTerminalFailure(f: Fixture) {
     const contractId = randomUUID(), resultId = randomUUID();
     await db.insert(completionContracts).values({ id: contractId, companyId: f.companyId, issueId: f.issueId,
