@@ -30,7 +30,7 @@ import { applyOwnershipReportBackstops, registerOwnershipReconciliationWork } fr
 import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { notifyNativeFinalizationWork } from "../services/native-finalization-notifications.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
-import { listUndispatchedQueuedRuns } from "../services/queued-run-dispatch-liveness.js";
+import { listUndispatchedQueuedRuns, readUndispatchedQueuedRuns } from "../services/queued-run-dispatch-liveness.js";
 import { releaseLapsedCoordinatorOwner } from "../services/workspace-recovery-stop-proof.js";
 import { subscribeDatabaseWork } from "@paperclipai/db/work-signals";
 import {
@@ -1031,6 +1031,20 @@ describe("report-only ownership reconciliation", () => {
       vi.stubEnv("PAPERCLIP_HOME", home);
       vi.stubEnv("SANDBOX_ORPHAN_CLEANUP_SPOOL_DIR", orphanSpool);
     }
+  });
+
+  it("reads undispatched queued runs in bounded slices that resume from a cursor, and skips an agent with a scheduled retry", async () => {
+    const created = [30, 29, 28].map(minutesAgo);
+    const runs = await db.insert(heartbeatRuns).values(created.map(createdAt =>
+      ({ companyId, agentId, status: "queued", invocationSource: "automation", createdAt }))).returning();
+    const first = await readUndispatchedQueuedRuns(db, { pageSize: 1, maxRuns: 2 });
+    expect(first.runs.map(run => run.runId)).toEqual([runs[0]!.id, runs[1]!.id]);
+    expect(first.next).not.toBeNull();
+    const rest = await readUndispatchedQueuedRuns(db, { pageSize: 1, maxRuns: 2, after: first.next });
+    expect(rest).toEqual({ runs: [expect.objectContaining({ runId: runs[2]!.id })], next: null });
+    await db.insert(heartbeatRuns).values({ companyId, agentId, status: "scheduled_retry", invocationSource: "automation",
+      scheduledRetryAt: new Date(Date.now() + 60_000) });
+    expect(await listUndispatchedQueuedRuns(db)).toEqual([]);
   });
 
   it("signals queued-run dispatch when finalization work settles or a finished coordinator's lapsed owner is released", async () => {
