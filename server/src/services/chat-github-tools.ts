@@ -431,7 +431,7 @@ export async function githubGuestBotConnectionForSession(
         eq(heartbeatRuns.id, session.runId),
       ),
     );
-  const commentId = run ? await chatRunSourceMessageId(db, run, { allowLegacyWakeComment: true, provider: "github" }) : null;
+  const commentId = run ? await chatRunSourceMessageId(db, run, { allowLegacyWakeComment: true, provider: "github", stopAtOtherTask: true }) : null;
   if (typeof commentId !== "string") return null;
   const [source] = await guestSource(commentId);
   return source?.connectionId ?? null;
