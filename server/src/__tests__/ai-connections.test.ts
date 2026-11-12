@@ -2442,8 +2442,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     }
     // Managed harnesses still inherit a compatible binding.
     const managedResult = defaultAiConnectionForHire("claude_local", { model: "test", provider: "acpx" }, managerBinding);
-    expect(managedResult).toBeDefined();
-    expect(managedResult?.provider).toBe("anthropic");
+    expect(managedResult).toMatchObject({ provider: "anthropic" });
     // Managed harnesses without a provider default keep inheriting an installed connection.
     expect(defaultAiConnectionForHire("hermes_local", { model: "test", provider: "acpx" }, {
       provider: "anthropic", method: "api_key", mode: "shared",
