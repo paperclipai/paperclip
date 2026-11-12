@@ -290,16 +290,17 @@ describe("Codex app-server Codex driver", () => {
       expect(recoveryTransport.calls.some(call => ["turn/start", "thread/start", "turn/interrupt"].includes(call.method))).toBe(false);
     });
 
-    it("detaches and keeps the Runner when the recovery deadline aborts a hung read", async () => {
+    it("still stops the Runner when an abort (a Stop or the recovery deadline) ends a hung read", async () => {
       const controller = new AbortController();
       const { recovery, close, detach } = await recoverWith(method => {
         if (method !== "thread/read") return null;
-        setTimeout(() => controller.abort(new Error("native session provider recovery timed out")), 0);
+        setTimeout(() => controller.abort(new Error("Stop requested")), 0);
         return new Promise<never>(() => {});
       }, controller.signal);
-      await expect(recovery).rejects.toThrow("native session provider recovery timed out");
-      expect(detach).toHaveBeenCalledTimes(1);
-      expect(close).not.toHaveBeenCalled();
+      await expect(recovery).rejects.toThrow("Stop requested");
+      expect(detach).not.toHaveBeenCalled();
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(close.mock.calls[0]).toEqual([]);
     });
 
     it.each([

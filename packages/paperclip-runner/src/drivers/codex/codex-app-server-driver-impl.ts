@@ -97,7 +97,6 @@ export function isTransientRunnerRecoveryFailure(error: unknown): boolean {
 function bootstrapCancellation(
   transport: CodexAppServerTransport,
   signal: AbortSignal | undefined,
-  options: { keepRunnerOnAbort?: boolean } = {},
 ): BootstrapCancellation {
   let closePromise: Promise<void> | null = null;
   const close = (keepRunner = false): Promise<void> => {
@@ -118,7 +117,7 @@ function bootstrapCancellation(
     // until its pending RPCs have been rejected and TERM/KILL cleanup has
     // completed. The cancellation reason remains authoritative if cleanup
     // itself reports a secondary failure.
-    void close(options.keepRunnerOnAbort === true).then(
+    void close().then(
       () =>
         rejectAborted(signal?.reason ?? new Error("Codex bootstrap aborted")),
       () =>
@@ -470,12 +469,13 @@ export class CodexAppServerDriver implements HarnessDriver {
         activeTurnId: snapshot.activeTurnId,
       },
     });
-    // A recovery that times out or loses its transport on the way to a live
-    // Runner detaches from it, as a restart does, for the same run's next
+    // A recovery whose Runner command timed out or lost its transport detaches
+    // from the Runner, as a restart does, for the same run's next
     // reattachment: the Runner may still own an in-flight turn, and stopping
-    // or killing it loses the turn. Identity refusals, other recovery
-    // failures and protocol integrity faults still stop it.
-    const cancellation = bootstrapCancellation(transport, options.signal, { keepRunnerOnAbort: true });
+    // or killing it loses the turn. An abort (a Stop or the recovery
+    // deadline), identity refusals, other recovery failures and protocol
+    // integrity faults still close and stop it.
+    const cancellation = bootstrapCancellation(transport, options.signal);
     try {
       await cancellation.wait(this.#persistProcessOwnership(transport));
       const initialize = await cancellation.wait(this.#initialize(transport));
