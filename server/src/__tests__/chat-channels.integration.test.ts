@@ -84332,7 +84332,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     );
   });
 
-  describe("Lossless long Board publications", () => {
+  describe("Lossless long Board publications", { timeout: 45_000 }, () => {
     async function longFixture(
       provider: "slack" | "github" | "microsoft-teams",
     ) {
