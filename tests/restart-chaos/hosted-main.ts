@@ -98,14 +98,20 @@ export async function runHosted(argv: readonly string[]): Promise<number> {
     console.info(`Hosted run ${options.label}: results ${dir}`);
     return exit;
   } finally {
-    await saveRequests(dir, api.requests);
+    await saveRequests(dir, api.requests, options.mode);
     process.off("SIGINT", onSignal);
     process.off("SIGTERM", onSignal);
   }
 }
 
-export async function saveRequests(dir: string, requests: readonly RequestRecord[]): Promise<void> {
-  await writeFile(path.join(dir, "requests.jsonl"), requests.map(entry => JSON.stringify(entry)).join("\n") + (requests.length ? "\n" : ""), { mode: 0o600 });
+export function requestsFile(mode: HostedOptions["mode"], at = new Date()): string {
+  return mode === "run" ? "requests.jsonl" : `requests-${mode}-${at.toISOString().replace(/[:.]/g, "-")}.jsonl`;
+}
+
+export async function saveRequests(dir: string, requests: readonly RequestRecord[], mode: HostedOptions["mode"] = "run", at = new Date()): Promise<string> {
+  const file = path.join(dir, requestsFile(mode, at));
+  await writeFile(file, requests.map(entry => JSON.stringify(entry)).join("\n") + (requests.length ? "\n" : ""), { mode: 0o600 });
+  return file;
 }
 
 async function hostedSession(input: { options: HostedOptions; dir: string; timeline: Timeline; record: (kind: string, data: Record<string, unknown>) => void;

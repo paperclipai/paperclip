@@ -742,8 +742,10 @@ approvals, failure chains and next events from `/api/heartbeat-runs/:id/events`,
 subtasks from comments and the issue list. Per release the table counts failed runs and the time from the old
 build's last answer to each surviving run's next event. Web and API continuity are reported for both the health
 probe and every API request the harness made, counted separately: requests, failures, slow answers and the longest
-gap between successful answers. Every request, cleanup included, is saved to `requests.jsonl` at the end of every mode (time, method, path with ids
-replaced by `:id`, status, duration, and whether it was a health probe), and the summary breaks failures down by status and by
+gap between successful answers. Every request, cleanup included, is saved at the end of every mode with its time, method, path
+with ids replaced by `:id`, status, duration, and whether it was a health probe. A run writes `requests.jsonl`;
+`--hosted-cleanup-only` and `--hosted-observe-only` write their own `requests-<mode>-<time>.jsonl`, so a later call never
+replaces a run's records. The summary breaks failures down by status and by
 inside or outside a release window (from the old build's last answer to 60 s after the new build answers). A health probe fails unless `/api/health` answers 200 with a readable body. An API request fails
 on no answer, a server error, or 401, 403, 408 or 429; a deliberate 400, 404, 409 or 422 answer is not a failure. Runs come from the company run list, or from every task's
 run list when that list is full, so no task's early runs are lost. A queued or running run with no activity for 5

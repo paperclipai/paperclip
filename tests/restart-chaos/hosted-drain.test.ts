@@ -107,6 +107,17 @@ describe("hosted request records", () => {
     expect((await readFile(path.join(dir, "requests.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line).path)).toEqual(["/api/issues/:id", "/api/agents/:id"]);
   });
 
+  it("keeps a run's requests when a later cleanup-only or observe-only call uses the same label", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "hosted-requests-"));
+    dirs.push(dir);
+    const record = (method: string): RequestRecord => ({ at: 1, ok: true, reachable: true, status: 200, ms: 5, method, kind: "api", path: "/api/agents/:id" });
+    await saveRequests(dir, [record("GET")], "run");
+    const cleanup = await saveRequests(dir, [record("DELETE")], "cleanup", new Date("2026-11-12T23:00:00.000Z"));
+    expect(path.basename(cleanup)).toBe("requests-cleanup-2026-11-12T23-00-00-000Z.jsonl");
+    expect(JSON.parse(await readFile(path.join(dir, "requests.jsonl"), "utf8")).method).toBe("GET");
+    expect(JSON.parse(await readFile(cleanup, "utf8")).method).toBe("DELETE");
+  });
+
   it("marks a health answer that is not a readable 200 as failed in the saved record too", async () => {
     const answers = [new Response("not json", { status: 200 }), new Response("{}", { status: 404 })];
     const api = new HostedApi(hostedTarget("https://release-proof-1.staging.paperclip.app", "release-proof-1.staging.paperclip.app"), "t", 1_000,
