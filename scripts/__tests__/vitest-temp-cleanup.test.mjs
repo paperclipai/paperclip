@@ -6,7 +6,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const vitest = path.join(root, "node_modules/vitest/vitest.mjs");
 const api = fileURLToPath(new URL("../../node_modules/vitest/dist/index.js", import.meta.url));
