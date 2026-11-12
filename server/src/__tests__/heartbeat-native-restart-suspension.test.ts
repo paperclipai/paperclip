@@ -948,6 +948,36 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
       } finally { probe.restore(); unknown?.mockRestore(); }
     }, 60_000);
 
+    it("ends an unverifiable run on the first look once its controller's lease lapsed longer ago than the bound", async () => {
+      // A successor that boots (or first scans) minutes after the old server left
+      // must not restart the 2-minute wait from its own first observation.
+      const f = await seedClaim("CLAIM-SPACE-LAPSED-LONG-AGO", "expired", "foreign-process-space");
+      await f.db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(Date.now() - 3 * 60_000) })
+        .where(eq(nativeRunFinalizations.runId, f.runId));
+      const probe = observeOwnerPid(), onClaim = vi.fn();
+      try {
+        const dispositions = await claimNativeRestartRecoveries({ db: f.db, restartKind: "hard", runIds: [f.runId], onClaim });
+        expect(dispositions).toEqual([{ kind: "blocked", runId: f.runId, reason: "controller_process_space_unverified" }]);
+        expect(probe.observed).toEqual([]);
+        expect(onClaim).not.toHaveBeenCalled();
+        expect((await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0])
+          .toMatchObject({ status: "failed", errorCode: "native_restart_recovery_blocked" });
+      } finally { probe.restore(); }
+    }, 60_000);
+
+    it("schedules the recheck for the end of the bound measured from the lease lapse", async () => {
+      const f = await seedClaim("CLAIM-SPACE-LAPSED-RECENTLY", "expired", "foreign-process-space");
+      const lapsedAt = Date.now() - 30_000;
+      await f.db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(lapsedAt) }).where(eq(nativeRunFinalizations.runId, f.runId));
+      const probe = observeOwnerPid();
+      try {
+        const [disposition] = await claimNativeRestartRecoveries({ db: f.db, restartKind: "hard", runIds: [f.runId], onClaim: vi.fn() });
+        expect(disposition).toMatchObject({ kind: "awaiting_evidence", reason: "controller_process_space_unverified" });
+        const retryAt = (disposition as { retryAt: Date }).retryAt.getTime();
+        expect(Math.abs(retryAt - (lapsedAt + 2 * 60_000))).toBeLessThan(5_000);
+      } finally { probe.restore(); }
+    }, 60_000);
+
     it("keeps a real controller-only attestation from authorizing an in-flight claim", async () => {
       const f = await seedClaim("CLAIM-CONTROLLER-ONLY", "expired", "foreign-process-space");
       const [before] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
