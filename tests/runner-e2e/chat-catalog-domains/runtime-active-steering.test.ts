@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { gradeActiveSteering, isBlueColor, hasVisibleBlueDesign, steerDeliveryRevisionBound, steeringBranch } from "./runtime-active-steering.js";
+import { finalSteeredArtifact, gradeActiveSteering, isBlueColor, hasVisibleBlueDesign, steerDeliveryRevisionBound, steeringBranch } from "./runtime-active-steering.js";
 function valid() {
   return { scenarioId: "steering.steer-active", companyId: "company", leadId: "ceo", agents: [], links: [], humanQueries: [], reply: "", tasks: [{ id: "website" }], activity: [],
     runs: [{ id: "worker", status: "succeeded" }, { id: "source", status: "succeeded" }],
@@ -9,7 +9,7 @@ function valid() {
       steerControlEnabled: true, continuationControlVisible: false, unsupportedStateRetained: false, steeredActivityCount: 1,
       queryReply: "Use Steer beside your saved message to send this direction to Morgan's active turn; waiting in the queue is separate from delivery.",
       steerObservedBranch: "same-run-acknowledged", steerStatus: 200, acknowledgedSameRun: true, steerAuditBound: true, idempotentRetryStatus: 200, ordinaryConsumerCount: 0,
-      actualBlueArtifact: true, deliveryRevisionBound: true, workerTaskDone: true, queueEmptyAtEnd: true,
+      actualBlueArtifact: true, artifactRegisteredAfterDirection: true, deliveryRevisionBound: true, workerTaskDone: true, queueEmptyAtEnd: true,
       steerFailureCode: "" as string | undefined, providerFailureVisible: false, failureRetainedMessage: false, supportedContinuationVisible: false, continuationInputBound: false } };
 }
 it("accepts real explicit same-turn delivery and actual blue result", () => expect(gradeActiveSteering(valid()).passed).toBe(true));
@@ -103,8 +103,29 @@ describe("website-delivery document after a same-turn steer with a queued relay"
   const doc = (latest: string) => ({ documents: [{ id: "doc", key: "website-delivery", issueId: "website", latestRevisionId: latest }],
     revisions: [{ id: "r1", documentId: "doc", createdByRunId: "worker", createdByAgentId: "morgan" }, { id: "r2", documentId: "doc", createdByRunId: "relay-consumer", createdByAgentId: "morgan" },
       { id: "r3", documentId: "doc", createdByRunId: "other", createdByAgentId: "morgan" }] });
-  it("accepts the steered turn's own revision", () => expect(steerDeliveryRevisionBound(doc("r1") as never, "website", "morgan", "worker")).toBe(true));
-  it("accepts a later revision by the relay consumer", () => expect(steerDeliveryRevisionBound(doc("r2") as never, "website", "morgan", "worker", "relay-consumer")).toBe(true));
-  it("rejects a later revision by the relay consumer when no relay was queued", () => expect(steerDeliveryRevisionBound(doc("r2") as never, "website", "morgan", "worker")).toBe(false));
-  it("rejects a revision by any other run", () => expect(steerDeliveryRevisionBound(doc("r3") as never, "website", "morgan", "worker", "relay-consumer")).toBe(false));
+  it("accepts the steered turn's own revision", () => expect(steerDeliveryRevisionBound(doc("r1") as never, "website", "morgan", ["worker"])).toBe(true));
+  it("accepts a later revision by the relay consumer", () => expect(steerDeliveryRevisionBound(doc("r2") as never, "website", "morgan", ["worker", "relay-consumer"])).toBe(true));
+  it("rejects a later revision by the relay consumer when no relay was queued", () => expect(steerDeliveryRevisionBound(doc("r2") as never, "website", "morgan", ["worker"])).toBe(false));
+  it("rejects a revision by any other run", () => expect(steerDeliveryRevisionBound(doc("r3") as never, "website", "morgan", ["worker", "relay-consumer"])).toBe(false));
+});
+
+// Full cohort 5 on 98c18784c6: Morgan read the queued blue direction from task history in its original run, applied it
+// and registered website.html there; the normal continuation then consumed the message once and had nothing to change.
+describe("the final website may come from either of the worker's runs, once, after the direction", () => {
+  const direction = "2026-11-12T06:56:00.000Z";
+  it("accepts a blue website registered by the original run after the direction, with the continuation registering none", () => {
+    expect(finalSteeredArtifact([{ runId: "worker", registeredAt: "2026-11-12T06:57:00.000Z", blue: true }], direction))
+      .toEqual({ runId: "worker", blue: true, registeredAfterDirection: true });
+    const o = unsupported(); Object.assign(o.state, { artifactRunId: "worker" }); expect(gradeActiveSteering(o).passed).toBe(true);
+  });
+  it("uses the website registered last: a blue continuation over an earlier plain one passes, a later plain one fails", () => {
+    expect(finalSteeredArtifact([{ runId: "worker", registeredAt: "2026-11-12T06:57:00.000Z", blue: false }, { runId: "ordinary", registeredAt: "2026-11-12T06:58:00.000Z", blue: true }], direction)?.blue).toBe(true);
+    expect(finalSteeredArtifact([{ runId: "worker", registeredAt: "2026-11-12T06:58:00.000Z", blue: false }, { runId: "ordinary", registeredAt: "2026-11-12T06:57:00.000Z", blue: true }], direction)?.blue).toBe(false);
+  });
+  it("rejects a website registered before the direction was saved, no website, or a second consumption", () => {
+    expect(finalSteeredArtifact([{ runId: "worker", registeredAt: "2026-11-12T06:55:00.000Z", blue: true }], direction)?.registeredAfterDirection).toBe(false);
+    expect(finalSteeredArtifact([], direction)).toBeUndefined();
+    const early = unsupported(); Object.assign(early.state, { artifactRegisteredAfterDirection: false }); expect(gradeActiveSteering(early).passed).toBe(false);
+    const twice = unsupported(); Object.assign(twice.state, { ordinaryConsumerCount: 2 }); expect(gradeActiveSteering(twice).passed).toBe(false);
+  });
 });
