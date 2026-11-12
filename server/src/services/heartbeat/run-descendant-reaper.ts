@@ -35,17 +35,71 @@ function lineagePath(runId: string) {
   return path.resolve(lineageDir(), `${runId}.json`);
 }
 
-async function saveLineage(lineage: RunProcessLineage) {
+// Saves and removals of one run's file run one at a time, in call order, so
+// an older snapshot never replaces a newer one and a removal is never undone
+// by a save that was still in progress.
+const lineageFileOps = new Map<string, Promise<unknown>>();
+
+function queueLineageFileOp<T>(runId: string, op: () => Promise<T>): Promise<T> {
+  const previous = lineageFileOps.get(runId) ?? Promise.resolve();
+  const next = previous.then(op, op);
+  const settled = next.catch(() => undefined);
+  lineageFileOps.set(runId, settled);
+  void settled.then(() => {
+    if (lineageFileOps.get(runId) === settled) lineageFileOps.delete(runId);
+  });
+  return next;
+}
+
+let lineageTmpSeq = 0;
+// Runs whose last save failed and was logged; a save that keeps failing is
+// retried on every sample but logged once.
+const saveFailureLogged = new Set<string>();
+
+/** Writes the lineage's current snapshot. Returns false when the write failed. */
+async function writeLineageFile(lineage: RunProcessLineage) {
   const file = lineagePath(lineage.runId);
-  if (!file) return;
+  if (!file) return true;
+  // Each write has its own temporary file, so a rename can only publish a
+  // complete snapshot.
+  const tmp = `${file}.${process.pid}.${++lineageTmpSeq}.tmp`;
   try {
     await fs.mkdir(lineageDir(), { recursive: true, mode: 0o700 });
-    const tmp = `${file}.${process.pid}.tmp`;
     await fs.writeFile(tmp, JSON.stringify(lineage.toSnapshot()), { mode: 0o600 });
     await fs.rename(tmp, file);
+    saveFailureLogged.delete(lineage.runId);
+    return true;
   } catch (err) {
-    logger.warn({ err, runId: lineage.runId }, "failed to save run process lineage");
+    if (!saveFailureLogged.has(lineage.runId)) {
+      saveFailureLogged.add(lineage.runId);
+      logger.warn({ err, runId: lineage.runId }, "failed to save run process lineage");
+    }
+    await fs.rm(tmp, { force: true }).catch(() => undefined);
+    return false;
   }
+}
+
+function saveLineage(lineage: RunProcessLineage) {
+  return queueLineageFileOp(lineage.runId, () => writeLineageFile(lineage));
+}
+
+// Tracked runs whose latest recorded processes are not on disk yet. A run
+// stays here until a save succeeds, so a failed save is retried on the next
+// sample even when the process set has not changed again.
+const unsavedRuns = new Set<string>();
+
+async function persistTrackedLineage(lineage: RunProcessLineage) {
+  const { runId } = lineage;
+  if (lineage.takeChanged()) unsavedRuns.add(runId);
+  if (!unsavedRuns.has(runId)) return;
+  await queueLineageFileOp(runId, async () => {
+    // Reaped meanwhile: the reap owns the file now.
+    if (trackedRuns.get(runId) !== lineage) return;
+    // The write takes the snapshot when it runs, so it includes every change
+    // recorded before it; a later change sets the changed flag again.
+    if (await writeLineageFile(lineage)) unsavedRuns.delete(runId);
+    else if (trackedRuns.get(runId) === lineage) unsavedRuns.add(runId);
+  });
 }
 
 async function loadLineage(runId: string) {
@@ -59,14 +113,16 @@ async function loadLineage(runId: string) {
   }
 }
 
-async function removeLineage(runId: string) {
+function removeLineage(runId: string) {
   const file = lineagePath(runId);
-  if (!file) return;
-  try {
-    await fs.rm(file, { force: true });
-  } catch {
-    // Best effort; a stale file only adds identities that are checked again.
-  }
+  if (!file) return Promise.resolve();
+  return queueLineageFileOp(runId, async () => {
+    try {
+      await fs.rm(file, { force: true });
+    } catch {
+      // Best effort; a stale file only adds identities that are checked again.
+    }
+  });
 }
 
 // All procfs and file work is asynchronous, and a sample never overlaps the
@@ -80,7 +136,7 @@ async function sampleTrackedRunsOnce() {
     const table = await readRunProcessTableAsync();
     for (const lineage of [...trackedRuns.values()]) {
       await lineage.sampleAsync(table);
-      if (lineage.takeChanged() && trackedRuns.get(lineage.runId) === lineage) await saveLineage(lineage);
+      if (trackedRuns.get(lineage.runId) === lineage) await persistTrackedLineage(lineage);
     }
   } catch (err) {
     logger.warn({ err }, "failed to sample run process lineage");
@@ -123,6 +179,8 @@ export function setRunLineageSampleIntervalForTests(ms: number | null) {
  */
 export function forgetTrackedRunLineageForTests() {
   trackedRuns.clear();
+  unsavedRuns.clear();
+  saveFailureLogged.clear();
   stopSamplerIfIdle();
 }
 
@@ -154,7 +212,7 @@ export async function trackRunDescendants(input: { runId: string; rootPid?: numb
     }
     ensureSampler();
     await lineage.sampleAsync(await readRunProcessTableAsync());
-    if (lineage.takeChanged() && trackedRuns.get(input.runId) === lineage) await saveLineage(lineage);
+    if (trackedRuns.get(input.runId) === lineage) await persistTrackedLineage(lineage);
   } catch (err) {
     logger.warn({ err, runId: input.runId }, "failed to start run process lineage");
   }
@@ -211,9 +269,15 @@ export async function reapRunDescendants(input: {
 }): Promise<RunDescendantTerminateResult | null> {
   const tracked = trackedRuns.get(input.runId);
   trackedRuns.delete(input.runId);
+  unsavedRuns.delete(input.runId);
+  saveFailureLogged.delete(input.runId);
   stopSamplerIfIdle();
   try {
-    const lineage = tracked ?? (await loadLineage(input.runId)) ?? new RunProcessLineage(input.runId);
+    // Read the saved file only after any save still in progress has finished.
+    const lineage =
+      tracked ??
+      (await queueLineageFileOp(input.runId, () => loadLineage(input.runId))) ??
+      new RunProcessLineage(input.runId);
     const exclusions = registeredServiceExclusions(await listLocalServiceRegistryRecords());
     const result = await terminateRunMarkedProcesses(input.runId, {
       lineage,
