@@ -1,5 +1,5 @@
 import { sql, type SQL } from "drizzle-orm";
-import { livenessDb, type Db } from "@paperclipai/db";
+import { controllerLeaseDb, type Db } from "@paperclipai/db";
 import { publishDatabaseWorkHint } from "@paperclipai/db/work-signals";
 import { logger } from "../middleware/logger.js";
 import { currentControllerBootId, currentProcessSpaceHash } from "./controller-process-identity.js";
@@ -25,9 +25,13 @@ import { subscribeTaskDrainChanges, subscribeTaskDrainExpiry } from "./task-admi
  * `dispatching_at is not null and dispatch_lease_expires_at > now()
  *  and stopped_at is null and fenced_at is null`.
  *
- * Database use: marker writes are liveness writes on the server's small liveness
- * pool, so they never queue behind slow statements on the shared pool. Reads use
- * the shared pool. At most one read and one write are in flight, each bounded by
+ * Database use: marker writes run on the dedicated one-connection controller
+ * lease pool (shared only with legacy controller-lease renewals, never with
+ * native lease renewals or the shared pool), with a 1 s statement timeout. A
+ * write waits at most one legacy renewal batch (10 s statement timeout), which
+ * is inside the 15 s between a renewal and the lease's expiry; it delays a
+ * legacy renewal (60 s lease, renewed every 10 s) by at most 1 s. Reads use the
+ * shared pool. At most one read and one write are in flight, each bounded by
  * a statement timeout. An unanswered read never keeps this server yielding: a
  * dispatch that cannot get an answer within a second admits, and a yield always
  * ends when the replacement's last seen lease runs out on this server's clock.
@@ -51,7 +55,8 @@ const DEFAULT_TIMING = {
   /** A dispatch waits at most this long for that read; the read itself is cancelled by the database. */
   readWaitMs: 1_000,
   readStatementTimeoutMs: 2_000,
-  writeStatementTimeoutMs: 5_000,
+  /** Short, so a marker write can delay a legacy lease renewal on the shared lease connection by at most this. */
+  writeStatementTimeoutMs: 1_000,
   /** Skipped starts are announced to the replacement at most this often. */
   skipHintMinMs: 1_000,
 };
@@ -136,13 +141,13 @@ export function createRunStartHandover(input: {
         where older.epoch < controller_instances.epoch and older.boot_id <> ${bootId}
           and older.stopped_at is null and older.fenced_at is null
           and older.lease_expires_at > now() - ${interval(t.olderBootWindowMs)}) as "olderMayServe"`, t.writeStatementTimeoutMs,
-      livenessDb(db));
+      controllerLeaseDb(db));
     return row ?? null;
   }
 
   async function clearLease() {
     await bounded(sql`update controller_instances set dispatch_lease_expires_at = null
-      where boot_id = ${bootId} and dispatch_lease_expires_at is not null`, t.writeStatementTimeoutMs, livenessDb(db));
+      where boot_id = ${bootId} and dispatch_lease_expires_at is not null`, t.writeStatementTimeoutMs, controllerLeaseDb(db));
     // Only a clear that succeeded ends the marker; a failed one is retried by the next release or renewal.
     leaseHeld = false;
     markerMayBeLive = false;
@@ -162,7 +167,13 @@ export function createRunStartHandover(input: {
       // Counted from the attempt, so a failing database is retried on the renewal cadence, not in a loop.
       lastWriteAt = Date.now();
       markerMayBeLive = true;
-      const row = await writeLease();
+      let row: Awaited<ReturnType<typeof writeLease>>;
+      try { row = await writeLease(); }
+      catch (error) {
+        // Unconfirmed: the next successful write counts as regained and tells the older server again.
+        leaseHeld = false;
+        throw error;
+      }
       const regained = row !== null && !leaseHeld;
       leaseHeld = row !== null;
       // No older server left to hand over from: the lease lapses without further writes.

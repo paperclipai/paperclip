@@ -203,6 +203,38 @@ suite("run start hand-over between an old and a new server during a deploy overl
     await busy;
   });
 
+  it("renewals blocked past the TTL hand starts back once, then the replacement takes them again", async () => {
+    const old = await bootServer("old");
+    await old.handover.begin();
+    const next = await bootServer("new", { timing: { writeStatementTimeoutMs: 300 } });
+    await next.handover.begin();
+    await vi.waitFor(() => expect(old.handover.isActive()).toBe(true), { timeout: 10_000 });
+
+    // Every renewal is cancelled while the replacement's row is held, until its lease lapses.
+    let unlock!: () => void;
+    const locked = new Promise<void>(resolve => { unlock = resolve; });
+    let held!: () => void;
+    const holding = new Promise<void>(resolve => { held = resolve; });
+    const lock = admin.transaction(async tx => {
+      await tx.execute(sql`select 1 from controller_instances where process_space = 'new' for update`);
+      held();
+      await locked;
+    });
+    await holding;
+    await vi.waitFor(() => expect(old.resumed).toHaveBeenCalledTimes(1), { timeout: 10_000 });
+    expect(old.handover.isActive()).toBe(false);
+    expect(await dispatch(old, await queueRun())).toBe(true);
+
+    unlock();
+    await lock;
+    // The first renewal that succeeds again announces the marker, and the old server leaves starts to it.
+    await vi.waitFor(() => expect(old.handover.isActive()).toBe(true), { timeout: 10_000 });
+    expect(old.resumed).toHaveBeenCalledTimes(1);
+    const run = await queueRun();
+    expect(await dispatch(old, run)).toBe(false);
+    expect(await dispatch(next, run)).toBe(true);
+  });
+
   it("an older server that outlives the lease TTL keeps leaving starts to the renewing replacement", async () => {
     const old = await bootServer("old");
     await old.handover.begin();

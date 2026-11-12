@@ -2485,9 +2485,22 @@ is handed over, never paused.
     old. The pass waits at most 1 second for that read.
 
   The read is a single flight. A database statement timeout cancels it, so a
-  slow read never piles further reads onto the shared pool. Marker writes are
-  liveness writes and use the small liveness pool. An unanswered read never
-  keeps a server yielding:
+  slow read never piles further reads onto the shared pool. Marker writes use
+  the dedicated one-connection controller-lease pool with a 1 second statement
+  timeout. That pool is shared only with legacy controller-lease renewals, and
+  never with native lease renewals:
+  - A marker write waits behind at most one legacy renewal batch (bounded by
+    10 seconds). That fits inside the 15 seconds between a marker renewal and
+    the marker's expiry.
+  - A marker write delays a legacy renewal by at most 1 second. A legacy lease
+    lasts 60 seconds and is renewed every 10 seconds.
+
+  If marker renewals fail for longer than the lease, the old server starts runs
+  again once. The first renewal that succeeds afterwards announces the marker,
+  and the old server yields again. Each resume therefore needs at least 15
+  seconds of failed renewals, so the hand-over cannot flap faster than that.
+
+  An unanswered read never keeps a server yielding:
   - A read that fails leaves the server admitting.
   - A dispatch that gets no answer within 1 second admits.
   - A yield always ends when the replacement's last seen lease runs out on
