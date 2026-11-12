@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { McpAppViewSummary } from "@paperclipai/shared";
-import { matchMcpAppView, runIdFromToolItemId, toolRowMatchesView } from "./mcp-app-matching";
+import { matchMcpAppView, mcpAppViewIndexFor, runIdFromToolItemId, toolRowMatchesView } from "./mcp-app-matching";
 
 function view(id: string, overrides: Partial<McpAppViewSummary> = {}): McpAppViewSummary {
   return {
@@ -36,5 +36,31 @@ describe("mcp app matching", () => {
     expect(matchMcpAppView({ ...row, input: { meetingIds: ["a"] } }, views)?.id).toBe("a");
     expect(matchMcpAppView({ ...row, id: "run-2:tool:t9" }, views)?.id).toBe("c");
     expect(matchMcpAppView({ ...row, id: "run-3:tool:t9" }, views)).toBeNull();
+  });
+
+  it("picks the newest call when a run repeats identical arguments", () => {
+    const views = [view("first"), view("second")];
+    const row = { id: "run-1:tool:t2", rawName: "mcp__paperclip__displaymeetings", input: { meetingIds: ["a"] } };
+    expect(matchMcpAppView(row, views)?.id).toBe("second");
+  });
+
+  it("builds one index per view list and keeps lookups to the row's run", () => {
+    // Realistic upper bound: 200 saved views over 100 runs, 2,000 rendered rows.
+    const views = Array.from({ length: 200 }, (_, index) => view(`v${index}`, {
+      runId: `run-${index % 100}`,
+      toolInput: { meetingIds: [String(index)] },
+    }));
+    const index = mcpAppViewIndexFor(views);
+    expect(mcpAppViewIndexFor(views)).toBe(index);
+    const rows = Array.from({ length: 2000 }, (_, row) => ({
+      id: `run-${row % 100}:tool:t${row}`,
+      rawName: "mcp__paperclip__displaymeetings",
+      input: { meetingIds: [String(row % 200)] },
+    }));
+    const started = performance.now();
+    const matched = rows.map((row) => index.match(row));
+    expect(performance.now() - started).toBeLessThan(250);
+    expect(matched[0]?.id).toBe("v0");
+    expect(matched[150]?.id).toBe("v150");
   });
 });

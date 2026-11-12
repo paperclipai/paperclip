@@ -6274,6 +6274,8 @@ export function createToolGatewayService(
       .join("\n");
   }
 
+  const mcpResultMetaByResult = new WeakMap<object, Record<string, unknown>>();
+
   function normalizeMcpToolResult(
     result: unknown,
     transport: "mcp_http" | "local_stdio" | "cognee_cloud" = "mcp_http",
@@ -6293,7 +6295,7 @@ export function createToolGatewayService(
     const content = googleWorkspacePermissionDenied
       ? "Google rejected this call. Google Workspace MCP is a Developer Preview: enroll the signed-in Workspace account and this OAuth client's Google Cloud project in Google's Developer Preview Program, wait for Google's registration confirmation, then reconnect and try again."
       : providerContent;
-    return {
+    const normalized = {
       content,
       data: {
         content: record.content,
@@ -6302,12 +6304,15 @@ export function createToolGatewayService(
         transport,
         spawnedLocalProcess,
       },
-      // Kept for MCP Apps views; never forwarded to the agent.
-      ...(asRecord(record._meta) ? { meta: record._meta } : {}),
       ...(record.isError === true
         ? { error: "MCP tool returned an error result", ...githubFailure }
         : {}),
     };
+    // `_meta` is for MCP Apps views only. It rides beside the result, never in
+    // it, so no agent-facing path can return it.
+    const meta = asRecord(record._meta);
+    if (meta) mcpResultMetaByResult.set(normalized, meta);
+    return normalized;
   }
 
   function toolResultErrorMessage(result: Record<string, unknown>, failureInstructions?: string) {
@@ -11644,12 +11649,18 @@ export function createToolGatewayService(
         // execution report both outcomes.
         void emitConnectionInvoked(db, invocationId);
         if (connectedMcpExecution) {
+          const resultMeta = asRecord(connectedMcpExecution.result)
+            ? mcpResultMetaByResult.get(connectedMcpExecution.result as object)
+            : undefined;
           await recordMcpAppView(db, {
             session,
             tool,
             invocationId,
             toolInput: argumentValidation.value,
             result: resultValidation.value,
+            resultMeta: resultMeta
+              ? (await validateToolContent({ value: resultMeta, direction: "result", sensitiveMode: "redact", promptInjectionMode: "ignore" })).value
+              : undefined,
           });
         }
         return {

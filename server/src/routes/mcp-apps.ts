@@ -7,6 +7,7 @@ import { assertBoard, getAccessibleResource } from "./authz.js";
 import { connectionRequestUserId } from "./connection-management-authz.js";
 import { forbidden } from "../errors.js";
 import { accessService } from "../services/access.js";
+import { authorizationService } from "../services/authorization.js";
 import { mcpAppViewsService, toMcpAppViewSummary } from "../services/mcp-app-views.js";
 import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-gateway.js";
 
@@ -36,6 +37,14 @@ export function mcpAppsRoutes(db: Db, toolGateway: McpAppsGateway) {
     const [issue] = await db.select({ id: issues.id, companyId: issues.companyId }).from(issues)
       .where(eq(issues.id, req.params.issueId as string)).limit(1);
     if (!(await getAccessibleResource(req, res, issue, "Task not found"))) return;
+    // Company access is not enough: private tasks also need task read access.
+    const readable = await authorizationService(db).decide({ actor: req.actor, action: "issue:read", resource: {
+      type: "issue", companyId: issue.companyId, issueId: issue.id,
+    } });
+    if (!readable.allowed) {
+      res.status(404).json({ error: "Task not found" });
+      return;
+    }
     res.locals.mcpAppIssue = issue;
     res.setHeader("Cache-Control", "no-store");
     next();

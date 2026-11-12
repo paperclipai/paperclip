@@ -16,25 +16,25 @@ function record(value: unknown): Record<string, unknown> | null {
 }
 
 /** The tool's MCP Apps view declaration, when it was discovered from an MCP server. */
-export function mcpAppToolUi(tool: { providerType?: string; providerMetadata?: unknown }): McpAppToolUi | null {
+export function mcpAppToolUi(tool: { providerType?: string; providerMetadata?: unknown }): (McpAppToolUi & { resourceUri: string }) | null {
   if (tool.providerType !== "mcp_remote_http" && tool.providerType !== "mcp_local_stdio") return null;
   const ui = record(record(tool.providerMetadata)?.ui);
-  return typeof ui?.resourceUri === "string" ? ui as unknown as McpAppToolUi : null;
+  return typeof ui?.resourceUri === "string" ? ui as unknown as McpAppToolUi & { resourceUri: string } : null;
 }
 
 /**
  * Converts the gateway's normalized MCP result (`{ content, data: { content,
- * structuredContent, isError }, meta }`) back to the MCP `CallToolResult` the
- * view expects.
+ * structuredContent, isError } }`) and the provider `_meta` back to the MCP
+ * `CallToolResult` the view expects.
  */
-export function mcpAppCallToolResult(result: unknown): McpAppCallToolResult {
+export function mcpAppCallToolResult(result: unknown, resultMeta?: unknown): McpAppCallToolResult {
   const normalized = record(result);
   const data = record(normalized?.data);
   const content = Array.isArray(data?.content)
     ? data.content
     : typeof normalized?.content === "string" ? [{ type: "text", text: normalized.content }] : [];
   const structuredContent = record(data?.structuredContent);
-  const meta = record(normalized?.meta);
+  const meta = record(resultMeta);
   return {
     content,
     ...(structuredContent ? { structuredContent } : {}),
@@ -62,11 +62,13 @@ export async function recordMcpAppView(db: Db, input: {
   invocationId: string;
   toolInput: unknown;
   result: unknown;
+  /** The redacted provider `_meta`, which is never part of the agent's result. */
+  resultMeta?: unknown;
 }): Promise<void> {
   const ui = mcpAppToolUi(input.tool);
   if (!ui || !input.tool.connectionId) return;
   try {
-    const toolResult = mcpAppCallToolResult(input.result);
+    const toolResult = mcpAppCallToolResult(input.result, input.resultMeta);
     if (Buffer.byteLength(JSON.stringify(toolResult), "utf8") > MAX_STORED_RESULT_BYTES) return;
     await db.insert(toolMcpAppViews).values({
       companyId: input.session.companyId,

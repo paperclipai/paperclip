@@ -20,9 +20,12 @@ export const MCP_APPS_CLIENT_CAPABILITY = {
 
 export type McpAppToolVisibility = "model" | "app";
 
-/** A tool's normalized `_meta.ui` declaration. */
+/**
+ * A tool's normalized `_meta.ui` declaration. `resourceUri` is null for a tool
+ * that only declares visibility, such as an app-only helper without a view.
+ */
 export interface McpAppToolUi {
-  resourceUri: string;
+  resourceUri: string | null;
   visibility: McpAppToolVisibility[];
 }
 
@@ -96,19 +99,24 @@ function stringList(value: unknown): string[] | undefined {
 /**
  * Reads a tool's UI declaration from its `_meta`. Accepts the deprecated flat
  * `_meta["ui/resourceUri"]` key, which servers still emit during the
- * transition. Returns null when the tool has no `ui://` view.
+ * transition. Visibility is kept even without a view, so an app-only helper
+ * stays hidden from agents. Returns null when the tool declares neither.
  */
 export function readMcpAppToolUi(meta: unknown): McpAppToolUi | null {
   const metaRecord = record(meta);
   if (!metaRecord) return null;
   const ui = record(metaRecord.ui);
-  const uri = typeof ui?.resourceUri === "string"
+  const rawUri = typeof ui?.resourceUri === "string"
     ? ui.resourceUri
     : typeof metaRecord["ui/resourceUri"] === "string" ? metaRecord["ui/resourceUri"] as string : null;
-  if (!uri || !uri.startsWith("ui://") || uri.length > 2048) return null;
-  const declared = stringList(ui?.visibility)?.filter((item): item is McpAppToolVisibility => item === "model" || item === "app");
-  const visibility = declared && declared.length > 0 ? [...new Set(declared)] : ["model", "app"] as McpAppToolVisibility[];
-  return { resourceUri: uri, visibility };
+  const resourceUri = rawUri && rawUri.startsWith("ui://") && rawUri.length <= 2048 ? rawUri : null;
+  const declared = Array.isArray(ui?.visibility)
+    ? (ui.visibility as unknown[]).filter((item): item is McpAppToolVisibility => item === "model" || item === "app")
+    : null;
+  if (!resourceUri && declared === null) return null;
+  // An explicit list with no valid entries (for example `[]`) grants nothing.
+  const visibility = declared === null ? ["model", "app"] as McpAppToolVisibility[] : [...new Set(declared)];
+  return { resourceUri, visibility };
 }
 
 export function mcpAppToolVisibleToModel(ui: McpAppToolUi | null | undefined): boolean {

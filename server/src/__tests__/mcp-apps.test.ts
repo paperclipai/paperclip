@@ -36,8 +36,7 @@ describe("mcpAppCallToolResult", () => {
     expect(mcpAppCallToolResult({
       content: "text",
       data: { content: [{ type: "text", text: "Two meetings" }], structuredContent: { meetings: [1, 2] }, isError: false },
-      meta: { "circleback/viewState": "cards" },
-    })).toEqual({
+    }, { "circleback/viewState": "cards" })).toEqual({
       content: [{ type: "text", text: "Two meetings" }],
       structuredContent: { meetings: [1, 2] },
       _meta: { "circleback/viewState": "cards" },
@@ -120,17 +119,17 @@ const support = await getEmbeddedPostgresTestSupport();
     const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id, issueId: issue.id });
     const app = express();
     app.use(express.json());
-    let actorKind: "board" | "agent" = "board";
+    let actorKind: "board" | "agent" | "teammate" = "board";
     app.use((req, _res, next) => {
-      req.actor = actorKind === "board"
-        ? { type: "board", userId: actor.actorId, source: "session", companyIds: [company.id] }
+      req.actor = actorKind !== "agent"
+        ? { type: "board", userId: actorKind === "teammate" ? "circleback-teammate" : actor.actorId, source: "session", companyIds: [company.id] }
         : { type: "agent", companyId: company.id, agentId: agent.id, source: "agent_key" };
       next();
     });
     app.use(mcpAppsRoutes(db, gateway));
     app.use(errorHandler);
     return { company, agent, issue, run, gateway, session, request, app, initializeCapabilities, connectionId: signedIn.connectionId,
-      setActor: (kind: "board" | "agent") => { actorKind = kind; } };
+      setActor: (kind: "board" | "agent" | "teammate") => { actorKind = kind; } };
   }
 
   it("keeps the view declaration, hides app-only tools from the agent, and records the call's view", async () => {
@@ -149,6 +148,8 @@ const support = await getEmbeddedPostgresTestSupport();
     const display = listed.find(tool => tool.upstreamToolName === "DisplayMeetings")!;
     const result = await f.gateway.executeTool({ sessionToken: f.session.token, tool: display.name, parameters: { meetingIds: ["m1"] }, idempotencyKey: randomUUID() });
     expect(JSON.stringify(result)).toContain("DisplayMeetings done");
+    // The provider `_meta` is for the view only; the agent never receives it.
+    expect(JSON.stringify(result)).not.toContain("circleback/cards");
     // A call to a tool without a view records nothing.
     const search = listed.find(tool => tool.upstreamToolName === "SearchMeetings")!;
     await f.gateway.executeTool({ sessionToken: f.session.token, tool: search.name, parameters: {}, idempotencyKey: randomUUID() });
@@ -198,5 +199,13 @@ const support = await getEmbeddedPostgresTestSupport();
     await http(f.app).get(`/issues/${foreignIssue.id}/mcp-app-views`).expect(404);
     f.setActor("agent");
     await http(f.app).get(`/issues/${f.issue.id}/mcp-app-views`).expect(403);
+
+    // A company member who cannot open a private task cannot read its views.
+    await db.insert(companyMemberships).values({ companyId: f.company.id, principalType: "user", principalId: "circleback-teammate", status: "active", membershipRole: "member" });
+    f.setActor("teammate");
+    await http(f.app).get(`/issues/${f.issue.id}/mcp-app-views`).expect(200);
+    await db.update(issues).set({ visibility: "private" }).where(eq(issues.id, f.issue.id));
+    await http(f.app).get(`/issues/${f.issue.id}/mcp-app-views`).expect(404);
+    await http(f.app).get(`/issues/${f.issue.id}/mcp-app-views/${viewId}`).expect(404);
   });
 });

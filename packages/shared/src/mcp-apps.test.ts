@@ -25,6 +25,14 @@ describe("readMcpAppToolUi", () => {
     expect(mcpAppToolCallableFromApp(appOnly)).toBe(true);
   });
 
+  it("keeps visibility for an app-only helper without a view", () => {
+    const helper = readMcpAppToolUi({ ui: { visibility: ["app"] } });
+    expect(helper).toEqual({ resourceUri: null, visibility: ["app"] });
+    expect(mcpAppToolVisibleToModel(helper)).toBe(false);
+    expect(mcpAppToolVisibleToModel(readMcpAppToolUi({ ui: { resourceUri: "https://evil.example", visibility: ["app"] } }))).toBe(false);
+    expect(mcpAppToolVisibleToModel(readMcpAppToolUi({ ui: { visibility: [] } }))).toBe(false);
+  });
+
   it("ignores tools without a ui:// view", () => {
     expect(readMcpAppToolUi(undefined)).toBeNull();
     expect(readMcpAppToolUi({ ui: { resourceUri: "https://evil.example/view" } })).toBeNull();

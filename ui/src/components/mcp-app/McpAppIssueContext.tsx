@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import type { McpAppViewSummary } from "@paperclipai/shared";
 import { mcpAppsApi } from "@/api/mcpApps";
 import { queryKeys } from "@/lib/queryKeys";
-import { matchMcpAppView } from "./mcp-app-matching";
+import { mcpAppViewIndexFor } from "./mcp-app-matching";
 
 /** The task whose chat is showing, so tool rows can find their MCP Apps views. */
 const McpAppIssueContext = createContext<string | null>(null);
@@ -38,7 +38,7 @@ export function useMcpAppViewForTool(item: { id: string; rawName?: string; input
     enabled,
     staleTime: 60_000,
   });
-  const view = enabled && data ? matchMcpAppView(item, data) : null;
+  const view = enabled && data ? mcpAppViewIndexFor(data).match(item) : null;
   // A row that completes while the chat is open can be newer than the cached
   // list; look once more before concluding the call has no view.
   const refetched = useRef(false);

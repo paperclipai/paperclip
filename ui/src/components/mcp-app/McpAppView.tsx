@@ -69,8 +69,8 @@ export function McpAppView({ issueId, view, displayName }: { issueId: string; vi
   return (
     <McpAppViewContent
       detail={query.data}
-      status={query.isError ? "error" : query.data ? "ready" : "loading"}
-      errorMessage={query.isError ? viewErrorMessage(query.error, view.applicationName) : null}
+      status={query.data ? "ready" : query.error ? "error" : "loading"}
+      errorMessage={!query.data && query.error ? viewErrorMessage(query.error, view.applicationName) : null}
       callTool={callTool}
       displayName={displayName}
     />
