@@ -71,12 +71,6 @@ async function ensureIssueRelationsTable(db: ReturnType<typeof createDb>) {
   `));
 }
 
-// A queued run that holds an issue's execution lock can be withdrawn at the
-// claim-time execution gate before it ever starts (for example because the
-// issue's assignee no longer matches the run's agent, or because the question
-// card that woke a non-assignee was answered meanwhile). Any wake that was
-// deferred behind that queued run must then be promoted, exactly as it would
-// be when the holder finishes normally.
 describeEmbeddedPostgres("deferred wake promotion after a queued holder is withdrawn before start", () => {
   let db!: ReturnType<typeof createDb>;
   let heartbeat!: ReturnType<typeof heartbeatService>;
@@ -162,9 +156,6 @@ describeEmbeddedPostgres("deferred wake promotion after a queued holder is withd
       },
     ]);
 
-    // The other agent has a queued run on the issue. It is not the assignee
-    // and carries no verified pending question, so the claim-time gate
-    // withdraws it as `issue_assignee_changed` before it starts.
     await db.insert(agentWakeupRequests).values({
       id: holderWakeId,
       companyId,
@@ -193,8 +184,6 @@ describeEmbeddedPostgres("deferred wake promotion after a queued holder is withd
       status: "in_progress",
       priority: "medium",
       assigneeAgentId,
-      // Promotion stamps the issue lock only for the assignee, so a promoted
-      // non-assignee run is queued with the lock column still empty.
       executionRunId: null,
       issueNumber: 1,
       identifier: `${issuePrefix}-1`,
@@ -222,8 +211,6 @@ describeEmbeddedPostgres("deferred wake promotion after a queued holder is withd
   it("promotes the assignee's deferred wake when the claim gate withdraws the queued holder", async () => {
     const { companyId, assigneeAgentId, otherAgentId, issueId, holderRunId } = await seed();
 
-    // Enqueue adopts the other agent's queued run as the issue's execution
-    // holder and parks the assignee's wake behind it.
     const deferredRun = await heartbeat.wakeup(assigneeAgentId, {
       source: "automation",
       triggerDetail: "system",
@@ -238,17 +225,14 @@ describeEmbeddedPostgres("deferred wake promotion after a queued holder is withd
     expect(deferred).toBeDefined();
     expect(await issueExecutionRunId(issueId)).toBe(holderRunId);
 
-    // The holder's agent gets capacity; its queued run reaches the claim gate.
     await heartbeat.resumeQueuedRunsForAgent(companyId, otherAgentId);
 
     const holder = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, holderRunId)).then((r) => r[0]);
     expect(holder?.status).toBe("cancelled");
     expect(holder?.errorCode).toBe("issue_assignee_changed");
     expect(holder?.startedAt).toBeNull();
-    // Withdrawn while queued: no provider work to reconcile before releasing.
     expect(await legacyExecutionNeedsReconciliationWithEvidence(db, holder!)).toBe(false);
 
-    // No further event arrives. The parked wake must already be promoted.
     const promoted = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, deferred!.id)).then((r) => r[0]);
     expect(promoted?.status).not.toBe("deferred_issue_execution");
     const runs = await assigneeRuns(assigneeAgentId, holderRunId);
@@ -257,7 +241,6 @@ describeEmbeddedPostgres("deferred wake promotion after a queued holder is withd
     await drainHeartbeatRunsToQuiescence(db, heartbeat);
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runs[0]!.id)))[0]?.status).toBe("succeeded");
 
-    // The exemption is verified against retained evidence, not the row alone.
     await db.insert(heartbeatRunEvents).values({ companyId, runId: holderRunId, agentId: otherAgentId,
       seq: 99, eventType: "adapter.invoke" });
     expect(await legacyExecutionNeedsReconciliationWithEvidence(db, holder!)).toBe(true);
@@ -280,8 +263,6 @@ describeEmbeddedPostgres("deferred wake promotion after a queued holder is withd
         options: [{ id: "after", label: "After the current run" }] }] },
       result: { version: 1, answers: [{ questionId: "q1", optionIds: ["after"] }] },
     });
-    // The question was answered meanwhile, so the addressee's queued run is
-    // obsolete. The assignee's resume wake carries the answered card.
     await db.update(heartbeatRuns).set({
       contextSnapshot: {
         issueId, taskId: issueId, wakeReason: "interaction_pending", source: "issue.interaction.created",
