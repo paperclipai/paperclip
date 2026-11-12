@@ -1316,6 +1316,7 @@ async function startServerWithDatabaseTeardown(
   const runStartHandover = deploymentListenUrl !== null && controllerInstanceLeaseWork && config.heartbeatSchedulerEnabled
     ? createRunStartHandover({
       db: db as any,
+      coordinator: deliveryWork,
       canDispatch: () => !heartbeatSchedulerStopped && !isProcessRunAdmissionClosed() && !isWarmStandby()
         && readTaskDrain(new Date()) === null,
       onResume: () => {
@@ -2172,13 +2173,20 @@ async function startServerWithDatabaseTeardown(
     liveEventsWebSocketServer.close();
     // Finish admitted HTTP requests while their services, workers and database
     // are still available. Railway must switch routing before signaling A.
+    // An older server still serving (rollback, failed deploy) starts runs again at once:
+    // the release starts when run admission closes, and shutdown waits for it below.
+    let runStartRelease: Promise<void> | undefined;
     await closeHttpListenerForShutdown({ server, signal, timeoutMs: 30_000, log: logger, closeRunAdmission: () => {
       closeProcessRunAdmission();
-      // An older server still serving (rollback, failed deploy) starts runs again at once.
-      void runStartHandover?.release();
+      runStartRelease = runStartHandover?.release();
     },
       drainRequests: abort => drainHttpRequestWork(app, abort) });
     const preDrain = createPreDrainShutdownBudget({ signal, log: logger });
+    await preDrain.run("run_start_handover_release", async () => {
+      await runStartRelease;
+      // A failed clear is retried once more before the workers stop.
+      await runStartHandover?.release();
+    });
     await preDrain.run("systemd_notify", () =>
       systemdNotify(["--stopping", `--status=Stopping after ${signal}`]));
     heartbeatSchedulerStopped = true;

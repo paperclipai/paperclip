@@ -2477,26 +2477,30 @@ is handed over, never paused.
   other's notifications: the instance lease is on, the notification channel is
   configured, and the scheduler is enabled. A self-hosted server is unchanged.
 - **The old server.** Every queued-run claim reads an in-memory flag through
-  the existing run-admission gate, so the dispatch path runs no query. The
-  flag is updated in three ways:
-  - The `run-start-handover` notification.
-  - A background re-read, at most every 2 seconds while the server dispatches.
-  - A single read that a dispatch pass waits for, but only when the server
-    has not read the marker for 30 seconds. This happens only for the first
-    pass after an idle stretch.
+  the existing run-admission gate, so a claim runs no query of its own. The
+  flag is updated in two ways:
+  - The `run-start-handover` notification. A server listens for it only while
+    a hand-over involves it, so it cannot rely on hearing the first one.
+  - One read before a dispatch pass when the last read is more than 2 seconds
+    old. The pass waits at most 1 second for that read.
 
-  A read that fails or takes longer than 1 second leaves the server admitting.
-  While it yields, the old server rechecks every 3 seconds and keeps its
-  notification listener on. For starts it skips, it notifies the new server's
-  queued-run dispatch at most once a second, so the new server starts those
-  runs without waiting for a sweep.
+  The read is a single flight. A database statement timeout cancels it, so a
+  slow read never piles further reads onto the shared pool. A read that fails
+  leaves the server admitting. While it yields, the old server rechecks every
+  3 seconds on the shared worker scheduler and keeps its notification
+  listener on. For starts it skips, it notifies the new server's queued-run
+  dispatch at most once a second, so the new server starts those runs without
+  waiting for a sweep.
 - **Who yields.** A server yields only to a newer boot by epoch that has a
   live marker. It never yields to an older boot, to itself, or to a row
   without the marker. Rows from releases without this rule never carry the
   marker, so in a mixed-version overlap nothing changes in either direction.
   A server that has no row of its own does not yield.
 - **Failure.** When the new server closes run admission at shutdown (a
-  rollback or a failed deploy), it clears its lease and sends the hint. It
+  rollback or a failed deploy), it clears its lease and sends the hint.
+  Shutdown waits for that clear. The clear runs after any renewal already in
+  flight, so a renewal cannot restore the lease, and a clear that fails is
+  retried before the workers stop. It
   does the same while it drains, waits in standby, or cannot dispatch. If it
   crashes, the lease lapses within 20 seconds. In every case the old server's
   recheck resumes admission and runs its queued-run pass again. This happens
@@ -2513,8 +2517,9 @@ is handed over, never paused.
 
 A post-deploy audit should find no run claimed by the old server more than
 about 2 seconds after the new server's `dispatching_at`. That window is the
-background re-read, and it applies only when the old server was not already
-listening for notifications. The gap from `dispatching_at` to the first run
+age of the last read, and it applies only when the old server was not already
+listening for notifications. A replacement that starts while the server
+drains writes its marker when the drain ends. The gap from `dispatching_at` to the first run
 that the new server starts should be seconds.
 
 Automatic productivity reviews are retired. Run counts, missing comments, and elapsed task time do not create review tasks or impose continuation holds. Bounded continuation, provider recovery, budget limits, explicit blockers, and normal review/approval stages remain in force. Existing productivity-review tasks, comments, assignments, and dependencies remain unchanged and readable; their historical origins still identify them as recovery work for recursion suppression.

@@ -1,9 +1,11 @@
-import { sql } from "drizzle-orm";
+import { sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { publishDatabaseWorkHint, subscribeDatabaseWork } from "@paperclipai/db/work-signals";
+import { publishDatabaseWorkHint } from "@paperclipai/db/work-signals";
 import { logger } from "../middleware/logger.js";
 import { currentControllerBootId, currentProcessSpaceHash } from "./controller-process-identity.js";
+import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
+import { subscribeTaskDrainChanges, subscribeTaskDrainExpiry } from "./task-admission.js";
 
 /**
  * Hand-over of new run starts during a deploy overlap.
@@ -22,13 +24,14 @@ import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
  * is starting runs" as a row with a higher epoch than the old boot where
  * `dispatching_at is not null and dispatch_lease_expires_at > now()
  *  and stopped_at is null and fenced_at is null`.
+ *
+ * Database use: the server's shared pool, at most one read and one write of
+ * this module in flight at a time, each bounded by a statement timeout.
  */
 export const RUN_START_HANDOVER_RENEW_MS = 5_000;
 export const RUN_START_HANDOVER_TTL_MS = 20_000;
 /** A replacement renews the hand-over for at most this long after it began starting runs. */
 export const RUN_START_HANDOVER_MAX_MS = 30 * 60_000;
-/** An older boot counts as possibly serving while its lease was live this recently. */
-const OLDER_BOOT_WINDOW_MS = RUN_START_HANDOVER_MAX_MS;
 /** A yielding server checks this often whether the replacement still starts runs. */
 export const RUN_START_YIELD_RECHECK_MS = 3_000;
 
@@ -36,31 +39,27 @@ const DEFAULT_TIMING = {
   renewMs: RUN_START_HANDOVER_RENEW_MS,
   ttlMs: RUN_START_HANDOVER_TTL_MS,
   maxMs: RUN_START_HANDOVER_MAX_MS,
-  olderBootWindowMs: OLDER_BOOT_WINDOW_MS,
+  /** An older boot counts as possibly serving while its lease was live this recently. */
+  olderBootWindowMs: RUN_START_HANDOVER_MAX_MS,
   recheckMs: RUN_START_YIELD_RECHECK_MS,
-  /** While dispatching, re-read the hand-over in the background at most this often. */
-  backgroundRefreshMs: 2_000,
-  /** After this long without a read (an idle stretch), the next dispatch waits for one read first. */
-  staleAwaitMs: 30_000,
-  readTimeoutMs: 1_000,
+  /** A dispatch pass first waits for a read when the last one is older than this: the bound on a stale answer. */
+  staleAwaitMs: 2_000,
+  /** A dispatch waits at most this long for that read; the read itself is cancelled by the database. */
+  readWaitMs: 1_000,
+  readStatementTimeoutMs: 2_000,
+  writeStatementTimeoutMs: 5_000,
   /** Skipped starts are announced to the replacement at most this often. */
   skipHintMinMs: 1_000,
 };
 
 const interval = (ms: number) => sql`${`${ms} milliseconds`}::interval`;
 
-function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  return Promise.race([work, new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error("run start hand-over read timed out")), ms);
-    timer.unref?.();
-  })]).finally(() => clearTimeout(timer));
-}
-
 export type RunStartHandover = ReturnType<typeof createRunStartHandover>;
 
 export function createRunStartHandover(input: {
   db: Db;
+  /** The server's shared worker coordinator: renewals and rechecks are its deadlines. */
+  coordinator: ReturnType<typeof createDeliveryWorkCoordinator>;
   /** This server may start runs now (not stopping, draining, or in standby). */
   canDispatch: () => boolean;
   /** Called when a yielding server starts runs again. */
@@ -74,30 +73,52 @@ export function createRunStartHandover(input: {
   const t = { ...DEFAULT_TIMING, ...input.timing };
   const bootId = input.bootId ?? currentControllerBootId();
   let stopped = false;
-  // Replacement side.
-  let renewTimer: ReturnType<typeof setTimeout> | null = null;
+  const listeners = new Set<() => void>();
+  const changed = () => { for (const listener of listeners) { try { listener(); } catch { /* never blocks */ } } };
+
+  // Replacement side. Every marker write runs in this one chain, so a release
+  // always lands after a renewal that was already in flight.
+  let intendedAt: number | null = null;
+  let released = false;
+  let olderMayServe = true;
   let leaseHeld = false;
-  let handingOverSince: number | null = null;
+  /** A marker was written and no clear has succeeded since: a release must (re)try the clear. */
+  let markerMayBeLive = false;
+  let lastWriteAt = Number.NEGATIVE_INFINITY;
+  let writes: Promise<void> = Promise.resolve();
+  const handingOver = () => intendedAt !== null && !released && olderMayServe && Date.now() - intendedAt < t.maxMs;
+  let reportedHandingOver = false;
+  const reportHandingOver = () => {
+    const now = handingOver();
+    if (now !== reportedHandingOver) { reportedHandingOver = now; changed(); }
+  };
+
   // Older-server side: the in-memory flag every run start reads.
   let yieldingTo: string | null = null;
   let lastReadAt = Number.NEGATIVE_INFINITY;
   let reading: Promise<void> | null = null;
-  let recheckTimer: ReturnType<typeof setTimeout> | null = null;
+  let readRequested = false;
   let lastSkipHintAt = Number.NEGATIVE_INFINITY;
-  const listeners = new Set<() => void>();
-  const changed = () => { for (const listener of listeners) { try { listener(); } catch { /* never blocks */ } } };
+
+  /** One statement under a statement timeout, so a slow database cancels it instead of holding a pool connection. */
+  function bounded<T>(statement: SQL, timeoutMs: number): Promise<T[]> {
+    return db.transaction(async tx => {
+      await tx.execute(sql`select set_config('statement_timeout', ${String(timeoutMs)}, true)`);
+      return await tx.execute(statement) as unknown as T[];
+    });
+  }
 
   const announce = () => publishDatabaseWorkHint(db, DELIVERY_QUEUES.runStartHandover)
     .catch(error => logger.warn({ err: error }, "run start hand-over notification failed"));
 
-  /** A not-stopped, not-fenced boot older than this one whose lease was live recently. */
-  const olderBootMayServe = sql`exists (select 1 from controller_instances older
-    where older.epoch < controller_instances.epoch and older.boot_id <> ${bootId}
-      and older.stopped_at is null and older.fenced_at is null
-      and older.lease_expires_at > now() - ${interval(t.olderBootWindowMs)})`;
+  const serialize = (work: () => Promise<void>) => {
+    const next = writes.then(work);
+    writes = next.catch(error => { logger.warn({ err: error }, "run start hand-over write failed; its lease lapses unless a later write succeeds"); });
+    return writes;
+  };
 
-  async function writeLease(): Promise<{ olderMayServe: boolean } | null> {
-    const rows = await db.execute(sql`
+  async function writeLease() {
+    const [row] = await bounded<{ olderMayServe: boolean }>(sql`
       insert into controller_instances (boot_id, process_space, pid, lease_expires_at, dispatching_at, dispatch_lease_expires_at)
       values (${bootId}, ${input.processSpace ?? currentProcessSpaceHash()}, ${input.pid ?? process.pid}, now(), now(),
         now() + ${interval(t.ttlMs)})
@@ -105,65 +126,59 @@ export function createRunStartHandover(input: {
         dispatching_at = coalesce(controller_instances.dispatching_at, now()),
         dispatch_lease_expires_at = now() + ${interval(t.ttlMs)}
       where controller_instances.fenced_at is null and controller_instances.stopped_at is null
-      returning ${olderBootMayServe} as "olderMayServe"`) as unknown as Array<{ olderMayServe: boolean }>;
-    return rows[0] ?? null;
+      returning exists (select 1 from controller_instances older
+        where older.epoch < controller_instances.epoch and older.boot_id <> ${bootId}
+          and older.stopped_at is null and older.fenced_at is null
+          and older.lease_expires_at > now() - ${interval(t.olderBootWindowMs)}) as "olderMayServe"`, t.writeStatementTimeoutMs);
+    return row ?? null;
   }
 
-  async function clearLease(): Promise<void> {
-    if (!leaseHeld) return;
+  async function clearLease() {
+    await bounded(sql`update controller_instances set dispatch_lease_expires_at = null
+      where boot_id = ${bootId} and dispatch_lease_expires_at is not null`, t.writeStatementTimeoutMs);
+    // Only a clear that succeeded ends the marker; a failed one is retried by the next release or renewal.
     leaseHeld = false;
-    await db.execute(sql`update controller_instances set dispatch_lease_expires_at = null where boot_id = ${bootId}`);
+    markerMayBeLive = false;
     await announce();
   }
 
-  function stopRenewing() {
-    if (renewTimer) clearTimeout(renewTimer);
-    renewTimer = null;
-    if (handingOverSince !== null) { handingOverSince = null; changed(); }
-  }
-
-  function scheduleRenewal() {
-    if (stopped || renewTimer) return;
-    renewTimer = setTimeout(() => { renewTimer = null; void renew(); }, t.renewMs);
-    renewTimer.unref?.();
-  }
-
-  async function renew() {
-    if (stopped || handingOverSince === null) return;
-    try {
+  /** Set, renew, or clear the marker to match whether this server can start runs now. */
+  function maintainLease(): Promise<void> {
+    return serialize(async () => {
+      if (intendedAt === null || released || !handingOver() && leaseHeld) return;
       if (!input.canDispatch()) {
-        // Stopping, draining or in standby: the older server takes run starts back now.
-        await clearLease();
-      } else {
-        const row = await writeLease();
-        const regained = row !== null && !leaseHeld;
-        leaseHeld = row !== null;
-        // Taking run starts back after a drain or standby: tell the older server now.
-        if (regained) await announce();
-        if (!row || !row.olderMayServe || Date.now() - handingOverSince >= t.maxMs) {
-          // No older server left to hand over from: let the lease lapse without further writes.
-          stopRenewing();
-          return;
-        }
+        // Draining, standby or admission closed: the older server takes run starts back now.
+        if (markerMayBeLive) await clearLease();
+        return;
       }
-    } catch (error) {
-      logger.warn({ err: error }, "run start hand-over renewal failed; the lease lapses unless a later renewal succeeds");
-    }
-    scheduleRenewal();
+      if (Date.now() - lastWriteAt < t.renewMs / 2) return;
+      // Counted from the attempt, so a failing database is retried on the renewal cadence, not in a loop.
+      lastWriteAt = Date.now();
+      markerMayBeLive = true;
+      const row = await writeLease();
+      const regained = row !== null && !leaseHeld;
+      leaseHeld = row !== null;
+      // No older server left to hand over from: the lease lapses without further writes.
+      olderMayServe = row?.olderMayServe ?? false;
+      if (regained) {
+        await announce();
+        if (olderMayServe) logger.info("this server now starts runs; an older server still serving leaves new run starts to it");
+      }
+    }).finally(reportHandingOver);
   }
 
-  /** Read whether a newer boot starts runs now. Any failure resumes run starts here. */
+  /** Read whether a newer boot starts runs now. A failed or cancelled read resumes run starts here. */
   async function read(): Promise<void> {
     let next: string | null = null;
     try {
-      const rows = await withTimeout(db.execute(sql`
+      const [row] = await bounded<{ bootId: string }>(sql`
         select newer.boot_id as "bootId" from controller_instances me
         join controller_instances newer on newer.epoch > me.epoch and newer.boot_id <> me.boot_id
         where me.boot_id = ${bootId} and newer.dispatching_at is not null
           and newer.dispatch_lease_expires_at > now()
           and newer.stopped_at is null and newer.fenced_at is null
-        order by newer.epoch desc limit 1`) as unknown as Promise<Array<{ bootId: string }>>, t.readTimeoutMs);
-      next = rows[0]?.bootId ?? null;
+        order by newer.epoch desc limit 1`, t.readStatementTimeoutMs);
+      next = row?.bootId ?? null;
     } catch (error) {
       logger.warn({ err: error }, "run start hand-over read failed; this server keeps starting runs");
     }
@@ -175,26 +190,21 @@ export function createRunStartHandover(input: {
       logger.info({ replacementBootId: next }, "a newer server is starting runs; this server leaves new run starts to it");
       skipHint(true);
       changed();
+      worker.wake();
     } else if (!next && previous) {
       logger.info({ replacementBootId: previous }, "the newer server stopped starting runs; this server starts runs again");
       changed();
       input.onResume?.();
     }
-    if (yieldingTo) scheduleRecheck();
   }
 
+  /** Single flight: a slow read stays tracked until it settles, so reads never pile up on the pool. */
   function refresh(): Promise<void> {
     reading ??= read().finally(() => { reading = null; });
     return reading;
   }
 
-  function scheduleRecheck() {
-    if (stopped || recheckTimer) return;
-    recheckTimer = setTimeout(() => { recheckTimer = null; void refresh(); }, t.recheckMs);
-    recheckTimer.unref?.();
-  }
-
-  /** Runs this server skips are queued; wake the replacement's dispatch so they do not wait for a sweep. */
+  /** Runs this server skips stay queued; wake the replacement's dispatch so they do not wait for a sweep. */
   function skipHint(force = false) {
     const now = Date.now();
     if (!force && now - lastSkipHintAt < t.skipHintMinMs) return;
@@ -203,45 +213,68 @@ export function createRunStartHandover(input: {
       .catch(error => logger.warn({ err: error }, "queued run dispatch hint for the newer server failed"));
   }
 
-  const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.runStartHandover, event => {
-    if (event === "settled" && !stopped) void refresh();
+  function nextDeadline(): number | null {
+    const deadlines: number[] = [];
+    // Renew while handing over and able to start runs; a drain change wakes the worker otherwise.
+    if (handingOver() && input.canDispatch()) deadlines.push(lastWriteAt + t.renewMs);
+    if (yieldingTo) deadlines.push(lastReadAt + t.recheckMs);
+    return deadlines.length ? Math.max(Date.now(), Math.min(...deadlines)) : null;
+  }
+
+  const worker = input.coordinator.register(DELIVERY_QUEUES.runStartHandover, {
+    retryMs: t.renewMs,
+    // Clearing the marker while this server drains is what lets the older one resume.
+    runDuringDrain: true,
+    // Another server's marker changed.
+    onSettled: () => { readRequested = true; },
+    run: async () => {
+      if (stopped) return;
+      if (handingOver()) await maintainLease();
+      if (readRequested || (yieldingTo && Date.now() - lastReadAt >= t.recheckMs)) {
+        readRequested = false;
+        await refresh();
+      }
+    },
+    hasPending: async () => false,
+    nextRunAt: nextDeadline,
   });
+  const stopDrainChanges = subscribeTaskDrainChanges(worker.wake);
+  const stopDrainExpiry = subscribeTaskDrainExpiry(worker.wake);
 
   return {
-    /** Replacement side: this boot starts runs now. Older boots leave new starts to it. */
+    ready: worker.ready,
+    /** Replacement side: this boot starts runs now. Older boots leave new starts to it. A drain defers it. */
     async begin(): Promise<void> {
-      if (stopped || handingOverSince !== null || !input.canDispatch()) return;
-      const row = await writeLease();
-      if (!row) return;
-      leaseHeld = true;
-      await announce();
-      if (!row.olderMayServe) return;
-      logger.info("this server now starts runs; an older server still serving leaves new run starts to it");
-      handingOverSince = Date.now();
-      changed();
-      scheduleRenewal();
+      if (stopped || released || intendedAt !== null) return;
+      intendedAt = Date.now();
+      await maintainLease();
+      worker.wake();
     },
-    /** Replacement side: stop claiming run starts (shutdown). Older boots resume at once. */
+    /** Replacement side, final (shutdown): stop claiming run starts. Older boots resume at once. */
     async release(): Promise<void> {
-      stopRenewing();
-      await clearLease().catch(error => logger.warn({ err: error }, "run start hand-over release failed; its lease lapses"));
+      released = true;
+      reportHandingOver();
+      // Runs after any write already in flight, so nothing restores the marker afterwards.
+      await serialize(async () => { if (markerMayBeLive) await clearLease(); });
     },
     /** The hot-path flag: a newer server starts runs, so this one starts none. Never queries inline. */
     isYielding(): boolean {
-      if (!stopped && Date.now() - lastReadAt >= t.backgroundRefreshMs) void refresh();
       if (yieldingTo) skipHint();
       return yieldingTo !== null;
     },
-    /** Before a dispatch pass: after an idle stretch, read once so the first start uses a current answer. */
+    /** Before a dispatch pass: when the last read is older than staleAwaitMs, wait (briefly) for a fresh one. */
     refreshIfStale(): Promise<void> | null {
       if (stopped || Date.now() - lastReadAt < t.staleAwaitMs) return null;
-      return refresh();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      // The read keeps running (and stays the single flight) if this caller stops waiting.
+      return Promise.race([refresh(), new Promise<void>(resolve => { timer = setTimeout(resolve, t.readWaitMs); })])
+        .finally(() => clearTimeout(timer));
     },
     refresh,
     /** This server holds a hand-over an older server may be reading. */
-    isHandingOver: () => handingOverSince !== null,
+    isHandingOver: () => handingOver(),
     /** A hand-over involves this server (either side). Pure read, no refresh. */
-    isActive: () => handingOverSince !== null || yieldingTo !== null,
+    isActive: () => handingOver() || yieldingTo !== null,
     subscribe(listener: () => void) {
       listeners.add(listener);
       return () => { listeners.delete(listener); };
@@ -249,10 +282,10 @@ export function createRunStartHandover(input: {
     async stop(): Promise<void> {
       await this.release();
       stopped = true;
-      unsubscribe();
-      if (recheckTimer) clearTimeout(recheckTimer);
-      recheckTimer = null;
+      stopDrainChanges();
+      stopDrainExpiry();
       yieldingTo = null;
+      await worker.stop();
       await reading;
     },
   };

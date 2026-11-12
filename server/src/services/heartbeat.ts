@@ -4,7 +4,7 @@ import { endStorageOutageWaitOn, reportStorageOutageWaitsTo, runInOwnStorageScop
 import { createStorageWaitNotice } from "./heartbeat/storage-wait-notice.js";
 import { resolveProviderApiPlacement } from "./native-runtime/provider-api-placement.js";
 import { isProcessRunAdmissionClosed } from "./heartbeat/run-admission.js";
-import { isYieldingRunStarts } from "./run-start-handover.js";
+import { isYieldingRunStarts, refreshRunStartYieldIfStale, type RunStartHandover } from "./run-start-handover.js";
 import type { StopInvocationOptions } from "./heartbeat/run-control.js";
 import { isContextCompactionRun } from "./context-compaction.js";
 import { isUnstartedTaskQuestionAnswer } from "./unstarted-task-question-answer.js";
@@ -795,6 +795,8 @@ export type HeartbeatEnvironmentRuntime = ReturnType<
 >;
 
 export interface HeartbeatServiceOptions {
+  /** This server's run-start hand-over; defaults to the process's registered one. */
+  runStartHandover?: Pick<RunStartHandover, "isYielding" | "refreshIfStale">;
   /** Test seam before the atomic native runtime handoff. */
   beforeNativeRuntimeSelection?: (runId: string) => Promise<void>;
   /** Test seam immediately before the durable chat-control admission check. */
@@ -1344,7 +1346,9 @@ export function heartbeatService(
     liveRunExecutions,
     getSchedulingSuppression,
     // A newer server that already starts runs takes new run starts during a deploy overlap.
-    isRunAdmissionClosed: () => shutdownInProgress || isProcessRunAdmissionClosed() || isYieldingRunStarts(),
+    isRunAdmissionClosed: () => shutdownInProgress || isProcessRunAdmissionClosed()
+      || (options.runStartHandover ? options.runStartHandover.isYielding() : isYieldingRunStarts()),
+    refreshRunAdmission: () => options.runStartHandover ? options.runStartHandover.refreshIfStale() : refreshRunStartYieldIfStale(),
     resumeExecutionWaitComments,
     getWorktreeExecutionCutoff,
     resumeQueuedCommentInterrupt,
