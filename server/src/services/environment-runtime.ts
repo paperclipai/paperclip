@@ -3,10 +3,13 @@ import { ENVIRONMENT_LEASE_CONTROLLER_KEY } from "./environment-lease-controller
 import { RetainedSandboxAbsentError, resumeReplyConfirmsAbsence } from "./retained-sandbox-absent-error.js";
 import { readNativeWorkspaceMigration } from "./native-runtime/native-workspace-migration.js";
 import { ReusableSandboxResumeError } from "./reusable-sandbox-resume-error.js";
+import { sandboxProviderFailureLabel } from "./remote-workspace-transport.js";
 import { NATIVE_PREDECESSOR_RETIREMENT_UNPROVEN_CODE, readReplaceBeforeReuseMarker } from "./native-runtime/predecessor-retirement.js";
 import {
+  REUSABLE_SANDBOX_IDLE_RESUME_BUDGET_MS,
   REUSABLE_SANDBOX_RESUME_BUDGET_MS,
   retireReplacedReusableSandboxLease,
+  reusableSandboxLeaseIsIdle,
   reusableSandboxReplacementIsSafe,
   sandboxStateTransitionFailure,
 } from "./reusable-sandbox-resume-replacement.js";
@@ -1890,14 +1893,17 @@ function createSandboxEnvironmentDriver(
           else try {
             // One run spends a bounded budget resuming, retries included; the
             // provider's own start deadline (five minutes on Daytona) is not it.
-            const configuredResumeTimeoutMs = Math.min(
-              resolvePluginSandboxRpcTimeoutMs(
-                workerConfig,
-                pluginProvider.resolved.driver.defaultAcquireTimeoutMs,
-              ) ?? 60_000,
-              REUSABLE_SANDBOX_RESUME_BUDGET_MS,
+            const providerStartTimeoutMs = resolvePluginSandboxRpcTimeoutMs(
+              workerConfig,
+              pluginProvider.resolved.driver.defaultAcquireTimeoutMs,
+            ) ?? 60_000;
+            const configuredResumeTimeoutMs = Math.min(providerStartTimeoutMs, REUSABLE_SANDBOX_RESUME_BUDGET_MS);
+            const resumeStartedAt = Date.now();
+            let resumeDeadline = resumeStartedAt + configuredResumeTimeoutMs;
+            const idleResumeDeadline = resumeStartedAt + Math.max(
+              configuredResumeTimeoutMs,
+              Math.min(providerStartTimeoutMs, REUSABLE_SANDBOX_IDLE_RESUME_BUDGET_MS),
             );
-            const resumeDeadline = Date.now() + configuredResumeTimeoutMs;
             let retryDelayMs = 250;
             let resumed: PluginEnvironmentLease;
             while (true) {
@@ -1921,10 +1927,17 @@ function createSandboxEnvironmentDriver(
                 );
                 break;
               } catch (error) {
-                if (
-                  !transientSandboxResumeFailure(error) ||
-                  Date.now() + retryDelayMs * 1.25 >= resumeDeadline
-                ) throw error;
+                if (!transientSandboxResumeFailure(error)) throw error;
+                const retryAt = Date.now() + retryDelayMs * 1.25;
+                if (retryAt >= resumeDeadline) {
+                  const waitForIdleStart = resumeDeadline < idleResumeDeadline && retryAt < idleResumeDeadline
+                    && sandboxProviderFailureLabel(error).label === "transport_timeout"
+                    && await reusableSandboxLeaseIsIdle({
+                      db, lease: reusableLease, companyId: input.companyId, heartbeatRunId: input.heartbeatRunId,
+                    });
+                  if (!waitForIdleStart) throw error;
+                  resumeDeadline = idleResumeDeadline;
+                }
                 const jitteredDelayMs = Math.max(
                   1,
                   Math.round(retryDelayMs * (0.75 + Math.random() * 0.5)),
