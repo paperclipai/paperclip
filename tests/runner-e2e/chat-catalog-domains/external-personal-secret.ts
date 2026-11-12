@@ -161,7 +161,7 @@ export function personalSecretQuestionHandoff(value: unknown, b: PersonalSecretQ
  * and the task's completion) proves the value was set and used, so the reply's wording is not graded; it must still
  * not ask for the value in chat. */
 export function personalSecretConfirmation(o: Pick<ExternalObservation, "origin" | "runs" | "tasks" | "leadId" | "renderedLinkEvidence">,
-  last: { runId: string; body: string; commentId?: string } | undefined, expected: { workerRunId: unknown; taskId: unknown }) {
+  last: { runId: string; body: string; commentId?: string } | undefined, expected: { workerRunId: unknown; taskId: unknown; workerAgentId?: unknown; workerUrlKey?: unknown; companyPrefix?: unknown }) {
   if (!last?.commentId || solicitsChatCredential(last.body)) return false;
   const run = o.runs.find(row => row.id === last.runId), worker = o.runs.find(row => row.id === expected.workerRunId);
   const reported = Date.parse(String(run?.startedAt)), delivered = Date.parse(String((worker as PersonalSecretWorkerRun | undefined)?.finishedAt));
@@ -174,9 +174,13 @@ export function personalSecretConfirmation(o: Pick<ExternalObservation, "origin"
     try {
       const url = new URL(link.href, o.origin);
       if (url.origin !== new URL(o.origin).origin) return false;
+      // Only the product's own routes count: /<prefix>/issues/<task> and /<prefix>/agents/<worker>/runs/<run>.
       const parts = url.pathname.split("/").filter(Boolean).map(decodeURIComponent);
-      const issue = parts.indexOf("issues"), runs = parts.indexOf("runs");
-      return issue >= 0 && taskRefs.includes(parts[issue + 1] ?? "") || runs >= 0 && parts[runs + 1] === expected.workerRunId;
+      if (typeof expected.companyPrefix === "string" && parts[0] !== expected.companyPrefix) return false;
+      const task = parts.length === 3 && parts[1] === "issues" && taskRefs.includes(parts[2]!);
+      const workerRefs = [expected.workerAgentId, expected.workerUrlKey].filter(Boolean);
+      const run = parts.length === 5 && parts[1] === "agents" && (!workerRefs.length || workerRefs.includes(parts[2])) && parts[3] === "runs" && parts[4] === expected.workerRunId;
+      return task || run;
     } catch { return false; }
   });
 }
@@ -317,7 +321,7 @@ export function gradePersonalSecret(value: unknown) {
       o.runs.some(
         (run) => run.id === last.runId && run.status === "succeeded",
       ) &&
-      personalSecretConfirmation(o, last, { workerRunId: o.state.workerRunId, taskId: o.state.taskId }) &&
+      personalSecretConfirmation(o, last, { workerRunId: o.state.workerRunId, taskId: o.state.taskId, workerAgentId: o.state.morganId, workerUrlKey: o.state.morganUrlKey }) &&
       (!o.state.initialQuestionId || (questionAnswered
         && o.runs.some(run => run.id === last.runId && run.companyId === o.companyId && run.agentId === o.leadId
           && run.contextSnapshot?.issueId === o.state.sourceIssueId && run.contextSnapshot?.interactionId === question?.interactionId)
@@ -444,6 +448,7 @@ export const personalSecretExternalCases = [
             otherSecret.userSecretDefinitionId === definition.id,
           requiredReferenceBefore: true,
           morganId: morgan.id,
+          morganUrlKey: (morgan as { urlKey?: string | null }).urlKey ?? null,
           taskId: task.id,
           taskResponsibleUserId: task.responsibleUserId,
           agentValueCreateStatus: await probeAgentPermission(

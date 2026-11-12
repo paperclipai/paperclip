@@ -32,15 +32,19 @@ export interface InterruptedBundleField { field: string; passed: boolean; expect
 /** Each property the exported bundle must keep for the original cancelled run, with the value it held, so a failure
  * names the property that changed instead of one combined false. */
 export function interruptedBundleFields(bundle: FeedbackTraceBundle, ids: { company: string; issue: string; run: string; agent: string; comment: string }): InterruptedBundleField[] {
-  const run = bundle.paperclipRun;
-  const runFile = bundle.files.find(f => f.path === "paperclip/run.json"), eventsFile = bundle.files.find(f => f.path === "paperclip/run-events.json");
-  const parse = <T,>(text: string | undefined): T | undefined => { try { return text === undefined ? undefined : JSON.parse(text) as T; } catch { return undefined; } };
-  const saved = parse<Record<string, unknown>>(runFile?.contents), events = parse<Array<{ runId?: string; agentId?: string; seq?: number }>>(eventsFile?.contents);
+  // A malformed export still yields named failed fields rather than throwing.
+  const record = (value: unknown) => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+  const run = record(bundle?.paperclipRun), files = Array.isArray(bundle?.files) ? bundle.files : [];
+  const runFile = files.find(f => record(f)?.path === "paperclip/run.json"), eventsFile = files.find(f => record(f)?.path === "paperclip/run-events.json");
+  const parse = (text: unknown): unknown => { try { return typeof text === "string" ? JSON.parse(text) : undefined; } catch { return undefined; } };
+  const saved = record(parse(runFile?.contents));
+  const parsedEvents = parse(eventsFile?.contents);
+  const events = Array.isArray(parsedEvents) ? parsedEvents.map(event => record(event) ?? {}) as Array<{ runId?: unknown }> : undefined;
   const field = (name: string, expected: unknown, actual: unknown, passed = actual === expected) => ({ field: name, passed, expected, actual });
   return [
-    field("bundle.companyId", ids.company, bundle.companyId),
-    field("bundle.issueId", ids.issue, bundle.issueId),
-    field("envelope.targetId", ids.comment, bundle.envelope.targetId),
+    field("bundle.companyId", ids.company, bundle?.companyId),
+    field("bundle.issueId", ids.issue, bundle?.issueId),
+    field("envelope.targetId", ids.comment, record(bundle?.envelope)?.targetId),
     field("paperclipRun.id", ids.run, run?.id),
     field("paperclipRun.companyId", ids.company, run?.companyId),
     field("paperclipRun.agentId", ids.agent, run?.agentId),

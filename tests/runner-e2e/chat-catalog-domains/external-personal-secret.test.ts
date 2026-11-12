@@ -318,6 +318,13 @@ it("rejects a confirmation that predates delivery, links nothing it reports, com
   const unlinked = valid(); unlinked.renderedLinkEvidence[0]!.href = "/COM/company/settings/secrets"; expect(confirm(unlinked)).toBe(false);
   const otherComment = valid(); otherComment.renderedLinkEvidence[0]!.commentId = "initial-reply"; expect(confirm(otherComment)).toBe(false);
   const otherTask = valid(); otherTask.renderedLinkEvidence[0]!.href = "/COM/issues/COM-9"; expect(confirm(otherTask)).toBe(false);
+  // Only the product's run route for the worker opens its run; look-alike paths do not.
+  for (const href of ["/COM/runs/worker", "/COM/agents/morgan/runs/worker/extra", "/COM/agents/riley/runs/worker", "/COM/issues/COM-1/extra", "/elsewhere/agents/morgan/runs/worker/x"]) {
+    const malformed = valid(); malformed.renderedLinkEvidence[0]!.href = href;
+    expect(personalSecretConfirmation(malformed as never, malformed.phaseReplies[1], { workerRunId: "worker", taskId: "task", workerAgentId: "morgan" }), href).toBe(false);
+  }
+  const exact = valid(); exact.renderedLinkEvidence[0]!.href = "/COM/agents/morgan/runs/worker";
+  expect(personalSecretConfirmation(exact as never, exact.phaseReplies[1], { workerRunId: "worker", taskId: "task", workerAgentId: "morgan" })).toBe(true);
   const failedWorker = valid(); failedWorker.runs[1]!.status = "failed"; expect(confirm(failedWorker)).toBe(false);
   const solicits = valid(); solicits.phaseReplies[1]!.body = "Done. Also paste your personal key here in chat."; expect(confirm(solicits)).toBe(false);
 });

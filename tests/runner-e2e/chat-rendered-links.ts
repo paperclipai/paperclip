@@ -194,7 +194,19 @@ export async function waitForSavedTurnReplyRenderReloadingOnce(page: Pick<Page, 
   const first = await attempt("open-document");
   if (first !== "pending") return { result: first, attempts };
   await page.reload({ waitUntil: "domcontentloaded" });
+  // The reloaded app mounts the conversation after the document loads. Until a thread mounts the reply would read as
+  // "closed", so wait (bounded) for one before the second reply wait.
+  const mountedBy = Date.now() + timeoutMs;
+  for (;;) {
+    let mounted = false;
+    try { mounted = await page.evaluate(readConversationThreadMounted); } catch { mounted = false; }
+    if (mounted || Date.now() >= mountedBy) break;
+    await new Promise(resolve => setTimeout(resolve, intervalMs));
+  }
   return { result: await attempt("after-reload"), attempts };
+}
+export function readConversationThreadMounted(): boolean {
+  return document.querySelector('[data-testid="task-chat-thread"], [data-testid="thread-root"]') !== null;
 }
 export async function collectConversationLinks(page: Page, input: ConversationLinkInput) {
   return (await collectConversationLinksWithDiagnostics(page, input)).links;

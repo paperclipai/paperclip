@@ -82,6 +82,10 @@ it("binds retained interrupted work to actual original cancelled run, comment an
   expect(failed({ ...bundle, paperclipRun: { ...run, status: "failed" } })).toEqual([["paperclipRun.status", "failed"]]);
   expect(failed({ ...bundle, paperclipRun: { ...run, eventCount: 2 } })).toEqual([["paperclipRun.eventCount", 2]]);
   expect(failed({ ...bundle, files: bundle.files.slice(0, 1) }).map(([field]) => field)).toEqual(["run-events.json.count", "run-events.json.runIds", "paperclipRun.eventCount"]);
+  // Malformed exports name their failed fields instead of throwing.
+  expect(failed({ ...bundle, files: [bundle.files[0]!, { ...bundle.files[1]!, contents: "[null]" }] }).map(([field]) => field)).toEqual(["run-events.json.runIds"]);
+  expect(failed({ ...bundle, envelope: undefined } as unknown as FeedbackTraceBundle)).toEqual([["envelope.targetId", undefined]]);
+  expect(failed({ ...bundle, paperclipRun: null, files: undefined } as unknown as FeedbackTraceBundle).length).toBeGreaterThan(5);
   const fields = interruptedBundleFields({ ...bundle, envelope: { targetId: "other" } }, ids);
   const state = { agentReportStatus: 403, cliExecuted: true, workerWasReallyWaiting: true, cancelledBeforeCanonical: true, exportedInterruptionMatches: false, exportedInterruption: fields, workerRunId: "run", originalTraceUnchanged: true, bundleWithinOwnedDirectory: true, exportCompanyMatches: true, exportIssueMatches: true, fullTraceBytesMatch: true, archiveBytesMatch: true, zipSha256: "a".repeat(64), zipBytes: 100, noPrivateCredentialBytes: true, remoteSharingUnchanged: true, bundlePublished: false, localOutputDirectory: "/owned/export", exportReport: { attributed: true, reply: "Saved at /owned/export." } };
   const graded = gradeFeedbackBundle({ ...base, state, runs: [{ id: "run", status: "cancelled" }] });

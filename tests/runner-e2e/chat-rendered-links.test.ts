@@ -163,6 +163,17 @@ describe("reloads once when a saved reply never renders in the open conversation
     expect(wait.result).toBe("rendered"); expect(p.reloads()).toBe(1);
     expect(wait.attempts.map(row => [row.phase, row.result])).toEqual([["open-document", "pending"], ["after-reload", "rendered"]]);
   });
+  it("waits for the reloaded app to mount the conversation before the second wait", async () => {
+    const comments = async () => input().comments;
+    document.querySelector('#comment-reply')!.remove();
+    const saved = document.body.innerHTML;
+    const p = reloading(() => {
+      document.body.innerHTML = "<main>Loading</main>";
+      setTimeout(() => { document.body.innerHTML = saved; document.querySelector('[data-testid="task-chat-scroller"]')!.insertAdjacentHTML("beforeend", '<div id="comment-reply"><a href="/RUN/issues/task">Task</a></div>'); }, 300);
+    });
+    const wait = await waitForSavedTurnReplyRenderReloadingOnce(p.page, { comments, leadId: "ceo", runIds: ["run"] }, 1_000, 50);
+    expect(wait.attempts.map(row => [row.phase, row.result])).toEqual([["open-document", "pending"], ["after-reload", "rendered"]]);
+  });
   it("does not reload a reply that rendered live, and still reports a reply that never renders", async () => {
     const comments = async () => input().comments;
     const live = reloading(() => undefined);
