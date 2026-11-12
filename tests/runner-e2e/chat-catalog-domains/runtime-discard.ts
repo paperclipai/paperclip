@@ -38,8 +38,23 @@ export function contactSectionRemoved(consumed: string, previous: string | undef
   const added = carrying.filter(section => !earlier.has(section.heading)).sort((a, b) => a.lines.length - b.lines.length);
   const blocks = titled.length ? titled : added.slice(0, 1);
   if (!blocks.length) return false;
-  const headings = new Set(markdownSections(final).map(section => section.heading)), lines = new Set(final.split(/\r?\n/).map(line => line.trim()));
-  return blocks.every(block => !headings.has(block.heading) && block.lines.map(line => line.trim()).filter(line => line.length >= 20).every(line => !lines.has(line)));
+  const finalLines = final.split(/\r?\n/), sections = markdownSections(final);
+  const firstHeading = finalLines.findIndex(line => /^#{1,6}\s/.test(line));
+  const groups = [finalLines.slice(0, firstHeading < 0 ? finalLines.length : firstHeading), ...sections.map(section => section.lines)].map(group => new Set(group.map(line => line.trim())));
+  return blocks.every(block => {
+    const substantive = [...new Set(block.lines.map(line => line.trim()).filter(line => line.length >= 20))];
+    return !sections.some(section => section.heading === block.heading)
+      && !groups.some(group => substantive.filter(line => group.has(line)).length * 2 > substantive.length);
+  });
+}
+export function documentContactRemoved(rows: ReadonlyArray<{ id: string; body?: string | null; createdByRunId?: string | null }>, latestRevisionId: unknown, consumerRunId: string, label: string) {
+  const number = (row: object) => Number((row as { revisionNumber?: unknown }).revisionNumber);
+  const revisions = [...rows].sort((a, b) => number(a) - number(b));
+  const saves = revisions.filter(row => row.createdByRunId === consumerRunId && (row.body ?? "").includes(label));
+  const consumed = saves.at(-1), final = revisions.find(row => row.id === latestRevisionId);
+  if (!consumed) return !(final?.body ?? "").includes(label);
+  const previous = revisions.filter(row => number(row) < number(saves[0]!)).at(-1);
+  return !!final && contactSectionRemoved(consumed.body ?? "", previous?.body ?? undefined, final.body ?? "", label);
 }
 export function gradeDiscard(value: unknown) {
   const c = checks(), o = runtimeObservation(value);
@@ -142,16 +157,8 @@ export const runtimeDiscardCases = [runtimeDefinition("steering.discard-queued-m
     state.consumedLabelSaved = o.revisions.some(row => row.createdByRunId === state.consumerRunId && row.createdByAgentId === worker && (row.body ?? "").includes(label));
     const latest = o.revisions.filter(row => row.createdByRunId === state.finalWorkerRunId && row.createdByAgentId === worker
       && o.documents.some(doc => doc.id === row.documentId && doc.latestRevisionId === row.id));
-    const number = (row: object) => Number((row as { revisionNumber?: unknown }).revisionNumber);
-    const contactRemoved = (doc: { id: string; latestRevisionId?: unknown }) => {
-      const revisions = o.revisions.filter(row => row.documentId === doc.id).sort((a, b) => number(a) - number(b));
-      const consumed = revisions.filter(row => row.createdByRunId === state.consumerRunId && (row.body ?? "").includes(label)).at(-1);
-      const final = revisions.find(row => row.id === doc.latestRevisionId);
-      if (!consumed) return !(final?.body ?? "").includes(label);
-      const previous = revisions.filter(row => number(row) < number(consumed)).at(-1);
-      return !!final && contactSectionRemoved(consumed.body ?? "", previous?.body ?? undefined, final.body ?? "", label);
-    };
-    state.finalPlanWithoutContact = latest.length > 0 && o.documents.every(doc => contactRemoved(doc));
+    state.finalPlanWithoutContact = latest.length > 0 && o.documents.every(doc => documentContactRemoved(
+      o.revisions.filter(row => row.documentId === doc.id), doc.latestRevisionId, String(state.consumerRunId), label));
     return o;
   },
   async cleanup(ctx, state) { try { await cleanupIdentityProbes(ctx); } finally { await releaseRuntimeWorker(state); } },

@@ -101,14 +101,23 @@ it("keeps every run's evidence when one never-started run has no log, and saves 
   const runs = [{ id: "lead", companyId: "company", status: "succeeded" }, { id: "never-started", companyId: "company", status: "queued" }];
   const context = { scenario: { id: "questions-and-approvals.multi-part-question", query: "Original request" },
     input: { execution: { task: { turnTimeoutMs: 0 } }, fixtures: { company: { id: "company" }, agent: { id: "ceo" } },
-      api: { baseURL: "http://127.0.0.1", get: async () => [] }, page: { locator: () => ({ count: async () => 0 }) },
+      api: { baseURL: "http://127.0.0.1", get: async (route: string) => { if (route.includes("/never-started/log")) throw new Error("Run log not found"); return []; },
+        getRunObservation: async (route: string) => route.includes("/never-started/events") && route.includes("afterSeq=0") ? [{ seq: 1, eventType: "lifecycle" }] : [] },
+      page: { locator: () => ({ count: async () => 0 }) },
       evidence: async (name: string, value: unknown) => { order.push(name); snapshots[name] = structuredClone(value); },
       retireFailedAttempt: async () => { order.push("retired"); runs[1]!.status = "cancelled"; throw new Error("cancel timed out"); } },
     refreshIssue: async () => {}, issue: () => ({ id: "source", companyId: "company" }), allRuns: async () => runs };
   await expect(runChatCatalogFlow(context as never)).rejects.toThrow("Original attempt failed");
   expect(order.indexOf("chat-catalog-failure-run-ledger.json")).toBeLessThan(order.indexOf("retired"));
   expect(snapshots["chat-catalog-failure-run-ledger.json"].runs.map((run: { status: string }) => run.status)).toEqual(["succeeded", "queued"]);
-  expect(snapshots["chat-catalog-runs.json"]).toEqual([{ runId: "lead", log: "log" }, { runId: "never-started", log: null, events: [], evidenceError: "GET /api/heartbeat-runs/never-started/log 404" }]);
+  expect(snapshots["chat-catalog-runs.json"]).toEqual([{ runId: "lead", log: "log" }, { runId: "never-started", log: null, events: [{ seq: 1, eventType: "lifecycle" }], logError: "Run log not found" }]);
   expect(snapshots["api-state.json"]).toMatchObject({ retirementError: "cancel timed out" });
   expect(snapshots["api-state.json"].incomplete).toBeUndefined();
+});
+it("records a separate error for each piece of a failed run's evidence it cannot read", async () => {
+  const { failedRunEvidence } = await import("./chat-catalog-flow.js");
+  const ok = { get: async () => "log text", getRunObservation: async (route: string) => route.includes("afterSeq=0") ? [{ seq: 1 }] : [] };
+  expect(await failedRunEvidence(ok as never, "run")).toEqual({ runId: "run", log: "log text", events: [{ seq: 1 }] });
+  const none = { get: async () => { throw new Error("Run log not found"); }, getRunObservation: async () => { throw new Error("events 500"); } };
+  expect(await failedRunEvidence(none as never, "run")).toEqual({ runId: "run", log: null, events: [], logError: "Run log not found", eventsError: "events 500" });
 });

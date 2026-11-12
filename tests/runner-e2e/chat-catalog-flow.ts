@@ -9,7 +9,8 @@ import { chatQueryWithAttachments, resolveChatQueryAttachments, verifyChatQueryA
 import { CHAT_CATALOG_MAX_SUPERSEDED_QUEUED_RUNS, chatCatalogNeverStartedTerminalTaskRun, chatCatalogProviderRuns, chatCatalogReassignedQueuedRun, chatCatalogRunStatusAllowed, chatCatalogSupersededQueuedRuns, gradeChatCatalogRuns, createChatCatalogFinalRunVerifier } from "./chat-catalog-run-policy.js";
 import { chatCatalogCaseFingerprint, normalizedChatCatalogExecution } from "./chat-catalog-fingerprint.js";
 import { expect, type Page } from "@playwright/test";
-import { pollUntil } from "./api.js";
+import { pollUntil, type RunnerApi } from "./api.js";
+import { collectRunEvents } from "./run-observations.js";
 import { collectChatRunEvidence, sendChatMessage } from "./chat-flow.js";
 import { prepareNativeStopCanonicalBoundary } from "./chat-native-stop-boundary.js";
 import { collectChatCatalogCompanySecretApprovalActivity, verifyChatCatalogCompanySecretBindingApproval, chatCatalogHumanHistoryMatches, chatCatalogAllowsHumanQuestionAnswer, verifyChatCatalogHumanQuestionAnswer, type ChatCatalogHumanQuestionAudit, validateChatCatalogGrade, type ChatCatalogSetupBoundary, type ChatCatalogContext, type ChatCatalogGrade } from "./chat-catalog-contract.js";
@@ -267,7 +268,7 @@ export async function runChatCatalogFlow(context: ChatCatalogContext) {
           const interactions = finalConversation.issue ? await input.api.get(`/api/issues/${finalConversation.issue.id}/interactions`) : [];
           failureSnapshot.interactions = interactions;
           const runEvidence = await Promise.all(finalConversation.runs.map(run => collectChatRunEvidence(chatRunEvidenceApi(input), run)
-            .catch((error: unknown) => ({ runId: run.id, log: null, events: [], evidenceError: error instanceof Error ? error.message : String(error) }))
+            .catch(() => failedRunEvidence(chatRunEvidenceApi(input), run.id))
             .then(row => { collected.push(row); return row; })));
           return { ...failureSnapshot, runEvidence };
         })();
@@ -331,6 +332,16 @@ async function reopenConversation(page: Page, url: string) {
   } catch { /* Evidence is still collected; a page that cannot reopen yields an honest empty link read. */ }
 }
 
+export async function failedRunEvidence(api: Pick<RunnerApi, "get" | "getRunObservation">, runId: string) {
+  const message = (error: unknown) => error instanceof Error ? error.message : String(error);
+  const [log, events] = await Promise.all([
+    api.get(`/api/heartbeat-runs/${runId}/log?limitBytes=1048576`).then(value => ({ value }), (error: unknown) => ({ error: message(error) })),
+    collectRunEvents((afterSeq, limit) => api.getRunObservation(`/api/heartbeat-runs/${runId}/events?afterSeq=${afterSeq}&limit=${limit}`))
+      .then(value => ({ value }), (error: unknown) => ({ error: message(error) })),
+  ]);
+  return { runId, log: "value" in log ? log.value : null, events: "value" in events ? events.value : [],
+    ...("error" in log ? { logError: log.error } : {}), ...("error" in events ? { eventsError: events.error } : {}) };
+}
 export function chatCatalogEndedRunRejection(run: { status: string; errorCode?: string | null; resultJson?: Record<string, unknown> | null }) {
   if (run.status !== "cancelled") return "Observed provider run failed";
   const cancellation = run.resultJson?.cancellation as { source?: unknown } | undefined;

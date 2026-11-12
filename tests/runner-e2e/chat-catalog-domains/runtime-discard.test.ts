@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { contactSectionRemoved, gradeDiscard, promptCarries, replyLinkHrefs } from "./runtime-discard.js";
+import { contactSectionRemoved, documentContactRemoved, gradeDiscard, promptCarries, replyLinkHrefs } from "./runtime-discard.js";
 function valid() {
   const neighbour = { position: 0, comment: { id: "font", body: "Use a readable font.", authorUserId: "human", authorAgentId: null } };
   return { scenarioId: "steering.discard-queued-message", origin: "http://fixture.invalid", companyId: "company", leadId: "ceo", agents: [], links: [], humanQueries: [], reply: "",
@@ -86,4 +86,24 @@ it("broken: the contact section remains, renamed, emptied of its heading, or was
   expect(contactSectionRemoved(consumedPlan, initialPlan, consumedPlan.replace(`## Contact section (label: ${label})`, "## Get in touch"), label)).toBe(false);
   expect(contactSectionRemoved(consumedPlan, initialPlan, consumedPlan.replace(`## Contact section (label: ${label})\n`, ""), label)).toBe(false);
   expect(contactSectionRemoved(`# Plan\n\nLabel ${label} only in the preamble.\n`, undefined, "# Plan\n", label)).toBe(false);
+});
+it("a long line the contact section shares with a kept section does not keep the removed section", () => {
+  const shared = "- Every field has a persistently visible, programmatically associated label.";
+  const consumed = `# Plan\n\n## Fonts\n\n- Readable base size of at least 16px.\n\n## Contact (${label})\n\n- Contact form with name, email and message fields.\n${shared}\n- Success and failure states are announced to assistive technology.\n`;
+  const previous = "# Plan\n\n## Fonts\n\n- Readable base size of at least 16px.\n";
+  expect(contactSectionRemoved(consumed, previous, `# Plan\n\n## Fonts\n\n- Readable base size of at least 16px.\n${shared}\n`, label)).toBe(true);
+  expect(contactSectionRemoved(consumed, previous, consumed.replace(`## Contact (${label})`, "## Reach us"), label)).toBe(false);
+});
+it("compares against the plan from before the consuming run first added the section, across its repeated saves", () => {
+  const rows = [
+    { id: "r1", revisionNumber: 1, createdByRunId: "initial", body: initialPlan },
+    { id: "r2", revisionNumber: 2, createdByRunId: "consumer", body: consumedPlan },
+    { id: "r3", revisionNumber: 3, createdByRunId: "consumer", body: `${consumedPlan}\n## Next steps\n\nConfirm contact details with the person.\n` },
+    { id: "r4", revisionNumber: 4, createdByRunId: "final", body: initialPlan },
+  ];
+  expect(documentContactRemoved(rows, "r4", "consumer", label)).toBe(true);
+  expect(documentContactRemoved([...rows.slice(0, 3), { ...rows[3]!, body: rows[2]!.body }], "r4", "consumer", label)).toBe(false);
+  const bodyLabelled = (body: string) => body.replace(`## Contact section (label: ${label})`, "## Contact section").replace("- Use a readable font with accessible labels.\n- Add a contact section to the saved website plan, labelled", "- Use a readable font with accessible labels.\n- Contact section ref");
+  const relabelled = rows.map(row => row.createdByRunId === "consumer" ? { ...row, body: bodyLabelled(row.body) } : row);
+  expect(documentContactRemoved(relabelled, "r4", "consumer", label)).toBe(true);
 });
