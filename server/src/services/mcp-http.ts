@@ -303,27 +303,51 @@ export function mcpCacheHint(result: unknown, maxTtlMs = 10 * 60_000): { ttlMs: 
   return { ttlMs: Math.min(Math.floor(value.ttlMs), maxTtlMs), scope: value.cacheScope === "public" ? "public" : "private" };
 }
 
-/** A small bounded in-memory cache for cacheable MCP results. */
+/**
+ * A bounded in-memory cache for cacheable MCP results. Results come from
+ * providers, so both the entry count and the bytes held are capped: a result
+ * larger than `maxEntryBytes` is never cached, and the oldest entries are
+ * evicted to keep the total under `maxBytes`. One connection can only push out
+ * others' entries (a cache miss), never grow the process.
+ */
 export class McpResultCache<T> {
-  readonly #entries = new Map<string, { value: T; expiresAt: number }>();
-  constructor(readonly maxEntries = 500, readonly now: () => number = Date.now) {}
+  readonly #entries = new Map<string, { value: T; expiresAt: number; bytes: number }>();
+  #bytes = 0;
+  constructor(
+    readonly maxEntries = 500,
+    readonly now: () => number = Date.now,
+    readonly maxBytes = 32 * 1024 * 1024,
+    readonly maxEntryBytes = 2 * 1024 * 1024,
+  ) {}
+  get bytes() { return this.#bytes; }
   get(key: string): T | undefined {
     const entry = this.#entries.get(key);
     if (!entry) return undefined;
-    if (entry.expiresAt <= this.now()) { this.#entries.delete(key); return undefined; }
+    if (entry.expiresAt <= this.now()) { this.delete(key); return undefined; }
     return entry.value;
   }
   set(key: string, value: T, ttlMs: number) {
     if (ttlMs <= 0) return;
+    let bytes: number;
+    try { bytes = Buffer.byteLength(JSON.stringify(value) ?? "", "utf8"); } catch { return; }
+    this.delete(key);
+    if (bytes > this.maxEntryBytes) return;
+    while (this.#entries.size > 0 && (this.#entries.size >= this.maxEntries || this.#bytes + bytes > this.maxBytes)) {
+      this.delete(this.#entries.keys().next().value!);
+    }
+    this.#entries.set(key, { value, expiresAt: this.now() + ttlMs, bytes });
+    this.#bytes += bytes;
+  }
+  delete(key: string) {
+    const entry = this.#entries.get(key);
+    if (!entry) return;
+    this.#bytes -= entry.bytes;
     this.#entries.delete(key);
-    if (this.#entries.size >= this.maxEntries) this.#entries.delete(this.#entries.keys().next().value!);
-    this.#entries.set(key, { value, expiresAt: this.now() + ttlMs });
   }
-  delete(key: string) { this.#entries.delete(key); }
   deletePrefix(prefix: string) {
-    for (const key of this.#entries.keys()) if (key.startsWith(prefix)) this.#entries.delete(key);
+    for (const key of [...this.#entries.keys()]) if (key.startsWith(prefix)) this.delete(key);
   }
-  clear() { this.#entries.clear(); }
+  clear() { this.#entries.clear(); this.#bytes = 0; }
 }
 
 export class McpHttpInitializationError extends Error {

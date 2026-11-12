@@ -1370,7 +1370,8 @@ export function createToolGatewayService(
   const upstreamHandoffs = new Map<string, { pending: ToolUpstreamPending; expires: number }>();
   // A server's "try again" state, returned on the next identical call. It is
   // in memory: after a restart the server simply asks again.
-  const mcpContextCache = new McpResultCache<unknown>(500);
+  // MCP Apps view documents can reach MCP_APP_MAX_HTML_BYTES; larger results are not cached.
+  const mcpContextCache = new McpResultCache<unknown>(500, Date.now, 32 * 1024 * 1024, MCP_APP_MAX_HTML_BYTES + 64 * 1024);
   const mcpContinuations = new McpResultCache<{ requestState: string }>(512);
   async function persistMcpProtocolVersion(connection: typeof toolConnections.$inferSelect, protocolVersion: string) {
     if (asRecord(connection.config)?.mcpProtocolVersion === protocolVersion) return;

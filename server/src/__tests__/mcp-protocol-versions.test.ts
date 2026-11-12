@@ -17,6 +17,7 @@ import {
   mcpHttpRequestInit,
   mcpInputRequired,
   mcpModernErrorOf,
+  McpResultCache,
   mcpResultType,
   mcpToolHeaderParameters,
   readMcpModernError,
@@ -262,6 +263,18 @@ describe("MCP results", () => {
     expect(mcpCacheHint({ resultType: "input_required", ttlMs: 5_000 })).toBeNull();
     expect(mcpCacheHint({ tools: [] })).toBeNull();
     expect(mcpCacheHint({ ttlMs: 7 * 24 * 3600_000 })!.ttlMs).toBe(10 * 60_000);
+  });
+
+  it("bounds cached provider results by size, not only by count", () => {
+    const cache = new McpResultCache<string>(500, Date.now, 1_000, 400);
+    cache.set("huge", "x".repeat(10_000), 60_000);
+    expect(cache.get("huge")).toBeUndefined();
+    for (let index = 0; index < 10; index += 1) cache.set(`entry-${index}`, "y".repeat(300), 60_000);
+    expect(cache.bytes).toBeLessThanOrEqual(1_000);
+    expect(cache.get("entry-9")).toBeDefined();
+    expect(cache.get("entry-0")).toBeUndefined();
+    cache.deletePrefix("entry-");
+    expect(cache.bytes).toBe(0);
   });
 
   it("turns a URL input request into a sign-in link and a form request into a needs-input stop", () => {
