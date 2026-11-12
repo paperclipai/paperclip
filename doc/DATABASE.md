@@ -2130,7 +2130,9 @@ first time a transaction reads it (`packages/db/src/lazy-transaction-queries.ts`
 `db.query`, `tx.query`, and `tx._` keep their contents. `BEGIN`, `SAVEPOINT`,
 commit, rollback, and connection reservation remain Drizzle's and the driver's.
 
-Measure the cost of a transaction and a savepoint with:
+Measure the cost of a transaction and a savepoint with the command below. It
+needs Node.js 25 or later, because Node.js 24 has no V8 allocation counter, and
+it stops with that message on an older runtime:
 
 ```sh
 cd packages/db

@@ -15,6 +15,9 @@
 // collection counts only when it starts inside the measured window. The
 // allocation profile attributes an empty transaction's bytes to named frames.
 // TSX_DISABLE_CACHE keeps tsx from scanning its shared cache while passes run.
+//
+// Needs Node.js 25 or later: Node.js 24 has no total_allocated_bytes counter,
+// and the script stops with that message instead of printing empty numbers.
 import inspector from "node:inspector/promises";
 import { cpus, loadavg } from "node:os";
 import { PerformanceObserver, performance } from "node:perf_hooks";
@@ -36,6 +39,9 @@ if (!collect) throw new Error("Run node with --expose-gc");
 
 type Sample = { allocatedBytes: number; cpuMicros: number; wallMicros: number; collections: number; collectionMs: number };
 const allocated = () => (v8.getHeapStatistics() as unknown as { total_allocated_bytes: number }).total_allocated_bytes;
+if (typeof allocated() !== "number") {
+  throw new Error(`This benchmark needs Node.js 25 or later; ${process.version} has no v8 total_allocated_bytes counter`);
+}
 const median = (values: number[]) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)]!;
 const settle = () => new Promise<void>(resolve => setImmediate(resolve));
 
