@@ -613,43 +613,58 @@ export async function inspectPluginWorkspace(db: Db, workers: WorkspaceWorkers |
       ? Promise.resolve(removedInspection()) : inspectBinding(db, workers, current, recoveryPullRequest));
 }
 
+type PluginWorkspaceFinalizationPlan = { kind: "inspect" } | { kind: "finalize"; taskLease?: TaskPlacement };
+
+export async function resolvePluginWorkspaceFinalization(db: Db, workspace: Workspace,
+  context: { runId: string; agentId: string; taskLease?: TaskPlacement | null }): Promise<PluginWorkspaceFinalizationPlan | undefined> {
+  if (workspace.providerType !== "plugin") return undefined;
+  if (context.taskLease) return { kind: "finalize", taskLease: context.taskLease };
+  const binding = readWorkspaceProviderBinding(workspace.metadata);
+  if (!binding) throw conflict("Workspace storage ownership is missing");
+  const selected = await pluginRegistryService(db).getById(binding.pluginId);
+  if (!selected) throw conflict("The workspace storage plugin is unavailable");
+  // Existing providers continue to use their established inspection contract.
+  if (selected.manifestJson.workspaceProvider?.finalizationVersion !== 1) return { kind: "inspect" };
+  const portableDrivers = new Set(selected.manifestJson.environmentDrivers?.filter(driver =>
+    driver.sessionHandoffVersion === 1).map(driver => driver.driverKey));
+  let taskLease: TaskPlacement | undefined;
+  if (context.taskLease === undefined && portableDrivers.size > 0) {
+    const leases = await db.select().from(environmentLeases).where(and(
+      eq(environmentLeases.companyId, workspace.companyId),
+      eq(environmentLeases.executionWorkspaceId, workspace.id),
+      eq(environmentLeases.heartbeatRunId, context.runId),
+      eq(environmentLeases.status, "active"),
+    ));
+    const placements = leases.flatMap(lease => {
+      const driverKey = lease.metadata?.driverKey;
+      return lease.metadata?.pluginId === binding.pluginId && lease.metadata?.agentId === context.agentId &&
+        lease.metadata?.runnerTaskLease === true && lease.environmentId && lease.providerLeaseId &&
+        typeof driverKey === "string" && portableDrivers.has(driverKey)
+        ? [{ driverKey, environmentId: lease.environmentId, providerLeaseId: lease.providerLeaseId }] : [];
+    });
+    if (placements.length > 1) throw conflict("Workspace Launcher placement is ambiguous");
+    taskLease = placements[0];
+  }
+  return { kind: "finalize", taskLease };
+}
+
 /** Completion does not need the deletion-safety proof supplied by inspect. */
 export async function finalizePluginWorkspace(db: Db, workers: WorkspaceWorkers | undefined,
-  workspace: Workspace, context: { runId: string; agentId: string;
-    taskLease?: TaskPlacement | null; recordPlacement?: (placement: TaskPlacement) => Promise<void> }) {
+  workspace: Workspace, context: { runId: string; agentId: string; taskLease?: TaskPlacement | null;
+    plan?: PluginWorkspaceFinalizationPlan }) {
   return withRetainedWorkspace(db, workers, workspace, async (current) => {
     if (current.metadata?.workspaceProviderRemoved === true)
       throw conflict("Workspace was removed before finalization");
     const binding = readWorkspaceProviderBinding(current.metadata);
     if (!binding) throw conflict("Workspace storage ownership is missing");
-    const selected = await pluginRegistryService(db).getById(binding.pluginId);
-    if (!selected) throw conflict("The workspace storage plugin is unavailable");
-    // Existing providers continue to use their established inspection contract.
-    if (!context.taskLease && selected.manifestJson.workspaceProvider?.finalizationVersion !== 1)
-      return inspectBinding(db, workers, current);
-    const portableDrivers = new Set(selected.manifestJson.environmentDrivers?.filter(driver =>
-      driver.sessionHandoffVersion === 1).map(driver => driver.driverKey));
-    let taskLease = context.taskLease;
-    if (taskLease === undefined && portableDrivers.size > 0) {
-      const leases = await db.select().from(environmentLeases).where(and(
-        eq(environmentLeases.companyId, current.companyId),
-        eq(environmentLeases.executionWorkspaceId, current.id),
-        eq(environmentLeases.heartbeatRunId, context.runId),
-        eq(environmentLeases.status, "active"),
-      ));
-      const placements = leases.flatMap(lease => {
-        const driverKey = lease.metadata?.driverKey;
-        return lease.metadata?.pluginId === binding.pluginId && lease.metadata?.agentId === context.agentId &&
-          lease.metadata?.runnerTaskLease === true && lease.environmentId && lease.providerLeaseId &&
-          typeof driverKey === "string" && portableDrivers.has(driverKey)
-          ? [{ driverKey, environmentId: lease.environmentId, providerLeaseId: lease.providerLeaseId }] : [];
-      });
-      if (placements.length > 1) throw conflict("Workspace Launcher placement is ambiguous");
-      taskLease = placements[0];
-      if (taskLease) await context.recordPlacement?.(taskLease);
-    }
+    if (context.plan && !isDeepStrictEqual(binding, readWorkspaceProviderBinding(workspace.metadata)))
+      throw conflict("Workspace storage ownership changed");
+    const plan = context.plan ?? await resolvePluginWorkspaceFinalization(db, current, context);
+    if (!plan) throw conflict("The workspace storage plugin is unavailable");
+    if (plan.kind === "inspect") return inspectBinding(db, workers, current);
+    const taskLease = plan.taskLease;
     const result = await callWorkspaceProvider(db, workers, {
-      workspace: current, runId: context.runId, agentId: context.agentId, taskLease: taskLease ?? undefined, operation: { kind: "finalize", binding },
+      workspace: current, runId: context.runId, agentId: context.agentId, taskLease, operation: { kind: "finalize", binding },
     });
     if (result.kind !== "finalized") throw conflict("Workspace finalization is incomplete");
     return result;

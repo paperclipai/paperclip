@@ -17,7 +17,7 @@ import { registerServerAdapter, getServerAdapter, type AdapterExecutionContext }
 import { environmentRunOrchestrator } from "../environment-run-orchestrator.js";
 import { environmentService } from "../environments.js";
 import { buildEnvironmentLeaseContext } from "../environment-runtime.js";
-import { callWorkspaceProvider, finalizePluginWorkspace } from "../plugin-workspaces.js";
+import { callWorkspaceProvider, finalizePluginWorkspace, resolvePluginWorkspaceFinalization } from "../plugin-workspaces.js";
 import { executionWorkspaceService, toExecutionWorkspace } from "../execution-workspaces.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { workspaceOperationService } from "../workspace-operations.js";
@@ -1123,17 +1123,15 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     expect(workspace).toMatchObject({ providerType: "plugin", cwd: null, mode: defaultMode, strategyType: "git_worktree", branchName: fresh ? null : fromDefault ? "WSP-1-prepare-this-workspace" : "test-WSP-1" });
     if (portable) {
       const finalization = { runId: input.run.id, agentId: input.agent.id };
-      let recordedPlacement: Parameters<typeof finalizePluginWorkspace>[3]["taskLease"];
-      await expect(finalizePluginWorkspace(db, input.services.workspaceWorkers, workspace, { ...finalization,
-        recordPlacement: async placement => { recordedPlacement = placement; },
-      }))
+      const plan = await resolvePluginWorkspaceFinalization(db, workspace, finalization);
+      expect(plan).toEqual({ kind: "finalize", taskLease });
+      await expect(finalizePluginWorkspace(db, input.services.workspaceWorkers, workspace, { ...finalization, plan }))
         .resolves.toMatchObject({ kind: "finalized" });
       expect(sequence).toEqual([...portableSequence, "finalize"]);
-      expect(recordedPlacement).toEqual(taskLease);
       await db.update(environmentLeases).set({ status: "released" }).where(and(
         eq(environmentLeases.companyId, input.agent.companyId), eq(environmentLeases.heartbeatRunId, input.run.id)));
       await expect(finalizePluginWorkspace(db, input.services.workspaceWorkers, workspace, {
-        ...finalization, taskLease: recordedPlacement,
+        ...finalization, plan,
       })).resolves.toMatchObject({ kind: "finalized" });
       expect(finalizationIds).toEqual([finalizationIds[0], finalizationIds[0]]);
       const request = { workspace, pluginId: plugin.id, operation: prepareRequests[0]!.operation,

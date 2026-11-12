@@ -3,7 +3,7 @@ import { readRemoteWorkspaceAuthority, saveRemoteWorkspace } from "../remote-wor
 import { remoteWorkspaceFailureCause } from "../remote-workspace-transport.js";
 import { recordNativeFinalizationFailure } from "./native-run-finalizer.js";
 import { inspectPluginWorkspaceForFinalization } from "./native-plugin-workspace-finalization.js";
-import type { WorkspaceWorkers } from "../plugin-workspaces.js";
+import { resolvePluginWorkspaceFinalization, type WorkspaceWorkers } from "../plugin-workspaces.js";
 import { restoreNativeWorkspaceBestEffort } from "./native-workspace-best-effort.js";
 import { withNativeWorkspaceFinalizationOwnership, type NativeWorkspaceFinalizationOwnership } from "./native-workspace-finalization-ownership.js";
 import { settleSupersededNativeWorkspaceFinalizations } from "./native-workspace-finalization-supersession.js";
@@ -161,6 +161,10 @@ export async function attemptNativeWorkspaceFinalization(input: {
   const taskLease = previous
     ? pluginWorkspaceParamsSchema.shape.taskLease.parse(previous.metadata?.pluginWorkspaceTaskLease) ?? null
     : undefined;
+  const pluginFinalizationPlan = workspace && !nativeWorkspaceSync && !readRemoteWorkspaceAuthority(workspace.metadata)
+    ? await resolvePluginWorkspaceFinalization(input.db, workspace, { runId: input.runId, agentId: bound.agentId, taskLease })
+    : undefined;
+  const recordedTaskLease = pluginFinalizationPlan?.kind === "finalize" ? pluginFinalizationPlan.taskLease : undefined;
 
   const recorder = workspaceOperationService(input.db).createRecorder({
     companyId: bound.companyId,
@@ -177,12 +181,12 @@ export async function attemptNativeWorkspaceFinalization(input: {
     metadata: {
       resumedFromOperationId: previous?.id ?? null,
       owningService: "native_workspace_finalizer",
-      ...(taskLease ? { pluginWorkspaceTaskLease: taskLease } : {}),
+      ...(recordedTaskLease ? { pluginWorkspaceTaskLease: recordedTaskLease } : {}),
       observation: workspace?.strategyType === "git_worktree"
         ? "managed_git_worktree_branch"
         : "workspace_directory",
     },
-    run: async reportProgress => {
+    run: async () => {
       await ownership.assertHeld();
       const remoteAuthority = readRemoteWorkspaceAuthority(workspace?.metadata);
       if (remoteAuthority && workspace) {
@@ -313,11 +317,8 @@ export async function attemptNativeWorkspaceFinalization(input: {
       try {
         pluginWorkspace = workspace
           ? await inspectPluginWorkspaceForFinalization(input.db, input.pluginWorkerManager, workspace, bound.agentId, input.runId, {
-              taskLease,
-              recordPlacement: async placement => {
-                await ownership.assertHeld();
-                await reportProgress({ metadata: { pluginWorkspaceTaskLease: placement } });
-              },
+              taskLease: taskLease ?? null,
+              plan: pluginFinalizationPlan,
             })
           : null;
       } catch (error) {

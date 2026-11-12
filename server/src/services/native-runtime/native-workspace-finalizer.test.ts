@@ -1,3 +1,4 @@
+import { armCrashPointForTest } from "@paperclipai/shared/crash-points";
 import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../delivery-work-notifications.js";
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import * as pluginWorkspaces from "../plugin-workspaces.js";
@@ -746,6 +747,7 @@ describe("native workspace finalization recovery", () => {
       mode: "isolated_workspace", strategyType: providerType === "plugin" ? "git_worktree" : "project_primary",
       branchName: "task-branch", metadata: providerType === "plugin" ? {} : { runnerTaskWorkspaceOwner: { agentId } } }).returning();
     const seeded = await seedRun({ executionWorkspaceId: workspace.id, title: "Plugin result before controller restart" });
+    const plan = vi.spyOn(pluginWorkspaces, "resolvePluginWorkspaceFinalization").mockResolvedValue({ kind: "inspect" });
     const inspect = vi.spyOn(pluginWorkspaces, "finalizePluginWorkspace").mockResolvedValue({ kind: "inspection",
       branchName: "task-branch", headSha: "a".repeat(40), hasDirtyTrackedFiles: true, hasUntrackedFiles: false,
       hasLocalOnlyData: true, isMergedIntoBase: false, remotelyRecoverable: false });
@@ -754,10 +756,10 @@ describe("native workspace finalization recovery", () => {
       if (providerType === "plugin") expect(inspect).toHaveBeenCalledWith(db, undefined,
         expect.objectContaining({ id: workspace.id }), expect.objectContaining({ agentId, runId: seeded.runId }));
       else expect(inspect).not.toHaveBeenCalled();
-    } finally { inspect.mockRestore(); }
+    } finally { inspect.mockRestore(); plan.mockRestore(); }
   });
 
-  it("replays a pre-placement finalization without changing its operation identity", async () => {
+  it.each(["pre-placement request", "crash before dispatch"] as const)("replays the recorded route after %s", async scenario => {
     const pluginId = randomUUID(), environmentId = randomUUID(), workspaceId = randomUUID();
     const binding = { pluginId, projectId, executionWorkspaceId: workspaceId, projectWorkspaceId: randomUUID(),
       sourceRevision: "fixture-revision", workspaceRef: "provider:pre-placement" };
@@ -767,7 +769,7 @@ describe("native workspace finalization recovery", () => {
         workspaceProvider: { finalizationVersion: 1 },
         environmentDrivers: [{ driverKey: "portable", sessionHandoffVersion: 1 }] } as never,
     });
-    await db.insert(environments).values({ id: environmentId, name: "Portable tasks", driver: "plugin" });
+    await db.insert(environments).values({ id: environmentId, name: `Portable tasks ${environmentId}`, driver: "plugin" });
     const [workspace] = await db.insert(executionWorkspaces).values({
       id: workspaceId, companyId, projectId, name: "Pre-placement worktree", providerType: "plugin", providerRef: binding.workspaceRef,
       mode: "isolated_workspace", strategyType: "git_worktree", branchName: "task-branch", metadata: { workspaceProvider: binding },
@@ -778,52 +780,37 @@ describe("native workspace finalization recovery", () => {
       status: "active", provider: "plugin:fixture:portable", providerLeaseId: "live-task",
       metadata: { pluginId, agentId, driverKey: "portable", runnerTaskLease: true },
     });
-    const worker = vi.fn()
-      .mockRejectedValueOnce(new Error("fixture reply lost"))
-      .mockResolvedValueOnce({ kind: "finalized", branchName: "task-branch", headSha: "a".repeat(40) });
+    const result = { kind: "finalized", branchName: "task-branch", headSha: "a".repeat(40) };
+    const worker = vi.fn().mockResolvedValue(result);
     const workers = { getWorker: () => ({ supportedMethods: ["workspaceOperation"] }), call: worker } as unknown as pluginWorkspaces.WorkspaceWorkers;
-    await expect(pluginWorkspaces.callWorkspaceProvider(db, workers, {
-      workspace, runId, agentId, operation: { kind: "finalize", binding },
-    })).rejects.toThrow();
-    await db.insert(workspaceOperations).values({
-      companyId, executionWorkspaceId: workspaceId, heartbeatRunId: runId, issueId,
-      phase: "workspace_finalize", status: "running", metadata: {},
-    });
-
-    await expect(resumeNativeWorkspaceFinalization({ db, runId, pluginWorkerManager: workers }))
-      .resolves.toMatchObject({ status: "succeeded" });
-    const requests = worker.mock.calls.map(([, , request]) => request);
-    expect(requests).toHaveLength(2);
-    expect(requests[1]?.operationId).toBe(requests[0]?.operationId);
-    expect(requests.every(request => request.taskLease === undefined)).toBe(true);
-  });
-
-  it("records the plugin task placement before dispatch and replays it after a lost reply", async () => {
-    const [workspace] = await db.insert(executionWorkspaces).values({
-      companyId, projectId, name: "Portable worktree", providerType: "plugin", providerRef: "provider:portable",
-      mode: "isolated_workspace", strategyType: "git_worktree", branchName: "task-branch",
-    }).returning();
-    const { runId } = await seedRun({ executionWorkspaceId: workspace.id, title: "Portable finalization retry" });
-    const taskLease = { environmentId: randomUUID(), driverKey: "portable", providerLeaseId: "task-1" };
-    const inspect = vi.spyOn(pluginWorkspaces, "finalizePluginWorkspace")
-      .mockImplementationOnce(async (_db, _workers, _workspace, context) => {
-        expect(context.taskLease).toBeUndefined();
-        await context.recordPlacement!(taskLease);
-        const [running] = await db.select().from(workspaceOperations).where(eq(workspaceOperations.heartbeatRunId, runId));
-        expect(running).toMatchObject({ status: "running", metadata: { pluginWorkspaceTaskLease: taskLease } });
-        throw new Error("fixture reply lost");
-      })
-      .mockImplementationOnce(async (_db, _workers, _workspace, context) => {
-        expect(context.taskLease).toEqual(taskLease);
-        return { kind: "finalized", branchName: "task-branch", headSha: "a".repeat(40) };
+    const resume = () => resumeNativeWorkspaceFinalization({ db, runId, pluginWorkerManager: workers });
+    if (scenario === "pre-placement request") {
+      worker.mockRejectedValueOnce(new Error("fixture reply lost"));
+      await expect(pluginWorkspaces.callWorkspaceProvider(db, workers, {
+        workspace, runId, agentId, operation: { kind: "finalize", binding },
+      })).rejects.toThrow();
+      await db.insert(workspaceOperations).values({
+        companyId, executionWorkspaceId: workspaceId, heartbeatRunId: runId, issueId,
+        phase: "workspace_finalize", status: "running", metadata: {},
       });
-    try {
-      expect(await resumeNativeWorkspaceFinalization({ db, runId })).toMatchObject({ status: "failed" });
-      expect(await resumeNativeWorkspaceFinalization({ db, runId })).toMatchObject({
-        status: "succeeded", metadata: { pluginWorkspaceTaskLease: taskLease },
-      });
-      expect(inspect).toHaveBeenCalledTimes(2);
-    } finally { inspect.mockRestore(); }
+      await expect(resume()).resolves.toMatchObject({ status: "succeeded" });
+      const requests = worker.mock.calls.map(([, , request]) => request);
+      expect(requests).toHaveLength(2);
+      expect(requests[1]?.operationId).toBe(requests[0]?.operationId);
+      expect(requests.every(request => request.taskLease === undefined)).toBe(true);
+    } else {
+      const disarm = armCrashPointForTest("workspace.finalize.after_start_before_copyback");
+      try { await expect(resume()).rejects.toThrow("workspace.finalize.after_start_before_copyback"); }
+      finally { disarm(); }
+      expect(worker).not.toHaveBeenCalled();
+      const taskLease = { environmentId, driverKey: "portable", providerLeaseId: "live-task" };
+      const [interrupted] = await db.select().from(workspaceOperations).where(eq(workspaceOperations.heartbeatRunId, runId));
+      expect(interrupted).toMatchObject({ status: "running", metadata: { pluginWorkspaceTaskLease: taskLease } });
+      await db.update(environmentLeases).set({ status: "released" }).where(eq(environmentLeases.heartbeatRunId, runId));
+      await expect(resume()).resolves.toMatchObject({ status: "succeeded", metadata: { pluginWorkspaceTaskLease: taskLease } });
+      expect(worker).toHaveBeenCalledExactlyOnceWith(pluginId, "workspaceOperation",
+        expect.objectContaining({ taskLease, runId, agentId, operation: { kind: "finalize", binding } }), 40_000);
+    }
   });
 
   it.each(["synthetic plugin unavailable", "plugin_workspace_branch_mismatch", "plugin_workspace_owner_mismatch"])("defers plugin failure without aborting other result recovery: %s", async message => {
@@ -835,6 +822,7 @@ describe("native workspace finalization recovery", () => {
     ]).returning();
     const blocked = await seedRun({ executionWorkspaceId: unavailable.id, title: "Plugin is unavailable after restart" });
     const ready = await seedRun({ executionWorkspaceId: healthy.id, title: "Other result can recover" });
+    const plan = vi.spyOn(pluginWorkspaces, "resolvePluginWorkspaceFinalization").mockResolvedValue({ kind: "inspect" });
     const inspect = vi.spyOn(pluginWorkspaces, "finalizePluginWorkspace").mockRejectedValue(new Error(message));
     const code = message.startsWith("plugin_workspace_") ? message : "plugin_workspace_inspection_failed";
     try {
@@ -847,7 +835,7 @@ describe("native workspace finalization recovery", () => {
         .toMatchObject([{ status: "failed", stderrExcerpt: `${code}\n` }]);
       expect(await db.select().from(workspaceOperations).where(eq(workspaceOperations.heartbeatRunId, ready.runId)))
         .toMatchObject([{ status: "succeeded" }]);
-    } finally { inspect.mockRestore(); }
+    } finally { inspect.mockRestore(); plan.mockRestore(); }
   });
 
   it("records directory-only recovery without inventing an execution-workspace foreign key", async () => {

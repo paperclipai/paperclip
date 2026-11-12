@@ -1,3 +1,4 @@
+import { armCrashPointForTest } from "@paperclipai/shared/crash-points";
 import { NativeControllerRecoveryWaitingError } from "../native-runtime/native-controller-recovery.js";
 
 import { createNativeUsageDelivery } from "../native-runtime/native-usage-delivery.js";
@@ -557,6 +558,7 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
       name: "Plugin worktree", providerType: "plugin", providerRef: "provider:opaque-worktree", cwd: "/workspaces/plugin-only",
       mode: "isolated_workspace", strategyType: "git_worktree", branchName: "task-branch" }).returning();
     input.workspace.persistedExecutionWorkspace = workspace;
+    const plan = vi.spyOn(pluginWorkspaces, "resolvePluginWorkspaceFinalization").mockResolvedValue({ kind: "inspect" });
     const inspect = vi.spyOn(pluginWorkspaces, "finalizePluginWorkspace").mockResolvedValue({ kind: "inspection",
       branchName: branch === "expected" ? "task-branch" : "other-branch", headSha: "a".repeat(40),
       hasDirtyTrackedFiles: true, hasUntrackedFiles: false, hasLocalOnlyData: true, isMergedIntoBase: false, remotelyRecoverable: false });
@@ -571,10 +573,10 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
       }
       expect(inspect).toHaveBeenCalledWith(db, undefined, expect.objectContaining({ id: workspace.id, providerRef: workspace.providerRef }),
         expect.objectContaining({ agentId: input.agent.id, runId: input.run.id }));
-    } finally { inspect.mockRestore(); }
+    } finally { inspect.mockRestore(); plan.mockRestore(); }
   });
 
-  it.each(["lost reply", "worker unavailable"])("replays inline plugin finalization after %s", async failure => {
+  it.each(["lost reply", "worker unavailable", "crash before dispatch", "ambiguous placement"])("replays inline plugin finalization after %s", async failure => {
     const { input, run } = await fixture(true);
     const issue = input.task.issueRef!;
     const storage = await createPluginWorkspaceFixture(db, run.companyId);
@@ -613,6 +615,9 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
       environmentId: environment.id, providerLeaseId: taskLease.providerLeaseId,
       metadata: { pluginId: storage.pluginId, agentId: run.agentId, driverKey: taskLease.driverKey, runnerTaskLease: true },
     }).returning();
+    const duplicate = failure === "ambiguous placement"
+      ? (await db.insert(environmentLeases).values({ ...lease, id: randomUUID(), providerLeaseId: "other-task" }).returning())[0]
+      : undefined;
     let retry = false;
     const dispatch = vi.fn(async (_pluginId: string, method: string, params: PluginWorkspaceParams) => {
       expect(method).toBe("workspaceOperation");
@@ -629,18 +634,32 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     } as unknown as NonNullable<HeartbeatRuntimeExecutionInput["options"]["pluginWorkerManager"]>;
     input.options.pluginWorkerManager = workers;
 
-    await expect(executeHeartbeatRuntime(db, input)).rejects.toMatchObject({
-      name: "NativeWorkspaceFinalizeScheduledError", reasonCode: "workspace_sync_out_failed",
-    });
+    const disarm = failure === "crash before dispatch"
+      ? armCrashPointForTest("workspace.finalize.after_start_before_copyback") : undefined;
+    try {
+      await expect(executeHeartbeatRuntime(db, input)).rejects.toMatchObject({
+        name: "NativeWorkspaceFinalizeScheduledError", reasonCode: "workspace_sync_out_failed",
+      });
+    } finally { disarm?.(); }
     expect(input.effects.onNativeWorkspaceFinalizeScheduled).toHaveBeenCalledOnce();
-    expect(await finalizations()).toEqual(expect.arrayContaining([
-      expect.objectContaining({ status: "failed", metadata: expect.objectContaining({ pluginWorkspaceTaskLease: taskLease }) }),
-    ]));
-    if (failure === "lost reply") {
-      await db.update(environmentLeases).set({ status: "released", releasedAt: new Date() }).where(eq(environmentLeases.id, lease.id));
+    if (duplicate) {
+      expect(await finalizations()).toHaveLength(0);
+      await db.delete(environmentLeases).where(eq(environmentLeases.id, duplicate.id));
     } else {
-      expect(dispatch).not.toHaveBeenCalled();
+      expect(await finalizations()).toEqual(expect.arrayContaining([
+        expect.objectContaining({ status: "failed", metadata: expect.objectContaining({ pluginWorkspaceTaskLease: taskLease }) }),
+      ]));
+    }
+    if (failure === "crash before dispatch") {
+      expect(await finalizations()).toEqual(expect.arrayContaining([
+        expect.objectContaining({ status: "running", metadata: expect.objectContaining({ pluginWorkspaceTaskLease: taskLease }) }),
+      ]));
+    }
+    if (failure !== "lost reply") expect(dispatch).not.toHaveBeenCalled();
+    if (failure === "worker unavailable" || duplicate) {
       expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, lease.id)))[0].status).toBe("active");
+    } else {
+      await db.update(environmentLeases).set({ status: "released", releasedAt: new Date() }).where(eq(environmentLeases.id, lease.id));
     }
     retry = true;
     await db.update(nativeRunFinalizations).set({ nextAttemptAt: null }).where(eq(nativeRunFinalizations.runId, run.id));

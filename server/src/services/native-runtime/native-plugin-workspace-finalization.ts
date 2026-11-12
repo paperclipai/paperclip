@@ -8,7 +8,7 @@ export async function inspectPluginWorkspaceForFinalization(
   workspace: typeof executionWorkspaces.$inferSelect,
   agentId: string,
   runId: string,
-  placement?: Pick<Parameters<typeof finalizePluginWorkspace>[3], "taskLease" | "recordPlacement">,
+  placement?: Pick<Parameters<typeof finalizePluginWorkspace>[3], "taskLease" | "plan">,
 ): Promise<Record<string, unknown> | null> {
   if (workspace.providerType === "plugin") {
     const inspection = await finalizePluginWorkspace(db, workers, workspace, { agentId, runId, ...placement });
