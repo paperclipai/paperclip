@@ -7,7 +7,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
-  archiveImageDigest, assertPipelineUnchanged, createRecord, repositoryId, selectArtifact, selectVerifiedRun, verifyRecord, workflowPath,
+  archiveImageDigest, assertPipelineUnchanged, changedSince, createRecord, repositoryId, selectArtifact, selectVerifiedRun, verifyRecord, workflowPath,
 } from "./merge-group-image.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -102,12 +102,39 @@ test("promotion proves commit, tree, architecture and archive digest", () => {
   assert.throws(() => createRecord({ sha, tree: "HEAD", arch: "amd64", digest }));
 });
 
-test("a commit that changes the merge-group pipeline is built from source, not promoted", () => {
+test("a push that changes the merge-group pipeline is built from source, not promoted", () => {
   assert.doesNotThrow(() => assertPipelineUnchanged([]));
-  assert.doesNotThrow(() => assertPipelineUnchanged(["Dockerfile", "server/src/index.ts", ".github/workflows/docker.yml"]));
-  for (const file of [".github/workflows/docker-merge-group.yml", "scripts/merge-group-image.mjs", "scripts/assert-orphan-reaping.sh"]) {
+  assert.doesNotThrow(() => assertPipelineUnchanged(["Dockerfile", "server/src/index.ts", "scripts/standard-image-contract.mjs"]));
+  for (const file of [".github/workflows/docker-merge-group.yml", ".github/workflows/docker.yml", "scripts/merge-group-image.mjs", "scripts/assert-orphan-reaping.sh"]) {
     assert.throws(() => assertPipelineUnchanged(["server/src/index.ts", file]), /changes the merge-group image pipeline/, file);
   }
+});
+
+test("the pipeline check covers every commit the push landed, not only the last", () => {
+  const directory = mkdtempSync(path.join(tmpdir(), "merge-group-push-"));
+  const git = (...args) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", ...args],
+    { cwd: directory, encoding: "utf8" }).trim();
+  const commit = (file, text) => {
+    mkdirSync(path.dirname(path.join(directory, file)), { recursive: true });
+    writeFileSync(path.join(directory, file), text);
+    git("add", "-A"); git("commit", "-q", "-m", file);
+    return git("rev-parse", "HEAD");
+  };
+  try {
+    git("init", "-q", "-b", "main");
+    const before = commit("scripts/merge-group-image.mjs", "v1");
+    // A merge group of two PRs lands in one push: the first edits the
+    // pipeline, the second (the push's HEAD) only edits app code.
+    commit("scripts/merge-group-image.mjs", "v2");
+    commit("server/src/index.ts", "app");
+    assert.deepEqual(changedSince(git("rev-parse", "HEAD~1"), directory), []);
+    assert.deepEqual(changedSince(before, directory), ["scripts/merge-group-image.mjs"]);
+    assert.throws(() => assertPipelineUnchanged(changedSince(before, directory)), /changes the merge-group image pipeline/);
+    assert.throws(() => changedSince("HEAD~2", directory), /full `before` SHA/);
+    git("checkout", "-q", "--orphan", "other"); const unrelated = commit("README.md", "x");
+    git("checkout", "-q", "main");
+    assert.throws(() => changedSince(unrelated, directory), "a non-ancestor `before` is refused");
+  } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
 test("the CLI refuses to record outside a merge group or promote outside a canonical master push", () => {
@@ -157,11 +184,19 @@ test("master promotes only after proof and otherwise builds exactly as before", 
     assert.match(step(name), /continue-on-error: true/, `${name} must fall back to the build`);
   }
   const promote = step("Promote the merge-queue image");
-  assert.ok(promote.indexOf("merge-group-image.mjs verify") < promote.indexOf("skopeo copy"));
+  // Both helpers run master's copy from before the push, so a push cannot
+  // weaken the checks it must pass.
+  for (const name of ["Find the merge-queue build of this commit", "Promote the merge-queue image"]) {
+    assert.match(step(name), /BEFORE: \$\{\{ github.event.before \}\}/);
+    assert.match(step(name), /git show "\$BEFORE:scripts\/merge-group-image.mjs" > "\$trusted"/);
+    assert.doesNotMatch(step(name), /node scripts\/merge-group-image\.mjs/);
+  }
+  assert.match(promote, /node "\$trusted" verify --arch "\$ARCH" --dir "\$DIRECTORY" --since "\$BEFORE"/);
+  assert.ok(promote.indexOf('"$trusted" verify') < promote.indexOf("skopeo copy"));
   assert.ok(promote.indexOf("skopeo copy --all --preserve-digests") < promote.indexOf('echo "digest=$digest" >> "$GITHUB_OUTPUT"'),
     "the promoted digest becomes an output only after the exact bytes are pushed");
-  assert.match(promote, /GITHUB_OUTPUT='' node scripts\/merge-group-image.mjs verify/);
-  assert.ok(promote.indexOf("command -v skopeo") < promote.indexOf("merge-group-image.mjs verify"),
+  assert.match(promote, /GITHUB_OUTPUT='' node "\$trusted" verify/);
+  assert.ok(promote.indexOf("command -v skopeo") < promote.indexOf('"$trusted" verify'),
     "a runner without skopeo reports that promotion is unavailable before it tries");
   for (const name of ["Set up Docker Buildx", "Compute schema migration labels", "Docker meta", "Build and push by digest"]) {
     assert.match(step(name), /if: steps.promote.outputs.digest == ''/, `${name} runs whenever nothing was promoted`);

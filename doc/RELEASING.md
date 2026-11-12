@@ -340,8 +340,10 @@ credentials and uploads an OCI archive with a record of the commit, tree,
 architecture and digest. The `master` push for that same commit then pushes
 those exact bytes by digest instead of rebuilding
 (`scripts/merge-group-image.mjs`). A commit that changes that pipeline (the
-merge-group workflow, the promotion script or the PID 1 probe) is always built
-from source, so promotion trusts only a pipeline that master already ran.
+merge-group workflow, `docker.yml`, the promotion script or the PID 1 probe)
+anywhere in the pushed range is always built from source. `docker.yml` runs the
+promotion script as master had it before the push, so promotion trusts only a
+pipeline that master already ran.
 Without a matching successful merge-group
 run, or on any mismatch or error, the push builds from source. The PID 1 probe,
 exact-source gate and signing apply on both paths.

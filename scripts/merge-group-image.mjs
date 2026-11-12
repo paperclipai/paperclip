@@ -108,20 +108,27 @@ export function verifyRecord({ record, sha, tree, arch, archiveDigest }) {
 }
 
 /**
- * Files that produce or vouch for a merge-group image. The merge-group run uses
- * the queued commit's own copies, so a commit that changes any of them is
- * built from source on master instead: promotion then trusts only a pipeline
- * that master already ran before this commit.
+ * Files that produce, promote or vouch for a merge-group image. The merge-group
+ * run uses the queued commits' own copies, so a push that changes any of them
+ * is built from source on master instead: promotion then trusts only a
+ * pipeline that master already ran before this push. docker.yml runs this
+ * check from the copy of this script in the push's `before` commit, so a push
+ * cannot remove the check it is subject to.
  */
-export const pipelineFiles = [workflowPath, "scripts/merge-group-image.mjs", "scripts/assert-orphan-reaping.sh"];
+export const pipelineFiles = [workflowPath, ".github/workflows/docker.yml", "scripts/merge-group-image.mjs", "scripts/assert-orphan-reaping.sh"];
 
 export function assertPipelineUnchanged(changedFiles) {
   const changed = changedFiles.filter(file => pipelineFiles.includes(file));
-  assert.equal(changed.length, 0, `This commit changes the merge-group image pipeline (${changed.join(", ")})`);
+  assert.equal(changed.length, 0, `This push changes the merge-group image pipeline (${changed.join(", ")})`);
 }
 
-const changedSinceParent = () => execFileSync("git", ["diff", "--name-only", "HEAD^", "HEAD", "--", ...pipelineFiles], { encoding: "utf8" })
-  .split("\n").filter(Boolean);
+/** Pipeline files changed by everything this push landed: `since` (the push's `before`) to HEAD. */
+export function changedSince(since, cwd = process.cwd()) {
+  assert.match(since ?? "", fullSha, "--since must be the push's full `before` SHA");
+  // Throws unless `since` is an ancestor: a push is a fast-forward of master.
+  execFileSync("git", ["merge-base", "--is-ancestor", since, "HEAD"], { cwd, stdio: "ignore" });
+  return execFileSync("git", ["diff", "--name-only", since, "HEAD", "--", ...pipelineFiles], { cwd, encoding: "utf8" }).split("\n").filter(Boolean);
+}
 const tarReader = archive => entry => execFileSync("tar", ["-xOf", archive, entry], { maxBuffer: 16 * 1024 * 1024 });
 const gitTree = () => execFileSync("git", ["rev-parse", "HEAD^{tree}"], { encoding: "utf8" }).trim();
 const option = name => {
@@ -166,7 +173,7 @@ async function main(command) {
   }
   if (command === "verify") {
     const directory = option("dir");
-    assertPipelineUnchanged(changedSinceParent());
+    assertPipelineUnchanged(changedSince(option("since")));
     const record = JSON.parse(await readFile(`${directory}/record.json`, "utf8"));
     const archiveDigest = archiveImageDigest({ readEntry: tarReader(`${directory}/image.tar`), arch });
     return output("digest", verifyRecord({ record, sha, tree: gitTree(), arch, archiveDigest }));

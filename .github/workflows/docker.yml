@@ -253,7 +253,15 @@ jobs:
         continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: node scripts/merge-group-image.mjs find --arch "${{ matrix.arch }}"
+          BEFORE: ${{ github.event.before }}
+          ARCH: ${{ matrix.arch }}
+        # Master's copy from before this push selects the run; see the promote
+        # step below.
+        run: |
+          set -euo pipefail
+          trusted="$RUNNER_TEMP/merge-group-image-trusted.mjs"
+          git show "$BEFORE:scripts/merge-group-image.mjs" > "$trusted"
+          node "$trusted" find --arch "$ARCH"
 
       - name: Download the merge-queue image
         if: steps.find.outputs.run_id != ''
@@ -273,6 +281,7 @@ jobs:
           ARCH: ${{ matrix.arch }}
           DIRECTORY: ${{ runner.temp }}/merge-group-image
           IMAGE_NAME: ghcr.io/${{ github.repository }}
+          BEFORE: ${{ github.event.before }}
         run: |
           set -euo pipefail
           # Say plainly when this runner image cannot promote, instead of
@@ -282,9 +291,15 @@ jobs:
             exit 1
           fi
           echo "Promoting with $(skopeo --version)"
+          # Run the verifier as master had it before this push, not the copy
+          # this push brings, so a push cannot weaken the check it must pass.
+          # The verifier refuses any push that changes the pipeline since
+          # BEFORE. A push whose BEFORE has no verifier builds from source.
+          trusted="$RUNNER_TEMP/merge-group-image-trusted.mjs"
+          git show "$BEFORE:scripts/merge-group-image.mjs" > "$trusted"
           # Verify without writing a step output: the digest is set only after
           # the exact bytes are in the registry.
-          verified="$(GITHUB_OUTPUT='' node scripts/merge-group-image.mjs verify --arch "$ARCH" --dir "$DIRECTORY")"
+          verified="$(GITHUB_OUTPUT='' node "$trusted" verify --arch "$ARCH" --dir "$DIRECTORY" --since "$BEFORE")"
           digest="$(printf '%s\n' "$verified" | sed -n 's/^digest=//p')"
           printf '%s' "$digest" | grep -Eq '^sha256:[a-f0-9]{64}$'
           # --preserve-digests fails rather than re-encode, so the registry
