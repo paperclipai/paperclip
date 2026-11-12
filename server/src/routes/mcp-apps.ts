@@ -2,7 +2,7 @@ import { Router, type Request, type Response } from "express";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { issues, type Db } from "@paperclipai/db";
-import type { McpAppViewDetail } from "@paperclipai/shared";
+import { mcpAppToolCallSchema, type McpAppViewDetail } from "@paperclipai/shared";
 import { assertBoard, getAccessibleResource } from "./authz.js";
 import { connectionRequestUserId } from "./connection-management-authz.js";
 import { forbidden } from "../errors.js";
@@ -12,10 +12,6 @@ import { mcpAppViewsService, toMcpAppViewSummary } from "../services/mcp-app-vie
 import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-gateway.js";
 
 const uuidSchema = z.string().uuid();
-const toolCallSchema = z.object({
-  name: z.string().min(1).max(256),
-  arguments: z.record(z.string(), z.unknown()).optional(),
-}).strict();
 
 type McpAppsGateway = Pick<ToolGatewayService, "readMcpAppViewResource" | "callMcpAppViewTool">;
 
@@ -97,7 +93,7 @@ export function mcpAppsRoutes(db: Db, toolGateway: McpAppsGateway) {
   router.post("/issues/:issueId/mcp-app-views/:viewId/tool-calls", async (req, res) => {
     const found = await viewFor(req, res);
     if (!found) return;
-    const body = toolCallSchema.safeParse(req.body);
+    const body = mcpAppToolCallSchema.safeParse(req.body);
     if (!body.success) {
       res.status(400).json({ error: "Invalid tool call" });
       return;

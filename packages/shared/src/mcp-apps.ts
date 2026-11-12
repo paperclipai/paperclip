@@ -7,6 +7,8 @@
  * https://github.com/modelcontextprotocol/ext-apps/blob/main/specification/2026-01-26/apps.mdx
  */
 
+import { z } from "zod";
+
 export const MCP_APPS_EXTENSION_ID = "io.modelcontextprotocol/ui";
 export const MCP_APP_MIME_TYPE = "text/html;profile=mcp-app";
 export const MCP_APPS_PROTOCOL_VERSION = "2026-01-26";
@@ -81,10 +83,13 @@ export interface McpAppCallToolResult {
   isError?: boolean;
 }
 
-export interface McpAppToolCallRequest {
-  name: string;
-  arguments?: Record<string, unknown>;
-}
+/** Body of `POST /api/issues/:issueId/mcp-app-views/:viewId/tool-calls`: a view's `tools/call`. */
+export const mcpAppToolCallSchema = z.object({
+  name: z.string().min(1).max(256),
+  arguments: z.record(z.string(), z.unknown()).optional(),
+}).strict();
+
+export type McpAppToolCallRequest = z.infer<typeof mcpAppToolCallSchema>;
 
 function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
