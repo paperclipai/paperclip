@@ -1624,7 +1624,7 @@ timeout retries still require a fresh allocation under the policy above.
 
 A person's task Retry on a connected task first asks the chat retry owner to repeat the exact failed chat request. When the latest run is that person's own saved board turn that cannot be certified for replay, when no chat retry owner is available, or when that owner refuses (`chat_failed_run_retry_not_authorized`), the refusal and any writes it made are rolled back and the same Retry receipt becomes an ordinary board continuation: the clicking person is the responsible user, the run starts a fresh session from saved work, and no chat action, chat authority, or output replay is created. This is the same authority as a new message from that person. When the conversation still holds saved or unadmitted chat input for the task, Retry keeps the exact-replay path and its refusal, because that input continues through its own admission. Dispatch keeps every normal gate (current task access, executor containment, recovery holds, unadmitted chat input). Projection and the route therefore agree: a shown Retry on a connected task is accepted. Retry that Paperclip requests by itself on a person's behalf (restart recovery, provider limit reset) keeps the exact-replay requirement and still settles on the refusal. A budget resume continues the person's own Retry, so it takes the board continuation too. No migration is needed; tasks blocked by an earlier release become retryable at the next click.
 
-The exact replay can also be refused after the click is accepted. This happens when chat source authorization was deferred by a busy identity or endpoint lock, or when it later fails, so the chat retry action settles `failed` with no admitted run. The task Retry receipt is then not failed. If it is a person's Retry, its source run is still the latest run, its chat wake has no run, and no saved or unadmitted chat input remains, the same receipt drops its chat action and becomes the board continuation described above, recorded as `issue.retry_continued_from_saved_work`. The deferred-receipt worker dispatches it with every normal gate. Retry that Paperclip requests by itself still settles as failed. When a failed run's saved work is recovered, the task's execution blocker offers Retry (also on a connected task) and says "Saved work recovered. Retry continues from it." A stopped (cancelled) run keeps "Send a message to continue."
+The exact replay can also be refused after the click is accepted. This happens when chat source authorization was deferred by a busy identity or endpoint lock, or when it later fails, so the chat retry action settles `failed` with no admitted run. The task Retry receipt is then not failed. If it is a person's Retry, its source run is still the latest run, its chat wake has no run, and no saved or unadmitted chat input remains, the same receipt drops its chat action and becomes the board continuation described above, recorded as `issue.retry_continued_from_saved_work`. Saved chat input whose source comment was written no later than the failed run's stop boundary (the user's recorded Stop request, otherwise `finishedAt`, the same boundary admission uses) does not block this: admission holds such input as `message_predates_stop`, so it can never start alone. The continuation adopts it (the input receipt is coalesced into the Retry receipt) and the task continues from saved work. Saved input that arrived after the stop keeps its own admission path, and the Retry still settles as failed. When the latest run is an admission that the recovery hold cancelled before dispatch (`execution_reconciliation_required`), the saved work that counts is the recovered work of the run whose recovery action held it. The deferred-receipt worker dispatches it with every normal gate. Retry that Paperclip requests by itself still settles as failed. When a failed run's saved work is recovered, the task's execution blocker offers Retry (also on a connected task) and says "Saved work recovered. Retry continues from it." A stopped (cancelled) run keeps "Send a message to continue."
 
 ### Saved chat Retry preparation
 
@@ -2446,6 +2446,106 @@ error is logged, a warning transition is recorded on the run, and the run waits
 for the next deadline. A failed transition write is logged and does not stop
 the claims that already committed. Only a failure of the candidate scan itself
 fails the recovery pass.
+
+### Run starts during a deploy overlap
+
+A Cloud deploy starts the new server while the old server still serves. Once
+the new server can start runs, it takes over the start of new runs, and the old
+server leaves new starts to it. The old server never stops admitting before the
+new server admits, so there is always one server that starts runs. Admission
+is handed over, never paused.
+
+- **Marker.** The new server marks that it starts runs on its own
+  `controller_instances` row. It sets `dispatching_at`, the time it began
+  starting runs, which is set once and kept. It also sets
+  `dispatch_lease_expires_at`, a short lease of 20 seconds. The new server
+  writes the marker right after its startup queued-run dispatch pass
+  (`queued_run_pass` in the startup timeline). At that point its queued-run
+  dispatch queue is registered and has scanned the whole queue once. The same
+  statement creates the boot's row if the row does not exist, so the new boot's
+  epoch is ordered after the old boot's. The new server then publishes a
+  `run-start-handover` hint and sweeps its queued-run dispatch, so runs the old
+  server left queued start at once. Another component reads "a replacement
+  starts runs" as a row with a higher `epoch` than the old boot where
+  `dispatching_at is not null`, `dispatch_lease_expires_at > now()`, and
+  `stopped_at` and `fenced_at` are both null.
+- **Renewal.** The new server renews the lease every 5 seconds, but only while
+  an older boot that is neither stopped nor fenced may still serve, and for at
+  most 30 minutes. A lone server, or a server whose predecessor has stopped,
+  writes the marker once and never renews it, so an idle database can still
+  sleep. The marker is written only where servers overlap and hear each
+  other's notifications: the instance lease is on, the notification channel is
+  configured, and the scheduler is enabled. A self-hosted server is unchanged.
+- **The old server.** Every queued-run claim reads an in-memory flag through
+  the existing run-admission gate, so a claim runs no query of its own. The
+  flag is updated in two ways:
+  - The `run-start-handover` notification. A server listens for it only while
+    a hand-over involves it, so it cannot rely on hearing the first one.
+  - One read before a dispatch pass when the last read is more than 2 seconds
+    old. The pass waits at most 1 second for that read.
+
+  Every statement of the hand-over runs on the dedicated one-connection
+  controller-lease pool, in a small transaction with a 1 second statement
+  timeout. That covers the reads, the marker writes, and both notifications.
+  None of it touches the shared pool or registers tracked database work, so a
+  busy shared pool on either server cannot lapse the marker, delay a release,
+  or stop a yield or a resume. The controller-lease pool is shared only with
+  legacy controller-lease renewals, and never with native lease renewals:
+  - A hand-over statement waits behind at most one legacy renewal batch
+    (bounded by 10 seconds). That fits inside the 15 seconds between a marker
+    renewal and the marker's expiry.
+  - A hand-over statement delays a legacy renewal by at most 1 second. A
+    legacy lease lasts 60 seconds and is renewed every 10 seconds.
+  - At most one read, one write, and one hint are in flight at a time.
+
+  The `run-start-handover` notification is part of the marker write's own
+  transaction, so it is delivered when that transaction commits.
+
+  If marker renewals fail for longer than the lease, the old server starts runs
+  again once. The first renewal that succeeds afterwards announces the marker,
+  and the old server yields again. Each resume therefore needs at least 15
+  seconds of failed renewals, so the hand-over cannot flap faster than that.
+
+  An unanswered read never keeps a server yielding:
+  - A read that fails leaves the server admitting.
+  - A dispatch that gets no answer within 1 second admits.
+  - A yield always ends when the replacement's last seen lease runs out on
+    this server's own clock, whether or not a read is still waiting for a
+    connection. While it yields, the old server rechecks every
+  3 seconds on the shared worker scheduler and keeps its notification
+  listener on. For starts it skips, it notifies the new server's queued-run
+  dispatch at most once a second, so the new server starts those runs without
+  waiting for a sweep.
+- **Who yields.** A server yields only to a newer boot by epoch that has a
+  live marker. It never yields to an older boot, to itself, or to a row
+  without the marker. Rows from releases without this rule never carry the
+  marker, so in a mixed-version overlap nothing changes in either direction.
+  A server that has no row of its own does not yield.
+- **Failure.** When the new server closes run admission at shutdown (a
+  rollback or a failed deploy), it clears its lease and sends the hint.
+  Shutdown waits for that clear. The clear runs after any renewal already in
+  flight, so a renewal cannot restore the lease, and a clear that fails is
+  retried before the workers stop. It
+  does the same while it drains, waits in standby, or cannot dispatch. If it
+  crashes, the lease lapses within 20 seconds. In every case the old server's
+  recheck resumes admission and runs its queued-run pass again. This happens
+  within about 3 seconds of a clear, or about 23 seconds after a crash.
+- **What counts as starting a new run.** Every queued-to-running claim counts:
+  wake dispatch, scheduled retries promoted to queued, continuations, Retry,
+  and the startup fresh-run pass. These all go through
+  `startNextQueuedRunForAgent`. The yield happens before a claim, and a claim
+  stays one atomic queued-to-running update, so a run cannot be started twice
+  or left half-claimed. The following continue on the old server and are
+  handed over at SIGTERM as before: turns of runs it already started, native
+  session resume and reattach, finalization, lease renewal, result
+  application, and wakeups it accepts (these stay queued for the new server).
+
+A post-deploy audit should find no run claimed by the old server more than
+about 2 seconds after the new server's `dispatching_at`. That window is the
+age of the last read, and it applies only when the old server was not already
+listening for notifications. A replacement that starts while the server
+drains writes its marker when the drain ends. The gap from `dispatching_at` to the first run
+that the new server starts should be seconds.
 
 Automatic productivity reviews are retired. Run counts, missing comments, and elapsed task time do not create review tasks or impose continuation holds. Bounded continuation, provider recovery, budget limits, explicit blockers, and normal review/approval stages remain in force. Existing productivity-review tasks, comments, assignments, and dependencies remain unchanged and readable; their historical origins still identify them as recovery work for recursion suppression.
 

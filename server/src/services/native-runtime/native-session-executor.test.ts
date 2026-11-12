@@ -468,6 +468,8 @@ import {
   resolveNativeBilling,
   parseRemoteRunnerProcessIdentity,
   REMOTE_RUNNER_CHILD_LAUNCH_SCRIPT,
+  REMOTE_RUNNER_STALE_LINEAGE_STOP_SCRIPT,
+  REMOTE_RUNNER_PROCESS_STDERR_FILE,
   REMOTE_RUNNER_AUTHORITY_ARCHIVE_SCRIPT,
   verifyRemoteRunnerReattachment,
   stopStaleRemoteRunnerBeforeBootstrap,
@@ -1362,6 +1364,164 @@ describe("remote runner launch fingerprint compatibility", () => {
       const lines = (await readFile(marker, "utf8")).split("\n");
       expect(lines[4]).toBe(hasBootIdentity ? "linux:abcd-1234:1234" : "");
     } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it("embeds a stale Runner stop script that survives double-quoted shell embedding", () => {
+    expect(REMOTE_RUNNER_STALE_LINEAGE_STOP_SCRIPT).not.toMatch(/["$`\\]/);
+    expect(() => new Function("require", "process", REMOTE_RUNNER_STALE_LINEAGE_STOP_SCRIPT)).not.toThrow();
+  });
+});
+
+// Staging failure: the previous server launched a Runner just before an
+// upgrade. It kept the run's state directory and ingress port, and each new
+// launch failed with runner_ingress_bind_conflict in a restart loop.
+describe.skipIf(!existsSync("/proc/self/cmdline"))("remote runner launch stale state holder", () => {
+  const gone = (pid: number) => { try { return readFileSync(`/proc/${pid}/stat`, "utf8").split(") ")[1]?.startsWith("Z") ?? true; } catch { return true; } };
+  const fixture = async () => {
+    const root = await mkdtemp(join(tmpdir(), "remote-launch-fence-"));
+    const binary = join(root, "bin", "paperclip-runnerd");
+    await mkdir(join(root, "bin"));
+    // The launched binary: `reap-lineage` prints the report the test chose, anything else is the new Runner.
+    // LAUNCH_SHELL in the report becomes the detached launch shell's PID (the parent of node, this reaper's parent).
+    await writeFile(binary, '#!/bin/sh\nif test "$1" = reap-lineage; then printf "%s\\n" "$*" >> "$REAP_LOG"; read -r stat < "/proc/$PPID/stat"; set -- $stat;'
+      + ' printf "%s\\n" "$REAP_REPORT" | sed "s/LAUNCH_SHELL/$4/"; exit "$REAP_EXIT"; fi\nprintf launched\n', { mode: 0o755 });
+    const children: ReturnType<typeof spawn>[] = [];
+    const start = (args: string[], options: { script?: string; argv0?: string } = {}) => {
+      const child = spawn(process.execPath, ["-e", options.script ?? "setInterval(() => {}, 1000)", "--", ...args],
+        { argv0: options.argv0 ?? binary, stdio: "ignore", detached: true });
+      children.push(child);
+      return child;
+    };
+    // A real `paperclip-runnerd reap-lineage ...` command line: sh runs ./reap-lineage under the Runner's name.
+    await writeFile(join(root, "reap-lineage"), "while :; do sleep 1; done\n");
+    const startReaper = (args: string[]) => {
+      const child = spawn("/bin/sh", ["reap-lineage", ...args], { argv0: binary, cwd: root, stdio: "ignore", detached: true });
+      children.push(child);
+      return child;
+    };
+    const running = (child: ReturnType<typeof spawn>, arg: string) =>
+      vi.waitFor(async () => expect((await readFile(`/proc/${child.pid}/cmdline`, "utf8")).split("\0")).toContain(arg));
+    const launch = (stateDirectory: string, report: { verified: boolean; reason: string | null; remaining?: (number | "LAUNCH_SHELL")[] }) =>
+      spawnSync("/bin/sh", ["-c", REMOTE_RUNNER_CHILD_LAUNCH_SCRIPT, "launch", join(root, "identity"), "nonce", "runner",
+        join(root, "diagnostics"), binary, "--state-dir", stateDirectory], { encoding: "utf8", env: { ...process.env,
+        REAP_LOG: join(root, "reap.log"), REAP_EXIT: report.verified ? "0" : "1",
+        REAP_REPORT: JSON.stringify({ schema: "paperclip.runner.process-lineage-reap.v1", journals: 1, signalled: 0, remaining: [], ...report })
+          .replace('"LAUNCH_SHELL"', "LAUNCH_SHELL") } });
+    const cleanup = async (extraPids: number[] = []) => {
+      for (const child of children) child.kill("SIGKILL");
+      for (const pid of extraPids) try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ }
+      await rm(root, { recursive: true, force: true });
+    };
+    return { root, start, startReaper, running, launch, cleanup };
+  };
+
+  it("stops only this state directory's Runner and its lineage, then reaps its journal before launching", async () => {
+    const { root, start, startReaper, running, launch, cleanup } = await fixture();
+    const stateDirectory = join(root, "state");
+    const toolPidFile = join(root, "tool.pid");
+    // The stale Runner's provider tool runs in its own session and process group.
+    const stale = start(["--state-dir", stateDirectory], { script:
+      `const c=require("child_process").spawn(process.execPath,["-e","setInterval(()=>{},1000)"],{detached:true,stdio:"ignore"});`
+      + `require("fs").writeFileSync(${JSON.stringify(toolPidFile)},String(c.pid));setInterval(()=>{},1000)` });
+    const staleExit = new Promise<string>(resolveExit => stale.once("exit", (_code, signal) => resolveExit(String(signal))));
+    const survivors = [
+      start(["--state-dir", join(root, "other-state")]),
+      startReaper(["--state-dir", stateDirectory, "--runner-pid", "1"]),
+      start(["--diagnostics-directory", stateDirectory, "--state-dir", join(root, "other-state")]),
+      start(["--state-dir", stateDirectory], { argv0: join(root, "bin", "some-other-tool") }),
+    ];
+    let toolPid = 0;
+    try {
+      await running(stale, stateDirectory);
+      for (const survivor of survivors) await running(survivor, "--state-dir");
+      await vi.waitFor(async () => { toolPid = Number(await readFile(toolPidFile, "utf8")); expect(toolPid).toBeGreaterThan(0); });
+      const result = launch(stateDirectory, { verified: true, reason: null });
+      expect(result.stdout).toBe("launched");
+      expect(await Promise.race([staleExit, new Promise(resolveAlive => setTimeout(() => resolveAlive("alive"), 8_000))])).toBe("SIGTERM");
+      expect(gone(toolPid)).toBe(true);
+      for (const survivor of survivors) expect(gone(survivor.pid!)).toBe(false);
+      expect(await readFile(join(root, "reap.log"), "utf8"))
+        .toBe(`reap-lineage --state-dir ${stateDirectory} --runner-pid ${stale.pid} --grace-ms 1000 --deadline-ms 5000\n`);
+      expect((await readFile(join(root, "identity"), "utf8")).split("\n")[0]).toBe("nonce");
+    } finally { await cleanup(toolPid ? [toolPid] : []); }
+  }, 30_000);
+
+  it.each(["plain file", "symlink"] as const)("fails closed and keeps the marker when the stale lineage is not proven gone (log is a %s)", async (logKind) => {
+    const { root, start, running, launch, cleanup } = await fixture();
+    const stateDirectory = join(root, "state");
+    const outside = join(root, "outside.log");
+    const log = join(root, "diagnostics", REMOTE_RUNNER_PROCESS_STDERR_FILE);
+    try {
+      await writeFile(join(root, "identity"), "previous-marker\n");
+      await mkdir(join(root, "diagnostics"), { mode: 0o700 });
+      await writeFile(outside, "");
+      if (logKind === "symlink") await symlink(outside, log);
+      const stale = start(["--state-dir", stateDirectory]);
+      await running(stale, stateDirectory);
+      const result = launch(stateDirectory, { verified: false, reason: "survivors_remaining" });
+      expect(result.status).toBe(75);
+      expect(result.stdout).toBe("");
+      expect(await readFile(join(root, "identity"), "utf8")).toBe("previous-marker\n");
+      expect(await readFile(outside, "utf8")).toBe("");
+      if (logKind === "plain file") {
+        expect(await readFile(log, "utf8")).toContain(`runner_stale_lineage_unproven: runner ${stale.pid}: survivors_remaining`);
+      } else {
+        expect((await lstat(log)).isSymbolicLink()).toBe(true);
+      }
+    } finally { await cleanup(); }
+  }, 30_000);
+
+  // The reaper reports unattributed_orphan only after every recorded process
+  // is gone, for orphans it can neither claim nor signal. This launch's own
+  // detached shell and other sessions' Runners are such orphans; any other
+  // orphan could be an old tool that escaped between samples.
+  it.each(["owned elsewhere", "an unknown orphan", "no journal"] as const)("handles a reap refusal for %s", async (kind) => {
+    const { root, start, running, launch, cleanup } = await fixture();
+    const stateDirectory = join(root, "state");
+    const log = join(root, "diagnostics", REMOTE_RUNNER_PROCESS_STDERR_FILE);
+    const other = start(["--state-dir", join(root, "other-state")]);
+    const trimmer = spawn("/bin/sh", ["-c", "while :; do sleep 1; done", "paperclip-runner-stderr-trim", String(other.pid), log],
+      { stdio: "ignore", detached: true });
+    const unknown = start(["--tool"], { argv0: join(root, "bin", "tool") });
+    try {
+      await mkdir(join(root, "diagnostics"), { mode: 0o700 });
+      const stale = start(["--state-dir", stateDirectory]);
+      for (const [child, arg] of [[stale, stateDirectory], [other, "--state-dir"], [trimmer, "paperclip-runner-stderr-trim"], [unknown, "--tool"]] as const) {
+        await running(child, arg);
+      }
+      const result = launch(stateDirectory, kind === "no journal"
+        ? { verified: false, reason: "journal_unavailable" }
+        : { verified: false, reason: "unattributed_orphan",
+          remaining: kind === "owned elsewhere" ? ["LAUNCH_SHELL", other.pid!, trimmer.pid!] : [other.pid!, unknown.pid!] });
+      if (kind === "an unknown orphan") {
+        expect(result.status).toBe(75);
+        expect(result.stdout).toBe("");
+        await expect(access(join(root, "identity"))).rejects.toMatchObject({ code: "ENOENT" });
+        expect(await readFile(log, "utf8")).toContain(`runner_stale_lineage_unproven: runner ${stale.pid}: unattributed_orphan`);
+      } else {
+        expect(result.stdout).toBe("launched");
+        expect((await readFile(join(root, "identity"), "utf8")).split("\n")[0]).toBe("nonce");
+        expect(await readFile(log, "utf8")).toContain(`runner_stale_lineage_partial: runner ${stale.pid}:`);
+      }
+      for (const survivor of [other, trimmer, unknown]) expect(gone(survivor.pid!)).toBe(false);
+    } finally {
+      trimmer.kill("SIGKILL");
+      await cleanup();
+    }
+  }, 30_000);
+
+  it("starts no extra process on a launch that finds no stale Runner", async () => {
+    const { root, cleanup } = await fixture();
+    const wrappers = join(root, "wrappers");
+    try {
+      await mkdir(wrappers);
+      await writeFile(join(wrappers, "node"), `#!/bin/sh\nprintf "%s\\n" node >> '${join(root, "node.log")}'\nexec '${process.execPath}' "$@"\n`, { mode: 0o755 });
+      const result = spawnSync("/bin/sh", ["-c", `PATH='${wrappers}':"$PATH"; export PATH; ${REMOTE_RUNNER_CHILD_LAUNCH_SCRIPT}`, "launch", join(root, "identity"), "nonce", "runner",
+        join(root, "diagnostics"), join(root, "bin", "paperclip-runnerd"), "--state-dir", join(root, "state")], { encoding: "utf8" });
+      expect(result.stdout).toBe("launched");
+      // Only the existing process-fingerprint read runs node.
+      expect(await readFile(join(root, "node.log"), "utf8")).toBe("node\n");
+    } finally { await cleanup(); }
   });
 });
 
