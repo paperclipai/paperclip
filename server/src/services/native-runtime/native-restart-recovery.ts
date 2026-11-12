@@ -1450,7 +1450,11 @@ export async function claimNativeRestartRecoveries(input: {
         // minutes later, or re-records the wait, must not restart the clock.
         const observedSince = namespaceWaitStartedAt(row.coordinator.recoveryHistory, takeover.reason);
         const starts = [observedSince, leaseLapsedAt].filter((at): at is number => at !== null);
-        const waitingSince = starts.length ? Math.min(...starts) : null;
+        // A controller boot proven stopped or fenced already outlived its lease
+        // (90 s) and the fence grace (30 s): waiting longer proves nothing more
+        // about a Runner in another process space, so the run ends now.
+        const waitingSince = ownerControllerStopped ? now.getTime() - NATIVE_NAMESPACE_UNVERIFIED_WAIT_MS
+          : starts.length ? Math.min(...starts) : null;
         unverifiedWaitEndsAt = (waitingSince ?? now.getTime()) + NATIVE_NAMESPACE_UNVERIFIED_WAIT_MS;
         if (waitingSince !== null && now.getTime() - waitingSince >= NATIVE_NAMESPACE_UNVERIFIED_WAIT_MS) {
           await endNamespaceUnverifiedRun(tx as unknown as Db, row, now, takeover.reason, historyEntry({

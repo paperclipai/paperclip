@@ -965,6 +965,35 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
       } finally { probe.restore(); }
     }, 60_000);
 
+    it("ends at once a run whose controller boot is fenced, even with its 20-minute claim lease unexpired (N1)", async () => {
+      // N1 cell: old server SIGKILLed mid-overlap at 22:09:31; its boot was fenced at 22:13:02, and the
+      // run still waited a further 2 minutes from that first look. A fenced boot already outlived its lease.
+      const f = await seedClaim("CLAIM-SPACE-FENCED-BOOT", "live", "foreign-process-space");
+      const [owner] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+      await f.db.insert(controllerInstances).values({ bootId: owner!.controllerBootId!, processSpace: "foreign-process-space",
+        pid: priorPid, leaseExpiresAt: new Date(Date.now() - 3 * 60_000), fencedAt: new Date(Date.now() - 10_000) });
+      registerControllerInstanceDb(f.db);
+      const probe = observeOwnerPid();
+      try {
+        expect(await claimNativeRestartRecoveries({ db: f.db, restartKind: "hard", runIds: [f.runId], onClaim: vi.fn() }))
+          .toEqual([{ kind: "blocked", runId: f.runId, reason: "controller_process_space_unverified" }]);
+      } finally { probe.restore(); resetControllerInstanceLeaseForTests(); }
+    }, 60_000);
+
+    it("keeps waiting for a controller whose boot is still live, whatever the run's own lease says", async () => {
+      const f = await seedClaim("CLAIM-SPACE-LIVE-BOOT", "expired", "foreign-process-space");
+      const [owner] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+      await f.db.insert(controllerInstances).values({ bootId: owner!.controllerBootId!, processSpace: "foreign-process-space",
+        pid: priorPid, leaseExpiresAt: new Date(Date.now() + 60_000) });
+      registerControllerInstanceDb(f.db);
+      const probe = observeOwnerPid();
+      try {
+        expect(await claimNativeRestartRecoveries({ db: f.db, restartKind: "hard", runIds: [f.runId], onClaim: vi.fn() }))
+          .toMatchObject([{ kind: "awaiting_evidence", runId: f.runId }]);
+        expect((await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0].status).toBe("running");
+      } finally { probe.restore(); resetControllerInstanceLeaseForTests(); }
+    }, 60_000);
+
     it("schedules the recheck for the end of the bound measured from the lease lapse", async () => {
       const f = await seedClaim("CLAIM-SPACE-LAPSED-RECENTLY", "expired", "foreign-process-space");
       const lapsedAt = Date.now() - 30_000;
