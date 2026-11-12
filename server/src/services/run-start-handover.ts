@@ -61,6 +61,8 @@ const DEFAULT_TIMING = {
   writeStatementTimeoutMs: 1_000,
   /** Skipped starts are announced to the replacement at most this often. */
   skipHintMinMs: 1_000,
+  /** A clear that failed while this server cannot start runs is retried this often until the lease would lapse. */
+  clearRetryMs: 1_000,
 };
 
 const interval = (ms: number) => sql`${`${ms} milliseconds`}::interval`;
@@ -96,6 +98,7 @@ export function createRunStartHandover(input: {
   /** A marker was written and no clear has succeeded since: a release must (re)try the clear. */
   let markerMayBeLive = false;
   let lastWriteAt = Number.NEGATIVE_INFINITY;
+  let lastClearAttemptAt = Number.NEGATIVE_INFINITY;
   let writes: Promise<void> = Promise.resolve();
   const handingOver = () => intendedAt !== null && !released && olderMayServe && Date.now() - intendedAt < t.maxMs;
   let reportedHandingOver = false;
@@ -167,7 +170,10 @@ export function createRunStartHandover(input: {
       if (intendedAt === null || released || !handingOver() && leaseHeld) return;
       if (!input.canDispatch()) {
         // Draining, standby or admission closed: the older server takes run starts back now.
-        if (markerMayBeLive) await clearLease();
+        if (markerMayBeLive) {
+          lastClearAttemptAt = Date.now();
+          await clearLease();
+        }
         return;
       }
       if (Date.now() - lastWriteAt < t.renewMs / 2) return;
@@ -265,6 +271,10 @@ export function createRunStartHandover(input: {
 
   function nextDeadline(): number | null {
     const deadlines: number[] = [];
+    // A clear that has not succeeded yet, while this server cannot start runs: retry until the lease would lapse.
+    if (handingOver() && !input.canDispatch() && markerMayBeLive && Date.now() < lastWriteAt + t.ttlMs) {
+      deadlines.push(lastClearAttemptAt + t.clearRetryMs);
+    }
     // Renew while handing over and able to start runs; a drain change wakes the worker otherwise.
     if (handingOver() && input.canDispatch()) deadlines.push(lastWriteAt + t.renewMs);
     if (yieldingTo) deadlines.push(reading ? yieldUntil : Math.min(lastReadAt + t.recheckMs, yieldUntil));

@@ -354,6 +354,42 @@ suite("run start hand-over between an old and a new server during a deploy overl
     await vi.waitFor(() => expect(old.handover.isActive()).toBe(true), { timeout: 10_000 });
   });
 
+  it("a clear that fails when the replacement starts draining is retried well inside the lease", async () => {
+    const old = await bootServer("old");
+    await old.handover.begin();
+    // A long lease, so the old server can only resume early through a retried clear.
+    const next = await bootServer("new", { canDispatch: () => readTaskDrain(new Date()) === null,
+      timing: { ttlMs: 8_000, writeStatementTimeoutMs: 300 } });
+    await next.handover.begin();
+    await vi.waitFor(() => expect(old.handover.isActive()).toBe(true), { timeout: 10_000 });
+
+    let unlock!: () => void;
+    const locked = new Promise<void>(resolve => { unlock = resolve; });
+    let held!: () => void;
+    const holding = new Promise<void>(resolve => { held = resolve; });
+    const lock = admin.transaction(async tx => {
+      await tx.execute(sql`select 1 from controller_instances where process_space = 'new' for update`);
+      held();
+      await locked;
+    });
+    await holding;
+    try {
+      startTaskDrain();
+      // The first clear is cancelled by its statement timeout while the row is held.
+      await new Promise(resolve => setTimeout(resolve, 700));
+      expect(await marker(next)).toMatchObject({ live: true });
+      unlock();
+      await lock;
+      const unlockedAt = Date.now();
+      await vi.waitFor(() => expect(old.resumed).toHaveBeenCalledTimes(1), { timeout: 10_000 });
+      expect(Date.now() - unlockedAt).toBeLessThan(4_000);
+      expect(await marker(next)).toMatchObject({ live: null });
+    } finally {
+      unlock();
+      stopTaskDrain();
+    }
+  });
+
   it("a replacement that starts up during a drain takes run starts over once the drain ends", async () => {
     const old = await bootServer("old");
     await old.handover.begin();
