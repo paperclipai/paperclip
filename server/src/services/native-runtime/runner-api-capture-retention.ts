@@ -84,7 +84,7 @@ export async function finishPendingRunnerApiCaptureDeletes(db: Db, storage: Stor
       )).orderBy(asc(runnerApiResponseReservations.id)).limit(PENDING_DELETE_BATCH_SIZE);
     if (!pending.length) break;
     after = pending[pending.length - 1].id;
-    const deleted = (await Promise.all(pending.map(row => storage.deleteObject(companyId, row.objectKey!, { signal })
+    const deleted = (await Promise.all(pending.map(row => storage.deleteObject(companyId, row.objectKey!, { signal, allVersions: true })
       .then(() => row.id, () => null)))).filter((id): id is string => id !== null);
     if (deleted.length) {
       await db.delete(runnerApiResponseReservations).where(and(

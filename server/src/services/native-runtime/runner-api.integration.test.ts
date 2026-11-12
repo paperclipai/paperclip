@@ -1141,7 +1141,11 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     expect(await server.db.select().from(runnerApiResponseReservations).where(eq(runnerApiResponseReservations.companyId, fixture.companyId))).toEqual([
       expect.objectContaining({ pendingDeleteObjectKey: objectKey }),
     ]);
-    expect(await finishPendingRunnerApiCaptureDeletes(server.db, server.storage, fixture.companyId)).toBe(1);
+    const deleteSpy = vi.spyOn(server.storage, "deleteObject");
+    try {
+      expect(await finishPendingRunnerApiCaptureDeletes(server.db, server.storage, fixture.companyId)).toBe(1);
+      expect(deleteSpy).toHaveBeenCalledWith(fixture.companyId, objectKey, expect.objectContaining({ allVersions: true }));
+    } finally { deleteSpy.mockRestore(); }
     expect(await server.db.select().from(runnerApiResponseReservations).where(eq(runnerApiResponseReservations.companyId, fixture.companyId))).toEqual([]);
   });
 
