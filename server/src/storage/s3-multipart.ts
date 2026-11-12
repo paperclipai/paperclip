@@ -255,11 +255,14 @@ export async function putS3MultipartFile(
     // The first round of parts is digested before any of them is sent. They
     // leave together, as they did when this thread digested them side by side,
     // so a rate limit still answers one burst rather than a trickle of requests.
-    const firstRound = Promise.all(Array.from({ length: Math.min(FILE_PART_CONCURRENCY, count) }, (_, index) => partMd5(index)));
-    firstRound.catch(() => undefined);
+    // Every digest of the round has ended, also a failed or cancelled one,
+    // before a part goes on: none still reads the file when the upload settles.
+    const firstRound = Array.from({ length: Math.min(FILE_PART_CONCURRENCY, count) }, (_, index) => partMd5(index));
+    const firstRoundEnded = Promise.allSettled(firstRound);
     const sendPart = async (index: number) => {
       const start = index * partSize, length = Math.min(partSize, input.contentLength - start), end = start + length - 1;
-      const contentMd5 = index < FILE_PART_CONCURRENCY ? (await firstRound)[index]! : await partMd5(index);
+      if (index < firstRound.length) await firstRoundEnded;
+      const contentMd5 = await (firstRound[index] ?? partMd5(index));
       for (let failures = 0, throttles = 0; ;) {
         controller.signal.throwIfAborted();
         const body = createReadStream(file, { start, end, highWaterMark: 64 * 1024 });
