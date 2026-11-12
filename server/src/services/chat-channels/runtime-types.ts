@@ -98,6 +98,10 @@ export type PreparedProviderInventory = {
   managementUrl?: string;
 };
 
+export type PrepareProviderInventoryOptions = {
+  allowEmptyInventory?: boolean;
+};
+
 export type LiveInboundMessage = {
   endpoint: EndpointRow;
   message: Message;

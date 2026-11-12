@@ -4,7 +4,7 @@ import { chatConversations, chatEndpointResources, chatEndpoints, type Db } from
 import type { ConnectionManagementContext } from "../../connection-management.js";
 import type { chatCredentialMutationLease } from "../../chat-credential-mutation-lease.js";
 import type { createChatResourceReconciliation } from "../resource-reconciliation.js";
-import type { EndpointRecord, EndpointRow, PreparedProviderInventory } from "../runtime-types.js";
+import type { EndpointRecord, EndpointRow, PrepareProviderInventoryOptions, PreparedProviderInventory } from "../runtime-types.js";
 
 import { conflict, notFound } from "../../../errors.js";
 import { logActivity, publishActivity, type ActivityPublication } from "../../activity-log.js";
@@ -13,7 +13,7 @@ type DiscordChannelRefreshOptions = {
   endpointRecord: (endpointId: string) => Promise<EndpointRecord | null>;
   withCredentialMutationLease: ReturnType<typeof chatCredentialMutationLease>;
   resolveCredentials: (endpoint: EndpointRow) => Promise<Record<string, string>>;
-  prepareProviderInventory: (endpoint: EndpointRow, credentials: Record<string, string>) => Promise<PreparedProviderInventory>;
+  prepareProviderInventory: (endpoint: EndpointRow, credentials: Record<string, string>, options?: PrepareProviderInventoryOptions) => Promise<PreparedProviderInventory>;
   reconcileProviderResourceRows: ReturnType<typeof createChatResourceReconciliation>["reconcileProviderResourceRows"];
   listResources: ReturnType<typeof createChatResourceReconciliation>["listResources"];
 };
@@ -31,7 +31,7 @@ export function createDiscordChannelRefresh(db: Db, options: DiscordChannelRefre
       if (!record) throw notFound("Discord bot not found");
       if (["archived", "paused"].includes(record.endpoint.status)) throw conflict("Resume the Discord bot before refreshing its channels");
       const credentials = await resolveCredentials(record.endpoint);
-      const prepared = await prepareProviderInventory(record.endpoint, credentials);
+      const prepared = await prepareProviderInventory(record.endpoint, credentials, { allowEmptyInventory: true });
       await managementContext?.reauthorize();
       if (prepared.inventory) await reconcileProviderResourceRows(record.endpoint, prepared.inventory, lease);
       await lease.assertOwned();

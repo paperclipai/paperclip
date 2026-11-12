@@ -8756,6 +8756,20 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       }
     });
 
+    it("removes the last channel after Discord stops reporting every channel", async () => {
+      const f = await refreshFixture();
+      try {
+        const [lab] = await f.service.listResources(f.endpoint.id);
+        f.setChannels([]);
+        const refreshed = await f.service.refreshDiscordChannels(f.endpoint.id, "owner-user");
+        expect(refreshed).toEqual([expect.objectContaining({ id: lab!.id, availability: "unavailable" })]);
+        await f.service.replaceResources(f.endpoint.id, [{ id: lab!.id, enabled: false }], "owner-user");
+        expect(await f.service.removeUnavailableDiscordChannel(f.endpoint.id, lab!.id, "owner-user")).toEqual([]);
+      } finally {
+        await f.service.shutdown();
+      }
+    });
+
     it("refuses to remove a channel Discord still reports", async () => {
       const f = await refreshFixture();
       try {
