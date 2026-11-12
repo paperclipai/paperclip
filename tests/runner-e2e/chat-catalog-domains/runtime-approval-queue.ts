@@ -27,6 +27,31 @@ export function ordinaryApprovalEntries(queue: Pick<IssueQueuedCommentQueue, "en
 export function leadRelayEntries(queue: Pick<IssueQueuedCommentQueue, "entries">, leadId: string) {
   return queue.entries.filter(row => !row.source && row.comment.authorAgentId === leadId);
 }
+/**
+ * The composer lists one pending wake at a time and prefers editable ordinary messages over a saved card response
+ * (#19331): a receipt must never hide someone's later messages. So while the chat lead's own relay comment waits, the
+ * queue shows that relay and the bound answer keeps its own, unlisted wake. Either listing is a valid view of the
+ * same saved answer; what the person relies on is that the answer is retained and later delivered exactly once.
+ */
+export function approvalResponseListing(queue: Pick<IssueQueuedCommentQueue, "entries">, questionId: string, leadId: string) {
+  const bound = queue.entries.filter(row => row.source);
+  if (bound.length === 1 && queue.entries.length === 1 && bound[0]!.source?.kind === "interaction" && bound[0]!.source.interactionId === questionId
+    && bound[0]!.canEdit === false && bound[0]!.canDiscard === false) return "listed" as const;
+  if (bound.length === 0 && queue.entries.length > 0 && queue.entries.length === leadRelayEntries(queue, leadId).length) return "behind_lead_relay" as const;
+  return null;
+}
+type SuccessorRun = { id: string; contextSnapshot?: { interactionId?: unknown; wakeCommentIds?: unknown } | null };
+/** Worker turns after the original owner: the one bound to the answer, turns that only carry the lead's relay, and anything else. */
+export function classifyApprovalSuccessors(runs: SuccessorRun[], questionId: string, leadCommentIds: ReadonlySet<string>) {
+  const bound: string[] = [], relay: string[] = [], other: string[] = [];
+  for (const run of runs) {
+    const context = run.contextSnapshot ?? {}, comments = Array.isArray(context.wakeCommentIds) ? context.wakeCommentIds.map(String) : [];
+    if (context.interactionId === questionId) bound.push(run.id);
+    else if (!context.interactionId && comments.length > 0 && comments.every(id => leadCommentIds.has(id))) relay.push(run.id);
+    else other.push(run.id);
+  }
+  return { bound, relay, other };
+}
 export function gradeApprovalQueue(value: unknown) {
   const c = checks(), o = runtimeObservation(value);
   c.add("real-question-response-and-ordinary-queue-evidence", !!o, "The actual native question, human response, separate queue mutations and once-only consuming native input are required."); if (!o) return c.result();
@@ -44,14 +69,14 @@ export function gradeApprovalQueue(value: unknown) {
   c.add("bound-answer-path-and-real-ordinary-mutations", (s.humanAnswerSubmitted === true) !== (s.canonicalAnswerAttributed === true)
     && s.actualOrdinaryEdit === true && (s.actualOrdinaryReorder === true || s.ordinaryReorderRestricted === true) && s.actualOrdinaryDiscard === true,
   "Exactly one actual path records Acorn on the bound question (the human's response control, or an attributed canonical response); editing, ordering and discarding ordinary messages cannot impersonate or cancel it.");
-  const response = s.responseQueue as IssueQueuedCommentQueue;
-  const bound = response?.entries.filter(row => row.source) ?? [];
-  c.add("response-own-delivery-semantics-and-once-only-admission", !!response && bound.length === 1 && bound[0]?.source?.kind === "interaction"
-    && bound[0].source.interactionId === question.id && bound[0].canEdit === false && bound[0].canDiscard === false
-    && response.entries.length === 1 + leadRelayEntries(response, o.leadId).length
-    && s.consumingRunCount === 1 && s.responseNativeInputBound === true && s.queueEmptyAfterDelivery === true
-    && o.runs.length === 4 && o.runs.every(row => row.status === "succeeded") && o.tasks.length === 1 && s.actualAcornResult === true && s.initialWorkRetained === true,
-  "After the original owner settles, exactly one eligible native continuation receives the bound answer and saves actual Acorn work without replaying or losing it.");
+  const response = s.responseQueue as IssueQueuedCommentQueue, listing = response ? approvalResponseListing(response, question.id, o.leadId) : null;
+  c.add("response-kept-apart-from-ordinary-queue", !!listing && listing === s.responseListing && (listing === "listed" ? s.responseListedImmutable === true : true),
+    "Once the person's messages are gone the queue holds either the uneditable, undiscardable Acorn response alone, or only the chat lead's own relay ahead of it; never a person's message or an editable copy of the answer.");
+  const relayRuns = Number(s.relayRunCount);
+  c.add("response-own-delivery-semantics-and-once-only-admission", s.consumingRunCount === 1 && s.unexpectedSuccessorRunCount === 0 && Number.isInteger(relayRuns) && relayRuns >= 0 && relayRuns <= 1
+    && s.responseNativeInputBound === true && s.queueEmptyAfterDelivery === true
+    && o.runs.length === 4 + relayRuns && o.runs.every(row => row.status === "succeeded") && o.tasks.length === 1 && s.actualAcornResult === true && s.initialWorkRetained === true,
+  "After the original owner settles, exactly one native continuation is bound to the answer and receives it; the only other worker turn allowed carries just the lead's relay; Acorn work is saved and earlier work kept.");
   return c.result();
 }
 export const runtimeApprovalQueueCases = [runtimeDefinition("steering.approval-delivery", async ctx => {
@@ -93,7 +118,7 @@ export const runtimeApprovalQueueCases = [runtimeDefinition("steering.approval-d
     humanId: session.user.id, ordinaryQueueOwned: true, ordinaryQueuedBeforeAnswer: true };
 }, gradeApprovalQueue, {
   setupPolicy: runtimeQueueCases[0]!.setupPolicy, verifySetup: runtimeQueueCases[0]!.verifySetup,
-  authentication: "human-session", expectedRunCount: 4, attemptTimeoutMs: 900_000, oracleVersion: "paperclip.chat-catalog.runtime.approval-delivery.v5",
+  authentication: "human-session", expectedRunCount: 5, minimumRunCount: 4, attemptTimeoutMs: 900_000, oracleVersion: "paperclip.chat-catalog.runtime.approval-delivery.v6",
   sourceFiles: ["chat-catalog-domains/runtime-approval-queue.ts", "chat-catalog-domains/runtime-queue.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-support.ts", "chat-scenarios/steering.yaml"],
   async act(ctx, state) {
     const canonicalPhase = await pollUntil({ label: "Canonical naming answer guidance while real worker remains active", deadlineAt: Date.now() + 150_000,
@@ -169,36 +194,50 @@ export const runtimeApprovalQueueCases = [runtimeDefinition("steering.approval-d
       await verifyResponse();
     }
     state.actualOrdinaryDiscard = true; state.responseRetainedAcrossOrdinaryMutations = retained;
-    const response = await pollUntil({ label: "Typed immutable naming answer remains queued after ordinary comments are removed", deadlineAt: Date.now() + 20_000,
-      load: () => ctx.input.api.get<IssueQueuedCommentQueue>(endpoint), accept: q => q.entries.filter(row => row.source).length === 1 && q.entries.find(row => row.source)?.source?.interactionId === question.id
-        && ordinaryApprovalEntries(q, humanId).length === 0 && q.entries.length === 1 + leadRelayEntries(q, leadId).length })
+    const response = await pollUntil({ label: "Typed immutable naming answer stays apart from the queue after ordinary comments are removed", deadlineAt: Date.now() + 20_000,
+      load: () => ctx.input.api.get<IssueQueuedCommentQueue>(endpoint), accept: q => ordinaryApprovalEntries(q, humanId).length === 0 && approvalResponseListing(q, question.id, leadId) !== null })
       .catch(async error => {
         const observed = await ctx.input.api.get<IssueQueuedCommentQueue>(endpoint);
         await ctx.input.evidence("runtime-approval-queue-after-discard.json", { questionId: question.id, targetRunId: observed.targetRunId ?? null,
           entries: observed.entries.map(row => ({ id: row.comment.id, source: row.source?.kind ?? null, interactionId: row.source?.interactionId ?? null, person: row.comment.authorUserId === humanId, lead: row.comment.authorAgentId === leadId })),
           interaction: (await ctx.input.api.get<IssueThreadInteraction[]>(`/api/issues/${task.id}/interactions`)).filter(row => row.id === question.id).map(row => ({ status: row.status, dismissed: !!(row as { dismissedAt?: unknown }).dismissedAt })) });
         throw error;
-      }); state.responseQueue = response;
+      }); state.responseQueue = response; state.responseListing = approvalResponseListing(response, question.id, leadId);
+    // Try to rewrite the answer through the queue's edit route; whichever wake is listed, the saved answer must not change.
     const immutable = await ctx.input.page.request.patch(`${endpoint}/${question.id}`, { data: { queueId: response.queueId, revision: response.revision, body: "Replace the accepted name with an unauthorized comment edit" }, headers: { Origin: new URL(ctx.input.page.url()).origin } });
-    state.responseUneditable = immutable.status() >= 400 && immutable.status() < 500 && immutable.status() !== 401; await immutable.dispose(); await verifyResponse();
-    await ctx.input.page.reload({ waitUntil: "domcontentloaded" }); await expect(ctx.input.page.getByTestId(`task-chat-queued-message-${question.id}`)).toBeVisible();
-    await expect(ctx.input.page.getByTestId(`task-chat-queued-discard-${question.id}`)).toBeDisabled();
+    const refused = immutable.status() >= 400 && immutable.status() < 500 && immutable.status() !== 401; await immutable.dispose(); await verifyResponse();
+    state.responseUneditable = refused && retained;
+    await ctx.input.page.reload({ waitUntil: "domcontentloaded" });
+    if (state.responseListing === "listed") {
+      await expect(ctx.input.page.getByTestId(`task-chat-queued-message-${question.id}`)).toBeVisible();
+      await expect(ctx.input.page.getByTestId(`task-chat-queued-discard-${question.id}`)).toBeDisabled(); state.responseListedImmutable = true;
+    }
     await ctx.input.capture("actual-immutable-answer-queue", "Bound Acorn answer remains distinct from edited, reordered and removed ordinary comments", "runtime-approval-queue.png");
     state.initialMarker = `Earlier website work ${ctx.input.nonce}`;
     await writeFile((state.gate as { gate: string }).gate, `This turn is settling while the naming question waits. Save a task document with the exact reference ${state.initialMarker} preserving earlier website work, then finish this turn normally. Do not manufacture or pre-consume a name decision; leave the actual accepted response for normal Paperclip admission.`, "utf8");
-    const done = await pollUntil({ label: "One normal successor receives actual immutable name response", deadlineAt: Date.now() + 240_000,
-      load: async () => ({ runs: await ctx.allRuns(), queue: await ctx.input.api.get<IssueQueuedCommentQueue>(endpoint), task: await ctx.input.api.get<Entity>(`/api/issues/${task.id}`) }),
-      accept: v => v.runs.length === 4 && v.runs.every(row => row.status === "succeeded") && v.queue.entries.length === 0 && v.task.status === "done",
-      reject: v => v.runs.length > 4 || v.runs.some(row => ["failed", "cancelled", "timed_out"].includes(row.status)) ? "Accepted decision delivery failed or replayed work" : undefined });
-    const consumers = done.runs.filter(row => row.agentId === (state.worker as Entity).id && row.id !== state.workerRunId && row.id !== state.questionRunId); state.consumingRunCount = consumers.length; state.consumerRunId = consumers[0]?.id;
-    const full = consumers[0] && await ctx.input.api.get<{ contextSnapshot?: { interactionId?: string }; runnerProfileJson?: { nativeExecutionInput?: { task?: { prompt?: string } } } }>(`/api/heartbeat-runs/${consumers[0].id}`);
+    type FullRun = { id: string; contextSnapshot?: { interactionId?: string; wakeCommentIds?: unknown }; runnerProfileJson?: { nativeExecutionInput?: { task?: { prompt?: string } } } };
+    const worker = (state.worker as Entity).id;
+    const successors = async () => {
+      const runs = await ctx.allRuns(), comments = await ctx.input.api.get<Array<{ id: string; authorAgentId?: string | null }>>(`/api/issues/${task.id}/comments`);
+      const later = await Promise.all(runs.filter(row => row.agentId === worker && row.id !== state.workerRunId && row.id !== state.questionRunId)
+        .map(row => ctx.input.api.get<FullRun>(`/api/heartbeat-runs/${row.id}`)));
+      return { runs, later, split: classifyApprovalSuccessors(later, question.id, new Set(comments.filter(row => row.authorAgentId === leadId).map(row => row.id))) };
+    };
+    const done = await pollUntil({ label: "One normal successor receives actual immutable name response", deadlineAt: Date.now() + 300_000,
+      load: async () => ({ ...(await successors()), queue: await ctx.input.api.get<IssueQueuedCommentQueue>(endpoint), task: await ctx.input.api.get<Entity>(`/api/issues/${task.id}`) }),
+      accept: v => v.split.bound.length === 1 && v.runs.every(row => row.status === "succeeded") && v.queue.entries.length === 0 && v.task.status === "done",
+      reject: v => v.runs.length > 5 || v.split.bound.length > 1 || v.split.other.length > 0 || v.runs.some(row => ["failed", "cancelled", "timed_out"].includes(row.status)) ? "Accepted decision delivery failed or replayed work" : undefined });
+    state.consumingRunCount = done.split.bound.length; state.consumerRunId = done.split.bound[0]; state.relayRunCount = done.split.relay.length;
+    state.relayRunIds = done.split.relay; state.unexpectedSuccessorRunCount = done.split.other.length;
+    const full = done.later.find(row => row.id === state.consumerRunId);
     state.responseNativeInputBound = full?.contextSnapshot?.interactionId === question.id && full.runnerProfileJson?.nativeExecutionInput?.task?.prompt?.includes(question.id) === true && full.runnerProfileJson.nativeExecutionInput.task.prompt.includes("Acorn");
     state.queueEmptyAfterDelivery = done.queue.entries.length === 0;
     await ctx.input.page.goto(source, { waitUntil: "domcontentloaded" });
   },
   async observe(ctx, state) { const o = await observeRuntime(ctx, state);
     const question = state.questionBefore as IssueThreadInteraction; state.questionAfter = (await ctx.input.api.get<IssueThreadInteraction[]>(`/api/issues/${(state.task as Entity).id}/interactions`)).find(row => row.id === question.id);
-    state.actualAcornResult = o.revisions.some(row => row.createdByRunId === state.consumerRunId && row.createdByAgentId === (state.worker as Entity).id && /Acorn/i.test(row.body ?? "") && o.documents.some(doc => doc.id === row.documentId && doc.latestRevisionId === row.id));
+    const successorIds = [state.consumerRunId, ...((state.relayRunIds as string[] | undefined) ?? [])];
+    state.actualAcornResult = o.revisions.some(row => successorIds.includes(row.createdByRunId) && row.createdByAgentId === (state.worker as Entity).id && /Acorn/i.test(row.body ?? "") && o.documents.some(doc => doc.id === row.documentId && doc.latestRevisionId === row.id));
     state.initialWorkRetained = o.revisions.some(row => row.createdByRunId === state.workerRunId && (row.body ?? "").includes(String(state.initialMarker))); return o; },
   async verifyResult(ctx, state) { const source = ctx.input.page.url(), task = state.task as Entity;
     await ctx.input.page.goto(`/${ctx.input.fixtures.company.issuePrefix}/issues/${task.identifier ?? task.id}`, { waitUntil: "domcontentloaded" }); await ctx.input.page.reload({ waitUntil: "domcontentloaded" });

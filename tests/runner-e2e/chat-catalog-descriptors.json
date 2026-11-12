@@ -5447,9 +5447,10 @@
       "chat-catalog-domains/runtime-support.ts",
       "chat-scenarios/steering.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.runtime.approval-delivery.v5",
+    "oracleVersion": "paperclip.chat-catalog.runtime.approval-delivery.v6",
     "coverageGaps": [],
-    "expectedRunCount": 4,
+    "expectedRunCount": 5,
+    "minimumRunCount": 4,
     "turnTimeoutMs": 120000,
     "attemptTimeoutMs": 900000,
     "authentication": "human-session",
