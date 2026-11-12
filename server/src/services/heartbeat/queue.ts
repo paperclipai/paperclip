@@ -69,6 +69,7 @@ import {
   readNativeReviewAssignmentContext,
 } from "../native-runtime/native-review-participant.js";
 import { claimQueuedNativeReviewRun } from "../native-runtime/native-review-dispatch.js";
+import { nativeCleanupHoldsAdmission } from "../native-runtime/native-cleanup-admission-hold.js";
 import { adapterExecutionControls } from "../adapter-execution-control.js";
 import { preserveTaskRemoteWorkspaceWriter } from "../native-runtime/native-failed-workspace-recovery.js";
 import { executionFailureRetryCount } from "../execution-recovery-attempt.js";
@@ -1063,6 +1064,18 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         logger.info({ runId: run.id, agentId: run.agentId, companyId: run.companyId, issueId,
           reason: "predecessor_settling_in_process", predecessorRunId: settlingOwner.id },
         "claimQueuedRun: queued run declined at the issue execution claim");
+        return null;
+      }
+    }
+    if (issueId && !run.startedAt && agent.adapterType === "paperclip_runner") {
+      // A previous native session of this task (any agent's, such as the
+      // assignee before a reassignment) may still be closing. Wait for it
+      // instead of dispatching a run its cleanup gate can only refuse.
+      const cleanupBlock = await nativeCleanupHoldsAdmission(db, { companyId: run.companyId, issueId });
+      if (cleanupBlock) {
+        logger.info({ runId: run.id, agentId: run.agentId, companyId: run.companyId, issueId,
+          reason: "native_session_cleanup_settling", cleanupBlock },
+        "claimQueuedRun: queued run kept queued while the task's previous session finishes cleanup");
         return null;
       }
     }
