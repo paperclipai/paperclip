@@ -7181,7 +7181,8 @@ export function agentRoutes(
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     assertBoard(req);
-    res.json(await heartbeat.reportAssignedWorkInvariant(companyId));
+    // Only tasks this caller may read count, so private tasks stay private.
+    res.json(await heartbeat.reportAssignedWorkInvariant(companyId, { readCondition: await issueReadSqlCondition(db, req.actor) }));
   });
 
   router.get("/companies/:companyId/live-runs", async (req, res) => {

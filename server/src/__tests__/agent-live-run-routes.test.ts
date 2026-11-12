@@ -780,7 +780,7 @@ describe("agent live run routes", () => {
     const board = await request(await createApp()).get("/api/companies/company-1/assigned-work-invariant");
     expect(board.status).toBe(200);
     expect(board.body).toMatchObject({ checked: 3, violationCount: 1 });
-    expect(mockHeartbeatService.reportAssignedWorkInvariant).toHaveBeenCalledWith("company-1");
+    expect(mockHeartbeatService.reportAssignedWorkInvariant).toHaveBeenCalledWith("company-1", { readCondition: expect.anything() });
 
     mockHeartbeatService.reportAssignedWorkInvariant.mockClear();
     const member = { type: "board", userId: "member-1", companyIds: ["company-1"], source: "session", isInstanceAdmin: false };

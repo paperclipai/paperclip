@@ -6,6 +6,7 @@ import {
   continuationAllowance,
   evaluateAssignedWork,
   SETTLING_GRACE_MS,
+  SETTLING_MAX_MS,
   STALE_BLOCK_MS,
   VIOLATION_REASONS,
   type AssignedWorkFacts,
@@ -171,19 +172,33 @@ describe("assigned-work invariant", () => {
         .toEqual({ kind: "settling", recheckAt: new Date(finishedAt.getTime() + SETTLING_GRACE_MS) });
     });
 
-    it("gives a just-changed task (new assignment) and a just-resolved blocker to their own owners first", () => {
-      const updatedAt = ago(5_000);
-      expect(evaluateAssignedWork(facts({ issue: { status: "todo", updatedAt }, latestRun: null }), now))
-        .toEqual({ kind: "settling", recheckAt: new Date(updatedAt.getTime() + SETTLING_GRACE_MS) });
+    it("gives a new assignment and a just-resolved blocker to their own owners first, but never routine touches", () => {
+      const createdAt = ago(5_000);
+      expect(evaluateAssignedWork(facts({ issue: { status: "todo", createdAt }, latestRun: null }), now))
+        .toEqual({ kind: "settling", recheckAt: new Date(createdAt.getTime() + SETTLING_GRACE_MS) });
+      // A comment, read marker or label change only moves updatedAt: no postponement.
+      expect(evaluateAssignedWork(facts({ issue: { updatedAt: ago(1_000) } }), now)).toMatchObject({ kind: "violation" });
       const resolved = ago(10_000);
       expect(evaluateAssignedWork(facts({ issue: { status: "blocked", blockedTransitionAt: ago(60 * 60_000) }, blockedBy: "assignee",
         lastBlockerResolvedAt: resolved }), now)).toEqual({ kind: "settling", recheckAt: new Date(resolved.getTime() + SETTLING_GRACE_MS) });
     });
 
-    it("waits for another server's controller lease that still settles the run", () => {
-      const lease = new Date(now.getTime() + 5 * 60_000);
+    it("never lets a held lease postpone a finished run's repair beyond the bound", () => {
       expect(evaluateAssignedWork(facts({ latestRun: { id: "r", status: "failed", errorCode: "process_lost",
-        finishedAt: ago(10 * 60_000), settlingUntil: lease, operatorStopped: false } }), now))
+        finishedAt: ago(SETTLING_MAX_MS + 1_000), settlingUntil: new Date(now.getTime() + 60 * 60_000), operatorStopped: false } }), now))
+        .toMatchObject({ kind: "violation" });
+    });
+
+    it("continues a run a deploy's shutdown cut within the grace of it ending", () => {
+      const ended = ago(SETTLING_GRACE_MS + 1);
+      expect(evaluateAssignedWork(facts({ latestRun: { id: "r", status: "interrupted", errorCode: "server_shutdown_interrupted",
+        finishedAt: ended, settlingUntil: null, operatorStopped: false } }), now)).toMatchObject({ kind: "violation" });
+    });
+
+    it("waits for another server's controller lease that still settles the run", () => {
+      const lease = new Date(now.getTime() + 60_000);
+      expect(evaluateAssignedWork(facts({ latestRun: { id: "r", status: "failed", errorCode: "process_lost",
+        finishedAt: ago(2 * 60_000), settlingUntil: lease, operatorStopped: false } }), now))
         .toEqual({ kind: "settling", recheckAt: lease });
     });
   });
@@ -205,12 +220,11 @@ describe("continuation allowance", () => {
     expect(CONTINUATION_CAP).toBe(6);
   });
 
-  it("keeps backing off across hours for a task that keeps needing continuation, up to a ceiling", () => {
-    const recent = Array.from({ length: 10 }, (_, index) => ago((index + 2) * 2 * 60 * 60_000));
-    // Ten continuations in the last day: spacing is at its 4-hour ceiling.
-    expect(continuationAllowance([ago(3 * 60 * 60_000), ...recent], now))
-      .toEqual({ allowed: false, capped: false, retryAt: new Date(now.getTime() + 60 * 60_000) });
-    expect(continuationAllowance([ago(5 * 60 * 60_000), ...recent.map(at => new Date(at.getTime() - 3 * 60 * 60_000))], now))
-      .toEqual({ allowed: true });
+  it("never spaces continuations more than 15 minutes apart below the cap, and continuations an hour old no longer count", () => {
+    // Five continuations in the hour: 2, 4, 8, 15, 15 minutes of spacing.
+    const five = [ago(1 * 60_000), ago(16 * 60_000), ago(24 * 60_000), ago(28 * 60_000), ago(30 * 60_000)];
+    expect(continuationAllowance(five, now)).toEqual({ allowed: false, capped: false, retryAt: new Date(now.getTime() + 14 * 60_000) });
+    expect(continuationAllowance([ago(16 * 60_000), ...five.slice(1)], now)).toEqual({ allowed: true });
+    expect(continuationAllowance([ago(61 * 60_000), ago(70 * 60_000)], now)).toEqual({ allowed: true });
   });
 });

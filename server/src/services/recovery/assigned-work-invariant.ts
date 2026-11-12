@@ -90,6 +90,8 @@ const PROVIDER_LIMIT_CAUSES = new Set(["provider_quota", "native_provider_usage_
 /** How long a just-finished run may still be settling (retry scheduling,
  * claim release) before its task is judged. A re-check follows at the end. */
 export const SETTLING_GRACE_MS = 90_000;
+/** Upper bound on how long another server's lease can keep a finished run settling. */
+export const SETTLING_MAX_MS = 5 * 60_000;
 /** Blocked tasks older than this are reported, never continued automatically. */
 export const STALE_BLOCK_MS = 7 * 24 * 60 * 60_000;
 /** Automatic continuations per task, shared with the server-restart lane. */
@@ -97,9 +99,9 @@ export const CONTINUATION_CAP = SERVER_RESTART_RETRY_MAX_ATTEMPTS;
 export const CONTINUATION_CAP_WINDOW_MS = SERVER_RESTART_RETRY_WINDOW_MS;
 /** Spacing between continuations of one task, doubling with each one in the window. */
 export const CONTINUATION_BASE_BACKOFF_MS = 2 * 60_000;
-export const CONTINUATION_MAX_BACKOFF_MS = 4 * 60 * 60_000;
-/** How far back the spacing counts earlier continuations. */
-export const CONTINUATION_HISTORY_MS = 24 * 60 * 60_000;
+/** Spacing never exceeds this below the cap, so a task that keeps needing
+ * continuation is retried at the hourly cap's pace, never left for hours. */
+export const CONTINUATION_MAX_BACKOFF_MS = 15 * 60_000;
 
 export type AssignedWorkFacts = {
   issue: {
@@ -109,6 +111,8 @@ export type AssignedWorkFacts = {
     hidden: boolean;
     blockedTransitionAt: Date | null;
     updatedAt: Date;
+    /** When the task was created; a task that never ran settles from it. */
+    createdAt?: Date | null;
     /** Owner of the agent's declared unblock action, when it declared one. */
     unblockOwner: { agentId: string } | { userId: string } | "board" | null;
     monitorNextCheckAt: Date | null;
@@ -223,16 +227,24 @@ function pendingIntent(facts: AssignedWorkFacts, now: Date): PendingIntent | nul
   return null;
 }
 
-/** The owners of a fresh change act on its own event: a run's failure path
- * schedules its retry, a new assignment is dispatched, a resolved blocker
- * wakes its dependent. The invariant judges only once that grace is over. */
+/** The owners of three specific events act on them first: a run's failure
+ * path schedules its retry when the run ends, the stranded sweep dispatches a
+ * new assignment, the dependency wake follows a resolved blocker. Each grants
+ * SETTLING_GRACE_MS from its own event; routine touches (comments, reads,
+ * labels) never count. A held controller lease can extend the run's window,
+ * but never past SETTLING_MAX_MS after the run ended. */
 function settlingUntil(facts: AssignedWorkFacts, now: Date): Date | null {
   const run = facts.latestRun;
   const candidates: number[] = [];
-  if (run?.finishedAt) candidates.push(run.finishedAt.getTime() + SETTLING_GRACE_MS);
-  if (run?.finishedAt && run.settlingUntil) candidates.push(run.settlingUntil.getTime());
-  candidates.push(facts.issue.updatedAt.getTime() + SETTLING_GRACE_MS);
+  if (run?.finishedAt) {
+    const ended = run.finishedAt.getTime();
+    candidates.push(ended + SETTLING_GRACE_MS);
+    if (run.settlingUntil) candidates.push(Math.min(run.settlingUntil.getTime(), ended + SETTLING_MAX_MS));
+  }
+  // A task that never ran: its assignment was just created.
+  if (!run && facts.issue.createdAt) candidates.push(facts.issue.createdAt.getTime() + SETTLING_GRACE_MS);
   if (facts.lastBlockerResolvedAt) candidates.push(facts.lastBlockerResolvedAt.getTime() + SETTLING_GRACE_MS);
+  if (!candidates.length) return null;
   const until = Math.max(...candidates);
   return until > now.getTime() ? new Date(until) : null;
 }
@@ -273,22 +285,21 @@ function waitingReason(facts: AssignedWorkFacts, now: Date): WaitingReason | nul
 }
 
 /** Spacing and cap for automatic continuations of one task. `recent` are the
- * times of its earlier automatic continuations within the back-off history.
- * At most CONTINUATION_CAP per hour (the server-restart lane's bound), and the
- * spacing doubles with every continuation in the last day, up to a ceiling, so
- * a task that keeps failing is tried less and less often but never given up. */
+ * times of its earlier automatic continuations. At most CONTINUATION_CAP per
+ * rolling hour (the server-restart lane's bound). Below the cap the spacing
+ * doubles with each continuation in the hour, 2, 4, 8 and then 15 minutes at
+ * most. At the cap the next one waits until the oldest leaves the hour. */
 export function continuationAllowance(recent: Date[], now: Date = new Date()):
   { allowed: true } | { allowed: false; retryAt: Date; capped: boolean } {
-  const history = recent.filter(at => at.getTime() > now.getTime() - CONTINUATION_HISTORY_MS)
+  const inWindow = recent.filter(at => at.getTime() > now.getTime() - CONTINUATION_CAP_WINDOW_MS)
     .sort((a, b) => b.getTime() - a.getTime());
-  const inWindow = history.filter(at => at.getTime() > now.getTime() - CONTINUATION_CAP_WINDOW_MS);
   if (inWindow.length >= CONTINUATION_CAP) {
     const oldest = inWindow[CONTINUATION_CAP - 1];
     return { allowed: false, capped: true, retryAt: new Date(oldest.getTime() + CONTINUATION_CAP_WINDOW_MS) };
   }
-  if (history.length > 0) {
-    const spacing = Math.min(CONTINUATION_MAX_BACKOFF_MS, CONTINUATION_BASE_BACKOFF_MS * 2 ** (history.length - 1));
-    const next = history[0].getTime() + spacing;
+  if (inWindow.length > 0) {
+    const spacing = Math.min(CONTINUATION_MAX_BACKOFF_MS, CONTINUATION_BASE_BACKOFF_MS * 2 ** (inWindow.length - 1));
+    const next = inWindow[0].getTime() + spacing;
     if (next > now.getTime()) return { allowed: false, capped: false, retryAt: new Date(next) };
   }
   return { allowed: true };
@@ -296,6 +307,8 @@ export function continuationAllowance(recent: Date[], now: Date = new Date()):
 
 /** Activity text while a continuation is being admitted, and when admission refused it. */
 export const CONTINUATION_PENDING_MESSAGE = "Starting this task again automatically after an interruption.";
+export const CONTINUATION_REVIEW_MESSAGE =
+  "Returned to review automatically after an interruption. Nothing needed you, so the review picks up where it stopped.";
 export const CONTINUATION_REFUSED_MESSAGE =
   "Paperclip tried to continue this task automatically, but it could not start yet. It will try again shortly.";
 

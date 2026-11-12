@@ -59,7 +59,8 @@ describePostgres("assigned-work invariant sweep", () => {
       const id = randomUUID();
       number += 1;
       await db.insert(issues).values({ id, companyId, title: `Task ${number}`, status: "in_progress", assigneeAgentId: agentId,
-        issueNumber: number, identifier: `I${companyId.slice(0, 7)}-${number}`, updatedAt: new Date(Date.now() - 3 * HOUR), ...values });
+        issueNumber: number, identifier: `I${companyId.slice(0, 7)}-${number}`, updatedAt: new Date(Date.now() - 3 * HOUR),
+        createdAt: new Date(Date.now() - 5 * HOUR), ...values });
       return id;
     }
     async function run(issueId: string, values: Partial<typeof heartbeatRuns.$inferInsert> = {}) {
@@ -352,6 +353,85 @@ describePostgres("assigned-work invariant sweep", () => {
       await heartbeat.drainActiveRunExecutions();
     }
   }, 120_000);
+
+  it("routine touches on a stranded task (a comment, a read, a label) do not postpone its repair", async () => {
+    const f = await seedCompany();
+    const issueId = await f.issue();
+    await f.run(issueId);
+    await db.update(issues).set({ updatedAt: new Date() }).where(eq(issues.id, issueId));
+    const queue = wakeQueue();
+    expect(await assignedWorkSweep(db, { enqueueWakeup: queue.enqueueWakeup }).checkIssue({ companyId: f.companyId, issueId }))
+      .toMatchObject({ outcome: "repaired" });
+    expect(queue.calls).toHaveLength(1);
+  }, 60_000);
+
+  it("restores a block made through the normal update route to its recorded status, and a review block back to review without a wake", async () => {
+    const f = await seedCompany();
+    const queue = wakeQueue();
+    const sweep = assignedWorkSweep(db, { enqueueWakeup: queue.enqueueWakeup });
+    const blockedAt = new Date(Date.now() - 2 * HOUR);
+    const cases = [["in_progress", "in_progress", 1], ["in_review", "in_review", 0]] as const;
+    for (const [before, expected, wakes] of cases) {
+      const issueId = await f.issue({ status: "blocked", blockedTransitionAt: blockedAt });
+      await f.run(issueId, { status: "failed", errorCode: "process_lost", livenessState: "failed" });
+      // The shape the normal issue update route writes.
+      await db.insert(activityLog).values({ companyId: f.companyId, actorType: "system", actorId: "system", action: "issue.updated",
+        entityType: "issue", entityId: issueId, details: { status: "blocked", _previous: { status: before } }, createdAt: blockedAt });
+      const callsBefore = queue.calls.length;
+      expect(await sweep.checkIssue({ companyId: f.companyId, issueId })).toMatchObject({ outcome: "repaired" });
+      expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0].status).toBe(expected);
+      expect(queue.calls.length - callsBefore).toBe(wakes);
+    }
+  }, 60_000);
+
+  it("puts a lifted block back when admission refuses the continuation", async () => {
+    const f = await seedCompany();
+    const blockedAt = new Date(Date.now() - 2 * HOUR);
+    const issueId = await f.issue({ status: "blocked", blockedTransitionAt: blockedAt });
+    await f.run(issueId, { status: "failed", errorCode: "controller_lease_lost", livenessState: "failed" });
+    const sweep = assignedWorkSweep(db, { enqueueWakeup: async () => null });
+    expect(await sweep.checkIssue({ companyId: f.companyId, issueId })).toMatchObject({ outcome: "enqueue_refused" });
+    const [after] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(after.status).toBe("blocked");
+    expect(after.blockedTransitionAt?.getTime()).toBe(blockedAt.getTime());
+  }, 60_000);
+
+  it("re-runs the predicate under the row lock: a question asked after the first read stops the repair", async () => {
+    const f = await seedCompany();
+    const issueId = await f.issue();
+    await f.run(issueId);
+    const queue = wakeQueue();
+    const sweep = assignedWorkSweep(db, { enqueueWakeup: queue.enqueueWakeup });
+    // The first read sees a violation; the person's question lands just before
+    // the claim's transaction takes the row lock.
+    const original = db.transaction.bind(db);
+    const spy = vi.spyOn(db, "transaction").mockImplementationOnce((async (work: never, config?: never) => {
+      await db.insert(issueThreadInteractions).values({ companyId: f.companyId, issueId, kind: "ask_user_questions",
+        status: "pending", continuationPolicy: "wake_assignee", payload: {} } as never);
+      return original(work, config);
+    }) as never);
+    try {
+      expect(await sweep.checkIssue({ companyId: f.companyId, issueId })).toMatchObject({ outcome: "changed", verdict: { kind: "violation" } });
+    } finally { spy.mockRestore(); }
+    expect(await db.select().from(activityLog).where(and(eq(activityLog.entityId, issueId),
+      eq(activityLog.action, ASSIGNED_WORK_CONTINUED_ACTION)))).toHaveLength(0);
+    expect(queue.calls).toHaveLength(0);
+  }, 60_000);
+
+  it("reports only tasks the caller may read; the sweep still evaluates private tasks", async () => {
+    const f = await seedCompany();
+    const open = await f.issue();
+    await f.run(open);
+    const hidden = await f.issue();
+    await f.run(hidden);
+    const queue = wakeQueue();
+    const sweep = assignedWorkSweep(db, { enqueueWakeup: queue.enqueueWakeup });
+    // A caller whose read condition excludes the private task.
+    const report = await sweep.report(f.companyId, { readCondition: sqlTag<boolean>`${issues.id} <> ${hidden}` });
+    expect(report).toMatchObject({ checked: 1, violationCount: 1 });
+    expect(report.sample.map(row => row.identifier)).not.toContain((await db.select().from(issues).where(eq(issues.id, hidden)))[0].identifier);
+    expect(await sweep.checkIssue({ companyId: f.companyId, issueId: hidden })).toMatchObject({ outcome: "repaired" });
+  }, 60_000);
 
   it("stops scheduling a task once it leaves eligibility", async () => {
     const f = await seedCompany();

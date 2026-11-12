@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray, isNull, or, sql, type SQLWrapper } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, or, sql, type SQL, type SQLWrapper } from "drizzle-orm";
 import {
   activityLog,
   agentTaskSessions,
@@ -33,8 +33,9 @@ import {
   continuationAllowance,
   CONTINUATION_PENDING_MESSAGE,
   CONTINUATION_REFUSED_MESSAGE,
+  CONTINUATION_REVIEW_MESSAGE,
   evaluateAssignedWork,
-  CONTINUATION_HISTORY_MS,
+  CONTINUATION_CAP_WINDOW_MS,
   STALE_BLOCK_MS,
   type AssignedWorkFacts,
   type AssignedWorkVerdict,
@@ -61,7 +62,7 @@ const BLOCK_ATTRIBUTION_WINDOW_MS = 10_000;
 
 type IssueRow = Pick<typeof issues.$inferSelect, "id" | "companyId" | "status" | "assigneeAgentId" | "assigneeUserId" | "hiddenAt"
   | "blockedTransitionAt" | "updatedAt" | "unblockDescriptor" | "monitorNextCheckAt" | "conversationAgentId" | "originKind"
-  | "projectId" | "statusVersion" | "executionState" | "identifier">;
+  | "projectId" | "statusVersion" | "executionState" | "identifier" | "createdAt">;
 
 type RunRow = Pick<typeof heartbeatRuns.$inferSelect, "id" | "status" | "agentId" | "runtimeMode" | "errorCode" | "finishedAt"
   | "scheduledRetryAt" | "controllerBootId" | "controllerLeaseExpiresAt" | "controllerProcess" | "resultJson"> & { issueId: string };
@@ -300,6 +301,7 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
         issue: {
           status: issue.status, assigneeAgentId: issue.assigneeAgentId, assigneeUserId: issue.assigneeUserId,
           hidden: Boolean(issue.hiddenAt), blockedTransitionAt: issue.blockedTransitionAt, updatedAt: issue.updatedAt,
+          createdAt: issue.createdAt,
           unblockOwner: (issue.unblockDescriptor?.owner ?? null) as AssignedWorkFacts["issue"]["unblockOwner"],
           monitorNextCheckAt: issue.monitorNextCheckAt,
           isConversation: Boolean(issue.conversationAgentId) || issue.originKind === "chat_channel",
@@ -346,11 +348,14 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
     updatedAt: issues.updatedAt, unblockDescriptor: issues.unblockDescriptor, monitorNextCheckAt: issues.monitorNextCheckAt,
     conversationAgentId: issues.conversationAgentId, originKind: issues.originKind, projectId: issues.projectId,
     statusVersion: issues.statusVersion, executionState: issues.executionState, identifier: issues.identifier,
+    createdAt: issues.createdAt,
   };
 
-  async function loadIssues(companyId: string, issueId?: string, limit = ASSIGNED_WORK_REPORT_LIMIT): Promise<IssueRow[]> {
+  async function loadIssues(companyId: string, issueId?: string, limit = ASSIGNED_WORK_REPORT_LIMIT,
+    readCondition?: SQL<boolean>): Promise<IssueRow[]> {
     return db.select(issueColumns).from(issues).where(and(
       eq(issues.companyId, companyId),
+      readCondition,
       issueId ? eq(issues.id, issueId) : undefined,
       inArray(issues.status, [...OPEN_STATUSES]),
       sql`${issues.assigneeAgentId} is not null`,
@@ -453,94 +458,124 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
     if (repairTimes.length >= ASSIGNED_WORK_REPAIRS_PER_MINUTE) {
       return { verdict, outcome: "deferred_rate_limit", retryAt: new Date(repairTimes[0] + 60_000 + Math.floor(Math.random() * 5_000)) };
     }
-    const claimed = await claimContinuation(issue, verdict.reason, at);
+    const claimed = await claimContinuation(issue, at);
     if (claimed.kind !== "claimed") return { verdict, outcome: claimed.kind === "capped" ? "deferred_cap" : claimed.kind === "changed" ? "changed" : "deferred_rate_limit",
       retryAt: claimed.kind === "changed" ? null : claimed.retryAt };
     repairTimes.push(at.getTime());
+    // A block that interrupted a review goes back to review; the review's own
+    // recovery wakes its participant. No agent work starts from here.
+    if (claimed.restoredTo === "in_review") {
+      await settleContinuationActivity(claimed, claimed.reason, "restored_to_review");
+      return { verdict: claimed.verdict, outcome: "repaired", retryAt: null };
+    }
     const run = await deps.enqueueWakeup(issue.assigneeAgentId!, {
       source: facts.latestRun ? "automation" : "assignment", triggerDetail: "system",
       reason: facts.latestRun ? "issue_continuation_needed" : "issue_assigned",
       payload: { issueId: issue.id, mutation: "assigned_work_invariant" },
       requestedByActorType: "system", requestedByActorId: null,
       contextSnapshot: { issueId: issue.id, taskId: issue.id, wakeReason: facts.latestRun ? "issue_continuation_needed" : "issue_assigned",
-        source: ASSIGNED_WORK_CONTINUATION_SOURCE, assignedWorkViolation: verdict.reason,
+        source: ASSIGNED_WORK_CONTINUATION_SOURCE, assignedWorkViolation: claimed.reason,
         ...(facts.latestRun ? { previousRunId: facts.latestRun.id } : {}) },
     }).catch(error => {
       logger.warn({ err: error, companyId: issue.companyId, issueId: issue.id }, "assigned-work continuation was not admitted");
       return null;
     });
     // A refused continuation stays a violation; the claim spaces the next try.
-    await settleContinuationActivity(claimed, verdict.reason, Boolean(run));
-    return { verdict, outcome: run ? "repaired" : "enqueue_refused", retryAt: claimed.nextCheckAt };
+    // A block lifted for it is put back, so the task never sits unblocked
+    // with nothing pending.
+    if (!run && claimed.restoredTo) await revertRestoredBlock(issue, claimed);
+    await settleContinuationActivity(claimed, claimed.reason, run ? "queued" : "not_started");
+    return { verdict: claimed.verdict, outcome: run ? "repaired" : "enqueue_refused", retryAt: claimed.nextCheckAt };
   }
 
+  type Claimed = { kind: "claimed"; nextCheckAt: Date; activityId: string; publications: ActivityPublication[];
+    verdict: Extract<AssignedWorkVerdict, { kind: "violation" }>; reason: ViolationReason;
+    restoredTo: "todo" | "in_progress" | "in_review" | null; restoredStatusVersion: number | null;
+    blockedTransitionAt: Date | null };
+
   /**
-   * The durable, serialized claim: under the task's row lock, re-check that the
-   * task is unchanged and still has nothing pending, apply the per-task cap and
-   * spacing, restore a recovery-owned block, and record the activity entry. A
-   * second server sweeping at the same time waits on the lock and then sees the
-   * claim, so one violation produces one continuation.
+   * The durable, serialized claim. Under the task's row lock it loads the
+   * task's facts again and re-runs the same predicate, so a question, approval,
+   * blocker, monitor, wake or run that appeared since the first read stops the
+   * repair. It then applies the per-task cap and spacing, lifts a block that has
+   * no hold, and records the activity entry. A second server sweeping at the
+   * same time waits on the lock and then sees the claim, so one violation
+   * produces one continuation.
    */
-  async function claimContinuation(issue: IssueRow, reason: ViolationReason, at: Date):
-    Promise<{ kind: "claimed"; nextCheckAt: Date; activityId: string; publications: ActivityPublication[] }
-      | { kind: "capped" | "spaced"; retryAt: Date } | { kind: "changed" }> {
+  async function claimContinuation(issue: IssueRow, at: Date):
+    Promise<Claimed | { kind: "capped" | "spaced"; retryAt: Date } | { kind: "changed" }> {
     const publications: ActivityPublication[] = [];
-    const outcome = await db.transaction(async tx => {
+    return db.transaction(async tx => {
       const [current] = await tx.select(issueColumns).from(issues)
         .where(and(eq(issues.companyId, issue.companyId), eq(issues.id, issue.id))).for("update");
       if (!current || current.status !== issue.status || current.statusVersion !== issue.statusVersion
         || current.assigneeAgentId !== issue.assigneeAgentId || current.assigneeUserId || current.hiddenAt) return { kind: "changed" as const };
+      const fresh = (await loadFacts(issue.companyId, [current])).get(current.id)!;
+      const verdict = evaluateAssignedWork(fresh, at);
+      if (verdict.kind !== "violation" || verdict.stale || verdict.reason === "run_owner_gone"
+        || (current.status === "blocked" && fresh.activeRecoveryAction)) return { kind: "changed" as const };
+      const recent = await tx.select({ createdAt: activityLog.createdAt }).from(activityLog).where(and(
+        eq(activityLog.companyId, issue.companyId), eq(activityLog.entityType, "issue"), eq(activityLog.entityId, issue.id),
+        eq(activityLog.action, ASSIGNED_WORK_CONTINUED_ACTION),
+        gte(activityLog.createdAt, new Date(at.getTime() - CONTINUATION_CAP_WINDOW_MS)))).orderBy(desc(activityLog.createdAt)).limit(64);
+      const allowance = continuationAllowance(recent.map(row => row.createdAt), at);
+      if (!allowance.allowed) return { kind: allowance.capped ? "capped" as const : "spaced" as const, retryAt: allowance.retryAt };
+      let restoredTo: Claimed["restoredTo"] = null;
+      let restoredStatusVersion: number | null = null;
+      if (current.status === "blocked") {
+        // A recovery outcome with no hold left: nothing names a person's
+        // move. Put the task back where the block found it.
+        const [blocking] = await tx.select({ details: activityLog.details }).from(activityLog).where(and(
+          eq(activityLog.companyId, issue.companyId), eq(activityLog.entityType, "issue"), eq(activityLog.entityId, issue.id),
+          sql`(${activityLog.details}->>'status' = 'blocked' or ${activityLog.details}->>'toStatus' = 'blocked')`,
+        )).orderBy(desc(activityLog.createdAt)).limit(1);
+        restoredTo = recordedPreviousStatus(blocking?.details);
+        await issueService(tx as unknown as Db).update(issue.id, { status: restoredTo }, tx);
+        const [restored] = await tx.select({ statusVersion: issues.statusVersion }).from(issues).where(eq(issues.id, issue.id));
+        restoredStatusVersion = restored?.statusVersion ?? null;
+      }
+      const activity = await logActivity(tx as unknown as Db, {
+        companyId: issue.companyId, actorType: "system", actorId: "system", agentId: issue.assigneeAgentId, runId: null,
+        action: ASSIGNED_WORK_CONTINUED_ACTION, entityType: "issue", entityId: issue.id,
+        details: { identifier: issue.identifier, message: CONTINUATION_PENDING_MESSAGE, outcome: "pending", violation: verdict.reason,
+          ...(restoredTo ? { status: restoredTo, previousStatus: "blocked" } : {}),
+          attempt: recent.length + 1 },
+      }, publications);
+      const next = continuationAllowance([at, ...recent.map(row => row.createdAt)], at);
+      return { kind: "claimed" as const, activityId: activity.id, publications, verdict, reason: verdict.reason,
+        restoredTo, restoredStatusVersion, blockedTransitionAt: current.blockedTransitionAt,
+        nextCheckAt: next.allowed ? new Date(at.getTime() + 90_000) : next.retryAt };
+    });
+  }
+
+  /** Put back a block lifted for a continuation that admission refused, when
+   * nothing changed the task since: same status version, nothing pending. */
+  async function revertRestoredBlock(issue: IssueRow, claimed: Claimed) {
+    await db.transaction(async tx => {
+      const [current] = await tx.select(issueColumns).from(issues)
+        .where(and(eq(issues.companyId, issue.companyId), eq(issues.id, issue.id))).for("update");
+      if (!current || current.status !== claimed.restoredTo || current.statusVersion !== claimed.restoredStatusVersion) return;
       const [pendingWake] = await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
         eq(agentWakeupRequests.companyId, issue.companyId), inArray(agentWakeupRequests.status, PENDING_WAKE_STATUSES),
         sql`${agentWakeupRequests.payload}->>'issueId' = ${issue.id}`)).limit(1);
       const [activeRun] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
         eq(heartbeatRuns.companyId, issue.companyId), inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
         sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issue.id}`)).limit(1);
-      if (pendingWake || activeRun) return { kind: "changed" as const };
-      const recent = await tx.select({ createdAt: activityLog.createdAt }).from(activityLog).where(and(
-        eq(activityLog.companyId, issue.companyId), eq(activityLog.entityType, "issue"), eq(activityLog.entityId, issue.id),
-        eq(activityLog.action, ASSIGNED_WORK_CONTINUED_ACTION),
-        gte(activityLog.createdAt, new Date(at.getTime() - CONTINUATION_HISTORY_MS)))).orderBy(desc(activityLog.createdAt)).limit(64);
-      const allowance = continuationAllowance(recent.map(row => row.createdAt), at);
-      if (!allowance.allowed) return { kind: allowance.capped ? "capped" as const : "spaced" as const, retryAt: allowance.retryAt };
-      let previousStatus: string | null = null;
-      if (current.status === "blocked") {
-        // A recovery outcome with no hold left: nothing names a person's
-        // move. Put the task back where the block found it. A hold that
-        // appeared meanwhile belongs to its owner.
-        if (await issueRecoveryActionService(tx as unknown as Db).getActiveForIssue(issue.companyId, issue.id, tx as unknown as Db)) {
-          return { kind: "changed" as const };
-        }
-        const [blocking] = await tx.select({ details: activityLog.details }).from(activityLog).where(and(
-          eq(activityLog.companyId, issue.companyId), eq(activityLog.entityType, "issue"), eq(activityLog.entityId, issue.id),
-          sql`(${activityLog.details}->>'status' = 'blocked' or ${activityLog.details}->>'toStatus' = 'blocked')`,
-        )).orderBy(desc(activityLog.createdAt)).limit(1);
-        const recorded = json(blocking?.details).previousStatus ?? json(blocking?.details).fromStatus;
-        previousStatus = recorded === "in_progress" || recorded === "todo" ? recorded : "todo";
-        await issueService(tx as unknown as Db).update(issue.id, { status: previousStatus }, tx);
-      }
-      const activity = await logActivity(tx as unknown as Db, {
-        companyId: issue.companyId, actorType: "system", actorId: "system", agentId: issue.assigneeAgentId, runId: null,
-        action: ASSIGNED_WORK_CONTINUED_ACTION, entityType: "issue", entityId: issue.id,
-        details: { identifier: issue.identifier, message: CONTINUATION_PENDING_MESSAGE, outcome: "pending", violation: reason,
-          ...(previousStatus ? { status: previousStatus, previousStatus: "blocked" } : {}),
-          attempt: recent.length + 1 },
-      }, publications);
-      const next = continuationAllowance([at, ...recent.map(row => row.createdAt)], at);
-      return { kind: "claimed" as const, activityId: activity.id, publications,
-        nextCheckAt: next.allowed ? new Date(at.getTime() + 90_000) : next.retryAt };
+      if (pendingWake || activeRun) return;
+      await issueService(tx as unknown as Db).update(issue.id, { status: "blocked" }, tx);
+      // Keep the original block time, so the stale window still counts from it.
+      await tx.update(issues).set({ blockedTransitionAt: claimed.blockedTransitionAt }).where(eq(issues.id, issue.id));
     });
-    return outcome;
   }
 
   /** The claim's activity entry says what happened only once the wake was
    * admitted or refused; it is published then, never before. A refused
    * continuation stays a violation and is tried again under the same cap. */
   async function settleContinuationActivity(claimed: { activityId: string; publications: ActivityPublication[] },
-    reason: ViolationReason, admitted: boolean) {
-    const update = admitted
-      ? { outcome: "queued", message: continuationActivityMessage(reason) }
-      : { outcome: "not_started", message: CONTINUATION_REFUSED_MESSAGE };
+    reason: ViolationReason, outcome: "queued" | "not_started" | "restored_to_review") {
+    const update = outcome === "queued" ? { outcome, message: continuationActivityMessage(reason) }
+      : outcome === "restored_to_review" ? { outcome, message: CONTINUATION_REVIEW_MESSAGE }
+        : { outcome, message: CONTINUATION_REFUSED_MESSAGE };
     await db.update(activityLog).set({ details: sql`coalesce(${activityLog.details}, '{}'::jsonb) || ${JSON.stringify(update)}::jsonb` })
       .where(eq(activityLog.id, claimed.activityId));
     for (const publication of claimed.publications) {
@@ -549,9 +584,12 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
     }
   }
 
-  /** Read-only: classify every open assigned task of a company. */
-  async function report(companyId: string) {
-    const rows = await loadIssues(companyId);
+  /** Read-only: classify the open assigned tasks of a company that the caller
+   * may read (`readCondition`, the caller's issue-privacy predicate). Private
+   * tasks the caller cannot read are left out of every count and sample. The
+   * sweep itself evaluates all tasks. */
+  async function report(companyId: string, options: { readCondition?: SQL<boolean> } = {}) {
+    const rows = await loadIssues(companyId, undefined, ASSIGNED_WORK_REPORT_LIMIT, options.readCondition);
     const at = now();
     const summary = { checked: rows.length, truncated: rows.length >= ASSIGNED_WORK_REPORT_LIMIT, ok: {} as Record<string, number>,
       violations: {} as Record<string, number>, violationCount: 0, heldByRecoveryOwner: 0, staleBlocked: 0, settling: 0,
@@ -601,4 +639,14 @@ function interactionNotSupersededSql(companyId: SQLWrapper, issueIdText: SQLWrap
     and (retry.context_snapshot->>'issueId') = ${issueIdText}
     and jsonb_typeof(retry.context_snapshot->'explicitUserContinuation') = 'object'
     and retry.created_at > ${createdAt})`;
+}
+
+/** The status a block replaced, from the activity entry that blocked the task:
+ * the normal update route records it as `_previous.status`, recovery as
+ * `previousStatus`, the native status committer as `fromStatus`. */
+export function recordedPreviousStatus(details: unknown): "todo" | "in_progress" | "in_review" {
+  const record = json(details);
+  const candidates = [json(record._previous).status, record.previousStatus, record.fromStatus];
+  const recorded = candidates.find(value => value === "todo" || value === "in_progress" || value === "in_review");
+  return (recorded as "todo" | "in_progress" | "in_review" | undefined) ?? "todo";
 }
