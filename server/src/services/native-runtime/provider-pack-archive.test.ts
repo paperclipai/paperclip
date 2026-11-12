@@ -94,6 +94,27 @@ async function layeredFixture() {
   return { root, pack, receipt, archive };
 }
 
+it("writes the same archive for the same file every time, with nothing after the frame", async () => {
+  // Ending the compressor while its last chunk was still queued made Node
+  // finish the zstd stream twice, and about half the archives got an empty
+  // frame at their end. An image layer of these archives then never repeated.
+  const emptyFrame = Buffer.from("28b52ffd2000010000", "hex");
+  const seen = new Set<string>();
+  for (let trial = 0; trial < 12; trial += 1) {
+    const { pack } = await fixture();
+    const large = path.join(pack, "bin", "large");
+    await fs.writeFile(large, Buffer.alloc(1024 * 1024, 42), { mode: 0o755 });
+    await fs.utimes(large, 0, 0);
+    const receipt = await createProviderPackLayers(pack);
+    seen.add(receipt.files[0].archive.sha256);
+    for (const name of ["0.tar.zst", "overlay.tar.zst"]) {
+      const bytes = await fs.readFile(path.join(`${pack}.archives`, name));
+      expect(bytes.subarray(-emptyFrame.length).equals(emptyFrame), name).toBe(false);
+    }
+  }
+  expect([...seen]).toHaveLength(1);
+});
+
 it.skipIf(!tar || !hasZstd)("reuses only byte-matched image files, keeps modes, and never shares writable hardlinks", async () => {
   const { root, pack, archive } = await layeredFixture();
   const remote = await runner(root);
