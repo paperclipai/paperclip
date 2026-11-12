@@ -31,7 +31,11 @@ const admitted = new WeakMap<NativeSession, Readonly<Selection>>();
 const digest = /^sha256:[a-f0-9]{64}$/;
 type NativeRunIdentity = ReturnType<NativeSession["identity"]>;
 
-export type NativeProviderPackAdmissionSource = { runId: string; receipt: unknown; state: unknown; artifacts?: unknown };
+export type NativeProviderPackAdmissionRefusal = "session_identity_unavailable" | "session_identity_differs"
+  | "source_state_pending" | "source_state_unknown" | "source_state_missing" | "receipt_missing"
+  | "runner_instance_differs" | "environment_lease_differs" | "receipt_invalid";
+
+export type NativeProviderPackAdmissionSource ={ runId: string; receipt: unknown; state: unknown; artifacts?: unknown };
 
 export function nativeProviderPackAdmissionPending(admissionEpoch: string) {
   return { schema: "paperclip.native-provider-pack-admission-state.v1" as const, state: "pending" as const, admissionEpoch };
@@ -83,19 +87,30 @@ export async function rememberRecoveredNativeProviderPack(db: Db, session: Nativ
   runnerInstanceId: string;
   environmentLeaseId: string;
   source?: NativeProviderPackAdmissionSource;
+  /** Diagnostics only: names the check that refused the saved admission. */
+  onRefused?: (reason: NativeProviderPackAdmissionRefusal) => void | Promise<void>;
 }): Promise<boolean> {
   admitted.delete(session);
-  if (typeof session.identity !== "function") return false;
-  if (canonicalProviderPackJson(session.identity()) !== canonicalProviderPackJson(input.identity)) return false;
+  const refuse = async (reason: NativeProviderPackAdmissionRefusal) => {
+    try { await input.onRefused?.(reason); } catch { /* diagnostics never change admission */ }
+    return false;
+  };
+  if (typeof session.identity !== "function") return refuse("session_identity_unavailable");
+  if (canonicalProviderPackJson(session.identity()) !== canonicalProviderPackJson(input.identity)) return refuse("session_identity_differs");
   const source = input.source?.runId === input.sourceRunId ? input.source : (await db.select({
     receipt: sql<unknown>`${heartbeatRuns.runnerProfileJson}->'nativeProviderPackAdmission'`,
     state: sql<unknown>`${heartbeatRuns.runnerProfileJson}->'nativeProviderPackAdmissionState'`,
   }).from(heartbeatRuns).where(and(eq(heartbeatRuns.id, input.sourceRunId), eq(heartbeatRuns.companyId, input.identity.companyId),
     eq(heartbeatRuns.agentId, input.identity.agentId), eq(heartbeatRuns.runtimeMode, "native"))).limit(1))[0];
-  if (!verifiedState(source?.state)) return false;
+  if (!verifiedState(source?.state)) {
+    const state = source?.state && typeof source.state === "object" ? (source.state as Record<string, unknown>).state : undefined;
+    return refuse(state === "pending" ? "source_state_pending" : state === "unknown" ? "source_state_unknown" : "source_state_missing");
+  }
   const value = source?.receipt;
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return refuse("receipt_missing");
   const receipt = value as Record<string, unknown>;
+  if (receipt.runnerInstanceId !== input.runnerInstanceId) return refuse("runner_instance_differs");
+  if (receipt.runnerEnvironmentLeaseId !== input.environmentLeaseId) return refuse("environment_lease_differs");
   const keys = new Set(["schema", "stage", "authority", "companyId", "agentId", "runId", "sessionId", "runnerInstanceId",
     "runnerEnvironmentLeaseId", "providerPackDigest", "opencodeProxySha256", "sourceRevision", "inheritedFromRunId"]);
   if (Object.keys(receipt).some(key => !keys.has(key)) || receipt.schema !== "paperclip.native-provider-pack-admission.v1"
@@ -104,7 +119,7 @@ export async function rememberRecoveredNativeProviderPack(db: Db, session: Nativ
     || receipt.sessionId !== input.identity.sessionId || receipt.runnerInstanceId !== input.runnerInstanceId
     || receipt.runnerEnvironmentLeaseId !== input.environmentLeaseId || !digest.test(String(receipt.providerPackDigest))
     || !digest.test(String(receipt.opencodeProxySha256)) || !/^[a-f0-9]{40}$/.test(String(receipt.sourceRevision))
-    || (receipt.inheritedFromRunId !== undefined && (typeof receipt.inheritedFromRunId !== "string" || !receipt.inheritedFromRunId))) return false;
+    || (receipt.inheritedFromRunId !== undefined && (typeof receipt.inheritedFromRunId !== "string" || !receipt.inheritedFromRunId))) return refuse("receipt_invalid");
   return rememberSelection(session, { admittedRunId: String(receipt.inheritedFromRunId ?? receipt.runId),
     companyId: input.identity.companyId, agentId: input.identity.agentId, sessionId: input.identity.sessionId,
     runnerInstanceId: input.runnerInstanceId, environmentLeaseId: input.environmentLeaseId,
