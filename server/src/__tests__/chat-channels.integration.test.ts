@@ -66023,6 +66023,49 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     } finally { await f.service.shutdown(); }
   }, 90_000);
 
+  it.each(["unrecovered_workspace", "access_revoked", "paused_agent"] as const)(
+    "settles a refused GitHub task Retry by its own gates: %s", async gate => {
+      const f = await currentGitHubTaskRetryFixture(false);
+      try {
+        const companyId = f.fixture.companyId, issueId = f.issue.id;
+        await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issueId, kind: "active_run_watchdog",
+          status: "resolved", ownerType: "system", outcome: "blocked", cause: "native_continuation_requires_reconciliation",
+          fingerprint: `native-workspace:${f.runId}`, nextAction: "Recovered", evidence: { runId: f.runId,
+            automaticRecovery: { runId: f.runId, policy: "preserve_without_replay_v1", replay: "blocked", actionOutcome: "unknown" },
+            systemRecovery: { ...createSystemRecovery(f.runId), state: gate === "unrecovered_workspace" ? "running" : "complete",
+              phase: gate === "unrecovered_workspace" ? "preserve_files" : "reconcile_effects", attempts: 1,
+              preservationOperationIds: [randomUUID()] },
+            workspaceRecovery: { schema: "paperclip.workspace-recovery.v1", runId: f.runId,
+              status: gate === "unrecovered_workspace" ? "recovering" : "recovered",
+              stage: gate === "unrecovered_workspace" ? "restoring_files" : "saving_receipts", attempt: 1, requestIds: [] } } });
+        const request = await requestTaskRetry({ db, companyId, issueId, actorId: "owner-user", actorSource: "cloud_tenant",
+          observedRunId: f.runId, idempotencyKey: randomUUID(), prepareChatRetry: f.service.prepareFailedChatRunRetry });
+        const [chat] = await db.update(chatActions).set({ status: "failed",
+          result: { code: "failed_chat_retry_not_authorized", attemptCount: 1 } })
+          .where(eq(chatActions.id, request.chatActionId!)).returning();
+        const [{ status: agentStatus }] = await db.select({ status: agents.status }).from(agents)
+          .where(eq(agents.id, f.fixture.assignedAgentId));
+        if (gate === "access_revoked") await db.update(companyMemberships).set({ status: "suspended", updatedAt: new Date() })
+          .where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalId, "owner-user")));
+        if (gate === "paused_agent") await db.update(agents).set({ status: "paused" }).where(eq(agents.id, f.fixture.assignedAgentId));
+        await taskRetryModule.settleRefusedTaskChatRetry(db, chat);
+        const retryRuns = async () => (await readHeartbeatRunsByCompanyId(companyId))
+          .filter(candidate => candidate.contextSnapshot?.taskRetryRequestId === request.requestId);
+        if (gate !== "paused_agent") {
+          expect((await readAgentWakeupRequestsById(request.requestId!))[0]).toMatchObject({ status: "failed", runId: null });
+          expect(await retryRuns()).toHaveLength(0);
+          return;
+        }
+        expect((await readAgentWakeupRequestsById(request.requestId!))[0]).toMatchObject({ status: "deferred_issue_execution", runId: null });
+        await expect(heartbeatService(db).resumeTaskRetry(companyId, request.requestId!)).rejects.toThrow("not invokable");
+        expect(await retryRuns()).toHaveLength(0);
+        await db.update(agents).set({ status: agentStatus }).where(eq(agents.id, f.fixture.assignedAgentId));
+        await heartbeatService(db).resumeTaskRetry(companyId, request.requestId!);
+        expect((await readAgentWakeupRequestsById(request.requestId!))[0]).toMatchObject({ status: "coalesced", runId: expect.any(String) });
+        expect(await retryRuns()).toHaveLength(1);
+      } finally { await f.service.shutdown(); }
+    }, 60_000);
+
   it("keeps a refused GitHub task Retry continued when reconciliation read it before the refusal settled", async () => {
     const f = await currentGitHubTaskRetryFixture(false);
     try {
