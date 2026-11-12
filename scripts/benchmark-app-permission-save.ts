@@ -86,12 +86,17 @@ try {
         .filter(([key]) => !["id", "createdAt", "updatedAt"].includes(key)).map(([key, nested]) => [key, normalize(nested)]));
       return value;
     }
-    fixtures.push({ label, save: () => save(roster.map(agent => agent.id)), normalize,
+    fixtures.push({ label, save: () => save(roster.map(agent => agent.id)),
+      reset: () => save(roster.slice(0, 3).map(agent => agent.id)), normalize,
       company, roster, connection, catalog, samples: [] as number[], statements: [] as Statement[], result: initial });
   }
-  for (let i = 0; i < 2; i++) for (const fixture of fixtures) await fixture.save();
+  for (let i = 0; i < 2; i++) for (const fixture of fixtures) {
+    await fixture.reset();
+    await fixture.save();
+  }
   for (let i = 0; i < 6; i++) {
     for (const fixture of i % 2 ? [...fixtures].reverse() : fixtures) {
+      await fixture.reset();
       captured = [];
       const started = performance.now();
       fixture.result = await fixture.save();
@@ -130,7 +135,7 @@ try {
   }
   const report = { baselineRevision, treatmentRevision: git("rev-parse", "HEAD"), treatmentDiff: git("diff", "--", servicePath, policyPath),
     postgres: await client.$client`select version(), current_setting('shared_buffers') as shared_buffers`,
-    fixture: { actions: 100, askFirst: 99, disabledPolicies: 500, agentsBefore: 3, agentsAfter: 4, warmups: 2, samples: 6, order: "alternating" },
+    fixture: { actions: 100, askFirst: 99, disabledPolicies: 500, agentsBefore: 3, agentsAfter: 4, warmups: 2, samples: 6, order: "alternating", reset: "restore three-agent selection outside each timed sample" },
     measurements, speedup: measurements[0].medianMs / measurements[1].medianMs,
     correctness: "Complete profile, entries, bindings, and policies match after mapping fixture IDs and excluding generated row IDs and write timestamps. Allowed and Ask first decisions match for the added agent.",
     scope: "Local assembled-service timings with disposable PostgreSQL. Hosted endpoint latency is unverified.",
