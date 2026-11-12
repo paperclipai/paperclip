@@ -172,13 +172,21 @@ type LaneRun = Parameters<typeof executionFailureRetryCount>[0] & Partial<Parame
  * still has failure budget. Once real failures spent that budget, the
  * preparation lane refuses, but a restart is still not a failure, so the run
  * continues in the server-restart lane.
+ *
+ * The exception applies only when the preparation lane really takes the run.
+ * scheduleBoundedRetryForRun passes its own verdict. Without one, only an
+ * interrupted run qualifies: a legacy run that the orphan reaper ended as
+ * `process_lost` while it was preparing carries the same bootstrap marker,
+ * but the preparation lane refuses it, so it would fall to the charged
+ * transient-failure lane.
  */
-export function usesServerRestartLane(run: LaneRun): boolean {
+export function usesServerRestartLane(run: LaneRun, preparationLaneTakesRun?: boolean): boolean {
   if (!run.status || !run.runtimeMode || !isServerReplacementInterruption({ runtimeMode: run.runtimeMode, status: run.status,
     errorCode: run.errorCode ?? null, resultJson: run.resultJson ?? null, controllerBootId: run.controllerBootId ?? null }))
     return false;
   const preparation = parseObject(run.resultJson?.executionRecovery);
-  const interruptedPreparation = preparation.kind === "bootstrap" && preparation.providerWorkStarted === false;
+  const interruptedPreparation = (preparationLaneTakesRun ?? run.status === "interrupted")
+    && preparation.kind === "bootstrap" && preparation.providerWorkStarted === false;
   return !interruptedPreparation || executionFailureRetryCount(run) >= BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS;
 }
 
@@ -543,7 +551,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     // A run that a server restart or replacement ended did not fail: it
     // continues in the server-restart lane and never spends the failure budget.
     const retryReason = opts?.retryReason ??
-      (usesServerRestartLane(run) ? SERVER_RESTART_RETRY_REASON
+      (usesServerRestartLane(run, interruptedPreparation) ? SERVER_RESTART_RETRY_REASON
         : interruptedPreparation ? INTERRUPTED_PREPARATION_RETRY_REASON : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON);
     const wakeReason =
       opts?.wakeReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON;

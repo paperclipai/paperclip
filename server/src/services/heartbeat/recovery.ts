@@ -40,9 +40,10 @@ import { discoverSettledNativeRunProcesses, PROCESS_IDENTITY_RECORDED, PROCESS_S
 import { pendingCaseHandoffForRun } from "./case-handoff-lifecycle.js";
 import { retireInheritedRemoteRunnerIdentity } from "../native-runtime/native-inherited-runner-retry.js";
 import {
+  LEGACY_LIVE_OWNER_SETTLE_GRACE_MS,
   legacyControllerBootId,
-  legacyControllerProvenGone,
   liveLegacyControllerExpiresAt,
+  proveLegacyController,
   revokeExpiredLegacyControllerWithState,
 } from "../legacy-controller-lease.js";
 import { remoteTerminationReceipt } from "../remote-execution-termination.js";
@@ -2533,12 +2534,27 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       }
       // The shared prover (Phase 2): a controller of another boot whose
       // recorded process is proven gone holds no lease and needs no age guard.
-      const legacyControllerGone = run.runtimeMode === "legacy" && run.controllerBootId !== legacyControllerBootId
-        && await legacyControllerProvenGone(run);
+      const legacyControllerProof = run.runtimeMode === "legacy" && run.controllerBootId !== legacyControllerBootId
+        ? await proveLegacyController(run) : null;
+      const legacyControllerGone = legacyControllerProof?.verdict === "gone";
       const legacyLease = await liveLegacyControllerExpiresAt(db, run);
       if (legacyLease && !(legacyControllerGone
         && (await settleOwnableKind(db, "legacy_controller_lease", { runIds: [run.id] })).length > 0)) {
         scope.onDeferredDeadline?.(legacyLease.getTime()); continue;
+      }
+      // The lease lapsed, but its owner is another server process that is
+      // proven alive: two servers serve together during every upgrade, and a
+      // slow database can hold a renewal past the lease. The owner stops and
+      // settles its own run (controller_lease_lost, in the uncharged
+      // preparation lane). Declaring it lost here would race that owner and
+      // charge the failure budget. Recover it only once the owner is gone, or
+      // when it has not settled the run within the grace.
+      if (!legacyLease && legacyControllerProof?.verdict === "alive" && run.controllerLeaseExpiresAt) {
+        const ownerSettlesBy = run.controllerLeaseExpiresAt.getTime() + LEGACY_LIVE_OWNER_SETTLE_GRACE_MS;
+        if (now.getTime() < ownerSettlesBy) {
+          scope.onDeferredDeadline?.(Math.min(ownerSettlesBy, Date.now() + 30_000));
+          continue;
+        }
       }
 
       // A legacy controller proves it is alive only by renewing its lease, and
@@ -2690,7 +2706,9 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         // A conversation run that a restart ended draws on the server-restart
         // bound only. Other adapters keep the failure budget: a spent one
         // holds them for reconciliation (legacyExecutionNeedsReconciliation).
-        !(controllerReplaced && conversationContinuationEligible
+        // A setup that a restart stopped before dispatch did no provider work,
+        // so it continues in the same lane whatever the adapter.
+        !(controllerReplaced && (conversationContinuationEligible || restartInterruptedBeforeDispatch)
           ? serverRestartBudgetSpent(run, now) : failedRunRetryBudgetSpent(run)) &&
         ((tracksLegacyLocalChild &&
           (!!run.processPid || !!run.processGroupId)) ||

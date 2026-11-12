@@ -36,6 +36,7 @@ import { requestTaskRetry } from "../services/task-retry.js";
 import { adapterExecutionControls, createAdapterExecutionControl } from "../services/adapter-execution-control.js";
 import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { currentControllerProcessStamp } from "../services/controller-process-identity.js";
+import { registerControllerInstanceDb, resetControllerInstanceLeaseForTests } from "../services/controller-instance-lease.js";
 import { settleUnrecoverableExecutions } from "../services/execution-recovery-resolution.js";
 import { createOwnershipReportState, runOwnershipReconciliationPass } from "../services/recovery/ownership-invariant-report.js";
 import fs from "node:fs/promises";
@@ -55,6 +56,7 @@ import {
 import {
   activityLog,
   agents,
+  controllerInstances,
   agentTaskSessions,
   agentRuntimeState,
   agentWakeupRequests,
@@ -3733,15 +3735,19 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     /** A conversation-adapter run in progress. `alreadyRetried` makes it the
      * second automatic retry of a chain whose real failures spent the budget. */
     async function seedInterruptibleRun(input: { alreadyRetried: boolean; owner: "this_server" | "replaced_server";
-      accounting?: Record<string, unknown> }) {
-      const fixture = await seedRunFixture({ adapterType: "codex_local", agentStatus: "running", runtimeMode: "legacy",
-        contextSnapshot: { wakeReason: "issue_monitor_due" } });
+      accounting?: Record<string, unknown>; adapterType?: string; executionStage?: "preparing" | "dispatching";
+      controllerBootId?: string; controllerProcess?: Record<string, unknown>; leaseExpiredSeconds?: number }) {
+      const fixture = await seedRunFixture({ adapterType: input.adapterType ?? "codex_local", agentStatus: "running",
+        runtimeMode: "legacy", contextSnapshot: { wakeReason: "issue_monitor_due" } });
       const [seeded] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
       await db.update(heartbeatRuns).set({
-        controllerBootId: input.owner === "this_server" ? controllerLeases.legacyControllerBootId : randomUUID(),
+        controllerBootId: input.owner === "this_server" ? controllerLeases.legacyControllerBootId
+          : input.controllerBootId ?? randomUUID(),
+        ...(input.controllerProcess ? { controllerProcess: input.controllerProcess } : {}),
         controllerLeaseExpiresAt: input.owner === "this_server"
-          ? sql`clock_timestamp() + interval '1 minute'` : sql`clock_timestamp() - interval '1 second'`,
-        executionStage: "dispatching",
+          ? sql`clock_timestamp() + interval '1 minute'`
+          : sql`clock_timestamp() - make_interval(secs => ${input.leaseExpiredSeconds ?? 1})`,
+        executionStage: input.executionStage ?? "dispatching",
         ...(input.alreadyRetried ? { scheduledRetryReason: "transient_failure", scheduledRetryAttempt: 2 } : {}),
         contextSnapshot: {
           ...(seeded!.contextSnapshot ?? {}),
@@ -3876,6 +3882,79 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       await heartbeatService(db).drainRunningRunsForShutdown("SIGTERM", new Date(), [old.runId]);
       expect(await successorsOf(old.companyId, old.runId)).toEqual([expect.objectContaining({
         scheduledRetryReason: "server_restart", scheduledRetryAttempt: 1 })]);
+    });
+
+    // Production shape (staging, 2026-11-12): every run the replacement server
+    // reaped was a Runner run still preparing (no process recorded), so the
+    // reaper marked it bootstrap/providerWorkStarted=false. Those successors
+    // went to the charged transient_failure lane instead of server_restart.
+    it.each([
+      { name: "a first attempt", alreadyRetried: false },
+      { name: "a run that was already the last automatic retry", alreadyRetried: true },
+    ])("continues $name that a replaced server left preparing, in the restart lane", async ({ alreadyRetried }) => {
+      const fixture = await seedInterruptibleRun({ alreadyRetried, owner: "replaced_server",
+        adapterType: "paperclip_runner", executionStage: "preparing" });
+
+      await Promise.all([heartbeatService(db).reapOrphanedRuns(), heartbeatService(db).reapOrphanedRuns()]);
+
+      const [lost] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+      expect(lost).toMatchObject({ status: "failed", errorCode: "process_lost" });
+      expect(lost!.resultJson).toMatchObject({ executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+        processLossDiagnostic: { controllerReplaced: true, retryEligible: true } });
+      await expectOneRestartContinuation(fixture, alreadyRetried ? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS : 0);
+      await heartbeatService(db).reconcileStrandedAssignedIssues();
+      expect(await successorsOf(fixture.companyId, fixture.runId)).toHaveLength(1);
+    });
+
+    describe("while the server that owns the run is still serving", () => {
+      const oldBootId = randomUUID();
+      const oldServer = { bootId: oldBootId, pid: 3, hostHash: "old-server-container",
+        processStartedAt: new Date(Date.now() - 60 * 60_000).toISOString() };
+
+      beforeEach(async () => {
+        // The old server's own process lease is live: it is alive and serving.
+        await db.insert(controllerInstances).values({ bootId: oldBootId, processSpace: oldServer.hostHash, pid: oldServer.pid,
+          leaseExpiresAt: new Date(Date.now() + 60_000) });
+        registerControllerInstanceDb(db);
+      });
+      afterEach(async () => {
+        resetControllerInstanceLeaseForTests();
+        await db.delete(controllerInstances);
+      });
+
+      it.each(["preparing", "dispatching"] as const)(
+        "leaves a %s run whose lease lapsed with its owner, then recovers it once the owner stops", async (executionStage) => {
+          // A slow database held the owner's renewal past the 60 s lease while
+          // the new server was already running its recovery sweeps.
+          const fixture = await seedInterruptibleRun({ alreadyRetried: false, owner: "replaced_server",
+            adapterType: "paperclip_runner", executionStage, controllerBootId: oldBootId, controllerProcess: oldServer });
+
+          await Promise.all([heartbeatService(db).reapOrphanedRuns(), heartbeatService(db).reapOrphanedRuns()]);
+
+          const [kept] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+          expect(kept).toMatchObject({ status: "running", controllerBootId: oldBootId, errorCode: null });
+          expect(await successorsOf(fixture.companyId, fixture.runId)).toEqual([]);
+
+          // The old server shut down: its process lease is stopped, so the run is lost now.
+          await db.update(controllerInstances).set({ stoppedAt: new Date() }).where(eq(controllerInstances.bootId, oldBootId));
+          await heartbeatService(db).reapOrphanedRuns();
+
+          const [lost] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+          expect(lost).toMatchObject({ status: "failed", errorCode: "process_lost" });
+          if (executionStage === "preparing") await expectOneRestartContinuation(fixture, 0);
+        });
+
+      it("recovers the run when its live owner has not settled it within the grace", async () => {
+        const fixture = await seedInterruptibleRun({ alreadyRetried: false, owner: "replaced_server",
+          adapterType: "paperclip_runner", executionStage: "preparing", controllerBootId: oldBootId,
+          controllerProcess: oldServer, leaseExpiredSeconds: controllerLeases.LEGACY_LIVE_OWNER_SETTLE_GRACE_MS / 1000 + 1 });
+
+        await heartbeatService(db).reapOrphanedRuns();
+
+        const [lost] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+        expect(lost).toMatchObject({ status: "failed", errorCode: "process_lost" });
+        await expectOneRestartContinuation(fixture, 0);
+      });
     });
 
     it("keeps the failure budget for a run that failed on its own", async () => {
