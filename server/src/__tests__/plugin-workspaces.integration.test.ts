@@ -6,6 +6,7 @@ import {
   createDb,
   subscribeDatabaseWork,
   environmentLeases,
+  environments,
   executionWorkspaces,
   heartbeatRuns,
   issues,
@@ -651,6 +652,43 @@ const support = await getEmbeddedPostgresTestSupport();
         .where(eq(executionWorkspaces.id, reservation.id));
       expect(recorded.providerRef).not.toBeNull();
     });
+    it.each(["inspect", "retry"] as const)("replays a lost Launcher prepare through %s", async (recovery) => {
+      const f = await fixture();
+      const [plugin] = await db.select().from(plugins).where(eq(plugins.id, f.pluginId));
+      await db.update(plugins).set({ manifestJson: { ...plugin.manifestJson,
+        capabilities: [...plugin.manifestJson.capabilities, "environment.drivers.register"],
+        environmentDrivers: [{ driverKey: "tasks", displayName: "Tasks", configSchema: { type: "object" },
+          supportsTasks: true, sessionHandoffVersion: 1 }],
+      } }).where(eq(plugins.id, f.pluginId));
+      const [environment] = await db.insert(environments).values({ name: `Workspace Launcher ${f.pluginId}`, driver: "plugin",
+        status: "active", config: { pluginKey: plugin.pluginKey, driverKey: "tasks" } }).returning();
+      const taskLease = { environmentId: environment.id, driverKey: "tasks", providerLeaseId: randomUUID() };
+      const leaseId = randomUUID();
+      const input = { ...f.input, environment: { ...environment, driver: "plugin" as const },
+        acquireTaskLease: async () => ({ leaseId, taskLease }) };
+      f.lose();
+      await expect(preparePluginWorkspace(db, f.workers, input)).rejects.toThrow("incomplete");
+      const [task] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+      const [reservation] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, task.executionWorkspaceId!));
+      expect(reservation.providerRef).toBeNull();
+      expect(reservation.metadata?.workspaceProviderPreparationPlacement).toMatchObject({
+        generation: 0, runId: f.runId, agentId: f.input.agentId, taskLease,
+      });
+      if (recovery === "inspect") {
+        await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, f.runId));
+        await expect(inspectPluginWorkspace(db, f.workers, reservation)).resolves.toMatchObject({ remotelyRecoverable: true });
+      } else {
+        await expect(preparePluginWorkspace(db, f.workers, { ...input, existingWorkspaceId: reservation.id })).resolves.toMatchObject({ id: reservation.id });
+        expect(f.calls).toHaveLength(2);
+      }
+      expect(f.calls[1]).toMatchObject({
+        runId: f.runId, agentId: f.input.agentId, taskLease,
+        operationId: f.calls[0].operationId, operation: f.calls[0].operation,
+      });
+      const [prepared] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, reservation.id));
+      expect(prepared.providerRef).not.toBeNull();
+      expect(prepared.metadata?.workspaceProviderPreparationPlacement).toBeUndefined();
+    });
     it("reconciles an unfinished reservation before applying PR-only cleanup eligibility", async () => {
       const f = await fixture();
       const [plugin] = await db.select().from(plugins).where(eq(plugins.id, f.pluginId));
@@ -715,13 +753,23 @@ const support = await getEmbeddedPostgresTestSupport();
       await expect(
         svc.removeWorkspace(f.input.projectId, f.input.projectWorkspaceId),
       ).rejects.toThrow("repository source");
+      const placement = { generation: 0, runId: f.runId, agentId: f.input.agentId,
+        taskLease: { environmentId: randomUUID(), driverKey: "tasks", providerLeaseId: randomUUID() } };
+      await db.update(executionWorkspaces).set({
+        metadata: { ...workspace!.metadata, workspaceProviderPreparationPlacement: placement },
+      }).where(eq(executionWorkspaces.id, workspace!.id));
       const execution = executionWorkspaceService(db);
       const updated = await execution.update(workspace!.id, {
         metadata: {
           note: "caller edit",
           workspaceProvider: { workspaceRef: "foreign" },
+          workspaceProviderPreparationPlacement: { ...placement, runId: randomUUID() },
         },
       });
+      expect(updated!.metadata?.workspaceProviderPreparationPlacement).toBeUndefined();
+      const [saved] = await db.select({ metadata: executionWorkspaces.metadata })
+        .from(executionWorkspaces).where(eq(executionWorkspaces.id, workspace!.id));
+      expect(saved.metadata?.workspaceProviderPreparationPlacement).toEqual(placement);
       expect(updated!.metadata?.workspaceProvider).toEqual(
         workspace!.metadata?.workspaceProvider,
       );

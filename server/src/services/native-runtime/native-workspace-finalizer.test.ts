@@ -23,6 +23,8 @@ import {
   companies,
   completionContracts,
   createDb,
+  environmentLeases,
+  environments,
   executionWorkspaces,
   heartbeatRuns,
   issues,
@@ -30,6 +32,7 @@ import {
   nativeRunResults,
   issueRecoveryActions,
   issueThreadInteractions,
+  plugins,
   projects,
   workspaceOperations,
   workAssessments,
@@ -752,6 +755,47 @@ describe("native workspace finalization recovery", () => {
         expect.objectContaining({ id: workspace.id }), expect.objectContaining({ agentId, runId: seeded.runId }));
       else expect(inspect).not.toHaveBeenCalled();
     } finally { inspect.mockRestore(); }
+  });
+
+  it("replays a pre-placement finalization without changing its operation identity", async () => {
+    const pluginId = randomUUID(), environmentId = randomUUID(), workspaceId = randomUUID();
+    const binding = { pluginId, projectId, executionWorkspaceId: workspaceId, projectWorkspaceId: randomUUID(),
+      sourceRevision: "fixture-revision", workspaceRef: "provider:pre-placement" };
+    await db.insert(plugins).values({
+      id: pluginId, pluginKey: pluginId, packageName: "test-storage", version: "1.0.0", status: "ready",
+      manifestJson: { capabilities: ["workspaces.manage"], resourceLifecycle: ["project"],
+        workspaceProvider: { finalizationVersion: 1 },
+        environmentDrivers: [{ driverKey: "portable", sessionHandoffVersion: 1 }] } as never,
+    });
+    await db.insert(environments).values({ id: environmentId, name: "Portable tasks", driver: "plugin" });
+    const [workspace] = await db.insert(executionWorkspaces).values({
+      id: workspaceId, companyId, projectId, name: "Pre-placement worktree", providerType: "plugin", providerRef: binding.workspaceRef,
+      mode: "isolated_workspace", strategyType: "git_worktree", branchName: "task-branch", metadata: { workspaceProvider: binding },
+    }).returning();
+    const { runId, issueId } = await seedRun({ executionWorkspaceId: workspaceId, title: "Workspace finalization interrupted during upgrade" });
+    await db.insert(environmentLeases).values({
+      companyId, environmentId, executionWorkspaceId: workspaceId, heartbeatRunId: runId, issueId,
+      status: "active", provider: "plugin:fixture:portable", providerLeaseId: "live-task",
+      metadata: { pluginId, agentId, driverKey: "portable", runnerTaskLease: true },
+    });
+    const worker = vi.fn()
+      .mockRejectedValueOnce(new Error("fixture reply lost"))
+      .mockResolvedValueOnce({ kind: "finalized", branchName: "task-branch", headSha: "a".repeat(40) });
+    const workers = { getWorker: () => ({ supportedMethods: ["workspaceOperation"] }), call: worker } as unknown as pluginWorkspaces.WorkspaceWorkers;
+    await expect(pluginWorkspaces.callWorkspaceProvider(db, workers, {
+      workspace, runId, agentId, operation: { kind: "finalize", binding },
+    })).rejects.toThrow();
+    await db.insert(workspaceOperations).values({
+      companyId, executionWorkspaceId: workspaceId, heartbeatRunId: runId, issueId,
+      phase: "workspace_finalize", status: "running", metadata: {},
+    });
+
+    await expect(resumeNativeWorkspaceFinalization({ db, runId, pluginWorkerManager: workers }))
+      .resolves.toMatchObject({ status: "succeeded" });
+    const requests = worker.mock.calls.map(([, , request]) => request);
+    expect(requests).toHaveLength(2);
+    expect(requests[1]?.operationId).toBe(requests[0]?.operationId);
+    expect(requests.every(request => request.taskLease === undefined)).toBe(true);
   });
 
   it("records the plugin task placement before dispatch and replays it after a lost reply", async () => {

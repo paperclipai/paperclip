@@ -158,7 +158,9 @@ export async function attemptNativeWorkspaceFinalization(input: {
       )).limit(1).then((rows) => rows[0] ?? null)
     : null;
   const cwd = workspace?.providerRef ?? workspace?.cwd ?? previous?.cwd ?? null;
-  const taskLease = pluginWorkspaceParamsSchema.shape.taskLease.parse(previous?.metadata?.pluginWorkspaceTaskLease);
+  const taskLease = previous
+    ? pluginWorkspaceParamsSchema.shape.taskLease.parse(previous.metadata?.pluginWorkspaceTaskLease) ?? null
+    : undefined;
 
   const recorder = workspaceOperationService(input.db).createRecorder({
     companyId: bound.companyId,

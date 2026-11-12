@@ -177,7 +177,15 @@ reserves the managed workspace before it acquires the run's task lease. Core
 reconciles placement ownership, then passes `taskLease` to the workspace
 preparation call. The plugin uses the same allocation for checkout and Runner
 admission. Finalization records that placement before calling the plugin and
-reuses it on retry.
+reuses it on retry. If an interrupted finalization has no recorded placement,
+Core retries its original request without placement. This preserves the
+operation ID and the provider's established routing for requests made before
+this upgrade.
+
+Before dispatching preparation for an unbound workspace, Core records the
+original run, agent, and task placement. Reservation recovery replays that
+request with the same operation ID. A provider must be able to recover the
+preparation receipt after the Launcher allocation has been deleted.
 
 A portable restore uses the durable ownership claim and the same account
 identity after a credential refresh or controller replacement. It starts a
