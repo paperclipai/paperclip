@@ -350,13 +350,17 @@ it.skipIf(!gnuTar)("extracts interleaved read-only skill directories with GNU ta
     // Never treat a corrupted read-only bundle as a cache hit, even if its
     // file size, permissions and timestamp still match the source archive.
     // Repair it in place instead of failing the run.
-    const before = await fs.stat(qa);
+    const sourceTimes = await Promise.all([qa, agentsDir, path.join(target, "references", "overview.md")]
+      .map((entry) => fs.stat(path.join(source, path.relative(target, entry)))));
+    const before = sourceTimes[0]!;
     await fs.chmod(agentsDir, 0o755);
     await fs.chmod(qa, 0o644);
     await fs.writeFile(qa, "XX instructions");
     await fs.chmod(qa, 0o444);
     await fs.chmod(agentsDir, 0o555);
     await fs.utimes(qa, before.atime, before.mtime);
+    await fs.utimes(agentsDir, sourceTimes[1]!.atime, sourceTimes[1]!.mtime);
+    await fs.utimes(path.join(target, "references", "overview.md"), sourceTimes[2]!.atime, sourceTimes[2]!.mtime);
     await performSyncIn({ sandbox: sandbox as never, remoteDir, timeoutSeconds: 30,
       operations: [{ operationId: "corrupt-skill-resume", files: [{ sourcePath: source, targetPath: target, kind: "directory", mode: 0o555 }] }] });
     expect(await fs.readFile(qa, "utf8")).toBe("QA instructions");
