@@ -117,6 +117,8 @@ describePostgres("assigned-work invariant sweep", () => {
     await deferred(new Date(Date.now() - 30 * 60_000));
     const queue = wakeQueue();
     const recovery = recoveryService(db, { enqueueWakeup: queue.enqueueWakeup, scheduleRecoveryRetry: async () => null });
+    // The periodic sweep finds it too: a stale deferred wake no longer hides the task from the suspect list.
+    expect((await recovery.assignedWork.listSuspects({ companyId: f.companyId }, null, 50)).map(row => row.id)).toContain(issueId);
     expect(await recovery.assignedWork.checkIssue({ companyId: f.companyId, issueId }))
       .toMatchObject({ outcome: "repaired", verdict: { kind: "violation", reason: "no_pending_path" } });
 
@@ -125,6 +127,7 @@ describePostgres("assigned-work invariant sweep", () => {
     await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId, source: "automation",
       triggerDetail: "system", reason: "issue_execution_deferred", status: "deferred_issue_execution",
       payload: { issueId: freshIssue }, createdAt: new Date(Date.now() - 60_000) });
+    expect((await recovery.assignedWork.listSuspects({ companyId: f.companyId }, null, 50)).map(row => row.id)).not.toContain(freshIssue);
     expect(await recovery.assignedWork.checkIssue({ companyId: f.companyId, issueId: freshIssue }))
       .toMatchObject({ outcome: "ok", verdict: { clause: "pending_intent", intent: "queued_wake" } });
   }, 60_000);

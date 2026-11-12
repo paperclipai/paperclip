@@ -101,10 +101,13 @@ export const SETTLING_GRACE_MS = 90_000;
 /** Upper bound on how long another server's lease can keep a finished run settling. */
 export const SETTLING_MAX_MS = 5 * 60_000;
 /** "System recovery working" with nothing else pending is believed for this long
- * after the task's last run ended. Every recovery wait the fallback owns ends
- * within 15 minutes (saved-work recovery that keeps advancing: its own budget);
- * past this the state is stale and the task is continued like any other. */
-export const SYSTEM_RECOVERY_WORKING_BOUND_MS = 20 * 60_000;
+ * after the task's last run ended: the fallback's worst-case wait for exact
+ * recovery that shows progress (FRESH_CONTINUATION_PROGRESS_BOUND_MS, 15 min)
+ * plus one 2-minute disposition re-check. Past it the state is stale and the
+ * task is continued like any other; the sweep's wake still goes through
+ * admission, which hands a held task to the fallback rather than starting a
+ * second writer (saved-work recovery that keeps advancing keeps its budget). */
+export const SYSTEM_RECOVERY_WORKING_BOUND_MS = 17 * 60_000;
 /** Blocked tasks older than this are reported, never continued automatically. */
 export const STALE_BLOCK_MS = 7 * 24 * 60 * 60_000;
 /** Automatic continuations per task, shared with the server-restart lane. */

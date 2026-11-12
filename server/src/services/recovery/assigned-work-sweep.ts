@@ -431,7 +431,8 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
           and r.controller_lease_expires_at < ${at.toISOString()}::timestamptz))`,
       sql`not exists (select 1 from agent_wakeup_requests w where w.company_id = ${issues.companyId}
         and (w.payload->>'issueId') = ${issues.id}::text
-        and w.status in ('queued', 'deferred_issue_execution', 'claimed'))`,
+        and (w.status in ('queued', 'claimed') or (w.status = 'deferred_issue_execution'
+          and w.created_at > ${new Date(at.getTime() - DEFERRED_WAKE_PENDING_BOUND_MS).toISOString()}::timestamptz)))`,
       sql`not exists (select 1 from issue_thread_interactions t where t.company_id = ${issues.companyId}
         and t.issue_id = ${issues.id} and t.status = 'pending'
         and ${interactionNotSupersededSql(sql`t.company_id`, sql`t.issue_id::text`, sql`t.created_at`)})`,
