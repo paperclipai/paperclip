@@ -14,7 +14,7 @@ import {
 } from "./embedded-postgres-error.js";
 import { prepareEmbeddedPostgresNativeRuntime } from "./embedded-postgres-native.js";
 import { loadWithoutEmbeddedPostgresExitHooks } from "./embedded-postgres-lifecycle.js";
-import { ownTestPostgres, TestPostgresShutdownError, type TestPostgresInstance } from "./test-postgres-owner.js";
+import { beforeTestPostgresShutdown, ownTestPostgres, TestPostgresShutdownError, type TestPostgresInstance } from "./test-postgres-owner.js";
 import postgres from "postgres";
 import {
   checkTestPostgresAdmin,
@@ -667,6 +667,31 @@ async function startEmbeddedPostgresClusterForSuite(
   return { ...started, mode: "fresh" };
 }
 
+// Suite clusters whose caller has not cleaned up yet. A signal can stop the
+// process first, for example when Vitest stops a worker after a hook timeout
+// left the suite without its handle. Shutdown then stops each cluster, and
+// this task removes the directories after the clusters have stopped.
+const liveSuiteDirs = new Set<string>();
+let removeSuiteDirShutdownTask: (() => void) | null = null;
+
+function trackSuiteDir(dataDir: string): () => void {
+  liveSuiteDirs.add(dataDir);
+  removeSuiteDirShutdownTask ??= beforeTestPostgresShutdown({
+    stop: async () => {},
+    interrupt: () => {},
+    afterStop: async () => {
+      await Promise.allSettled([...liveSuiteDirs].map((dir) => cleanupEmbeddedPostgresTestDirs(dir)));
+    },
+  });
+  return () => {
+    liveSuiteDirs.delete(dataDir);
+    if (liveSuiteDirs.size === 0 && removeSuiteDirShutdownTask) {
+      removeSuiteDirShutdownTask();
+      removeSuiteDirShutdownTask = null;
+    }
+  };
+}
+
 export async function startEmbeddedPostgresTestDatabase(
   tempDirPrefix: string,
 ): Promise<EmbeddedPostgresTestDatabase> {
@@ -674,6 +699,7 @@ export async function startEmbeddedPostgresTestDatabase(
   if (adminUrl) return startTestPostgresDatabase(adminUrl);
   const { port, dataDir, instance, mode } = await startEmbeddedPostgresClusterForSuite(tempDirPrefix);
   lastStartMode = mode;
+  const untrackSuiteDir = trackSuiteDir(dataDir);
 
   try {
     // Both calls are no-ops on a template copy and keep the returned database
@@ -694,11 +720,13 @@ export async function startEmbeddedPostgresTestDatabase(
         try { await closeRegisteredClients(connectionString); }
         finally {
           await stopEmbeddedPostgresBounded(instance, () => cleanupEmbeddedPostgresTestDirs(dataDir));
+          untrackSuiteDir();
         }
       },
     };
   } catch (error) {
     await stopEmbeddedPostgresBounded(instance, () => cleanupEmbeddedPostgresTestDirs(dataDir));
+    untrackSuiteDir();
     throw new Error(
       `Failed to start embedded PostgreSQL test database: ${
         formatEmbeddedPostgresError(error, {
