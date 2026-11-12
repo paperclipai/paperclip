@@ -1,6 +1,8 @@
 import { and, asc, eq, gt, inArray, isNotNull, isNull, lt, sql } from "drizzle-orm";
 import { assets, runnerApiResponseReservations, type Db } from "@paperclipai/db";
 import type { StorageService } from "../../storage/types.js";
+import { logger } from "../../middleware/logger.js";
+import { incrementToolRuntimeMetricCounter } from "../tool-runtime-metrics.js";
 import { RUNNER_API_RESPONSE_DEADLINE_MS } from "./runner-api-response-limits.js";
 
 const ACTIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
@@ -8,6 +10,8 @@ const EVICTION_PAGE_SIZE = 200;
 const PENDING_DELETE_BATCH_SIZE = 50;
 export const STALE_CAPTURE_RESERVATION_MS = 2 * RUNNER_API_RESPONSE_DEADLINE_MS;
 export const CAPTURE_EVICTION_DELETE_TIMEOUT_MS = 30_000;
+export const CAPTURE_CLEANUP_STALLED_MS = 5 * 60_000;
+export const RUNNER_API_CAPTURE_DELETE_FAILURE_METRIC = "runner_api_capture_delete_failed";
 
 function activeRunStatusList() {
   return sql.join(ACTIVE_RUN_STATUSES.map(status => sql`${status}`), sql`, `);
@@ -75,6 +79,7 @@ export async function finishPendingRunnerApiCaptureDeletes(db: Db, storage: Stor
   timeoutMs = CAPTURE_EVICTION_DELETE_TIMEOUT_MS) {
   const signal = AbortSignal.timeout(timeoutMs);
   let deletedCount = 0;
+  let failedCount = 0;
   let after: string | undefined;
   while (!signal.aborted) {
     const pending = await db.select({ id: runnerApiResponseReservations.id, objectKey: runnerApiResponseReservations.pendingDeleteObjectKey })
@@ -84,8 +89,17 @@ export async function finishPendingRunnerApiCaptureDeletes(db: Db, storage: Stor
       )).orderBy(asc(runnerApiResponseReservations.id)).limit(PENDING_DELETE_BATCH_SIZE);
     if (!pending.length) break;
     after = pending[pending.length - 1].id;
-    const deleted = (await Promise.all(pending.map(row => storage.deleteObject(companyId, row.objectKey!, { signal, allVersions: true })
-      .then(() => row.id, () => null)))).filter((id): id is string => id !== null);
+    const results = await Promise.all(pending.map(row => storage.deleteObject(companyId, row.objectKey!, { signal, allVersions: true })
+      .then(() => ({ id: row.id, error: null as unknown }), (error: unknown) => ({ id: row.id, error }))));
+    const deleted = results.filter(result => result.error === null).map(result => result.id);
+    const failures = results.filter(result => result.error !== null);
+    if (failures.length) {
+      failedCount += failures.length;
+      logger.warn({ companyId, failedDeletes: failures.length, err: failures[0].error },
+        "Failed to delete evicted API response snapshots; they stay counted and will be retried");
+      await Promise.all(failures.map(() => incrementToolRuntimeMetricCounter(db, { companyId, metric: RUNNER_API_CAPTURE_DELETE_FAILURE_METRIC })
+        .catch(() => undefined)));
+    }
     if (deleted.length) {
       await db.delete(runnerApiResponseReservations).where(and(
         eq(runnerApiResponseReservations.companyId, companyId), inArray(runnerApiResponseReservations.id, deleted),
@@ -94,5 +108,13 @@ export async function finishPendingRunnerApiCaptureDeletes(db: Db, storage: Stor
     }
     if (pending.length < PENDING_DELETE_BATCH_SIZE) break;
   }
-  return deletedCount;
+  return { deleted: deletedCount, failed: failedCount };
+}
+
+export async function runnerApiCaptureCleanupStalled(db: Db, companyId: string, now = new Date()) {
+  const [row] = await db.select({ id: runnerApiResponseReservations.id }).from(runnerApiResponseReservations).where(and(
+    eq(runnerApiResponseReservations.companyId, companyId), isNotNull(runnerApiResponseReservations.pendingDeleteObjectKey),
+    lt(runnerApiResponseReservations.createdAt, new Date(now.getTime() - CAPTURE_CLEANUP_STALLED_MS)),
+  )).limit(1);
+  return Boolean(row);
 }

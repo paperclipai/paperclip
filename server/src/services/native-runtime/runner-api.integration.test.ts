@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { chmod, writeFile, symlink, mkdir, open } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { and, eq, isNotNull } from "drizzle-orm";
-import { agents, agentApiKeys, agentWakeupRequests, assets, authUsers, issueAttachments, documents, heartbeatRuns, issues, projects, routineDocuments, routineRevisions, routines, runnerApiResponseReservations, companySkills, companySkillVersions, companySkillTestRuns, companyMemberships, principalPermissionGrants, budgetPolicies, companies } from "@paperclipai/db";
+import { agents, agentApiKeys, agentWakeupRequests, assets, authUsers, issueAttachments, cases, caseAttachments, companyLogos, toolRuntimeMetricCounters, documents, heartbeatRuns, issues, projects, routineDocuments, routineRevisions, routines, runnerApiResponseReservations, companySkills, companySkillVersions, companySkillTestRuns, companyMemberships, principalPermissionGrants, budgetPolicies, companies } from "@paperclipai/db";
 import { initializeRunIdentity } from "../run-identity.js";
 import { beforeAll, afterAll, beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import * as nativeSetupReadiness from "./setup-readiness.js";
@@ -16,7 +16,7 @@ import { registerRunnerPrpAuthority } from "../../realtime/runner-prp-ws.js";
 import { createLocalAgentJwt } from "../../agent-auth-jwt.js";
 import { RUNNER_API_RESPONSE_MAX_BYTES, RUNNER_API_RESPONSE_RUN_MAX_BYTES } from "./runner-api-response-limits.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
-import { finishPendingRunnerApiCaptureDeletes } from "./runner-api-capture-retention.js";
+import { finishPendingRunnerApiCaptureDeletes, RUNNER_API_CAPTURE_DELETE_FAILURE_METRIC } from "./runner-api-capture-retention.js";
 import { prepareHeartbeatTaskContext } from "../heartbeat/task-context.js";
 import { createHeartbeatRunPreparation } from "../heartbeat/run-preparation.js";
 import { createAssignedMcpTools } from "./assigned-mcp-tools.js";
@@ -1136,14 +1136,16 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     const stalled = { ...server.storage, deleteObject: (_companyId: string, _key: string, options?: { signal?: AbortSignal }) =>
       new Promise<void>((_, reject) => options?.signal?.addEventListener("abort", () => reject(options.signal!.reason))) };
     const startedAt = Date.now();
-    expect(await finishPendingRunnerApiCaptureDeletes(server.db, stalled as typeof server.storage, fixture.companyId, 50)).toBe(0);
+    expect(await finishPendingRunnerApiCaptureDeletes(server.db, stalled as typeof server.storage, fixture.companyId, 50)).toEqual({ deleted: 0, failed: 1 });
+    expect(await server.db.select().from(toolRuntimeMetricCounters).where(and(eq(toolRuntimeMetricCounters.companyId, fixture.companyId),
+      eq(toolRuntimeMetricCounters.metric, RUNNER_API_CAPTURE_DELETE_FAILURE_METRIC)))).toEqual([expect.objectContaining({ count: 1 })]);
     expect(Date.now() - startedAt).toBeLessThan(5_000);
     expect(await server.db.select().from(runnerApiResponseReservations).where(eq(runnerApiResponseReservations.companyId, fixture.companyId))).toEqual([
       expect.objectContaining({ pendingDeleteObjectKey: objectKey }),
     ]);
     const deleteSpy = vi.spyOn(server.storage, "deleteObject");
     try {
-      expect(await finishPendingRunnerApiCaptureDeletes(server.db, server.storage, fixture.companyId)).toBe(1);
+      expect(await finishPendingRunnerApiCaptureDeletes(server.db, server.storage, fixture.companyId)).toEqual({ deleted: 1, failed: 0 });
       expect(deleteSpy).toHaveBeenCalledWith(fixture.companyId, objectKey, expect.objectContaining({ allVersions: true }));
     } finally { deleteSpy.mockRestore(); }
     expect(await server.db.select().from(runnerApiResponseReservations).where(eq(runnerApiResponseReservations.companyId, fixture.companyId))).toEqual([]);
@@ -1165,6 +1167,25 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     } })).toMatchObject({ ok: true });
     expect((await server.db.select({ id: assets.id }).from(assets).where(eq(assets.companyId, fixture.companyId))).map(row => row.id)).toContain(survivor.id);
     expect((await server.storage.headObject(fixture.companyId, stored.objectKey)).exists).toBe(false);
+  });
+
+  it("says storage cleanup is failing when old snapshot deletes keep failing", async () => {
+    const fixture = await server.fixture();
+    vi.stubEnv("PAPERCLIP_RUNNER_API_COMPANY_CAPTURE_MAX_BYTES", String(2 * RUNNER_API_RESPONSE_MAX_BYTES));
+    await server.db.insert(runnerApiResponseReservations).values({ companyId: fixture.companyId, runId: null,
+      reservedBytes: RUNNER_API_RESPONSE_MAX_BYTES * 1.5, pendingDeleteObjectKey: `${fixture.companyId}/runner-api/undeletable`,
+      createdAt: new Date(Date.now() - 3_600_000) });
+    await server.db.update(projects).set({ description: "x".repeat(32 * 1024) }).where(eq(projects.id, fixture.projectId));
+    const spy = vi.spyOn(server.storage, "deleteObject").mockRejectedValue(new Error("storage unavailable"));
+    let result: any;
+    try {
+      result = await fixture.authority.execute({ tool: "call_api", callId: randomUUID(), arguments: {
+        operationId: "GET /api/projects/{id}", pathParams: { id: fixture.projectId },
+      } });
+    } finally { spy.mockRestore(); }
+    expect(result).toMatchObject({ ok: false, error: "api_response_company_storage_limit" });
+    expect(result.message).toMatch(/keeps failing to delete/);
+    expect(result.message).not.toMatch(/operator|reservation|snapshot|quota/i);
   });
 
   it("releases stale reservations left by interrupted captures of finished runs", async () => {
@@ -1206,6 +1227,15 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
       objectKey: `${fixture.companyId}/runner-api/attached-snapshot`, contentType: "text/plain", byteSize: RUNNER_API_RESPONSE_MAX_BYTES / 2,
       sha256: "attached-snapshot", createdByAgentId: fixture.agentId, createdAt: longAgo }).returning();
     await server.db.insert(issueAttachments).values({ companyId: fixture.companyId, issueId: fixture.issueId, assetId: attached.id });
+    const linked = async (name: string) => (await server.db.insert(assets).values({ companyId: fixture.companyId, provider: "local_disk",
+      objectKey: `${fixture.companyId}/runner-api/${name}`, contentType: "text/plain", byteSize: 1024 * 1024,
+      sha256: name, createdByAgentId: fixture.agentId, createdAt: new Date(longAgo.getTime() - 1000) }).returning())[0];
+    const caseAsset = await linked("case-snapshot");
+    const logoAsset = await linked("logo-snapshot");
+    const caseId = randomUUID();
+    await server.db.insert(cases).values({ id: caseId, companyId: fixture.companyId, caseNumber: 1, identifier: `CASE-${caseId}`, caseType: "work", title: "Retention" });
+    await server.db.insert(caseAttachments).values({ companyId: fixture.companyId, caseId, assetId: caseAsset.id });
+    await server.db.insert(companyLogos).values({ companyId: fixture.companyId, assetId: logoAsset.id });
     await server.db.update(projects).set({ description: "x".repeat(32 * 1024) }).where(eq(projects.id, fixture.projectId));
     const result: any = await fixture.authority.execute({ tool: "call_api", callId: randomUUID(), arguments: {
       operationId: "GET /api/projects/{id}", pathParams: { id: fixture.projectId },
@@ -1213,7 +1243,7 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     expect(result).toMatchObject({ ok: false, error: "api_response_company_storage_limit" });
     expect(result.message).not.toMatch(/operator/i);
     const remaining = await server.db.select({ id: assets.id }).from(assets).where(eq(assets.companyId, fixture.companyId));
-    expect(remaining.map(row => row.id)).toEqual(expect.arrayContaining([held.id, attached.id]));
+    expect(remaining.map(row => row.id)).toEqual(expect.arrayContaining([held.id, attached.id, caseAsset.id, logoAsset.id]));
     expect(await server.db.select().from(runnerApiResponseReservations).where(eq(runnerApiResponseReservations.companyId, fixture.companyId))).toHaveLength(2);
   });
 

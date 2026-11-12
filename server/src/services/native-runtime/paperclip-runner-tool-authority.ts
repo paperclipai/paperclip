@@ -76,7 +76,7 @@ import { badRequest, forbidden, notFound, HttpError } from "../../errors.js";
 import { casesDisabledError } from "../cases-disabled.js";
 import { runnerApiCatalog, searchRunnerApi, withCompanyPagePaths } from "./runner-api-catalog.js";
 import { assertRunnerApiDispatchable, executeRunnerApi, validateRunnerApiCall, RUNNER_API_MAX_BYTES, type RunnerApiCall, type RunnerApiFile, type RunnerApiIo } from "./runner-api-client.js";
-import { finishPendingRunnerApiCaptureDeletes, markRunnerApiCaptureEvictions, runnerApiCaptureUsageBytes } from "./runner-api-capture-retention.js";
+import { finishPendingRunnerApiCaptureDeletes, markRunnerApiCaptureEvictions, runnerApiCaptureCleanupStalled, runnerApiCaptureUsageBytes } from "./runner-api-capture-retention.js";
 import { acquireRunnerApiResponseSlot, runnerApiCompanyCaptureMaxBytes, RUNNER_API_RESPONSE_MAX_BYTES, RUNNER_API_RESPONSE_RUN_MAX_BYTES, RunnerApiResponseLimitError } from "./runner-api-response-limits.js";
 import { and, desc, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -1539,6 +1539,7 @@ export class PaperclipRunnerToolAuthority {
   async #reserveApiResponseCapture() {
     const release = acquireRunnerApiResponseSlot(this.binding.companyId);
     let id: string | undefined;
+    let cleanupFailing = false;
     try {
       for (let attempt = 0; id === undefined; attempt++) {
         id = await this.db.transaction(async tx => {
@@ -1557,13 +1558,17 @@ export class PaperclipRunnerToolAuthority {
             if (marked.releasedBytes >= overBy) return this.#insertApiCaptureReservation(tx as unknown as Db, resultJson, used);
             return undefined;
           }
+          if (cleanupFailing && overBy > 0) {
+            throw new RunnerApiResponseLimitError("api_response_company_storage_limit", "Saved API responses for this company cannot be stored right now because file storage keeps failing to delete old ones. Paperclip keeps retrying the cleanup automatically. Read a saved response you already have, ask for less data, or try again later.");
+          }
           if (!Number.isSafeInteger(companyBytes) || companyBytes < 0 || overBy > 0) {
             throw new RunnerApiResponseLimitError("api_response_company_storage_limit", "Saved API responses for this company are using all of their storage, and none can be removed yet: they belong to runs that are still working, are attached to tasks, or are still being deleted. Read a saved response you already have, ask for less data, or try again in a few minutes.");
           }
           return this.#insertApiCaptureReservation(tx as unknown as Db, resultJson, used);
         });
         if (id === undefined) {
-          await finishPendingRunnerApiCaptureDeletes(this.db, this.binding.storage ?? getStorageService(), this.binding.companyId);
+          const cleanup = await finishPendingRunnerApiCaptureDeletes(this.db, this.binding.storage ?? getStorageService(), this.binding.companyId);
+          cleanupFailing = cleanup.failed > 0 && await runnerApiCaptureCleanupStalled(this.db, this.binding.companyId);
         }
       }
     } catch (error) { release(); throw error; }
