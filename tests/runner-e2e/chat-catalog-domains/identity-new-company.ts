@@ -13,6 +13,14 @@ const originals = new WeakMap<ChatCatalogContext, { companyName: string; company
 /** The person's existing company: an ordinary business unrelated to the website business they ask to set up. */
 export const SOURCE_COMPANY_PROFILE = { name: "Harbor Analytics", description: "Data analytics consulting for regional retailers." };
 export const SOURCE_PERSON_NAME = "Jordan Avery";
+/** Put back the source company's and the person's own names; called on a failed setup and at cleanup. */
+async function restoreOriginalNames(ctx: ChatCatalogContext) {
+  const original = originals.get(ctx); if (!original) return;
+  try {
+    await ctx.input.api.patch(`/api/companies/${ctx.input.fixtures.company.id}`, { name: original.companyName, description: original.companyDescription });
+    await ctx.input.page.context().request.patch(`${ctx.input.api.baseURL}/api/auth/profile`, { data: { name: original.personName }, headers: { Origin: ctx.input.api.baseURL } });
+  } finally { originals.delete(ctx); }
+}
 /** The unprefixed onboarding route, which opens the new-organization wizard. */
 export function isCompanyCreationFlow(href: string, origin: string) {
   try { const url = new URL(href, origin); return url.origin === new URL(origin).origin && url.pathname.replace(/\/+$/, "") === "/onboarding"; } catch { return false; }
@@ -80,11 +88,13 @@ export const newCompanyIdentityCases: readonly ChatCatalogCase[] = [identityDefi
   const companyPath = `/api/companies/${ctx.input.fixtures.company.id}`;
   const before = await ctx.input.api.get<{ name: string; description: string | null; issuePrefix: string }>(companyPath);
   originals.set(ctx, { companyName: before.name, companyDescription: before.description, personName: session.user.name });
-  await ctx.input.api.patch(companyPath, SOURCE_COMPANY_PROFILE);
-  if ((await ctx.input.api.get<{ issuePrefix: string }>(companyPath)).issuePrefix !== before.issuePrefix) throw new Error("Setup blocker: renaming the source company changed its task prefix");
-  const renamed = await ctx.input.page.context().request.patch(`${ctx.input.api.baseURL}/api/auth/profile`, { data: { name: SOURCE_PERSON_NAME }, headers: { Origin: ctx.input.api.baseURL } });
-  if (!renamed.ok()) throw new Error("Setup blocker: the person's profile name could not be set");
-  return { sourceAccounts: await ctx.input.api.get(`${companyPath}/ai-connections`), humanId: session.user.id, sourceMembers: await ctx.input.api.get(`${companyPath}/members`) };
+  try {
+    await ctx.input.api.patch(companyPath, SOURCE_COMPANY_PROFILE);
+    if ((await ctx.input.api.get<{ issuePrefix: string }>(companyPath)).issuePrefix !== before.issuePrefix) throw new Error("Setup blocker: renaming the source company changed its task prefix");
+    const renamed = await ctx.input.page.context().request.patch(`${ctx.input.api.baseURL}/api/auth/profile`, { data: { name: SOURCE_PERSON_NAME }, headers: { Origin: ctx.input.api.baseURL } });
+    if (!renamed.ok()) throw new Error("Setup blocker: the person's profile name could not be set");
+    return { sourceAccounts: await ctx.input.api.get(`${companyPath}/ai-connections`), humanId: session.user.id, sourceMembers: await ctx.input.api.get(`${companyPath}/members`) };
+  } catch (error) { await restoreOriginalNames(ctx); throw error; }
 }, gradeNewCompany, {
   authentication: "human-session", requiredCredentials: ["OPENROUTER_API_KEY"], attemptTimeoutMs: 600_000,
   // v2: the guidance is graded on the creation-flow link and saved company count (a response card counts as the
@@ -128,15 +138,10 @@ export const newCompanyIdentityCases: readonly ChatCatalogCase[] = [identityDefi
     return observeIdentity(ctx, state);
   },
   async cleanup(ctx) {
-    const id = companies.get(ctx), owned = connections.get(ctx) ?? [], original = originals.get(ctx);
+    const id = companies.get(ctx), owned = connections.get(ctx) ?? [];
     try { for (const connection of owned) if (connection.companyId === id) await ctx.input.api.delete(`/api/tool-connections/${connection.connectionId}`, { allowNotFound: true }); }
     finally { try { if (id) await ctx.input.api.delete(`/api/companies/${id}`, { allowNotFound: true }); } finally {
-      try {
-        if (original) {
-          await ctx.input.api.patch(`/api/companies/${ctx.input.fixtures.company.id}`, { name: original.companyName, description: original.companyDescription });
-          await ctx.input.page.context().request.patch(`${ctx.input.api.baseURL}/api/auth/profile`, { data: { name: original.personName }, headers: { Origin: ctx.input.api.baseURL } });
-        }
-      } finally { companies.delete(ctx); connections.delete(ctx); originals.delete(ctx); }
+      try { await restoreOriginalNames(ctx); } finally { companies.delete(ctx); connections.delete(ctx); }
     } }
   },
 })];

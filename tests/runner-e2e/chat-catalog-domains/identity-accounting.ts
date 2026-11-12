@@ -101,7 +101,8 @@ export interface SavedRunRecord { runId: string; assetId: string; recordId: stri
 export function readSavedAccounting(calls: readonly LeadApiCall[], runId: string, target: SavedAccountingTarget) {
   const { companyId, task, originalRunId } = target;
   const companyDigests = companyId ? apiReadDigests(COMPANY_COST_SEGMENTS.map(segment => ({ operationId: `GET /api/companies/{companyId}/costs/${segment}`,
-    pathParams: recordParams("companyId", companyId), queries: [{ period: "all" }, { period: "month" }] }))) : new Set<string>();
+    // runnerApiUrl fills companyId from the run's company when the call omits it, so that form reads the same report.
+    pathParams: [...recordParams("companyId", companyId), undefined], queries: [{ period: "all" }, { period: "month" }] }))) : new Set<string>();
   const taskDigests = task ? apiReadDigests([{ operationId: "GET /api/issues/{id}/cost-summary", pathParams: recordParams("id", task.id, task.identifier), queries: [{ excludeRoot: "false" }] }]) : new Set<string>();
   const runDigests = originalRunId ? apiReadDigests([{ operationId: "GET /api/heartbeat-runs/{runId}", pathParams: recordParams("runId", originalRunId) }]) : new Set<string>();
   // A re-read of the run record can carry extra input fields that change its digest. It still counts when the reading

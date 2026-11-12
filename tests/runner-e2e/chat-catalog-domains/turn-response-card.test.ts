@@ -107,16 +107,17 @@ describe("goals.align-existing-work final phase", () => {
 
 // Decision after full cohort 4: a question card counts as the turn's reply; its Markdown-rendered fields can carry links.
 describe("links a response card renders", () => {
-  it("reads Markdown links from a question form's description and a confirmation's prompt and details only", () => {
+  it("reads Markdown links from a question form's description and prompts and a confirmation's prompt and details only", () => {
     const question = goalQuestion() as ReturnType<typeof goalQuestion> & { payload: Record<string, unknown> };
     question.payload.questionSet = { schema: "paperclip.question_set.v1", description: "Pick [COM-1](/COM/issues/COM-1) or [COM-2](/COM/issues/COM-2).",
-      questions: [{ id: "goal_choice", prompt: "Which one? [not rendered](/COM/issues/COM-9)", answerMode: "single_select", required: true,
-        options: [{ id: "a", label: "[COM-1](/COM/issues/COM-1)" }, { id: "b", label: "COM-2" }] }] };
+      questions: [{ id: "goal_choice", prompt: "Which one? [COM-9](/COM/issues/COM-9)", answerMode: "single_select", required: true,
+        options: [{ id: "a", label: "[COM-8](/COM/issues/COM-8)" }, { id: "b", label: "COM-2" }] }] };
     const [card] = cards([question]);
-    expect(card!.links).toEqual(["/COM/issues/COM-1", "/COM/issues/COM-2"]);
+    // QuestionForm renders the description and each prompt with MarkdownBody; option labels stay plain text.
+    expect(card!.links).toEqual(["/COM/issues/COM-1", "/COM/issues/COM-2", "/COM/issues/COM-9"]);
     const review = draftReview(); review.payload.prompt = "Open [the draft](/COM/issues/COM-3#document-draft) first.";
     expect(cards([review])[0]!.links).toEqual(["/COM/issues/COM-3#document-draft"]);
-    expect(replyOrCardLinks(["/COM/agents/ceo"], [card!])).toEqual(["/COM/agents/ceo", "/COM/issues/COM-1", "/COM/issues/COM-2"]);
+    expect(replyOrCardLinks(["/COM/agents/ceo"], [card!])).toEqual(["/COM/agents/ceo", "/COM/issues/COM-1", "/COM/issues/COM-2", "/COM/issues/COM-9"]);
   });
   it("finds no link in a card without Markdown links, such as cohort 4's ambiguous-task options", () => {
     const question = goalQuestion();

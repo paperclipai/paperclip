@@ -16,8 +16,8 @@ export interface TurnResponseCard {
   text: string;
   /** The exact record a confirmation card asks the person to review, when it names one. */
   target?: Record<string, unknown>;
-  /** Markdown link targets in the card fields the page renders as Markdown (a question form's description; a
-   * confirmation's prompt and details). Prompts, option labels and help text render as plain text, unlinked. */
+  /** Markdown link targets in the card fields the page renders as Markdown (a question form's description and
+   * question prompts; a confirmation's prompt and details). Option labels and help text render as plain text. */
   links: string[];
 }
 
@@ -72,7 +72,7 @@ export function turnResponseCards(input: { companyId: string; leadId: string; ru
       if (!answerable.length) continue;
       const form = record(shownQuestionForm(payload)?.questionSet);
       cards.push({ id: row.id, kind: "ask_user_questions", runId: row.sourceRunId, text: strings(row.title, row.summary, ...displayedText(shownQuestionForm(payload))).join("\n"),
-        links: strings(form?.description).flatMap(markdownLinkTargets) });
+        links: strings(form?.description, ...(Array.isArray(form?.questions) ? form.questions.map(question => record(question)?.prompt) : [])).flatMap(markdownLinkTargets) });
     } else if (row.kind === "request_confirmation") {
       if (!payload || payload.toolAction || payload.secretProposal || payload.connectionAuthorization || typeof payload.prompt !== "string" || !payload.prompt.trim()) continue;
       cards.push({ id: row.id, kind: "request_confirmation", runId: row.sourceRunId,
