@@ -158,12 +158,20 @@ export async function attemptNativeWorkspaceFinalization(input: {
       )).limit(1).then((rows) => rows[0] ?? null)
     : null;
   const cwd = workspace?.providerRef ?? workspace?.cwd ?? previous?.cwd ?? null;
-  const taskLease = previous
-    ? pluginWorkspaceParamsSchema.shape.taskLease.parse(previous.metadata?.pluginWorkspaceTaskLease) ?? null
-    : undefined;
-  const pluginFinalizationPlan = workspace && !nativeWorkspaceSync && !readRemoteWorkspaceAuthority(workspace.metadata)
-    ? await resolvePluginWorkspaceFinalization(input.db, workspace, { runId: input.runId, agentId: bound.agentId, taskLease })
-    : undefined;
+  let pluginFinalizationPlan: Awaited<ReturnType<typeof resolvePluginWorkspaceFinalization>>;
+  if (workspace && !nativeWorkspaceSync && !readRemoteWorkspaceAuthority(workspace.metadata)) {
+    try {
+      const taskLease = previous
+        ? pluginWorkspaceParamsSchema.shape.taskLease.parse(previous.metadata?.pluginWorkspaceTaskLease) ?? null
+        : undefined;
+      pluginFinalizationPlan = await resolvePluginWorkspaceFinalization(input.db, workspace, {
+        runId: input.runId, agentId: bound.agentId, taskLease,
+      });
+    } catch {
+      await ownership.assertHeld();
+      return { kind: "failed", operation: { stderrExcerpt: "plugin_workspace_inspection_failed" } } as const;
+    }
+  }
   const recordedTaskLease = pluginFinalizationPlan?.kind === "finalize" ? pluginFinalizationPlan.taskLease : undefined;
 
   const recorder = workspaceOperationService(input.db).createRecorder({
@@ -317,7 +325,7 @@ export async function attemptNativeWorkspaceFinalization(input: {
       try {
         pluginWorkspace = workspace
           ? await inspectPluginWorkspaceForFinalization(input.db, input.pluginWorkerManager, workspace, bound.agentId, input.runId, {
-              taskLease: taskLease ?? null,
+              taskLease: null,
               plan: pluginFinalizationPlan,
             })
           : null;

@@ -41,6 +41,7 @@ import {
 } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { resumeNativeWorkspaceFinalization } from "./native-workspace-finalizer.js";
+import { nativeWorkspaceFinalizationWork } from "./native-workspace-finalization-work.js";
 import { reconcileNativeFinalizations } from "./native-finalization-reconciler.js";
 
 describe("native workspace finalization recovery", () => {
@@ -58,10 +59,11 @@ describe("native workspace finalization recovery", () => {
   async function seedRun(input: {
     executionWorkspaceId: string;
     title: string;
+    runId?: string;
   }) {
     const issueId = randomUUID();
     const contractId = randomUUID();
-    const runId = randomUUID();
+    const runId = input.runId ?? randomUUID();
     const resultId = randomUUID();
 
     await db.insert(issues).values({
@@ -836,6 +838,42 @@ describe("native workspace finalization recovery", () => {
       expect(await db.select().from(workspaceOperations).where(eq(workspaceOperations.heartbeatRunId, ready.runId)))
         .toMatchObject([{ status: "succeeded" }]);
     } finally { inspect.mockRestore(); plan.mockRestore(); }
+  });
+
+  it("accounts for a removed workspace plugin without blocking other accepted runs", async () => {
+    const workspaceId = randomUUID();
+    const binding = { pluginId: randomUUID(), projectId, executionWorkspaceId: workspaceId, projectWorkspaceId: randomUUID(),
+      sourceRevision: "fixture-revision", workspaceRef: "provider:removed-plugin" };
+    const [unavailable, healthy] = await db.insert(executionWorkspaces).values([
+      { id: workspaceId, companyId, projectId, name: "Removed plugin", providerType: "plugin", providerRef: binding.workspaceRef,
+        mode: "isolated_workspace", strategyType: "git_worktree", branchName: "task-branch", metadata: { workspaceProvider: binding } },
+      { companyId, projectId, name: "Healthy task", providerType: "adapter_managed", cwd: "/workspaces/healthy-task",
+        mode: "shared_workspace", strategyType: "project_primary", metadata: { runnerTaskWorkspaceOwner: { agentId } } },
+    ]).returning();
+    const blocked = await seedRun({ executionWorkspaceId: unavailable.id, title: "Removed plugin", runId: `0${randomUUID().slice(1)}` });
+    const ready = await seedRun({ executionWorkspaceId: healthy.id, title: "Healthy finalization", runId: `f${randomUUID().slice(1)}` });
+    await expect(reconcileNativeFinalizations(db, [blocked.runId, ready.runId])).resolves.toBeDefined();
+    expect(await db.select().from(workspaceOperations).where(eq(workspaceOperations.heartbeatRunId, ready.runId)))
+      .toMatchObject([{ status: "succeeded" }]);
+    const coordinator = () => db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, blocked.runId))
+      .then(([row]) => row);
+    expect(await coordinator()).toMatchObject({
+      phase: "retryable_failure", nextAttemptAt: expect.any(Date),
+      failureCode: "native_workspace_sync_out_failed", failureDetail: { workspaceFinalizeAttempt: 1 },
+    });
+
+    const onWorkspaceSettled = vi.fn(async () => {});
+    const work = nativeWorkspaceFinalizationWork(db, { onWorkspaceSettled });
+    for (const attempt of [2, 3]) {
+      await db.update(nativeRunFinalizations).set({ nextAttemptAt: null }).where(eq(nativeRunFinalizations.runId, blocked.runId));
+      const [entry] = await work.load({ companyId, runId: blocked.runId });
+      expect(await work.check(entry)).toEqual(attempt === 2 ? expect.objectContaining({ id: blocked.runId }) : null);
+      expect(await coordinator()).toMatchObject({
+        phase: attempt === 2 ? "retryable_failure" : "terminal_failure", failureDetail: { workspaceFinalizeAttempt: attempt },
+      });
+    }
+    expect(onWorkspaceSettled).toHaveBeenCalledExactlyOnceWith({ runId: blocked.runId, companyId, agentId, succeeded: false });
+    expect(await db.select().from(workspaceOperations).where(eq(workspaceOperations.heartbeatRunId, blocked.runId))).toHaveLength(0);
   });
 
   it("records directory-only recovery without inventing an execution-workspace foreign key", async () => {
