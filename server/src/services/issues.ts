@@ -4754,6 +4754,7 @@ async function listIssueReviewAttentionMap(
     approvalRows,
     recoveryActionRows,
     recoveryIssueRows,
+    toolReviewContinuationRows,
   ] = await Promise.all([
     dbOrTx
       .select({
@@ -4903,6 +4904,39 @@ async function listIssueReviewAttentionMap(
           notInArray(issues.status, ["done", "cancelled"]),
         ),
       ),
+    dbOrTx
+      .select({
+        id: toolActionDeliveries.actionRequestId,
+        companyId: toolActionDeliveries.companyId,
+        issueId: toolActionDeliveries.issueId,
+        agentId: toolActionRequests.requestedByAgentId,
+        status: sql<string>`'queued'`,
+        reason: sql<string>`'tool_action_review'`,
+        createdAt: toolActionDeliveries.createdAt,
+      })
+      .from(toolActionDeliveries)
+      .innerJoin(
+        toolActionRequests,
+        and(
+          eq(toolActionRequests.id, toolActionDeliveries.actionRequestId),
+          eq(toolActionRequests.companyId, companyId),
+        ),
+      )
+      .innerJoin(
+        issues,
+        and(
+          eq(issues.id, toolActionDeliveries.issueId),
+          eq(issues.companyId, companyId),
+          eq(issues.assigneeAgentId, toolActionRequests.requestedByAgentId),
+        ),
+      )
+      .where(
+        and(
+          eq(toolActionDeliveries.companyId, companyId),
+          isNull(toolActionDeliveries.deliveredAt),
+          inArray(toolActionDeliveries.issueId, reviewIds),
+        ),
+      ),
   ]);
 
   const recoveryPaths = [
@@ -4961,7 +4995,7 @@ async function listIssueReviewAttentionMap(
     relations: [],
     agents: agentRows,
     activeRuns: activeRunRows,
-    queuedWakeRequests: wakeRows,
+    queuedWakeRequests: [...wakeRows, ...toolReviewContinuationRows],
     pendingInteractions: interactionRows,
     pendingApprovals: approvalRows,
     externalResponseWaits: await readExternalReviewWaits(reviewIds),
@@ -5025,7 +5059,7 @@ async function listIssueReviewAttentionMap(
     ).map((row) => [row.id, row]),
   );
   const wakeReasonById = new Map(
-    (wakeRows as Array<{ id: string; reason: string | null }>).map((row) => [
+    ([...wakeRows, ...toolReviewContinuationRows] as Array<{ id: string; reason: string | null }>).map((row) => [
       row.id,
       row.reason,
     ]),

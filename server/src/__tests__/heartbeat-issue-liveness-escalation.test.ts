@@ -20,11 +20,15 @@ import {
   issueComments,
   issueRelations,
   issueRecoveryActions,
+  issueThreadInteractions,
   issueTreeHoldMembers,
   issueTreeHolds,
   issues,
   projects,
   projectWorkspaces,
+  toolActionDeliveries,
+  toolActionRequests,
+  toolInvocations,
   workspaceOperations,
 } from "@paperclipai/db";
 import {
@@ -74,6 +78,7 @@ vi.mock("../adapters/index.ts", async () => {
 import { heartbeatService } from "../services/heartbeat.ts";
 import { attentionService } from "../services/attention.ts";
 import { issueService } from "../services/issues.ts";
+import { toolActionDeliveryService } from "../services/tool-action-delivery.ts";
 import { escalateExhaustedIssueReviewPathRecovery } from "../services/recovery/review-path-recovery-escalation.ts";
 import { runningProcesses } from "../adapters/index.ts";
 import {
@@ -125,6 +130,10 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     await db.delete(issueTreeHolds);
     await db.delete(issueRelations);
     await db.delete(issueRecoveryActions);
+    await db.delete(toolActionDeliveries);
+    await db.delete(toolActionRequests);
+    await db.delete(toolInvocations);
+    await db.delete(issueThreadInteractions);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
@@ -496,6 +505,73 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
         expect.objectContaining({ id: "open_recovery", label: "Open recovery" }),
       ]),
     });
+  });
+
+  it("keeps a card accepted while its run settles as the review path and queues no recovery run", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `R${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    await db.insert(companies).values({
+      id: companyId, name: "Review Accept Co", issuePrefix, defaultResponsibleUserId: "responsible-user",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(authUsers).values({ id: "responsible-user", name: "Fixture user", email: "responsible-user@example.test", createdAt: new Date(), updatedAt: new Date() }).onConflictDoNothing();
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "member" });
+    await db.insert(agents).values({
+      id: agentId, companyId, name: "Review Agent", role: "engineer", status: "idle", adapterType: "codex_local",
+      adapterConfig: {}, runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } }, permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId, companyId, title: "Create the issue once approved", status: "in_review", priority: "medium",
+      assigneeAgentId: agentId, responsibleUserId: "responsible-user", issueNumber: 1, identifier: `${issuePrefix}-1`,
+    });
+    const [interaction] = await db.insert(issueThreadInteractions).values({
+      companyId, issueId, kind: "request_confirmation", status: "accepted", createdByAgentId: agentId,
+      payload: { version: 1, prompt: "Run the tool?" }, result: { version: 1, outcome: "accepted" }, resolvedAt: new Date(),
+    }).returning();
+    const [invocation] = await db.insert(toolInvocations).values({
+      companyId, agentId, issueId, toolName: "create_issue", approvalState: "approved", status: "pending",
+    }).returning();
+    const [request] = await db.insert(toolActionRequests).values({
+      companyId, invocationId: invocation!.id, issueId, interactionId: interaction!.id, status: "executing",
+      canonicalArgumentsHash: "hash", canonicalArgumentsSummary: { type: "object" } as never,
+      requestedByAgentId: agentId, decidedByUserId: "responsible-user", decidedAt: new Date(),
+    }).returning();
+    await db.insert(toolActionDeliveries).values({
+      actionRequestId: request!.id, companyId, issueId, interactionId: interaction!.id,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const sourceRun = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: { issueId },
+      requestedByActorType: "user",
+      requestedByActorId: "responsible-user",
+      contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_commented" },
+    });
+    expect(sourceRun).not.toBeNull();
+    await heartbeat.drainActiveRunExecutions();
+
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, sourceRun!.id)).then((rows) => rows[0]?.status))
+      .toBe("succeeded");
+    expect(await db.select().from(agentWakeupRequests).where(and(
+      eq(agentWakeupRequests.companyId, companyId),
+      eq(agentWakeupRequests.reason, "issue_review_path_lost"),
+    ))).toHaveLength(0);
+    expect(await db.select().from(toolActionDeliveries).where(eq(toolActionDeliveries.actionRequestId, request!.id))
+      .then((rows) => rows[0]?.deliveredAt)).toBeNull();
+
+    await db.update(toolInvocations).set({ runId: sourceRun!.id, status: "succeeded" }).where(eq(toolInvocations.id, invocation!.id));
+    await db.update(toolActionRequests).set({ status: "executed", resolvedAt: new Date() }).where(eq(toolActionRequests.id, request!.id));
+    expect(await toolActionDeliveryService(db, heartbeat).deliver(request!.id)).toBe(true);
+    await heartbeat.drainActiveRunExecutions();
+    const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
+    expect(wakes.filter((wake) => wake.idempotencyKey === `tool-action-response:${request!.id}`)).toHaveLength(1);
+    expect(wakes.filter((wake) => wake.reason === "issue_review_path_lost"
+      && wake.payload?.sourceRunId === sourceRun!.id)).toHaveLength(0);
   });
 
   it.each(["monitor", "completed", "reassigned", "newer_run", "other_company"] as const)(
