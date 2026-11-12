@@ -162,6 +162,24 @@ type AdapterType = string;
 
 const ONBOARDING_ADAPTER_TYPES = new Set(["claude_local", "codex_local"]);
 
+// Adapters offered in the onboarding harness grid. First onboarding leads with
+// ONBOARDING_ADAPTER_TYPES (the recommended pair); the rest appear under "More
+// harnesses". cursor_cloud is managed-remote-only and is never offered here, so
+// it stays out of this set even though it is a visual choice. This must stay
+// broader than ONBOARDING_ADAPTER_TYPES: gating the grid on that pair leaves
+// moreAdapters permanently empty and the toggle dead.
+const ONBOARDING_GRID_ADAPTER_TYPES = new Set([
+  ...ONBOARDING_ADAPTER_TYPES,
+  "gemini_local",
+  "kimi_local",
+  "opencode_local",
+  "pi_local",
+  "cursor",
+  "agy_local",
+  "grok_local",
+  "hermes_local",
+]);
+
 function restoreOnboardingAdapterType(savedAdapterType: unknown, provider?: unknown, savedCopilot?: unknown): AdapterType {
   if (savedAdapterType === "paperclip_runner" && provider === "pi") return "pi_local";
   if (savedAdapterType === "paperclip_runner" && provider === "opencode") return "opencode_local";
@@ -1284,7 +1302,7 @@ function OnboardingWizardInner({
   const { recommendedAdapters, moreAdapters } = useMemo(() => {
     const all = listUIAdapters()
       .filter((a) =>
-        ONBOARDING_ADAPTER_TYPES.has(a.type) &&
+        ONBOARDING_GRID_ADAPTER_TYPES.has(a.type) &&
         !disabledTypes.has(a.type) &&
         isVisualAdapterChoice(a.type)
       )
