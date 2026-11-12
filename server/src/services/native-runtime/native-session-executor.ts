@@ -161,7 +161,7 @@ import {
 import { lstat, readFile, readdir, readlink } from "node:fs/promises";
 import { hostname, tmpdir, userInfo } from "node:os";
 import { DatabaseSync } from "node:sqlite";
-import { NATIVE_CHECKPOINT_HEADER_INSPECTION_MAX_BYTES, loadNativeRunnerCheckpoint, loadNativeRunnerCheckpointHeader, loadNativeUnclaimedBootstrapCheckpoint, nativeRunnerCheckpointPersistence, nativeRunnerCheckpointRemoteBootstrapProof, nativeRunnerNeverAuthenticated, nativeRunnerCheckpointRegistration, restoreNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
+import { NATIVE_CHECKPOINT_HEADER_INSPECTION_MAX_BYTES, loadNativeRunnerCheckpoint, loadNativeRunnerCheckpointHeader, loadNativeUnclaimedBootstrapCheckpoint, nativeRunnerCheckpointPersistence, nativeRunnerCheckpointRemoteBootstrapEvidence, nativeRunnerNeverAuthenticated, nativeRunnerCheckpointRegistration, restoreNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
 import { REMOTE_CONTROLLER_LEASE_MS, REMOTE_RUNNER_RECONNECT_GRACE_MS, localRunnerProcessReconnectGraceMs } from "./native-runner-recovery-contract.js";
 import type { NativeTaskSessionPublicationContext } from "./native-task-session-publication.js";
 import { basename, dirname, join, posix, resolve } from "node:path";
@@ -6283,6 +6283,7 @@ async function migrateRunnerdStateRootForExecution(input: {
   if (input.restartRecovery?.kind === "reattach_remote_runner" && !existsSync(scoped)) {
     throw new Error("runner_state_identity_mismatch: remote_reattach_root_missing");
   }
+  await captureClaimTimeRemoteBootstrapProof(input);
   await restoreRemoteBootstrapCheckpointForRecovery({ ...input, root: scoped });
   if (existsSync(scoped)) {
     if (!isSafeNativeStateDirectory(scoped)) {
@@ -6924,6 +6925,34 @@ export function recordRemoteBootstrapRestartProof(runId: string,
   if (stopped !== "absent_confirmed" && stopped !== "stopped" && stopped !== "killed") return false;
   provenRemoteBootstrapRestarts.set(runId, stopped);
   return true;
+}
+
+/**
+ * The controller checkpoint proof read before this server registers its own
+ * controller for the run. A new controller rewrites that checkpoint with its
+ * own bootstrap commands, so a later read would no longer describe what the
+ * interrupted runner received.
+ */
+const claimTimeRemoteBootstrapProofs = new Map<string, string>();
+
+export async function captureClaimTimeRemoteBootstrapProof(input: {
+  db: Pick<Db, "select">;
+  execution: NativeExecutionInput;
+  restartRecovery?: NativeRestartRecoveryClaim;
+  runnerExecutionTarget?: AdapterExecutionTarget | null;
+}): Promise<void> {
+  const runId = input.execution.binding.runId;
+  claimTimeRemoteBootstrapProofs.delete(runId);
+  const target = input.runnerExecutionTarget;
+  if (input.restartRecovery?.kind !== "bootstrap_incomplete" || input.restartRecovery.runId !== runId
+    || target?.kind !== "remote" || target.transport !== "sandbox" || target.runnerTask) return;
+  const evidence = await nativeRunnerCheckpointRemoteBootstrapEvidence(input.db, input.execution.binding,
+    nativeSessionKey(input.execution));
+  if (evidence) claimTimeRemoteBootstrapProofs.set(runId, evidence.runnerInstanceId);
+}
+
+export function claimTimeRemoteBootstrapProofHolds(runId: string, runnerInstanceId: unknown): boolean {
+  return typeof runnerInstanceId === "string" && claimTimeRemoteBootstrapProofs.get(runId) === runnerInstanceId;
 }
 
 export function hasRemoteBootstrapRestartProof(runId: string): boolean {
@@ -16702,8 +16731,7 @@ async function createRunnerdBackendWithinSessionClaim(
       || runnerState.normalizedSessionId !== nativeSessionKey(input.execution)
       || typeof runnerState.lifecycle !== "string" || runnerState.lifecycle === "suspended") return null;
     if (!hasRemoteBootstrapRestartProof(runId) && !((remoteRunnerStateNeverConnected(runnerState)
-      || await nativeRunnerCheckpointRemoteBootstrapProof(input.db, input.execution.binding,
-        { runnerInstanceId: input.runnerInstanceId, normalizedSessionId: nativeSessionKey(input.execution) }) !== null)
+      || claimTimeRemoteBootstrapProofHolds(runId, runnerState.runnerInstanceId))
       && recordRemoteBootstrapRestartProof(runId, await stopStaleRemoteRunnerBeforeBootstrap({
         execution: input.execution, runnerExecutionTarget: input.runnerExecutionTarget, identity: runnerState, onLog: input.onLog,
       })))) return null;
