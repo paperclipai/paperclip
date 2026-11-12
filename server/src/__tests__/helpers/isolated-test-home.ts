@@ -2,9 +2,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-export function createIsolatedTestHome() {
+export function createIsolatedTestHome(prefix = "paperclip-vitest-home-") {
   const { mkdtempSync, lstatSync, openSync, fchmodSync, closeSync, readdirSync, rmSync, constants } = fs;
-  const home = mkdtempSync(path.join(os.tmpdir(), "paperclip-vitest-home-"));
+  const home = mkdtempSync(path.join(os.tmpdir(), prefix));
   const identity = lstatSync(home);
   const cleanup = () => {
     let current;
@@ -28,4 +28,28 @@ export function createIsolatedTestHome() {
     rmSync(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 });
   };
   return { home, cleanup };
+}
+
+const TERMINATION_SIGNALS = ["SIGTERM", "SIGINT", "SIGHUP"] as const;
+
+/**
+ * Run `cleanup` once when this worker ends. Vitest stops forks-pool workers
+ * with SIGTERM (then SIGKILL), and a default signal exit skips `exit`
+ * listeners, so termination signals clean up too. When no other listener
+ * owns the signal, it is raised again so the worker still exits as before.
+ */
+export function cleanupAtProcessEnd(cleanup: () => void) {
+  let done = false;
+  const runOnce = () => {
+    if (done) return;
+    done = true;
+    cleanup();
+  };
+  const onSignal = (signal: NodeJS.Signals) => {
+    for (const name of TERMINATION_SIGNALS) process.off(name, onSignal);
+    try { runOnce(); }
+    finally { if (process.listenerCount(signal) === 0) process.kill(process.pid, signal); }
+  };
+  process.once("exit", runOnce);
+  for (const name of TERMINATION_SIGNALS) process.on(name, onSignal);
 }
