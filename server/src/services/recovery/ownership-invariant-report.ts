@@ -127,11 +127,14 @@ export type OwnershipReportState = {
   admissionBacklog: boolean;
   /** Keyset cursor of the I7 queued-run check (created_at, id); null starts over. */
   queuedRunCursor: UndispatchedQueuedRunCursor | null;
+  /** Earliest grace deadline seen in the earlier slices of the current queued-run scan. */
+  queuedRunDueAt: Date | null;
 };
 
 export function createOwnershipReportState(): OwnershipReportState {
   return { goneLastPass: new Set(), reported: new Set(), intentCursor: null, unwritten: new Map(), intentBacklog: false,
-    admissionWakeCursor: null, admissionRunCursor: null, admissionBacklog: false, queuedRunCursor: null };
+    admissionWakeCursor: null, admissionRunCursor: null, admissionBacklog: false, queuedRunCursor: null,
+    queuedRunDueAt: null };
 }
 
 const TERMINAL_RUN_STATUSES = ["succeeded", "failed", "cancelled", "timed_out", "interrupted"];
@@ -629,10 +632,15 @@ async function checkVisibleNextAction(db: Db, now: Date, limit: number): Promise
 async function checkQueuedRunsDispatched(db: Db, state: OwnershipReportState, now: Date, limit: number):
   Promise<{ violations: InvariantViolation[]; nextDueAt: Date | null }> {
   const window = await readQueuedRunExecutionWindow(db);
-  if (!window.dispatches) { state.queuedRunCursor = null; return { violations: [], nextDueAt: null }; }
+  if (!window.dispatches) {
+    state.queuedRunCursor = null; state.queuedRunDueAt = null;
+    return { violations: [], nextDueAt: null };
+  }
+  if (state.queuedRunDueAt && state.queuedRunDueAt <= now) { state.queuedRunCursor = null; state.queuedRunDueAt = null; }
   const { runs, next } = await readUndispatchedQueuedRuns(db, { pageSize: limit, createdAfter: window.createdAfter,
     after: state.queuedRunCursor, maxRuns: MAX_RECORDS_PER_KIND });
   state.queuedRunCursor = next;
+  const carried = state.queuedRunDueAt;
   const cutoff = now.getTime() - QUEUED_RUN_DISPATCH_GRACE_MS;
   const violations: InvariantViolation[] = [];
   let nextDueAt: Date | null = null;
@@ -644,6 +652,8 @@ async function checkQueuedRunsDispatched(db: Db, state: OwnershipReportState, no
       nextDueAt ??= new Date(run.createdAt.getTime() + QUEUED_RUN_DISPATCH_GRACE_MS);
     }
   }
+  if (carried && (!nextDueAt || carried < nextDueAt)) nextDueAt = carried;
+  state.queuedRunDueAt = next ? nextDueAt : null;
   return { violations, nextDueAt };
 }
 

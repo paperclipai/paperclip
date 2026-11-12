@@ -1047,6 +1047,24 @@ describe("report-only ownership reconciliation", () => {
     expect(await listUndispatchedQueuedRuns(db)).toEqual([]);
   });
 
+  it("keeps the earliest grace deadline when the queued-run check reaches its cap, and rescans once it ends", async () => {
+    const createdAt = minutesAgo(1);
+    await db.insert(heartbeatRuns).values(Array.from({ length: 2_000 }, () =>
+      ({ companyId, agentId, status: "queued", invocationSource: "automation", createdAt })));
+    const dueAt = createdAt.getTime() + 5 * 60_000;
+    const state = createOwnershipReportState();
+    const queuedRuns = (report: OwnershipReport) => report.violations.filter(violation => violation.kind === "queued_run");
+    const first = await runOwnershipReconciliationPass(db, { state, record: false });
+    expect(queuedRuns(first)).toEqual([]);
+    expect(first.retryNeeded).toBe(true);
+    expect(first.nextDueAt?.getTime()).toBeLessThanOrEqual(dueAt);
+    const tail = await runOwnershipReconciliationPass(db, { state, record: false });
+    expect(queuedRuns(tail)).toEqual([]);
+    expect(tail.nextDueAt?.getTime()).toBeLessThanOrEqual(dueAt);
+    const overdue = await runOwnershipReconciliationPass(db, { state, record: false, now: new Date(dueAt + 1) });
+    expect(queuedRuns(overdue)).toHaveLength(2_000);
+  }, 60_000);
+
   it("signals queued-run dispatch when finalization work settles or a finished coordinator's lapsed owner is released", async () => {
     const issueId = randomUUID();
     const runId = randomUUID();
