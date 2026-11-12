@@ -28,7 +28,7 @@ import { CREDENTIAL_FOR_ADAPTER, parseCommand, replayCommand, waveIdFor } from "
 import { assertControllerMatchesImage, assertProviderPackMismatch, defaultDaytonaImageCacheRoot, prepareDaytonaImageArtifacts } from "./daytona-image.js";
 import { PLUGIN_BUILD_STAMP, pluginBuildState } from "./plugin-build.js";
 import { DaytonaWaveSweeper, leaksForTask, unattributedLeaks, type DaytonaSweepResult } from "./daytona-sweep.js";
-import { knownSecretValues, redactKnownSecrets, writeEvidenceBundle } from "./evidence.js";
+import { knownSecretValues, redactKnownSecrets, wakeEvidenceOnce, writeEvidenceBundle } from "./evidence.js";
 import { gradeTask } from "./grader.js";
 import { releaseInstance } from "../runner-e2e/instance-retention.js";
 import { checkPlanInvariants, readUniversalDbEvidence, summarizeViolations, type InvariantCheck } from "./invariants.js";
@@ -320,8 +320,8 @@ async function main(): Promise<number> {
     harnessError ??= error;
     interrupted = true;
   });
-  // Spend is read once per wave: after the tasks, or during cleanup when the wave stopped early.
   let spendTarget: { api: ChaosApi; companyId: string } | null = null;
+  let captureEvidence: (() => Promise<void>) | null = null;
   let spendRecorded = false;
   const recordWaveSpend = async () => {
     if (!spendTarget || spendRecorded) return;
@@ -463,6 +463,7 @@ async function main(): Promise<number> {
         };
       } });
     spendTarget = { api, companyId: lab.companyId };
+    captureEvidence = wakeEvidenceOnce({ databaseUrl: waveDatabaseUrl, companyId: lab.companyId, waveDir, observers: () => launched, windows: supervisor.serverWindows, shifts: supervisor.agingShifts, redact: text => redactKnownSecrets(text, knownSecretValues()), note: (kind, data) => timeline.add(kind, data) });
     const releaseSwap = plan.options.releaseSwap ? await ReleaseSwapWave.start({ plan, lab, api, timeline, supervisor, databaseUrl: waveDatabaseUrl(), cancelled: () => interrupted }) : null;
     // --db-pressure: contend with the wave's running run rows from outside the server (contention.ts).
     if (plan.options.dbPressure) {
@@ -782,8 +783,8 @@ async function main(): Promise<number> {
     }
     const attributed = new Set<string>();
     const secrets = knownSecretValues();
-    // U3 and L1 read the wave database once, before the instance is removed.
     const evidenceDb = createDb(waveDatabaseUrl());
+    await captureEvidence?.();
     const universalByIssue = await readUniversalDbEvidence(evidenceDb, lab.companyId).catch(error => {
       timeline.add("universal_db_evidence_failed", { error: String(error) }); return null; });
     const allRunMessages = new Map([...(universalByIssue?.values() ?? [])].flatMap(entry => [...entry.runMessages]));
@@ -907,11 +908,10 @@ async function main(): Promise<number> {
     sandboxWatchStopped = true;
     await mix?.stop().catch(() => undefined);
     await stopPressure().catch(error => timeline.add("db_pressure_stop_failed", { error: String(error) }));
-    // Best effort for an interrupted or failed wave; the server may already be down.
+    await captureEvidence?.();
     if (supervisor.serverReady) await recordWaveSpend().catch(() => undefined);
     await board?.close().catch(() => undefined);
     await closeJourneyApps();
-    // A failure here (for example writing the report) must not skip stopping the controller and Postgres.
     try { if (sweeper) try {
       const owned = sweeper as DaytonaWaveSweeper;
       // An interrupted wave still reports what it leaked before cleanup.

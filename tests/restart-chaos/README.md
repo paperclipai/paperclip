@@ -1906,10 +1906,28 @@ re-arms the task's own triggered faults instead of using their offsets.
 
 - `ledger.jsonl`, `SUMMARY.md` — every graded task, per-cell pass rate, open signatures.
 - `<wave>/plan.json`, `timeline.jsonl`, `server.log`, `faults.json`, `<task>.grade.json`.
-- `<wave>/evidence/<task>/` on failure — run ids and statuses, last 200 events per
-  run, workspace operations, server log window around each fault, startup phase
-  timings, fault timeline, seed, git SHA and the replay command. Known provider
-  key values are redacted.
+- `<wave>/evidence/<task>/` on failure — run ids and statuses, each run's events (all of them, or the first 400
+  and the last 200 with an `omittedEvents` marker between, so the wake payload and `turn.submitted` are always
+  kept), workspace operations, server log window around each fault, startup phase timings, fault timeline, seed,
+  git SHA and the replay command. Known provider key values are redacted.
+- `<wave>/wake-evidence/<task>.json` for every task, read from the wave database before the instance is deleted.
+  It holds:
+  - each run's `context_snapshot`, invocation source and trigger;
+  - the `agent_wakeup_requests` row behind each run and every wake for the issue: reason, source, trigger detail,
+    requesting actor, idempotency key, payload and times;
+  - the issue's status changes from the activity log.
+
+  Each wake and run also names the server generations alive when it was created (`servingAtCreate`): the pid, boot
+  id, epoch and process space from `controller_instances`, and the harness's own primary or secondary role during an
+  overlap. The run's owning controller is listed as `owner`. `wake-evidence/servers.json` lists every controller and
+  harness server window.
+
+  - **Process exit:** a controller's lifetime also ends at the process exit the harness recorded, so a hard-killed
+    server is not listed as serving later work.
+  - **Aged waves:** in TM2/TM3 waves, the database times are put back at their real times before they are compared
+    with the harness clock.
+  - **Failed waves:** the capture also runs, once, on the failure path before PostgreSQL stops. If the task list does
+    not exist yet, it writes one `issue-<id>.json` per issue that has runs.
 
 ## Grading notes
 
