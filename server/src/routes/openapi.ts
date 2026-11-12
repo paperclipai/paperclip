@@ -3697,7 +3697,9 @@ registry.registerPath({
   method: "post",
   path: "/api/agents/me/secret-proposals",
   tags: ["secrets"],
-  summary: "Propose a company secret or agent secret binding",
+  summary: "Bind an existing company secret to an agent's environment variable, or propose a new company secret, for board approval",
+  description:
+    "This is how an agent gives itself or an agent in its reporting line (targetAgentId) access to a company secret: send kind \"binding\" with the secret's id from the secrets catalog and the agent configuration path (configPath, e.g. env.DEPLOY_API_KEY). Agents cannot PATCH agent configuration with secret refs; a board member approves the proposal, which applies the binding. Send kind \"secret\" to propose storing a new value.",
   request: { body: jsonBody(createAgentSecretProposalSchema) },
   responses: {
     201: r.ok(),

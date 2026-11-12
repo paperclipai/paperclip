@@ -480,18 +480,23 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
       loadCheckpoint: () => checkpoint, canReuseProcess: () => true, ...overrides,
     });
     const denied = "runner_state_identity_mismatch: prior_owner_terminal_state_indeterminate";
-    await expect(inspect({ execution: { ...current, binding: { ...current.binding, companyId: randomUUID() } } }))
-      .rejects.toThrow(denied);
-    await expect(inspect({ matchesExecution: () => false })).rejects.toThrow(denied);
+    const ordinary = async (attempt: Promise<unknown>) => {
+      const error = await attempt.then(() => null, failure => failure);
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain(denied);
+      expect(error).not.toBeInstanceOf(NativePredecessorRetirementUnprovenError);
+    };
+    await ordinary(inspect({ execution: { ...current, binding: { ...current.binding, companyId: randomUUID() } } }));
+    await ordinary(inspect({ matchesExecution: () => false }));
     await expect(readSandbox({ remoteCwd: "/unrelated" })).rejects.toThrow("retained_sandbox_binding");
     for (const leaseExpiresAt of [null, new Date(Date.now() - 1_000)]) {
       await db.update(nativeRunFinalizations).set({ leaseExpiresAt }).where(eq(nativeRunFinalizations.runId, fixture.scope.runId));
-      await expect(inspect()).rejects.toThrow(denied);
+      await ordinary(inspect());
       await expect(readSandbox()).rejects.toThrow("retained_sandbox_binding");
     }
     await db.update(nativeRunFinalizations).set({ leaseExpiresAt: deadline }).where(eq(nativeRunFinalizations.runId, fixture.scope.runId));
     await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, fixture.scope.runId));
-    await expect(inspect()).rejects.toThrow(denied);
+    await ordinary(inspect());
     await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, fixture.scope.runId));
     await expect(readSandbox()).rejects.toMatchObject({ retryAt: deadline });
     const waiting = await inspect().catch(error => error);
@@ -505,7 +510,7 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
       .where(eq(nativeRunFinalizations.runId, fixture.scope.runId));
     await expect(readSandbox()).resolves.toEqual({ remoteCwd: "/workspace" });
     await expect(inspect({ readControlState: () => ({ identity, commands: [{ status: "pending" }],
-      committedEvents: [{ eventType: "run.terminal", envelope: identity }] }) })).rejects.toThrow(denied);
+      committedEvents: [{ eventType: "run.terminal", envelope: identity }] }) })).rejects.toBeInstanceOf(NativePredecessorRetirementUnprovenError);
     // A created or replacement sandbox holds no Runner to adopt. Live adoption
     // steps aside so ordinary admission can retire the finished owner, instead
     // of denying with prior_owner_terminal_state_indeterminate (Nov 10 staging).
@@ -581,6 +586,15 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
 
     fallback(await inspect(() => ({ ...parked, commands: [...parked.commands, { type: "runner.suspend", status: "pending" }] }))
       .catch(error => error), "journal_unsettled");
+
+    for (const status of ["failed", "running"] as const) {
+      await db.update(heartbeatRuns).set({ status }).where(eq(heartbeatRuns.id, fixture.scope.runId));
+      const unsettled = await inspect(() => ({ ...parked, commands: [...parked.commands, { type: "runner.suspend", status: "pending" }] }))
+        .catch(error => error);
+      expect(unsettled).not.toBeInstanceOf(NativePredecessorRetirementUnprovenError);
+      expect(unsettled.message).toBe("runner_state_identity_mismatch: prior_owner_terminal_state_indeterminate; warm_recovery_refused=owner_unsettled");
+    }
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, fixture.scope.runId));
 
     const recovered = (await inspect())!;
     await expect(recovered.revalidate("replacement-controller")).resolves.toBeUndefined();
