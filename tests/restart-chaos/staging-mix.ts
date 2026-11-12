@@ -1,6 +1,7 @@
 import type { ChaosApi } from "./api.js";
 import { k15HoldMs } from "./redeploy.js";
-import { createRng, K4_HOLD_RANGE_MS } from "./scheduler.js";
+import { stableRequestId } from "./observer.js";
+import { createRng, k4HoldRange } from "./scheduler.js";
 import type { AdapterId, FaultKind, OracleArtifacts, OracleResult, TaskFaultKind, TaskPlan, TaskRecord, TaskSample, WavePlan, WaveOptions } from "./types.js";
 import type { WorkloadAgents, WorkloadDefinition } from "./workloads.js";
 
@@ -13,6 +14,7 @@ export const BURST_GAP_MS = 5_000;
 export const FAULT_LEAD_MS = 60_000;
 export const WARM_IDLE_MINUTES = 5;
 export const DEFAULT_RATIO: ReadonlyArray<[AdapterId, number]> = [["opencode", 60], ["codex", 25], ["claude", 15]];
+export const DEFAULT_MIN_FREE_MB = 3_072;
 export const MIX_FAULT_KINDS: readonly FaultKind[] = ["K1", "K2", "K4", "K15"];
 const ACTIVE = new Set(["queued", "running", "scheduled_retry"]);
 
@@ -27,6 +29,7 @@ export interface StagingMixOptions {
   faultSpacingMinutes: number;
   holdMinutes: number;
   runCap: number;
+  minFreeMb: number;
   tasks?: number;
 }
 
@@ -108,7 +111,7 @@ export function applyStagingMix(options: WaveOptions, values: MixArgs, environme
     return options;
   }
   if (values.workload !== STAGING_MIX) throw new Error(`Unknown --workload "${String(values.workload)}"; allowed: ${STAGING_MIX}`);
-  for (const key of ["workloads", "adapters", "tasks", "concurrency", "matrix", "storm-minutes", "crash-point", "long-turn-minutes", "triggers"]) {
+  for (const key of ["workloads", "adapters", "tasks", "concurrency", "matrix", "storm-minutes", "crash-point", "long-turn-minutes", "triggers", "fault-after-seconds"]) {
     if (values[key] !== undefined) throw new Error(`--workload ${STAGING_MIX} plans its own tasks; do not combine it with --${key}`);
   }
   const unsupported = options.faults.filter(fault => !MIX_FAULT_KINDS.includes(fault));
@@ -128,6 +131,7 @@ export function applyStagingMix(options: WaveOptions, values: MixArgs, environme
     faultSpacingMinutes: whole(values["mix-fault-spacing-minutes"], "mix-fault-spacing-minutes", 40, 1, 600),
     holdMinutes: whole(values["mix-hold-minutes"], "mix-hold-minutes", 10, 0, 60),
     runCap: whole(values["mix-run-cap"], "mix-run-cap", runCapDefault, 1, 200),
+    minFreeMb: whole(environment.RESTART_CHAOS_MIX_MIN_FREE_MB, "RESTART_CHAOS_MIX_MIN_FREE_MB", DEFAULT_MIN_FREE_MB, 0, 1_048_576),
     ...(values["mix-tasks"] !== undefined ? { tasks: whole(values["mix-tasks"], "mix-tasks", 1, 1, 2_000) } : {}),
   };
   if (mix.runs > mix.runCap) {
@@ -251,7 +255,7 @@ export function planStagingMixTasks(options: WaveOptions): TaskPlan[] {
       adapter: adapters[index]!,
       fault,
       fireAfterMs: carrier?.fireAfterMs ?? 0,
-      holdMs: fault === "K15" ? k15HoldMs(options.k15HoldMs, rng.int) : fault === "K4" ? rng.int(...K4_HOLD_RANGE_MS) : 0,
+      holdMs: fault === "K15" ? k15HoldMs(options.k15HoldMs, rng.int) : fault === "K4" ? rng.int(...k4HoldRange(options.k4HoldMaxMs)) : 0,
       followUpAfterMs: null,
       nonce: rng.hex(8),
       stagingMix: { turnMinutes, rounds, subtasks, followUpAfterMs, arriveAtMs, holdMs: mix.holdMinutes * 60_000 },
@@ -334,6 +338,8 @@ export function stagingMixDescription(nonce: string, task: StagingMixTask, agent
   lines.push(`${step++}. Post exactly one comment on this task with the body \`${doneMarker(nonce)}\`. Then mark this task done.`);
   return lines.join("\n");
 }
+
+export const followUpRequestId = (issueId: string, nonce: string) => stableRequestId(`followup-${issueId}-${nonce}`);
 
 export function followUpComment(nonce: string): string {
   return `Additional requirement: include the line \`${followUpMarker(nonce)}\` on its own line in this task's \`ledger\` document. Keep going with your rounds; do not restart any.`;
@@ -471,7 +477,8 @@ export async function stagingMixStep(input: StagingMixStepInput): Promise<void> 
     if (now >= plannedAt && (overlap || now >= latestAt)) {
       const followUp: NonNullable<StagingMixRecord["followUp"]> = { at: now, commentId: null, duringRun: true, inOverlap: overlap, error: null };
       try {
-        const comment = await input.api.post<{ id?: string }>(`/api/issues/${record.issueId}/comments`, { body: followUpComment(input.nonce) });
+        const comment = await input.api.post<{ id?: string }>(`/api/issues/${record.issueId}/comments`, { body: followUpComment(input.nonce),
+          clientRequestId: followUpRequestId(record.issueId, input.nonce) });
         followUp.commentId = typeof comment?.id === "string" ? comment.id : null;
         if (!followUp.commentId) followUp.error = "the comment response had no id";
       } catch (error) {

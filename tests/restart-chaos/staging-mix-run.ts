@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -6,7 +7,6 @@ import { agentRunCaps, type StagingMixOptions } from "./staging-mix.js";
 import type { AdapterId, TaskPlan, WaveOptions } from "./types.js";
 
 export const RESOURCE_SAMPLE_MS = 30_000;
-export const DEFAULT_MIN_FREE_MB = 3_072;
 
 export interface ProcessRow { pid: number; ppid: number; rssKb: number; cpu: number }
 export interface ResourceSample { at: number; descendants: number; rssMb: number; cpuPercent: number; availableMb: number; load1m: number; inFlight: number }
@@ -38,12 +38,18 @@ export function parseVmStat(output: string): number | null {
   return Math.round(((pages("Pages free") + pages("Pages inactive") + pages("Pages speculative") + pages("Pages purgeable")) * pageSize) / 1_048_576);
 }
 
-export function availableMemoryMb(): number {
-  if (process.platform === "darwin") {
-    try {
-      const parsed = parseVmStat(execFileSync("vm_stat", { encoding: "utf8" }));
-      if (parsed !== null) return parsed;
-    } catch { return Math.round(os.freemem() / 1_048_576); }
+export function parseMemInfo(output: string): number | null {
+  const kb = /^MemAvailable:\s+([0-9]+) kB$/m.exec(output)?.[1];
+  return kb === undefined ? null : Math.round(Number(kb) / 1024);
+}
+
+export function availableMemoryMb(platform: NodeJS.Platform = process.platform): number {
+  try {
+    const parsed = platform === "darwin" ? parseVmStat(execFileSync("vm_stat", { encoding: "utf8" }))
+      : platform === "linux" ? parseMemInfo(readFileSync("/proc/meminfo", "utf8")) : null;
+    if (parsed !== null) return parsed;
+  } catch {
+    return Math.round(os.freemem() / 1_048_576);
   }
   return Math.round(os.freemem() / 1_048_576);
 }
@@ -72,7 +78,7 @@ export class StagingMixRun {
   inFlight = () => 0;
 
   constructor(readonly mix: StagingMixOptions, readonly startedAt: number, private readonly note: (kind: string, data: Record<string, unknown>) => void,
-    private readonly waveDir: string, readonly minFreeMb = Number(process.env.RESTART_CHAOS_MIX_MIN_FREE_MB ?? DEFAULT_MIN_FREE_MB),
+    private readonly waveDir: string, readonly minFreeMb = mix.minFreeMb,
     private readonly sample: (inFlight: number) => ResourceSample = inFlight => sampleResources(process.pid, inFlight)) {}
 
   start(): this {

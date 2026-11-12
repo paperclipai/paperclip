@@ -3,10 +3,10 @@ import { describe, expect, it } from "vitest";
 import { parseCommand } from "./config.js";
 import {
   agentRunCaps, assignAdapters, childLine, childNonce, doneMarker, expectedRoundHash, followUpMarker, gradeStagingMix, holdsRetry, planArrivals,
-  planFaultCarriers, planStagingMixWave, plannedTaskCount, posixCksum, retryDue, roundCommand, ROUND_SECONDS, setOverlapProbe, stagingMixDescription,
+  followUpRequestId, planFaultCarriers, planStagingMixWave, plannedTaskCount, posixCksum, retryDue, roundCommand, ROUND_SECONDS, setOverlapProbe, stagingMixDescription,
   stagingMixStep, SUBTASK_ROUNDS, verifyLedger, type StagingMixTask,
 } from "./staging-mix.js";
-import { descendantsOf, parsePs, parseVmStat, StagingMixRun, stagingMixSeedOptions, unfiredFaultSlots, type ResourceSample } from "./staging-mix-run.js";
+import { descendantsOf, parseMemInfo, parsePs, parseVmStat, StagingMixRun, stagingMixSeedOptions, unfiredFaultSlots, type ResourceSample } from "./staging-mix-run.js";
 import type { OracleArtifacts, TaskRecord, TaskSample } from "./types.js";
 
 const IMAGE = `ghcr.io/paperclipai/paperclip-daytona-runner@sha256:${"a".repeat(64)}`;
@@ -59,6 +59,24 @@ describe("staging-mix options", () => {
     expect(() => wave(["--workload", "staging-mix", "--faults", "TM1"])).toThrow(/remove TM1/);
     expect(() => wave(["--workload", "other"])).toThrow(/Unknown --workload/);
     expect(() => wave(["--mix-runs", "5"])).toThrow(/needs --workload staging-mix/);
+    expect(() => wave(["--workload", "staging-mix", "--faults", "K15", "--fault-after-seconds", "60"])).toThrow(/do not combine it with --fault-after-seconds/);
+  });
+
+  it("honours --k4-hold-max-seconds for K4 slots", () => {
+    const options = wave(["--workload", "staging-mix", "--faults", "K4", "--seed", "3", "--k4-hold-max-seconds", "600"]);
+    const holds = planStagingMixWave("w-20261112T000000-s3", options).tasks.filter(entry => entry.fault === "K4").map(entry => entry.holdMs);
+    expect(holds.length).toBe(5);
+    expect(holds.every(hold => hold >= 120_000 && hold <= 600_000)).toBe(true);
+    const many = Array.from({ length: 40 }, (_, seed) => planStagingMixWave("w", wave(["--workload", "staging-mix", "--faults", "K4", "--seed", String(seed), "--k4-hold-max-seconds", "600"])).tasks)
+      .flat().filter(entry => entry.fault === "K4").map(entry => entry.holdMs);
+    expect(Math.max(...many)).toBeGreaterThan(300_000);
+  });
+
+  it("fails fast on a malformed memory floor instead of turning the guard off", () => {
+    expect(() => wave(["--workload", "staging-mix", "--faults", "K0"], { RESTART_CHAOS_MIX_MIN_FREE_MB: "lots" })).toThrow(/RESTART_CHAOS_MIX_MIN_FREE_MB must be a whole number/);
+    expect(() => wave(["--workload", "staging-mix", "--faults", "K0"], { RESTART_CHAOS_MIX_MIN_FREE_MB: "" })).toThrow(/RESTART_CHAOS_MIX_MIN_FREE_MB/);
+    expect(wave(["--workload", "staging-mix", "--faults", "K0"], { RESTART_CHAOS_MIX_MIN_FREE_MB: "8192" }).stagingMix!.minFreeMb).toBe(8192);
+    expect(wave(["--workload", "staging-mix", "--faults", "K0"]).stagingMix!.minFreeMb).toBe(3072);
   });
 
   it("checks the Daytona vCPU budget against running, queued and idle warm sandboxes", () => {
@@ -220,6 +238,7 @@ describe("staging-mix deliverable", () => {
 });
 
 describe("staging-mix board step", () => {
+  const requests: Array<string | undefined> = [];
   const record = (overrides: Partial<TaskRecord> = {}) => ({ issueId: "i1", createdAt: 0, retry: null, lastFaultAt: undefined, ...overrides }) as TaskRecord;
   const running: TaskSample = { at: 0, reachable: true, serverReady: false, issueStatus: "in_progress",
     runs: [{ id: "r1", status: "running", createdAt: null, startedAt: null, finishedAt: null, errorCode: null, retryOfRunId: null, wakeCommentIds: [], livenessState: null }] };
@@ -229,7 +248,7 @@ describe("staging-mix board step", () => {
   const step = async (rec: TaskRecord, sample: TaskSample, now: number, faultInProgress: boolean, plan = task({ followUpAfterMs: 60_000 }),
     reply: () => unknown = () => ({ id: "c1" })) => {
     const posted: string[] = [], retried: number[] = [], notes: string[] = [];
-    await stagingMixStep({ api: { post: async (_path: string, body: unknown) => { posted.push(JSON.stringify(body)); return reply() as never; } },
+    await stagingMixStep({ api: { post: async (_path: string, body: unknown) => { posted.push(JSON.stringify(body)); requests.push((body as { clientRequestId?: string }).clientRequestId); return reply() as never; } },
       record: rec, task: plan, nonce: "n1", sample, now, faultInProgress, retry: async (_sample, at) => { retried.push(at); rec.retry = { at } as never; },
       note: kind => notes.push(kind) });
     return { posted, retried, notes };
@@ -258,6 +277,10 @@ describe("staging-mix board step", () => {
     expect(rec.stagingMix!.followUpErrors).toEqual(["HTTP 502", "the comment response had no id"]);
     expect((await step(rec, running, 86_000, true)).posted.length).toBe(1);
     expect(rec.stagingMix!.followUp).toMatchObject({ commentId: "c1", at: 86_000 });
+    const keys = requests.slice(-3);
+    expect(keys[0]).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(new Set(keys).size).toBe(1);
+    expect(keys[0]).not.toBe(followUpRequestId("i2", "n1"));
   });
 
   it("posts the follow-up before the turn's last rounds when no overlap comes", async () => {
@@ -325,5 +348,7 @@ describe("staging-mix resource guard", () => {
     const vm = "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:  1000.\nPages inactive:  2000.\nPages speculative:  100.\nPages purgeable:  4.\n";
     expect(parseVmStat(vm)).toBe(Math.round((3104 * 16384) / 1_048_576));
     expect(parseVmStat("nothing")).toBeNull();
+    expect(parseMemInfo("MemTotal:       65536000 kB\nMemFree:          512000 kB\nMemAvailable:   40960000 kB\n")).toBe(40_000);
+    expect(parseMemInfo("MemFree: 1 kB\n")).toBeNull();
   });
 });
