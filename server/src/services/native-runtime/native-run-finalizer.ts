@@ -41,7 +41,7 @@ import { issueTreeControlService } from "../issue-tree-control.js";
 import { COMPLETION_REVIEW_STAGE_REASON, completionReviewStageEntry } from "../issue-execution-policy.js";
 import { randomUUID } from "node:crypto";
 import { preserveNativeWorkspaceExportLease } from "./native-workspace-export-resume.js";
-import { and, desc, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agentWakeupRequests,
@@ -973,6 +973,18 @@ async function acceptedResponseDigestMatches(
   );
 }
 
+async function hasLaterAppliedStatusDecision(db: Db, input: {
+  companyId: string; issueId: string; decision: { decisionVersion: number };
+}) {
+  const [later] = await db.select({ id: statusDecisions.id }).from(statusDecisions).where(and(
+    eq(statusDecisions.companyId, input.companyId),
+    eq(statusDecisions.issueId, input.issueId),
+    eq(statusDecisions.applicationState, "applied"),
+    gt(statusDecisions.decisionVersion, input.decision.decisionVersion),
+  )).limit(1);
+  return Boolean(later);
+}
+
 /** Recover only the already accepted answer. Neither issue disposition nor
  * provider state is repaired here; an unsafe native session stays quarantined. */
 export async function repairCommittedNativeChatResponse(
@@ -1171,6 +1183,9 @@ async function recoverCommittedNativeChatResponseInScope(
         return true;
       }
       const conversation = isConversation(issue);
+      const blockedTaskReply = !conversation && result.reportedWorkDisposition === "blocked"
+        && terminal.reportedWorkDisposition === "blocked" && issue.status === "blocked"
+        && !(await hasLaterAppliedStatusDecision(tx, { ...input, decision }));
       // The turn is still the conversation's unsettled current turn. A held
       // turn keeps whatever status its gate committed; a finished turn
       // preserves in_progress.
@@ -1195,7 +1210,8 @@ async function recoverCommittedNativeChatResponseInScope(
           (!conversation && result.reportedWorkDisposition === "needs_review" && terminal.reportedWorkDisposition === "needs_review") ||
           // A conversation turn can yield while an approval, an execution
           // stage or a blocker holds its task; it still answered the person.
-          (currentConversation && result.reportedWorkDisposition === "yielded" && terminal.reportedWorkDisposition === "yielded")) &&
+          (currentConversation && result.reportedWorkDisposition === "yielded" && terminal.reportedWorkDisposition === "yielded") ||
+          blockedTaskReply) &&
         (await resolveChatRunPresentationAuthorizationReason(tx, input)) === "internal_agent_write"
       ) {
         const rows = await tx.select({ seq: heartbeatRunEvents.seq, payload: heartbeatRunEvents.payload })
@@ -1224,7 +1240,7 @@ async function recoverCommittedNativeChatResponseInScope(
             return candidate ? [candidate] : [];
           }),
         });
-        if (!finalAgentMessage) return false;
+        if (!finalAgentMessage && !blockedTaskReply) return false;
         const comments = await tx.select({ id: issueComments.id, body: issueComments.body, presentation: issueComments.presentation })
           .from(issueComments).where(and(
             eq(issueComments.companyId, input.companyId),
