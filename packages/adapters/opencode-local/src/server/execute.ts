@@ -337,6 +337,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   });
   const localRuntimeConfigHome =
     preparedRuntimeConfig.notes.length > 0 ? preparedRuntimeConfig.env.XDG_CONFIG_HOME : "";
+  // Releases the host-side workspace baseline on every exit path, including a
+  // failure before the restoring `finally` runs. Idempotent, so it is a no-op
+  // after a restore, which releases it itself.
+  let releaseRemoteWorkspaceSnapshot: (() => Promise<void>) | null = null;
   try {
     const runtimeEnv = Object.fromEntries(
       Object.entries(ensurePathInEnv({ ...process.env, ...preparedRuntimeConfig.env })).filter(
@@ -423,6 +427,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         });
         restoreRemoteWorkspace = () =>
           preparedExecutionTargetRuntime.restoreWorkspace((line) => onLog("stdout", line));
+        releaseRemoteWorkspaceSnapshot = async () => { await preparedExecutionTargetRuntime.cleanupWorkspaceSnapshot?.(); };
         effectiveExecutionCwd = preparedExecutionTargetRuntime.workspaceRemoteDir ?? effectiveExecutionCwd;
         refreshPaperclipWorkspaceEnvForExecution({
           env: preparedRuntimeConfig.env,
@@ -830,6 +835,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
     }
   } finally {
+    await releaseRemoteWorkspaceSnapshot?.().catch(() => {});
     await preparedRuntimeConfig.cleanup();
   }
 }

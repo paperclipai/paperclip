@@ -936,6 +936,13 @@ export async function prepareNativeWorkspaceSync(input: {
   );
 
   let runtime: PreparedAdapterExecutionTargetRuntime | undefined;
+  // A warm stamp mismatch prepares a second runtime from the first one's
+  // snapshots. The first runtime still owns its private manifests, so it is
+  // released together with the final runtime. Snapshot disposal is idempotent.
+  let supersededRuntime: PreparedAdapterExecutionTargetRuntime | undefined;
+  const releaseRuntimes = async () => {
+    try { await runtime?.cleanupWorkspaceSnapshot?.(); } finally { await supersededRuntime?.cleanupWorkspaceSnapshot?.(); }
+  };
   let descriptor: NativeWorkspaceSyncDescriptor;
   let mode: WorkspaceInboundMode = "host_current";
   let reuseReason: StartupReuseReason = "created";
@@ -1061,6 +1068,7 @@ export async function prepareNativeWorkspaceSync(input: {
         } catch (error) {
           if (!(error instanceof Error) || error.message !== "workspace_sync_out_unrecoverable") throw error;
         }
+        const warmRuntime = runtime;
         runtime = await prepareRuntime({
           runId: input.runId,
           target,
@@ -1075,6 +1083,7 @@ export async function prepareNativeWorkspaceSync(input: {
           onCheckpoint: input.onCheckpoint,
           durableSeed: preparedSeed ?? seedPaths,
         });
+        supersededRuntime = warmRuntime;
         if (!preparedSeed) {
           workspaceArchiveSha256 = await sha256File(seedPaths.workspaceArchivePath);
           gitArchiveSha256 = currentSnapshot.gitSnapshot || currentSnapshot.repositories?.length
@@ -1145,10 +1154,10 @@ export async function prepareNativeWorkspaceSync(input: {
       }
       await restorePromise;
     },
-    cleanup: async () => { await preparedRuntime.cleanupWorkspaceSnapshot?.(); await cleanupNativeWorkspaceSync(input.runId); },
+    cleanup: async () => { await releaseRuntimes(); await cleanupNativeWorkspaceSync(input.runId); },
   };
   } catch (error) {
-    await runtime?.cleanupWorkspaceSnapshot?.();
+    await releaseRuntimes();
     if (!existingReference) await cleanupNativeWorkspaceSync(input.runId);
     throw error;
   }

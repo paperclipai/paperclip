@@ -39,9 +39,12 @@ async function git(cwd: string, ...args: string[]) {
 describe("native warm workspace Git history", () => {
   const oldHome = process.env.PAPERCLIP_HOME;
   const oldInstance = process.env.PAPERCLIP_INSTANCE_ID;
+  const oldTmpdir = process.env.TMPDIR;
   const roots: string[] = [];
   afterEach(async () => {
     vi.restoreAllMocks();
+    if (oldTmpdir === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = oldTmpdir;
     if (oldHome === undefined) delete process.env.PAPERCLIP_HOME;
     else process.env.PAPERCLIP_HOME = oldHome;
     if (oldInstance === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
@@ -49,16 +52,22 @@ describe("native warm workspace Git history", () => {
     await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true })));
   });
 
-  it.each(["unchanged", "host_commit", "host_branch", "new_workspace_branch", "host_origin", "remote_commit", "remote_commit_corrupt_seed", "remote_commit_missing_seed", "remote_commit_cache_refused", "host_bytes_cache_refused", "remote_commit_missing_run_seed", "remote_commit_corrupt_run_seed", "nested_commit", "plain_nested_commit"] as const)(
+  it.each(["unchanged", "host_commit", "host_branch", "new_workspace_branch", "host_origin", "remote_commit", "remote_commit_corrupt_seed", "remote_commit_missing_seed", "remote_commit_cache_refused", "host_bytes_cache_refused", "remote_commit_missing_run_seed", "remote_commit_corrupt_run_seed", "nested_commit", "plain_nested_commit", "plain_nested_commit_error"] as const)(
     "checks Git identity before reusing a warm sandbox: %s", async (change) => {
       const invalidRunSeed = change === "remote_commit_missing_run_seed" || change === "remote_commit_corrupt_run_seed";
       const cacheRefused = change === "remote_commit_cache_refused" || change === "host_bytes_cache_refused" || invalidRunSeed;
+      const plainNested = change === "plain_nested_commit" || change === "plain_nested_commit_error";
       const snapshotWorker = vi.spyOn(restoreMerge, "captureDirectorySnapshotOffThread");
       const packClone = vi.spyOn(gitWorkspaceSync, "withShallowGitWorkspaceClone");
       const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-warm-history-"));
       roots.push(root);
       process.env.PAPERCLIP_HOME = path.join(root, "home");
       process.env.PAPERCLIP_INSTANCE_ID = "test";
+      // Host-side snapshots and manifests go to a private temp dir, so the case
+      // can prove it releases every one of them.
+      const tmp = path.join(root, "tmp");
+      await mkdir(tmp);
+      process.env.TMPDIR = tmp;
       const host = path.join(root, "host");
       let remote = path.join(root, "remote");
       async function initRepo(dir: string) {
@@ -70,10 +79,10 @@ describe("native warm workspace Git history", () => {
         await git(dir, "add", ".");
         await git(dir, "commit", "-m", "base");
       }
-      if (change === "plain_nested_commit") await mkdir(host, { recursive: true });
+      if (plainNested) await mkdir(host, { recursive: true });
       else await initRepo(host);
       const nestedPath = path.join(".paperclip-repositories", "nested");
-      if (change === "nested_commit" || change === "plain_nested_commit") await initRepo(path.join(host, nestedPath));
+      if (change === "nested_commit" || plainNested) await initRepo(path.join(host, nestedPath));
       const lease = { id: "lease", providerLeaseId: "sandbox", metadata: {} } as EnvironmentLease;
       let runnerProfileJson: Record<string, unknown> = {};
       // Persist the real service's descriptors and stamps; only the DB query
@@ -106,7 +115,7 @@ describe("native warm workspace Git history", () => {
       expect(first.mode).toBe("host_current");
       expect(snapshotWorker).toHaveBeenCalled();
       expect(first.reference.schema).toBe("paperclip.native-workspace-sync/v3");
-      if (change === "plain_nested_commit") {
+      if (plainNested) {
         const recovered = await nativeWorkspaceSyncInternals.readDescriptor({ runId: "first", reference: first.reference });
         expect(recovered.descriptor.gitSnapshot).toBeNull();
         expect(recovered.descriptor.repositories?.[0]?.path).toBe(nestedPath);
@@ -114,8 +123,8 @@ describe("native warm workspace Git history", () => {
       await first.restoreWorkspace();
       await first.cleanup();
 
-      if (change === "host_commit" || change === "nested_commit" || change === "plain_nested_commit") {
-        await git(change === "nested_commit" || change === "plain_nested_commit" ? path.join(host, nestedPath) : host, "commit", "--allow-empty", "-m", "host only");
+      if (change === "host_commit" || change === "nested_commit" || plainNested) {
+        await git(change === "nested_commit" || plainNested ? path.join(host, nestedPath) : host, "commit", "--allow-empty", "-m", "host only");
       } else if (change === "host_branch" || change === "new_workspace_branch") {
         await git(host, "checkout", "-b", "other");
         if (change === "new_workspace_branch") {
@@ -142,12 +151,12 @@ describe("native warm workspace Git history", () => {
         await rm(path.join(process.env.PAPERCLIP_HOME!, "instances", "test", "native-workspace-sync", "generations", "company", "shared-v1"), { recursive: true, force: true });
         vi.spyOn(workspaceSeedCache, "publishWorkspaceSeedGeneration").mockResolvedValue(false);
       }
-      const hostRepo = change === "plain_nested_commit" ? path.join(host, nestedPath) : host;
-      const remoteRepo = change === "plain_nested_commit" ? path.join(remote, nestedPath) : remote;
+      const hostRepo = plainNested ? path.join(host, nestedPath) : host;
+      const remoteRepo = plainNested ? path.join(remote, nestedPath) : remote;
       const expectedContents = await readFile(path.join(hostRepo, "file.txt"), "utf8");
       const expectedHead = await git(hostRepo, "rev-parse", "HEAD");
       const expectedBranch = await git(hostRepo, "symbolic-ref", "--short", "HEAD");
-      const nestedHead = change === "nested_commit" || change === "plain_nested_commit" ? await git(path.join(host, nestedPath), "rev-parse", "HEAD") : null;
+      const nestedHead = change === "nested_commit" || plainNested ? await git(path.join(host, nestedPath), "rev-parse", "HEAD") : null;
       runnerProfileJson = {};
       packClone.mockClear();
       let invalidatedRunSeed = false;
@@ -164,9 +173,19 @@ describe("native warm workspace Git history", () => {
         },
       };
       const reuseEvents: import("@paperclipai/adapter-utils").AdapterRuntimeEvent[] = [];
-      const second = (await prepareNativeWorkspaceSync({ ...input, runId: "second", workspaceId: change === "new_workspace_branch" ? "another-workspace" : input.workspaceId, onEvent: async event => { reuseEvents.push(event); }, target: {
+      const prepareSecond = () => prepareNativeWorkspaceSync({ ...input, runId: "second", workspaceId: change === "new_workspace_branch" ? "another-workspace" : input.workspaceId, onEvent: async event => { reuseEvents.push(event); }, target: {
         ...target, remoteCwd: remote, runner: secondRunner, sandboxLeaseAcquisition: { outcome: change === "new_workspace_branch" ? "created" : "resumed", providerLeaseId: "sandbox" },
-      } }))!;
+      } });
+      if (change === "plain_nested_commit_error") {
+        // Fail after the warm stamp mismatch prepared a replacement runtime.
+        vi.spyOn(restoreMerge, "serializeDirectorySnapshot").mockImplementationOnce(() => {
+          throw new Error("descriptor serialization failed");
+        });
+        await expect(prepareSecond()).rejects.toThrow("descriptor serialization failed");
+        expect(await readdir(tmp, { recursive: true })).toEqual([]);
+        return;
+      }
+      const second = (await prepareSecond())!;
       try {
         if (change === "remote_commit") expect(packClone).not.toHaveBeenCalled();
         if (change === "new_workspace_branch") expect(packClone).not.toHaveBeenCalled();
@@ -191,6 +210,7 @@ describe("native warm workspace Git history", () => {
           expect(await git(path.join(host, nestedPath), "rev-parse", "HEAD")).toBe(nestedHead);
         }
       } finally { await second.cleanup(); }
+      expect(await readdir(tmp, { recursive: true })).toEqual([]);
     }, 30_000,
   );
 });

@@ -666,6 +666,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         });
       })()
     : null;
+  // Release the host-side workspace baseline if the run fails before the
+  // restoring `finally` below runs. Idempotent, so a restore that already
+  // released it makes this a no-op.
+  try {
   const restoreRemoteWorkspace = preparedExecutionTargetRuntime
     ? () => preparedExecutionTargetRuntime.restoreWorkspace((line) => onLog("stdout", line))
     : null;
@@ -1478,5 +1482,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         }
       }
     }
+  }
+  } catch (error) {
+    await preparedExecutionTargetRuntime?.cleanupWorkspaceSnapshot?.().catch(() => {});
+    throw error;
   }
 }

@@ -347,10 +347,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   })();
   const autoTrustEnabled = !hasCursorTrustBypassArg(extraArgs);
   let restoreRemoteWorkspace: (() => Promise<void>) | null = null;
+  // Releases the host-side workspace baseline if the run fails before the
+  // restoring `finally` below runs. Idempotent, so a restore that already
+  // released it makes this a no-op.
+  let releaseRemoteWorkspaceSnapshot: (() => Promise<void>) | null = null;
   let localSkillsDir: string | null = null;
   let remoteRuntimeRootDir: string | null = null;
   let paperclipBridge: Awaited<ReturnType<typeof startAdapterExecutionTargetPaperclipBridge>> = null;
 
+  try {
   try {
     if (executionTargetIsRemote) {
       try {
@@ -378,6 +383,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         });
         restoreRemoteWorkspace = () =>
           preparedExecutionTargetRuntime.restoreWorkspace((line) => onLog("stdout", line));
+        releaseRemoteWorkspaceSnapshot = async () => { await preparedExecutionTargetRuntime.cleanupWorkspaceSnapshot?.(); };
         effectiveExecutionCwd = preparedExecutionTargetRuntime.workspaceRemoteDir ?? effectiveExecutionCwd;
         refreshPaperclipWorkspaceEnvForExecution({
           env,
@@ -828,5 +834,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         }
       }
     }
+  }
+  } catch (error) {
+    await releaseRemoteWorkspaceSnapshot?.().catch(() => {});
+    throw error;
   }
 }

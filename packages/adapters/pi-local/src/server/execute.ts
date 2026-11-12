@@ -345,6 +345,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     env.PI_CODING_AGENT_DIR = localAgentConfigDir;
   }
   let attributionExtension: Awaited<ReturnType<typeof preparePiOpenRouterExtension>> | undefined;
+  // Releases the host-side workspace baseline on every exit path, including a
+  // failure before the restoring `finally` runs. Idempotent, so it is a no-op
+  // after a restore, which releases it itself.
+  let releaseRemoteWorkspaceSnapshot: (() => Promise<void>) | null = null;
   try {
     attributionExtension = await preparePiOpenRouterExtension();
     let attributionExtensionPath = attributionExtension.extensionPath;
@@ -462,6 +466,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           });
           restoreRemoteWorkspace = () =>
             preparedRemoteRuntime.restoreWorkspace((line) => onLog("stdout", line));
+          releaseRemoteWorkspaceSnapshot = async () => { await preparedRemoteRuntime.cleanupWorkspaceSnapshot?.(); };
           effectiveExecutionCwd = preparedRemoteRuntime.workspaceRemoteDir ?? effectiveExecutionCwd;
           refreshPaperclipWorkspaceEnvForExecution({
             env,
@@ -928,6 +933,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
     }
   } finally {
+    await releaseRemoteWorkspaceSnapshot?.().catch(() => {});
     await Promise.all([preparedRuntimeConfig.cleanup(), attributionExtension?.cleanup()]);
   }
 }
