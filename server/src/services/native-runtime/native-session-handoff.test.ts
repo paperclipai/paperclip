@@ -164,6 +164,25 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(fallback.task.prompt).not.toContain("WORKFLOW_BODY_CANARY");
   });
 
+  it("labels another agent's chat message apart from this agent's own replies", async () => {
+    const chatId = randomUUID(), peerId = randomUUID();
+    await db.insert(agents).values({ id: peerId, companyId, name: "Austen", role: "general", adapterType: "paperclip_runner" });
+    await db.insert(issues).values({ id: chatId, companyId, title: "Chat", status: "in_progress", assigneeAgentId: agentId,
+      conversationAgentId: agentId, conversationUserId: "second-user", conversationState: "active" });
+    await db.insert(issueComments).values([
+      { companyId, issueId: chatId, body: "Plan the launch", authorUserId: "second-user", createdAt: new Date(1_000) },
+      { companyId, issueId: chatId, body: "PEER NOTE", authorAgentId: peerId, createdAt: new Date(2_000) },
+      { companyId, issueId: chatId, body: "OWN REPLY", authorAgentId: agentId, createdAt: new Date(3_000) },
+    ]);
+    const history = await buildNativeSessionHandoff({ db, companyId, issueId: chatId, agentId, before: new Date(20_000) });
+    const packet = JSON.parse(history!.split("\n").at(-1)!);
+    expect(packet.entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ body: "Plan the launch", author: "user" }),
+      expect.objectContaining({ body: "PEER NOTE", author: "other_agent", authorAgentId: peerId }),
+      expect.objectContaining({ body: "OWN REPLY", author: "agent", authorAgentId: agentId }),
+    ]));
+  });
+
   it("loads and redacts history once only when a fresh attempt requests it", async () => {
     const select = vi.spyOn(db, "select");
     try {
