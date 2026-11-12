@@ -26,6 +26,16 @@ export class NativePredecessorRetirementUnprovenError extends Error {
   }
 }
 
+export const NATIVE_PREDECESSOR_RETIREMENT_DIRECTORY_BUSY_CODE = "native_predecessor_retirement_directory_busy";
+
+export class NativePredecessorRetirementDirectoryBusyError extends Error {
+  readonly code = NATIVE_PREDECESSOR_RETIREMENT_DIRECTORY_BUSY_CODE;
+  constructor(readonly predecessorRunId: string | null, cause: unknown) {
+    super("Another run of this agent kept its files busy while the previous run's session was retired. Retry the run.", { cause });
+    this.name = "NativePredecessorRetirementDirectoryBusyError";
+  }
+}
+
 /** The typed error itself or one of its first causes (AggregateError members included). */
 export function findNativePredecessorRetirementUnproven(error: unknown): NativePredecessorRetirementUnprovenError | null {
   const pending: unknown[] = [error];

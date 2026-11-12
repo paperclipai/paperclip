@@ -48,11 +48,11 @@ export function collapsePendingConfirmationsToNewest<T extends {
   addresseeUserId?: string | null;
   addresseeAgentId?: string | null;
 }>(rows: T[], newestSettledConfirmationAt: ReadonlyMap<string, Date> = new Map()) {
-  const independent = (row: T) => payloadFlag(row.payload, "qualityReview");
+  const independent = (row: T) => payloadFlag(row.payload, "qualityReview") || governedAction(row.payload);
   const newestByGroup = new Map<string, T>();
   for (const row of rows) {
     if (row.kind !== "request_confirmation" || independent(row)) continue;
-    const groupKey = `${row.issueId}:${row.kind}`;
+    const groupKey = confirmationAudienceKey(row);
     const newest = newestByGroup.get(groupKey);
     if (
       !newest
@@ -65,8 +65,8 @@ export function collapsePendingConfirmationsToNewest<T extends {
 
   return rows.filter((row) => {
     if (row.kind !== "request_confirmation" || independent(row)) return true;
-    if (newestByGroup.get(`${row.issueId}:${row.kind}`)?.id !== row.id) return false;
-    const settledAt = governedAction(row.payload) ? undefined : newestSettledConfirmationAt.get(confirmationAudienceKey(row));
+    if (newestByGroup.get(confirmationAudienceKey(row))?.id !== row.id) return false;
+    const settledAt = newestSettledConfirmationAt.get(confirmationAudienceKey(row));
     return !settledAt || settledAt.getTime() <= row.createdAt.getTime();
   });
 }

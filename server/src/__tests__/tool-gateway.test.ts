@@ -1,6 +1,9 @@
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { createHash, randomUUID } from "node:crypto";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import express from "express";
 import { and, eq, sql } from "drizzle-orm";
 import request from "supertest";
@@ -1515,7 +1518,7 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
         .expect(200);
       expect(initialized.body.result).toMatchObject({
         capabilities: { tools: {}, resources: {}, prompts: {} },
-        _meta: { "paperclip/mcp-app-ui": "unsupported" },
+        _meta: { "paperclip/mcp-app-ui": "host_rendered" },
       });
       const setupLimited = await request(app)
         .post(endpoint)
@@ -1913,6 +1916,164 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
       status: "idle",
       commandTemplateKey: localTool.templateKey,
       healthStatus: "ok",
+    });
+  });
+
+  describe("local stdio MCP protocol versions", () => {
+    // Each script records every message it receives, one JSON line per message,
+    // so the tests can see exactly what Paperclip sent to each process.
+    function stdioScript(logPath: string, behavior: "modern" | "exit-on-probe" | "silent" | "upgrading" | "downgrading" | "broken" | "modern-failing") {
+      return `
+const fs = require("node:fs");
+const readline = require("node:readline");
+// "upgrading" is a legacy server until the marker file exists, then stateless.
+// "downgrading" is stateless until the marker exists, then a strict handshake server.
+const switched = fs.existsSync(${JSON.stringify(`${logPath}.upgraded`)});
+const behavior = ${JSON.stringify(behavior)} === "upgrading" ? (switched ? "modern" : "legacy-quick")
+  : ${JSON.stringify(behavior)} === "downgrading" ? (switched ? "legacy-strict" : "modern")
+  : ${JSON.stringify(behavior)} === "modern-failing" ? "modern"
+  : ${JSON.stringify(behavior)};
+const failsCalls = ${JSON.stringify(behavior)} === "modern-failing";
+let initialized = false;
+const send = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
+readline.createInterface({ input: process.stdin }).on("line", (line) => {
+  const message = JSON.parse(line);
+  fs.appendFileSync(${JSON.stringify(logPath)}, JSON.stringify(message) + "\\n");
+  if (message.method === "server/discover") {
+    if (behavior === "modern") send({ jsonrpc: "2.0", id: message.id, result: { resultType: "complete", supportedVersions: ["2026-07-28"], capabilities: { tools: {} } } });
+    if (behavior === "exit-on-probe" || behavior === "broken") process.exit(1);
+    if (behavior === "legacy-quick" || behavior === "legacy-strict") send({ jsonrpc: "2.0", id: message.id, error: { code: -32601, message: "Method not found" } });
+    return;
+  }
+  if (message.method === "initialize") {
+    if (behavior === "broken") process.exit(1);
+    if (behavior === "modern") { send({ jsonrpc: "2.0", id: message.id, error: { code: -32601, message: "Method not found" } }); return; }
+    initialized = true;
+    send({ jsonrpc: "2.0", id: message.id, result: { protocolVersion: "2025-06-18", capabilities: {}, serverInfo: { name: "legacy-stdio", version: "1" } } });
+    return;
+  }
+  if (message.method === "tools/call") {
+    if (behavior === "legacy-strict" && !initialized) {
+      send({ jsonrpc: "2.0", id: message.id, error: { code: -32002, message: "Server not initialized" } });
+      return;
+    }
+    if (failsCalls) {
+      send({ jsonrpc: "2.0", id: message.id, error: { code: -32603, message: "Internal error after writing" } });
+      return;
+    }
+    const meta = message.params && message.params._meta;
+    if (behavior === "modern" && !(meta && meta["io.modelcontextprotocol/protocolVersion"] === "2026-07-28")) {
+      send({ jsonrpc: "2.0", id: message.id, error: { code: -32602, message: "Required per-request metadata is missing" } });
+      return;
+    }
+    send({ jsonrpc: "2.0", id: message.id, result: { content: [{ type: "text", text: behavior + ":" + String(message.params.arguments.message) }], resultType: behavior === "modern" ? "complete" : undefined } });
+  }
+});
+`;
+    }
+
+    async function runStdio(behavior: "modern" | "exit-on-probe" | "silent" | "upgrading" | "downgrading" | "broken" | "modern-failing", calls: number, beforeCall?: (index: number, logPath: string) => void) {
+      const dir = mkdtempSync(join(tmpdir(), "paperclip-stdio-protocol-"));
+      const logPath = join(dir, "messages.jsonl");
+      try {
+        const company = await createCompany(db);
+        const agent = await createAgent(db, company.id);
+        const { run } = await createIssueAndRun(db, company.id, agent.id);
+        const applicationKey = `stdio-${behavior}`;
+        const localTool = await createLocalStdioMcpTool(db, company.id, { applicationKey, toolName: "echo", stdioScript: stdioScript(logPath, behavior) });
+        const profile = await allowToolsForAgent(db, company.id, agent.id, []);
+        await db.insert(toolProfileEntries).values({
+          companyId: company.id, profileId: profile.id, selectorType: "catalog_entry", effect: "include", catalogEntryId: localTool.catalogEntry.id,
+        });
+        const gateway = createTestToolGatewayService(db, { runtimeSupervisor: { idleTtlMs: 10_000 } });
+        const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+        const tool = expectedConnectedToolName({ applicationKey, connectionId: localTool.connection.id, toolName: "echo" });
+        const results = [];
+        for (let index = 0; index < calls; index += 1) {
+          beforeCall?.(index, logPath);
+          results.push(await gateway.executeTool({ sessionToken: session.token, tool, parameters: { message: `hello-${index}` } })
+            .catch((error: unknown) => ({ result: { error } })));
+        }
+        const messages = existsSync(logPath)
+          ? readFileSync(logPath, "utf8").trim().split("\n").map((line) => JSON.parse(line) as { method?: string; params?: Record<string, any> })
+          : [];
+        return { results, messages, methods: messages.map((message) => message.method) };
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+
+    it("calls a 2026-07-28 stdio server without a handshake and with per-request metadata", async () => {
+      const { results, messages, methods } = await runStdio("modern", 2);
+      expect(results.map((result) => (result.result as { content?: unknown }).content)).toEqual(["modern:hello-0", "modern:hello-1"]);
+      // Probed once; the second process is called directly.
+      expect(methods).toEqual(["server/discover", "tools/call", "tools/call"]);
+      const call = messages.find((message) => message.method === "tools/call")!;
+      expect(call.params!._meta["io.modelcontextprotocol/clientCapabilities"].extensions["io.modelcontextprotocol/ui"]).toBeTruthy();
+    });
+
+    it("starts a legacy stdio server again for the handshake when it exits on the probe", async () => {
+      const { results, methods } = await runStdio("exit-on-probe", 2);
+      expect(results.map((result) => (result.result as { content?: unknown }).content)).toEqual(["exit-on-probe:hello-0", "exit-on-probe:hello-1"]);
+      expect(methods).toEqual([
+        "server/discover",
+        "initialize", "notifications/initialized", "tools/call",
+        "initialize", "notifications/initialized", "tools/call",
+      ]);
+    });
+
+    it("probes again when a remembered handshake server is replaced by a stateless one", async () => {
+      const { results, methods } = await runStdio("upgrading", 2, (index, logPath) => {
+        if (index === 1) writeFileSync(`${logPath}.upgraded`, "");
+      });
+      expect(results.map((result) => (result.result as { content?: unknown }).content)).toEqual(["legacy-quick:hello-0", "modern:hello-1"]);
+      expect(methods).toEqual([
+        "server/discover", "initialize", "notifications/initialized", "tools/call",
+        // Remembered as legacy, refused, probed again, then called statelessly.
+        "initialize", "server/discover", "tools/call",
+      ]);
+    });
+
+    it("probes again when a remembered stateless server is rolled back to a handshake build", async () => {
+      const { results, methods } = await runStdio("downgrading", 2, (index, logPath) => {
+        if (index === 1) writeFileSync(`${logPath}.upgraded`, "");
+      });
+      expect(results.map((result) => (result.result as { content?: unknown }).content)).toEqual(["modern:hello-0", "legacy-strict:hello-1"]);
+      expect(methods).toEqual([
+        "server/discover", "tools/call",
+        // Remembered as stateless, refused before running, probed again, then the handshake.
+        "tools/call", "server/discover", "initialize", "notifications/initialized", "tools/call",
+      ]);
+    });
+
+    it("never replays a call that a stateless stdio server failed after it may have run", async () => {
+      const { results, methods } = await runStdio("modern-failing", 2);
+      for (const result of results) {
+        expect(((result.result as { error?: ToolGatewayHttpError }).error)!.reasonCode).toBe("local_stdio_protocol_error");
+      }
+      expect(methods).toEqual(["server/discover", "tools/call", "tools/call"]);
+    });
+
+    it("gives up after one restart when a stdio server exits on both the probe and the handshake", async () => {
+      const { results, methods } = await runStdio("broken", 2);
+      for (const result of results) {
+        expect((result.result as { error?: unknown }).error).toBeInstanceOf(ToolGatewayHttpError);
+        expect(((result.result as { error?: ToolGatewayHttpError }).error)!.reasonCode).toBe("local_stdio_process_exited");
+      }
+      // Two processes per call at most: one recovery restart, never a loop.
+      expect(methods).toEqual(["server/discover", "initialize", "server/discover", "initialize"]);
+    });
+
+    it("falls back to the handshake when a legacy stdio server ignores the probe", async () => {
+      const started = Date.now();
+      const { results, methods } = await runStdio("silent", 2);
+      expect(results.map((result) => (result.result as { content?: unknown }).content)).toEqual(["silent:hello-0", "silent:hello-1"]);
+      expect(methods).toEqual([
+        "server/discover", "initialize", "notifications/initialized", "tools/call",
+        "initialize", "notifications/initialized", "tools/call",
+      ]);
+      // Only the first process waits out the probe; the answer is remembered.
+      expect(Date.now() - started).toBeLessThan(10_000);
     });
   });
 

@@ -31,9 +31,10 @@ const mockInstructionWorkingCopies = vi.hoisted(() => ({ list: vi.fn(), resolve:
 vi.mock("../services/agent-instruction-working-copies.js", () => ({ agentInstructionWorkingCopyService: () => mockInstructionWorkingCopies }));
 
 const mockDownloadAgentFile = vi.hoisted(() => vi.fn());
+const mockRenameAgentFile = vi.hoisted(() => vi.fn());
 vi.mock("../services/agent-file-store.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../services/agent-file-store.js")>();
-  return { ...actual, agentFileStore: (...args: Parameters<typeof actual.agentFileStore>) => ({ ...actual.agentFileStore(...args), download: mockDownloadAgentFile }) };
+  return { ...actual, agentFileStore: (...args: Parameters<typeof actual.agentFileStore>) => ({ ...actual.agentFileStore(...args), download: mockDownloadAgentFile, rename: mockRenameAgentFile }) };
 });
 
 const mockInstructionRevisions = vi.hoisted(() => ({ readCurrent: vi.fn(), commit: vi.fn(), restore: vi.fn(), history: vi.fn(), readRevision: vi.fn(), diff: vi.fn(), materializeCurrent: vi.fn() }));
@@ -579,6 +580,27 @@ describe("agent instructions bundle routes", () => {
       expect.objectContaining({ id: "11111111-1111-4111-8111-111111111111" }),
       filePath,
     );
+  });
+
+  it("renames through the file store with the authenticated actor and source hash", async () => {
+    mockRenameAgentFile.mockResolvedValue(undefined);
+    const res = await requestApp(await createApp(), baseUrl => request(baseUrl)
+      .put("/api/agents/11111111-1111-4111-8111-111111111111/instructions-bundle/file")
+      .send({ path: "AGENTS.md", renameTo: "ROOT.md", content: "Updated", baseHash: "a".repeat(64) }));
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockRenameAgentFile).toHaveBeenCalledWith({ companyId: "company-1", agentId: "11111111-1111-4111-8111-111111111111",
+      path: "AGENTS.md", renameTo: "ROOT.md", bytes: Buffer.from("Updated"), baseHash: "a".repeat(64) }, expect.objectContaining({ type: "board" }));
+    expect(mockAgentInstructionsService.readFile).toHaveBeenCalledWith(expect.objectContaining({ companyId: "company-1" }), "ROOT.md");
+    expect(mockInstructionRevisions.commit).not.toHaveBeenCalled();
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+  });
+
+  it("requires a source hash before renaming", async () => {
+    const res = await requestApp(await createApp(), baseUrl => request(baseUrl)
+      .put("/api/agents/11111111-1111-4111-8111-111111111111/instructions-bundle/file")
+      .send({ path: "AGENTS.md", renameTo: "ROOT.md", content: "Updated" }));
+    expect(res.status).toBe(422);
+    expect(mockRenameAgentFile).not.toHaveBeenCalled();
   });
 
   it("commits entry bytes through the canonical service with the authenticated actor", async () => {

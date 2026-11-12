@@ -1595,7 +1595,7 @@ describe("automatic retained workspace recovery", () => {
         await expect(db.transaction(async tx => {
           await tx.update(agentWakeupRequests).set({ status: "skipped" }).where(eq(agentWakeupRequests.id, wake.id));
           await recover(tx as unknown as typeof db);
-          expect(scheduleRecoveryRetry).toHaveBeenCalledWith(queued.id);
+          expect(scheduleRecoveryRetry).toHaveBeenCalledWith(queued.id, expect.any(Object));
           throw rollback;
         })).rejects.toBe(rollback);
         scheduleRecoveryRetry.mockClear();

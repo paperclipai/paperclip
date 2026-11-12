@@ -52,6 +52,34 @@ export class RemoteAdmissionReadError extends Error {
   }
 }
 
+/** Leaf strings of a request body: a validation message that echoes one is redacted. */
+function requestStrings(value: unknown, out: string[] = []): string[] {
+  if (typeof value === "string") { if (value.length >= 8) out.push(value); }
+  else if (Array.isArray(value)) for (const item of value) requestStrings(item, out);
+  else if (value && typeof value === "object") for (const item of Object.values(value)) requestStrings(item, out);
+  return out;
+}
+/** The product's own validation message from a 400/409/422 body, bounded and redacted.
+ * Details, issues and any other field stay withheld; request values and the session never appear. */
+async function validationReason(response: Response, request: unknown, session?: string): Promise<string | undefined> {
+  const reader = response.body?.getReader(); if (!reader) return;
+  const chunks: Uint8Array[] = []; let bytes = 0, done = false;
+  try {
+    for (;;) {
+      const next = await reader.read(); if (next.done) { done = true; break; }
+      bytes += next.value.byteLength; if (bytes > 16_384) return;
+      chunks.push(next.value);
+    }
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { error?: unknown };
+    if (!body || typeof body !== "object" || typeof body.error !== "string") return;
+    let reason = body.error.replace(/\s+/g, " ").trim();
+    for (const secret of [...requestStrings(request), ...(session ? [session] : [])].sort((a, b) => b.length - a.length)) reason = reason.split(secret).join("[redacted]");
+    reason = reason.replace(/[A-Za-z0-9+/_=-]{32,}/g, "[redacted]");
+    return reason ? (reason.length > 240 ? `${reason.slice(0, 240)}...` : reason) : undefined;
+  } catch { return; }
+  finally { if (!done) await reader.cancel().catch(() => {}); reader.releaseLock(); }
+}
+
 export class RunnerApi {
   readonly baseURL: string;
   private browserCookie?: string;
@@ -232,7 +260,11 @@ export class RunnerApi {
   private async authenticatedJson<T>(method: string, path: string, data?: unknown, options?: { timeout: number }): Promise<T> {
     const response = await this.authenticatedResponse(method, path, data, options);
     const endpoint = new URL(path, this.baseURL).pathname;
-    if (!response.ok) { await response.body?.cancel(); throw new RunnerApiHttpError(response.status, `${method} ${endpoint} returned ${response.status}; body withheld`); }
+    if (!response.ok) {
+      const reason = [400, 409, 422].includes(response.status) ? await validationReason(response, data, this.browserCookie) : undefined;
+      if (!reason) await response.body?.cancel();
+      throw new RunnerApiHttpError(response.status, `${method} ${endpoint} returned ${response.status}; ${reason ? `reason: ${reason}; other body fields withheld` : "body withheld"}`);
+    }
     try { return await response.json() as T; } catch { throw new Error(`${method} ${endpoint} returned ${response.status} with invalid JSON; body withheld`); }
   }
 }

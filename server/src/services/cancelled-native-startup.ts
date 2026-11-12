@@ -7,7 +7,7 @@ import { isUuidLike } from "@paperclipai/shared";
 import { claimedAdapterType } from "./conversation-continuation.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { canContinueCancelledRun, readRunCancellation } from "./run-cancellation.js";
-import { legacyControllerBootId, legacyControllerProvenGone } from "./legacy-controller-lease.js";
+import { CONTROLLER_LEASE_LOST_FAILURE_CODE, legacyControllerBootId, legacyControllerProvenGone } from "./legacy-controller-lease.js";
 import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state.js";
 import { hasVerifiedWorkspaceRepair } from "./workspace-recovery-receipt.js";
 import { readFailedPreparationSettlement } from "./failed-preparation-settlement.js";
@@ -129,7 +129,8 @@ export function isInterruptedNativePreparationCandidate(run: Run): boolean {
   const recovery = run.resultJson?.executionRecovery as Record<string, unknown> | undefined;
   // Restart recovery records this certificate only after revoking a preparing
   // controller. A generic process-lost error cannot establish safe replay.
-  const lostPreparation = run.status === "failed" && run.errorCode === "process_lost"
+  const lostPreparation = run.status === "failed"
+    && (run.errorCode === "process_lost" || run.errorCode === CONTROLLER_LEASE_LOST_FAILURE_CODE)
     && recovery?.kind === "bootstrap" && recovery.providerWorkStarted === false;
   // Older shutdown records predate structured cancellation. Current records
   // identify unexpected system interruption without relying on an error label.

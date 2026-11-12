@@ -680,6 +680,8 @@ describe("OpenCodeServerDriver", () => {
           { status: 200, headers: { "Content-Type": "text/event-stream" } },
         );
       }
+      if (method === "GET" && url.pathname === "/mcp")
+        return json({ paperclip: { status: "connected" } });
       if (method === "POST" && url.pathname === "/session")
         return json({ id: providerSessionId });
       if (method === "GET" && url.pathname === "/question") return json([]);
@@ -3013,9 +3015,206 @@ describe("OpenCodeServerDriver", () => {
         event.payload.channel === "final",
     );
     expect(finalMessages).toHaveLength(1);
+    // Structure cannot tell commentary from an answer, so the saved reply keeps
+    // all prose written after the last work tool, in order, as the person saw it.
     expect(finalMessages[0]?.payload.text).toBe(
-      "This is the complete substantive answer emitted after the accepted completion tool call.",
+      "This deliberately long pre-tool commentary discusses possible schema corrections, retries, compatibility details, and several implementation alternatives, but it is not the provider's final response.\n\nThis is the complete substantive answer emitted after the accepted completion tool call.",
     );
+    await session.close({ reason: "test" });
+  });
+  it("keeps an answer written before the completion call when a later message only refers back to it", async () => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-driver-"));
+    const workspace = await mkdtemp(
+      join(tmpdir(), "paperclip-opencode-workspace-"),
+    );
+    roots.push(root, workspace);
+    const driver = new OpenCodeServerDriver({
+      model: "openrouter/deepseek/deepseek-v4-flash-0731",
+      runtimeDirectory: root,
+      command: fixture,
+      environment: {
+        PATH: process.env.PATH,
+        OPENROUTER_API_KEY: "fixture-key",
+      },
+    });
+    const session = await driver.openSession({
+      runId: "run-answer-then-reference",
+      normalizedSessionId: "answer-then-reference",
+      workingDirectory: workspace,
+    });
+    await session.startTurn({
+      message: { role: "user", text: "answer-before-finish-then-reference" },
+    });
+    const events = await collectTurnEvents(session.events());
+    const finalMessages = events.filter(
+      (event) =>
+        event.eventType === "item.completed" &&
+        event.payload.kind === "agentMessage" &&
+        event.payload.channel === "final",
+    );
+    expect(finalMessages).toHaveLength(1);
+    // The saved reply must hold the answer the person saw, not only "Answered above".
+    expect(finalMessages[0]?.payload.text).toBe(
+      "Two inbox items need you: [COM-2](/COM/issues/COM-2) is blocked and [COM-1](/COM/issues/COM-1) is waiting for review.\n\nAnswered above: two inbox items need your attention.",
+    );
+    expect(finalMessages[0]?.itemId).toBe("part-reference");
+    await session.close({ reason: "test" });
+  });
+
+  it("keeps a short answer written before the completion call when a later message only refers back to it", async () => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-driver-"));
+    const workspace = await mkdtemp(join(tmpdir(), "paperclip-opencode-workspace-"));
+    roots.push(root, workspace);
+    const driver = new OpenCodeServerDriver({
+      model: "openrouter/deepseek/deepseek-v4-flash-0731",
+      runtimeDirectory: root,
+      command: fixture,
+      environment: { PATH: process.env.PATH, OPENROUTER_API_KEY: "fixture-key" },
+    });
+    const session = await driver.openSession({
+      runId: "run-short-answer-then-reference",
+      normalizedSessionId: "short-answer-then-reference",
+      workingDirectory: workspace,
+    });
+    await session.startTurn({ message: { role: "user", text: "short-answer-before-finish-then-reference" } });
+    const events = await collectTurnEvents(session.events());
+    const finalMessages = events.filter(
+      (event) => event.eventType === "item.completed" && event.payload.kind === "agentMessage" && event.payload.channel === "final",
+    );
+    expect(finalMessages).toHaveLength(1);
+    expect(finalMessages[0]?.payload.text).toBe("The result is 42.\n\nAnswered above.");
+    await session.close({ reason: "test" });
+  });
+
+  it("keeps a full answer written before the completion call when the later message is only \"Done.\"", async () => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-driver-"));
+    const workspace = await mkdtemp(join(tmpdir(), "paperclip-opencode-workspace-"));
+    roots.push(root, workspace);
+    const driver = new OpenCodeServerDriver({
+      model: "openrouter/deepseek/deepseek-v4-flash-0731",
+      runtimeDirectory: root,
+      command: fixture,
+      environment: { PATH: process.env.PATH, OPENROUTER_API_KEY: "fixture-key" },
+    });
+    const session = await driver.openSession({
+      runId: "run-long-answer-then-done",
+      normalizedSessionId: "long-answer-then-done",
+      workingDirectory: workspace,
+    });
+    await session.startTurn({ message: { role: "user", text: "long-answer-before-finish-then-done" } });
+    const events = await collectTurnEvents(session.events());
+    const finalMessages = events.filter(
+      (event) => event.eventType === "item.completed" && event.payload.kind === "agentMessage" && event.payload.channel === "final",
+    );
+    expect(finalMessages).toHaveLength(1);
+    expect(finalMessages[0]?.payload.text).toBe(
+      "Morgan's run on [COM-1](/COM/issues/COM-1) finished: the landing page is saved as `index.html` on the task, with the hero, features and signup sections from the brief.\n\nDone.",
+    );
+    await session.close({ reason: "test" });
+  });
+
+  it.each([
+    ["short-status-before-finish-then-short-answer", "Updated the Launch blockers status card."],
+    ["short-answer-repeated-after-finish", "The result is 42."],
+  ])("saves only a short complete answer written after the completion call: %s", async (prompt, expected) => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-driver-"));
+    const workspace = await mkdtemp(join(tmpdir(), "paperclip-opencode-workspace-"));
+    roots.push(root, workspace);
+    const driver = new OpenCodeServerDriver({
+      model: "openrouter/deepseek/deepseek-v4-flash-0731",
+      runtimeDirectory: root,
+      command: fixture,
+      environment: { PATH: process.env.PATH, OPENROUTER_API_KEY: "fixture-key" },
+    });
+    const session = await driver.openSession({
+      runId: `run-${prompt}`,
+      normalizedSessionId: prompt,
+      workingDirectory: workspace,
+    });
+    await session.startTurn({ message: { role: "user", text: prompt } });
+    const events = await collectTurnEvents(session.events());
+    const finalMessages = events.filter(
+      (event) => event.eventType === "item.completed" && event.payload.kind === "agentMessage" && event.payload.channel === "final",
+    );
+    expect(finalMessages).toHaveLength(1);
+    expect(finalMessages[0]?.payload.text).toBe(expected);
+    await session.close({ reason: "test" });
+  });
+
+  it("saves an answer once when the model restates it after the completion call", async () => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-driver-"));
+    const workspace = await mkdtemp(
+      join(tmpdir(), "paperclip-opencode-workspace-"),
+    );
+    roots.push(root, workspace);
+    const driver = new OpenCodeServerDriver({
+      model: "openrouter/deepseek/deepseek-v4-flash-0731",
+      runtimeDirectory: root,
+      command: fixture,
+      environment: {
+        PATH: process.env.PATH,
+        OPENROUTER_API_KEY: "fixture-key",
+      },
+    });
+    const session = await driver.openSession({
+      runId: "run-answer-then-restatement",
+      normalizedSessionId: "answer-then-restatement",
+      workingDirectory: workspace,
+    });
+    await session.startTurn({
+      message: { role: "user", text: "answer-before-finish-then-restatement" },
+    });
+    const events = await collectTurnEvents(session.events());
+    const finalMessages = events.filter(
+      (event) =>
+        event.eventType === "item.completed" &&
+        event.payload.kind === "agentMessage" &&
+        event.payload.channel === "final",
+    );
+    expect(finalMessages).toHaveLength(1);
+    expect(finalMessages[0]?.payload.text).toBe(
+      "I can't change agent budgets from chat — that's board-only, and agent credentials get 403. Two agents also match \"Morgan,\" so choose the intended one and set $50/month on its budget tab: [Morgan budgets](/COM/agents/agent-morgan/budgets) or [Morgan Research budgets](/COM/agents/agent-morgan-research/budgets).",
+    );
+    expect(finalMessages[0]?.itemId).toBe("part-reference");
+    await session.close({ reason: "test" });
+  });
+
+  it.each([
+    ["answer-before-finish-then-rewrite", "Work on [COM-1 Website task](/COM/issues/COM-1) stopped at 06:57 UTC, about 90 seconds after starting: its run's local runner process exited unexpectedly (`runnerd exited unexpectedly`), all 3 automatic recovery attempts were exhausted, and Paperclip marked the task **blocked** with cause `native_session_retry_exhausted`. The human-supplied website brief had also not arrived, so no brief was saved.\n\n[The assigned agent, Morgan,](https://example.invalid) is in an error state. To resume, open COM-1 and use **Retry** on that task; it rechecks gates and preserves the failed attempt's evidence. Agents cannot retry it for you."],
+    ["status-before-finish-then-answer", "Updated the [Launch blockers status card](/COM/status/status-card-launch) with current Synthetic Launch Notes verification.\n\n- **COM-1 \u2014 Mobile Safari checkout regression blocks launch** \u2014 `blocked`\n- Payment approval is now recorded as received; the mobile Safari checkout regression remains the blocker.\n- Only COM-1 appears in the bounded changed-issue set; no other Launch blockers were added."],
+  ])("saves only the later message when %s writes its own answer after the completion call", async (prompt, expected) => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-driver-"));
+    const workspace = await mkdtemp(join(tmpdir(), "paperclip-opencode-workspace-"));
+    roots.push(root, workspace);
+    const driver = new OpenCodeServerDriver({
+      model: "openrouter/deepseek/deepseek-v4-flash-0731",
+      runtimeDirectory: root,
+      command: fixture,
+      environment: { PATH: process.env.PATH, OPENROUTER_API_KEY: "fixture-key" },
+    });
+    const session = await driver.openSession({
+      runId: `run-${prompt}`,
+      normalizedSessionId: prompt,
+      workingDirectory: workspace,
+    });
+    await session.startTurn({ message: { role: "user", text: prompt } });
+    const events = await collectTurnEvents(session.events());
+    const finalMessages = events.filter(
+      (event) =>
+        event.eventType === "item.completed" &&
+        event.payload.kind === "agentMessage" &&
+        event.payload.channel === "final",
+    );
+    // The completion tool names the later message as the final response; a
+    // planning note or an earlier copy of the answer is not saved with it.
+    expect(finalMessages.map((event) => event.payload.text)).toEqual([expected]);
+    expect(finalMessages[0]?.itemId).toBe("part-reference");
     await session.close({ reason: "test" });
   });
 

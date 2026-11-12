@@ -167,6 +167,24 @@ describeEmbeddedPostgres("heartbeat terminalizeRunOnLeaseRelease", () => {
     expect(terminal).toMatchObject({ status: "cancelled", error: null, errorCode: null });
   });
 
+  it("preserves an acknowledged agent termination Stop when teardown wins the finalizer race", async () => {
+    const { companyId, issueId, runId } = await seed({ issueStatus: "in_progress", runStatus: "running" });
+    const [run] = await db.update(heartbeatRuns).set({
+      nativeIssueId: issueId,
+      resultJson: {
+        cancellation: { reason: "Agent lifecycle stop requested", source: "control_plane", expected: true,
+          initiator: { type: "system" }, recordedAt: new Date().toISOString() },
+        nativeCancellation: {
+          schema: "paperclip.native-cancellation.v1", runId, companyId, issueId, scope: "run",
+          reasonCode: "cancellation_run_only", dispatched: true, dispatchState: "acknowledged",
+          intentAuditId: randomUUID(), acknowledgementAuditId: randomUUID(),
+        },
+      },
+    }).where(eq(heartbeatRuns.id, runId)).returning();
+    const terminal = await heartbeatService(db).terminalizeRunOnLeaseRelease(run!);
+    expect(terminal).toMatchObject({ status: "cancelled", error: null, errorCode: null });
+  });
+
   it("forces a still-queued run to interrupted when the lease releases before it starts", async () => {
     // A queued run holds a lease but never reached "running". The teardown
     // released the lease, so the run must not stay queued and show a phantom

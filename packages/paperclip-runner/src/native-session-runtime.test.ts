@@ -388,12 +388,15 @@ describe("executeNativeSession recovery", () => {
       async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; },
       completeRun,
     };
+    const prepareWakeAttachmentPrompt = vi.fn(async () => "Read the fresh attachment at /run/attachments/restarted.png.");
     const execution = executeNativeSession({
-      input: executionInput, backend, controlPlane: port, persistedSession: checkpoint,
+      input: executionInput, backend, controlPlane: port, persistedSession: checkpoint, prepareWakeAttachmentPrompt,
       runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery", resumeInterruptedTurn: true,
     });
     void execution.catch(() => undefined);
     await vi.waitFor(() => expect(turnStarts()).toHaveLength(1));
+    expect(prepareWakeAttachmentPrompt).toHaveBeenCalledOnce();
+    expect(JSON.stringify(turnStarts()[0]!.params)).toContain("/run/attachments/restarted.png");
     // Like the RC-60 Claude turns: the continuation ends saying it will wait
     // for a background command, with no paperclip_finish.
     recoveredTransport.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-2", status: "completed", items: [] } });
@@ -5958,6 +5961,7 @@ describe("executeNativeSession recovery", () => {
     expect(cancel).toHaveBeenCalledWith({
       reason: "Native session event consumption failed.",
       signal: expect.any(AbortSignal),
+      failureCleanup: true,
     });
     expect(providerResult).not.toHaveBeenCalled();
     expect(events.map((event) => event.eventType)).toEqual([
@@ -10968,5 +10972,64 @@ describe("first-turn queued input", () => {
   it("starts the first turn unchanged when nothing is queued", async () => {
     const { sent } = await startFirstTurn(input, null);
     expect((JSON.parse(sent[0]!) as { task: { prompt: string } }).task.prompt).toBe(input.task.prompt);
+  });
+});
+
+describe("remote Runner retention after a failed run", () => {
+  const port = (): ControlPlanePort => ({
+    async openRun() {}, async checkpointSession() {}, async completeRun() {},
+    async appendEvent(event: PrpEvent) {
+      return { cursor: event.sourceSeq, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" };
+    },
+    async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; },
+  });
+  const startCodexRun = (transport: FakeCodexTransport, options: { timeoutMs?: number;
+    onSession?: (session: NativeSession | null) => void } = {}) => {
+    const close = vi.spyOn(transport, "close");
+    const executionInput = { ...input, workspace: { ...input.workspace, cwd: WORKSPACE } };
+    const backend = createCodexNativeSessionBackend(executionInput, {
+      runnerInstanceId: "runner-recovery", transportFactory: () => transport,
+    });
+    const execution = executeNativeSession({ input: executionInput, backend, controlPlane: port(),
+      runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery",
+      timeoutMs: options.timeoutMs ?? 5_000, requireSessionCloseBeforeReturn: true, onSession: options.onSession });
+    void execution.catch(() => undefined);
+    return { execution, close };
+  };
+  const retainedOn = (close: { mock: { calls: unknown[][] } }): Array<boolean | undefined> =>
+    close.mock.calls.map((call: unknown[]) =>
+      (call[1] as { retainUnsettledRemoteRunner?: boolean } | undefined)?.retainUnsettledRemoteRunner);
+
+  it("keeps the Runner for same-run reattachment when the turn start fails", async () => {
+    const transport = new FakeCodexTransport();
+    transport.rejectMethods.set("turn/start", new Error("runnerd did not report the provider turn identity"));
+    const { execution, close } = startCodexRun(transport);
+    await expect(execution).rejects.toThrow("runnerd did not report the provider turn identity");
+    expect(retainedOn(close)).not.toHaveLength(0);
+    expect(retainedOn(close).every(retained => retained === true)).toBe(true);
+  });
+
+  it("keeps the Runner for same-run reattachment when event consumption fails", async () => {
+    const transport = new FakeCodexTransport();
+    const { execution, close } = startCodexRun(transport, { timeoutMs: 100 });
+    await vi.waitFor(() => expect(transport.calls.some(call => call.method === "turn/start")).toBe(true));
+    transport.push("turn/started", { threadId: "thread-1", turn: { id: "turn-1", status: "inProgress" } });
+    await expect(execution).rejects.toThrow("native session timed out after 100ms");
+    expect(retainedOn(close)).not.toHaveLength(0);
+    expect(retainedOn(close).every(retained => retained === true)).toBe(true);
+  });
+
+  it("still stops the Runner after a Stop, even when the stopped run then fails", async () => {
+    const transport = new FakeCodexTransport();
+    let published: NativeSession | null = null;
+    const { execution, close } = startCodexRun(transport, { timeoutMs: 300,
+      onSession: session => { published ??= session; } });
+    await vi.waitFor(() => expect(transport.calls.some(call => call.method === "turn/start")).toBe(true));
+    transport.push("turn/started", { threadId: "thread-1", turn: { id: "turn-1", status: "inProgress" } });
+    await vi.waitFor(() => expect(published).not.toBeNull());
+    void published!.cancel!({ reason: "Stop requested", signal: new AbortController().signal }).cleanup.catch(() => undefined);
+    await expect(execution).rejects.toThrow();
+    expect(retainedOn(close)).not.toHaveLength(0);
+    expect(retainedOn(close).every(retained => retained === false)).toBe(true);
   });
 });

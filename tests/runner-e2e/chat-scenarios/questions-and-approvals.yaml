@@ -15,8 +15,9 @@ scenarios:
     expected_outcome: >-
       The agent asks a short, necessary question for the missing product name using the
       supported interaction. The person can enter a free-text answer; it is saved and delivered
-      to the right work once. The agent uses the answer in the resulting brief without making
-      the person fill in incidental implementation settings.
+      to the right work once. The answer shapes the resulting work: the agent uses the exact
+      answer in that work's saved brief or saved deliverable without making the person fill in
+      incidental implementation settings.
   - id: questions-and-approvals.multi-part-question
     capabilities:
       - questions-and-approvals/questions

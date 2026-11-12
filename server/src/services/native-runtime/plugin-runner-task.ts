@@ -50,9 +50,11 @@ export function createPluginRunnerTaskOwner(input: {
   warmTaskVersion?: 1;
   releaseResumeVersion?: 1;
   releasedSource?: DurableRecoveryIdentity;
+  sessionHandoff?: boolean;
   onResumed?: (identity: DurableRecoveryIdentity) => Promise<void>;
   onRetired?: (identity: DurableRecoveryIdentity) => Promise<void>;
   githubBroker?: { url: string; token: string };
+  githubCredentialBrokerVersion?: 1;
   adoptIdentity?: DurableRecoveryIdentity;
 }) {
   const taskId = input.taskId;
@@ -132,11 +134,8 @@ export function createPluginRunnerTaskOwner(input: {
           requirements.identity[key as keyof DurableRecoveryIdentity] !== value))) {
       throw new Error("Plugin Runner source reconciliation unavailable");
     }
-    if (input.githubBroker) {
-      const description = await call({ kind: "describe" });
-      if (description.kind !== "description" || description.githubCredentialBrokerVersion !== 1) {
-        throw new Error("Update the environment plugin to support the GitHub credential broker v1");
-      }
+    if (input.githubBroker && input.githubCredentialBrokerVersion !== 1) {
+      throw new Error("Update the environment plugin to support the GitHub credential broker v1");
     }
     const result = await call(environmentTaskOperationSchema.parse({ kind: "prepare", requirements,
       ...(input.githubBroker ? { githubBroker: input.githubBroker } : {}),
@@ -420,7 +419,12 @@ export function createPluginRunnerTaskOwner(input: {
   };
   const resume = async (identity: DurableRecoveryIdentity, bootstrapTicket: string): Promise<"resumed" | "unavailable"> => {
     requireReleaseResume();
-    const result = await call(environmentTaskOperationSchema.parse({ kind: "resume", identity, bootstrapTicket }));
+    const handoffCredential = input.sessionHandoff && input.credential?.type === "claude-env"
+      ? { accountIdentity: input.accountIdentity, environment: input.credential.environment }
+      : undefined;
+    const result = await call(environmentTaskOperationSchema.parse({ kind: "resume", identity, bootstrapTicket,
+      ...(handoffCredential ? { handoffCredential } : {}),
+    }));
     requireReleaseResume();
     if (result.kind !== "resume") throw new Error("Plugin Runner resume result unavailable");
     if (result.outcome === "unavailable") {

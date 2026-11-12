@@ -14,7 +14,7 @@ import { hasRequiredWorkspaceRecovery, LEGACY_WORKSPACE_RECOVERY_SCHEMA, nativeR
 import { unreconciledNativeExportPredicate } from "./native-runtime/native-workspace-reconstruction.js";
 import { hasRecoveredCleanupStopReceipt, hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { readNativeWorkspaceSyncReference } from "./native-runtime/native-workspace-sync.js";
-import { completedWorkspaceRecoveryCondition, hasVerifiedWorkspaceRepair, workspaceRecoveryDisplay } from "./workspace-recovery-receipt.js";
+import { completedWorkspaceRecoveryCondition, hasVerifiedWorkspaceRepair, recoveredWorkMessage, workspaceRecoveryDisplay } from "./workspace-recovery-receipt.js";
 import { nativeManualAdmissionHoldsExecution } from "./native-runtime/native-runner-ownership.js";
 import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED } from "./native-local-process-stop.js";
 import { NATIVE_CLEANUP_SETTLING_MESSAGE, NATIVE_SESSION_CLEANUP_QUARANTINED } from "./native-runtime/completed-turn-cleanup.js";
@@ -369,7 +369,7 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
   )).limit(1) : [];
   const withoutWorkspace = Boolean(run?.driverKind === "grok_bot_mcp" && nativeRunHasNoWorkspaceAccess(run));
   const workspaceRepairRequired = Boolean(restoreHold && !withoutWorkspace && (!run || !await hasVerifiedWorkspaceRepair(db, run)));
-  const workspaceRecovery = workspaceRecoveryDisplay(action.evidence, runId);
+  const workspaceRecoveryState = workspaceRecoveryDisplay(action.evidence, runId);
   const reconstructableExport = ["native_workspace_sync_out_unrecoverable", "native_workspace_sync_out_retry_exhausted"].includes(action.cause);
   const exportSource = reconstructableExport ? readNativeWorkspaceSyncReference(run?.runnerProfileJson?.nativeWorkspaceSync) : null;
   const [exportLease] = exportSource ? await db.select().from(environmentLeases).where(and(
@@ -411,8 +411,8 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
   // hold to protect its files. Offer the same Retry that admission accepts, so
   // an infrastructure failure (such as a restart) is not left to a new message.
   // An intentional Stop keeps "send a new message" as its only continuation.
-  const recoveredFailure = Boolean(restoreHold && run?.status === "failed" && !workspaceRepairRequired &&
-    workspaceRecovery?.status === "recovered");
+  const recoveredFailure = Boolean(restoreHold && (run?.status === "failed" || run?.status === "timed_out") && !workspaceRepairRequired &&
+    workspaceRecoveryState?.status === "recovered");
   const canRetry = Boolean((!restoreHold || recoveredFailure) && run && conversation?.assigneeAgentId === run.agentId &&
     !["done", "cancelled"].includes(conversation.status) && await canRetryStoppedRun(db, run));
   const runError = run && canRetry && isPreDispatchReviewWait(run)
@@ -435,6 +435,9 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
   )).where(and(
     eq(chatConversations.companyId, companyId), eq(chatConversations.issueId, issueId),
   )).limit(1) : [];
+  const retryOffered = canRetry && (!chatBinding || recoveredFailure);
+  const workspaceRecovery = workspaceRecoveryState?.status === "recovered"
+    ? { ...workspaceRecoveryState, message: recoveredWorkMessage(run?.status, retryOffered) } : workspaceRecoveryState;
   let nextAction = action.status === "active" && action.cause === EXECUTION_FINALIZATION_DEADLINE_EXCEEDED
     ? EXECUTION_FINALIZATION_DEADLINE_MESSAGE : action.nextAction;
   // Retry is a person's control on this task. Say so, so an agent reading this
@@ -469,13 +472,12 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
     // A stopped reviewer can differ from the task owner who receives the work back.
     agentId: run?.agentId ?? null,
     cause: action.cause,
-    nextAction: (workspaceRecovery?.status === "recovered" && canRetry && !chatBinding
-      ? "Saved work recovered. Retry or send a message to continue." : workspaceRecovery?.message) ?? (reconstructionPending ? "Continuation from saved sources is queued and waiting for execution checks." : nextAction),
+    nextAction: workspaceRecovery?.message ?? (reconstructionPending ? "Continuation from saved sources is queued and waiting for execution checks." : nextAction),
     ...(workspaceRecovery ? { workspaceRecovery } : {}),
     runStatus: run?.status ?? null,
     runError: runError?.slice(0, 1024) ?? null,
     canContinue: eligibleContinuation && !chatBinding,
-    canRetry: canRetry && !chatBinding,
+    canRetry: retryOffered,
     ...(restoreHold ? { workspaceRepairRequired, canRecordWorkspaceRepair: workspaceRepairRequired && hasRequiredWorkspaceRecovery(action.evidence) } : {}),
     savedMessageCount: saved.length,
     ...(canReconstructWorkspace ? { canReconstructWorkspace, workspaceRecoveryStatusVersion: conversation!.statusVersion } : {}),

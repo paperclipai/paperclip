@@ -22,6 +22,12 @@ export function registerIssueRecoveryWork(
     locks(scope: Scope): Promise<unknown>;
     watchdogs(scope: { companyId: string; watchdogId: string; onDeferredDeadline: (at: number) => void }): Promise<{ incomplete: number }>;
     schedulingSuppressed(): Promise<boolean>;
+    /** The assigned-work invariant (assigned-work-sweep.ts). */
+    assignedWork?: {
+      listSuspects(scope: { companyId?: string; issueId?: string }, cursor: string | null, limit: number):
+        Promise<Array<{ id: string; companyId: string; updatedAt: Date }>>;
+      checkIssue(scope: Scope): Promise<unknown>;
+    };
   },
   canRun: () => boolean,
 ) {
@@ -55,6 +61,39 @@ export function registerIssueRecoveryWork(
         if (!enabled) return null;
         let next: number | null = null;
         await check({ companyId: entry.companyId, issueId: entry.id,
+          onDeferredDeadline: at => { next = next === null ? at : Math.min(next, at); } });
+        return next === null ? null : { ...entry, dueAt: next };
+      },
+    }, canRun);
+  }
+  /** Event-driven: run terminal states, hold settlements and boot mark the
+   * company dirty; checks schedule their own grace and back-off deadlines.
+   * Newest-updated tasks are checked first, a small batch per pass. */
+  function registerAssignedWork(sweep: NonNullable<typeof owner.assignedWork>) {
+    type Suspect = Entry & { updatedAt: number };
+    const cursors = new Map<string, string>();
+    let enabled = false;
+    return registerScopedDeadlineWork<Suspect, IssueRecoveryScope>(coordinator, {
+      queue: DELIVERY_QUEUES.assignedWorkInvariant,
+      reconstructionIntervalMs: 30_000,
+      batchSize: 25,
+      beforePass: async () => { enabled = !(await owner.schedulingSuppressed()); },
+      decodeScope: hint => hint === "*" ? undefined : JSON.parse(hint) as IssueRecoveryScope,
+      matches: (entry, scope) => !scope || (entry.companyId === scope.companyId && (!scope.issueId || entry.id === scope.issueId)),
+      priority: entry => entry.updatedAt,
+      mergeEntry: (pending, loaded) => ({ ...loaded, dueAt: Math.max(pending.dueAt, loaded.dueAt) }),
+      load: async scope => {
+        const key = scope ? JSON.stringify([scope.companyId, scope.issueId]) : "*";
+        if (!enabled) { cursors.delete(key); return []; }
+        const rows = await sweep.listSuspects(scope ?? {}, cursors.get(key) ?? null, PAGE_SIZE);
+        const complete = rows.length < PAGE_SIZE;
+        if (complete) cursors.delete(key); else cursors.set(key, rows.at(-1)!.id);
+        return { rows: rows.map(row => ({ id: row.id, companyId: row.companyId, updatedAt: row.updatedAt.getTime(), dueAt: Date.now() })), complete };
+      },
+      check: async entry => {
+        if (!enabled) return null;
+        let next: number | null = null;
+        await sweep.checkIssue({ companyId: entry.companyId, issueId: entry.id,
           onDeferredDeadline: at => { next = next === null ? at : Math.min(next, at); } });
         return next === null ? null : { ...entry, dueAt: next };
       },
@@ -117,11 +156,13 @@ export function registerIssueRecoveryWork(
     if (result.enqueueFailed > 0) throw new Error("Resolved dependency wake remains undelivered");
   });
   const locks = register(DELIVERY_QUEUES.staleIssueLocks, null, owner.locks);
+  const assignedWork = owner.assignedWork ? registerAssignedWork(owner.assignedWork) : null;
   const watchdogs = registerTaskWatchdogWork(db, coordinator, {
     reconcile: owner.watchdogs, enabled: async () => !(await owner.schedulingSuppressed()),
   }, canRun);
-  const workers = [assignments, orphanBlockers, recoveryActions, dependencies, locks, watchdogs];
-  return { watchdogs, assignments, ready: Promise.all(workers.map(worker => worker.ready)),
+  const workers = [assignments, orphanBlockers, recoveryActions, dependencies, locks, watchdogs,
+    ...(assignedWork ? [assignedWork] : [])];
+  return { watchdogs, assignments, assignedWork, ready: Promise.all(workers.map(worker => worker.ready)),
     wake() { for (const worker of workers) worker.invalidate(); },
     async stop() { await Promise.all(workers.map(worker => worker.stop())); } };
 }

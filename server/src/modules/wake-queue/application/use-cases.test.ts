@@ -115,6 +115,8 @@ function createFakeTransaction(overrides: Partial<WakeQueueTransaction> = {}): W
       releasePolicy: null,
     })),
     getCommentSelfAuthorship: vi.fn(async () => ({ allSelfAuthored: false })),
+    isWatcherCommentDuringFinishingRun: vi.fn(async () => false),
+    owedInteractionAnswer: vi.fn(async (): Promise<"deliver" | "blocked" | null> => null),
     isCompletedDelegationMention: vi.fn(async () => false),
     reopenIssue: vi.fn(async () => null),
     claimDeferredWakeForPromotion: vi.fn(async () => true),
@@ -594,7 +596,55 @@ describe("releaseIssueExecution", () => {
     expect(result.outcome.kind).toBe("promoted");
   });
 
-  it.each(["done_live", "cancelled_live", "done_missing", "done_self", "done_no_resume", "done_untracked_comment"])("handles explicit agent feedback after completion: %s", async (scenario) => {
+  it.each([
+    ["owed answer on a done task", "done", "user", "deliver", "promoted"],
+    ["answer already delivered or saved after completion", "done", "user", null, "released"],
+    ["answer on a cancelled task", "cancelled", "user", "deliver", "released"],
+    ["agent-requested interaction wake", "done", "agent", "deliver", "released"],
+  ] as const)("handles a person's answer queued behind a turn that closed the task: %s", async (_label, status, actor, owed, outcome) => {
+    const queue = [wakeCandidate({ agentId: ISSUE.assigneeAgentId!, requestedByActorType: actor,
+      payload: { issueId: ISSUE.id, mutation: "interaction", interactionId: "11111111-1111-4111-8111-111111111111", interactionStatus: "answered" } })];
+    const transaction = createFakeTransaction({
+      findNextDeferredWake: vi.fn(async () => queue.shift() ?? null),
+      owedInteractionAnswer: vi.fn(async () => owed),
+      reopenIssue: vi.fn(async () => ({ ...ISSUE, status: "in_progress" })),
+    });
+    const release = createReleaseIssueExecution({
+      issueLock: createFakeIssueLock(createFakeHost(), transaction, { ...ISSUE, status }),
+      recovery: createFakeRecovery(),
+    });
+    const result = await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date() });
+    expect(result.outcome.kind).toBe(outcome);
+    if (outcome === "promoted") {
+      expect(transaction.reopenIssue).toHaveBeenCalledWith(expect.objectContaining({ status: "in_progress" }));
+      expect(transaction.cancelDeferredWake).not.toHaveBeenCalled();
+    } else {
+      expect(transaction.reopenIssue).not.toHaveBeenCalled();
+      expect(transaction.cancelDeferredWake).toHaveBeenCalledWith(expect.objectContaining({ reason: "Deferred execution wake no longer applies to a terminal task" }));
+    }
+  });
+
+  it("cancels an owed answer without reopening or failing the drain while blockers forbid in_progress", async () => {
+    const queue = [wakeCandidate({ id: "answer", agentId: ISSUE.assigneeAgentId!, requestedByActorType: "user",
+      payload: { issueId: ISSUE.id, mutation: "interaction", interactionId: "11111111-1111-4111-8111-111111111111", interactionStatus: "answered" } }),
+      wakeCandidate({ id: "next", agentId: ISSUE.assigneeAgentId!, requestedByActorType: "agent" })];
+    const transaction = createFakeTransaction({
+      findNextDeferredWake: vi.fn(async () => queue.shift() ?? null),
+      owedInteractionAnswer: vi.fn(async () => "blocked" as const),
+    });
+    const release = createReleaseIssueExecution({
+      issueLock: createFakeIssueLock(createFakeHost(), transaction, { ...ISSUE, status: "done" }),
+      recovery: createFakeRecovery(),
+    });
+    const result = await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date() });
+    expect(result.outcome.kind).toBe("released");
+    expect(transaction.reopenIssue).not.toHaveBeenCalled();
+    expect(transaction.cancelDeferredWake).toHaveBeenCalledWith(expect.objectContaining({ wakeId: "answer", reason: "Queued answer cannot continue a task with unresolved blockers" }));
+    // The drain continues past the answer to the next queued wake.
+    expect(transaction.cancelDeferredWake).toHaveBeenCalledWith(expect.objectContaining({ wakeId: "next" }));
+  });
+
+  it.each(["done_live", "cancelled_live", "done_missing", "done_self", "done_no_resume", "done_untracked_comment", "done_watcher_during_run"])("handles explicit agent feedback after completion: %s", async (scenario) => {
     const commentIds = ["accepted-agent-feedback"];
     const queue = [wakeCandidate({
       agentId: ISSUE.assigneeAgentId!,
@@ -612,6 +662,7 @@ describe("releaseIssueExecution", () => {
         containedSelfAuthoredComment: scenario === "done_self",
       })),
       getCommentSelfAuthorship: vi.fn(async () => ({ allSelfAuthored: scenario === "done_self" })),
+      isWatcherCommentDuringFinishingRun: vi.fn(async () => scenario === "done_watcher_during_run"),
       reopenIssue: vi.fn(async () => ({ ...ISSUE, status: "todo" })),
     });
     const release = createReleaseIssueExecution({
@@ -764,6 +815,55 @@ describe("releaseIssueExecution", () => {
       code: "responsible_user_unresolved",
     });
     expect(transaction.queueImmediateRecoveryRun).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["retries a continuation that lost its controller lease before provider work through the bounded sweep", true, "released"],
+    ["still blocks a continuation whose automatic retry failed after provider work could have started", false, "blocked"],
+  ] as const)("%s", async (_label, retryableBeforeProviderWork, expected) => {
+    const transaction = createFakeTransaction();
+    const recovery = createFakeRecovery();
+    const release = createReleaseIssueExecution({
+      issueLock: createFakeIssueLock(createFakeHost(), transaction, ISSUE, { ...RUN, runtimeMode: "legacy",
+        errorCode: "controller_lease_lost", retryableBeforeProviderWork,
+        contextSnapshot: { issueId: ISSUE.id, retryReason: "issue_continuation_needed", source: "issue.continuation_recovery" } }),
+      recovery,
+    });
+    const result = await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date() });
+    expect(result.outcome.kind).toBe(expected);
+    expect(transaction.queueImmediateRecoveryRun).not.toHaveBeenCalled();
+    expect(recovery.escalateStrandedAssignedIssue).toHaveBeenCalledTimes(expected === "blocked" ? 1 : 0);
+  });
+
+  it("leaves a failed interrupted-preparation successor of a continuation to its bounded lane instead of queuing a fresh continuation", async () => {
+    const transaction = createFakeTransaction();
+    const recovery = createFakeRecovery();
+    const release = createReleaseIssueExecution({
+      issueLock: createFakeIssueLock(createFakeHost(), transaction, ISSUE, { ...RUN, runtimeMode: "legacy",
+        errorCode: "controller_lease_lost", retryableBeforeProviderWork: true,
+        contextSnapshot: { issueId: ISSUE.id, retryReason: "interrupted_preparation",
+          executionRetryAccounting: { version: 1, failureRetries: 0, maxTurnContinuations: 0, interruptedPreparations: 4 } } }),
+      recovery,
+    });
+    const result = await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date() });
+    expect(result.outcome.kind).toBe("released");
+    expect(transaction.queueImmediateRecoveryRun).not.toHaveBeenCalled();
+    expect(recovery.escalateStrandedAssignedIssue).not.toHaveBeenCalled();
+  });
+
+  it("carries the chain's retry accounting into an immediate continuation", async () => {
+    const accounting = { version: 1, failureRetries: 1, maxTurnContinuations: 0, interruptedPreparations: 3 };
+    const queueImmediateRecoveryRun = vi.fn(
+      async (_input: Parameters<WakeQueueTransaction["queueImmediateRecoveryRun"]>[0]) => runSummary("immediate-recovery"),
+    );
+    const transaction = createFakeTransaction({ queueImmediateRecoveryRun });
+    const release = createReleaseIssueExecution({
+      issueLock: createFakeIssueLock(createFakeHost(), transaction, ISSUE, { ...RUN, executionRetryAccounting: accounting }),
+      recovery: createFakeRecovery(),
+    });
+    const result = await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date() });
+    expect(result.outcome.kind).toBe("queued_recovery");
+    expect(queueImmediateRecoveryRun.mock.calls[0]![0].contextSnapshot).toMatchObject({ executionRetryAccounting: accounting });
   });
 
   it("escalates through the recovery port for a blocked outcome, after the transaction resolves", async () => {

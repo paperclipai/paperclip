@@ -111,6 +111,26 @@ export function projectRoutes(db: Db) {
     );
   }
 
+  /**
+   * PAP-749 task 1d: the project's decision owner gets this project's ownerless
+   * Needs You cards, so only a board user may choose them, and they must be an
+   * active member of the company. `null` clears it; agents cannot change it.
+   */
+  async function assertProjectDecisionOwner(
+    req: Request,
+    companyId: string,
+    decisionOwnerUserId: unknown,
+    current: string | null = null,
+  ) {
+    if (decisionOwnerUserId === undefined || decisionOwnerUserId === current) return;
+    if (req.actor.type !== "board") throw forbidden("Only board users can set a project's decision owner");
+    if (typeof decisionOwnerUserId !== "string") return;
+    const membership = await access.getMembership(companyId, "user", decisionOwnerUserId);
+    if (membership?.status !== "active") {
+      throw unprocessable("Project decision owner must be an active member of this company");
+    }
+  }
+
   async function resolveCompanyIdForProjectReference(req: Request) {
     const companyIdQuery = req.query.companyId;
     const requestedCompanyId =
@@ -383,6 +403,7 @@ export function projectRoutes(db: Db) {
     projectData.privacyOwnerUserId = req.actor.type === "board" ? req.actor.userId ?? null : req.actor.type === "agent" ? req.actor.onBehalfOfUserId ?? null : null;
     const runContext = req.actor.type === "agent" && req.actor.source === "agent_jwt" && req.actor.runId
       ? await projectToolContext(db, req.actor, true) : null;
+    await assertProjectDecisionOwner(req, companyId, projectData.decisionOwnerUserId);
     assertNoAgentHostWorkspaceCommandMutation(
       req,
       [
@@ -508,6 +529,7 @@ export function projectRoutes(db: Db) {
       req,
       collectProjectExecutionWorkspaceCommandPaths(body.executionWorkspacePolicy),
     );
+    await assertProjectDecisionOwner(req, existing.companyId, body.decisionOwnerUserId, existing.decisionOwnerUserId ?? null);
     if (typeof body.archivedAt === "string") {
       body.archivedAt = new Date(body.archivedAt);
     }

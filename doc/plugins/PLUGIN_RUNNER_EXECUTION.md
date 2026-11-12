@@ -172,6 +172,34 @@ It does not qualify a deployed plugin, live account, or production WSS proxy.
 
 ## Workspace completion and maintenance
 
+When the selected task driver declares `sessionHandoffVersion: 1`, Core
+reserves the managed workspace before it acquires the run's task lease. Core
+reconciles placement ownership, then passes `taskLease` to the workspace
+preparation call. The plugin uses the same allocation for checkout and Runner
+admission. Finalization records that placement before calling the plugin and
+reuses it on retry. If an interrupted finalization has no recorded placement,
+Core retries its original request without placement. This preserves the
+operation ID and the provider's established routing for requests made before
+this upgrade.
+
+Before dispatching preparation for an unbound workspace, Core records the
+run and agent, plus the task placement when present. Inspection replays the
+saved request. A retry with the same run, agent, and placement uses the same
+operation ID. When a retry acquires a different task, Core records its
+placement and prepares the same workspace. The provider settles the prior
+preparation before using the retained checkout. Reservation reconciliation
+uses project Git consent while keeping the original run and agent in the
+provider request.
+
+A portable restore uses the durable ownership claim and the same account
+identity after a credential refresh or controller replacement. It starts a
+new Runner on the target. Run attachment applies the current tools and
+runtime configuration to the restored provider session. After a confirmed
+workspace transfer, Core can use the same target to start a new conversation
+when its session compatibility check requires one. The new conversation
+starts without the prior provider checkpoint, and the ownership claim
+continues to fence the source.
+
 A storage provider can declare `workspaceProvider.workspaceVerificationVersion: 1`.
 Before creating a fresh workspace for an admitted Retry, Core may send the
 original task-owned workspace's `prepare` request with `verifyExisting: true`.
@@ -389,6 +417,17 @@ not reused by the new session. A handoff that still fails, failed file
 collection, another close error from an owner without a task, or continuation
 of the same session still blocks replacement.
 A controller restart is not required for this stopped-owner reset path.
+
+Deleting an environment (with consent to destroy its reusable sandboxes) closes its
+idle warm owners first. An idle owner whose close cannot settle is retired the same
+way: one confirmed `stop`, the credential snapshot, `complete`, then instruction
+collection. An owner whose sandbox lease already carries a `destroyed` termination
+receipt has no process left to stop, so Core releases it without contacting the
+sandbox. Only then are the environment's sandboxes destroyed, through the usual
+workspace-export and restore-source guards. When an owner still cannot be retired,
+the delete returns 409 and names each run and the close and stop errors. Idle-timeout,
+restart and sleep sweeps do not force a stop. They log the exact close error for each
+owner instead of a count.
 
 When retiring the previous owner stays unproven anyway (any close failure,
 on any of the paths a new run uses to retire it: instruction preparation,

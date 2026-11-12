@@ -28,6 +28,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
+import { deliverReconciledExecutions } from "../services/execution-recovery-resolution.ts";
 import { normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
 import { PaperclipRunnerToolAuthority } from "../services/native-runtime/paperclip-runner-tool-authority.js";
 
@@ -329,8 +330,11 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     expect((await db.select().from(agentWakeupRequests)).filter(wake => wake.reason === "issue_monitor_due")).toHaveLength(1);
   });
 
-  it("explains held monitor dispatch without replaying uncertain execution", async () => {
-    const { companyId, issueId, agentId, nextCheckAt } = await seedFixture();
+  // Before the fresh-continuation fallback this hold deferred the monitor for
+  // a person. The due monitor is an ordinary continuation: it now settles the
+  // hold and starts one fresh run, without replaying the interrupted execution.
+  it("continues a held task in a fresh run when its monitor is due, without replaying uncertain execution", async () => {
+    const { companyId, issueId, agentId } = await seedFixture();
     const sourceRunId = randomUUID();
     await db.insert(heartbeatRuns).values({ id: sourceRunId, companyId, agentId,
       runtimeMode: "legacy", status: "interrupted", errorCode: "process_lost",
@@ -341,26 +345,19 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       evidence: { runId: sourceRunId }, nextAction: "Inspect the interrupted execution before continuing." }).returning();
     const heartbeat = heartbeatService(db);
     const tickAt = new Date("2026-04-11T12:31:00.000Z");
-    expect((await heartbeat.tickTimers(tickAt)).enqueued).toBe(0);
-    expect((await heartbeat.tickTimers(new Date(tickAt.getTime() + 30_000))).enqueued).toBe(0);
-    const [waiting] = await db.select().from(issues).where(eq(issues.id, issueId));
-    expect(waiting.monitorNextCheckAt).toEqual(nextCheckAt);
-    expect(waiting.monitorWakeRequestedAt).toBeNull();
-    expect(waiting.monitorAttemptCount).toBe(0);
-    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId))).toHaveLength(1);
-    const diagnostics = (await db.select().from(activityLog).where(eq(activityLog.entityId, issueId)))
-      .filter(row => row.action === "issue.monitor_deferred");
-    expect(diagnostics).toHaveLength(1);
-    expect(diagnostics[0]?.details).toMatchObject({ nextCheckAt: nextCheckAt.toISOString(),
-      reason: "execution_reconciliation_required", blockerCause: "legacy_execution_requires_reconciliation", attemptCount: 0 });
-    expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, hold!.id)))[0]?.status).toBe("active");
-    await db.update(issueRecoveryActions).set({ status: "resolved", resolvedAt: new Date(),
-      evidence: { runId: sourceRunId, executionReconciliation: { action: "continue" } } }).where(eq(issueRecoveryActions.id, hold!.id));
-    expect((await heartbeat.tickTimers(new Date(tickAt.getTime() + 60_000))).enqueued).toBe(1);
-    expect((await heartbeat.tickTimers(new Date(tickAt.getTime() + 90_000))).enqueued).toBe(0);
-    const [triggered] = await db.select().from(issues).where(eq(issues.id, issueId));
-    expect(triggered.monitorAttemptCount).toBe(1);
-    expect(triggered.monitorNextCheckAt).toBeNull();
+    // The due monitor reaches the fallback, which records one pending fresh
+    // continuation and coalesces the monitor wake into it.
+    await heartbeat.tickTimers(tickAt);
+    const [settled] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, hold!.id));
+    expect(settled).toMatchObject({ status: "resolved", outcome: "restored" });
+    expect(settled!.evidence).toMatchObject({ continuationDelivery: "pending",
+      freshContinuation: { sourceRunId, trigger: "continuation_wake" } });
+    // The continuation worker starts it once, as a fresh session.
+    await deliverReconciledExecutions(db, heartbeat.wakeup);
+    await deliverReconciledExecutions(db, heartbeat.wakeup);
+    const successors = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, sourceRunId));
+    expect(successors).toHaveLength(1);
+    expect(successors[0]!.contextSnapshot).toMatchObject({ forceFreshSession: true, previousRunId: sourceRunId });
   });
 
   it("recovers a rejected native monitor call and delivers the corrected schedule once", async () => {
