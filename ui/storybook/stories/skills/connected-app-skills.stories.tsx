@@ -82,6 +82,6 @@ export const NameCollision: Story = {
 export const ReadingInstructions: Story = {
   args: {
     skills: [base],
-    preview: { skillId: base.id, markdown: "---\nname: hf-cli\ndescription: Hugging Face Hub CLI\n---\n\n# hf CLI\n\nUse `hf download` to fetch a model.\n" },
+    preview: { skillId: base.id, manifestDigest: base.manifestDigest!, markdown: "---\nname: hf-cli\ndescription: Hugging Face Hub CLI\n---\n\n# hf CLI\n\nUse `hf download` to fetch a model.\n" },
   },
 };

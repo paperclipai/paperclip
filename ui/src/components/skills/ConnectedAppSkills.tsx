@@ -40,7 +40,8 @@ export function connectedAppSkillNote(skill: CompanyMcpSkill): string | null {
 export interface ConnectedAppSkillsListProps {
   skills: CompanyMcpSkill[];
   pendingSkillId?: string | null;
-  preview?: { skillId: string; markdown?: string; loading?: boolean; error?: string } | null;
+  /** `manifestDigest` is the version the shown text was verified against. */
+  preview?: { skillId: string; manifestDigest?: string; markdown?: string; loading?: boolean; error?: string } | null;
   onPreview?: (skill: CompanyMcpSkill) => void;
   onApprove?: (skill: CompanyMcpSkill, allowTools: boolean) => void;
   onDecline?: (skill: CompanyMcpSkill) => void;
@@ -65,6 +66,9 @@ export function ConnectedAppSkillsList({ skills, pendingSkillId, preview, onPrev
           const reviewable = skill.status === "pending_review" || skill.status === "declined";
           const busy = pendingSkillId === skill.id;
           const showing = preview?.skillId === skill.id;
+          // Text for an older version is never shown as this one, and the
+          // board cannot approve while it reads something else.
+          const previewCurrent = !showing || (Boolean(preview?.markdown) && preview?.manifestDigest === skill.manifestDigest);
           return (
             <li key={skill.id} className="flex flex-col gap-2 px-4 py-3">
               <div className="flex flex-wrap items-center gap-2">
@@ -107,7 +111,7 @@ export function ConnectedAppSkillsList({ skills, pendingSkillId, preview, onPrev
                     </Button>
                   ) : null}
                   {reviewable && onApprove ? (
-                    <Button size="xs" disabled={busy} onClick={() => onApprove(skill, allowTools[skill.id] === true)}>Approve</Button>
+                    <Button size="xs" disabled={busy || !previewCurrent} onClick={() => onApprove(skill, allowTools[skill.id] === true)}>Approve</Button>
                   ) : null}
                   {skill.status !== "declined" && onDecline ? (
                     <Button size="xs" variant="outline" disabled={busy} onClick={() => onDecline(skill)}>
@@ -122,8 +126,8 @@ export function ConnectedAppSkillsList({ skills, pendingSkillId, preview, onPrev
                 </p>
               ) : null}
               {showing ? (
-                preview?.loading ? <p className="text-sm text-muted-foreground">Loading instructions…</p>
-                  : preview?.error ? <p className="text-sm text-destructive">{preview.error}</p>
+                preview?.error ? <p className="text-sm text-destructive">{preview.error}</p>
+                  : preview?.loading || !previewCurrent ? <p className="text-sm text-muted-foreground">Loading instructions…</p>
                     // Shown as text: the content comes from the app and is never rendered as a page.
                     : <pre className="max-h-96 overflow-auto whitespace-pre-wrap rounded-md bg-muted p-3 font-mono text-xs">{preview?.markdown}</pre>
               ) : null}
@@ -145,11 +149,11 @@ export function ConnectedAppSkills({ companyId }: { companyId: string | null | u
     queryFn: () => mcpSkillsApi.list(companyId!),
     enabled: Boolean(companyId),
   });
+  const previewSkill = listQuery.data?.find((skill) => skill.id === previewId) ?? null;
   const contentQuery = useQuery({
-    queryKey: queryKeys.mcpSkills.content(companyId ?? "", previewId ?? ""),
+    queryKey: queryKeys.mcpSkills.content(companyId ?? "", previewId ?? "", previewSkill?.manifestDigest ?? ""),
     queryFn: () => mcpSkillsApi.content(companyId!, previewId!),
-    enabled: Boolean(companyId && previewId),
-    retry: false,
+    enabled: Boolean(companyId && previewSkill?.manifestDigest),
   });
   const reportError = (title: string) => (error: unknown) => {
     pushToast({ tone: "error", title, body: describeError(error).body });
@@ -181,7 +185,8 @@ export function ConnectedAppSkills({ companyId }: { companyId: string | null | u
       pendingSkillId={pendingSkillId ?? null}
       preview={previewId ? {
         skillId: previewId,
-        markdown: contentQuery.data,
+        manifestDigest: contentQuery.data?.manifestDigest,
+        markdown: contentQuery.data?.markdown,
         loading: contentQuery.isLoading,
         error: contentQuery.error ? describeError(contentQuery.error).body : undefined,
       } : null}

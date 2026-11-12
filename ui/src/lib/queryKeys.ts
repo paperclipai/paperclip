@@ -173,7 +173,7 @@ export const queryKeys = {
   },
   mcpSkills: {
     list: (companyId: string) => ["mcp-skills", companyId] as const,
-    content: (companyId: string, skillId: string) => ["mcp-skills", companyId, skillId, "content"] as const,
+    content: (companyId: string, skillId: string, manifestDigest: string) => ["mcp-skills", companyId, skillId, "content", manifestDigest] as const,
   },
   companySkills: {
     list: (companyId: string) => ["company-skills", companyId] as const,

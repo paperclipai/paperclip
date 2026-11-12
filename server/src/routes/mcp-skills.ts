@@ -80,9 +80,9 @@ export function mcpSkillsRoutes(db: Db, toolGateway: McpSkillsGateway) {
       return;
     }
     try {
-      const markdown = await toolGateway.readConnectionSkillForReview({ companyId, userId: boardUserId(req), skillId: req.params.skillId as string });
+      const content = await toolGateway.readConnectionSkillForReview({ companyId, userId: boardUserId(req), skillId: req.params.skillId as string });
       res.setHeader("Cache-Control", "no-store");
-      res.json({ markdown });
+      res.json(content);
     } catch (error) {
       if (!sendGatewayError(res, error)) throw error;
     }

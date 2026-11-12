@@ -272,7 +272,14 @@ export function mcpSkillsService(db: Db) {
       const [updated] = await db.update(toolMcpSkills).set({
         status: "approved", statusReason: null, approvedManifestDigest: row.manifestDigest,
         allowedToolsApproved: allowTools, reviewedAt, reviewedByUserId: userId, updatedAt: reviewedAt,
-      }).where(and(eq(toolMcpSkills.id, row.id), eq(toolMcpSkills.manifestDigest, input.manifestDigest))).returning();
+        // Only the skill the board reviewed: a failed verification or removal
+        // since then changes `status`; a refresh changes the digest or frontmatter.
+      }).where(and(
+        eq(toolMcpSkills.id, row.id),
+        eq(toolMcpSkills.manifestDigest, input.manifestDigest),
+        inArray(toolMcpSkills.status, ["pending_review", "declined", "approved"]),
+        sql`${toolMcpSkills.frontmatter} = ${JSON.stringify(row.frontmatter)}::jsonb`,
+      )).returning();
       if (!updated) throw conflict("This skill changed since you opened it. Review it again.", { code: "mcp_skill_manifest_changed" });
       await audit(updated, "tool_mcp_skill.approved", { actorType: "user", actorId: userId }, { manifestDigest: updated.approvedManifestDigest, allowedToolsApproved: allowTools });
       return updated;

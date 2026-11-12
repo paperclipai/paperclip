@@ -47,6 +47,18 @@ describe("ConnectedAppSkillsList", () => {
     expect(onApprove).toHaveBeenLastCalledWith(skill, true);
   });
 
+  it("never shows or approves against instructions for an older version", () => {
+    const onApprove = vi.fn();
+    const stale = { skillId: skill.id, manifestDigest: `sha256:${"b".repeat(64)}`, markdown: "old instructions" };
+    act(() => root.render(<ConnectedAppSkillsList skills={[skill]} preview={stale} onPreview={vi.fn()} onApprove={onApprove} onDecline={vi.fn()} />));
+    expect(container.textContent).not.toContain("old instructions");
+    const approve = [...container.querySelectorAll("button")].find((button) => button.textContent === "Approve")!;
+    expect(approve.disabled).toBe(true);
+    act(() => root.render(<ConnectedAppSkillsList skills={[skill]} preview={{ ...stale, manifestDigest: skill.manifestDigest!, markdown: "current" }} onPreview={vi.fn()} onApprove={onApprove} onDecline={vi.fn()} />));
+    expect(container.textContent).toContain("current");
+    expect(([...container.querySelectorAll("button")].find((button) => button.textContent === "Approve")!).disabled).toBe(false);
+  });
+
   it("explains declined-by-default and changed skills without offering approval for unavailable ones", () => {
     const dynamic = { ...skill, id: "s-2", status: "unavailable" as const, statusReason: "dynamic" as const, manifestDigest: null, fileCount: null, totalBytes: null };
     act(() => root.render(<ConnectedAppSkillsList skills={[dynamic]} onApprove={vi.fn()} onDecline={vi.fn()} />));

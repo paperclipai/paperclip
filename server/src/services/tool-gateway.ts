@@ -6057,9 +6057,14 @@ export function createToolGatewayService(
     if (!resource) {
       throw new ToolGatewayHttpError(404, "That file is not part of this skill.", "mcp_skill_file_not_listed");
     }
-    const cached = await mcpSkills.cachedFile(skill, resource);
-    if (cached) return cached;
     try {
+      const cached = await mcpSkills.cachedFile(skill, resource);
+      if (cached) {
+        // Cached bytes match the digest, but the listed frontmatter may have
+        // changed since; check it on every load, not only on fetch.
+        if (resource.uri === skill.skillUri) verifyMcpSkillFrontmatter(cached.toString("utf8"), skill.frontmatter, skill.skillUri);
+        return cached;
+      }
       const result = await callAssignedConnectionProtocol({
         session, connection, method: "resources/read", params: { uri: resource.uri },
         // JSON or SSE framing escapes the bytes; leave headroom over the listed size.
@@ -6079,23 +6084,29 @@ export function createToolGatewayService(
     }
   }
 
+  /**
+   * After a verification failure the skill leaves use unless a refresh shows
+   * a different manifest (which already needs review). Anything else, including
+   * an answer for another URI or no usable entry, takes this skill out of use.
+   */
   async function refreshMcpSkillAfterFailure(session: ToolGatewaySession, connection: typeof toolConnections.$inferSelect,
     skill: McpSkillRow, detail: string) {
     const actor = { actorType: "system" as const, actorId: "mcp-skills", agentId: session.agentId, runId: session.runId };
+    let refreshed: McpSkillRow | null = null;
     try {
       const result = asRecord(await callAssignedConnectionProtocol({
         session, connection, method: "skills/get", params: { uri: skill.skillUri }, markHealth: false,
       }));
-      const refreshed = await mcpSkills.applyEntry(connection, result?.skill, actor);
-      // The same manifest served content that does not match it.
-      if (refreshed && refreshed.status === "approved") await mcpSkills.markVerificationFailed(refreshed, actor, detail);
+      const entry = asRecord(result?.skill);
+      if (entry?.uri === skill.skillUri) refreshed = await mcpSkills.applyEntry(connection, entry, actor);
     } catch (error) {
       if (error instanceof ToolGatewayHttpError && asRecord(error.details)?.code === -32602) {
         await mcpSkills.markRemoved(skill, actor);
         return;
       }
-      await mcpSkills.markVerificationFailed(skill, actor, detail);
     }
+    if (refreshed && refreshed.id === skill.id && refreshed.status !== "approved") return;
+    await mcpSkills.markVerificationFailed(refreshed?.id === skill.id ? refreshed : skill, actor, detail);
   }
 
   /** A run-bound session for an agent, as connection instructions use. */
@@ -10288,18 +10299,29 @@ export function createToolGatewayService(
       const loaded: Array<{ skill: McpSkillRow; appName: string; markdown: string }> = [];
       const skipped: Array<{ skillName: string; appName: string; reason: string }> = [];
       if (!(await mcpSkills.hasApproved(binding.companyId))) return { loaded, skipped };
-      const candidates = await approvedMcpSkillConnections(binding.companyId);
-      if (!candidates.length) return { loaded, skipped };
-      const session = await agentRunSession(binding);
-      const usable = await usableConnectionsForAgent(session, candidates);
-      const skills = await mcpSkills.approvedForConnections(binding.companyId, usable.map((connection) => connection.id));
-      const byId = new Map(usable.map((connection) => [connection.id, connection]));
-      // A slow app must not hold the run back. A read still in flight at the
-      // deadline finishes in the background and fills the cache for later runs.
+      // The whole optional step shares one deadline: a slow database or app
+      // must not hold the run back. Reads still in flight at the deadline
+      // finish in the background and fill the cache for later runs.
       const budgetMs = options.budgetMs ?? MCP_SKILL_LOAD_BUDGET_MS;
       let timer: ReturnType<typeof setTimeout> | undefined;
       const deadline = new Promise<"late">((resolve) => { timer = setTimeout(() => resolve("late"), budgetMs); });
       try {
+        const prepare = (async () => {
+          const candidates = await approvedMcpSkillConnections(binding.companyId);
+          if (!candidates.length) return null;
+          const session = await agentRunSession(binding);
+          const usable = await usableConnectionsForAgent(session, candidates);
+          const skills = await mcpSkills.approvedForConnections(binding.companyId, usable.map((connection) => connection.id));
+          return { session, skills, byId: new Map(usable.map((connection) => [connection.id, connection])) };
+        })();
+        prepare.catch(() => undefined);
+        const prepared = await Promise.race([prepare, deadline]);
+        if (prepared === "late") {
+          skipped.push({ skillName: "", appName: "", reason: "Skills from connected apps took too long to prepare." });
+          return { loaded, skipped };
+        }
+        if (!prepared) return { loaded, skipped };
+        const { session, skills, byId } = prepared;
         await Promise.all(skills.map(async (skill) => {
           const connection = byId.get(skill.connectionId)!;
           const read = readVerifiedMcpSkillFile(session, connection, skill, "SKILL.md");
@@ -10364,7 +10386,8 @@ export function createToolGatewayService(
         throw new ToolGatewayHttpError(404, "Skill not found", "mcp_skill_not_accessible");
       }
       const bytes = await readVerifiedMcpSkillFile(session, connection, skill, "SKILL.md");
-      return bytes.toString("utf8");
+      // The digest the content was verified against, so the board approves what it read.
+      return { markdown: bytes.toString("utf8"), manifestDigest: skill.manifestDigest! };
     },
 
     async browserUseResources(binding: { companyId: string; agentId: string; runId?: string; issueId?: string }) {

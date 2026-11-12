@@ -405,7 +405,7 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
   const mcpSkills = await mcpSkillsPreparation;
   if (mcpSkills?.skipped.length) {
     await appendRunEvent(run, { eventType: "skills.mcp_unavailable", stream: "system", level: "warn",
-      message: mcpSkills.skipped.map(({ skillName, appName, reason }) => `Skill "${skillName}" from ${appName} was not loaded: ${reason}`).join("\n"),
+      message: mcpSkills.skipped.map(({ skillName, appName, reason }) => skillName ? `Skill "${skillName}" from ${appName} was not loaded: ${reason}` : reason).join("\n"),
       payload: { skipped: mcpSkills.skipped } });
   }
   const connectorSkillConfig = mcpSkills?.loaded.length
