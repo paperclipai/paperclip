@@ -1068,19 +1068,30 @@ describe("AgentConfigForm environment selector", () => {
   it("keeps an edited Codex draft and account when returning from another harness", async () => {
     let save: (() => void) | null = null;
     const binding = {mode:"responsible_user",provider:"openai",method:"subscription"} as const;
-    const result = await renderForm([], {adapterType:"codex_local",adapterConfig:{engine:"cli",model:"saved-codex-model",search:false},runtimeConfig:{aiConnection:binding}}, {showAdapterTypeField:true,onSaveActionChange:action=>{save=action;}}); roots.push(result.root);
-    await clickByText(result.container, "Advanced Run Policy");
-    expect(result.container.querySelector('[aria-label="Enable search"]')).not.toBeNull();
-    await clickElement(result.container.querySelector('[aria-label="Enable search"]'));
+    const result = await renderForm([], {adapterType:"codex_local",adapterConfig:{engine:"cli",model:DEFAULT_CODEX_LOCAL_MODEL,modelReasoningEffort:"high"},runtimeConfig:{aiConnection:binding}}, {showAdapterTypeField:true,onSaveActionChange:action=>{save=action;}}); roots.push(result.root);
+    await clickElement(result.container.querySelector('[aria-label="Thinking effort"]'));
+    const low=document.querySelector('[role="option"][data-value="low"]');expect(low).toBeTruthy();await clickElement(low);
     for (const choice of ["claude_local","codex_local"]) {
       await clickElement(result.container.querySelector('[aria-label="Harness"]'));
       const option=document.querySelector(`[role="option"][data-value="${choice}"]`);expect(option).toBeTruthy();await clickElement(option);
     }
-    if (!result.container.querySelector('[aria-label="Enable search"]')) await clickByText(result.container, "Advanced Run Policy");
-    expect(result.container.querySelector('[aria-label="Enable search"]')?.getAttribute("aria-checked")).toBe("true");
+    expect(result.container.querySelector('[aria-label="Thinking effort"]')?.textContent).toContain("Low");
     expect(save).toBeTypeOf("function");await act(async()=>save!());
-    expect(result.onSave).toHaveBeenCalledWith({adapterConfig:expect.objectContaining({model:"saved-codex-model",search:true})});
+    expect(result.onSave).toHaveBeenCalledWith({replaceAdapterConfig:true,adapterConfig:expect.objectContaining({engine:"cli",model:DEFAULT_CODEX_LOCAL_MODEL,modelReasoningEffort:"low"})});
   });
+
+  it.each(["grok_local", "cursor_cloud"])("preserves the native runner when switching Codex to %s", async target => {
+    mockAdaptersApi.list.mockResolvedValue([
+      {type:"codex_local",supportedRunners:["legacy","paperclip"],defaultRunner:"legacy"},
+      {type:target,supportedRunners:["legacy","paperclip"],defaultRunner:"legacy"},
+    ]);
+    const result=await renderForm([], {adapterType:"paperclip_runner",adapterConfig:{provider:"codex",model:DEFAULT_CODEX_LOCAL_MODEL}}, {showAdapterTypeField:true});roots.push(result.root);
+    await clickElement(result.container.querySelector('[aria-label="Harness"]'));
+    const option=document.querySelector(`[role="option"][data-value="${target}"]`);expect(option).toBeTruthy();await clickElement(option);
+    await clickByText(result.container,"Save");
+    expect(result.onSave).toHaveBeenCalledWith(expect.objectContaining({adapterType:target,runner:"paperclip"}));
+  });
+
 
   it("drops cached harness drafts when the operator discards changes", async () => {
     let discard: (() => void) | null = null;

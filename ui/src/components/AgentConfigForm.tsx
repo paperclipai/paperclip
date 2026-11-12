@@ -1892,7 +1892,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     setOverlay((prev) => ({
                       ...prev,
                       adapterType: t,
-                      runner: ["codex_local", "claude_local", "opencode_local", "pi_local"].includes(t) ? runner : undefined,
+                      runner: paperclipRunnerProfileForHarness(t) ? runner : undefined,
                       adapterConfig: {
                         model:
                           t === "gemini_local"
