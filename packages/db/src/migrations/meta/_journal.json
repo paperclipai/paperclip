@@ -3186,6 +3186,104 @@
       "when": 1794270045155,
       "tag": "0456_chat_review_lookup_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 457,
+      "version": "7",
+      "when": 1794323383634,
+      "tag": "0457_native_session_run_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 458,
+      "version": "7",
+      "when": 1794326875077,
+      "tag": "0458_chat_admission_issue_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 459,
+      "version": "7",
+      "when": 1794329161946,
+      "tag": "0459_environment_lease_backup_scope_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 460,
+      "version": "7",
+      "when": 1794332988056,
+      "tag": "0460_workspace_activity_context_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 461,
+      "version": "7",
+      "when": 1794334724911,
+      "tag": "0461_created_from_legacy_origin_run_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 462,
+      "version": "7",
+      "when": 1794335976242,
+      "tag": "0462_plugin_lifecycle_resource_cursors",
+      "breakpoints": true
+    },
+    {
+      "idx": 463,
+      "version": "7",
+      "when": 1794340358740,
+      "tag": "0463_gateway_token_pending_reveal",
+      "breakpoints": true
+    },
+    {
+      "idx": 464,
+      "version": "7",
+      "when": 1794346237220,
+      "tag": "0464_project_environment",
+      "breakpoints": true
+    },
+    {
+      "idx": 465,
+      "version": "7",
+      "when": 1794400732201,
+      "tag": "0465_better_auth_account_identity",
+      "breakpoints": true
+    },
+    {
+      "idx": 466,
+      "version": "7",
+      "when": 1794408985337,
+      "tag": "0466_drop_project_environment",
+      "breakpoints": true
+    },
+    {
+      "idx": 467,
+      "version": "7",
+      "when": 1794414797116,
+      "tag": "0467_fair_human_torch",
+      "breakpoints": true
+    },
+    {
+      "idx": 468,
+      "version": "7",
+      "when": 1794421030996,
+      "tag": "0468_busy_wendell_rand",
+      "breakpoints": true
+    },
+    {
+      "idx": 469,
+      "version": "7",
+      "when": 1794428870590,
+      "tag": "0469_zippy_photon",
+      "breakpoints": true
+    },
+    {
+      "idx": 470,
+      "version": "7",
+      "when": 1794449318551,
+      "tag": "0470_heartbeat_runs_queued_created_index",
+      "breakpoints": true
     }
   ]
 }

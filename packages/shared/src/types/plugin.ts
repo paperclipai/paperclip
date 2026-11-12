@@ -500,6 +500,8 @@ export interface PluginUiSlotDeclaration {
    * Required for `detailTab`, `taskDetailView`, and `contextMenuItem`.
    */
   entityTypes?: PluginUiSlotEntityType[];
+  /** Only show this agent detail tab when the agent uses this plugin environment driver key. */
+  agentEnvironmentDriver?: string;
   /** Also offer this agent detail tab for manual selection beside a task.
    * It uses the running agent, or the assigned agent while idle.
    * Matching run activity and readiness also open the panel automatically.
@@ -719,6 +721,7 @@ export interface PaperclipPluginManifestV1 {
   workspaceProvider?: {
     /** Supports bounded run completion separately from removal-safety inspection. */
     finalizationVersion?: 1;
+    workspaceVerificationVersion?: 1;
     supportsMergeAncestry?: boolean;
     recoveryPullRequestVersion?: 1;
     freshWorkspaceVersion?: 1;
@@ -921,6 +924,8 @@ export interface PluginCompanySettings {
  * Query filter for `ctx.entities.list`.
  */
 export interface PluginEntityQuery {
+  scopeKind?: PluginStateScopeKind;
+  scopeId?: string;
   /** Optional filter by entity type (e.g. 'project', 'issue'). */
   entityType?: string;
   /** Optional filter by external system identifier. */

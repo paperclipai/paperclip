@@ -1,8 +1,10 @@
 import { STORAGE_UNAVAILABLE_WAIT_RETRY_REASON } from "../storage/storage-unavailable.js";
+import { AGENT_DIRECTORY_WAIT_RETRY_REASON } from "./execution-recovery-attempt.js";
 import { boundSetupCommandFailure, readSetupCommandFailure } from "./workspace-setup-command-failure.js";
 import { and, desc, eq, inArray, isNull, sql, type SQL } from "drizzle-orm";
 import { unidentifiedLocalLaunchRefusals } from "./native-local-process-stop.js";
-import { agents, agentWakeupRequests, approvals, chatActions, companies, heartbeatRuns, issueApprovals, issueRecoveryActions,
+import { nativeSessionCleanupBlock } from "../vendor/paperclip-runner/index.js";
+import { agents, agentWakeupRequests, approvals, chatActions, companies, environmentLeases, heartbeatRuns, issueApprovals, issueRecoveryActions,
   issues, issueTreeHoldMembers, issueTreeHolds, nativeRunFinalizations, projects, type Db } from "@paperclipai/db";
 import { unionAll } from "drizzle-orm/pg-core";
 import { HEARTBEAT_RUN_STATUSES, readProviderFailure, type TaskInterruptionPresentation } from "@paperclipai/shared";
@@ -19,7 +21,9 @@ import { redactCurrentUserText } from "../log-redaction.js";
 import { logger } from "../middleware/logger.js";
 import { canonicalExecutionUuid } from "./execution-identity.js";
 import { chatActionDeadline } from "./chat-action-work.js";
+import { NATIVE_CLEANUP_SETTLING_MESSAGE, NATIVE_SESSION_CLEANUP_QUARANTINED } from "./native-runtime/completed-turn-cleanup.js";
 import { isQueuedDependencyWait } from "./run-cancellation.js";
+import { exhaustedNativeFinalizationCondition, savedResultRetryPendingCondition } from "./native-runtime/exhausted-finalization-retry.js";
 import { AI_CONNECTION_BUSY_RETRY_REASON, AI_CONNECTION_POOL_WAIT_RETRY_REASON, RUNNER_REVISION_WAIT_RETRY_REASON,
   WORKSPACE_BUSY_RETRY_REASON } from "../modules/run-dispatch/index.js";
 
@@ -27,7 +31,8 @@ import { AI_CONNECTION_BUSY_RETRY_REASON, AI_CONNECTION_POOL_WAIT_RETRY_REASON, 
 // attempt. Their dispatcher re-checks the resource, so the run can stay
 // scheduled past its retry time. Retry cannot free the resource either.
 const resourceWaitRetryReasons = new Set<string>([WORKSPACE_BUSY_RETRY_REASON, AI_CONNECTION_BUSY_RETRY_REASON,
-  AI_CONNECTION_POOL_WAIT_RETRY_REASON, RUNNER_REVISION_WAIT_RETRY_REASON, STORAGE_UNAVAILABLE_WAIT_RETRY_REASON]);
+  AI_CONNECTION_POOL_WAIT_RETRY_REASON, RUNNER_REVISION_WAIT_RETRY_REASON, STORAGE_UNAVAILABLE_WAIT_RETRY_REASON,
+  AGENT_DIRECTORY_WAIT_RETRY_REASON]);
 
 // A due same-run resume dispatches within seconds; past this, offer Retry.
 const NATIVE_RESUME_DISPATCH_GRACE_MS = 2 * 60_000;
@@ -44,8 +49,14 @@ type ProjectionRun = Pick<typeof heartbeatRuns.$inferSelect,
   nativeResumeAt?: Date | null;
   /** When the native coordinator saved this run's terminal failure, if it did. */
   nativeFailedAt?: Date | null;
+  /** A succeeded native run whose accepted result ran out of finalization retries; Retry applies it again. */
+  nativeFinalizationRetry?: boolean;
+  /** A saved-result Retry of this succeeded run is still being applied. */
+  nativeFinalizationRetryPending?: boolean;
   /** The configured model id the provider rejected (native_provider_model_rejected only). */
   rejectedModel?: string | null;
+  /** A cleanup-gate refusal after this run's own provider turn completed; its work is saved. */
+  completedTurnCleanup?: boolean;
 };
 type ProjectionWait = { id: string; requestedAt: Date; sourceRunId?: string | null; executionWaitReason?: string | null;
   preparationStatus?: string | null; preparationRetryAt?: number | string | null; preparationUpdatedAt?: Date | null;
@@ -72,6 +83,12 @@ type ProjectionState = {
   /** The latest wake for a task with no run yet, when admission refused it. */
   admissionWait?: { id: string; status: string; reason: string | null; agentId: string };
   retryDependencies?: RetryDependencies;
+  /** The task waits on unresolved blocker tasks, a wait that does not depend on its last run. */
+  waitingOnBlockers?: boolean;
+  /** A live owner is settling this run's session cleanup gate: an unreleased
+   * remote environment, or a scheduled close in this process. Without one,
+   * nothing settles the gate by itself, so Retry is the way forward. */
+  cleanupSettling?: boolean;
 };
 
 // A task read reports the change that made a task fail, not every later read of
@@ -133,7 +150,7 @@ const retryWaitMessages: Record<string, string> = {
   saved_work_recovery_refused: "Paperclip refused to recover the saved files because a safety check on them cannot pass. "
     + "Retry runs the same check again and succeeds only after Paperclip is updated. The agent's result is saved, and the agent will not repeat its work.",
   workspace_owner_stop_required: "Retry is waiting until Paperclip confirms that the previous server stopped saving files. The agent's result and your Retry are saved.",
-  cleanup_quarantined: "Retry cannot continue this attempt. Send a new message after the previous execution has stopped.",
+  cleanup_quarantined: NATIVE_CLEANUP_SETTLING_MESSAGE,
   cancelled_by_operator: "This attempt was stopped. Send a new message to continue from saved work.",
   // A new click replaces a Retry declined for its requester's access with a
   // fresh attempt under the clicker's access, so Retry stays available.
@@ -172,8 +189,18 @@ function deniedProjectId(issue: ProjectionIssue, run?: ProjectionRun): string | 
 }
 
 /** Presentation never grants authority. Dispatch repeats all gates under its
- * locks. The same projection is used in detail, lists and attention surfaces. */
+ * locks. The same projection is used in detail, lists and attention surfaces.
+ * A native run refused by the cleanup gate offers no Retry only while a live
+ * owner settles that gate. Without one, the task Retry (explicit continuation)
+ * proves the old session stopped and continues in a fresh session. */
 export function projectTaskInterruption(issue: ProjectionIssue, input: ProjectionState, now = Date.now()): TaskInterruptionPresentation | null {
+  const presentation = projectTaskInterruptionState(issue, input, now);
+  if (!presentation?.canRetry || input.run?.errorCode !== NATIVE_SESSION_CLEANUP_QUARANTINED || !input.cleanupSettling)
+    return presentation;
+  return { ...presentation, canRetry: false };
+}
+
+function projectTaskInterruptionState(issue: ProjectionIssue, input: ProjectionState, now: number): TaskInterruptionPresentation | null {
   const { run, wait, action, agent, project, company } = input;
   const retryWait = input.retryWait ?? wait;
   if (!run) {
@@ -194,7 +221,11 @@ export function projectTaskInterruption(issue: ProjectionIssue, input: Projectio
   const base: TaskInterruptionPresentation = { intentId: wait?.id ?? null, responsibility: "system",
     state: "resolved", nextRetryAt: null, canRetry: false, userAction: null,
     sourceRunIds: [run.id], observedRunId: run.id };
-  if (["done", "cancelled"].includes(issue.status) || (run.status === "succeeded" && !wait)) return base;
+  if (["done", "cancelled"].includes(issue.status)) return base;
+  // Retry took effect: the saved result is being applied again.
+  if (run.status === "succeeded" && run.nativeFinalizationRetryPending)
+    return { ...base, state: "working", recoveryStep: "finishing_recovery" };
+  if (run.status === "succeeded" && !wait && !run.nativeFinalizationRetry) return base;
   const providerFailure = run.status === "failed" || run.status === "scheduled_retry"
     ? readProviderFailure(run.resultJson?.providerFailure) : null;
   if (providerFailure) base.providerFailure = providerFailure;
@@ -295,12 +326,44 @@ export function projectTaskInterruption(issue: ProjectionIssue, input: Projectio
     const reason = Object.hasOwn(retryWaitMessages, retryWait.executionWaitReason) ? retryWait.executionWaitReason : "execution_recovery";
     // Keep the latest input receipt so message submission can settle independently.
     return { ...base, state: "failed",
-      canRetry: !["cleanup_quarantined", "cancelled_by_operator", "retry_source_changed", "workspace_owner_stop_required"].includes(reason), retryWait: { reason,
+      canRetry: !["cancelled_by_operator", "retry_source_changed", "workspace_owner_stop_required"].includes(reason)
+        && (reason !== "cleanup_quarantined" || !input.cleanupSettling), retryWait: { reason,
       message: retryWaitMessages[reason] ?? "Retry is waiting for execution checks. Your message is saved." } };
   }
   if (wait && wait.requestedAt.getTime() > now - 10_000 && system?.state !== "exhausted")
     return { ...base, state: "working" };
+  if (run.errorCode === NATIVE_SESSION_CLEANUP_QUARANTINED) {
+    // The provider turn completed and its work is saved; only shutdown of the
+    // old session is unproven, and that settles by itself. A task that waits on
+    // its blockers shows that wait, not a failed attempt. Without such a wait a
+    // missing task disposition stays visible.
+    if (run.completedTurnCleanup && input.waitingOnBlockers) return base;
+    // Waiting is honest only while something settles the gate. Otherwise
+    // Retry proves the old session stopped and continues from saved work.
+    if (!input.cleanupSettling) return { ...base, state: "failed", canRetry: true };
+    return { ...base, state: "failed", canRetry: false,
+      retryWait: { reason: "cleanup_quarantined", message: NATIVE_CLEANUP_SETTLING_MESSAGE } };
+  }
   return { ...base, state: "failed", canRetry: true, ...(projectAccess ? { projectAccess } : {}) };
+}
+
+/** Tasks whose cleanup-gated run still has a live owner settling the gate: a
+ * remote environment not yet released (its termination receipt retires the
+ * gate), or a scheduled close in this process. An operator-required gate or a
+ * gate lost with a restarted process has no owner. */
+async function quarantineCleanupSettling(db: Db, companyId: string,
+  entries: Array<{ issueId: string; run: { id: string; nativeIssueId?: string | null } }>): Promise<Set<string>> {
+  const settling = new Set<string>();
+  if (!entries.length) return settling;
+  const unreleased = new Set((await db.select({ runId: environmentLeases.heartbeatRunId }).from(environmentLeases).where(and(
+    eq(environmentLeases.companyId, companyId), inArray(environmentLeases.heartbeatRunId, entries.map(entry => entry.run.id)),
+    isNull(environmentLeases.releasedAt), sql`${environmentLeases.provider} is distinct from 'local'`,
+  ))).map(row => row.runId));
+  for (const { issueId, run } of entries) {
+    if (unreleased.has(run.id) || nativeSessionCleanupBlock({ companyId, issueId: run.nativeIssueId ?? issueId }) === "pending")
+      settling.add(issueId);
+  }
+  return settling;
 }
 
 /** A scheduled retry has no outcome yet, so its provider failure is read from
@@ -347,6 +410,12 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
         then ${heartbeatRuns.error} else null end`,
       errorCode: heartbeatRuns.errorCode, livenessState: heartbeatRuns.livenessState, scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
       // The model this run asked the provider for; configuration, not provider text.
+      // Saved fields only, so quarantines written by earlier releases read the same.
+      completedTurnCleanup: sql<boolean>`coalesce(${heartbeatRuns.runtimeMode} = 'native' and ${heartbeatRuns.status} = 'failed'
+        and ${heartbeatRuns.errorCode} = ${NATIVE_SESSION_CLEANUP_QUARANTINED}
+        and ${heartbeatRuns.runnerProfileJson}#>>'{sessionCheckpoint,identity,runId}' = ${heartbeatRuns.id}::text
+        and ${heartbeatRuns.runnerProfileJson}#>>'{sessionCheckpoint,terminal,turnTerminalState}' = 'completed'
+        and coalesce(jsonb_typeof(${heartbeatRuns.runnerProfileJson}#>'{sessionCheckpoint,activeTurnId}'), 'null') = 'null', false)`,
       rejectedModel: sql<string | null>`case when ${heartbeatRuns.errorCode} = 'native_provider_model_rejected'
         then ${boundedJsonString(sql`${heartbeatRuns.runnerProfileJson}->'nativeExecutionInput'->'provider'->'model'`, 200)} end`,
       scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
@@ -362,6 +431,8 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
       nativeFailedAt: sql<Date | null>`(select ${nativeRunFinalizations.updatedAt} from ${nativeRunFinalizations}
         where ${nativeRunFinalizations.companyId} = ${heartbeatRuns.companyId} and ${nativeRunFinalizations.runId} = ${heartbeatRuns.id}
           and ${nativeRunFinalizations.phase} = 'terminal_failure')`.mapWith(value => value == null ? null : new Date(value)),
+      nativeFinalizationRetry: exhaustedNativeFinalizationCondition(),
+      nativeFinalizationRetryPending: savedResultRetryPendingCondition(),
       // The run whose resultJson supplied providerFailure. A scheduled retry
       // shows its predecessor's reason, so redaction must use that run's registry.
       providerFailureRunId: sql<string>`case when ${heartbeatRuns.resultJson}->'providerFailure' is null
@@ -525,6 +596,16 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
         savingFilesOnly: ids.every(id => saving.has(id)) });
     }
   }
+  // A completed turn refused only by the cleanup gate shows the task's own
+  // blocker wait. Read readiness for those tasks only.
+  const settledIssueIds = [...runMap.values()].filter(run => run.completedTurnCleanup).map(run => run.issueId);
+  const waitingOnBlockers = new Set<string>();
+  if (settledIssueIds.length) {
+    const { issueService } = await import("./issues.js");
+    const readiness = await issueService(db).listDependencyReadiness(companyId, settledIssueIds);
+    for (const [waitingIssueId, row] of readiness)
+      if (row.unresolvedBlockerIssueIds.length) waitingOnBlockers.add(waitingIssueId);
+  }
   for (const wait of currentWaits) {
     const current = waitMap.get(wait.issueId);
     if (!current || wait.requestedAt > current.requestedAt ||
@@ -568,6 +649,8 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
     return run && wait.sourceRunId === run.id && wait.executionWaitReason === "process_identity_missing" ? [{ issueId, run }] : [];
   });
   const launchRefusals = await unidentifiedLocalLaunchRefusals(db, launchWaits.map(entry => entry.run));
+  const cleanupSettling = await quarantineCleanupSettling(db, companyId,
+    [...runMap].flatMap(([issueId, run]) => run.errorCode === NATIVE_SESSION_CLEANUP_QUARANTINED ? [{ issueId, run }] : []));
   const confirmableLaunches = new Set(launchWaits.filter(entry => launchRefusals.get(entry.run.id) === null).map(entry => entry.issueId));
   const now = Date.now();
   for (const issue of selected) {
@@ -586,6 +669,8 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
       unidentifiedLaunchConfirmable: confirmableLaunches.has(issue.id),
       admissionWait: admissionWaitMap.get(issue.id),
       retryDependencies: retryDependencyMap.get(issue.id),
+      waitingOnBlockers: waitingOnBlockers.has(issue.id),
+      cleanupSettling: cleanupSettling.has(issue.id),
     }, now);
     result.set(issue.id, presentation);
     const run = facts.run;

@@ -16,6 +16,7 @@ import {
   prepareRemoteRepository,
   prepareRemoteWorkspaceDirectory,
   remoteWorkspaceFailureCause,
+  REMOTE_WORKSPACE_SANDBOX_DISK_FULL,
   removeRemoteRecoveryAttachment,
   restoreRemoteWorkspaceDirectory,
   type RemoteWorkspaceTarget,
@@ -284,7 +285,8 @@ describe("remote workspace transport safety with real sandbox commands", () => {
       let lost = false;
       execute.mockImplementation(async input => {
         const result = await original(input);
-        if (!lost && input.args?.[0] === "-e" && input.args[1]?.includes("workspace-restored.json") && result.exitCode === 0) {
+        if (!lost && input.args?.[0] === "-e" && input.args[1]?.includes("workspace-restored.json") && input.args.at(-1) === "extract"
+          && result.exitCode === 0) {
           lost = true; throw new Error("synthetic lost restore reply");
         }
         return result;
@@ -332,7 +334,7 @@ describe("remote workspace transport safety with real sandbox commands", () => {
       if (scenario === "interrupted") {
         const run = execute.getMockImplementation()!; let interrupt = true;
         execute.mockImplementation(async command => {
-          if (interrupt && command.args?.[1]?.includes("remote_workspace_restore_failed")) {
+          if (interrupt && command.args?.[1]?.includes("remote_workspace_restore_failed") && command.args.at(-1) === "extract") {
             interrupt = false;
             return run({ ...command, args: command.args.map((arg, index) => index === 1
               ? arg.replace("try{await fs.rename(staged,root);}", "throw Error('interrupted');try{await fs.rename(staged,root);}") : arg) });
@@ -387,6 +389,7 @@ fs.unlinkSync(${JSON.stringify(postPublish)});throw Error('published_interrupted
       const run = execute.getMockImplementation()!; let interrupt = scenario === "interrupted";
       execute.mockImplementation(async command => {
         if (!command.args?.[1]?.includes("remote_workspace_restore_failed")) return run(command);
+        if (command.args.at(-1) !== "extract") return run({ ...command, args: ["--require", preload, ...command.args] });
         const args = interrupt ? command.args.map((arg, index) => index === 1
           ? arg.replace("await fs.rename(path.join(staged,'.paperclip-runtime','workspace-restored.json')", "throw Error('interrupted');await fs.rename(path.join(staged,'.paperclip-runtime','workspace-restored.json')") : arg) : command.args;
         interrupt = false;
@@ -719,6 +722,292 @@ fs.unlinkSync(${JSON.stringify(kill)});process.kill(process.pid,'SIGKILL');}retu
     } finally { await captured.cleanup(); }
   });
 
+  describe("restoring into a sandbox disk that cannot hold two workspace copies", () => {
+    const MiB = 1024 * 1024;
+    // The sandbox disk is a folder with a byte capacity. Every write the restore
+    // commands make through a file handle counts what the folder already holds.
+    async function boundedDisk(capacity: number, kill?: { afterWrites: number }) {
+      const disk = path.join(scratch, "disk"), preload = path.join(scratch, `disk-${randomUUID()}.cjs`);
+      await fs.mkdir(disk, { recursive: true });
+      await fs.writeFile(preload, `const fs=require('node:fs'),path=require('node:path');
+const disk=${JSON.stringify(disk)},capacity=${capacity},killAfter=${kill?.afterWrites ?? 0};
+const used=()=>{let total=0;const walk=d=>{for(const e of fs.readdirSync(d,{withFileTypes:true})){const p=path.join(d,e.name);
+ if(e.isDirectory())walk(p);else if(e.isFile())total+=fs.lstatSync(p).size;}};walk(disk);return total;};
+let writes=0;const helper=process.argv.includes('restore');const open=fs.promises.open;
+fs.promises.open=async(...args)=>{const handle=await open.apply(fs.promises,args);
+ if(!String(args[0]).startsWith(disk+path.sep))return handle;const writeFile=handle.writeFile.bind(handle);
+ handle.writeFile=async(data,...rest)=>{
+  if(used()+Buffer.byteLength(data)>capacity)throw Object.assign(Error('ENOSPC: no space left on device, write'),{code:'ENOSPC',errno:-28,syscall:'write'});
+  const result=await writeFile(data,...rest);
+  if(helper&&killAfter&&++writes>=killAfter){process.kill(process.ppid,'SIGKILL');process.kill(process.pid,'SIGKILL');}
+  return result;};
+ return handle;};
+const writeFile=fs.promises.writeFile;
+fs.promises.writeFile=async(file,data,...rest)=>{
+ if(String(file).startsWith(disk+path.sep)&&used()+Buffer.byteLength(data)>capacity)
+  throw Object.assign(Error('ENOSPC: no space left on device, write'),{code:'ENOSPC',errno:-28,syscall:'write'});
+ return writeFile.call(fs.promises,file,data,...rest);};
+require('node:module').syncBuiltinESMExports();`);
+      const { remote, execute } = target();
+      const actual = execute.getMockImplementation()!;
+      // Every sandbox command, including the helper install, writes to this disk.
+      execute.mockImplementation(command => actual({ ...command, env: { ...command.env, NODE_OPTIONS: `--require ${preload}` } }));
+      const used = async () => {
+        let total = 0;
+        const walk = async (directory: string): Promise<void> => {
+          for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+            if (entry.isDirectory()) await walk(path.join(directory, entry.name));
+            else if (entry.isFile()) total += (await fs.lstat(path.join(directory, entry.name))).size;
+          }
+        };
+        await walk(disk);
+        return total;
+      };
+      // The upload lands on the same disk, so it must fit beside what is already there.
+      const syncIn = remote.runner!.syncIn!;
+      remote.runner!.syncIn = async (operations, options) => {
+        let incoming = 0;
+        for (const operation of operations) for (const file of operation.files) {
+          incoming += (await fs.stat(file.sourcePath)).size;
+          incoming -= (await fs.stat(file.targetPath).catch(() => null))?.size ?? 0;
+        }
+        if (await used() + incoming > capacity) throw Object.assign(new Error("upload failed: ENOSPC: no space left on device"), { code: "ENOSPC" });
+        return syncIn(operations, options);
+      };
+      return { disk, remote, execute, used, root: path.join(disk, "workspace-root") };
+    }
+    async function savedWorkspace() {
+      const files = Array.from({ length: 4 }, (_, index) => ({ name: `part-${index}.bin`, bytes: randomBytes(MiB) }));
+      await fs.mkdir(path.join(workspace, "nested"));
+      for (const file of files) await fs.writeFile(path.join(workspace, "nested", file.name), file.bytes);
+      const { remote } = target();
+      const captured = await captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() });
+      return { files, captured, archiveSize: (await fs.stat(captured.archivePath)).size };
+    }
+    async function expectRestored(root: string, files: Array<{ name: string; bytes: Buffer }>) {
+      for (const file of files) expect((await fs.readFile(path.join(root, "nested", file.name))).equals(file.bytes)).toBe(true);
+    }
+
+    it("restores a saved workspace when the archive and the extracted tree do not both fit", async () => {
+      const { files, captured, archiveSize } = await savedWorkspace();
+      try {
+        // Room for the uploaded archive and one file, not for a second copy.
+        const { remote, root, used, disk } = await boundedDisk(archiveSize + 1.5 * MiB);
+        await restoreRemoteWorkspaceDirectory({ target: remote, remoteCwd: root, archivePath: captured.archivePath,
+          manifestDigest: captured.manifestDigest, restorationIdentity: "1".repeat(64), restorationEpoch: 1 });
+        await expectRestored(root, files);
+        // The consumed archive is gone; nothing but the restored files holds space.
+        expect(await used()).toBeLessThan(4 * MiB + 256 * 1024);
+        expect((await fs.readdir(disk)).filter(name => name.includes(".restoring-") || name.startsWith(".workspace-restore-"))).toEqual([]);
+      } finally { await captured.cleanup(); }
+    });
+
+    it("names a disk that cannot take the upload so it is not retried automatically", async () => {
+      const { captured, archiveSize } = await savedWorkspace();
+      try {
+        const { remote, root } = await boundedDisk(archiveSize / 2);
+        await expect(restoreRemoteWorkspaceDirectory({ target: remote, remoteCwd: root, archivePath: captured.archivePath,
+          manifestDigest: captured.manifestDigest, restorationIdentity: "9".repeat(64), restorationEpoch: 1 })).rejects.toThrow(
+          /^remote_workspace_operation_failed: operation=upload; remote_workspace_restore_failed: stage=upload reason=sandbox_disk_full$/);
+      } finally { await captured.cleanup(); }
+    });
+
+    it("names a disk that cannot take the archive helper so it is not retried automatically", async () => {
+      const { remote, execute } = target();
+      // The reclaim phase runs first; then the helper install finds the disk full.
+      execute.mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "", timedOut: false, signal: null,
+        pid: process.pid, startedAt: new Date().toISOString() });
+      execute.mockResolvedValueOnce({ exitCode: 1, stdout: "", stderr: REMOTE_WORKSPACE_SANDBOX_DISK_FULL, timedOut: false, signal: null,
+        pid: process.pid, startedAt: new Date().toISOString() });
+      const archivePath = path.join(scratch, "restore.pcws"); await fs.writeFile(archivePath, "synthetic archive");
+      await expect(restoreRemoteWorkspaceDirectory({ target: remote, remoteCwd: path.join(scratch, "restored"), archivePath,
+        manifestDigest: "a".repeat(64), restorationIdentity: "b".repeat(64) })).rejects.toThrow(
+        /^remote_workspace_operation_failed: operation=archive_helper; remote_workspace_restore_failed: stage=helper reason=sandbox_disk_full$/);
+    });
+
+    it("names a disk too small for one workspace copy so it is not retried automatically, and restores once space exists", async () => {
+      const { files, captured, archiveSize } = await savedWorkspace();
+      try {
+        const small = await boundedDisk(archiveSize + MiB / 2);
+        const input = { target: small.remote, remoteCwd: small.root, archivePath: captured.archivePath,
+          manifestDigest: captured.manifestDigest, restorationIdentity: "2".repeat(64), restorationEpoch: 1 };
+        await expect(restoreRemoteWorkspaceDirectory(input)).rejects.toThrow(
+          /^remote_workspace_operation_failed: operation=restore exit=1; remote_workspace_restore_failed: stage=extract reason=sandbox_disk_full$/);
+        expect(await fs.lstat(small.root).catch(() => null)).toBeNull();
+        // The failed attempt leaves no partial tree or consumed archive behind.
+        expect(await small.used()).toBeLessThan(256 * 1024);
+        const larger = await boundedDisk(archiveSize + 1.5 * MiB);
+        await restoreRemoteWorkspaceDirectory({ ...input, target: larger.remote });
+        await expectRestored(small.root, files);
+      } finally { await captured.cleanup(); }
+    });
+
+    it.each(["same", "new"] as const)("reclaims a restore that died mid-extraction before retrying with the %s identity", async identity => {
+      const { files, captured, archiveSize } = await savedWorkspace();
+      try {
+        const dying = await boundedDisk(archiveSize + 1.5 * MiB, { afterWrites: 2 });
+        const input = { target: dying.remote, remoteCwd: dying.root, archivePath: captured.archivePath,
+          manifestDigest: captured.manifestDigest, restorationIdentity: "3".repeat(64), restorationEpoch: 1 };
+        await expect(restoreRemoteWorkspaceDirectory(input)).rejects.toThrow(/^remote_workspace_operation_failed: operation=restore/);
+        // Both processes died: a partial tree and the unconsumed archive remain.
+        expect((await fs.readdir(dying.disk)).some(name => name.startsWith("workspace-root.restoring-"))).toBe(true);
+        expect(await fs.lstat(dying.root).catch(() => null)).toBeNull();
+        const retry = await boundedDisk(archiveSize + 1.5 * MiB);
+        await restoreRemoteWorkspaceDirectory(identity === "same" ? { ...input, target: retry.remote }
+          : { ...input, target: retry.remote, restorationIdentity: "4".repeat(64), restorationEpoch: 2 });
+        await expectRestored(dying.root, files);
+        expect((await fs.readdir(dying.disk)).filter(name => name.includes(".restoring-"))).toEqual([]);
+      } finally { await captured.cleanup(); }
+    });
+
+    it("reclaims an earlier release's partial extraction and leaves its unbound archive staging alone", async () => {
+      const { files, captured, archiveSize } = await savedWorkspace();
+      try {
+        const { remote, root, disk } = await boundedDisk(archiveSize + 1.5 * MiB);
+        // An earlier release's restore died here: its partial tree carries this
+        // root's staging name, and its archive staging names no root.
+        const partial = path.join(disk, "workspace-root.restoring-Ab12Cd");
+        await fs.mkdir(path.join(partial, "tree", "nested"), { recursive: true });
+        await fs.writeFile(path.join(partial, "tree", "nested", "part-0.bin"), randomBytes(MiB));
+        await fs.chmod(path.join(partial, "tree", "nested"), 0o555);
+        const unbound = path.join(disk, ".paperclip-runtime", "workspace-snapshots", randomUUID());
+        await fs.mkdir(unbound, { recursive: true });
+        await fs.writeFile(path.join(unbound, "workspace.pcws"), "earlier release archive");
+        await restoreRemoteWorkspaceDirectory({ target: remote, remoteCwd: root, archivePath: captured.archivePath,
+          manifestDigest: captured.manifestDigest, restorationIdentity: "8".repeat(64), restorationEpoch: 1 });
+        await expectRestored(root, files);
+        expect(await fs.lstat(partial).catch(() => null)).toBeNull();
+        expect(await fs.readFile(path.join(unbound, "workspace.pcws"), "utf8")).toBe("earlier release archive");
+      } finally { await captured.cleanup(); }
+    });
+
+    it("reclaims a full disk before the helper install needs space", async () => {
+      const { files, captured, archiveSize } = await savedWorkspace();
+      try {
+        const capacity = archiveSize + 1.5 * MiB;
+        const { remote, root, disk, used } = await boundedDisk(capacity);
+        // A dead attempt of this root left a partial tree that fills the disk.
+        const partial = path.join(disk, "workspace-root.restoring-Zz98Yy");
+        await fs.mkdir(path.join(partial, "tree"), { recursive: true });
+        await fs.writeFile(path.join(partial, "tree", "filler.bin"), Buffer.alloc(Math.floor(capacity - 1024)));
+        expect(capacity - await used()).toBeLessThan(2048);
+        await restoreRemoteWorkspaceDirectory({ target: remote, remoteCwd: root, archivePath: captured.archivePath,
+          manifestDigest: captured.manifestDigest, restorationIdentity: "a1".repeat(32), restorationEpoch: 1 });
+        await expectRestored(root, files);
+        expect(await fs.lstat(partial).catch(() => null)).toBeNull();
+      } finally { await captured.cleanup(); }
+    });
+
+    it("keeps a later attempt's upload when an earlier attempt's reclaim with the same identity runs late", async () => {
+      const { files, captured, archiveSize } = await savedWorkspace();
+      try {
+        const { remote, execute, root } = await boundedDisk(archiveSize + 1.5 * MiB);
+        const bounded = execute.getMockImplementation()!;
+        let delayed = false;
+        execute.mockImplementation(async command => {
+          if (!delayed && command.args?.at(-1) === "extract") {
+            delayed = true;
+            // The earlier attempt's reclaim reached the sandbox only now. It names its own upload.
+            expect(command.args[3]).toMatch(/workspace-[0-9]{16}-[a-f0-9-]{36}\.pcws$/);
+            const late = command.args.map((arg, index) => index === 3
+              ? path.join(path.dirname(arg), `workspace-${String(Date.now() - 60_000).padStart(16, "0")}-${randomUUID()}.pcws`) : index === command.args!.length - 1 ? "reclaim" : arg);
+            expect((await bounded({ ...command, args: late })).exitCode).toBe(0);
+          }
+          return bounded(command);
+        });
+        await restoreRemoteWorkspaceDirectory({ target: remote, remoteCwd: root, archivePath: captured.archivePath,
+          manifestDigest: captured.manifestDigest, restorationIdentity: "b2".repeat(32), restorationEpoch: 1 });
+        expect(delayed).toBe(true);
+        await expectRestored(root, files);
+      } finally { await captured.cleanup(); }
+    });
+
+    it("reclaims an abandoned upload of the same identity before uploading again", async () => {
+      const { files, captured, archiveSize } = await savedWorkspace();
+      try {
+        const { remote, root, disk } = await boundedDisk(archiveSize + 1.5 * MiB);
+        const identity = "c3".repeat(32);
+        const operationId = `${identity.slice(0, 8)}-${identity.slice(8, 12)}-${identity.slice(12, 16)}-${identity.slice(16, 20)}-${identity.slice(20, 32)}`;
+        // An earlier attempt finished its upload, then the server stopped before extraction.
+        const staging = path.join(disk, ".paperclip-runtime", "workspace-snapshots", operationId);
+        await fs.mkdir(staging, { recursive: true });
+        const abandoned = path.join(staging, `workspace-${String(Date.now() - 60_000).padStart(16, "0")}-${randomUUID()}.pcws`);
+        await fs.copyFile(captured.archivePath, abandoned);
+        await restoreRemoteWorkspaceDirectory({ target: remote, remoteCwd: root, archivePath: captured.archivePath,
+          manifestDigest: captured.manifestDigest, restorationIdentity: identity, restorationEpoch: 1 });
+        await expectRestored(root, files);
+        expect(await fs.lstat(abandoned).catch(() => null)).toBeNull();
+      } finally { await captured.cleanup(); }
+    });
+
+    async function retainedRoot(root: string) {
+      const runtime = path.join(root, ".paperclip-runtime");
+      await fs.mkdir(path.join(runtime, "paperclip-runner"), { recursive: true });
+      await fs.writeFile(path.join(runtime, "paperclip-runner", "runner-state.json"), "{\"lifecycle\":\"suspended\"}");
+      await fs.writeFile(path.join(runtime, "workspace-ready.json"), JSON.stringify({ preparationIdentity: "f".repeat(64) }));
+      await fs.mkdir(path.join(root, "nested"));
+      for (let index = 0; index < 4; index++) await fs.writeFile(path.join(root, "nested", `old-${index}.bin`), randomBytes(MiB));
+    }
+
+    it("removes a retained root whose save the server proved before extracting into its space", async () => {
+      const { files, captured, archiveSize } = await savedWorkspace();
+      try {
+        // The old copy, the uploaded archive, and one file fit; a third copy does not.
+        const { remote, root } = await boundedDisk(4 * MiB + archiveSize + 1.5 * MiB);
+        await retainedRoot(root);
+        await restoreRemoteWorkspaceDirectory({ target: remote, remoteCwd: root, archivePath: captured.archivePath,
+          manifestDigest: captured.manifestDigest, restorationIdentity: "5".repeat(64), restorationEpoch: 1, replaceRetiredRoot: true });
+        await expectRestored(root, files);
+        expect(await fs.lstat(path.join(root, "nested", "old-0.bin")).catch(() => null)).toBeNull();
+        expect(await fs.readFile(path.join(root, ".paperclip-runtime", "paperclip-runner", "runner-state.json"), "utf8"))
+          .toBe("{\"lifecycle\":\"suspended\"}");
+      } finally { await captured.cleanup(); }
+    });
+
+    it.each(["unproven", "no_receipt"] as const)("never removes a retained root whose save is %s", async scenario => {
+      const { captured, archiveSize } = await savedWorkspace();
+      try {
+        const { remote, root } = await boundedDisk(4 * MiB + archiveSize + 1.5 * MiB);
+        await retainedRoot(root);
+        if (scenario === "no_receipt") await fs.rm(path.join(root, ".paperclip-runtime", "workspace-ready.json"));
+        const before = await fs.readdir(path.join(root, "nested"));
+        await expect(restoreRemoteWorkspaceDirectory({ target: remote, remoteCwd: root, archivePath: captured.archivePath,
+          manifestDigest: captured.manifestDigest, restorationIdentity: "6".repeat(64), restorationEpoch: 1,
+          replaceRetiredRoot: scenario !== "unproven" }))
+          .rejects.toThrow(/; remote_workspace_restore_failed: stage=inspect_root reason=occupied_root$/);
+        expect(await fs.readdir(path.join(root, "nested"))).toEqual(before);
+      } finally { await captured.cleanup(); }
+    });
+
+    it("finishes the removal and restore after a proven retained root's removal is interrupted", async () => {
+      const { files, captured, archiveSize } = await savedWorkspace();
+      try {
+        const { remote, execute, root, disk } = await boundedDisk(4 * MiB + archiveSize + 1.5 * MiB);
+        await retainedRoot(root);
+        const flag = path.join(scratch, "interrupt-removal"), interrupt = path.join(scratch, "interrupt-removal.cjs");
+        await fs.writeFile(flag, "once");
+        // The command dies right after deleting the old files, as a restart would leave it.
+        await fs.writeFile(interrupt, `const fs=require('node:fs'),rm=fs.promises.rm;
+fs.promises.rm=async(file,options)=>{const result=await rm.call(fs.promises,file,options);
+if(String(file)===${JSON.stringify(path.join(root, "nested"))}&&fs.existsSync(${JSON.stringify(flag)})){fs.unlinkSync(${JSON.stringify(flag)});process.kill(process.pid,'SIGKILL');}
+return result};`);
+        const bounded = execute.getMockImplementation()!;
+        execute.mockImplementation(command => bounded(command.args?.[1]?.includes("remote_workspace_restore_failed")
+          ? { ...command, args: ["--require", interrupt, ...command.args!] } : command));
+        const input = { target: remote, remoteCwd: root, archivePath: captured.archivePath, manifestDigest: captured.manifestDigest,
+          restorationIdentity: "7".repeat(64), restorationEpoch: 1, replaceRetiredRoot: true };
+        await expect(restoreRemoteWorkspaceDirectory(input)).rejects.toThrow(/^remote_workspace_operation_failed: operation=restore/);
+        expect(await fs.lstat(path.join(root, "nested")).catch(() => null)).toBeNull();
+        expect((await fs.lstat(path.join(root, ".paperclip-runtime", "workspace-ready.json"))).isFile()).toBe(true);
+        await restoreRemoteWorkspaceDirectory(input);
+        await expectRestored(root, files);
+        expect(await fs.readFile(path.join(root, ".paperclip-runtime", "paperclip-runner", "runner-state.json"), "utf8"))
+          .toBe("{\"lifecycle\":\"suspended\"}");
+        expect((await fs.readdir(disk)).filter(name => name.includes(".restoring-") || name.startsWith("workspace-root.retired-"))).toEqual([]);
+      } finally { await captured.cleanup(); }
+    });
+  });
+
   it("names the preparation step that could not select a missing branch", async () => {
     const origin = await repository(), { remote } = target(), root = path.join(workspace, "missing-branch-cause");
     await expect(prepareRemoteWorkspaceDirectory({ target: remote, remoteCwd: root,
@@ -739,8 +1028,9 @@ fs.unlinkSync(${JSON.stringify(kill)});process.kill(process.pid,'SIGKILL');}retu
   it.each(["prepare", "repository", "restore"] as const)("drops %s output that is outside the closed cause grammar", async operation => {
     const { remote, execute } = target();
     const forged = `remote_workspace_${operation}_failed: stage=extract reason=/home/secret`;
-    if (operation === "restore") execute.mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "", timedOut: false,
-      signal: null, pid: process.pid, startedAt: new Date().toISOString() });
+    // A restore runs its reclaim phase and installs its helper before extracting.
+    if (operation === "restore") for (let call = 0; call < 2; call++) execute.mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "",
+      timedOut: false, signal: null, pid: process.pid, startedAt: new Date().toISOString() });
     execute.mockResolvedValueOnce({ exitCode: 1, stdout: "", stderr: forged, timedOut: false,
       signal: null, pid: process.pid, startedAt: new Date().toISOString() });
     const request = operation === "prepare"
@@ -857,20 +1147,49 @@ fs.unlinkSync(${JSON.stringify(kill)});process.kill(process.pid,'SIGKILL');}retu
     expect(await fs.readdir(outside)).toEqual(["workspace.pcws"]);
   });
 
-  it.each(["split", "one-shot"] as const)("retains a closed capture validation failure with %s output", async outputMode => {
-    const privateName = "SYNTHETIC_PRIVATE_FILENAME", outside = path.join(scratch, privateName);
-    await fs.writeFile(outside, "outside source bytes\n");
+  it.skipIf(process.platform === "win32").each(["split", "one-shot"] as const)("retains a closed capture validation failure with %s output", async outputMode => {
+    const privateName = "SYNTHETIC_PRIVATE_FILENAME";
     await fs.writeFile(path.join(workspace, "saved.txt"), "retained source bytes\n");
-    await fs.symlink(`../${privateName}`, path.join(workspace, "link"));
+    await exec("mkfifo", [path.join(workspace, privateName)]);
     const { remote, execute } = target({}, outputMode), operationId = randomUUID();
     await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId }))
-      .rejects.toThrow(/^remote_workspace_archive_unsafe_symlink$/);
+      .rejects.toThrow(/^remote_workspace_archive_unsupported_entry$/);
     expect(execute).toHaveBeenCalledTimes(2);
-    expect(await fs.readFile(outside, "utf8")).toBe("outside source bytes\n");
     expect(await fs.readFile(path.join(workspace, "saved.txt"), "utf8")).toBe("retained source bytes\n");
-    expect(await fs.readlink(path.join(workspace, "link"))).toBe(`../${privateName}`);
+    expect((await fs.lstat(path.join(workspace, privateName))).isFIFO()).toBe(true);
     const directory = path.join(workspace, ".paperclip-runtime", "workspace-snapshots", operationId);
     expect(await fs.readdir(directory)).toEqual(["archive.cjs"]);
+  });
+
+  /**
+   * The staging shape through the sandbox command path: a `node_modules/.bin` link
+   * inside the workspace, a Chromium profile link by absolute path into /tmp,
+   * and a `..` link out of the workspace. The save completes; only the
+   * confined link is restored.
+   */
+  it.each(["split", "one-shot"] as const)("saves a workspace with outside links through the sandbox helper with %s output", async outputMode => {
+    const outside = path.join(scratch, "sandbox-tmp"); await fs.mkdir(outside);
+    await fs.writeFile(path.join(outside, "SingletonSocket"), "SYNTHETIC_SANDBOX_ONLY\n");
+    await fs.writeFile(path.join(workspace, "saved.txt"), "review evidence\n");
+    await fs.mkdir(path.join(workspace, "node_modules", "tool"), { recursive: true });
+    await fs.mkdir(path.join(workspace, "node_modules", ".bin"));
+    await fs.writeFile(path.join(workspace, "node_modules", "tool", "cli.js"), "cli\n");
+    await fs.symlink("../tool/cli.js", path.join(workspace, "node_modules", ".bin", "tool"));
+    await fs.mkdir(path.join(workspace, ".review-chrome"));
+    await fs.symlink(path.join(outside, "SingletonSocket"), path.join(workspace, ".review-chrome", "SingletonSocket"));
+    await fs.symlink("../sandbox-tmp/SingletonSocket", path.join(workspace, "escape"));
+    const { remote } = target({}, outputMode);
+    const captured = await captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() });
+    try {
+      const restoredRoot = path.join(scratch, "restored");
+      await restoreRemoteWorkspaceDirectory({ target: remote, remoteCwd: restoredRoot, archivePath: captured.archivePath,
+        manifestDigest: captured.manifestDigest, restorationIdentity: "d".repeat(64) });
+      expect(await fs.readFile(path.join(restoredRoot, "saved.txt"), "utf8")).toBe("review evidence\n");
+      expect(await fs.readlink(path.join(restoredRoot, "node_modules", ".bin", "tool"))).toBe("../tool/cli.js");
+      expect(await fs.readdir(path.join(restoredRoot, ".review-chrome"))).toEqual([]);
+      await expect(fs.lstat(path.join(restoredRoot, "escape"))).rejects.toMatchObject({ code: "ENOENT" });
+      expect((await fs.readFile(captured.archivePath)).includes(Buffer.from("SYNTHETIC_SANDBOX_ONLY"))).toBe(false);
+    } finally { await captured.cleanup(); }
   });
 
   it.each(["split", "one-shot"] as const)("retains a closed filesystem failure for a missing canonical archive with %s output", async outputMode => {
@@ -1025,6 +1344,28 @@ fs.unlinkSync(${JSON.stringify(kill)});process.kill(process.pid,'SIGKILL');}retu
       await saved?.cleanup();
       await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
     }
+  });
+
+  it.each([
+    ["socket hang up", "transport_closed", true],
+    ["503 service unavailable", "provider_unavailable", true],
+    ["synthetic transfer unavailable", "provider_error", false],
+  ] as const)("keeps a full disk only when the read-only fallback did not just lose its connection (%s)", async (thrown, label, transient) => {
+    await fs.writeFile(path.join(workspace, "saved.txt"), "retained work\n");
+    const { remote, execute } = target();
+    execute.mockResolvedValueOnce({ exitCode: 1, stdout: "", stderr: REMOTE_WORKSPACE_SANDBOX_DISK_FULL,
+      timedOut: false, signal: null, pid: process.pid, startedAt: new Date().toISOString() });
+    remote.runner!.syncOut = async () => { throw new Error(thrown); };
+    const failure = await captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() })
+      .then(() => { throw new Error("expected the capture to fail"); }, (error: Error) => error);
+    const fallback = `remote_workspace_readonly_capture_failed: stage=transfer reason=operation_failed transport=${label}`;
+    // Finalization retries a dropped connection; a full disk goes straight to saved-work recovery.
+    if (transient) {
+      expect(failure.message).toBe(fallback);
+      // The save records where the fallback stopped.
+      expect(remoteWorkspaceFailureCause(failure)).toBe(fallback);
+    } else expect(failure).toMatchObject({ message: REMOTE_WORKSPACE_SANDBOX_DISK_FULL, cause: { message: fallback } });
+    expect(await fs.readFile(path.join(workspace, "saved.txt"), "utf8")).toBe("retained work\n");
   });
 
   it.each(["source changed", "copy changed", "extra file"])("rejects a read-only fallback when %s", async fault => {
@@ -1300,7 +1641,8 @@ fs.unlinkSync(${JSON.stringify(kill)});process.kill(process.pid,'SIGKILL');}retu
     const { remote, execute } = target();
     const failed = { exitCode: 1, stdout: "remote_workspace_archive_fs_enoent", stderr: "", timedOut: false,
       signal: null, pid: process.pid, startedAt: new Date().toISOString() };
-    if (operation === "restore") execute.mockResolvedValueOnce({ ...failed, exitCode: 0, stdout: "" });
+    // A restore runs its reclaim phase and installs its helper before extracting.
+    if (operation === "restore") execute.mockResolvedValueOnce({ ...failed, exitCode: 0, stdout: "" }).mockResolvedValueOnce({ ...failed, exitCode: 0, stdout: "" });
     execute.mockResolvedValueOnce(failed);
     const request = operation === "prepare"
       ? prepareRemoteWorkspaceDirectory({ target: remote, remoteCwd: workspace, source: { kind: "empty" },
@@ -1315,7 +1657,7 @@ fs.unlinkSync(${JSON.stringify(kill)});process.kill(process.pid,'SIGKILL');}retu
               manifestDigest: "a".repeat(64), restorationIdentity: "b".repeat(64) });
           })();
     await expect(request).rejects.toThrow(/^remote_workspace_operation_failed: operation=[a-z_]+ exit=1$/);
-    expect(execute).toHaveBeenCalledTimes(operation === "restore" ? 2 : 1);
+    expect(execute).toHaveBeenCalledTimes(operation === "restore" ? 3 : 1);
   });
 
   it("keeps the existing disk diagnostic ahead of a new capture diagnostic", async () => {

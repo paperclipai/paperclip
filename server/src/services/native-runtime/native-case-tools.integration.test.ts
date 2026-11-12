@@ -511,6 +511,9 @@ describe("native case tools through authenticated production routes", () => {
     const disabled = new PaperclipRunnerToolAuthority(server.db, { ...f, casesEnabled: false });
     expect(disabled.definitions().map(tool => tool.name)).not.toContain("read_case");
     await expect(disabled.execute({ tool: "read_case", callId: randomUUID(), arguments: {} })).rejects.toThrow("Cases are disabled");
+    // Native tool results carry only the message, so it must hold the final, actionable remediation.
+    await expect(disabled.execute({ tool: "list_workflows", callId: randomUUID(), arguments: {} })).rejects.toThrow(
+      /^Cases are disabled\. .*this denial is final.*\[Experimental settings\]\(\/<prefix>\/company\/settings\/instance\/experimental\).*offer to track the request as an ordinary task instead\.$/);
     const review = new PaperclipRunnerToolAuthority(server.db, { ...f, casesEnabled: true,
       nativeReview: { nativeReviewInteractionId: randomUUID(), nativeReviewDecisionId: randomUUID() } });
     expect(review.definitions().map(tool => tool.name)).not.toContain("read_case");

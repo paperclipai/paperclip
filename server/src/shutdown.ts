@@ -14,6 +14,11 @@ export type ShutdownStepResult<T> =
   | { outcome: "timed_out"; durationMs: number }
   | { outcome: "failed"; error: unknown; durationMs: number };
 
+export async function afterStalledShutdownStep<T>(result: ShutdownStepResult<T>, onStalled: () => Promise<void>) {
+  if (result.outcome !== "completed") await onStalled();
+  return result;
+}
+
 export async function runBoundedShutdownStep<T>(input: {
   step: string;
   signal: "SIGINT" | "SIGTERM";

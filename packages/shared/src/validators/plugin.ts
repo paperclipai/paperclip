@@ -395,6 +395,7 @@ export const pluginUiSlotDeclarationSchema = z.object({
   displayName: z.string().min(1),
   exportName: z.string().min(1),
   entityTypes: z.array(z.enum(PLUGIN_UI_SLOT_ENTITY_TYPES)).optional(),
+  agentEnvironmentDriver: z.string().min(1).optional(),
   taskSidePanel: z.object({
     availabilityPath: z.string().regex(/^\/(?:[a-zA-Z0-9_-]+\/)*:entityId(?:\/[a-zA-Z0-9_-]+)*$/),
     activation: z.object({ namespace: runtimeActivityIdentifierSchema, activityKey: runtimeActivityIdentifierSchema }).strict().optional(),
@@ -404,6 +405,9 @@ export const pluginUiSlotDeclarationSchema = z.object({
   }).optional(),
   order: z.number().int().optional(),
 }).superRefine((value, ctx) => {
+  if (value.agentEnvironmentDriver && (value.type !== "detailTab" || value.entityTypes?.length !== 1 || value.entityTypes[0] !== "agent")) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "agentEnvironmentDriver requires an agent-only detailTab", path: ["agentEnvironmentDriver"] });
+  }
   if (value.taskSidePanel && (value.type !== "detailTab" || !value.entityTypes?.includes("agent"))) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: "taskSidePanel requires an agent detailTab", path: ["taskSidePanel"] });
   }
@@ -808,6 +812,7 @@ export const pluginManifestV1Schema = z.object({
   agentLifecycle: z.literal(true).optional(),
   workspaceProvider: z.object({
     finalizationVersion: z.literal(1).optional(),
+    workspaceVerificationVersion: z.literal(1).optional(),
     supportsMergeAncestry: z.boolean().optional(),
     recoveryPullRequestVersion: z.literal(1).optional(),
     freshWorkspaceVersion: z.literal(1).optional(),

@@ -192,6 +192,104 @@ describeEmbeddedPostgres("native execution lease taken back after a host sleep",
     });
   }
 
+  function restartClaimEntry(overrides: Record<string, unknown> = {}) {
+    return { at: new Date().toISOString(), restartKind: "hard", controllerBootId: controller.bootId,
+      controllerPid: controller.pid, controllerProcessStartedAt: controller.processStartedAt.toISOString(),
+      controllerGeneration: GENERATION, disposition: "resume_dead_runner", reason: "dead_runner_with_exact_provider_checkpoint",
+      stateRootAction: "reuse_exact_root", recoveryRequestId: null, providerAttempt: 1, ...overrides };
+  }
+
+  async function seedResumedSleptRun(label: string, state = "resuming_session",
+    history: Array<Record<string, unknown>> = [restartClaimEntry()], recoveryRequestId: string | null = null) {
+    const run = await seedSleptRun(label);
+    await db.update(nativeRunFinalizations).set({ recoveryState: state, recoveryRequestId, recoveryHistory: history })
+      .where(eq(nativeRunFinalizations.runId, run.runId));
+    return run;
+  }
+
+  it.each([
+    ["a dead Runner resumed", "resuming_session", "resume_dead_runner"],
+    ["a live Runner reattached", "awaiting_runner_reattach", "reattach_existing_runner"],
+    ["an incomplete bootstrap restarted", "bootstrap_incomplete", "bootstrap_incomplete"],
+  ])("takes back a lease held under its own restart claim (%s)", async (_name, state, disposition) => {
+    const run = await seedResumedSleptRun(`resumed-${disposition}`, state, [
+      restartClaimEntry({ controllerGeneration: GENERATION - 1, controllerBootId: `boot-${randomUUID()}` }),
+      restartClaimEntry({ disposition }),
+    ]);
+    await expect(renewNativeSessionExecutionLease(run.renewal)).resolves.toBeUndefined();
+    const saved = await row(run.runId);
+    expect(saved.leaseOwner).toBe(run.leaseOwner);
+    expect(saved.recoveryState).toBe(state);
+    expect(saved.leaseExpiresAt!.getTime()).toBeGreaterThan(Date.now() + 15 * 60_000);
+  });
+
+  it("takes back a lease held under a requested restart claim with the same request", async () => {
+    const requestId = randomUUID();
+    const run = await seedResumedSleptRun("requested", "resuming_session",
+      [restartClaimEntry({ recoveryRequestId: requestId })], requestId);
+    await expect(renewNativeSessionExecutionLease(run.renewal)).resolves.toBeUndefined();
+  });
+
+  it("lets the owner release its own lapsed lease under its own restart claim", async () => {
+    const run = await seedResumedSleptRun("resumed-release");
+    expect(await releaseAsOwner(run)).toHaveLength(1);
+  });
+
+  async function settleFailureAsOwner(run: SleptRun) {
+    return owner.transaction(async tx => {
+      await lockNativeExecutionLeaseForReacquire(tx, { ...run, preResultOnly: true });
+      return tx.update(nativeRunFinalizations).set({
+        phase: "retryable_failure", leaseOwner: null, leaseExpiresAt: null, recoveryState: "resuming_session",
+        failureCode: "native_session_lease_lost", nextAttemptAt: new Date(),
+        recoveryHistory: sql`coalesce(${nativeRunFinalizations.recoveryHistory}, '[]'::jsonb)
+          || jsonb_build_array(${JSON.stringify({ disposition: "retryable_failure", reason: "native_session_lease_lost",
+            controllerBootId: controller.bootId, controllerGeneration: GENERATION })}::jsonb)`,
+      }).where(and(eq(nativeRunFinalizations.runId, run.runId), eq(nativeRunFinalizations.leaseOwner, run.leaseOwner),
+        eq(nativeRunFinalizations.attempt, 1), eq(nativeRunFinalizations.controllerGeneration, GENERATION),
+        eq(nativeRunFinalizations.controllerBootId, controller.bootId),
+        nativeExecutionLeaseHeldCondition({ remote: false, controllerGeneration: GENERATION })))
+        .returning({ runId: nativeRunFinalizations.runId });
+    });
+  }
+
+  it("lets failure settlement write a resumable failure under its own restart claim", async () => {
+    const run = await seedResumedSleptRun("resumed-settle");
+    expect(await settleFailureAsOwner(run)).toHaveLength(1);
+    const saved = await row(run.runId);
+    expect(saved).toMatchObject({ phase: "retryable_failure", leaseOwner: null, recoveryState: "resuming_session",
+      failureCode: "native_session_lease_lost" });
+    expect((saved.recoveryHistory as Array<{ disposition?: string }>).at(-1)?.disposition).toBe("retryable_failure");
+    await expect(renewNativeSessionExecutionLease(run.renewal)).rejects.toThrow("native_session_lease_lost");
+  });
+
+  const restartClaimChanged: Array<[string, () => Promise<SleptRun>]> = [
+    ["a graceful shutdown suspended the claim", () => seedResumedSleptRun("suspended", "awaiting_runner_reattach",
+      [restartClaimEntry({ disposition: "reattach_existing_runner" }),
+        { at: new Date().toISOString(), restartKind: "graceful", disposition: "restart_suspended", reason: "SIGTERM" }])],
+    ["the claim belongs to an earlier generation", () => seedResumedSleptRun("old-generation", "resuming_session",
+      [restartClaimEntry({ controllerGeneration: GENERATION - 1 })])],
+    ["the claim belongs to another boot", () => seedResumedSleptRun("other-boot", "resuming_session",
+      [restartClaimEntry({ controllerBootId: `boot-${randomUUID()}` })])],
+    ["the state does not match the claimed disposition", () => seedResumedSleptRun("mismatch", "awaiting_runner_reattach",
+      [restartClaimEntry()])],
+    ["recovery now waits for evidence", () => seedResumedSleptRun("evidence", "awaiting_evidence", [restartClaimEntry()])],
+    ["a later recovery request was recorded", () => seedResumedSleptRun("request", "resuming_session",
+      [restartClaimEntry()], randomUUID())],
+    ["failure settlement appended its outcome", () => seedResumedSleptRun("settled", "resuming_session",
+      [restartClaimEntry(), { at: new Date().toISOString(), disposition: "retryable_failure", reason: "native_session_lease_lost",
+        controllerBootId: controller.bootId, controllerGeneration: GENERATION }])],
+    ["no claim was ever recorded", () => seedResumedSleptRun("no-history", "resuming_session", [])],
+  ];
+
+  it.each(restartClaimChanged)("stays fenced out when %s", async (_name, seed) => {
+    const run = await seed();
+    const before = await row(run.runId);
+    await expect(renewNativeSessionExecutionLease(run.renewal)).rejects.toThrow("native_session_lease_lost");
+    expect(await releaseAsOwner(run)).toHaveLength(0);
+    expect(await settleFailureAsOwner(run)).toHaveLength(0);
+    expect(await row(run.runId)).toEqual(before);
+  });
+
   it("releases its own lapsed lease after the result was accepted, but never renews it", async () => {
     const accepted = await seedSleptRun("accepted");
     // Only the coordinator's accepted-result shape matters here; skip the

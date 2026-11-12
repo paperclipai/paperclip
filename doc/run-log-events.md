@@ -5,6 +5,21 @@ Run-log events write to the `heartbeat_run_events` table
 Paperclip Telemetry events, and they are not OpenTelemetry exports. A run-log
 event needs no operator endpoint.
 
+## ACPX sidecar shutdown
+
+The ACPX sidecar emits `runtime.diagnostic` with code
+`sidecar_shutdown_requested` once at the first local shutdown request, before
+waiters are removed. Its JSON message records the local reason, pending tool,
+input and permission counts, completion-normalization count, and at most 16
+oldest pending tools. Each tool sample contains elapsed milliseconds and a
+SHA-256 call ID. Hash the corresponding `runtime.tool_called` call ID to match
+it. Arguments, results, operation names and raw call IDs are excluded.
+The existing diagnostic path also writes this message to sidecar stderr.
+A controller that has already stopped may not ingest the frame. Stdin EOF
+identifies a closed controller pipe, not the upstream reason for that closure.
+This is local run evidence; no first-party Telemetry event or OpenTelemetry
+span is added. Retry, cancellation and authorization behavior stay unchanged.
+
 ## Startup reuse evidence
 
 `run.startup.reuse` uses schema `paperclip.startup-reuse.v1`. Each receipt names
@@ -15,6 +30,12 @@ or `provider_session`. Its state is `reused`, `fresh`, `unknown`, or
 `configuration_changed`, `tools_changed`, `workspace_changed`, `cache_miss`,
 `not_applicable`, and `evidence_missing`. No paths, identifiers, configuration
 values, or exception messages enter these fields.
+
+A restart's reattachment to a remote Runner resumes the run's own retained
+sandbox lease and never acquires another one. Its `environment` receipt is
+`reused` / `verified_reuse`. Earlier releases reported the lease's original
+acquisition there, so a reattachment to a sandbox the run created showed
+`fresh` / `created` although no sandbox was created.
 
 Provider-process receipts carry a cumulative `providerLaunchCount` for the run.
 `null` means unobserved; zero requires a physical launch observer. Direct ACPX
@@ -343,7 +364,10 @@ runner diagnostic. Its evidence includes runner suspension, provider drain,
 final provider state, pending call/operation/source-event IDs and input digests,
 and incomplete result-delivery command IDs and statuses. If execution and
 cleanup both fail, execution retains its original error identity and cleanup is
-attached as `cleanupError`.
+attached as `cleanupError`. `runnerRetained: true` means a remote Runner that
+could not prove its suspension was left running for the same-run
+reattachment instead of being force-stopped; the diagnostic
+`remote runner left alive unsettled for same-run reattachment` records it.
 
 Semantic settlement also includes up to 20 content-free failure records, with
 the call ID, operation ID, stage (`dispatch` or `persist_result`), and cause.
@@ -423,6 +447,15 @@ provider cleanup or warm transition is pending. These fields explain how the run
 stopped. The event is not recorded when a scheduled retry resumes a runner that
 exited after a settled suspension; see `doc/execution-semantics.md`.
 
+`native.interrupted_turn_outcome_unknown` (level `warn`) is recorded once on a
+failed run whose reattachment proved the Runner process gone
+(`process_verification` / `process_not_running`) while its last provider turn
+had no observed settlement, just before the server requests the automatic
+Retry. The payload holds the provider `turnId` (or `null`), the last turn event
+type, `replayed: false`, and the closed `runnerExit` fields `stage`, `reason`
+and `runnerLifecycle`. It names a turn whose outcome is unknown; the Retry's
+fresh session never replays it.
+
 For a prepared remote workspace interrupted before its first executor claim,
 that ledger records `remote_execution_never_claimed` with a
 `bootstrap_incomplete` disposition. The provider attempt remains zero during
@@ -494,6 +527,15 @@ before the new PID callback. Continuation admission accepts only the latest
 server-authored event among these three types; provider
 source events cannot supply stop authority. These records stay in the local run
 log and do not add Telemetry or OpenTelemetry data.
+
+The server writes `native.prior_owner_fence_refused` when its runner-state
+check refuses a run before any launch, because the conversation's saved runner
+state belongs to an earlier run that cannot be proven finished. The payload
+holds only the closed refusal `reason` (for example
+`prior_owner_terminal_state_indeterminate`). Continuation admission reads it,
+with no launch, identity, `adapter.invoke` or runner-sourced event, as proof
+that the failed run never had a runner, so Retry and new input need no stop
+record for it.
 
 Explicit continuation writes `native.stopped_conversation_verified` after it
 verifies the retained worker and provider processes stopped. Its payload binds
@@ -618,6 +660,36 @@ settlement record. The record does not imply exactly-once emission across
 controller recovery, and failure to write it is logged without changing the
 already-settled outcome.
 
+## Storage outage waits
+
+A run waits out a file-storage outage on its critical path: when it starts its
+run log, restores its saved workspace, or saves it. While it waits, the run's live
+status says so, with phase `waiting_for_storage`, for example "Waiting for file
+storage before starting the run log (45s so far)". That status lives in server
+memory and on the live-event stream only. It writes nothing to the run row or
+the run log during the wait.
+
+When the wait ends, the controller writes one record with `eventType:
+"lifecycle"`, `stream: "system"`, and `level: "warn"`. Its message is "Waited Ns
+for file storage before <step>." or, when storage stayed unavailable, "Waited Ns
+for file storage before <step>; it was still unavailable." Its payload holds
+`reason: "storage_outage_wait"`, `purpose` (the step), `waitedMs`, and
+`recovered`. The record stays in the instance run log.
+
+When the outage outlasts that wait, the run fails. Only a run recorded with
+`errorCode: "storage_unavailable"` gets a storage wait: a bounded retry
+(`retryReason: "storage_unavailable_wait"`) that starts again after storage is
+back. Its error says "Paperclip will retry automatically when storage is back"
+only while that retry is scheduled. When the retry budget is spent, the error
+says so and asks for Retry. When no storage wait follows, the error says
+"Paperclip is not retrying it automatically. Retry or send a message to
+continue." That happens when a native recovery already holds the run under
+another code (for example `native_continuation_requires_reconciliation`, where
+its files are kept and its unfinished turn is not replayed), or when the retry
+is refused or cannot be written. A run saved by an earlier release with the
+retry promise under another code reads with the same Retry text, with no
+migration.
+
 ## Durable storage timing
 
 A saved remote workspace is one encrypted archive in durable object storage.
@@ -729,6 +801,14 @@ after it lost the durable controller lease; the reason names a closed cause
 (`renewal_rejected`, `renewal_deadline`, or `renewal_error`). The watchdog
 retries a failed renewal until the lease deadline, so `renewal_error` means the
 attempts still failed with an error when the deadline passed.
+All legacy controllers in one server process renew through a single queue on
+the private lease connection pool. Renewals that arrive while one is in flight
+share the next statement, so a burst of runs costs one renewal statement per
+round instead of one transaction per run, and a renewal waits behind at most
+one other. A run whose row another transaction holds is skipped and retried
+shortly, without delaying the other runs. A renewal only moves the lease
+deadline later, so it does not wake live-run recovery; recovery rereads the
+moved deadline when the earlier one comes due.
 A lease lost during run setup (for example a rejected renewal while preparing
 the workspace) settles the run `failed` with error code `controller_lease_lost`,
 the same `controller_lease` cancellation evidence, and
@@ -808,7 +888,11 @@ or its owner changed, the existing cancellation settlement records
 `continuation_task_ownership_changed`. The run and wake request become cancelled
 before adapter dispatch, with the run-log message
 `stale execution continuation cancelled before dispatch`. Immediate recovery is
-suppressed. Missing source context, authorization failures, and other setup
+suppressed. A comment the cancelled run carried that no run read is saved
+first when an agent run closed the task: a person's comment, or another agent's
+comment posted with `resume: true`. The release then reopens the task and
+delivers that comment once. Another agent's comment without `resume: true`
+stays communicative and does not reopen the task. Missing source context, authorization failures, and other setup
 errors retain their failure classification. An untyped error with the same
 message is also still a failure; cancellation requires the typed ownership guard.
 
@@ -895,6 +979,28 @@ The message distinguishes an automatic retry from work that is no longer eligibl
 This pre-provider wait records `ai_connection_busy` on the cancelled run and does
 not consume the provider-failure retry allowance. The event contains no credentials
 and creates no Telemetry or OpenTelemetry export.
+
+## Agent directory waits
+
+A run whose instruction preparation finds another run of the same agent using
+its files writes one informational `lifecycle` event to the local run log, with
+`stream: "system"`. It records no file contents, paths or credentials, and
+creates no Telemetry or OpenTelemetry export.
+
+- A resumed native run that stays on its own run writes the message "Another
+  run of this agent is still using its files; this run continues when it
+  finishes". Its payload has exactly two fields: `retryReasonCode`, always
+  `agent_directory_operation_busy`, and `nextAttemptAt`, the ISO time when the
+  same run is scheduled to try again.
+- A run that has not yet started native execution is cancelled with error code
+  `agent_directory_busy` and writes "Another run of this agent is still using
+  its files. This task will continue automatically." when an
+  `agent_directory_busy` retry was scheduled, or "Another run of this agent is
+  still using its files, and this task could not be rescheduled." when it was
+  not. Its payload contains only `retryScheduled`, a boolean.
+
+Neither wait consumes the provider-failure retry allowance. Each stops after 30
+deferrals, after which the run follows the normal failure path.
 
 ## Managed Agent File Save Receipts
 

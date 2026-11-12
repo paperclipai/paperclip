@@ -1062,7 +1062,7 @@ describe("issue comment reopen routes", () => {
       // Plan §6: name the boundary, who can act, and the sanctioned path.
       expect(res.body.error).toContain("Issue visibility");
       expect(res.body.error).toContain("Who can act:");
-      expect(res.body.details.sanctionedPath).toContain("child issue");
+      expect(res.body.details.sanctionedPath).toContain("Ask the board to widen visibility");
       expect(mockAccessService.decide).toHaveBeenCalledWith(
         expect.objectContaining({ action: "issue:comment" }),
       );

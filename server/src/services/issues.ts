@@ -48,7 +48,7 @@ import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notificatio
 import { recordChatHandoff, recordAcceptedChatHandoff, lockAcceptedChatHandoffSource, recordChatCompletion, existingChatCompletionReply, acknowledgeChatCompletionReply } from "./chat-completion-delivery.js";
 import { mirrorSlackBoardComment, slackBoardReplyBindings } from "./slack-board-messages.js";
 import { agentRunWritesRevoked, assertAgentRunWriteAllowed } from "../agent-run-cancellation.js";
-import { assertLegacyRunTaskOwnership } from "../legacy-run-task-ownership.js";
+import { assertHandedOffRunTaskOwnership } from "../run-task-ownership.js";
 import { retryIdempotentDatabaseOperation } from "../database-retry.js";
 import { externalConversationStateSql, nonIdleSlackIssueCondition, resumeSlackConversation } from "./slack-conversation-state.js";
 import { documentService } from "./documents.js";
@@ -2606,6 +2606,20 @@ function pendingFinalizeBlockerCondition(companyId: string, issueId: SQL, worksp
             and owning_finalize.finished_at >= latest_blocker_operation.finished_at
         )
       )
+      and not (
+        latest_blocker_operation.status in ('succeeded', 'failed', 'skipped')
+        and exists (
+          select 1 from workspace_operations recovery_finalize
+          where recovery_finalize.company_id = ${companyId}::uuid
+            and recovery_finalize.issue_id = ${issueId}
+            and recovery_finalize.heartbeat_run_id = latest_blocker_operation.heartbeat_run_id
+            and recovery_finalize.phase = 'workspace_finalize' and recovery_finalize.status = 'succeeded'
+            and recovery_finalize.metadata->>'owningService' = 'workspace_recovery'
+            and (recovery_finalize.execution_workspace_id is null
+              or recovery_finalize.execution_workspace_id = ${workspaceId})
+            and recovery_finalize.started_at >= coalesce(latest_blocker_operation.finished_at, latest_blocker_operation.started_at)
+        )
+      )
   )`;
 }
 
@@ -3033,7 +3047,8 @@ function unreadForUserCondition(companyId: string, userId: string) {
             OR ${issueComments.authorUserId} <> ${userId}
           )
           AND ${issueComments.createdAt} > ${myLastTouchAt}
-      ) OR ${pendingUserRequestCondition(companyId, userId, myLastRequestReadAt)})
+      ) OR ${pendingUserRequestCondition(companyId, userId, myLastRequestReadAt)}
+      OR ${withdrawnForUserCondition(companyId, userId, myLastRequestReadAt)})
     )
   `;
 }
@@ -3066,6 +3081,23 @@ function mineParticipationIssueIds(db: Db, companyId: string, userId: string) {
       .where(pendingUserRequestRowCondition(companyId, userId)),
   ).as("mine_participation_sources");
   return db.selectDistinct({ id: participationSources.id }).from(participationSources).as("mine_participants");
+}
+
+/**
+ * A different person withdrew a request on this task that was for this user
+ * after they last read it (PAP-749 plan §6, Rule 12): the task shows unread in
+ * their Mine list. Reads the receipt on the activity entry; no extra state.
+ */
+function withdrawnForUserCondition(companyId: string, userId: string, readAt: SQL) {
+  return sql<boolean>`EXISTS (
+    SELECT 1
+    FROM ${activityLog}
+    WHERE ${activityLog.companyId} = ${companyId}
+      AND (${activityLog.details} ->> 'handledForUserId') = ${userId}
+      AND ${activityLog.details} -> 'receipt' ->> 'outcome' = 'withdrawn'
+      AND ${activityLog.details} -> 'receipt' ->> 'issueId' = ${issues.id}::text
+      AND ${activityLog.createdAt} > ${readAt}
+  )`;
 }
 
 function inboxVisibleForUserCondition(companyId: string, userId: string) {
@@ -5776,6 +5808,38 @@ function compareBlockedInboxRows(
   return right.id.localeCompare(left.id);
 }
 
+/**
+ * The in-review issues whose external response waits can change a finding
+ * for the given rows. The caller reads only the rows' findings, and the
+ * liveness classifier reads a wait only for a row, or for a blocker that it
+ * reaches from a row through blocker relations. This returns every in-review
+ * issue in that blocker closure, which includes all of those issues.
+ */
+export function blockedInboxReviewWaitIssueIds(
+  rowIssueIds: readonly string[],
+  graphIssues: ReadonlyArray<{ id: string; status: string }>,
+  graphRelations: ReadonlyArray<{ blockerIssueId: string; blockedIssueId: string }>,
+): string[] {
+  const statusById = new Map(graphIssues.map((issue) => [issue.id, issue.status]));
+  const blockersByBlockedId = new Map<string, string[]>();
+  for (const relation of graphRelations) {
+    const blockers = blockersByBlockedId.get(relation.blockedIssueId) ?? [];
+    blockers.push(relation.blockerIssueId);
+    blockersByBlockedId.set(relation.blockedIssueId, blockers);
+  }
+  const reached = new Set<string>();
+  const pending = [...rowIssueIds];
+  while (pending.length > 0) {
+    const issueId = pending.pop()!;
+    if (reached.has(issueId)) continue;
+    reached.add(issueId);
+    for (const blockerId of blockersByBlockedId.get(issueId) ?? []) {
+      if (!reached.has(blockerId)) pending.push(blockerId);
+    }
+  }
+  return [...reached].filter((issueId) => statusById.get(issueId) === "in_review");
+}
+
 async function listIssueBlockedInboxAttentionMap(
   dbOrTx: any,
   companyId: string,
@@ -6040,7 +6104,9 @@ async function listIssueBlockedInboxAttentionMap(
     });
 
   const findings = classifyIssueGraphLiveness({
-    externalResponseWaits: await readExternalReviewWaits(graphIssues.filter(issue => issue.status === "in_review").map(issue => issue.id)),
+    externalResponseWaits: await readExternalReviewWaits(
+      blockedInboxReviewWaitIssueIds(rowIssueIds, graphIssues, graphRelations),
+    ),
     issues: graphIssues.map((issue) => ({
       id: issue.id,
       companyId: issue.companyId,
@@ -11860,7 +11926,7 @@ export function issueService(db: Db) {
           const actorRun = await assertAgentRunWriteAllowed(tx, receiptExisting.companyId, {
             agentId: actorAgentId, runId: actorRunId, stopId: actorRunStopId,
           });
-          assertLegacyRunTaskOwnership(actorRun, receiptExisting);
+          assertHandedOffRunTaskOwnership(actorRun, receiptExisting);
         }
         if (blockedByIssueIds !== undefined) {
           await assertOnboardingFirstTaskDependenciesAllowed(tx as Db, {
@@ -12502,6 +12568,7 @@ export function issueService(db: Db) {
       agentId: string,
       expectedStatuses: string[],
       checkoutRunId: string | null,
+      options: { blockedState?: { lastStatusDecisionId: string; statusVersion: number } } = {},
     ) => {
       const issueCompany = await db
         .select({ companyId: issues.companyId })
@@ -12603,11 +12670,21 @@ export function issueService(db: Db) {
             status: "in_progress",
             startedAt: now,
             updatedAt: now,
+            ...(expectedStatuses.includes("blocked") ? {
+              unblockDescriptor: sql`case when ${issues.status} = 'blocked' then null else ${issues.unblockDescriptor} end`,
+              blockedTransitionAt: sql`case when ${issues.status} = 'blocked' then null else ${issues.blockedTransitionAt} end`,
+              blockedOwnerNotifiedAt: sql`case when ${issues.status} = 'blocked' then null else ${issues.blockedOwnerNotifiedAt} end`,
+            } : {}),
           })
           .where(
             and(
               eq(issues.id, id),
               inArray(issues.status, expectedStatuses),
+              options.blockedState ? or(
+                ne(issues.status, "blocked"),
+                and(eq(issues.lastStatusDecisionId, options.blockedState.lastStatusDecisionId),
+                  eq(issues.statusVersion, options.blockedState.statusVersion)),
+              ) : undefined,
               or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
               executionLockCondition,
             ),
