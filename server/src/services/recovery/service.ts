@@ -4595,6 +4595,7 @@ export function recoveryService(
   async function resumeShutdownStoppedRetryPreparations(
     candidates: RecoveryIssue[],
     result: { continuationRequeued: number; escalated: number; issueIds: string[] },
+    onDeferredDeadline?: (at: number) => void,
   ) {
     const handled = new Set<string>();
     const waiting = candidates.filter(issue => issue.status === "in_progress" && issue.assigneeAgentId
@@ -4618,8 +4619,15 @@ export function recoveryService(
       if (!agent || agent.companyId !== issue.companyId || !(await isAgentInvokable(agent))
         || await hasActiveExecutionPath(issue.companyId, issue.id)
         || (await recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id))?.ownerType === "board"
-        || await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)
-        || await terminalRunSettlingUntil(issue.companyId, run.id)) continue;
+        || await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)) continue;
+      // Another server is still settling the run: look again when its lease
+      // lapses, since later generic skips may never reach their own check.
+      const settlingUntil = await terminalRunSettlingUntil(issue.companyId, run.id);
+      if (settlingUntil) {
+        onDeferredDeadline?.(settlingUntil.getTime());
+        handled.add(issue.id);
+        continue;
+      }
       handled.add(issue.id);
       const outcome: StrandedRecoveryOutcome = {};
       const queued = await enqueueStrandedIssueRecovery({ issueId: issue.id, agentId: issue.assigneeAgentId,
@@ -4695,7 +4703,7 @@ export function recoveryService(
       issueIds: [] as string[],
     };
 
-    const handledIssueIds = await resumeShutdownStoppedRetryPreparations(candidates, result);
+    const handledIssueIds = await resumeShutdownStoppedRetryPreparations(candidates, result, opts?.onDeferredDeadline);
 
     const candidateIssueIds = candidates.map((issue) => issue.id);
     const unfinishedGoalBindings = new Set<string>();

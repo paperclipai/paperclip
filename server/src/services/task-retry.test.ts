@@ -384,6 +384,22 @@ describe("durable task Retry admission", () => {
       expect(successors).toEqual([expect.objectContaining({ status: "scheduled_retry" })]);
       await expect(dispatchRun(f.input, successors[0]!)).resolves.toMatchObject({ interruptedRunId: f.parent.id });
     });
+  it("looks again at a shutdown-stopped Retry run once another server's lease on it lapses", async () => {
+    const f = await seedRefusedShutdownContinuation();
+    await db.insert(agentTaskSessions).values({ companyId: f.input.companyId, agentId: f.parent.agentId,
+      adapterType: "paperclip_runner", taskKey: f.input.issueId, goalStatus: "active" });
+    await db.update(heartbeatRuns).set({ controllerLeaseExpiresAt: sql`clock_timestamp() + interval '1 minute'` })
+      .where(eq(heartbeatRuns.id, f.parent.id));
+    const deadlines: number[] = [];
+    await heartbeatService(db).reconcileStrandedAssignedIssues({ companyId: f.input.companyId,
+      onDeferredDeadline: at => deadlines.push(at) });
+    expect(await successorsOf(f.parent.id)).toHaveLength(0);
+    expect(deadlines).toEqual([expect.any(Number)]);
+    expect(deadlines[0]!).toBeGreaterThan(Date.now());
+    await db.update(heartbeatRuns).set({ controllerLeaseExpiresAt: null }).where(eq(heartbeatRuns.id, f.parent.id));
+    await heartbeatService(db).reconcileStrandedAssignedIssues({ companyId: f.input.companyId });
+    expect(await successorsOf(f.parent.id)).toHaveLength(1);
+  });
   // A refusal that cannot succeed later ends automatic recovery once, with a
   // plain notice and a Retry that works, instead of a refusal every sweep.
   it("escalates a refused shutdown continuation once instead of refusing it on every sweep", async () => {
