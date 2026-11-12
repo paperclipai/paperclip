@@ -189,6 +189,31 @@ describeEmbeddedPostgres("documentService system issue documents", () => {
     });
   });
 
+  it("returns the saved document from update and restore exactly as a fresh read returns it", async () => {
+    const { issueId } = await createIssueWithDocuments();
+    const original = (await svc.getIssueDocumentByKey(issueId, "plan"))!;
+
+    const updated = await svc.upsertIssueDocument({
+      issueId,
+      key: "plan",
+      title: "Plan",
+      format: "markdown",
+      body: "# Second plan",
+      baseRevisionId: original.latestRevisionId,
+    });
+    expect(updated.document).toEqual(await svc.getIssueDocumentByKey(issueId, "plan"));
+    expect(updated.document).not.toHaveProperty("latestBody");
+
+    const restored = await svc.restoreIssueDocumentRevision({
+      issueId,
+      key: "plan",
+      revisionId: original.latestRevisionId!,
+    });
+    expect(restored.document.body).toBe(original.body);
+    expect(restored.document).toEqual(await svc.getIssueDocumentByKey(issueId, "plan"));
+    expect(restored.document).not.toHaveProperty("latestBody");
+  });
+
   it("locks and unlocks issue documents", async () => {
     const { issueId } = await createIssueWithDocuments();
 
