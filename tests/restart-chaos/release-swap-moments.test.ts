@@ -46,7 +46,15 @@ describe("release swap moments", () => {
     }
     await driver.drain();
     expect(events.filter(event => event.kind.startsWith("swap_")).map(event => event.kind))
-      .toEqual(["swap_incoming_spawned", "swap_traffic_switched", "swap_outgoing_sigterm", "swap_outgoing_exited"]);
+      .toEqual(["swap_incoming_spawned", "swap_incoming_ready", "swap_traffic_switched", "swap_outgoing_sigterm", "swap_outgoing_exited"]);
+    expect(events.find(event => event.kind === "swap_incoming_ready")!.data).toMatchObject({ confirmedBy: "supervisor", at: new Date(now + 2).toISOString() });
     expect(events.find(event => event.kind === "swap_outgoing_sigterm")!.data).toMatchObject({ swap: 1, fromPid: 10, at: new Date(now + 3).toISOString() });
+  });
+
+  it("never places readiness after the traffic switch when the readiness watcher answers late", () => {
+    const record = { ...swap(), incomingPhases: [{ phase: "starting", at: base + 2_000 }, { phase: "ready", at: base + 35_000 }] };
+    mergeRunSample(record.runs, row("just-after-switch", base + 32_000, 20));
+    expect(swapMoments(record)).toMatchObject({ incoming_ready: base + 30_000, traffic_switched: base + 30_000 });
+    expect(runsStartedDuringSwap(record).map(run => [run.runId, run.after, run.before])).toEqual([["just-after-switch", "traffic_switched", "outgoing_sigterm"]]);
   });
 });

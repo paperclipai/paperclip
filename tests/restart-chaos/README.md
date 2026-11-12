@@ -650,7 +650,8 @@ unless every task passed.
 **Swap moments.** Each swap has five moments, in the timeline as `swap_incoming_spawned`, `swap_incoming_ready`,
 `swap_traffic_switched`, `swap_outgoing_sigterm` and `swap_outgoing_exited`. `fault_started` marks only that the swap
 was requested (`marks: "swap_requested"`); it carries no signal for an overlap swap, and the outgoing server's real
-SIGTERM is `swap_outgoing_sigterm`. The summary prints the five times per swap, then each run started during the swap
+SIGTERM is `swap_outgoing_sigterm`. `incoming_ready` is the moment the supervisor confirmed readiness before switching
+traffic, or the readiness watcher's earlier answer, so it never falls after `traffic_switched`. The summary prints the five times per swap, then each run started during the swap
 with the two moments it started between and whether the outgoing or the incoming server started it
 (`release-swap-moments.ts`).
 
@@ -741,8 +742,8 @@ approvals, failure chains and next events from `/api/heartbeat-runs/:id/events`,
 subtasks from comments and the issue list. Per release the table counts failed runs and the time from the old
 build's last answer to each surviving run's next event. Web and API continuity are reported for both the health
 probe and every API request the harness made, counted separately: requests, failures, slow answers and the longest
-gap between successful answers. Every request is saved to `requests.jsonl` (time, method, path with ids replaced by
-`:id`, status, duration, and whether it was a health probe), and the summary breaks failures down by status and by
+gap between successful answers. Every request, cleanup included, is saved to `requests.jsonl` at the end of every mode (time, method, path with ids
+replaced by `:id`, status, duration, and whether it was a health probe), and the summary breaks failures down by status and by
 inside or outside a release window (from the old build's last answer to 60 s after the new build answers). A health probe fails unless `/api/health` answers 200 with a readable body. An API request fails
 on no answer, a server error, or 401, 403, 408 or 429; a deliberate 400, 404, 409 or 422 answer is not a failure. Runs come from the company run list, or from every task's
 run list when that list is full, so no task's early runs are lost. A queued or running run with no activity for 5

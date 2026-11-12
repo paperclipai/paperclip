@@ -1,4 +1,4 @@
-import { startedBy, type SwapRecord } from "./release-swap-driver.js";
+import { incomingReadyAt, startedBy, type SwapRecord } from "./release-swap-driver.js";
 
 export const SWAP_MOMENTS = ["incoming_spawned", "incoming_ready", "traffic_switched", "outgoing_sigterm", "outgoing_exited"] as const;
 export type SwapMoment = (typeof SWAP_MOMENTS)[number];
@@ -6,7 +6,7 @@ export type SwapMoment = (typeof SWAP_MOMENTS)[number];
 export function swapMoments(swap: Pick<SwapRecord, "spawnedAt" | "switchedAt" | "stopRequestedAt" | "stoppedAt" | "incomingPhases">): Record<SwapMoment, number | null> {
   return {
     incoming_spawned: swap.spawnedAt,
-    incoming_ready: swap.incomingPhases.find(phase => phase.phase === "ready")?.at ?? swap.switchedAt,
+    incoming_ready: swap.switchedAt === null ? swap.incomingPhases.find(phase => phase.phase === "ready")?.at ?? null : incomingReadyAt(swap, swap.switchedAt),
     traffic_switched: swap.switchedAt,
     outgoing_sigterm: swap.stopRequestedAt,
     outgoing_exited: swap.stoppedAt,

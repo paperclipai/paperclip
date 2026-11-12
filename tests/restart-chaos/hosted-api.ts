@@ -43,7 +43,7 @@ export class HostedApi {
 
   get baseUrl(): string { return this.target.baseUrl; }
 
-  private async once(method: string, route: string, body: unknown, timeoutMs: number): Promise<{ status: number | null; text: string; retryAfterMs: number | null }> {
+  private async once(method: string, route: string, body: unknown, timeoutMs: number): Promise<{ status: number | null; text: string; retryAfterMs: number | null; record: RequestRecord }> {
     const url = `${this.target.baseUrl}${route}`;
     assertSameOrigin(this.target, url);
     const started = Date.now();
@@ -53,12 +53,14 @@ export class HostedApi {
           ...(body === undefined ? {} : { "content-type": "application/json" }) },
         body: body === undefined ? undefined : JSON.stringify(body) });
       const text = await response.text();
-      this.requests.push({ at: started, ok: response.ok || ANSWERED_REFUSALS.has(response.status), reachable: response.status < 500, status: response.status, ms: Date.now() - started, method,
-        kind: route === "/api/health" ? "health" : "api", path: pathClass(route) });
-      return { status: response.ok ? 200 : response.status, text, retryAfterMs: rateLimitDelayMs(response, text) };
+      const record: RequestRecord = { at: started, ok: response.ok || (route !== "/api/health" && ANSWERED_REFUSALS.has(response.status)), reachable: response.status < 500, status: response.status,
+        ms: Date.now() - started, method, kind: route === "/api/health" ? "health" : "api", path: pathClass(route) };
+      this.requests.push(record);
+      return { status: response.ok ? 200 : response.status, text, retryAfterMs: rateLimitDelayMs(response, text), record };
     } catch (error) {
-      this.requests.push({ at: started, ok: false, reachable: false, status: null, ms: Date.now() - started, method, kind: route === "/api/health" ? "health" : "api", path: pathClass(route) });
-      return { status: null, text: error instanceof Error ? error.message : String(error), retryAfterMs: null };
+      const record: RequestRecord = { at: started, ok: false, reachable: false, status: null, ms: Date.now() - started, method, kind: route === "/api/health" ? "health" : "api", path: pathClass(route) };
+      this.requests.push(record);
+      return { status: null, text: error instanceof Error ? error.message : String(error), retryAfterMs: null, record };
     }
   }
 
@@ -92,6 +94,7 @@ export class HostedApi {
       const body = JSON.parse(result.text) as { commit?: string; serverInfo?: { processStartedAt?: string } };
       return { at, ok: true, status: 200, ms, processStartedAt: body.serverInfo?.processStartedAt ?? null, commit: body.commit ?? null };
     } catch (error) {
+      result.record.ok = false;
       return { at, ok: false, status: 200, ms, processStartedAt: null, commit: null, error: `unparseable health: ${String(error)}` };
     }
   }

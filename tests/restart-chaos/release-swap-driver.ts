@@ -118,6 +118,11 @@ function firstOwner(trace: RunTrace): number | null {
   return trace.samples.find(sample => sample.ownerPid !== null)?.ownerPid ?? null;
 }
 
+export function incomingReadyAt(swap: Pick<SwapRecord, "incomingPhases">, switchedAt: number): number {
+  const watched = swap.incomingPhases.find(phase => phase.phase === "ready")?.at;
+  return watched === undefined ? switchedAt : Math.min(watched, switchedAt);
+}
+
 export function startedBy(trace: RunTrace, swap: Pick<SwapRecord, "fromPid" | "toPid">): "old" | "new" | "unknown" {
   const owner = firstOwner(trace);
   if (owner !== null && owner === swap.fromPid) return "old";
@@ -236,6 +241,7 @@ export class ReleaseSwapDriver {
     this.input.record("release_swap_phase", { swap: swap.index, faultId: info.faultId, phase: info.phase, fromPid: info.fromPid, toPid: info.toPid,
       ...(root ? { serverRoot: root } : {}) });
     const moment = SWAP_PHASE_MOMENT[info.phase];
+    if (info.phase === "switched") this.input.record("swap_incoming_ready", { swap: swap.index, faultId: info.faultId, at: new Date(incomingReadyAt(swap, info.at)).toISOString(), toPid: info.toPid, confirmedBy: "supervisor" });
     if (moment) this.input.record(`swap_${moment}`, { swap: swap.index, faultId: info.faultId, at: new Date(info.at).toISOString(), fromPid: info.fromPid, toPid: info.toPid });
     if (info.phase === "spawned") this.onSpawned(swap, info);
     if (info.phase === "switched") this.onSwitched(swap, info);
@@ -296,7 +302,6 @@ export class ReleaseSwapDriver {
       const last = swap.incomingPhases[swap.incomingPhases.length - 1]?.phase;
       if (phase !== last) {
         swap.incomingPhases.push({ phase, at: Date.now() });
-        if (phase === "ready") this.input.record("swap_incoming_ready", { swap: swap.index, faultId: swap.faultId, at: new Date().toISOString(), toPid: swap.toPid });
         if (phase === "recovering" && prepProbes < cap) { prepProbes += 1; lastProbeAt = Date.now(); this.background.push(this.probe(swap, "prep")); }
       }
       if (phase === "ready") return;

@@ -2,7 +2,9 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { pathClass, requestBreakdown, type RequestRecord } from "./hosted-api.js";
+import { HostedApi, pathClass, requestBreakdown, type RequestRecord } from "./hosted-api.js";
+import { hostedTarget } from "./hosted-guard.js";
+import { saveRequests } from "./hosted-main.js";
 import { gradeHosted } from "./hosted-grade.js";
 import { duplicateAgentComments } from "./hosted-readers.js";
 import { continuity } from "./hosted-release.js";
@@ -92,5 +94,25 @@ describe("failed runs per release", () => {
     expect(swapForFailedRun(swaps, later)).toBeNull();
     expect(failedOutsideSwaps(swaps, [live, soon, later])).toEqual(["later"]);
     expect(swapMetrics(swaps, [live, soon, later], new Map(), 9_000_000).map(metric => metric.failedRuns)).toEqual([["live", "soon"], []]);
+  });
+});
+
+describe("hosted request records", () => {
+  it("saves every request, including ones made after the grade, from one final step", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "hosted-requests-"));
+    dirs.push(dir);
+    const records: RequestRecord[] = [{ at: 1, ok: true, reachable: true, status: 200, ms: 5, method: "GET", kind: "api", path: "/api/issues/:id" }];
+    records.push({ at: 2, ok: true, reachable: true, status: 200, ms: 5, method: "PATCH", kind: "api", path: "/api/agents/:id" });
+    await saveRequests(dir, records);
+    expect((await readFile(path.join(dir, "requests.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line).path)).toEqual(["/api/issues/:id", "/api/agents/:id"]);
+  });
+
+  it("marks a health answer that is not a readable 200 as failed in the saved record too", async () => {
+    const answers = [new Response("not json", { status: 200 }), new Response("{}", { status: 404 })];
+    const api = new HostedApi(hostedTarget("https://release-proof-1.staging.paperclip.app", "release-proof-1.staging.paperclip.app"), "t", 1_000,
+      (async () => answers.shift()!) as unknown as typeof fetch);
+    expect((await api.health()).ok).toBe(false);
+    expect((await api.health()).ok).toBe(false);
+    expect(api.requests.map(record => [record.kind, record.status, record.ok])).toEqual([["health", 200, false], ["health", 404, false]]);
   });
 });

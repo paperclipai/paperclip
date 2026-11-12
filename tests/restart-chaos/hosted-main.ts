@@ -3,7 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { ChaosApi } from "./api.js";
-import { apiRequests, HealthProbe, HostedApi, hostedToken, requestSamples } from "./hosted-api.js";
+import { apiRequests, HealthProbe, HostedApi, hostedToken, requestSamples, type RequestRecord } from "./hosted-api.js";
 import { parseHostedCommand, type HostedOptions } from "./hosted-config.js";
 import { gradeHosted } from "./hosted-grade.js";
 import { continuity, detectReleases, identityOf, releaseMarkdown, type DetectedRelease, type HealthSample } from "./hosted-release.js";
@@ -93,6 +93,24 @@ export async function runHosted(argv: readonly string[]): Promise<number> {
   process.on("SIGTERM", onSignal);
   const cancelled = () => interrupted;
   const api = new HostedApi(options.target, hostedToken(options.target));
+  try {
+    const exit = await hostedSession({ options, dir, timeline, record, cancelled, api, interrupted: () => interrupted });
+    console.info(`Hosted run ${options.label}: results ${dir}`);
+    return exit;
+  } finally {
+    await saveRequests(dir, api.requests);
+    process.off("SIGINT", onSignal);
+    process.off("SIGTERM", onSignal);
+  }
+}
+
+export async function saveRequests(dir: string, requests: readonly RequestRecord[]): Promise<void> {
+  await writeFile(path.join(dir, "requests.jsonl"), requests.map(entry => JSON.stringify(entry)).join("\n") + (requests.length ? "\n" : ""), { mode: 0o600 });
+}
+
+async function hostedSession(input: { options: HostedOptions; dir: string; timeline: Timeline; record: (kind: string, data: Record<string, unknown>) => void;
+  cancelled: () => boolean; api: HostedApi; interrupted: () => boolean }): Promise<number> {
+  const { options, dir, timeline, record, cancelled, api } = input;
   const me = await api.get<{ userId?: string; companyIds?: string[] }>("/api/cli-auth/me");
   timeline.add("hosted_signed_in", { baseUrl: options.target.baseUrl, mode: options.mode, label: options.label, companies: me.companyIds?.length ?? 0 });
 
@@ -132,7 +150,7 @@ export async function runHosted(argv: readonly string[]): Promise<number> {
       await delay(LOOP_MS);
     }
     for (const entry of workload.records) if (entry.issueId) state.issueIds.push(entry.issueId);
-    timeline.add("hosted_arrivals_ended", { launched: workload.launched, releases: detectReleases(probe.samples).length, interrupted, timedOut: Date.now() - started > options.maxWaitMs });
+    timeline.add("hosted_arrivals_ended", { launched: workload.launched, releases: detectReleases(probe.samples).length, interrupted: input.interrupted(), timedOut: Date.now() - started > options.maxWaitMs });
     const releases = detectReleases(probe.samples, { now: Date.now() });
     if (options.releases > 0 && !releasesReached(releases, options.releases)) timeline.add("hosted_releases_short", { wanted: options.releases, seen: releases.length });
     polling = keepPolling(workload);
@@ -144,7 +162,7 @@ export async function runHosted(argv: readonly string[]): Promise<number> {
       lastReleaseAt: releases.at(-1)?.lastOldAt ?? Date.now(), settleMs: options.settleMs, drainMs: options.drainMs, dir, cancelled, record });
     console.info(`\n${graded.markdown}`);
     const short = options.releases > 0 && !releasesReached(releases, options.releases);
-    exit = graded.pass && !short && !interrupted ? 0 : 1;
+    exit = graded.pass && !short && !input.interrupted() ? 0 : 1;
   } catch (error) {
     timeline.add("harness_error", { error: error instanceof Error ? error.stack ?? error.message : String(error) });
     console.error(error);
@@ -154,12 +172,9 @@ export async function runHosted(argv: readonly string[]): Promise<number> {
     await probe.stop();
     await writeFile(path.join(dir, "health-summary.json"), `${JSON.stringify({ releases: detectReleases(probe.samples), health: continuity(probe.samples),
       api: continuity(requestSamples(apiRequests(api.requests))), inventory: census }, null, 2)}\n`, { mode: 0o600 });
-    await writeFile(path.join(dir, "requests.jsonl"), api.requests.map(record => JSON.stringify(record)).join("\n") + "\n", { mode: 0o600 });
     const cleaned = await finalizeHosted({ api, keep: options.keep, label: options.label, dir, state, record });
     if (cleaned && cleaned.errors.length) exit = Math.max(exit, 1);
-    process.off("SIGINT", onSignal);
-    process.off("SIGTERM", onSignal);
   }
-  console.info(`Hosted run ${options.label}: results ${dir}`);
   return exit;
 }
+
