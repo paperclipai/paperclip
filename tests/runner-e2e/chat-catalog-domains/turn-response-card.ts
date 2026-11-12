@@ -42,13 +42,20 @@ function shownQuestionForm(payload: Row | undefined): Row | undefined {
   return questionSet !== undefined ? { ...rest, questionSet } : { ...rest, questions };
 }
 
-/** Link targets the card's Markdown renders as clickable links: inline links and autolinks outside code. Code spans
- * and fenced blocks show their text literally, and a reference definition alone renders nothing. */
+/** Link targets the card's Markdown renders as clickable links: inline links, autolinks and reference links whose
+ * definition exists, outside code. Code spans and fenced blocks show their text literally, and a reference
+ * definition that no link uses renders nothing. */
 export function renderedMarkdownLinks(text: string): string[] {
   const prose = text.replace(/^(```|~~~)[^\n]*\n[\s\S]*?^\1[^\n]*$/gm, "").replace(/(`+)[\s\S]*?\1/g, "");
   const unwrap = (target: string) => target.startsWith("<") && target.endsWith(">") ? target.slice(1, -1) : target;
-  return [...[...prose.matchAll(/(?<!!)\[[^\]\n]*\]\(\s*([^)\s]+)/g)].map(match => unwrap(match[1]!)),
-    ...[...prose.matchAll(/<((?:https?:\/\/|\/)[^>\s]+)>/g)].map(match => match[1]!)];
+  const label = (value: string) => value.trim().replace(/\s+/g, " ").toLowerCase();
+  const definitions = new Map<string, string>();
+  for (const match of prose.matchAll(/^[ \t]{0,3}\[([^\]\n]+)\]:[ \t]*(\S+)/gm)) if (!definitions.has(label(match[1]!))) definitions.set(label(match[1]!), unwrap(match[2]!));
+  const body = prose.replace(/^[ \t]{0,3}\[[^\]\n]+\]:[^\n]*$/gm, "");
+  const references = [...body.matchAll(/(?<![!\]])\[([^\]\n]+)\](?:\[([^\]\n]*)\])?(?!\()/g)]
+    .map(match => definitions.get(label(match[2] || match[1]!))).filter((target): target is string => !!target);
+  return [...[...body.matchAll(/(?<!!)\[[^\]\n]*\]\(\s*([^)\s]+)/g)].map(match => unwrap(match[1]!)),
+    ...[...body.matchAll(/<((?:https?:\/\/|\/)[^>\s]+)>/g)].map(match => match[1]!), ...references];
 }
 /** True when the product decided that a card owns this run's conversation response. */
 export function runEndedOnCard(run: RunLike): boolean {

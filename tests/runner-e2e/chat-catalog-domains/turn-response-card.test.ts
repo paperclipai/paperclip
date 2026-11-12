@@ -135,6 +135,11 @@ describe("Markdown a card renders as clickable links", () => {
     expect(renderedMarkdownLinks("Type `[setup](/onboarding)` to see the syntax.")).toEqual([]);
     expect(renderedMarkdownLinks("```\n[setup](/onboarding)\n```\nThen continue.")).toEqual([]);
     expect(renderedMarkdownLinks("[setup]: /onboarding")).toEqual([]);
+    // A used reference definition renders a link: full, collapsed and shortcut forms.
+    expect(renderedMarkdownLinks("Open [Create organization][setup].\n\n[setup]: /onboarding")).toEqual(["/onboarding"]);
+    expect(renderedMarkdownLinks("Open [setup][] now.\n[Setup]: </onboarding>")).toEqual(["/onboarding"]);
+    expect(renderedMarkdownLinks("Open [setup].\n[setup]: /onboarding")).toEqual(["/onboarding"]);
+    expect(renderedMarkdownLinks("Open [Create organization][missing].\n[setup]: /onboarding")).toEqual([]);
     expect(renderedMarkdownLinks("![logo](/logo.png)")).toEqual([]);
   });
 });
