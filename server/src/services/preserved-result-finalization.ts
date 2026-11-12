@@ -60,8 +60,9 @@ async function readApplicableResult(db: Db, companyId: string, runId: string, lo
   const coordinatorQuery = db.select().from(nativeRunFinalizations).where(and(
     eq(nativeRunFinalizations.companyId, companyId), eq(nativeRunFinalizations.runId, runId)));
   const [coordinator] = lock ? await coordinatorQuery.for("update") : await coordinatorQuery;
+  // A result retired as superseded is never applied, even after its files are saved.
   if (!coordinator?.resultId || coordinator.phase !== "terminal_failure" || coordinator.leaseOwner ||
-      coordinator.failureDetail?.successorRunId) return null;
+      coordinator.failureDetail?.successorRunId || coordinator.failureCode === "native_finalization_superseded") return null;
   const issueQuery = db.select().from(issues).where(and(eq(issues.companyId, companyId), eq(issues.id, coordinator.issueId)));
   const [issue] = lock === "nowait" ? await issueQuery.for("update", { noWait: true })
     : lock ? await issueQuery.for("update") : await issueQuery;
