@@ -125,7 +125,8 @@ function toRunSnapshot(row: ReleaseRun): RunSnapshot {
 function carriedRetryAccounting(row: ReleaseRun): Record<string, unknown> | null {
   const accounting = executionRetryAccounting(row);
   return accounting.failureRetries > 0 || accounting.maxTurnContinuations > 0 || (accounting.interruptedPreparations ?? 0) > 0
-    || (accounting.storageWaits ?? 0) > 0 || (accounting.agentDirectoryWaits ?? 0) > 0 ? { ...accounting } : null;
+    || (accounting.storageWaits ?? 0) > 0 || (accounting.agentDirectoryWaits ?? 0) > 0
+    || (accounting.serverRestarts ?? 0) > 0 ? { ...accounting } : null;
 }
 
 export function isRetryableBeforeProviderWorkRunRow(row: ReleaseRun): boolean {
