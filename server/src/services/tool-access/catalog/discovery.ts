@@ -35,6 +35,14 @@ import type { ConnectionSetupPolicy } from "../connections/setup-policy.js";
 import type { ToolRemoteHttp } from "../remote-http.js";
 import { normalizeToolDescriptor, type McpToolDescriptor } from "./descriptors.js";
 import { googleWorkspaceServicesUnavailable, unsupportedToolConnectionTransport } from "./failures.js";
+
+const URL_CREDENTIAL_PARAMETER = /token|secret|passw|api[-_]?key|^key$|auth|signature|^sig$|session|credential/i;
+
+/** Whether a sent URL carries a credential: user info, or a query parameter named like one. Plain settings such as `?region=us` do not. */
+export function urlCarriesCredential(url: URL): boolean {
+  if (url.username || url.password) return true;
+  return [...url.searchParams.keys()].some((key) => URL_CREDENTIAL_PARAMETER.test(key));
+}
 function asRecord(value: unknown): Record<string, unknown> {
   if (value && typeof value === "object" && !Array.isArray(value))
     return value as Record<string, unknown>;
@@ -275,7 +283,7 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
         connection.authKind === "none" &&
         connection.credentialSecretRefs.length === 0 &&
         Object.keys(headers).length === 0 &&
-        !sentUrl.search && !sentUrl.username && !sentUrl.password;
+        !urlCarriesCredential(sentUrl);
       if (
         response.status === 401 &&
         (/bearer|oauth|authorization/i.test(authenticate) ||

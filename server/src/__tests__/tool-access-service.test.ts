@@ -16671,6 +16671,30 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(res.status).not.toBe(422);
   });
 
+  it("still asks for a key when a pasted link carries only plain settings", async () => {
+    const company = await createCompany(db);
+    const app = createRouteApp(db);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: false,
+      status: 401,
+      headers: { get: () => null },
+      text: async () => "",
+      json: async () => ({}),
+    } as unknown as Response);
+
+    const res = await request(app)
+      .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .send({
+        link: "https://key.example.test/mcp?region=us",
+        name: "Regional key app",
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body).toMatchObject({
+      details: expect.objectContaining({ code: "oauth_challenge" }),
+    });
+  });
+
   it.each(["catalog", "catalog/refresh", "health-check"])(
     "explains disabled Slack MCP access on %s without reporting a server error",
     async (path) => {
