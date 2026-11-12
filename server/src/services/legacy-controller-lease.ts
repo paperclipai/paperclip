@@ -1,5 +1,5 @@
 import { notifyLiveRunRecovery } from "./live-run-recovery-notifications.js";
-import { and, eq, gt, lte, sql } from "drizzle-orm";
+import { and, eq, gt, isNull, lte, sql, type SQL } from "drizzle-orm";
 import { controllerLeaseDb, heartbeatRuns, type Db } from "@paperclipai/db";
 import type { LegacyControllerLeaseLossCause, LegacyControllerLeaseLossTiming } from "./run-cancellation.js";
 import { randomUUID } from "node:crypto";
@@ -176,7 +176,25 @@ export async function hasLiveLegacyController(db: Db, run: Run): Promise<boolean
   return (await liveLegacyControllerExpiresAt(db, run)) !== null;
 }
 
-export type RevokedLegacyControllerState = Pick<Run, "executionStage" | "processPid" | "processGroupId">;
+export type RevokedLegacyControllerState = Pick<Run, "executionStage" | "processPid" | "processGroupId"> & { portablePreparationLeaseId?: string };
+
+function legacyPreparationStage() {
+  return and(eq(heartbeatRuns.runtimeMode, "legacy"), eq(heartbeatRuns.executionStage, "preparing"),
+    isNull(heartbeatRuns.processPid), isNull(heartbeatRuns.processGroupId), isNull(heartbeatRuns.processStartedAt));
+}
+
+export async function handoffLegacyControllerPreparation(db: Db, run: Run, preparationLease: SQL<string | null>, onHandoff: () => void) {
+  return db.transaction(async tx => {
+    await notifyLiveRunRecovery(tx, { companyId: run.companyId, runId: run.id });
+    const [released] = await tx.update(heartbeatRuns).set({ controllerLeaseExpiresAt: sql`clock_timestamp()` })
+      .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId),
+        eq(heartbeatRuns.status, "running"), eq(heartbeatRuns.controllerBootId, legacyControllerBootId),
+        legacyPreparationStage(), sql`${preparationLease} is not null`)).returning({ id: heartbeatRuns.id });
+    if (!released) return false;
+    onHandoff();
+    return true;
+  });
+}
 
 /** Atomically revoke an expired controller. Renewal and revocation serialize on
  * the run row. Expiry permits cleanup, never dispatch of a replacement agent.
@@ -186,6 +204,7 @@ export type RevokedLegacyControllerState = Pick<Run, "executionStage" | "process
 export async function revokeExpiredLegacyControllerWithState(
   db: Db,
   run: Run,
+  reclaimPreparation?: SQL<string | null>,
 ): Promise<RevokedLegacyControllerState | null> {
   if (run.runtimeMode === "native" || !run.controllerBootId) {
     return { executionStage: run.executionStage, processPid: run.processPid, processGroupId: run.processGroupId };
@@ -193,19 +212,19 @@ export async function revokeExpiredLegacyControllerWithState(
   const controllerBootId = run.controllerBootId;
   const [revoked] = await db.transaction(async tx => {
     await notifyLiveRunRecovery(tx, { companyId: run.companyId, runId: run.id });
-    return tx.update(heartbeatRuns).set({
-    controllerBootId: randomUUID(),
-    controllerLeaseExpiresAt: sql`clock_timestamp() + interval '60 seconds'`,
-  }).where(and(
-    eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId),
-    eq(heartbeatRuns.status, "running"),
-    eq(heartbeatRuns.controllerBootId, controllerBootId),
-    lte(heartbeatRuns.controllerLeaseExpiresAt, sql`clock_timestamp()`),
-  )).returning({
-    executionStage: heartbeatRuns.executionStage,
-    processPid: heartbeatRuns.processPid,
-    processGroupId: heartbeatRuns.processGroupId,
-  });
+    const expired = and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId),
+      eq(heartbeatRuns.status, "running"), eq(heartbeatRuns.controllerBootId, controllerBootId),
+      lte(heartbeatRuns.controllerLeaseExpiresAt, sql`clock_timestamp()`));
+    const state = { executionStage: heartbeatRuns.executionStage, processPid: heartbeatRuns.processPid,
+      processGroupId: heartbeatRuns.processGroupId };
+    if (reclaimPreparation) {
+      const [reclaimed] = await tx.update(heartbeatRuns).set(legacyControllerClaim("legacy")).where(and(expired, legacyPreparationStage(),
+        sql`${reclaimPreparation} is not null`)).returning({ ...state, portablePreparationLeaseId: reclaimPreparation });
+      if (reclaimed?.portablePreparationLeaseId) return [{ ...reclaimed, portablePreparationLeaseId: reclaimed.portablePreparationLeaseId }];
+    }
+    return tx.update(heartbeatRuns).set({ controllerBootId: randomUUID(),
+      controllerLeaseExpiresAt: sql`clock_timestamp() + interval '60 seconds'`,
+    }).where(expired).returning(state);
   });
   return revoked ?? null;
 }
