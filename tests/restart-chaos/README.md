@@ -1444,6 +1444,10 @@ node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env daytona
 node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env daytona --daytona-image $IMG --daytona-warm --daytona-cpu 1 \
   --storage s3 --ephemeral-server --workload staging-mix --faults K15 --k15-overlap-seconds 480-540 --mix-runs 15 --mix-queue 3 \
   --mix-minutes 40 --mix-fault-spacing-minutes 12 --mix-turn-minutes 5-15 --budget-cents <cap> --seed 7102
+# The same short form locally (agents on this Mac, so 10 runs). `--ephemeral-server` runs only on Daytona, so it is left out.
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local --storage s3 --workload staging-mix --faults K15 \
+  --k15-overlap-seconds 480-540 --mix-runs 10 --mix-queue 3 --mix-minutes 40 --mix-fault-spacing-minutes 12 --mix-turn-minutes 5-15 \
+  --budget-cents 5000 --seed 7201
 # Full form (about 4.5 hours): 6 swaps 40 minutes apart, 15-45 minute turns, 30 runs and a queue of 6.
 RESTART_CHAOS_DAYTONA_VCPU_BUDGET=<org headroom> node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env daytona \
   --daytona-image $IMG --daytona-warm --daytona-cpu 1 --storage s3 --ephemeral-server --workload staging-mix --faults K15 \
@@ -1487,13 +1491,49 @@ one settled and at least one task is in flight; it hits every task in flight (`s
 tasks do: the wave's clock crosses them. A slot that never fired because every task rested first fails the wave as a
 harness error (`staging_mix_fault_slots_missed`). With `--faults K0` the tasks are `K0` and nothing fires.
 
-**Follow-ups and Retries.** About half of the tasks (`--mix-follow-up-share`) get a board comment while a run is
-running. The comment asks the agent to add `FOLLOWUP-<nonce>` to the ledger. A failed task's Retry is clicked the
-same way. Both are held until the next overlap window, but for at most `--mix-hold-minutes` (default 10); a follow-up
-also goes out before the last 15% of the planned turn. A failed post is tried again on the next poll. The
-overlap window comes from `setOverlapProbe` in `staging-mix.ts`, which a swap driver registers. Without a probe, the
-window is any time a fault is in progress and the server still answers (a K15 overlap). The timeline records
-`staging_mix_follow_up` and `staging_mix_retry_in_overlap`.
+**Follow-ups.** About half of the tasks (`--mix-follow-up-share`) get a board comment while a run is running. The
+comment asks the agent to add `FOLLOWUP-<nonce>` to the ledger. It is held until the next overlap window, but for at
+most `--mix-hold-minutes` (default 10), and it goes out before the last 15% of the planned turn. A failed post is
+tried again on the next poll with the same `clientRequestId`. The overlap window comes from `setOverlapProbe` in
+`staging-mix.ts`, which a swap driver registers. Without a probe, the window is any time a fault is in progress and the
+server still answers (a K15 overlap). The timeline records `staging_mix_follow_up`.
+
+**Retries: hands-off first.** By default the harness never clicks Retry during the wave or the settle, so the product's
+own continuation is what gets measured. A task that shows a Retry banner is kept under watch, not rested. Every banner
+is recorded per task: when it first showed, how long it stayed, and the error code behind it, even when the task then
+finished by itself. A banner is a defect, because the product goal is that it never appears. After the settle
+(`--mix-settle-minutes`, default 15, after the last fault slot ends), each task that is still not done and still
+offers Retry gets one click (`staging_mix_retry_after_settle`). The harness follows the click to rest for up to 15 minutes,
+whatever the settle setting. A task that finished by itself during the settle is watched again until it rests, so its
+record is fresh before grading. When the release-swap cell drives the wave, its own end-of-wave pass makes that one
+click instead, and its issue reads also update the banner record. Both paths use `shouldClickRetryAfterSettle` in
+`staging-mix-retry.ts`, which never clicks:
+
+- a done task;
+- a task with a scheduled retry (`scheduledRetry`, state `retry_scheduled` or a `nextRetryAt`);
+- a task that was already clicked.
+
+So no task gets two clicks. `--mix-retry-during-wave` restores the old behaviour: Retries
+clicked during the wave, held until an overlap window as follow-ups are (`staging_mix_retry_in_overlap`).
+
+**Results.** `staging-mix-results.json` and the first lines of `SUMMARY.md` give four lines, in this order:
+
+1. `completed hands-off / started`.
+2. `duplicated side effects: N tasks`, followed by `; evidence incomplete: M tasks` when a check could not read its evidence (such a check is never counted as a duplicate).
+3. `Retry banner shown: N tasks`.
+4. `Retry worked / Retry clicked`.
+
+A task counts as completed hands-off when all three hold, read from fresh data at the end of the wave:
+
+- its status is `done`;
+- every check of its deliverable passes (ledger rounds, DONE comment posted, follow-up delivered, subtasks);
+- nobody clicked Retry.
+
+A duplicated side effect (`rounds_once`, `done_comment_once`, `completion_once`, `subtasks_once`,
+`subtask_rounds_once`) is counted on the second line. It does not remove the task from the first line. A Retry counts as
+worked when the clicked task meets the same completion rule. The banner list follows, then one read of
+`GET /api/companies/:id/assigned-work-invariant` at the end of the wave: `violationCount`, `violations` by reason,
+`agentsWithStalledSlots` and `openTasks`.
 
 **Grade.** The usual R1–R6, U1–U5 and T rules apply. A needed Retry still fails R3. The T-oracle checks the result,
 not the status:
@@ -1503,10 +1543,13 @@ not the status:
 | `issue_done` | the task is not `done` |
 | `ledger_rounds_verified` | a round is missing, ran under 80 s, or its hash differs from the harness's own computation (POSIX `cksum`, chained per tick) |
 | `rounds_once` | a round line appears twice (a tool ran again) |
-| `done_comment_once` | the `DONE-<nonce>` comment is missing or was posted twice |
+| `done_comment_posted` | no comment's whole body is `DONE-<nonce>`; a summary that quotes the marker does not count |
+| `done_comment_once` | that comment was posted more than once |
+| `completion_once` | more than one run posted a comment that mentions `DONE-<nonce>` (a duplicate completion), or the comments could not be read |
 | `follow_up_posted` | a planned follow-up was never posted (the detail lists the post errors) |
 | `follow_up_served` | a follow-up was posted during a run and the ledger lacks its line |
-| `subtasks_once`, `subtask_<k>_done`, `parent_read_subtask_<k>` | a parent created more or fewer than two subtasks, a subtask's ledger fails, or the parent did not report a subtask's last hash |
+| `subtask_<k>_done`, `parent_read_subtask_<k>` | a subtask is missing, not done or its ledger fails, or the parent did not report its last hash |
+| `subtasks_once`, `subtask_rounds_once` | a parent created more than two subtasks, or a subtask repeated a round |
 
 Duplicated side effects (a repeated round, comment or subtask) fail the task and show in the signature.
 
