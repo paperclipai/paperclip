@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import http from "node:http";
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
 import express from "express";
@@ -8,6 +9,7 @@ import { actorMiddleware } from "../middleware/auth.js";
 import {
   chainBelongsToAgentRun,
   createLocalAgentProcessBoundary,
+  type LocalProcessInspector,
   findPeerPidInDarwinNetstat,
   findSocketInodeInProcNet,
 } from "../middleware/local-agent-process-boundary.js";
@@ -134,5 +136,72 @@ describe("local process identification", () => {
     const shell = { pid: 11, ppid: 10, executable: "/bin/bash", environment: new Map() };
     expect(chainBelongsToAgentRun([daemon], {})).toBe(false);
     expect(chainBelongsToAgentRun([shell, daemon], {})).toBe(true);
+  });
+});
+
+describe("process lookups under connection bursts", () => {
+  it("shares one lookup at a time across parallel connections and keeps the server responsive", async () => {
+    let active = 0;
+    let maxActive = 0;
+    let scans = 0;
+    const scannedSockets: number[] = [];
+    const inspector: LocalProcessInspector = {
+      async findPeerPids(sockets) {
+        scans += 1;
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        scannedSockets.push(sockets.length);
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        active -= 1;
+        return sockets.map(() => 4242);
+      },
+      async ancestries(pids) {
+        return new Map(pids.map((pid) => [pid, [{ pid, ppid: 1, executable: "/usr/bin/browser", environment: new Map() }]]));
+      },
+      async ancestorPids(pid) {
+        return [pid];
+      },
+    };
+    const app = express();
+    app.use(actorMiddleware({} as Db, {
+      deploymentMode: "local_trusted",
+      localAgentProcessBoundary: createLocalAgentProcessBoundary({ inspector, serverEnvironment: {} }),
+    }));
+    app.get("/api/whoami", (req, res) => { res.json({ type: req.actor.type }); });
+    const server = await new Promise<Server>((resolve) => {
+      const started = app.listen(0, "127.0.0.1", () => resolve(started));
+    });
+    const { port } = server.address() as AddressInfo;
+    const request = (abortAfterMs?: number) => new Promise<string>((resolve) => {
+      const req = http.get({ host: "127.0.0.1", port, path: "/api/whoami", agent: false }, (res) => {
+        let body = "";
+        res.on("data", (chunk) => { body += chunk; });
+        res.on("end", () => resolve(body));
+      });
+      req.on("error", () => resolve("aborted"));
+      if (abortAfterMs !== undefined) setTimeout(() => req.destroy(), abortAfterMs);
+    });
+    try {
+      const timerStarted = Date.now();
+      const timerDelay = new Promise<number>((resolve) => setTimeout(() => resolve(Date.now() - timerStarted - 50), 50));
+      const first = await Promise.all([
+        ...Array.from({ length: 12 }, () => request()),
+        request(20),
+        request(20),
+        timerDelay,
+      ]);
+      const bodies = first.slice(0, 12);
+      expect(bodies.every((body) => JSON.parse(body as string).type === "board")).toBe(true);
+      expect(first.slice(12, 14)).toEqual(["aborted", "aborted"]);
+      expect(first[14] as number).toBeLessThan(250);
+      expect(maxActive).toBe(1);
+      expect(scans).toBeLessThanOrEqual(2);
+      const scanned = scannedSockets.reduce((sum, count) => sum + count, 0);
+      expect(scanned).toBeGreaterThanOrEqual(12);
+      expect(scanned).toBeLessThanOrEqual(14);
+      expect(JSON.parse(await request())).toEqual({ type: "board" });
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
   });
 });

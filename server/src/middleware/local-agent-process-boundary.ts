@@ -38,8 +38,8 @@ export interface LocalProcessInfo {
 }
 
 export interface LocalProcessInspector {
-  findPeerPid(socket: LocalPeerEndpoints): Promise<number | null | "unsupported">;
-  ancestry(pid: number, stopAt: ReadonlySet<number>): Promise<LocalProcessInfo[] | null>;
+  findPeerPids(sockets: readonly LocalPeerEndpoints[]): Promise<(number | null)[] | "unsupported">;
+  ancestries(pids: readonly number[], stopAt: ReadonlySet<number>): Promise<Map<number, LocalProcessInfo[] | null>>;
   ancestorPids(pid: number): Promise<number[] | null>;
 }
 
@@ -141,30 +141,59 @@ async function ownedByServerUser(pid: string): Promise<boolean> {
   return realUid !== undefined && Number(realUid) === process.getuid?.();
 }
 
+function endpoints(socket: LocalPeerEndpoints) {
+  return {
+    peer: { address: normalizeLoopbackAddress(socket.remoteAddress), port: socket.remotePort },
+    server: { address: normalizeLoopbackAddress(socket.localAddress), port: socket.localPort },
+  };
+}
+
+async function linuxProcessInfo(pid: number): Promise<LocalProcessInfo | null> {
+  const stat = await readFile(`/proc/${pid}/stat`, "utf8").catch(() => null);
+  if (!stat) return null;
+  const [cmdline, environ] = await Promise.all([
+    readFile(`/proc/${pid}/cmdline`, "utf8").catch(() => ""),
+    readFile(`/proc/${pid}/environ`, "utf8").catch(() => ""),
+  ]);
+  return {
+    pid,
+    ppid: linuxParentPid(stat),
+    executable: cmdline.split("\0")[0] || null,
+    environment: parseEnvironmentBlock(environ.split("\0")),
+  };
+}
+
 const linuxInspector: LocalProcessInspector = {
-  async findPeerPid(socket) {
-    const peer = { address: normalizeLoopbackAddress(socket.remoteAddress), port: socket.remotePort };
-    const server = { address: normalizeLoopbackAddress(socket.localAddress), port: socket.localPort };
+  async findPeerPids(sockets) {
     const tables = await Promise.all(["/proc/net/tcp", "/proc/net/tcp6"].map((file) =>
       readFile(file, "utf8").catch(() => null)));
     if (tables.every((table) => table === null)) return "unsupported";
-    const inode = tables.map((table) => table ? findSocketInodeInProcNet(table, peer, server) : null)
-      .find((value) => value !== null);
-    if (!inode) return null;
-    const target = `socket:[${inode}]`;
-    const others = (await readdir("/proc").catch(() => [] as string[]))
-      .filter((entry) => /^\d+$/.test(entry) && Number(entry) !== process.pid);
+    const inodes = sockets.map((socket) => {
+      const { peer, server } = endpoints(socket);
+      return tables.map((table) => table ? findSocketInodeInProcNet(table, peer, server) : null)
+        .find((value) => value !== null) ?? null;
+    });
+    const wanted = new Map<string, number>();
+    for (const inode of inodes) if (inode) wanted.set(`socket:[${inode}]`, 0);
+    const owners = new Map<string, number>();
     let unreadable = false;
-    for (const pid of [String(process.pid), ...others]) {
-      const fds = await readdir(`/proc/${pid}/fd`).catch(async (error: NodeJS.ErrnoException) => {
-        if ((error.code === "EACCES" || error.code === "EPERM") && await ownedByServerUser(pid)) unreadable = true;
-        return [] as string[];
-      });
-      for (const fd of fds) {
-        if (await readlink(`/proc/${pid}/fd/${fd}`).catch(() => null) === target) return Number(pid);
+    if (wanted.size) {
+      const others = (await readdir("/proc").catch(() => [] as string[]))
+        .filter((entry) => /^\d+$/.test(entry) && Number(entry) !== process.pid);
+      for (const pid of [String(process.pid), ...others]) {
+        if (owners.size === wanted.size) break;
+        const fds = await readdir(`/proc/${pid}/fd`).catch(async (error: NodeJS.ErrnoException) => {
+          if ((error.code === "EACCES" || error.code === "EPERM") && await ownedByServerUser(pid)) unreadable = true;
+          return [] as string[];
+        });
+        for (const fd of fds) {
+          const link = await readlink(`/proc/${pid}/fd/${fd}`).catch(() => null);
+          if (link && wanted.has(link) && !owners.has(link)) owners.set(link, Number(pid));
+        }
       }
     }
-    return unreadable ? "unsupported" : null;
+    if (unreadable && inodes.some((inode) => inode && !owners.has(`socket:[${inode}]`))) return "unsupported";
+    return inodes.map((inode) => inode ? owners.get(`socket:[${inode}]`) ?? null : null);
   },
   async ancestorPids(pid) {
     const pids: number[] = [];
@@ -178,26 +207,22 @@ const linuxInspector: LocalProcessInspector = {
     }
     return pids;
   },
-  async ancestry(pid, stopAt) {
-    const chain: LocalProcessInfo[] = [];
-    let current = pid;
-    for (let depth = 0; depth < MAX_ANCESTRY_DEPTH && current > 1 && !stopAt.has(current); depth += 1) {
-      const stat = await readFile(`/proc/${current}/stat`, "utf8").catch(() => null);
-      if (!stat) return chain.length ? chain : null;
-      const ppid = linuxParentPid(stat);
-      const [cmdline, environ] = await Promise.all([
-        readFile(`/proc/${current}/cmdline`, "utf8").catch(() => ""),
-        readFile(`/proc/${current}/environ`, "utf8").catch(() => ""),
-      ]);
-      chain.push({
-        pid: current,
-        ppid,
-        executable: cmdline.split("\0")[0] || null,
-        environment: parseEnvironmentBlock(environ.split("\0")),
-      });
-      current = ppid;
+  async ancestries(pids, stopAt) {
+    const known = new Map<number, LocalProcessInfo | null>();
+    const result = new Map<number, LocalProcessInfo[] | null>();
+    for (const pid of pids) {
+      const chain: LocalProcessInfo[] = [];
+      let current = pid;
+      for (let depth = 0; depth < MAX_ANCESTRY_DEPTH && current > 1 && !stopAt.has(current); depth += 1) {
+        if (!known.has(current)) known.set(current, await linuxProcessInfo(current));
+        const info = known.get(current);
+        if (!info) break;
+        chain.push(info);
+        current = info.ppid;
+      }
+      result.set(pid, chain.length || stopAt.has(pid) ? chain : null);
     }
-    return chain;
+    return result;
   },
 };
 
@@ -238,37 +263,52 @@ export function parseDarwinProcessEnvironmentLine(command: string): {
 }
 
 const darwinInspector: LocalProcessInspector = {
-  async findPeerPid(socket) {
+  async findPeerPids(sockets) {
     const output = await runCommand("netstat", ["-anv", "-p", "tcp"]);
     if (output === null) return "unsupported";
-    return findPeerPidInDarwinNetstat(
-      output,
-      { address: normalizeLoopbackAddress(socket.remoteAddress), port: socket.remotePort },
-      { address: normalizeLoopbackAddress(socket.localAddress), port: socket.localPort },
-    );
+    const pids: (number | null)[] = [];
+    for (const socket of sockets) {
+      const { peer, server } = endpoints(socket);
+      const pid = findPeerPidInDarwinNetstat(output, peer, server);
+      if (pid === "unsupported") return "unsupported";
+      pids.push(pid);
+    }
+    return pids;
   },
   async ancestorPids(pid) {
     const parents = await darwinParentTable();
     return parents ? darwinChain(parents, pid, new Set()) : null;
   },
-  async ancestry(pid, stopAt) {
+  async ancestries(pids, stopAt) {
+    const result = new Map<number, LocalProcessInfo[] | null>();
     const parents = await darwinParentTable();
-    if (!parents) return null;
-    const pids = darwinChain(parents, pid, stopAt);
-    if (!pids.length) return [];
-    const output = await runCommand("ps", ["-E", "-ww", "-o", "pid=,command=", "-p", pids.join(",")]);
-    if (output === null) return null;
-    const details = new Map<number, ReturnType<typeof parseDarwinProcessEnvironmentLine>>();
-    for (const line of output.split("\n")) {
-      const match = /^\s*(\d+)\s+(.*)$/.exec(line);
-      if (match) details.set(Number(match[1]), parseDarwinProcessEnvironmentLine(match[2]!));
+    if (!parents) {
+      for (const pid of pids) result.set(pid, null);
+      return result;
     }
-    return pids.map((entry) => ({
-      pid: entry,
-      ppid: parents.get(entry) ?? 0,
-      executable: details.get(entry)?.executable ?? null,
-      environment: details.get(entry)?.environment ?? new Map(),
-    }));
+    const chains = new Map(pids.map((pid) => [pid, darwinChain(parents, pid, stopAt)]));
+    const members = [...new Set([...chains.values()].flat())];
+    const details = new Map<number, ReturnType<typeof parseDarwinProcessEnvironmentLine>>();
+    if (members.length) {
+      const output = await runCommand("ps", ["-E", "-ww", "-o", "pid=,command=", "-p", members.join(",")]);
+      if (output === null) {
+        for (const pid of pids) result.set(pid, null);
+        return result;
+      }
+      for (const line of output.split("\n")) {
+        const match = /^\s*(\d+)\s+(.*)$/.exec(line);
+        if (match) details.set(Number(match[1]), parseDarwinProcessEnvironmentLine(match[2]!));
+      }
+    }
+    for (const [pid, chain] of chains) {
+      result.set(pid, chain.map((entry) => ({
+        pid: entry,
+        ppid: parents.get(entry) ?? 0,
+        executable: details.get(entry)?.executable ?? null,
+        environment: details.get(entry)?.environment ?? new Map(),
+      })));
+    }
+    return result;
   },
 };
 
@@ -304,6 +344,8 @@ export function createLocalAgentProcessBoundary(options: LocalAgentProcessBounda
   const classifications = new WeakMap<object, Promise<LocalPeerClassification>>();
   let serverAncestors: Promise<ReadonlySet<number>> | null = null;
   let warnedUnsupported = false;
+  let queued: { socket: LocalPeerEndpoints; resolve: (result: LocalPeerClassification) => void }[] = [];
+  let scanning = false;
 
   function stopSet(): Promise<ReadonlySet<number>> {
     serverAncestors ??= (inspector?.ancestorPids(serverPid) ?? Promise.resolve(null))
@@ -311,27 +353,54 @@ export function createLocalAgentProcessBoundary(options: LocalAgentProcessBounda
     return serverAncestors;
   }
 
-  async function classifyUncached(socket: LocalPeerSocket): Promise<LocalPeerClassification> {
-    if (!inspector) return "unsupported";
-    const { remoteAddress, remotePort, localAddress, localPort } = socket;
-    if (!remoteAddress || !remotePort || !localAddress || !localPort) return "agent_run";
-    const peerPid = await inspector.findPeerPid({ remoteAddress, remotePort, localAddress, localPort });
-    if (peerPid === "unsupported") return "unsupported";
-    if (peerPid === null) return "agent_run";
+  async function classifyBatch(sockets: readonly LocalPeerEndpoints[]): Promise<LocalPeerClassification[]> {
+    if (!inspector) return sockets.map(() => "unsupported");
+    const peerPids = await inspector.findPeerPids(sockets);
+    if (peerPids === "unsupported") return sockets.map(() => "unsupported");
     const stopAt = await stopSet();
-    if (stopAt.has(peerPid)) return "operator";
-    const chain = await inspector.ancestry(peerPid, stopAt);
-    if (chain === null) return "agent_run";
-    return chainBelongsToAgentRun(chain, serverEnvironment) ? "agent_run" : "operator";
+    const outside = [...new Set(peerPids.filter((pid): pid is number => pid !== null && !stopAt.has(pid)))];
+    const chains = outside.length ? await inspector.ancestries(outside, stopAt) : new Map<number, LocalProcessInfo[] | null>();
+    return peerPids.map((pid) => {
+      if (pid === null) return "agent_run";
+      if (stopAt.has(pid)) return "operator";
+      const chain = chains.get(pid);
+      if (!chain) return "agent_run";
+      return chainBelongsToAgentRun(chain, serverEnvironment) ? "agent_run" : "operator";
+    });
+  }
+
+  async function drain() {
+    if (scanning) return;
+    scanning = true;
+    try {
+      while (queued.length) {
+        const batch = queued;
+        queued = [];
+        const results = await classifyBatch(batch.map((entry) => entry.socket)).catch((err) => {
+          logger.warn({ err }, "Could not identify the local process behind a request; refusing implicit board access");
+          return batch.map(() => "agent_run" as const);
+        });
+        batch.forEach((entry, index) => entry.resolve(results[index]!));
+      }
+    } finally {
+      scanning = false;
+    }
+  }
+
+  function classifyUncached(socket: LocalPeerSocket): Promise<LocalPeerClassification> {
+    if (!inspector) return Promise.resolve("unsupported");
+    const { remoteAddress, remotePort, localAddress, localPort } = socket;
+    if (!remoteAddress || !remotePort || !localAddress || !localPort) return Promise.resolve("agent_run");
+    return new Promise((resolve) => {
+      queued.push({ socket: { remoteAddress, remotePort, localAddress, localPort }, resolve });
+      void drain();
+    });
   }
 
   async function classify(socket: LocalPeerSocket & object): Promise<LocalPeerClassification> {
     let pending = classifications.get(socket);
     if (!pending) {
-      pending = classifyUncached(socket).catch((err) => {
-        logger.warn({ err }, "Could not identify the local process behind a request; refusing implicit board access");
-        return "agent_run" as const;
-      });
+      pending = classifyUncached(socket);
       classifications.set(socket, pending);
     }
     const result = await pending;
