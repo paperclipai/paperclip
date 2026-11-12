@@ -6,7 +6,7 @@ import { recoveryService } from "./recovery/index.js";
 import { inspectWorkspaceSource } from "./workspace-source-inspection.js";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { isPreDispatchExecutionWaitVerified } from "./pre-dispatch-execution-wait.js";
-import { heartbeatRunEvents, agents, approvals, budgetPolicies, costEvents, completionContracts, issueApprovals, issueTreeHolds, issueTreeHoldMembers, companies, createDb, environmentLeases, environments, heartbeatRuns, issueComments, issueRecoveryActions, issues, nativeRunFinalizations, nativeRunResults, agentWakeupRequests, workspaceOperations, plugins } from "@paperclipai/db";
+import { activityLog, heartbeatRunEvents, agents, approvals, budgetPolicies, costEvents, completionContracts, issueApprovals, issueTreeHolds, issueTreeHoldMembers, companies, createDb, environmentLeases, environments, heartbeatRuns, issueComments, issueRecoveryActions, issues, nativeRunFinalizations, nativeRunResults, agentWakeupRequests, workspaceOperations, plugins } from "@paperclipai/db";
 import { createHeartbeatQueue, shouldDeferFollowupWakeForSameIssue, shouldQueueFollowupForRunningIssueWake } from "./heartbeat/queue.js";
 import { createHeartbeatQueueTestDependencies } from "../__tests__/helpers/heartbeat-queue.js";
 import { recordRequiredWorkspaceRestoreFailure } from "./legacy-execution-recovery.js";
@@ -530,6 +530,155 @@ describe("automatic retained workspace recovery", () => {
     await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() }).where(eq(heartbeatRuns.id, successors[0].id));
     await db.update(issues).set({ assigneeAgentId: previousOwnerId }).where(eq(issues.id, f.issueId));
     expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toMatchObject({ runId: f.runId, workspaceRepairRequired: false });
+  }, 30_000);
+
+  it("starts the new assignee on the message saved behind a handed-over run once its files are recovered", async () => {
+    // Shape of a hand-over from the assignee's own native run: the reassignment
+    // stopped the run, the provider turn settled as failed, and its files were
+    // retained under a no-replay hold while the new assignee's wakes arrived.
+    const f = await seed();
+    const previousOwnerId = (await run(f.runId)).agentId;
+    await db.update(heartbeatRuns).set({ errorCode: "native_provider_terminal_failed",
+      error: "Cancelled before issue reassignment" }).where(eq(heartbeatRuns.id, f.runId));
+    const held = await action(f.actionId);
+    await db.update(issueRecoveryActions).set({ status: "resolved", outcome: "blocked", resolvedAt: new Date(),
+      fingerprint: `native-workspace:${f.runId}`, evidence: { ...held.evidence, continuationDelivery: "invalidated",
+        automaticRecovery: { policy: "preserve_without_replay_v1", runId: f.runId, replay: "blocked", actionOutcome: "unknown" } },
+    }).where(eq(issueRecoveryActions.id, f.actionId));
+    const newOwnerId = randomUUID();
+    await db.insert(agents).values({ id: newOwnerId, companyId: f.companyId, name: "Reviewer", adapterType: "claude_local",
+      status: "idle", runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } });
+    await db.update(issues).set({ assigneeAgentId: newOwnerId, status: "todo" }).where(eq(issues.id, f.issueId));
+    // The new owner's only slot is busy elsewhere, so its turn on this task stays queued and observable.
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: newOwnerId, status: "running" });
+    const heartbeat = heartbeatService(db);
+    const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
+      authorType: "user", authorUserId: "board", body: "Please look at this first." }).returning();
+    await heartbeat.wakeup(newOwnerId, { source: "assignment", triggerDetail: "system", reason: "issue_assigned",
+      payload: { issueId: f.issueId, mutation: "update" }, requestedByActorType: "agent", requestedByActorId: previousOwnerId,
+      contextSnapshot: { issueId: f.issueId, source: "issue.update" } });
+    await heartbeat.wakeup(newOwnerId, { source: "automation", triggerDetail: "system", reason: "issue_commented",
+      payload: { issueId: f.issueId, commentId: comment.id, mutation: "comment" },
+      requestedByActorType: "user", requestedByActorId: "board",
+      contextSnapshot: { issueId: f.issueId, taskId: f.issueId, commentId: comment.id, wakeCommentId: comment.id,
+        source: "issue.comment", wakeReason: "issue_commented" } });
+    const wakes = (agentId: string) => db.select().from(agentWakeupRequests).where(and(
+      eq(agentWakeupRequests.agentId, agentId), sql`${agentWakeupRequests.payload}->>'issueId' = ${f.issueId}`));
+    const turns = () => db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
+      sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${f.issueId}`, inArray(heartbeatRuns.status, ["queued", "scheduled_retry", "running"])));
+
+    // While the files are unrecovered the hold binds every executor: the
+    // assignment wake is skipped and the message is saved behind the hold.
+    expect((await wakes(newOwnerId)).map(wake => wake.status).sort()).toEqual(["deferred_issue_execution", "skipped"]);
+    await heartbeat.resumeQueuedRuns();
+    expect(await turns()).toEqual([]);
+
+    await recoverRetainedWorkspace(f.input);
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
+    // The previous owner's own saved message is not the new owner's turn.
+    const [earlier] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
+      authorType: "user", authorUserId: "board", body: "For the previous owner." }).returning();
+    await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: previousOwnerId, source: "automation",
+      reason: "issue_commented", status: "deferred_issue_execution", requestedByActorType: "user", requestedByActorId: "board",
+      requestedAt: new Date(Date.now() - 60_000),
+      payload: { issueId: f.issueId, commentId: earlier.id, _paperclipWakeContext: { issueId: f.issueId,
+        wakeReason: "issue_commented", wakeCommentId: earlier.id, wakeCommentIds: [earlier.id] } } });
+
+    // Twice, to prove a repeated pass adds no second executor.
+    for (let pass = 0; pass < 2; pass += 1) await heartbeat.resumeQueuedRuns();
+    const started = await turns();
+    expect(started).toHaveLength(1);
+    expect(started[0]).toMatchObject({ agentId: newOwnerId, contextSnapshot: { issueId: f.issueId, wakeCommentIds: [comment.id] } });
+    // A fresh turn for the new owner, never a replay of the handed-over run.
+    expect(started[0].retryOfRunId).toBeNull();
+    expect(started[0].contextSnapshot?.previousRunId).toBeUndefined();
+    expect((await wakes(newOwnerId)).filter(wake => wake.status === "deferred_issue_execution")).toEqual([]);
+    expect((await wakes(previousOwnerId)).filter(wake => wake.status === "deferred_issue_execution")).toHaveLength(1);
+    // The audit row and its no-replay hold stay intact for the previous owner.
+    expect(await action(f.actionId)).toMatchObject({ status: "resolved", outcome: "blocked",
+      evidence: { automaticRecovery: { replay: "blocked" } } });
+  }, 60_000);
+
+  // Shape of a round trip: the owner's native run handed the task to another
+  // agent as its last call, the reassignment stopped that run, the provider
+  // turn settled as failed with its files retained under a no-replay hold, and
+  // the other agent handed the task back.
+  async function handedBack(f: Awaited<ReturnType<typeof seed>>, stop: "own-hand-off" | "provider-failure" | "board-reassignment" | "another-run") {
+    const ownerId = (await run(f.runId)).agentId;
+    await db.update(heartbeatRuns).set({ errorCode: "native_provider_terminal_failed",
+      error: "Cancelled before issue reassignment" }).where(eq(heartbeatRuns.id, f.runId));
+    const held = await action(f.actionId);
+    await db.update(issueRecoveryActions).set({ status: "resolved", outcome: "blocked", resolvedAt: new Date(),
+      fingerprint: `native-workspace:${f.runId}`, evidence: { ...held.evidence, continuationDelivery: "invalidated",
+        automaticRecovery: { policy: "preserve_without_replay_v1", runId: f.runId, replay: "blocked", actionOutcome: "unknown" } },
+    }).where(eq(issueRecoveryActions.id, f.actionId));
+    const otherId = randomUUID();
+    await db.insert(agents).values({ id: otherId, companyId: f.companyId, name: "Reviewer", adapterType: "claude_local", status: "idle" });
+    const update = { companyId: f.companyId, action: "issue.updated", entityType: "issue", entityId: f.issueId };
+    if (stop === "board-reassignment") {
+      await db.insert(activityLog).values({ ...update, actorType: "user", actorId: "board",
+        details: { assigneeAgentId: otherId, interruptedRunId: f.runId } });
+    } else if (stop !== "provider-failure") {
+      // "another-run": an earlier run of the owner made the hand-off; the held run failed by itself.
+      const actingRunId = stop === "own-hand-off" ? f.runId : (await db.insert(heartbeatRuns).values({ companyId: f.companyId,
+        agentId: ownerId, status: "cancelled", finishedAt: new Date(), errorCode: "issue_reassigned" }).returning())[0]!.id;
+      await db.insert(activityLog).values({ ...update, actorType: "agent", actorId: ownerId, agentId: ownerId,
+        runId: actingRunId, details: { assigneeAgentId: otherId, interruptedRunId: actingRunId } });
+    }
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: otherId, runtimeMode: "legacy", status: "succeeded",
+      finishedAt: new Date(), contextSnapshot: { issueId: f.issueId } });
+    await db.update(issues).set({ assigneeAgentId: ownerId, status: "todo" }).where(eq(issues.id, f.issueId));
+    return { ownerId, otherId };
+  }
+
+  it("starts the returning owner on a task its own hand-off run gave away, once that run's files are recovered", async () => {
+    const f = await seed();
+    const { ownerId, otherId } = await handedBack(f, "own-hand-off");
+    // The owner's only slot is busy elsewhere, so its turn on this task stays queued and observable.
+    await db.update(agents).set({ runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } }).where(eq(agents.id, ownerId));
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: ownerId, status: "running" });
+    const heartbeat = heartbeatService(db);
+    const assign = () => heartbeat.wakeup(ownerId, { source: "assignment", triggerDetail: "system", reason: "issue_assigned",
+      payload: { issueId: f.issueId, mutation: "update" }, requestedByActorType: "agent", requestedByActorId: otherId,
+      contextSnapshot: { issueId: f.issueId, source: "issue.update" } });
+    const turns = () => db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
+      sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${f.issueId}`, inArray(heartbeatRuns.status, ["queued", "scheduled_retry", "running"])));
+
+    // Until the files are saved the hold binds every executor, the owner included.
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toMatchObject({ runId: f.runId, workspaceRepairRequired: true });
+    await assign();
+    expect(await turns()).toEqual([]);
+
+    await recoverRetainedWorkspace(f.input);
+    expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(true);
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
+    await assign();
+    const started = await turns();
+    expect(started).toHaveLength(1);
+    expect(started[0]).toMatchObject({ agentId: ownerId, contextSnapshot: { issueId: f.issueId } });
+    // A fresh turn on the returned task, never a replay of the handed-over run.
+    expect(started[0].retryOfRunId).toBeNull();
+    expect(started[0].contextSnapshot?.previousRunId).toBeUndefined();
+    // The audit row keeps its no-replay evidence.
+    expect(await action(f.actionId)).toMatchObject({ status: "resolved", outcome: "blocked",
+      evidence: { automaticRecovery: { replay: "blocked" } } });
+  }, 60_000);
+
+  it.each(["provider-failure", "board-reassignment", "another-run"] as const)
+  ("keeps the returning owner held when its stopped run did not end at its own hand-off (%s)", async stop => {
+    const f = await seed();
+    await handedBack(f, stop);
+    await recoverRetainedWorkspace(f.input);
+    expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(true);
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toMatchObject({ recoveryActionId: f.actionId, runId: f.runId });
+  }, 30_000);
+
+  it("keeps the returning owner held after a snapshot-only save of its own hand-off run", async () => {
+    const f = await seed("native", false);
+    await handedBack(f, "own-hand-off");
+    await recoverRetainedWorkspace(f.input);
+    expect(readSystemRecovery((await action(f.actionId)).evidence)?.state).toBe("complete");
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toMatchObject({ recoveryActionId: f.actionId, runId: f.runId });
   }, 30_000);
 
   // Shape of a Stop or reassignment that reached a remote native run while its
