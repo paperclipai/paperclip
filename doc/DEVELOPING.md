@@ -5168,6 +5168,15 @@ count is kept on the run's context so a resume claim does not reset it, and a
 Stop, a lost lease or a moved task leave it to normal settlement. A busy lock
 met while collecting files after a turn is not deferred this way.
 
+Agent configuration writes refuse external instructions on a volume-free
+server. An agent's managed instruction paths are saved as absolute paths under
+the home of the server that wrote them, and each replacement server can have a
+new home. When a configuration change keeps the saved `instructionsFilePath`
+of a managed bundle, the bundle stays managed and its paths are rewritten under
+the current server's managed root. A change that sets a different
+`instructionsFilePath` is classified from that path and is still refused when
+it points outside the managed root.
+
 ### Runner controller state on a restarted volume-free server
 
 A volume-free server keeps Runner controller files under
