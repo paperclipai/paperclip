@@ -68,8 +68,11 @@ export const FRESH_CONTINUATIONS_PER_HOUR = 6;
 export const FRESH_CONTINUATION_WINDOW_MS = 60 * 60_000;
 const PERSON_RECHECK_MS = 60 * 60_000;
 /** Consecutive pending checks (about 12 minutes) before the fallback stops waiting. */
-export const FRESH_CONTINUATION_MAX_PENDING_CHECKS = 6;
-const EXACT_RECOVERY_RECHECK_MS = 2 * 60_000;
+/** Worst case from the first pending check to the fresh continuation. */
+export const FRESH_CONTINUATION_PENDING_BOUND_MS = 10 * 60_000;
+/** Longer cap while the exact-recovery owner shows progress (a new event or a renewed lease). */
+export const FRESH_CONTINUATION_PROGRESS_BOUND_MS = 15 * 60_000;
+const EXACT_RECOVERY_RECHECK_MS = 60_000;
 
 /**
  * Run failure codes that only a person can resolve (the test for each: did a
@@ -129,7 +132,7 @@ export type FreshContinuationResult =
   | { kind: "dependency_wait" }
   | { kind: "person_owned"; reason: string }
   | { kind: "backoff"; retryAt: Date }
-  | { kind: "exact_recovery_pending"; reason: string; retryAt: Date }
+  | { kind: "exact_recovery_pending"; reason: string; retryAt: Date; progressAt?: number }
   | { kind: "not_applicable"; reason: string };
 
 type Input = {
@@ -334,16 +337,24 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
   // resolved history is never rewritten.
   const ownedHolds = holds.filter(isOwnedReconciliationHold);
 
-  // Every wait is bounded: after this many consecutive pending checks the
-  // fallback stops waiting and continues in isolation (writes revoked, new root).
-  const pendingChecks = Math.max(0, ...holds.map(hold => {
-    const check = object(hold.evidence[FRESH_CONTINUATION_CHECK_KEY]);
-    return check.kind === "exact_recovery_pending" && typeof check.checks === "number" ? check.checks : 0;
-  }));
-  const waitBounded = pendingChecks >= FRESH_CONTINUATION_MAX_PENDING_CHECKS;
-  // Each recheck is at most ten minutes out, so the bound is reached in time too.
+  // Every wait is bounded in time: about 10 minutes from the first pending
+  // check, or 15 while the exact-recovery owner shows progress (a new run
+  // event, output or lease renewal since the last check). Then the fallback
+  // stops waiting and continues in isolation (writes revoked, new root).
+  const pendingMarker = holds.map(hold => object(hold.evidence[FRESH_CONTINUATION_CHECK_KEY]))
+    .filter(check => check.kind === "exact_recovery_pending" && typeof check.firstPendingAt === "number")
+    .sort((a, b) => Number(a.firstPendingAt) - Number(b.firstPendingAt))[0];
+  const progressAt = Math.max(run.updatedAt?.getTime() ?? 0, run.lastOutputAt?.getTime() ?? 0,
+    coordinator?.updatedAt?.getTime() ?? 0, coordinator?.leaseExpiresAt?.getTime() ?? 0);
+  const waitedMs = pendingMarker ? now.getTime() - Number(pendingMarker.firstPendingAt) : 0;
+  const progressing = Boolean(pendingMarker && typeof pendingMarker.progressAt === "number" && progressAt > pendingMarker.progressAt);
+  const waitBounded = waitedMs >= FRESH_CONTINUATION_PROGRESS_BOUND_MS
+    || (waitedMs >= FRESH_CONTINUATION_PENDING_BOUND_MS && !progressing);
+  // Rechecks back off 1, 2, 3, 4 minutes, so the bound is reached on time.
+  const step = Math.min(4, (typeof pendingMarker?.checks === "number" ? pendingMarker.checks : 0) + 1) * EXACT_RECOVERY_RECHECK_MS;
   const pending = (reason: string, retryAt: Date): FreshContinuationResult | null => waitBounded ? null
-    : { kind: "exact_recovery_pending", reason, retryAt: new Date(Math.min(retryAt.getTime(), now.getTime() + 10 * 60_000)) };
+    : { kind: "exact_recovery_pending", reason, progressAt,
+      retryAt: new Date(Math.min(retryAt.getTime(), now.getTime() + step)) };
 
   // (a) Something already follows this run: a newer run of the task, a linked
   // replacement, or an operator's continuation.
@@ -453,8 +464,8 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
   const writer = remoteSource ? null : await localWriterState(tx, run);
   // A local process still running on this host is executing: its own owner
   // (the reaper or a Stop) settles it first, then the fallback continues.
-  if (writer === "alive" && !waitBounded) return { kind: "exact_recovery_pending", reason: "previous_process_running",
-    retryAt: new Date(now.getTime() + EXACT_RECOVERY_RECHECK_MS) };
+  const aliveWait = writer === "alive" ? pending("previous_process_running", new Date(now.getTime() + step)) : null;
+  if (aliveWait) return aliveWait;
   const fenced = await fenceSourceWorkspace(tx, run);
   // Never claim a stop that was not proven: record what isolates the successor.
   const isolation: FreshContinuationIsolation = fenced || remoteSource ? "remote_epoch"
@@ -572,8 +583,13 @@ export async function recordFreshContinuationCheck(db: Db, input: { companyId: s
   const [row] = await db.select({ evidence: issueRecoveryActions.evidence }).from(issueRecoveryActions).where(and(
     eq(issueRecoveryActions.companyId, input.companyId), eq(issueRecoveryActions.id, input.actionId)));
   const prior = object(row?.evidence[FRESH_CONTINUATION_CHECK_KEY]);
-  const checks = prior.kind === result.kind && typeof prior.checks === "number" ? prior.checks + 1 : 1;
-  const marker = { kind: result.kind, reason: "reason" in result ? result.reason : null, checks, checkedAt: now.getTime(), nextCheckAt };
+  const same = prior.kind === result.kind;
+  const checks = same && typeof prior.checks === "number" ? prior.checks + 1 : 1;
+  const firstPendingAt = result.kind === "exact_recovery_pending"
+    ? (same && typeof prior.firstPendingAt === "number" ? prior.firstPendingAt : now.getTime()) : null;
+  const marker = { kind: result.kind, reason: "reason" in result ? result.reason : null, checks, checkedAt: now.getTime(), nextCheckAt,
+    ...(firstPendingAt !== null ? { firstPendingAt,
+      progressAt: result.kind === "exact_recovery_pending" ? result.progressAt ?? null : null } : {}) };
   await db.update(issueRecoveryActions).set({ evidence: sql`${issueRecoveryActions.evidence}
     || jsonb_build_object(${FRESH_CONTINUATION_CHECK_KEY}::text, ${JSON.stringify(marker)}::jsonb)` }).where(and(
     eq(issueRecoveryActions.companyId, input.companyId), eq(issueRecoveryActions.id, input.actionId)));

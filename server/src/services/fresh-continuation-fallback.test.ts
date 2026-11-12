@@ -10,7 +10,7 @@ import { deliverReconciledExecutions, settleUnrecoverableExecutions } from "./ex
 import { getExecutionBlocker } from "./execution-blocker.js";
 import {
   FRESH_CONTINUATIONS_PER_HOUR, FRESH_CONTINUATION_SCHEMA, PERSON_OWNED_FAILURE_CODES, continueHeldExecutions, ensureFreshContinuation,
-  heldExecutionsAwaitingFreshContinuation, nextFreshContinuationCheckAt, recordFreshContinuationCheck, FRESH_CONTINUATION_MAX_PENDING_CHECKS,
+  heldExecutionsAwaitingFreshContinuation, nextFreshContinuationCheckAt, recordFreshContinuationCheck, FRESH_CONTINUATION_PENDING_BOUND_MS, FRESH_CONTINUATION_PROGRESS_BOUND_MS,
 } from "./fresh-continuation-fallback.js";
 import { heartbeatService } from "./heartbeat.js";
 import { currentProcessSpaceHash } from "./controller-process-identity.js";
@@ -316,17 +316,40 @@ suite("fresh-continuation fallback", () => {
   const liveIdentity = () => ({ processPid: process.pid, processHostHash: currentProcessSpaceHash(),
     processStartedAt: new Date(Date.now() - process.uptime() * 1_000) });
 
-  it("lets a previous process still running on this host settle first, for a bounded number of checks", async () => {
+  /** Moves the recorded start of the pending wait into the past. */
+  async function waitedFor(actionId: string, ms: number) {
+    await db.update(issueRecoveryActions).set({ evidence: sql`jsonb_set(${issueRecoveryActions.evidence},
+      '{freshContinuationCheck,firstPendingAt}', to_jsonb(${Date.now() - ms}::bigint))` }).where(eq(issueRecoveryActions.id, actionId));
+  }
+
+  it("lets a previous process still running on this host settle first, for about ten minutes at most", async () => {
     const f = await unfinishedRun({ runtime: "legacy", errorCode: "process_lost" });
     await db.update(heartbeatRuns).set(liveIdentity()).where(eq(heartbeatRuns.id, f.runId));
     const first = await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" });
     expect(first).toMatchObject({ kind: "exact_recovery_pending", reason: "previous_process_running" });
-    // Each pending check is counted on the hold; the wait never outlives the bound.
-    for (let check = 0; check < FRESH_CONTINUATION_MAX_PENDING_CHECKS; check++)
-      await recordFreshContinuationCheck(db, { companyId, actionId: f.actionId! }, first);
+    // Rechecks back off from one minute.
+    expect((first as { retryAt: Date }).retryAt.getTime()).toBeLessThanOrEqual(Date.now() + 61_000);
+    await recordFreshContinuationCheck(db, { companyId, actionId: f.actionId! }, first);
     const [hold] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.actionId!));
-    expect(hold!.evidence.freshContinuationCheck).toMatchObject({ checks: FRESH_CONTINUATION_MAX_PENDING_CHECKS });
+    expect(hold!.evidence.freshContinuationCheck).toMatchObject({ checks: 1, firstPendingAt: expect.any(Number) });
     // Past the bound it stops waiting and continues in a new isolated workspace.
+    await waitedFor(f.actionId!, FRESH_CONTINUATION_PENDING_BOUND_MS + 1_000);
+    expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" }))
+      .toMatchObject({ kind: "continued", isolation: "fresh_isolated_workspace" });
+  }, 60_000);
+
+  it("keeps waiting up to fifteen minutes while the exact-recovery owner shows progress", async () => {
+    const f = await unfinishedRun({ runtime: "legacy", errorCode: "controller_lease_lost" });
+    await db.update(heartbeatRuns).set({ controllerLeaseExpiresAt: new Date(Date.now() + 365 * 86_400_000) })
+      .where(eq(heartbeatRuns.id, f.runId));
+    const waiting = await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" });
+    await recordFreshContinuationCheck(db, { companyId, actionId: f.actionId! }, waiting);
+    await waitedFor(f.actionId!, FRESH_CONTINUATION_PENDING_BOUND_MS + 1_000);
+    // The owner renewed its lease since the last check: progress.
+    await db.update(heartbeatRuns).set({ lastOutputAt: new Date(Date.now() + 1_000) }).where(eq(heartbeatRuns.id, f.runId));
+    expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" }))
+      .toMatchObject({ kind: "exact_recovery_pending", reason: "controller_lease_live" });
+    await waitedFor(f.actionId!, FRESH_CONTINUATION_PROGRESS_BOUND_MS + 1_000);
     expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" }))
       .toMatchObject({ kind: "continued", isolation: "fresh_isolated_workspace" });
   }, 60_000);
@@ -346,8 +369,8 @@ suite("fresh-continuation fallback", () => {
       .where(eq(heartbeatRuns.id, f.runId));
     const waiting = await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" });
     expect(waiting).toMatchObject({ kind: "exact_recovery_pending", reason: "controller_lease_live" });
-    for (let check = 0; check < FRESH_CONTINUATION_MAX_PENDING_CHECKS; check++)
-      await recordFreshContinuationCheck(db, { companyId, actionId: f.actionId! }, waiting);
+    await recordFreshContinuationCheck(db, { companyId, actionId: f.actionId! }, waiting);
+    await waitedFor(f.actionId!, FRESH_CONTINUATION_PENDING_BOUND_MS + 1_000);
     expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" }))
       .toMatchObject({ kind: "continued", isolation: "fresh_isolated_workspace" });
   }, 60_000);
