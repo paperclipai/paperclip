@@ -1,5 +1,7 @@
 import { afterAll, afterEach, beforeAll, expect, it, vi } from "vitest";
-import { createDb } from "@paperclipai/db";
+import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
+import { agents, companies, createDb } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { assertEphemeralServerData } from "../services/ephemeral-server-contract.js";
 import { hasLocalNativeHarnessObligations } from "../services/native-runtime/native-harness-backup-migration.js";
@@ -26,6 +28,23 @@ it("starts a volume-free server over harness backups a volume-free server left u
   vi.mocked(hasLocalNativeHarnessObligations).mockResolvedValue(true);
   vi.mocked(volumeFreeControllerStateOwned).mockResolvedValue(true);
   await expect(assertEphemeralServerData(db)).resolves.toBeUndefined();
+});
+
+it("still refuses configuration that would write new data to the local disk, with the owner marker present", async () => {
+  vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", "true"); vi.stubEnv("PAPERCLIP_DURABLE_AGENT_FILES", "true");
+  vi.mocked(hasLocalNativeHarnessObligations).mockResolvedValue(true);
+  vi.mocked(volumeFreeControllerStateOwned).mockResolvedValue(true);
+  const companyId = randomUUID();
+  await db.insert(companies).values({ id: companyId, name: "Startup gate", issuePrefix: "SGAT" });
+  await db.insert(agents).values({ companyId, name: "Legacy files" });
+  try {
+    const refusal = assertEphemeralServerData(db);
+    await expect(refusal).rejects.toThrow("agent_files_require_migration");
+    await expect(refusal).rejects.not.toThrow("native_harness_backups_require_migration");
+  } finally {
+    await db.delete(agents).where(eq(agents.companyId, companyId));
+    await db.delete(companies).where(eq(companies.id, companyId));
+  }
 });
 
 it("still refuses unsaved harness backups on a filesystem with no volume-free owner marker", async () => {

@@ -42,7 +42,14 @@ export function assertEphemeralServerConfig(config: Pick<Config, "databaseUrl" |
   return listener.href;
 }
 
-const harnessBackupBlocker = "native_harness_backups_require_migration";
+/** Findings that describe work in progress when a server stopped, not data
+ * waiting on a volume to be migrated. Every volume-free server that stops
+ * during a run leaves some of them behind. */
+const interruptedRunBlockers: ReadonlySet<string> = new Set([
+  "native_harness_backups_require_migration",
+  "local_instruction_copies_require_settlement",
+  "runtime_skill_assets_require_migration",
+]);
 
 /** A readiness gate, not a periodic scan or an implicit migration. Existing
  * volume data is adopted by the owning maintenance commands before removal. */
@@ -51,16 +58,18 @@ export async function assertEphemeralServerData(db: Db) {
   const eligibility = await readEphemeralServerDataEligibility(db, { purpose: "startup" });
   const { controller } = eligibility;
   let blockers = eligibility.blockers;
-  // A harness backup that never reached durable storage needs migration only
-  // while it can still be on a volume. Once this filesystem carries the
-  // volume-free owner marker there is no volume: the backup was written by a
-  // volume-free server, this one or a predecessor that died mid-run, and
-  // refusing to start cannot bring it back. It would only keep every restart
-  // from starting again. Restart recovery owns those runs; start and say so.
-  if (blockers.includes(harnessBackupBlocker) && await volumeFreeControllerStateOwned()) {
-    blockers = blockers.filter(blocker => blocker !== harnessBackupBlocker);
-    logger.warn({ blocker: harnessBackupBlocker },
-      "Volume-free server is starting with harness backups that never reached durable storage; restart recovery owns those runs");
+  // Run state that never reached durable storage needs migration only while
+  // it can still be on a volume. Once this filesystem carries the volume-free
+  // owner marker there is no volume: the state was written by a volume-free
+  // server, this one or a predecessor that stopped mid-run, and refusing to
+  // start cannot bring it back. It would only keep every restart from
+  // starting again. Restart recovery owns those runs; start and say so.
+  // Configuration that would write new data to the local disk stays refused.
+  const interrupted = blockers.filter(blocker => interruptedRunBlockers.has(blocker));
+  if (interrupted.length && await volumeFreeControllerStateOwned()) {
+    blockers = blockers.filter(blocker => !interruptedRunBlockers.has(blocker));
+    logger.warn({ blockers: interrupted },
+      "Volume-free server is starting over run state that never reached durable storage; restart recovery owns those runs");
   }
   if (!blockers.length) return;
   const detail = (blocker: string) => blocker === "native_controllers_require_migration" && controller
