@@ -934,7 +934,9 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
       try {
         const dispositions = await claimNativeRestartRecoveries({ db: f.db, restartKind: "hard", runIds: [f.runId], onClaim });
         expect(probe.observed).toEqual([]);
-        expect(dispositions).toEqual([{ kind: "awaiting_evidence", runId: f.runId, reason: "controller_process_space_unverified", retryAt: expect.any(Date) }]);
+        // Only a lapsed lease starts the bounded wait that ends the run.
+        expect(dispositions).toEqual([{ kind: "awaiting_evidence", runId: f.runId, reason: "controller_process_space_unverified",
+          ...(expires === "expired" ? { retryAt: expect.any(Date) } : {}) }]);
         expect(onClaim).not.toHaveBeenCalled();
         const [after] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
         expect(after).toMatchObject({ leaseOwner: before.leaseOwner, leaseExpiresAt: before.leaseExpiresAt,
