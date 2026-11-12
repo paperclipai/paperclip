@@ -114,10 +114,12 @@ export async function retireSandboxRunnerPortHolders(input: {
     args: ["-c", SANDBOX_RUNNER_HOLDER_LIST_SCRIPT, "paperclip-runner-port-holders", input.runtimeRoot, input.ownSessionRoot],
     bypassSession: true,
     timeoutMs: 15_000,
-  });
-  if (listed.exitCode !== 0 || listed.timedOut) {
-    throw new NativePredecessorRetirementUnprovenError(null, input.providerLeaseId,
-      new Error(`runner_port_holder_inventory_unavailable: exit=${listed.exitCode} timedOut=${listed.timedOut}`));
+  }).catch(() => null);
+  if (!listed || listed.exitCode !== 0 || listed.timedOut) {
+    await input.onLog?.("stderr",
+      `[paperclip-runner] Could not list other Runners on this sandbox (exit=${listed?.exitCode ?? "none"} timedOut=${listed?.timedOut ?? false}); launching as before.\n`)
+      .catch(() => undefined);
+    return [];
   }
   const retired: string[] = [];
   for (const holder of parseSandboxRunnerHolders(listed.stdout)) {
