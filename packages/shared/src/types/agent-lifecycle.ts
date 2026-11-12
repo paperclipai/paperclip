@@ -36,6 +36,7 @@ export interface AgentLifecycleRequest {
   operationId: string;
   version: number;
   phase: AgentLifecycleState;
+  environmentDriverKey?: string;
   instanceSecrets?: Record<string, string>;
 }
 export interface AgentLifecycleResult {
