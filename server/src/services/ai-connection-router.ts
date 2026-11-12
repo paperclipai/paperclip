@@ -1,7 +1,7 @@
 import type { ConnectionManagementContext } from "./connection-management.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, ne, sql } from "drizzle-orm";
-import { aiConnectionPools, aiConnectionRouterCursors, aiConnectionTaskPins, companySecrets, connectionGrants, instanceSettings, plugins, toolApplications, toolConnections, toolConnectionInstalls, type Db } from "@paperclipai/db";
+import { aiConnectionPools, aiConnectionRouterCursors, aiConnectionTaskPins, instanceSettings, plugins, toolApplications, toolConnections, toolConnectionInstalls, type Db } from "@paperclipai/db";
 import { aiConnectionRouterAppDefinition, aiConnectionRouterSlug, aiConnectionPoolConfigSchema, isAiConnectionCompatible, type AiConnectionPool, type AiConnectionPoolMember, type AiConnectionRouterRequest, type AiConnectionRouterSelection, type AiConnectionPoolSaveInput, type AiConnectionUsage } from "@paperclipai/shared";
 import { isCodexLocalKnownModel, codexLocalReasoningEffortsForModel } from "@paperclipai/adapter-codex-local";
 import { models as claudeModels, claudeLocalReasoningEffortsForModel } from "@paperclipai/adapter-claude-local";
@@ -13,8 +13,6 @@ import { forbidden, notFound, conflict, unprocessable } from "../errors.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { resolvePaperclipRunnerProviderProfile, resolvePaperclipRunnerNativeProviderInput } from "./native-runtime/provider-profile.js";
 
-const usageCache = new Map<string, { expires: number; value: AiConnectionUsage }>();
-const usageInFlight = new Map<string, Promise<AiConnectionUsage | undefined>>();
 const routedRuntimeKeys = new Set(["provider", "acpxAgent", "model", "modelReasoningEffort", "reasoningEffort", "effort", "variant"]);
 export function applyAiConnectionRouterTaskSettings(config: Record<string, unknown>, selection: AiConnectionRouterSelection) {
   return { ...Object.fromEntries(Object.entries(config).filter(([key]) => !routedRuntimeKeys.has(key))), ...selection.runtimeConfig };
@@ -111,9 +109,7 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
     const result: Record<string, { reason: string; checkedAt: string | null; usage?: AiConnectionUsage }> = {};
     for (const member of pool.members) {
       const account = visible.find(account => account.id === member.binding.connectionId && account.grantId === member.binding.grantId);
-      const key = account ? await usageCacheKey(member, companyId) : null;
-      const cached = key ? usageCache.get(key) : undefined;
-      const observation = cached && cached.expires > Date.now() ? cached.value : undefined;
+      const observation = account ? await aiConnectionService(db).cachedUsage(companyId, member.binding.grantId) : undefined;
       result[member.id] = { reason: account?.status === "connected" ? "Eligible if agent access permits" : account?.status ?? "Not permitted", checkedAt: account && observation ? observation.checkedAt : null, ...(account && observation ? { usage: observation } : {}) };
     }
     return result;
@@ -168,38 +164,16 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
     });
     return { ok: true };
   }
-  async function usageCacheKey(member: AiConnectionPoolMember, companyId: string) {
-    const [grant] = await db.select().from(connectionGrants).where(and(eq(connectionGrants.companyId, companyId), eq(connectionGrants.id, member.binding.grantId)));
-    if (!grant) return null;
-    const ref = grant.credentialSecretRefs.find((r) => r.configPath === "ai.credential");
-    const [secret] = ref ? await db.select({ version: companySecrets.latestVersion }).from(companySecrets).where(and(eq(companySecrets.companyId, companyId), eq(companySecrets.id, ref.secretId))) : [];
-    return `${companyId}:${grant.id}:${ref?.secretId}:${secret?.version}:${grant.updatedAt.toISOString()}`;
-  }
-  async function probe(member: AiConnectionPoolMember, companyId: string, userId: string, deadline: number) {
-    const key = await usageCacheKey(member, companyId);
-    if (!key) return undefined;
-    const cached = usageCache.get(key);
-    if (cached && cached.expires > Date.now()) return cached.value;
-    let pending = usageInFlight.get(key);
-    if (!pending) {
-      let probeTimer: ReturnType<typeof setTimeout> | undefined;
-      pending = Promise.race([
-        aiConnectionService(db).probeUsage(companyId, userId, member.binding.connectionId, member.binding.grantId).catch(() => undefined),
-        new Promise<undefined>(resolve => { probeTimer = setTimeout(() => resolve(undefined), 15_000); }),
-      ]).then(value => {
-        if (value) {
-          const resets = value.limits.map(v => Date.parse(v.resetsAt ?? "")).filter(v => Number.isFinite(v) && v > Date.now());
-          if (usageCache.size > 1000) usageCache.clear();
-          usageCache.set(key, { value, expires: Math.min(Date.now() + 60_000, ...resets) });
-        }
-        return value;
-      }).finally(() => { if (probeTimer) clearTimeout(probeTimer); usageInFlight.delete(key); });
-      usageInFlight.set(key, pending);
-    }
+  /**
+   * Reads usage through the shared cache that the usage route also uses. A
+   * failed, backed-off or unfinished check stays unknown to the policy: it is
+   * never turned into zero usage or an exhausted account here.
+   */
+  async function probe(member: AiConnectionPoolMember, companyId: string, userId: string, deadline: number): Promise<AiConnectionUsage | undefined> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       return await Promise.race([
-        pending,
+        aiConnectionService(db).probeUsage(companyId, userId, member.binding.connectionId, member.binding.grantId).catch(() => undefined),
         new Promise<undefined>(resolve => { timer = setTimeout(() => resolve(undefined), Math.max(0, deadline - Date.now())); }),
       ]);
     } finally { if (timer) clearTimeout(timer); }
