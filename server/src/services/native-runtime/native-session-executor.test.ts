@@ -14496,12 +14496,38 @@ describe("native session bounded recovery", () => {
     } finally { releaseCleanup(); endTurn(); await outcome; }
   });
 
-  it("still retries a missing result after a system Stop that is not a governance pause", async () => {
+  it.each([
+    "Agent lifecycle stop requested",
+    "Cancelled because the agent was terminated or became invalid-org-chain under a terminated manager",
+    "Cancelled because the company was archived",
+  ])("settles an acknowledged agent termination Stop (%s) with no turn result as a cancellation", async (reason) => {
     const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
     const stop: Record<string, unknown> = {};
     state.execute.mockReset().mockImplementationOnce(async () => {
       Object.assign(stop, {
-        cancellation: { reason: "Agent lifecycle stop requested", source: "control_plane", expected: true,
+        cancellation: { reason, source: "control_plane", expected: true, initiator: { type: "system" },
+          recordedAt: new Date().toISOString() },
+        nativeCancellation: {
+          schema: "paperclip.native-cancellation.v1", ...execution.binding, scope: "run", reasonCode: "cancellation_run_only",
+          dispatched: true, dispatchState: "acknowledged", intentAuditId: "intent", acknowledgementAuditId: "ack",
+        } });
+      throw new Error("native_finalization_missing: session returned no semantic result");
+    });
+    state.upsertRecoveryAction.mockClear();
+    await expect(executePaperclipNativeSession({
+      db: leaseDb(execution, {}, stop, updates), execution, runnerInstanceId: "termination-stop",
+    })).rejects.toThrow("native_cancellation_pending_recovery");
+    expect(updates.some(update => update.table === heartbeatRuns && update.values.status === "failed")).toBe(false);
+    expect(updates.some(update => update.table === nativeRunFinalizations && update.values.failureCode === "native_retry_cancelled")).toBe(true);
+    expect(state.upsertRecoveryAction).not.toHaveBeenCalled();
+  });
+
+  it("still retries a missing result after a system Stop that is neither a pause nor a termination", async () => {
+    const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
+    const stop: Record<string, unknown> = {};
+    state.execute.mockReset().mockImplementationOnce(async () => {
+      Object.assign(stop, {
+        cancellation: { reason: "Superseded by a newer execution", source: "control_plane", expected: true,
           initiator: { type: "system" }, recordedAt: new Date().toISOString() },
         nativeCancellation: {
           schema: "paperclip.native-cancellation.v1", ...execution.binding, scope: "run", reasonCode: "cancellation_run_only",
@@ -14513,7 +14539,7 @@ describe("native session bounded recovery", () => {
     const service = vi.spyOn(issueServiceModule, "issueService").mockReturnValue({ update: vi.fn(async () => null) } as unknown as ReturnType<typeof issueServiceModule.issueService>);
     try {
       await expect(executePaperclipNativeSession({
-        db: leaseDb(execution, {}, stop, updates), execution, runnerInstanceId: "termination-stop",
+        db: leaseDb(execution, {}, stop, updates), execution, runnerInstanceId: "other-system-stop",
       })).rejects.not.toThrow("native_cancellation_pending_recovery");
       expect(updates.some(update => update.table === nativeRunFinalizations && update.values.failureCode === "native_retry_cancelled")).toBe(false);
     } finally { service.mockRestore(); }
