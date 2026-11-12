@@ -93,6 +93,7 @@ import { appendHeartbeatRunEvent } from "../services/heartbeat-run-events.js";
 import { companySkillService } from "../services/company-skills.js";
 import { companyObservability } from "@paperclipai/db";
 import * as runIdentityModule from "../services/run-identity.js";
+import * as heartbeatModule from "../services/heartbeat.js";
 import { chatGitHubRegistrations, chatGitHubReviews, chatGitHubConfigurations, toolCatalogEntries } from "@paperclipai/db";
 import { AsyncLocalStorage } from "node:async_hooks";
 import * as cloudRuntimeIdentity from "../services/cloud-runtime-identity.js";
@@ -66632,7 +66633,14 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       const app = express();
       app.use(express.json());
       app.use((req, _res, next) => { req.actor = boardActor(companyId); next(); });
-      app.use("/api", issueRoutes(db, createStorageService().storage, { chatRunRetries: f.service }));
+      const actualHeartbeatService = heartbeatModule.heartbeatService;
+      const routeHeartbeat = vi.spyOn(heartbeatModule, "heartbeatService").mockImplementation((database, options) =>
+        ({ ...actualHeartbeatService(database, options), resumeTaskRetry: async () => undefined }));
+      try {
+        app.use("/api", issueRoutes(db, createStorageService().storage, { chatRunRetries: f.service }));
+      } finally {
+        routeHeartbeat.mockRestore();
+      }
       app.use(errorHandler);
       const denySource = async (apply: () => Promise<unknown>, restore: () => Promise<unknown>, stale = false) => {
         try {
