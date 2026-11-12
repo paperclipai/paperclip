@@ -5889,3 +5889,10 @@ with company/run identifiers to the process logger; it cannot append provider te
 to a completed run or borrow a successor run's recorder. Canonical native output
 export, source coverage, secret redaction and persistence-failure warnings retain
 their existing contracts.
+
+Exact sandbox reattachment reports the current acquisition as `resumed` only
+when the recorded lease passes scope and identity checks and the provider confirms
+that same allocation. The lease's original acquisition can have been `replacement`;
+that historical label cannot describe the later reattachment. This changes the
+lease projection passed to preparation, not the Runner verification guard. Missing,
+expired, foreign or changed allocations retain their named recovery refusals.

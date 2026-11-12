@@ -983,10 +983,31 @@ describe("live remote runner lease reattachment", () => {
       environment: result.environment, lease: savedLease, requestedCwd: "/remote/workspace",
       runnerReconnectGraceMs: REMOTE_RUNNER_RECONNECT_GRACE_MS,
     });
-    expect(result.lease).toEqual(savedLease);
+    expect(result.lease).toEqual({ ...savedLease, metadata: { ...savedLease.metadata,
+      sandboxLeaseAcquisition: { outcome: "resumed", providerLeaseId: "original-sandbox" },
+    } });
     expect(result.leaseContext.executionWorkspaceId).toBe("ew-1");
     expect(result.environment.config.reuseLease).toBe(false);
   });
+  it.each(["created", "replacement", "resumed"] as const)(
+    "reports exact-lease reattachment as resumed after historical %s acquisition", async outcome => {
+      const savedLease = originalLease();
+      savedLease.metadata!.sandboxLeaseAcquisition = {
+        outcome, providerLeaseId: "original-sandbox", previousProviderLeaseId: "older-sandbox", reason: "resume_failed",
+      };
+      const before = structuredClone(savedLease);
+      mockGetLease.mockResolvedValue(savedLease);
+      const runtime = makeMockRuntime();
+      const result = await environmentRunOrchestrator({} as never, { environmentRuntime: runtime }).acquireForRun(input);
+      expect(result.lease.metadata?.sandboxLeaseAcquisition).toEqual({ outcome: "resumed", providerLeaseId: "original-sandbox" });
+      expect(result.lease.id).toBe(savedLease.id);
+      expect(result.lease.metadata?.remoteCwd).toBe("/remote/workspace");
+      expect(savedLease).toEqual(before);
+      expect(runtime.resumeRunLease).toHaveBeenCalledOnce();
+      expect(runtime.acquireRunLease).not.toHaveBeenCalled();
+      expect(mockUpdateLeaseMetadata).not.toHaveBeenCalled();
+    },
+  );
   it("forwards the admitted warm idle window to the recovery resume", async () => {
     const savedLease = originalLease();
     mockGetLease.mockResolvedValue(savedLease);
@@ -1021,7 +1042,10 @@ describe("live remote runner lease reattachment", () => {
       expect(state).toBe("pending");
       expect(ready).toBe(false);
     } finally { release(); }
-    expect((await pending).lease).toEqual(before);
+    expect((await pending).lease).toEqual({ ...before, metadata: { ...before.metadata,
+      sandboxLeaseAcquisition: { outcome: "resumed", providerLeaseId: "original-sandbox" },
+    } });
+    expect(savedLease).toEqual(before);
     expect(ready).toBe(true);
     expect(runtime.acquireRunLease).not.toHaveBeenCalled();
     expect(runtime.execute).not.toHaveBeenCalled();
@@ -1047,7 +1071,7 @@ describe("live remote runner lease reattachment", () => {
         providerLeaseId: "original-sandbox", metadata,
       })) });
       const result = await environmentRunOrchestrator({} as never, { environmentRuntime: runtime }).acquireForRun(input);
-      expect(result.lease).toBe(savedLease);
+      expect(result.lease).toMatchObject({ id: savedLease.id, providerLeaseId: savedLease.providerLeaseId });
       expect(result.lease.metadata?.remoteCwd).toBe("/remote/workspace");
       expect(runtime.resumeRunLease).toHaveBeenCalledOnce();
       expect(runtime.acquireRunLease).not.toHaveBeenCalled();
