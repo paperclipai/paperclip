@@ -14812,8 +14812,33 @@ const REMOTE_RUNNER_PROCESS_STDERR_TRIM_SCRIPT =
   `if test "\${size:-0}" -gt ${REMOTE_RUNNER_PROCESS_STDERR_TRIM_BYTES} && test -f "$log" && test ! -L "$log"; then ` +
   `tail -c ${REMOTE_RUNNER_PROCESS_STDERR_KEEP_BYTES} -- "$log" > "$log.trim" && cat -- "$log.trim" > "$log"; rm -f -- "$log.trim"; fi; done`;
 
+/**
+ * Two runnerd processes must never share one durable state directory. A runner
+ * from an interrupted attempt (for example, launched by the previous server
+ * just before an upgrade) can still hold that state and the ingress port, and
+ * each new launch overwrites the identity marker that pointed at it. Stop any
+ * live runnerd whose arguments name this exact state directory before the new
+ * one starts. A normal launch finds none and pays one grep over /proc.
+ */
+const REMOTE_RUNNER_STALE_STATE_FENCE_SCRIPT =
+  'state_dir=""; previous_arg=""; for arg in "$@"; do if test "$previous_arg" = "--state-dir"; then state_dir=$arg; fi; previous_arg=$arg; done; ' +
+  'if test -n "$state_dir" && test -r /proc/self/cmdline; then ' +
+  'for stale_cmdline in $(grep -l -s -z -F -x -- "$state_dir" /proc/[0-9]*/cmdline 2>/dev/null || true); do ' +
+  'stale_pid=${stale_cmdline#/proc/}; stale_pid=${stale_pid%/cmdline}; ' +
+  'case "$stale_pid" in ""|*[!0-9]*) continue ;; esac; test "$stale_pid" != "$$" || continue; ' +
+  'stale_binary=$(head -z -n 1 "$stale_cmdline" 2>/dev/null | tr -d "\\000") || continue; ' +
+  'test "${stale_binary##*/}" = "paperclip-runnerd" || continue; ' +
+  'grep -q -s -z -F -x -- "--state-dir" "$stale_cmdline" || continue; ' +
+  'kill -TERM -- "-$stale_pid" 2>/dev/null || kill -TERM "$stale_pid" 2>/dev/null || continue; ' +
+  'stale_wait=0; while kill -0 "$stale_pid" 2>/dev/null && test "$stale_wait" -lt 50; do stale_wait=$((stale_wait + 1)); sleep 0.1; done; ' +
+  'if kill -0 "$stale_pid" 2>/dev/null; then kill -KILL -- "-$stale_pid" 2>/dev/null || kill -KILL "$stale_pid" 2>/dev/null || true; ' +
+  'stale_wait=0; while kill -0 "$stale_pid" 2>/dev/null && test "$stale_wait" -lt 50; do stale_wait=$((stale_wait + 1)); sleep 0.1; done; fi; ' +
+  'done; fi; ';
+
 export const REMOTE_RUNNER_CHILD_LAUNCH_SCRIPT =
-  'set -eu; identity_path=$1; identity_nonce=$2; runner_instance_id=$3; diagnostics_directory=$4; shift 4; umask 077; test ! -L "$diagnostics_directory"; if test -e "$diagnostics_directory"; then test -d "$diagnostics_directory"; else mkdir -p -- "$diagnostics_directory"; fi; chmod 0700 "$diagnostics_directory"; started_at=$(date -u +"%Y-%m-%dT%H:%M:%S.%3NZ"); pid=$$; process_fingerprint=""; if ' +
+  'set -eu; identity_path=$1; identity_nonce=$2; runner_instance_id=$3; diagnostics_directory=$4; shift 4; umask 077; ' +
+  REMOTE_RUNNER_STALE_STATE_FENCE_SCRIPT +
+  'test ! -L "$diagnostics_directory"; if test -e "$diagnostics_directory"; then test -d "$diagnostics_directory"; else mkdir -p -- "$diagnostics_directory"; fi; chmod 0700 "$diagnostics_directory"; started_at=$(date -u +"%Y-%m-%dT%H:%M:%S.%3NZ"); pid=$$; process_fingerprint=""; if ' +
   REMOTE_RUNNER_PROCESS_FINGERPRINT_SCRIPT +
   '; then :; else process_fingerprint=""; fi; ' +
   // Bounded stderr evidence: rotate an oversized file once, then trim it in place while runnerd runs.

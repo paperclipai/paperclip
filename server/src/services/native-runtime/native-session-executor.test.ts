@@ -1362,6 +1362,32 @@ describe("remote runner launch fingerprint compatibility", () => {
       expect(lines[4]).toBe(hasBootIdentity ? "linux:abcd-1234:1234" : "");
     } finally { await rm(root, { recursive: true, force: true }); }
   });
+
+  // Staging failure: the previous server launched a runner just before an
+  // upgrade. It kept the run's state directory and ingress port, and each new
+  // launch failed with runner_ingress_bind_conflict in a restart loop.
+  it.skipIf(!existsSync("/proc/self/cmdline"))("stops a live runner that still holds this state directory before launching", async () => {
+    const root = await mkdtemp(join(tmpdir(), "remote-launch-fence-"));
+    const stateDirectory = join(root, "state");
+    const runnerAt = (directory: string) => spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", "--", "--state-dir", directory],
+      { argv0: join(root, "bin", "paperclip-runnerd"), stdio: "ignore", detached: true });
+    const stale = runnerAt(stateDirectory);
+    const unrelated = runnerAt(join(root, "other-state"));
+    const staleExit = new Promise<string>(resolveExit => stale.once("exit", (_code, signal) => resolveExit(String(signal))));
+    try {
+      await vi.waitFor(async () => expect((await readFile(`/proc/${stale.pid}/cmdline`, "utf8")).split("\0")).toContain(stateDirectory));
+      await vi.waitFor(async () => expect((await readFile(`/proc/${unrelated.pid}/cmdline`, "utf8")).split("\0")).toContain("--state-dir"));
+      const result = execFileSync("/bin/sh", ["-c", REMOTE_RUNNER_CHILD_LAUNCH_SCRIPT, "launch", join(root, "identity"), "nonce", "runner",
+        join(root, "diagnostics"), "/bin/sh", "-c", "printf launched", "paperclip-runnerd", "--state-dir", stateDirectory], { encoding: "utf8" });
+      expect(result).toBe("launched");
+      expect(await Promise.race([staleExit, new Promise(resolveAlive => setTimeout(() => resolveAlive("alive"), 8_000))])).toBe("SIGTERM");
+      expect(() => process.kill(unrelated.pid!, 0)).not.toThrow();
+    } finally {
+      stale.kill("SIGKILL");
+      unrelated.kill("SIGKILL");
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 20_000);
 });
 
 describe("remote runner process supervision", () => {
