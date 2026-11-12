@@ -53,6 +53,7 @@ export function createPluginRunnerTaskOwner(input: {
   onResumed?: (identity: DurableRecoveryIdentity) => Promise<void>;
   onRetired?: (identity: DurableRecoveryIdentity) => Promise<void>;
   githubBroker?: { url: string; token: string };
+  githubCredentialBrokerVersion?: 1;
   adoptIdentity?: DurableRecoveryIdentity;
 }) {
   const taskId = input.taskId;
@@ -132,11 +133,8 @@ export function createPluginRunnerTaskOwner(input: {
           requirements.identity[key as keyof DurableRecoveryIdentity] !== value))) {
       throw new Error("Plugin Runner source reconciliation unavailable");
     }
-    if (input.githubBroker) {
-      const description = await call({ kind: "describe" });
-      if (description.kind !== "description" || description.githubCredentialBrokerVersion !== 1) {
-        throw new Error("Update the environment plugin to support the GitHub credential broker v1");
-      }
+    if (input.githubBroker && input.githubCredentialBrokerVersion !== 1) {
+      throw new Error("Update the environment plugin to support the GitHub credential broker v1");
     }
     const result = await call(environmentTaskOperationSchema.parse({ kind: "prepare", requirements,
       ...(input.githubBroker ? { githubBroker: input.githubBroker } : {}),
