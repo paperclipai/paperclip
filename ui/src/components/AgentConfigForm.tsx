@@ -478,9 +478,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
   // ---- Edit mode: overlay for dirty tracking ----
   const [overlay, setOverlay] = useState<AgentConfigOverlay>(emptyOverlay);
-  const harnessDrafts = useRef(new Map<string, Pick<AgentConfigOverlay, "adapterType" | "runner" | "adapterConfig"> & {
-    aiConnection: unknown; harnessPool: unknown;
-  }>());
   const [environmentDraftDirty, setEnvironmentDraftDirty] = useState(false);
   const [environmentEditorKey, setEnvironmentEditorKey] = useState(0);
   const [runnerUpgrade, setRunnerUpgrade] = useState<{
@@ -522,7 +519,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         !backgroundSaveInFlightRef.current
       ) {
         const persisted = backgroundSaveOverlayRef.current;
-        harnessDrafts.current.clear();
         backgroundSaveOverlayRef.current = null;
         setOverlay((prev) =>
           persisted ? subtractPersistedOverlay(prev, persisted) : { ...emptyOverlay },
@@ -589,7 +585,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
   /** Build accumulated patch and send to parent */
   const handleCancel = useCallback(() => {
-    harnessDrafts.current.clear();
     setOverlay({ ...emptyOverlay });
     setEnvironmentDraftDirty(false);
     setEnvironmentEditorKey(key => key + 1);
@@ -1826,23 +1821,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 poolEligible={adapterType === "paperclip_runner" || ["codex_local", "claude_local", "grok_local", "opencode_local"].includes(adapterType)}
                 museEnabled={experimentalSettings?.enableMuse === true && experimentalSettings?.enableNativeRunner === true}
                 onChange={(choice) => {
-                  if (!isCreate) {
-                    const currentChoice = isPoolHarness ? "pool" : isDotRunner ? "openai_dot" : isMuseRunner ? "muse" : isRunnerHarness ? harnessType : adapterType;
-                    if (choice === currentChoice) return;
-                    harnessDrafts.current.set(currentChoice, { adapterType: overlay.adapterType, runner: overlay.runner,
-                      adapterConfig: overlay.adapterConfig, aiConnection: selectedRuntime.aiConnection, harnessPool: selectedRuntime.harnessPool });
-                    const cached = harnessDrafts.current.get(choice);
-                    if (cached) {
-                      setOverlay(prev => {
-                        const restoredRuntime = { ...selectedRuntime, aiConnection: cached.aiConnection, harnessPool: cached.harnessPool };
-                        const runtime = { ...prev.runtime };
-                        if (overlayValuesEqual(omitUndefinedEntries(restoredRuntime), omitUndefinedEntries(runtimeConfig))) delete runtime.runtimeConfig;
-                        else runtime.runtimeConfig = restoredRuntime;
-                        return { ...prev, adapterType: cached.adapterType, runner: cached.runner, adapterConfig: cached.adapterConfig, runtime };
-                      });
-                      return;
-                    }
-                  }
                   if (choice === "pool") {
                     if (isCreate) return;
                     setOverlay(prev => ({ ...prev, adapterType: "paperclip_runner", runner: "paperclip", adapterConfig: { ...config, ...prev.adapterConfig, ...(adapterType !== "paperclip_runner" ? paperclipRunnerProfileForHarness(adapterType) : {}), homeMode: undefined }, runtime: { ...prev.runtime, runtimeConfig: { ...selectedRuntime, aiConnection: undefined, harnessPool: { poolId: "" } } } }));
@@ -1887,7 +1865,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     setOverlay((prev) => ({
                       ...prev,
                       adapterType: t,
-                      runner: ["codex_local", "claude_local", "opencode_local", "pi_local"].includes(t) ? runner : undefined,
+                      runner: ["codex_local", "claude_local", "opencode_local", "pi_local"].includes(t) ? "auto" : undefined,
                       adapterConfig: {
                         model:
                           t === "gemini_local"
@@ -1921,7 +1899,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             </Field>
           )}
 
-          {!isPoolHarness && isRunnerHarness && <Field label="Runner" hint="Runtime settings depend on the selected runner."><p className="text-sm text-muted-foreground">{fieldsAdapterType === "paperclip_runner" ? "Paperclip Runner" : "Legacy"}</p></Field>}
           {isPoolHarness && selectedCompanyId && <Field label="Pool" hint="Shared harness, model and account configuration.">
             <NativeSelect aria-label="Harness pool" disabled={experimentalSettings?.enableNativeRunner !== true} value={harnessPoolId ?? ""} onChange={event => { if (!isCreate) mark("runtime", "runtimeConfig", { ...selectedRuntime, aiConnection: undefined, harnessPool: { poolId: event.target.value } }); }}>
               <option value="">Choose a pool</option>{harnessPools.data?.map(pool => <option key={pool.id} value={pool.id} disabled={!pool.enabled}>{pool.name}{pool.enabled ? "" : " (disabled)"}</option>)}
