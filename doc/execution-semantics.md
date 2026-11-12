@@ -3687,6 +3687,10 @@ apply the hold again. A new owner's turn is a fresh assignment, not a replay of
 the stopped run. After the receipt, admission, the final dispatch gate and
 stranded-work recovery no longer apply the hold to that owner. Wakes that the
 gate cancelled during the copy-back therefore get one bounded continuation.
+A message for the new owner that was saved behind the hold starts that owner's
+turn after the receipt. The saved-wake recovery pass promotes it although the
+stopped native run has no committed result, because the message is not a
+continuation of that run. Saved wakes of the stopped run's agent stay saved.
 
 The hold row and its no-replay evidence stay unchanged. The hold still applies
 when the task returns to the stopped run's agent. It also applies when that agent

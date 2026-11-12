@@ -1283,6 +1283,7 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
               `,
         );
 
+        let strandedHandoff = false;
         if (input.resumeStrandedQueue && run.runtimeMode === "native") {
           const [finalized] = contextIssueId && run.nativeIssueId === contextIssueId
             ? await tx.select({ runId: nativeRunFinalizations.runId }).from(nativeRunFinalizations).where(and(
@@ -1290,7 +1291,20 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
                 eq(nativeRunFinalizations.issueId, run.nativeIssueId), eq(nativeRunFinalizations.phase, "committed"),
               )).limit(1)
             : [];
-          if (!finalized) return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
+          if (!finalized) {
+            // An uncommitted native run still owes its own agent a
+            // reconciliation, so that agent's saved work waits. A task that has
+            // since passed to another agent owes that agent a first turn: its
+            // saved wakes are a fresh assignment, not a continuation of this
+            // run. The execution blocker below still holds them until this
+            // run's files are saved.
+            const [task] = contextIssueId && run.nativeIssueId === contextIssueId
+              ? await tx.select({ assigneeAgentId: issues.assigneeAgentId, assigneeUserId: issues.assigneeUserId })
+                  .from(issues).where(and(eq(issues.companyId, input.companyId), eq(issues.id, contextIssueId))).limit(1)
+              : [];
+            strandedHandoff = Boolean(task?.assigneeAgentId && !task.assigneeUserId && task.assigneeAgentId !== run.agentId);
+            if (!strandedHandoff) return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
+          }
         }
         if (await nativeManualAdmissionHoldsExecution(tx, { companyId: input.companyId, runId: run.id })) {
           return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
@@ -1375,9 +1389,12 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
         // A deliberate stop does not promote the stopped agent's queued work.
         // When a reassignment committed while that stop was still settling, the
         // new assignee's wake parked behind this run; it is explicit new work
-        // and must run now, or the task is left with no run at all.
-        const handoffAssigneeAgentId = preDrain.kind === "released" &&
-          decidePreDrain({ ...preDrainFacts, executionCancellationAcknowledged: false }).kind === "proceed" &&
+        // and must run now, or the task is left with no run at all. The same
+        // holds for a wake that parked behind a failed native run's
+        // file-preservation hold and is revisited after that hold released.
+        const handoffAssigneeAgentId = (preDrain.kind === "released"
+          ? decidePreDrain({ ...preDrainFacts, executionCancellationAcknowledged: false }).kind === "proceed"
+          : strandedHandoff && preDrain.kind === "proceed") &&
           issueRow?.assigneeAgentId && !issueRow.assigneeUserId && issueRow.assigneeAgentId !== run.agentId
           ? issueRow.assigneeAgentId : undefined;
 
