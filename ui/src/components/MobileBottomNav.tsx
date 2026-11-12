@@ -22,7 +22,6 @@ import { Badge } from "@/components/ui/badge";
 
 interface MobileBottomNavProps {
   visible: boolean;
-  /** True on a chat route whose drawer holds the agent chats list. Chat then opens that list instead of re-navigating. */
   chatListInDrawer?: boolean;
 }
 
@@ -140,8 +139,6 @@ export function MobileBottomNav({ visible, chatListInDrawer = false }: MobileBot
               to={item.to}
               state={SIDEBAR_SCROLL_RESET_STATE}
               onClick={item.to === "/chats" && chatListInDrawer ? (event) => {
-                // A chat is already open, so Chat opens the chats list.
-                // From any other page the first tap still opens the last chat.
                 event.preventDefault();
                 setSidebarOpen(true);
               } : undefined}
