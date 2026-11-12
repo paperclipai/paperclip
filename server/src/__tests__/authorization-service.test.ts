@@ -564,8 +564,9 @@ describeEmbeddedPostgres("authorization service", () => {
       allowed: false,
       code: "RESPONSIBLE_USER_UNAUTHORIZED",
     });
-    expect(decision.explanation).toContain("The person this agent acts for is not allowed to do this");
+    expect(decision.explanation).toBe("The person this agent acts for does not have permission to change skills.");
     expect(decision.explanation).not.toContain(responsibleUserId);
+    expect(decision.explanation).not.toContain("skill_config");
   });
 
   it("denies cross-company agent decisions before grant evaluation", async () => {

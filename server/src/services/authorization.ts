@@ -190,6 +190,30 @@ function companyIdForResource(resource: AuthorizationResource) {
   return resource.companyId;
 }
 
+function plainAuthorizationActionPhrase(action: AuthorizationAction): string {
+  switch (action) {
+    case "tasks:assign": return "assign this task";
+    case "issue:mutate": return "change this task";
+    case "issue:comment": return "comment on this task";
+    case "issue:read": return "view this task";
+    case "agent_config:read": return "view this agent's settings";
+    case "agent_config:update": return "change this agent's settings";
+    case "agent_instructions:update": return "change this agent's instructions";
+    case "skill_config:update": return "change skills";
+    case "secrets:read": return "read secrets";
+    case "secrets:propose": return "propose secrets";
+    case "project:read": return "view this project";
+    case "project:write_workspace": return "change this project's workspace";
+    default: return "do this";
+  }
+}
+
+function plainDelegatedUserDenial(subject: string, decision: AuthorizationDecision, action: AuthorizationAction): string {
+  return decision.reason === "deny_missing_membership"
+    ? `${subject} is no longer an active member of this company.`
+    : `${subject} does not have permission to ${plainAuthorizationActionPhrase(action)}.`;
+}
+
 function permissionForAction(action: AuthorizationAction): PermissionKey | null {
   if (isConnectionManagementAction(action)) return CONNECTION_MANAGEMENT_PERMISSIONS[action];
   if (action === "project:write_workspace") return "tasks:assign";
@@ -2842,7 +2866,7 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
       explanation:
         denyCode === "RESPONSIBLE_USER_UNAVAILABLE"
           ? "The person this agent acts for is no longer an active member of this company."
-          : `The person this agent acts for is not allowed to do this: ${userDecision.explanation}`,
+          : plainDelegatedUserDenial("The person this agent acts for", userDecision, input.action),
       grant: userDecision.grant,
     });
 
@@ -2893,7 +2917,7 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
     return deny({
       action: input.action,
       reason: userDecision.reason,
-      explanation: `Authorizing user is not authorized for ${input.action}: ${userDecision.explanation}`,
+      explanation: plainDelegatedUserDenial("The person who authorized this agent", userDecision, input.action),
       grant: userDecision.grant,
     });
   }
