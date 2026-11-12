@@ -1092,6 +1092,56 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       });
     });
 
+    it("still needs attention when its only pending wake targets a paused agent", async () => {
+      const { companyId, pausedAgentId } = await createCompany("PBZ");
+      const issueId = await insertIssue({
+        companyId,
+        identifier: "PBZ-1",
+        title: "Wake deferred while paused",
+        status: "blocked",
+        assigneeAgentId: pausedAgentId,
+      });
+      await db.insert(agentWakeupRequests).values({
+        companyId,
+        agentId: pausedAgentId,
+        source: "automation",
+        reason: "issue_commented",
+        status: "deferred_issue_execution",
+        payload: { issueId },
+      });
+
+      const issue = (await svc.list(companyId, { status: "blocked" })).find((row) => row.id === issueId);
+
+      expect(issue?.blockerAttention).toMatchObject({
+        state: "needs_attention",
+        blockingTreeLive: false,
+        terminalBlockerIssueId: issueId,
+      });
+    });
+
+    it("covers a blocked issue whose pending wake targets an invokable agent", async () => {
+      const { companyId, agentId } = await createCompany("PBY");
+      const issueId = await insertIssue({
+        companyId,
+        identifier: "PBY-1",
+        title: "Wake queued for a live agent",
+        status: "blocked",
+        assigneeAgentId: agentId,
+      });
+      await db.insert(agentWakeupRequests).values({
+        companyId,
+        agentId,
+        source: "automation",
+        reason: "issue_commented",
+        status: "queued",
+        payload: { issueId },
+      });
+
+      const issue = (await svc.list(companyId, { status: "blocked" })).find((row) => row.id === issueId);
+
+      expect(issue?.blockerAttention).toMatchObject({ state: "covered", blockingTreeLive: true });
+    });
+
     it("still needs attention with no owner, run, or waiting path", async () => {
       const { companyId, agentId } = await createCompany("PBD");
       const issueId = await insertIssue({
