@@ -284,15 +284,10 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
     const stoppedWithoutSession = !!run && metadata.runnerTaskExecutionStopped === true &&
       metadata.runnerTaskSessionRetained !== true && admissionRejection?.taskId !== taskId;
     if (operation.kind === "describe" && (metadata.runnerTaskReused === true || stoppedWithoutSession)) {
-      const state = parseEnvironmentTaskResult({kind:"status"}, taskId, await callWorker("environmentTask", {
-        driverKey: metadata.driverKey, companyId: input.companyId, environmentId: environment?.id ?? null,
-        issueId: lease.issueId, config: driverConfig, taskId, runId: run?.id ?? null, agentId: run?.agentId ?? null,
-        projectIds, lease: {providerLeaseId: taskId, metadata}, operation:{kind:"status"},
-      }));
+      const state = await executeEnvironmentTask(db, workers, {...input, expectedTaskId:taskId, operation:{kind:"status"}});
       if (state.kind === "status" && state.executionStopped === true &&
           (metadata.runnerTaskReused === true || state.sessionStateAvailable !== true)) {
-        await executeEnvironmentTask(db, workers, {...input, operation:{kind:"status"}});
-        await executeEnvironmentTask(db, workers, {...input, operation:{kind:"complete"}});
+        await executeEnvironmentTask(db, workers, {...input, expectedTaskId:taskId, operation:{kind:"complete"}});
         // Preserve the predecessor's stop proof for checkpoint authorization.
         if (typeof metadata.runnerTaskPreviousLeaseId === "string") await db.update(environmentLeases).set({
           metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({runnerTaskExecutionStopped:true,

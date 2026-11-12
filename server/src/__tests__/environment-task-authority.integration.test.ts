@@ -67,7 +67,7 @@ databaseSuite("environment task lease authority", () => {
     try {
       await expect(environmentRuntimeService(db, { pluginWorkerManager: workers }).task({ companyId, leaseId,
         operation: { kind: "describe" }, executionContext: context })).resolves.toMatchObject({ kind: "description", taskId: "replacement-task" });
-      expect(calls).toEqual([...(mode === "writeback" ? ["status"] : []), "status", "status", "complete", "environmentAcquireLease", "describe"]);
+      expect(calls).toEqual([...(mode === "writeback" ? ["status"] : []), "status", "complete", "environmentAcquireLease", "describe"]);
       expect(context.pending).toBe(false);
       const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, leaseId));
       expect(lease.providerLeaseId).toBe("replacement-task");
