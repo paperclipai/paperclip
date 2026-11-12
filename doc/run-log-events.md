@@ -698,16 +698,16 @@ run phases:
 
 | Phase | Step |
 | --- | --- |
-| `storage.snapshot.download` | Get the encrypted archive from storage and hash it while it streams. |
-| `storage.snapshot.decrypt` | Decrypt the archive to private scratch. |
-| `storage.snapshot.verify_plaintext` | Hash the decrypted archive against its sealed digest. |
-| `storage.snapshot.publish` | Copy the verified archive to its destination. |
+| `storage.snapshot.download` | Get the encrypted archive from storage. |
+| `storage.snapshot.decrypt` | Hash the downloaded archive and decrypt it to private scratch, at the same time on worker threads. |
+| `storage.snapshot.verify_plaintext` | Hash the decrypted archive against its sealed digest while copying it beside its destination, on a worker thread. |
+| `storage.snapshot.publish` | Link the verified copy to its destination. |
 | `workspace.snapshot.sandbox_restore` | Upload and unpack the archive in the sandbox. |
 | `workspace.snapshot.sandbox_upload` | Inside `sandbox_restore`: copy the archive into the sandbox. |
 | `workspace.snapshot.sandbox_extract` | Inside `sandbox_restore`: verify and unpack the archive, then publish the restored folder. |
 | `storage.snapshot.prior_attempts` | Check whether an earlier upload attempt already landed. |
-| `storage.snapshot.encrypt` | Hash and encrypt the archive in one pass. |
-| `storage.snapshot.digest` | Hash the encrypted file that is uploaded. |
+| `storage.snapshot.encrypt` | Hash the archive, encrypt it and hash the encrypted file, in one pass on a worker thread. |
+| `storage.snapshot.digest` | Record the digest of the encrypted file. The `encrypt` pass computes it, so this step takes no time. |
 | `storage.snapshot.put` | Upload the encrypted archive (multipart above 16 MiB). |
 | `storage.snapshot.verify` | Confirm the stored object (its size when the backend checked every part, otherwise a full read-back). |
 
