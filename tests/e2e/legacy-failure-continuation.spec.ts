@@ -111,7 +111,7 @@ for (const action of ["task_retry", "retry_after_reload", "inbox_retry", "messag
             response.request().postDataJSON()?.observedRunId === sourceRunId),
           retry.click(),
         ]);
-        expect(response.ok(), `${response.status()} ${await response.text()}`).toBe(true);
+        expect(response.status(), await response.text()).toBe(202);
       } else if (action === "automatic_message_on_reactivation") {
         // This fixture writes history through a separate SQL connection after boot.
         // Reactivation is the supported producer that makes saved work eligible;

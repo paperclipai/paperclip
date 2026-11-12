@@ -1,7 +1,8 @@
-import { spawn, type ChildProcess } from "node:child_process";
-import { expect, it } from "vitest";
+import { spawn, ChildProcess } from "node:child_process";
+import { PassThrough } from "node:stream";
+import { expect, it, vi } from "vitest";
 import { createProcessTreeOwner, stopOwnedProcessTree } from "./process-tree-owner.js";
-import { readProcessTable, type ProcessObservation } from "./process-tree.js";
+import { readProcessTable, type ProcessObservation, type ProcessTableInspectionFailure } from "./process-tree.js";
 
 function row(pid: number, parentPid: number, processGroupId: number, started = `start-${pid}`, state = "S"): ProcessObservation {
   return { pid, parentPid, processGroupId, started, state, kind: "node" };
@@ -150,15 +151,96 @@ it.skipIf(process.platform === 'win32')('reselects a vanished owner only when no
 });
 
 
+it.skipIf(process.platform === "win32").each(["exit", "signal", "error", "throw"] as const)(
+  "retains only bounded inspection metadata after an inspector %s", async failure => {
+    const inspector = new ChildProcess(), output = new PassThrough();
+    Object.assign(inspector, { stdout: output });
+    const failures: ProcessTableInspectionFailure[] = [];
+    const error = Object.assign(new Error("private process metadata"), { code: "private executable path", errno: -11 });
+    const inspecting = readProcessTable(() => {
+      if (failure === "throw") throw error;
+      return inspector;
+    }, details => { failures.push(details); });
+    const metadata = "private process metadata é";
+    if (failure !== "throw") output.write(metadata);
+    if (failure === "error") inspector.emit("error", error);
+    if (failure === "exit") Object.assign(inspector, { exitCode: 23 });
+    if (failure === "signal") Object.assign(inspector, { signalCode: "SIGTERM" });
+    inspector.emit("close", inspector.exitCode, inspector.signalCode);
+    expect(await inspecting).toBeNull();
+    expect(failures).toEqual([{
+      code: failure === "exit" ? 23 : null,
+      signal: failure === "signal" ? "SIGTERM" : null,
+      errno: failure === "error" || failure === "throw" ? -11 : null,
+      outputBytes: failure === "throw" ? 0 : Buffer.byteLength(metadata),
+    }]);
+    expect(JSON.stringify(failures)).not.toContain("private");
+    output.destroy();
+  },
+);
+
+it.skipIf(process.platform === "win32")("keeps successful inspections free of failure metadata", async () => {
+  const inspector = new ChildProcess(), output = new PassThrough();
+  Object.assign(inspector, { stdout: output });
+  const onFailure = vi.fn();
+  const inspecting = readProcessTable(() => inspector, onFailure);
+  output.write("100 1 100 Tue Nov 10 12:00:00 2026 S node\n");
+  Object.assign(inspector, { exitCode: 0 });
+  inspector.emit("close", 0, null);
+  expect(await inspecting).toEqual([{
+    pid: 100, parentPid: 1, processGroupId: 100, started: "Tue Nov 10 12:00:00 2026", state: "S", kind: "node",
+  }]);
+  expect(onFailure).not.toHaveBeenCalled();
+  output.destroy();
+});
+
+it.skipIf(process.platform === "win32")("retains inspection metadata through fail-closed tree cleanup without group signals", async () => {
+  const signalGroup = vi.fn();
+  const root = { pid: 100, exitCode: 0, signalCode: null } as ChildProcess;
+  const owner = createProcessTreeOwner(root, {
+    readTable: (_startInspector, onFailure) => readProcessTable(() => {
+      throw Object.assign(new Error("private executable path"), { errno: -11 });
+    }, onFailure),
+    signalGroup,
+  });
+  try {
+    await expect(stopOwnedProcessTree(root, owner, 10, 10)).rejects.toThrow(
+      'Owned tree cleanup incomplete: Error: Could not inspect owned process identities ({"code":null,"signal":null,"errno":-11,"outputBytes":0})',
+    );
+    expect(signalGroup).not.toHaveBeenCalled();
+  } finally { owner.stopObserving(); }
+});
+
+it.skipIf(process.platform === "win32")("retains the original inspection timeout and one failure receipt", async () => {
+  vi.useFakeTimers();
+  const inspector = new ChildProcess(), kill = vi.spyOn(inspector, "kill").mockReturnValue(true);
+  const onFailure = vi.fn();
+  try {
+    const inspecting = readProcessTable(() => inspector, onFailure);
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(kill).not.toHaveBeenCalled();
+    expect(onFailure).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await inspecting).toBeNull();
+    expect(kill).toHaveBeenCalledExactlyOnceWith("SIGKILL");
+    expect(onFailure).toHaveBeenCalledExactlyOnceWith({ code: null, signal: null, errno: null, outputBytes: 0 });
+    inspector.emit("close", null, "SIGKILL");
+    expect(onFailure).toHaveBeenCalledTimes(1);
+  } finally { vi.useRealTimers(); }
+});
+
 it.skipIf(process.platform === "win32")("rejects an overflowing inspector instead of returning a partial identity table", async () => {
   const inspector = spawn(process.execPath, ["-e", "process.stdout.write('x'.repeat(2 * 1024 * 1024)); setInterval(() => {}, 1000)"], {
     stdio: ["ignore", "pipe", "ignore"],
   });
   const exited = new Promise<void>(resolve => inspector.once("exit", () => resolve()));
+  const failures: ProcessTableInspectionFailure[] = [];
   try {
-    expect(await readProcessTable(() => inspector)).toBeNull();
+    expect(await readProcessTable(() => inspector, details => { failures.push(details); })).toBeNull();
     await exited;
     expect(inspector.signalCode).toBe("SIGKILL");
+    expect(failures).toHaveLength(1);
+    expect(failures[0]!.outputBytes).toBeGreaterThan(1024 * 1024);
   } finally { if (inspector.exitCode === null && inspector.signalCode === null) inspector.kill("SIGKILL"); }
 });
 

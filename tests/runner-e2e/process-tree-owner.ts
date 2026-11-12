@@ -49,7 +49,7 @@ export async function settleUncertainIdentity<T>(step: () => Promise<T>, until: 
 }
 
 export function createProcessTreeOwner(root: ChildProcess, options: {
-  readTable?: () => Promise<ProcessObservation[] | null>;
+  readTable?: typeof readProcessTable;
   signalGroup?: (pid: number, signal: NodeJS.Signals) => void;
 } = {}) {
   let groups: ObservedProcessGroup[] = [];
@@ -68,8 +68,9 @@ export function createProcessTreeOwner(root: ChildProcess, options: {
     if (process.platform === "win32") return Promise.resolve();
     if (observing) return observing;
     observing = (async () => {
-      const next = await readTable();
-      if (!next) throw new Error("Could not inspect owned process identities");
+      let inspectionFailure = "";
+      const next = await readTable(undefined, failure => { inspectionFailure = ` (${JSON.stringify(failure)})`; });
+      if (!next) throw new Error(`Could not inspect owned process identities${inspectionFailure}`);
       const callerGroup = next.find(row => row.pid === process.pid)?.processGroupId;
       if (callerGroup === undefined) throw new Error("Cleanup caller group identity is unavailable");
       const rootRow = next.find(row => row.pid === root.pid);

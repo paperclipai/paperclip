@@ -10,6 +10,13 @@ export interface ProcessObservation {
   state?: string;
 }
 
+export interface ProcessTableInspectionFailure {
+  code: number | null;
+  signal: NodeJS.Signals | null;
+  errno: number | null;
+  outputBytes: number;
+}
+
 export interface ObservedProcessGroup {
   processGroupId: number;
   depth: number;
@@ -167,10 +174,18 @@ export function diagnosticProcessKind(command: string, platform: NodeJS.Platform
   return diagnosticProcessKinds.has(name) ? name : "other";
 }
 
-export async function readProcessTable(startInspector?: () => ChildProcess): Promise<ProcessObservation[] | null> {
+export async function readProcessTable(
+  startInspector?: () => ChildProcess,
+  onFailure?: (failure: ProcessTableInspectionFailure) => void,
+): Promise<ProcessObservation[] | null> {
   if (process.platform === "win32") {
     return null;
   }
+  let outputBytes = 0;
+  const reportFailure = (code: number | null, signal: NodeJS.Signals | null, error?: unknown) => {
+    const errno = (error as NodeJS.ErrnoException | undefined)?.errno;
+    onFailure?.({ code, signal, errno: typeof errno === "number" && Number.isSafeInteger(errno) ? errno : null, outputBytes });
+  };
   return await new Promise<ProcessObservation[] | null>((resolve) => {
     const inspector = startInspector ? startInspector() : spawn(
       "ps",
@@ -185,10 +200,11 @@ export async function readProcessTable(startInspector?: () => ChildProcess): Pro
     let output = "";
     let settled = false;
     let truncated = false;
-    const finish = (value: ProcessObservation[] | null) => {
+    const finish = (value: ProcessObservation[] | null, error?: unknown) => {
       if (settled) return;
       settled = true;
       clearTimeout(inspectionTimeout);
+      if (value === null) reportFailure(inspector.exitCode, inspector.signalCode, error);
       resolve(value);
     };
     const inspectionTimeout = setTimeout(() => {
@@ -197,6 +213,7 @@ export async function readProcessTable(startInspector?: () => ChildProcess): Pro
     }, 5_000);
     inspectionTimeout.unref();
     inspector.stdout?.setEncoding("utf8").on("data", (chunk: string) => {
+      outputBytes += Buffer.byteLength(chunk);
       if (output.length + chunk.length > 1024 * 1024) {
         truncated = true;
         inspector.kill("SIGKILL");
@@ -205,7 +222,7 @@ export async function readProcessTable(startInspector?: () => ChildProcess): Pro
       }
       output += chunk;
     });
-    inspector.once("error", () => finish(null));
+    inspector.once("error", error => finish(null, error));
     inspector.once("close", (code) => {
       if (code !== 0 || truncated) { finish(null); return; }
       const observations = output
@@ -232,5 +249,5 @@ export async function readProcessTable(startInspector?: () => ChildProcess): Pro
         });
       finish(observations);
     });
-  }).catch(() => null);
+  }).catch(error => { reportFailure(null, null, error); return null; });
 }
