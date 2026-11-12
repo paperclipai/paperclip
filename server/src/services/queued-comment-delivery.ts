@@ -59,6 +59,35 @@ export async function recordTaskHistoryRead(db: Db, input: {
     payload: { comments: Object.fromEntries(input.comments.map(comment => [comment.id, comment.updatedAt.toISOString()])) } });
 }
 
+export async function taskHistoryReadsForRun(db: Pick<Db, "select">, input: { companyId: string; runId: string }): Promise<Array<{
+  commentId: string; readAt: Date; revision: Date;
+}>> {
+  const rows = await db.select({ readAt: heartbeatRunEvents.createdAt, payload: heartbeatRunEvents.payload })
+    .from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.companyId, input.companyId),
+      eq(heartbeatRunEvents.runId, input.runId), eq(heartbeatRunEvents.eventType, TASK_HISTORY_READ_EVENT)))
+    .orderBy(heartbeatRunEvents.seq);
+  const latest = new Map<string, { commentId: string; readAt: Date; revision: Date }>();
+  for (const row of rows) {
+    const comments = row.payload?.comments;
+    if (!comments || typeof comments !== "object" || Array.isArray(comments)) continue;
+    for (const [commentId, value] of Object.entries(comments as Record<string, unknown>)) {
+      const revision = typeof value === "string" ? new Date(value) : null;
+      if (revision && !Number.isNaN(revision.getTime())) latest.set(commentId, { commentId, readAt: row.readAt, revision });
+    }
+  }
+  return [...latest.values()];
+}
+
+export async function historyReadDeliveredCommentIds(tx: Pick<Db, "select">, input: {
+  companyId: string; issueId: string; agentId: string; commentIds: string[];
+}): Promise<Set<string>> {
+  if (input.commentIds.length === 0) return new Set();
+  const rows = await tx.select({ id: issueComments.id }).from(issueComments).where(and(
+    eq(issueComments.companyId, input.companyId), eq(issueComments.issueId, input.issueId),
+    inArray(issueComments.id, input.commentIds), historyReadDeliveredSql(input.companyId, input.issueId, input.agentId)));
+  return new Set(rows.map(row => row.id));
+}
+
 function historyReadDeliveredSql(companyId: string, issueId: string, agentId: string) {
   const readBy = (binding: SQL) => sql`exists (select 1 from ${heartbeatRuns} reading_run
       cross join lateral (select 1 from ${heartbeatRunEvents} history_read
