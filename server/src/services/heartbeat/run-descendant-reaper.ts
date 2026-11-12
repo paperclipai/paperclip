@@ -133,18 +133,21 @@ export function forgetTrackedRunLineageForTests() {
 export async function trackRunDescendants(input: { runId: string; rootPid?: number | null }) {
   try {
     let lineage = trackedRuns.get(input.runId);
+    const isNew = !lineage;
     if (!lineage) {
       lineage = new RunProcessLineage(input.runId);
       trackedRuns.set(input.runId, lineage);
+    }
+    // Record the CLI before any await: if it exits first, its start time can
+    // no longer be read, and a child left in its session would lose its link
+    // to the run.
+    if (typeof input.rootPid === "number") lineage.addRoot(input.rootPid);
+    if (isNew) {
       const saved = await loadLineage(input.runId);
       // Reaped while the saved file was read: do not track it again.
       if (trackedRuns.get(input.runId) !== lineage) return;
-      if (saved) {
-        lineage = saved;
-        trackedRuns.set(input.runId, saved);
-      }
+      if (saved) lineage.absorb(saved);
     }
-    if (typeof input.rootPid === "number") lineage.addRoot(input.rootPid);
     ensureSampler();
     await lineage.sampleAsync(await readRunProcessTableAsync());
     if (lineage.takeChanged() && trackedRuns.get(input.runId) === lineage) await saveLineage(lineage);
