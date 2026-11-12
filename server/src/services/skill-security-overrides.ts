@@ -14,7 +14,7 @@ import { skillFileBytes } from './skill-snapshot.js';
 /** Mirrors `SkillSecurityFindingAcceptor` in company-skills.ts without importing that module. */
 export type SecurityFindingAcceptor = (filePath: string, sha256: string, code: string) => boolean;
 
-type OverrideGrant = Pick<SkillSourceSecurityOverride, 'commitSha' | 'trustFutureUpdates'> & {
+type OverrideGrant = Pick<SkillSourceSecurityOverride, 'commitSha' | 'trustFutureUpdates' | 'retained'> & {
   files: Array<{ path: string; sha256: string }>;
 };
 
@@ -30,13 +30,16 @@ export function fileSha256(file: CompanySkillVersionFileInventoryEntry) {
  * administrator reviewed, and only to the exact bytes they saw. With the
  * explicit future-updates opt-in it keeps applying to the same paths in later
  * commits. Non-overridable codes are never accepted, whatever the grant says.
+ * Approvals a renewal replaced but kept for installed versions apply only to
+ * their own commit, so a scan of an installed version reads them as before.
  */
 export function securityOverrideAcceptor(
   grants: Array<OverrideGrant | null | undefined>,
   commitSha: string,
   toRepositoryPath: (filePath: string) => string = filePath => filePath,
 ): SecurityFindingAcceptor | undefined {
-  const active = grants.filter((grant): grant is OverrideGrant => Boolean(grant));
+  const active = grants.filter((grant): grant is OverrideGrant => Boolean(grant))
+    .flatMap(grant => [grant, ...(grant.retained ?? []).map(retained => ({ ...retained, trustFutureUpdates: false }))]);
   if (!active.length) return undefined;
   const commit = commitSha.toLowerCase();
   // Index once per scan: a repository can hold thousands of audited and approved files.

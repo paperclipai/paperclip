@@ -1,6 +1,6 @@
 import { useId, useMemo } from 'react';
 import { ShieldAlert, ShieldCheck } from 'lucide-react';
-import { SKILL_SECURITY_OVERRIDE_MAX_PATH_BYTES, skillSecurityOverridePathBytes, type SkillSecurityFinding, type SkillSecurityOverrideRequest, type SkillSourceSecurityOverrideSummary } from '@paperclipai/shared';
+import { SKILL_SECURITY_OVERRIDE_MAX_PATH_BYTES, SKILL_SECURITY_OVERRIDE_REASON_MAX_LENGTH, skillSecurityOverridePathBytes, type SkillSecurityFinding, type SkillSecurityOverrideRequest, type SkillSourceSecurityOverrideSummary } from '@paperclipai/shared';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Textarea } from '@/components/ui/textarea';
 
@@ -37,7 +37,8 @@ export function fitsSkillSecurityOverride(files: SkillSecurityFinding[]) {
  */
 export function skillSecurityOverrideRequest(trust: SkillSecurityTrust, commitSha: string | undefined, files: SkillSecurityFinding[]): SkillSecurityOverrideRequest | null | undefined {
   if (!trust.trusted || !files.length || !commitSha) return null;
-  if (trust.reason.trim().length < MIN_REASON_LENGTH) return undefined;
+  const reasonLength = trust.reason.trim().length;
+  if (reasonLength < MIN_REASON_LENGTH || reasonLength > SKILL_SECURITY_OVERRIDE_REASON_MAX_LENGTH) return undefined;
   return { commitSha, reason: trust.reason.trim(), trustFutureUpdates: trust.trustFutureUpdates,
     files: files.map(file => ({ path: file.path, sha256: file.sha256 })) };
 }
@@ -74,6 +75,7 @@ export function SkillSecurityReview({ findings = NO_FINDINGS, repository, commit
   if (!overridable.length && !blocked.length && !accepted.length && !recorded) return null;
   const short = commitSha?.slice(0, 7);
   const reasonMissing = value.trusted && value.reason.trim().length < MIN_REASON_LENGTH;
+  const reasonTooLong = value.trusted && value.reason.trim().length > SKILL_SECURITY_OVERRIDE_REASON_MAX_LENGTH;
   return <section className="space-y-3 rounded-md border border-border px-3 py-3 text-sm" aria-label="Security review">
     <h3 className="flex items-center gap-2 font-medium"><ShieldAlert className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />Security review</h3>
     {blocked.length > 0 && <div className="space-y-1">
@@ -93,10 +95,11 @@ export function SkillSecurityReview({ findings = NO_FINDINGS, repository, commit
         </label>
         {value.trusted && <div className="space-y-2 pl-6">
           <label className="flex flex-col gap-1 text-xs" htmlFor={`${id}-reason`}>Why do you trust this repository?
-            <Textarea id={`${id}-reason`} value={value.reason} disabled={disabled} rows={2} aria-invalid={reasonMissing || undefined}
+            <Textarea id={`${id}-reason`} value={value.reason} disabled={disabled} rows={2} maxLength={SKILL_SECURITY_OVERRIDE_REASON_MAX_LENGTH} aria-invalid={reasonMissing || reasonTooLong || undefined}
               placeholder="For example: maintained by our team, reviewed the flagged files." onChange={event => onChange({ ...value, reason: event.target.value })} />
           </label>
           {reasonMissing && <p className="text-xs text-destructive">Add a reason of at least {MIN_REASON_LENGTH} characters. It’s saved in the activity log.</p>}
+          {reasonTooLong && <p className="text-xs text-destructive">Shorten the reason to {SKILL_SECURITY_OVERRIDE_REASON_MAX_LENGTH.toLocaleString()} characters or fewer.</p>}
           <label className="flex items-start gap-2 text-xs" htmlFor={`${id}-future`}>
             <Checkbox id={`${id}-future`} className="mt-0.5" checked={value.trustFutureUpdates} disabled={disabled}
               onCheckedChange={checked => onChange({ ...value, trustFutureUpdates: checked === true })} />

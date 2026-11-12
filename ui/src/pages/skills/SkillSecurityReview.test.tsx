@@ -3,7 +3,7 @@ import { act, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { SkillSecurityFinding } from '@paperclipai/shared';
-import { SkillSecurityReview, emptySkillSecurityTrust, type SkillSecurityTrust } from './SkillSecurityReview';
+import { SkillSecurityReview, emptySkillSecurityTrust, skillSecurityOverrideRequest, type SkillSecurityTrust } from './SkillSecurityReview';
 
 // A repository scan may report up to its file limit; use a realistic large review.
 const OVERRIDABLE = 1_500;
@@ -70,5 +70,14 @@ describe('SkillSecurityReview beyond one request', () => {
     await act(async () => root.render(<SkillSecurityReview findings={long} repository="acme/skills" commitSha={'a'.repeat(40)} canOverride value={emptySkillSecurityTrust} onChange={() => {}} />));
     expect(host.querySelector('button[role="checkbox"]')).toBeNull();
     expect(host.textContent).toContain('too many or too long paths to approve in one request');
+  });
+});
+
+describe('skillSecurityOverrideRequest', () => {
+  it('holds the request back while the reason is longer than the server accepts', () => {
+    const files = [{ path: 'hooks/install.sh', code: 'remote_fetch_exec', message: 'Flagged.', sha256: 'd'.repeat(64), overridable: true }];
+    const trust = { ...emptySkillSecurityTrust, trusted: true };
+    expect(skillSecurityOverrideRequest({ ...trust, reason: 'x'.repeat(2001) }, 'a'.repeat(40), files)).toBeUndefined();
+    expect(skillSecurityOverrideRequest({ ...trust, reason: 'x'.repeat(2000) }, 'a'.repeat(40), files)).toMatchObject({ reason: 'x'.repeat(2000) });
   });
 });

@@ -70,6 +70,16 @@ describe('skill security overrides', () => {
     expect(later?.('hooks/install.sh', hash(hook), 'secret_exfiltration')).toBe(false);
   });
 
+  it('applies an approval a renewal kept for an installed version only at the commit of that version', async () => {
+    const installedCommit = 'a'.repeat(40);
+    const grant = { commitSha: 'b'.repeat(40), trustFutureUpdates: false, files: [{ path: 'hooks/install.sh', sha256: hash(`${hook}
+echo updated`) }],
+      retained: [{ commitSha: installedCommit, files: [{ path: 'hooks/install.sh', code: 'remote_fetch_exec', sha256: hash(hook) }] }] };
+    const installed = await scanGitHubSkills({ ...repository, commitSha: installedCommit }, githubFixture(files, {}, installedCommit), { securityOverrides: [grant] });
+    expect(installed.repositoryFiles?.some(file => file.path === 'hooks/install.sh')).toBe(true);
+    expect(securityOverrideAcceptor([grant], 'c'.repeat(40))?.('hooks/install.sh', hash(hook), 'remote_fetch_exec')).toBe(false);
+  });
+
   it('validates override requests', () => {
     const base = { repositoryUrl: 'https://github.com/acme/skills', commitSha: 'a'.repeat(40), selectedPaths: [] };
     const valid = override('a'.repeat(40), { 'hooks/install.sh': hook });

@@ -47,8 +47,8 @@ export interface SkillSourceSecurityOverride {
   approvedAt: string;
   /**
    * Earlier approvals that still cover installed skill versions after a new approval replaced them,
-   * for example when a refresh kept a skill on its older commit. Audits of installed files read them;
-   * scans never apply them.
+   * for example when a refresh kept a skill on its older commit. They apply only to their own commit,
+   * so audits and scans of those installed versions keep accepting the approved files.
    */
   retained?: Array<{ commitSha: string; files: Array<{ path: string; code: string; sha256: string }> }>;
 }
