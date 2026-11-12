@@ -149,7 +149,6 @@ import {
   initializeMcpHttpSession,
   getMcpHttpSession,
   forgetMcpHttpSession,
-  forgetMcpHttpSessions,
   readMcpHttpResponse,
   McpHttpResponseError,
   McpHttpInitializationError,
@@ -5633,16 +5632,21 @@ export function createToolGatewayService(
     const sessionScope = connectionRequiresMcpSession(input.connection)
       ? `${input.connection.id}:grant:${grant.id}:actor:${input.session.agentId}:${endpoint}`
       : null;
+    // The session this read used. On a 400/404 only that session is dropped:
+    // other identities' sessions and in-flight initializations are untouched.
+    let usedSession: { scope: string; headers: Record<string, string>; sessionId: string } | null = null;
     const send = async (fresh: boolean) => {
       let requestHeaders: Record<string, string> = headers;
       if (sessionScope) {
-        if (fresh) forgetMcpHttpSessions(input.connection.id);
+        if (fresh && usedSession) forgetMcpHttpSession(usedSession);
         requestHeaders = await getMcpHttpSession({
           scope: sessionScope,
           send: (init) => dispatch({ ...init, redirect: "manual" }),
           headers,
           requestId,
         });
+        const sessionId = new Headers(requestHeaders).get("mcp-session-id");
+        usedSession = sessionId ? { scope: sessionScope, headers, sessionId } : null;
       }
       return dispatch({
         method: "POST",

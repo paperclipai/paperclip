@@ -68,6 +68,9 @@ const support = await getEmbeddedPostgresTestSupport();
     const initializeCapabilities: unknown[] = [];
     const resourceReadSessions: Array<string | null> = [];
     let failResourceReads = false;
+    let expireNextResourceRead = false;
+    let initializeGate: Promise<void> | null = null;
+    let sessionCounter = 0;
     const request = vi.fn(async (url: string, init: RequestInit) => {
       const headers = new Headers(init.headers);
       const body = String(init.body ?? "");
@@ -78,11 +81,15 @@ const support = await getEmbeddedPostgresTestSupport();
         const rpc = JSON.parse(body);
         if (rpc.method === "initialize") {
           initializeCapabilities.push(rpc.params?.capabilities);
+          const gate = initializeGate;
+          initializeGate = null;
+          if (gate) await gate;
+          sessionCounter += 1;
           return Response.json({ jsonrpc: "2.0", id: rpc.id, result: { protocolVersion: "2025-06-18", capabilities: { tools: {}, resources: {} }, serverInfo: { name: "Circleback fixture", version: "1" } } },
-            options.requireSession ? { headers: { "mcp-session-id": "fixture-session" } } : undefined);
+            options.requireSession ? { headers: { "mcp-session-id": `fixture-session-${sessionCounter}` } } : undefined);
         }
         // A stateful server refuses requests outside an initialized session.
-        if (options.requireSession && rpc.method !== "notifications/initialized" && headers.get("mcp-session-id") !== "fixture-session") {
+        if (options.requireSession && rpc.method !== "notifications/initialized" && !headers.get("mcp-session-id")?.startsWith("fixture-session-")) {
           return Response.json({ jsonrpc: "2.0", id: rpc.id ?? null, error: { code: -32000, message: "Bad Request: No valid session ID provided" } }, { status: 400 });
         }
         if (rpc.method === "notifications/initialized") return new Response(null, { status: 202 });
@@ -90,6 +97,10 @@ const support = await getEmbeddedPostgresTestSupport();
         if (rpc.method === "resources/read") {
           resourceReadSessions.push(headers.get("mcp-session-id"));
           if (failResourceReads) return new Response("view unavailable", { status: 500 });
+          if (expireNextResourceRead) {
+            expireNextResourceRead = false;
+            return new Response("session expired", { status: 404 });
+          }
           return Response.json({ jsonrpc: "2.0", id: rpc.id, result: { contents: [{
             uri: rpc.params.uri, mimeType: MCP_APP_MIME_TYPE, text: VIEW_HTML,
             _meta: { ui: { csp: { resourceDomains: ["https://cdn.circleback.ai"] }, prefersBorder: true } },
@@ -123,7 +134,8 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(start.registrationSource).toBe("dcr");
     const signedIn = await service.completeOAuthCallback({ state: authorization.searchParams.get("state")!, code: "fixture-code", iss: origin, redirectUri, actor });
     const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Meeting analyst", role: "engineer", adapterType: "process" }).returning();
-    await service.finishGalleryAppConnection(company.id, signedIn.connectionId, { enabledCatalogEntryIds: signedIn.catalog.map(entry => entry.id), askFirstCatalogEntryIds: [], access: { agentIds: [agent.id] } }, actor);
+    const [otherAgent] = await db.insert(agents).values({ companyId: company.id, name: "Second analyst", role: "engineer", adapterType: "process" }).returning();
+    await service.finishGalleryAppConnection(company.id, signedIn.connectionId, { enabledCatalogEntryIds: signedIn.catalog.map(entry => entry.id), askFirstCatalogEntryIds: [], access: { agentIds: [agent.id, otherAgent.id] } }, actor);
     const [issue] = await db.insert(issues).values({ companyId: company.id, title: "Recap the partner meeting", assigneeAgentId: agent.id }).returning();
     const [run] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent.id, issueId: issue.id,
       scopeKind: "issue", invocationSource: "on_demand", status: "running", responsibleUserId: actor.actorId, contextSnapshot: { issueId: issue.id } }).returning();
@@ -145,6 +157,9 @@ const support = await getEmbeddedPostgresTestSupport();
     app.use(errorHandler);
     return { company, agent, issue, run, gateway, session, request, app, initializeCapabilities, resourceReadSessions, connectionId: signedIn.connectionId,
       failResourceReads: (fail: boolean) => { failResourceReads = fail; },
+      expireNextResourceRead: () => { expireNextResourceRead = true; },
+      holdNextInitialize: () => { let release!: () => void; initializeGate = new Promise<void>((resolve) => { release = resolve; }); return release; },
+      otherAgent,
       setActor: (kind: "board" | "agent" | "teammate") => { actorKind = kind; } };
   }
 
@@ -258,12 +273,36 @@ const support = await getEmbeddedPostgresTestSupport();
     const viewId = (await http(f.app).get(`/issues/${f.issue.id}/mcp-app-views`).expect(200)).body[0].id as string;
     const detail = await http(f.app).get(`/issues/${f.issue.id}/mcp-app-views/${viewId}`).expect(200);
     expect(detail.body.resource.html).toBe(VIEW_HTML);
-    expect(f.resourceReadSessions.at(-1)).toBe("fixture-session");
+    expect(f.resourceReadSessions.at(-1)).toMatch(/^fixture-session-/);
 
     const healthBefore = (await db.select().from(toolConnections).where(eq(toolConnections.id, f.connectionId)))[0]!.healthStatus;
     f.failResourceReads(true);
     await http(f.app).get(`/issues/${f.issue.id}/mcp-app-views/${viewId}`).expect(502);
     const healthAfter = (await db.select().from(toolConnections).where(eq(toolConnections.id, f.connectionId)))[0]!.healthStatus;
     expect(healthAfter).toBe(healthBefore);
+  });
+
+  it("retries an expired view read without interrupting another agent's session setup", async () => {
+    const f = await fixture({ requireSession: true });
+    const listed = await f.gateway.listToolsForSession(f.session.token);
+    const display = listed.find(tool => tool.upstreamToolName === "DisplayMeetings")!;
+    await f.gateway.executeTool({ sessionToken: f.session.token, tool: display.name, parameters: { meetingIds: ["m1"] }, idempotencyKey: randomUUID() });
+    const viewId = (await http(f.app).get(`/issues/${f.issue.id}/mcp-app-views`).expect(200)).body[0].id as string;
+    await http(f.app).get(`/issues/${f.issue.id}/mcp-app-views/${viewId}`).expect(200);
+
+    // Another agent starts a tool call; its session setup is still in flight ...
+    const [otherRun] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.otherAgent.id, issueId: f.issue.id,
+      scopeKind: "issue", invocationSource: "on_demand", status: "running", contextSnapshot: { issueId: f.issue.id } }).returning();
+    const otherSession = await f.gateway.createSession({ companyId: f.company.id, agentId: f.otherAgent.id, runId: otherRun.id, issueId: f.issue.id });
+    const otherTool = (await f.gateway.listToolsForSession(otherSession.token)).find(tool => tool.upstreamToolName === "SearchMeetings")!;
+    const release = f.holdNextInitialize();
+    const otherCall = f.gateway.executeTool({ sessionToken: otherSession.token, tool: otherTool.name, parameters: {}, idempotencyKey: randomUUID() });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // ... when the view read finds its session expired and starts a new one.
+    f.expireNextResourceRead();
+    await http(f.app).get(`/issues/${f.issue.id}/mcp-app-views/${viewId}`).expect(200);
+    release();
+    await expect(otherCall).resolves.toMatchObject({ status: "completed" });
   });
 });
