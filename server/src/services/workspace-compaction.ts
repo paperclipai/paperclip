@@ -163,6 +163,50 @@ export async function findRegenerableWorkspaceDirs(
   return removable;
 }
 
+// An isolated task directory is not a worktree itself. It holds the task's own
+// files and, often, repository checkouts that the agent cloned into it. Each
+// checkout is compacted as its own root, so that checkout's `.gitignore` decides
+// what is regenerable. Files outside every checkout are never candidates.
+const MAX_TASK_DIRECTORY_CHECKOUT_DEPTH = 4;
+
+async function findGitCheckouts(root: string, signal?: AbortSignal) {
+  const checkouts: string[] = [];
+  async function visit(relativeDir: string, depth: number) {
+    signal?.throwIfAborted();
+    const absoluteDir = relativeDir ? path.join(root, relativeDir) : root;
+    const entries = await fs.readdir(absoluteDir, { withFileTypes: true }).catch(() => []);
+    if (entries.some((entry) => entry.name === ".git" && (entry.isDirectory() || entry.isFile()))) {
+      checkouts.push(relativeDir);
+      return;
+    }
+    if (depth >= MAX_TASK_DIRECTORY_CHECKOUT_DEPTH) return;
+    for (const entry of entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
+      if (!entry.isDirectory()) continue;
+      if (PROTECTED_WORKSPACE_DIR_NAMES.has(entry.name) || REGENERABLE_WORKSPACE_DIR_NAMES.has(entry.name)) continue;
+      if (entry.name === WORKSPACE_COMPACTION_TRASH_DIR) continue;
+      await visit(relativeDir ? path.posix.join(relativeDir, entry.name) : entry.name, depth + 1);
+    }
+  }
+  await visit("", 0);
+  return checkouts;
+}
+
+// Lists the regenerable directories of every Git checkout inside an isolated
+// task directory, as paths relative to the task directory.
+export async function findTaskDirectoryRegenerableDirs(
+  taskDirectory: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<string[]> {
+  const removable: string[] = [];
+  for (const checkout of await findGitCheckouts(taskDirectory, options.signal)) {
+    const checkoutPath = checkout ? path.join(taskDirectory, checkout) : taskDirectory;
+    for (const relativePath of await findRegenerableWorkspaceDirs(checkoutPath, options)) {
+      removable.push(checkout ? path.posix.join(checkout, relativePath) : relativePath);
+    }
+  }
+  return removable;
+}
+
 export type MovedWorkspaceDir = { relativePath: string; trashPath: string };
 
 export type WorkspaceCompactionMove = {

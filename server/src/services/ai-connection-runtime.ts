@@ -28,6 +28,7 @@ import { readLocalAiCredentialFile } from "./local-ai-credential-file.js";
 import { prepareAntigravityCredentialWriteback } from "./native-runtime/antigravity-runner-credentials.js";
 import { quotaCredentialHash, quotaCredentialRecovery, RetiredCredentialRecoveryError } from "./quota-credential-recovery.js";
 import { bindRetainedAiCredentialHome, reconcileRetainedAiCleanup, retainAiCredentialCleanup } from "./retained-ai-credential-cleanup.js";
+import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 
 export function isAiConnectionBusy(error: unknown): error is HttpError {
   return error instanceof HttpError && error.status === 422 &&
@@ -221,6 +222,30 @@ function managedAiHomeEnvironment(home: string): Record<string, string> {
   };
 }
 
+// The managed home and its XDG data directory are removed after each run, so a
+// package manager store under them is never reused: every install copies each
+// package again. These keys give pnpm one store per company that outlives the
+// run. pnpm 9 and 10 read the npm-style key; pnpm 11 reads only its own key.
+// A value already set by the operator or the adapter config is kept.
+export const MANAGED_PACKAGE_STORE_ENV_KEYS = ["npm_config_store_dir", "pnpm_config_store_dir"] as const;
+
+function managedPackageStoresRoot() {
+  return path.resolve(resolvePaperclipInstanceRoot(), "package-stores");
+}
+
+export function managedPackageStoreEnvironment(
+  companyId: string,
+  configuredEnv: Record<string, unknown>,
+  processEnv: NodeJS.ProcessEnv = process.env,
+): Record<string, string> {
+  if (!/^[A-Za-z0-9_-]+$/.test(companyId)) return {};
+  const configured = (key: string) => [configuredEnv, processEnv].some((env) =>
+    Object.entries(env).some(([name, value]) => name.toLowerCase() === key && typeof value === "string" && value.length > 0));
+  if (MANAGED_PACKAGE_STORE_ENV_KEYS.some(configured)) return {};
+  const store = path.join(managedPackageStoresRoot(), companyId, "pnpm");
+  return Object.fromEntries(MANAGED_PACKAGE_STORE_ENV_KEYS.map((key) => [key, store]));
+}
+
 /** Only the server-created credential home is volatile; retain all other config. */
 export function managedAiSessionFingerprintConfig(
   config: Record<string, unknown>,
@@ -233,6 +258,9 @@ export function managedAiSessionFingerprintConfig(
     if (env[key] === value) env[key] = stable[key];
   }
   if (env.GEMINI_HOME === path.join(managedHome, "provider")) env.GEMINI_HOME = path.join("<managed-ai-home>", "provider");
+  for (const key of MANAGED_PACKAGE_STORE_ENV_KEYS) {
+    if (typeof env[key] === "string" && path.dirname(path.dirname(env[key] as string)) === managedPackageStoresRoot()) delete env[key];
+  }
   const managed = config.managedAiConnection as Record<string, unknown> | undefined;
   if (managed?.sessionIdentity) {
     for (const key of ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY", "CODEX_API_KEY", "OPENROUTER_API_KEY", "XAI_API_KEY", "GROK_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENCODE_AUTH_JSON", "OPENCODE_CONFIG_CONTENT"]) {
@@ -351,6 +379,7 @@ export async function prepareManagedAiRuntime(
       ...stripAiAuthBindings(input.config.env),
       ...Object.fromEntries(AI_AUTH_ENV_KEYS.map((key) => [key, ""])),
       ...managedAiHomeEnvironment(home),
+      ...managedPackageStoreEnvironment(input.companyId, stripAiAuthBindings(input.config.env)),
       ...(input.binding.provider === "github" ? { GH_TOKEN: "", GITHUB_TOKEN: "" } : {}),
     };
     const capability =

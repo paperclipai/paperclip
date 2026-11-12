@@ -10,7 +10,8 @@ import { assertExecutionWorkspaceRecordAccess, assertTaskWorkspaceExecutionAcces
 import { verifiedRecordedIsolatedRemoteSource, withIsolatedRepositorySourceLock } from "./isolated-remote-workspace-source.js";
 import { workspaceSourceIdentities, retainCurrentWorkspaceSource, withWorkspaceSourceLocks } from "./workspace-source-lock.js";
 import { localWorkspaceSourcePaths } from "./execution-workspace-source-roots.js";
-import { expireReconstructableGitWorkspace, gitWorkspaceLastActivityAt, hasPendingGitExpiration, listIssuesUsingGitWorkspace } from "./git-workspace-expiration.js";
+import { expireReconstructableGitWorkspace, gitWorkspaceLastActivityAt, hasPendingGitExpiration, isGitWorkspaceExpirationEligible,
+  listIssuesUsingGitWorkspace } from "./git-workspace-expiration.js";
 import { expireIsolatedTaskDirectory, hasPendingTaskDirectoryRetention, isIsolatedTaskDirectoryWorkspace, isRetryableTaskDirectorySkip,
   mayBeIsolatedTaskDirectoryWorkspace, readTaskDirectoryRetention, restoreIsolatedTaskDirectory, supersedeTaskDirectoryRestorePoint,
   sweepIsolatedTaskDirectories, inspectIsolatedTaskDirectoryFolders, taskDirectoryFoldersForHints, taskDirectoryCandidateFilter, TASK_DIRECTORY_RESTORE_POINT_EXPIRED_WARNING, TASK_DIRECTORY_RETENTION_KEY,
@@ -47,6 +48,7 @@ import {
 import {
   deleteWorkspaceCompactionTrash,
   findRegenerableWorkspaceDirs,
+  findTaskDirectoryRegenerableDirs,
   isLinkedGitWorktree,
   moveWorkspaceDirsToTrash,
   purgeStaleWorkspaceCompactionTrash,
@@ -2448,7 +2450,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
   // worktree parent directory is checked at most once per interval.
   function deferCompactionTrashPurge(workspace: ExecutionWorkspaceRow) {
     const worktreePath = workspace.providerRef ?? workspace.cwd;
-    if (workspace.providerType !== "git_worktree" || !worktreePath) return;
+    if ((workspace.providerType !== "git_worktree" && !mayBeIsolatedTaskDirectoryWorkspace(workspace)) || !worktreePath) return;
     if (deferredCompactionTrashParents.size >= 1024) return;
     deferredCompactionTrashParents.add(path.dirname(path.resolve(worktreePath)));
   }
@@ -2468,7 +2470,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
 
   async function purgeCompactionTrashIfDue(workspace: ExecutionWorkspaceRow) {
     const worktreePath = workspace.providerRef ?? workspace.cwd;
-    if (workspace.providerType !== "git_worktree" || !worktreePath) return;
+    if ((workspace.providerType !== "git_worktree" && !mayBeIsolatedTaskDirectoryWorkspace(workspace)) || !worktreePath) return;
     const parentDir = path.dirname(path.resolve(worktreePath));
     const nowMs = now().getTime();
     const lastPurgedAt = compactionTrashPurgedAt.get(parentDir);
@@ -2492,15 +2494,21 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     signal?: AbortSignal,
   ): Promise<"compacted" | "nothing_to_compact" | "not_compactable" | "busy"> {
     const worktreePath = workspace.providerRef ?? workspace.cwd;
-    if (
-      workspace.providerType !== "git_worktree"
-      || workspace.mode === "shared_workspace"
-      || !workspace.sourceIssueId
-      || !worktreePath
-    ) {
-      return "not_compactable";
+    // An isolated task directory holds the task's files and any checkouts cloned
+    // into it. Each checkout inside it is compacted by its own `.gitignore`.
+    const taskDirectory = mayBeIsolatedTaskDirectoryWorkspace(workspace) && await isIsolatedTaskDirectoryWorkspace(workspace);
+    if (!taskDirectory) {
+      if (
+        workspace.providerType !== "git_worktree"
+        || workspace.mode === "shared_workspace"
+        || !workspace.sourceIssueId
+        || !worktreePath
+      ) {
+        return "not_compactable";
+      }
+      if (!(await isLinkedGitWorktree(worktreePath))) return "not_compactable";
     }
-    if (!(await isLinkedGitWorktree(worktreePath))) return "not_compactable";
+    if (!worktreePath) return "not_compactable";
     const projectWorkspaceCwd = workspace.projectWorkspaceId
       ? await db
           .select({ cwd: projectWorkspaces.cwd })
@@ -2515,7 +2523,14 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       return "not_compactable";
     }
 
-    const relativePaths = await findRegenerableWorkspaceDirs(worktreePath, { signal });
+    const relativePaths = taskDirectory
+      ? await findTaskDirectoryRegenerableDirs(worktreePath, { signal })
+      : await findRegenerableWorkspaceDirs(worktreePath, { signal });
+    // A task directory may be shared by other issues and hold other workspaces,
+    // leases, or runtime services. It uses the same consumer check as task
+    // directory retention, in addition to the compaction guard.
+    const guardPasses = async (tx: DbTransaction) => await terminalWorkspaceCompactionGuardPasses(tx, workspace)
+      && (!taskDirectory || await isGitWorkspaceExpirationEligible(tx, workspace, now(), undefined, { closedSiblingsAllowed: true }));
     if (relativePaths.length === 0) return "nothing_to_compact";
 
     const snapshotGeneration = readExecutionWorkspaceLifecycleGeneration(
@@ -2542,14 +2557,14 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         || fresh.closedAt
         || metadataHasReopenPendingConsumption(freshMetadata)
         || readExecutionWorkspaceLifecycleGeneration(freshMetadata) !== snapshotGeneration
-        || !(await terminalWorkspaceCompactionGuardPasses(tx, workspace))
+        || !(await guardPasses(tx))
       ) {
         return null;
       }
       const moved = await moveWorkspaceDirsToTrash(worktreePath, relativePaths);
       try {
         await opts.afterWorkspaceCompactionMove?.(workspace);
-        if (!(await terminalWorkspaceCompactionGuardPasses(tx, workspace))) {
+        if (!(await guardPasses(tx))) {
           await restoreWorkspaceDirsFromTrash(worktreePath, moved);
           await deleteWorkspaceCompactionTrash(moved.trashDir);
           return null;
@@ -3815,15 +3830,6 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         }
         const expirationTerminalAt = Math.max(...expirationTree.map(issue => issueTerminalTimestamp(issue)!.getTime()));
         const latestTerminalAt = treeOpen ? expirationTerminalAt : Math.max(...issueTree.map(issue => issueTerminalTimestamp(issue)!.getTime()));
-        if (opts.taskDirectoryRetention && !treeOpen && !reopenPending && !isClosedExecutionWorkspaceStatus(workspace.status)
-          && mayBeIsolatedTaskDirectoryWorkspace(workspace) && await isIsolatedTaskDirectoryWorkspace(workspace)) {
-          const dueAt = latestTerminalAt + opts.taskDirectoryRetention.terminalDelayMs;
-          if (dueAt > now().getTime()) {
-            terminalWorkspaceDeadlines.set(workspace.id, dueAt);
-            result.skippedCooldown += 1;
-          } else await expireTaskDirectory(workspace, new Date(dueAt));
-          continue;
-        }
         // Compaction runs once per terminal cycle, after its own delay and
         // before the archive cooldown, so a workspace the reaper cannot archive
         // yet (or ever) stops holding regenerable files.
@@ -3844,6 +3850,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
               if (compactedTerminalAt.size >= 4096) compactedTerminalAt.delete(compactedTerminalAt.keys().next().value!);
               compactedTerminalAt.set(workspace.id, latestTerminalAt);
               terminalWorkspaceDeadlines.set(workspace.id, archiveDueAt);
+            } else if (mayBeIsolatedTaskDirectoryWorkspace(workspace)) {
+              // A task directory stays busy while its consumer check fails,
+              // which can last a day after closure. Check again later.
+              terminalWorkspaceDeadlines.set(workspace.id, now().getTime() + TASK_DIRECTORY_RETRY_MS);
             }
           } catch (error) {
             if (signal?.aborted) throw error;
@@ -3853,6 +3863,18 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
               "terminal workspace compaction failed; a later sweep retries",
             );
           }
+        }
+        // Retention runs after compaction, so a task directory too large to save
+        // still loses its regenerable files while it waits or is kept.
+        if (opts.taskDirectoryRetention && !treeOpen && !reopenPending && !isClosedExecutionWorkspaceStatus(workspace.status)
+          && mayBeIsolatedTaskDirectoryWorkspace(workspace) && await isIsolatedTaskDirectoryWorkspace(workspace)) {
+          const dueAt = latestTerminalAt + opts.taskDirectoryRetention.terminalDelayMs;
+          const compactionWaiting = compactionPending && compactedTerminalAt.get(workspace.id) !== latestTerminalAt;
+          if (dueAt > now().getTime()) {
+            terminalWorkspaceDeadlines.set(workspace.id, compactionWaiting ? Math.min(dueAt, compactionDueAt) : dueAt);
+            result.skippedCooldown += 1;
+          } else await expireTaskDirectory(workspace, new Date(dueAt));
+          continue;
         }
         if (gitExpirationCandidate) {
           const expiration = await expireReconstructableGitWorkspace(db, workspace, {
