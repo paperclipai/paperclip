@@ -616,11 +616,7 @@ async function copyDirectoryContents(sourceDir: string, targetDir: string): Prom
 
 async function readLocalGitWorkspaceSnapshot(localDir: string): Promise<LocalGitWorkspaceSnapshot | null> {
   try {
-    const insideWorkTree = await runLocalGit(localDir, ["rev-parse", "--is-inside-work-tree"], {
-      timeout: 10_000,
-      maxBuffer: 16 * 1024,
-    });
-    if (insideWorkTree.stdout.trim() !== "true") {
+    if (!(await isLocalGitRepositoryRoot(localDir))) {
       return null;
     }
 
@@ -1087,7 +1083,7 @@ async function isLocalGitRepositoryRoot(localDir: string): Promise<boolean> {
     });
     const [directory, repository] = await Promise.all([
       fs.realpath(localDir),
-      fs.realpath(toplevel.stdout.trim()),
+      fs.realpath(toplevel.stdout.replace(/\n$/, "")),
     ]);
     return directory === repository;
   } catch {
