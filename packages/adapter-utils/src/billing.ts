@@ -38,7 +38,7 @@ export function resolveManagedOpenAiBilling(routing: unknown) {
   return {
     provider: "openai",
     biller: route.kind === "openrouter" ? "openrouter"
-      : inferOpenAiCompatibleBiller({ OPENAI_BASE_URL: baseUrl }, "openai"),
+      : inferOpenAiCompatibleBiller({ OPENAI_BASE_URL: baseUrl }, "openai") ?? "unknown",
     billingType: "api" as const,
   };
 }
