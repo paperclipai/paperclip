@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { agentRunCaps, type StagingMixOptions } from "./staging-mix.js";
+import { agentRunCaps, type StagingMixOptions, type StagingMixSlot } from "./staging-mix.js";
 import type { AdapterId, TaskPlan, WaveOptions } from "./types.js";
 
 export const RESOURCE_SAMPLE_MS = 30_000;
@@ -65,20 +65,18 @@ export function stagingMixSeedOptions(options: WaveOptions): { maxConcurrentRuns
   return options.stagingMix ? { maxConcurrentRunsByAdapter: agentRunCaps(options.stagingMix.ratio, options.stagingMix.runs) } : {};
 }
 
-export function unfiredFaultSlots(tasks: readonly TaskPlan[], faults: ReadonlyArray<{ requestedBy: string }>): string[] {
-  const fired = new Set(faults.map(fault => fault.requestedBy));
-  return tasks.filter(task => task.stagingMix && task.fault !== "K0" && !fired.has(task.taskId)).map(task => `${task.taskId}:${task.fault}`);
-}
-
 export class StagingMixRun {
   readonly samples: ResourceSample[] = [];
   ended = false;
   private held = false;
   private timer: NodeJS.Timeout | null = null;
+  private slotsFired = 0;
+  private slotUnsettled = false;
+  unlaunched = 0;
   inFlight = () => 0;
 
   constructor(readonly mix: StagingMixOptions, readonly startedAt: number, private readonly note: (kind: string, data: Record<string, unknown>) => void,
-    private readonly waveDir: string, readonly minFreeMb = mix.minFreeMb,
+    private readonly waveDir: string, readonly slots: readonly StagingMixSlot[] = [], readonly minFreeMb = mix.minFreeMb,
     private readonly sample: (inFlight: number) => ResourceSample = inFlight => sampleResources(process.pid, inFlight)) {}
 
   start(): this {
@@ -96,12 +94,29 @@ export class StagingMixRun {
     return sample;
   }
 
-  endIfDue(now: number): boolean {
-    if (this.ended || now < this.startedAt + this.mix.minutes * 60_000) return false;
+  endIfDue(now: number, pending = 0): boolean {
+    if (this.ended || now < this.startedAt + this.mix.arrivalEndMs) return false;
     this.ended = true;
-    this.note("staging_mix_arrivals_ended", { at: now });
+    this.unlaunched = pending;
+    this.note("staging_mix_arrivals_ended", { at: now, unlaunched: pending });
     return true;
   }
+
+  slotDue(now: number): StagingMixSlot | null {
+    const slot = this.slots[this.slotsFired];
+    return !this.slotUnsettled && slot && now >= this.startedAt + slot.atMs ? slot : null;
+  }
+
+  commitSlot(slot: StagingMixSlot): boolean {
+    if (this.slots[this.slotsFired] !== slot || this.slotUnsettled) return false;
+    this.slotsFired += 1;
+    this.slotUnsettled = true;
+    return true;
+  }
+
+  slotSettled(): void { this.slotUnsettled = false; }
+
+  unfiredSlots(): StagingMixSlot[] { return this.slots.slice(this.slotsFired); }
 
   mayLaunch(now: number, next: TaskPlan): boolean {
     if (this.ended || !next.stagingMix || now < this.startedAt + next.stagingMix.arriveAtMs) return false;
@@ -116,7 +131,7 @@ export class StagingMixRun {
 
   summary() {
     const peak = (key: "rssMb" | "cpuPercent" | "load1m" | "inFlight") => Math.max(0, ...this.samples.map(sample => sample[key]));
-    return { samples: this.samples.length, peakRssMb: peak("rssMb"), peakCpuPercent: peak("cpuPercent"), peakLoad1m: peak("load1m"), peakInFlight: peak("inFlight"),
+    return { slotsPlanned: this.slots.length, slotsFired: this.slotsFired, unlaunched: this.unlaunched, samples: this.samples.length, peakRssMb: peak("rssMb"), peakCpuPercent: peak("cpuPercent"), peakLoad1m: peak("load1m"), peakInFlight: peak("inFlight"),
       minAvailableMb: Math.min(...this.samples.map(sample => sample.availableMb)), totalMemoryMb: Math.round(os.totalmem() / 1_048_576), cpus: os.cpus().length };
   }
 

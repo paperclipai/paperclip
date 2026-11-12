@@ -3,10 +3,10 @@ import { describe, expect, it } from "vitest";
 import { parseCommand } from "./config.js";
 import {
   agentRunCaps, assignAdapters, childLine, childNonce, doneMarker, expectedRoundHash, followUpMarker, gradeStagingMix, holdsRetry, planArrivals,
-  followUpRequestId, planFaultCarriers, planStagingMixWave, plannedTaskCount, posixCksum, retryDue, roundCommand, ROUND_SECONDS, setOverlapProbe, stagingMixDescription,
+  arrivalEndMs, followUpRequestId, planStagingMixWave, plannedTaskCount, posixCksum, retryDue, roundCommand, ROUND_SECONDS, setOverlapProbe, stagingMixDescription,
   stagingMixStep, SUBTASK_ROUNDS, verifyLedger, type StagingMixTask,
 } from "./staging-mix.js";
-import { descendantsOf, parseMemInfo, parsePs, parseVmStat, StagingMixRun, stagingMixSeedOptions, unfiredFaultSlots, type ResourceSample } from "./staging-mix-run.js";
+import { descendantsOf, parseMemInfo, parsePs, parseVmStat, StagingMixRun, stagingMixSeedOptions, type ResourceSample } from "./staging-mix-run.js";
 import type { OracleArtifacts, TaskRecord, TaskSample } from "./types.js";
 
 const IMAGE = `ghcr.io/paperclipai/paperclip-daytona-runner@sha256:${"a".repeat(64)}`;
@@ -43,7 +43,7 @@ describe("staging-mix options", () => {
     expect(options.adapters).toEqual(["opencode", "codex", "claude"]);
     expect(options.concurrency).toBe(36);
     expect(options.tasks).toBe(plannedTaskCount(options.stagingMix!));
-    expect(options.tasks).toBeGreaterThan(200);
+    expect(options.tasks).toBeGreaterThan(150);
     expect(options.stagingMix).toMatchObject({ runs: 30, queue: 6, minutes: 240, turnMinutes: [15, 45], subtaskShare: 30, followUpShare: 50, faultSpacingMinutes: 40 });
   });
 
@@ -60,16 +60,24 @@ describe("staging-mix options", () => {
     expect(() => wave(["--workload", "other"])).toThrow(/Unknown --workload/);
     expect(() => wave(["--mix-runs", "5"])).toThrow(/needs --workload staging-mix/);
     expect(() => wave(["--workload", "staging-mix", "--faults", "K15", "--fault-after-seconds", "60"])).toThrow(/do not combine it with --fault-after-seconds/);
+    expect(() => parseCommand(["--replay", "w-20261112T000000-s1/t01", "--workload", "staging-mix"])).toThrow(/--replay reproduces the saved plan; do not combine it with --workload/);
+    expect(() => parseCommand(["--replay", "w-20261112T000000-s1/t01", "--mix-runs", "5"])).toThrow(/do not combine it with --mix-runs/);
+  });
+
+  it("loads from any entry module without an import cycle", () => {
+    const tsx = new URL("../../cli/node_modules/tsx/dist/cli.mjs", import.meta.url).pathname;
+    for (const entry of ["./staging-mix-run.ts", "./staging-mix.ts", "./observer.ts", "./scheduler.ts"]) {
+      const out = execFileSync(process.execPath, [tsx, "-e", `import(${JSON.stringify(new URL(entry, import.meta.url).pathname)}).then(() => console.log("ok"))`],
+        { encoding: "utf8", timeout: 60_000 });
+      expect(out.trim()).toBe("ok");
+    }
   });
 
   it("honours --k4-hold-max-seconds for K4 slots", () => {
-    const options = wave(["--workload", "staging-mix", "--faults", "K4", "--seed", "3", "--k4-hold-max-seconds", "600"]);
-    const holds = planStagingMixWave("w-20261112T000000-s3", options).tasks.filter(entry => entry.fault === "K4").map(entry => entry.holdMs);
-    expect(holds.length).toBe(5);
-    expect(holds.every(hold => hold >= 120_000 && hold <= 600_000)).toBe(true);
-    const many = Array.from({ length: 40 }, (_, seed) => planStagingMixWave("w", wave(["--workload", "staging-mix", "--faults", "K4", "--seed", String(seed), "--k4-hold-max-seconds", "600"])).tasks)
-      .flat().filter(entry => entry.fault === "K4").map(entry => entry.holdMs);
-    expect(Math.max(...many)).toBeGreaterThan(300_000);
+    const many = Array.from({ length: 20 }, (_, seed) => planStagingMixWave("w", wave(["--workload", "staging-mix", "--faults", "K4", "--seed", String(seed),
+      "--k4-hold-max-seconds", "600"])).stagingMixSlots!).flat();
+    expect(many.every(slot => slot.kind === "K4" && slot.holdMs >= 120_000 && slot.holdMs <= 600_000)).toBe(true);
+    expect(Math.max(...many.map(slot => slot.holdMs))).toBeGreaterThan(300_000);
   });
 
   it("fails fast on a malformed memory floor instead of turning the guard off", () => {
@@ -127,56 +135,59 @@ describe("staging-mix planning", () => {
     expect(Math.max(...gaps)).toBeLessThanOrEqual(Math.ceil(1.5 * ((240 * 60_000 - 36 * 5_000) / 64)));
   });
 
-  it("puts one fault on the clock every spacing, on a task already running, cycling the kinds", () => {
-    const arrivals = Array.from({ length: 60 }, (_, index) => index * 4 * 60_000);
-    const { carriers, missedSlotsMs } = planFaultCarriers(arrivals.map(arriveAtMs => ({ arriveAtMs, turnMs: 20 * 60_000 })), 40 * 60_000, 240 * 60_000, ["K15", "K1"]);
-    expect(missedSlotsMs).toEqual([]);
-    expect(carriers.size).toBe(5);
-    const fired = [...carriers.entries()].map(([index, carrier]) => ({ at: arrivals[index]! + carrier.fireAfterMs, kind: carrier.kind, lead: carrier.fireAfterMs }));
-    expect(fired.map(entry => entry.at)).toEqual([40, 80, 120, 160, 200].map(minutes => minutes * 60_000));
-    expect(fired.map(entry => entry.kind)).toEqual(["K15", "K1", "K15", "K1", "K15"]);
-    expect(fired.every(entry => entry.lead >= 60_000)).toBe(true);
-    expect(planFaultCarriers(arrivals.map(arriveAtMs => ({ arriveAtMs, turnMs: 20 * 60_000 })), 40 * 60_000, 240 * 60_000, []).carriers.size).toBe(0);
+  it("fires one fault per spacing on the wave clock, cycling the kinds, whatever the tasks' lifetimes", () => {
+    const options = wave(["--workload", "staging-mix", "--faults", "K15,K1", "--seed", "4", "--k15-overlap-seconds", "30-150", "--mix-minutes", "250",
+      "--mix-tasks", "6", "--mix-turn-minutes", "5"]);
+    const plan = planStagingMixWave("w-20261112T000000-s4", options);
+    expect(plan.stagingMixSlots!.map(slot => [slot.atMs / 60_000, slot.kind])).toEqual([[40, "K15"], [80, "K1"], [120, "K15"], [160, "K1"], [200, "K15"], [240, "K1"]]);
+    expect(plan.stagingMixSlots!.filter(slot => slot.kind === "K15").every(slot => slot.holdMs >= 30_000 && slot.holdMs <= 150_000)).toBe(true);
+    expect(plan.stagingMixSlots!.filter(slot => slot.kind === "K1").every(slot => slot.holdMs === 0)).toBe(true);
+    expect(plan.tasks.every(entry => entry.fault === "K13" && entry.fireAfterMs === 0)).toBe(true);
+    expect(planStagingMixWave("w", wave(["--workload", "staging-mix", "--faults", "K0"])).stagingMixSlots).toEqual([]);
+    expect(planStagingMixWave("w", wave(["--workload", "staging-mix", "--faults", "K0"])).tasks.every(entry => entry.fault === "K0")).toBe(true);
   });
 
-  it("only puts a fault on a task still in its turn, and refuses a plan whose slot no task covers", () => {
-    const burst = Array.from({ length: 6 }, (_, index) => ({ arriveAtMs: index * 5_000, turnMs: 6 * 60_000 }));
-    const planned = planFaultCarriers(burst, 40 * 60_000, 240 * 60_000, ["K15"]);
-    expect(planned.carriers.size).toBe(0);
-    expect(planned.missedSlotsMs).toEqual([40, 80, 120, 160, 200].map(minutes => minutes * 60_000));
-    const options = wave(["--workload", "staging-mix", "--faults", "K15", "--mix-tasks", "6", "--mix-turn-minutes", "5", "--mix-minutes", "240"]);
-    expect(() => planStagingMixWave("w-20261112T000000-s1", options)).toThrow(/No planned task is still in its turn at the fault slot\(s\) 40 min/);
-    const smoke = wave(["--workload", "staging-mix", "--faults", "K15", "--mix-runs", "5", "--mix-queue", "1", "--mix-tasks", "6", "--mix-turn-minutes", "5",
-      "--mix-minutes", "7", "--mix-fault-spacing-minutes", "3"]);
-    const carriers = planStagingMixWave("w-20261112T000000-s1", smoke).tasks.filter(entry => entry.fault === "K15");
-    expect(carriers.map(entry => entry.stagingMix!.arriveAtMs + entry.fireAfterMs).sort((a, b) => a - b)).toEqual([3 * 60_000, 6 * 60_000]);
-    expect(carriers.every(entry => entry.fireAfterMs <= entry.stagingMix!.rounds * ROUND_SECONDS * 1_000)).toBe(true);
+  it("stops arrivals one maximum turn before the last slot ends, so every started task can finish", () => {
+    const full = wave(["--workload", "staging-mix", "--faults", "K15", "--k15-overlap-seconds", "30-150", "--mix-minutes", "250", "--seed", "8"]);
+    expect(full.stagingMix!.arrivalEndMs).toBe((240 * 60 + 150 - 45 * 60) * 1_000);
+    const plan = planStagingMixWave("w", full);
+    expect(Math.max(...plan.tasks.map(entry => entry.stagingMix!.arriveAtMs))).toBeLessThan(full.stagingMix!.arrivalEndMs);
+    expect(plan.tasks.filter(entry => entry.stagingMix!.arriveAtMs > 150 * 60_000).length).toBeGreaterThan(10);
+    const slots = plan.stagingMixSlots!.map(slot => slot.atMs);
+    const crossesTwo = plan.tasks.filter(entry => slots.filter(at => at > entry.stagingMix!.arriveAtMs
+      && at < entry.stagingMix!.arriveAtMs + entry.stagingMix!.rounds * ROUND_SECONDS * 1_000).length >= 2);
+    expect(crossesTwo.length).toBeGreaterThan(0);
+    const tuned = wave(["--workload", "staging-mix", "--faults", "K15", "--k15-overlap-seconds", "30-150", "--mix-minutes", "250", "--mix-arrival-cutoff-minutes", "60"]);
+    expect(tuned.stagingMix!.arrivalEndMs).toBe((240 * 60 + 150 - 60 * 60) * 1_000);
+    expect(arrivalEndMs({ minutes: 30, faultSpacingMinutes: 40, arrivalCutoffMinutes: 10 }, { faults: [] })).toBe(20 * 60_000);
   });
 
-  it("names every planned fault slot that never fired, so the wave fails instead of passing untested", () => {
-    const options = wave(["--workload", "staging-mix", "--faults", "K15", "--mix-runs", "5", "--mix-queue", "1", "--mix-tasks", "6", "--mix-turn-minutes", "5",
-      "--mix-minutes", "7", "--mix-fault-spacing-minutes", "3"]);
-    const tasks = planStagingMixWave("w-20261112T000000-s1", options).tasks;
-    const carriers = tasks.filter(entry => entry.fault === "K15").map(entry => entry.taskId);
-    expect(unfiredFaultSlots(tasks, [])).toEqual(carriers.map(id => `${id}:K15`));
-    expect(unfiredFaultSlots(tasks, [{ requestedBy: carriers[0]! }])).toEqual([`${carriers[1]}:K15`]);
-    expect(unfiredFaultSlots(tasks, carriers.map(requestedBy => ({ requestedBy })))).toEqual([]);
+  it("expresses the one-hour form: 3 swaps 12 minutes apart, 8-9 minute overlaps, 5-15 minute turns at 15 runs", () => {
+    const short = wave(["--workload", "staging-mix", "--faults", "K15", "--k15-overlap-seconds", "480-540", "--mix-runs", "15", "--mix-queue", "3",
+      "--mix-minutes", "40", "--mix-fault-spacing-minutes", "12", "--mix-turn-minutes", "5-15", "--seed", "12"]);
+    expect(short.concurrency).toBe(18);
+    const plan = planStagingMixWave("w", short);
+    expect(plan.stagingMixSlots!.map(slot => slot.atMs / 60_000)).toEqual([12, 24, 36]);
+    expect(plan.stagingMixSlots!.every(slot => slot.holdMs >= 480_000 && slot.holdMs <= 540_000)).toBe(true);
+    expect(short.stagingMix!.arrivalEndMs).toBe(30 * 60_000);
+    const lastEnd = Math.max(...plan.tasks.map(entry => entry.stagingMix!.arriveAtMs + entry.stagingMix!.rounds * ROUND_SECONDS * 1_000));
+    expect(lastEnd).toBeLessThanOrEqual(46 * 60_000);
+    const slots = plan.stagingMixSlots!.map(slot => slot.atMs);
+    for (const at of slots) {
+      expect(plan.tasks.some(entry => entry.stagingMix!.arriveAtMs < at && at < entry.stagingMix!.arriveAtMs + entry.stagingMix!.rounds * ROUND_SECONDS * 1_000)).toBe(true);
+    }
   });
 
-  it("plans a deterministic wave where tasks start before a swap and are still running after the next two", () => {
+  it("plans a deterministic wave with parents, follow-ups and turns inside the range", () => {
     const options = wave(["--workload", "staging-mix", "--faults", "K15", "--seed", "9", "--mix-turn-minutes", "15-45", "--mix-fault-spacing-minutes", "40"]);
     const plan = planStagingMixWave("w-20261112T000000-s9", options);
-    expect(planStagingMixWave("w-20261112T000000-s9", options).tasks).toEqual(plan.tasks);
-    const faults = plan.tasks.filter(entry => entry.fault === "K15");
-    expect(faults.length).toBe(5);
-    expect(plan.tasks.filter(entry => entry.fault === "K0").length).toBe(plan.tasks.length - 5);
+    expect(planStagingMixWave("w-20261112T000000-s9", options)).toMatchObject({ tasks: plan.tasks, stagingMixSlots: plan.stagingMixSlots });
     const parents = plan.tasks.filter(entry => entry.stagingMix!.subtasks > 0).length / plan.tasks.length;
     expect(parents).toBeGreaterThan(0.2);
     expect(parents).toBeLessThan(0.4);
     expect(plan.tasks.every(entry => entry.stagingMix!.turnMinutes >= 15 && entry.stagingMix!.turnMinutes <= 45)).toBe(true);
     const followUps = plan.tasks.filter(entry => entry.stagingMix!.followUpAfterMs !== null);
     expect(followUps.every(entry => entry.stagingMix!.followUpAfterMs! <= entry.stagingMix!.rounds * ROUND_SECONDS * 1_000)).toBe(true);
-    expect(plan.tasks.some(entry => entry.stagingMix!.arriveAtMs > 200 * 60_000)).toBe(true);
   });
 
   it("names every subtask's own nonce and the hash the parent must report", () => {
@@ -323,7 +334,7 @@ describe("staging-mix resource guard", () => {
     const plan = planStagingMixWave("w-20261112T000000-s1", options);
     let available = 8_000;
     const notes: string[] = [];
-    const run = new StagingMixRun(options.stagingMix!, 0, kind => notes.push(kind), "/nonexistent", 3_072, () => sample(available));
+    const run = new StagingMixRun(options.stagingMix!, 0, kind => notes.push(kind), "/nonexistent", [], 3_072, () => sample(available));
     run.record();
     const late = plan.tasks.at(-1)!;
     expect(run.mayLaunch(0, plan.tasks[0]!)).toBe(true);
@@ -336,10 +347,27 @@ describe("staging-mix resource guard", () => {
     available = 8_000;
     run.record();
     expect(run.mayLaunch(late.stagingMix!.arriveAtMs, late)).toBe(true);
-    expect(run.endIfDue(15 * 60_000 - 1)).toBe(false);
-    expect(run.endIfDue(15 * 60_000)).toBe(true);
-    expect(run.mayLaunch(15 * 60_000, late)).toBe(false);
-    expect(run.summary()).toMatchObject({ peakRssMb: 900, minAvailableMb: 1_000 });
+    expect(run.endIfDue(10 * 60_000 - 1, 2)).toBe(false);
+    expect(run.endIfDue(10 * 60_000, 2)).toBe(true);
+    expect(run.mayLaunch(10 * 60_000, late)).toBe(false);
+    expect(run.summary()).toMatchObject({ peakRssMb: 900, minAvailableMb: 1_000, unlaunched: 2 });
+    expect(notes).toContain("staging_mix_arrivals_ended");
+  });
+
+  it("fires each slot once, after the previous one settled, and names the slots that never fired", () => {
+    const options = wave(["--workload", "staging-mix", "--faults", "K15", "--k15-overlap-seconds", "30-60", "--mix-minutes", "25", "--mix-fault-spacing-minutes", "10"]);
+    const plan = planStagingMixWave("w", options);
+    const run = new StagingMixRun(options.stagingMix!, 0, () => undefined, "/nonexistent", plan.stagingMixSlots!, 3_072, () => sample(8_000));
+    expect(run.slotDue(10 * 60_000 - 1)).toBeNull();
+    const first = run.slotDue(10 * 60_000)!;
+    expect(first.atMs).toBe(10 * 60_000);
+    expect(run.commitSlot(first)).toBe(true);
+    expect(run.commitSlot(first)).toBe(false);
+    expect(run.slotDue(30 * 60_000)).toBeNull();
+    run.slotSettled();
+    expect(run.slotDue(30 * 60_000)!.atMs).toBe(20 * 60_000);
+    expect(run.unfiredSlots().map(slot => slot.atMs)).toEqual([20 * 60_000]);
+    expect(run.summary()).toMatchObject({ slotsPlanned: 2, slotsFired: 1 });
   });
 
   it("sums only the harness's own process tree and reads macOS available memory", () => {

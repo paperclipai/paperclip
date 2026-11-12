@@ -164,6 +164,9 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-pack-mismatch", "daytona-cpu", "daytona-reuse-lease", "daytona-warm", "daytona-inherit", "storm-minutes", "lifecycle", "k4-hold-max-seconds", "crash-point", "crash-point-hold-ms", "upgrade-from", "workspace-repo", "storage", "storage-faults", "storage-fault-seconds", "storage-trigger", "native-trigger", "native-trigger-outage", "fault-after-seconds", "provider-fault-message", "provider-fault-delays", "db-pressure", "matrix", "server-from", "time-age-hours", "provider-fault-restart", "provider-fault-restart-after-seconds", "rr-gap-seconds", "rr-stop-on", "k15-hold-seconds", "k15-overlap-seconds", "k15-fresh-home", "ephemeral-server", "runner-bind-fault", "tm1-hold-seconds", "fail-recovery-step", "long-turn-minutes", "cr1-hold-seconds", "cr2-hold-seconds", "cr3-stall-seconds", "sandbox-watch-seconds"] as const) {
       if (values[key] !== undefined) throw new Error(`--replay reproduces the saved plan; do not combine it with --${key}`);
     }
+    for (const key of Object.keys(STAGING_MIX_ARG_OPTIONS) as Array<keyof typeof STAGING_MIX_ARG_OPTIONS>) {
+      if (values[key] !== undefined) throw new Error(`--replay reproduces the saved plan; do not combine it with --${key}`);
+    }
     return { mode: "replay", ref: parseReplayRef(values.replay), keep,
       overrides: { ...(values["poll-ms"] ? { pollMs } : {}), ...(values["budget-cents"] ? { budgetCents } : {}),
         // The saved plan already carries its masks; this adds the RC-06 mask to a replay of an unmasked wave.

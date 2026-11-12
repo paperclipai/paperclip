@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
+import { stableRequestId } from "./plan-primitives.js";
 import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -32,10 +33,7 @@ const MAX_SNAPSHOT_FILES = 2_000;
 
 /** Relative paths of workspace files, excluding VCS and cache directories. */
 
-export function stableRequestId(key: string): string {
-  const hex = createHash("sha256").update(key).digest("hex");
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-${(8 + (Number.parseInt(hex[16]!, 16) & 3)).toString(16)}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
-}
+export { stableRequestId } from "./plan-primitives.js";
 export async function listWorkspaceFiles(root: string): Promise<string[]> {
   const out: string[] = [];
   const walk = async (relative: string) => {

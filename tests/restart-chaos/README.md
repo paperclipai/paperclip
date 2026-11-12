@@ -1231,14 +1231,19 @@ the turn. Waves get long and expensive: keep them small.
 ## Staging mix (`--workload staging-mix`)
 
 ```sh
-# Smoke: 6 tasks, 5-minute turns, a K15 overlap deploy at minutes 3 and 6.
+# Smoke: 6 tasks, 5-minute turns, K15 overlap deploys at minutes 3 and 6.
 node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env daytona --daytona-image $IMG --daytona-warm --daytona-cpu 1 \
-  --storage s3 --ephemeral-server --workload staging-mix --faults K15 --k15-overlap-seconds 30-150 \
-  --mix-runs 5 --mix-queue 1 --mix-minutes 7 --mix-turn-minutes 5 --mix-tasks 6 --mix-fault-spacing-minutes 3 --mix-hold-minutes 2 --seed 7101
-# The full wave shape: 30 runs, a queue of 6, tasks arriving for 4 hours, a deploy every 40 minutes.
+  --storage s3 --ephemeral-server --workload staging-mix --faults K15 --k15-overlap-seconds 30-150 --mix-runs 5 --mix-queue 1 \
+  --mix-minutes 7 --mix-turn-minutes 5 --mix-tasks 6 --mix-fault-spacing-minutes 3 --mix-arrival-cutoff-minutes 0 --mix-hold-minutes 2 --seed 7101
+# Short form (about 1 hour, for fix-PR comparisons): 3 swaps 12 minutes apart with 8-9 minute overlaps, 5-15 minute turns, 15 runs.
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env daytona --daytona-image $IMG --daytona-warm --daytona-cpu 1 \
+  --storage s3 --ephemeral-server --workload staging-mix --faults K15 --k15-overlap-seconds 480-540 --mix-runs 15 --mix-queue 3 \
+  --mix-minutes 40 --mix-fault-spacing-minutes 12 --mix-turn-minutes 5-15 --budget-cents <cap> --seed 7102
+# Full form (about 4.5 hours): 6 swaps 40 minutes apart, 15-45 minute turns, 30 runs and a queue of 6.
 RESTART_CHAOS_DAYTONA_VCPU_BUDGET=<org headroom> node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env daytona \
   --daytona-image $IMG --daytona-warm --daytona-cpu 1 --storage s3 --ephemeral-server --workload staging-mix --faults K15 \
-  --k15-overlap-seconds 30-150 --budget-cents <cap> --seed 7102
+  --k15-overlap-seconds 30-150 --mix-runs 30 --mix-queue 6 --mix-minutes 250 --mix-fault-spacing-minutes 40 --mix-turn-minutes 15-45 \
+  --budget-cents <cap> --seed 7103
 ```
 
 Staging runs many agents at once on reusable sandboxes, with long tool turns, subtasks, comments and Retries arriving
@@ -1260,16 +1265,20 @@ the qualified runner profiles: OpenCode with DeepSeek V4 Flash through OpenRoute
 5. The task posts one `DONE-<nonce>` comment and marks itself done.
 
 **Arrivals and the queue.** The first `--mix-runs` + `--mix-queue` tasks arrive 5 s apart. The rest arrive evenly,
-with jitter, until `--mix-minutes` ends. A task that starts before swap N is often still running after swap N+2. The
-three agents' `maxConcurrentRuns` split `--mix-runs` by the ratio. The harness keeps runs plus queue tasks in flight,
-so about `--mix-queue` tasks wait in Paperclip's own queue behind the running ones. `--mix-tasks` sets the task count
-for a smoke; otherwise the count fills the window.
+with jitter, until the arrival cutoff: `--mix-arrival-cutoff-minutes` (default: the longest turn) before the last fault
+slot ends (its time plus its longest hold), or before `--mix-minutes` ends when there is no fault. So every started task
+can finish before the wave is graded, and a task that starts before swap N can still be running after swap N+1. Planned
+tasks that never launched are printed and recorded (`unlaunched` in `staging_mix_arrivals_ended` and
+`staging-mix-resources.json`); they are not tasks started. Subtasks are created by their parents at any time. The
+three agents' `maxConcurrentRuns` split `--mix-runs` by the ratio, one run each first. The harness keeps runs plus queue
+tasks in flight, so about `--mix-queue` tasks wait in Paperclip's own queue behind the running ones. `--mix-tasks` sets
+the task count for a smoke; otherwise the count fills the arrival window.
 
-**Faults.** One task per `--mix-fault-spacing-minutes` (default 40, staging's deploy cadence) carries the planned
-fault. That task arrived at least a minute before the slot and its planned turn still runs at the slot. A plan with a
-slot that no task's turn covers is refused, and a planned slot that never fired (its task rested first) fails the wave
-as a harness error (`staging_mix_fault_slots_missed`). Every fault still hits every task in flight. The other tasks are
-`K0`.
+**Faults.** The faults in `--faults` fire on the wave's own clock, one every `--mix-fault-spacing-minutes` (default
+40, staging's deploy cadence) before `--mix-minutes` ends, cycling through the kinds. Each slot fires after the previous
+one settled and hits every task in flight (`staging_mix_fault_slot` in the timeline). The tasks show fault `K13`, as storm
+tasks do: the wave's clock crosses them. A slot that never fired because every task rested first fails the wave as a
+harness error (`staging_mix_fault_slots_missed`). With `--faults K0` the tasks are `K0` and nothing fires.
 
 **Follow-ups and Retries.** About half of the tasks (`--mix-follow-up-share`) get a board comment while a run is
 running. The comment asks the agent to add `FOLLOWUP-<nonce>` to the ledger. A failed task's Retry is clicked the

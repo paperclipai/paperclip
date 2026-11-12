@@ -1,7 +1,6 @@
 import type { ChaosApi } from "./api.js";
 import { k15HoldMs } from "./redeploy.js";
-import { stableRequestId } from "./observer.js";
-import { createRng, k4HoldRange } from "./scheduler.js";
+import { createRng, k4HoldRange, stableRequestId } from "./plan-primitives.js";
 import type { AdapterId, FaultKind, OracleArtifacts, OracleResult, TaskFaultKind, TaskPlan, TaskRecord, TaskSample, WavePlan, WaveOptions } from "./types.js";
 import type { WorkloadAgents, WorkloadDefinition } from "./workloads.js";
 
@@ -11,7 +10,6 @@ export const ROUND_SECONDS = ROUND_TICKS * 2;
 export const SUBTASKS_PER_PARENT = 2;
 export const SUBTASK_ROUNDS = 2;
 export const BURST_GAP_MS = 5_000;
-export const FAULT_LEAD_MS = 60_000;
 export const WARM_IDLE_MINUTES = 5;
 export const DEFAULT_RATIO: ReadonlyArray<[AdapterId, number]> = [["opencode", 60], ["codex", 25], ["claude", 15]];
 export const DEFAULT_MIN_FREE_MB = 3_072;
@@ -30,8 +28,12 @@ export interface StagingMixOptions {
   holdMinutes: number;
   runCap: number;
   minFreeMb: number;
+  arrivalCutoffMinutes: number;
+  arrivalEndMs: number;
   tasks?: number;
 }
+
+export interface StagingMixSlot { atMs: number; kind: FaultKind; holdMs: number }
 
 export interface StagingMixTask {
   turnMinutes: number;
@@ -68,6 +70,7 @@ export const STAGING_MIX_ARG_OPTIONS = {
   "mix-hold-minutes": { type: "string" },
   "mix-run-cap": { type: "string" },
   "mix-tasks": { type: "string" },
+  "mix-arrival-cutoff-minutes": { type: "string" },
 } as const;
 
 type MixArgs = Partial<Record<keyof typeof STAGING_MIX_ARG_OPTIONS, string | boolean | undefined>> & Record<string, unknown>;
@@ -119,19 +122,25 @@ export function applyStagingMix(options: WaveOptions, values: MixArgs, environme
   if (options.providerFaults?.length || options.diskFullFaults?.length || options.sessionFaults?.length) {
     throw new Error(`--workload ${STAGING_MIX} takes restart faults only`);
   }
+  const turnMinutes = parseRange(String(values["mix-turn-minutes"] ?? "15-45"), "mix-turn-minutes", 1, 60);
+  const minutes = whole(values["mix-minutes"], "mix-minutes", 240, 1, 600);
+  const faultSpacingMinutes = whole(values["mix-fault-spacing-minutes"], "mix-fault-spacing-minutes", 40, 1, 600);
+  const arrivalCutoffMinutes = whole(values["mix-arrival-cutoff-minutes"], "mix-arrival-cutoff-minutes", turnMinutes[1], 0, 600);
   const runCapDefault = whole(environment.RESTART_CHAOS_MIX_RUN_CAP, "RESTART_CHAOS_MIX_RUN_CAP", 30, 1, 200);
   const mix: StagingMixOptions = {
     runs: whole(values["mix-runs"], "mix-runs", 30, 1, 200),
     queue: whole(values["mix-queue"], "mix-queue", 6, 0, 200),
-    minutes: whole(values["mix-minutes"], "mix-minutes", 240, 1, 600),
-    turnMinutes: parseRange(String(values["mix-turn-minutes"] ?? "15-45"), "mix-turn-minutes", 1, 60),
+    minutes,
+    turnMinutes,
     ratio: values["mix-ratio"] === undefined ? DEFAULT_RATIO.map(([adapter, weight]) => [adapter, weight]) : parseRatio(String(values["mix-ratio"])),
     subtaskShare: whole(values["mix-subtask-share"], "mix-subtask-share", 30, 0, 100),
     followUpShare: whole(values["mix-follow-up-share"], "mix-follow-up-share", 50, 0, 100),
-    faultSpacingMinutes: whole(values["mix-fault-spacing-minutes"], "mix-fault-spacing-minutes", 40, 1, 600),
+    faultSpacingMinutes,
     holdMinutes: whole(values["mix-hold-minutes"], "mix-hold-minutes", 10, 0, 60),
     runCap: whole(values["mix-run-cap"], "mix-run-cap", runCapDefault, 1, 200),
     minFreeMb: whole(environment.RESTART_CHAOS_MIX_MIN_FREE_MB, "RESTART_CHAOS_MIX_MIN_FREE_MB", DEFAULT_MIN_FREE_MB, 0, 1_048_576),
+    arrivalCutoffMinutes,
+    arrivalEndMs: arrivalEndMs({ minutes, faultSpacingMinutes, arrivalCutoffMinutes }, options),
     ...(values["mix-tasks"] !== undefined ? { tasks: whole(values["mix-tasks"], "mix-tasks", 1, 1, 2_000) } : {}),
   };
   if (mix.runs > mix.runCap) {
@@ -182,10 +191,27 @@ function meanCycleMs(mix: Pick<StagingMixOptions, "turnMinutes">): number {
   return ((mix.turnMinutes[0] + mix.turnMinutes[1]) / 2 + 5) * 60_000;
 }
 
-export function plannedTaskCount(mix: Pick<StagingMixOptions, "runs" | "queue" | "minutes" | "turnMinutes" | "tasks">): number {
+export function slotTimesMs(mix: Pick<StagingMixOptions, "minutes" | "faultSpacingMinutes">): number[] {
+  const times: number[] = [];
+  for (let at = mix.faultSpacingMinutes * 60_000; at < mix.minutes * 60_000; at += mix.faultSpacingMinutes * 60_000) times.push(at);
+  return times;
+}
+
+export function maxSlotHoldMs(options: Pick<WaveOptions, "faults" | "k15HoldMs" | "k4HoldMaxMs">): number {
+  return Math.max(0, ...options.faults.map(kind => kind === "K15" ? options.k15HoldMs?.[1] ?? 0 : kind === "K4" ? k4HoldRange(options.k4HoldMaxMs)[1] : 0));
+}
+
+export function arrivalEndMs(mix: Pick<StagingMixOptions, "minutes" | "faultSpacingMinutes" | "arrivalCutoffMinutes">,
+  options: Pick<WaveOptions, "faults" | "k15HoldMs" | "k4HoldMaxMs">): number {
+  const slots = options.faults.length ? slotTimesMs(mix) : [];
+  const horizon = slots.length ? slots.at(-1)! + maxSlotHoldMs(options) : mix.minutes * 60_000;
+  return Math.max(0, horizon - mix.arrivalCutoffMinutes * 60_000);
+}
+
+export function plannedTaskCount(mix: Pick<StagingMixOptions, "runs" | "queue" | "arrivalEndMs" | "turnMinutes" | "tasks">): number {
   if (mix.tasks !== undefined) return mix.tasks;
   const burst = mix.runs + mix.queue;
-  const steadyMs = Math.max(0, mix.minutes * 60_000 - burst * BURST_GAP_MS);
+  const steadyMs = Math.max(0, mix.arrivalEndMs - burst * BURST_GAP_MS);
   return burst + Math.floor((steadyMs / meanCycleMs(mix)) * mix.runs);
 }
 
@@ -196,66 +222,46 @@ export function planArrivals(count: number, burst: number, durationMs: number, n
   const rest = count - head;
   if (!rest) return arrivals;
   const start = head * BURST_GAP_MS;
-  const step = Math.max(1_000, (durationMs - start) / rest);
+  const end = Math.max(start + 1_000, durationMs);
+  const step = Math.max(1_000, (end - start) / rest);
   for (let index = 0; index < rest; index += 1) {
     const jitter = (next() - 0.5) * step * 0.5;
-    arrivals.push(Math.round(Math.min(durationMs - 1_000, Math.max(start, start + index * step + step / 2 + jitter))));
+    arrivals.push(Math.round(Math.min(end - 1_000, Math.max(start, start + index * step + step / 2 + jitter))));
   }
   return arrivals.sort((a, b) => a - b);
 }
 
-export interface LiveWindow { arriveAtMs: number; turnMs: number }
-
-export function planFaultCarriers(windows: readonly LiveWindow[], spacingMs: number, durationMs: number, kinds: readonly FaultKind[]) {
-  const carriers = new Map<number, { kind: FaultKind; fireAfterMs: number }>();
-  const missedSlotsMs: number[] = [];
-  if (!kinds.length) return { carriers, missedSlotsMs };
-  for (let slot = 1; slot * spacingMs < durationMs; slot += 1) {
-    const at = slot * spacingMs;
-    let pick = -1;
-    windows.forEach((window, index) => {
-      const live = window.arriveAtMs + FAULT_LEAD_MS <= at && at <= window.arriveAtMs + window.turnMs;
-      if (live && !carriers.has(index) && (pick < 0 || window.arriveAtMs > windows[pick]!.arriveAtMs)) pick = index;
-    });
-    if (pick < 0) { missedSlotsMs.push(at); continue; }
-    carriers.set(pick, { kind: kinds[(slot - 1) % kinds.length]!, fireAfterMs: at - windows[pick]!.arriveAtMs });
-  }
-  return { carriers, missedSlotsMs };
+export function planFaultSlots(options: WaveOptions, int: (min: number, max: number) => number): StagingMixSlot[] {
+  const mix = options.stagingMix!;
+  if (!options.faults.length) return [];
+  return slotTimesMs(mix).map((atMs, index) => {
+    const kind = options.faults[index % options.faults.length]!;
+    return { atMs, kind, holdMs: kind === "K15" ? k15HoldMs(options.k15HoldMs, int) : kind === "K4" ? int(...k4HoldRange(options.k4HoldMaxMs)) : 0 };
+  });
 }
 
 export const roundsFor = (minutes: number) => Math.max(1, Math.ceil((minutes * 60) / ROUND_SECONDS));
 
-export function planStagingMixTasks(options: WaveOptions): TaskPlan[] {
+export function planStagingMixTasks(options: WaveOptions, rng = createRng((options.seed ^ 0x5d1a6e1f) >>> 0)): TaskPlan[] {
   const mix = options.stagingMix!;
-  const rng = createRng((options.seed ^ 0x5d1a6e1f) >>> 0);
   const count = options.tasks;
-  const durationMs = mix.minutes * 60_000;
-  const arrivals = planArrivals(count, mix.runs + mix.queue, durationMs, rng.next);
+  const arrivals = planArrivals(count, mix.runs + mix.queue, mix.arrivalEndMs, rng.next);
   const adapters = assignAdapters(mix.ratio, count);
-  const drawn = arrivals.map(arriveAtMs => {
+  return arrivals.map((arriveAtMs, index) => {
     const turnMinutes = rng.int(mix.turnMinutes[0], mix.turnMinutes[1]);
     const rounds = roundsFor(turnMinutes);
     const turnMs = rounds * ROUND_SECONDS * 1_000;
     const subtasks = rng.int(0, 99) < mix.subtaskShare ? SUBTASKS_PER_PARENT : 0;
     const followUpAfterMs = rng.int(0, 99) < mix.followUpShare ? rng.int(Math.round(turnMs * 0.25), Math.round(turnMs * 0.7)) : null;
-    return { arriveAtMs, turnMinutes, rounds, turnMs, subtasks, followUpAfterMs };
-  });
-  const { carriers, missedSlotsMs } = planFaultCarriers(drawn, mix.faultSpacingMinutes * 60_000, durationMs, options.faults);
-  if (missedSlotsMs.length) {
-    throw new Error(`No planned task is still in its turn at the fault slot(s) ${missedSlotsMs.map(at => `${Math.round(at / 60_000)} min`).join(", ")}; `
-      + "lengthen --mix-turn-minutes, add tasks, shorten --mix-minutes or change --mix-fault-spacing-minutes");
-  }
-  return drawn.map(({ arriveAtMs, turnMinutes, rounds, subtasks, followUpAfterMs }, index) => {
-    const carrier = carriers.get(index);
-    const fault: TaskFaultKind = carrier?.kind ?? "K0";
+    const fault: TaskFaultKind = options.faults.length ? "K13" : "K0";
     return {
       taskId: `t${String(index + 1).padStart(3, "0")}`,
       index,
       workload: "SM",
       adapter: adapters[index]!,
       fault,
-      fireAfterMs: carrier?.fireAfterMs ?? 0,
-      holdMs: fault === "K15" ? k15HoldMs(options.k15HoldMs, rng.int) : fault === "K4" ? rng.int(...k4HoldRange(options.k4HoldMaxMs)) : 0,
+      fireAfterMs: 0,
+      holdMs: 0,
       followUpAfterMs: null,
       nonce: rng.hex(8),
       stagingMix: { turnMinutes, rounds, subtasks, followUpAfterMs, arriveAtMs, holdMs: mix.holdMinutes * 60_000 },
@@ -264,8 +270,10 @@ export function planStagingMixTasks(options: WaveOptions): TaskPlan[] {
 }
 
 export function planStagingMixWave(waveId: string, options: WaveOptions, createdAt = new Date()): WavePlan {
-  return { schema: "paperclip.restart-chaos.wave-plan/v1", waveId, seed: options.seed, createdAt: createdAt.toISOString(), options,
-    tasks: planStagingMixTasks(options) };
+  const rng = createRng((options.seed ^ 0x5d1a6e1f) >>> 0);
+  const tasks = planStagingMixTasks(options, rng);
+  return { schema: "paperclip.restart-chaos.wave-plan/v1", waveId, seed: options.seed, createdAt: createdAt.toISOString(), options, tasks,
+    stagingMixSlots: planFaultSlots(options, rng.int) };
 }
 
 export function posixCksum(text: string): number {

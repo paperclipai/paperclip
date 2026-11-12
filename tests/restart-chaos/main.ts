@@ -48,7 +48,7 @@ import { StormRun, TASK_FAULT_LOG, observedFaultSchedule, planWave, replayOnCurr
 import { chaosLifecycleOverrides, seedChaosLab } from "./seed.js";
 import { ChaosSupervisor } from "./supervisor.js";
 import { planStagingMixWave } from "./staging-mix.js";
-import { StagingMixRun, stagingMixSeedOptions, unfiredFaultSlots } from "./staging-mix-run.js";
+import { StagingMixRun, stagingMixSeedOptions } from "./staging-mix-run.js";
 import { TimeShiftedApi } from "./time-faults.js";
 import type { RestartStep } from "./repeated-restarts.js";
 import { isBrokenStdoutError, markTimelineEchoBroken, Timeline } from "./timeline.js";
@@ -489,7 +489,7 @@ async function main(): Promise<number> {
       timeline.add("storage_faults_planned", { windows: windows.map(window => `${window.kind}@${window.startMs}ms+${window.durationMs}ms`) });
     }
     if (plan.options.stagingMix && !plan.replayOf) {
-      mix = new StagingMixRun(plan.options.stagingMix, Date.now(), (kind, data) => timeline.add(kind, data), waveDir).start();
+      mix = new StagingMixRun(plan.options.stagingMix, Date.now(), (kind, data) => timeline.add(kind, data), waveDir, plan.stagingMixSlots).start();
       mix.inFlight = () => active.length;
     }
     if (storm) timeline.add("storm_started", { durationMs: storm.plan.durationMs, plannedFaults: storm.plan.faults.length });
@@ -639,7 +639,7 @@ async function main(): Promise<number> {
         timeline.add("storm_ended", { faultsFired: storm.state.fired, inFlight: active.length, unlaunched: pending.length });
         pending.length = 0;
       }
-      if (mix?.endIfDue(now)) pending.length = 0;
+      if (mix?.endIfDue(now, pending.length)) pending.length = 0;
       // A failed fault or an unexpected exit leaves the server not ready.
       // Recover within a bound, or fail the wave instead of waiting forever.
       if (!supervisor.serverReady && !supervisor.faultInProgress) await supervisor.ensureServing();
@@ -712,6 +712,15 @@ async function main(): Promise<number> {
           }
         }
       }
+      const slot = mix && !faultsQueued && !supervisor.faultInProgress && supervisor.serverReady ? mix.slotDue(Date.now()) : null;
+      if (mix && slot) {
+        const exposed = active.filter(candidate => !candidate.done);
+        await Promise.all(exposed.map(candidate => candidate.snapshotBeforeFault()));
+        if (mix.commitSlot(slot)) {
+          timeline.add("staging_mix_fault_slot", { ...slot, exposed: exposed.map(candidate => candidate.plan.taskId) });
+          fireFault(slot.kind, slot.holdMs, "staging-mix", exposed, undefined, () => mix?.slotSettled());
+        }
+      }
       for (let index = active.length - 1; index >= 0; index -= 1) {
         if (!active[index]!.done) continue;
         // Daytona: the sandboxes as the task rests, before the product releases them (pass or fail).
@@ -723,11 +732,13 @@ async function main(): Promise<number> {
     sandboxWatchStopped = true;
     await mix?.stop();
     await Promise.all(faultWork);
-    const unfired = mix && !interrupted ? unfiredFaultSlots(plan.tasks, faults) : [];
+    const unfired = mix && !interrupted ? mix.unfiredSlots() : [];
     if (unfired.length) {
       timeline.add("staging_mix_fault_slots_missed", { unfired });
-      harnessError ??= new Error(`Planned staging-mix fault slot(s) never fired, so the wave tested no restart there: ${unfired.join(", ")}`);
+      harnessError ??= new Error(`Staging-mix fault slot(s) at ${unfired.map(entry => `${Math.round(entry.atMs / 60_000)} min`).join(", ")} never fired: every task rested first`);
     }
+    if (mix) console.info(`Staging mix: ${launched.length} tasks started; ${mix.unlaunched} planned tasks never launched (excluded from tasks started); `
+      + `${mix.slots.length - unfired.length}/${mix.slots.length} fault slots fired`);
     if (storageTrigger) {
       const shortfall = storageTriggerShortfall(storageTrigger.finish(faults));
       storageSection = storageTriggerMarkdown(storageTrigger.receipts);

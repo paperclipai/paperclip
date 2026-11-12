@@ -242,6 +242,7 @@ export interface WavePlan {
   tasks: TaskPlan[];
   /** K13 only: the seeded storm fault sequence. */
   storm?: StormPlan;
+  stagingMixSlots?: import("./staging-mix.js").StagingMixSlot[];
   /** Present when this wave replays one task of an earlier wave. */
   replayOf?: { waveId: string; taskId: string };
 }
