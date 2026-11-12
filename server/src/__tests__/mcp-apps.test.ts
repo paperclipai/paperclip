@@ -4,11 +4,12 @@ import http from "supertest";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
-  agents, companies, companyMemberships, createDb, heartbeatRuns, issues, toolCatalogEntries, toolMcpAppViews,
+  agents, companies, companyMemberships, createDb, heartbeatRuns, issues, principalPermissionGrants, toolCatalogEntries, toolMcpAppViews,
 } from "@paperclipai/db";
 import { MCP_APP_MIME_TYPE, MCP_APPS_EXTENSION_ID } from "@paperclipai/shared";
 import { errorHandler } from "../middleware/error-handler.js";
 import { mcpAppsRoutes } from "../routes/mcp-apps.js";
+import { toolAccessRoutes } from "../routes/tool-access.js";
 import { toolAccessService, type McpToolDescriptor } from "../services/tool-access.js";
 import { createToolGatewayService } from "../services/tool-gateway.js";
 import { mcpAppCallToolResult } from "../services/mcp-app-views.js";
@@ -124,10 +125,13 @@ const support = await getEmbeddedPostgresTestSupport();
     let actorKind: "board" | "agent" | "teammate" = "board";
     app.use((req, _res, next) => {
       req.actor = actorKind !== "agent"
-        ? { type: "board", userId: actorKind === "teammate" ? "circleback-teammate" : actor.actorId, source: "session", companyIds: [company.id] }
+        ? { type: "board", userId: actorKind === "teammate" ? "circleback-teammate" : actor.actorId, source: "session", companyIds: [company.id],
+          memberships: [{ companyId: company.id, status: "active", membershipRole: actorKind === "teammate" ? "member" : "admin" }] }
         : { type: "agent", companyId: company.id, agentId: agent.id, source: "agent_key" };
       next();
     });
+    // Same order as app.ts: a view's tool calls are served by the tool-access router.
+    app.use(toolAccessRoutes(db, { toolGateway: gateway, remoteHttpRequest: request, remoteHttpEndpointLookup: async () => [{ address: "8.8.8.8", family: 4 }] }));
     app.use(mcpAppsRoutes(db, gateway));
     app.use(errorHandler);
     return { company, agent, issue, run, gateway, session, request, app, initializeCapabilities, connectionId: signedIn.connectionId,
@@ -211,6 +215,17 @@ const support = await getEmbeddedPostgresTestSupport();
     await db.insert(companyMemberships).values({ companyId: f.company.id, principalType: "user", principalId: "circleback-teammate", status: "active", membershipRole: "member" });
     f.setActor("teammate");
     await http(f.app).get(`/issues/${f.issue.id}/mcp-app-views`).expect(200);
+    // A view's tool calls need what a connection test call needs. Reading the
+    // task is not enough: the member also needs tool permission ...
+    const callFromView = () => http(f.app).post(`/issues/${f.issue.id}/mcp-app-views/${viewId}/tool-calls`)
+      .send({ name: "RefreshMeetingCards", arguments: {} });
+    expect((await callFromView()).status).toBe(403);
+    await db.insert(principalPermissionGrants).values({ companyId: f.company.id, principalType: "user", principalId: "circleback-teammate", permissionKey: "tools:use", grantedByUserId: actor.actorId });
+    expect((await callFromView()).status).toBe(200);
+    // ... and authority to act as the view's agent, which ends with the agent.
+    await db.update(agents).set({ status: "terminated" }).where(eq(agents.id, f.agent.id));
+    expect((await callFromView()).status).toBe(403);
+    await db.update(agents).set({ status: "idle" }).where(eq(agents.id, f.agent.id));
     await db.update(issues).set({ visibility: "private" }).where(eq(issues.id, f.issue.id));
     await http(f.app).get(`/issues/${f.issue.id}/mcp-app-views`).expect(404);
     await http(f.app).get(`/issues/${f.issue.id}/mcp-app-views/${viewId}`).expect(404);

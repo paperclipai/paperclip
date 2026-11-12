@@ -2,27 +2,25 @@ import { Router, type Request, type Response } from "express";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { issues, type Db } from "@paperclipai/db";
-import { mcpAppToolCallSchema, type McpAppViewDetail } from "@paperclipai/shared";
+import type { McpAppViewDetail } from "@paperclipai/shared";
 import { assertBoard, getAccessibleResource } from "./authz.js";
 import { connectionRequestUserId } from "./connection-management-authz.js";
-import { forbidden } from "../errors.js";
-import { accessService } from "../services/access.js";
 import { authorizationService } from "../services/authorization.js";
 import { mcpAppViewsService, toMcpAppViewSummary } from "../services/mcp-app-views.js";
 import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-gateway.js";
 
 const uuidSchema = z.string().uuid();
 
-type McpAppsGateway = Pick<ToolGatewayService, "readMcpAppViewResource" | "callMcpAppViewTool">;
+type McpAppsGateway = Pick<ToolGatewayService, "readMcpAppViewResource">;
 
 /**
  * MCP Apps views in the task chat. Viewing follows task read access. A view's
- * own tool calls also need the viewer's permission to use tools.
+ * own tool calls are served by the tool-access router, which applies the
+ * connection test-call authorization.
  */
 export function mcpAppsRoutes(db: Db, toolGateway: McpAppsGateway) {
   const router = Router();
   const views = mcpAppViewsService(db);
-  const access = accessService(db);
 
   router.use("/issues/:issueId/mcp-app-views", async (req, res, next) => {
     assertBoard(req);
@@ -85,33 +83,6 @@ export function mcpAppsRoutes(db: Db, toolGateway: McpAppsGateway) {
         resource,
       };
       res.json(detail);
-    } catch (error) {
-      if (!sendGatewayError(res, error)) throw error;
-    }
-  });
-
-  router.post("/issues/:issueId/mcp-app-views/:viewId/tool-calls", async (req, res) => {
-    const found = await viewFor(req, res);
-    if (!found) return;
-    const body = mcpAppToolCallSchema.safeParse(req.body);
-    if (!body.success) {
-      res.status(400).json({ error: "Invalid tool call" });
-      return;
-    }
-    const userId = connectionRequestUserId(req);
-    const permitted = req.actor.source === "local_implicit" || req.actor.isInstanceAdmin || (userId !== null && (
-      await access.hasPermission(found.issue.companyId, "user", userId, "tools:use")
-      || await access.hasPermission(found.issue.companyId, "user", userId, "tools:manage_connections")
-    ));
-    if (!permitted) throw forbidden("You need permission to use tools to act in this app");
-    try {
-      res.json(await toolGateway.callMcpAppViewTool({
-        companyId: found.issue.companyId,
-        userId: userId ?? "board",
-        view: found.view,
-        toolName: body.data.name,
-        arguments: body.data.arguments ?? {},
-      }));
     } catch (error) {
       if (!sendGatewayError(res, error)) throw error;
     }

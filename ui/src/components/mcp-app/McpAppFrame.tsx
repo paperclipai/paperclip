@@ -55,8 +55,16 @@ export function McpAppFrame({ title, viewId, toolName, resource, toolInput, tool
   // frame left the view's document: that frame and its channel are discarded.
   const [generation, setGeneration] = useState(0);
   const srcDoc = useMemo(() => mcpAppDocument(resource.html, resource.csp), [resource.html, resource.csp]);
-  const callToolRef = useRef(callTool);
-  callToolRef.current = callTool;
+  // A refetch of the same view hands over new object identities. The host reads
+  // the latest values through refs, so it lives exactly as long as its document.
+  const latest = useRef({ callTool, toolInput, toolResult });
+  latest.current = { callTool, toolInput, toolResult };
+  // A different document is a different frame: remount the iframe with a new host.
+  const documentVersion = useRef({ srcDoc, version: 0 });
+  if (documentVersion.current.srcDoc !== srcDoc) {
+    documentVersion.current = { srcDoc, version: documentVersion.current.version + 1 };
+  }
+  const frameKey = `${generation}:${documentVersion.current.version}`;
 
   // Layout effect: the listener must exist before the view's first script posts `ui/initialize`.
   useLayoutEffect(() => {
@@ -79,9 +87,9 @@ export function McpAppFrame({ title, viewId, toolName, resource, toolInput, tool
       // ever goes to this iframe's own window.
       post: (message) => iframe.contentWindow?.postMessage(message, "*"),
       hostContext,
-      toolInput,
-      toolResult,
-      callTool: (name, args) => callToolRef.current(name, args),
+      get toolInput() { return latest.current.toolInput; },
+      get toolResult() { return latest.current.toolResult; },
+      callTool: (name, args) => latest.current.callTool(name, args),
       openLink: (url) => window.open(url, "_blank", "noopener,noreferrer"),
       onSizeChanged: ({ height: next }) => {
         if (typeof next === "number" && Number.isFinite(next) && next > 0) {
@@ -113,17 +121,20 @@ export function McpAppFrame({ title, viewId, toolName, resource, toolInput, tool
       host.teardown();
       window.removeEventListener("message", onMessage);
     };
-  }, [srcDoc, viewId, toolName, toolInput, toolResult, generation]);
+    // srcDoc is captured by frameKey; tool input and result are read through `latest`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [frameKey, viewId, toolName]);
 
   return (
     <iframe
-      key={generation}
+      key={frameKey}
       ref={iframeRef}
       title={title}
       srcDoc={srcDoc}
       // Never add allow-same-origin: the opaque origin is the boundary between
-      // the provider's view and Paperclip's session.
-      sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
+      // the provider's view and Paperclip's session. No popups either: links
+      // go through `ui/open-link`, which the host opens with noopener.
+      sandbox="allow-scripts"
       referrerPolicy="no-referrer"
       allow="camera 'none'; microphone 'none'; geolocation 'none'; clipboard-read 'none'; clipboard-write 'none'; fullscreen 'none'"
       data-testid="mcp-app-frame"

@@ -67,4 +67,43 @@ describe("McpAppFrame", () => {
     await act(async () => root.unmount());
     container.remove();
   });
+
+  it("keeps the view's host when a refetch hands over equal data, and remounts for a new document", async () => {
+    const callTool = vi.fn(async () => ({ content: [] }));
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const props = (html: string) => ({
+      title: "Circleback: Display meetings",
+      viewId: "view-1",
+      toolName: "DisplayMeetings",
+      // New object identities on every render, as a refetch produces.
+      resource: { uri: "ui://circleback/meetings", html, csp: {}, permissions: {}, prefersBorder: true },
+      toolInput: { meetingIds: ["m1"] },
+      toolResult: { content: [{ type: "text", text: "ok" }] },
+      callTool,
+    });
+    await act(async () => root.render(<McpAppFrame {...props("<p>cards</p>")} />));
+    const original = frame(container);
+    await act(async () => {
+      fromView(original, { jsonrpc: "2.0", id: 1, method: "ui/initialize", params: {} });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    await act(async () => root.render(<McpAppFrame {...props("<p>cards</p>")} />));
+    expect(frame(container)).toBe(original);
+    await act(async () => {
+      fromView(original, { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "RefreshMeetingCards", arguments: {} } });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    // The same host still knows the view finished ui/initialize.
+    expect(callTool).toHaveBeenCalledTimes(1);
+
+    await act(async () => root.render(<McpAppFrame {...props("<p>new cards</p>")} />));
+    expect(frame(container)).not.toBe(original);
+    expect(frame(container).getAttribute("srcdoc")).toContain("new cards");
+    expect(frame(container).getAttribute("sandbox")).toBe("allow-scripts");
+    await act(async () => root.unmount());
+    container.remove();
+  });
 });
