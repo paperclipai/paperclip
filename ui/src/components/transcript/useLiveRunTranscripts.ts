@@ -83,6 +83,10 @@ function runKnownLogBytes(run: RunTranscriptSource): number | null {
   return typeof bytes === "number" && Number.isFinite(bytes) && bytes > 0 ? bytes : null;
 }
 
+function completedLogKey(run: RunTranscriptSource, streamEpoch: number): string {
+  return `${streamEpoch}:${run.logBytes ?? ""}:${run.lastOutputBytes ?? ""}:${run.logRef ?? ""}:${run.hasStoredOutput === true ? "1" : "0"}`;
+}
+
 export function resolveInitialLogOffset(run: RunTranscriptSource, limitBytes: number): number {
   const knownBytes = runKnownLogBytes(run);
   if (knownBytes === null) return 0;
@@ -128,6 +132,7 @@ export function useLiveRunTranscripts({
   const [retryGeneration, setRetryGeneration] = useState(0);
   const retry = useCallback(() => {
     missingTerminalLogRunIdsRef.current.clear();
+    completedLogKeyByRunRef.current.clear();
     setRetryGeneration((value) => value + 1);
   }, []);
   const seenChunkKeysRef = useRef(new Set<string>());
@@ -165,7 +170,7 @@ export function useLiveRunTranscripts({
     retired.add(prior);
     if (retired.size > 8) retired.delete(retired.values().next().value!);
     retiredLogIdentitiesRef.current.set(runId, retired);
-    logOffsetByRunRef.current.set(runId, 0); logReadLimitByRunRef.current.delete(runId);
+    logOffsetByRunRef.current.set(runId, 0); logReadLimitByRunRef.current.delete(runId); completedLogKeyByRunRef.current.delete(runId);
     pendingLogRowsByRunRef.current.delete(runId); pendingLogRowsByRunRef.current.delete(`${runId}:records`);
     trimmedSeqFloorByRunRef.current.delete(runId); sequencesRef.current.delete(runId);
     for (const key of seenChunkKeysRef.current) if (key.includes(`:${runId}:`)) seenChunkKeysRef.current.delete(key);
@@ -179,6 +184,7 @@ export function useLiveRunTranscripts({
 
   const [truncatedRunIds, setTruncatedRunIds] = useState<ReadonlySet<string>>(new Set());
   const missingTerminalLogRunIdsRef = useRef(new Set<string>());
+  const completedLogKeyByRunRef = useRef(new Map<string, string>());
   // PAP-462 B3: buffered runs that dropped out of the `runs` list, mapped to the
   // wall-clock deadline (ms) after which their buffer may be pruned. A run still
   // inside its grace window is retained across the empty poll; `pruneTick` fires
@@ -202,7 +208,7 @@ export function useLiveRunTranscripts({
     seenChunkKeysRef.current.clear(); trimmedSeqFloorByRunRef.current.clear();
     pendingLogRowsByRunRef.current.clear(); logOffsetByRunRef.current.clear(); logReadLimitByRunRef.current.clear();
     logIdentityRef.current.clear(); retiredLogIdentitiesRef.current.clear(); sequencesRef.current.clear();
-    gapPendingRef.current.clear(); missingTerminalLogRunIdsRef.current.clear();
+    gapPendingRef.current.clear(); missingTerminalLogRunIdsRef.current.clear(); completedLogKeyByRunRef.current.clear();
     absenceDeadlineByRunRef.current.clear(); prevKnownRunIdsRef.current.clear(); transcriptCacheRef.current.clear();
   }, [companyId]);
 
@@ -339,6 +345,7 @@ export function useLiveRunTranscripts({
       for (const id of map.keys()) if (!retainedRunIds.has(id)) map.delete(id);
     }
     for (const id of gapPendingRef.current) if (!retainedRunIds.has(id)) gapPendingRef.current.delete(id);
+    for (const id of completedLogKeyByRunRef.current.keys()) if (!retainedRunIds.has(id)) completedLogKeyByRunRef.current.delete(id);
 
     // Re-run once the nearest grace window elapses so a run that stays gone is
     // pruned even if `normalizedRuns` never changes again.
@@ -425,6 +432,10 @@ export function useLiveRunTranscripts({
       if (cancelled || missingTerminalLogRunIdsRef.current.has(run.id) || inFlightRunIds.has(run.id)) {
         return;
       }
+      if (isTerminalStatus(run.status) && completedLogKeyByRunRef.current.get(run.id) === completedLogKey(run, stream.epoch) &&
+        (logReadLimitByRunRef.current.get(run.id) ?? 0) >= logReadLimitBytes) {
+        return;
+      }
       pendingRefresh.delete(run.id);
       window.clearTimeout(retryTimers.get(run.id));
       retryTimers.delete(run.id);
@@ -487,6 +498,7 @@ export function useLiveRunTranscripts({
         }
         failed = sequence(run.id).needsCatchup;
         if (!failed) gapPendingRef.current.delete(run.id);
+        if (!failed && isTerminalStatus(run.status)) completedLogKeyByRunRef.current.set(run.id, completedLogKey(run, stream.epoch));
       } catch (error) {
         if (cancelled) return;
         failed = true;
@@ -512,6 +524,7 @@ export function useLiveRunTranscripts({
         if (!cancelled) {
           if (pendingRefresh.has(run.id)) {
             missingTerminalLogRunIdsRef.current.delete(run.id);
+            completedLogKeyByRunRef.current.delete(run.id);
             void readRunLog(run);
           } else if (failed && stream.healthy) {
             const timer = window.setTimeout(() => { retryTimers.delete(run.id); void readRunLog(run); }, LOG_POLL_INTERVAL_MS);
@@ -529,7 +542,7 @@ export function useLiveRunTranscripts({
 
     for (const run of readableRuns) {
       refreshByRunRef.current.set(run.id, (force = false) => {
-        if (force) { pendingRefresh.add(run.id); missingTerminalLogRunIdsRef.current.delete(run.id); }
+        if (force) { pendingRefresh.add(run.id); missingTerminalLogRunIdsRef.current.delete(run.id); completedLogKeyByRunRef.current.delete(run.id); }
         void readRunLog(run);
       });
       void readRunLog(run);

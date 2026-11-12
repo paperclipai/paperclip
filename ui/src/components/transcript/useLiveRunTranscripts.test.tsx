@@ -132,6 +132,43 @@ describe("useLiveRunTranscripts", () => {
     }
   });
 
+  it("reads a finished run's log once while other runs come, finish, and the tab is hidden", async () => {
+    const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    const finished = [
+      { id: "run-1", status: "succeeded", adapterType: "codex_local", logBytes: 10 },
+      { id: "run-2", status: "failed", adapterType: "codex_local", logBytes: 20 },
+    ];
+    function Harness({ runs }: { runs: Array<{ id: string; status: string; adapterType: string; logBytes?: number }> }) {
+      useLiveRunTranscripts({ companyId: "company-1", runs, enableRealtimeUpdates: false });
+      return null;
+    }
+    const readsFor = (runId: string) => logMock.mock.calls.filter(([id]) => id === runId).length;
+    const root = createRoot(document.createElement("div"));
+    try {
+      await act(async () => root.render(<Harness runs={finished} />));
+      expect(readsFor("run-1")).toBe(1);
+      expect(readsFor("run-2")).toBe(1);
+      await act(async () => root.render(<Harness runs={[...finished, { id: "run-3", status: "running", adapterType: "codex_local" }]} />));
+      await act(async () => root.render(<Harness runs={[...finished, { id: "run-3", status: "succeeded", adapterType: "codex_local", logBytes: 30 }]} />));
+      await act(async () => {
+        visibility.mockReturnValue("hidden");
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      await act(async () => {
+        visibility.mockReturnValue("visible");
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      expect(readsFor("run-1")).toBe(1);
+      expect(readsFor("run-2")).toBe(1);
+      expect(readsFor("run-3")).toBe(2);
+      await act(async () => root.render(<Harness runs={[{ ...finished[0], logBytes: 15 }, finished[1]]} />));
+      expect(readsFor("run-1")).toBe(2);
+      expect(readsFor("run-2")).toBe(1);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it("expands a compact log tail without hiding or duplicating the latest output", async () => {
     let truncatedRunIds: ReadonlySet<string> = new Set();
     const row = (seq: number, chunk: string) => JSON.stringify({ seq, chunk, ts: `2026-10-24T00:00:0${seq}Z`, stream: "stdout" });

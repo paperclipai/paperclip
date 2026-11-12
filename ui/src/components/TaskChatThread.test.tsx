@@ -532,6 +532,25 @@ it.each([0, 32_000, 100_000])("offers earlier output only when a single legacy r
   }
 });
 
+it("bounds expanded transcript reads to the most recent settled runs plus live runs", () => {
+  const minute = (index: number) => new Date(Date.UTC(2025, 0, 1, 10, index)).toISOString();
+  const linkedRuns = [
+    ...Array.from({ length: 30 }, (_, index) => ({
+      runId: `settled-${index}`, agentId: "agent", status: "succeeded", adapterType: "claude_local",
+      runtimeMode: "legacy" as const, createdAt: minute(index), startedAt: minute(index),
+    })),
+    { runId: "live", agentId: "agent", status: "running", adapterType: "claude_local", runtimeMode: "legacy" as const, createdAt: minute(0), startedAt: minute(0) },
+  ];
+  render(<TaskChatThread issueId="long-history" comments={[]} onAdd={async () => {}} linkedRuns={linkedRuns} compactHistory={false} />);
+  const ids = (transcriptHookRuns.legacy.at(-1) as Array<{ id: string }>).map((run) => run.id);
+  expect(ids).toHaveLength(20);
+  expect(ids).toContain("live");
+  expect(ids).toContain("settled-29");
+  expect(ids).toContain("settled-11");
+  expect(ids).not.toContain("settled-10");
+  expect(ids).not.toContain("settled-0");
+});
+
 it("defers initial history for a saved conversation with its own draft key", () => {
   render(<TaskChatThread comments={[]} onAdd={async () => {}} issueId="saved-chat"
     conversationMode draftKey="agent-chat:company:saved-agent" initialHistoryPending />);

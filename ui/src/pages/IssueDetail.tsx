@@ -1631,7 +1631,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
       : fetchRecentIssueRunWindow(queryClient, issueQueryRef, { conversationMode }),
     enabled: !!issueId,
     refetchInterval:
-      hasLiveRuns || issueStatus === "in_progress" ? 1000 : false,
+      hasLiveRuns || issueStatus === "in_progress" ? 5000 : false,
     placeholderData: historyExpanded ? queryClient.getQueryData<RecentIssueRunWindow>([...queryKeys.issues.runs(issueQueryRef), "recent-window"])?.runs : undefined,
   });
   const observedRunIds = useMemo(() => [...new Set([
