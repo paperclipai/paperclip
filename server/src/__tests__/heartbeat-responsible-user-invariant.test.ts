@@ -354,7 +354,12 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
     expect(await waitForRun(db, first!.id)).toMatchObject({ status: "succeeded", responsibleUserId: ownerUserId });
   });
 
-  it("keeps adopted comment authors on an explicit task retry instead of the source run's user", async () => {
+  it.each(["taskRetryRequestId", "wakeReason"] as const)(
+    "keeps adopted comment authors on an explicit task retry instead of the source run's user (marker: %s)",
+    async (marker) => {
+    const retryMarker = marker === "taskRetryRequestId"
+      ? { taskRetryRequestId: randomUUID() }
+      : { wakeReason: "task_retry" };
     const { companyId, agentId, ownerUserId } = await seedCompany();
     const operatorId = `operator-${randomUUID()}`, issueId = randomUUID(), commentId = randomUUID();
     await db.insert(authUsers).values({
@@ -373,7 +378,7 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
       body: "While retrying, also check the sidebar" });
     const [retry] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "queued",
       invocationSource: "on_demand", retryOfRunId: source.id,
-      contextSnapshot: { issueId, taskRetryRequestId: randomUUID(), wakeCommentIds: [commentId],
+      contextSnapshot: { issueId, ...retryMarker, wakeCommentIds: [commentId],
         responsibleUserId: ownerUserId } }).returning();
     await db.update(agents).set({ status: "idle", lifecycleState: "ready" }).where(eq(agents.id, agentId));
     const driver = createLifecycleDriver(db, {} as never);
