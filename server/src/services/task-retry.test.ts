@@ -463,6 +463,23 @@ describe("durable task Retry admission", () => {
       }
       await expect(dispatchRun(f.input, successors[0])).resolves.toMatchObject({ interruptedRunId: f.parent.id });
     });
+  it("escalates a failed Retry run's transient preparation failure once when the scheduler declines it permanently", async () => {
+    const f = await seedFailedRetryAdmittedRun();
+    // An external Dot execution is never retried by the bounded scheduler.
+    await db.update(heartbeatRuns).set({ errorCode: "reusable_sandbox_resume_failed",
+      runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" },
+        nativeExecutionInput: { provider: { kind: "openai_dot" } } },
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+    }).where(eq(heartbeatRuns.id, f.parent.id));
+    const heartbeat = heartbeatService(db);
+    await heartbeat.reconcileStrandedAssignedIssues({ companyId: f.input.companyId });
+    expect((await db.select().from(issues).where(eq(issues.id, f.input.issueId)))[0]).toMatchObject({ status: "blocked" });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.parent.id))).toHaveLength(0);
+    const notices = async () => (await db.select().from(issueComments).where(eq(issueComments.issueId, f.input.issueId))).length;
+    const escalated = await notices();
+    await heartbeat.reconcileStrandedAssignedIssues({ companyId: f.input.companyId });
+    expect(await notices()).toBe(escalated);
+  });
   it("still escalates a failed Retry run's transient preparation failure once its bounded retries are spent", async () => {
     const f = await seedFailedRetryAdmittedRun();
     await db.update(heartbeatRuns).set({ errorCode: "reusable_sandbox_resume_failed",
