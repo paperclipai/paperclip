@@ -167,7 +167,10 @@ export function diagnosticProcessKind(command: string, platform: NodeJS.Platform
   return diagnosticProcessKinds.has(name) ? name : "other";
 }
 
-export async function readProcessTable(startInspector?: () => ChildProcess): Promise<ProcessObservation[] | null> {
+export async function readProcessTable(
+  startInspector?: () => ChildProcess,
+  onFailure?: (reason: string) => void,
+): Promise<ProcessObservation[] | null> {
   if (process.platform === "win32") {
     return null;
   }
@@ -177,7 +180,7 @@ export async function readProcessTable(startInspector?: () => ChildProcess): Pro
       ["-e", "-o", "pid=,ppid=,pgid=,lstart=,stat=,comm="],
       {
         env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" },
-        stdio: ["ignore", "pipe", "ignore"],
+        stdio: ["ignore", "pipe", "pipe"],
         // A wrapper-group shutdown must not interrupt its own bounded audit.
         detached: true,
       },
@@ -185,31 +188,40 @@ export async function readProcessTable(startInspector?: () => ChildProcess): Pro
     let output = "";
     let settled = false;
     let truncated = false;
-    const finish = (value: ProcessObservation[] | null, reason?: "timeout" | "output_limit" | "spawn_error" | "nonzero_exit", code?: string | number | null, signal?: NodeJS.Signals | null) => {
+    let errorOutput = "";
+    const finish = (value: ProcessObservation[] | null, reason?: string, diagnostic?: { reason: "timeout" | "output_limit" | "spawn_error" | "nonzero_exit"; code?: string | number | null; signal?: NodeJS.Signals | null }) => {
       if (settled) return;
       settled = true;
       clearTimeout(inspectionTimeout);
-      if (reason) console.error("[runner-process-inspector] " + JSON.stringify({ reason, pid: inspector.pid ?? null, code: code ?? null, signal: signal ?? null, outputLength: output.length }));
+      if (diagnostic) console.error("[runner-process-inspector] " + JSON.stringify({ reason: diagnostic.reason, pid: inspector.pid ?? null, code: diagnostic.code ?? null, signal: diagnostic.signal ?? null, outputLength: output.length }));
+      if (value === null && reason) onFailure?.(reason);
       resolve(value);
     };
     const inspectionTimeout = setTimeout(() => {
       inspector.kill("SIGKILL");
-      finish(null, "timeout");
+      finish(null, "ps did not finish within 5000ms", { reason: "timeout" });
     }, 5_000);
     inspectionTimeout.unref();
     inspector.stdout?.setEncoding("utf8").on("data", (chunk: string) => {
       if (output.length + chunk.length > 1024 * 1024) {
         truncated = true;
         inspector.kill("SIGKILL");
-        finish(null, "output_limit");
+        finish(null, "ps output exceeded 1 MiB", { reason: "output_limit" });
         return;
       }
       output += chunk;
     });
-    inspector.once("error", (error: NodeJS.ErrnoException) => finish(null, "spawn_error",
-      ["EAGAIN", "EMFILE", "ENFILE", "ENOENT", "EACCES", "EPERM"].includes(error.code ?? "") ? error.code : "other"));
+    inspector.stderr?.setEncoding("utf8").on("data", (chunk: string) => {
+      errorOutput = (errorOutput + chunk).slice(-512);
+    });
+    inspector.once("error", (error: NodeJS.ErrnoException) => finish(null, `ps could not start: ${error.message}`,
+      { reason: "spawn_error", code: ["EAGAIN", "EMFILE", "ENFILE", "ENOENT", "EACCES", "EPERM"].includes(error.code ?? "") ? error.code : "other" }));
     inspector.once("close", (code, signal) => {
-      if (code !== 0 || truncated) { finish(null, truncated ? "output_limit" : "nonzero_exit", code, signal); return; }
+      if (code !== 0 || truncated) {
+        finish(null, `ps exited code=${code} signal=${signal}${errorOutput.trim() ? `: ${errorOutput.trim()}` : ""}`,
+          { reason: truncated ? "output_limit" : "nonzero_exit", code, signal });
+        return;
+      }
       const observations = output
         .split(/\r?\n/)
         .map((line) =>

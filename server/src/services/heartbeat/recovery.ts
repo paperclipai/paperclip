@@ -38,9 +38,11 @@ import {
 } from "../sandbox-stop-and-retain.js";
 import { discoverSettledNativeRunProcesses, PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED, recordNativeLocalProcessStopInTransaction, releaseSettledNativeRunProcess, retryPendingSettledNativeRunProcesses } from "../native-local-process-stop.js";
 import { pendingCaseHandoffForRun } from "./case-handoff-lifecycle.js";
+import { portableTaskPreparationLeaseId } from "../plugin-task-ownership.js";
 import { retireInheritedRemoteRunnerIdentity } from "../native-runtime/native-inherited-runner-retry.js";
 import {
   LEGACY_LIVE_OWNER_SETTLE_GRACE_MS,
+  handoffLegacyControllerPreparation,
   legacyControllerBootId,
   liveLegacyControllerExpiresAt,
   proveLegacyController,
@@ -157,6 +159,7 @@ export interface HeartbeatRecoveryDependencies extends Pick<HeartbeatRetryDepend
   executeRun: (runId: string, options?: {
     nativeLeaseOwner?: string;
     nativeRestartRecovery?: NativeRestartRecoveryClaim;
+    portablePreparationLeaseId?: string;
     onNativeExecutionLeaseAcquired?: () => Promise<void>;
   }) => Promise<void>;
   scheduleNativeSessionResumeDispatch: (runId: string, nextAttemptAt: Date, mode?: "restart") => void;
@@ -1266,6 +1269,13 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
             retryRunCreated: false,
           },
         });
+        restartSuspendedRunIds.push(run.id);
+        return;
+      }
+      if (agent.adapterType === "paperclip_runner" && run.runtimeMode === "legacy" && run.scopeKind === "issue" &&
+          run.issueId && run.executionStage === "preparing" && run.controllerBootId === legacyControllerBootId &&
+          await handoffLegacyControllerPreparation(db, run, portableTaskPreparationLeaseId(db, run),
+            () => markRunHandedOffForShutdown(run.id))) {
         restartSuspendedRunIds.push(run.id);
         return;
       }
@@ -2467,6 +2477,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       nativeWorkspaceFinalizationPending,
     } of activeRuns) {
       if (run.runtimeMode === "native" && readNativeStartupCleanup(run)) continue;
+      if (run.runtimeMode === "legacy" && isRunHandedOffForShutdown(run.id)) continue;
       if (parseObject(run.contextSnapshot).nativeQuestionCancellation) continue;
       // Native recovery owns these dispositions. Its writes happened after this
       // inventory was read; do not reap or overwrite them using the old row.
@@ -2686,8 +2697,18 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         readNonEmptyString(runContext.wakeReason) === "issue_monitor_due" &&
         monitorNextCheckAt !== undefined &&
         (!monitorNextCheckAt || monitorNextCheckAt.getTime() <= now.getTime());
-      const revokedState = await revokeExpiredLegacyControllerWithState(db, run);
+      const reclaimPortablePreparation = priorBootSetupExpired && adapterType === "paperclip_runner" && run.scopeKind === "issue" && run.issueId
+        ? portableTaskPreparationLeaseId(db, run) : undefined;
+      const revokedState = await revokeExpiredLegacyControllerWithState(db, run, reclaimPortablePreparation);
       if (!revokedState) continue;
+      if (revokedState.portablePreparationLeaseId) {
+        const execution = executeRun(run.id, { portablePreparationLeaseId: revokedState.portablePreparationLeaseId }).catch(error => {
+          logger.error({ err: error, runId: run.id }, "portable task preparation recovery failed");
+        });
+        activeRunExecutionPromises.add(execution);
+        void execution.finally(() => activeRunExecutionPromises.delete(execution));
+        continue;
+      }
       // The scan snapshot can predate a child the old controller saved just
       // before it died. The child checks above used that snapshot, so a proven
       // gone controller is never enough here: when revocation reports a child
