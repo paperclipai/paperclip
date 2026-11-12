@@ -703,7 +703,7 @@ describe("iMessage Photon channel control plane", () => {
     expect(secretSafe).not.toContain("private-line-token");
     expect(secretSafe).not.toContain('"projectSecret"');
   }, 30_000);
-  async function onlinePhotonEnrollment(activityFails = false, reEnrollment = false) {
+  async function onlinePhotonEnrollment(activityFails = false, reEnrollment = false, lateConfigLoss = false) {
     const home = await mkdtemp(path.join(tmpdir(), "photon-online-enrollment-"));
     const keys = ["PAPERCLIP_HOME", "PAPERCLIP_CONFIG", "PAPERCLIP_INSTANCE_ID", "PAPERCLIP_PUBLIC_URL",
       "PAPERCLIP_AUTH_PUBLIC_BASE_URL", "BETTER_AUTH_URL", "BETTER_AUTH_BASE_URL",
@@ -901,6 +901,51 @@ describe("iMessage Photon channel control plane", () => {
       expect(await state.read(PHOTON_EXTERNAL_STATE)).toEqual(retainedBeforeProof);
       expect(allocations).not.toHaveBeenCalled();
       expect(t.f.client.close).toHaveBeenCalledTimes(closeCalls);
+      if (lateConfigLoss) {
+        const receiverStarts = vi.spyOn(PhotonReceiver.prototype, "start");
+        const currentInitialize = PhotonChatAdapter.prototype.initialize;
+        const initialize = vi.isMockFunction(currentInitialize) ? currentInitialize.getMockImplementation() : currentInitialize;
+        if (!initialize) throw new Error("Normal controlled Photon initialize implementation is absent");
+        let entered = 0, armed = true, configurationHidden = false;
+        const originalCheckpoint = await state.read("checkpoint");
+        // Actual SDK initialization is after the normal lease/reservation and
+        // constructor/context attachment, before its final placement callback.
+        const initializing = vi.spyOn(PhotonChatAdapter.prototype, "initialize").mockImplementation(async function (this: PhotonChatAdapter, chat) {
+          const initialized = await initialize.call(this, chat);
+          if (!armed) return initialized;
+          armed = false; entered++;
+          await request(listener).post("/api/tools/oauth/cloud-connector/enrollment").set("Connection", "close")
+            .send({ companyId }).expect(201);
+          const again = loadPaperclipCloudConnectorIdentity();
+          expect(again).toMatchObject({ status: "pending", instanceId: recovered.binding.instanceId });
+          expect(cloudConnectors.paperclipCloudConnectorConfigFromEnv()).toBeNull();
+          configurationHidden = true;
+          return initialized;
+        });
+        try {
+          const result = await t.service.reconcileProviderRuntimes();
+          expect(entered).toBe(1);
+          expect(configurationHidden, "normal public re-enrollment must hide configuration before final intake selection").toBe(true);
+          expect(receiverStarts, "late connector loss must not start local Photon intake after external custody was selected").not.toHaveBeenCalled();
+          expect(result).toMatchObject({ local: 0, failed: 1 });
+          expect(t.service.runtime.get(t.endpoint.id)).toBeNull();
+          expect(await state.read("checkpoint")).toEqual(originalCheckpoint);
+          expect(readPhotonExternalState(await state.read(PHOTON_EXTERNAL_STATE))).toMatchObject({
+            phase: "external", handoffId: recovered.handoffId, binding: recovered.binding, acceptedSequence: recovered.acceptedSequence });
+          expect(t.f.client.close).toHaveBeenCalledTimes(closeCalls + 1);
+        } finally {
+          if (vi.isMockFunction(currentInitialize)) initializing.mockImplementation(initialize);
+          else initializing.mockRestore();
+          const pendingAgain = loadPaperclipCloudConnectorIdentity();
+          if (pendingAgain?.pending) {
+            await request(listener).get("/api/tools/oauth/cloud-connector/enrollment-callback").set("Connection", "close")
+              .query({ enrollment_id: "online-case", approval_code: "controlled-approval", state: pendingAgain.pending.returnState }).expect(303);
+          }
+        }
+        expect(cloudConnectors.paperclipCloudConnectorConfigFromEnv()).toMatchObject({ instanceId: recovered.binding.instanceId });
+        expect(await t.service.reconcileProviderRuntimes()).toMatchObject({ failed: 0 });
+        expect(brokerOperations.filter(operation => operation.kind === "enroll")).toHaveLength(1);
+      }
       if (reEnrollment) {
         // The real public operation changes the SAME active on-disk identity to
         // pending; the normal config getter must now hide the connector.
@@ -958,6 +1003,8 @@ describe("iMessage Photon channel control plane", () => {
     () => onlinePhotonEnrollment(true), 30_000);
   it("keeps retained Photon Cloud custody fenced during normal connector re-enrollment and restores its original handoff",
     () => onlinePhotonEnrollment(false, true), 30_000);
+  it("fences late connector loss at the normal Photon SDK intake-placement callback and restores its original handoff",
+    () => onlinePhotonEnrollment(false, false, true), 30_000);
   async function resumeOriginalHandoff(phase: "enrolling" | "joining", observeIdleRenewal = false) {
     const renew = vi.fn(async () => true);
     const signing = generateKeyPairSync("ed25519"), sealing = generateKeyPairSync("x25519");

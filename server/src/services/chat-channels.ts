@@ -1122,11 +1122,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
               onPhotonUsefulClientDebt: () => photonExternalRuntimeOwner.senderDebt(endpoint.id, context),
               onPhotonSenderRuntimeClosed: photonSenderAllocation
                 ? () => photonExternalRuntimeOwner.senderRuntimeClosed(photonSenderAllocation, context) : undefined,
-              onPhotonIntakePlacement: async () => {
-                const latest = await endpointRecord(endpoint.id);
-                const external = latest && await photonExternalRuntimeOwner.placement(latest);
-                return external ? { kind: "cloud", bindingId: external.binding.bindingId } : { kind: "local" };
-              },
+              onPhotonIntakePlacement: async () => photonExternalRuntimeOwner.intakePlacement(
+                await endpointRecord(endpoint.id), photonAllocation),
               onPhotonEvent: (event) => handlePhotonEvent(endpoint.id, event, context),
               onDiscordRootMentionAdmission:
                 record.endpoint.provider === "discord"

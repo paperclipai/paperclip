@@ -121,6 +121,35 @@ export function createPhotonExternalRuntimeOwner(db: Db, options: {
     if (record.endpoint.provider !== "imessage-photon") return null;
     return selected(record);
   }
+  /** Final SDK intake decision after construction awaits. Discovery may return
+   * no placement while connector authority is pending; that never revokes an
+   * unfinished Cloud handoff or authorizes another local receiver. */
+  async function intakePlacement(record: EndpointRecord | null, allocation: PhotonRuntimeAllocation | null):
+    Promise<{ kind: "local" } | { kind: "cloud"; bindingId: string }> {
+    if (!record || record.endpoint.provider !== "imessage-photon")
+      throw conflict("Photon intake endpoint is no longer current");
+    const external = await selected(record);
+    if (external) return { kind: "cloud", bindingId: external.binding.bindingId };
+    const prior = await store.read({ companyId: record.endpoint.companyId, endpointId: record.endpoint.id });
+    if (!prior || prior.phase === "retired") return { kind: "local" };
+    const runtime = allocation?.context.endpointRuntime;
+    if (allocation?.kind === "receiver" && prior.phase === "enrolling"
+      && prior.handoffId === allocation.handoffId && prior.localResourceId === allocation.resourceId
+      && isDeepStrictEqual(prior.identity, allocation.identity)
+      && isDeepStrictEqual(prior.localResource, allocation.descriptor)
+      && allocation.descriptor.closed === false && prior.localClosureConfirmed !== true
+      && prior.identity.companyId === record.endpoint.companyId && prior.identity.endpointId === record.endpoint.id
+      && prior.identity.connectionId === record.endpoint.connectionId
+      && prior.identity.subject === (record.endpoint.setup as InternalSetupState).photonExternalSubject
+      && prior.identity.runtimeGeneration === Number((record.endpoint.setup as InternalSetupState).runtimeGeneration ?? 0)
+      && prior.identity.runtimeGeneration === allocation.context.generation
+      && prior.identity.credentialReferences === credentialFingerprint(record.credentialSecretRefs)
+      && prior.identity.credentialReferences === allocation.context.credentialFingerprint
+      && runtime && options.currentRuntime(record.endpoint.id) === runtime
+      && options.context(runtime) === allocation.context && resources.owns(allocation.resourceId, runtime))
+      return { kind: "local" };
+    throw conflict("Photon original handoff must settle before local intake can start");
+  }
   /** Configuration needs a ready sender, not an idle renewable receiver lease.
    * Recover unfinished custody through the existing finite lease owner before
    * asking the normal Runtime registry to construct an external-only sender. */
@@ -659,7 +688,7 @@ export function createPhotonExternalRuntimeOwner(db: Db, options: {
     return !state.senderResource || resources.owns(state.senderResource.id, runtime);
   } };
   ingress.set(db, registration);
-  return { configurationRuntimeFor, reserveLocalRuntime, attachLocalRuntime, reserveSenderRuntime, attachSenderRuntime, senderRuntimeClosed, runtimeConstructionAborted, reconcile, placement, senderDebt, retire, retained, cleanupFailure, retry, close() { if (ingress.get(db) === registration) ingress.delete(db); return Promise.all([...active.values()]).then(() => undefined); } };
+  return { configurationRuntimeFor, reserveLocalRuntime, attachLocalRuntime, reserveSenderRuntime, attachSenderRuntime, senderRuntimeClosed, runtimeConstructionAborted, reconcile, placement, intakePlacement, senderDebt, retire, retained, cleanupFailure, retry, close() { if (ingress.get(db) === registration) ingress.delete(db); return Promise.all([...active.values()]).then(() => undefined); } };
 }
 
 /** Called by normal configuration SQL with its actual authorized actor. Existing
