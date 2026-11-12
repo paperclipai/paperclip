@@ -2743,9 +2743,14 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       const enrichedById = new Map(enrichedItems.map((item) => [item.id, item]));
       const obligationLeadOf = (item: AttentionItem) =>
         isObligationEvidence(item) ? enrichedById.get(item.obligationLeadId!) ?? item : item;
+      // An obligation is actionable when any member is: a budget hard stop leads its override
+      // approval, and the approval is what the person acts on.
+      const actionableLeadIds = options.actionableOnly
+        ? new Set(enrichedItems.filter(isActionableAttention).map((item) => obligationLeadOf(item).id)) : null;
+      const isActionableLead = (lead: AttentionItem) => !actionableLeadIds || actionableLeadIds.has(lead.id);
       const visibleItems = enrichedItems.filter((member) => {
         const item = obligationLeadOf(member);
-        if (options.actionableOnly && !isActionableAttention(item)) return false;
+        if (!isActionableLead(item)) return false;
         if (view === "archived") {
           // The person's own Archived view (PAP-749 plan §3): open cards they
           // archived or snoozed, and nothing else.
@@ -2776,7 +2781,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       const viewCounts: AttentionViewCounts = { mine: 0, unassigned: 0, company: 0, archived: 0, all: 0 };
       for (const item of enrichedItems) {
         if (obligationLeadOf(item) !== item) continue;
-        if (options.actionableOnly && !isActionableAttention(item)) continue;
+        if (!isActionableLead(item)) continue;
         if (item.archivedAt) continue;
         if (item.snoozedUntil && timestamp(item.snoozedUntil) > now) continue;
         if (hiddenForViewer(item)) {

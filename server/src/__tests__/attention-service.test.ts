@@ -2118,6 +2118,28 @@ describeEmbeddedPostgres("attention service", () => {
     expect((await svc.list(companyId, { userId: "board-user" })).items.some(item => item.subject.id === errorAgentId)).toBe(true);
   });
 
+  it("keeps a budget override approval and its hard stop in the actionable projection", async () => {
+    const { companyId, workerId } = await seedCompany("BUD");
+    const approvalId = randomUUID();
+    await db.insert(approvals).values({ id: approvalId, companyId, type: "budget_override_required", requestedByAgentId: workerId,
+      status: "pending", payload: { title: "Raise the agent budget" } });
+    const policyId = randomUUID();
+    await db.insert(budgetPolicies).values({ id: policyId, companyId, scopeType: "agent", scopeId: workerId, metric: "billed_cents",
+      windowKind: "calendar_month_utc", amount: 100 });
+    await db.insert(budgetIncidents).values({ companyId, policyId, scopeType: "agent", scopeId: workerId, metric: "billed_cents",
+      windowKind: "calendar_month_utc", windowStart: new Date("2026-07-01T00:00:00.000Z"), windowEnd: new Date("2026-08-01T00:00:00.000Z"),
+      thresholdType: "hard", amountLimit: 100, amountObserved: 100, status: "open", approvalId });
+    const svc = attentionService(db);
+    const options = { userId: "board-user", actionableOnly: true };
+    const feed = await svc.list(companyId, { ...options, all: true, allowUnscopedAll: true });
+    const budget = feed.items.filter(item => item.sourceKind === "budget_alert" || item.subject.id === approvalId);
+    expect(budget.map(item => item.sourceKind).sort()).toEqual(["approval", "budget_alert"]);
+    expect(new Set(budget.map(item => item.obligationLeadId)).size).toBe(1);
+    const summary = await svc.summary(companyId, options);
+    expect(summary.countsBySourceKind).toEqual(feed.countsBySourceKind);
+    expect(summary.viewCounts.all).toBe(new Set(feed.items.map(item => item.obligationLeadId ?? item.id)).size);
+  });
+
   it("does not route pre-rollout human unblock descriptors", async () => {
     const { companyId } = await seedCompany("ATQ");
     const transitionAt = new Date(ROUTABLE_BLOCKED_ROLLOUT_AT.getTime() - 1);
