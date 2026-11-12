@@ -257,7 +257,7 @@ import {
 } from "./recovery/origins.js";
 import {
   classifyIssueGraphLiveness,
-  classifyIssueReviewPaths,
+  createIssueReviewPathClassifier,
   type IssueGraphLivenessInput,
   type IssueLivenessFinding,
 } from "./recovery/issue-graph-liveness.js";
@@ -4992,6 +4992,7 @@ async function listIssueReviewAttentionMap(
     !(row.continuationRunId && listedExecutionIds.has(row.continuationRunId)),
   );
 
+  const reviewIdSet = new Set(reviewIds);
   const recoveryPaths = [
     ...(recoveryActionRows as Array<{
       id: string;
@@ -5012,13 +5013,13 @@ async function listIssueReviewAttentionMap(
     if (
       recovery.originKind === RECOVERY_ORIGIN_KINDS.strandedIssueRecovery &&
       recovery.originId &&
-      reviewIds.includes(recovery.originId)
+      reviewIdSet.has(recovery.originId)
     ) {
       recoveryPaths.push({ ...recovery, issueId: recovery.originId });
       continue;
     }
     const parsed = parseIssueGraphLivenessIncidentKey(recovery.originId);
-    if (parsed?.companyId === companyId && reviewIds.includes(parsed.issueId)) {
+    if (parsed?.companyId === companyId && reviewIdSet.has(parsed.issueId)) {
       recoveryPaths.push({ ...recovery, issueId: parsed.issueId });
     }
   }
@@ -5118,11 +5119,10 @@ async function listIssueReviewAttentionMap(
     ]),
   );
 
-  for (const issue of reviewIssues) {
-    const pathFacts = classifyIssueReviewPaths(
-      livenessInput,
-      livenessInput.issues.find((entry) => entry.id === issue.id)!,
-    );
+  // One index of the agents and paths for every review of the request.
+  const reviewPathsOf = createIssueReviewPathClassifier(livenessInput);
+  for (const [reviewIndex, issue] of reviewIssues.entries()) {
+    const pathFacts = reviewPathsOf(livenessInput.issues[reviewIndex]!);
     const paths: IssueReviewAttentionPath[] = pathFacts.map((path) => {
       const interactionAudience =
         path.kind === "interaction" && path.ref
