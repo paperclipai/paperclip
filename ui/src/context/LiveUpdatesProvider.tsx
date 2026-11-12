@@ -656,6 +656,29 @@ function invalidateVisibleIssueRunQueries(
   return true;
 }
 
+/**
+ * Run finalization can save a turn's reply after the run's terminal status was
+ * published, and that commit logs no comment_added. Its only notice is the
+ * run.presentation.resolved commit signal, so fetch the open conversation's
+ * saved comments when it arrives. Other run events never refetch history.
+ */
+function invalidateVisibleIssueCommittedReply(
+  queryClient: QueryClient,
+  pathname: string,
+  payload: Record<string, unknown>,
+  options?: VisibleRouteOptions,
+): boolean {
+  if (readString(payload.eventType) !== "run.presentation.resolved") return false;
+  const context = resolveVisibleIssueRouteContext(queryClient, pathname, options);
+  if (!context) return false;
+  const issueId = readString(payload.issueId);
+  if (issueId ? !context.issueRefs.has(issueId) : !runEventMatchesVisibleIssue(context, payload)) return false;
+  for (const issueRef of context.issueRefs) {
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(issueRef) });
+  }
+  return true;
+}
+
 interface RunLiveStatusPatch {
   runId: string;
   agentId: string | null;
@@ -2170,6 +2193,7 @@ function handleLiveEvent(
   }
 
   if (event.type === "heartbeat.run.event") {
+    invalidateVisibleIssueCommittedReply(queryClient, pathname, payload);
     return;
   }
 
@@ -2329,6 +2353,7 @@ export const __liveUpdatesTestUtils = {
   invalidateHeartbeatQueries,
   invalidateHeartbeatProgressQueries,
   invalidateVisibleIssueRunQueries,
+  invalidateVisibleIssueCommittedReply,
   readRunLiveStatusPatchFromPayload,
   resolveLiveCompanyId,
   canUseLiveSession,
