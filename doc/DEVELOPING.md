@@ -1141,6 +1141,15 @@ orphan recovery.
 pnpm exec vitest run server/src/services/heartbeat/agent-status.test.ts server/src/__tests__/heartbeat-agent-status-recovery.test.ts
 ```
 
+## Task document bodies
+
+The native `write_document` tool preserves the supplied Markdown body, including
+leading whitespace, hard-break spaces, line endings, and final newlines. It still
+requires a nonblank body and normalizes key/title fields. `write_task_document`
+and REST document PUT also retain surrounding whitespace. Those REST-backed
+paths keep their existing escaped-line-break normalization: a body with no real
+line breaks can have literal `\n` sequences converted to newlines.
+
 ## Test Commands
 
 The [feature map](../maps/feature-map/README.md) is an optional reference for user
@@ -1433,6 +1442,11 @@ The generated configs and declarations go in
 The server typecheck builds only the Runner's TypeScript output. Use
 `pnpm --filter @paperclipai/paperclip-runner build` when a local check needs the
 Runner binary.
+
+If a compiler child terminates on a signal, the wrapper reports the signal,
+layer, command, and working directory on stderr, then stops with a nonzero exit.
+Compiler stdout and stderr remain visible. A signal such as `SIGKILL` alone does
+not establish that the process ran out of memory.
 
 `src/__tests__/tsconfig.json` holds the options for the test-tree layers, so an
 editor and the typecheck report the same errors. Server tests reach Daytona plugin
@@ -3767,9 +3781,10 @@ boundary. `managed-skill-content.test.ts` covers the focused domain behavior;
 `ephemeral-skills-process.test.ts` requires independent disposable Postgres and
 S3 fixtures and starts separate Node processes. The optional
 `PAPERCLIP_TEST_POSTGRES_ADMIN_URL` creates a random test database per suite.
-On hosts with unavailable Tailscale, set `PAPERCLIP_TAILNET_BIND_HOST=127.0.0.1`
-for local fixtures to avoid repeated CLI discovery. Do not use fixture timings
-collected during builds as hosted performance evidence.
+The server starts the `tailscale` command only when the bind configuration reads
+a tailnet address, and at most one time per process, so local fixtures need no
+`PAPERCLIP_TAILNET_BIND_HOST`. Do not use fixture timings collected during
+builds as hosted performance evidence.
 
 ## App-Shipped Skills Catalog
 
@@ -5143,6 +5158,44 @@ lease and save baseline remain unchanged; current canonical files are never
 uploaded over the retained execution. Remote collection and cleanup serialize
 through Postgres across controller homes. A missing remote collector retains a
 pending save instead of treating an empty local cache as the agent's files.
+A run whose instruction preparation finds another operation on the same
+agent's directory holding that lock does not fail. Before native admission it
+is cancelled as an expected wait and a `agent_directory_busy` retry is
+scheduled 5 to 15 seconds later; this lane spends no failure retries and stops
+after 30 attempts. A native run resuming on its own saved state instead stays
+on the same run and is rescheduled through the same-run retry schedule; its
+count is kept on the run's context so a resume claim does not reset it, and a
+Stop, a lost lease or a moved task leave it to normal settlement. A busy lock
+met while collecting files after a turn is not deferred this way.
+
+Agent configuration writes refuse external instructions on a volume-free
+server. An agent's managed instruction paths are saved as absolute paths under
+the home of the server that wrote them, and each replacement server can have a
+new home. When a configuration change keeps the saved `instructionsFilePath`
+of a managed bundle, the bundle stays managed and its paths are rewritten under
+the current server's managed root. A change that sets a different
+`instructionsFilePath` is classified from that path and is still refused when
+it points outside the managed root.
+
+### Runner controller state on a restarted volume-free server
+
+A volume-free server keeps Runner controller files under
+`runtime/paperclip-runner/durable-sessions/` while it runs. Its durable record is
+the Postgres checkpoint, so those files are disposable. Early in startup, before
+any controller can write, a volume-free server claims an empty (or absent) state
+directory by writing `.volume-free-owner.json` there. A later start that finds
+this marker treats every file in the directory as its own, and the data
+eligibility gate does not count it as legacy volume data; normal restart
+recovery reconciles it as it would after a crash of a volume-backed server. A
+server started without `PAPERCLIP_EPHEMERAL_SERVER` removes the marker, because
+from then on it may write files that exist only on that disk.
+
+A volume-free server that finds files it did not claim (a mounted legacy volume,
+or a directory written before this marker existed) logs a warning and keeps the
+existing protection: if the native controller check finds state the database does
+not prove, startup refuses and the error names the run, the task and the file,
+because that file may be the only copy of the run's progress. Adopt it with the
+native controller migration first.
 
 ## Cloud startup configuration
 

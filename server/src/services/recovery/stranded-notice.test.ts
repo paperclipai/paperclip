@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { noticeMetadataReferencesRecoveryAction } from "./successful-run-handoff.js";
+import { ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE } from "../environment-provider-unavailable-error.js";
 import {
   DEFAULT_STRANDED_RECOVERY_NOTICE_BODY,
   buildConfigurationIncompleteRecoveryNoticeSeed,
@@ -146,6 +147,19 @@ describe("buildStrandedRecoveryEscalationNotice", () => {
     expect(notice.presentation.title).toBe("Environment plugin was not running");
     expect(notice.body).toContain("before the agent started");
     expect(JSON.stringify(notice.metadata)).toContain("worker status");
+  });
+  it("asks for Retry, not a board decision, when the environment provider stayed unavailable", () => {
+    const notice = buildStrandedRecoveryEscalationNotice({
+      seed: buildImmediateExecutionPathRecoveryNoticeSeed({ status: "in_progress" }),
+      recoveryCause: ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE,
+      recoveryActionId: "provider-recovery",
+      recoveryOwner: null,
+      sourceRun: { id: "failed-run", status: "failed", errorCode: ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE },
+    });
+    const metadata = JSON.stringify(notice.metadata);
+    expect(notice.presentation.title).toBe("Environment provider was temporarily unavailable");
+    expect(metadata).toContain("Retry when ready");
+    expect(metadata).not.toContain("Board decision required");
   });
   const actionId = "6a2f8e64-6f5e-4b58-b7fd-111111111111";
   const owner = { id: "9b1c2d3e-4f50-4a61-8b72-222222222222", name: "CTO" };

@@ -25,6 +25,8 @@ describe("Git mount-boundary absence classification", () => {
 
   it.each([
     { stderr: boundary, accepted: true },
+    { stderr: boundary.replace("/mounted workspace", "/"), accepted: true },
+    { stderr: boundary.replaceAll("\n", "\r\n"), accepted: true },
     { stderr: boundary + "\n", accepted: true },
     { stderr: boundary.replaceAll("\n", "\r\n") + "\r\n", accepted: true },
     { stderr: boundary.split("\n")[0], accepted: false },
@@ -34,6 +36,8 @@ describe("Git mount-boundary absence classification", () => {
     { stderr: "prefix\n" + boundary, accepted: false },
     { stderr: boundary.replace("not set", "set"), accepted: false },
     { stderr: boundary.replace("/mounted workspace", ""), accepted: false },
+    { stderr: boundary.replace("/mounted workspace", "/mounted\ninjected"), accepted: false },
+    { stderr: boundary.replace("/mounted workspace", "/mounted\rinjected"), accepted: false },
     { stderr: "fatal: cannot open .git: Permission denied\n", accepted: false },
     { stderr: "fatal: detected dubious ownership in repository\n", accepted: false },
     { stderr: "fatal: bad object HEAD\n", accepted: false },

@@ -1,5 +1,28 @@
 # Database
 
+### Better Auth 1.7.16 upgrade
+
+Better Auth 1.7.3 and later identify accounts by `provider_id` and `account_id`.
+They no longer write the `issuer` column that 1.7.0–1.7.2 required. Apply the
+schema migration before starting the updated server. It makes `issuer` nullable,
+keeps its existing values, removes the old issuer index, and adds a unique index
+on the provider/account pair. This permits new credential signups and preserves
+existing accounts.
+
+Before the upgrade, check for duplicate provider/account pairs:
+
+```sql
+SELECT provider_id, account_id, count(*)
+FROM account
+GROUP BY provider_id, account_id
+HAVING count(*) > 1;
+```
+
+Resolve any duplicates before migration. Keep different users separate. A duplicate
+causes index creation to fail rather than leaving an ambiguous login identity.
+Do not restore the issuer `NOT NULL` constraint on rollback while new rows have
+null issuers. See the [Better Auth upgrade guide](https://better-auth.com/docs/guides/1-7-upgrade-guide).
+
 ### Durable native provider backups
 
 `native_harness_backups` journals encrypted provider-session archives in object
@@ -573,6 +596,15 @@ run bindings. When both bindings name the same task, the batch reads its current
 authority once. Different task bindings must both pass. The batch is discarded
 after that delivery; later events still recheck grants, membership, task
 existence, and company boundaries.
+
+Task routes that filter several rows for one actor (summaries, lists, blockers,
+relation edges, and the chat bootstrap) use one fresh authorization batch per
+call. The batch reads the task rows and applies the task-privacy predicate to
+all of them in one statement. It reads membership, agent, and run policy once.
+The number of statements does not grow with the number of tasks. The boundary
+checks of a low-trust agent (ancestry and mention grants) stay per task and run
+at most eight at a time. The batch is discarded after the call; the next
+request reads current grants, membership, and privacy again.
 
 Browser progress events update cached live run status directly. A successful
 patch does not refetch task details, activity, or run history. Unknown runs
@@ -1284,6 +1316,77 @@ When you change the data model:
 `packages/db/drizzle.config.ts` reads the compiled schema from `dist/schema/*.js`.
 Then update every layer that the change affects: `packages/shared` types and
 validators, `server` routes and services, and `ui` API clients and pages.
+
+### Migration compatibility with the running release
+
+Paperclip Cloud starts a new release while the previous one is still serving
+against the same database. Every migration is therefore classified by
+`packages/db/src/migration-compatibility.ts` as one of:
+
+| Class | Meaning | Examples |
+| --- | --- | --- |
+| `online_compatible` | The previous release keeps working and no lock is held for long. A deployer applies it without a pause. | `CREATE TABLE` and anything on a table created in the same migration, `CREATE INDEX CONCURRENTLY`, `ADD COLUMN` that is nullable or has a constant default, `ADD CONSTRAINT ... NOT VALID`, `CREATE TYPE`, `ALTER TYPE ... ADD VALUE` |
+| `requires_staging` | The previous release breaks or its writes are rejected. Ship it in two releases: expand first, contract later. | `DROP TABLE`/`DROP COLUMN`, renames, `ALTER COLUMN ... TYPE`, `SET NOT NULL`, `DROP DEFAULT`, a `NOT NULL` column without a default, a validated `CHECK`, a `UNIQUE` constraint or unique index on an existing table, `TRUNCATE`, `DELETE` |
+| `unknown` | The classifier cannot prove either. This includes every statement it does not recognize and every lock or duration hazard (reason codes starting with `lock_hazard_`). | plain `CREATE INDEX` on an existing table, a validated foreign key on an existing table, `VALIDATE CONSTRAINT`, `UPDATE` backfills, procedural `DO` blocks, `CREATE OR REPLACE FUNCTION`, triggers on existing tables, `DROP INDEX`, `DROP CONSTRAINT` |
+
+A migration takes the worst class of its statements. Lock and duration hazards
+are `unknown`, not compatible with a warning.
+
+A table counts as created in the migration when the statement is a plain
+`CREATE TABLE`, or a `CREATE TABLE IF NOT EXISTS` for a table that no earlier
+migration created. `IF NOT EXISTS` on a table from an earlier migration proves
+nothing, so later statements on that table are judged as changes to an existing
+table.
+
+`drizzle-kit` emits validated foreign keys and plain indexes. For an existing
+table, edit the generated SQL: append `NOT VALID` to the foreign key, and use
+`CREATE INDEX CONCURRENTLY IF NOT EXISTS`.
+
+PostgreSQL rejects `CONCURRENTLY` inside a transaction, and the migrator runs
+each migration file in one transaction. A migration that uses `CONCURRENTLY`
+must therefore be listed in `MIGRATIONS_WITH_TOP_LEVEL_STATEMENTS` in
+`packages/db/src/client.ts`, and every statement in it must be idempotent,
+because a failed run starts again from the first statement. The pull-request
+guard fails a new `CONCURRENTLY` migration that is not in that list.
+
+**The rule for a new migration.** A pull request fails when a migration it adds
+is `unknown`. Rewrite the migration, split it into expand and contract
+migrations, or, when you have verified the migration yourself, state the class
+in the first lines of the migration file:
+
+```sql
+-- paperclip:migration-compat online_compatible: <why the previous release keeps working and no lock is held long>
+```
+
+Use `requires_staging` in place of `online_compatible` when the previous
+release cannot run against the migration. The justification is mandatory. The
+override is read only from the migration file, so it is reviewed with the SQL
+and travels with it. A contract migration (for example the `DROP COLUMN` that
+follows an expand release) always classifies as `requires_staging`; mark it
+`online_compatible` this way once no running release uses the column.
+`requires_staging` does not fail the pull request yet; it prints a notice.
+
+Check a migration locally:
+
+```sh
+cd packages/db
+pnpm exec tsx scripts/migration-compatibility.ts src/migrations/0468_busy_wendell_rand.sql
+pnpm exec tsx scripts/migration-compatibility.ts            # distribution over all migrations
+pnpm exec tsx scripts/migration-compatibility.ts --check    # the pull-request guard
+```
+
+The guard runs in `check:migrations` (so in the `@paperclipai/db` typecheck and
+build) against the merge base with `origin/master`, and in the pull-request
+policy job through `.github/scripts/check-pr-migration-order.mjs`. Migrations
+that were already on `master` when the classifier shipped are not annotated.
+
+Deployers read the result from the cloud migrator manifest
+(`cloud-migrators/v1/<sha>/manifest.json`, built by
+`scripts/cloud-migrator-artifacts.mjs`). Its `migrationCompatibility.migrations`
+array lists every packed migration in journal order with `idx`, `tag`,
+`sqlSha256` (the hash the migrator records in the migration history),
+`compatibility`, `classified` (the classifier's verdict before an override),
+`override`, `overrideJustification`, and `reasons`.
 
 ## Migration authoring checklist
 
@@ -2262,6 +2365,19 @@ named `review_wait_benchmark...` can be supplied through
 `PAPERCLIP_TEST_DATABASE_URL` to compare another PostgreSQL major version.
 DataRow bytes exclude response metadata and transport overhead.
 
+An issue list or inbox request reads the waits of all its tasks in one pass.
+That pass checks the requester provenance of every waiting run with
+`chatRunSourceMessageIds`. The runs that need the same kind of provenance read
+share one statement, so the statement count follows the longest requester
+lineage, not the number of waits. Each run gets the decision of a separate
+`chatRunSourceMessageId` call: both use the same walk and the same reads. The
+benchmark counts the statements of one request and measures its wall and CPU
+time against a pre-fix commit:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx scripts/benchmark-review-wait-provenance.ts --baseline-ref=<pre-fix commit>
+```
+
 
 ### Sandbox creation ownership
 
@@ -2360,3 +2476,22 @@ but those values no longer select the active workspace. API reads derive
 retain the existing account and company-audit checks. Replaying the migration
 preserves explicit Classic choices. Agent Chat ignores its retired stored flag
 without rewriting instance settings. No task, agent, or execution state changes.
+
+## Project environment rolling compatibility
+
+New projects select repository storage rather than a persistent run environment.
+The nullable `projects.environment_id` column remains a database compatibility
+field for older servers; the current project API omits it and does not use it
+for placement.
+
+When migrations `0466_drop_project_environment.sql` and
+`0467_fair_human_torch.sql` are both pending, the canonical migration runner
+qualifies their exact SQL hashes and applies them in one transaction. It locks
+`projects`, saves every nonnull legacy environment value, executes both published
+migrations and records both genuine ledger entries, then restores those values
+before commit. Old readers and writers wait for the table lock and continue
+against the retained column. Any failure rolls back the DDL, values and receipts.
+If `0466` was already committed, `0467` adds the nullable column and its original
+`ON DELETE SET NULL` foreign key normally; it cannot recover values previously
+removed by that committed migration. Deployments that pre-stage this pair must
+use this migration runner rather than execute the SQL files independently.

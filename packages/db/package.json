@@ -38,7 +38,7 @@
     "embedded-postgres"
   ],
   "scripts": {
-    "check:migrations": "tsx src/check-migration-numbering.ts && tsx src/check-migration-safety.ts",
+    "check:migrations": "tsx src/check-migration-numbering.ts && tsx src/check-migration-safety.ts && tsx scripts/migration-compatibility.ts --check",
     "build": "pnpm run check:migrations && tsc && rm -rf dist/migrations && mkdir -p dist/migrations/meta && cp src/migrations/*.sql dist/migrations/ && cp src/migrations/meta/_journal.json dist/migrations/meta/",
     "clean": "rm -rf dist",
     "typecheck": "pnpm run check:migrations && tsc --noEmit",

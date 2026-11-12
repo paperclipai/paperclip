@@ -9,10 +9,13 @@ import {
   readBoundedResponse,
   runnerApiUrl,
   validateRunnerApiCall,
+  type RunnerApiCall,
   type RunnerApiIo,
 } from "./runner-api-client.js";
 import { runnerApiSensitiveResponse } from "./runner-api-sensitive-response.js";
 import { RUNNER_API_RESPONSE_MAX_BYTES } from "./runner-api-response-limits.js";
+import { runnerBridgeDefinitions } from "./runner-bridge-tools.js";
+import { CAPABILITY_SEMANTIC_TOOL_CATALOG } from "../../vendor/paperclip-runner/index.js";
 
 const context = {
   companyId: "company-a",
@@ -22,6 +25,8 @@ const context = {
   workMode: "standard",
 };
 const projects = "GET /api/companies/{companyId}/projects";
+const emptyRequestBody = (operation: { requestBody?: unknown }) =>
+  (operation.requestBody as { content?: Record<string, { schema?: { type?: string } }> } | undefined)?.content?.["application/json"]?.schema?.type === "array" ? [] : {};
 const createProject = "POST /api/companies/{companyId}/projects";
 const io = (fetcher: typeof fetch): RunnerApiIo => ({
   apiUrl: "http://127.0.0.1:3100",
@@ -77,7 +82,7 @@ describe("capped list pagination", () => {
 describe("bounded response capture receipts", () => {
   it.each([projects, createProject])("reports oversize evidence without retrying %s", async operationId => {
     const fetcher = vi.fn(async () => new Response("", { headers: { "content-length": String(RUNNER_API_RESPONSE_MAX_BYTES + 1) } }));
-    const result = await executeRunnerApi({ operationId }, context, io(fetcher));
+    const result = await executeRunnerApi({ operationId, ...(operationId === createProject ? { body: { name: "Oversize" } } : {}) }, context, io(fetcher));
     expect(result).toMatchObject({ ok: false, error: "api_response_too_large", maxResponseBytes: RUNNER_API_RESPONSE_MAX_BYTES,
       outcome: operationId === projects ? "read_failed" : "unknown" });
     expect(fetcher).toHaveBeenCalledTimes(1);
@@ -318,8 +323,8 @@ describe("runner API request boundary", () => {
           [name, name === "companyId" ? context.companyId : "fixture"]),
       );
       const result = await executeRunnerApi(
-        // A body-less PATCH is rejected before dispatch; send an empty update.
-        { operationId: operation.operationId, pathParams, ...(operation.method === "PATCH" && operation.requestBody?.required ? { body: {} } : {}) }, context, io(request),
+        // A write missing its required body is rejected before dispatch; send an empty one.
+        { operationId: operation.operationId, pathParams, ...(operation.method !== "GET" && operation.requestBody?.required ? { body: emptyRequestBody(operation) } : {}) }, context, io(request),
       );
       expect(operation.callPolicy).toBe("rest");
       expect(result).toMatchObject({ ok: false, status: 403, data: { error: "Route permission required" } });
@@ -370,7 +375,7 @@ describe("runner API request boundary", () => {
     );
     await expect(
       executeRunnerApi(
-        { operationId: operation.operationId, pathParams, ...(operation.method === "PATCH" ? { body: { status: "resolved" } } : {}) },
+        { operationId: operation.operationId, pathParams, body: operation.method === "PATCH" ? { status: "resolved" } : { body: "Note" } },
         context,
         io(request),
       ),
@@ -819,11 +824,48 @@ describe("runner API request boundary", () => {
   it("rejects a PATCH with no body instead of sending a no-op update", async () => {
     const request = vi.fn<typeof fetch>();
     const call = { operationId: "PATCH /api/companies/{companyId}", pathParams: { companyId: "company-a" }, query: {}, responseText: { limitBytes: 8192 } };
-    await expect(executeRunnerApi(call, context, io(request))).rejects.toThrow(/not sent.*requires body.*name.*Received arguments: operationId, pathParams, query, responseText/);
+    await expect(executeRunnerApi(call, context, io(request))).rejects.toThrow(/not sent.*requires body.*name.*Received arguments: operationId, pathParams, query, responseText\./);
     expect(() => validateRunnerApiCall({ operationId: "PATCH /api/companies/{companyId}", pathParams: { companyId: "company-a" }, body: {} }, context)).not.toThrow();
     // Recovery validates saved calls without dispatch: an older accepted body-less PATCH stays readable.
     expect(() => validateRunnerApiCall({ operationId: "PATCH /api/companies/{companyId}", pathParams: { companyId: "company-a" } }, context)).not.toThrow();
     expect(request).not.toHaveBeenCalled();
+  });
+  // Recorded cohort writes: the model sent read-only options and no body.
+  it.each([
+    { operationId: "POST /api/issues/{id}/interactions/{interactionId}/resolve-from-comment", pathParams: { id: "issue-a", interactionId: "interaction-a" }, query: {}, saveResponse: false },
+    { operationId: "PATCH /api/issues/{id}", pathParams: { id: "issue-a" }, query: {}, saveResponse: false },
+    { operationId: "POST /api/issues/{id}/comments", pathParams: { id: "issue-a" }, query: {}, responseText: { limitBytes: 8192 }, saveResponse: false },
+  ] as RunnerApiCall[])("refuses a write with no body before sending and names the shape to resend: $operationId", async call => {
+    const request = vi.fn<typeof fetch>();
+    const error = await executeRunnerApi(call, context, io(request)).then(() => null, (caught: Error) => caught);
+    expect(request).not.toHaveBeenCalled();
+    expect(error?.message).toContain(`This request was not sent: ${call.operationId} requires body`);
+    expect(error?.message).toContain(`Received arguments: ${Object.keys(call).sort().join(", ")}.`);
+    expect(error?.message).toContain('Resend with a top-level body argument');
+    expect(error?.message).toMatch(/saveResponse never carr(y|ies) request fields/);
+  });
+  it("still sends writes whose body is present or optional", async () => {
+    const request = vi.fn<typeof fetch>(async () => Response.json({ ok: true }));
+    await executeRunnerApi({ operationId: "POST /api/issues/{id}/comments", pathParams: { id: "issue-a" }, body: { body: "Done" } }, context, io(request));
+    expect(request).toHaveBeenCalledTimes(1);
+    const optional = runnerApiCatalog().find(operation => operation.method === "POST" && operation.requestBody
+      && !((operation.requestBody as any).content?.["application/json"]?.schema?.required?.length) && operation.allowedModes.includes("standard")
+      && !operation.path.includes("{") && operation.transport === "rest");
+    if (optional) {
+      request.mockClear();
+      await executeRunnerApi({ operationId: optional.operationId }, context, io(request)).catch(() => undefined);
+      expect(request).toHaveBeenCalledTimes(1);
+    }
+  });
+  it("keeps read-only save options off the call_api schema the model sees", () => {
+    const callApi = CAPABILITY_SEMANTIC_TOOL_CATALOG.find(descriptor => descriptor.operationId === "call_api")!;
+    const properties = Object.keys(callApi.inputSchema.properties ?? {});
+    expect(properties).toContain("body");
+    expect(properties).not.toContain("saveResponse");
+    expect(callApi.description).toContain("save_api_response");
+    const save = runnerBridgeDefinitions({ workspace: false, skills: false, api: true, mode: "standard" }).find(tool => tool.name === "save_api_response");
+    expect(Object.keys((save?.inputSchema as any).properties).sort()).toEqual(["operationId", "pathParams", "query"]);
+    expect(runnerBridgeDefinitions({ workspace: false, skills: false, api: false, mode: "standard" }).some(tool => tool.name === "save_api_response")).toBe(false);
   });
   it("rejects binary, invalid UTF-8 and offsets that split text", async () => {
     for (const [body, type, offsetBytes] of [

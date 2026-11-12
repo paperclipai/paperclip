@@ -16,6 +16,7 @@ import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-pre
 import { notifyInstructionCollection } from "../instruction-collection-notifications.js";
 import { readRequiredQualityReview } from "../required-quality-review.js";
 import { NativeDeliverableEvidenceError, validateNativeDeliverableEvidence } from "./native-deliverable-feedback.js";
+import { OWN_QUESTION_UNANSWERED_REASON, pendingOwnQuestionId, reportsOnlyProviderMessage } from "./own-question-wait.js";
 import { conversationTurnPresentsAnswer, pendingNativeGovernance } from "./native-governance.js";
 import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { onboardingFirstTaskCompletionAllowed } from "../onboarding-first-task-admission.js";
@@ -37,6 +38,7 @@ import { findSupersededExternalReviewRequests } from "./superseded-external-revi
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-review-participant.js";
 import { conversationNativeDecision, isConversation, settleConversationTurnForRun } from "../agent-conversations.js";
 import { issueTreeControlService } from "../issue-tree-control.js";
+import { COMPLETION_REVIEW_STAGE_REASON, completionReviewStageEntry } from "../issue-execution-policy.js";
 import { randomUUID } from "node:crypto";
 import { preserveNativeWorkspaceExportLease } from "./native-workspace-export-resume.js";
 import { and, desc, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
@@ -62,8 +64,10 @@ import type { PrpIgnoredAttentionRequest, PrpTerminalState } from "@paperclipai/
 import {
   arbitrateNativeStatus,
   NATIVE_STATUS_ARBITER_POLICY_VERSION,
+  supersedeHandedOffDecision,
   supersedeStaleOwnerCompletion,
   type NativeAuthoritativeIssueStatus,
+  gateDoneOnConfiguredReview,
 } from "./status-arbiter.js";
 import { recordNativeWorkAssessment } from "./work-assessments.js";
 import {
@@ -1642,9 +1646,14 @@ export async function finalizeNativeRun(input: {
       }, authoritativeIssue) : null;
     if (supersededMonitorWait && supersededMonitorWait.resultId !== resultRow.id) throw new NativeStatusRaceError();
     const qualityReview = await readRequiredQualityReview(input.db, authoritativeIssue);
+    // The configured review stage a completion would start, decided as the
+    // issue route decides `status: "done"`. Review runs keep their own path.
+    const reviewStage = isConversation(authoritativeIssue) || reviewContext
+      ? { kind: "none" as const } : completionReviewStageEntry(authoritativeIssue, run.agentId);
     const statusInput: Parameters<typeof resolveNativeFinalizerStatus>[0] = {
       requiredQualityReviewSatisfied: qualityReview.satisfied,
       executionStageApprovedByRun: await executionStageApprovedByRun(input.db, run, authoritativeIssue),
+      executionReviewStageStarts: reviewStage.kind === "starts",
       caseHandoffAuthorized: Boolean(await assertNativeCaseHandoffResult(input.db, run.id, authoritativeIssue.id, result)),
       monitorWaitDispatched: monitorDelivery !== null,
       monitorWaitPreserved: preservedMonitorWait !== null,
@@ -1706,8 +1715,16 @@ export async function finalizeNativeRun(input: {
     // new owner's task. The status committer rechecks this under the issue lock.
     if (!isConversation(authoritativeIssue)) {
       proposedDecision = supersedeStaleOwnerCompletion(proposedDecision, authoritativeIssue, run.agentId, run.id);
+      if (!reviewContext) proposedDecision = supersedeHandedOffDecision(proposedDecision, authoritativeIssue);
     }
-    if (proposedDecision.statusAction === "done") {
+    if (proposedDecision.statusAction === "done" && !isConversation(authoritativeIssue) &&
+        reportsOnlyProviderMessage(result) && await pendingOwnQuestionId(input.db, {
+          companyId: run.companyId, issueId: authoritativeIssue.id, agentId: run.agentId,
+        })) {
+      proposedDecision = { ...proposedDecision, statusAction: "in_review", toStatus: "in_review",
+        reasonCode: OWN_QUESTION_UNANSWERED_REASON, unblockDescriptor: null, effects: [{ kind: "release_checkout" }] };
+    }
+    if (proposedDecision.statusAction === "done" || proposedDecision.reasonCode === COMPLETION_REVIEW_STAGE_REASON) {
       const continuation = record(run.contextSnapshot?.executionContinuation);
       const objective = typeof continuation.objective === "string" ? continuation.objective
         : [authoritativeIssue.title, authoritativeIssue.description].filter(Boolean).join("\n");
@@ -1723,6 +1740,7 @@ export async function finalizeNativeRun(input: {
             : effect.kind === "record_finalization_error" ? { ...effect, nextAction: error.message } : effect) };
       }
     }
+    proposedDecision = gateDoneOnConfiguredReview(proposedDecision, reviewStage, run.agentId);
     const decision = conversationNativeDecision({
       conversation: isConversation(authoritativeIssue), terminalState,
       workspaceFinalizeStatus: input.workspaceFinalizeStatus, hasGovernanceGate: !!governanceGate,

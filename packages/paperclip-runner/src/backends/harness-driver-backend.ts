@@ -167,6 +167,8 @@ export class HarnessDriverBackend implements NativeSessionBackend {
         recovered: false,
         reason: recovered.reason,
         ...(recovered.failureClass ? { failureClass: recovered.failureClass } : {}),
+        ...(recovered.resumeStateUnavailable ? { resumeStateUnavailable: true as const } : {}),
+        ...(recovered.runnerExitConfirmed ? { runnerExitConfirmed: true as const } : {}),
       };
     }
     try {
@@ -457,6 +459,10 @@ class HarnessNativeSession implements NativeSession {
 
   identity() {
     return structuredClone(this.#input.identity);
+  }
+
+  downloadAttachment(grant: Parameters<NonNullable<NativeSession["downloadAttachment"]>>[0]) {
+    return this.#session.downloadAttachment?.(grant) ?? Promise.resolve(null);
   }
 
   async capabilities() {
@@ -916,7 +922,7 @@ class HarnessNativeSession implements NativeSession {
   }
 
   close(input: { reason: string }) {
-    return this.#session.close(input);
+    return this.#session.close({ ...input, retainUnsettledRemoteRunner: !this.#explicitlyCancelled });
   }
 }
 

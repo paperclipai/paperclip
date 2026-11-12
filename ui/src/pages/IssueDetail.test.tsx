@@ -2923,7 +2923,7 @@ describe("IssueDetail", () => {
     expect(container.textContent).toContain("Issue detail smoke");
     expect(mockSetBreadcrumbs).toHaveBeenLastCalledWith([
       { label: "Tasks", href: "/issues" },
-      expect.objectContaining({ label: "Parent task visible in Properties", identifier: "PAP-0", href: "/issues/PAP-0" }),
+      expect.objectContaining({ label: "Parent task visible in Properties", href: "/issues/PAP-0" }),
       expect.objectContaining({ label: "Issue detail smoke" }),
     ]);
   });
@@ -2939,6 +2939,8 @@ describe("IssueDetail", () => {
     await act(async () => { renderIssueView(); });
     await flushReact();
     const parentCrumb = mockSetBreadcrumbs.mock.calls.at(-1)![0][1];
+    expect(parentCrumb.identifier).toBeUndefined();
+    expect(parentCrumb.label).toBe("Parent task");
     expect(parentCrumb.onClick).toBeTypeOf("function");
     parentCrumb.onClick();
     const expected = { label: source === "query" ? "Inbox" : "Mine", href: state.issueDetailBreadcrumb!.href };
@@ -2951,7 +2953,9 @@ describe("IssueDetail", () => {
     mockIssuesApi.get.mockResolvedValue(createIssue({ id: "parent-1", identifier: "PAP-0", title: "Parent task" }));
     await act(async () => { renderIssueView(); });
     await waitForAssertion(() => {
-      expect(mockSetBreadcrumbs.mock.calls.at(-1)![0][0]).toEqual(expected);
+      const breadcrumbs = mockSetBreadcrumbs.mock.calls.at(-1)![0];
+      expect(breadcrumbs[0]).toEqual(expected);
+      expect(breadcrumbs.at(-1)?.label).toBe(parentCrumb.label);
     });
   });
 
@@ -2964,19 +2968,20 @@ describe("IssueDetail", () => {
     await flushReact();
     expect(mockSetBreadcrumbs).toHaveBeenLastCalledWith([
       { label: "Tasks", href: "/issues" },
-      expect.objectContaining({ label: "Private task", identifier: "PAP-0", href: undefined }),
+      expect.objectContaining({ label: "Private task", href: undefined }),
       expect.objectContaining({ label: "Issue detail smoke" }),
     ]);
     const parentCrumb = mockSetBreadcrumbs.mock.calls.at(-1)![0][1];
+    expect(parentCrumb.identifier).toBeUndefined();
     expect(parentCrumb.onClick).toBeUndefined();
     await act(async () => { renderIssueView(parentCrumb.control); });
     const chip = container.querySelector('[data-testid="locked-issue-chip"]');
     expect(chip).not.toBeNull();
-    expect(chip?.textContent).toBe(isMobile ? "Private" : "PAP-0");
+    expect(chip?.textContent).toBe("Private");
     expect(container.querySelector('a, [role="link"]')).toBeNull();
   });
 
-  it("updates the private parent label when an open task changes viewport", async () => {
+  it("keeps the private parent title free of IDs when an open task changes viewport", async () => {
     mockIssuesApi.get.mockResolvedValue(createIssue({
       ancestors: [{ id: "private-parent", identifier: "PAP-0", locked: true }] as unknown as Issue["ancestors"],
     }));
@@ -3000,7 +3005,7 @@ describe("IssueDetail", () => {
     await act(async () => {
       renderIssueView(<BreadcrumbProvider><RenderBreadcrumbControl /></BreadcrumbProvider>);
     });
-    for (const [index, expected] of ["PAP-0", "Private", "PAP-0"].entries()) {
+    for (const [index, expected] of ["Private", "Private", "Private"].entries()) {
       await act(async () => { updateBreadcrumbs(captured[index]); });
       expect(container.querySelector('[data-testid="locked-issue-chip"]')?.textContent).toBe(expected);
       expect(container.querySelector('a, [role="link"]')).toBeNull();
@@ -4596,6 +4601,134 @@ describe("IssueDetail", () => {
     await act(async () => props.onReorderQueuedComments([followUp.id], queue.revision));
     expect(mockIssuesApi.reorderQueuedComments).toHaveBeenCalledWith("issue-1", {
       orderedCommentIds: [opener.id, followUp.id], queueId: queue.queueId, revision: queue.revision,
+    });
+  });
+
+  it.each(["still starting", "sealed into its first turn"] as const)(
+    "shows a message the booting run's first turn takes as sent, not queued (%s)",
+    async (stage) => {
+      const followUp = createIssueComment({ id: "boot-follow-up", body: "Steer while the sandbox boots",
+        createdAt: new Date("2026-04-21T00:00:05.000Z"), updatedAt: new Date("2026-04-21T00:00:05.000Z") });
+      mockIssuesApi.get.mockResolvedValue(createIssue({ status: "in_progress", assigneeAgentId: "agent-1",
+        executionRunId: "run-boot" }));
+      mockIssuesApi.listComments.mockResolvedValue([followUp]);
+      mockIssuesApi.recentComments.mockResolvedValue({ comments: [followUp], latestCommentId: followUp.id, hasMore: false });
+      const bootingRun = {
+        id: "run-boot", status: "running", invocationSource: "assignment", triggerDetail: null,
+        contextCommentId: null, contextWakeCommentId: null,
+        startedAt: "2026-04-21T00:00:00.000Z", finishedAt: null, createdAt: "2026-04-21T00:00:00.000Z",
+        agentId: "agent-1", agentName: "Codie", adapterType: "paperclip_runner", issueId: "issue-1",
+      };
+      mockHeartbeatsApi.activeRunForIssue.mockResolvedValue(bootingRun);
+      mockHeartbeatsApi.liveRunsForIssue.mockResolvedValue([bootingRun]);
+      // Staging PAP-4454: the server hides a sealed message from the queue,
+      // and steering is unavailable until the sandbox's session is up.
+      mockIssuesApi.getQueuedComments.mockResolvedValue(createQueuedCommentQueue({
+        queueId: "boot-wake", state: "deferred", targetRunId: "run-boot",
+        steeringDisposition: "temporarily_unavailable",
+        entries: stage === "still starting" ? [{ comment: followUp, position: 0, canEdit: true, canDiscard: true }] : [],
+        firstTurnCommentIds: [followUp.id],
+      }));
+      await act(async () => renderIssueView());
+      await waitForAssertion(() => {
+        expect(mockIssuesApi.getQueuedComments).toHaveBeenCalled();
+        const props = mockIssueChatThreadRender.mock.calls.at(-1)?.[0];
+        const bubble = props?.comments.find((comment: IssueComment) => comment.id === followUp.id);
+        expect(bubble).toMatchObject({ body: followUp.body, consumedByRunId: "run-boot" });
+        expect(bubble?.queueState).toBeUndefined();
+        expect(props?.queuedCommentQueue?.entries ?? []).toEqual([]);
+      });
+    },
+  );
+
+  it("keeps first-turn messages the view hides in a reorder of the rest", async () => {
+    const at = (second: number) => new Date(`2026-04-21T00:00:0${second}.000Z`);
+    const joining = createIssueComment({ id: "joins-first-turn", body: "Plain text", createdAt: at(5), updatedAt: at(5) });
+    const withFileA = createIssueComment({ id: "with-file-a", body: "First file", createdAt: at(6), updatedAt: at(6) });
+    const withFileB = createIssueComment({ id: "with-file-b", body: "Second file", createdAt: at(7), updatedAt: at(7) });
+    mockIssuesApi.get.mockResolvedValue(createIssue({ status: "in_progress", assigneeAgentId: "agent-1",
+      executionRunId: "run-boot" }));
+    mockIssuesApi.listComments.mockResolvedValue([joining, withFileA, withFileB]);
+    mockIssuesApi.recentComments.mockResolvedValue({ comments: [joining, withFileA, withFileB],
+      latestCommentId: withFileB.id, hasMore: false });
+    const bootingRun = {
+      id: "run-boot", status: "running", invocationSource: "assignment", triggerDetail: null,
+      contextCommentId: null, contextWakeCommentId: null,
+      startedAt: "2026-04-21T00:00:00.000Z", finishedAt: null, createdAt: "2026-04-21T00:00:00.000Z",
+      agentId: "agent-1", agentName: "Codie", adapterType: "paperclip_runner", issueId: "issue-1",
+    };
+    mockHeartbeatsApi.activeRunForIssue.mockResolvedValue(bootingRun);
+    mockHeartbeatsApi.liveRunsForIssue.mockResolvedValue([bootingRun]);
+    // Until the seal, the server queue still lists the message the first turn will take.
+    const queue = createQueuedCommentQueue({
+      queueId: "boot-wake", state: "deferred", targetRunId: "run-boot", steeringDisposition: "temporarily_unavailable",
+      entries: [joining, withFileA, withFileB].map((comment, position) => ({ comment, position, canEdit: true, canDiscard: true })),
+      firstTurnCommentIds: [joining.id],
+    });
+    mockIssuesApi.getQueuedComments.mockResolvedValue(queue);
+    mockIssuesApi.reorderQueuedComments.mockResolvedValue(queue);
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => {
+      const props = mockIssueChatThreadRender.mock.calls.at(-1)?.[0];
+      expect(props?.queuedCommentQueue?.entries.map((entry: { comment: IssueComment }) => entry.comment.id))
+        .toEqual([withFileA.id, withFileB.id]);
+    });
+    const props = mockIssueChatThreadRender.mock.calls.at(-1)?.[0];
+    await act(async () => props.onReorderQueuedComments([withFileB.id, withFileA.id], queue.revision));
+    expect(mockIssuesApi.reorderQueuedComments).toHaveBeenCalledWith("issue-1", {
+      orderedCommentIds: [joining.id, withFileB.id, withFileA.id], queueId: "boot-wake", revision: queue.revision,
+    });
+  });
+
+  it("keeps queue controls for a new message after the run that took an earlier one hands off", async () => {
+    const runnerRun = (id: string, startedAt: string) => ({
+      id, status: "running" as const, invocationSource: "assignment" as const, triggerDetail: null,
+      contextCommentId: null, contextWakeCommentId: null, startedAt, finishedAt: null, createdAt: startedAt,
+      agentId: "agent-1", agentName: "Codie", adapterType: "paperclip_runner", issueId: "issue-1",
+    });
+    const bootRun = runnerRun("run-boot", "2026-04-21T00:00:00.000Z");
+    const bootMessage = createIssueComment({ id: "boot-message", body: "Sent while the sandbox boots",
+      createdAt: new Date("2026-04-21T00:00:05.000Z"), updatedAt: new Date("2026-04-21T00:00:05.000Z") });
+    mockIssuesApi.get.mockResolvedValue(createIssue({ status: "in_progress", assigneeAgentId: "agent-1",
+      executionRunId: "run-boot" }));
+    mockIssuesApi.addComment.mockResolvedValue(bootMessage);
+    mockHeartbeatsApi.activeRunForIssue.mockResolvedValue(bootRun);
+    mockHeartbeatsApi.liveRunsForIssue.mockResolvedValue([bootRun]);
+    mockIssuesApi.getQueuedComments.mockResolvedValue(createQueuedCommentQueue({
+      queueId: null, state: null, targetRunId: null, steeringDisposition: "temporarily_unavailable", entries: [],
+    }));
+    await act(async () => renderIssueView());
+    await flushReact();
+    const bootProps = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as { onAdd: (body: string) => Promise<void> };
+    await act(async () => { await bootProps.onAdd(bootMessage.body); });
+    await flushReact();
+
+    // The boot run's first turn took the message and finished; a successor runs.
+    // The server queue never lists the boot message, only the new follow-up.
+    const nextRun = runnerRun("run-next", "2026-04-21T00:10:00.000Z");
+    const newMessage = createIssueComment({ id: "new-message", body: "Merge the PR when checks pass",
+      createdAt: new Date("2026-04-21T00:11:00.000Z"), updatedAt: new Date("2026-04-21T00:11:00.000Z") });
+    mockIssuesApi.listComments.mockResolvedValue([bootMessage, newMessage]);
+    mockIssuesApi.recentComments.mockResolvedValue({ comments: [bootMessage, newMessage],
+      latestCommentId: newMessage.id, hasMore: false });
+    const nextQueue = createQueuedCommentQueue({ queueId: "next-wake", state: "deferred", targetRunId: "run-next",
+      steeringDisposition: "available",
+      entries: [{ comment: newMessage, position: 0, canEdit: true, canDiscard: true }] });
+    mockIssuesApi.getQueuedComments.mockResolvedValue(nextQueue);
+    mockHeartbeatsApi.activeRunForIssue.mockResolvedValue(nextRun);
+    mockHeartbeatsApi.liveRunsForIssue.mockResolvedValue([nextRun]);
+    mockIssuesApi.get.mockResolvedValue(createIssue({ status: "in_progress", assigneeAgentId: "agent-1",
+      executionRunId: "run-next" }));
+    await act(async () => {
+      await queryClient.invalidateQueries();
+      await queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments("issue-1") });
+    });
+    await waitForAssertion(() => {
+      const props = mockIssueChatThreadRender.mock.calls.at(-1)?.[0];
+      // A stale local entry must not withhold Steer and Discard from the real queue.
+      expect(props?.queuedCommentQueue?.entries.map((entry: { comment: IssueComment }) => entry.comment.id))
+        .toEqual([newMessage.id]);
+      expect(props?.queuedCommentQueue?.queueId).toBe("next-wake");
     });
   });
 

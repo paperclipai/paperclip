@@ -33,8 +33,6 @@ async function prepare(owner: ReturnType<typeof createPluginRunnerTaskOwner>, cu
 function provider() {
   let stopped = false;
   const task = vi.fn(async (operation: any): Promise<unknown> => {
-    if (operation.kind === "describe") return { kind: "description", taskId: "task", githubCredentialBrokerVersion: 1,
-      runner: {version: "fixture", digest: `sha256:${"a".repeat(64)}`} };
     if (operation.kind === "check_project_auth") return { kind: "project_auth", taskId: "task", allowed: true,
       provider: operation.provider, configurationId: operation.configurationId };
     if (operation.kind === "prepare") return { kind: "prepared", taskId: "task", launch: {
@@ -440,6 +438,23 @@ describe("plugin native Runner ownership", () => {
     expect(task.mock.calls.find(([op]) => op.kind === "stop")).toBeUndefined();
     await registration.release(); await registration.checkpoint("settled"); await handle.completion;
   });
+  it("surfaces a proven admission rejection without polling or stopping the task", async () => {
+    const { task } = provider();
+    const perform = task.getMockImplementation()!;
+    task.mockImplementation(async op => op.kind === "submit"
+      ? { kind: "admission_rejected", taskId: "task", reason: "session_state_unavailable" } : perform(op));
+    const owner = createPluginRunnerTaskOwner({ taskId: "task", projectAuthCheckVersion: 1, task, projectIds: [], harness: "codex" });
+    await prepare(owner);
+    const registration = await owner.registration({} as never, "run");
+    const process = owner.launcher(launchSpec());
+    registration.activate();
+    await expect(registration.ready()).rejects.toThrow("runner_task_admission_rejected: session_state_unavailable");
+    await expect(registration.failure).rejects.toThrow("runner_task_admission_rejected: session_state_unavailable");
+    await expect(process.completion).resolves.toMatchObject({ code: 1 });
+    await registration.checkpoint("unsettled");
+    expect(task.mock.calls.map(([op]) => op.kind)).toEqual(["prepare", "check_project_auth", "submit"]);
+  });
+
   it("reconciles a lost submit reply without launching another attempt", async () => {
     const { task } = provider();
     const perform = task.getMockImplementation()!;
@@ -730,7 +745,8 @@ it.each(["codex", "claude"])("reuses a warm %s process across run authorities wi
   ingress.connect.mockReturnValue({ready:Promise.resolve(),close:async()=>{}});
   const retained = vi.fn(async()=>{});
   const input = {taskId:"task",task,projectIds:[],harness,projectAuthCheckVersion:1 as const,warmTaskVersion:1 as const,
-    accountIdentity:"account",credentialIdentity:"revision",pollMs:1,onSessionRetained:retained, githubBroker:{url:"https://core.example.test",token:"first-run-capability"}};
+    accountIdentity:"account",credentialIdentity:"revision",pollMs:1,onSessionRetained:retained, githubCredentialBrokerVersion:1 as const,
+    githubBroker:{url:"https://core.example.test",token:"first-run-capability"}};
   const owner = createPluginRunnerTaskOwner(input);
   await prepare(owner, launchRequirements(harness));
   const registration = await owner.registration({} as never,"run");
@@ -748,9 +764,9 @@ it.each(["codex", "claude"])("reuses a warm %s process across run authorities wi
   const nextRegistration=await owner.registration({} as never,"next-run");
   const nextIdentity={...requirements.identity,runId:"next-run",turnId:"next-turn",itemId:"next-item"};
   await owner.driver.prepareLaunch!({...launchRequirements(harness),identity:nextIdentity});
-  expect(nextTask.mock.calls[1][0]).toMatchObject({kind:"prepare",priorIdentity:requirements.identity,accountIdentity:"account",githubBroker:{url:"https://core.example.test",token:"next-run-capability"}});
+  expect(nextTask.mock.calls[0][0]).toMatchObject({kind:"prepare",priorIdentity:requirements.identity,accountIdentity:"account",githubBroker:{url:"https://core.example.test",token:"next-run-capability"}});
   expect(task.mock.calls.find(([op])=>op.kind === "prepare")?.[0]).toMatchObject({githubBroker:input.githubBroker});
-  expect(nextTask.mock.calls.map(([op])=>op.kind)).toEqual(["describe","prepare","check_project_auth"]);
+  expect(nextTask.mock.calls.map(([op])=>op.kind)).toEqual(["prepare","check_project_auth"]);
   await registration.release(); nextRegistration.activate(); await nextRegistration.ready();
   expect(nextTask.mock.calls.some(([op])=>op.kind==="submit" || op.kind==="stop" || op.kind==="complete")).toBe(false);
   await nextRegistration.release(); await nextRegistration.checkpoint("settled"); await handle.completion;
@@ -806,14 +822,10 @@ it.each(["codex", "claude"])("refuses warm %s account, harness, project, or cred
 
  it("rejects a missing broker capability before handing authority to a plugin", async () => {
   const {task} = provider();
-  const implementation = task.getMockImplementation()!;
-  task.mockImplementation(async operation => operation.kind === "describe"
-    ? {kind:"description",taskId:"task",runner:{version:"fixture",digest:`sha256:${"a".repeat(64)}`}}
-    : implementation(operation));
   const owner = createPluginRunnerTaskOwner({ taskId: "task",task,projectIds:[],harness:"codex",
     githubBroker:{url:"https://core.example.test",token:"runtime-capability"}});
   await expect(prepare(owner)).rejects.toThrow("credential broker v1");
-  expect(task.mock.calls.map(([op])=>op.kind)).toEqual(["describe"]);
+  expect(task).not.toHaveBeenCalled();
 });
 
 it.each((["codex", "claude"] as const).flatMap(harness => ["prepared", "unprepared", "foreign target"].map(mode => [harness, mode] as const)))(

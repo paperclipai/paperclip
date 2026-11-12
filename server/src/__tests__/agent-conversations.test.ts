@@ -987,6 +987,13 @@ describe("conversation execution wake policy", () => {
 });
 
 describe("chat prompt policy", () => {
+  it("tells chat to save a requested start order as a blocker on the waiting task, not only a promise to hold it", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("must not start until another task is done or approved");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("add the prerequisite to the waiting task's blockedByIssueIds with PATCH /api/issues/{id}, keeping its existing blockers");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("A comment or a promise to hold the work does not stop it");
+    const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: null, title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
+    expect(prompt).toContain("blockedByIssueIds with PATCH /api/issues/{id}");
+  });
   it("tells chat to link the profile of an agent it acted on without turning the link into a wake mention", () => {
     expect(AGENT_CHAT_DIRECTIVE).toContain("link its profile at /<prefix>/agents/<urlKey or id>");
     expect(AGENT_CHAT_DIRECTIVE).toContain("use agent:// only when you intend to notify that agent");
@@ -1043,7 +1050,7 @@ describe("chat prompt policy", () => {
     expect(AGENT_CHAT_DIRECTIVE).toContain("/<prefix>/agents/<urlKey or id>/api-keys for API keys");
     expect(AGENT_CHAT_DIRECTIVE).toContain("The API keys page is not in the profile's navigation");
     const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: "RUN-1", title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
-    expect(prompt).toContain("/<prefix>/agents/<urlKey or id>/api-keys");
+    expect(prompt).toContain("/RUN/agents/<urlKey or id>/api-keys");
   });
 
   it("says how to read the company link prefix from a task identifier so agent links are not guessed", () => {
@@ -1100,7 +1107,7 @@ describe("chat prompt policy", () => {
   it("tells chat how to link projects and to link only the workspace pages a tool result gives", () => {
     const app = readFileSync(new URL("../../../ui/src/App.tsx", import.meta.url), "utf8");
     expect(app).toMatch(/<Route\s+path="projects\/:projectId"/);
-    expect(AGENT_CHAT_DIRECTIVE).toContain("agent profiles, projects) uses that same prefix");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("agent profiles, projects, goals) uses that same prefix");
     expect(AGENT_CHAT_DIRECTIVE).toContain("For a project, link /<prefix>/projects/<projectId>.");
     expect(AGENT_CHAT_DIRECTIVE).toContain("When a tool result gives a record's href, such as a project or a workspace, link that href; a workspace without an href has no page on this instance");
     const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: null, title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
@@ -1114,6 +1121,41 @@ describe("chat prompt policy", () => {
     expect(AGENT_CHAT_DIRECTIVE).toContain("running pnpm dev in their own Paperclip checkout and visiting /<prefix>/dev/task-chat-lab");
     const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: null, title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
     expect(prompt).toContain("/<prefix>/dev/task-chat-lab");
+  });
+
+  it("links reference pages for a component or chat state instead of creating a real card or a mock", () => {
+    const app = readFileSync(new URL("../../../ui/src/App.tsx", import.meta.url), "utf8");
+    expect(app).toMatch(/<Route\s+path="design-guide"/);
+    for (const lab of ["responsible-user-denial", "bootstrap-setup", "cross-issue-collaboration"]) {
+      expect(app).toMatch(new RegExp(`<Route\\s+path="ux-lab/${lab}"`));
+      expect(AGENT_CHAT_DIRECTIVE).toContain(`/ux-lab/${lab}`);
+    }
+    expect(AGENT_CHAT_DIRECTIVE).toContain("link its existing reference page instead of creating a real card, request or record and instead of drawing a mock");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("the design guide at /<prefix>/design-guide shows the standard components, including the pending question card");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("The ux-lab pages take no company prefix.");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("synthetic presentation fixtures, not proof that the live flow works");
+  });
+
+  it("explains a task's purpose from its saved goal chain with goal links", () => {
+    const app = readFileSync(new URL("../../../ui/src/App.tsx", import.meta.url), "utf8");
+    expect(app).toMatch(/<Route\s+path="goals\/:goalId"/);
+    expect(AGENT_CHAT_DIRECTIVE).toContain("For a goal, link /<prefix>/goals/<goalId>.");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("its goal with GET /api/goals/{id} and each parent goal through parentId, and give the reason the goals' own descriptions state");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("When the task has no goal, say so instead of supplying a reason.");
+  });
+
+  it("asks for a missing name before building or handing off work that must carry it", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("ask for it before starting: use request_human_input with interactionKind: \"questions\" and one required free-text question");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Do not build, delegate or brief the work with an invented or placeholder name");
+    const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: null, title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
+    expect(prompt).toContain("Do not build, delegate or brief the work with an invented or placeholder name");
+  });
+
+  it("asks for a name only when the request, conversation and saved brief give none", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("a project the person names in the request counts, so \"Start a Launch project and build its landing page\" carries the name Launch and needs no question");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Only when none of these gives a name, ask for it before starting");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Do not take the name from unrelated records such as other existing projects or the company name.");
+    expect(AGENT_CHAT_DIRECTIVE).not.toContain("must carry a name they have not given");
   });
 
   it("routes a person's own profile change to their profile settings instead of an agent write", () => {

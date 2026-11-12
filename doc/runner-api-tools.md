@@ -54,6 +54,38 @@ exactly one authorized `artifactId` or task-workspace `path`, and an optional
 multipart `field`. No arbitrary URL, headers, authentication, or remote file URL
 can be supplied. Routes still validate payloads and enforce permissions.
 
+Writes put every request field in `body`. A POST or PUT whose request schema
+names required fields, or a PATCH with a required body, is refused before it is
+sent when `body` (and `files`) are missing; the error names the received
+arguments and the shape to resend. `query` and the read-only options never carry
+request fields.
+
+For lossless input to a local helper, call the separate `save_api_response`
+tool with an authorized non-sensitive GET `operationId`, `pathParams` and
+`query`. It has no request body and cannot run a write, so `call_api`'s write
+path carries no read-only save option. This saves the complete response bytes as an immutable artifact
+even below the inline threshold. A zero-byte successful response instead returns
+`empty: true`, `byteSize: 0` and `data: null`, without an asset or storage
+reservation. JSON empty results such as `[]` are nonempty bytes and export normally.
+Artifact receipts contain `artifactId`, `byteSize` and `sha256`. For artifacts up
+to 10 MiB, pass those exact values to `download_artifact` with a workspace-relative
+destination. Larger text snapshots (up to the 1 GiB capture limit) remain readable
+through `GET /api/assets/{assetId}/content` with `responseText`; follow
+`nextOffsetBytes` until null. They cannot be installed with `download_artifact`;
+narrow or paginate the source query for local helper input. Pass downloaded files
+to the helper instead of recreating JSON in model output. Pagination metadata remains in the receipt; each
+artifact contains one complete HTTP response, not all pages of a list. Continue
+list pagination explicitly. The file remains untrusted data.
+
+Sensitive endpoints are rejected before dispatch. Older saved `call_api` calls
+that carry `saveResponse: true` remain valid for recovery and follow the same
+rules; `saveResponse` cannot be combined with `responseText`, and is rejected
+before dispatch for mutations. Denied or partial HTTP responses
+are not exported. Failed response receipts include the full `byteSize` and a
+`truncated` flag when their inline diagnostic body is incomplete. It uses the same capture limits, storage admission, actor access
+and integrity validation as automatic large-response artifacts. The original
+request runs once. Default inline behavior is unchanged when the option is absent.
+
 Requests have a 16 KiB URL limit and 10 MiB request/upload limit. **New response
 captures are limited to 1 GiB of decoded bytes.** This is separate from the 24 KiB
 inline/page limit. The receiver rejects an oversized Content-Length before
@@ -74,7 +106,7 @@ assets; text previews are limited to 2,000 bytes.
 Large captures reserve 1 GiB against a **durable 4 GiB per-run capture budget**
 before creating a file. A completed capture settles to its actual byte count;
 failed/interrupted captures retain the full reservation to bound retry loops.
-A process restart does not reset that budget. Small inline responses and reads
+A process restart does not reset that budget. Small inline responses without explicit export and reads
 of existing assets need no reservation. Concurrent large captures are limited
 to **two per company and four per server process**, including the storage upload
 and temporary-file cleanup. Budget exhaustion returns `api_response_capture_limit`;

@@ -11,6 +11,12 @@ import * as schema from "./schema/index.js";
 const MIGRATIONS_FOLDER = fileURLToPath(new URL("./migrations", import.meta.url));
 const DRIZZLE_MIGRATIONS_TABLE = "__drizzle_migrations";
 const MIGRATIONS_JOURNAL_JSON = fileURLToPath(new URL("./migrations/meta/_journal.json", import.meta.url));
+const PROJECT_ENVIRONMENT_OVERLAP = {
+  dropFile: "0466_drop_project_environment.sql",
+  dropSha256: "07ca1c666c6471fdb9ce7a0a5fb31bf1a074138466fa8daae50b53199b8e0d7c",
+  repairFile: "0467_fair_human_torch.sql",
+  repairSha256: "50ce0eb2567570b098bea1de92fe6a220d139e4ba83438195fbbad1be51e31a1",
+} as const;
 
 function createUtilitySql(url: string) {
   return postgres(url, { max: 1, onnotice: () => {} });
@@ -624,6 +630,8 @@ const MIGRATIONS_WITH_TOP_LEVEL_STATEMENTS = new Set([
   "0459_environment_lease_backup_scope_index.sql",
   "0460_workspace_activity_context_index.sql",
   "0461_created_from_legacy_origin_run_index.sql",
+  "0470_heartbeat_runs_queued_created_index.sql",
+  "0469_zippy_photon.sql",
 
 
   "0384_funny_adam_warlock.sql",
@@ -706,7 +714,29 @@ async function applyPendingMigrationsManually(
             folderMillisByFileName.get(migrationFile) ?? Date.now(),
           );
         };
-        if (MIGRATIONS_WITH_TOP_LEVEL_STATEMENTS.has(migrationFile)) {
+        if (migrationFile === PROJECT_ENVIRONMENT_OVERLAP.dropFile) {
+          const repairFile = PROJECT_ENVIRONMENT_OVERLAP.repairFile;
+          const repairContent = await readMigrationFileContent(repairFile);
+          const repairHash = createHash("sha256").update(repairContent).digest("hex");
+          const dropIndex = orderedPendingMigrations.indexOf(migrationFile);
+          if (hash !== PROJECT_ENVIRONMENT_OVERLAP.dropSha256
+            || repairHash !== PROJECT_ENVIRONMENT_OVERLAP.repairSha256
+            || orderedPendingMigrations[dropIndex + 1] !== repairFile
+            || await migrationHistoryEntryExists(sql, qualifiedTable, columnNames, repairFile, repairHash)) {
+            throw new Error("Project environment migration pair does not match the qualified overlap repair");
+          }
+          await runInTransaction(sql, async () => {
+            await sql.unsafe('LOCK TABLE "public"."projects" IN ACCESS EXCLUSIVE MODE');
+            await sql.unsafe(`CREATE TEMP TABLE paperclip_project_environment_overlap ON COMMIT DROP AS
+              SELECT id, environment_id FROM "public"."projects" WHERE environment_id IS NOT NULL`);
+            await applyMigration();
+            for (const statement of splitMigrationStatements(repairContent)) await sql.unsafe(statement);
+            await sql.unsafe(`UPDATE "public"."projects" AS project SET environment_id = legacy.environment_id
+              FROM pg_temp.paperclip_project_environment_overlap AS legacy WHERE project.id = legacy.id`);
+            await recordMigrationHistoryEntry(sql, qualifiedTable, columnNames, repairFile, repairHash,
+              folderMillisByFileName.get(repairFile) ?? Date.now());
+          });
+        } else if (MIGRATIONS_WITH_TOP_LEVEL_STATEMENTS.has(migrationFile)) {
           await applyMigration();
         } else {
           await runInTransaction(sql, applyMigration);

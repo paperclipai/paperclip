@@ -126,7 +126,10 @@ schema). When it starts a turn, before any provider work, it truncates the file
 and writes a `received` record. Immediately before ACPX writes the turn's first
 `session/prompt` request to the provider, it appends a `dispatched` record and
 fsyncs it. ACPX calls the host's `onAcpMessage("outbound")` hook synchronously
-before it writes the bytes, so a failed journal write aborts the prompt write.
+before it writes the bytes. ACPX 0.22 ignores errors from that hook, so the port
+keeps a failed journal write and throws it from the turn's `assertActive`, which
+ACPX calls next, before the write. A failed journal write therefore aborts the
+prompt write.
 
 The Runner reads the journal only after it acquires the provider lifetime fence,
 which proves that the sidecar and the provider are gone.
@@ -143,6 +146,31 @@ which proves that the sidecar and the provider are gone.
   no file (an older sidecar) proves nothing. The earlier behavior applies
   unchanged: a failed start closes the session, and a killed Runner uses
   lost-turn recovery.
+- A session this run closed cannot reopen for the same run. The failed start,
+  and every later `turn.start` of the run, fail with the closed class
+  `provider_session_closed` in the command result. The controller records
+  `native_provider_session_closed`, stops same-run retries, and the board offers
+  Retry at once. Retry starts a new run with a fresh provider conversation and
+  the saved task context. An older Runner sends the same text without the class; the
+  controller then keeps its bounded same-run retries, because the same text
+  also covers a session that can reopen after a restart.
+- A definite `session.open` failure whose command result carries a startup
+  `providerFailure` with `retryability: requires_action` and category
+  `authentication`, `permission` or `invalid_request` records
+  `native_provider_startup_rejected`. No provider work began, so the
+  controller stops same-run bootstrap retries and the board offers Retry at once
+  with the provider message. On a remote execution target, a definite
+  `session.open` failure with a startup `providerFailure` keeps a same-run
+  bootstrap retry only when the transport's close settled the runner and
+  observed its exit (`runnerExitConfirmed`); restart recovery accepts that proof
+  as it accepts a runner's own exit. Without it, or when the failure repeats the
+  previous attempt's startup error, it records the same code, because a remote
+  same-run bootstrap cannot then prove ownership. On a local
+  target, other startup failures (unknown, transient, rate limit, quota, model)
+  keep the bounded same-run startup retries and end as
+  `native_session_retry_exhausted` with Retry. A run an older release held on
+  `ambiguous_remote_recovery_evidence` after such a rejection offers Retry once
+  its saved workspace is recovered; no migration is needed.
 
 Until a proof settles it, the saved session stays `turn_starting`, so a Runner
 killed during the proof restores through the same check. The cut-off command is
@@ -219,6 +247,16 @@ protected launch argument fails with the closed classification
 controller never opens a replacement session after either class, whatever the
 checkpoint's recovery policy, and stops the run for an operator.
 
+A remote session whose saved working directory is not the run's assigned
+workspace root (its workspace epoch was abandoned, so the saved version was
+restored into a new root) cannot resume there. The driver declines it before
+any Runner or provider process starts. An idle session reports
+`provider_state_incompatible`: a replacement opens in the assigned root when the
+checkpoint allows it, and otherwise the run fails with
+`native_provider_state_incompatible`. A session with an unfinished provider turn
+or a pending runtime request reports `provider_side_effect_pending` and stops
+for an operator, whatever its recovery policy.
+
 A restart can kill the runner after it journaled a run's own cold `run.attach`
 and before the attachment finished. The restored runner settles that command as
 `execution_indeterminate` and never executes it again. When the journal shows no
@@ -232,6 +270,25 @@ runtime-request event is committed.
 Attaching starts no turn, and the runner admits the new command only for a
 settled session, so the run continues instead of failing on the old command.
 Warm transitions and staged attachments keep their exact replay paths.
+
+A restart can kill the runner inside `runner.suspend` in the same way. The
+next runner replays it from the welcome as `execution_indeterminate`, sends it
+as `failed`, and still treats it as terminal: it records `suspended` and exits
+once the controller acknowledges the result. The controller therefore keeps the
+terminal fence for that result (it lifts the fence only for a suspension the
+runner refused), and its acknowledgement names the runner's journal status
+`indeterminate`. Current runners accept either `indeterminate` or `failed`; older
+runners accept only `indeterminate` and otherwise exit with "terminal command
+result acknowledgement changed its durable identity".
+
+That runner exits before it accepts any command of the new attempt. During
+startup, the controller restarts it in place once, so the attempt continues.
+It does this only when the runner's durable journal proves the exit: its last
+command is exactly the suspend that an earlier attempt journaled, the
+controller has settled that suspend, the runner rests `suspended` with no
+terminal or provider cleanup fence, and no command of this attempt has a
+result. The runner file is read only after such an exit. Any other exit keeps
+its earlier failure.
 
 A kill during that attachment's provider launch can also leave a `spawned`
 startup fence over a `prepared` state that holds a saved thread. The next runner
@@ -306,8 +363,13 @@ Each provider declares how in `ACPX_RELEASE_ATTESTATIONS`
 
 `generate:acpx-profiles` writes the computed digests and `check:acpx-profiles`
 refuses a stale one, so a digest changes only with its upstream release. Every
-ACPX harness binds the shared ACPX layer the same way: saved inputs must match
-the current ACPX version, and the provider pack's `contractDigest` binds the
+ACPX harness binds the shared ACPX layer the same way. Saved sessions carry
+forward across an ACPX upgrade when the new ACPX loads the records the old one
+wrote: Runner moves a saved descriptor that names a release in
+`CARRIED_ACPX_RELEASES` to the current one, and the session identity keeps its
+original ACPX value, so the saved session key and identity record still match.
+A session saved by any other ACPX release is refused as
+`provider_state_incompatible`. The provider pack's `contractDigest` binds the
 Runner's ACPX patch with the other Runner contracts. Runner source changes
 change no provider digest.
 

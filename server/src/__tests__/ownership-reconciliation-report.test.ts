@@ -26,7 +26,13 @@ import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.j
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { currentControllerBootId, currentProcessSpaceHash } from "../services/controller-process-identity.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
-import { registerOwnershipReconciliationWork } from "../services/native-runtime/native-finalization-reconciler.js";
+import { applyOwnershipReportBackstops, registerOwnershipReconciliationWork } from "../services/native-runtime/native-finalization-reconciler.js";
+import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
+import { notifyNativeFinalizationWork } from "../services/native-finalization-notifications.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
+import { listUndispatchedQueuedRuns } from "../services/queued-run-dispatch-liveness.js";
+import { releaseLapsedCoordinatorOwner } from "../services/workspace-recovery-stop-proof.js";
+import { subscribeDatabaseWork } from "@paperclipai/db/work-signals";
 import {
   createOwnershipReportState,
   OWNERSHIP_INVARIANT_VIOLATION_ACTION,
@@ -527,6 +533,66 @@ describe("report-only ownership reconciliation", () => {
       .toEqual({ kind: "free" });
   });
 
+  it("hands on a preparation-only epoch at its saved version only when the unchanged baseline is proven", async () => {
+    // Each writer restored saved version `snapshotId` and was killed in
+    // preparation. Only `clean` has nothing after the restore; every other
+    // writer lacks the proof and keeps today's abandonment.
+    const cases = ["clean", "noBaseline", "otherEpochBaseline", "releasedBaseline", "provisioned", "processStarted"] as const;
+    const snapshotId = randomUUID();
+    const setup = Object.fromEntries(cases.map(name => [name, {
+      runId: randomUUID(), workspaceId: randomUUID(), leaseId: randomUUID(), providerLeaseId: `sandbox-${randomUUID()}`,
+    }])) as Record<(typeof cases)[number], { runId: string; workspaceId: string; leaseId: string; providerLeaseId: string }>;
+    const remoteCwd = (name: string) => `/home/daytona/paperclip-workspace/.paperclip-workspaces/${setup[name as keyof typeof setup].workspaceId}`;
+    await db.insert(heartbeatRuns).values(cases.map(name => {
+      const s = setup[name];
+      return { id: s.runId, companyId, agentId, status: "failed", invocationSource: "manual", executionStage: "preparing",
+        finishedAt: minutesAgo(2), errorCode: "process_lost",
+        ...(name === "processStarted" ? { processPid: 4_194_303 } : {}),
+        runnerProfileJson: { remoteWorkspace: { schema: "paperclip.remote-workspace-run.v1", workspaceId: s.workspaceId,
+          leaseId: s.leaseId, providerLeaseId: s.providerLeaseId, remoteCwd: remoteCwd(name), epoch: 2, state: "prepared", snapshotId } } };
+    }));
+    await db.insert(executionWorkspaces).values(cases.map(name => {
+      const s = setup[name];
+      const baseline = name === "noBaseline" ? {}
+        : { remoteWorkspaceUnchangedBaseline: { schema: "paperclip.remote-workspace-unchanged-baseline.v1",
+          epoch: name === "otherEpochBaseline" ? 1 : 2, runId: s.runId, snapshotId,
+          ...(name === "releasedBaseline" ? { releasedAt: minutesAgo(5).toISOString() } : {}) } };
+      return { id: s.workspaceId, companyId, mode: "isolated_workspace", strategyType: "test", name,
+        metadata: { ...baseline, remoteWorkspace: { schema: "paperclip.remote-workspace.v1", epoch: 2, snapshotId,
+          source: { kind: "git", repoUrl: "https://example.invalid/repo.git", ref: null }, dirty: true, writerRunId: s.runId,
+          location: { environmentId: randomUUID(), leaseId: s.leaseId, providerLeaseId: s.providerLeaseId, remoteCwd: remoteCwd(name) } } } };
+    }));
+    // The restore itself is file-neutral; a provisioning command is not.
+    await db.insert(workspaceOperations).values(cases.map(name => ({ companyId, executionWorkspaceId: setup[name].workspaceId,
+      heartbeatRunId: setup[name].runId, phase: "remote_workspace_restore", status: "succeeded", metadata: { epoch: 2, snapshotId } })));
+    await db.insert(workspaceOperations).values({ companyId, executionWorkspaceId: setup.provisioned.workspaceId,
+      heartbeatRunId: setup.provisioned.runId, phase: "remote_workspace_provision", status: "failed", metadata: { epoch: 2 } });
+    const read = async (name: (typeof cases)[number]) => (await db.select().from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, setup[name].workspaceId)))[0]!;
+
+    await runOwnershipReconciliationPass(db, { state: createOwnershipReportState() });
+
+    const clean = await read("clean");
+    expect(readRemoteWorkspaceAuthority(clean.metadata)).toMatchObject({ epoch: 2, dirty: false, writerRunId: null, snapshotId,
+      location: { leaseId: setup.clean.leaseId, providerLeaseId: setup.clean.providerLeaseId, remoteCwd: remoteCwd("clean") } });
+    expect(clean.metadata?.remoteWorkspaceAbandonedEpochs).toBeUndefined();
+    expect(clean.metadata?.remoteWorkspaceUnchangedBaseline).toMatchObject({ releasedAt: expect.any(String) });
+    const [cleanRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, setup.clean.runId));
+    expect(cleanRun.runnerProfileJson?.remoteWorkspace).toMatchObject({ state: "saved", epoch: 2 });
+    // The retry is admitted at once, and the killed run's sandbox is no longer a prepared source holding it.
+    expect(await readRemoteWorkspaceWriterHold(db, { companyId, authority: readRemoteWorkspaceAuthority(clean.metadata)!,
+      runId: randomUUID() })).toEqual({ kind: "free" });
+    // A recorded process is runtime work: neither handed on nor abandoned here.
+    expect(readRemoteWorkspaceAuthority((await read("processStarted")).metadata))
+      .toMatchObject({ epoch: 2, dirty: true, writerRunId: setup.processStarted.runId });
+    for (const name of cases.filter(name => name !== "clean" && name !== "processStarted")) {
+      const row = await read(name);
+      expect(readRemoteWorkspaceAuthority(row.metadata), name)
+        .toMatchObject({ epoch: 3, dirty: false, writerRunId: null, location: null });
+      expect(row.metadata?.remoteWorkspaceAbandonedEpochs, name).toEqual([expect.objectContaining({ epoch: 2, runId: setup[name].runId })]);
+    }
+  });
+
   it("settles a workspace command whose process died mid-command, and keeps live or unprovable ones", async () => {
     const run = (id: string, status: string) => ({ id, companyId, agentId, status, invocationSource: "manual",
       ...(status === "running" ? {} : { finishedAt: minutesAgo(2) }) });
@@ -899,6 +965,111 @@ describe("report-only ownership reconciliation", () => {
     const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
     expect(report.violations.filter(violation => violation.rule === "I7_visible_next_action")).toEqual([]);
     expect(report.nextDueAt?.getTime()).toBe(updatedAt.getTime() + 5 * 60_000);
+  });
+
+  it("reports and re-drives a queued run that no dispatch started while its agent had nothing running", async () => {
+    const issueId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Continuation", status: "in_progress", assigneeAgentId: agentId });
+    const [stranded] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "queued", invocationSource: "automation",
+      contextSnapshot: { issueId }, createdAt: minutesAgo(19) }).returning();
+    const signals: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.queuedRunDispatch, event => signals.push(event));
+    try {
+      const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+      expect(report.violations.filter(violation => violation.kind === "queued_run")).toEqual([
+        expect.objectContaining({ rule: "I7_visible_next_action", recordId: stranded!.id, runId: stranded!.id,
+          issueId, companyId, reason: "queued_run_not_dispatched" })]);
+      await applyOwnershipReportBackstops(db, report);
+      expect(signals).toContain("settled");
+    } finally { unsubscribe(); }
+  });
+
+  it("finds a stranded run behind older queued rows past the first page, and re-drives it only once", async () => {
+    const otherCompany = randomUUID();
+    const otherAgent = randomUUID();
+    await db.insert(companies).values({ id: otherCompany, name: "Held queue", issuePrefix: "HLD" });
+    await db.insert(agents).values({ id: otherAgent, companyId: otherCompany, name: "Held", role: "engineer", adapterType: "codex_local" });
+    await db.insert(heartbeatRuns).values([40, 39, 38].map(minutes =>
+      ({ companyId: otherCompany, agentId: otherAgent, status: "queued", invocationSource: "automation", createdAt: minutesAgo(minutes) })));
+    const [stranded] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "queued", invocationSource: "automation",
+      createdAt: minutesAgo(19) }).returning();
+    const state = createOwnershipReportState();
+    const first = await runOwnershipReconciliationPass(db, { state, limitPerKind: 2 });
+    expect(first.violations.filter(violation => violation.kind === "queued_run").map(violation => violation.recordId))
+      .toContain(stranded!.id);
+    const signals: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.queuedRunDispatch, event => signals.push(event));
+    try {
+      await applyOwnershipReportBackstops(db, first);
+      expect(signals).toContain("settled");
+      signals.length = 0;
+      const second = await runOwnershipReconciliationPass(db, { state, limitPerKind: 2 });
+      expect(second.violations.filter(violation => violation.kind === "queued_run")).toHaveLength(4);
+      await applyOwnershipReportBackstops(db, second);
+      expect(signals).toEqual([]);
+    } finally { unsubscribe(); }
+  });
+
+  it("does not report queued runs a worktree runtime will never start: before its cutoff or while execution is off", async () => {
+    const copied = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: copied, companyId, agentId, status: "queued", invocationSource: "automation",
+      createdAt: minutesAgo(19) });
+    const queuedRunViolations = async () => (await runOwnershipReconciliationPass(db,
+      { state: createOwnershipReportState(), record: false })).violations.filter(violation => violation.kind === "queued_run");
+    vi.stubEnv("PAPERCLIP_IN_WORKTREE", "true");
+    vi.stubEnv("PAPERCLIP_INSTANCE_ID", "ownership-worktree");
+    const settings = instanceSettingsService(db);
+    try {
+      expect(await queuedRunViolations()).toEqual([]);
+      await settings.updateExperimental({ enableWorktreeRunExecution: true });
+      expect(await queuedRunViolations()).toEqual([]);
+      expect(await listUndispatchedQueuedRuns(db, { createdAfter: minutesAgo(1) })).toEqual([]);
+      expect((await listUndispatchedQueuedRuns(db)).map(run => run.runId)).toEqual([copied]);
+    } finally {
+      await settings.updateExperimental({ enableWorktreeRunExecution: false });
+      vi.unstubAllEnvs();
+      vi.stubEnv("PAPERCLIP_HOME", home);
+      vi.stubEnv("SANDBOX_ORPHAN_CLEANUP_SPOOL_DIR", orphanSpool);
+    }
+  });
+
+  it("signals queued-run dispatch when finalization work settles or a finished coordinator's lapsed owner is released", async () => {
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Settling", status: "in_progress", assigneeAgentId: agentId });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "succeeded", invocationSource: "automation",
+      runtimeMode: "native", nativeIssueId: issueId, finishedAt: minutesAgo(2) });
+    await db.insert(nativeRunFinalizations).values({ runId, companyId, issueId, phase: "committed",
+      leaseOwner: "native-finalizer:lapsed", leaseExpiresAt: minutesAgo(1) });
+    const signals: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.queuedRunDispatch, event => signals.push(event));
+    try {
+      await db.transaction(tx => notifyNativeFinalizationWork(tx, { companyId, runId, issueId }));
+      expect(signals).toContain("settled");
+      signals.length = 0;
+      const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId));
+      expect(await db.transaction(tx => releaseLapsedCoordinatorOwner(tx, { companyId, runId }, coordinator, new Date()))).toBe(true);
+      expect(signals).toContain("settled");
+    } finally { unsubscribe(); }
+  });
+
+  it("does not report a queued run behind a running run, on a paused agent, or still inside its grace window", async () => {
+    const otherAgent = randomUUID();
+    const pausedAgent = randomUUID();
+    await db.insert(agents).values([
+      { id: otherAgent, companyId, name: "Busy", role: "engineer", adapterType: "codex_local" },
+      { id: pausedAgent, companyId, name: "Paused", role: "engineer", adapterType: "codex_local", status: "paused" },
+    ]);
+    await db.insert(heartbeatRuns).values([
+      { companyId, agentId: otherAgent, status: "running", invocationSource: "manual" },
+      { companyId, agentId: otherAgent, status: "queued", invocationSource: "automation", createdAt: minutesAgo(30) },
+      { companyId, agentId: pausedAgent, status: "queued", invocationSource: "automation", createdAt: minutesAgo(30) },
+    ]);
+    const createdAt = minutesAgo(1);
+    await db.insert(heartbeatRuns).values({ companyId, agentId, status: "queued", invocationSource: "automation", createdAt });
+    const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    expect(report.violations.filter(violation => violation.kind === "queued_run")).toEqual([]);
+    expect(report.nextDueAt?.getTime()).toBeLessThanOrEqual(createdAt.getTime() + 5 * 60_000);
   });
 
   it("retries a violation whose activity row failed to save", async () => {

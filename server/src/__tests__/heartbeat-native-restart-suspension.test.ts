@@ -17,12 +17,13 @@ import type { NativeRunIdentity, NativeSession, PrpEvent } from "@paperclipai/pa
 import { randomUUID } from "node:crypto";
 import * as controllerProcess from "../services/controller-process-identity.js";
 import { and, eq, sql } from "drizzle-orm";
-import { activityLog, agents, createDb, agentWakeupRequests, authUsers, budgetReservations, companyMemberships, completionContracts, environmentLeases, heartbeatRunEvents, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, nativeRunResults, workspaceOperations } from "@paperclipai/db";
+import { activityLog, agents, environments, createDb, agentWakeupRequests, authUsers, budgetReservations, companyMemberships, completionContracts, environmentLeases, heartbeatRunEvents, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, nativeRunResults, workspaceOperations } from "@paperclipai/db";
 import { describe, expect, it, vi } from "vitest";
 import { subscribeDatabaseWork } from "@paperclipai/db/work-signals";
 import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { resolveLocalRuntimeApiUrl } from "../runtime-api.js";
 import { heartbeatService } from "../services/heartbeat.js";
+import { environmentService } from "../services/environments.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { claimNativeRestartRecoveries, classifyNativeRunnerRecoveryEvidence, currentNativeControllerIdentity } from "../services/native-runtime/native-restart-recovery.js";
 import type { NativeSessionBackend } from "@paperclipai/paperclip-runner";
@@ -382,6 +383,55 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
       expect(claims).toEqual([expect.objectContaining({ runId: f.runId })]);
     } finally { await heartbeat.drainActiveRunExecutions(); }
     expect(reached).toHaveBeenCalled();
+  }, 60_000);
+
+  // Daytona waves s9330 and s9331 (TM1): stalls of the same server outlived
+  // the execution lease. Renewal found the lease lapsed and detached the
+  // executor for "the next controller" with no shutdown handoff, and the
+  // executor returned with the run still running. The next controller is this
+  // same process; nothing may leave the run running with no recovery.
+  it("recovers a run whose executor detached after its own lease lapsed, with no restart", async () => {
+    const f = await seedRecoverableRun("SELF-DETACHED-LAPSED");
+    let opened = 0;
+    const reachedAgain = vi.fn();
+    const backend = vi.fn((): NativeSessionBackend => {
+      opened += 1;
+      const first = opened === 1;
+      const open = async () => {
+        if (first) {
+          // What the remote renewal's loss does: the lease lapsed during the
+          // stall, and the executor is detached for the next controller.
+          await f.db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(Date.now() - 1_000) })
+            .where(eq(nativeRunFinalizations.runId, f.runId));
+          void detachNativeSessionsForRestart([f.runId]);
+          throw new Error("runner stream lost while the controller was stopped");
+        }
+        reachedAgain();
+        throw new Error("stop at provider dispatch");
+      };
+      return {
+        async descriptor() {
+          return { kind: "mock", name: "self-detached", version: "1", capabilities: {
+            resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true },
+            runtimeContextCapabilities: { instructions: "native", skills: "native", mcp: "native" } };
+        },
+        openSession: open,
+        recoverSession: open,
+      } as unknown as NativeSessionBackend;
+    });
+    const heartbeat = heartbeatService(f.db, { nativeSessionBackendFactory: backend });
+    try {
+      const { claims } = await heartbeat.recoverNativeRunsAfterRestart(new Date(), [f.runId]);
+      expect(claims).toEqual([expect.objectContaining({ runId: f.runId })]);
+      await heartbeat.drainActiveRunExecutions();
+      // The same process takes the run back on its own, without a restart.
+      await waitForCondition("the same process to take the run back", () => reachedAgain.mock.calls.length > 0, 15_000);
+    } finally { await heartbeat.drainActiveRunExecutions(); }
+    expect(reachedAgain).toHaveBeenCalled();
+    const transitions = await f.db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, f.runId),
+      eq(heartbeatRunEvents.eventType, "native.recovery.transition")));
+    expect(transitions.map(event => (event.payload as Record<string, unknown>).reason))
+      .not.toContain("controller_still_alive");
   }, 60_000);
 
 
@@ -832,7 +882,9 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
         .where(eq(nativeRunFinalizations.runId, f.runId));
       const onClaim = vi.fn();
       expect(await claimNativeRestartRecoveries({ db: f.db, restartKind: "hard", runIds: [f.runId], onClaim }))
-        .toEqual([{ kind: "awaiting_evidence", runId: f.runId, reason: "controller_still_alive" }]);
+        .toEqual([{ kind: "awaiting_evidence", runId: f.runId, reason: "controller_still_alive",
+          // This process's own live lease lapses by itself; recovery looks again then.
+          retryAt: expect.any(Date) }]);
       expect(onClaim).not.toHaveBeenCalled();
     }, 60_000);
 
@@ -1715,4 +1767,73 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
     expect(outcome).toEqual({ settled: false, reason: "owner_changed_since_proof" });
     expect((await leaseOf(f)).leaseExpiresAt).toEqual(f.leaseExpiresAt);
   }, 60_000);
+
+  it.each([
+    { settledBy: "lease release", signalled: true, startWithinMs: 5_000 },
+    { settledBy: "unsignalled write", signalled: false, startWithinMs: 75_000 },
+  ])("starts a continuation that queued behind its predecessor's sandbox release after a graceful restart ($settledBy)", async ({ settledBy, signalled, startWithinMs }) => {
+    const f = await seedRecoverableRun(`ACCEPTED-CONTINUE-THEN-SIGTERM-${settledBy}`, true);
+    const [contract] = await f.db.select().from(completionContracts).where(eq(completionContracts.issueId, f.issueId));
+    await f.db.update(heartbeatRuns).set({ completionContractId: contract.id,
+      completionContractSha256: contract.canonicalSha256 }).where(eq(heartbeatRuns.id, f.runId));
+    const controller = await currentNativeControllerIdentity();
+    await f.db.update(nativeRunFinalizations).set({
+      leaseOwner: `${f.native.runnerInstanceId}:${randomUUID()}`, leaseExpiresAt: new Date(Date.now() + 20 * 60_000),
+      controllerBootId: controller.bootId, controllerHostHash: (await controllerProcess.currentControllerProcess()).hostHash,
+      controllerPid: controller.pid, controllerProcessStartedAt: controller.processStartedAt, controllerGeneration: 1,
+    }).where(eq(nativeRunFinalizations.runId, f.runId));
+    const [prepared] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    const identity = { companyId: fixture.current.companyId, issueId: f.issueId, runId: f.runId,
+      agentId: prepared.agentId, sessionId: prepared.nativeSessionId! };
+    const port = new PaperclipControlPlanePort(f.db, { ...identity, completionContractId: prepared.completionContractId!,
+      completionContractSha256: prepared.completionContractSha256!, sourceInstanceId: prepared.runnerInstanceId!,
+      controlPlaneSourceInstanceId: "continue-after-restart-control" });
+    await port.openRun({ ...CONTROL_PLANE_CONFORMANCE_OPEN, identity, sourceInstanceId: prepared.runnerInstanceId! });
+    const { revision, criterionIds } = f.native.completionContract;
+    await port.completeRun({
+      result: { ...CONTROL_PLANE_CONFORMANCE_RESULT, reportedWorkDisposition: "yielded",
+        continuation: { kind: "same_agent", summary: "Continue with phase two.", idempotencyKey: `continue-${f.runId}` },
+        completionClaim: { ...CONTROL_PLANE_CONFORMANCE_RESULT.completionClaim, contractRevision: revision,
+          criteria: criterionIds.map((criterionId) => ({ criterionId, status: "satisfied" as const, evidenceRefs: ["event:2"] })) } },
+      terminal: { ...CONTROL_PLANE_CONFORMANCE_TERMINAL, reportedWorkDisposition: "yielded" },
+      callerResultId: "continue-after-restart-result",
+    });
+    await f.db.insert(workspaceOperations).values({ companyId: fixture.current.companyId, issueId: f.issueId,
+      heartbeatRunId: f.runId, phase: "workspace_finalize", status: "running", cwd: fixture.current.runtimeRoot });
+    const [environment] = await f.db.insert(environments).values({
+      name: `Warm sandbox ${settledBy}`, driver: "sandbox", config: { provider: "daytona", reuseLease: true } }).returning();
+    const [warmLease] = await f.db.insert(environmentLeases).values({ environmentId: environment!.id,
+      companyId: fixture.current.companyId, issueId: f.issueId, heartbeatRunId: f.runId, status: "active",
+      leasePolicy: "reuse_by_environment", provider: "daytona", providerLeaseId: `sandbox-${randomUUID()}` }).returning();
+
+    await heartbeatService(f.db).drainRunningRunsForShutdown("SIGTERM", new Date(), [f.runId]);
+    const providerDispatch = vi.fn(() => { throw new Error("the continuation does not reach a provider here"); });
+    const next = heartbeatService(f.db, { nativeSessionBackendFactory: providerDispatch });
+    try {
+      await next.recoverNativeRunsAfterRestart(new Date(), [f.runId]);
+      await reconcileNativeFinalizations(f.db, [f.runId]);
+      await next.dispatchPendingNativeStatusWakeups();
+    } finally { await next.drainActiveRunExecutions(); }
+    const successors = () => f.db.select().from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.agentId, prepared.agentId), eq(heartbeatRuns.retryOfRunId, f.runId)));
+    const [queued] = await successors();
+    expect(queued).toMatchObject({ status: "queued", startedAt: null });
+    expect((await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0]?.status).toBe("succeeded");
+
+    if (!signalled) await f.db.update(heartbeatRuns).set({ createdAt: new Date(Date.now() - 2 * 60_000) })
+      .where(eq(heartbeatRuns.id, queued!.id));
+    const coordinator = createDeliveryWorkCoordinator({ owner: f.db, canRun: () => true, onError: () => undefined });
+    const later = heartbeatService(f.db, { nativeSessionBackendFactory: providerDispatch });
+    try {
+      await later.registerRunDispatchWork(coordinator, () => true).ready;
+      expect((await successors())[0]?.status).toBe("queued");
+      const settledAt = Date.now();
+      if (signalled) await environmentService(f.db).releaseLease(warmLease!.id, "retained", { cleanupStatus: "success" });
+      else await f.db.update(environmentLeases).set({ status: "retained", cleanupStatus: "success" })
+        .where(eq(environmentLeases.id, warmLease!.id));
+      await expect.poll(async () => (await successors())[0]?.startedAt ?? null, { timeout: startWithinMs, interval: 250 })
+        .not.toBeNull();
+      expect(Date.now() - settledAt).toBeLessThan(startWithinMs);
+    } finally { await coordinator.stop(); await later.drainActiveRunExecutions(); }
+  }, 150_000);
 });

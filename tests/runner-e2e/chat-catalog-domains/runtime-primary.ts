@@ -1,7 +1,7 @@
 import { expect } from "@playwright/test";
 import { checks, type Entity } from "./internal-support.js";
 import { createAuthenticatedPerson, enrollPrerequisitePerson } from "./identity-auth.js";
-import { probeAgentPermission, waitForReply, remainingIdentityObservationBudget } from "./identity-support.js";
+import { probeAgentPermission, waitForReply, waitForTurnReplyLinks, remainingIdentityObservationBudget } from "./identity-support.js";
 import { runtimeDefinition, runtimeWorker, runtimeObservation, observeRuntime, openRuntimeAgentProfile, verifyRuntimeResult, agentLink, type RuntimeAgent } from "./runtime-support.js";
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
 interface Primary { companyId: string; userId: string; primaryAgentId: string | null }
@@ -89,7 +89,7 @@ export const runtimePrimaryCases = [runtimeDefinition("agents.choose-primary", a
   return { worker, primaryBefore, otherCompany, otherPersonBefore: await personPrimary(person, ctx.input.fixtures.company.id),
     otherCompanyBefore: await ctx.input.api.get<Primary>(endpoint(otherCompany.id)) };
 }, gradePrimary, {
-  authentication: "human-session", oracleVersion: "paperclip.chat-catalog.runtime-primary.v3",
+  authentication: "human-session", oracleVersion: "paperclip.chat-catalog.runtime-primary.v4",
   sourceFiles: ["chat-catalog-domains/runtime-primary.ts", "chat-catalog-domains/runtime-support.ts", "chat-catalog-domains/identity-support.ts", "chat-scenarios/agents.yaml"],
   async act(ctx, state) {
     remainingIdentityObservationBudget(ctx);
@@ -98,6 +98,8 @@ export const runtimePrimaryCases = [runtimeDefinition("agents.choose-primary", a
     const worker = state.worker as RuntimeAgent;
     state.beforeHumanPrimary = (await ctx.input.api.get<Primary>(endpoint(ctx.input.fixtures.company.id))).primaryAgentId;
     state.agentWriteStatus = await probeAgentPermission(ctx, endpoint(ctx.input.fixtures.company.id), "PUT", { primaryAgentId: worker.id });
+    // The run is recorded finished before its reply is saved and rendered; read the reply's links only once it is on the page.
+    await waitForTurnReplyLinks(ctx);
     const o = await observeRuntime(ctx, state);
     const source = ctx.input.page.url();
     const href = agentLink(o, worker);

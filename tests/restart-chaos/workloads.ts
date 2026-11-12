@@ -1,6 +1,7 @@
-import { questionHandoffWorkload } from "./question-handoff.js";
+import { questionHandoffWorkload, questionSequenceWorkload } from "./question-handoff.js";
 import { l1Workload } from "./contention.js";
 import { journeyWorkloadDefinitions } from "./journeys.js";
+import { rewakeWorkloadDefinitions } from "./rewake.js";
 import type { OracleArtifacts, OracleResult, WorkloadId } from "./types.js";
 
 /** Deterministic bench output: sum of squares 1..240. */
@@ -19,6 +20,7 @@ export interface WorkloadDefinition {
   title(nonce: string): string;
   description(nonce: string, agents?: WorkloadAgents): string;
   followUp?(nonce: string): string;
+  startComment?(nonce: string): string;
   stopBeforeFollowUp?: boolean;
   /** Files and commands the observer must collect for the T-oracle. */
   collect: { documents: string[]; files(nonce: string): string[]; commands: Array<{ name: string; argv: string[] | ((nonce: string) => string[]) }>;
@@ -43,6 +45,48 @@ const continueMarker = (nonce: string) => `CONTINUE-${nonce}`;
 const notesFile = (nonce: string) => `NOTES-${nonce}.md`;
 /** F1: the absolute symlink the agent creates and keeps in the repository root. */
 export const f1LinkName = (nonce: string) => `hosts-link-${nonce}`;
+/** T1: ticks of the long tool (2 s each) and the line the agent reports after it finished. */
+export const T1_TICKS = 50;
+export const t1Marker = (nonce: string) => `TICKS-${nonce}`;
+/** Prints `<ticks> start=<epoch s> end=<epoch s>`: the loop's own clock window, so the harness can check a fault crossed it. */
+export const t1Command = (nonce: string) =>
+  `s=$(date +%s); i=0; while [ $i -lt ${T1_TICKS} ]; do i=$((i+1)); echo tick-$i; sleep 2; done > ticks-${nonce}.txt;`
+  + ` echo "$(wc -l < ticks-${nonce}.txt | tr -d ' ') start=$s end=$(date +%s)"`;
+
+/** The brief's first line, `TICKS-<nonce>=<ticks> start=<s> end=<s>`, parsed; null when it does not match. */
+export function parseT1Report(nonce: string, brief: string | null | undefined): { ticks: number; startMs: number; endMs: number } | null {
+  const first = (brief ?? "").split(/\r?\n/).map(line => line.trim()).find(Boolean) ?? "";
+  const match = new RegExp(`^${t1Marker(nonce)}=([0-9]+) start=([0-9]{9,11}) end=([0-9]{9,11})$`).exec(first);
+  if (!match) return null;
+  const [ticks, start, end] = [Number(match[1]), Number(match[2]) * 1000, Number(match[3]) * 1000];
+  return end >= start ? { ticks, startMs: start, endMs: end } : null;
+}
+
+/** Sandbox and host clocks are not the same clock: a fault this close to the loop's edges still counts as crossing it. */
+export const T1_CLOCK_SLACK_MS = 5_000;
+
+/**
+ * T1 tested a mid-tool fault only if one of the task's own faults started while the loop ran. A fault that landed
+ * during preparation, with the loop run afterwards, tested nothing mid-tool: the task fails `fault_crossed_tool`,
+ * as a provider-fault task whose fault never applied does.
+ */
+export function withT1CrossingCheck(oracle: OracleResult, plan: { taskId: string; workload: WorkloadId; nonce: string; fault: string },
+  brief: string | null | undefined, faults: ReadonlyArray<{ requestedBy: string; startedAt: number; faultId: string }>): OracleResult {
+  // A matrix baseline (K0) expects no fault, a provider message fault (PV*) restarts nothing of its own, and CR5
+  // stalls the plugin at launch, before the tool loop starts (class-r.ts).
+  if (plan.workload !== "T1" || plan.fault === "K0" || plan.fault.startsWith("PV") || plan.fault === "CR5") return oracle;
+  const report = parseT1Report(plan.nonce, brief);
+  // A storm task (K13) has no fault of its own: the storm's faults (requested by "storm") are the ones that cross it.
+  const own = faults.filter(fault => fault.requestedBy === plan.taskId || (plan.fault === "K13" && fault.requestedBy === "storm"));
+  const crossing = report ? own.filter(fault => fault.startedAt >= report.startMs - T1_CLOCK_SLACK_MS
+    && fault.startedAt <= report.endMs + T1_CLOCK_SLACK_MS) : [];
+  const check = { name: "fault_crossed_tool", ok: crossing.length > 0,
+    detail: report ? `loop ${new Date(report.startMs).toISOString()}..${new Date(report.endMs).toISOString()}; `
+      + `faults ${own.map(fault => `${fault.faultId}@${new Date(fault.startedAt).toISOString()}`).join(",") || "none"}`
+      : "no loop window reported" };
+  const checks = [...oracle.checks, check];
+  return { ...oracle, checks, verdict: checks.every(entry => entry.ok) ? "pass" : "fail" };
+}
 /** F1: an `ls -l` line for that link: a symlink (`l` mode) naming the link and its absolute target. */
 export const f1LinkListing = (nonce: string) => new RegExp(`^l\\S*\\s.*\\s${f1LinkName(nonce)} -> /etc/hosts$`);
 const benchFile = (nonce: string) => `bench-result-${nonce}.txt`;
@@ -109,6 +153,41 @@ const briefDescription = (nonce: string) => [
   "Do not create files or other tasks. When the document is saved, mark this task done.",
 ].join("\n");
 
+/** H2: the brief, then the agent's own last step hands the task to the person who created it, in review. */
+const handoffDescription = (nonce: string) => [
+  "Write a short brief on why idempotent retries matter for background job queues.",
+  "Save it as this issue's document with key `brief` (title \"Brief\"), in markdown.",
+  `The document must contain the line \`${briefMarker(nonce)}\` exactly, on its own line,`,
+  "and at least three bullet points that start with \"- \".",
+  "Do not create files or other tasks. Do not mark this task done.",
+  "When the document is saved, hand this task to the person who created it for review, as your last step:",
+  "update this task with `assigneeAgentId` null, `assigneeUserId` set to the task's `createdByUserId`, and status `in_review`.",
+  "Then end your turn.",
+].join("\n");
+
+/**
+ * H2 (staging class H): the agent's own hand-off to a person must not cancel its run. The task rests in review with
+ * that person, every run of the task settled without `issue_reassigned`, and nothing blocks the task's execution.
+ */
+export function handoffChecks(artifacts: OracleArtifacts): OracleResult["checks"] {
+  const handoff = artifacts.handoff;
+  const runs = handoff?.runs ?? null;
+  const reassignedRuns = (runs ?? []).filter(run => run.errorCode === "issue_reassigned").map(run => run.id);
+  // A restart after the hand-off settles the run as failed (it is not resumed without the task); it must settle.
+  const unsettled = (runs ?? []).filter(run => !["succeeded", "cancelled", "failed", "timed_out"].includes(run.status));
+  return [
+    { name: "issue_in_review", ok: artifacts.issueStatus === "in_review", detail: `status=${artifacts.issueStatus ?? "unknown"}` },
+    { name: "handed_to_creator", ok: Boolean(handoff?.createdByUserId) && handoff!.assigneeAgentId === null
+        && handoff!.assigneeUserId === handoff!.createdByUserId,
+      detail: `agent=${handoff?.assigneeAgentId ?? "none"} user=${handoff?.assigneeUserId ?? "none"} creator=${handoff?.createdByUserId ?? "none"}` },
+    { name: "handoff_did_not_cancel_run", ok: Boolean(runs?.length) && reassignedRuns.length === 0 && unsettled.length === 0,
+      detail: runs === null ? "run history unavailable" : reassignedRuns.length ? `issue_reassigned=${reassignedRuns.join(",")}`
+        : `runs=${runs.map(run => `${run.id}:${run.status}`).join(",") || "none"}` },
+    { name: "no_execution_blocker", ok: Boolean(handoff) && !handoff!.executionBlocker && !handoff!.activeRecoveryAction,
+      detail: `blocker=${handoff?.executionBlocker ?? "unknown"} recovery=${handoff?.activeRecoveryAction ?? "unknown"}` },
+  ];
+}
+
 const delegateDescription = (nonce: string, agents?: WorkloadAgents) => {
   const self = agents?.self.name ?? "yourself";
   const other = agents?.other.name ?? "yourself";
@@ -174,8 +253,10 @@ function budgetChecks(artifacts: OracleArtifacts) {
 
 export const workloadDefinitions: Record<WorkloadId, WorkloadDefinition> = {
   Q1: questionHandoffWorkload,
+  Q4: questionSequenceWorkload,
   L1: l1Workload,
   ...journeyWorkloadDefinitions,
+  ...rewakeWorkloadDefinitions,
   G1: {
     id: "G1",
     label: "Approval-gated action across a restart",
@@ -201,6 +282,19 @@ export const workloadDefinitions: Record<WorkloadId, WorkloadDefinition> = {
     collect: { documents: ["brief"], files: () => [], commands: [] },
     grade(nonce, artifacts) {
       return result([statusCheck(artifacts), ...briefChecks(artifacts.documents.brief, [briefMarker(nonce)]), ...budgetChecks(artifacts)]);
+    },
+  },
+  H2: {
+    id: "H2",
+    label: "The agent's own hand-off to a person, in review",
+    usesRepository: false,
+    fireWindowMs: [10_000, 45_000],
+    budgetMs: 10 * 60_000,
+    title: nonce => `Chaos H2 handoff ${nonce}`,
+    description: handoffDescription,
+    collect: { documents: ["brief"], files: () => [], commands: [] },
+    grade(nonce, artifacts) {
+      return result([...handoffChecks(artifacts), ...briefChecks(artifacts.documents.brief, [briefMarker(nonce)])]);
     },
   },
   M1: {
@@ -351,6 +445,32 @@ export const workloadDefinitions: Record<WorkloadId, WorkloadDefinition> = {
         // Proof the absolute link was in the workspace before the save-back: the agent's own `ls -l` output, saved
         // with the notes file. Best-effort against an agent that invents it; how the link itself is saved is not graded.
         { name: "link_listed", ok: f1LinkListing(nonce).test(lines[1] ?? ""), detail: JSON.stringify((lines[1] ?? "").slice(0, 160)) },
+      ]);
+    },
+  },
+  T1: {
+    // Staging class R (`runner_remote_process_identity_unavailable`): the controller went away mid-turn while a
+    // tool ran in the sandbox, and recovery 4–7 minutes later found the remote Runner gone. T1 keeps one shell
+    // tool running for about 100 s (short of provider shell-tool timeouts), so a fault in its window lands mid-tool.
+    id: "T1",
+    label: "Long shell tool in the agent's workspace",
+    usesRepository: false,
+    fireWindowMs: [35_000, 80_000],
+    budgetMs: 15 * 60_000,
+    title: nonce => `Chaos T1 long tool ${nonce}`,
+    description: nonce => [
+      "Run this exact shell command in your working directory as one tool call, in the foreground, and wait for it to finish",
+      `(about 100 seconds; do not run it in the background): \`${t1Command(nonce)}\``,
+      `Then save this issue's document with key \`brief\` (title "Brief"). Its first line is \`${t1Marker(nonce)}=<the exact line the command printed>\`.`,
+      "Do not create other files or tasks. When the document is saved, mark this task done.",
+    ].join("\n"),
+    collect: { documents: ["brief"], files: () => [], commands: [] },
+    grade(nonce, artifacts) {
+      const report = parseT1Report(nonce, artifacts.documents.brief);
+      const first = (artifacts.documents.brief ?? "").split(/\r?\n/).map(line => line.trim()).find(Boolean) ?? "";
+      return result([
+        statusCheck(artifacts),
+        { name: "tool_finished", ok: report?.ticks === T1_TICKS, detail: JSON.stringify(first.slice(0, 120)) },
       ]);
     },
   },
