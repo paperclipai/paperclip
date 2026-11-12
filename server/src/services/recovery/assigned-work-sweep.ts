@@ -62,7 +62,7 @@ const BLOCK_ATTRIBUTION_WINDOW_MS = 10_000;
 
 type IssueRow = Pick<typeof issues.$inferSelect, "id" | "companyId" | "status" | "assigneeAgentId" | "assigneeUserId" | "hiddenAt"
   | "blockedTransitionAt" | "updatedAt" | "unblockDescriptor" | "monitorNextCheckAt" | "conversationAgentId" | "originKind"
-  | "projectId" | "statusVersion" | "executionState" | "identifier" | "createdAt">;
+  | "projectId" | "statusVersion" | "executionState" | "identifier" | "createdAt" | "blockedOwnerNotifiedAt">;
 
 type RunRow = Pick<typeof heartbeatRuns.$inferSelect, "id" | "status" | "agentId" | "runtimeMode" | "errorCode" | "finishedAt"
   | "scheduledRetryAt" | "controllerBootId" | "controllerLeaseExpiresAt" | "controllerProcess" | "resultJson"> & { issueId: string };
@@ -129,9 +129,9 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
   const proveOwner = deps.proveOwner ?? ((stamp: LocalOwnerStamp) => proveOwnerGone(stamp, { ...currentProcessProbe(), readOnly: true }));
   const passLog = createPassLog();
   const repairTimes: number[] = [];
-  const treeControl = issueTreeControlService(db);
+  const sweepTreeControl = issueTreeControlService(db);
 
-  async function runOwner(run: RunRow, at: Date): Promise<RunOwnerVerdict> {
+  async function runOwner(run: RunRow, at: Date, proveOwners = true): Promise<RunOwnerVerdict> {
     if (run.status !== "running") return "alive";
     if (deps.liveRunExecutions?.has(run.id)) return "alive";
     // Native runs are owned through the native coordinator's fenced claims,
@@ -140,12 +140,21 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
     // A held lease is a live owner, including another server during a deploy overlap.
     if (run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt.getTime() > at.getTime()) return "alive";
     const stamp = legacyControllerOwnerStamp(run);
-    if (!stamp) return "unprovable";
+    if (!stamp || !proveOwners) return "unprovable";
     const proof = await proveOwner(stamp);
     return proof.verdict;
   }
 
-  async function loadFacts(companyId: string, issueRows: IssueRow[]): Promise<Map<string, AssignedWorkFacts>> {
+  /** `database` is the connection to read through: the claim passes its
+   * transaction, so the re-check holds no second pool connection while the
+   * task row is locked and sees exactly what the lock protects. Owner proofs
+   * that reach other connections are skipped there (`proveOwners: false`):
+   * a lapsed-lease run is then treated as live, which only stops the repair. */
+  async function loadFacts(companyId: string, issueRows: IssueRow[],
+    options: { database?: Db; proveOwners?: boolean } = {}): Promise<Map<string, AssignedWorkFacts>> {
+    const database = options.database ?? db;
+    const proveOwners = options.proveOwners ?? true;
+    const treeControl = database === db ? sweepTreeControl : issueTreeControlService(database);
     const result = new Map<string, AssignedWorkFacts>();
     if (!issueRows.length) return result;
     const at = now();
@@ -166,10 +175,10 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
 
     const [activeRuns, latestRuns, wakes, chatWakes, nativePending, handoffs, goals, interactions, approvalRows,
       blockerRows, resolvedBlockerRows, childRows, actionMap, agentRows, companyRows, onboardingRows, blockActivity, interruptions] = await Promise.all([
-      db.select(runColumns).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId),
+      database.select(runColumns).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId),
         inArray(heartbeatRuns.status, NON_TERMINAL_RUN_STATUSES), sql`${runIssue} = any(${idParam})`)),
       // The newest run per task, read through the (company, issueId, created) index.
-      db.execute<RunRow & { issue_id: string }>(sql`select requested.id as "issueId", latest.*
+      database.execute<RunRow & { issue_id: string }>(sql`select requested.id as "issueId", latest.*
         from unnest(${idParam}) as requested(id)
         cross join lateral (
           select r.id, r.status, r.agent_id as "agentId", r.runtime_mode as "runtimeMode", r.error_code as "errorCode",
@@ -181,14 +190,14 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
           where r.company_id = ${companyId} and (r.context_snapshot->>'issueId') = requested.id
           order by r.created_at desc limit 1
         ) latest`),
-      db.select({ issueId: sql<string>`${agentWakeupRequests.payload}->>'issueId'`, count: sql<number>`count(*)::int` })
+      database.select({ issueId: sql<string>`${agentWakeupRequests.payload}->>'issueId'`, count: sql<number>`count(*)::int` })
         .from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, companyId),
           inArray(agentWakeupRequests.status, PENDING_WAKE_STATUSES),
           sql`${agentWakeupRequests.payload}->>'issueId' = any(${idParam})`))
         .groupBy(sql`${agentWakeupRequests.payload}->>'issueId'`),
-      db.select({ id: issues.id }).from(issues).where(and(eq(issues.companyId, companyId), inArray(issues.id, ids),
+      database.select({ id: issues.id }).from(issues).where(and(eq(issues.companyId, companyId), inArray(issues.id, ids),
         unadmittedChatWakeupCondition(issues.id, issues.companyId))),
-      db.selectDistinct({ issueId: nativeRunFinalizations.issueId }).from(nativeRunFinalizations).where(and(
+      database.selectDistinct({ issueId: nativeRunFinalizations.issueId }).from(nativeRunFinalizations).where(and(
         eq(nativeRunFinalizations.companyId, companyId), inArray(nativeRunFinalizations.issueId, ids),
         isNull(nativeRunFinalizations.resultId),
         // Same native paths as the stranded sweep's active-path check: a
@@ -197,44 +206,44 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
         or(inArray(nativeRunFinalizations.recoveryState, NATIVE_PENDING_RECOVERY_STATES),
           eq(nativeRunFinalizations.phase, "retryable_failure")),
         sql`coalesce(${nativeRunFinalizations.failureDetail}->>'replacementDenied', '') <> 'explicit_user_continuation'`)),
-      db.selectDistinct({ issueId: caseHandoffs.issueId }).from(caseHandoffs).where(and(eq(caseHandoffs.companyId, companyId),
+      database.selectDistinct({ issueId: caseHandoffs.issueId }).from(caseHandoffs).where(and(eq(caseHandoffs.companyId, companyId),
         inArray(caseHandoffs.issueId, ids), eq(caseHandoffs.destinationKind, "agent"),
         inArray(caseHandoffs.state, ["awaiting_release", "pending_dispatch"]))),
-      db.select({ taskKey: agentTaskSessions.taskKey, agentId: agentTaskSessions.agentId, goalStatus: agentTaskSessions.goalStatus,
+      database.select({ taskKey: agentTaskSessions.taskKey, agentId: agentTaskSessions.agentId, goalStatus: agentTaskSessions.goalStatus,
         goalDesiredState: agentTaskSessions.goalDesiredState })
         .from(agentTaskSessions).where(and(eq(agentTaskSessions.companyId, companyId), inArray(agentTaskSessions.taskKey, ids),
           sql`${agentTaskSessions.goalStatus} is not null`, sql`${agentTaskSessions.goalStatus} <> 'complete'`)),
       // A pending question counts as the person's move until the person
       // answers it another way: a Retry or message started after the question
       // was asked (an explicit user continuation) supersedes it as a wait.
-      db.select({ issueId: issueThreadInteractions.issueId, count: sql<number>`count(*)::int` }).from(issueThreadInteractions)
+      database.select({ issueId: issueThreadInteractions.issueId, count: sql<number>`count(*)::int` }).from(issueThreadInteractions)
         .where(and(eq(issueThreadInteractions.companyId, companyId), inArray(issueThreadInteractions.issueId, ids),
           eq(issueThreadInteractions.status, "pending"), notSupersededByUserContinuation))
         .groupBy(issueThreadInteractions.issueId),
-      db.select({ issueId: issueApprovals.issueId, count: sql<number>`count(*)::int` }).from(issueApprovals)
+      database.select({ issueId: issueApprovals.issueId, count: sql<number>`count(*)::int` }).from(issueApprovals)
         .innerJoin(approvals, eq(approvals.id, issueApprovals.approvalId))
         .where(and(eq(issueApprovals.companyId, companyId), inArray(issueApprovals.issueId, ids), eq(approvals.status, "pending")))
         .groupBy(issueApprovals.issueId),
-      db.select({ issueId: issueRelations.relatedIssueId, count: sql<number>`count(*)::int` }).from(issueRelations)
+      database.select({ issueId: issueRelations.relatedIssueId, count: sql<number>`count(*)::int` }).from(issueRelations)
         .innerJoin(issues, and(eq(issues.id, issueRelations.issueId), eq(issues.companyId, issueRelations.companyId)))
         .where(and(eq(issueRelations.companyId, companyId), inArray(issueRelations.relatedIssueId, ids),
           eq(issueRelations.type, "blocks"), sql`${issues.status} not in ('done', 'cancelled')`))
         .groupBy(issueRelations.relatedIssueId),
-      db.select({ issueId: issueRelations.relatedIssueId,
+      database.select({ issueId: issueRelations.relatedIssueId,
         at: sql<string | null>`max(coalesce(${issues.completedAt}, ${issues.cancelledAt}))` }).from(issueRelations)
         .innerJoin(issues, and(eq(issues.id, issueRelations.issueId), eq(issues.companyId, issueRelations.companyId)))
         .where(and(eq(issueRelations.companyId, companyId), inArray(issueRelations.relatedIssueId, ids),
           eq(issueRelations.type, "blocks"), sql`${issues.status} in ('done', 'cancelled')`))
         .groupBy(issueRelations.relatedIssueId),
-      db.select({ parentId: issues.parentId, count: sql<number>`count(*)::int` }).from(issues)
+      database.select({ parentId: issues.parentId, count: sql<number>`count(*)::int` }).from(issues)
         .where(and(eq(issues.companyId, companyId), inArray(issues.parentId, ids), sql`${issues.status} not in ('done', 'cancelled')`,
           isNull(issues.hiddenAt))).groupBy(issues.parentId),
-      issueRecoveryActionService(db).listActiveForIssues(companyId, ids),
-      agentIds.length ? db.select().from(agents).where(and(eq(agents.companyId, companyId), inArray(agents.id, agentIds))) : [],
-      db.select({ status: companies.status, pauseReason: companies.pauseReason }).from(companies).where(eq(companies.id, companyId)),
-      db.select({ id: issues.id }).from(issues).where(and(eq(issues.companyId, companyId), inArray(issues.id, ids),
+      issueRecoveryActionService(database).listActiveForIssues(companyId, ids),
+      agentIds.length ? database.select().from(agents).where(and(eq(agents.companyId, companyId), inArray(agents.id, agentIds))) : [],
+      database.select({ status: companies.status, pauseReason: companies.pauseReason }).from(companies).where(eq(companies.id, companyId)),
+      database.select({ id: issues.id }).from(issues).where(and(eq(issues.companyId, companyId), inArray(issues.id, ids),
         onboardingFirstTaskAwaitingUserSql(issues.companyId, issues.id, issues.originKind))),
-      blockedRows.length ? db.execute<{ issueId: string; actorType: string; actorId: string; agentId: string | null; details: unknown }>(sql`
+      blockedRows.length ? database.execute<{ issueId: string; actorType: string; actorId: string; agentId: string | null; details: unknown }>(sql`
         select requested.id as "issueId", latest.actor_type as "actorType", latest.actor_id as "actorId",
           latest.agent_id as "agentId", latest.details
         from jsonb_to_recordset(${JSON.stringify(blockedRows.map(issue => ({ id: issue.id,
@@ -248,7 +257,7 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
               or a.details->'changes'->'status'->>'to' = 'blocked')
           order by a.created_at desc limit 1
         ) latest`) : [],
-      taskInterruptionPresentations(db, companyId, issueRows.map(issue => ({ id: issue.id, companyId: issue.companyId,
+      taskInterruptionPresentations(database, companyId, issueRows.map(issue => ({ id: issue.id, companyId: issue.companyId,
         status: issue.status, assigneeAgentId: issue.assigneeAgentId, projectId: issue.projectId }))),
     ]);
 
@@ -258,7 +267,7 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       // An agent still being set up, or held by a lifecycle hold, takes no work
       // yet; its setup or release is the next move, not a continuation.
       const ready = !isAgentAwaitingSetup(agent) && (agent.lifecycleHolds ?? []).length === 0;
-      agentsById.set(agent.id, { ...agent, invokable: ready && (await evaluateAgentInvokabilityFromDb(db, agent)).invokable });
+      agentsById.set(agent.id, { ...agent, invokable: ready && (await evaluateAgentInvokabilityFromDb(database, agent)).invokable });
     }
     const company = companyRows[0];
     const companyBudget = company?.pauseReason === "budget" || company?.pauseReason === "budget_exceeded";
@@ -283,7 +292,7 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       const runs = activeRuns.filter(run => run.issueId === issue.id) as RunRow[];
       const ownedRuns = [];
       for (const run of runs) {
-        ownedRuns.push({ id: run.id, status: run.status, scheduledRetryAt: run.scheduledRetryAt, owner: await runOwner(run, at) });
+        ownedRuns.push({ id: run.id, status: run.status, scheduledRetryAt: run.scheduledRetryAt, owner: await runOwner(run, at, proveOwners) });
       }
       const latest = latestByIssue.get(issue.id) ?? null;
       const latestFinishedAt = latest?.finishedAt ? new Date(latest.finishedAt) : null;
@@ -348,7 +357,7 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
     updatedAt: issues.updatedAt, unblockDescriptor: issues.unblockDescriptor, monitorNextCheckAt: issues.monitorNextCheckAt,
     conversationAgentId: issues.conversationAgentId, originKind: issues.originKind, projectId: issues.projectId,
     statusVersion: issues.statusVersion, executionState: issues.executionState, identifier: issues.identifier,
-    createdAt: issues.createdAt,
+    createdAt: issues.createdAt, blockedOwnerNotifiedAt: issues.blockedOwnerNotifiedAt,
   };
 
   async function loadIssues(companyId: string, issueId?: string, limit = ASSIGNED_WORK_REPORT_LIMIT,
@@ -491,7 +500,7 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
   type Claimed = { kind: "claimed"; nextCheckAt: Date; activityId: string; publications: ActivityPublication[];
     verdict: Extract<AssignedWorkVerdict, { kind: "violation" }>; reason: ViolationReason;
     restoredTo: "todo" | "in_progress" | "in_review" | null; restoredStatusVersion: number | null;
-    blockedTransitionAt: Date | null };
+    blockedTransitionAt: Date | null; unblockDescriptor: IssueRow["unblockDescriptor"]; blockedOwnerNotifiedAt: Date | null };
 
   /**
    * The durable, serialized claim. Under the task's row lock it loads the
@@ -510,7 +519,7 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
         .where(and(eq(issues.companyId, issue.companyId), eq(issues.id, issue.id))).for("update");
       if (!current || current.status !== issue.status || current.statusVersion !== issue.statusVersion
         || current.assigneeAgentId !== issue.assigneeAgentId || current.assigneeUserId || current.hiddenAt) return { kind: "changed" as const };
-      const fresh = (await loadFacts(issue.companyId, [current])).get(current.id)!;
+      const fresh = (await loadFacts(issue.companyId, [current], { database: tx as unknown as Db, proveOwners: false })).get(current.id)!;
       const verdict = evaluateAssignedWork(fresh, at);
       if (verdict.kind !== "violation" || verdict.stale || verdict.reason === "run_owner_gone"
         || (current.status === "blocked" && fresh.activeRecoveryAction)) return { kind: "changed" as const };
@@ -544,6 +553,7 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       const next = continuationAllowance([at, ...recent.map(row => row.createdAt)], at);
       return { kind: "claimed" as const, activityId: activity.id, publications, verdict, reason: verdict.reason,
         restoredTo, restoredStatusVersion, blockedTransitionAt: current.blockedTransitionAt,
+        unblockDescriptor: current.unblockDescriptor, blockedOwnerNotifiedAt: current.blockedOwnerNotifiedAt,
         nextCheckAt: next.allowed ? new Date(at.getTime() + 90_000) : next.retryAt };
     });
   }
@@ -563,8 +573,10 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
         sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issue.id}`)).limit(1);
       if (pendingWake || activeRun) return;
       await issueService(tx as unknown as Db).update(issue.id, { status: "blocked" }, tx);
-      // Keep the original block time, so the stale window still counts from it.
-      await tx.update(issues).set({ blockedTransitionAt: claimed.blockedTransitionAt }).where(eq(issues.id, issue.id));
+      // Keep the original block record: its time (the stale window counts
+      // from it), its declared unblock action, and that its owner was told.
+      await tx.update(issues).set({ blockedTransitionAt: claimed.blockedTransitionAt, unblockDescriptor: claimed.unblockDescriptor,
+        blockedOwnerNotifiedAt: claimed.blockedOwnerNotifiedAt }).where(eq(issues.id, issue.id));
     });
   }
 
@@ -589,9 +601,17 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
    * tasks the caller cannot read are left out of every count and sample. The
    * sweep itself evaluates all tasks. */
   async function report(companyId: string, options: { readCondition?: SQL<boolean> } = {}) {
-    const rows = await loadIssues(companyId, undefined, ASSIGNED_WORK_REPORT_LIMIT, options.readCondition);
+    const rows = await loadIssues(companyId, undefined, ASSIGNED_WORK_REPORT_LIMIT + 1, options.readCondition);
+    const truncated = rows.length > ASSIGNED_WORK_REPORT_LIMIT;
+    if (truncated) rows.length = ASSIGNED_WORK_REPORT_LIMIT;
+    // When the read was capped, say how many open tasks exist, and that the
+    // violation count is a lower bound: it covers only the newest tasks read.
+    const [total] = truncated ? await db.select({ count: sql<number>`count(*)::int` }).from(issues).where(and(
+      eq(issues.companyId, companyId), options.readCondition, inArray(issues.status, [...OPEN_STATUSES]),
+      sql`${issues.assigneeAgentId} is not null`, isNull(issues.assigneeUserId), isNull(issues.hiddenAt))) : [{ count: rows.length }];
     const at = now();
-    const summary = { checked: rows.length, truncated: rows.length >= ASSIGNED_WORK_REPORT_LIMIT, ok: {} as Record<string, number>,
+    const summary = { checked: rows.length, openTasks: Number(total?.count ?? rows.length), truncated,
+      violationCountIsLowerBound: truncated, ok: {} as Record<string, number>,
       violations: {} as Record<string, number>, violationCount: 0, heldByRecoveryOwner: 0, staleBlocked: 0, settling: 0,
       sample: [] as Array<{ identifier: string | null; status: string; reason: string }> };
     for (let index = 0; index < rows.length; index += 200) {

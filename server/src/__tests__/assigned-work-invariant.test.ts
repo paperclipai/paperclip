@@ -389,11 +389,16 @@ describePostgres("assigned-work invariant sweep", () => {
     const blockedAt = new Date(Date.now() - 2 * HOUR);
     const issueId = await f.issue({ status: "blocked", blockedTransitionAt: blockedAt });
     await f.run(issueId, { status: "failed", errorCode: "controller_lease_lost", livenessState: "failed" });
+    const notifiedAt = new Date(Date.now() - HOUR);
+    const descriptor = { owner: { agentId: f.agentId }, action: "Retry the build once the cache is warm." };
+    await db.update(issues).set({ unblockDescriptor: descriptor as never, blockedOwnerNotifiedAt: notifiedAt }).where(eq(issues.id, issueId));
     const sweep = assignedWorkSweep(db, { enqueueWakeup: async () => null });
     expect(await sweep.checkIssue({ companyId: f.companyId, issueId })).toMatchObject({ outcome: "enqueue_refused" });
     const [after] = await db.select().from(issues).where(eq(issues.id, issueId));
     expect(after.status).toBe("blocked");
     expect(after.blockedTransitionAt?.getTime()).toBe(blockedAt.getTime());
+    expect(after.unblockDescriptor).toEqual(descriptor);
+    expect(after.blockedOwnerNotifiedAt?.getTime()).toBe(notifiedAt.getTime());
   }, 60_000);
 
   it("re-runs the predicate under the row lock: a question asked after the first read stops the repair", async () => {
@@ -431,6 +436,29 @@ describePostgres("assigned-work invariant sweep", () => {
     expect(report).toMatchObject({ checked: 1, violationCount: 1 });
     expect(report.sample.map(row => row.identifier)).not.toContain((await db.select().from(issues).where(eq(issues.id, hidden)))[0].identifier);
     expect(await sweep.checkIssue({ companyId: f.companyId, issueId: hidden })).toMatchObject({ outcome: "repaired" });
+  }, 60_000);
+
+  it("completes a claim on a one-connection pool: the locked re-check reads through the transaction", async () => {
+    const single = createDb(temporary.connectionString, { maxConnections: 1 });
+    try {
+      const f = await seedCompany();
+      const issueId = await f.issue({ status: "blocked", blockedTransitionAt: new Date(Date.now() - 2 * HOUR) });
+      await f.run(issueId, { status: "failed", errorCode: "controller_lease_lost", livenessState: "failed" });
+      const queue = wakeQueue();
+      const sweep = assignedWorkSweep(single, { enqueueWakeup: queue.enqueueWakeup });
+      const result = await Promise.race([sweep.checkIssue({ companyId: f.companyId, issueId }),
+        new Promise(resolve => setTimeout(() => resolve("deadlocked"), 20_000))]);
+      expect(result).toMatchObject({ outcome: "repaired" });
+      expect(queue.calls).toHaveLength(1);
+    } finally { await single.$client.end({ timeout: 0 }); }
+  }, 60_000);
+
+  it("says when the report is capped, and that the violation count is then a lower bound", async () => {
+    const f = await seedCompany();
+    const issueId = await f.issue();
+    await f.run(issueId);
+    const report = await assignedWorkSweep(db, { enqueueWakeup: wakeQueue().enqueueWakeup }).report(f.companyId);
+    expect(report).toMatchObject({ checked: 1, openTasks: 1, truncated: false, violationCountIsLowerBound: false, violationCount: 1 });
   }, 60_000);
 
   it("stops scheduling a task once it leaves eligibility", async () => {

@@ -147,7 +147,9 @@ Board only. Read-only. Classifies every open task assigned to an agent (`todo`, 
 
 The response contains:
 
-- `checked`: the number of tasks read, newest-updated first. At most 2,000; `truncated` is `true` when there were more.
+- `checked`: the number of tasks classified, newest-updated first. At most 2,000.
+- `openTasks`: the number of open agent-assigned tasks the caller may read. When it exceeds 2,000, `truncated` and `violationCountIsLowerBound` are `true`: the counts cover only the 2,000 newest tasks, so the real violation count can be higher, never lower.
+- Only tasks the caller may read are counted; private tasks the caller cannot read are left out of every count and sample. On an instance with a worktree execution cutoff, the sweep skips tasks created before the cutoff, but the report still counts them.
 - `ok`: counts by clause, for example `live_run`, `pending:queued_wake`, `waiting:question`.
 - `violations` and `violationCount`: counts by reason (`no_pending_path`, `retry_offered`, `recovery_block`, `unknown_block`, `run_owner_gone`).
 - `heldByRecoveryOwner`: violations that are blocked under an active recovery hold, which the hold's owner continues.
