@@ -132,11 +132,13 @@ async function allocationProfile(client: string, db: AnyDb, count: number) {
 }
 
 const database = await startEmbeddedPostgresTestDatabase("paperclip-db-transaction-allocation-");
+// These two pools are not registered with createDb, so database.cleanup() does
+// not end them. End them before PostgreSQL stops, also when a scenario throws.
+const eagerSql = postgres(database.connectionString, { max: 10, onnotice: () => {} });
+const bareSql = postgres(database.connectionString, { max: 10, onnotice: () => {} });
 try {
   const db = createDb(database.connectionString) as unknown as AnyDb & { _: { schema: Record<string, unknown> } };
-  const eagerSql = postgres(database.connectionString, { max: 10, onnotice: () => {} });
   const eager = drizzle(eagerSql, { schema }) as unknown as AnyDb;
-  const bareSql = postgres(database.connectionString, { max: 10, onnotice: () => {} });
   const bare = drizzle(bareSql) as unknown as AnyDb;
   console.log(JSON.stringify({ kind: "host", node: process.version, logicalCpus: cpus().length, loadavg: loadavg().map(value => Number(value.toFixed(1))),
     iterations, passes, schemaTables: Object.keys(db._.schema).length,
@@ -146,8 +148,8 @@ try {
   await scenarios("drizzle without a schema", bare);
   await allocationProfile("paperclip createDb", db, Math.min(iterations, 2000));
   await allocationProfile("drizzle with the schema", eager, Math.min(iterations, 2000));
-  await Promise.all([eagerSql.end({ timeout: 1 }), bareSql.end({ timeout: 1 })]);
 } finally {
   observer.disconnect();
+  await Promise.allSettled([eagerSql.end({ timeout: 1 }), bareSql.end({ timeout: 1 })]);
   await database.cleanup();
 }

@@ -4,12 +4,16 @@ import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { createDb, type Db } from "./client.js";
+import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "./response-capture.js";
 import { announcementDismissals, announcementPublications } from "./schema/index.js";
 import {
   EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./test-embedded-postgres.js";
+import {
+  databaseWorkPending, databaseWorkScopeKey, reconcileDatabaseWork, signalDatabaseWork, subscribeDatabaseWork,
+} from "./work-signals.js";
 
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
@@ -139,6 +143,88 @@ describeEmbeddedPostgres("transactions on the Paperclip database client", () => 
         expect(await tx.query.announcementPublications.findMany()).toEqual([{ announcementId: "outer" }]);
       });
       expect(await db.query.announcementPublications.findMany()).toEqual([{ announcementId: "outer" }]);
+    });
+  });
+
+  describe("instrumentation of transactions", () => {
+    const assignedXid = async (connection: Pick<Db, "execute">) =>
+      (await connection.execute<{ xid: string | null }>(sql`select pg_current_xact_id_if_assigned()::text as xid`))[0]!.xid;
+
+    it("registers each transaction and savepoint with the client's work signals", async () => {
+      const events: string[] = [];
+      const unsubscribe = subscribeDatabaseWork(db, "lazy-transaction-queries", event => events.push(event));
+      try {
+        await db.transaction(async (tx) => {
+          expect(databaseWorkScopeKey(tx)).toBe(databaseWorkScopeKey(db));
+          expect(await assignedXid(tx)).toBeNull();
+          await tx.transaction(async (nested) => {
+            expect(databaseWorkScopeKey(nested)).toBe(databaseWorkScopeKey(db));
+            await signalDatabaseWork(nested, "lazy-transaction-queries");
+            // The registration asked for the transaction ID on this transaction's connection.
+            expect(await assignedXid(nested)).not.toBeNull();
+            await publication(nested, "signalled");
+          });
+          expect(events).toEqual(["intent"]);
+          expect(databaseWorkPending(db, "lazy-transaction-queries")).toBe(true);
+          expect(await tx.query.announcementPublications.findMany()).toEqual([{ announcementId: "signalled" }]);
+          // A released savepoint and a relational read settle nothing before the outer commit.
+          expect(events).toEqual(["intent"]);
+        });
+        expect(events).toEqual(["intent", "settled"]);
+        expect(databaseWorkPending(db, "lazy-transaction-queries")).toBe(false);
+
+        await expect(db.transaction(async (tx) => {
+          await signalDatabaseWork(tx, "lazy-transaction-queries");
+          await publication(tx, "rolled-back");
+          throw new Error("rollback");
+        })).rejects.toThrow("rollback");
+        expect(events).toEqual(["intent", "settled", "intent", "settled"]);
+        await reconcileDatabaseWork(db, "lazy-transaction-queries");
+        expect(databaseWorkPending(db, "lazy-transaction-queries")).toBe(false);
+        expect(await publicationIds(db)).toEqual(["signalled"]);
+        await expect(signalDatabaseWork(db, "lazy-transaction-queries")).rejects.toThrow("inside a transaction");
+      } finally { unsubscribe(); }
+    });
+
+    it("response capture counts every statement of a transaction, a savepoint and tx.query", async () => {
+      const events: Array<Record<string, unknown>> = [];
+      const now = Date.now();
+      const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+      const captured = createDb(database.connectionString, { maxConnections: 2 });
+      try {
+        installDatabaseResponseCapture(captured, { announcementPublications, announcementDismissals }, capture);
+        await captured.transaction(async (tx: Tx) => {
+          await publication(tx, "captured");
+          await tx.select().from(announcementPublications);
+          await tx.transaction(async (nested: Tx) => {
+            await nested.update(announcementPublications).set({ announcementId: "captured-renamed" })
+              .where(eq(announcementPublications.announcementId, "captured"));
+            await nested.query.announcementPublications.findFirst({
+              where: eq(announcementPublications.announcementId, "captured-renamed"),
+            });
+            await nested.delete(announcementDismissals);
+          });
+          await tx.query.announcementDismissals.findMany();
+        });
+        capture.flush();
+        expect(events.find(event => event.event === "paperclip.db_response_capture.summary.v2"))
+          .toMatchObject({ startedQueries: 6, completedQueries: 6, inFlightAtEnd: 0 });
+        const calls: Record<string, number> = {};
+        for (const event of events.filter(entry => entry.event === "paperclip.db_response_capture.entry.v2")) {
+          const key = `${String(event.operation)} ${String(event.table)}`;
+          calls[key] = (calls[key] ?? 0) + Number(event.calls);
+        }
+        expect(calls).toEqual({
+          "insert announcement_publications": 1,
+          "select announcement_publications": 2,
+          "update announcement_publications": 1,
+          "delete announcement_dismissals": 1,
+          "select announcement_dismissals": 1,
+        });
+      } finally {
+        capture.flush();
+        await captured.$client.end({ timeout: 1 });
+      }
     });
   });
 
