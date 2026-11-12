@@ -410,3 +410,8 @@ it.each([undefined, "off", "low", "high", "max"] as const)("builds exact Pi thin
 it("rejects silently clamped Pi aliases during configuration", () => {
   expect(() => buildPaperclipRunnerConfig(makeValues({ adapterType: "paperclip_runner", adapterSchemaValues: { provider: "acpx", acpxAgent: "pi", piThinkingLevel: "medium" } }))).toThrow();
 });
+
+it("persists explicitly edited ACP settings for the effective Auto engine", () => {
+  expect(buildCodexLocalConfig(makeValues({ codexEngine: "auto", codexAcpMode: "oneshot", codexAcpNonInteractivePermissions: "fail", codexAcpWarmHandleIdleMs: 2000 }))).toMatchObject({ mode: "oneshot", nonInteractivePermissions: "fail", warmHandleIdleMs: 2000 });
+  expect(buildCodexLocalConfig(makeValues({ codexEngine: "auto" })).engine).toBeUndefined();
+});

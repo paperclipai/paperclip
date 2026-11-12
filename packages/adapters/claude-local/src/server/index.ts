@@ -11,6 +11,7 @@ export {
 export {
   parseClaudeStreamJson,
   describeClaudeFailure,
+  extractClaudeRetryNotBefore,
   isClaudeMaxTurnsResult,
   isClaudeProviderQuotaError,
   isClaudeRefusalResult,

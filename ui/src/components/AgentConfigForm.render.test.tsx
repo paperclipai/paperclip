@@ -302,11 +302,11 @@ function e2bEnvironments() {
   ];
 }
 
-function renderFormView(root: Root, queryClient: QueryClient, children: Parameters<Root["render"]>[0]) {
+function renderFormView(root: Root, queryClient: QueryClient, children: Parameters<Root["render"]>[0], wrapRouter = false) {
   root.render(
     <QueryClientProvider client={queryClient}>
       <ToastProvider>
-        <TooltipProvider>{children}</TooltipProvider>
+        <TooltipProvider>{wrapRouter ? <MemoryRouter>{children}</MemoryRouter> : children}</TooltipProvider>
       </ToastProvider>
     </QueryClientProvider>,
   );
@@ -325,9 +325,12 @@ async function renderForm(
     showAdapterTestEnvironmentButton?: boolean;
     showAdapterTypeField?: boolean;
     compactTestFeedback?: boolean;
+    hiddenSections?: readonly string[];
+    sectionLayout?: "panels";
     content?: "configuration" | "secrets";
     environmentVariablesPlacement?: "configuration" | "secrets";
     hideInlineSave?: boolean;
+    wrapRouter?: boolean;
     onDirtyChange?: (dirty: boolean) => void;
     onSaveActionChange?: (save: (() => void) | null) => void;
     onCancelActionChange?: (cancel: (() => void) | null) => void;
@@ -349,6 +352,8 @@ async function renderForm(
         onSave={onSave}
         hidePromptTemplate
         compactTestFeedback={options.compactTestFeedback}
+        hiddenSections={options.hiddenSections}
+        sectionLayout={options.sectionLayout}
         content={options.content}
         environmentVariablesPlacement={options.environmentVariablesPlacement}
         hideInlineSave={options.hideInlineSave}
@@ -357,7 +362,7 @@ async function renderForm(
         onCancelActionChange={options.onCancelActionChange}
         showAdapterTypeField={options.showAdapterTypeField ?? false}
         showAdapterTestEnvironmentButton={options.showAdapterTestEnvironmentButton ?? false}
-      />
+      />, options.wrapRouter
     );
   });
 
@@ -646,6 +651,17 @@ async function flushUntil(check: () => boolean, timeoutMs = 4000) {
 describe("AgentConfigForm environment selector", () => {
   let roots: Root[] = [];
 
+  it("keeps Claude execution policies reachable in the runtime panel", async () => {
+    const result = await renderForm([], { adapterType: "claude_local", adapterConfig: { engine: "cli", timeoutSec: 42 } }, { sectionLayout: "panels", hiddenSections: ["identity", "run-policy"] });
+    roots.push(result.root);
+    const panel = result.container.querySelector('[data-config-section="configuration"]')!;
+    const disclosure = [...panel.querySelectorAll("button")].find(button => button.textContent?.trim() === "Advanced Run Policy");
+    expect(disclosure).toBeTruthy();
+    await act(async () => disclosure!.click()); await flushReact();
+    expect(panel.querySelector<HTMLInputElement>('[aria-label="Timeout (sec)"]')?.value).toBe("42");
+    expect(result.container.querySelector('[data-config-section="run-policy"]')).toBeNull();
+  });
+
   it.each(["paperclip", "legacy"] as const)("uses the resolved %s Claude form to preserve the correct turn limit", async defaultRunner => {
     mockAdaptersApi.list.mockResolvedValue([{ type: "claude_local", supportedRunners: defaultRunner === "paperclip" ? ["paperclip", "legacy"] : ["legacy"], defaultRunner }]);
     try {
@@ -728,6 +744,69 @@ describe("AgentConfigForm environment selector", () => {
     await flushReact();
     await clickByText(result.container, "Save");
     expect(result.onSave).toHaveBeenCalledWith({ name: "Renamed Cody" });
+  });
+
+  it("edits the shared Pool binding without exposing a direct account or model", async () => {
+    const { harnessPoolsApi } = await import("../api/harness-pools");
+    const list = vi.spyOn(harnessPoolsApi, "choices").mockResolvedValue([
+      { id: "smart", revision: 1, name: "Smart", enabled: true },
+      { id: "mid", revision: 1, name: "Mid", enabled: true },
+    ]);
+    try {
+      const edited = await renderForm([], { adapterType: "paperclip_runner", adapterConfig: { provider: "codex", model: "inactive" }, runtimeConfig: { harnessPool: { poolId: "smart" } } }, { showAdapterTypeField: true, wrapRouter: true });
+      roots.push(edited.root);
+      expect(edited.container.querySelector('[aria-label="Harness"]')?.textContent).toContain("Pool");
+      expect(edited.container.querySelector('[aria-label="Harness pool"]')).not.toBeNull();
+      expect(edited.container.textContent).toContain("Runners, models and accounts come from the pool.");
+      expect(edited.container.querySelector('[aria-label="Connection"]')).toBeNull();
+      expect(edited.container.querySelector('[aria-label="Model"]')).toBeNull();
+      await act(async () => { const select = edited.container.querySelector<HTMLSelectElement>('[aria-label="Harness pool"]')!; select.value = "mid"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+      await clickByText(edited.container, "Save");
+      expect(edited.onSave).toHaveBeenCalledWith(expect.objectContaining({ runtimeConfig: expect.objectContaining({ harnessPool: { poolId: "mid" } }) }));
+    } finally { list.mockRestore(); }
+  });
+
+  it.each(["shared-pool", "legacy-router", "both"])("saves a direct account after leaving %s without restoring its pool", async savedBinding => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableNativeRunner: true });
+    const { harnessPoolsApi } = await import("../api/harness-pools");
+    const pools = vi.spyOn(harnessPoolsApi, "choices").mockResolvedValue([{ id: "smart", revision: 1, name: "Smart", enabled: true }]);
+    const accounts = vi.spyOn(aiConnectionsApi, "list").mockResolvedValue({ currentUserId: "you", canManageConnections: true, connections: [{
+      id: "78306e75-506c-4240-981e-31d8508e33f2", grantId: "93587692-5e38-433e-bc06-7b98957009b2", companyId: "company-1", provider: "openai", method: "subscription", name: "Direct Codex",
+      ownership: "shared", isDefault: false, status: "connected",
+    }] });
+    try {
+      const edited = await renderForm([], { adapterType: "paperclip_runner", adapterConfig: { provider: "codex" }, runtimeConfig: {
+        ...(savedBinding !== "legacy-router" ? { harnessPool: { poolId: "smart" } } : {}),
+        ...(savedBinding !== "shared-pool" ? { aiConnection: { mode: "router", connectionId: "a8d3a9a3-9866-49d8-93d6-c497ae090d05" } } : {}),
+        heartbeat: { enabled: true, intervalSec: 300 }, debug: { diagnostic: true },
+      } }, { showAdapterTypeField: true, wrapRouter: true });
+      roots.push(edited.root);
+      if (savedBinding === "legacy-router") {
+        const routing = Array.from(edited.container.querySelectorAll("select")).find(select => select.textContent?.includes("Individual account"))!;
+        await act(async () => { routing.value = ""; routing.dispatchEvent(new Event("change", { bubbles: true })); });
+      } else {
+        await clickElement(edited.container.querySelector('[aria-label="Harness"]'));
+        await clickElement(document.querySelector('[role="option"][data-value="codex_local"]'));
+      }
+      await flushReact();
+      const adoption = findButton(edited.container, "Choose a managed connection");
+      if (adoption) await clickElement(adoption);
+      // Legacy router bindings must also stop hiding the direct account picker.
+      const connection = edited.container.querySelector('[aria-label="Connection"]');
+      expect(connection).not.toBeNull();
+      await act(async () => { connection!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })); });
+      await flushReact();
+      await clickElement(Array.from(document.querySelectorAll<HTMLElement>('[role="option"]')).find(option => option.textContent?.includes("Direct Codex")) ?? null);
+      await flushReact();
+      const adopt = findButton(document.body, "Use this binding when saved");
+      if (adopt) await clickElement(adopt);
+      await clickByText(edited.container, "Save");
+      const patch = edited.onSave.mock.calls[0]?.[0];
+      expect(JSON.parse(JSON.stringify(patch.runtimeConfig))).toEqual({
+        aiConnection: { mode: "shared", provider: "openai", method: "subscription", connectionId: "78306e75-506c-4240-981e-31d8508e33f2", grantId: "93587692-5e38-433e-bc06-7b98957009b2" },
+        heartbeat: { enabled: true, intervalSec: 300 }, debug: { diagnostic: true },
+      });
+    } finally { pools.mockRestore(); accounts.mockRestore(); }
   });
 
   it.each([
@@ -1055,22 +1134,64 @@ describe("AgentConfigForm environment selector", () => {
     expect(result.container.querySelector('[aria-label="Runner"]')).toBeNull();
   });
 
-  it.each([false, true])("keeps experimental native selection gated when enableNativeRunner is %s", async enabled => {
+  it.each(["codex_local", "claude_local"])("selects a pool from a directly configured %s agent without losing policy or workspace", async adapterType => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableNativeRunner: true });
+    const { harnessPoolsApi } = await import("../api/harness-pools");
+    const pools = vi.spyOn(harnessPoolsApi, "choices").mockResolvedValue([{ id: "chosen", name: "Claude first", revision: 1, enabled: true }]);
+    const source = { engine: "cli", cwd: "/existing-workspace", instructionsFilePath: "/agent/AGENTS.md", ...(adapterType === "codex_local" ? { dangerouslyBypassApprovalsAndSandbox: false } : { dangerouslySkipPermissions: true }) };
+    try {
+      const result = await renderForm([], { adapterType, adapterConfig: source, runtimeConfig: { aiConnection: { mode: "responsible_user", provider: adapterType === "codex_local" ? "openai" : "anthropic", method: "subscription" } } }, { showAdapterTypeField: true, wrapRouter: true }); roots.push(result.root);
+      await clickElement(result.container.querySelector('[aria-label="Harness"]'));
+      const pool = document.querySelector('[role="option"][data-value="pool"]'); expect(pool).toBeTruthy(); await clickElement(pool); await flushReact();
+      expect(result.onSave).not.toHaveBeenCalled();
+      const choice = result.container.querySelector<HTMLSelectElement>('[aria-label="Harness pool"]')!; expect(choice).toBeTruthy();
+      expect(result.container.querySelector('[aria-label="Connection"]')).toBeNull();
+      await act(async () => { choice.value = "chosen"; choice.dispatchEvent(new Event("change", { bubbles: true })); }); await clickByText(result.container, "Save");
+      expect(result.onSave).toHaveBeenCalledWith(expect.objectContaining({ adapterType: "paperclip_runner", runner: "paperclip", adapterConfig: expect.objectContaining({ ...source, provider: adapterType === "codex_local" ? "codex" : "acpx" }), runtimeConfig: expect.objectContaining({ aiConnection: undefined, harnessPool: { poolId: "chosen" } }) }));
+    } finally { pools.mockRestore(); }
+  });
+
+  it.each([
+    ["claude_local", { dangerouslySkipPermissions: false }],
+    ["claude_local", { permissionMode: "deny-all" }],
+    ["opencode_local", { model: "openrouter/deepseek/deepseek-v4-flash-0731", dangerouslySkipPermissions: false }],
+  ] as const)("refuses Pool for a %s agent whose local permission rules Runner cannot keep: %j", async (adapterType, policy) => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableNativeRunner: true });
+    const result = await renderForm([], { adapterType, adapterConfig: { cwd: "/existing-workspace", ...policy } }, { showAdapterTypeField: true, wrapRouter: true }); roots.push(result.root);
+    await clickElement(result.container.querySelector('[aria-label="Harness"]'));
+    await clickElement(document.querySelector('[role="option"][data-value="pool"]')); await flushReact();
+    expect(result.container.querySelector('[aria-label="Harness pool"]')).toBeNull();
+    expect(result.container.querySelector('[role="alert"]')?.textContent).toContain("Pool cannot keep this harness's local permission rules");
+    expect(result.onSave).not.toHaveBeenCalled();
+  });
+
+  it("retains the native source policy when selecting Pool", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableNativeRunner: true });
+    const { harnessPoolsApi } = await import("../api/harness-pools");
+    const list = vi.spyOn(harnessPoolsApi, "choices").mockResolvedValue([{ id: "smart", name: "Smart", revision: 1, enabled: true }]);
+    const source = { provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-5", acpxPermissionMode: "deny-all" };
+    try {
+      const result = await renderForm([], { adapterType: "paperclip_runner", adapterConfig: source, runtimeConfig: {} }, { showAdapterTypeField: true, wrapRouter: true }); roots.push(result.root);
+      await clickElement(result.container.querySelector('[aria-label="Harness"]'));
+      await clickElement(document.querySelector('[role="option"][data-value="pool"]'));
+      await flushReact();
+      await act(async () => { const select = result.container.querySelector<HTMLSelectElement>('[aria-label="Harness pool"]')!; select.value = "smart"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+      await clickByText(result.container, "Save");
+      const patch = result.onSave.mock.calls[0]![0];
+      expect(patch.replaceAdapterConfig).toBe(true);
+      expect(patch.adapterConfig).toEqual(source);
+      expect(patch.runtimeConfig.harnessPool).toEqual({ poolId: "smart" });
+    } finally { list.mockRestore(); }
+  });
+
+  it.each([false, true])("gates Pool separately from concrete harnesses when enableNativeRunner is %s", async enabled => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableNativeRunner: enabled });
-    const result = await renderForm([], { adapterType: "claude_local", adapterConfig: { model: "claude-sonnet-5" } }, { showAdapterTypeField: true });
+    const result = await renderForm([], { adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-5" } }, { showAdapterTypeField: true });
     roots.push(result.root);
     await clickElement(result.container.querySelector('[aria-label="Harness"]'));
-    const option = [...document.querySelectorAll('[role="option"]')].find(element => element.getAttribute("data-value") === "paperclip_runner");
-    expect(Boolean(option)).toBe(enabled);
-    if (!enabled) return;
-    expect(document.body.textContent).toContain("Advanced");
-    await clickElement(option);
-    await clickByText(result.container, "Save");
-    expect(result.onSave).toHaveBeenCalledWith(expect.objectContaining({
-      adapterType: "paperclip_runner",
-      adapterConfig: expect.objectContaining({ provider: "acpx", acpxAgent: "claude" }),
-    }));
-    expect(result.onSave.mock.calls[0][0].runner).toBeUndefined();
+    const options = [...document.querySelectorAll('[role="option"]')];
+    expect(options.some(element => element.getAttribute("data-value") === "pool")).toBe(enabled);
+    expect(options.some(element => element.getAttribute("data-value") === "paperclip_runner")).toBe(false);
   });
 
   it("preserves Claude's saved runner without runner or legacy command controls when the experimental gate is off", async () => {
@@ -1418,6 +1539,23 @@ describe("AgentConfigForm environment selector", () => {
     expect(mockAgentsApi.testEnvironment).toHaveBeenCalledExactlyOnceWith("company-1", "cursor_cloud", expect.objectContaining({
       environmentId: null, runner: "paperclip",
     }));
+  });
+
+  it("requests Codex models for the selected account", async () => {
+    const binding = { provider: "openai", method: "subscription", mode: "responsible_user" } as const;
+    const accounts = vi.spyOn(aiConnectionsApi, "list").mockResolvedValue({ currentUserId: "you", canManageConnections: true, connections: [{
+      id: "codex-account", grantId: "codex-grant", companyId: "company-1", provider: "openai", method: "subscription", name: "Codex",
+      ownership: "personal", ownerUserId: "you", isDefault: true, status: "connected",
+    }] });
+    mockAgentsApi.adapterModels.mockResolvedValue([{ id: "gpt-6.1-terra", label: "Terra" }]);
+    try {
+      const result = await renderForm([makeEnvironment({ id: "local-1", name: "Local", driver: "local" })], {
+        adapterType: "codex_local", adapterConfig: { model: "gpt-6.1-terra" }, runtimeConfig: { aiConnection: binding },
+      });
+      roots.push(result.root);
+      await vi.waitFor(() => expect(mockAgentsApi.adapterModels).toHaveBeenCalledWith("company-1", "codex_local", expect.objectContaining({ aiConnection: binding, agentId: "agent-1" })));
+      expect(result.container.textContent).toContain("Terra");
+    } finally { accounts.mockRestore(); }
   });
 
   it("requests the native Kimi model catalog while preserving an explicit saved model", async () => {

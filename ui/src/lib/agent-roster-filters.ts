@@ -32,7 +32,7 @@ export function buildAgentRosterIndex(agents: readonly Agent[], accounts?: AiCon
     const values: Record<AgentRosterFilterField, AgentRosterOption> = {
       harness: { value: harness, label: getAdapterLabel(harness) },
       model: pending ? { value: "unconfigured", label: "Not available yet" }
-        : model ? { value: `model:${model}`, label: model } : { value: "default", label: "Harness default" },
+        : model ? { value: `model:${model}`, label: model } : agent.runtimeConfig.harnessPool ? { value: "pool", label: "From pool" } : { value: "default", label: "Harness default" },
       status: { value: agent.status, label: agent.status.charAt(0).toUpperCase() + agent.status.slice(1) },
       connection,
     };

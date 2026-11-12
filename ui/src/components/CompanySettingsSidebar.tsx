@@ -143,6 +143,7 @@ export function CompanySettingsSidebar() {
             />
           )}
           <SidebarNavItem to="/company/settings/connections" label="Connections" icon={Link2} end />
+          <SidebarNavItem to="/company/settings/pools" label="Pools" icon={Cpu} end />
           {showPage("instance.access") && (
             <SidebarNavItem
               to={`${INSTANCE_SETTINGS_PATH_PREFIX}/access`}

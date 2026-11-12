@@ -1,3 +1,4 @@
+import { legacyRunHasUnsettledActions } from "./legacy-action-outcomes.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
@@ -90,6 +91,8 @@ export function legacyExecutionNeedsReconciliation(
       || run.errorCode === RUNNER_REVISION_MISMATCH_CODE || run.errorCode === ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE
       || run.errorCode === REPOSITORY_CATALOG_UNAVAILABLE_CODE) &&
       evidence?.kind === "bootstrap" && evidence.providerWorkStarted === false) return false;
+  if ((run.errorCode === "provider_quota" || run.resultJson?.errorFamily === "provider_quota") &&
+      evidence?.kind === "bootstrap" && evidence.providerWorkStarted === false) return false;
   // A server restart or replacement stopped this setup before dispatch: no
   // provider action happened, so there is nothing to reconcile. Its
   // continuation is bounded by the server-restart lane, not the failure count.
@@ -106,7 +109,9 @@ export async function legacyExecutionNeedsReconciliationWithEvidence(db: Db, run
   if (await isInterruptedNativePreparation(db, run)) return false;
   return await hasUnrestoredRemoteWorkspace(db, run) ||
     (legacyExecutionNeedsReconciliation(run) && !(await isPreDispatchReviewWaitVerified(db, run))
-      && !(await isPreDispatchExecutionWaitVerified(db, run)));
+      && !(await isPreDispatchExecutionWaitVerified(db, run))) ||
+    (run.runtimeMode !== "native" && ["failed", "timed_out", "interrupted", "cancelled"].includes(run.status)
+      && await legacyRunHasUnsettledActions(db, run));
 }
 
 /** Persist the failed legacy run, owned lock release and operator decision together. */

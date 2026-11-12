@@ -326,6 +326,7 @@ export interface DurablePrpControlPlaneOptions {
   onProtocolIntegrityError?: (
     error: NativeSessionProtocolIntegrityError,
   ) => void;
+  onPersistenceError?: (error: Error) => void;
   /** Diagnostic only: called synchronously after each runner connection is authenticated. */
   onAuthenticatedConnection?: () => void;
   connectionLeaseTtlMs?: number;
@@ -1682,6 +1683,7 @@ class DurableCoreStore {
   readonly path: string;
   #state: StoredCoreState;
   #writeIndeterminate = false;
+  #onPersistenceError?: (error: Error) => void;
   #writeRevision = 0;
   #externallyPersisted = false;
   revision = 0;
@@ -1693,7 +1695,8 @@ class DurableCoreStore {
     committed: boolean;
   } | null = null;
 
-  constructor(directory: string, identity: DurableRecoveryIdentity) {
+  constructor(directory: string, identity: DurableRecoveryIdentity, onPersistenceError?: (error: Error) => void) {
+    this.#onPersistenceError = onPersistenceError;
     try {
       const metadata = lstatSync(directory);
       if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
@@ -1742,7 +1745,7 @@ class DurableCoreStore {
         identity: this.#state.identity,
       }));
     } catch (error) {
-      this.#writeIndeterminate = true;
+      this.#failPersistence(error);
       throw error;
     }
     this.#state.checkpointEventPolicy = "control-v1";
@@ -1769,7 +1772,7 @@ class DurableCoreStore {
       this.revision += 1;
       this.onChange?.();
     } catch (error) {
-      this.#writeIndeterminate = true;
+      this.#failPersistence(error);
       throw error;
     }
   }
@@ -1811,7 +1814,7 @@ class DurableCoreStore {
       // leave the event unacknowledged for replay instead of rewriting in a loop.
       return pending.committed;
     } catch (error) {
-      this.#writeIndeterminate = true;
+      this.#failPersistence(error);
       throw error;
     } finally {
       if (this.#pendingEvent === pending) this.#pendingEvent = null;
@@ -1823,6 +1826,18 @@ class DurableCoreStore {
       throw new Error(
         "Durable authority commit is indeterminate; reload is required.",
       );
+  }
+
+  #failPersistence(error: unknown): void {
+    if (this.#writeIndeterminate) return;
+    this.#writeIndeterminate = true;
+    const code = error && typeof error === "object" && "code" in error ? error.code : null;
+    const safeCode = typeof code === "string" && ["ENOSPC", "EDQUOT", "EACCES", "EPERM", "EBUSY", "EIO", "EROFS", "ENOENT", "EBADF"].includes(code) ? code : "unknown";
+    try {
+      this.#onPersistenceError?.(new Error(`native_runner_authority_persistence_failed: ${safeCode}`));
+    } catch {
+      // An observer must not hide the original write failure or clear the fence.
+    }
   }
 
   /** Replace authority without allowing an older staged event to overwrite it. */
@@ -1843,7 +1858,7 @@ class DurableCoreStore {
     } catch (error) {
       // Rename may already have succeeded before directory fsync failed.
       // Never overwrite that possibly durable receipt using stale memory.
-      this.#writeIndeterminate = true;
+      this.#failPersistence(error);
       throw error;
     }
   }
@@ -2150,6 +2165,7 @@ export class DurablePrpControlPlane {
     this.#store = new DurableCoreStore(
       options.stateDirectory,
       options.identity,
+      options.onPersistenceError,
     );
     this.#store.onChange = () => this.#readableStateChanged();
     if (this.#store.state.checkpointEventPolicy === "control-v1") {
@@ -4608,6 +4624,8 @@ const runnerPlatformEnvironmentKeys = [
   "HOME",
   "CODEX_HOME",
   "SystemRoot",
+  "SystemDrive",
+  "LOCALAPPDATA",
   "WINDIR",
   "PATHEXT",
   "LANG",
@@ -4695,7 +4713,7 @@ function runnerEnvironment(
     PAPERCLIP_RUNNER_BOOTSTRAP_TICKET: ticket,
   };
   for (const key of runnerPlatformEnvironmentKeys) {
-    const value = platformSource[key];
+    const value = platformSource[key] ?? (process.platform === "win32" ? platformSource[key.toUpperCase()] : undefined);
     if (value !== undefined) environment[key] = value;
   }
   // Provider credentials cross this boundary only when the caller supplies an

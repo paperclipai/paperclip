@@ -130,6 +130,42 @@ Current implementation status:
 - Node.js 24.11+
 - pnpm 9+
 
+On native Windows, use the Node installation that includes npm. Packaging scripts
+run `npm-cli.js` through Node, so an installation path with spaces is supported.
+The local POSIX sandbox tests require Git for Windows in its standard
+`Program Files/Git` location. These fixtures use Git Bash and POSIX sandbox paths;
+host file transfers retain Windows drive paths. Full workspace typechecking also
+requires Rust and Cargo for the native Runner. POSIX mode-bit assertions do not
+validate Windows ACLs.
+
+Native Codex uses the executable from its matching Windows platform package.
+The native Windows runtime uses the separate `@openai/codex-native` dependency
+(Codex 0.166.0) and the MXC sandbox. The ACP bridge retains its independently
+qualified Codex dependency. MXC requires a supported Windows 11 build; an
+unavailable sandbox fails closed. Filesystem read restrictions remain enabled.
+When the installed executable is outside the system volume, only its executable
+resources are copied to a hash-verified cache under
+`~/.paperclip/runtime-cache/native-codex`. Credentials and sessions are never
+copied there. A cold cache hashes and copies the runtime once; subsequent lookups
+reuse the generation while its file identities and timestamps remain unchanged.
+The optional live confinement regression is:
+`PAPERCLIP_LIVE_WINDOWS_MXC=1 pnpm --filter @paperclipai/paperclip-runner exec vitest run src/drivers/codex/windows-mxc.test.ts`.
+Keep that optional dependency installed with the main Codex package. A missing
+or mismatched platform package fails setup instead of using another executable.
+Managed account probes use the account home prepared by the server. Windows
+credential reads check regular files and path identity without Unix uid/mode
+bits. Unbound credential links remain refused. The native observer detects
+credential refreshes without putting credential content in its durable events.
+Assigned skill snapshots use Windows write-deny ACLs, applied with the built-in
+System32 whoami and icacls tools. A failed ACL operation refuses publication;
+cleanup removes the snapshot's deny rules before deleting the owned tree.
+
+Embedded PostgreSQL on Windows stops through its matching `pg_ctl.exe` with a
+bounded fast shutdown. The recorded postmaster PID must match the owned process
+before shutdown. This lets PostgreSQL flush and retire its workers before a
+development preflight or restart releases the port. An ownership mismatch or
+failed shutdown is reported instead of forcing termination of a process tree.
+
 ## Dependency Lockfile Policy
 
 GitHub Actions owns every managed pnpm lockfile:
@@ -5291,6 +5327,27 @@ workspace saves retain repository coverage only for directories present in the
 captured archive. Deleted checkouts lose coverage and can be acquired again.
 A failed batch upload marks the affected repository rows as needing repair.
 
+
+### Pool harness host admission
+
+`heartbeat/harness-pool-admission.ts` resolves a virtual Pool selection before
+claim, through the existing authorized router and the member's explicit runner
+and validated adapter settings. Native selections use the provider-profile
+builders; Legacy selections use the existing direct adapter.
+`effective-run-adapter.ts` reads the frozen concrete target; native execution
+receives its normal concrete driver input. `harness-pool-environment.ts`
+reads placement policy for scoped cooldown identity. Fresh environment admission
+checks that placement still matches; retained native recovery uses its admitted
+execution input. Pool management is the facade in `services/harness-pools.ts`.
+Company-scoped Pool runs use `heartbeat/company-pool-execution.ts` to project
+the unchanged agent policy into the selected member's direct adapter. This
+supports manual runs and unscoped timers without inventing a task or a native
+completion contract. The admitted dispatch records this path; persisted native
+task runs never enter it. Account grants, environment placement, cooldowns,
+budget checks, Stop and successor settlement retain their existing owners.
+It does not add another scheduler, provider transport, idle timer or state store.
+See [central harness pools](connections/AI-CONNECTION-ROUTERS.md#central-harness-pools)
+for operator setup, conversion and continuation limits.
 ### Native Runner credential refreshes
 
 Core handles PRP `auth.credentials.updated` notifications for managed Codex and

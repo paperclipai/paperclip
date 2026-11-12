@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   aiConnectionBindingSchema,
+  BUILTIN_AI_FAILOVER_ROUTER_KEY,
   isAiConnectionCompatible,
   type AiRuntimeConnectionBinding,
   type AiAuthMethod,
@@ -58,6 +59,7 @@ export function AiConnectionField({
   readOnly = false,
   preferAdvanced = false,
   routerAdapterType,
+  explicitAccount = false,
 }: {
   companyId: string;
   agentId?: string;
@@ -71,9 +73,11 @@ export function AiConnectionField({
   readOnly?: boolean;
   preferAdvanced?: boolean;
   routerAdapterType?: string;
+  explicitAccount?: boolean;
 }) {
   const provider = aiProviderForAdapter(adapterType);
   const returnFocus = useRef<HTMLElement | null>(null);
+  const individualBinding = useRef(value?.mode !== "router" ? value : undefined);
   const restoreFocus = (event: Event) => { event.preventDefault(); returnFocus.current?.focus(); };
   const [adopting, setAdopting] = useState(false);
   const [pendingAdoption, setPendingAdoption] = useState<AiRuntimeConnectionBinding>();
@@ -94,6 +98,9 @@ export function AiConnectionField({
   });
   const accountsView = useQueryView(accounts);
   const personalDefault = accounts.data?.connections.find((account) => account.provider === provider && account.isDefault && account.ownership === "personal" && account.ownerUserId === accounts.data.currentUserId);
+  const selectedAccount = value && value.mode !== "router" && value.mode !== "responsible_user"
+    ? accounts.data?.connections.find(account => account.id === value.connectionId && account.grantId === value.grantId)
+    : undefined;
   const pendingAccount = pendingAdoption?.mode === "responsible_user"
     ? personalDefault
     : pendingAdoption && pendingAdoption.mode !== "router"
@@ -124,7 +131,14 @@ export function AiConnectionField({
   const method: AiAuthMethod = (value && value.mode !== "router" && value.mode !== "responsible_user" ? value.method : undefined)
     ?? accounts.data?.connections.find((account) => account.provider === provider && account.isDefault)?.method
     ?? (provider === "openrouter" || provider === "google" || provider === "github" ? "api_key" : "subscription");
-  const compatiblePools = agentId ? accounts.data?.pools?.filter(pool => pool.enabled && pool.members.some(member => isAiConnectionCompatible(member.binding, routerAdapterType ?? adapterType, member.profile.model, member.profile.provider, member.profile.acpxAgent))) ?? [] : [];
+  const poolAdapterType = routerAdapterType ?? adapterType;
+  const supportsBuiltInPools = ["paperclip_runner", "claude_local", "codex_local", "grok_local", "opencode_local"].includes(poolAdapterType);
+  const compatiblePools = agentId ? accounts.data?.pools?.filter(pool => pool.enabled && (
+    pool.pluginKey === BUILTIN_AI_FAILOVER_ROUTER_KEY ? supportsBuiltInPools
+      : pool.members.some(member => isAiConnectionCompatible(member.binding, poolAdapterType,
+        member.profile.model, member.profile.provider, member.profile.acpxAgent))
+  )) ?? [] : [];
+  const selectedPoolUnavailable = value?.mode === "router" && accounts.isSuccess && !compatiblePools.some(pool => pool.id === value.connectionId);
   if (!provider) return null;
   if (legacy && !value && !adopting)
     return (
@@ -144,15 +158,19 @@ export function AiConnectionField({
       {(compatiblePools.length > 0 || value?.mode === "router") && <label className="block space-y-1 text-sm">
         AI connection
         <select className="block w-full rounded-md border bg-background px-3 py-2" disabled={readOnly} value={value?.mode === "router" ? value.connectionId : ""} onChange={event => {
-          if (event.target.value) changeBinding({ mode: "router", connectionId: event.target.value });
-          else changeBinding({ mode: "responsible_user", provider, method });
+          if (event.target.value) {
+            if (value?.mode !== "router") individualBinding.current = value;
+            changeBinding({ mode: "router", connectionId: event.target.value });
+          } else changeBinding(individualBinding.current ?? { mode: "responsible_user", provider, method });
         }}>
           <option value="">Individual account</option>
-          {compatiblePools.map(pool => <option key={pool.id} value={pool.id}>{pool.name} · Experimental pool</option>)}
-          {value?.mode === "router" && !compatiblePools.some(pool => pool.id === value.connectionId) && <option value={value.connectionId}>Pool unavailable — enable routing and the pool</option>}
+          {compatiblePools.map(pool => <option key={pool.id} value={pool.id}>{pool.name}</option>)}
+          {value?.mode === "router" && !compatiblePools.some(pool => pool.id === value.connectionId) && <option value={value.connectionId}>{accounts.isSuccess ? "Pool unavailable — enable routing and the pool" : "Saved connection pool"}</option>}
         </select>
-        {value?.mode === "router" && <span className="text-muted-foreground">New tasks rotate. Existing tasks keep their account.</span>}
+        {value?.mode === "router" && <span className="text-muted-foreground">The pool selects an account and its model. Existing tasks keep their account until a backup is needed.</span>}
       </label>}
+      {selectedPoolUnavailable && <p role="alert" className="text-sm text-destructive">This pool is unavailable for this agent. Enable the pool or choose another connection before saving.</p>}
+      {value?.mode === "router" && accountsView.kind === "error" && <p role="alert" className="text-sm text-destructive">{describeError(accounts.error).body} <Button variant="ghost" size="sm" onClick={accountsView.retry}>Retry connections</Button></p>}
       {value?.mode !== "router" && <AiConnectionSelect
         adapterType={adapterType}
           model={model}
@@ -169,7 +187,8 @@ export function AiConnectionField({
           changeBinding(aiConnectionBindingSchema.parse(binding))
         }
         onConnect={() => openConnection()}
-        onReconnect={(!value || value.mode === "responsible_user") && personalDefault && personalDefault.status !== "connected" ? () => openConnection(personalDefault) : undefined}
+        explicitAccount={explicitAccount}
+        onReconnect={explicitAccount && selectedAccount && selectedAccount.status !== "connected" ? () => openConnection(selectedAccount) : !explicitAccount && (!value || value.mode === "responsible_user") && personalDefault && personalDefault.status !== "connected" ? () => openConnection(personalDefault) : undefined}
         onRetry={accountsView.retry}
       />}
       <Dialog
@@ -217,14 +236,16 @@ export function AiConnectionField({
           <DialogHeader>
             <DialogTitle>{reconnecting ? "Reconnect account" : "Connect account"}</DialogTitle>
             <DialogDescription>
-              {advancedSetup ? "Choose a provider connection for this agent." : reconnecting ? "Sign in again to repair your current default account. Its agent access stays the same." : "This account will become your default for this provider. Your tasks will use it; other users keep their own default."}
+              {explicitAccount ? "Connect an account for this pool member. Choose which agents can use it during setup." : advancedSetup ? "Choose a provider connection for this agent." : reconnecting ? "Sign in again to repair your current default account. Its agent access stays the same." : "This account will become your default for this provider. Your tasks will use it; other users keep their own default."}
             </DialogDescription>
           </DialogHeader>
-          {advancedSetup ? <AiProviderSetup
+          {advancedSetup || explicitAccount ? <AiProviderSetup
             companyId={companyId} agentId={agentId} environmentId={environmentId}
+            initialProvider={explicitAccount && !advancedSetup ? provider : undefined}
+            reconnect={explicitAccount ? reconnecting : undefined}
             advancedOnly={preferAdvanced}
             initialProtocol={adapterType === "claude_local" ? "messages" : adapterType === "codex_local" ? "responses" : "chat"}
-            onCancel={() => preferAdvanced ? setConnecting(false) : setAdvancedSetup(false)}
+            onCancel={() => preferAdvanced || explicitAccount ? setConnecting(false) : setAdvancedSetup(false)}
             onComplete={binding => {
               void client.invalidateQueries({ queryKey: ["ai-connections", companyId] });
               setConnecting(false);

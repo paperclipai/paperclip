@@ -1,9 +1,10 @@
+import { ExecutionEngineField } from "../../components/ExecutionEngineField";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue, SelectPopover } from "../../components/ui/select";
 import { AdapterMark } from "../../components/AdapterMark";
 import { MuseRunnerConnection } from "../../components/MuseRunnerConnection";
 import { GrokBotConnection } from "../../components/GrokBotConnection";
 import { DotRunnerConnection } from "../../components/DotRunnerConnection";
-import { configFieldsForSection } from "../config-sections";
+import { configFieldsForSection, ConfigFieldGroup } from "../config-sections";
 import type { AdapterConfigFieldsProps } from "../types";
 import type { CreateConfigValues } from "@paperclipai/adapter-utils";
 import { buildCodexLocalConfig } from "@paperclipai/adapter-codex-local/ui";
@@ -70,6 +71,7 @@ export function buildCodexRunnerConfig(values: CreateConfigValues): Record<strin
 
 export function CodexLocalConfigFields({
   section,
+  allowedConfigKeys,
   companyId,
   agentId,
   mode,
@@ -174,7 +176,7 @@ export function CodexLocalConfigFields({
       : eff("adapterConfig", "engine", String(config.engine ?? "auto"));
   const engine =
     rawEngine === "acp" || rawEngine === "cli" ? rawEngine : "auto";
-  const acpSelected = engine === "acp";
+  const acpSelected = engine !== "cli";
   const bypassEnabled = resolveCodexLocalCliPolicy({
     ...config,
     dangerouslyBypassApprovalsAndSandbox: eff("adapterConfig", "dangerouslyBypassApprovalsAndSandbox", config.dangerouslyBypassApprovalsAndSandbox),
@@ -200,37 +202,9 @@ export function CodexLocalConfigFields({
 
   return configFieldsForSection(section, (
     <>
-      {!hideEngineChoice && (
-        <Field
-          label="Execution engine"
-          hint="Default uses ACP. If ACP is unavailable, the run fails with a setup error. Choose CLI explicitly to use it."
-        >
-          <SelectPopover
-            aria-label="Execution engine"
-            value={engine}
-            onValueChange={(next) => {
-              const value =
-                next === "acp"
-                  ? "acp"
-                  : next === "cli"
-                    ? "cli"
-                    : "auto";
-              isCreate
-                ? set!({ codexEngine: value })
-                : mark(
-                    "adapterConfig",
-                    "engine",
-                    value === "auto" ? undefined : value,
-                  );
-            }}
-            options={[
-              { value: "auto", label: "Default (ACP)" },
-              { value: "cli", label: "Codex CLI" },
-              { value: "acp", label: "ACP" },
-            ]}
-          />
-        </Field>
-      )}
+      {!hideEngineChoice && <ExecutionEngineField configKey="engine" harness="codex" value={engine} onChange={value => {
+        isCreate ? set!({ codexEngine: value }) : mark("adapterConfig", "engine", value === "auto" ? undefined : value);
+      }} />}
       {runnerManaged && !hideRunnerHarness && !isExternal && (
         <Field configSection="adapter"
           label="Harness"
@@ -525,7 +499,7 @@ export function CodexLocalConfigFields({
         </>
       )}
       {runnerManaged && !isExternal && runnerPermissionCapability.configurable && (runnerPermissionCapability.options.length > 1 || runnerPermissionModeUnsupported) && (
-        <Field
+        <Field configKey={runnerPermissionCapability.configurable ? runnerPermissionCapability.configKey : undefined}
           label="Permission mode"
           hint={`${runnerPermissionCapability.description} The selected mode does not widen Paperclip's workspace, network, credential, or planning boundaries.`}
         >
@@ -585,7 +559,7 @@ export function CodexLocalConfigFields({
         </Field>
       )}
       {runnerManaged && !isExternal && !isCursorCloud && (
-        <Field configSection="runPolicy"
+        <Field configKey="lifecycleMode" configSection="runPolicy"
           label="Runner lifecycle"
           hint="Automatic keeps Codex and OpenCode warm on this computer for 5 minutes after a run, so a follow-up starts faster, and runs other harnesses turn by turn. Turn by turn suspends after each run. Warm keeps the same provider process available between governed runs."
         >
@@ -607,7 +581,7 @@ export function CodexLocalConfigFields({
         </Field>
       )}
       {runnerManaged && !isExternal && !isCursorCloud && runnerLifecycleMode === "warm" && (
-        <Field configSection="runPolicy"
+        <Field configKey="idleTimeoutMs" configSection="runPolicy"
           label="Warm idle timeout (ms)"
           hint="After this much inactivity, runnerd checkpoints and suspends the provider session. The maximum is 24 hours."
         >
@@ -648,7 +622,7 @@ export function CodexLocalConfigFields({
       {acpSelected && (
         <>
           {!managedSandboxOnly && (
-            <Field configSection="advanced"
+            <Field configKey="agentCommand" configSection="advanced"
               label="ACP server command"
               hint="Optional override for the Codex ACP server command. Defaults to the package-local codex-acp binary."
             >
@@ -673,7 +647,7 @@ export function CodexLocalConfigFields({
               />
             </Field>
           )}
-          <Field configSection="runPolicy"
+          <Field configKey="mode" configSection="runPolicy"
             label="ACP session mode"
             hint="Persistent keeps ACP session state between runs. One-shot starts fresh each run."
           >
@@ -701,7 +675,7 @@ export function CodexLocalConfigFields({
               ]}
             />
           </Field>
-          <Field
+          <Field configKey="nonInteractivePermissions"
             label="ACP non-interactive permissions"
             hint="Fallback if the ACP agent asks for input outside an interactive session."
           >
@@ -729,7 +703,7 @@ export function CodexLocalConfigFields({
             />
           </Field>
           {!managedSandboxOnly && (
-            <Field
+            <Field configKey="stateDir"
               label="ACP state directory"
               hint="Optional ACP session state directory. Defaults to Paperclip-managed organization/agent scoped storage."
             >
@@ -757,7 +731,7 @@ export function CodexLocalConfigFields({
               </div>
             </Field>
           )}
-          <Field configSection="runPolicy"
+          <Field configKey="warmHandleIdleMs" configSection="runPolicy"
             label="ACP warm process idle ms"
             hint="Defaults to 0, which closes the ACP process after each run while retaining persistent session state."
           >
@@ -788,7 +762,7 @@ export function CodexLocalConfigFields({
         </>
       )}
       {!runnerManaged && !hideInstructionsFile && (
-        <Field label="Agent instructions file" hint={instructionsFileHint}>
+        <Field configKey="instructionsFilePath" label="Agent instructions file" hint={instructionsFileHint}>
           <div className="flex items-center gap-2">
             <DraftInput
               value={
@@ -819,7 +793,7 @@ export function CodexLocalConfigFields({
       )}
       {!runnerManaged && (
         <>
-          <ToggleField
+          <ToggleField configKey="dangerouslyBypassApprovalsAndSandbox"
             label="Bypass sandbox"
             hint={help.dangerouslyBypassSandbox}
             checked={
@@ -837,7 +811,7 @@ export function CodexLocalConfigFields({
                   )
             }
           />
-          <ToggleField
+          {!acpSelected && <ToggleField configKey="search"
             label="Enable search"
             hint={help.search}
             checked={
@@ -850,8 +824,8 @@ export function CodexLocalConfigFields({
                 ? set!({ search: v })
                 : mark("adapterConfig", "search", v)
             }
-          />
-          <ToggleField
+          />}
+          <ToggleField configKey="fastMode"
             label="Fast mode"
             hint={help.fastMode}
             checked={fastModeEnabled}
@@ -862,9 +836,9 @@ export function CodexLocalConfigFields({
             }
           />
           {fastModeEnabled && (
-            <div className="rounded-md border border-amber-300/70 bg-amber-50/80 px-3 py-2 text-sm text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
+            <ConfigFieldGroup configKey="fastMode"><div className="rounded-md border border-amber-300/70 bg-amber-50/80 px-3 py-2 text-sm text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
               {fastModeMessage}
-            </div>
+            </div></ConfigFieldGroup>
           )}
         </>
       )}
@@ -880,5 +854,5 @@ export function CodexLocalConfigFields({
         models={models}
       />}
     </>
-  ));
+  ), allowedConfigKeys);
 }

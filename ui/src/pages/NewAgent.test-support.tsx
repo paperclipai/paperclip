@@ -70,15 +70,22 @@ vi.mock("@/components/AgentConfigForm", () => ({
   ModelDropdown: ({
     value,
     onChange,
+    onRefreshModels,
+    refreshingModels,
   }: {
     value: string;
     onChange: (value: string) => void;
+    onRefreshModels?: () => Promise<void>;
+    refreshingModels?: boolean;
   }) => (
-    <input
-      aria-label="Model"
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-    />
+    <>
+      <input
+        aria-label="Model"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      />
+      {onRefreshModels && <button type="button" disabled={refreshingModels} onClick={() => void onRefreshModels()}>Refresh models</button>}
+    </>
   ),
   AdapterLoginPanel: ({ onConnected }: { onConnected: (id: string) => void }) => (
     <button onClick={() => onConnected("login-session")}>

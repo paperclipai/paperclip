@@ -1,14 +1,14 @@
 import { agents } from "@paperclipai/db";
 import { asBoolean, parseObject } from "../adapters/utils.js";
 
-/** Runner work needs a task; generic interval heartbeats have no task owner.
+/** Native task execution needs a task; Pool can dispatch company heartbeats through its member harness.
  * Task-bound schedules, monitors and external-provider assignments use their
  * existing wake paths and are unaffected by this interval policy.
  */
 export function supportsUnscopedTimerHeartbeat(
-  agent: Pick<typeof agents.$inferSelect, "adapterType">,
+  agent: Pick<typeof agents.$inferSelect, "adapterType"> & Partial<Pick<typeof agents.$inferSelect, "runtimeConfig">>,
 ) {
-  return agent.adapterType !== "paperclip_runner";
+  return agent.adapterType !== "paperclip_runner" || Boolean(parseObject(agent.runtimeConfig).harnessPool);
 }
 
 export function isHeartbeatWakeOnDemandEnabled(

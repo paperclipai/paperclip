@@ -17,8 +17,9 @@ import { mkdtemp, realpath, rm, access, readFile, writeFile, stat } from "node:f
 import os from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
-import { createDb, type Db, companies, agents, agentTaskSessions, heartbeatRuns, companyMemberships, connectionGrants, toolApplications, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, plugins, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests, companySecrets, companySecretVersions, userSecretDefinitions, principalPermissionGrants } from "@paperclipai/db";
+import { createDb, closeRegisteredClients, companies, agents, agentTaskSessions, heartbeatRuns, nativeRunFinalizations, companyMemberships, connectionGrants, toolApplications, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, plugins, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests, companySecrets, companySecretVersions, userSecretDefinitions, principalPermissionGrants, type Db } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { fetchCompanyQuotaWindows } from "../services/quota-windows.js";
 import { quotaCredentialRecoveryPath, quotaCredentialRecovery, quotaCredentialHash } from "../services/quota-credential-recovery.js";
 import { reconcileRetainedAiCleanup, retainAiCredentialCleanup } from "../services/retained-ai-credential-cleanup.js";
@@ -53,6 +54,7 @@ vi.mock("../services/local-ai-browser-login.js", () => ({
   startLocalBrowserLogin: () => ({ authorizationUrl: "https://auth.openai.com/codex/device", code: "ABCD-EFGHJ", abort: () => {} }),
 }));
 
+const externalDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_TEST_DATABASE_URL");
 let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
 let db: ReturnType<typeof createDb>;
 let home: string;
@@ -68,7 +70,9 @@ beforeAll(async () => {
   home = await realpath(await mkdtemp(path.join(os.tmpdir(), "paperclip-ai-tests-")));
   vi.stubEnv("PAPERCLIP_HOME", home);
   vi.stubEnv("PAPERCLIP_INSTANCE_ID", "ai-connection-fixture");
-  database = await startEmbeddedPostgresTestDatabase("paperclip-ai-db-");
+  database = externalDatabaseUrl ? { connectionString: externalDatabaseUrl,
+    cleanup: () => closeRegisteredClients(externalDatabaseUrl, { scope: "database" }) }
+    : await startEmbeddedPostgresTestDatabase("paperclip-ai-db-");
   db = createDb(database.connectionString);
   service = aiConnectionService(db);
   await db.insert(companies).values([{ id: companyId, name: "AI connection tests", issuePrefix: "AIT" }, { id: otherCompanyId, name: "Other", issuePrefix: "AIO" }]);
@@ -78,6 +82,31 @@ beforeAll(async () => {
 afterAll(async () => { await database?.cleanup(); vi.unstubAllEnvs(); if (home) await rm(home, { recursive: true, force: true }); });
 
 describe("managed AI connections", () => {
+  it("signals replacement work when an AI account reconnects", async () => {
+    const isolatedCompanyId = randomUUID(), isolatedAgentId = randomUUID(), owner = `reconnect-${randomUUID()}`;
+    await db.insert(companies).values({ id: isolatedCompanyId, name: "Reconnect", issuePrefix: `R${isolatedCompanyId.slice(0, 7)}` });
+    await db.insert(agents).values({ id: isolatedAgentId, companyId: isolatedCompanyId, name: "Reconnect agent", adapterType: "claude_local" });
+    await db.insert(companyMemberships).values({ companyId: isolatedCompanyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const saved = await service.save(isolatedCompanyId, owner, { provider: "anthropic", method: "api_key", ownership: "personal", name: "Wake on reconnect", apiKey: "fixture", agentIds: [], allAgents: true }, "fixture-reconnect");
+    const issueId = randomUUID(), runId = randomUUID(), deadline = new Date(Date.now() + 60_000);
+    await db.insert(issues).values({ id: issueId, companyId: isolatedCompanyId, title: "Quota wait", assigneeAgentId: isolatedAgentId });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId: isolatedCompanyId, agentId: isolatedAgentId, nativeIssueId: issueId, status: "failed" });
+    await db.insert(nativeRunFinalizations).values({ runId, companyId: isolatedCompanyId, issueId, phase: "terminal_failure", failureCode: "native_provider_usage_limit", nextAttemptAt: deadline });
+    const wake = vi.fn();
+    const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.executionReplacement, wake);
+    try {
+      await service.save(isolatedCompanyId, owner, { provider: "anthropic", method: "api_key", ownership: "personal", name: "Wake on reconnect", apiKey: "fixture", agentIds: [], allAgents: true, connectionId: saved.connectionId }, "new-fixture");
+      expect(wake).toHaveBeenCalled();
+      expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId)))[0]?.nextAttemptAt).toBeNull();
+      await db.update(nativeRunFinalizations).set({ nextAttemptAt: deadline }).where(eq(nativeRunFinalizations.runId, runId));
+      await toolAccessService(db).updateConnection(saved.connectionId, { enabled: false });
+      expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId)))[0]?.nextAttemptAt).toBeNull();
+      await db.update(nativeRunFinalizations).set({ nextAttemptAt: deadline }).where(eq(nativeRunFinalizations.runId, runId));
+      const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, saved.grantId));
+      await secretService(db).rotate(grant!.credentialSecretRefs[0]!.secretId, { value: "generic-rotation" }, { userId: owner });
+      expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId)))[0]?.nextAttemptAt).toBeNull();
+    } finally { unsubscribe(); }
+  });
   it.each([
     { provider: "openrouter", envKey: "OPENROUTER_API_KEY", routed: false },
     { provider: "openrouter", envKey: "OPENROUTER_API_KEY", routed: true },
@@ -386,6 +415,52 @@ describe("managed AI connections", () => {
     const account = await create(owner, "Selection blocker account");
     await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, account.grantId));
     await expectSelectionFailure(service.select({ ...input, userId: owner }), "ai_connection_unavailable");
+  });
+
+  it("refreshes an expired Codex catalog token without changing its account or session epoch", async () => {
+    const owner = "catalog-refresh-owner";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const original = JSON.stringify({ tokens: { account_id: owner, access_token: "expired-catalog-token", refresh_token: "single-use-catalog-token" } });
+    const account = await service.save(companyId, owner, { provider: "openai", method: "subscription", ownership: "personal", name: owner,
+      loginSessionId: "fixture", agentIds: [], allAgents: true }, original);
+    const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, account.grantId));
+    const secretId = grant.credentialSecretRefs.find(ref => ref.configPath === "ai.credential")!.secretId;
+    const [before] = await db.select().from(companySecrets).where(eq(companySecrets.id, secretId));
+    const network = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      if (String(url) === "https://auth.openai.com/oauth/token") {
+        expect(JSON.parse(String(init?.body))).toMatchObject({ grant_type: "refresh_token", refresh_token: "single-use-catalog-token" });
+        return Response.json({ access_token: "fresh-catalog-token", refresh_token: "next-catalog-token" });
+      }
+      if (String(url).startsWith("https://chatgpt.com/backend-api/codex/models?")) {
+        const headers = new Headers(init?.headers);
+        expect(headers.get("ChatGPT-Account-Id")).toBe(owner);
+        if (headers.get("Authorization") === "Bearer expired-catalog-token") return new Response("expired", { status: 401 });
+        expect(headers.get("Authorization")).toBe("Bearer fresh-catalog-token");
+        return Response.json({ models: [{ slug: "gpt-6.1-terra", display_name: "Terra", visibility: "list" }] });
+      }
+      throw new Error("Unexpected catalog provider request");
+    });
+    const { errorHandler } = await import("../middleware/index.js");
+    const app = express(); app.use(express.json());
+    app.use((req, _res, next) => { req.actor = { type: "board", source: "local_implicit", userId: owner, companyIds: [companyId] }; next(); });
+    app.use("/api", agentRoutes(db)); app.use(errorHandler);
+    try {
+      const response = await request(app).get(`/api/companies/${companyId}/adapters/codex_local/models`).query({
+        aiConnection: JSON.stringify({ mode: "delegated", provider: "openai", method: "subscription", ...account }),
+      });
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      expect(response.body).toEqual([{ id: "gpt-6.1-terra", label: "Terra" }]);
+      expect(network).toHaveBeenCalledTimes(3);
+      const [after] = await db.select().from(companySecrets).where(eq(companySecrets.id, secretId));
+      expect(after.latestVersion).toBe(before.latestVersion + 1);
+      expect(after.aiSessionEpoch).toBe(before.aiSessionEpoch);
+      const [current] = await service.quotaAccounts(companyId, owner);
+      expect(current.grant.id).toBe(account.grantId);
+      expect(JSON.parse(await service.credential(current))).toMatchObject({ tokens: {
+        account_id: owner, access_token: "fresh-catalog-token", refresh_token: "next-catalog-token",
+      } });
+      expect(JSON.stringify(response.body)).not.toContain("catalog-token");
+    } finally { network.mockRestore(); }
   });
 
   it("commits one exchanged token without writable credential recovery storage", async () => {
@@ -1947,6 +2022,27 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       execute.mockResolvedValue({ exitCode: 0, stdout: "", stderr: "", signal: null, timedOut: false } as Awaited<ReturnType<typeof executionTarget.runAdapterExecutionTargetProcess>>);
       await expect(assertManagedAiProjectAuth({}, "openai", target)).resolves.toBeUndefined();
       await expect(assertManagedAiProjectAuth({ args: ["--api-key=override"] }, "xai", target)).rejects.toThrow("overrides");
+    } finally { execute.mockRestore(); }
+  });
+  it("permits only exact Codex confinement config pairs with managed credentials", async () => {
+    const execute = vi.spyOn(executionTarget, "runAdapterExecutionTargetProcess");
+    const target = { kind: "remote", transport: "sandbox", remoteCwd: "/workspace/project" } as Parameters<typeof assertManagedAiProjectAuth>[2];
+    const safe = ["-c", 'sandbox_mode="workspace-write"', "-c", "sandbox_workspace_write.network_access=false"];
+    try {
+      execute.mockResolvedValue({ exitCode: 0, stdout: "", stderr: "", signal: null, timedOut: false } as Awaited<ReturnType<typeof executionTarget.runAdapterExecutionTargetProcess>>);
+      await expect(assertManagedAiProjectAuth({ extraArgs: safe }, "openai", target)).resolves.toBeUndefined();
+      await expect(assertManagedAiProjectAuth({ args: safe }, "openai", target)).resolves.toBeUndefined();
+      for (const extraArgs of [
+        [...safe, "-c", 'model_provider="evil"'],
+        ["-c", 'sandbox_mode="workspace-write"\nmodel_provider="evil"'],
+        ["-c", "sandbox_workspace_write.network_access=true"],
+        ["-c", 'sandbox_mode="danger-full-access"'],
+        ["-c", 'profile="evil"'], ["-c", 'sandbox_workspace_write.writable_roots=["/"]'],
+        [...safe, "-c"], [...safe, "--config=model_provider=evil"],
+        [...safe, "--api-key=evil"], [...safe, "--settings=evil"],
+      ]) await expect(assertManagedAiProjectAuth({ extraArgs }, "openai", target)).rejects.toThrow("overrides");
+      await expect(assertManagedAiProjectAuth({ extraArgs: safe }, "anthropic", target)).rejects.toThrow("overrides");
+      await expect(assertManagedAiProjectAuth({ extraArgs: ["-c"], args: ['sandbox_mode="workspace-write"'] }, "openai", target)).rejects.toThrow("overrides");
     } finally { execute.mockRestore(); }
   });
   it("reports only a found conflict as configuration, naming the files to fix", async () => {

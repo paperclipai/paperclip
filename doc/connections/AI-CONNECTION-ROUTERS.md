@@ -1,5 +1,75 @@
 # Experimental AI connection routers
 
+The built-in **Ordered failover pool** is available without a router plugin or
+the experimental router flag. It is configured with existing AI connections,
+ordered by preference and bound to a Paperclip Runner or a supported local agent.
+Local Claude, Codex, Grok, and OpenCode agents can use mixed-provider pools.
+Each run records its effective adapter without changing the agent's primary adapter. On a confirmed
+account allowance exhaustion, Paperclip records a company-scoped cooldown for
+the credential and skips it until its reset time. A known provider reset is
+preserved; without one the default quota cooldown is two hours. Authentication
+failures also cool down the failed credential; reconnecting changes its identity.
+A confirmed definitive runner failure uses a five-minute cooldown. Accounts sharing the
+same stored credential and epoch share a cooldown. Independently stored
+credentials are not assumed to represent the same external account.
+
+Provider changes must preserve the configured execution policy. Incompatible
+CLI permission flags and custom command wrappers are rejected before selection.
+Explicit CLI/ACP engine choices remain in place for compatible local Claude and
+Codex changes. A legacy CLI agent with filesystem or network restrictions cannot switch to a harness that does not enforce the same local process sandbox.
+
+Before selecting an account for a task without an existing pin, the host may
+read the responsible user's authorized Claude subscription usage. When an
+account-wide limit is exhausted, extra usage is disabled, and the provider gives
+a future reset, it records the cooldown and tries the next account. Unknown or
+scoped limits, missing authorization and unsuccessful usage checks do not block
+selection. This observation is a momentary preflight; it cannot guarantee that
+capacity remains available when the provider starts. Existing task pins are not
+changed by this check.
+
+Before a fresh provider start, the host rechecks the pinned account's global and
+scoped cooldowns. A concurrent cooldown defers fresh work without changing an
+already admitted native session. Temporary database contention leaves replacement
+pending for the existing recovery scheduler; it is not a permanent refusal.
+
+Legacy provider quota or authentication text can come from model or tool output.
+It cannot by itself write an account-wide cooldown, authorize failover, or mark
+a pooled credential unusable through automatic authentication repair. For saved
+Claude and Codex subscriptions, quota attribution requires account-wide exhaustion
+through the saved account's authenticated usage endpoint. Claude must have extra
+usage disabled; Codex must deny account-wide admission without available or
+unlimited credits. Authentication attribution requires an actual HTTP 401 from
+that saved credential's fixed provider endpoint. Local credential parsing failures,
+network errors and permission-denied responses do not count as that observation.
+The host rechecks the credential epoch before committing attribution. Only quota
+uses an observed reset; authentication waits two hours and runner faults five
+minutes, ignoring model-visible reset hints. Unsupported or inconclusive evidence
+keeps the failed turn held. Historical legacy quota/auth receipts without the
+corresponding account evidence cannot authorize a new pin transition. Saved
+workspace and session evidence remain available. Codex panic text without an
+actual host crash signal may enter its existing bounded same-account retry, but
+cannot cool an account or select a backup.
+
+Healthy tasks stay on their selected account, including after a backup takes over.
+When a conversation fails because of quota, authentication, or confirmed runner
+failure, Paperclip can select the next available account after the previous
+execution and local workspace cleanup have settled. The task pin and successor
+run commit together. Stop is serialized with successor creation. Ordinary task
+errors do not trigger a provider change. If all eligible accounts are cooling
+down, the successor waits for the earliest reset instead of probing them repeatedly.
+
+An automatic continuation must prove that the prior execution is stopped and
+that the workspace and history are preserved. Known unfinished external changes
+retain their reconciliation requirement. Completed actions enter the new conversation
+as evidence, never as tool calls to replay. When the required
+evidence is unavailable, the task remains held for recovery. A provider switch
+starts a separate provider conversation with bounded Paperclip task history;
+provider-private conversation state and full tool history are not transferred.
+The task's existing account sessions remain isolated by credential identity.
+Background runs without an issue retain their original pool affinity and receive
+a bounded, untrusted progress handoff. They do not reuse another provider's
+agent-wide session. Stop also fences these background successors.
+
 AI routers are virtual, company-scoped connections owned by a capability-gated
 plugin (`ai.connections.route`). The instance flag `enableAiConnectionRouters`
 defaults to false. Pools also default to disabled. The host must implement this
@@ -33,7 +103,8 @@ the original run ID as an affinity key in retry context. Conflicts retry at most
 
 Pins snapshot the concrete binding and member profile. Removing or editing a
 member affects future allocations. Composer changes can change a supported
-model or effort, with a note on fallback, but never the account or harness.
+model or effort, with a note on fallback. Only an admitted pool failover can
+change the task's account or harness.
 Session reset and compaction retain the pin. Revocation requires operator repair.
 Authentication repair uses the failed run’s durable concrete allocation and
 current member permissions; reconnect-and-continue preserves the agent’s pool
@@ -131,3 +202,98 @@ control for routing. With a test agent already bound to a saved pool, they also 
 the **Used by** list, avatars and profile links. Cleanup archives only the test's own pool and verifies that existing
 accounts and pools remain intact. This suite does not execute agents or probe
 live usage; provider and restart acceptance remain separate gated test drives.
+
+
+## Central harness pools
+
+Settings → Pools manages shared, company-scoped pools. The left list starts
+without a selection. **Add pool** opens a blank create form on the right;
+selecting an existing pool opens its editor. Names are chosen by the user;
+there are no predefined pools or naming templates. Add as many ordered members
+as needed (up to 100). Each member chooses its own saved account grant,
+concrete harness, runner, execution settings, model ID and optional effort. The same account
+can appear with different models. No credentials are copied into the pool.
+The member editor uses the same harness, account, model, thinking-effort and
+execution-engine controls as agent configuration. Select **Legacy** and
+**Claude CLI** to use Claude's existing CLI adapter; select **Paperclip Runner**
+to use a qualified native driver. Provider tuning and permission settings are
+validated against the agent and task execution constraints. Member settings
+cannot supply credentials, environment variables, instructions, workspace paths
+or private provider-session directories. Choose an existing connected account or use
+**Connect an account…** in the Connection selector. Sign-in and API-key setup
+use the existing account setup flow, including access controls. A pool member
+always saves an explicit account grant; connecting it does not change your
+personal default. Changing harness or account clears the previous model and
+effort. Reconnecting the same account preserves them. Claude and Codex model
+choices are requested using the selected account; gateway connections use their
+configured routing catalog, and OpenRouter uses its public catalog. Refresh
+reloads the catalog. A model ID can also be entered manually; provider access
+is checked when it is used. If discovery fails, the editor reports the failure.
+
+On an agent's Harness / Runtime settings, choose **Harness: Pool**, then the
+central pool. This explicitly uses **Paperclip Runner** and requires the existing
+Native Runner experiment to be enabled by the operator. Pool selection does not
+enable that setting or upgrade Legacy agents. Use the existing Runner upgrade
+action before selecting Pool on a Legacy agent. New agent setup offers a held
+Pool choice and tests it before the normal hiring/approval action. Several agents can choose the same pool; changing one
+agent's selection does not change the others. Instructions, permissions and the
+execution environment belong to the agent and remain admission constraints.
+Models, accounts and member runner settings belong to the pool. Task-bound runs
+use the selected member's existing Legacy adapter or native Runner driver.
+Manual agent runs and unscoped timer heartbeats can also use Pool without a task.
+These company-scoped runs use the selected member's existing direct harness path.
+They do not create a placeholder task or acquire task completion authority.
+Manual runs keep their own run-key allocation; timer wakes use the existing
+heartbeat session policy. Retrying a run retains its allocation lineage.
+Explicit Paperclip Runner members require a task and are skipped for taskless
+runs; choose a Legacy member for unscoped manual runs and heartbeats. A chat
+backed by a conversation task can use a qualified native member.
+Older members without an explicit runner retain their existing compatibility
+behavior. Native-only permission restrictions that cannot be preserved by the
+selected path cause an explicit policy error. Existing task pins retain their
+recorded adapter, settings and private session boundary after pool edits.
+The selected execution environment must support the chosen execution path.
+On Windows x64, native Codex is supported; native ACPX harnesses remain
+unsupported. Claude Legacy/CLI uses its existing independent adapter. A
+successful Runner build alone does not qualify a driver. See the
+[Runner platform notes](../../packages/paperclip-runner/README.md).
+
+The host freezes the concrete driver profile, pool name/revision and selected
+member before claim. Task runs use the selected existing Legacy adapter or
+Codex, Claude/Grok ACPX or OpenCode native driver, with one execution owner. Pool is not another model API, Rust provider,
+CLI wrapper process or nested agent loop. Existing direct/Legacy configurations
+and old run snapshots keep their original readers. The optional
+`runtimeConfig.harnessPool: { poolId }` conflicts with a direct `aiConnection`.
+
+A healthy task keeps its pinned member. Confirmed usage/authentication failures
+hold the credential across models and agents; the provider reset deadline wins,
+otherwise the hold is two hours. Definitive stopped-runner failures hold the
+credential/harness/runner/engine/environment combination for five minutes. New credential
+epochs do not inherit old cooldowns. Unsupported or uncertain failures retain the
+existing recovery hold. All-cooling work waits for the earliest deadline or a
+real configuration/reconnect event, without trying a blocked provider repeatedly.
+
+A supported transition admits one linked successor after the existing settlement,
+Stop, task ownership, budget, permission and workspace checks. It retains the
+workspace and bounded task handoff. It starts a fresh provider conversation when
+necessary; it does not copy private Claude/Codex sessions or replay completed or
+uncertain tool calls. Historical failures can still record a verified cooldown
+after an agent changes pools. That receipt cannot authorize a new successor.
+
+Existing built-in ordered pools offer **Preview conversion** and an explicit
+**Convert pool** action. Conversion preserves the ID, order and historical pins;
+it does not upgrade agents or change an active run. Plugin-owned routers cannot
+be converted. Archive explains that new work needs another pool; historical
+receipts remain readable. Edits and archive use the existing revision checks.
+
+The `/companies/:companyId/harness-pools` management API shares the existing
+connection permissions, company boundaries, audit log, pool storage and cursor.
+Its inspection returns visible member status/account deadlines and referencing
+agents. Runner eligibility also depends on each task's environment and policy.
+The separate `/harness-pools/choices` endpoint returns only authorized pool
+IDs, names, revisions and enabled state for agent selection. It does not expose
+managed member/account details. Archive requires a successful affected-agent
+inspection in the editor.
+Legacy pool listings exclude V2 records. Existing OpenAI-compatible gateway
+connections remain qualified connection types; installing/managing a proxy is
+outside this feature, and hidden upstream accounts are not attributed by Paperclip.

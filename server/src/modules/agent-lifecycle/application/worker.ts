@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { LifecycleDriver, LifecycleStore, LifecycleFailure } from "./ports.js";
 import { isLifecycleWorkPending } from "../domain/policy.js";
-import { lifecycleFailureCode, lifecycleFailureMessage, lifecycleVerificationNeedsRetry } from "./failure.js";
+import { lifecycleFailureCode, lifecycleFailureMessage, lifecycleVerificationNeedsRetry, lifecycleVerificationRetryAt } from "./failure.js";
 
 /** Database leases protect each attempt across server processes. */
 export function createLifecycleWorker(store: LifecycleStore, driver: LifecycleDriver, reportFailure: (context: LifecycleFailure, error: unknown) => void, canRun = () => true) {
@@ -88,7 +88,10 @@ export function createLifecycleWorker(store: LifecycleStore, driver: LifecycleDr
         failureContext = { ...failureContext, verificationFailures };
         const message = lifecycleFailureMessage(failureContext, error);
         const retryRequired = lifecycleVerificationNeedsRetry(failureContext, error);
-        if (!await runStep("defer", () => retryRequired || verificationFailures !== undefined
+        const retryAt = lifecycleVerificationRetryAt(failureContext, error);
+        if (!await runStep("defer", () => retryAt
+          ? store.defer(agent, owner, message, new Date(), { retryAt })
+          : retryRequired || verificationFailures !== undefined
           ? store.defer(agent, owner, message, new Date(), { retryRequired, ...(verificationFailures !== undefined ? { verificationFailures } : {}) })
           : store.defer(agent, owner, message, new Date()))) continue;
         return;

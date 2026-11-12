@@ -2,7 +2,7 @@ import { GROK_ADMISSION_ERROR_CODES } from "../drivers/acpx/grok-effort.js";
 import { enqueueSerialInput } from "./serial-input-queue.js";
 import { acpxAdmissionFailureCode } from "../drivers/acpx/admission-diagnostics.js";
 
-const ACPX_BOOTSTRAP_COMMANDS = new Set(["initialize", "session.open"]);
+const ACPX_BOOTSTRAP_COMMANDS = new Set(["initialize", "session.prepare", "session.commit", "session.open"]);
 
 export function enqueueAcpxSidecarInput(
   pending: Promise<void>,

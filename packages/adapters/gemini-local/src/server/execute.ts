@@ -1,3 +1,4 @@
+import { withLocalProviderSettlement } from "@paperclipai/adapter-utils/local-provider-settlement";
 import { createProviderStoppedBoundary } from "@paperclipai/adapter-utils/provider-stopped-boundary";
 import { createUsageCheckpointLog } from "@paperclipai/adapter-utils/usage-checkpoint";
 import fs from "node:fs/promises";
@@ -208,6 +209,10 @@ async function buildGeminiSkillsDir(
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+  return withLocalProviderSettlement(ctx, executeWithCleanup);
+}
+
+async function executeWithCleanup(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const providerStop = createProviderStoppedBoundary(ctx.onProviderStopped);
   const engineSelection = await resolveGeminiExecutionEngineForRun(ctx);
   if (engineSelection.unavailableReason) {
@@ -217,9 +222,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       timedOut: false,
       errorCode: "adapter_engine_unavailable",
       errorMessage: engineSelection.unavailableReason,
-      resultJson: {
-        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
-      },
+      executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
     };
   }
   if (engineSelection.engine === "acp") {

@@ -1,8 +1,8 @@
-import { agentRuntimeSettingsHarness, aiRuntimeConnectionBindingSchema, type Agent, type AiConnectionBinding, type AiConnectionList, type AiRuntimeConnectionBinding } from "@paperclipai/shared";
+import { effectiveAiConnectionInput, agentRuntimeSettingsHarness, aiRuntimeConnectionBindingSchema, type Agent, type AiConnectionBinding, type AiConnectionList, type AiRuntimeConnectionBinding } from "@paperclipai/shared";
 
-export const bulkAgentHarness = (agent: Agent) => agentRuntimeSettingsHarness(agent.adapterType, agent.adapterConfig);
-export const agentDefaultModel = (agent: Agent) => typeof agent.adapterConfig.model === "string" ? agent.adapterConfig.model.trim() || null : null;
-export const agentConnection = (agent: Agent) => aiRuntimeConnectionBindingSchema.safeParse(agent.runtimeConfig.aiConnection).data;
+export const bulkAgentHarness = (agent: Agent) => agent.runtimeConfig?.harnessPool ? "pool" : agentRuntimeSettingsHarness(agent.adapterType, agent.adapterConfig);
+export const agentDefaultModel = (agent: Agent) => !agent.runtimeConfig?.harnessPool && typeof agent.adapterConfig.model === "string" ? agent.adapterConfig.model.trim() || null : null;
+export const agentConnection = (agent: Agent) => aiRuntimeConnectionBindingSchema.safeParse(effectiveAiConnectionInput(agent.runtimeConfig)).data;
 export const sameBinding = (a: AiRuntimeConnectionBinding | undefined, b: AiRuntimeConnectionBinding | undefined) => {
   const canonical = (value: AiRuntimeConnectionBinding | undefined) => JSON.stringify(value && Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b))));
   return canonical(a) === canonical(b);

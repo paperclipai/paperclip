@@ -69,3 +69,18 @@ it("restores cleared defaults after switching back before the intermediate schem
   await act(async () => root?.render(view(firstType)));
   expect(set).toHaveBeenCalledExactlyOnceWith({ adapterSchemaValues: { model: "default-model" } });
 });
+
+it("filters schema UI and create defaults by allowed configuration keys", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const adapterType = "allowed-runtime-fields";
+  invalidateConfigSchemaCache(adapterType);
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({ fields: [
+    { key: "mode", label: "Session mode", type: "text", default: "persistent" },
+    { key: "env", label: "Environment secrets", type: "text", default: "secret" },
+    { key: "command", label: "Host command", type: "text", default: "host-command" },
+  ] }) }));
+  const set = vi.fn(); const container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+  await act(async () => root?.render(<TooltipProvider><SchemaConfigFields mode="create" isCreate adapterType={adapterType} allowedConfigKeys={new Set(["mode"])} values={{ ...defaultCreateValues, adapterSchemaValues: {} }} set={set} config={{}} eff={(_group, _key, original) => original} mark={vi.fn()} models={[]} /></TooltipProvider>));
+  expect(container.textContent).toContain("Session mode"); expect(container.textContent).not.toContain("Environment secrets"); expect(container.textContent).not.toContain("Host command");
+  expect(set).toHaveBeenCalledExactlyOnceWith({ adapterSchemaValues: { mode: "persistent" } });
+});

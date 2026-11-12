@@ -6,6 +6,7 @@ import type { prepareManagedAiRuntime } from "../ai-connection-runtime.js";
 import { aiConnectionSessionCompatibilityInputs, managedAiSessionIdentityCompatible } from "../ai-connection-session.js";
 import { createNativeSessionHandoffLoader } from "../native-runtime/native-session-handoff.js";
 import { agentInstructionsService } from "../agent-instructions.js";
+import { accountSessionStore } from "./account-session-store.js";
 import {
   describeSessionResetReason, shouldResetTaskSessionForWake, isCanonicalSessionIdForAdapter,
   normalizeResumeParamsForAdapter, normalizeSessionParams, requiresCanonicalSessionIds,
@@ -72,14 +73,44 @@ function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
+export async function selectAccountTaskSession(db: Db, input: {
+  parentTaskSession: TaskSession;
+  companyId: string;
+  router: boolean;
+  managedAiRuntime: ManagedAiRuntime | undefined;
+}) {
+  const { parentTaskSession, managedAiRuntime } = input;
+  const routerScoped = input.router && managedAiRuntime != null && parentTaskSession != null;
+  const parentIdentityCompatible = !routerScoped || managedAiSessionIdentityCompatible(
+    parentTaskSession.sessionParamsJson?.paperclipAiCredentialIdentity,
+    managedAiRuntime.sessionIdentity,
+    managedAiRuntime.identity,
+  );
+  const accountSession = routerScoped ? await accountSessionStore(db).get({
+    companyId: input.companyId, sessionId: parentTaskSession.id, sessionIdentity: managedAiRuntime.sessionIdentity,
+  }) : undefined;
+  const staleAccountSession = Boolean(accountSession && parentTaskSession && accountSession.lastRunId !== parentTaskSession.lastRunId);
+  const taskSession = staleAccountSession ? null : accountSession && parentTaskSession ? {
+    ...parentTaskSession,
+    sessionParamsJson: accountSession.sessionParamsJson,
+    sessionDisplayId: accountSession.sessionDisplayId,
+    lastRunId: accountSession.lastRunId,
+    lastError: accountSession.lastError,
+  } : parentIdentityCompatible ? parentTaskSession : null;
+  return { taskSession, routerScoped, parentIdentityCompatible: parentIdentityCompatible && !staleAccountSession };
+}
+
 /** Selects a resumable session before workspace preparation; acquires no runtime resources. */
 export async function prepareHeartbeatSession(db: Db, input: HeartbeatSessionPreparationInput) {
   const { run, agent, getLatestAgentConfigRevision } = input;
   const { context, issueRef, issueContext, taskProjectContext, workspaceProjectContext, wakeCommentId, acceptedPlanContinuationWake, acceptedPlanWakeRoutingDecision } = input.task;
-  const { taskSession, taskSessionDecodedParams, explicitResumeSessionParams, explicitResumeSessionDisplayId, sessionCodec } = input.session;
+  const { taskSession: parentTaskSession, taskSessionDecodedParams, explicitResumeSessionParams, explicitResumeSessionDisplayId, sessionCodec } = input.session;
   const { runtimeConfig, agentIdentity, issueAssigneeOverrides, originalAiIssueOverrides, managedAiRuntime, aiBinding, requestedAiBinding, secretManifest, runtimeSkillEntries, routineEnvContext } = input.config;
   const { requestedExecutionWorkspaceMode, effectiveExecutionWorkspaceMode, projectExecutionWorkspacePolicy, issueExecutionWorkspaceSettings, executionPolicy, requestedReusableExecutionWorkspaceConfig, reusableExistingExecutionWorkspace } = input.workspace;
   const { environmentResolution, selectedEnvironmentId, selectedEnvironmentForConfig } = input.environment;
+  const { taskSession, routerScoped, parentIdentityCompatible } = await selectAccountTaskSession(db, {
+    parentTaskSession, companyId: agent.companyId, router: requestedAiBinding?.mode === "router", managedAiRuntime,
+  });
   const latestAgentConfigRevision = await getLatestAgentConfigRevision(
     agent.companyId,
     agent.id,
@@ -192,7 +223,7 @@ export async function prepareHeartbeatSession(db: Db, input: HeartbeatSessionPre
     hasTaskSession: taskSession != null,
     configuredModel,
     taskSessionParams:
-      taskSession?.sessionParamsJson ?? taskSessionDecodedParams,
+      taskSession?.sessionParamsJson ?? (routerScoped ? null : taskSessionDecodedParams),
     configMetadata: sessionConfigMetadata,
     compatibleConfigMetadata,
     wakeResetReason: wakeSessionResetReason,
@@ -209,10 +240,10 @@ export async function prepareHeartbeatSession(db: Db, input: HeartbeatSessionPre
     throughCommentId: readNonEmptyString(context.conversationReplayThroughCommentId) ?? (context.interactionKind ? null : wakeCommentId),
   }) : undefined;
   const previousSessionParams =
-    explicitResumeSessionParams ??
+    (parentIdentityCompatible ? explicitResumeSessionParams : null) ??
     (isCanonicalSessionIdForAdapter(
       agent.adapterType,
-      explicitResumeSessionDisplayId,
+      parentIdentityCompatible ? explicitResumeSessionDisplayId : null,
     )
       ? { sessionId: explicitResumeSessionDisplayId }
       : null) ??
@@ -230,7 +261,7 @@ export async function prepareHeartbeatSession(db: Db, input: HeartbeatSessionPre
     const handoff = await getFreshSessionHandoff();
     if (handoff) context.paperclipFreshSessionHandoffMarkdown = handoff;
   }
-  return { sessionConfigMetadata, configuredModel, sessionConfigFreshness, resetTaskSession, sessionResetReason, taskSessionForRun, getFreshSessionHandoff, previousSessionParams };
+  return { sessionConfigMetadata, configuredModel, sessionConfigFreshness, resetTaskSession, sessionResetReason, taskSessionForRun, selectedTaskSession: taskSession, allowExplicitResume: parentIdentityCompatible, getFreshSessionHandoff, previousSessionParams };
 }
 
 export interface HeartbeatAdapterSessionInput {
@@ -263,7 +294,8 @@ export interface HeartbeatAdapterSessionInput {
 export async function resolveHeartbeatAdapterSession(input: HeartbeatAdapterSessionInput) {
   const { agent, evaluateSessionCompaction } = input;
   const { context, taskKey, issueId, continuationSummary, executionContinuation } = input.task;
-  const { runtime, taskSession, sessionCodec, explicitResumeSessionDisplayId, runtimeSessionParams, managedAiRuntime, prepared } = input.session;
+  const { runtime, sessionCodec, explicitResumeSessionDisplayId, runtimeSessionParams, managedAiRuntime, prepared } = input.session;
+  const taskSession = prepared.selectedTaskSession;
   const { sessionConfigMetadata, sessionConfigFreshness, resetTaskSession, taskSessionForRun, previousSessionParams } = prepared;
   const { latestWorkspaceConfigMetadata, workspaceConfigFreshness, reusedExecutionWorkspace, resolvedWorkspaceReusePolicy, persistedExecutionWorkspace, runtimeWorkspaceWarnings, requestedShouldReuseExisting, workspaceReuseRequest } = input.workspace;
   const runtimeSessionFallback =
@@ -273,7 +305,7 @@ export async function resolveHeartbeatAdapterSession(input: HeartbeatAdapterSess
         ? runtime.sessionId
         : null;
   const runtimeSessionDisplayId = truncateDisplayId(
-    explicitResumeSessionDisplayId ??
+    (prepared.allowExplicitResume ? explicitResumeSessionDisplayId : null) ??
       taskSessionForRun?.sessionDisplayId ??
       (sessionCodec.getDisplayId
         ? sessionCodec.getDisplayId(runtimeSessionParams)

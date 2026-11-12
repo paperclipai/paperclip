@@ -1,3 +1,8 @@
+import { AgentConfigPanel, agentConfigPanelClassName } from "./HarnessConfigPanels";
+import { AdapterTypeDropdown, ModelDropdown, ThinkingEffortDropdown, ExperimentalBadge, harnessThinkingEffortOptions } from "./HarnessConfigControls";
+export { AdapterTypeDropdown, ModelDropdown } from "./HarnessConfigControls";
+import { Link } from "@/lib/router";
+import { harnessPoolsApi } from "@/api/harness-pools";
 import { environmentSupportsLoginPty } from "@paperclipai/shared";
 import { matchesAdapterLoginTarget, useAdapterLoginCancellation } from "./useAdapterLoginCancellation";
 import { ACCOUNT_BOUND_MODEL_DISCOVERY_QUERY_OPTIONS, isAccountBoundAcpxAgent } from "@/lib/native-model-catalog";
@@ -66,22 +71,20 @@ import {
   resolveManagedSandboxEnvironmentId,
 } from "../lib/adapter-test-environment";
 import { environmentDisplayLabel } from "../lib/managed-sandbox-environment";
-import { adapterCuratesModelOrder, extractModelName, extractProviderId } from "../lib/model-utils";
+import { adapterCuratesModelOrder } from "../lib/model-utils";
 import { queryKeys } from "../lib/queryKeys";
 import { useCompany } from "../context/CompanyContext";
 import {
   Field,
   ToggleField,
   ToggleWithNumber,
-  CollapsibleSection,
   DraftInput,
   DraftNumberInput,
   help,
-  adapterLabels,
 } from "./agent-config-primitives";
 import { defaultCreateValues } from "./agent-config-defaults";
 import { getUIAdapter } from "../adapters";
-import { ClaudeLocalAdvancedFields } from "../adapters/claude-local/config-fields";
+import { AgentRuntimeConfigSections } from "./AgentRuntimeConfigSections";
 import { MarkdownEditor } from "./MarkdownEditor";
 import { ChoosePathButton } from "./PathInstructionsModal";
 import { ReportsToPicker } from "./ReportsToPicker";
@@ -94,13 +97,11 @@ import { AgentSecretAccessEditor } from "./AgentSecretAccessEditor";
 import { useProposalReview } from "../pages/secrets/proposal-review";
 import { AGENT_ACCESS_CONFIG_PATH_PREFIX } from "../lib/secret-delivery";
 import { shouldShowLegacyWorkingDirectoryField } from "../lib/legacy-agent-config";
-import { listAdapterOptions, listVisibleAdapterTypes } from "../adapters/metadata";
-import { getAdapterDisplay, getAdapterLabel } from "../adapters/adapter-display-registry";
+import { listVisibleAdapterTypes } from "../adapters/metadata";
 import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
 import { buildAgentUpdatePatch, omitUndefinedEntries, type AgentConfigOverlay } from "../lib/agent-config-patch";
 import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
 import { resolveForcedKubernetesEnvironment } from "../lib/forced-kubernetes-environment";
-import { codexReasoningEffortOptions } from "../lib/codex-reasoning-effort";
 
 /* ---- Create mode values ---- */
 
@@ -112,7 +113,6 @@ import {
   paperclipRunnerTransitionConfig,
   type CreateConfigValues,
 } from "@paperclipai/adapter-utils";
-import { Badge } from "@/components/ui/badge";
 
 /* ---- Props ---- */
 
@@ -283,16 +283,6 @@ function formatArgList(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
-const openCodeThinkingEffortOptions = [
-  { id: "", label: "Auto" },
-  { id: "minimal", label: "Minimal" },
-  { id: "low", label: "Low" },
-  { id: "medium", label: "Medium" },
-  { id: "high", label: "High" },
-  { id: "xhigh", label: "X-High" },
-  { id: "max", label: "Max" },
-] as const;
-
 const cursorModeOptions = [
   { id: "", label: "Auto" },
   { id: "plan", label: "Plan" },
@@ -356,13 +346,23 @@ function ConfigSections({ order, hidden, className, children }: {
 
 /* ---- Form ---- */
 
+/** Pool runs this agent through Paperclip Runner, which cannot keep a Legacy
+ * harness's local permission rules; refuse instead of silently dropping them. */
+function poolConversionRestrictedPolicy(adapterType: string, config: Record<string, unknown>): string | null {
+  if (!["claude_local", "opencode_local"].includes(adapterType)) return null;
+  const permissionMode = config.permissionMode ?? config.acpPermissionMode;
+  if (config.dangerouslySkipPermissions === false || (adapterType === "claude_local" && typeof permissionMode === "string" && permissionMode.trim()))
+    return "Pool cannot keep this harness's local permission rules. Remove the permission restriction first, or keep the current harness.";
+  return null;
+}
+
 export function AgentConfigForm(props: AgentConfigFormProps) {
   const { mode, adapterModels: externalModels } = props;
   const isCreate = mode === "create";
   const panels = props.sectionLayout === "panels";
   const cards = props.sectionLayout === "cards" || panels;
   const cardBody = panels
-    ? "space-y-3 rounded-lg bg-(--agent-detail-tile) p-(--agent-detail-module-inset)"
+    ? agentConfigPanelClassName
     : "border border-border rounded-lg p-4 space-y-3";
   const untitled = (key: string) => panels && props.sectionTitles?.[key] === "";
   const showAdapterTypeField = props.showAdapterTypeField ?? true;
@@ -489,6 +489,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   // ---- Edit mode: overlay for dirty tracking ----
   const [overlay, setOverlay] = useState<AgentConfigOverlay>(emptyOverlay);
   const [environmentDraftDirty, setEnvironmentDraftDirty] = useState(false);
+  const [poolSwitchError, setPoolSwitchError] = useState<string | null>(null);
   const [environmentEditorKey, setEnvironmentEditorKey] = useState(0);
   const [runnerUpgrade, setRunnerUpgrade] = useState<{
     agentId: string;
@@ -638,12 +639,16 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const runtimeConfig = !isCreate ? ((props.agent.runtimeConfig ?? {}) as Record<string, unknown>) : {};
   const heartbeat = !isCreate ? ((runtimeConfig.heartbeat ?? {}) as Record<string, unknown>) : {};
   const debug = !isCreate ? ((runtimeConfig.debug ?? {}) as Record<string, unknown>) : {};
-  displayedOriginals.set("runtime.runtimeConfig", { ...runtimeConfig, aiConnection: runtimeConfig.aiConnection });
+  displayedOriginals.set("runtime.runtimeConfig", { ...runtimeConfig, aiConnection: runtimeConfig.aiConnection, harnessPool: runtimeConfig.harnessPool });
 
   const adapterType = isCreate
     ? props.values.adapterType
     : overlay.adapterType ?? props.agent.adapterType;
   const effectiveConfig = isCreate ? props.values.adapterSchemaValues ?? {} : { ...config, ...overlay.adapterConfig };
+  const selectedRuntime = (overlay.runtime.runtimeConfig as Record<string, unknown> | undefined) ?? runtimeConfig;
+  const harnessPoolId = isCreate ? undefined : (selectedRuntime.harnessPool as { poolId?: string } | undefined)?.poolId;
+  const isPoolHarness = harnessPoolId !== undefined;
+  const harnessPools = useQuery({ queryKey: ["harness-pool-choices", selectedCompanyId], queryFn: () => harnessPoolsApi.choices(selectedCompanyId!), enabled: Boolean(selectedCompanyId && isPoolHarness) });
   const harnessType = agentHarnessType(adapterType, effectiveConfig);
   const isCodexHarness = harnessType === "codex_local";
   const runnerProfile = paperclipRunnerProfileForHarness(harnessType);
@@ -713,7 +718,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     && !hideHostPaths
     && shouldShowLegacyWorkingDirectoryField({ isCreate, adapterConfig: config });
   const uiAdapter = useMemo(() => getUIAdapter(adapterType), [adapterType]);
-  const fieldsUiAdapter = useMemo(() => getUIAdapter(fieldsAdapterType), [fieldsAdapterType]);
   const supportedEnvironmentDrivers = useMemo(
     () => new Set(supportedEnvironmentDriversForAdapter(fieldsAdapterType)),
     [fieldsAdapterType],
@@ -1043,13 +1047,14 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       : "Local";
 
   const modelProvider = adapterType === "opencode_local" && aiConnectionBindingSchema.safeParse(
-    (overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection,
+    selectedRuntime.aiConnection,
   ).data?.provider === "openrouter" ? "openrouter" : runnerProvider;
   const runnerAcpxAgent = adapterType === "paperclip_runner" && runnerProvider === "acpx"
     ? String(isCreate ? props.values.adapterSchemaValues?.acpxAgent ?? "claude" : eff("adapterConfig", "acpxAgent", config.acpxAgent ?? "claude")) : undefined;
-  const modelAiBinding = aiConnectionBindingSchema.safeParse((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection).data;
+  const modelAiBinding = aiConnectionBindingSchema.safeParse(selectedRuntime.aiConnection).data;
   const accountBoundCatalog = isAccountBoundAcpxAgent(runnerAcpxAgent);
-  const modelCacheIdentity = accountBoundCatalog ? `${modelProvider}:${runnerAcpxAgent}:${isCreate ? "new" : props.agent.id}:${JSON.stringify(modelAiBinding ?? null)}` : runnerAcpxAgent ? `${modelProvider}:${runnerAcpxAgent}` : modelProvider;
+  const accountScopedLocalCatalog = Boolean(modelAiBinding && ["codex_local", "claude_local"].includes(isRunnerHarness ? harnessType : adapterType));
+  const modelCacheIdentity = accountBoundCatalog || accountScopedLocalCatalog ? `${modelProvider}:${runnerAcpxAgent}:${isCreate ? "new" : props.agent.id}:${JSON.stringify(modelAiBinding ?? null)}` : runnerAcpxAgent ? `${modelProvider}:${runnerAcpxAgent}` : modelProvider;
   const connectionModels = useConnectionModels(isExternalRunner ? null : selectedCompanyId, isCreate ? undefined : modelAiBinding, aiRoutingHarness(adapterType, runnerProvider, runnerAcpxAgent));
   // Fetch adapter models for the effective provider, including unsaved changes.
   const modelAdapterType = accountBoundCatalog ? "paperclip_runner" : isRunnerHarness ? harnessType : adapterType;
@@ -1133,20 +1138,13 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   };
 
   // Section toggle state — advanced always starts collapsed
-  const [runPolicyAdvancedOpen, setRunPolicyAdvancedOpen] = useState(false);
-  const [configurationAdvancedOpen, setConfigurationAdvancedOpen] = useState(false);
   const configSchema = useConfigSchema(adapterType);
   const hasLocalAdvancedFields = isLocal && (!isRunnerHarness || fieldsAdapterType !== "paperclip_runner");
   const hasConfigurationAdvancedFields = hasLocalAdvancedFields
     || adapterType === "process"
-    || (adapterType === "claude_local" && !hideHostPaths && (isCreate ? props.values.claudeEngine : eff("adapterConfig", "engine", config.engine)) === "acp")
+    || (fieldsAdapterType === "claude_local" && !hideHostPaths && (isCreate ? props.values.claudeEngine : eff("adapterConfig", "engine", config.engine)) !== "cli")
     || (fieldsAdapterType !== "paperclip_runner" && configSchema?.fields.some((field) => schemaFieldSection(field.key) === "advanced"));
-  const renderAdapterFields = (section: AdapterConfigSection) => (
-    <>
-      {adapterType === "claude_local" && <ClaudeLocalAdvancedFields {...adapterFieldProps} section={section} />}
-      <fieldsUiAdapter.ConfigFields {...adapterFieldProps} section={section} hideModel={isLocal} />
-    </>
-  );
+  const renderAdapterFields = (section: AdapterConfigSection) => <AgentRuntimeConfigSections fieldProps={{ ...adapterFieldProps, hideModel: isLocal }} section={section} />;
   // Popover states
   const [modelOpen, setModelOpen] = useState(false);
   const [thinkingEffortOpen, setThinkingEffortOpen] = useState(false);
@@ -1243,8 +1241,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       });
       const adapterConfig = buildAdapterConfigForTest(adapterConfigPatch);
       const agentId = isCreate ? undefined : props.agent.id;
-      const aiConnection = isCreate ? undefined : aiRuntimeConnectionBindingSchema.safeParse(
-        (overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? props.agent.runtimeConfig.aiConnection,
+      const aiConnection = isPoolHarness ? { mode: "router" as const, connectionId: harnessPoolId! } : isCreate ? undefined : aiRuntimeConnectionBindingSchema.safeParse(
+        selectedRuntime.aiConnection,
       ).data;
       const testRunnerSelection = isCursorCloudRunner
         ? { runner: "paperclip" as const }
@@ -1277,7 +1275,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const [testActionError, setTestActionError] = useState<string | null>(null);
   const testActionLabel = "Test";
   const isSavePending = !isCreate && Boolean(props.isSaving);
-  const testEnvironmentDisabled = testActionPending || isSavePending || !selectedCompanyId;
+  const testEnvironmentDisabled = testActionPending || isSavePending || !selectedCompanyId || (isPoolHarness && !harnessPoolId);
 
   // Drop a stale Test result when the adapter type or the effective environment
   // changes. A held result would keep the login affordance visible for a target
@@ -1340,7 +1338,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const providerSupportsLoginPty = environmentSupportsLoginPty(effectiveLoginEnvironment, environmentCapabilities, isRunnerHarness ? harnessType : adapterType);
   const loginNeedsPty = adapterCaps.login != null;
   const showAdapterLogin =
-    (isCreate || !((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection)) &&
+    (isCreate || !selectedRuntime.aiConnection) &&
     adapterSupportsSandboxLogin &&
     (effectiveLoginEnvironment?.driver === "sandbox" || (effectiveLoginEnvironment?.driver === "plugin" && !isCreate)) &&
     Boolean(effectiveLoginEnvironmentId) &&
@@ -1441,7 +1439,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     setRefreshingModels(true);
     setRefreshModelsError(null);
     try {
-      const refreshed = await agentsApi.adapterModels(selectedCompanyId, modelAdapterType, { refresh: true, environmentId: currentDefaultEnvironmentId || null, provider: modelProvider, ...(runnerAcpxAgent ? { acpxAgent: runnerAcpxAgent } : {}), ...(accountBoundCatalog ? { aiConnection: modelAiBinding, agentId: !isCreate ? props.agent.id : undefined } : {}) });
+      const refreshed = await agentsApi.adapterModels(selectedCompanyId, modelAdapterType, { refresh: true, environmentId: currentDefaultEnvironmentId || null, provider: modelProvider, ...(runnerAcpxAgent ? { acpxAgent: runnerAcpxAgent } : {}), ...(accountBoundCatalog || accountScopedLocalCatalog ? { aiConnection: modelAiBinding, agentId: !isCreate ? props.agent.id : undefined } : {}) });
       queryClient.setQueryData(modelQueryKey, refreshed);
     } catch (error) {
       setRefreshModelsError(describeError(error).body);
@@ -1461,23 +1459,17 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           : adapterType === "pi_local" ? "thinking" : "effort";
   const thinkingEffortOptions =
     isCodexHarness
-      ? codexReasoningEffortOptions(currentModelId, "Auto").map((option) => ({
-          id: option.value,
-          label: option.label,
-        }))
+      ? harnessThinkingEffortOptions("codex_local", currentModelId)
       : adapterType === "cursor"
         ? cursorModeOptions
         : adapterType === "opencode_local"
-          ? openCodeThinkingEffortOptions
+          ? harnessThinkingEffortOptions("opencode_local", currentModelId)
           : adapterType === "kimi_local"
             ? kimiThinkingEffortOptions
             : adapterType === "pi_local"
               ? [{ id: "", label: "Auto" }, ...["off", "minimal", "low", "medium", "high", "xhigh"].map(id => ({ id, label: id }))]
               : harnessType === "claude_local" || harnessType === "grok_local"
-                ? [{ id: "", label: "Auto" }, ...setupEfforts(harnessType, currentModelId).map((id) => ({
-                    id,
-                    label: id === "xhigh" ? "X-High" : id[0].toUpperCase() + id.slice(1),
-                  }))]
+                ? harnessThinkingEffortOptions(harnessType, currentModelId)
                 : claudeThinkingEffortOptions;
   const currentThinkingEffort = isCreate
     ? val!.thinkingEffort
@@ -1492,7 +1484,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         : adapterType === "opencode_local"
           ? eff("adapterConfig", "variant", String(config.variant ?? ""))
           : eff("adapterConfig", thinkingEffortKey, String(config[thinkingEffortKey] ?? ""));
-  const showThinkingEffort = !(harnessType === "pi_local" && fieldsAdapterType === "paperclip_runner")
+  const showThinkingEffort = !isPoolHarness && !(harnessType === "pi_local" && fieldsAdapterType === "paperclip_runner")
     && adapterType !== "gemini_local"
     && harnessType !== "cursor_cloud"
     && (adapterType !== "paperclip_runner" || isRunnerHarness);
@@ -1819,7 +1811,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             </Button>
           )}
         </div>}
-        <div data-agent-tile={panels ? "" : undefined} className={cn(cards ? cardBody : "px-4 pb-3 space-y-3")}>
+        <AgentConfigPanel panel={panels} className={cn(cards ? cardBody : "px-4 pb-3 space-y-3")}>
           {showAdapterTypeField && isGrokBotRunner && (
             <Field label="Harness" hint={help.adapterType}>
               <div className="inline-flex items-center gap-1.5">
@@ -1832,12 +1824,28 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           {showAdapterTypeField && !isGrokBotRunner && (
             <Field label="Harness" hint={help.adapterType}>
               <AdapterTypeDropdown
-                value={isDotRunner ? "openai_dot" : isMuseRunner ? "muse" : isRunnerHarness ? harnessType : adapterType}
+                value={isPoolHarness ? "pool" : isDotRunner ? "openai_dot" : isMuseRunner ? "muse" : isRunnerHarness ? harnessType : adapterType}
                 disabledTypes={adapterPickerDisabledTypes}
                 openAiDotEnabled={experimentalSettings?.enableOpenAiDot === true}
                 nativeRunnerEnabled={experimentalSettings?.enableNativeRunner === true}
+                poolEnabled={!isCreate && experimentalSettings?.enableNativeRunner === true}
+                poolEligible={adapterType === "paperclip_runner" || ["codex_local", "claude_local", "grok_local", "opencode_local"].includes(adapterType)}
                 museEnabled={experimentalSettings?.enableMuse === true && experimentalSettings?.enableNativeRunner === true}
                 onChange={(choice) => {
+                  setPoolSwitchError(null);
+                  if (choice === "pool") {
+                    if (isCreate) return;
+                    const restrictedPolicy = poolConversionRestrictedPolicy(adapterType, effectiveConfig);
+                    if (restrictedPolicy) { setPoolSwitchError(restrictedPolicy); return; }
+                    setOverlay(prev => ({ ...prev, adapterType: "paperclip_runner", runner: "paperclip", adapterConfig: { ...config, ...prev.adapterConfig, ...(adapterType !== "paperclip_runner" ? paperclipRunnerProfileForHarness(adapterType) : {}), homeMode: undefined }, runtime: { ...prev.runtime, runtimeConfig: { ...selectedRuntime, aiConnection: undefined, harnessPool: { poolId: "" } } } }));
+                    return;
+                  }
+                  if (!isCreate) mark("runtime", "runtimeConfig", {
+                    ...selectedRuntime,
+                    harnessPool: undefined,
+                    ...(aiRuntimeConnectionBindingSchema.safeParse(selectedRuntime.aiConnection).data?.mode === "router"
+                      ? { aiConnection: undefined } : {}),
+                  });
                   const dot = choice === "openai_dot";
                   const muse = choice === "muse";
                   const external = dot || muse;
@@ -1902,19 +1910,30 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   }
                 }}
               />
+              {poolSwitchError && <p role="alert" className="text-sm text-destructive">{poolSwitchError}</p>}
             </Field>
           )}
 
-          {isRunnerHarness && runnerDiscoveryView.kind === "error" && (
+          {isPoolHarness && selectedCompanyId && <Field label="Pool" hint="Shared harness, model and account configuration.">
+            <NativeSelect aria-label="Harness pool" disabled={experimentalSettings?.enableNativeRunner !== true} value={harnessPoolId ?? ""} onChange={event => { if (!isCreate) mark("runtime", "runtimeConfig", { ...selectedRuntime, aiConnection: undefined, harnessPool: { poolId: event.target.value } }); }}>
+              <option value="">Choose a pool</option>{harnessPools.data?.map(pool => <option key={pool.id} value={pool.id} disabled={!pool.enabled}>{pool.name}{pool.enabled ? "" : " (disabled)"}</option>)}
+            </NativeSelect>
+            {experimentalSettings?.enableNativeRunner !== true && <p className="text-sm text-muted-foreground">Enable Paperclip Runner in instance settings before selecting a pool.</p>}
+            {harnessPoolId && harnessPools.isSuccess && !harnessPools.data.some(pool => pool.id === harnessPoolId) && <p role="alert" className="text-sm text-destructive">The saved pool is unavailable. Choose another pool.</p>}
+            {harnessPools.isPending && <p className="text-sm text-muted-foreground">Loading pools…</p>}
+            {harnessPools.error && <p role="alert" className="text-sm text-destructive">{describeError(harnessPools.error).body}</p>}
+            <p className="text-sm text-muted-foreground">Runners, models and accounts come from the pool. <Link to="/company/settings/pools">Manage pools</Link></p>
+          </Field>}
+          {!isPoolHarness && isRunnerHarness && runnerDiscoveryView.kind === "error" && (
             <QueryErrorState size="inline" error={runnerDiscoveryView.error}
               action="load agent setup data" retrying={runnerDiscoveryView.isFetching}
               onRetry={runnerDiscoveryView.retry} />
           )}
-          {!isExternalRunner && !isCreate && selectedCompanyId && <AiConnectionField companyId={selectedCompanyId} agentId={props.agent.id} agentName={props.agent.name} adapterType={aiRoutingHarness(adapterType, eff("adapterConfig", "provider", config.provider), eff("adapterConfig", "acpxAgent", config.acpxAgent))}
-            routerAdapterType={adapterType} value={aiRuntimeConnectionBindingSchema.safeParse((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection).data}
+          {!isPoolHarness && !isExternalRunner && !isCreate && selectedCompanyId && <AiConnectionField companyId={selectedCompanyId} agentId={props.agent.id} agentName={props.agent.name} adapterType={aiRoutingHarness(adapterType, eff("adapterConfig", "provider", config.provider), eff("adapterConfig", "acpxAgent", config.acpxAgent))}
+            routerAdapterType={adapterType} value={aiRuntimeConnectionBindingSchema.safeParse(selectedRuntime.aiConnection).data}
             model={String(eff("adapterConfig", "model", config.model) ?? "")} environmentId={currentDefaultEnvironmentId || undefined} legacy
             onChange={binding => {
-              mark("runtime", "runtimeConfig", { ...runtimeConfig, aiConnection: binding });
+              mark("runtime", "runtimeConfig", { ...selectedRuntime, harnessPool: undefined, aiConnection: binding });
               if (accountBoundCatalog && hashKey([modelAiBinding ?? null]) === hashKey([binding ?? null])) void refreshConnectionModels();
             }} />}
 
@@ -1969,8 +1988,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             </Field>
           )}
 
-          {renderAdapterFields("adapter")}
-          {isLocal && (<>
+          {!isPoolHarness && renderAdapterFields("adapter")}
+          {!isPoolHarness && isLocal && (<>
               <ModelDropdown
                 models={models}
                 loadingModels={connectionModels?.isLoading ?? (fetchingModels || fetchedModelsView.kind === "reconnecting")}
@@ -2067,7 +2086,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 </>
               )}
           </>)}
-        </div>
+        </AgentConfigPanel>
 
       </div>
 
@@ -2078,7 +2097,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             ? (untitled("configuration") ? null : <h3 className="text-sm font-medium mb-3">Configuration</h3>)
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Configuration</div>
           }
-          <div data-agent-tile={panels ? "" : undefined} className={cn(cards ? cardBody : "px-4 pb-3 space-y-3")}>
+          <AgentConfigPanel panel={panels} className={cn(cards ? cardBody : "px-4 pb-3 space-y-3")}>
               {!isCreate && typeof config.bootstrapPromptTemplate === "string" && config.bootstrapPromptTemplate && (
                 <>
                   <Field label="Bootstrap prompt (legacy)" hint={help.bootstrapPrompt}>
@@ -2105,15 +2124,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   </div>
                 </>
               )}
-              {renderAdapterFields("configuration")}
-              {hasConfigurationAdvancedFields && (
-              <CollapsibleSection
-                title="Advanced"
-                open={configurationAdvancedOpen}
-                onToggle={() => setConfigurationAdvancedOpen(!configurationAdvancedOpen)}
-              >
-                <div className="space-y-3">
-                  {hasLocalAdvancedFields && (<>              {/*
+              <AgentRuntimeConfigSections fieldProps={{ ...adapterFieldProps, hideModel: isLocal }} section="configuration" showAdvanced={hasConfigurationAdvancedFields} advancedFields={
+                <>
+{hasLocalAdvancedFields && (<>              {/*
                 The command names a binary on the execution host, so the
                 managed-sandbox-only policy hides it: the platform-managed image
                 owns the binary. Hiding is presentation only. A stored
@@ -2178,12 +2191,13 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               </Field>
 
                   </>)}
-                  {renderAdapterFields("advanced")}
-                </div>
-              </CollapsibleSection>
-              )}
+                </>
+              } />
 
-          </div>
+            {props.hiddenSections?.includes("run-policy") && !isCreate && <AgentRuntimeConfigSections
+              fieldProps={{ ...adapterFieldProps, hideModel: isLocal }} section="runPolicy" includeTimeouts={isLocal}
+              schemaKeys={configSchema?.fields.map(field => field.key)} />}
+          </AgentConfigPanel>
         </div>
       )}
 
@@ -2219,9 +2233,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               numberHint={help.intervalSec}
               showNumber={val!.heartbeatEnabled}
             />
-            <CollapsibleSection title="Advanced Run Policy" open={runPolicyAdvancedOpen} onToggle={() => setRunPolicyAdvancedOpen(!runPolicyAdvancedOpen)}>
-              <div className="space-y-3">{renderAdapterFields("runPolicy")}</div>
-            </CollapsibleSection>
+            <AgentRuntimeConfigSections fieldProps={{ ...adapterFieldProps, hideModel: isLocal }} section="runPolicy" />
           </div>
         </div>
       ) : !isCreate ? (
@@ -2245,49 +2257,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 showNumber={eff("heartbeat", "enabled", heartbeat.enabled === true)}
               />
             </div>
-            <CollapsibleSection
-              title="Advanced Run Policy"
-              bordered={cards}
-              open={runPolicyAdvancedOpen}
-              onToggle={() => setRunPolicyAdvancedOpen(!runPolicyAdvancedOpen)}
-            >
-            <div className="space-y-3">
-              {renderAdapterFields("runPolicy")}
-              {isLocal && (<>
-              {/* Edit-only: timeout + grace period */}
-              {!isCreate && (
-                <>
-                  {!configSchema?.fields.some((field) => field.key === "timeoutSec") && (
-                  <Field label="Timeout (sec)" hint={help.timeoutSec}>
-                    <DraftNumberInput
-                      value={eff(
-                        "adapterConfig",
-                        "timeoutSec",
-                        Number(config.timeoutSec ?? 0),
-                      )}
-                      onCommit={(v) => mark("adapterConfig", "timeoutSec", v)}
-                      immediate
-                      className={inputClass}
-                    />
-                  </Field>
-                  )}
-                  {!configSchema?.fields.some((field) => field.key === "graceSec") && (
-                  <Field label="Interrupt grace period (sec)" hint={help.graceSec}>
-                    <DraftNumberInput
-                      value={eff(
-                        "adapterConfig",
-                        "graceSec",
-                        Number(config.graceSec ?? 15),
-                      )}
-                      onCommit={(v) => mark("adapterConfig", "graceSec", v)}
-                      immediate
-                      className={inputClass}
-                    />
-                  </Field>
-                  )}
-                </>
-              )}
-              </>)}
+            <AgentRuntimeConfigSections fieldProps={{ ...adapterFieldProps, hideModel: isLocal }} section="runPolicy" bordered={cards} includeTimeouts={isLocal} schemaKeys={configSchema?.fields.map(field => field.key)}>
               <ToggleField
                 label="Wake on demand"
                 hint={help.wakeOnDemand}
@@ -2356,8 +2326,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   </div>
                 ) : null}
               </div>
-            </div>
-          </CollapsibleSection>
+            </AgentRuntimeConfigSections>
           </div>
         </div>
       ) : null}
@@ -4022,435 +3991,4 @@ export function AdapterEnvironmentResult({ result }: { result: AdapterEnvironmen
       </div>
     </div>
   );
-}
-
-/* ---- Internal sub-components ---- */
-
-export function AdapterTypeDropdown({
-  value,
-  onChange,
-  disabledTypes,
-  openAiDotEnabled = false,
-  museEnabled = false,
-  nativeRunnerEnabled = false,
-}: {
-  value: string;
-  onChange: (type: string) => void;
-  disabledTypes: Set<string>;
-  openAiDotEnabled?: boolean;
-  museEnabled?: boolean;
-  nativeRunnerEnabled?: boolean;
-}) {
-  const selectedDisplay = getAdapterDisplay(value);
-  const adapterList = useMemo(() =>
-    [...listAdapterOptions(type => adapterLabels[type] ?? getAdapterLabel(type)),
-      ...(openAiDotEnabled ? [{ value: "openai_dot", label: "OpenAI Dot", experimental: true, comingSoon: false }] : []),
-      ...(museEnabled ? [{ value: "muse", label: "Muse — Personal agent", experimental: true, comingSoon: false }] : []),
-    ].filter(item => !item.comingSoon && (item.value !== "paperclip_runner" || nativeRunnerEnabled) && !disabledTypes.has(item.value))
-      .sort((a, b) => Number(a.value === "paperclip_runner") - Number(b.value === "paperclip_runner")),
-    [disabledTypes, openAiDotEnabled, nativeRunnerEnabled, museEnabled]);
-  return <SelectPopover aria-label="Harness" value={value} onValueChange={onChange}
-    displayValue={<span className="inline-flex min-w-0 items-center gap-1.5">
-      <span aria-hidden="true" className="inline-flex shrink-0"><AdapterMark type={value} className="size-4" /></span>
-      <span className="truncate">{adapterLabels[value] ?? getAdapterLabel(value)}</span>
-      {selectedDisplay.experimental && <ExperimentalBadge />}
-    </span>}
-    options={adapterList.map(item => ({ value: item.value,
-      group: item.value === "paperclip_runner" ? "Advanced" : undefined,
-      label: <span className="inline-flex items-center gap-1.5"><span aria-hidden="true" className="inline-flex shrink-0"><AdapterMark type={item.value} className="size-4" /></span><span>{item.label}</span>{item.experimental && <ExperimentalBadge />}</span>,
-    }))} />;
-}
-
-function ExperimentalBadge() {
-  return (
-    <span className="shrink-0 rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-(length:--text-nano) font-medium leading-none text-amber-700 dark:text-amber-200">
-      Experimental
-    </span>
-  );
-}
-
-export function ModelDropdown({
-  models,
-  value,
-  onChange,
-  open,
-  onOpenChange,
-  allowDefault,
-  required,
-  groupByProvider,
-  preserveOrder,
-  creatable,
-  detectedModel,
-  detectedModelCandidates,
-  onDetectModel,
-  onRefreshModels,
-  refreshingModels,
-  loadingModels,
-  detectModelLabel,
-  emptyDetectHint,
-  defaultLabel,
-  presentation = "searchable",
-}: {
-  models: AdapterModel[];
-  value: string;
-  onChange: (id: string) => void;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  allowDefault: boolean;
-  required: boolean;
-  groupByProvider: boolean;
-  /** Keep the adapter's list order (curated lists) instead of sorting ungrouped entries by id. */
-  preserveOrder?: boolean;
-  creatable?: boolean;
-  detectedModel?: string | null;
-  detectedModelCandidates?: string[];
-  onDetectModel?: () => Promise<string | null>;
-  onRefreshModels?: () => Promise<void>;
-  refreshingModels?: boolean;
-  loadingModels?: boolean;
-  detectModelLabel?: string;
-  emptyDetectHint?: string;
-  defaultLabel?: string;
-  presentation?: "searchable" | "native";
-}) {
-  const [modelSearch, setModelSearch] = useState("");
-  const [enteringCustomModel, setEnteringCustomModel] = useState(false);
-  const [detectingModel, setDetectingModel] = useState(false);
-  const selected = models.find((m) => m.id === value);
-  const manualModel = modelSearch.trim();
-  const canCreateManualModel = Boolean(
-    creatable &&
-      manualModel &&
-      !models.some((m) => m.id.toLowerCase() === manualModel.toLowerCase()),
-  );
-  // Model IDs already shown as detected/candidate badges — exclude from regular list
-  const promotedModelIds = useMemo(() => {
-    const set = new Set<string>();
-    if (detectedModel) set.add(detectedModel);
-    for (const c of detectedModelCandidates ?? []) {
-      if (c) set.add(c);
-    }
-    return set;
-  }, [detectedModel, detectedModelCandidates]);
-
-  const filteredModels = useMemo(() => {
-    return models.filter((m) => {
-      if (promotedModelIds.has(m.id)) return false;
-      if (!modelSearch.trim()) return true;
-      const q = modelSearch.toLowerCase();
-      const provider = extractProviderId(m.id) ?? "";
-      return (
-        m.id.toLowerCase().includes(q) ||
-        m.label.toLowerCase().includes(q) ||
-        provider.toLowerCase().includes(q)
-      );
-    });
-  }, [models, modelSearch, promotedModelIds]);
-  const groupedModels = useMemo(() => {
-    if (!groupByProvider) {
-      // A hand-ordered list (newest release of each family first, older releases at the end) is
-      // shown as the adapter ordered it; a discovered list has no stable order, so sort it.
-      const entries = preserveOrder ? filteredModels : [...filteredModels].sort((a, b) => a.id.localeCompare(b.id));
-      return [{ provider: "models", entries }];
-    }
-    const map = new Map<string, AdapterModel[]>();
-    for (const model of filteredModels) {
-      const provider = extractProviderId(model.id) ?? "other";
-      const group = map.get(provider) ?? [];
-      group.push(model);
-      map.set(provider, group);
-    }
-    return Array.from(map.entries())
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([provider, entries]) => ({
-        provider,
-        entries: [...entries].sort((a, b) => a.id.localeCompare(b.id)),
-      }));
-  }, [filteredModels, groupByProvider, preserveOrder]);
-
-  async function handleDetectModel() {
-    if (!onDetectModel) return;
-    setDetectingModel(true);
-    try {
-      const nextModel = await onDetectModel();
-      if (nextModel) {
-        onChange(nextModel);
-        onOpenChange(false);
-        setModelSearch("");
-      }
-    } finally {
-      setDetectingModel(false);
-    }
-  }
-
-  if (presentation === "native") {
-    const customOption = "__paperclip_custom_model__";
-    const extraModels = [...new Set([value, ...promotedModelIds])].filter(id => id && (!models.some(model => model.id === id) || promotedModelIds.has(id)));
-    return (
-      <Field label="Model" hint={help.model}>
-        <NativeSelect
-          aria-label="Model"
-          aria-busy={loadingModels || refreshingModels}
-          value={enteringCustomModel ? customOption : value}
-          required={required && !enteringCustomModel}
-          onChange={event => {
-            const next = event.target.value;
-            setEnteringCustomModel(next === customOption);
-            if (next !== customOption) onChange(next);
-          }}
-        >
-          <option value="" disabled={!allowDefault}>
-            {allowDefault ? (defaultLabel ?? "Default") : loadingModels ? "Loading models…" : required ? "Select model (required)" : "Select model"}
-          </option>
-          {extraModels.map(id => <option key={id} value={id}>{models.find(model => model.id === id)?.label ?? id}</option>)}
-          {groupedModels.map(({ provider, entries }) => groupByProvider ? (
-            <optgroup key={provider} label={provider}>
-              {entries.map(model => <option key={model.id} value={model.id}>{model.label}</option>)}
-            </optgroup>
-          ) : entries.map(model => <option key={model.id} value={model.id}>{model.label}</option>))}
-          {creatable && <option value={customOption}>Enter custom model…</option>}
-        </NativeSelect>
-        {enteringCustomModel && (
-          <label className="mt-3 block space-y-1 text-xs text-muted-foreground">
-            Model ID
-            <Input aria-label="Model ID" value={value} onChange={event => onChange(event.target.value)}
-              placeholder="Enter model ID or alias" autoFocus required={required} />
-          </label>
-        )}
-        {loadingModels && <p role="status" className="mt-2 text-xs text-muted-foreground">Loading models…</p>}
-        {onRefreshModels && <Button type="button" variant="ghost" size="sm" disabled={refreshingModels}
-          onClick={() => void onRefreshModels()}>{refreshingModels ? "Refreshing…" : "Refresh models"}</Button>}
-      </Field>
-    );
-  }
-
-  return (
-    <Field label="Model" hint={help.model}>
-      <SelectPopover aria-label="Model" value={value}
-        displayValue={<span className={cn("truncate", !value && "text-muted-foreground")}>
-          {selected?.label ?? (value || (allowDefault ? (defaultLabel ?? "Default") : required ? "Select model (required)" : "Select model"))}
-        </span>}
-        open={open}
-        onOpenChange={(nextOpen) => {
-          onOpenChange(nextOpen);
-          if (!nextOpen) setModelSearch("");
-        }}
-      >
-        <div role="listbox" aria-label="Model">
-          <div className="relative mb-1">
-            <input
-              className="w-full px-2 py-1.5 pr-6 text-xs bg-transparent outline-none border-b border-border placeholder:text-muted-foreground/50"
-              placeholder={creatable ? "Search models... (type to create)" : "Search models..."}
-              value={modelSearch}
-              onChange={(e) => setModelSearch(e.target.value)}
-              autoFocus
-            />
-            {modelSearch && (
-              <button
-                type="button"
-                className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                onClick={() => setModelSearch("")}
-              >
-                <svg aria-hidden="true" focusable="false" className="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="18" y1="6" x2="6" y2="18" />
-                  <line x1="6" y1="6" x2="18" y2="18" />
-                </svg>
-              </button>
-            )}
-          </div>
-          {onDetectModel && !modelSearch.trim() && (
-            <button
-              type="button"
-              className="flex items-center gap-1.5 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-muted-foreground"
-              onClick={() => {
-                void handleDetectModel();
-              }}
-              disabled={detectingModel}
-            >
-              <svg aria-hidden="true" focusable="false" className="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
-                <path d="M3 3v5h5" />
-              </svg>
-              {detectingModel ? "Detecting..." : detectedModel ? (detectModelLabel?.replace(/^Detect\b/, "Re-detect") ?? "Re-detect from config") : (detectModelLabel ?? "Detect from config")}
-            </button>
-          )}
-          {onRefreshModels && !modelSearch.trim() && (
-            <button
-              type="button"
-              className="flex items-center gap-1.5 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-muted-foreground"
-              onClick={() => {
-                void onRefreshModels();
-              }}
-              disabled={refreshingModels}
-            >
-              <svg aria-hidden="true" focusable="false" className="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M3 12a9 9 0 0 1 15.28-6.36L21 8" />
-                <path d="M21 3v5h-5" />
-                <path d="M21 12a9 9 0 0 1-15.28 6.36L3 16" />
-                <path d="M8 16H3v5" />
-              </svg>
-              {refreshingModels ? "Refreshing..." : "Refresh models"}
-            </button>
-          )}
-          {value && (!models.some((m) => m.id === value) || promotedModelIds.has(value)) && (
-            <button
-              type="button"
-              role="option" aria-selected
-              className={cn(
-                "flex items-center w-full px-2 py-1.5 text-sm rounded bg-accent/50",
-              )}
-              onClick={() => {
-                onOpenChange(false);
-              }}
-            >
-              <span className="block w-full text-left truncate font-mono text-xs" title={value}>
-                {models.find((m) => m.id === value)?.label ?? value}
-              </span>
-              <Badge variant="outline" className="ml-auto text-(length:--text-nano) px-1.5 bg-green-500/15 text-green-400 border-green-500/20">
-                current
-              </Badge>
-            </button>
-          )}
-          {detectedModel && detectedModel !== value && (
-            <button
-              type="button"
-              role="option" aria-selected={false}
-              className={cn(
-                "flex items-center w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
-              )}
-              onClick={() => {
-                onChange(detectedModel);
-                onOpenChange(false);
-              }}
-            >
-              <span className="block w-full text-left truncate font-mono text-xs" title={detectedModel}>
-                {models.find((m) => m.id === detectedModel)?.label ?? detectedModel}
-              </span>
-              <Badge variant="outline" className="ml-auto text-(length:--text-nano) px-1.5 bg-blue-500/15 text-blue-400 border-blue-500/20">
-                detected
-              </Badge>
-            </button>
-          )}
-          {detectedModelCandidates
-            ?.filter((candidate) => candidate && candidate !== detectedModel && candidate !== value)
-            .map((candidate) => {
-              const entry = models.find((m) => m.id === candidate);
-              return (
-                <button
-                  key={`detected-${candidate}`}
-                  type="button"
-                  role="option" aria-selected={false}
-                  className={cn(
-                    "flex items-center w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
-                  )}
-                  onClick={() => {
-                    onChange(candidate);
-                    onOpenChange(false);
-                  }}
-                >
-                  <span className="block w-full text-left truncate font-mono text-xs" title={candidate}>
-                    {entry?.label ?? candidate}
-                  </span>
-                  <Badge variant="outline" className="ml-auto text-(length:--text-nano) px-1.5 bg-sky-500/15 text-sky-400 border-sky-500/20">
-                    config
-                  </Badge>
-                </button>
-              );
-            })}
-          <div className="max-h-(--sz-240px) overflow-y-auto">
-            {allowDefault && (
-              <button
-                type="button"
-                role="option" aria-selected={!value}
-                className={cn(
-                  "flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
-                  !value && "bg-accent",
-                )}
-                onClick={() => {
-                  onChange("");
-                  onOpenChange(false);
-                }}
-              >
-                Default
-              </button>
-            )}
-            {canCreateManualModel && (
-              <button
-                type="button"
-                role="option" aria-selected={false}
-                className="flex items-center justify-between gap-2 w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50"
-                onClick={() => {
-                  onChange(manualModel);
-                  onOpenChange(false);
-                  setModelSearch("");
-                }}
-              >
-                <span>Use manual model</span>
-                <span className="text-xs font-mono text-muted-foreground">{manualModel}</span>
-              </button>
-            )}
-            {groupedModels.map((group) => (
-              <div key={group.provider} className="mb-1 last:mb-0">
-                {groupByProvider && (
-                  <div className="px-2 py-1 text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">
-                    {group.provider} ({group.entries.length})
-                  </div>
-                )}
-                {group.entries.map((m) => (
-                  <button
-                    type="button"
-                    key={m.id}
-                    role="option" aria-selected={m.id === value}
-                    className={cn(
-                      "flex items-center w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
-                      m.id === value && "bg-accent",
-                    )}
-                    onClick={() => {
-                      onChange(m.id);
-                      onOpenChange(false);
-                    }}
-                  >
-                    <span className="block w-full text-left truncate" title={m.id}>
-                      {groupByProvider ? extractModelName(m.id) : m.label}
-                    </span>
-                  </button>
-                ))}
-              </div>
-            ))}
-            {filteredModels.length === 0 && !canCreateManualModel && promotedModelIds.size === 0 && (
-              <div className="px-2 py-2 space-y-2">
-                <p className="text-xs text-muted-foreground">
-                  {loadingModels ? "Loading models…" : onDetectModel
-                    ? (emptyDetectHint ?? "No model detected yet. Enter a provider/model manually.")
-                    : "No models found."}
-                </p>
-              </div>
-            )}
-          </div>
-        </div>
-      </SelectPopover>
-    </Field>
-  );
-}
-
-function ThinkingEffortDropdown({
-  value,
-  options,
-  onChange,
-  open,
-  onOpenChange,
-}: {
-  value: string;
-  options: ReadonlyArray<{ id: string; label: string }>;
-  onChange: (id: string) => void;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-}) {
-  return <Field label="Thinking effort" hint={help.thinkingEffort}>
-    <SelectPopover aria-label="Thinking effort" value={value} onValueChange={onChange}
-      open={open} onOpenChange={onOpenChange}
-      options={options.map(option => ({ value: option.id, label: option.label,
-        suffix: option.id ? <span className="text-xs text-muted-foreground font-mono">{option.id}</span> : undefined,
-      }))} />
-  </Field>;
 }

@@ -173,6 +173,7 @@ describe("CompanySettingsSidebar", () => {
     expect(container.textContent).not.toContain("Instance Settings");
     expect(container.textContent).toContain("General");
     expect(container.textContent).toContain("Connections");
+    expect(sidebarNavItemMock).toHaveBeenCalledWith(expect.objectContaining({to:"/company/settings/pools",label:"Pools"}));
     expect(container.textContent).toContain("Environments");
     expect(container.textContent).toContain("Export");
     expect(container.textContent).toContain("Import");
@@ -276,6 +277,7 @@ describe("CompanySettingsSidebar", () => {
     await act(async () => root.render(<QueryClientProvider client={queryClient}><ProductionCompanySettingsSidebar /></QueryClientProvider>));
     await flushReact();
     expect(container.querySelector('a[href="/company/settings/connections"]')?.textContent).toBe("Connections");
+    expect(container.querySelector('a[href="/company/settings/pools"]')?.textContent).toBe("Pools");
     expect(queryClient.getQueryCache().getAll().some(query => String(query.queryKey[0]).includes("experimental"))).toBe(false);
     await act(async () => root.unmount());
   });

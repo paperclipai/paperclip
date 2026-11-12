@@ -11,6 +11,7 @@ const connectionReasons = {
   ai_connection_credential_not_shared: "The credential is not shared with the responsible user. Ask its owner for access or choose an authorized connection.",
 } as const;
 const reasons = {
+  ai_connection_pool_exhausted: "All eligible pool accounts are temporarily unavailable. Paperclip will retry at the next account deadline or after a pool or account update.",
   harness_test_failed: "The execution test did not pass. Open Configuration and run the agent test to inspect the failed checks.",
   ai_connection_required: "This agent's environment requires a managed AI connection and an isolated Runner home. Check both in Configuration, then retry.",
   harness_auth_failed: "Authentication failed. Check the agent's AI connection or sign in to its execution tool, then retry.",
@@ -24,6 +25,15 @@ const reasons = {
   required_plugin_unavailable: "A required plugin is unavailable. Check the plugin's status in Settings. Paperclip will retry automatically.",
   invalid_lifecycle_result: "A required plugin returned an invalid result. Check the plugin's status in Settings. Paperclip will retry automatically.",
 } as const;
+
+export function lifecycleVerificationRetryAt(context: LifecycleFailure, error: unknown): string | undefined {
+  if (context.phase !== "verifying" || context.stage !== "host"
+    || lifecycleFailureCode(error) !== "ai_connection_pool_exhausted") return;
+  const retryAt = (error as { retryAt?: unknown }).retryAt;
+  if (typeof retryAt === "string" && Number.isFinite(Date.parse(retryAt)) && Date.parse(retryAt) > Date.now()) {
+    return new Date(retryAt).toISOString();
+  }
+}
 
 const transientCodes = new Set(["ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "40001", "40P01", "53300", "57P01"]);
 const configurationFailures = new Set([

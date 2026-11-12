@@ -1461,6 +1461,34 @@ it.each([false, true])("uses the same API result envelope and fences handler pub
   }
 }, 20_000);
 
+it("fails waiting consumers immediately after authority persistence becomes indeterminate", async () => {
+  const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-authority-failure-"));
+  const OriginalCore = durableControlPlane.DurablePrpControlPlane;
+  let callbacks!: ConstructorParameters<typeof OriginalCore>[0];
+  const coreSpy = vi.spyOn(durableControlPlane, "DurablePrpControlPlane").mockImplementation(function (options) {
+    callbacks = options;
+    return new OriginalCore(options);
+  });
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(stateDirectory), stateDirectory, closeGraceMs: 100,
+  });
+  try {
+    await bundle.transport.request("thread/start", { cwd: stateDirectory });
+    const waiting = (async () => { for await (const _ of bundle.transport.notifications()) {} })();
+    const failure = new Error("native_runner_authority_persistence_failed: EIO");
+    const rejected = expect(waiting).rejects.toBe(failure);
+    expect(callbacks.onPersistenceError).toBeTypeOf("function");
+    callbacks.onPersistenceError!(failure);
+    await rejected;
+    await expect(bundle.transport.request("thread/start", { cwd: stateDirectory })).rejects.toBe(failure);
+  } finally {
+    await bundle.transport.close().catch(() => undefined);
+    coreSpy.mockRestore();
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+}, 15_000);
+
 it.each([false, true])("refuses a terminal call decided before earlier results were seen (seen: %s)", async seen => {
   // Restart chaos t03: Codex called write_document, the controller was held,
   // and Codex re-sampled the model until it called paperclip_block. After the

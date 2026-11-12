@@ -226,7 +226,7 @@ describe("connection usage probes", () => {
     const result = await probeAiConnectionUsage({ provider: "anthropic", method: "subscription" }, "token", {
       request: fixture({ error: "echoed-credential-secret" }, status as number),
     });
-    expect(result).toMatchObject({ status: expected, errorCode: code, limits: [], overage: null });
+    expect(result).toMatchObject({ status: expected, errorCode: code, providerStatus: status, limits: [], overage: null });
     expect(JSON.stringify(result)).not.toContain("echoed-credential-secret");
   });
   it.each([{}, [], { five_hour: { utilization: -1 } }, { five_hour: { utilization: "100" } }])("fails closed on missing or malformed limits: %j", async body => {
@@ -236,6 +236,7 @@ describe("connection usage probes", () => {
     const request = vi.fn<typeof fetch>().mockRejectedValue(new Error("Authorization: secret"));
     expect(await probeAiConnectionUsage({ provider: "openai", method: "subscription" }, "not-json", { request })).toMatchObject({ status: "unavailable" });
     expect(request).not.toHaveBeenCalled();
+    expect(await probeAiConnectionUsage({ provider: "openai", method: "subscription" }, "not-json", { request })).not.toHaveProperty("providerStatus");
     const result = await probeAiConnectionUsage({ provider: "openai", method: "subscription" }, auth, { request });
     expect(result.status).toBe("error");
     expect(JSON.stringify(result)).not.toContain("Authorization: secret");

@@ -1,3 +1,4 @@
+import { PoolAgentSetup } from "./PoolAgentSetup";
 import { ACCOUNT_BOUND_MODEL_DISCOVERY_QUERY_OPTIONS } from "@/lib/native-model-catalog";
 import { PAPERCLIP_RUNNER_ACPX_PROFILES } from "@paperclipai/adapter-utils";
 import { ExternalAgentInviteDialog } from "./ExternalAgentInviteDialog";
@@ -96,6 +97,7 @@ export function NewAgentSetup() {
         Select an organization to create an agent.
       </p>
     );
+  if (params.get("runnerProvider") === "pool" && params.get("setupAgentId")) return <PoolAgentSetup companyId={selectedCompanyId} agentId={params.get("setupAgentId")!} />;
   if (params.get("adapterType") === "muse" || params.get("runnerProvider") === "muse") return <ExternalAgentInviteDialog companyId={selectedCompanyId} initialPreset="muse" initialMuseName={params.get("name") ?? ""} onClose={() => navigate("/agents/all")} onBack={() => navigate("/agents/all")} />;
   return (
     <Setup
@@ -334,16 +336,18 @@ function Setup({
       describeError(cause).body;
   }
   const accountBoundCatalog = brandType === "copilot_runtime" || brandType === "antigravity_runtime";
+  const accountScopedLocalCatalog = Boolean(aiBinding && ["codex_local", "claude_local"].includes(brandType));
   const accountCatalogAvailable = brandType === "copilot_runtime" || (brandType === "antigravity_runtime" && aiBinding?.method === "subscription");
+  const canRefreshAccountModels = accountCatalogAvailable || accountScopedLocalCatalog;
   const requestAccountModels = accountCatalogAvailable && showModel && !connectionModels && Boolean(aiBinding)
     && envs.isSuccess && settings.isSuccess && experimental.isSuccess && general.isSuccess && !environmentError;
   const accountModelScope = JSON.stringify([companyId, environmentId, aiBinding]);
   const models = useQuery({
-    queryKey: queryKeys.agents.adapterModels(companyId, brandType, environmentId, accountBoundCatalog ? JSON.stringify(aiBinding ?? null) : aiBinding?.provider),
+    queryKey: queryKeys.agents.adapterModels(companyId, brandType, environmentId, accountBoundCatalog || accountScopedLocalCatalog ? JSON.stringify(aiBinding ?? null) : aiBinding?.provider),
     queryFn: () => agentsApi.adapterModels(companyId, isKimi || accountBoundCatalog ? "paperclip_runner" : brandType, isKimi
       ? { provider: "acpx", acpxAgent: "kimi", environmentId } : accountBoundCatalog
       ? { provider: "acpx", acpxAgent: runnerProvider, aiConnection: aiBinding, environmentId }
-      : { provider: aiBinding?.provider, environmentId }),
+      : { provider: aiBinding?.provider, environmentId, ...(accountScopedLocalCatalog ? { aiConnection: aiBinding } : {}) }),
     ...(accountBoundCatalog ? ACCOUNT_BOUND_MODEL_DISCOVERY_QUERY_OPTIONS : {}),
     enabled: Boolean(brandType) && showModel && !connectionModels && (!accountBoundCatalog || requestAccountModels),
     });
@@ -871,6 +875,7 @@ function Setup({
           : "Loading your agent…"}
       </p>
     );
+  if ((created?.runtimeConfig?.harnessPool || savedSetupChoice?.runnerProvider === "pool") && created && !createdAgentId) return <PoolAgentSetup companyId={companyId} agentId={created.id} />;
   if (resumeSavedChoice) return <p role="status" className="text-sm text-muted-foreground">Loading your agent setup…</p>;
   if (choosingAdapter || !name || !adapterType || (created?.metadata?.setupAdapterPending === true && !unreleasedAntigravity))
     return (
@@ -1192,7 +1197,7 @@ function Setup({
                         {!connectionAdapter && aiProviderForAdapter(brandType) && (
                           <AiConnectionField companyId={companyId} agentName={name} adapterType={brandType} model={model} environmentId={environmentId ?? undefined} value={aiBinding}
                             onChange={binding => { binding.mode !== "router" && setRuntimeAiBinding(binding); resetTest();
-                              if (accountCatalogAvailable && hashKey([aiBinding ?? null]) === hashKey([binding ?? null])) void refreshAccountModels();
+                              if (canRefreshAccountModels && hashKey([aiBinding ?? null]) === hashKey([binding ?? null])) void refreshAccountModels();
                             }} />
                         )}
                         {(connectionModels ? connectionModels.error : models.error) && <p role="alert" className="text-sm text-destructive">Could not load models. Retry or enter a model ID manually.</p>}
@@ -1204,8 +1209,8 @@ function Setup({
                                 presentation={brandType === "codex_local" ? "searchable" : "native"}
                                 models={connectionModels?.models ?? models.data ?? []}
                                 loadingModels={connectionModels?.isLoading ?? models.isLoading}
-                                onRefreshModels={connectionModels?.refreshModels ?? (accountCatalogAvailable ? async () => { await models.refetch(); } : undefined)}
-                                refreshingModels={connectionModels?.refreshing ?? (accountCatalogAvailable ? models.isFetching : undefined)}
+                                onRefreshModels={connectionModels?.refreshModels ?? (canRefreshAccountModels ? async () => { await models.refetch(); } : undefined)}
+                                refreshingModels={connectionModels?.refreshing ?? (canRefreshAccountModels ? models.isFetching : undefined)}
                                 value={model}
                                 onChange={(value) => {
                                   setModel(connectionModels?.resolveModel(value) ?? value);

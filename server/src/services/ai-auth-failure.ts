@@ -47,7 +47,7 @@ export function isAiAuthenticationRepairable(run: AuthenticationFailure): boolea
 export function isAiAuthenticationFailure(code: string | null | undefined): boolean {
   return Boolean(code && (
     /^(acpx|claude|codex|grok|opencode|gemini|kimi|pi|cursor|copilot)_auth_required$/i.test(code)
-    || ["adapter_auth_missing", "authentication_required", "auth_required", "refresh_token_reused", "refresh_token_expired", "refresh_token_invalidated"].includes(code)
+    || ["native_provider_auth_failed", "adapter_auth_missing", "authentication_required", "auth_required", "refresh_token_reused", "refresh_token_expired", "refresh_token_invalidated"].includes(code)
   ));
 }
 

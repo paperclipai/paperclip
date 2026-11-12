@@ -1,3 +1,5 @@
+import { effectiveAiConnectionInput } from "@paperclipai/shared";
+import { harnessPoolService } from "../services/harness-pools.js";
 import { resolveLoginEnvironmentTarget } from "../services/login-environment.js";
 import { assertProviderApiPlacementPolicy, managedCursorApiDefaultEnabled, resolveProviderApiPlacement } from "../services/native-runtime/provider-api-placement.js";
 import { isObjectJournalBusyError } from "../services/object-byte-journal.js";
@@ -22,7 +24,7 @@ import { createAgentLifecycle } from "../services/agent-lifecycle.js";
 import { isAgentSetupDraft } from "../modules/agent-lifecycle/index.js";
 
 import { agentIdentityService } from "../services/agent-identity.js";
-import { aiConnectionRouterService, poolMemberRuntimeConfig } from "../services/ai-connection-router.js";
+import { aiConnectionRouterService, assertPoolAdapterPolicyCompatible, LOCAL_POOL_ADAPTERS, poolMemberRuntimeConfig } from "../services/ai-connection-router.js";
 import { connectionIntentService } from "../services/connection-intents.js";
 import { isCloudManagedInstance } from "../services/cloud-instance.js";
 import { dotRunnerBroker } from "../services/dot-runner-broker.js";
@@ -44,10 +46,12 @@ import {
   type AiConnectionBinding,
   type AiRuntimeConnectionBinding,
 } from "@paperclipai/shared";
-import { toolConnections } from "@paperclipai/db";
+import { aiConnectionPools, toolConnections } from "@paperclipai/db";
+import { BUILTIN_AI_FAILOVER_ROUTER_KEY } from "@paperclipai/shared";
 import { aiConnectionService } from "../services/ai-connections.js";
 import { probeCopilotConnection, probeCopilotExecutionTarget } from "../services/copilot-connection-probe.js";
 import { antigravityConnectionModels } from "../services/antigravity-connection-models.js";
+import { fetchAccountModels } from "../services/account-model-catalog.js";
 import { resolveAntigravityCandidateAdmission, resolveKimiCandidateAdmission } from "../services/native-runtime/acpx-qualification.js";
 import { defaultAiConnectionForHire } from "../services/agent-ai-connection-default.js";
 import { assertAiConnectionCreateAccess, canInstallSharedAiConnectionForNewAgent, responsibleUserForAiRequest } from "./ai-connections.js";
@@ -2188,6 +2192,26 @@ export function agentRoutes(
     return normalizedRuntimeConfig;
   }
 
+  async function assertBuiltinPoolAdapter(companyId: string, adapterType: string, binding: AiRuntimeConnectionBinding | undefined) {
+    if (adapterType === "paperclip_runner" || LOCAL_POOL_ADAPTERS.includes(adapterType) || binding?.mode !== "router") return;
+    const [pool] = await db.select({ pluginKey: aiConnectionPools.pluginKey }).from(aiConnectionPools).where(and(
+      eq(aiConnectionPools.companyId, companyId), eq(aiConnectionPools.id, binding.connectionId),
+    ));
+    if (pool?.pluginKey === BUILTIN_AI_FAILOVER_ROUTER_KEY) {
+      throw unprocessable("Use the Paperclip Runner adapter to use this built-in pool; migrate this agent to Paperclip Runner first.");
+    }
+  }
+
+  async function assertHarnessPoolBinding(companyId: string, adapterType: string, config: Record<string, unknown>, runtimeConfig: Record<string, unknown>) {
+    if (!runtimeConfig.harnessPool) return;
+    effectiveAiConnectionInput(runtimeConfig);
+    if (adapterType !== "paperclip_runner" || !(await instanceSettingsService(db).getExperimental()).enableNativeRunner)
+      throw unprocessable("Pool harness requires an enabled Paperclip Runner");
+    if (config.homeMode === "preconfigured") throw unprocessable("Pool harness owns its model account; remove the preconfigured home");
+    const binding = effectiveAiConnectionInput(runtimeConfig) as { connectionId: string };
+    await harnessPoolService(db).get(companyId, binding.connectionId);
+  }
+
   async function normalizeCreatedAgentRuntimeConfig(
     req: Request,
     companyId: string,
@@ -2196,7 +2220,14 @@ export function agentRoutes(
     runtimeConfig: unknown,
   ) {
     const normalized = normalizeNewAgentRuntimeConfig(runtimeConfig);
-    if (normalized.aiConnection) return normalized;
+    if (normalized.harnessPool) {
+      await assertHarnessPoolBinding(companyId, adapterType, adapterConfig, normalized);
+      return normalized;
+    }
+    if (normalized.aiConnection) {
+      await assertBuiltinPoolAdapter(companyId, adapterType, aiRuntimeConnectionBindingSchema.parse(normalized.aiConnection));
+      return normalized;
+    }
     if (req.actor.type === "agent") {
       const manager = req.actor.agentId ? await svc.getById(req.actor.agentId) : null;
       if (!manager || manager.companyId !== companyId) throw forbidden("Hiring agent is unavailable");
@@ -2210,6 +2241,7 @@ export function agentRoutes(
       && adapterConfig.provider === "acpx" && adapterConfig.acpxAgent === "copilot") {
       normalized.aiConnection = { provider: "github", method: "api_key", mode: "responsible_user" };
     }
+    if (normalized.aiConnection) await assertBuiltinPoolAdapter(companyId, adapterType, aiRuntimeConnectionBindingSchema.parse(normalized.aiConnection));
     return normalized;
   }
 
@@ -3096,7 +3128,7 @@ export function agentRoutes(
         const memberAdapter = member.binding.provider === "openai" ? "codex_local" : member.binding.provider === "anthropic" ? "claude_local" : member.binding.provider === "xai" ? "grok_local" : "opencode_local";
         const models = [{ id: member.profile.model, label: member.profile.model }, ...await listAdapterModels(memberAdapter)];
         for (const model of models) {
-          try { poolMemberRuntimeConfig({ ...member, profile: { ...member.profile, model: model.id } }, type); catalog.set(model.id, model); } catch { /* Only qualified profiles belong in the pool catalog. */ }
+          try { poolMemberRuntimeConfig({ ...member, profile: { ...member.profile, model: model.id } }, type, {}, pool.pluginKey === BUILTIN_AI_FAILOVER_ROUTER_KEY); catalog.set(model.id, model); } catch { /* Only qualified profiles belong in the pool catalog. */ }
         }
       }
       res.json([...catalog.values()]);
@@ -3112,6 +3144,38 @@ export function agentRoutes(
       return;
     }
     const provider = asNonEmptyString(req.query.provider);
+    if ((type === "codex_local" || type === "claude_local") && typeof req.query.aiConnection === "string") {
+      if (req.query.aiConnection.length > 4096) throw unprocessable("Invalid AI connection binding");
+      let binding: AiConnectionBinding;
+      try { binding = aiConnectionBindingSchema.parse(JSON.parse(req.query.aiConnection)); }
+      catch { throw unprocessable("Invalid AI connection binding"); }
+      const expectedProvider = type === "codex_local" ? "openai" : "anthropic";
+      if (binding.provider !== expectedProvider) throw unprocessable("Select a compatible AI connection");
+      const userId = responsibleUserForAiRequest(req);
+      const modelAgentId = asNonEmptyString(req.query.agentId);
+      if (modelAgentId) {
+        const modelAgent = await svc.getById(modelAgentId);
+        if (!modelAgent || modelAgent.companyId !== companyId) throw notFound("Agent not found");
+        await assertCanUpdateAgent(req, modelAgent);
+      }
+      const service = aiConnectionService(db);
+      const catalogAgentId = modelAgentId ?? (req.actor.type === "agent" ? req.actor.agentId : undefined);
+      const allowUninstalledShared = !modelAgentId && await canInstallSharedAiConnectionForNewAgent(db, req, companyId, binding);
+      const selected = await service.select({ companyId, userId, agentId: catalogAgentId ?? "00000000-0000-0000-0000-000000000000", adapterType: type, binding,
+        allowUninstalledPersonal: !modelAgentId, allowUninstalledShared });
+      if (req.actor.type === "agent") await connectionManagementService(db).authorize(req.actor, "connections:read", {
+        type: "connection_management", companyId, connectionId: selected.connection.id, purpose: "ai",
+        operation: "GET /companies/:companyId/adapters/:type/models", readOnly: true,
+      }, { mutation: false });
+      if (selected.connection.config.ai && aiConnectionMetadataSchema.parse(selected.connection.config.ai).routing) throw unprocessable("Use the configured gateway model catalog");
+      const credential = await service.runtimeCredential(selected);
+      res.setHeader("Cache-Control", "no-store");
+      res.json(await fetchAccountModels(expectedProvider, selected.attribution.method as "subscription" | "api_key", credential,
+        expectedProvider === "openai" && selected.attribution.method === "subscription"
+          ? { refreshCredential: (failedCredential, signal) => service.refreshQuotaCredential(selected, failedCredential, signal) }
+          : undefined));
+      return;
+    }
     if (type === "paperclip_runner" && provider === "acpx" && req.query.acpxAgent === "kimi") {
       res.json([]);
       return;
@@ -3204,8 +3268,6 @@ export function agentRoutes(
 
   async function validateManagedAgentBinding(req: Request, companyId: string, agentId: string, adapterType: string, config: Record<string, unknown>, binding: AiRuntimeConnectionBinding, environmentId: string | null | undefined, probe: "none" | "legacy" | "always", newAgent = false, validateModelCatalog = false) {
     if (binding.mode === "router") {
-      const settings = await import("../services/instance-settings.js");
-      if (!(await settings.instanceSettingsService(db).getExperimental()).enableAiConnectionRouters) throw unprocessable("Ask your instance operator to enable AI connection routing.");
       const pool = (await aiConnectionRouterService(db).selectable(companyId, responsibleUserForAiRequest(req) ?? "")).find((p) => p.id === binding.connectionId && p.enabled);
       if (!pool) throw unprocessable("Enable the selected connection pool");
       const userId = responsibleUserForAiRequest(req);
@@ -3213,11 +3275,14 @@ export function agentRoutes(
       let compatible = false;
       for (const member of pool.members) {
         let runtime: ReturnType<typeof poolMemberRuntimeConfig>;
-        try { runtime = poolMemberRuntimeConfig(member, adapterType); } catch { continue; }
+        try {
+          runtime = poolMemberRuntimeConfig(member, adapterType, {}, pool.pluginKey === BUILTIN_AI_FAILOVER_ROUTER_KEY);
+          assertPoolAdapterPolicyCompatible(config, adapterType, runtime.adapterType, runtime.config);
+        } catch { continue; }
         compatible = true;
         const allowUninstalledShared = newAgent && await canInstallSharedAiConnectionForNewAgent(db, req, companyId, member.binding);
         try {
-          const selection = await aiConnectionService(db).select({ companyId, agentId, userId, adapterType, binding: member.binding,
+          const selection = await aiConnectionService(db).select({ companyId, agentId, userId, adapterType: runtime.adapterType, binding: member.binding,
             model: runtime.config.model, runnerProvider: runtime.config.provider, acpxAgent: runtime.config.acpxAgent,
             allowUninstalledPersonal: newAgent, allowUninstalledShared });
           memberConnectionIds.add(selection.connection.id);
@@ -3225,7 +3290,7 @@ export function agentRoutes(
           if (!(error instanceof HttpError && [403, 422].includes(error.status))) throw error;
         }
       }
-      if (!compatible) throw unprocessable("This pool has no compatible harness");
+      if (!compatible) throw unprocessable("This pool has no compatible harness", { code: "ai_connection_pool_no_eligible_member" });
       if (!memberConnectionIds.size) throw unprocessable("Install or repair a compatible pool member for this agent.", { code: "ai_connection_pool_no_eligible_member" });
       return { connectionId: pool.id, ...(newAgent ? { memberConnectionIds: [...memberConnectionIds] } : {}) };
     }
@@ -3312,7 +3377,7 @@ export function agentRoutes(
         await assertCanConfigureAgentSetup(req, savedAgent);
       }
       const testingSetup = savedAgent ? isAgentSetupDraft(savedAgent) : false;
-      const poolBinding = requestedBinding ?? (savedAgent?.runtimeConfig?.aiConnection ? aiRuntimeConnectionBindingSchema.parse(savedAgent.runtimeConfig.aiConnection) : undefined);
+      const poolBinding = requestedBinding ?? aiRuntimeConnectionBindingSchema.optional().parse(effectiveAiConnectionInput(savedAgent?.runtimeConfig));
       const prospectiveCursorDefault = type === "cursor_cloud" && !savedAgent
         && (req.body.runner === undefined || req.body.runner === "auto")
         && managedCursorApiDefaultEnabled((await instanceSettings.get()).experimental);
@@ -4680,7 +4745,7 @@ export function agentRoutes(
 
       const requiresApproval = company.requireBoardApprovalForNewAgents;
       const status = requiresApproval ? "pending_approval" : "idle";
-      const managedHireBinding = normalizedHireInput.runtimeConfig?.aiConnection ? aiRuntimeConnectionBindingSchema.parse(normalizedHireInput.runtimeConfig.aiConnection) : undefined;
+      const managedHireBinding = aiRuntimeConnectionBindingSchema.optional().parse(effectiveAiConnectionInput(normalizedHireInput.runtimeConfig));
       const managedHireConnection = managedHireBinding ? await validateManagedAgentBinding(req, companyId, hiredAgentId, normalizedHireInput.adapterType, normalizedHireInput.adapterConfig, managedHireBinding, normalizedHireInput.defaultEnvironmentId, "none", true) : undefined;
       const createdAgent = await svcLifecycle.requestHire(
         companyId,
@@ -4963,7 +5028,7 @@ export function agentRoutes(
       allowedSandboxProviders: allowedSandboxProvidersForAgent(createInput.adapterType),
     });
 
-    const managedBinding = normalizedRuntimeConfig.aiConnection ? aiRuntimeConnectionBindingSchema.parse(normalizedRuntimeConfig.aiConnection) : undefined;
+    const managedBinding = aiRuntimeConnectionBindingSchema.optional().parse(effectiveAiConnectionInput(normalizedRuntimeConfig));
     const managedConnection = managedBinding && !setupId ? await validateManagedAgentBinding(req, companyId, agentId, createInput.adapterType, normalizedAdapterConfig, managedBinding, createInput.defaultEnvironmentId, "none", true) : undefined;
     const createdAgent = await svcLifecycle.requestHire(
       companyId,
@@ -5779,7 +5844,7 @@ export function agentRoutes(
       });
     }
     const nextAiConfig = (patchData.adapterConfig ?? existing.adapterConfig) as Record<string, unknown>;
-    if (existing.runtimeConfig.aiConnection && requestedRuntimeConfig && !requestedRuntimeConfig.aiConnection
+    if (existing.runtimeConfig.aiConnection && requestedRuntimeConfig && !requestedRuntimeConfig.aiConnection && !requestedRuntimeConfig.harnessPool
       && !isAgentSetupDraft(existing)) {
       const existingBinding = aiRuntimeConnectionBindingSchema.safeParse(existing.runtimeConfig.aiConnection).data;
       if (existingBinding && agentHarnessType(existing.adapterType, existing.adapterConfig) === agentHarnessType(requestedAdapterType, nextAiConfig)
@@ -5788,7 +5853,7 @@ export function agentRoutes(
         requestedRuntimeConfig.aiConnection = existingBinding;
       }
     }
-    if (!requestedRuntimeConfig?.aiConnection && !existing.runtimeConfig.aiConnection
+    if (!requestedRuntimeConfig?.harnessPool && !existing.runtimeConfig.harnessPool && !requestedRuntimeConfig?.aiConnection && !existing.runtimeConfig.aiConnection
       && !isAgentSetupDraft(existing)
       && requestedAdapterType === "paperclip_runner" && nextAiConfig.provider === "acpx"
       && nextAiConfig.acpxAgent === "copilot"
@@ -5796,10 +5861,13 @@ export function agentRoutes(
       requestedRuntimeConfig = { ...(requestedRuntimeConfig ?? existing.runtimeConfig),
         aiConnection: { provider: "github", method: "api_key", mode: "responsible_user" } };
     }
-    const nextAiBinding = aiRuntimeConnectionBindingSchema.safeParse(requestedRuntimeConfig ? requestedRuntimeConfig.aiConnection : existing.runtimeConfig.aiConnection).data;
+    if (requestedRuntimeConfig || touchesAdapterConfiguration || Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId"))
+      await assertHarnessPoolBinding(existing.companyId, requestedAdapterType, nextAiConfig, requestedRuntimeConfig ?? existing.runtimeConfig);
+    const nextAiBinding = aiRuntimeConnectionBindingSchema.optional().parse(effectiveAiConnectionInput(requestedRuntimeConfig ?? existing.runtimeConfig));
     if (nextAiBinding) {
       await assertCanConfigureAgentSetup(req, existing);
-      const changed = !isDeepStrictEqual(nextAiBinding, existing.runtimeConfig.aiConnection);
+      await assertBuiltinPoolAdapter(existing.companyId, requestedAdapterType, nextAiBinding);
+      const changed = !isDeepStrictEqual(nextAiBinding, effectiveAiConnectionInput(existing.runtimeConfig));
       if (changed && req.actor.type === "agent") {
         await connectionManagementService(db).authorize(req.actor, "connections:profiles", {
           type: "connection_management", companyId: existing.companyId, purpose: "ai", targetAgentId: existing.id,

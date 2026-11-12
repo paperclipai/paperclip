@@ -1113,8 +1113,10 @@ it.each(["event", "progress", "lifecycle", "lifecycle_priority_one", "usage", "c
     });
     const effects = new Set<string>();
     const commit = vi.fn(async (event: { sourceEventId: string }) => { effects.add(event.sourceEventId); });
+    const persistenceFailure = vi.fn();
     const core = new DurablePrpControlPlane({ stateDirectory: root, identity,
-      expectedRunnerVersion, expectedRunnerDigest, onCommittedEvent: commit, onSemanticToolInput: dispatch });
+      expectedRunnerVersion, expectedRunnerDigest, onCommittedEvent: commit, onSemanticToolInput: dispatch,
+      onPersistenceError: persistenceFailure });
     const http = createServer((_req, res) => res.end("responsive"));
     let release!: () => void;
     const barrier = new Promise<void>(resolveWrite => { release = resolveWrite; });
@@ -1257,6 +1259,8 @@ it.each(["event", "progress", "lifecycle", "lifecycle_priority_one", "usage", "c
       } else if (mode === "write_failure" || mode === "usage_write_failure" || mode === "command_failure") {
         expect(await receiveSecure(client)).toBeNull();
         expect(() => core.queueCommand("session.snapshot")).toThrow("indeterminate");
+        expect(persistenceFailure).toHaveBeenCalledTimes(1);
+        expect(persistenceFailure.mock.calls[0]![0].message).toBe("native_runner_authority_persistence_failed: unknown");
       } else if (mode !== "replacement") {
         expect(await receiveSecure(client)).toMatchObject({ kind: "ack", payload: { ackedSourceSeq: 1 } });
       }
@@ -1627,9 +1631,10 @@ it("renews one authenticated connection for three weeks without replacing its au
   let now = Date.now();
   const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
   const ttl = 6 * 60 * 60 * 1_000;
+  const persistenceFailure = vi.fn();
   const core = new DurablePrpControlPlane({
     stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest,
-    connectionLeaseTtlMs: ttl,
+    connectionLeaseTtlMs: ttl, onPersistenceError: persistenceFailure,
   });
   try {
     await core.start();
@@ -1641,6 +1646,7 @@ it("renews one authenticated connection for three weeks without replacing its au
       const request = renewalRequest(client, expiry);
       sendSecure(client, request);
       const reply = (await receiveSecure(client))!;
+      expect(reply, persistenceFailure.mock.calls[0]?.[0]?.message).not.toBeNull();
       expect(reply.kind).toBe("lease_renewed");
       expect(reply.connectionLeaseId).toBe(leaseId);
       expect(reply.connectionId).toBe(client.welcome.connectionId);
@@ -2342,6 +2348,24 @@ it("passes structured inputs to an external owner and preserves its replacement 
   expect(spawnRunner({ ...options, processLauncher: launcher })).toBe(process);
   expect(launcher).toHaveBeenCalledWith(expect.objectContaining({ nativeRunner: expect.objectContaining(options) }));
   expect(launcher.mock.calls[0]![0].args).not.toContain("--connect-url");
+});
+
+it("preserves the Windows sandbox host environment through runner launch", () => {
+  let launched: RunnerProcessLaunchSpec | undefined;
+  spawnRunner({
+    connection: { mode: "connect", connectUrl: "ws://127.0.0.1:43127" },
+    stateDirectory: "/tmp/paperclip-runner-test", identity, ticket: "bootstrap-ticket",
+    maxOutboxBytes: 256 * 1024, p0ReserveBytes: 64 * 1024,
+    runnerVersion: expectedRunnerVersion, runnerDigest: expectedRunnerDigest,
+    environment: { SystemRoot: "C:\\Windows", SystemDrive: "C:", LOCALAPPDATA: "C:\\Users\\fixture\\AppData\\Local", PRIVATE_SECRET: "excluded" },
+    processLauncher: spec => {
+      launched = spec;
+      return { child: { pid: 42, exitCode: null, signalCode: null, kill: () => true },
+        completion: Promise.resolve({ code: 0, signal: null, stdout: "", stderr: "" }) };
+    },
+  });
+  expect(launched?.environment).toMatchObject({ SystemRoot: "C:\\Windows", SystemDrive: "C:", LOCALAPPDATA: "C:\\Users\\fixture\\AppData\\Local" });
+  expect(launched?.environment.PRIVATE_SECRET).toBeUndefined();
 });
 
 it("preserves the controller-selected ACPX provider package root", () => {

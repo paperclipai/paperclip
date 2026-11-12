@@ -1,3 +1,4 @@
+import { withLocalProviderSettlement } from "@paperclipai/adapter-utils/local-provider-settlement";
 import { asStringArray } from "@paperclipai/adapter-utils/server-utils";
 import { applyObservabilityEnvironment } from "@paperclipai/adapter-utils/agent-observability";
 import { prepareCodexObservabilityProfile, selectedCodexProfile, replaceCodexProfileArgs, disableCodexObservabilityArgs } from "@paperclipai/adapter-utils/codex-observability-profile";
@@ -576,6 +577,10 @@ export async function ensureCodexSkillsInjected(
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+  return withLocalProviderSettlement(ctx, executeWithCleanup);
+}
+
+async function executeWithCleanup(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const providerStop = createProviderStoppedBoundary(ctx.onProviderStopped);
   const engineSelection = await resolveCodexExecutionEngineForRun(ctx);
   if (engineSelection.unavailableReason) {
@@ -585,9 +590,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       timedOut: false,
       errorCode: "adapter_engine_unavailable",
       errorMessage: engineSelection.unavailableReason,
-      resultJson: {
-        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
-      },
+      executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
     };
   }
   if (engineSelection.engine === "acp") {

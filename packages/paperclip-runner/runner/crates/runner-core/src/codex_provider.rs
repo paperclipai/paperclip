@@ -634,8 +634,15 @@ impl CodexProviderConfig {
         }
         if self.args.len() > 64
             || self.args.iter().any(|argument| {
-                argument.len() > 4096 || argument.chars().any(|character| character == '\0')
+                // A normal Windows PATH projection can exceed 4096 bytes.
+                argument.len() > 16_384 || argument.chars().any(|character| character == '\0')
             })
+            || self
+                .args
+                .iter()
+                .map(|argument| argument.len() + 1)
+                .sum::<usize>()
+                > 32_768
         {
             return Err(LocalRunnerError::invalid(
                 "Codex arguments exceed the bounded launch contract",

@@ -1,3 +1,5 @@
+import { effectiveAiConnectionInput } from "@paperclipai/shared";
+
 import { registerHeldPreparationResumer } from "./interrupted-preparation-hold-settlement.js";
 import { registerCompletedTurnCleanupResumer } from "./native-runtime/completed-turn-cleanup-hold-settlement.js";
 import { endStorageOutageWaitOn, reportStorageOutageWaitsTo, runInOwnStorageScope } from "../storage/storage-unavailable.js";
@@ -37,6 +39,7 @@ import { readFreshWorkspaceReadiness, verifyRetryWorkspace } from "./fresh-works
 import { settleFailedNativeRecoveryPreparation } from "./native-runtime/native-recovery-preparation-failure.js";
 import { promptInjectionPreventionService } from "./prompt-injection-prevention.js";
 import { createHeartbeatAgentStatus } from "./heartbeat/agent-status.js";
+import { consumeLegacyQuotaPrestartFence } from "./heartbeat/quota-prestart-fence.js";
 import { heartbeatExternalProvider, nativeRuntimeHasInstructionFilesystem } from "./heartbeat/external-provider.js";
 import { pendingCaseHandoffForRun, recordCaseHandoffExecutionReleased, recordLegacyCaseHandoffCleanupIntent, recordLegacyCaseHandoffCleanupVerified } from "./heartbeat/case-handoff-lifecycle.js";
 import { recordLegacyPreparationSettlement, recordLegacyProcessSettlement } from "./heartbeat/legacy-process-settlement.js";
@@ -314,14 +317,12 @@ import {
   assertManagedAiProjectAuth,
 } from "./ai-connection-runtime.js";
 import { aiConnectionBindingSchema, aiRuntimeConnectionBindingSchema, type AiConnectionRouterSelection } from "@paperclipai/shared";
-import { aiConnectionRouterService, AiConnectionPoolExhausted, applyAiConnectionRouterTaskSettings } from "./ai-connection-router.js";
+import { aiConnectionRouterService, AiConnectionPoolExhausted, applyAiConnectionRouterTaskSettings, LOCAL_POOL_ADAPTERS } from "./ai-connection-router.js";
+import { effectiveRunAgent } from "./heartbeat/effective-run-adapter.js";
+import { companyPoolSourceAgent } from "./heartbeat/company-pool-execution.js";
 import {
   getExecutionBlocker,
 } from "./execution-blocker.js";
-import {
-  claimedAdapterType,
-} from "./conversation-continuation.js";
-
 import {
   settleInterruptedNativeBootstrap,
   settleCancelledLegacyPreparation,
@@ -629,7 +630,7 @@ const failedProcessRunCancellations = new Map<
 // Background heartbeat executions are dispatched fire-and-forget (see
 // startNextQueuedRunForAgent), so the promise that resolves once a run's DB
 // writes are fully flushed is otherwise unobservable. Track those promises here
-// — shared across service instances like activeRunExecutions above — so callers
+// â€” shared across service instances like activeRunExecutions above â€” so callers
 // that must guarantee no run write is still in flight (graceful shutdown, and
 // tests tearing down a shared database) can await drainActiveRunExecutions().
 const activeRunExecutionPromises = new Set<Promise<void>>();
@@ -638,8 +639,8 @@ const activeRunExecutionPromises = new Set<Promise<void>>();
 // resolves only after it inserts the queued run and registers the run
 // execution in activeRunExecutionPromises. Before that point neither
 // activeRunExecutionPromises nor the run table shows the pending run, so a
-// caller cannot observe the wake. Track each wakeup promise here — shared
-// across service instances like the two sets above — so drainActiveRunExecutions
+// caller cannot observe the wake. Track each wakeup promise here â€” shared
+// across service instances like the two sets above â€” so drainActiveRunExecutions
 // can await a wake that is still before run registration. A caller that tears
 // down a shared database (a test afterEach) then cannot race a late wake.
 const activeWakeupPromises = new Set<Promise<unknown>>();
@@ -704,7 +705,7 @@ export function formatRuntimeWorkspaceWarningLog(warning: string) {
  * execution tracked in memory. This happens when the server restarts and the
  * execution is lost, or when the DB row outlives the in-memory run state.
  *
- * Queued runs are never zombies — they don't have processes yet.
+ * Queued runs are never zombies â€” they don't have processes yet.
  */
 export function isZombieRun(
   run: { status: string; id: string },
@@ -714,7 +715,7 @@ export function isZombieRun(
 }
 
 /**
- * Filter a coalesce target — if it's a zombie run, return null so the
+ * Filter a coalesce target â€” if it's a zombie run, return null so the
  * wakeup falls through to create a new queued run instead of coalescing
  * into the dead process (which would refresh updatedAt and make it immortal).
  *
@@ -796,6 +797,8 @@ export type HeartbeatEnvironmentRuntime = ReturnType<
 export interface HeartbeatServiceOptions {
   /** Test seam before the atomic native runtime handoff. */
   beforeNativeRuntimeSelection?: (runId: string) => Promise<void>;
+  /** Test seam for a concurrent cooldown observation before fresh provider preparation. */
+  afterPoolSelection?: (runId: string, selection: AiConnectionRouterSelection) => Promise<void>;
   /** Test seam immediately before the durable chat-control admission check. */
   beforeChatControlRecoveryCheck?: (input: {
     runId: string;
@@ -1312,7 +1315,7 @@ export function heartbeatService(
   const heartbeatQueue = createHeartbeatQueue(db, {
     canStartNewExternalBotWork: async agent => {
       if (agent.adapterType !== "paperclip_runner" || agent.adapterConfig.provider !== "grok_bot") return true;
-      const aiConnection = aiRuntimeConnectionBindingSchema.safeParse(agent.runtimeConfig?.aiConnection);
+      const aiConnection = aiRuntimeConnectionBindingSchema.safeParse(effectiveAiConnectionInput(agent.runtimeConfig));
       if (aiConnection.success && aiConnection.data.mode === "router") return true;
       return dotRunnerBroker(db).canStartNewWork(agent.companyId, agent.id,
         readNonEmptyString(agent.adapterConfig.externalBindingId) ?? "");
@@ -1765,7 +1768,7 @@ export function heartbeatService(
 
   // Await every background heartbeat execution that is currently in flight. A
   // draining run can, in its finally block, promote and dispatch the next queued
-  // run for the same agent — that follow-up execution is registered in the set
+  // run for the same agent â€” that follow-up execution is registered in the set
   // before the parent promise settles, so we loop until the set is empty rather
   // than snapshotting once. Callers use this to guarantee no run is still
   // writing rows/events (graceful shutdown, deterministic test teardown).
@@ -2152,14 +2155,9 @@ export function heartbeatService(
         if (failedRun) await releaseIssueExecutionAndPromote(failedRun);
         return;
       }
-      let agent = loadedAgent;
-
-      // The claimed adapter identity is immutable recovery evidence. Do not
-      // execute a newly selected adapter under a previous adapter's claim.
-      const selectedAdapter = claimedAdapterType(run);
-      if (selectedAdapter && selectedAdapter !== agent.adapterType) {
-        throw new Error("Agent adapter changed during startup; start a new turn with the updated agent.");
-      }
+      let agent = effectiveRunAgent(run, loadedAgent);
+      const poolPolicyAgent = parseObject(parseObject(run.runnerProfileJson).adapterDispatch).companyPoolExecution === true
+        ? companyPoolSourceAgent(loadedAgent) : loadedAgent;
 
       const dispatchIssueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
       const resumingAdmittedConversationTurn = !!runOptions.nativeLeaseOwner
@@ -2195,6 +2193,10 @@ export function heartbeatService(
       }
       const runtime = await timePreparation("runtime_state", () => ensureRuntimeState(agent));
       const context = parseObject(run.contextSnapshot);
+      if (agent.adapterType !== loadedAgent.adapterType) {
+        delete context.resumeSessionParams;
+        delete context.resumeSessionDisplayId;
+      }
       const authorizeFailedChatRetryExecution = (stage?: "dispatching") =>
         retryChatControlAdmission(async () => {
           executionControl.controller.signal.throwIfAborted();
@@ -2262,7 +2264,11 @@ export function heartbeatService(
           );
         }
       }
-      const taskKey = deriveTaskKeyWithHeartbeatFallback(context, null);
+      const admittedPoolId = readNonEmptyString(parseObject(context.aiRouterSelection).poolId);
+      const admittedProfile = parseObject(run.runnerProfileJson);
+      const admittedPool = admittedPoolId && (parseObject(admittedProfile.adapterDispatch).poolId === admittedPoolId ||
+        Object.keys(parseObject(admittedProfile.nativeExecutionInput)).length > 0);
+      let taskKey = deriveTaskKeyWithHeartbeatFallback(context, null) ?? (admittedPool ? readNonEmptyString(context.aiRouterTaskKey) : null);
       const sessionCodec = getAdapterSessionCodec(agent.adapterType);
       const issueId = readNonEmptyString(context.issueId);
       let freshWorkspace = await timePreparation("workspace_selection", async () => {
@@ -2649,14 +2655,15 @@ export function heartbeatService(
           )
         : null;
       const savedRouterInput = parseObject(parseObject(run.runnerProfileJson).nativeExecutionInput);
-      const routerHasPersistedInput = Object.keys(savedRouterInput).length > 0;
+      const routerHasPersistedInput = Object.keys(savedRouterInput).length > 0 ||
+        (typeof parseObject(parseObject(run.runnerProfileJson).adapterDispatch).poolId === "string" && Boolean(context.aiRouterSelection));
       if (agent.adapterType === "paperclip_runner") {
         const homeConfig = bindHeartbeatRunnerHomeMode(config, savedRouterInput);
         if ("homeMode" in homeConfig) config = { ...config, homeMode: homeConfig.homeMode };
       }
       const persistedRouterPoolId = routerHasPersistedInput ? readNonEmptyString(parseObject(context.aiRouterSelection).poolId) : null;
       const preconfiguredHome = agent.adapterType === "paperclip_runner" && config.homeMode === "preconfigured";
-      const requestedAiBinding = preconfiguredHome ? undefined : persistedRouterPoolId ? { mode: "router" as const, connectionId: persistedRouterPoolId } : agent.runtimeConfig?.aiConnection ? aiRuntimeConnectionBindingSchema.parse(agent.runtimeConfig.aiConnection) : undefined;
+      const requestedAiBinding = preconfiguredHome ? undefined : persistedRouterPoolId ? { mode: "router" as const, connectionId: persistedRouterPoolId } : effectiveAiConnectionInput(agent.runtimeConfig) ? aiRuntimeConnectionBindingSchema.parse(effectiveAiConnectionInput(agent.runtimeConfig)) : undefined;
       let aiBinding = requestedAiBinding?.mode === "router" ? undefined : requestedAiBinding;
       const originalAiIssueOverrides = issueAssigneeOverrides;
       if (requestedAiBinding?.mode === "router") {
@@ -2668,25 +2675,44 @@ export function heartbeatService(
             await db.update(heartbeatRuns).set({ contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) || ${JSON.stringify({ aiRouterTaskKey: routerTaskKey })}::jsonb` }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, agent.companyId)));
           }
           context.aiRouterTaskKey = routerTaskKey;
+          const poolPreparationFailure = parseObject(parseObject(parseObject(run.runnerProfileJson).adapterDispatch).poolPreparationFailure);
+          if (poolPreparationFailure.kind === "exhausted" && typeof poolPreparationFailure.retryAt === "string" && typeof poolPreparationFailure.poolId === "string") {
+            throw new AiConnectionPoolExhausted(poolPreparationFailure.retryAt, poolPreparationFailure.poolId);
+          }
+          if (typeof poolPreparationFailure.message === "string") throw new Error(poolPreparationFailure.message);
           const savedIdentity = taskSession?.sessionParamsJson?.paperclipAiCredentialIdentity;
-          const selection = await aiConnectionRouterService(db, options.pluginWorkerManager).resolve({
+          const router = aiConnectionRouterService(db, options.pluginWorkerManager);
+          const selection = await router.resolve({
             companyId: agent.companyId, poolId: requestedAiBinding.connectionId, agentId: agent.id,
-            userId: responsibleUserId, adapterType: agent.adapterType, taskKey: String(context.aiRouterTaskKey),
+            userId: responsibleUserId, adapterType: poolPolicyAgent.adapterType, taskKey: String(context.aiRouterTaskKey),
+            sourceAdapterConfig: { ...parseObject(poolPolicyAgent.adapterConfig), ...issueAssigneeOverrides?.adapterConfig },
             overrides: issueAssigneeOverrides?.adapterConfig ?? {},
             existingGrantId: typeof savedIdentity === "string" ? savedIdentity.split(":")[0] : undefined,
             requireExisting: Boolean(taskSession?.sessionDisplayId) && !shouldResetTaskSessionForWake(context),
             persisted: routerHasPersistedInput ? context.aiRouterSelection as AiConnectionRouterSelection | undefined : undefined,
           });
+          if ((selection.adapterType ?? loadedAgent.adapterType) !== agent.adapterType) {
+            throw new Error("The pool adapter changed after this run was claimed; start a new turn.");
+          }
+          context.aiRouterSelection = selection;
+          taskKey ??= routerTaskKey;
+          if (LOCAL_POOL_ADAPTERS.includes(agent.adapterType) ||
+              (agent.adapterType === "paperclip_runner" && Object.keys(savedRouterInput).length === 0)) {
+            await options.afterPoolSelection?.(run.id, selection);
+            await router.recheckPinnedPoolAccount({ companyId: agent.companyId, agentId: agent.id,
+              userId: responsibleUserId, taskKey: String(context.aiRouterTaskKey), selection });
+          }
           aiBinding = selection.binding;
           // Provider-specific fields from the configured harness must not leak into the selected member.
-          config = applyAiConnectionRouterTaskSettings(config, selection);
-          if (issueAssigneeOverrides) issueAssigneeOverrides = { ...issueAssigneeOverrides, adapterConfig: applyAiConnectionRouterTaskSettings(issueAssigneeOverrides.adapterConfig ?? {}, selection) };
+          config = applyAiConnectionRouterTaskSettings(config, selection, poolPolicyAgent.adapterType, parseObject(poolPolicyAgent.adapterConfig));
+          if (issueAssigneeOverrides) issueAssigneeOverrides = { ...issueAssigneeOverrides, adapterConfig: applyAiConnectionRouterTaskSettings(issueAssigneeOverrides.adapterConfig ?? {}, selection, poolPolicyAgent.adapterType, { ...parseObject(poolPolicyAgent.adapterConfig), ...issueAssigneeOverrides.adapterConfig }) };
           agent = { ...agent, adapterConfig: config };
           context.aiRouterSelection = selection;
           await db.update(heartbeatRuns).set({ contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) || ${JSON.stringify({ aiRouterTaskKey: context.aiRouterTaskKey, aiRouterSelection: selection })}::jsonb` }).where(eq(heartbeatRuns.id, run.id));
           await appendRunEvent(run, { eventType: "lifecycle", stream: "system", level: "info", message: "Using task-pinned pool account", payload: { poolId: selection.poolId, memberId: selection.memberId, provider: aiBinding.provider, model: config.model, notes: selection.notes } });
         } catch (error) {
-          if (error instanceof AiConnectionPoolExhausted && !routerHasPersistedInput) {
+          if (error instanceof AiConnectionPoolExhausted && Object.keys(savedRouterInput).length === 0) {
+            context.aiRouterPoolId = error.poolId;
             const now = new Date();
             context.aiConnectionBusyDeferredWhileAssignee = issueContext?.assigneeAgentId === agent.id;
             const cancelled = await setRunStatusIfRunning(run.id, "cancelled", {
@@ -2706,7 +2732,7 @@ export function heartbeatService(
             });
             if (cancelled.updated) {
               await setWakeupStatus(run.wakeupRequestId, "cancelled", { finishedAt: now, error: error.message });
-              const retry = await scheduleBoundedRetryForRun(cancelled.run ?? run, agent, { now, retryReason: AI_CONNECTION_POOL_WAIT_RETRY_REASON, wakeReason: "ai_connection_pool_retry", maxAttempts: (run.scheduledRetryAttempt ?? 0) + 1, delayMs: Math.max(1000, Date.parse(error.retryAt) - Date.now()) });
+              const retry = await scheduleBoundedRetryForRun(cancelled.run ?? run, agent, { now, retryReason: AI_CONNECTION_POOL_WAIT_RETRY_REASON, wakeReason: "ai_connection_pool_retry", maxAttempts: (run.scheduledRetryAttempt ?? 0) + 1, delayMs: Math.max(1000, Date.parse(error.retryAt) - now.getTime()) });
               if (retry.outcome !== "scheduled") await releaseIssueExecutionAndPromote(cancelled.run ?? run);
               await finalizeAgentStatus(run.agentId, "cancelled");
             }
@@ -2715,6 +2741,9 @@ export function heartbeatService(
           throw new ConfigurationIncompleteFailure(error instanceof Error ? error.message : "Configure this connection pool", { configurationIncomplete: { reason: "ai_connection_unavailable", companyId: agent.companyId, agentId: agent.id, responsibleUserId, actionUrl: `/agents/${agent.id}/runtime`, fingerprint: `ai-router:${requestedAiBinding.connectionId}` } });
         }
       }
+      // No provider-capable preparation may cross this durable boundary while
+      // the first-claim prestart evidence remains in its preparing state.
+      if (parseObject(run.runnerProfileJson).legacyQuotaPrestartFence) await consumeLegacyQuotaPrestartFence(db, run);
       if (isConversation(issueContext)) {
         delete context.resumeSessionParams;
         delete context.resumeSessionDisplayId;

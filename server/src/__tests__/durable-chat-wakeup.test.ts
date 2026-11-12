@@ -843,7 +843,7 @@ describe("durable inbound chat scheduler receipts", () => {
         execute.mockResolvedValueOnce({
           exitCode: 1, signal: null, timedOut: false,
           summary: "Fixture failed before provider work",
-          resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+          executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
         });
       } else {
         execute.mockRejectedValueOnce(new Error("Original chat provider outcome is unknown"));

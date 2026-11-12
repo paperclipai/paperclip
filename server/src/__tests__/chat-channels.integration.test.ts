@@ -16779,6 +16779,16 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           publicId: copy.id, botExternalId: copy.appId, botUsername: "recovery-" + copy.id })));
         ids.push(...copies.map(copy => copy.id));
       }
+      // Only the 106 new endpoints belong to this inventory assertion. Keep
+      // the source fixtures' existing scans out of the test even if creating
+      // the copies takes longer than their initial one-minute deadline.
+      for (const fixture of [first, second]) {
+        const checkpoint = await fixture.checkpoint();
+        await db.update(chatSdkState).set({ value: {
+          ...(checkpoint.value as Record<string, unknown>),
+          nextScanAt: new Date(Date.now() + 3_600_000).toISOString(),
+        } }).where(eq(chatSdkState.id, checkpoint.id));
+      }
       const windows = () => db.select({ companyId: chatSdkState.companyId }).from(chatSdkState).where(and(
         inArray(chatSdkState.endpointId, ids), eq(chatSdkState.stateKey, "paperclip:github-webhook-recovery:v1")));
       const errors: unknown[] = [];
@@ -65339,7 +65349,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         if (current.status === "failed") break;
         const retryAt = Date.parse(String(current.result?.retryAt));
         expect(Number.isFinite(retryAt)).toBe(true);
-        await new Promise(resolve => setTimeout(resolve, Math.max(0, retryAt - Date.now()) + 1));
+        while (Date.now() < retryAt) await new Promise(resolve => setTimeout(resolve, Math.max(1, retryAt - Date.now())));
         await f.service.processFailedChatRunRetries();
       }
       const [failed] = await db.select().from(chatActions).where(eq(chatActions.id, response.body.chatActionId));
@@ -67033,6 +67043,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
             expect(firstAttempt).toMatchObject({ status: "failed", errorCode: "chat_failed_run_retry_not_authorized",
               resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } });
             expect(verified).toEqual([firstAttempt.id]);
+            if (mode === "legacy_execution") await db.update(heartbeatRuns).set({ runnerProfileJson: {
+              adapterDispatch: { adapterType: "paperclip_runner", configuredAdapterType: "paperclip_runner" },
+            } }).where(eq(heartbeatRuns.id, firstAttempt.id));
             if (mode === "legacy_execution_log") await db.update(heartbeatRuns).set({ logBytes: 1 }).where(eq(heartbeatRuns.id, firstAttempt.id));
             if (mode === "legacy_execution_profile") await db.update(heartbeatRuns).set({ runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" }, unexpectedExecution: true } }).where(eq(heartbeatRuns.id, firstAttempt.id));
             if (mode === "legacy_execution_controller") await db.update(heartbeatRuns).set({ controllerLeaseExpiresAt: new Date(Date.now() + 60000) }).where(eq(heartbeatRuns.id, firstAttempt.id));

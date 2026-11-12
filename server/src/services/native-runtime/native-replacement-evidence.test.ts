@@ -53,6 +53,18 @@ describe("evidence-based replacement", () => {
       }),
     ).toMatchObject({ allowed: false, cause, nextAction: expect.any(String) }),
   );
+  it("continues a fresh conversation after a receipted completed write", () => {
+    expect(decideNativeReplacement({ ...safe, freshConversation: true, invocations: [{
+      id: "write-1", toolName: "write_file", riskLevel: "write", status: "succeeded",
+      completedAt: new Date(), resultHash: "sha256:receipt",
+    }] })).toMatchObject({ allowed: true });
+  });
+  it("holds a specifically unfinished mutation even for a fresh conversation", () => {
+    expect(decideNativeReplacement({ ...safe, freshConversation: true, invocations: [{
+      id: "email-1", toolName: "send_email", riskLevel: "write", status: "running",
+      completedAt: null, resultHash: null,
+    }] })).toMatchObject({ allowed: false, cause: "uncertain_external_action" });
+  });
   it("names the uncertain write instead of granting a generic retry", () => {
     expect(
       decideNativeReplacement({

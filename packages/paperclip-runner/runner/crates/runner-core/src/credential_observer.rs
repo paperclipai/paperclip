@@ -296,6 +296,7 @@ impl CredentialObserver {
             file.sync_all()?;
             drop(file);
             fs::rename(&temporary, &self.state_path)?;
+            #[cfg(unix)]
             File::open(parent)?.sync_all()?;
             Ok(())
         })();
@@ -449,14 +450,75 @@ fn read_snapshot(provider: &str, path: &Path) -> Option<Snapshot> {
     snapshot
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn read_snapshot(provider: &str, path: &Path) -> Option<Snapshot> {
+    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+
+    const REPARSE_POINT: u32 = 0x400;
+    const OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    const BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    let parent = path.parent()?;
+    if !path.is_absolute() {
+        return None;
+    }
+    // Retain handles without delete sharing so checked ancestors cannot be
+    // renamed or replaced with junctions while the credential is opened.
+    let mut ancestors = Vec::new();
+    let mut current = PathBuf::new();
+    for component in parent.components() {
+        match component {
+            Component::Prefix(_) | Component::RootDir => current.push(component),
+            Component::Normal(name) => {
+                current.push(name);
+                let directory = fs::OpenOptions::new()
+                    .read(true)
+                    .share_mode(3)
+                    .custom_flags(BACKUP_SEMANTICS | OPEN_REPARSE_POINT)
+                    .open(&current)
+                    .ok()?;
+                let metadata = directory.metadata().ok()?;
+                if !metadata.is_dir() || metadata.file_attributes() & REPARSE_POINT != 0 {
+                    return None;
+                }
+                ancestors.push(directory);
+            }
+            _ => return None,
+        }
+    }
+    let mut file = fs::OpenOptions::new()
+        .read(true)
+        .share_mode(1)
+        .custom_flags(OPEN_REPARSE_POINT)
+        .open(path)
+        .ok()?;
+    let before = file.metadata().ok()?;
+    if !before.is_file()
+        || before.file_attributes() & REPARSE_POINT != 0
+        || before.len() > MAX_BYTES
+    {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    let read = (&mut file).take(MAX_BYTES + 1).read_to_end(&mut bytes);
+    let snapshot = if read.is_ok() {
+        parse_snapshot(provider, &bytes)
+    } else {
+        None
+    };
+    bytes.fill(0);
+    drop(ancestors);
+    snapshot
+}
+
+#[cfg(not(any(unix, windows)))]
 fn read_snapshot(_provider: &str, _path: &Path) -> Option<Snapshot> {
     None
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::os::unix::fs::{symlink, PermissionsExt};
 
     struct Fixture {
@@ -468,6 +530,7 @@ mod tests {
             let root =
                 std::env::temp_dir().join(format!("credential-observer-{}", uuid::Uuid::new_v4()));
             fs::create_dir(&root).unwrap();
+            #[cfg(unix)]
             fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
             let root = fs::canonicalize(root).unwrap();
             let mut observer = CredentialObserver::new(&root, "session");
@@ -488,6 +551,7 @@ mod tests {
         fn write(&self, name: &str, value: &Value) {
             let path = self.root.join(name);
             fs::write(&path, serde_json::to_vec(value).unwrap()).unwrap();
+            #[cfg(unix)]
             fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
         }
     }
@@ -691,6 +755,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn rejects_symlinks_unsafe_permissions_and_oversized_stores() {
         let f = Fixture::new("codex", &codex("seed"));
         f.write("auth.json", &codex("seed"));
@@ -724,11 +789,35 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
+    fn windows_rejects_junctions_and_oversized_stores() {
+        use std::os::windows::process::CommandExt;
+        let f = Fixture::new("codex", &codex("seed"));
+        f.write("auth.json", &codex("seed"));
+        assert!(read_snapshot("codex", &f.root.join("auth.json")).is_some());
+        let redirected = f.root.join("redirect");
+        let status = std::process::Command::new("cmd.exe")
+            .args(["/d", "/c", "mklink", "/J"])
+            .arg(&redirected)
+            .arg(&f.root)
+            .creation_flags(0x0800_0000)
+            .stdout(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert!(read_snapshot("codex", &redirected.join("auth.json")).is_none());
+        fs::remove_dir(redirected).unwrap();
+        fs::write(f.root.join("auth.json"), vec![b' '; MAX_BYTES as usize + 1]).unwrap();
+        assert!(read_snapshot("codex", &f.root.join("auth.json")).is_none());
+    }
+
+    #[test]
     fn fresh_acpx_observers_create_a_private_runtime_directory() {
         let f = Fixture::new("codex", &codex("seed"));
         for provider in ["codex", "grok"] {
             let state_dir = f.root.join(provider);
             fs::create_dir(&state_dir).unwrap();
+            #[cfg(unix)]
             fs::set_permissions(&state_dir, fs::Permissions::from_mode(0o700)).unwrap();
             let runtime = state_dir.join("runtime");
             assert!(!runtime.exists());
@@ -736,6 +825,7 @@ mod tests {
             observer.configure(&json!({"observeCredentials":true,"provider":{
                 "kind":"acpx", "agent":provider, "runtimeDirectory":runtime, "normalizedSessionId":"session"
             }})).unwrap();
+            #[cfg(unix)]
             assert_eq!(
                 fs::metadata(&runtime).unwrap().permissions().mode() & 0o777,
                 0o700

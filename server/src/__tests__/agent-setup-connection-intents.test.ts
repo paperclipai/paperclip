@@ -5,6 +5,7 @@ import { activityLog, agents, companies, companyMemberships, heartbeatRuns, issu
   connectionIntentDeliveries, toolApplications, toolConnections, connectionGrants, aiProviderDefaults, plugins, aiConnectionTaskPins, aiConnectionRouterCursors, createDb } from "@paperclipai/db";
 import type { AiConnectionRouterRequest } from "@paperclipai/shared";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+import { harnessPoolService } from "../services/harness-pools.js";
 import { aiConnectionRouterService } from "../services/ai-connection-router.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { readAiConnectionConfigurationFailure } from "../services/ai-connection-configuration-failure.js";
@@ -117,7 +118,7 @@ describe.skipIf(!support.supported)("queued agent setup uses task connection car
     expect(source!.contextSnapshot).toEqual({ issueId: f.issueId });
   });
 
-  it("repairs a router's pinned lifecycle account without rerouting the task or changing its pool", async () => {
+  it.each(["router", "harness_pool"] as const)("repairs a %s pinned lifecycle account without rerouting the task or changing its pool", async kind => {
     const f = await fixture();
     const account = await aiConnectionService(db).save(f.companyId, f.setupUserId, { provider: "openai", method: "api_key",
       ownership: "personal", name: "Router setup account", apiKey: "fixture", agentIds: [], allAgents: true }, "fixture-key");
@@ -130,12 +131,16 @@ describe.skipIf(!support.supported)("queued agent setup uses task connection car
       ({ kind: "selected", memberId: input.candidates[0]!.member.id }));
     const router = aiConnectionRouterService(db, { isRunning: () => true, call: route } as unknown as PluginWorkerManager);
     const binding = { mode: "delegated", provider: "openai", method: "api_key", ...account } as const;
-    const pool = await router.save(pluginKey, { companyId: f.companyId, config: { name: "Lifecycle setup pool", enabled: true,
+    const pool = kind === "harness_pool" ? await harnessPoolService(db).save(f.companyId, { config: {
+      schemaVersion: 2, kind: "harness_pool", name: "Lifecycle harness pool", enabled: true, mode: "failover",
+      members: [{ id: randomUUID(), harness: { type: "codex" }, connection: binding, model: "gpt-5.6-sol", effort: "low" }],
+    } }, f.setupUserId) : await router.save(pluginKey, { companyId: f.companyId, config: { name: "Lifecycle setup pool", enabled: true,
       mode: "round_robin", thresholdPercent: 90, members: [{ id: randomUUID(), binding,
         profile: { provider: "codex", model: "gpt-5.6-sol", effort: "low" } }] } }, f.setupUserId);
     const [agent] = await db.select().from(agents).where(eq(agents.id, f.agentId));
     const routerBinding = { mode: "router", connectionId: pool.id };
-    await db.update(agents).set({ runtimeConfig: { aiConnection: routerBinding } }).where(eq(agents.id, f.agentId));
+    const runtimeConfig = kind === "harness_pool" ? { harnessPool: { poolId: pool.id } } : { aiConnection: routerBinding };
+    await db.update(agents).set({ runtimeConfig }).where(eq(agents.id, f.agentId));
     const input = { companyId: f.companyId, poolId: pool.id, agentId: f.agentId, userId: f.setupUserId,
       adapterType: "paperclip_runner", taskKey: `lifecycle:${agent!.lifecycleOperation!.id}` };
     const selected = await router.resolve(input);
@@ -156,7 +161,7 @@ describe.skipIf(!support.supported)("queued agent setup uses task connection car
     await connectionIntentDeliveryService(db, { wakeup } as never).deliver(card!.id);
     const [repaired] = await db.select().from(agents).where(eq(agents.id, f.agentId));
     expect(repaired!.lifecycleOperation).not.toHaveProperty("retryRequired");
-    expect(repaired!.runtimeConfig.aiConnection).toEqual(routerBinding);
+    expect(repaired!.runtimeConfig).toEqual(runtimeConfig);
     expect((await db.select().from(aiConnectionTaskPins).where(eq(aiConnectionTaskPins.agentId, f.agentId))))
       .toMatchObject([{ taskKey: input.taskKey, selection: selected }]);
     expect((await db.select().from(aiConnectionRouterCursors).where(eq(aiConnectionRouterCursors.poolId, pool.id)))[0]!.version).toBe(1);

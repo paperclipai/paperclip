@@ -270,7 +270,7 @@ export function createLifecycleStore(db: Db, effects: LifecycleEffects): Lifecyc
       }
       const retry: Partial<AgentLifecycleOperation> = options?.retryRequired && ["verifying", "resuming"].includes(agent.lifecycleState)
         ? { retryRequired: true }
-        : { retryAt: new Date(now.getTime() + (error ? 60_000 : 2_000)).toISOString() };
+        : { retryAt: options?.retryAt ?? new Date(now.getTime() + (error ? 60_000 : 2_000)).toISOString() };
       if (options?.verificationFailures !== undefined && agent.lifecycleState === "verifying") {
         retry.verificationFailures = options.verificationFailures;
       }

@@ -1,7 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { chmod, lstat, mkdir, mkdtemp, readFile, readlink, readdir, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, posix } from "node:path";
+import { join, posix, resolve } from "node:path";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "@paperclipai/shared";
 import * as localCredentialFile from "../local-ai-credential-file.js";
 import * as codexCredentials from "@paperclipai/adapter-codex-local/server";
@@ -30,7 +30,13 @@ const context = {
 };
 describe("Codex selected native account verification", () => {
   const receipt = (provider: "codex", model: string | null) => ({ provider, effectiveModel: model, providerDriver: "codex_app_server", helloProbePassed: true, cleanupConfirmed: true });
+  beforeAll(async () => {
+    // Cold Windows transforms of the native executor belong to suite setup,
+    // outside the credential checks' timeout and temporary-home lifetime.
+    if (process.platform === "win32") await import("./native-session-executor.js");
+  }, 120_000);
   beforeEach(() => {
+    vi.stubEnv("CODEX_HOME", join(tmpdir(), "paperclip-no-ambient-codex-fixture"));
     execute.mockReset(); nativeProbe.mockReset(); nativeProbeRuntimeDirectories.splice(0);
     sshExecute.mockReset().mockResolvedValue({ exitCode: 0, timedOut: false, stdout: "", stderr: "" });
     sshRunner.mockReset().mockReturnValue({ execute: sshExecute });
@@ -68,6 +74,21 @@ describe("Codex selected native account verification", () => {
     await expect(stat(input.runtimeDirectory)).rejects.toThrow();
     expect(execute).not.toHaveBeenCalled();
   });
+  it.runIf(process.platform === "win32").each([false, true])("accepts a regular Windows credential source with descriptor checks (managed=%s)", async managed => {
+    const home = await realpath(await mkdtemp(join(tmpdir(), "windows-managed-codex-probe-")));
+    const auth = '{"tokens":{"account_id":"fixture-account","access_token":"fixture-token"}}';
+    await writeFile(join(home, "auth.json"), auth, { mode: 0o600 });
+    nativeProbe.mockImplementation(async input => { await input.onCleanupConfirmed(); return receipt("codex", "gpt-6.1-sol"); });
+    try {
+      const result = await testNativeRunnerAuthentication({ companyId: "company", adapterType: "paperclip_runner",
+        ...(managed ? { managedAiCredentialHome: home } : {}), config: { env: { CODEX_HOME: home } },
+      }, "codex", "gpt-6.1-sol");
+      expect(result.status, JSON.stringify(result.checks)).toBe("pass");
+      expect(nativeProbe).toHaveBeenCalledOnce();
+      expect(await readFile(join(home, "auth.json"), "utf8")).toBe(auth);
+    } finally { await rm(home, { recursive: true, force: true }); }
+  }, 60_000);
+
   it("rejects a missing local daemon before creating private credential staging", async () => {
     const home = await realpath(await mkdtemp(join(tmpdir(), "native-preflight-daemon-")));
     const auth = '{"tokens":{"account_id":"fixture-account","access_token":"fixture-access"}}';
@@ -116,7 +137,7 @@ describe("Codex selected native account verification", () => {
     expect((await testNativeRunnerAuthentication({ companyId: "company", adapterType: "paperclip_runner", config,
       ...(mode === "managed-home" ? { managedAiCredentialHome: "/managed-codex" } : {}) }, "codex", null)).status).toBe("pass");
     const input = nativeProbe.mock.calls[0][0];
-    expect(input.transportOptions.sourceCodexHome).toBe({ "host-home": "/host-home/.codex", "host-codex-home": "/host-codex", "configured-home": "/configured-codex", "managed-home": "/managed-codex" }[mode]);
+    expect(input.transportOptions.sourceCodexHome).toBe({ "host-home": resolve("/host-home", ".codex"), "host-codex-home": "/host-codex", "configured-home": "/configured-codex", "managed-home": "/managed-codex" }[mode]);
     expect(input.environment.OPENAI_API_KEY).toBeUndefined();
     expect(input.environment.HOME).toBeUndefined();
     expect(input.runtimeDirectory).not.toContain("host-home");
@@ -141,7 +162,7 @@ describe("Codex selected native account verification", () => {
       const result = await testNativeRunnerAuthentication({ companyId: "company", adapterType: "paperclip_runner", managedAiCredentialHome: home, config: { env: { CODEX_HOME: home, ...(mode === "bound-key" ? { OPENAI_API_KEY: "selected-key" } : {}) } } }, "codex", "gpt-6.1-sol");
       expect(result.status).toBe(mode === "invalid-handoff" ? "fail" : "pass");
       expect(JSON.parse(await readFile(store, "utf8")).tokens.access_token).toBe(mode === "same-account" ? "access-new" : "access-old");
-      expect((await stat(store)).mode & 0o777).toBe(0o600);
+      if (process.platform !== "win32") expect((await stat(store)).mode & 0o777).toBe(0o600);
       expect(await realpath(join(home, "auth.json"))).toBe(store);
       expect(JSON.stringify(result)).not.toContain("access-new");
       if (mode !== "invalid-handoff") await expect(stat(nativeProbe.mock.calls[0][0].runtimeDirectory)).rejects.toMatchObject({ code: "ENOENT" });
@@ -250,8 +271,8 @@ describe("Codex selected native account verification", () => {
         if (linked) {
           const source = join(input.runtimeDirectory, "codex-credential-source");
           expect(input.transportOptions.sourceCodexHome).toBe(source);
-          expect((await stat(source)).mode & 0o777).toBe(0o700);
-          expect((await stat(join(source, "auth.json"))).mode & 0o777).toBe(0o600);
+          if (process.platform !== "win32") expect((await stat(source)).mode & 0o777).toBe(0o700);
+          if (process.platform !== "win32") expect((await stat(join(source, "auth.json"))).mode & 0o777).toBe(0o600);
           expect((await readdir(source)).sort()).toEqual(["auth.json", "config.toml"]);
         }
         if (transport === "remote") {
@@ -274,7 +295,7 @@ describe("Codex selected native account verification", () => {
       expect(execute).not.toHaveBeenCalled();
     } finally { await rm(home, { recursive: true, force: true }); }
   });
-  it.each(["local", "remote"].flatMap(transport => ["dangling", "foreign-owner", "unsafe-mode", "oversize"].map(mode => ({ transport, mode }))))
+  it.each(["local", "remote"].flatMap(transport => ["dangling", ...(process.platform === "win32" ? [] : ["foreign-owner", "unsafe-mode"]), "oversize"].map(mode => ({ transport, mode }))))
   ("rejects $mode linked subscription before $transport provider admission", async ({ transport, mode }) => {
     const home = await realpath(await mkdtemp(join(tmpdir(), "native-invalid-link-")));
     const stored = join(home, "account-store.json");

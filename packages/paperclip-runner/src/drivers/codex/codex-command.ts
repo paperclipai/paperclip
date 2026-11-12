@@ -1,6 +1,7 @@
 import { accessSync, constants, readFileSync, realpathSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { delimiter, dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { materializeWindowsCodexRuntime } from "./windows-codex-runtime.js";
 
 /** Prefer the installed dependency; compatibility is established by the CLI protocol. */
 export function resolveCodexCommand(
@@ -10,18 +11,27 @@ export function resolveCodexCommand(
 ): string {
   try {
     const runnerRequire = createRequire(issuer);
-    let manifestPath: string;
+    let manifestPath: string | undefined;
     try {
-      let bridgeManifest: string;
-      try {
-        bridgeManifest = runnerRequire.resolve("@agentclientprotocol/codex-acp/package.json");
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "MODULE_NOT_FOUND") throw error;
-        // pnpm can retain the bridge inside its declared adapter dependency.
-        const adapter = runnerRequire.resolve("@paperclipai/adapter-codex-local/server");
-        bridgeManifest = createRequire(adapter).resolve("@agentclientprotocol/codex-acp/package.json");
+      if (process.platform === "win32") {
+        try {
+          manifestPath = runnerRequire.resolve("@openai/codex-native/package.json");
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "MODULE_NOT_FOUND") throw error;
+        }
       }
-      manifestPath = createRequire(bridgeManifest).resolve("@openai/codex/package.json");
+      if (!manifestPath) {
+        let bridgeManifest: string;
+        try {
+          bridgeManifest = runnerRequire.resolve("@agentclientprotocol/codex-acp/package.json");
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "MODULE_NOT_FOUND") throw error;
+          // pnpm can retain the bridge inside its declared adapter dependency.
+          const adapter = runnerRequire.resolve("@paperclipai/adapter-codex-local/server");
+          bridgeManifest = createRequire(adapter).resolve("@agentclientprotocol/codex-acp/package.json");
+        }
+        manifestPath = createRequire(bridgeManifest).resolve("@openai/codex/package.json");
+      }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "MODULE_NOT_FOUND") throw error;
       try {
@@ -50,6 +60,48 @@ export function resolveCodexCommand(
     if (!inside(executable)) throw new Error("Installed Codex executable escapes its package");
     if (!statSync(executable).isFile()) throw new Error("Installed Codex executable is not a regular file");
     accessSync(executable, constants.X_OK);
+    if (process.platform === "win32" && /\.(?:[cm]?js)$/i.test(executable)) {
+      const triple = process.arch === "x64" ? "x86_64-pc-windows-msvc"
+        : process.arch === "arm64" ? "aarch64-pc-windows-msvc" : undefined;
+      if (!triple) throw new Error("Installed Codex does not support this Windows architecture");
+      let vendorRoot = resolve(root, "vendor");
+      let vendorPackageRoot = root;
+      try {
+        const platformManifestPath = realpathSync(createRequire(manifestPath).resolve(`@openai/codex-win32-${process.arch}/package.json`));
+        const platformManifest = JSON.parse(readFileSync(platformManifestPath, "utf8"));
+        if (typeof manifest.version !== "string" || platformManifest.name !== "@openai/codex"
+          || platformManifest.version !== `${manifest.version}-win32-${process.arch}`
+          || !Array.isArray(platformManifest.os) || !platformManifest.os.includes("win32")
+          || !Array.isArray(platformManifest.cpu) || !platformManifest.cpu.includes(process.arch)) {
+          throw new Error("Installed Codex Windows dependency has an unexpected package identity");
+        }
+        vendorRoot = resolve(dirname(platformManifestPath), "vendor");
+        vendorPackageRoot = dirname(platformManifestPath);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "MODULE_NOT_FOUND") throw error;
+      }
+      const ownedRoot = realpathSync(vendorRoot);
+      const vendorRelation = relative(vendorPackageRoot, ownedRoot);
+      if (!vendorRelation || vendorRelation === ".." || vendorRelation.startsWith(`..${sep}`) || isAbsolute(vendorRelation)) {
+        throw new Error("Installed Codex Windows vendor directory escapes its package");
+      }
+      for (const layout of ["bin", "codex"]) {
+        try {
+          const binary = realpathSync(resolve(ownedRoot, triple, layout, "codex.exe"));
+          const contained = relative(ownedRoot, binary);
+          if (!contained || contained === ".." || contained.startsWith(`..${sep}`) || isAbsolute(contained)) {
+            throw new Error("Installed Codex Windows executable escapes its package");
+          }
+          if (!statSync(binary).isFile()) throw new Error("Installed Codex Windows executable is not a regular file");
+          accessSync(binary, constants.X_OK);
+          return resolve(binary).slice(0, 3).toLowerCase() === `${process.env.SystemDrive ?? "C:"}\\`.toLowerCase()
+            ? binary : materializeWindowsCodexRuntime(binary);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
+      }
+      throw new Error("Installed Codex Windows executable is missing; restore its platform dependency");
+    }
     return executable;
   } catch (error) {
     throw new Error(`Codex runtime unavailable: ${(error as Error).message}. Install Codex or restore Paperclip's runtime dependencies.`, { cause: error });

@@ -1,6 +1,12 @@
+import { poolRunnerCooldownIdentity } from "../ai-connection-pool-cooldown.js";
+import { notifyExecutionRunWork } from "../execution-control-notifications.js";
+import { nativePoolFailureKind } from "../native-runtime/native-pool-failure.js";
 import { preserveAcceptedRunUsageProjectionSql } from "../usage-receipts.js";
 import { isContextCompactionRun } from "../context-compaction.js";
-import { providerFailureFromError } from "../../vendor/paperclip-runner/index.js";
+import { NativeProviderTerminalFailure, providerFailureFromError } from "../../vendor/paperclip-runner/index.js";
+import { nativeSessionFailureSourceCode } from "../native-runtime/native-session-executor.js";
+import { createHash } from "node:crypto";
+import { extractClaudeRetryNotBefore, isClaudeProviderQuotaError } from "@paperclipai/adapter-claude-local/server";
 import { GENERIC_RUN_FAILURE_CODES, NATIVE_PRE_DISPATCH_FAILURE_CODE, NATIVE_PRE_DISPATCH_FAILURE_KEY, NATIVE_PRE_DISPATCH_FAILURE_RECORD, failureCauseFromAdapterResult, failureCauseFromError,
   isNativePreDispatchTransientFailure } from "./run-failure-cause.js";
 import { INTERRUPTED_PREPARATION_RETRY_REASON } from "../execution-recovery-attempt.js";
@@ -9,6 +15,8 @@ import { releaseUnchangedFallbackWorkspace } from "./predecessor-retirement-fall
 import { hasNativeExecutionStartEvidence } from "../native-runtime/native-restart-recovery.js";
 import { withoutSqlStatementText } from "@paperclipai/shared";
 import { nativeTaskSessionPublicationHandled } from "../native-runtime/native-task-session-publication.js";
+import { poolFailureKind, POOL_ACCOUNT_DEFAULT_COOLDOWN_MS, hasCompanyPoolAffinity } from "./pool-failover.js";
+import { effectiveRunAgent } from "./effective-run-adapter.js";
 import { boundOriginalMessage, describeRefusedExactResume, interruptedExactResumeCause } from "../native-runtime/native-exact-resume-failure.js";
 import { settledResponsePublicationSql } from "../native-runtime/native-response-publication-receipt.js";
 import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
@@ -41,11 +49,17 @@ import { isConversation, settleConversationTurn } from "../agent-conversations.j
 import { legacyExecutionNeedsReconciliationWithEvidence } from "../legacy-execution-recovery.js";
 import { isWorkspaceGitScanError } from "../workspace-git-operation-scheduler.js";
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
-import { heartbeatRunEvents, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults } from "@paperclipai/db";
+import { agents, companySecrets, connectionGrants, aiConnectionPools, aiConnectionTaskPins, heartbeatRunEvents, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults } from "@paperclipai/db";
+import { readProviderFailure, type AiConnectionRouterSelection } from "@paperclipai/shared";
+import { allocateHeartbeatRunEventSeq } from "../heartbeat-run-events.js";
+import { aiConnectionRouterService, quotaIdentityFromSessionSnapshot } from "../ai-connection-router.js";
+import { PROVIDER_LIMIT_DEFAULT_COOLDOWN_MS } from "../system-recovery-state.js";
 import { HttpError } from "../../errors.js";
 import { logger } from "../../middleware/logger.js";
 import { normalizeResponsibleUserDenialCode } from "../responsible-user-denial-run-outcomes.js";
 import { parseObject } from "../../adapters/utils.js";
+import { observeLegacyPoolAccountFailure, isCurrentLegacyPoolAccountProof } from "./legacy-pool-account-proof.js";
+import { isDeepStrictEqual } from "node:util";
 import { CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON, isChatOriginPublicationCandidate, isExternalChatPresentationContext, mergeHeartbeatRunResultJson, resolveHeartbeatRunResponse, type RunPresentationDecision } from "../heartbeat-run-summary.js";
 import { normalizeMaxTurnStopReason } from "../heartbeat-stop-metadata.js";
 import { CHAT_CONTROL_RECOVERY_UNRESOLVED_CODE } from "../chat-control-recovery-stop.js";
@@ -75,10 +89,157 @@ import type { AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import type { getRunLogStore, RunLogHandle } from "../run-log-store.js";
 import type { createHeartbeatRunState, getAdapterSessionCodec } from "./run-state.js";
 import type { EffectiveRunSessionConfigMetadata } from "./workspaces.js";
-import type { Db, agents } from "@paperclipai/db";
+import type { Db } from "@paperclipai/db";
 import { setupCommandFailureResultJson } from "../workspace-setup-command-failure.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
+
+export function isConfirmedProviderQuotaFailure(value: unknown): boolean {
+  const failure = readProviderFailure(value);
+  if (!failure) return false;
+  return failure.category === "quota_exhausted" || (failure.provider === "anthropic" && failure.category === "rate_limit" &&
+    isClaudeProviderQuotaError({ errorMessage: failure.message }));
+}
+
+function providerQuotaRetryAt(value: unknown): string | undefined {
+  const failure = readProviderFailure(value);
+  if (!failure) return undefined;
+  return failure.retryAt ?? (failure.provider === "anthropic"
+    ? extractClaudeRetryNotBefore({ errorMessage: failure.message })?.toISOString() : undefined);
+}
+
+/** Credential identity and host-owned failure evidence bind cooldown attribution to the pin. */
+export async function recordVerifiedRouterQuotaCooldown(db: Db, input: {
+  runId: string; companyId: string; agentId: string; credentialIdentity: string | undefined;
+  retryNotBefore: string | null | undefined; now?: Date; failureKind?: "quota" | "auth" | "runner";
+  /** Test-only fault injection inside the receipt transaction. */
+  beforeCommit?: () => void | Promise<void>;
+  /** Recovery anchors the deadline without backdating authority checks. */
+  cooldownAnchor?: Date;
+}) {
+  const now = input.now ?? new Date();
+  const [source] = await db.select({ run: heartbeatRuns, adapterType: agents.adapterType }).from(heartbeatRuns)
+    .innerJoin(agents, and(eq(agents.id, heartbeatRuns.agentId), eq(agents.companyId, heartbeatRuns.companyId)))
+    .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.agentId, input.agentId)));
+  const kind = input.failureKind ?? "quota";
+  const legacyAccountFailure = source && source.run.runtimeMode !== "native" && (kind === "quota" || kind === "auth") ? kind : null;
+  const proofScope = source ? { companyId: input.companyId, agentId: input.agentId, userId: source.run.responsibleUserId,
+    selection: parseObject(source.run.contextSnapshot?.aiRouterSelection) as unknown as AiConnectionRouterSelection,
+    credentialIdentity: input.credentialIdentity } : null;
+  const accountProof = legacyAccountFailure && proofScope ? await observeLegacyPoolAccountFailure(db, proofScope, now, legacyAccountFailure) : null;
+  if (legacyAccountFailure && !accountProof) return false;
+  const supplied = accountProof ? accountProof.retryAt.getTime() : kind === "quota" && input.retryNotBefore ? Date.parse(input.retryNotBefore) : NaN;
+  const anchor = input.cooldownAnchor ?? now;
+  const deadline = new Date(Number.isFinite(supplied) && supplied > anchor.getTime()
+    ? supplied
+    : anchor.getTime() + (input.failureKind === "runner" ? 5 * 60_000 : POOL_ACCOUNT_DEFAULT_COOLDOWN_MS));
+  return db.transaction(async tx => {
+    const [candidate] = await tx.select({ scopeKind: heartbeatRuns.scopeKind, issueId: heartbeatRuns.issueId }).from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.agentId, input.agentId)));
+    if (!candidate) return false;
+    const [issue] = candidate.scopeKind === "issue" && candidate.issueId
+      ? await tx.select({ identifier: issues.identifier }).from(issues).where(and(eq(issues.companyId, input.companyId), eq(issues.id, candidate.issueId))).for("share") : [];
+    const [run] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, input.runId),
+      eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.agentId, input.agentId))).for("update");
+    if (!run || run.scopeKind !== candidate.scopeKind || run.issueId !== candidate.issueId || run.status !== "failed" ||
+      !(input.failureKind ? poolFailureKind(run) === input.failureKind : readHeartbeatRunErrorFamily(run) === "provider_quota" ||
+        (run.errorCode === "native_provider_usage_limit" && isConfirmedProviderQuotaFailure(run.resultJson?.providerFailure)))) return false;
+    if (run.runtimeMode === "native") {
+      if ((input.failureKind ?? "quota") === "quota" && !isConfirmedProviderQuotaFailure(run.resultJson?.providerFailure)) return false;
+      const [owner] = await tx.select().from(nativeRunFinalizations).where(and(eq(nativeRunFinalizations.companyId, run.companyId),
+        eq(nativeRunFinalizations.runId, run.id)));
+      if (!owner || owner.phase !== "terminal_failure" || owner.leaseOwner || owner.resultId ||
+          nativePoolFailureKind(owner.failureCode) !== (input.failureKind ?? "quota")) return false;
+      if (input.failureKind === "runner") {
+        const detail = parseObject(owner.failureDetail);
+        const originalCode = readNonEmptyString(detail.originalFailureCode);
+        const classifiedCode = originalCode === "notification_transport_failed"
+          ? nativeSessionFailureSourceCode(new NativeProviderTerminalFailure(originalCode, detail.recoverable === true,
+            typeof detail.message === "string" ? detail.message : ""))
+          : originalCode;
+        if (classifiedCode !== run.errorCode) return false;
+      }
+    }
+    const context = parseObject(run.contextSnapshot);
+    const selection = parseObject(context.aiRouterSelection);
+    if (legacyAccountFailure && (!accountProof || !proofScope || !isDeepStrictEqual(selection, proofScope.selection) ||
+        !(await isCurrentLegacyPoolAccountProof(tx as unknown as Db, proofScope, accountProof)))) return false;
+    const binding = parseObject(selection.binding);
+    const poolId = readNonEmptyString(selection.poolId);
+    const taskKey = readNonEmptyString(context.aiRouterTaskKey);
+    const connectionId = readNonEmptyString(binding.connectionId);
+    const grantId = readNonEmptyString(binding.grantId);
+    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const credentialIdentity = grantId && input.credentialIdentity ? quotaIdentityFromSessionSnapshot(grantId, input.credentialIdentity) : null;
+    if (!poolId || !uuid.test(poolId) || !connectionId || !uuid.test(connectionId) || !grantId || !credentialIdentity || !taskKey) return false;
+    const taskMatches = run.scopeKind === "issue" ? taskKey === run.issueId || Boolean(issue?.identifier && taskKey === issue.identifier)
+      : await hasCompanyPoolAffinity(tx as unknown as Db, run, taskKey);
+    if (!taskMatches) return false;
+
+    const [pin] = await tx.select({ id: aiConnectionTaskPins.id }).from(aiConnectionTaskPins)
+      .innerJoin(aiConnectionPools, and(eq(aiConnectionPools.id, aiConnectionTaskPins.poolId), eq(aiConnectionPools.companyId, aiConnectionTaskPins.companyId)))
+      .where(and(eq(aiConnectionTaskPins.companyId, run.companyId), eq(aiConnectionTaskPins.poolId, poolId),
+        eq(aiConnectionTaskPins.agentId, run.agentId), eq(aiConnectionTaskPins.taskKey, taskKey),
+        sql`(${aiConnectionTaskPins.selection} - 'runtimeConfig' - 'notes' - 'adapterType' - 'runnerScope') =
+          (${JSON.stringify(selection)}::jsonb - 'runtimeConfig' - 'notes' - 'adapterType' - 'runnerScope')`,
+        sql`${aiConnectionTaskPins.member}->>'id' = ${selection.memberId ?? ""}`,
+        sql`${aiConnectionTaskPins.member}->'binding' = ${JSON.stringify(binding)}::jsonb`)).for("update");
+    if (!pin) return false;
+    const kind = input.failureKind ?? "quota";
+    const runnerScope = parseObject(selection.runnerScope);
+    const cooldownIdentity = kind === "runner" && Object.hasOwn(runnerScope, "environmentId")
+      ? poolRunnerCooldownIdentity(credentialIdentity, parseObject(selection.runtimeConfig), typeof runnerScope.environmentId === "string" ? runnerScope.environmentId : null, typeof selection.adapterType === "string" ? selection.adapterType : undefined) : credentialIdentity;
+    const eventId = `ai-connection-${kind}-attributed:${run.id}`;
+    const [existing] = await tx.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, run.id), eq(heartbeatRunEvents.sourceEventId, eventId))).limit(1);
+    const existingPayload = parseObject(existing?.payload);
+    const receiptDeadline = existing && (kind !== "quota" || !Number.isFinite(supplied)) ? readNonEmptyString(existingPayload.retryAt) : deadline.toISOString();
+    if (!receiptDeadline || !Number.isFinite(Date.parse(receiptDeadline))) return false;
+    const payload = { schema: `paperclip.ai-connection-${kind}-attribution.v1`, companyId: run.companyId, runId: run.id,
+      agentId: run.agentId, poolId, taskKey, memberId: selection.memberId, connectionId, grantId, selection, retryAt: receiptDeadline,
+      ...(accountProof ? { providerEvidence: accountProof.providerEvidence } : {}),
+      quotaIdentityHash: createHash("sha256").update(cooldownIdentity).digest("hex") };
+    if (existing) {
+      const [matches] = await tx.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.id, existing.id),
+        eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.agentId, run.agentId),
+        eq(heartbeatRunEvents.eventType, `ai_connection.${kind}_attributed`), sql`${heartbeatRunEvents.sourceInstanceId} is null`,
+        sql`${heartbeatRunEvents.payload} = ${JSON.stringify(payload)}::jsonb`)).limit(1);
+      if (!matches) return false;
+    } else {
+      await notifyExecutionRunWork(tx, { companyId: run.companyId });
+      const seq = await allocateHeartbeatRunEventSeq(tx as unknown as Db, run.id);
+      await tx.insert(heartbeatRunEvents).values({ companyId: run.companyId, runId: run.id, agentId: run.agentId, seq,
+        eventType: `ai_connection.${kind}_attributed`, stream: "system", level: "info", sourceEventId: eventId, payload });
+    }
+    await aiConnectionRouterService(tx as unknown as Db).recordQuotaCooldown(run.companyId, connectionId, cooldownIdentity, new Date(receiptDeadline), credentialIdentity);
+    await input.beforeCommit?.();
+    return true;
+  });
+}
+
+/** Restart recovery uses only the account revision captured before provider admission. */
+export async function recoverNativePoolAttribution(db: Db, run: Run, beforeCommit?: () => void | Promise<void>) {
+  const kind = poolFailureKind(run);
+  if (run.runtimeMode !== "native" || run.status !== "failed" || !run.finishedAt || !kind) return false;
+  const selection = parseObject(run.contextSnapshot?.aiRouterSelection);
+  const binding = parseObject(selection.binding);
+  const account = parseObject(run.contextSnapshot?.aiConnection);
+  const identity = readNonEmptyString(account.sessionIdentity);
+  if (!identity || account.connectionId !== binding.connectionId || account.grantId !== binding.grantId ||
+      account.provider !== binding.provider || !identity.startsWith(`${binding.grantId}:${run.responsibleUserId ?? "shared"}:`)) return false;
+  const [grant] = await db.select().from(connectionGrants).where(and(eq(connectionGrants.companyId, run.companyId),
+    eq(connectionGrants.id, String(binding.grantId)), eq(connectionGrants.connectionId, String(binding.connectionId))));
+  if (!grant) return false;
+  const credential = grant.credentialSecretRefs.find(ref => ref.configPath === "ai.credential");
+  if (credential) {
+    const [secret] = await db.select({ epoch: companySecrets.aiSessionEpoch }).from(companySecrets).where(and(
+      eq(companySecrets.companyId, run.companyId), eq(companySecrets.id, credential.secretId)));
+    if (!secret || identity !== `${grant.id}:${run.responsibleUserId ?? "shared"}:${credential.secretId}:${secret.epoch}`) return false;
+  } else if (identity !== `${grant.id}:${run.responsibleUserId ?? "shared"}:no-auth`) return false;
+  return recordVerifiedRouterQuotaCooldown(db, { runId: run.id, companyId: run.companyId, agentId: run.agentId,
+    credentialIdentity: identity, failureKind: kind, cooldownAnchor: run.finishedAt,
+    retryNotBefore: providerQuotaRetryAt(readProviderFailure(run.resultJson?.providerFailure)), beforeCommit });
+}
+
 type Agent = typeof agents.$inferSelect;
 type RunState = ReturnType<typeof createHeartbeatRunState>;
 type IssueContext = Awaited<ReturnType<ReturnType<typeof createHeartbeatRunPreparation>["getIssueExecutionContext"]>> | null;
@@ -337,9 +498,9 @@ export function isConfigurationIncompleteFailedRun(
 }
 
 /**
- * Failure signatures from sandbox→host git workspace reconciliation. These
+ * Failure signatures from sandboxâ†’host git workspace reconciliation. These
  * describe the state of the SHARED workspace (divergent histories written by
- * different runs), not a defect in the agent that happened to run last —
+ * different runs), not a defect in the agent that happened to run last â€”
  * putting the agent into a sticky `error` state over them removes a healthy
  * agent from rotation while leaving the actual problem (the workspace)
  * untouched. The run still fails and carries the full message.
@@ -548,6 +709,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
           taskKey,
           adapterType: agent.adapterType,
           expectedRunId: finalizedRun.id,
+          ...(sessionConfigMetadata.aiCredentialIdentity ? { sessionIdentity: sessionConfigMetadata.aiCredentialIdentity } : {}),
         });
       } else {
         await upsertTaskSession({
@@ -674,7 +836,8 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
             ...parseObject(adapterResult.resultJson),
             ...(adapterResult.executionRecovery
               ? { executionRecovery: adapterResult.executionRecovery }
-              : {}),
+              : run.runtimeMode !== "native" ? { executionRecovery: undefined } : {}),
+            executionSettlement: adapterResult.executionSettlement,
             ...(outcome === "cancelled" ? controllerLeaseLossResultJson(signal) : {}),
             ...(failureCause ? { failureCause } : {}),
             configFreshness: configFreshnessResultMetadata,
@@ -773,10 +936,23 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       await measureRunPhase("completion.cost", () => accountRunCost(db, persistedRun!.id, budgetHooks)).catch((err) => {
         logger.error({ err, runId: run.id }, "Run accounting queued for recovery");
       });
+      const nativeQuotaFailure = adapterResult.errorCode === "native_provider_usage_limit"
+        ? readProviderFailure(adapterResult.resultJson?.providerFailure) : null;
+      const poolFailure = persistedRun ? poolFailureKind(persistedRun) : null;
+      if (persistedRun && outcome === "failed" &&
+        (poolFailure || adapterResult.errorFamily === "provider_quota" || adapterResult.errorCode === "provider_quota" || isConfirmedProviderQuotaFailure(nativeQuotaFailure))) {
+        await recordVerifiedRouterQuotaCooldown(db, {
+          runId: persistedRun.id, companyId: persistedRun.companyId, agentId: persistedRun.agentId,
+          credentialIdentity: sessionConfigMetadata.aiCredentialIdentity,
+          retryNotBefore: adapterResult.retryNotBefore ?? providerQuotaRetryAt(nativeQuotaFailure),
+          ...(poolFailure ? { failureKind: poolFailure } : {}),
+        }).catch(err => logger.warn({ err, runId: run.id }, "failed to record router quota cooldown"));
+      }
       persistedRun =
         (await measureRunPhase("completion.liveness", () => classifyAndPersistRunLiveness(
           persistedRun!,
           persistedResultJson,
+          { deferAuthenticationRepair: persistedRun!.runtimeMode !== "native" && poolFailure === "auth" },
         ))) ?? persistedRun;
     }
 
@@ -829,7 +1005,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
           `[paperclip] Failed to complete skill test run: ${err instanceof Error ? err.message : String(err)}\n`,
         );
       }
-      const livenessRun = finalizedRun;
+      let livenessRun = finalizedRun;
       await measureRunPhase("completion.summary", () => refreshContinuationSummaryForRun(livenessRun, agent));
       if (await pendingCaseHandoffForRun(db, livenessRun.id, livenessRun.companyId)) {
         // The returning agent must resume its own settled session with the
@@ -1003,9 +1179,12 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         }
       } else if (
         outcome === "failed" &&
-        readTransientRecoveryContractFromRun(livenessRun)
+        (readTransientRecoveryContractFromRun(livenessRun) || poolFailureKind(livenessRun))
       ) {
-        await scheduleBoundedRetryForRun(livenessRun, agent);
+        const retry = await scheduleBoundedRetryForRun(livenessRun, agent);
+        if (retry.outcome !== "scheduled" && livenessRun.runtimeMode !== "native" && poolFailureKind(livenessRun) === "auth") {
+          livenessRun = (await classifyAndPersistRunLiveness(livenessRun, persistedResultJson)) ?? livenessRun;
+        }
       } else if (
         outcome === "failed" &&
         !(await legacyExecutionNeedsReconciliationWithEvidence(db, livenessRun))
@@ -1414,6 +1593,12 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     }
 
     const failedRun = failedRunWrite.run;
+    const nativePoolFailure = nativePoolFailureKind(nativeTerminalFailureCode);
+    if (failedRun && failureOutcome === "failed" && nativePoolFailure) {
+      await recordVerifiedRouterQuotaCooldown(db, { runId: failedRun.id, companyId: failedRun.companyId,
+        agentId: failedRun.agentId, credentialIdentity: sessionConfigMetadata.aiCredentialIdentity,
+        retryNotBefore: providerQuotaRetryAt(readProviderFailure(failedRun.resultJson?.providerFailure)), failureKind: nativePoolFailure }).catch(error => logger.warn({ err: error, runId: run.id }, "failed to record router quota cooldown"));
+    }
     const settleAgent = () => finalizeAgentStatus(agent.id, "failed", message, {
       wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
       keepIdleOnFailure:
@@ -1686,7 +1871,12 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         ...(workspaceProviderFailure ? { workspaceProviderFailure } : {}) },
       "heartbeat execution setup failed",
     );
-    const setupFailureAgent = await getAgent(run.agentId).catch(() => null);
+    const configuredFailureAgent = await getAgent(run.agentId).catch(() => null);
+    let setupFailureAgent: Agent | null = null;
+    if (configuredFailureAgent) {
+      try { setupFailureAgent = effectiveRunAgent(run, configuredFailureAgent); }
+      catch { /* Configuration drift must not prevent terminalizing the admitted run. */ }
+    }
     // The structured failure payload drives the recovery notice and next
     // action, so it is persisted even when the agent lookup failed and the
     // agent-scoped stop metadata cannot be merged in.
@@ -1852,7 +2042,9 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
             || livenessRun.errorCode === REPOSITORY_CATALOG_UNAVAILABLE_CODE
             || livenessRun.errorCode === REVIEWED_CHAT_BINDING_NOT_READY)
             && isResolvedInteractionContinuationWakeContext(livenessRun.contextSnapshot);
-          const retry = await (isTransientWorkspacePreparationCode(livenessRun.errorCode) && !interactionOwnsRetry
+          const retry = await (poolFailureKind(livenessRun)
+            ? scheduleBoundedRetryForRun(livenessRun, failedAgent)
+            : isTransientWorkspacePreparationCode(livenessRun.errorCode) && !interactionOwnsRetry
             ? livenessRun.errorCode === RUNNER_REVISION_MISMATCH_CODE
               ? scheduleBoundedRetryForRun(livenessRun, failedAgent, RUNNER_REVISION_MISMATCH_RETRY)
               : livenessRun.errorCode === STORAGE_UNAVAILABLE_CODE

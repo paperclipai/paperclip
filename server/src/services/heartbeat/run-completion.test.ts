@@ -16,7 +16,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { createNativeRunLogCoverageVerifier, formatNativeRunLogEvent } from "../native-runtime/native-run-log-export.js";
 import type { Db } from "@paperclipai/db";
-import { activityLog, agents, agentWakeupRequests, approvals, issueApprovals, budgetReservations, caseHandoffs, cases, companies, completionContracts, costEvents, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, heartbeatRunEvents, issueComments, issueQuestionResponseDeliveries, issueRecoveryActions, issues, issueThreadInteractions, nativeRunFinalizations } from "@paperclipai/db";
+import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, activityLog, agentWakeupRequests, agents, aiConnectionPools, aiConnectionQuotaCooldowns, aiConnectionTaskPins, approvals, budgetReservations, caseHandoffs, cases, companies, completionContracts, costEvents, createDb, heartbeatRunEvents, heartbeatRuns, issueApprovals, issueComments, issueQuestionResponseDeliveries, issueRecoveryActions, issueThreadInteractions, issues, nativeRunFinalizations, toolApplications, toolConnections } from "@paperclipai/db";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -43,13 +43,15 @@ import { createHeartbeatLifecycle, type HeartbeatLifecycleDependencies } from ".
 import { createHeartbeatRunPreparation, ConfigurationIncompleteFailure, classifyManagedProjectAuthFailure } from "./run-preparation.js";
 import { createHeartbeatRunState, getAdapterSessionCodec } from "./run-state.js";
 import { buildEffectiveRunSessionConfigMetadata } from "./workspaces.js";
-import { createHeartbeatRunCompletion, type CompleteHeartbeatRunInput, type FailHeartbeatRunInput, type HeartbeatRunCompletionDependencies } from "./run-completion.js";
+import { createHeartbeatRunCompletion, isConfirmedProviderQuotaFailure, recordVerifiedRouterQuotaCooldown, type CompleteHeartbeatRunInput, type FailHeartbeatRunInput, type HeartbeatRunCompletionDependencies } from "./run-completion.js";
 import { createHeartbeatAgentStatus } from "./agent-status.js";
 import { prepareNativeHeartbeatRun } from "../native-runtime/prepare-native-run.js";
 import { buildNativeCompletionContract } from "../native-runtime/completion-contracts.js";
 import { readPendingNativeRunStop } from "../native-runtime/native-cancellation-request.js";
 import { reserveRunBudget } from "../budget-reservations.js";
 import { hasAcknowledgedNativeReassignmentStopIntent } from "../acknowledged-native-stop.js";
+import { PROVIDER_LIMIT_DEFAULT_COOLDOWN_MS } from "../system-recovery-state.js";
+import { planNativeStartupRetry } from "../native-runtime/native-startup-retry.js";
 import { questionResponseDeliveryService } from "../question-response-delivery.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
 import { heartbeatService } from "../heartbeat.js";
@@ -125,7 +127,7 @@ function callbacks(db: Db) {
     handleRunLivenessContinuation: vi.fn<Dependencies["handleRunLivenessContinuation"]>(),
     handleSuccessfulRunHandoff: vi.fn<Dependencies["handleSuccessfulRunHandoff"]>(),
     updateRuntimeState: vi.fn<Dependencies["updateRuntimeState"]>(),
-    scheduleBoundedRetryForRun: vi.fn<Dependencies["scheduleBoundedRetryForRun"]>(),
+    scheduleBoundedRetryForRun: vi.fn<Dependencies["scheduleBoundedRetryForRun"]>(async () => ({ outcome: "not_scheduled", reason: "Fixture scheduler boundary", issueId: null })),
     scheduleInteractionContinuationInfrastructureRetryIfEligible: vi.fn<Dependencies["scheduleInteractionContinuationInfrastructureRetryIfEligible"]>(async () => null),
     timerClaimWasFirstHeartbeat: vi.fn<Dependencies["timerClaimWasFirstHeartbeat"]>(() => undefined),
     releaseIssueExecutionAndPromote: vi.fn<Dependencies["releaseIssueExecutionAndPromote"]>(async () => undefined),
@@ -149,6 +151,13 @@ it("constructs completion handlers without querying or starting work", () => {
   createHeartbeatRunCompletion(db, deps);
   expect(access).not.toHaveBeenCalled();
   for (const callback of Object.values(deps)) if (vi.isMockFunction(callback)) expect(callback).not.toHaveBeenCalled();
+});
+
+it("distinguishes Claude allowance exhaustion from ordinary rate limiting", () => {
+  const failure = { schema: "paperclip.provider-failure.v1", provider: "anthropic", phase: "turn", category: "rate_limit", retryability: "unknown" };
+  expect(isConfirmedProviderQuotaFailure({ ...failure, message: "You've hit your weekly limit" })).toBe(true);
+  expect(isConfirmedProviderQuotaFailure({ ...failure, message: "This request would exceed your account's rate limit." })).toBe(false);
+  expect(isConfirmedProviderQuotaFailure({ ...failure, provider: "other", message: "You've hit your weekly limit" })).toBe(false);
 });
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -193,6 +202,129 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     return { run, agent, wake, deps, controller, input, completion, failure, setup };
   }
   const read = (id: string) => db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)).then(rows => rows[0]!);
+
+  it("records native quota only for the host credential and exact durable pool pin", async () => {
+    const f = await fixture();
+    const [ownerIssue] = await db.insert(issues).values({ id: f.run.id, companyId: f.run.companyId, title: "Native quota owner", identifier: "CMP-42" }).returning();
+    await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: ownerIssue.id }).where(eq(heartbeatRuns.id, f.run.id));
+    await db.insert(nativeRunFinalizations).values({ companyId: f.run.companyId, issueId: ownerIssue.id, runId: f.run.id,
+      phase: "terminal_failure", failureCode: "native_provider_usage_limit" });
+    const [app] = await db.insert(toolApplications).values({ companyId: f.run.companyId, name: "Quota", type: "rest_api" }).returning();
+    const [pool, account] = await db.insert(toolConnections).values(["pool", "account"].map(name => ({
+      companyId: f.run.companyId, applicationId: app.id, name, uid: name, transport: "rest_api" as const,
+    }))).returning();
+    const grantId = randomUUID();
+    const member = { id: randomUUID(), binding: { mode: "delegated" as const, provider: "openai" as const,
+      method: "api_key" as const, connectionId: account.id, grantId }, profile: { provider: "codex" as const, model: "gpt-5" } };
+    const selection = { poolId: pool.id, memberId: member.id, binding: member.binding, runtimeConfig: { provider: "codex", model: "gpt-5" }, notes: [] };
+    await db.insert(aiConnectionPools).values({ id: pool.id, companyId: f.run.companyId, pluginKey: "test",
+      config: { name: "pool", enabled: true, mode: "failover", thresholdPercent: 90, members: [member] } });
+    await db.insert(aiConnectionTaskPins).values({ companyId: f.run.companyId, agentId: f.run.agentId, poolId: pool.id,
+      taskKey: f.run.id, member, selection });
+    await db.update(agents).set({ runtimeConfig: { aiConnection: { mode: "router", connectionId: pool.id } } }).where(eq(agents.id, f.agent.id));
+    await db.update(heartbeatRuns).set({ contextSnapshot: { aiRouterTaskKey: f.run.id, aiRouterSelection: selection } }).where(eq(heartbeatRuns.id, f.run.id));
+    f.input.session.sessionConfigMetadata.aiCredentialIdentity = `${grantId}:shared:no-auth`;
+    const deadline = new Date(Date.now() + 120_000);
+    f.input.adapterResult = { exitCode: 1, signal: null, timedOut: false, errorCode: "native_provider_usage_limit",
+      resultJson: { providerFailure: { schema: "paperclip.provider-failure.v1", provider: "openai", phase: "turn",
+        category: "quota_exhausted", message: "quota", retryability: "unknown", retryAt: deadline.toISOString() } }, errorMessage: "quota" };
+    await db.update(heartbeatRuns).set({ status: "failed", errorCode: "native_provider_usage_limit",
+      resultJson: f.input.adapterResult.resultJson }).where(eq(heartbeatRuns.id, f.run.id));
+    expect(await recordVerifiedRouterQuotaCooldown(db, { runId: f.run.id, companyId: f.run.companyId, agentId: f.agent.id,
+      credentialIdentity: `${grantId}:shared:no-auth`, retryNotBefore: deadline.toISOString() })).toBe(true);
+    expect(await db.select().from(aiConnectionQuotaCooldowns)).toMatchObject([{ companyId: f.run.companyId, credentialIdentity: `grant:${grantId}:no-auth`, retryAt: deadline }]);
+    const receiptId = `ai-connection-quota-attributed:${f.run.id}`;
+    const receipts = () => db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.sourceEventId, receiptId));
+    expect(await receipts()).toMatchObject([{ companyId: f.run.companyId, runId: f.run.id, agentId: f.agent.id,
+      eventType: "ai_connection.quota_attributed", payload: { runId: f.run.id, poolId: pool.id, taskKey: f.run.id,
+        memberId: member.id, connectionId: account.id, grantId, selection, retryAt: deadline.toISOString() } }]);
+    await db.delete(aiConnectionQuotaCooldowns);
+    const call = { runId: f.run.id, companyId: f.run.companyId, agentId: f.run.agentId, retryNotBefore: deadline.toISOString() };
+    expect(await recordVerifiedRouterQuotaCooldown(db, { ...call, credentialIdentity: `${grantId}:shared:no-auth` })).toBe(true);
+    expect(await receipts()).toHaveLength(1);
+    expect(await recordVerifiedRouterQuotaCooldown(db, { ...call, retryNotBefore: new Date(deadline.getTime() + 1_000).toISOString(), credentialIdentity: `${grantId}:shared:no-auth` })).toBe(false);
+    await db.delete(aiConnectionQuotaCooldowns);
+    expect(await recordVerifiedRouterQuotaCooldown(db, { ...call, credentialIdentity: `${randomUUID()}:shared:no-auth` })).toBe(false);
+    expect(await recordVerifiedRouterQuotaCooldown(db, { ...call, companyId: randomUUID(), credentialIdentity: `${grantId}:shared:no-auth` })).toBe(false);
+    await db.update(heartbeatRuns).set({ contextSnapshot: { aiRouterTaskKey: f.run.id,
+      aiRouterSelection: { ...selection, memberId: randomUUID() } } }).where(eq(heartbeatRuns.id, f.run.id));
+    expect(await recordVerifiedRouterQuotaCooldown(db, { ...call, credentialIdentity: `${grantId}:shared:no-auth` })).toBe(false);
+    await db.update(heartbeatRuns).set({ contextSnapshot: { aiRouterTaskKey: f.run.id, aiRouterSelection: selection } }).where(eq(heartbeatRuns.id, f.run.id));
+    await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.sourceEventId, receiptId));
+    const now = new Date();
+    await expect(db.transaction(async tx => {
+      expect(await recordVerifiedRouterQuotaCooldown(tx as unknown as Db, { ...call, retryNotBefore: null, now, credentialIdentity: `${grantId}:shared:no-auth` })).toBe(true);
+      throw new Error("rollback attribution");
+    })).rejects.toThrow("rollback attribution");
+    expect(await receipts()).toEqual([]);
+    expect(await db.select().from(aiConnectionQuotaCooldowns)).toEqual([]);
+    expect(await recordVerifiedRouterQuotaCooldown(db, { ...call, retryNotBefore: null, now, credentialIdentity: `${grantId}:shared:no-auth` })).toBe(true);
+    expect((await db.select().from(aiConnectionQuotaCooldowns))[0]!.retryAt).toEqual(new Date(now.getTime() + 2 * 60 * 60_000));
+    const distant = new Date(now.getTime() + 30 * 24 * 60 * 60_000);
+    await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.sourceEventId, receiptId));
+    expect(await recordVerifiedRouterQuotaCooldown(db, { ...call, retryNotBefore: distant.toISOString(), now, credentialIdentity: `${grantId}:shared:no-auth` })).toBe(true);
+    expect((await db.select().from(aiConnectionQuotaCooldowns))[0]!.retryAt).toEqual(distant);
+    const oldLimit = new Date(now.getTime() + 2 * 60 * 60_000);
+    await db.insert(heartbeatRuns).values({ companyId: f.run.companyId, agentId: f.run.agentId, status: "failed",
+      startedAt: now, finishedAt: now, errorCode: "provider_quota", resultJson: { retryNotBefore: oldLimit.toISOString() } });
+    const startup = { db, binding: { runId: f.run.id, companyId: f.run.companyId, agentId: f.run.agentId },
+      attempt: 1, retryable: true, failure: null, now };
+    const currentSelection = { ...selection, adapterType: "paperclip_runner", runtimeConfig: {
+      provider: "codex", model: "gpt-5.6-sol", effort: "high" }, notes: ["Current task settings"],
+      runnerScope: { environmentId: randomUUID() } };
+    await db.update(heartbeatRuns).set({ contextSnapshot: { aiRouterTaskKey: f.run.id,
+      aiRouterSelection: currentSelection } }).where(eq(heartbeatRuns.id, f.run.id));
+    const startupIdentity = `${grantId}:shared:no-auth`;
+    expect((await planNativeStartupRetry({ ...startup, managedAiAccountIdentity: startupIdentity })).providerCooldownAt,
+      "changed runtime settings retain the pinned account deadline").toEqual(distant);
+    for (const invalidSelection of [
+      { ...currentSelection, poolId: randomUUID() },
+      { ...currentSelection, memberId: randomUUID() },
+      { ...currentSelection, binding: { ...member.binding, grantId: randomUUID() } },
+      { ...currentSelection, binding: { ...member.binding, connectionId: randomUUID() } },
+    ]) {
+      await db.update(heartbeatRuns).set({ contextSnapshot: { aiRouterTaskKey: f.run.id,
+        aiRouterSelection: invalidSelection } }).where(eq(heartbeatRuns.id, f.run.id));
+      expect((await planNativeStartupRetry({ ...startup, managedAiAccountIdentity: startupIdentity })).providerCooldownAt).toEqual(oldLimit);
+    }
+    await db.update(heartbeatRuns).set({ contextSnapshot: { aiRouterTaskKey: f.run.id,
+      aiRouterSelection: currentSelection } }).where(eq(heartbeatRuns.id, f.run.id));
+    for (const binding of [{ ...startup.binding, companyId: randomUUID() }, { ...startup.binding, agentId: randomUUID() }]) {
+      expect((await planNativeStartupRetry({ ...startup, binding, managedAiAccountIdentity: startupIdentity })).providerCooldownAt).toBeNull();
+    }
+    await db.delete(aiConnectionQuotaCooldowns);
+    expect((await planNativeStartupRetry({ ...startup, managedAiAccountIdentity: startupIdentity })).providerCooldownAt,
+      "a healthy pinned account ignores another account's quota history").toBeNull();
+    expect((await planNativeStartupRetry({ ...startup, managedAiAccountIdentity: `${randomUUID()}:shared:no-auth` })).providerCooldownAt).toEqual(oldLimit);
+    await db.update(heartbeatRuns).set({ contextSnapshot: { aiRouterTaskKey: f.run.id,
+      aiRouterSelection: selection } }).where(eq(heartbeatRuns.id, f.run.id));
+    await db.update(aiConnectionTaskPins).set({ taskKey: "other" }).where(eq(aiConnectionTaskPins.id, (await db.select().from(aiConnectionTaskPins))[0]!.id));
+    expect(await recordVerifiedRouterQuotaCooldown(db, { ...call, credentialIdentity: `${grantId}:shared:no-auth` })).toBe(false);
+    expect(await db.select().from(aiConnectionQuotaCooldowns)).toEqual([]);
+    await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.sourceEventId, receiptId));
+    const issue = ownerIssue;
+    await db.update(heartbeatRuns).set({ scopeKind: "issue", issueId: issue.id,
+      contextSnapshot: { aiRouterTaskKey: issue.identifier, aiRouterSelection: selection } }).where(eq(heartbeatRuns.id, f.run.id));
+    await db.update(aiConnectionTaskPins).set({ taskKey: issue.identifier! }).where(eq(aiConnectionTaskPins.agentId, f.agent.id));
+    expect(await recordVerifiedRouterQuotaCooldown(db, { ...call, credentialIdentity: `${grantId}:shared:no-auth` }), "issue identifier").toBe(true);
+    await db.delete(aiConnectionQuotaCooldowns);
+    const [timerRun] = await db.insert(heartbeatRuns).values({ companyId: f.run.companyId, agentId: f.agent.id,
+      status: "failed", runtimeMode: "native", nativeIssueId: ownerIssue.id, errorCode: "native_provider_usage_limit",
+      resultJson: f.input.adapterResult.resultJson, invocationSource: "timer",
+      contextSnapshot: { aiRouterTaskKey: issue.identifier, aiRouterSelection: selection, wakeSource: "timer" } }).returning();
+    await db.insert(nativeRunFinalizations).values({ companyId: f.run.companyId, issueId: ownerIssue.id, runId: timerRun.id,
+      phase: "terminal_failure", failureCode: "native_provider_usage_limit" });
+    await db.update(aiConnectionTaskPins).set({ taskKey: issue.identifier! }).where(eq(aiConnectionTaskPins.agentId, f.agent.id));
+    expect(await recordVerifiedRouterQuotaCooldown(db, { ...call, runId: timerRun.id, credentialIdentity: `${grantId}:shared:no-auth` }), "native timer issue affinity").toBe(true);
+    await db.delete(aiConnectionQuotaCooldowns);
+    await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, timerRun.id));
+    const nativeFailure = { schema: "paperclip.provider-failure.v1", provider: "openai", phase: "turn",
+      category: "rate_limit", message: "limit", retryability: "unknown", httpStatus: 429 };
+    await db.update(heartbeatRuns).set({ errorCode: "native_provider_usage_limit", resultJson: { providerFailure: nativeFailure } }).where(eq(heartbeatRuns.id, timerRun.id));
+    expect(await recordVerifiedRouterQuotaCooldown(db, { ...call, runId: timerRun.id, credentialIdentity: `${grantId}:shared:no-auth` })).toBe(false);
+    await db.update(heartbeatRuns).set({ resultJson: { providerFailure: { ...nativeFailure, category: "quota_exhausted" } } }).where(eq(heartbeatRuns.id, timerRun.id));
+    expect(await recordVerifiedRouterQuotaCooldown(db, { ...call, runId: timerRun.id, credentialIdentity: `${grantId}:shared:no-auth` })).toBe(true);
+  });
 
   it("replays saved user intent through normal Retry after a first-attempt retained runner failure", async () => {
     for (const mode of ["unattached", "archive_failed", "provider_started", "system_wake", "stopped", "stopped_failed", "promoted"] as const) {
@@ -461,6 +593,18 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect(f.deps.handleSuccessfulRunHandoff).not.toHaveBeenCalled();
     expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
     expect((await db.select().from(issues).where(eq(issues.id, issue.id)))[0]?.status).toBe("in_progress");
+  });
+
+  it.each([false, true])("uses only host-authored execution settlement metadata (trusted=%s)", async trusted => {
+    const f = await fixture({ runtimeMode: "legacy" });
+    const settlement = { providerStopped: true as const, workspaceSettled: true as const, actionOutcomes: "unknown" as const };
+    f.input.adapterResult = { exitCode: 1, signal: null, timedOut: false, errorCode: "provider_quota",
+      resultJson: { executionSettlement: settlement, executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+      ...(trusted ? { executionSettlement: settlement } : {}) };
+    await f.completion.completeRun(f.input);
+    const saved = await read(f.run.id);
+    expect(saved?.resultJson?.executionSettlement).toEqual(trusted ? settlement : undefined);
+    expect(saved?.resultJson?.executionRecovery).toBeUndefined();
   });
 
   it("persists usage, accounting, final logs, presentation and the next task session", async () => {
@@ -1197,6 +1341,34 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     const resultJson = { configurationIncomplete: { reason: "missing_binding" } };
     await f.deps.setRunStatusIfRunning(f.run.id, "failed", { errorCode: "configuration_incomplete", resultJson });
     expect((await read(f.run.id)).resultJson).toEqual(resultJson);
+  });
+
+  it.each([
+    ["claude_local", () => import("@paperclipai/adapter-claude-local/server")],
+    ["codex_local", () => import("@paperclipai/adapter-codex-local/server")],
+    ["gemini_local", () => import("@paperclipai/adapter-gemini-local/server")],
+    ["kimi_local", () => import("@paperclipai/adapter-kimi-local/server")],
+  ] as const)("persists the host engine bootstrap receipt from %s and releases its reservation", async (adapterType, load) => {
+    const f = await fixture({ costAccountingPending: true });
+    await db.update(agents).set({ adapterType }).where(eq(agents.id, f.agent.id));
+    f.agent.adapterType = adapterType;
+    await reserveRunBudget(db, f.run.companyId, f.run.id, null);
+    const { execute } = await load();
+    const originalVersion = process.version;
+    const onSpawn = vi.fn();
+    try {
+      Object.defineProperty(process, "version", { value: "v18.0.0" });
+      f.input.adapterResult = await execute({ config: { engine: "acp" }, onSpawn } as never);
+    } finally {
+      Object.defineProperty(process, "version", { value: originalVersion });
+    }
+    expect(onSpawn).not.toHaveBeenCalled();
+    await f.completion.completeRun(f.input);
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "adapter_engine_unavailable",
+      costAccountingPending: false, costAccountedAt: expect.any(Date),
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } });
+    const [hold] = await db.select().from(budgetReservations).where(eq(budgetReservations.runId, f.run.id));
+    expect(hold.state).toBe("released");
   });
 
   it("keeps ordinary adapter pre-provider receipts outside setup-history checks", async () => {

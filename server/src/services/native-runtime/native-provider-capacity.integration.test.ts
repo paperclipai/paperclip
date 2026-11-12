@@ -3,26 +3,34 @@ import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
-  agentWakeupRequests,
-  chatConversations,
-  chatEndpoints,
+  authUsers,
+  companyMemberships,
+  connectionGrants,
+  companySecrets,
+  aiConnectionTaskPins,
+  aiConnectionQuotaCooldowns,
   companies,
   completionContracts,
   createDb,
+  subscribeDatabaseWork,
   heartbeatRunEvents,
   heartbeatRuns,
   issueRecoveryActions,
   issues,
   nativeRunFinalizations,
-  toolApplications,
-  toolConnections,
 } from "@paperclipai/db";
 import type {
   ControlPlanePort,
-  NativeExecutionInputV1,
+  NativeExecutionInputV10,
   PrpEvent,
 } from "@paperclipai/paperclip-runner";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
+
+// This suite exercises persisted failover with a mocked provider on a supported target.
+vi.mock("../../lib/agent-runner-platform.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../lib/agent-runner-platform.js")>()),
+  localAgentRunnerTarget: () => ({ driver: "local", platform: "linux", architecture: "x64", libc: "glibc", glibcVersion: "2.39" }),
+}));
 
 const provider = vi.hoisted(() => ({ execute: vi.fn() }));
 vi.mock("../../vendor/paperclip-runner/index.js", async (importOriginal) => ({
@@ -32,16 +40,29 @@ vi.mock("../../vendor/paperclip-runner/index.js", async (importOriginal) => ({
   executeNativeSession: provider.execute,
 }));
 
+import { buildNativeExecutionInput } from "./native-execution-input.js";
+import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
 import { executePaperclipNativeSession } from "./native-session-executor.js";
 import { buildNativeCompletionContract } from "./completion-contracts.js";
 import { PaperclipControlPlanePort } from "./paperclip-control-plane-port.js";
 import { prepareNativeHeartbeatRun } from "./prepare-native-run.js";
-import { PROVIDER_LIMIT_RESUME_KEY_PREFIX, registerProviderLimitResumeWork, requestProviderLimitResumeRetry } from "./provider-limit-resume.js";
-import { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
+import { tmpdir } from "node:os";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { aiConnectionService } from "../ai-connections.js";
+import { aiConnectionRouterService } from "../ai-connection-router.js";
+import { BUILTIN_AI_FAILOVER_ROUTER_KEY, type AiConnectionPoolMember } from "@paperclipai/shared";
+import { recordVerifiedRouterQuotaCooldown, recoverNativePoolAttribution } from "../heartbeat/run-completion.js";
+import { NativeProviderTerminalFailure } from "../../vendor/paperclip-runner/index.js";
+import { fenceQuotaReplacementStop } from "./native-cancellation-request.js";
+import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
+import { executionControlSchedule } from "../execution-control-work.js";
+import { reconcileSafeNativeReplacements } from "./native-safe-replacement.js";
 
 describe("native provider capacity failure persistence", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
+  const workspaces: string[] = [];
   const companyId = randomUUID();
   const agentId = randomUUID();
 
@@ -67,230 +88,286 @@ describe("native provider capacity failure persistence", () => {
 
   afterAll(async () => {
     await temporary?.cleanup();
+    await Promise.all(workspaces.map(path => rm(path, { recursive: true, force: true })));
   });
 
-  /** Runs one native session whose provider ends its turn with `payload`. */
-  async function failTurn(options: {
-    payload: Record<string, unknown>;
-    replayed?: boolean;
-    responsibleUserId?: string | null;
-  }) {
-    const issueId = randomUUID();
-    const runId = randomUUID();
-    const [issue] = await db
-      .insert(issues)
-      .values({
-        id: issueId,
-        companyId,
-        title: "Reply after a capacity failure",
-        status: "in_progress",
-        workMode: "standard",
-        assigneeAgentId: agentId,
-      })
-      .returning();
-    const [run] = await db
-      .insert(heartbeatRuns)
-      .values({
-        id: runId,
-        companyId,
-        agentId,
-        status: "running",
-        runtimeMode: "native",
-        nativeIssueId: issueId,
-        invocationSource: "assignment",
-        triggerDetail: "system",
-        contextSnapshot: { issueId },
-        responsibleUserId: options.responsibleUserId ?? null,
-      })
-      .returning();
-    await db
-      .update(issues)
-      .set({ executionRunId: runId })
-      .where(eq(issues.id, issueId));
-    const native = await prepareNativeHeartbeatRun({
-      db,
-      run,
-      issue,
-      environmentLeaseId: randomUUID(),
-    });
-    const [contract] = await db
-      .select()
-      .from(completionContracts)
-      .where(eq(completionContracts.issueId, issueId));
-    const completionInput = buildNativeCompletionContract(issue, {
-      revision: contract.revision,
-    });
-    expect(completionInput).toEqual(contract.contractJson);
-    await db.insert(nativeRunFinalizations).values({
-      runId,
-      companyId,
-      issueId,
-      phase: "observed",
-    });
-    // A real terminal follows provider session establishment. Keep the
-    // recovery evidence explicit; this must not be a bootstrap retry.
-    await db
-      .update(heartbeatRuns)
-      .set({
-        runnerProfileJson: {
-          sessionCheckpoint: {
-            providerSessionId: "capacity-test-provider-session",
-            providerIdentity: { threadId: "capacity-test-thread" },
-          },
-        },
-      })
-      .where(eq(heartbeatRuns.id, runId));
-
-    const execution: NativeExecutionInputV1 = {
-      schema: "paperclip.native-execution-input.v1",
-      binding: {
-        companyId,
-        runId,
-        issueId,
-        agentId,
-        executionWorkspaceId: runId,
-      },
-      provider: { kind: "codex", model: "gpt-5.6-luna" },
-      task: {
-        identifier: issueId,
-        title: issue.title,
-        description: null,
-        prompt: "Reply to the current message.",
-        workMode: "standard",
-      },
-      workspace: {
-        cwd: "/tmp",
-        repoUrl: null,
-        repoRef: null,
-        branchName: null,
-      },
-      session: {
-        normalizedSessionId: native.normalizedSessionId,
-        driverKind: "codex_app_server",
-        protocolVersion: 1,
-        lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null },
-      },
-      completionContract: {
-        id: contract.id,
-        sha256: contract.canonicalSha256,
-        schemaVersion: "paperclip.completion-contract.v1",
-        contract: completionInput,
-      },
-      interactionResponses: [],
-      credentialBindings: [],
-    };
-    const event: PrpEvent = {
-      schema: "paperclip.prp.event.v1",
-      runId,
-      normalizedSessionId: native.normalizedSessionId,
-      turnId: native.turnId,
-      sourceInstanceId: native.runnerInstanceId,
-      sourceEventId: "capacity-terminal",
-      sourceSeq: 1,
-      sourceKind: "runner",
-      eventType: "turn.failed",
-      schemaVersion: 1,
-      priority: 0,
-      emittedAt: new Date().toISOString(),
-      payload: options.payload,
-    };
-    const openInput = {
-      identity: {
-        companyId,
-        issueId,
-        runId,
-        agentId,
-        sessionId: native.normalizedSessionId,
-      },
-      backendKind: "mock" as const,
-      sourceInstanceId: native.runnerInstanceId,
-    };
-    if (options.replayed) {
-      // Model a controller crash after the event commit but before its
-      // observational callback or failure coordinator could run.
-      const priorPort = new PaperclipControlPlanePort(db, {
-        companyId,
-        issueId,
-        runId,
-        agentId,
-        sessionId: native.normalizedSessionId,
-        sourceInstanceId: native.runnerInstanceId,
-        controlPlaneSourceInstanceId: "prior-controller",
-        completionContractId: contract.id,
-        completionContractSha256: contract.canonicalSha256,
-      });
-      await priorPort.openRun(openInput);
-      expect((await priorPort.appendEvent(event)).disposition).toBe(
-        "committed",
-      );
-    }
-    provider.execute
-      .mockReset()
-      .mockImplementation(
-        async (executeOptions: { controlPlane: ControlPlanePort }) => {
-          await executeOptions.controlPlane.openRun(openInput);
-          const appended = await executeOptions.controlPlane.appendEvent(event);
-          expect(appended.disposition).toBe(
-            options.replayed ? "duplicate" : "committed",
-          );
-          // Production reports the provider terminal through the event, not by
-          // pattern-matching this exception's arbitrary message.
-          throw new Error("provider turn stopped");
-        },
-      );
-    await expect(
-      executePaperclipNativeSession({
+  it.each([
+    ...[false, true].flatMap(replayed => [false, true].map(structured => ({ replayed, structured, kind: "quota", hold: "" }))),
+    { replayed: false, structured: false, kind: "auth", hold: "" },
+    { replayed: true, structured: true, kind: "auth", hold: "" },
+    { replayed: false, structured: false, kind: "runner", hold: "" },
+    { replayed: false, structured: false, kind: "runner_definitive", hold: "" },
+    { replayed: false, structured: true, kind: "runner_definitive", hold: "", poolHarness: true },
+    { replayed: false, structured: false, kind: "auth", hold: "stop" },
+    { replayed: false, structured: false, kind: "runner", hold: "unknown_action" },
+    { replayed: false, structured: false, kind: "runner_definitive", hold: "unknown_action" },
+    ...["quota", "auth", "runner_definitive"].map(kind => ({ replayed: false, structured: false, kind, hold: "", poolHarness: true })),
+    { replayed: false, structured: false, kind: "quota", hold: "", poolHarness: true, ordinaryRetry: true },
+    ...["quota", "auth", "runner_definitive"].map(kind => ({ replayed: false, structured: true, kind, hold: "", poolHarness: true, recoverAttribution: true })),
+  ])(
+    "persists $kind failure and continues receipted work (replayed=$replayed, structured=$structured, hold=$hold, recoverAttribution=$recoverAttribution)",
+    async scenario => {
+      const { replayed, structured, kind: scenarioKind, hold } = scenario;
+      const poolHarness = "poolHarness" in scenario && scenario.poolHarness === true;
+      const recoveringAttribution = "recoverAttribution" in scenario && scenario.recoverAttribution === true;
+      const ordinaryRetry = "ordinaryRetry" in scenario && scenario.ordinaryRetry === true;
+      const immediate = scenarioKind === "runner_definitive";
+      const kind = immediate ? "runner" : scenarioKind;
+      const code = kind === "auth" ? "native_provider_auth_failed" : kind === "runner" ? "native_provider_runner_failed" : "native_provider_usage_limit";
+      const failureMessage = kind === "runner" ? "native_runner_process_exited" : "provider turn stopped";
+      const workspaceCwd = await mkdtemp(join(tmpdir(), "native-quota-workspace-"));
+      workspaces.push(workspaceCwd);
+      const savedFile = join(workspaceCwd, "saved-work.txt");
+      const savedWork = "Completed work before the usage limit.\n";
+      const issueId = randomUUID();
+      const runId = randomUUID();
+      const [issue] = await db
+        .insert(issues)
+        .values({
+          id: issueId,
+          companyId,
+          title: "Reply after a capacity failure",
+          status: "in_progress",
+          workMode: "standard",
+          assigneeAgentId: agentId,
+        })
+        .returning();
+      const [run] = await db
+        .insert(heartbeatRuns)
+        .values({
+          id: runId,
+          companyId,
+          agentId,
+          status: "running",
+          runtimeMode: "native",
+          nativeIssueId: issueId,
+          invocationSource: "assignment",
+          triggerDetail: "system",
+          contextSnapshot: { issueId },
+        })
+        .returning();
+      await db
+        .update(issues)
+        .set({ executionRunId: runId })
+        .where(eq(issues.id, issueId));
+      const native = await prepareNativeHeartbeatRun({
         db,
-        execution,
-        runnerInstanceId: native.runnerInstanceId,
-        backend: {
-          descriptor: async () => {
-            throw new Error(
-              "Unexpected provider descriptor call in capacity test",
-            );
+        run,
+        issue,
+        environmentLeaseId: randomUUID(),
+      });
+      const [contract] = await db
+        .select()
+        .from(completionContracts)
+        .where(eq(completionContracts.issueId, issueId));
+      const completionInput = buildNativeCompletionContract(issue, {
+        revision: contract.revision,
+      });
+      expect(completionInput).toEqual(contract.contractJson);
+      await db.insert(nativeRunFinalizations).values({
+        runId,
+        companyId,
+        issueId,
+        phase: "observed",
+        attempt: kind === "runner" && !immediate ? 2 : 0,
+      });
+      // A real terminal follows provider session establishment. Keep the
+      // recovery evidence explicit; this must not be a bootstrap retry.
+      await db
+        .update(heartbeatRuns)
+        .set({
+          runnerProfileJson: {
+            sessionCheckpoint: {
+              providerSessionId: "capacity-test-provider-session",
+              providerIdentity: { threadId: "capacity-test-thread" },
+            },
           },
-          openSession: async () => {
-            throw new Error(
-              "Unexpected provider session call in capacity test",
-            );
-          },
+        })
+        .where(eq(heartbeatRuns.id, runId));
+
+      const execution: NativeExecutionInputV10 = {
+        schema: "paperclip.native-execution-input.v10",
+        homeMode: "isolated", executionMode: "default", planningContext: null, runtimeContext: nativeRuntimeContextFixture(),
+        binding: {
+          companyId,
+          runId,
+          issueId,
+          agentId,
+          executionWorkspaceId: runId,
         },
-      }),
-    ).rejects.toThrow("provider turn stopped");
-    expect(provider.execute).toHaveBeenCalledTimes(1);
-    return { runId, issueId, sourceEventId: event.sourceEventId };
-  }
-
-  async function holdFor(issueId: string) {
-    const [recovery] = await db
-      .select()
-      .from(issueRecoveryActions)
-      .where(eq(issueRecoveryActions.sourceIssueId, issueId));
-    return recovery;
-  }
-
-  it.each([false, true])(
-    "stops automatic retries for a durable usage terminal (replayed=%s)",
-    async (replayed) => {
-      const { runId, issueId, sourceEventId } = await failTurn({
-        replayed,
+        provider: { kind: "codex", model: "gpt-5.6-luna", approvalPolicy: "never" },
+        task: {
+          identifier: issueId,
+          title: issue.title,
+          description: null,
+          prompt: "Reply to the current message.",
+          workMode: "standard",
+        },
+        workspace: {
+          cwd: workspaceCwd,
+          repoUrl: null,
+          repoRef: null,
+          branchName: null,
+        },
+        session: {
+          normalizedSessionId: native.normalizedSessionId,
+          driverKind: "codex_app_server",
+          protocolVersion: 1,
+          lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null },
+        },
+        completionContract: {
+          id: contract.id,
+          sha256: contract.canonicalSha256,
+          schemaVersion: "paperclip.completion-contract.v1",
+          contract: completionInput,
+        },
+        interactionResponses: [],
+        credentialBindings: [],
+      };
+      const userId = `capacity-${randomUUID()}`;
+      await db.insert(authUsers).values({ id: userId, name: "Capacity", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
+      await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+      const accounts = aiConnectionService(db);
+      const saved = await Promise.all(["First", "Backup"].map(name => accounts.save(companyId, userId, {
+        provider: poolHarness && name === "Backup" ? "anthropic" : "openai", method: "api_key", ownership: "personal", name, apiKey: `fixture-${name}`, agentIds: [], allAgents: true,
+      }, randomUUID())));
+      const members: AiConnectionPoolMember[] = saved.map((account, index) => ({ id: randomUUID(), binding: {
+        mode: "delegated" as const, provider: poolHarness && index === 1 ? "anthropic" as const : "openai" as const, method: "api_key" as const, ...account,
+      }, profile: poolHarness && index === 1 ? { provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-5" } : { provider: "codex", model: "gpt-5" } }));
+      const router = aiConnectionRouterService(db);
+      const pool = await router.save(BUILTIN_AI_FAILOVER_ROUTER_KEY, { companyId,
+        config: { ...(poolHarness ? { schemaVersion: 2 as const, kind: "harness_pool" as const } : {}), name: "Capacity pool", enabled: true, mode: "failover", thresholdPercent: 90, members } }, userId);
+      await db.update(agents).set({ runtimeConfig: poolHarness ? { harnessPool: { poolId: pool.id } } : { aiConnection: { mode: "router", connectionId: pool.id } } }).where(eq(agents.id, agentId));
+      const selection = await router.resolve({ companyId, poolId: pool.id, agentId, userId, adapterType: "paperclip_runner", taskKey: issueId, ...(poolHarness ? { environmentId: null } : {}) });
+      if (selection.binding.mode === "responsible_user") throw new Error("Expected delegated fixture");
+      await db.update(heartbeatRuns).set({ scopeKind: "issue", issueId, responsibleUserId: userId,
+        contextSnapshot: { issueId, aiRouterTaskKey: issueId, aiRouterSelection: selection },
+        runnerProfileJson: { recoveryEventInventoryVersion: 1, nativeExecutionInput: { ...execution, workspace: { ...execution.workspace, cwd: workspaceCwd } },
+          sessionCheckpoint: { providerSessionId: "capacity-test-provider-session", providerIdentity: { threadId: "capacity-test-thread" }, ...(immediate ? { terminal: { runTerminalState: "failed" } } : {}) } },
+      }).where(eq(heartbeatRuns.id, runId));
+      if (ordinaryRetry) {
+        const [previous] = await db.insert(heartbeatRuns).values({ companyId, agentId, issueId, scopeKind: "issue", status: "failed", errorCode: "workspace_git_scan_timeout", contextSnapshot: { issueId, aiRouterTaskKey: issueId, aiRouterSelection: selection }, resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } }).returning();
+        await db.update(heartbeatRuns).set({ retryOfRunId: previous!.id }).where(eq(heartbeatRuns.id, runId));
+      }
+      const event: PrpEvent = {
+        schema: "paperclip.prp.event.v1",
+        runId,
+        normalizedSessionId: native.normalizedSessionId,
+        turnId: native.turnId,
+        sourceInstanceId: native.runnerInstanceId,
+        sourceEventId: "capacity-terminal",
+        sourceSeq: 3,
+        sourceKind: "runner",
+        eventType: "turn.failed",
+        schemaVersion: 1,
+        priority: 0,
+        emittedAt: new Date().toISOString(),
         payload: {
           status: "failed",
           error: {
-            codexErrorInfo: "usageLimitExceeded",
+            codexErrorInfo: kind === "auth" ? "unauthorized" : "usageLimitExceeded",
             message: "Private account metadata",
           },
         },
+      };
+      const toolStarted: PrpEvent = { ...event, sourceSeq: 1, sourceEventId: "capacity-tool-started", eventType: "tool.execution.started",
+        payload: { schema: "paperclip.tool.execution.v1", executionId: "saved-work", name: "write_file", transport: "process", operation: "edit", status: "running", output: null, outputBytes: 0, outputTruncated: false, outputDigest: null } };
+      const toolCompleted: PrpEvent = { ...toolStarted, sourceSeq: 2, sourceEventId: "capacity-tool-completed", eventType: "tool.execution.completed",
+        payload: { ...toolStarted.payload, status: "completed", output: "Saved work before quota exhaustion" } };
+      const openInput = {
+        identity: {
+          companyId,
+          issueId,
+          runId,
+          agentId,
+          sessionId: native.normalizedSessionId,
+        },
+        backendKind: "mock" as const,
+        sourceInstanceId: native.runnerInstanceId,
+      };
+      if (replayed) {
+        // Model a controller crash after the event commit but before its
+        // observational callback or failure coordinator could run.
+        const priorPort = new PaperclipControlPlanePort(db, {
+          companyId,
+          issueId,
+          runId,
+          agentId,
+          sessionId: native.normalizedSessionId,
+          sourceInstanceId: native.runnerInstanceId,
+          controlPlaneSourceInstanceId: "prior-controller",
+          completionContractId: contract.id,
+          completionContractSha256: contract.canonicalSha256,
+        });
+        await priorPort.openRun(openInput);
+        await priorPort.appendEvent(toolStarted);
+        await writeFile(savedFile, savedWork);
+        await priorPort.appendEvent(toolCompleted);
+        expect((await priorPort.appendEvent(event)).disposition).toBe(
+          "committed",
+        );
+      }
+      provider.execute
+        .mockReset()
+        .mockImplementation(
+          async (options: { controlPlane: ControlPlanePort }) => {
+            await options.controlPlane.openRun(openInput);
+            await options.controlPlane.appendEvent(toolStarted);
+            if (!replayed) await writeFile(savedFile, savedWork);
+            if (hold !== "unknown_action") await options.controlPlane.appendEvent(toolCompleted);
+            if (kind === "runner") throw structured
+              ? new NativeProviderTerminalFailure("notification_transport_failed", false,
+                "Notification transport failed closed: native_runner_process_exited: runnerd exited unexpectedly with code 137")
+              : new Error(failureMessage);
+            const appended = await options.controlPlane.appendEvent(event);
+            expect(appended.disposition).toBe(
+              replayed ? "duplicate" : "committed",
+            );
+            // Production reports the provider terminal through the event, not by
+            // pattern-matching this exception's arbitrary message.
+            if (!structured) throw new Error(failureMessage);
+            throw Object.assign(new Error("provider turn stopped"), { providerFailure: {
+              schema: "paperclip.provider-failure.v1", provider: "openai", phase: "turn", category: kind === "auth" ? "authentication" : "quota_exhausted",
+              message: "Provider rejected the account", retryability: "requires_action",
+            } });
+          },
+        );
+      let terminalWakes = 0;
+      const unsubscribeTerminal = subscribeDatabaseWork(db, DELIVERY_QUEUES.executionReplacement, event => {
+        if (event === "settled") terminalWakes++;
       });
+      try { await expect(
+        executePaperclipNativeSession({
+          db,
+          execution,
+          runnerInstanceId: native.runnerInstanceId,
+          backend: {
+            descriptor: async () => {
+              throw new Error(
+                "Unexpected provider descriptor call in capacity test",
+              );
+            },
+            openSession: async () => {
+              throw new Error(
+                "Unexpected provider session call in capacity test",
+              );
+            },
+          },
+        }),
+      ).rejects.toThrow(failureMessage); }
+      finally { unsubscribeTerminal(); }
+      if (recoveringAttribution) expect(terminalWakes).toBeGreaterThan(0);
+
+      expect(provider.execute).toHaveBeenCalledTimes(1);
       const [coordinator] = await db
         .select()
         .from(nativeRunFinalizations)
         .where(eq(nativeRunFinalizations.runId, runId));
       expect(coordinator).toMatchObject({
         phase: "terminal_failure",
-        failureCode: "native_provider_usage_limit",
+        failureCode: code,
         recoveryState: "blocked",
-        attempt: 1,
+        attempt: kind === "runner" && !immediate ? 3 : 1,
         nextAttemptAt: null,
         leaseOwner: null,
       });
@@ -298,16 +375,17 @@ describe("native provider capacity failure persistence", () => {
         .select()
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, runId));
-      expect(failedRun.errorCode).toBe("native_provider_usage_limit");
-      const recovery = await holdFor(issueId);
+      expect(failedRun.errorCode).toBe(kind === "runner" ? "native_runner_process_exited" : code);
+      const [recovery] = await db
+        .select()
+        .from(issueRecoveryActions)
+        .where(eq(issueRecoveryActions.sourceIssueId, issueId));
       expect(recovery).toMatchObject({
         ownerType: "board",
-        cause: "native_provider_usage_limit",
+        cause: code,
         wakePolicy: null,
       });
-      expect(recovery.nextAction).toContain(
-        "Restore model provider usage capacity",
-      );
+      if (kind === "quota") expect(recovery.nextAction).toContain("Restore model provider usage capacity");
       expect(recovery.nextAction).not.toContain("Private account metadata");
       const [waitingIssue] = await db
         .select()
@@ -319,269 +397,146 @@ describe("native provider capacity failure persistence", () => {
         .from(heartbeatRunEvents)
         .where(eq(heartbeatRunEvents.runId, runId));
       expect(
-        events.filter((row) => row.sourceEventId === sourceEventId),
-      ).toHaveLength(1);
-      // No reset was reported, so nothing retries the task by itself.
-      await expect(requestProviderLimitResumeRetry(db, { companyId, actionId: recovery.id }))
-        .resolves.toEqual({ requested: false, reason: "reset_unknown" });
+        events.filter((row) => row.sourceEventId === event.sourceEventId),
+      ).toHaveLength(kind === "runner" ? 0 : 1);
+      const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, selection.binding.grantId));
+      const ref = grant.credentialSecretRefs.find(item => item.configPath === "ai.credential")!;
+      const [secret] = await db.select().from(companySecrets).where(eq(companySecrets.id, ref.secretId));
+      if (poolHarness && kind === "quota" && !recoveringAttribution) await db.update(agents).set({ runtimeConfig: {} }).where(eq(agents.id, agentId));
+      if (kind === "runner" && structured) {
+        expect(coordinator.failureDetail).toMatchObject({ originalFailureCode: "notification_transport_failed" });
+        const attribute = () => recordVerifiedRouterQuotaCooldown(db, { companyId, agentId, runId,
+          credentialIdentity: `${grant.id}:${userId}:${secret.id}:${secret.aiSessionEpoch}`,
+          retryNotBefore: null, failureKind: "runner" });
+        for (const detail of [
+          { ...coordinator.failureDetail, originalFailureCode: "provider_turn_failed" },
+          { ...coordinator.failureDetail, message: "Notification transport failed closed: tool said native_runner_process_exited: not a runner exit" },
+        ]) {
+          await db.update(nativeRunFinalizations).set({ failureDetail: detail }).where(eq(nativeRunFinalizations.runId, runId));
+          expect(await attribute()).toBe(false);
+        }
+        await db.update(nativeRunFinalizations).set({ failureDetail: coordinator.failureDetail }).where(eq(nativeRunFinalizations.runId, runId));
+        await db.update(heartbeatRuns).set({ errorCode: "provider_process_exited" }).where(eq(heartbeatRuns.id, runId));
+        expect(await attribute()).toBe(false);
+        await db.update(heartbeatRuns).set({ errorCode: failedRun.errorCode }).where(eq(heartbeatRuns.id, runId));
+      }
+      if (recoveringAttribution) {
+        await db.update(heartbeatRuns).set({ responsibleUserId: userId, contextSnapshot: { ...failedRun.contextSnapshot,
+          aiConnection: { provider: "openai", connectionId: selection.binding.connectionId, grantId: grant.id,
+            sessionIdentity: `${grant.id}:${userId}:${secret.id}:${secret.aiSessionEpoch}` } } }).where(eq(heartbeatRuns.id, runId));
+        expect(await executionControlSchedule(db).replacement()).not.toBeNull();
+      }
+      const expectedDelay = kind === "runner" ? 5 * 60_000 : 2 * 60 * 60_000;
+      const attributionStartedAt = Date.now();
+      let recoveredScheduled: number | undefined;
+      if (recoveringAttribution) {
+        const [admitted] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+        const original = admitted.contextSnapshot!;
+        for (const candidate of [
+          { ...admitted, companyId: randomUUID() },
+          { ...admitted, contextSnapshot: { ...original, aiConnection: { ...original.aiConnection as object, connectionId: randomUUID() } } },
+          { ...admitted, contextSnapshot: { ...original, aiConnection: { ...original.aiConnection as object,
+            sessionIdentity: `${grant.id}:${userId}:${secret.id}:${secret.aiSessionEpoch + 1}` } } },
+        ]) expect(await recoverNativePoolAttribution(db, candidate)).toBe(false);
+        await db.update(companySecrets).set({ aiSessionEpoch: secret.aiSessionEpoch + 1 }).where(eq(companySecrets.id, secret.id));
+        expect(await recoverNativePoolAttribution(db, admitted)).toBe(false);
+        await db.update(companySecrets).set({ aiSessionEpoch: secret.aiSessionEpoch }).where(eq(companySecrets.id, secret.id));
+        const cooldownsBefore = await db.select().from(aiConnectionQuotaCooldowns).where(eq(aiConnectionQuotaCooldowns.companyId, companyId));
+        await expect(reconcileSafeNativeReplacements(db, new Date(), { failpoint: phase => {
+          if (phase === "pool_attribution_recorded") throw Object.assign(new Error("attribution transaction interrupted"), { code: "40001" });
+        } })).rejects.toThrow("attribution transaction interrupted");
+        expect(await db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, runId),
+          eq(heartbeatRunEvents.eventType, `ai_connection.${kind}_attributed`)))).toHaveLength(0);
+        expect(await db.select().from(aiConnectionQuotaCooldowns).where(eq(aiConnectionQuotaCooldowns.companyId, companyId))).toHaveLength(cooldownsBefore.length);
+        expect(await executionControlSchedule(db).replacement()).not.toBeNull();
+        const originalFinishedAt = new Date(Date.now() - expectedDelay - 5 * 60_000);
+        await db.update(heartbeatRuns).set({ finishedAt: originalFinishedAt }).where(eq(heartbeatRuns.id, runId));
+        recoveredScheduled = (await reconcileSafeNativeReplacements(db, new Date(), {
+          verifyStoppedSession: async candidate => candidate.id === runId ? { evidence: {}, retire: () => true } : null,
+        })).scheduled;
+        expect(recoveredScheduled).toBe(1);
+        expect((await reconcileSafeNativeReplacements(db)).scheduled).toBe(0);
+        const [receipt] = await db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, runId),
+          eq(heartbeatRunEvents.eventType, `ai_connection.${kind}_attributed`)));
+        expect(receipt.payload).toMatchObject({ retryAt: new Date(originalFinishedAt.getTime() + expectedDelay).toISOString() });
+      }
+      const attributed = recoveringAttribution || await recordVerifiedRouterQuotaCooldown(db, { companyId, agentId, runId,
+        credentialIdentity: `${grant.id}:${userId}:${secret.id}:${secret.aiSessionEpoch}`,
+        retryNotBefore: null, failureKind: kind as "quota" | "auth" | "runner",
+      });
+      expect(attributed).toBe(true);
+      if (poolHarness && kind === "quota") await db.update(agents).set({ runtimeConfig: { harnessPool: { poolId: pool.id } } }).where(eq(agents.id, agentId));
+      const cooldown = await router.accountCooldown(companyId, selection.binding.connectionId, `secret:${secret.id}:${secret.aiSessionEpoch}`, poolHarness ? { config: selection.runtimeConfig, scope: { environmentId: null } } : undefined);
+      if (recoveringAttribution) expect(cooldown).toBeNull();
+      else {
+        expect(cooldown!.getTime()).toBeGreaterThanOrEqual(attributionStartedAt + expectedDelay);
+        expect(cooldown!.getTime()).toBeLessThanOrEqual(Date.now() + expectedDelay);
+      }
+      if (hold === "stop") expect(await fenceQuotaReplacementStop(db, failedRun)).toMatchObject({ kind: "fenced" });
+      // This DB lifecycle test injects containment; the real local owner verifier
+      // has separate Codex/ACPX stop-receipt and changed-process coverage.
+      expect(recoveredScheduled ?? (await reconcileSafeNativeReplacements(db, new Date(), {
+        verifyStoppedSession: async candidate => candidate.id === runId ? { evidence: {}, retire: () => true } : null,
+      })).scheduled).toBe(hold ? 0 : 1);
+      if (hold) {
+        expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(0);
+        const [heldPin] = await db.select().from(aiConnectionTaskPins).where(and(eq(aiConnectionTaskPins.companyId, companyId), eq(aiConnectionTaskPins.taskKey, issueId)));
+        expect(heldPin.selection.memberId).toBe(members[0].id);
+        expect(provider.execute).toHaveBeenCalledTimes(1);
+        return;
+      }
+      const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId));
+      expect(successor.contextSnapshot).toMatchObject({ forceFreshSession: true, issueId,
+        aiRouterSelection: { memberId: members[1].id } });
+      const [pin] = await db.select().from(aiConnectionTaskPins).where(and(eq(aiConnectionTaskPins.companyId, companyId), eq(aiConnectionTaskPins.taskKey, issueId)));
+      expect(pin.selection.memberId).toBe(members[1].id);
+      expect(provider.execute).toHaveBeenCalledTimes(1);
+      expect(await readFile(savedFile, "utf8")).toBe(savedWork);
+      if (kind !== "quota" || poolHarness) {
+        const [currentIssue] = await db.select().from(issues).where(eq(issues.id, issueId));
+        const [runningSuccessor] = await db.update(heartbeatRuns).set({ status: "running", startedAt: new Date(),
+          runtimeMode: "native", nativeIssueId: issueId }).where(eq(heartbeatRuns.id, successor.id)).returning();
+        await db.update(issues).set({ executionRunId: successor.id }).where(eq(issues.id, issueId));
+        const prepared = await prepareNativeHeartbeatRun({ db, run: runningSuccessor, issue: currentIssue,
+          environmentLeaseId: randomUUID() });
+        await db.insert(nativeRunFinalizations).values({ runId: successor.id, companyId, issueId, phase: "observed" });
+        const backupInput = poolHarness ? buildNativeExecutionInput({ companyId, runId: successor.id, agentId,
+          issue: { id: issueId, title: issue.title, description: issue.description, identifier: issueId, workMode: "standard" },
+          taskPrompt: "Continue remaining work; preserve the receipted output.", workspace: { id: runId, ...execution.workspace },
+          normalizedSessionId: prepared.normalizedSessionId, provider: "acpx", acpxAgent: "claude", model: String(pin.selection.runtimeConfig.model),
+          completionContract: execution.completionContract, runtimeContext: nativeRuntimeContextFixture(),
+        }) : null;
+        if (backupInput && backupInput.provider.kind !== "acpx") throw new Error("Expected the selected Claude driver");
+        const nextExecution: NativeExecutionInputV10 = { ...execution,
+          binding: { ...execution.binding, runId: successor.id },
+          provider: backupInput?.provider.kind === "acpx" ? backupInput.provider : { kind: "codex", model: String(pin.selection.runtimeConfig.model), approvalPolicy: "never" },
+          session: { ...execution.session, driverKind: poolHarness ? "acpx_runtime" : "codex_app_server", normalizedSessionId: prepared.normalizedSessionId } };
+        provider.execute.mockImplementationOnce(async (options: { controlPlane: ControlPlanePort }) => {
+          expect(await readFile(savedFile, "utf8")).toBe(savedWork);
+          await options.controlPlane.openRun({ ...openInput,
+            identity: { ...openInput.identity, runId: successor.id, sessionId: prepared.normalizedSessionId }, sourceInstanceId: prepared.runnerInstanceId });
+          return { result: { summary: "Finished remaining work without replay" }, terminal: { runTerminalState: "succeeded" },
+            turnId: prepared.turnId, normalizedSessionId: prepared.normalizedSessionId, providerSessionId: "backup-provider",
+            driverKind: poolHarness ? "acpx_runtime" : "codex_app_server", driverVersion: "1", nativeEventCount: 0, highestContiguousSourceSeq: 0, usage: null };
+        });
+        const executeBackup = () => executePaperclipNativeSession({ db, execution: nextExecution, runnerInstanceId: prepared.runnerInstanceId,
+          backend: { descriptor: async () => { throw new Error("unexpected descriptor"); }, openSession: async () => { throw new Error("unexpected session"); } } });
+        if (kind === "runner" && !immediate) {
+          await db.update(heartbeatRuns).set({ contextSnapshot: { ...successor.contextSnapshot,
+            aiPoolFailover: { sourceRunId: runId, reason: "auth" } } }).where(eq(heartbeatRuns.id, successor.id));
+          await expect(executeBackup()).rejects.toThrow("native_session_retry_exhausted");
+          expect(provider.execute).toHaveBeenCalledTimes(1);
+          await db.update(heartbeatRuns).set({ contextSnapshot: successor.contextSnapshot }).where(eq(heartbeatRuns.id, successor.id));
+        }
+        const result = await executeBackup();
+        expect(result.exitCode).toBe(0);
+        const [backupOwner] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, successor.id));
+        expect(backupOwner.attempt).toBe(1);
+        expect(provider.execute).toHaveBeenCalledTimes(2);
+        expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0].status).toBe("failed");
+        const successorEvents = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, successor.id));
+        expect(successorEvents.filter(row => row.eventType === "tool.execution.started")).toHaveLength(0);
+      }
     },
   );
-
-  /** The ACP harness's weekly-limit terminal, as staging recorded it (PAP-1057). */
-  function weeklyLimit(resetAt: Date) {
-    const month = resetAt.toLocaleString("en-US", { month: "short", timeZone: "UTC" });
-    const hour = resetAt.getUTCHours();
-    const clock = `${hour % 12 || 12}${hour < 12 ? "am" : "pm"}`;
-    return {
-      status: "failed",
-      error: {
-        code: "RUNTIME",
-        message: "ACP agent reported a terminal limit failure.",
-        providerFailure: {
-          schema: "paperclip.provider-failure.v1",
-          provider: "anthropic",
-          phase: "turn",
-          category: "quota_exhausted",
-          retryability: "requires_action",
-          message: `ACP agent reported a terminal limit failure.\nYou've hit your weekly limit · resets ${month} ${resetAt.getUTCDate()}, ${clock} (UTC)`,
-        },
-      },
-    };
-  }
-
-  it("waits for a reported usage-limit reset and then requests the task's Retry once", async () => {
-    const resetAt = new Date(Date.now() + 2 * 24 * 60 * 60_000);
-    resetAt.setUTCMinutes(0, 0, 0);
-    const userId = `user-${randomUUID()}`;
-    const { runId, issueId } = await failTurn({ payload: weeklyLimit(resetAt), responsibleUserId: userId });
-
-    const hold = await holdFor(issueId);
-    expect(hold).toMatchObject({ cause: "native_provider_usage_limit",
-      evidence: expect.objectContaining({ providerLimitResetAt: resetAt.toISOString() }) });
-    // The hold says when work resumes, not that its session state is ambiguous.
-    expect(hold.nextAction).toBe(`The provider usage limit resets at ${resetAt.toISOString()}. `
-      + "Paperclip will retry this task then; Retry starts it sooner if usage capacity is already restored.");
-
-    // A hold saved by the previous release names no reset and calls the state ambiguous.
-    const { providerLimitResetAt: _reset, ...oldEvidence } = hold.evidence;
-    await db.update(issueRecoveryActions).set({ evidence: oldEvidence, nextAction: "Inspect the original provider failure "
-      + "and explicitly resolve the ambiguous session state; do not open a replacement provider session." })
-      .where(eq(issueRecoveryActions.id, hold.id));
-
-    // Before the reset nothing starts; the owner keeps the reset as its deadline
-    // and tells the reader when work resumes.
-    await expect(requestProviderLimitResumeRetry(db, { companyId, actionId: hold.id }))
-      .resolves.toEqual({ requested: false, waitUntil: resetAt });
-    expect(await holdFor(issueId)).toMatchObject({ nextAction: hold.nextAction,
-      evidence: expect.objectContaining({ providerLimitResetAt: resetAt.toISOString() }) });
-
-    // At the reset Paperclip asks for the same Retry the accountable user would.
-    const afterReset = new Date(resetAt.getTime() + 1000);
-    const outcome = await requestProviderLimitResumeRetry(db, { companyId, actionId: hold.id }, afterReset);
-    expect(outcome).toMatchObject({ requested: true });
-    const [receipt] = await db.select().from(agentWakeupRequests).where(and(
-      eq(agentWakeupRequests.companyId, companyId),
-      eq(agentWakeupRequests.idempotencyKey, `task-retry:provider-limit-reset:${runId}`)));
-    expect(receipt).toMatchObject({ reason: "task_retry", requestedByActorType: "user", requestedByActorId: userId,
-      status: "deferred_issue_execution", payload: expect.objectContaining({ issueId,
-        taskRetry: expect.objectContaining({ sourceRunId: runId, actorId: userId }) }) });
-    expect((await holdFor(issueId)).evidence.providerLimitResume).toMatchObject({ state: "requested",
-      requestId: receipt.id, resetAt: resetAt.toISOString() });
-
-    // A second pass never requests another Retry for the same hold.
-    await expect(requestProviderLimitResumeRetry(db, { companyId, actionId: hold.id }, afterReset))
-      .resolves.toEqual({ requested: false, reason: "not_waiting" });
-    const receipts = await db.select().from(agentWakeupRequests).where(and(
-      eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.reason, "task_retry"),
-      eq(agentWakeupRequests.agentId, agentId)));
-    expect(receipts.filter(row => (row.payload as Record<string, unknown>).issueId === issueId)).toHaveLength(1);
-  });
-
-  it("starts the Retry from the hold's own deadline after a restart rebuilds it", async () => {
-    // A typed reset a few seconds out; the owner learns it only from durable rows.
-    const resetAt = new Date(Date.now() + 3000);
-    const payload = weeklyLimit(resetAt);
-    (payload.error.providerFailure as Record<string, unknown>).retryAt = resetAt.toISOString();
-    const userId = `user-${randomUUID()}`;
-    const { issueId } = await failTurn({ payload, responsibleUserId: userId });
-    const hold = await holdFor(issueId);
-    const errors: unknown[] = [];
-    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
-      onError: error => { errors.push(error); } });
-    const resume = vi.fn(async () => undefined);
-    try {
-      const worker = registerProviderLimitResumeWork(db, coordinator,
-        { resume, schedulingSuppressed: async () => false }, () => true);
-      await worker.ready;
-      // Nothing starts before the reset.
-      expect(resume).not.toHaveBeenCalled();
-      await vi.waitFor(() => expect(resume).toHaveBeenCalledTimes(1), { timeout: 20_000, interval: 200 });
-      const [receipt] = await db.select().from(agentWakeupRequests).where(and(
-        eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.reason, "task_retry"),
-        eq(agentWakeupRequests.requestedByActorId, userId)));
-      expect(resume).toHaveBeenCalledWith(companyId, receipt.id);
-      expect(Date.now()).toBeGreaterThanOrEqual(resetAt.getTime());
-      expect((await holdFor(issueId)).evidence.providerLimitResume).toMatchObject({ state: "requested", requestId: receipt.id });
-      expect(hold.id).toBe((await holdFor(issueId)).id);
-    } finally {
-      await coordinator.stop();
-    }
-    expect(errors).toEqual([]);
-  }, 30_000);
-
-  it("leaves a visible Retry when no user is accountable for the run", async () => {
-    const resetAt = new Date(Date.now() + 3 * 60 * 60_000);
-    resetAt.setUTCMinutes(0, 0, 0);
-    const { issueId } = await failTurn({ payload: weeklyLimit(resetAt), responsibleUserId: null });
-    const hold = await holdFor(issueId);
-    expect(hold.nextAction).toBe(`The provider usage limit resets at ${resetAt.toISOString()}. `
-      + "Retry the task after that time, or sooner if usage capacity is restored.");
-    const outcome = await requestProviderLimitResumeRetry(db, { companyId, actionId: hold.id },
-      new Date(resetAt.getTime() + 1000));
-    expect(outcome).toEqual({ requested: false, reason: "no_accountable_user" });
-    expect((await holdFor(issueId)).nextAction).toBe("Paperclip did not retry this task after the provider usage limit "
-      + "reset because no user is accountable for the run. Retry the task when usage capacity is available.");
-  });
-
-  it("prepares a connected chat conversation's Retry through the chat service", async () => {
-    const resetAt = new Date(Date.now() + 2 * 60 * 60_000);
-    resetAt.setUTCMinutes(0, 0, 0);
-    const userId = `user-${randomUUID()}`;
-    const { runId, issueId } = await failTurn({ payload: weeklyLimit(resetAt), responsibleUserId: userId });
-    // The task belongs to a restricted external chat conversation.
-    const [application] = await db.insert(toolApplications).values({ companyId, name: "Slack", type: "chat" }).returning();
-    const connectionId = randomUUID();
-    await db.insert(toolConnections).values({ id: connectionId, companyId, applicationId: application!.id, uid: connectionId,
-      name: "Slack", transport: "chat_sdk", connectionPurpose: "channel" });
-    const endpointId = randomUUID();
-    await db.insert(chatEndpoints).values({ id: endpointId, companyId, connectionId, provider: "slack", publicId: endpointId,
-      assignedAgentId: agentId, status: "active", externalExecutionPolicy: "restricted" });
-    await db.insert(chatConversations).values({ companyId, endpointId, issueId, externalConversationId: "channel",
-      externalThreadId: issueId, externalLabel: "#limits", state: "waiting" });
-    const hold = await holdFor(issueId);
-    const chatActionId = randomUUID();
-    const prepareChatRetry = vi.fn(async () => ({ actionId: chatActionId }));
-    const outcome = await requestProviderLimitResumeRetry(db, { companyId, actionId: hold.id, prepareChatRetry },
-      new Date(resetAt.getTime() + 1000));
-    expect(outcome).toMatchObject({ requested: true });
-    expect(prepareChatRetry).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
-      companyId, issueId, agentId, failedRunId: runId, initiatedByUserId: userId }));
-    const [receipt] = await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, companyId),
-      eq(agentWakeupRequests.idempotencyKey, `task-retry:${PROVIDER_LIMIT_RESUME_KEY_PREFIX}${runId}`)));
-    expect(receipt.payload).toMatchObject({ taskRetry: expect.objectContaining({ chatActionId }) });
-  });
-
-  it("replaces the retry promise on every give-up path", async () => {
-    const resetAt = new Date(Date.now() + 2 * 60 * 60_000);
-    resetAt.setUTCMinutes(0, 0, 0);
-    const afterReset = new Date(resetAt.getTime() + 1000);
-    // The failed run's terminal can no longer be read as a provider-observed reset.
-    const unreadable = await failTurn({ payload: weeklyLimit(resetAt), responsibleUserId: `user-${randomUUID()}` });
-    await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, unreadable.runId));
-    const unreadableHold = await holdFor(unreadable.issueId);
-    expect(unreadableHold.nextAction).toContain("Paperclip will retry this task then");
-    await expect(requestProviderLimitResumeRetry(db, { companyId, actionId: unreadableHold.id }, afterReset))
-      .resolves.toEqual({ requested: false, reason: "reset_unknown" });
-    expect((await holdFor(unreadable.issueId)).nextAction).toBe("Paperclip did not retry this task after the provider "
-      + "usage limit reset because the provider's reset could no longer be read. Retry the task when usage capacity is available.");
-    // The hold's run no longer failed for the usage limit.
-    const changed = await failTurn({ payload: weeklyLimit(resetAt), responsibleUserId: `user-${randomUUID()}` });
-    await db.update(heartbeatRuns).set({ errorCode: "adapter_failed" }).where(eq(heartbeatRuns.id, changed.runId));
-    const changedHold = await holdFor(changed.issueId);
-    await expect(requestProviderLimitResumeRetry(db, { companyId, actionId: changedHold.id }, afterReset))
-      .resolves.toEqual({ requested: false, reason: "source_run_mismatch" });
-    expect((await holdFor(changed.issueId)).nextAction).toBe("Paperclip did not retry this task after the provider "
-      + "usage limit reset because the failed run no longer matches this hold. Retry the task when usage capacity is available.");
-  });
-
-  it("stops after three automatic Retries in a row and counts again after a successful run", async () => {
-    const resetAt = new Date(Date.now() + 2 * 60 * 60_000);
-    resetAt.setUTCMinutes(0, 0, 0);
-    const afterReset = new Date(resetAt.getTime() + 1000);
-    const userId = `user-${randomUUID()}`;
-    const { issueId } = await failTurn({ payload: weeklyLimit(resetAt), responsibleUserId: userId });
-    const hold = await holdFor(issueId);
-    // Earlier usage-limit Retries on this task, none followed by a success.
-    const earlierRetry = (task: string) => ({ companyId, agentId, source: "on_demand", triggerDetail: "manual",
-      reason: "task_retry", status: "completed", idempotencyKey: `task-retry:${PROVIDER_LIMIT_RESUME_KEY_PREFIX}${randomUUID()}`,
-      requestedByActorType: "user", requestedByActorId: userId, payload: { issueId: task },
-      requestedAt: new Date(Date.now() - 60_000) });
-    // Two in a row still leave this one.
-    await db.insert(agentWakeupRequests).values([earlierRetry(issueId), earlierRetry(issueId)]);
-    const [third] = await db.insert(agentWakeupRequests).values(earlierRetry(issueId)).returning();
-    await expect(requestProviderLimitResumeRetry(db, { companyId, actionId: hold.id }, afterReset))
-      .resolves.toEqual({ requested: false, reason: "automatic_retry_budget_used" });
-    expect((await holdFor(issueId)).nextAction).toBe("Paperclip did not retry this task after the provider usage limit "
-      + "reset because three automatic Retries in a row did not restore usage. Retry the task when usage capacity is available.");
-    expect(third.id).toBeTruthy();
-
-    // A successful run on the task after earlier Retries restores the budget.
-    const second = await failTurn({ payload: weeklyLimit(resetAt), responsibleUserId: userId });
-    await db.insert(agentWakeupRequests).values([earlierRetry(second.issueId), earlierRetry(second.issueId),
-      earlierRetry(second.issueId)]);
-    await db.insert(heartbeatRuns).values({ companyId, agentId, status: "succeeded", runtimeMode: "native",
-      nativeIssueId: second.issueId, invocationSource: "assignment", triggerDetail: "system",
-      contextSnapshot: { issueId: second.issueId }, finishedAt: new Date(Date.now() - 1000),
-      createdAt: new Date(Date.now() - 10 * 60_000) });
-    const secondHold = await holdFor(second.issueId);
-    await expect(requestProviderLimitResumeRetry(db, { companyId, actionId: secondHold.id }, afterReset))
-      .resolves.toMatchObject({ requested: true });
-  });
-
-  it("rebuilds every waiting hold after a restart, past one page", async () => {
-    const resetAt = new Date(Date.now() + 2 * 60 * 60_000);
-    resetAt.setUTCMinutes(0, 0, 0);
-    const { issueId } = await failTurn({ payload: weeklyLimit(resetAt), responsibleUserId: `user-${randomUUID()}` });
-    const hold = await holdFor(issueId);
-    // A hold saved before holds named their reset; it sorts after 600 others.
-    const { providerLimitResetAt: _reset, ...oldEvidence } = hold.evidence;
-    await db.delete(issueRecoveryActions).where(eq(issueRecoveryActions.id, hold.id));
-    const otherCompanyId = randomUUID();
-    await db.insert(companies).values({ id: otherCompanyId, name: "Other holds", issuePrefix: "OTH" });
-    const otherIssues = Array.from({ length: 600 }, () => randomUUID());
-    await db.insert(issues).values(otherIssues.map(id => ({ id, companyId: otherCompanyId, title: "Other", status: "in_progress" })));
-    const { id: _id, companyId: _company, sourceIssueId: _issue, createdAt: _c, updatedAt: _u, ...template } = hold;
-    for (let page = 0; page < 6; page++) {
-      await db.insert(issueRecoveryActions).values(Array.from({ length: 100 }, (_, index) => ({ ...template,
-        companyId: otherCompanyId, sourceIssueId: otherIssues[page * 100 + index]!,
-        id: `00000000-0000-4000-8000-${String(page * 100 + index).padStart(12, "0")}`,
-        evidence: { ...oldEvidence, runId: randomUUID() } })));
-    }
-    await db.insert(issueRecoveryActions).values({ ...hold, id: `ffffffff-ffff-4fff-bfff-${randomUUID().slice(-12)}`,
-      evidence: oldEvidence });
-    const errors: unknown[] = [];
-    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
-      onError: error => { errors.push(error); } });
-    try {
-      const worker = registerProviderLimitResumeWork(db, coordinator,
-        { resume: vi.fn(async () => undefined), schedulingSuppressed: async () => false }, () => true);
-      await worker.ready;
-      // The hold past the first page reads its reset and records it.
-      await vi.waitFor(async () => expect((await holdFor(issueId)).evidence.providerLimitResetAt).toBe(resetAt.toISOString()),
-        { timeout: 25_000, interval: 250 });
-    } finally {
-      await coordinator.stop();
-    }
-    expect(errors).toEqual([]);
-  }, 40_000);
-
-  it("reports a reset beyond the automatic wait without retrying by itself", async () => {
-    // A monthly limit, typed by the provider, three weeks out.
-    const resetAt = new Date(Date.now() + 21 * 24 * 60 * 60_000);
-    resetAt.setUTCMinutes(0, 0, 0);
-    const payload = weeklyLimit(resetAt);
-    (payload.error.providerFailure as Record<string, unknown>).retryAt = resetAt.toISOString();
-    const userId = `user-${randomUUID()}`;
-    const { issueId } = await failTurn({ payload, responsibleUserId: userId });
-    const hold = await holdFor(issueId);
-    expect(hold.nextAction).toBe(`The provider usage limit resets at ${resetAt.toISOString()}. `
-      + "Retry the task after that time, or sooner if usage capacity is restored.");
-    expect(hold.evidence).toMatchObject({ providerLimitResetAt: resetAt.toISOString() });
-    await expect(requestProviderLimitResumeRetry(db, { companyId, actionId: hold.id },
-      new Date(resetAt.getTime() + 1000))).resolves.toEqual({ requested: false, reason: "reset_beyond_wait" });
-    expect((await holdFor(issueId)).nextAction).toBe(hold.nextAction);
-    const receipts = await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, companyId),
-      eq(agentWakeupRequests.requestedByActorId, userId)));
-    expect(receipts).toEqual([]);
-  });
 });

@@ -99,6 +99,7 @@ const DecisionQueuePage = lazy(() => import("./pages/DecisionQueuePage").then((m
 const BoardChat = lazy(() => import("./pages/BoardChat").then((module) => ({ default: module.BoardChat })));
 const CompanySettings = lazy(() => import("./pages/CompanySettings").then((module) => ({ default: module.CompanySettings })));
 const CompanyConnections = lazy(() => import("./pages/CompanyConnections").then((module) => ({ default: module.CompanyConnections })));
+const CompanyPools = lazy(() => import("./pages/CompanyPools").then((module) => ({ default: module.CompanyPools })));
 const CompanyEnvironments = lazy(() => import("./pages/CompanyEnvironments").then((module) => ({ default: module.CompanyEnvironments })));
 const CompanySettingsPluginPage = lazy(() => import("./pages/CompanySettingsPluginPage").then((module) => ({ default: module.CompanySettingsPluginPage })));
 const CompanyAccess = lazy(() => import("./pages/CompanyAccess").then((module) => ({ default: module.CompanyAccess })));
@@ -161,6 +162,7 @@ function boardRoutes(streamlinedUiEnabled: boolean, combinedInboxTasksEnabled: b
       <Route path="companies" element={<Companies />} />
       <Route path="company/settings" element={<CompanySettings />} />
       <Route path="company/settings/connections" element={<CompanyConnections />} />
+      <Route path="company/settings/pools" element={<CompanyPools />} />
       <Route path="company/settings/environments" element={<Navigate to="/company/settings/instance/environments" replace />} />
       <Route path="company/settings/cloud-upstream" element={<Navigate to="/company/export" replace />} />
       <Route element={<HiddenSettingsPageGate pageKey="company.members" />}>

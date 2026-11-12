@@ -1,5 +1,20 @@
 # AI Connections
 
+## Pool member execution settings
+
+Settings > Pools stores runner behavior per ordered member. A Claude Legacy
+member exposes local profile import (off, copy per run, or cache per agent), an
+optional read-only profile source directory, and session transcript retention
+with a positive whole-day retention period under the Claude configuration's Advanced disclosure. These
+settings travel with the selected member; a fallback to another harness clears
+them. Transcript storage remains scoped to the company, agent, task and account.
+The managed Claude implementation is supplied by PR #18150; upstream integration
+of these controls depends on that runtime support. Workspace project trust is
+a separate operator grant and is never granted by choosing a pool setting.
+
+Existing pools offer archiving in the bottom Danger zone. A current affected-agent
+inspection and a separate confirmation are required before archiving.
+
 AI accounts use the existing Apps/Connections substrate. Manage them at
 `/:company/apps`; select their use beside an agent's harness/model settings.
 Onboarding, new-agent setup, account creation/reconnect, and inline task requests

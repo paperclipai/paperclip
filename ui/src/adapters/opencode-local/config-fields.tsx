@@ -15,6 +15,7 @@ const instructionsFileHint =
 
 export function OpenCodeLocalConfigFields({
   section,
+  allowedConfigKeys,
   isCreate,
   values,
   set,
@@ -26,7 +27,7 @@ export function OpenCodeLocalConfigFields({
   return configFieldsForSection(section, (
     <>
       {!hideInstructionsFile && (
-        <Field label="Agent instructions file" hint={instructionsFileHint}>
+        <Field configKey="instructionsFilePath" label="Agent instructions file" hint={instructionsFileHint}>
           <div className="flex items-center gap-2">
             <DraftInput
               value={
@@ -51,7 +52,7 @@ export function OpenCodeLocalConfigFields({
           </div>
         </Field>
       )}
-      <ToggleField
+      <ToggleField configKey="dangerouslySkipPermissions"
         label="Skip permissions"
         hint={help.dangerouslySkipPermissions}
         checked={
@@ -70,5 +71,5 @@ export function OpenCodeLocalConfigFields({
         }
       />
     </>
-  ));
+  ), allowedConfigKeys);
 }

@@ -551,6 +551,27 @@ describe("ConnectionIntentInteractionBody dialog behavior", () => {
 
 describe("AI repair inside the card", () => {
   const interaction: ConnectionIntentInteraction = { ...pendingConnectionIntentInteraction, payload: { ...pendingConnectionIntentInteraction.payload, purpose: "ai" } };
+  it("lets the addressed operator dismiss a stale AI request after changing providers", async () => {
+    setupOptionsMock.mockRejectedValue(new ApiError("AI configuration changed", 409, { error: "AI configuration changed" }));
+    declineMock.mockResolvedValue({ ...interaction, status: "rejected" });
+    renderBody(interaction);
+    await waitForAssertion(() => expect(button("Fix connection")).toBeDefined());
+    await act(() => button("Fix connection")!.click());
+    await waitForAssertion(() => expect(button("Dismiss request")).toBeDefined());
+    await act(() => button("Dismiss request")!.click());
+    expect(declineMock).toHaveBeenCalledWith(interaction.id);
+    expect(completeMock).not.toHaveBeenCalled();
+    expect(updateAgentMock).not.toHaveBeenCalled();
+  });
+  it("keeps a temporary setup failure from offering stale-request dismissal", async () => {
+    setupOptionsMock.mockRejectedValue(new ApiError("Unavailable", 500, { error: "Unavailable" }));
+    renderBody(interaction);
+    await waitForAssertion(() => expect(button("Fix connection")).toBeDefined());
+    await act(() => button("Fix connection")!.click());
+    await waitForAssertion(() => expect(document.body.textContent).toContain("Unavailable"));
+    expect(button("Dismiss request")).toBeUndefined();
+    expect(declineMock).not.toHaveBeenCalled();
+  });
   const connection = { id: "selected-account", name: "My Codex account", provider: "openai", method: "api_key", ownership: "personal", ownerName: "Dotta", status: "revoked" };
   it.each(["openrouter", "bedrock", "gateway"] as const)("retains the selected %s route through task-card account repair", async kind => {
     const routing = kind === "bedrock"
