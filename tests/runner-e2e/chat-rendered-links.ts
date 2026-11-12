@@ -10,6 +10,38 @@ export interface ConversationLinkInput {
   origin: string; companyId: string; companyPrefix?: string | null; sourceId: string; leadId: string;
   comments: Row[]; runs: ChatRun[]; projects: Row[]; activity: Row[];
 }
+/** Markdown link targets written in saved text, e.g. a reply body: inline [label](target), reference
+ * definitions ([label]: target) and autolinks (<https://...>). */
+export function markdownLinkTargets(text: string): string[] {
+  const unwrap = (target: string) => target.startsWith("<") && target.endsWith(">") ? target.slice(1, -1) : target;
+  return [
+    ...[...text.matchAll(/\]\(\s*([^)\s]+)/g)].map(match => unwrap(match[1]!)),
+    ...[...text.matchAll(/^[ \t]{0,3}\[[^\]\n]+\]:[ \t]*(\S+)/gm)].map(match => unwrap(match[1]!)),
+    ...[...text.matchAll(/<((?:https?:\/\/|\/)[^>\s]+)>/g)].map(match => match[1]!),
+  ];
+}
+export function mislabeledIssueLinks(text: string, identifierFor: (pathId: string) => string | undefined = () => undefined): string[] {
+  const identifier = /^[A-Za-z][A-Za-z0-9]*-\d+$/;
+  return [...text.matchAll(/\[((?:[^\[\]]|\[[^\]]*\])*)\]\(\s*<?([^)\s>]+)>?[^)]*\)?/g)].flatMap(match => {
+    const label = match[1]!, target = match[2]!;
+    let pathname: string;
+    try { pathname = decodeURIComponent(new URL(target, "http://paperclip.invalid").pathname); } catch { return []; }
+    const parts = pathname.split("/").filter(Boolean); const index = parts.indexOf("issues"); const pathId = index >= 0 ? parts[index + 1] : undefined;
+    if (!pathId) return [];
+    const opened = (identifier.test(pathId) ? pathId : identifierFor(pathId))?.toUpperCase();
+    if (!opened) return [];
+    const prefix = opened.split("-")[0]!;
+    const named = [...label.matchAll(/(?<![\w-])([A-Za-z][A-Za-z0-9]*-\d+)(?![\w-])/g)].map(token => token[1]!.toUpperCase())
+      .filter(token => token.split("-")[0] === prefix);
+    return named.length > 0 && !named.includes(opened) ? [match[0]] : [];
+  });
+}
+/** A link target that still holds a template placeholder such as <prefix> or {companyId}; it opens no real page. */
+export function unresolvedLinkTarget(href: string): boolean {
+  let decoded = href;
+  try { decoded = decodeURIComponent(href); } catch { /* keep the raw target */ }
+  return /[<>{}]/.test(decoded);
+}
 export function conversationLinkBindings(input: ConversationLinkInput) {
   const comments = input.comments.filter(row => row.companyId === input.companyId && row.issueId === input.sourceId);
   const replies = comments.filter(row => row.authorAgentId === input.leadId && input.runs.some(run =>
@@ -82,9 +114,15 @@ export function readConversationDomLinks(input: ReturnType<typeof conversationLi
  * saved lead reply to render so rendered links are not read too early. A page
  * that is not showing this conversation is left alone. */
 export const CONVERSATION_REPLY_RENDER_WAIT_MS = 10_000;
-// A reply that did not render within one wait is not waited for again on the same page, so repeated
-// observations in a poll loop pay the wait at most once per reply.
+// A reply that did not render within one wait is not waited for again in the same loaded document, so
+// repeated observations in a poll loop pay the wait at most once per reply. The expiry belongs to the
+// document, not the Playwright page: after a reload or navigation the thread renders again from scratch,
+// and reading it instantly then would capture no links although the reply renders moments later.
 const expiredReplyWaits = new WeakMap<object, Set<string>>();
+export function readConversationDocumentIdentity(): string {
+  const view = window as typeof window & { __paperclipConversationLinkDocument?: string };
+  return view.__paperclipConversationLinkDocument ??= `${performance.timeOrigin}:${Math.random()}`;
+}
 export type ConversationReplyRender = "closed" | "rendered" | "pending";
 export function readLatestConversationReplyRender(input: { anchors: string[]; latest: string }): ConversationReplyRender {
   const threadSelector = '[data-testid="task-chat-thread"], [data-testid="thread-root"]';
@@ -101,14 +139,37 @@ export async function waitForLatestConversationReplyRender(page: Pick<Page, "eva
   timeoutMs = CONVERSATION_REPLY_RENDER_WAIT_MS, intervalMs = 250): Promise<ConversationReplyRender> {
   const latest = bindings.replies.at(-1);
   if (!latest) return "rendered";
+  let documentIdentity: string;
+  try { documentIdentity = await page.evaluate(readConversationDocumentIdentity); } catch { return "closed"; }
+  const waitKey = `${documentIdentity}:${latest}`;
   const expired = expiredReplyWaits.get(page) ?? new Set<string>();
-  if (expired.has(latest)) timeoutMs = 0;
+  if (expired.has(waitKey)) timeoutMs = 0;
   // Bounded by attempts as well as time so a frozen test clock cannot spin.
   for (let attempt = 0, attempts = Math.max(1, Math.ceil(timeoutMs / intervalMs)), deadlineAt = Date.now() + timeoutMs; ; attempt++) {
     let state: unknown;
     try { state = await page.evaluate(readLatestConversationReplyRender, { anchors: bindings.anchors, latest }); } catch { return "closed"; }
     if (state !== "pending") return state === "closed" ? "closed" : "rendered";
-    if (attempt + 1 >= attempts || Date.now() >= deadlineAt) { expired.add(latest); expiredReplyWaits.set(page, expired); return "pending"; }
+    if (attempt + 1 >= attempts || Date.now() >= deadlineAt) { expired.add(waitKey); expiredReplyWaits.set(page, expired); return "pending"; }
+    await new Promise(resolve => setTimeout(resolve, intervalMs));
+  }
+}
+/** A finished run's reply comment can be saved shortly after the run itself is recorded as finished, and the open
+ * conversation renders it later still. Before acting on a turn's rendered links, wait (bounded) for each finished
+ * lead run's saved reply, then for the latest to render. "unsaved" means no run saved a reply in time. */
+export const TURN_REPLY_SAVE_WAIT_MS = 15_000;
+export async function waitForSavedTurnReplyRender(page: Pick<Page, "evaluate">, input: {
+  comments: () => Promise<Row[]>; leadId: string; runIds: readonly string[];
+}, timeoutMs = TURN_REPLY_SAVE_WAIT_MS, intervalMs = 250): Promise<ConversationReplyRender | "unsaved"> {
+  const deadlineAt = Date.now() + timeoutMs;
+  for (let attempt = 0, attempts = Math.max(1, Math.ceil(timeoutMs / intervalMs)); ; attempt++) {
+    const rows = await input.comments();
+    const replies = rows.filter(row => row.authorAgentId === input.leadId && input.runIds.includes(String(row.createdByRunId)));
+    const saved = input.runIds.length > 0 && input.runIds.every(id => replies.some(row => row.createdByRunId === id));
+    if (saved || attempt + 1 >= attempts || Date.now() >= deadlineAt) {
+      if (!replies.length) return "unsaved";
+      return waitForLatestConversationReplyRender(page, { anchors: rows.map(row => String(row.id)), replies: replies.map(row => String(row.id)) },
+        Math.max(CONVERSATION_REPLY_RENDER_WAIT_MS, deadlineAt - Date.now()), intervalMs);
+    }
     await new Promise(resolve => setTimeout(resolve, intervalMs));
   }
 }

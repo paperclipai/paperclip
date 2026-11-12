@@ -782,6 +782,7 @@ export type ProviderResourceDisposition =
   | "destroy";
 
 const DEFAULT_PLUGIN_SANDBOX_WORKER_READY_TIMEOUT_MS = 5_000;
+const DEFAULT_PLUGIN_SANDBOX_WORKER_RESUME_WAIT_MS = 60_000;
 const DEFAULT_PLUGIN_SANDBOX_WORKER_READY_POLL_MS = 100;
 
 const DEFAULT_DEFERRED_ORPHAN_CLEANUP_BUFFER_LIMIT = 256;
@@ -1338,6 +1339,7 @@ function createSandboxEnvironmentDriver(
     readOnlyInspection?: boolean;
     pluginWorkerReadyTimeoutMs?: number;
     pluginWorkerReadyPollMs?: number;
+    pluginWorkerResumeWaitMs?: number;
     deferredOrphanCleanupBufferLimit?: number;
     orphanCleanupSpool?: SandboxOrphanCleanupSpool;
     orphanCleanupSpoolDir?: string;
@@ -1346,6 +1348,7 @@ function createSandboxEnvironmentDriver(
   const pluginWorkerManager = options.pluginWorkerManager;
   const pluginWorkerReadyTimeoutMs = options.pluginWorkerReadyTimeoutMs ?? DEFAULT_PLUGIN_SANDBOX_WORKER_READY_TIMEOUT_MS;
   const pluginWorkerReadyPollMs = options.pluginWorkerReadyPollMs ?? DEFAULT_PLUGIN_SANDBOX_WORKER_READY_POLL_MS;
+  const pluginWorkerResumeWaitMs = options.pluginWorkerResumeWaitMs ?? DEFAULT_PLUGIN_SANDBOX_WORKER_RESUME_WAIT_MS;
   // The buffer holds at least one orphan, so a zero or negative override never
   // drops every buffered record.
   const deferredOrphanCleanupBufferLimit = Math.max(
@@ -1506,7 +1509,10 @@ function createSandboxEnvironmentDriver(
     if (input.pluginId) {
       const pinned = await resolvePluginSandboxProviderDriverById({ db, pluginId: input.pluginId, driverKey: input.provider });
       if (!pinned) return { state: "missing" as const, resolved: null };
-      if (pinned.plugin.status !== "ready") return { state: "not_ready" as const, resolved: pinned };
+      if (pinned.plugin.status !== "ready") {
+        return pluginWorkerManager?.requestActivationTimeoutRecovery?.(pinned.plugin)
+          ? { state: "worker_unavailable" as const, resolved: pinned } : { state: "not_ready" as const, resolved: pinned };
+      }
       if (!pluginWorkerManager?.isRunning(pinned.plugin.id)) return { state: "worker_unavailable" as const, resolved: pinned };
       return { state: "running" as const, resolved: pinned };
     }
@@ -1531,7 +1537,8 @@ function createSandboxEnvironmentDriver(
     }
 
     if (installed.plugin.status !== "ready") {
-      return { state: "not_ready" as const, resolved: installed };
+      return pluginWorkerManager?.requestActivationTimeoutRecovery?.(installed.plugin)
+        ? { state: "worker_unavailable" as const, resolved: installed } : { state: "not_ready" as const, resolved: installed };
     }
 
     if (!pluginWorkerManager) {
@@ -2694,6 +2701,16 @@ function createSandboxEnvironmentDriver(
     async resumeRunLease(input) {
       const pluginId = readString(input.lease.metadata?.pluginId);
       const providerKey = readString(input.lease.metadata?.provider);
+      if (input.lease.metadata?.sandboxProviderPlugin && pluginWorkerManager && pluginId && providerKey
+        && !pluginWorkerManager.isRunning(pluginId)) {
+        const plugin = await resolvePluginSandboxProviderDriverById({ db, pluginId, driverKey: providerKey });
+        if (plugin && (plugin.plugin.status === "ready" || pluginWorkerManager.requestActivationTimeoutRecovery?.(plugin.plugin))) {
+          const deadline = Date.now() + Math.max(0, pluginWorkerResumeWaitMs);
+          while (!pluginWorkerManager.isRunning(pluginId) && Date.now() < deadline) await delay(Math.max(1, pluginWorkerReadyPollMs));
+          if (!pluginWorkerManager.isRunning(pluginId)) throw new PluginWorkerUnavailableError({ pluginId, workerStatus: pluginWorkerManager.getWorker(pluginId)?.status ?? null,
+            message: `Sandbox provider "${providerKey}" is installed via plugin "${plugin.plugin.pluginKey}", but its worker is not running.` });
+        }
+      }
       if (!input.lease.metadata?.sandboxProviderPlugin || !pluginWorkerManager || !pluginId || !providerKey
         || !input.lease.providerLeaseId || input.lease.environmentId !== input.environment.id
         || !pluginWorkerVerifiesLifecycleMethod(pluginId, "environmentResumeLease")
@@ -3774,6 +3791,7 @@ export function environmentRuntimeService(
     readOnlyInspection?: boolean;
     pluginWorkerReadyTimeoutMs?: number;
     pluginWorkerReadyPollMs?: number;
+    pluginWorkerResumeWaitMs?: number;
     deferredOrphanCleanupBufferLimit?: number;
     orphanCleanupSpool?: SandboxOrphanCleanupSpool;
     orphanCleanupSpoolDir?: string;
@@ -3791,6 +3809,7 @@ export function environmentRuntimeService(
       readOnlyInspection: options.readOnlyInspection,
       pluginWorkerReadyTimeoutMs: options.pluginWorkerReadyTimeoutMs,
       pluginWorkerReadyPollMs: options.pluginWorkerReadyPollMs,
+      pluginWorkerResumeWaitMs: options.pluginWorkerResumeWaitMs,
       deferredOrphanCleanupBufferLimit: options.deferredOrphanCleanupBufferLimit,
       orphanCleanupSpool: options.orphanCleanupSpool,
       orphanCleanupSpoolDir: options.orphanCleanupSpoolDir,

@@ -19,7 +19,8 @@ vi.mock("./chat-catalog-registry.js", () => ({
 vi.mock("./chat-catalog-fingerprint.js", () => ({ chatCatalogCaseFingerprint: () => ({}), normalizedChatCatalogExecution: () => ({}) }));
 vi.mock("./chat-query-bindings.js", () => ({ resolveChatCatalogQuery: async () => { if (control.completeQuery) return { renderedQuery: "Original request" }; throw new Error("Original attempt failed"); } }));
 vi.mock("./chat-rendered-links.js", () => ({ collectConversationLinks: async () => [] }));
-vi.mock("./chat-catalog-run-policy.js", () => ({ gradeChatCatalogRuns: () => ({ checks: [] }) }));
+vi.mock("./chat-catalog-run-policy.js", () => ({ gradeChatCatalogRuns: () => ({ checks: [] }), CHAT_CATALOG_MAX_SUPERSEDED_QUEUED_RUNS: 1,
+  chatCatalogProviderRuns: (runs: unknown[]) => runs, chatCatalogSupersededQueuedRuns: () => [], chatCatalogReassignedQueuedRun: () => false }));
 vi.mock("./chat-flow.js", () => ({ sendChatMessage: async () => {}, collectChatRunEvidence: async () => { control.enter(); if (control.stall) await control.collectorRelease; return {}; } }));
 vi.mock("./api.js", () => ({ pollUntil: async ({ load }: { load: () => Promise<unknown> }) => { await load(); throw new Error("Original attempt failed"); } }));
 import { runChatCatalogFlow } from "./chat-catalog-flow.js";

@@ -425,7 +425,7 @@ for a while after the new one was up. Plain K15 restarts on the same instance ho
 Pass is the usual grade: no Retry (R3), no stuck record (R6), and the oracle. Staging's terminal errors here
 were `ENOENT` on a runtime asset, `Agent directory operation is already active` after a 9.5-minute
 `controller_lease_held` wait.
-### Staging class R cells (CR1–CR5, `class-r.ts`)
+### Staging class R cells (CR1–CR6, `class-r.ts`)
 
 ```sh
 node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env daytona --daytona-image $IMG --daytona-cpu 3 \
@@ -449,6 +449,7 @@ and the R1–R6 grading rules already exist.
 | CR3 | SIGSTOP of the server's Daytona plugin worker and its children. Every plugin RPC, including `environmentExecute`, stalls. There is no deploy. | `--cr3-stall-seconds <n>`, 41–600. Default 45. |
 | CR4 | A K1 restart (SIGKILL, no hold). When the replacement is healthy and its server log shows the plugin activated (`plugin-loader: loadAll complete`), its Daytona plugin worker is stopped for the CR3 stall. A stall during activation is a different fault: the plugin's `initialize` call times out and the plugin stays in error. The run's reattachment reads stall while the run recovers: the saved state, the identity marker and the process check. | `--cr3-stall-seconds <n>`. |
 | CR5 | The CR3 stall, fired 3–8 s after the task is assigned. It always uses the time trigger and ignores `--fault-after-seconds`. It covers the run's launch: the runnerd launch call and the identity read. It does not need to cross the T1 tool loop. | `--cr3-stall-seconds <n>`. |
+| CR6 | A K1 restart (SIGKILL, no hold). The replacement's Daytona plugin worker is stopped for the CR3 stall as soon as it forks, while the server activates the plugin at boot. The worker's `initialize` call times out (15 s). | `--cr3-stall-seconds <n>`. |
 
 - CR2 kills only the processes under the run's `paperclip-runnerd` whose arguments match the adapter's
   provider command. For Claude (ACPX) that is `--output-format stream-json`. For OpenCode it is
@@ -458,10 +459,10 @@ and the R1–R6 grading rules already exist.
 - The run id comes from the task's last sample before the fault. Each kill's output is saved to
   `daytona-runner/provider-kill-<task>-<ms>.json`.
 - Each CR task must pass `class_r_fault_applied`. The fault must not have failed, CR2 must have killed a
-  provider process, and the CR3, CR4 or CR5 stall must have ended. A cell whose fault never applied tested
+  provider process, and the CR3–CR6 stall must have ended. A cell whose fault never applied tested
   nothing.
 - Use T1, so that the fault lands while a tool runs, as it did on staging. CR5 is the exception: it lands at
-  launch, so T1's `fault_crossed_tool` check does not apply to it. Use `--concurrency 1` for CR3–CR5,
+  launch, so T1's `fault_crossed_tool` check does not apply to it. Use `--concurrency 1` for CR3–CR6,
   because the stall hits every task's plugin RPCs.
 
 **Sandbox capture.** Every Daytona wave, not only a CR wave, runs the class R probe (`CLASS_R_PROBE`) in
@@ -499,6 +500,7 @@ deletes a sandbox. An archived or stopped sandbox is recorded by its state alone
 | `w-20261111T202055-s9502` | CR1 75 s and CR2, OpenCode and Claude | No refusal. The Runner survived every outage. A killed provider failed the turn with a clear code: Claude `ACP agent reported a terminal connection failure`, OpenCode `opencode_server_exited`. |
 | `w-20261111T204144-s9503` | CR1 360 s twice, OpenCode and Claude | No refusal. The Runner and the provider survived both outages. |
 | `w-20261111T210055-s9504` | CR3 45 s, OpenCode and Claude | Not the staging code, a separate failure. `runnerd process supervision failed: RPC call "environmentExecute" timed out after 40000ms` failed the run as `notification_transport_failed`. The close path suspended a healthy Runner (`lifecycle: suspended`, no stderr). Retry worked. |
+| `w-20261111T223714-s9512` | CR1 360 s, Codex W2, `--daytona-warm --ephemeral-server` (with #20909) | `R1:no_rest_within_budget`, U1 `no_owner_no_action` with the follow-up run queued 485 s. The next controller finalized the run that crossed the outage. Its continuation queued while that run's warm lease was still `active`, so the claim was declined. No dispatch pass ran after the lease was retained, and the run stayed `queued` for 19 minutes with no Retry. Lease release and native finalization writes now send a queued-run dispatch signal, and a declined claim logs its reason (`claimQueuedRun: queued run declined at the issue execution claim`). As a backstop, the run-dispatch worker re-drives an undispatched queued run 60 s after it was created, then with a doubling interval up to 15 minutes, and the ownership reconciler reports one still queued after 5 minutes as I7 `queued_run_not_dispatched` and re-drives it once. |
 
 ### Volume-free servers (`--ephemeral-server`)
 

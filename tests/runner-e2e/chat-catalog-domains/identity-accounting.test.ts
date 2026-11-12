@@ -126,6 +126,17 @@ describe("post-retry read of the original run record", () => {
     expect(readSavedAccounting([runRead("final", bound, 403)], "final", { originalRunId: original })).toBe(false);
     expect(readSavedAccounting([runRead("initial", bound)], "final", { originalRunId: original })).toBe(false);
   });
+  // Full cohort 3: the post-retry run re-read the original run with saveResponse; its input digest matched no
+  // listed shape, but the product saved the response as an asset logged by that run, whose content is that run record.
+  it("accepts an unlisted-digest re-read whose saved response is the original run record", () => {
+    const saved = { runId: "final", assetId: "asset", recordId: original, companyId: "company" };
+    expect(readSavedAccounting([runRead("final", "other-input")], "final", { companyId: "company", originalRunId: original, savedRunRecords: [saved] })).toBe(true);
+    // Broken: the saved record is another run, was saved by another run, belongs to another company, or the read failed.
+    for (const bad of [{ ...saved, recordId: own }, { ...saved, runId: "initial" }, { ...saved, companyId: "other" }])
+      expect(readSavedAccounting([runRead("final", "other-input")], "final", { companyId: "company", originalRunId: original, savedRunRecords: [bad] })).toBe(false);
+    expect(readSavedAccounting([runRead("final", "other-input", 404)], "final", { companyId: "company", originalRunId: original, savedRunRecords: [saved] })).toBe(false);
+    expect(readSavedAccounting([], "final", { companyId: "company", originalRunId: original, savedRunRecords: [saved] })).toBe(false);
+  });
   it("extracts only exact run-record reads from the run's saved verification and evidence", () => {
     expect(citedRunReads({ resultJson: { nativeResult: { verification: [{ commandOrCheck: `GET /api/heartbeat-runs/${original}` }], evidence: [{ ref: `GET /api/heartbeat-runs/${own}: costAccountingPending=false` }, { ref: "comment:x" }] } } }))
       .toEqual([`GET /api/heartbeat-runs/${original}`, `GET /api/heartbeat-runs/${own}`]);

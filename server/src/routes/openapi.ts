@@ -11934,6 +11934,17 @@ registerCurrentRoute({
   responses: { 200: r.ok(observabilitySettingsEnvelopeSchema), 401: r.unauthorized, 403: r.forbidden },
 });
 registerCurrentRoute({
+  method: "get", path: "/api/companies/{companyId}/observability/status", tags: ["agent-observability"],
+  summary: "Read whether the company's agent trace export (observability to an OTLP collector or Braintrust) is configured and enabled",
+  description: "Readable by the company's agents and members. Reports whether company agent trace export to an OpenTelemetry (OTLP) collector or Braintrust is configured, enabled, has saved credentials, and the result of its latest delivery test. It never returns the destination or any credential. "
+    + "Use it to answer what is saved for the company's trace export or test collector; agent configuration and company secrets do not hold these settings. Board connection managers change them in Company settings, Agent observability, at /<prefix>/company/settings.",
+  responses: { 200: r.ok(z.object({
+    configured: z.boolean(), enabled: z.boolean(), provider: z.enum(["otlp", "braintrust"]).nullable(),
+    credentialsConfigured: z.boolean(), updatedAt: z.string().datetime().nullable(),
+    lastTest: z.object({ status: z.enum(["accepted", "partial", "failed"]), finishedAt: z.string().datetime() }).strict().nullable(),
+  }).strict()), 401: r.unauthorized, 403: r.forbidden },
+});
+registerCurrentRoute({
   method: "put", path: "/api/companies/{companyId}/observability", tags: ["agent-observability"],
   summary: "Save revision-checked agent export settings without contacting the destination", body: updateAgentObservabilitySchema,
   responses: { 200: r.ok(observabilitySettingsEnvelopeSchema), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 409: r.conflict, 422: r.unprocessable },

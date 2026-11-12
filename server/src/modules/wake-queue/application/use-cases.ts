@@ -363,15 +363,50 @@ async function promoteDeferredWake(
       finishingRunId: run.id,
       commentIds: workingCandidate.deferredCommentIds,
     });
+    const agentFeedbackAfterCompletion =
+      currentIssue.status === "done" &&
+      workingCandidate.agentId === currentIssue.assigneeAgentId &&
+      workingCandidate.requestedByActorType === "agent" &&
+      workingCandidate.deferredContextSeed.resumeIntent === true &&
+      workingCandidate.queuedCommentIds.length > 0;
     shouldReopen =
       !selfAuthorship.allSelfAuthored &&
       (workingCandidate.requestedByActorType === "user" ||
         workingCandidate.wakeReason === "issue_reopened_via_comment" ||
-        (currentIssue.status === "done" &&
-          workingCandidate.agentId === currentIssue.assigneeAgentId &&
-          workingCandidate.requestedByActorType === "agent" &&
-          workingCandidate.deferredContextSeed.resumeIntent === true &&
-          workingCandidate.queuedCommentIds.length > 0));
+        // The agent watching the task posted it while the run that closed the
+        // task was active. That agent receives the completed result and can
+        // follow up from it; reopening would only repeat finished work. A
+        // person's message (handled above) always reopens.
+        (agentFeedbackAfterCompletion && run.agentId === currentIssue.assigneeAgentId &&
+          !await ports.transaction.isWatcherCommentDuringFinishingRun({
+            companyId: run.companyId, issueId: currentIssue.id, finishingRunId: run.id,
+            commentIds: workingCandidate.queuedCommentIds,
+          })));
+  }
+
+  // A person's answer saved while the task was still open is owed input. The
+  // worker may have finished its turn without reading it; closing the task
+  // must not silently drop it. It reopens the task straight to in_progress,
+  // because an answer continues the assignee's own execution. While
+  // unresolved blockers forbid in_progress, an answer continuation cannot run
+  // (it requires in_progress), so the task stays done and the wake is
+  // cancelled with that reason; it never fails or stalls this drain.
+  let reopenForAnswer = false;
+  if (
+    !shouldReopen &&
+    currentIssue.status === "done" &&
+    workingCandidate.requestedByActorType === "user" &&
+    workingCandidate.agentId === currentIssue.assigneeAgentId
+  ) {
+    const owed = await ports.transaction.owedInteractionAnswer({ companyId: run.companyId, issueId: currentIssue.id, payload: workingCandidate.payload });
+    if (owed === "blocked") {
+      await ports.transaction.cancelDeferredWake({
+        companyId: run.companyId, wakeId: workingCandidate.id, agentId: workingCandidate.agentId,
+        reason: "Queued answer cannot continue a task with unresolved blockers", now: input.now,
+      });
+      return null;
+    }
+    if (owed === "deliver") shouldReopen = reopenForAnswer = true;
   }
 
   // Agent continuations can outlive the work they addressed. Live,
@@ -412,6 +447,7 @@ async function promoteDeferredWake(
       companyId: run.companyId,
       issueId: currentIssue.id,
       runId: run.id,
+      ...(reopenForAnswer ? { status: "in_progress" as const } : {}),
     });
     if (reopened) {
       postCommitEffects.push({

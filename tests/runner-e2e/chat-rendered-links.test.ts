@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { collectConversationLinks, conversationLinkBindings, readConversationDomLinks, readLatestConversationReplyRender, waitForLatestConversationReplyRender, type ConversationLinkInput } from "./chat-rendered-links.js";
+import { collectConversationLinks, conversationLinkBindings, mislabeledIssueLinks, readConversationDomLinks, readLatestConversationReplyRender, waitForLatestConversationReplyRender, waitForSavedTurnReplyRender, type ConversationLinkInput } from "./chat-rendered-links.js";
 
 const card = '<div data-thread-item-kind="project_created" data-thread-anchor="project-created:project"><article aria-label="Project created: Launch"><div><p>Project created</p><a href="/RUN/projects/project">Launch</a></div></article></div>';
 const thread = (content = card) => `<div data-testid="task-chat-thread"><div data-testid="task-chat-history-content"><div data-testid="task-chat-scroller"><div id="comment-human" data-thread-item-kind="human">Create a project called Launch for the new website.</div>${content}<div id="comment-reply" data-thread-item-kind="agent">Created the Launch project. No repositories are connected yet.</div></div></div></div>`;
@@ -110,5 +110,50 @@ describe("waits for the latest saved reply to render before reading links", () =
     const p = page();
     expect(await waitForLatestConversationReplyRender(p, bindings, 300, 50)).toBe("pending");
     const started = Date.now(); expect(await waitForLatestConversationReplyRender(p, bindings, 5_000, 50)).toBe("pending"); expect(Date.now() - started).toBeLessThan(1_000);
+  });
+  // Cohort 3 on dfd2a6efca (access.other-company, teams.install-team and six more): the final evidence read
+  // ran on a freshly loaded conversation whose wait had expired in an earlier document, so it read instantly
+  // and saved no links although the reply rendered them. A new document gets its own bounded wait.
+  it("waits again in a newly loaded document after an earlier document's wait expired", async () => {
+    const bindings = conversationLinkBindings(input());
+    document.body.innerHTML = thread(); document.querySelector('#comment-reply')!.remove();
+    const p = page();
+    expect(await waitForLatestConversationReplyRender(p, bindings, 200, 50)).toBe("pending");
+    delete (window as typeof window & { __paperclipConversationLinkDocument?: string }).__paperclipConversationLinkDocument;
+    setTimeout(() => document.querySelector('[data-testid="task-chat-scroller"]')!.insertAdjacentHTML("beforeend", '<div id="comment-reply"><a href="/RUN/issues/task">Task</a></div>'), 300);
+    expect(await waitForLatestConversationReplyRender(p, bindings, 5_000, 50)).toBe("rendered");
+  });
+});
+
+// Full cohort 3 (fast-responses, choose-primary, set-budget): the run was recorded finished 0.2-1.3s before its
+// reply comment was saved, so a link read right after the run finished saw no reply at all.
+describe("waits for a finished run's reply to be saved, then rendered, before its links are read", () => {
+  const page = () => ({ evaluate: async <T, A>(read: (arg: A) => T, arg: A) => read(arg) }) as unknown as Parameters<typeof collectConversationLinks>[0];
+  it("waits for the reply saved after the run finished and for its render", async () => {
+    const saved = input().comments, before = saved.filter(row => row.id !== "reply");
+    document.querySelector('#comment-reply')!.remove();
+    let reads = 0; const comments = async () => (reads++ < 3 ? before : saved);
+    setTimeout(() => document.querySelector('[data-testid="task-chat-scroller"]')!.insertAdjacentHTML("beforeend", '<div id="comment-reply"><a href="/RUN/issues/task">Task</a></div>'), 400);
+    expect(await waitForSavedTurnReplyRender(page(), { comments, leadId: "ceo", runIds: ["run"] }, 3_000, 50)).toBe("rendered");
+    expect(reads).toBeGreaterThan(3);
+  });
+  it("reports a run that saved no reply in time, without waiting past its bound", async () => {
+    const before = input().comments.filter(row => row.id !== "reply");
+    const started = Date.now();
+    expect(await waitForSavedTurnReplyRender(page(), { comments: async () => before, leadId: "ceo", runIds: ["run"] }, 300, 50)).toBe("unsaved");
+    expect(Date.now() - started).toBeLessThan(1_500);
+  });
+});
+
+describe("task links whose visible identifier names another task", () => {
+  it("accepts links whose label names the task they open, or names no task", () => {
+    expect(mislabeledIssueLinks("Open [COM-1](/COM/issues/COM-1) in [Launch](/COM/projects/launch).")).toEqual([]);
+    expect(mislabeledIssueLinks("The [open COM-1 task](/COM/issues/com-1#document-plan) and [this one](/COM/issues/COM-2).")).toEqual([]);
+    expect(mislabeledIssueLinks("[COM-1 Launch open website](/COM/issues/task-uuid)", id => id === "task-uuid" ? "COM-1" : undefined)).toEqual([]);
+    expect(mislabeledIssueLinks("[SHA-256 notes for COM-1](/COM/issues/COM-1)")).toEqual([]);
+  });
+  it("rejects a link whose label names a different task than it opens", () => {
+    expect(mislabeledIssueLinks("Open tasks: [COM-2 Launch open website](/COM/issues/COM-1)... correction:")).toEqual(["[COM-2 Launch open website](/COM/issues/COM-1)"]);
+    expect(mislabeledIssueLinks("[COM-2](/COM/issues/task-uuid)", id => id === "task-uuid" ? "COM-1" : undefined)).toHaveLength(1);
   });
 });

@@ -59,6 +59,7 @@ import { environmentTaskOperationSchema, environmentTaskResultSchema } from "@pa
 import { preparePluginRunnerCredentials } from "./plugin-runner-credentials.js";
 import { createPluginRunnerTaskOwner, verifyPluginRunnerTaskReattachment } from "./plugin-runner-task.js";
 import { findNativePredecessorRetirementUnproven, NATIVE_PREDECESSOR_RETIREMENT_UNPROVEN_CODE, NativePredecessorRetirementUnprovenError } from "./predecessor-retirement.js";
+import { retireSandboxRunnerPortHolders } from "./sandbox-runner-port-holders.js";
 import { NativeExecutionContext } from "./native-execution-context.js";
 import { NativeStartupCleanupPendingError, clearNativeStartupContext } from "./native-startup-cleanup.js";
 import { readUnreadSteeredMessages } from "./unread-steered-messages.js";
@@ -819,6 +820,25 @@ function sandboxProviderLeaseId(target?: AdapterExecutionTarget | null): string 
  * reports the typed pre-provider failure that sends the next attempt to a
  * fresh sandbox instead of failing the task.
  */
+async function retireInProcessWarmOwnerOnSandbox(runId: string, providerLeaseId: string | null): Promise<boolean> {
+  for (const [scope, entry] of warmNativeSessions) {
+    if (entry.runId !== runId || entry.released || (providerLeaseId && entry.providerLeaseId !== providerLeaseId)) continue;
+    if (entry.busy || entry.preparingRunId) {
+      throw new NativePredecessorRetirementUnprovenError(runId, providerLeaseId, new Error("runner_port_holder_busy"));
+    }
+    if (entry.idleTimer !== null) clearTimeout(entry.idleTimer);
+    entry.idleTimer = null;
+    entry.busy = true;
+    entry.closeOnReleaseReason = "warm Runner held the sandbox Runner port for another session";
+    try {
+      await retireWarmPredecessor(entry, entry.closeOnReleaseReason);
+      forgetWarmNativeSession(scope, entry);
+    } finally { entry.busy = false; }
+    return true;
+  }
+  return false;
+}
+
 async function retireWarmPredecessor(entry: WarmNativeSession, reason: string,
   options?: Parameters<typeof closeWarmNativeSession>[2]) {
   // Chaos cell SR1U: a sandbox owner whose stop stays unconfirmed even when
@@ -10666,6 +10686,7 @@ async function executePaperclipNativeSessionAttempt(
   });
   let retainedTransition: VerifiedWarmTransitionBinding | undefined;
   let remoteWarmRecovery: RemoteWarmSessionRecovery | undefined;
+  let pluginTaskDescription: Extract<ReturnType<typeof environmentTaskResultSchema.parse>,{kind:"description"}> | undefined;
   const cachedReleasedOwner = warmNativeSessions.get(nativeSessionScopeKey(input.execution));
   if (cachedReleasedOwner?.released) {
     const proof = releasedWarmRunner(readWarmNativeEnvelope(input.execution));
@@ -10708,7 +10729,9 @@ async function executePaperclipNativeSessionAttempt(
     if (taskTarget.transport === "sandbox" && taskTarget.runnerTask && taskTarget.leaseId &&
         durableIdentityMatchesSession(identity,input.execution) && identity.runId !== input.execution.binding.runId) {
       // Inspection can replace a stopped retained task before deciding between adoption and checkpoint recovery.
-      await taskTarget.runnerTask({kind:"describe"});
+      const description = environmentTaskResultSchema.parse(await taskTarget.runnerTask({kind:"describe"}));
+      if (description.kind !== "description") throw new Error("Plugin Runner description unavailable");
+      pluginTaskDescription = description;
       if (taskTarget.sandboxLeaseAcquisition?.outcome !== "resumed") {
         await recoverPluginRunnerCheckpoint(input, root);
       }
@@ -11689,7 +11712,6 @@ async function executePaperclipNativeSessionAttempt(
   );
   let existingWarmSession: NativeSession | undefined;
   let reusingReleasedRunner = false;
-  let pluginTaskDescription: Extract<ReturnType<typeof environmentTaskResultSchema.parse>,{kind:"description"}> | undefined;
   let managedCredentialSession: NativeSession | undefined;
   let githubAccess: NativeGitHubAccess | undefined;
   let releaseGitHubRun: (() => void) | undefined;
@@ -11727,7 +11749,9 @@ async function executePaperclipNativeSessionAttempt(
       if (entry) entry.preparingRunId = undefined;
       const taskTarget=input.runnerExecutionTarget;
       if ((entry?.pluginTaskId || remoteWarmRecovery?.releasedSource) && taskTarget?.kind === "remote" && taskTarget.transport === "sandbox" && taskTarget.runnerTask) {
-        const description=environmentTaskResultSchema.parse(await (executionContext
+        const priorDescription = pluginTaskDescription?.taskId === taskTarget.sandboxLeaseAcquisition?.providerLeaseId
+          ? pluginTaskDescription : undefined;
+        const description=priorDescription ?? environmentTaskResultSchema.parse(await (executionContext
           ? executionContext.wait(() => taskTarget.runnerTask!({kind:"describe"}, { executionContext }))
           : taskTarget.runnerTask({kind:"describe"})));
         if(description.kind !== "description") throw new Error("Plugin Runner description unavailable");
@@ -12038,13 +12062,29 @@ async function executePaperclipNativeSessionAttempt(
       const description = environmentTaskResultSchema.parse(await (executionContext ? executionContext.wait(inspect) : inspect()));
       if (description.kind !== "description" || description.taskId === retainedTaskId) return false;
       existingWarmSession = undefined;
-      pluginTaskDescription = undefined;
+      pluginTaskDescription = description;
       await finishStartupContextForFallback();
       persistedWarmSession = loadWarmNativeCheckpoint(input.execution, warmConfigDigest, target.kind);
       runnerdBackend = await createExecutionBackend();
       remoteCleanupLease = await readRemoteCleanupLease();
       return true;
     };
+    const portTarget = input.runnerExecutionTarget;
+    if (input.useRunnerd && !input.backend && !existingWarmSession && portTarget?.kind === "remote" && portTarget.transport === "sandbox"
+      && portTarget.runner && !portTarget.runnerTask && portTarget.sandboxLeaseAcquisition?.outcome === "resumed"
+      && input.restartRecovery?.kind !== "reattach_remote_runner"
+      && input.restartRecovery?.kind !== "reattach_existing_runner") {
+      const runtimeRoot = posix.join(portTarget.remoteCwd, ".paperclip-runtime", "paperclip-runner");
+      const providerLeaseId = portTarget.sandboxLeaseAcquisition?.providerLeaseId ?? null;
+      const retirePortHolders = () => retireSandboxRunnerPortHolders({
+        db: input.db, companyId: input.execution.binding.companyId, agentId: input.execution.binding.agentId,
+        runId: input.execution.binding.runId, runner: portTarget.runner!, runtimeRoot,
+        ownSessionRoot: posix.join(runtimeRoot, "sessions", createHash("sha256").update(nativeSessionKey(input.execution)).digest("hex")),
+        providerLeaseId, adoptedRunId: remoteWarmRecovery?.identity.runId ?? null,
+        retireInProcess: holderRunId => retireInProcessWarmOwnerOnSandbox(holderRunId, providerLeaseId), onLog: input.onLog,
+      });
+      await trace.measure("runner.port_holders.retire", () => executionContext ? executionContext.wait(retirePortHolders) : retirePortHolders());
+    }
     nativeSessionExecuteStartedAtMs = Date.now();
     native = await trace.measure(
       "native.session.execute",
@@ -14686,6 +14726,14 @@ export async function readRemoteRunnerState(input: {
   }
 }
 
+export function remoteRunnerStateNeverConnected(state: Record<string, unknown>): boolean {
+  const empty = (value: unknown) => value !== null && typeof value === "object" && !Array.isArray(value)
+    && Object.keys(value).length === 0;
+  return state.lastConnectionProtocolVersion === null && state.lastControllerCommandSeq === 0
+    && state.reconnectCount === 0 && Array.isArray(state.outbox) && state.outbox.length === 0
+    && state.pendingTerminalDelivery === null && empty(state.processedCommands);
+}
+
 async function readRemoteRunnerProviderState(input: {
   runner: CommandManagedRuntimeRunner;
   stateDirectory: string;
@@ -15969,7 +16017,9 @@ async function createRunnerdBackendWithinSessionClaim(
       if(stopped.kind!=="status" || stopped.executionStopped!==true) throw new Error("Plugin Runner termination is unconfirmed; reconcile the saved task");
       await pluginTask({kind:"complete"});
     }
-    const description = input.pluginTaskDescription ?? environmentTaskResultSchema.parse(await pluginTask({ kind: "describe" }));
+    const priorDescription = input.pluginTaskDescription?.taskId === remoteTarget.sandboxLeaseAcquisition?.providerLeaseId
+      ? input.pluginTaskDescription : undefined;
+    const description = priorDescription ?? environmentTaskResultSchema.parse(await pluginTask({ kind: "describe" }));
     if (description.kind !== "description" || description.launchPreparationVersion !== 1 || description.projectAuthCheckVersion !== 1) throw new Error("Plugin Runner launch preparation v1 unavailable");
     const saved = durableBinding ? durableIdentity as RunnerdDurableIdentity : undefined;
     const prior = saved ? {
@@ -16551,16 +16601,20 @@ async function createRunnerdBackendWithinSessionClaim(
     (state.incompleteReason === "not_suspended" || state.incompleteReason === "provider_unopened")
     && provenOwnBootstrapRestart(state.notSuspendedRunId);
   const inspectOwnUnpreparedBootstrap = async (): Promise<string | null> => {
+    const runId = input.execution.binding.runId;
     if (!remoteCommandRunner || !remoteStateDirectory || archivedRotationRunnerStatePath
-      || !provenOwnBootstrapRestart(input.execution.binding.runId)
+      || input.restartRecovery?.kind !== "bootstrap_incomplete" || input.restartRecovery.runId !== runId
       || harnessBackupCandidates(root).some(candidate => existsSync(resolve(candidate, "manifest.json")))) return null;
     const runnerState = await readRemoteRunnerState({ runner: remoteCommandRunner, stateDirectory: remoteStateDirectory })
       .then(record, () => null);
-    if (!runnerState || runnerState.runnerInstanceId !== input.runnerInstanceId
+    if (!runnerState || runnerState.runnerInstanceId !== input.runnerInstanceId || runnerState.runId !== runId
       || runnerState.normalizedSessionId !== nativeSessionKey(input.execution)
-      || typeof runnerState.lifecycle !== "string" || runnerState.lifecycle === "suspended"
-      || !provenOwnBootstrapRestart(typeof runnerState.runId === "string" ? runnerState.runId : null)) return null;
-    return input.execution.binding.runId;
+      || typeof runnerState.lifecycle !== "string" || runnerState.lifecycle === "suspended") return null;
+    if (!hasRemoteBootstrapRestartProof(runId) && !(remoteRunnerStateNeverConnected(runnerState)
+      && recordRemoteBootstrapRestartProof(runId, await stopStaleRemoteRunnerBeforeBootstrap({
+        execution: input.execution, runnerExecutionTarget: input.runnerExecutionTarget, identity: runnerState, onLog: input.onLog,
+      })))) return null;
+    return provenOwnBootstrapRestart(runId) ? runId : null;
   };
   const inspectRemoteHarnessState = async (
     source: "live" | "host_preparation" = "live",

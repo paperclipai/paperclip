@@ -1,5 +1,5 @@
-import { expect, it } from "vitest";
-import { approvalResponseListing, classifyApprovalSuccessors, gradeApprovalQueue, leadRelayEntries, ordinaryApprovalEntries, pendingInputYield } from "./runtime-approval-queue.js";
+import { describe, expect, it } from "vitest";
+import { acornWorkSource, approvalResponseListing, classifyApprovalSuccessors, gradeApprovalQueue, leadRelayEntries, ordinaryApprovalEntries, pendingInputYield } from "./runtime-approval-queue.js";
 function valid() {
   const payload = { questionSet: { questions: [{ id: "name", prompt: "What is the product name?" }] } };
   return { scenarioId: "steering.approval-delivery", companyId: "company", leadId: "ceo", agents: [], links: [], humanQueries: [], reply: "", tasks: [{ id: "website" }], activity: [],
@@ -99,4 +99,27 @@ it("keeps only the person's own messages as editable ordinary entries", () => {
     { source: { kind: "interaction" }, comment: { id: "decision" } }] } as unknown as Parameters<typeof ordinaryApprovalEntries>[0];
   expect(ordinaryApprovalEntries(queue, "human").map(row => row.comment.id)).toEqual(["mine"]);
   expect(leadRelayEntries(queue, "ceo").map(row => row.comment.id)).toEqual(["relay"]);
+});
+
+// Retained runner-opencode attempt (gha-43129293316): the settling turn read the answered question itself and saved the
+// Acorn document after the answer was saved; the answer must still reach one bound turn (product fix in this change).
+describe("where the Acorn document came from", () => {
+  const answeredAt = "2026-11-12T01:03:19.592Z";
+  const doc = (runId: string, createdAt: string, body = "# Acorn website delivery\n\nProduct name: **Acorn**", agent = "morgan") => ({
+    revisions: [{ id: "rev", documentId: "doc", createdByRunId: runId, createdByAgentId: agent, createdAt, body }], documents: [{ id: "doc", latestRevisionId: "rev" }] });
+  const source = (input: ReturnType<typeof doc>, extra: Partial<Parameters<typeof acornWorkSource>[0]> = {}) => acornWorkSource({ ...input, workerId: "morgan",
+    successorRunIds: ["bound", "relay"], settlingRunId: "settling", answeredAt, ...extra });
+  it("accepts the bound turn's document", () => expect(source(doc("bound", "2026-11-12T01:05:30.000Z"))).toBe("delivered_turn"));
+  it("accepts the lead relay turn's document", () => expect(source(doc("relay", "2026-11-12T01:05:00.000Z"))).toBe("delivered_turn"));
+  it("accepts the settling turn's document saved after the answer (the retained shape)", () => expect(source(doc("settling", "2026-11-12T01:04:21.660Z"))).toBe("settling_turn_after_answer"));
+  it("accepts a reworded document that still names Acorn", () => expect(source(doc("settling", "2026-11-12T01:04:21.660Z", "Website outline for Acorn: hero, features, contact."))).toBe("settling_turn_after_answer"));
+  it("rejects a settling-turn document saved before the answer existed", () => expect(source(doc("settling", "2026-11-12T01:02:00.000Z"))).toBeNull());
+  it("rejects a document that does not use the answered name", () => expect(source(doc("bound", "2026-11-12T01:05:30.000Z", "# Website delivery\n\nProduct name: Birch"))).toBeNull());
+  it("rejects a name that only appears inside another word", () => expect(source(doc("bound", "2026-11-12T01:05:30.000Z", "Acorns are a placeholder."))).toBeNull());
+  it("rejects a document saved by another agent", () => expect(source(doc("bound", "2026-11-12T01:05:30.000Z", undefined, "ceo"))).toBeNull());
+  it("rejects a revision that is no longer the document's current one", () => { const d = doc("bound", "2026-11-12T01:05:30.000Z"); d.documents[0]!.latestRevisionId = "newer";
+    expect(source(d)).toBeNull(); });
+  it("rejects a document from an unrelated turn", () => expect(source(doc("other", "2026-11-12T01:05:30.000Z"))).toBeNull());
+  it("rejects the settling turn when the answer time is unknown", () => expect(source(doc("settling", "2026-11-12T01:04:21.660Z"), { answeredAt: null })).toBeNull());
+  it("still fails the case when the settling turn used the answer but no turn was bound to it", () => { const o = valid(); o.state.consumingRunCount = 0; expect(gradeApprovalQueue(o).passed).toBe(false); });
 });
