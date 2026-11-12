@@ -355,7 +355,15 @@ export function setupLiveEventsWebSocketServer(
       // falls through to the default `return null` and never reaches
       // authenticated clients ("heartbeat.run_loop_suspected" is not matched by
       // the "heartbeat.run." prefix above).
-      if (event.type === "heartbeat.run_loop_suspected") return event;
+      //
+      // Fail closed (defense in depth with the detector): an issue-scoped signal
+      // must carry its issueId — that is the only binding readBindings gates on
+      // for this event. An issue-scoped signal with issueId null has no read
+      // boundary (empty readBindings => []`.every(Boolean)` is vacuously true),
+      // so never broadcast it company-wide.
+      if (event.type === "heartbeat.run_loop_suspected") {
+        return payload.scopeKind === "issue" && !issueId ? null : event;
+      }
       if (event.type === "agent.session.goal.changed") return issueId ? event : null;
       // Company-wide invalidations carry no task-derived content. Authorized
       // clients obtain details through viewer-filtered HTTP reads.

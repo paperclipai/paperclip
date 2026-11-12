@@ -52,6 +52,16 @@ export const LOOP_DETECTOR_WINDOW_SEC = clampPositiveInt(
  */
 export const LOOP_DETECTOR_MAX_WINDOW_RUNS = Math.max(5000, LOOP_DETECTOR_THRESHOLD);
 
+/**
+ * Cap on how many run ids a single signal carries in `recentRunIds`. `count`,
+ * `firstAt` and `lastAt` stay exact over the whole window; only the id list is
+ * truncated to the most recent ids. Without this, a tight loop counted over the
+ * full window (not a 50-row prefix any more) could put hundreds or thousands of
+ * UUIDs into every live event payload and warn log line. Kept at or above the
+ * threshold so a signal always lists at least a full loop's worth of ids.
+ */
+export const LOOP_DETECTOR_MAX_RECENT_RUN_IDS = Math.max(50, LOOP_DETECTOR_THRESHOLD);
+
 export interface DetectRunLoopRecentRun {
   id: string;
   /** Saved read boundary of the run; never derived from contextSnapshot. */
@@ -123,6 +133,15 @@ export function detectRunLoops(input: DetectRunLoopInput): RunLoopSignal[] {
     // widen their scope.
     const scopeKind = run.scopeKind;
     const issueId = scopeKind === "issue" ? readString(run.issueId) : null;
+    // Fail closed on an issue-scoped run with no issue binding. heartbeat_runs.
+    // issue_id is ON DELETE SET NULL, so deleting an issue (a normal user action,
+    // and a likely response to a loop) leaves its runs as scope_kind='issue' with
+    // issue_id NULL. Such a run has no readable boundary — the run-read policy
+    // denies it to everyone — but a signal built from it would carry issueId:null
+    // and no runId, which the live-events WS layer treats as "no bindings to
+    // check" and broadcasts company-wide. Dropping these runs means an
+    // issue-scoped group can never produce a signal without a real issue.
+    if (scopeKind === "issue" && issueId === null) continue;
     if (issueId === null && wakeReason === null) continue;
 
     const key = `${scopeKind}\u0000${issueId ?? ""}\u0000${wakeReason ?? ""}`;
@@ -145,7 +164,12 @@ export function detectRunLoops(input: DetectRunLoopInput): RunLoopSignal[] {
       scopeKind: bucket.scopeKind,
       issueId: bucket.issueId,
       wakeReason: bucket.wakeReason,
-      recentRunIds: sorted.map((r) => r.id),
+      // count/firstAt/lastAt below are exact over the whole window; only this id
+      // list is capped (to the most recent ids) so the payload and log line
+      // stay bounded under a tight loop.
+      recentRunIds: sorted
+        .slice(-LOOP_DETECTOR_MAX_RECENT_RUN_IDS)
+        .map((r) => r.id),
       windowSec,
       count: sorted.length,
       threshold,

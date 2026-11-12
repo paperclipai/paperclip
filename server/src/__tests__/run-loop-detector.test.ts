@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   detectRunLoop,
   detectRunLoops,
+  LOOP_DETECTOR_MAX_RECENT_RUN_IDS,
   LOOP_DETECTOR_MAX_WINDOW_RUNS,
   LOOP_DETECTOR_THRESHOLD,
   type DetectRunLoopRecentRun,
@@ -343,22 +344,82 @@ describe("saved read boundary (scopeKind, issueId)", () => {
     expect(signal?.count).toBe(5);
   });
 
-  it("keeps a company-scoped group and an issue-scoped group with null issue separate", () => {
+  it("fails closed on issue-scoped runs with no issue binding (deleted issue) and never emits a signal", () => {
+    // Regression for the deleted-issue leak: heartbeat_runs.issue_id is
+    // ON DELETE SET NULL, so deleting a looping issue leaves its runs as
+    // {scopeKind:"issue", issueId:null}. A signal built from them carries
+    // issueId:null and no runId, which the live-events WS layer treats as "no
+    // bindings to check" and broadcasts company-wide — while the run-read policy
+    // denies those runs to everyone. The detector must drop them so an
+    // issue-scoped group can never produce a signal without a real issue.
+    const runs = [0, 1, 2, 3, 4, 5].map((m, i) =>
+      run(`orphan-${i}`, m, { wakeReason: "issue_commented" }, NOW, {
+        scopeKind: "issue",
+        issueId: null,
+      }),
+    );
+    expect(
+      detectRunLoops({
+        agentId: "a",
+        recentRuns: runs,
+        now: NOW,
+        threshold: 5,
+        windowSec: 1800,
+      }),
+    ).toEqual([]);
+  });
+
+  it("still reports the company-scoped group when orphaned issue-scoped runs are interleaved", () => {
+    // The company-scoped loop (readable company-wide) is unaffected by dropping
+    // the orphaned issue-scoped runs: only the fail-closed group disappears.
     const companyRuns = [0, 1, 2, 3, 4].map((m, i) =>
       run(`co-${i}`, m, { wakeReason: "timer" }, NOW, { scopeKind: "company", issueId: null }),
     );
-    const issueNullRuns = [0, 1, 2, 3, 4].map((m, i) =>
+    const orphanIssueRuns = [0, 1, 2, 3, 4].map((m, i) =>
       run(`iss-${i}`, m, { wakeReason: "timer" }, NOW, { scopeKind: "issue", issueId: null }),
     );
     const signals = detectRunLoops({
       agentId: "a",
-      recentRuns: [...companyRuns, ...issueNullRuns],
+      recentRuns: [...companyRuns, ...orphanIssueRuns],
       now: NOW,
       threshold: 5,
       windowSec: 1800,
     });
-    expect(signals.map((s) => s.scopeKind).sort()).toEqual(["company", "issue"]);
-    expect(signals.every((s) => s.issueId === null)).toBe(true);
+    expect(signals).toHaveLength(1);
+    expect(signals[0].scopeKind).toBe("company");
+    expect(signals[0].issueId).toBeNull();
+  });
+});
+
+describe("recentRunIds cap", () => {
+  const NOW = new Date("2026-05-11T13:00:00.000Z");
+
+  it("caps recentRunIds to the most recent ids while keeping count/firstAt/lastAt exact over the whole window", () => {
+    // A tight loop counted over the full window could otherwise put hundreds of
+    // UUIDs into every live event payload and warn log line. count/firstAt/lastAt
+    // stay exact; only the id list is bounded, and it keeps the most recent ids.
+    const total = LOOP_DETECTOR_MAX_RECENT_RUN_IDS + 25;
+    // minutesAgo descending so run index 0 is the oldest and `total-1` the newest,
+    // all inside the 30-minute window (<= ~1799s old).
+    const runs = Array.from({ length: total }, (_, i) =>
+      run(`r${i}`, (total - 1 - i) * 0.1, { issueId: "issue-1", wakeReason: "timer" }, NOW),
+    );
+    const signal = detectRunLoop({
+      agentId: "a",
+      recentRuns: runs,
+      now: NOW,
+      threshold: 5,
+      windowSec: 1800,
+    });
+    expect(signal?.count).toBe(total);
+    expect(signal?.recentRunIds).toHaveLength(LOOP_DETECTOR_MAX_RECENT_RUN_IDS);
+    // The most recent ids are retained (newest is r{total-1}), oldest dropped.
+    expect(signal?.recentRunIds).toContain(`r${total - 1}`);
+    expect(signal?.recentRunIds).not.toContain("r0");
+    // firstAt/lastAt reflect the whole window, not the truncated id list.
+    expect(new Date(signal!.firstAt).getTime()).toBeLessThan(
+      new Date(signal!.lastAt).getTime(),
+    );
   });
 });
 

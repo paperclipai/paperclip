@@ -338,6 +338,45 @@ describeEmbeddedPostgres("heartbeat run-loop detection dispatch", () => {
     expect(events[0].payload.issueId).not.toBe(issueB);
   });
 
+  it("does not publish a signal for an issue-scoped loop whose issue was deleted (fail closed)", async () => {
+    // Regression for the deleted-issue leak. heartbeat_runs.issue_id is
+    // ON DELETE SET NULL and the scope-binding CHECK permits scope_kind='issue'
+    // with issue_id NULL, so deleting a looping issue (a normal user action, and
+    // a likely response to a loop) leaves its runs orphaned at
+    // {scopeKind:"issue", issueId:null}. A signal built from them carries
+    // issueId:null and no runId, which the live-events WS layer treats as "no
+    // bindings to check" and broadcasts company-wide — while the run-read policy
+    // denies those runs to everyone. The detector must drop them.
+    const { companyId, agentId } = await insertAgent();
+    const issueA = await insertIssue(companyId, "Deleted looping issue");
+    await insertGroupHistory(companyId, agentId, issueA, "issue_commented", LOOP_DETECTOR_THRESHOLD);
+
+    // Delete the issue; the FK sets the saved issue_id null on every seeded run,
+    // reproducing the orphaned state the detector must fail closed on.
+    await db.delete(issues).where(sql`${issues.id} = ${issueA}`);
+    const orphaned = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(heartbeatRuns)
+      .where(
+        sql`${heartbeatRuns.agentId} = ${agentId} AND ${heartbeatRuns.scopeKind} = 'issue' AND ${heartbeatRuns.issueId} IS NULL`,
+      );
+    expect(orphaned[0].count).toBe(LOOP_DETECTOR_THRESHOLD);
+
+    const { runId } = await insertClaimableRun(companyId, agentId);
+    const { events, unsubscribe } = collectLoopEvents(companyId);
+
+    try {
+      await heartbeat.resumeQueuedRuns();
+      await heartbeat.drainActiveRunExecutions();
+    } finally {
+      unsubscribe();
+    }
+
+    // Dispatch still completes; no loop signal is published for the orphaned group.
+    expect(await runStatus(runId)).toMatchObject({ status: "succeeded" });
+    expect(events).toEqual([]);
+  });
+
   it("counts a loop over the whole window even when newer unrelated runs would have filled a row-limited fetch", async () => {
     // Regression for the history-cutoff finding: the detector fetch is bounded by
     // the rolling window, not a recency-ordered row cap. The qualifying loop runs

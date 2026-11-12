@@ -209,16 +209,19 @@ describe("live-event run read boundaries", () => {
     const socket = new WebSocket(`ws://127.0.0.1:${(server.address() as AddressInfo).port}/api/companies/${companyId}/events/ws`);
     const messages: Array<{ type: string; payload: Record<string, unknown> }> = [];
     socket.on("message", bytes => messages.push(JSON.parse(bytes.toString())));
-    function loopPayload(issueId: string | null): Record<string, unknown> {
+    function loopPayload(
+      issueId: string | null,
+      scopeKind: "company" | "issue" = issueId ? "issue" : "company",
+    ): Record<string, unknown> {
       return {
-        agentId: agent.id, issueId, wakeReason: "issue_commented", recentRunIds: [],
+        agentId: agent.id, scopeKind, issueId, wakeReason: "issue_commented", recentRunIds: [],
         count: 5, threshold: 5, windowSec: 1800,
         firstAt: new Date().toISOString(), lastAt: new Date().toISOString(),
       };
     }
-    async function deliver(issueId: string | null) {
+    async function deliver(issueId: string | null, scopeKind?: "company" | "issue") {
       const start = messages.length, barrier = randomUUID();
-      publishLiveEvent({ companyId, type: "heartbeat.run_loop_suspected", payload: loopPayload(issueId) });
+      publishLiveEvent({ companyId, type: "heartbeat.run_loop_suspected", payload: loopPayload(issueId, scopeKind) });
       publishLiveEvent({ companyId, type: "agent.status", payload: { agentId: barrier, status: "idle" } });
       await expect.poll(() => messages.some(message => message.payload.agentId === barrier)).toBe(true);
       return messages.slice(start).filter(message => message.type === "heartbeat.run_loop_suspected");
@@ -231,6 +234,11 @@ describe("live-event run read boundaries", () => {
       expect(await deliver(null)).toHaveLength(1);
       // A loop on an issue the viewer cannot read is withheld.
       expect(await deliver(hiddenIssueId)).toEqual([]);
+      // Fail closed: an issue-scoped signal with no issueId (its issue was
+      // deleted, ON DELETE SET NULL) has no read boundary — never broadcast it
+      // company-wide. The detector drops these, and this WS guard is defense in
+      // depth for any that still reach delivery.
+      expect(await deliver(null, "issue")).toEqual([]);
     } finally {
       socket.terminate();
       await Promise.all([...wss.clients].map(client => { const closed = new Promise<void>(resolve => client.on("close", resolve)); client.terminate(); return closed; }));
