@@ -1323,6 +1323,7 @@ function AskUserQuestionsCard({
         }),
       );
     } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
       setActionError(resolutionErrorMessage(error));
     } finally {
       setWorking(false);
@@ -1399,6 +1400,7 @@ function AskUserQuestionsCard({
             try {
               await onSubmitInteractionAnswers?.(interaction, answers);
             } catch (error) {
+              if (error instanceof DOMException && error.name === "AbortError") throw error;
               throw new Error(resolutionErrorMessage(error));
             }
           }}

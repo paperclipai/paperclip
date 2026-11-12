@@ -427,6 +427,7 @@ function QuestionFormForRequest({
       });
       if (draftKey) clearDraft(draftKey);
     } catch (cause) {
+      if (cause instanceof DOMException && cause.name === "AbortError") return;
       setError({
         message:
           cause instanceof Error

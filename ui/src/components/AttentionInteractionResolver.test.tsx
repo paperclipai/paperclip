@@ -123,6 +123,8 @@ it.each(["ctrlKey", "metaKey"] as const)("confirms another person's keyboard ans
     await click("Cancel");
     expect(issuesApi.respondToInteraction).not.toHaveBeenCalled();
     expect(host.querySelector("textarea")!.value).toBe("My draft answer");
+    expect(host.querySelector('[role="alert"]')).toBeNull();
+    expect(host.textContent).not.toContain("Action cancelled");
     await sendShortcut();
     expect(issuesApi.respondToInteraction).not.toHaveBeenCalled();
     await click("Continue");

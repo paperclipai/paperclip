@@ -422,7 +422,7 @@ export function AttentionForOtherGate({
     setPending(null);
     setSubmissionPending(false);
     return () => {
-      confirmation.current?.reject(new Error("Action cancelled."));
+      confirmation.current?.reject(new DOMException("Action cancelled.", "AbortError"));
       confirmation.current = null;
     };
   }, [audienceKey]);
@@ -472,7 +472,7 @@ export function AttentionForOtherGate({
                 confirmation.current = null;
                 setPending(null);
                 setSubmissionPending(false);
-                waiting?.reject(new Error("Action cancelled."));
+                waiting?.reject(new DOMException("Action cancelled.", "AbortError"));
               }}>
                 Cancel
               </Button>
