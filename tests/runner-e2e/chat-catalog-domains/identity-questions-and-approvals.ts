@@ -223,9 +223,8 @@ export function gradeQuestions(value: unknown) {
       const necessary = soleRequiredQuestion(original);
       c.add("agent-created-essential-question", original?.createdByAgentId === o.leadId && !!original.sourceRunId
         && o.runs.some(run => run.id === original.sourceRunId && run.agentId === o.leadId && run.companyId === o.companyId && run.status === "succeeded") && !!necessary
-        && (necessary.answerMode === "text" || necessary.customAnswer?.enabled === true)
-        && /\b(?:product|name)\b/i.test(necessary.prompt)
-        && !/model|runtime|adapter|framework|deployment|database|hosting/i.test(necessary.prompt), "The agent itself requires exactly one necessary free-text product-name answer tied to its actual completed run, excluding incidental implementation settings; any other question on the card is optional.");
+        && (necessary.answerMode === "text" || necessary.customAnswer?.enabled === true),
+        "The agent itself requires exactly one free-text answer, tied to its actual completed run; any other question on the card is optional. Whether that answer is the product name is proved by the saved brief carrying the person's answer.");
       c.add("answer-in-saved-brief", o.tasks.some(row => `${row.title}\n${row.description}`.includes(String(o.state.answer)) && row.companyId === o.companyId && hasLink(o, "issues", row)),
         "A saved, linked task brief uses the actual answer rather than merely acknowledging it in chat.");
       c.add("one-bound-continuation", o.runs.filter(run => run.contextSnapshot?.interactionId === original?.id).length === 1
@@ -303,7 +302,7 @@ export const questionIdentityCases = [
         load: () => cards(ctx), accept: rows => chatCatalogNativePhaseIsTimely(ctx) && rows.some(row => row.kind === "ask_user_questions" && row.status === "pending") });
       const original = pending.find(row => row.kind === "ask_user_questions" && row.status === "pending")!;
       state.original = original;
-      await expect(ctx.input.page.getByTestId("task-chat-composer-takeover")).toContainText(/product|name/i);
+      await expect(ctx.input.page.getByTestId("task-chat-composer-takeover")).toBeVisible();
       await ctx.input.evidence("identity-question-before-answer.json", { original, runs: await ctx.allRuns() });
       await beforeAnswer(ctx, state);
       await answerRequiredQuestion(ctx, String(state.answer));

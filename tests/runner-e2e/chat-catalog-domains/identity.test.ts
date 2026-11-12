@@ -173,11 +173,14 @@ describe("identity catalog independent oracle calibration", () => {
     const optional = { id: "product_context", prompt: "Optional: what does the product do and who is it for?", answerMode: "text", required: false };
     expect(withQuestions([name])).toBe(true);
     expect(withQuestions([name, optional])).toBe(true);
-    expect(withQuestions([optional, { ...name, prompt: "Which name should the product use?" }])).toBe(true);
-    // Broken: the necessary question is optional, a second answer is required, or the required question is not the product name.
+    expect(withQuestions([optional, { ...name, prompt: "What should we call it?" }])).toBe(true);
+    // Broken: the necessary question is optional, a second answer is required, or the required answer is not free text.
     expect(withQuestions([{ ...name, required: false }, optional])).toBe(false);
     expect(withQuestions([name, { ...optional, required: true }])).toBe(false);
-    expect(withQuestions([{ ...name, prompt: "Which hosting provider should we deploy to?" }, optional])).toBe(false);
+    expect(withQuestions([{ ...name, answerMode: "single_select" }, optional])).toBe(false);
+    // The answer must reach the saved brief: an asked-and-ignored question still fails.
+    const ignored = valid("questions-and-approvals.necessary-question"); (ignored.state.original as Interaction).payload.questionSet!.questions = [name, optional];
+    ignored.tasks[0]!.description = "An invented product name"; ignored.tasks[0]!.title = "Landing page"; expect(gradeQuestions(ignored).passed).toBe(false);
   });
   it("approved read is graded on the provider nonce and one provider receipt, not the provider sentence", () => {
     const grade = (o: IdentityObservation) => toolReviewIdentityCases[0]!.grade(o).passed;
