@@ -27,10 +27,10 @@ function runner(store: ReturnType<typeof createRuntimeStore>, cwd: string) {
     const runtime = createAcpRuntime({
       cwd,
       sessionStore: store,
-      agentRegistry: createAgentRegistry({ overrides: { custom: `${JSON.stringify(process.execPath.replaceAll("\\", "/"))} ${JSON.stringify(fixture.replaceAll("\\", "/"))}` } }),
+      agentRegistry: createAgentRegistry({ overrides: { custom: [process.execPath, fixture] } }),
       permissionMode: "approve-all",
       nonInteractivePermissions: "deny",
-      inheritProcessEnv: false,
+      agentProcessEnvAllow: [],
     });
     const handle = await runtime.ensureSession({
       sessionKey, agent: "custom", mode: "persistent", cwd, resumeSessionId, sessionOptions: { env: {} },
