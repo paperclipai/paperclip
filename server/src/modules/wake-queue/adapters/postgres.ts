@@ -1,6 +1,6 @@
 import { notifyStrandedAgentStatus } from "../../../services/live-run-recovery-notifications.js";
 import { notifyDeferredExecutionWork } from "../../../services/deferred-execution-notifications.js";
-import { notifyQueuedRunDispatch, notifyRunDispatch } from "../../../services/run-dispatch-notifications.js";
+import { notifyRunDispatch } from "../../../services/run-dispatch-notifications.js";
 import { notifyStatusCardIssueChange } from "../../../services/status-card-notifications.js";
 import { notifyExternalConversationSettlement } from "../../../services/external-conversation-settlement-notifications.js";
 import { notifyNativeStatusReassessment } from "../../../services/native-status-reassessment-notifications.js";
@@ -125,7 +125,8 @@ function toRunSnapshot(row: ReleaseRun): RunSnapshot {
 function carriedRetryAccounting(row: ReleaseRun): Record<string, unknown> | null {
   const accounting = executionRetryAccounting(row);
   return accounting.failureRetries > 0 || accounting.maxTurnContinuations > 0 || (accounting.interruptedPreparations ?? 0) > 0
-    || (accounting.storageWaits ?? 0) > 0 || (accounting.agentDirectoryWaits ?? 0) > 0 ? { ...accounting } : null;
+    || (accounting.storageWaits ?? 0) > 0 || (accounting.agentDirectoryWaits ?? 0) > 0
+    || (accounting.serverRestarts ?? 0) > 0 ? { ...accounting } : null;
 }
 
 export function isRetryableBeforeProviderWorkRunRow(row: ReleaseRun): boolean {
@@ -871,7 +872,6 @@ async function recordNativeTerminalRecoveryIfNeeded(tx: Db, run: ReleaseRun, iss
     }
   }
   if (!existing.length) {
-    await notifyQueuedRunDispatch(tx, { companyId: issue.companyId });
     await tx
       .update(nativeRunFinalizations)
       .set({

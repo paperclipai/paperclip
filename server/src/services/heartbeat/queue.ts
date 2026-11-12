@@ -987,11 +987,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       // accepted work. Cancelling the unstarted run would drop the user's
       // message, Retry, or recovery it carries; keep it queued. Settling
       // accounting re-notifies run dispatch. A reached hard stop is the board's.
-      if (!run.startedAt && !(await isBoardOwnedBudgetBlock(db, run.companyId, budgetBlock))) {
-        logger.info({ runId: run.id, agentId: run.agentId, companyId: run.companyId, reason: "budget_hold_settling",
-          scopeType: budgetBlock.scopeType }, "claimQueuedRun: queued run kept queued behind a temporary budget hold");
-        return null;
-      }
+      if (!run.startedAt && !(await isBoardOwnedBudgetBlock(db, run.companyId, budgetBlock))) return null;
       // Record which budget stops this queued run, so Raise budget and resume
       // continues it (budget-resume-continuation.ts). Saved before the cancel
       // so a crash between them cannot lose it; the resume matches it only
@@ -1059,12 +1055,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`,
         ))
         .limit(1);
-      if (settlingOwner) {
-        logger.info({ runId: run.id, agentId: run.agentId, companyId: run.companyId, issueId,
-          reason: "predecessor_settling_in_process", predecessorRunId: settlingOwner.id },
-        "claimQueuedRun: queued run declined at the issue execution claim");
-        return null;
-      }
+      if (settlingOwner) return null;
     }
     if (issueId) {
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(
@@ -1206,13 +1197,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         context.wakeReason !== "source_scoped_recovery_action";
       const [handoff] = issueId ? await tx.select().from(caseHandoffs).where(and(eq(caseHandoffs.companyId, run.companyId), eq(caseHandoffs.issueId, issueId),
         inArray(caseHandoffs.state, ["awaiting_release", "pending_dispatch"]))).limit(1) : [];
-      const declined = (reason: string, predecessorRunId?: string) => {
-        logger.info({ runId: run.id, agentId: run.agentId, companyId: run.companyId, issueId, reason,
-          ...(predecessorRunId ? { predecessorRunId } : {}) }, "claimQueuedRun: queued run declined at the issue execution claim");
-        return { ownsIssue, blocked: true };
-      };
       if (handoff && (handoff.wakeupRequestId !== run.wakeupRequestId || handoff.state === "awaiting_release"))
-        return declined("case_handoff_pending");
+        return { ownsIssue, blocked: true };
       if (caseHandoffReceipt) {
         const [current] = await tx.select({ state: caseHandoffs.state, version: caseHandoffs.version,
           currentVersion: cases.handoffVersion, workIssueId: cases.workIssueId,
@@ -1223,18 +1209,18 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         if (!current || !["pending_dispatch", "delivered"].includes(current.state) || current.version !== current.currentVersion ||
             current.workIssueId !== issueId || current.toAgentId !== run.agentId || current.wakeupRequestId !== run.wakeupRequestId ||
             !ownsIssue || (!run.startedAt && current.appliedIssueStatusVersion !== owner?.statusVersion))
-          return declined("case_handoff_superseded");
+          return { ownsIssue, blocked: true };
       }
       if (ownsIssue && ["native_safe_replacement", "native_provider_overloaded"].includes(run.scheduledRetryReason ?? "") &&
           owner.checkoutRunId && owner.checkoutRunId !== run.id) {
-        return declined("issue_checked_out_by_another_run", owner.checkoutRunId);
+        return { ownsIssue, blocked: true };
       }
       if (run.scheduledRetryReason === "native_provider_overloaded" && owner?.executionRunId &&
           owner.executionRunId !== run.id && owner.executionRunId !== run.retryOfRunId) {
-        return declined("issue_execution_owned_by_another_run", owner.executionRunId);
+        return { ownsIssue, blocked: true };
       }
       if (ownsIssue && issueId && await taskChatRetrySourceCleanupPending(tx, run, issueId)) {
-        return declined("task_chat_retry_source_cleanup_pending");
+        return { ownsIssue, blocked: true };
       }
       const executionOwnerId = run.scheduledRetryReason === "native_provider_overloaded"
         ? run.retryOfRunId : ownsIssue ? owner?.executionRunId : null;
@@ -1254,10 +1240,10 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         // another controller. Local absence alone is not a release receipt.
         if (!isHeartbeatRunTerminalStatus(previous?.status) ||
             liveRunExecutions.has(previousRunId)) {
-          return declined("predecessor_still_executing", previousRunId);
+          return { ownsIssue, blocked: true };
         }
         if (await hasPendingRunCleanup(tx, run.companyId, previousRunId)) {
-          return declined("predecessor_cleanup_pending", previousRunId);
+          return { ownsIssue, blocked: true };
         }
       }
       return { ownsIssue, blocked: false };
