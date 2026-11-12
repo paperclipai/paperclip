@@ -431,9 +431,12 @@ telemetry. See [Announcements](ANNOUNCEMENTS.md).
 
 With Agent Chat enabled, Chat is the first row of the Work section and opens a
 secondary sidebar beside the primary nav. It lists every agent you can chat
-with: the open conversation first, then your other conversations by recent
-activity, then the rest of the roster alphabetically. Terminated agents and
-agents you have left are omitted unless you have history with them. Search
+with: pinned agents first in their saved order, then your conversations by recent
+activity, then the rest of the roster alphabetically. Pin controls appear on hover
+or keyboard focus. Drag a pinned agent's handle to change the order, or use Space,
+the arrow keys, and Space again. Pin order stays personal to the signed-in user
+in the current browser. Search filters the list without changing hidden pins.
+Terminated agents and agents you have left are omitted unless you have history with them. Search
 filters by name, title, or role; **+** starts or reopens a conversation.
 Selecting an agent opens their persistent conversation; it does not reset history
 or create a task until the existing first-write flow requires one.

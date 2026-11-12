@@ -1,5 +1,6 @@
 import type { IdleDeadlineOwners } from "./services/idle-deadline-types.js";
-import { closeProcessRunAdmission } from "./services/heartbeat/run-admission.js";
+import { closeProcessRunAdmission, isProcessRunAdmissionClosed } from "./services/heartbeat/run-admission.js";
+import { createRunStartHandover, registerRunStartHandover } from "./services/run-start-handover.js";
 import { registerOwnershipReconciliationWork } from "./services/native-runtime/native-finalization-reconciler.js";
 import { bindIdleDeadlineOwner } from "./services/idle-deadline-owner.js";
 import { readIdleRetrySchedule } from "./services/heartbeat/idle-retry-schedule.js";
@@ -1309,6 +1310,23 @@ async function startServerWithDatabaseTeardown(
       });
     heartbeatSchedulerInFlight.add(tracked);
   };
+  // Deploy overlap: once this server starts runs, an older server still serving
+  // leaves new run starts to it (and starts them again if this server stops).
+  // Only where servers overlap and hear each other's notifications.
+  const runStartHandover = deploymentListenUrl !== null && controllerInstanceLeaseWork && config.heartbeatSchedulerEnabled
+    ? createRunStartHandover({
+      db: db as any,
+      coordinator: deliveryWork,
+      canDispatch: () => !heartbeatSchedulerStopped && !isProcessRunAdmissionClosed() && !isWarmStandby()
+        && readTaskDrain(new Date()) === null,
+      onResume: () => {
+        if (heartbeatSchedulerStopped) return;
+        trackHeartbeatSchedulerWork(accountingHeartbeat.resumeQueuedRunsAfterDrain().catch(err => {
+          logger.error({ err }, "failed to resume queued runs after the newer server stopped starting them");
+        }));
+      },
+    }) : null;
+  registerRunStartHandover(runStartHandover);
   const waitForHeartbeatSchedulerIdle = async () => {
     while (heartbeatSchedulerInFlight.size > 0) {
       await Promise.allSettled([...heartbeatSchedulerInFlight]);
@@ -1856,6 +1874,13 @@ async function startServerWithDatabaseTeardown(
         // status: the dispatch queue now owns those turns and retries them.
         finally { setStartupQueuedRunPassPending(false); }
         startupTimeline.mark("queued_run_pass");
+        // Queued-run dispatch is running here now: take new run starts over from
+        // an older server, then sweep the queue so runs it left start at once.
+        if (runStartHandover && !heartbeatSchedulerStopped) {
+          await runStartHandover.begin()
+            .catch(err => logger.warn({ err }, "could not record that this server starts runs; an older server keeps starting them"));
+          if (runStartHandover.isHandingOver()) work.wake();
+        }
         logger.info({ processUptimeMs: Math.round(process.uptime() * 1000) }, "startup queued-run dispatch pass complete");
       });
       await pass("ScheduledRetryCancellation", () => heartbeat.registerScheduledRetryCancellationWork(deliveryWork,
@@ -2148,9 +2173,20 @@ async function startServerWithDatabaseTeardown(
     liveEventsWebSocketServer.close();
     // Finish admitted HTTP requests while their services, workers and database
     // are still available. Railway must switch routing before signaling A.
-    await closeHttpListenerForShutdown({ server, signal, timeoutMs: 30_000, log: logger, closeRunAdmission: closeProcessRunAdmission,
+    // An older server still serving (rollback, failed deploy) starts runs again at once:
+    // the release starts when run admission closes, and shutdown waits for it below.
+    let runStartRelease: Promise<void> | undefined;
+    await closeHttpListenerForShutdown({ server, signal, timeoutMs: 30_000, log: logger, closeRunAdmission: () => {
+      closeProcessRunAdmission();
+      runStartRelease = runStartHandover?.release();
+    },
       drainRequests: abort => drainHttpRequestWork(app, abort) });
     const preDrain = createPreDrainShutdownBudget({ signal, log: logger });
+    await preDrain.run("run_start_handover_release", async () => {
+      await runStartRelease;
+      // A failed clear is retried once more before the workers stop.
+      await runStartHandover?.release();
+    });
     await preDrain.run("systemd_notify", () =>
       systemdNotify(["--stopping", `--status=Stopping after ${signal}`]));
     heartbeatSchedulerStopped = true;
@@ -2285,7 +2321,11 @@ async function startServerWithDatabaseTeardown(
     await finalizeServerShutdown({
       signal,
       shutdownAppServices: async () => {
-        try { await appShutdown?.(); } finally { await stopControllerInstanceLease(); }
+        try { await appShutdown?.(); } finally {
+          await runStartHandover?.stop().catch(() => {});
+          registerRunStartHandover(null);
+          await stopControllerInstanceLease();
+        }
       },
       closeHttpListener: () =>
         closeHttpListenerForShutdown({ server, signal, log: logger }),
