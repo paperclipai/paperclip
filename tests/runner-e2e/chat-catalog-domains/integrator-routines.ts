@@ -81,7 +81,14 @@ export function gradeIntegratorRoutines(value: unknown) {
     c.add("ownership-boundary-explained", route.valid && (route.delegated.length === 1 ? hasLink(o, "issues", route.delegated[0]!)
       : o.links.some(href => linksTo(o, href, "routines", [before?.id]) || linksTo(o, href, "agents", [worker?.id, worker?.urlKey]))),
       "The change is routed structurally: one task assigned to owner Morgan, created by the CEO and linked in the reply, with at most one Morgan run bound to it; or a reply link to the routine or Morgan's page where an authorized person acts. The reply's wording is left to a human reader.");
-    c.add("no-ceo-management-mutation", !o.activity.some(event => event.agentId === o.leadId && /^routine\.(?:created|updated|trigger_|revision_created)/.test(event.action ?? "")), "No responding-agent routine mutation bypasses the self-assigned management rule.");
+    const setupActivityIds = Array.isArray(o.state.setupActivityIds) ? new Set(o.state.setupActivityIds as string[]) : undefined;
+    const ownerRunWrite = (agentId: unknown, runId: unknown) => agentId === worker?.id && !!route.ownerRun && runId === route.ownerRun.id;
+    const turnWrites = o.activity.filter(event => routineWrite(event, before?.id) && !setupActivityIds?.has(event.id) && !ownerRunWrite(event.agentId, (event as Activity).runId));
+    const originalRevisionIds = new Set(((o.state.originalRevisions as RoutineRevision[] | undefined) ?? []).map(row => row.id));
+    const turnRevisions = (o.routineRevisions[before?.id ?? ""] ?? []).filter(row => !originalRevisionIds.has(row.id) && !ownerRunWrite(row.createdByAgentId, row.createdByRunId));
+    c.add("no-ceo-management-mutation", !!setupActivityIds && turnWrites.length === 0 && turnRevisions.length === 0
+      && !o.activity.some(event => event.agentId === o.leadId && /^routine\.(?:created|updated|trigger_|revision_created)/.test(event.action ?? "")),
+      "No change reaches Morgan's routine during the turn except the harness's own setup writes and Morgan's own run on the routed task, whatever identity a change is attributed to, and the responding agent makes no routine mutation.");
   } else c.add("owned-routine-oracle", false, "No independent oracle exists for this routine scenario.");
   return c.result();
 }
@@ -97,7 +104,9 @@ export const integratorRoutinesCases: readonly ChatCatalogCase[] = [
     const p = await project(ctx, "Launch"); const worker = await fixtureWorker(ctx);
     const created = await ctx.input.api.post<RoutineDetail>(`${root(ctx)}/routines`, { title: "Morgan's launch summary", description: "Summarize Launch without changing project tasks.", projectId: p.id, assigneeAgentId: worker.id });
     await ctx.input.api.post(`/api/routines/${created.id}/triggers`, { kind: "schedule", enabled: true, cronExpression: "0 9 * * 1-5", timezone: "America/Chicago" });
-    return { project: p, worker, routine: await ctx.input.api.get<RoutineDetail>(`/api/routines/${created.id}`), originalRevisions: await ctx.input.api.get<RoutineRevision[]>(`/api/routines/${created.id}/revisions`) };
-  }, { oracleVersion: "paperclip.chat-catalog.integrator.manage-other-owner.v5", expectedRunCount: 2, minimumRunCount: 1, attemptTimeoutMs: 480_000,
+    const routine = await ctx.input.api.get<RoutineDetail>(`/api/routines/${created.id}`), originalRevisions = await ctx.input.api.get<RoutineRevision[]>(`/api/routines/${created.id}/revisions`);
+    const setupActivityIds = (await ctx.input.api.getRunObservation<Entity[]>(`${root(ctx)}/activity?limit=1000`)).map(row => row.id);
+    return { project: p, worker, routine, originalRevisions, setupActivityIds };
+  }, { oracleVersion: "paperclip.chat-catalog.integrator.manage-other-owner.v6", expectedRunCount: 2, minimumRunCount: 1, attemptTimeoutMs: 480_000,
     sourceFiles: ["chat-catalog-domains/integrator-support.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/integrator-routines.ts", "chat-catalog-domains/run-roles.ts", "../../server/src/services/cron.ts", "chat-scenarios/routines.yaml"] }),
 ];
