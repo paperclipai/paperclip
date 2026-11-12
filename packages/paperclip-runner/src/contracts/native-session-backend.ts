@@ -12,6 +12,7 @@ import type {
   PrpTerminalState,
 } from "../protocol/replay-contract.js";
 import type {
+  DownloadRunnerAttachment,
   HarnessRuntimeRequest,
   HarnessRuntimeRequestHandoff,
   HarnessRuntimeRequestResolution,
@@ -86,6 +87,8 @@ export interface NativeSessionRecoveryResult {
   session?: NativeSession;
   reason?: string;
   failureClass?: HarnessSessionRecoveryResult["failureClass"];
+  resumeStateUnavailable?: HarnessSessionRecoveryResult["resumeStateUnavailable"];
+  runnerExitConfirmed?: HarnessSessionRecoveryResult["runnerExitConfirmed"];
 }
 
 /** Runner-owned cause: the process was restored, but its active turn was lost. */
@@ -211,7 +214,7 @@ export class NativeSessionCleanupQuarantinedError extends Error {
 
   constructor() {
     super(
-      "native_session_cleanup_quarantined: prior session cleanup requires operator recovery; verify its retained process ownership and checkpoint before a controlled restart. Clearing a task session does not resolve this quarantine.",
+      "native_session_cleanup_quarantined: the previous session is still shutting down; Paperclip finishes the cleanup automatically and the saved work is kept.",
     );
     this.name = "NativeSessionCleanupQuarantinedError";
   }
@@ -220,6 +223,7 @@ export class NativeSessionCleanupQuarantinedError extends Error {
 export interface NativeSession {
   identity(): NativeRunIdentity;
   capabilities(): Promise<NativeSessionCapabilities>;
+  downloadAttachment?: DownloadRunnerAttachment;
   /** completionContract is the attaching run's own contract; a retained session must not keep the prior run's. */
   attachRun?(input: { identity: NativeRunIdentity; currentRunGrant?: NativeRunRuntimeGrant; completionContract?: { revision: string; criterionIds: readonly string[] } }): Promise<void>;
   beginRunAttachment?(input: { identity: NativeRunIdentity }): boolean;
@@ -266,6 +270,7 @@ export interface NativeSession {
   cancel?(input: {
     reason: string;
     signal: AbortSignal;
+    failureCleanup?: boolean;
   }): NativeSessionCancellation;
   settleCancelledTurn?(input: { turnId: string; reason: string }): Promise<CancelledTurnSettlement | null>;
   resolveRuntimeRequest?(input: {

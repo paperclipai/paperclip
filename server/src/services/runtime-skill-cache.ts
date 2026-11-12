@@ -3,7 +3,11 @@ import { constants, promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { CompanySkill } from "@paperclipai/shared";
-import { controllerProcessExited, currentControllerProcessStamp, readControllerProcess } from "./controller-process-identity.js";
+import { currentControllerProcessStamp, readControllerProcess } from "./controller-process-identity.js";
+import { proveOwnerGone, type LocalOwnerStamp, type OwnerProof } from "./owner-proof.js";
+
+/** Bounds one lock-holder proof, which can read the database across process spaces. */
+const LOCK_PROOF_TIMEOUT_MS = 5_000;
 
 const FORMAT = 1;
 const inFlight = new Map<string, Promise<string>>();
@@ -114,17 +118,50 @@ async function matches(spec: CacheSpec, entry = spec.entry): Promise<boolean> {
 }
 
 /**
- * True only when a lock holder's recorded server process has provably exited
- * in this PID space. Lock age is never proof. A holder on another host or PID
- * namespace, an unreadable space, or a lock written before holders recorded
- * their process identity stays held.
+ * True only when the shared owner prover shows that a lock holder's recorded
+ * server process is gone. Lock age is never proof. In this PID space the PID
+ * decides. A holder in another process space (for example before a redeploy)
+ * is gone only when the platform replaced its deployment on the same exclusive
+ * volume, or when its server boot stopped or was fenced. A lock written before
+ * holders recorded their process identity stays held.
  */
-export async function runtimeSkillCacheLockHolderExited(lockContent: Buffer): Promise<boolean> {
+export async function runtimeSkillCacheLockHolderExited(lockContent: Buffer, options: {
+  /** This wait gives up (the lock stays held) after this long. A stalled read keeps running; later waits on the same holder join it. */
+  timeoutMs?: number;
+  prove?: (stamp: LocalOwnerStamp) => Promise<OwnerProof>;
+} = {}): Promise<boolean> {
   let holder: unknown;
   try { holder = JSON.parse(lockContent.toString("utf8")); } catch { return false; }
   const controller = readControllerProcess((holder as { controller?: unknown } | null)?.controller);
-  return controller !== null && await controllerProcessExited(controller);
+  if (!controller) return false;
+  const stamp: LocalOwnerStamp = {
+    kind: "local", scope: "runtime_skill_cache_lock", generation: null, host: null, processSpace: controller.hostHash,
+    bootId: controller.bootId, pid: controller.pid, processStartedAt: controller.processStartedAt, processGroupId: null,
+    ...(controller.deployment ? { worker: controller.deployment.worker, exclusiveVolume: controller.deployment.exclusiveVolume,
+      volumeId: controller.deployment.volumeId } : {}),
+  };
+  // A proof that outlives its timeout keeps running (its database read cannot
+  // be cancelled), so later waits on the same holder join it instead of adding
+  // another read to the shared pool.
+  const key = JSON.stringify(stamp);
+  let proved = pendingLockProofs.get(key);
+  if (!proved) {
+    proved = (options.prove ?? (value => proveOwnerGone(value)))(stamp)
+      .then(proof => proof.verdict === "gone", () => false)
+      .finally(() => { if (pendingLockProofs.get(key) === proved) pendingLockProofs.delete(key); });
+    pendingLockProofs.set(key, proved);
+  }
+  let timer: NodeJS.Timeout | undefined;
+  const timedOut = new Promise<false>(resolve => { timer = setTimeout(() => resolve(false), options.timeoutMs ?? LOCK_PROOF_TIMEOUT_MS); });
+  try {
+    return await Promise.race([proved, timedOut]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
+
+/** Lock-holder proofs still running, by holder stamp; at most one per holder. */
+const pendingLockProofs = new Map<string, Promise<boolean>>();
 
 const OWNER_TOKEN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -221,7 +258,8 @@ async function publishLocked<T>(root: string, fingerprint: string, action: () =>
         const due = judged === null || judged.inode !== held.inode || Date.now() - judged.at >= 1_000;
         if (holderToken && due) {
           judged = { inode: held.inode, at: Date.now() };
-          if (await runtimeSkillCacheLockHolderExited(held.content)) {
+          if (await runtimeSkillCacheLockHolderExited(held.content,
+            { timeoutMs: Math.max(1, Math.min(LOCK_PROOF_TIMEOUT_MS, deadline - Date.now())) })) {
             await releaseExitedRuntimeSkillCacheLock(root, lock, { inode: held.inode, token: holderToken });
             continue;
           }

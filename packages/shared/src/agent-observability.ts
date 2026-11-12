@@ -88,6 +88,22 @@ export type AgentObservabilitySettings = {
   updatedAt: string; lastTest: AgentObservabilityTestReceipt | null;
 };
 export type AgentObservabilitySettingsResponse = { canManage: boolean; settings: AgentObservabilitySettings | null };
+/**
+ * Whether the company exports agent traces, without the destination or any
+ * credential. Readable by the company's agents and every member, so an agent
+ * can answer from saved settings instead of guessing from its own config.
+ */
+export type AgentObservabilityStatus = {
+  configured: boolean; enabled: boolean; provider: AgentObservabilityDestination["provider"] | null;
+  credentialsConfigured: boolean; updatedAt: string | null;
+  lastTest: { status: AgentObservabilityTestReceipt["status"]; finishedAt: string } | null;
+};
+export function agentObservabilityStatus(settings: AgentObservabilitySettings | null): AgentObservabilityStatus {
+  if (!settings) return { configured: false, enabled: false, provider: null, credentialsConfigured: false, updatedAt: null, lastTest: null };
+  return { configured: true, enabled: settings.enabled, provider: settings.destination.provider,
+    credentialsConfigured: settings.credentialsConfigured, updatedAt: settings.updatedAt,
+    lastTest: settings.lastTest ? { status: settings.lastTest.status, finishedAt: settings.lastTest.finishedAt } : null };
+}
 
 export type AgentObservabilityUnavailableReason =
   | "configuration_invalid" | "credentials_unavailable" | "unsupported_harness" | "unsupported_home_mode";

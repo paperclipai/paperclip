@@ -21,6 +21,46 @@ pub const ACPX_SIDECAR_MAX_FRAME_BYTES: usize = 1024 * 1024;
 const MAX_BUFFERED_EVENTS: usize = 512;
 const MAX_EVENT_POLL_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_JSON_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+/// A response wait blocks in slices of at most this long.
+const RESPONSE_WAIT_SLICE: Duration = Duration::from_secs(1);
+/// A slice that returns this much later than it asked was not waiting: this
+/// process was stopped (SIGSTOP, a frozen container, a whole-process stall).
+const STOPPED_TIME_THRESHOLD: Duration = Duration::from_secs(2);
+/// After a stop, the thawed sidecar keeps at least this long to answer.
+const POST_STOP_GRACE: Duration = Duration::from_secs(5);
+/// One request never credits more stopped time than this in total.
+const MAX_STOPPED_CREDIT: Duration = Duration::from_secs(15 * 60);
+
+/// Moves `deadline` later after a wait slice that this process spent stopped.
+///
+/// The sidecar is a child of this process and is normally stopped with it, so
+/// it could not answer either. Without this, a thaw found the deadline already
+/// past and failed the request before either process ran (chaos t05: a 61 s
+/// freeze failed a turn start against its 30 s bound). The slice overshoot is
+/// credited, and the deadline is at least `POST_STOP_GRACE` after the thaw, so
+/// a stop in the last slice still leaves the sidecar time to answer. Total
+/// credit is capped, so a process that never runs normally still times out.
+/// `credited` carries the request's total credit between slices.
+pub(crate) fn credit_stopped_time(
+    deadline: Instant,
+    slice: Duration,
+    slice_ended: Instant,
+    elapsed: Duration,
+    credited: &mut Duration,
+) -> Instant {
+    let Some(stopped) = elapsed.checked_sub(slice) else {
+        return deadline;
+    };
+    if stopped <= STOPPED_TIME_THRESHOLD || *credited >= MAX_STOPPED_CREDIT {
+        return deadline;
+    }
+    let extended = (deadline + stopped).max(slice_ended + POST_STOP_GRACE);
+    let credit = extended
+        .saturating_duration_since(deadline)
+        .min(MAX_STOPPED_CREDIT - *credited);
+    *credited += credit;
+    deadline + credit
+}
 
 #[derive(Clone, Debug)]
 pub struct AcpxSidecarTransportConfig {
@@ -93,6 +133,7 @@ pub struct AcpxSidecarTransport {
     stderr_categories: BTreeSet<&'static str>,
     poisoned: bool,
     abandoned_observation: Option<u64>,
+    abandoned_cancellation: Option<u64>,
 }
 
 // A fresh Pi process verifies and copies its native closure before ACP admission.
@@ -407,6 +448,7 @@ impl AcpxSidecarTransport {
             stderr_categories: BTreeSet::new(),
             poisoned: false,
             abandoned_observation: None,
+            abandoned_cancellation: None,
         })
     }
 
@@ -450,6 +492,7 @@ impl AcpxSidecarTransport {
             Ok(CommandOutcome::Rejected {
                 error,
                 resume_required,
+                ..
             }) => Err(AcpxTurnStartFailure {
                 error,
                 resume_required,
@@ -458,6 +501,23 @@ impl AcpxSidecarTransport {
                 error,
                 resume_required: false,
             }),
+        }
+    }
+
+    /// Returns `Err((error, retired))`, where `retired` is true only when the
+    /// sidecar rejected the result because it no longer tracks that tool call.
+    pub(crate) fn request_tool_resolve(
+        &mut self,
+        params: Value,
+    ) -> Result<Value, (LocalRunnerError, bool)> {
+        match self.request_outcome(GeneratedAcpxSidecarCommand::ToolResolve, params) {
+            Ok(CommandOutcome::Success(value)) => Ok(value),
+            Ok(CommandOutcome::Rejected {
+                error,
+                tool_call_retired,
+                ..
+            }) => Err((error, tool_call_retired)),
+            Err(error) => Err((error, false)),
         }
     }
 
@@ -576,6 +636,51 @@ impl AcpxSidecarTransport {
         }
     }
 
+    /// Sends `turn.cancel` and waits for its reply only until `deadline`.
+    ///
+    /// The provider's turn terminal settles a cancelled turn, not this reply,
+    /// and the runner cannot service `turn.stop` while it blocks here. A reply
+    /// lost past the bound therefore leaves the transport usable (polling still
+    /// owns every buffered and later frame) and retains the request ID, so a
+    /// late reply cannot masquerade as the answer to another request.
+    pub(crate) fn request_turn_cancel(
+        &mut self,
+        params: Value,
+        deadline: Instant,
+    ) -> Result<Option<Value>, LocalRunnerError> {
+        if self.poisoned {
+            return Err(LocalRunnerError::invalid(
+                "ACPX sidecar transport is unavailable after a protocol failure",
+            ));
+        }
+        if self.abandoned_cancellation.is_some() {
+            // The earlier cancel is still delivered and unanswered. Its runtime
+            // was retired, so no later turn exists; another cancel adds nothing
+            // and must not block the runner again.
+            return Ok(None);
+        }
+        let command = GeneratedAcpxSidecarCommand::TurnCancel;
+        let deadline = self
+            .request_deadline
+            .map_or(deadline, |bound| bound.min(deadline));
+        let result = self.send_request(command, params).and_then(|request_id| {
+            let result = self.receive_response(command, request_id, deadline)?;
+            if result.is_none() {
+                self.abandoned_cancellation = Some(request_id);
+            }
+            Ok(result)
+        });
+        match result {
+            Ok(Some(CommandOutcome::Success(value))) => Ok(Some(value)),
+            Ok(Some(CommandOutcome::Rejected { error, .. })) => Err(error),
+            Ok(None) => Ok(None),
+            Err(error) => {
+                self.poison();
+                Err(error)
+            }
+        }
+    }
+
     pub(crate) fn observed_event_sequence(&self) -> u64 {
         self.last_event_sequence
     }
@@ -645,19 +750,36 @@ impl AcpxSidecarTransport {
         request_id: u64,
         deadline: Instant,
     ) -> Result<Option<CommandOutcome>, LocalRunnerError> {
+        let mut deadline = deadline;
+        let mut credited = Duration::ZERO;
         loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
+            let slice_started = Instant::now();
+            let remaining = deadline.saturating_duration_since(slice_started);
             if remaining.is_zero() {
                 return Ok(None);
             }
-            let Some(line) = self.receive_stdout_line(remaining, command.as_str())? else {
-                return Ok(None);
+            let slice = remaining.min(RESPONSE_WAIT_SLICE);
+            let received = self.receive_stdout_line(slice, command.as_str())?;
+            let slice_ended = Instant::now();
+            deadline = credit_stopped_time(
+                deadline,
+                slice,
+                slice_ended,
+                slice_ended.saturating_duration_since(slice_started),
+                &mut credited,
+            );
+            let Some(line) = received else {
+                continue;
             };
             match parse_frame(&line)? {
                 ParsedFrame::Event(event) => self.buffer_event(event)?,
                 ParsedFrame::Response(response) => {
                     if self.abandoned_observation == Some(response.id) {
                         self.abandoned_observation = None;
+                        continue;
+                    }
+                    if self.abandoned_cancellation == Some(response.id) {
+                        self.abandoned_cancellation = None;
                         continue;
                     }
                     if response.id != request_id {
@@ -676,7 +798,9 @@ impl AcpxSidecarTransport {
                     let resume_required = command == GeneratedAcpxSidecarCommand::TurnStart
                         && error.retryable
                         && error.code == "SESSION_RESUME_REQUIRED";
-                    return Ok(Some(CommandOutcome::Rejected { error: LocalRunnerError::invalid(
+                    let tool_call_retired = command == GeneratedAcpxSidecarCommand::ToolResolve
+                        && error.code == "ACPX_TOOL_CALL_STALE";
+                    return Ok(Some(CommandOutcome::Rejected { tool_call_retired, error: LocalRunnerError::invalid(
                         format!(
                             "ACPX sidecar command {} was rejected (retryable={}, classification={})",
                             command.as_str(),
@@ -711,6 +835,11 @@ impl AcpxSidecarTransport {
                     if self.abandoned_observation == Some(response.id) =>
                 {
                     self.abandoned_observation = None;
+                }
+                ParsedFrame::Response(response)
+                    if self.abandoned_cancellation == Some(response.id) =>
+                {
+                    self.abandoned_cancellation = None;
                 }
                 ParsedFrame::Response(response) => {
                     return Err(LocalRunnerError::invalid(format!(
@@ -879,6 +1008,7 @@ enum CommandOutcome {
     Rejected {
         error: LocalRunnerError,
         resume_required: bool,
+        tool_call_retired: bool,
     },
 }
 
@@ -1211,8 +1341,66 @@ fn response_error_classification(error: &ResponseError) -> &'static str {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn credits_a_stop_and_leaves_the_sidecar_time_to_answer() {
+        let start = Instant::now();
+        let deadline = start + Duration::from_secs(30);
+        let slice = Duration::from_secs(1);
+        let mut credited = Duration::ZERO;
+        // A slice that returned on time, or a little late on a loaded host.
+        for elapsed in [Duration::from_millis(400), Duration::from_millis(2_900)] {
+            assert_eq!(
+                credit_stopped_time(deadline, slice, start + elapsed, elapsed, &mut credited),
+                deadline
+            );
+        }
+        assert_eq!(credited, Duration::ZERO);
+        // A 61 s freeze inside a 1 s slice early in the wait: 60 s are credited.
+        let ended = start + Duration::from_secs(61);
+        assert_eq!(
+            credit_stopped_time(
+                deadline,
+                slice,
+                ended,
+                Duration::from_secs(61),
+                &mut credited
+            ),
+            deadline + Duration::from_secs(60)
+        );
+        // A freeze in the last 0.5 s slice still leaves the grace after thaw.
+        let mut credited = Duration::ZERO;
+        let last = start + Duration::from_millis(29_500);
+        let half = Duration::from_millis(500);
+        let ended = last + Duration::from_secs(60);
+        assert_eq!(
+            credit_stopped_time(
+                deadline,
+                half,
+                ended,
+                Duration::from_secs(60),
+                &mut credited
+            ),
+            ended + POST_STOP_GRACE
+        );
+        // Total credit is capped.
+        let mut credited = MAX_STOPPED_CREDIT;
+        assert_eq!(
+            credit_stopped_time(
+                deadline,
+                slice,
+                ended,
+                Duration::from_secs(61),
+                &mut credited
+            ),
+            deadline
+        );
+    }
+
+    #[test]
     #[cfg(unix)]
     fn a_timed_out_turn_start_never_establishes_a_resumable_rejection() {
+        // Shutdown can orphan the `sleep` for a moment after its shell dies.
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let _orphans = crate::process_lineage::host_orphans::may_orphan();
         let mut transport = AcpxSidecarTransport::start(&AcpxSidecarTransportConfig {
             command: "/bin/sh".into(),
             args: vec!["-c".to_owned(), "read request; sleep 10".to_owned()],

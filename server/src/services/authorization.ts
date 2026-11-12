@@ -99,6 +99,7 @@ export type AuthorizationAction =
   | "agent_instructions:update"
   | "skill_config:update"
   | "agent:read"
+  | "attention:route"
   | "agent:wake"
   | "company_scope:read"
   | "decision_queue:manage"
@@ -196,6 +197,7 @@ function permissionForAction(action: AuthorizationAction): PermissionKey | null 
     return null;
   }
   if (
+    action === "attention:route" ||
     action === "agent:read" ||
     action === "agent:wake" ||
     action === "company_scope:read" ||
@@ -783,6 +785,22 @@ type ReadAuthorizationSnapshot = {
 
 type ReadAuthorizationResource = Extract<AuthorizationResource, { type: "issue" | "project" | "company" }>;
 
+/** Per-resource decisions of one batched read that run at the same time. */
+export const READ_DECISION_CONCURRENCY = 8;
+
+/** Maps in input order with bounded concurrency; stops starting work after the first failure. */
+async function mapWithConcurrency<T, R>(items: readonly T[], concurrency: number, mapper: (item: T) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0, failed = false;
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (!failed && next < items.length) {
+      const index = next++;
+      try { results[index] = await mapper(items[index]!); } catch (error) { failed = true; throw error; }
+    }
+  }));
+  return results;
+}
+
 export function authorizationService(db: Db | DbTransaction) {
   return createAuthorizationService(db);
 }
@@ -850,10 +868,13 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
     const results: AuthorizationDecision[][] = [];
     for (let index = 0; index < batchActors.length; index++) {
       const batch = createAuthorizationService(db, snapshots[index]);
-      const decisions: AuthorizationDecision[] = [];
-      for (const resource of resources) decisions.push(await batch.decide({ actor: batchActors[index], resource,
-        action: resource.type === "issue" ? "issue:read" : resource.type === "project" ? "project:read" : "company_scope:read" }));
-      results.push(decisions);
+      // The batch has already read what the resources share. Checks that stay
+      // per resource (a low-trust boundary's ancestry and mention grants) run
+      // a few at a time, so a long list neither waits on them one by one nor
+      // takes every pool connection at once.
+      results.push(await mapWithConcurrency(resources, READ_DECISION_CONCURRENCY, resource => batch.decide({
+        actor: batchActors[index], resource,
+        action: resource.type === "issue" ? "issue:read" : resource.type === "project" ? "project:read" : "company_scope:read" })));
     }
     return results;
   }
@@ -1998,6 +2019,11 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
       });
     }
 
+    if (input.action === "attention:route" && input.actor.type !== "board") {
+      return deny({ action: input.action, reason: "deny_unsupported_action",
+        explanation: "Only a human routing administrator can reroute another person's request." });
+    }
+
     if (input.action === "runtime:confirm_owner_stop" && input.actor.type !== "board") {
       return deny({ action: input.action, reason: "deny_unsupported_action",
         explanation: "Only a deployment administrator can confirm a workspace controller has stopped." });
@@ -2030,6 +2056,15 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
           reason: "allow_instance_admin",
           explanation: "Allowed because the actor is an instance admin.",
         });
+      }
+      if (input.action === "attention:route") {
+        const membership = await getActiveMembership(companyId, "user", input.actor.userId ?? "");
+        if (membership?.membershipRole === "owner" || membership?.membershipRole === "admin") {
+          return allow({ action: input.action, reason: "allow_role_default",
+            explanation: "Allowed by the active company owner or administrator role." });
+        }
+        return deny({ action: input.action, reason: "deny_missing_grant",
+          explanation: "Only a company owner, company administrator, or instance administrator can reroute another person's request." });
       }
       if (input.action === "runtime:confirm_owner_stop") {
         const membership = await getActiveMembership(companyId, "user", input.actor.userId ?? "");
@@ -2839,8 +2874,10 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
 
     const companyId = companyIdForResource(input.resource);
     // External authority always uses current membership, without the request's
-    // responsible-user memo or rollout exceptions for agent-owned grants.
-    const snapshot = await loadResponsibleUserSnapshot(companyId, authorizingUserId);
+    // responsible-user memo or rollout exceptions for agent-owned grants. A
+    // batch of read decisions reads that membership from the database once.
+    const snapshot = await batchRead(`responsible:${companyId}:${authorizingUserId}`,
+      () => loadResponsibleUserSnapshot(companyId, authorizingUserId));
     const userDecision = snapshot.userExists && snapshot.activeMembership
       ? await decideBase({
           ...input,

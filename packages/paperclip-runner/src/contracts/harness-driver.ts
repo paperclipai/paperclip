@@ -58,6 +58,16 @@ export interface OpenHarnessSessionInput {
   signal?: AbortSignal;
 }
 
+export interface RunnerAttachmentDownloadGrant {
+  url: string;
+  token: string;
+  byteSize: number;
+  sha256: string;
+  contentType: string;
+}
+
+export type DownloadRunnerAttachment = (grant: (turnId: string) => RunnerAttachmentDownloadGrant) => Promise<string | null>;
+
 export interface HarnessSessionRecoveryOptions {
   normalizeReplayPayload?(payload: PrpEvent["payload"]): PrpEvent["payload"];
   /** Abort provider recovery and release any not-yet-returned provider state. */
@@ -498,7 +508,9 @@ export interface PersistedHarnessSession {
 }
 
 /** Runner proof that saved provider state cannot be restored by this runner
- * build. Restoring the same state again fails the same way. */
+ * build, or in the workspace assigned to this run (for example, a remote
+ * workspace root that moved after its epoch was abandoned). Restoring the same
+ * state again fails the same way. */
 export const PROVIDER_STATE_INCOMPATIBLE = "provider_state_incompatible";
 /** Runner refused to attach a new run to the saved session (for example, a
  * protected launch argument or the durable provider profile would change).
@@ -530,12 +542,36 @@ export class NativeRunnerSourceReconciliationRequiredError extends Error {
   }
 }
 
+/** The Runner keeps no control-plane state for the saved session: none is
+ * live and no archived authority epoch matches it. A new sandbox whose
+ * harness backup was never saved has nothing to resume, and recovering again
+ * reads the same empty state. The driver classifies it only for a session
+ * with no turn or runtime request in flight. */
+export class NativeRunnerResumeStateUnavailableError extends Error {
+  readonly code = "native_runner_resume_state_unavailable";
+  constructor() {
+    super("PRP provider resume state is unavailable");
+    this.name = "NativeRunnerResumeStateUnavailableError";
+  }
+}
+
+export function isRunnerResumeStateUnavailable(error: unknown, depth = 0): boolean {
+  if (!error || typeof error !== "object" || depth > 5) return false;
+  if (error instanceof NativeRunnerResumeStateUnavailableError) return true;
+  return isRunnerResumeStateUnavailable((error as { cause?: unknown }).cause, depth + 1);
+}
+
 export interface HarnessSessionRecoveryResult {
   recovered: boolean;
   session?: HarnessSession;
   reason?: string;
   /** Closed runner class of a deterministic recovery failure. */
   failureClass?: RunnerRecoveryFailureClass;
+  /** Set only with PROVIDER_STATE_INCOMPATIBLE: the Runner proved it holds no
+   * saved state for this session (NativeRunnerResumeStateUnavailableError) and
+   * the checkpoint had no turn or runtime request in flight. */
+  resumeStateUnavailable?: true;
+  runnerExitConfirmed?: true;
 }
 
 /** Reads the closed class of an authenticated runner command failure, or of a
@@ -563,6 +599,7 @@ export interface CancelledTurnSettlement {
 
 export interface HarnessSession {
   supportsTurnReasoning?(): boolean;
+  downloadAttachment?: DownloadRunnerAttachment;
   turnControlCapabilities?(): NativeTurnControlCapabilities | null;
   ids(): {
     driverSessionId: string;
@@ -635,7 +672,7 @@ export interface HarnessSession {
   release?(): Promise<DurableRecoveryIdentity | false>;
   /** Relinquish controller authority without semantically closing the session. */
   detachControllerForRestart?(): Promise<void>;
-  close(input: { reason: string; force?: boolean }): Promise<void>;
+  close(input: { reason: string; force?: boolean; retainUnsettledRemoteRunner?: boolean }): Promise<void>;
 }
 
 /** A local harness implementation hidden behind the runner daemon boundary. */

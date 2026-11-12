@@ -1,4 +1,6 @@
 export const queryKeys = {
+  linkPreview: (companyId: string, userId: string | null, url: string) =>
+    ["link-preview", companyId, userId, url] as const,
   workspacePreferences: {
     mine: (userId: string | null) => ["workspace-preferences", userId] as const,
   },
@@ -517,6 +519,7 @@ export const queryKeys = {
       ["environment-custom-image-setup-sessions", sessionId] as const,
   },
   projects: {
+    environments: (companyId: string) => ["project-environments", companyId] as const,
     all: (companyId: string) => ["projects", companyId] as const,
     list: (companyId: string, opts: { includeArchived?: boolean } = {}) =>
       [

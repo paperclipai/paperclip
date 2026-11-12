@@ -1,11 +1,11 @@
 /**
- * Universal checks U1–U4: scenario-independent rules graded on every task of
+ * Universal checks U1–U5: scenario-independent rules graded on every task of
  * every wave, whatever its workload. Pure functions over observer samples (no
  * I/O), so they also run over saved evidence (`universal-audit.ts`).
  *
  *   U1 liveness        every non-terminal task has a live owner or a visible, actionable item
  *   U2 retry loop      the same failure does not repeat without the task changing state
- *   U3 diagnosable     every failed run names a specific cause
+ *   U3 diagnosable     every failed run names a specific cause (its code, or a recorded failureCause)
  *   U4 stale notices   no failure or Retry notice outlives later successful work
  *
  * Each rule is either `enforced` (a violation fails the task) or a warning
@@ -14,7 +14,7 @@
  */
 import type { RunSample, TaskRecord, TaskSample } from "./types.js";
 
-export type UniversalId = "U1" | "U2" | "U3" | "U4";
+export type UniversalId = "U1" | "U2" | "U3" | "U4" | "U5";
 export interface UniversalResult { verdict: "pass" | "fail" | "n/a"; detail: string; enforced: boolean;
   /** Measurements behind the verdict (milliseconds or counts), for bound tuning. */
   metrics?: Record<string, number> }
@@ -31,6 +31,7 @@ export interface UniversalBounds {
   sameFailureRuns: number;
   /** U4: longest a failure or Retry notice may remain after a later run succeeded. */
   staleNoticeMs: number;
+  maxRuns: number;
 }
 
 /**
@@ -45,10 +46,11 @@ export const DEFAULT_UNIVERSAL_BOUNDS: UniversalBounds = {
   silentRunMs: 3 * 60_000,
   sameFailureRuns: 3,
   staleNoticeMs: 60_000,
+  maxRuns: 10,
 };
 
 /** Rules that fail a task. The rest are warnings until the audit shows no false positive on known-good waves. */
-export const ENFORCED_UNIVERSAL: ReadonlySet<UniversalId> = new Set<UniversalId>(["U1", "U2", "U4"]);
+export const ENFORCED_UNIVERSAL: ReadonlySet<UniversalId> = new Set<UniversalId>(["U1", "U2", "U4", "U5"]);
 
 export function universalBounds(env: NodeJS.ProcessEnv = process.env): UniversalBounds {
   const seconds = (name: string, fallback: number) => {
@@ -64,6 +66,7 @@ export function universalBounds(env: NodeJS.ProcessEnv = process.env): Universal
     silentRunMs: DEFAULT_UNIVERSAL_BOUNDS.silentRunMs,
     sameFailureRuns: Math.round(seconds("RESTART_CHAOS_U2_SAME_FAILURE_RUNS", DEFAULT_UNIVERSAL_BOUNDS.sameFailureRuns)),
     staleNoticeMs: seconds("RESTART_CHAOS_U4_STALE_SECONDS", DEFAULT_UNIVERSAL_BOUNDS.staleNoticeMs / 1000) * 1000,
+    maxRuns: Math.round(seconds("RESTART_CHAOS_U5_MAX_RUNS", DEFAULT_UNIVERSAL_BOUNDS.maxRuns)),
   };
 }
 
@@ -78,6 +81,14 @@ const ready = (sample: TaskSample) => sample.reachable && sample.serverReady;
  * shows it as "adapter failed".
  */
 export const GENERIC_FAILURE_CODES: ReadonlySet<string> = new Set(["", "error", "unknown", "unknown_error", "failed", "adapter_failed", "internal_error"]);
+/** Server fallbacks that record only that the adapter gave no code: they name nothing specific. */
+const VAGUE_FAILURE_CAUSES: ReadonlySet<string> = new Set(["adapter_reported_error", "object", "string", "undefined"]);
+/** A recorded failureCause that names something: not empty, a bare class, `unknown_error` or a no-code fallback. */
+export function diagnosableFailureCause(cause: string | null | undefined): boolean {
+  const text = (cause ?? "").trim();
+  return text !== "" && !GENERIC_FAILURE_CODES.has(text.toLowerCase()) && !VAGUE_FAILURE_CAUSES.has(text)
+    && !bareCauseMessage(text);
+}
 const FAILED_RUN = new Set(["failed", "timed_out"]);
 
 /** A message whose only cause is a bare exception class or "unknown" (the #20385 "last cause: Error" class). */
@@ -241,8 +252,11 @@ export function gradeU3(record: TaskRecord, db?: UniversalDbEvidence): Omit<Univ
   }
   for (const run of failed) {
     const code = run.errorCode ?? "";
-    if (GENERIC_FAILURE_CODES.has(code.trim().toLowerCase())) vague.push(`${run.id}:code=${code || "none"}`);
-    else if (messages?.has(run.id) && bareCauseMessage(messages.get(run.id))) {
+    // A generic code with a recorded cause (for example `adapter_failed` + `40001`) names what failed.
+    if (diagnosableFailureCause(run.failureCause)) continue;
+    if (GENERIC_FAILURE_CODES.has(code.trim().toLowerCase())) {
+      vague.push(`${run.id}:code=${code || "none"}${run.failureCause ? ` cause=${run.failureCause.slice(0, 80)}` : ""}`);
+    } else if (messages?.has(run.id) && bareCauseMessage(messages.get(run.id))) {
       vague.push(`${run.id}:${code} message=${JSON.stringify((messages.get(run.id) ?? "").slice(0, 120))}`);
     }
   }
@@ -282,6 +296,13 @@ export function gradeU4(record: TaskRecord, bounds: UniversalBounds): Omit<Unive
   return { verdict: "pass", metrics: { staleNoticeMs: worst }, detail: worst ? `notice cleared ${seconds(worst)} after success` : "no notice after success" };
 }
 
+export function gradeU5(record: TaskRecord, bounds: UniversalBounds): Omit<UniversalResult, "enforced"> {
+  const runs = finalRuns(record).size;
+  return runs > bounds.maxRuns
+    ? { verdict: "fail", metrics: { runs }, detail: `run_budget_exceeded ${runs} runs > ${bounds.maxRuns}` }
+    : { verdict: "pass", metrics: { runs }, detail: `${runs} runs` };
+}
+
 export function gradeUniversal(record: TaskRecord, options: { bounds?: UniversalBounds; db?: UniversalDbEvidence;
   enforced?: ReadonlySet<UniversalId> } = {}): UniversalGrade {
   const bounds = options.bounds ?? universalBounds();
@@ -291,6 +312,7 @@ export function gradeUniversal(record: TaskRecord, options: { bounds?: Universal
     U2: gradeU2(record, bounds),
     U3: gradeU3(record, options.db),
     U4: gradeU4(record, bounds),
+    U5: gradeU5(record, bounds),
   };
   return Object.fromEntries(Object.entries(results).map(([id, result]) => [id, { ...result, enforced: enforced.has(id as UniversalId) }])) as UniversalGrade;
 }
