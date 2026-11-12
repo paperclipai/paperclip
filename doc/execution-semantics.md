@@ -1858,20 +1858,31 @@ Launcher-owned (remote) and adopted runners are not reaped this way.
 Legacy local adapter runs have no runnerd journal. Their CLI runs in its own
 process group, but a tool can move a process out of that group (for example
 Claude Code runs each Bash command with `setsid`, and `nohup` or a double fork
-reparent a server to init). Every local run exports `PAPERCLIP_RUN_ID` to its
-CLI, and descendants inherit it in their initial environment whatever group or
-session they join. On Linux, when a local legacy run settles (success, failure,
-timeout or in-process cancel), when it is cancelled without a live executor
-(for example after a server restart), and when process-loss recovery fails it,
-the server scans `/proc` for same-user processes whose initial environment has
-that exact run id. It sends SIGTERM, waits the grace period, then sends SIGKILL,
-including to a marked process that started during the grace period. A process
-is named by PID and start time, and the start time is read again before each
-signal, so a reused PID is never signalled. The server and its ancestors, and
-processes of registered local services, are excluded; server-managed runtime
-services also start without `PAPERCLIP_*` variables. A process that discards
-its environment (`env -i`) or changes user is not found. Other platforms keep
-the process-group stop only.
+reparent a server to init). On Linux the server therefore tracks each local
+legacy run's processes itself. A process belongs to the run when its initial
+environment carries the run's exact `PAPERCLIP_RUN_ID` (every local run exports
+it and descendants inherit it), when the run's recorded lineage contains it,
+when its parent belongs to the run, or when it is in a session or process group
+that a run process led. While the run is live a shared sampler (every 250 ms)
+records the run's processes by PID and start time, from the spawned CLI down,
+and saves them under the instance root (`run-lineage/<run id>.json`). A
+recorded process stays owned after it clears its environment (`env -i`), execs
+or is reparented. When a local legacy run settles (success, failure, timeout or
+in-process cancel), when it is cancelled without a live executor (for example
+after a server restart, using the saved lineage), and when process-loss
+recovery fails it, the server sends SIGTERM to every run process, rescans
+during the grace period so that a process started then (for example by a
+SIGTERM handler) also gets SIGTERM and the rest of the grace period, then sends
+SIGKILL to what is left. The start time is read again before each signal, so a
+reused PID is never signalled. A dead leader's session or group matches only
+members that started before the leader was seen gone. The server and its
+ancestors (and their sessions and groups), and processes of registered local
+services, are excluded; server-managed runtime services also start without
+`PAPERCLIP_*` variables. Known limit: sampling is not event-driven, so a
+process that clears its environment and whose run-owned parent and session or
+group leader all exit within one sampling interval is not found, nor is a
+process that changes user. Closing that gap needs a kernel containment such as
+a delegated cgroup. Other platforms keep the process-group stop only.
 
 When a native attempt fails before launch because its predecessor's session is
 quarantined, explicit task Retry verifies the retained journal's actual owner.

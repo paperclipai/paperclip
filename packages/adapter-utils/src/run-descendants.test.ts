@@ -7,7 +7,9 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   findRunMarkedProcesses,
+  readRunProcessTable,
   RUN_ID_ENV_MARKER,
+  RunProcessLineage,
   signalRunProcessIdentity,
   terminateRunMarkedProcesses,
 } from "./run-descendants.js";
@@ -83,6 +85,66 @@ async function waitFor(check: () => boolean, timeoutMs: number) {
 function readProcessGroup(pid: number) {
   const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
   return Number.parseInt(stat.slice(stat.lastIndexOf(")") + 1).trim().split(/\s+/)[2] ?? "", 10);
+}
+
+const MIN_PATH = "/usr/bin:/bin";
+
+/**
+ * Starts a marked "run CLI" that spawns a detached child through
+ * `env -i`, so the child has its own session and group and no marker, the
+ * way a clean-environment tool command does. The CLI prints the child PID
+ * and stays alive until it is sent "exit" on stdin.
+ */
+async function startCliWithEnvClearedChild(runId: string, childArgs: string[] = ["sleep", "300"]) {
+  const code = `const {spawn}=require('node:child_process');
+const c=spawn('/usr/bin/env',['-i','PATH=${MIN_PATH}',...${JSON.stringify(childArgs)}],{detached:true,stdio:'ignore'});
+c.unref();console.log(c.pid);
+process.stdin.on('data',()=>process.exit(0));`;
+  const cli = spawn(process.execPath, ["-e", code], {
+    env: { PATH: MIN_PATH, [RUN_ID_ENV_MARKER]: runId },
+    stdio: ["pipe", "pipe", "ignore"],
+    detached: true,
+  });
+  startedPids.add(cli.pid!);
+  const childPid = await new Promise<number>((resolve, reject) => {
+    let text = "";
+    cli.stdout!.on("data", (chunk) => {
+      text += chunk;
+      const pid = Number.parseInt(text, 10);
+      if (text.includes("\n") && Number.isInteger(pid)) resolve(pid);
+    });
+    cli.once("error", reject);
+    setTimeout(() => reject(new Error("cli did not report its child")), 5_000).unref();
+  });
+  startedPids.add(childPid);
+  // Wait until env has exec'd the final image (its environment is cleared).
+  await waitFor(() => {
+    try {
+      return !readFileSync(`/proc/${childPid}/environ`, "utf8").includes(RUN_ID_ENV_MARKER);
+    } catch {
+      return false;
+    }
+  }, 2_000);
+  const exitCli = async () => {
+    if (cli.exitCode !== null || cli.signalCode !== null) return;
+    const exited = new Promise((resolve) => cli.once("exit", resolve));
+    cli.stdin!.write("exit\n");
+    await exited;
+  };
+  return { cli, childPid, exitCli };
+}
+
+async function writeFixtureProcess(
+  procRoot: string,
+  entry: { pid: number; ppid: number; pgid: number; sid: number; startTime: number; environ?: string },
+) {
+  const dir = path.join(procRoot, String(entry.pid));
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(
+    path.join(dir, "stat"),
+    `${entry.pid} (proc) S ${entry.ppid} ${entry.pgid} ${entry.sid} 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 ${entry.startTime} 0 0`,
+  );
+  await fs.writeFile(path.join(dir, "environ"), entry.environ ?? "PATH=/usr/bin\0");
 }
 
 afterEach(async () => {
@@ -187,6 +249,184 @@ linuxOnly("run descendant teardown", () => {
 
     expect(signalRunProcessIdentity({ pid, startTime: liveStartTime! }, "SIGKILL")).toBe(true);
     expect(await waitFor(() => !isAlive(pid), 2_000)).toBe(true);
+  });
+
+  it("stops an environment-cleared detached child that the recorded lineage saw", async () => {
+    const runId = newRunId();
+    const { cli, childPid, exitCli } = await startCliWithEnvClearedChild(runId);
+    const lineage = new RunProcessLineage(runId);
+    lineage.addRoot(cli.pid!);
+    expect(lineage.sample(readRunProcessTable()).map((entry) => entry.pid)).toEqual(
+      expect.arrayContaining([cli.pid, childPid]),
+    );
+
+    // The CLI exits: the child is reparented and carries no marker.
+    await exitCli();
+    expect(isAlive(childPid)).toBe(true);
+    expect(findRunMarkedProcesses(runId)).toEqual([]);
+    expect((await terminateRunMarkedProcesses(runId, { graceMs: 200 })).found).toEqual([]);
+    expect(isAlive(childPid)).toBe(true);
+
+    const result = await terminateRunMarkedProcesses(runId, { graceMs: 2_000, lineage });
+
+    expect(result.found.map((entry) => entry.pid)).toEqual([childPid]);
+    expect(result.forceKilled).toEqual([]);
+    expect(result.survivors).toEqual([]);
+    expect(await waitFor(() => !isAlive(childPid), 2_000)).toBe(true);
+  });
+
+  it("restores recorded lineage from a snapshot", async () => {
+    const runId = newRunId();
+    const { cli, childPid, exitCli } = await startCliWithEnvClearedChild(runId);
+    const lineage = new RunProcessLineage(runId);
+    lineage.addRoot(cli.pid!);
+    lineage.sample(readRunProcessTable());
+    await exitCli();
+    lineage.sample(readRunProcessTable());
+
+    const restored = RunProcessLineage.fromSnapshot(JSON.parse(JSON.stringify(lineage.toSnapshot())));
+    expect(restored?.runId).toBe(runId);
+    const result = await terminateRunMarkedProcesses(runId, { graceMs: 2_000, lineage: restored! });
+
+    expect(result.found.map((entry) => entry.pid)).toEqual([childPid]);
+    expect(await waitFor(() => !isAlive(childPid), 2_000)).toBe(true);
+  });
+
+  it("stops an environment-cleared child of a live run process without prior sampling", async () => {
+    const runId = newRunId();
+    const { cli, childPid } = await startCliWithEnvClearedChild(runId);
+
+    const result = await terminateRunMarkedProcesses(runId, { graceMs: 2_000 });
+
+    expect(result.found.map((entry) => entry.pid).sort()).toEqual([cli.pid, childPid].sort());
+    expect(result.survivors).toEqual([]);
+    expect(await waitFor(() => !isAlive(childPid) && !isAlive(cli.pid!), 2_000)).toBe(true);
+  });
+
+  it("gives a cleanup child started from a SIGTERM handler the first signal and the grace period", async () => {
+    const runId = newRunId();
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "run-descendants-term-"));
+    const evidence = path.join(dir, "child-term");
+    try {
+      const childCode = `const fs=require('node:fs');process.on('SIGTERM',()=>{fs.writeFileSync(${JSON.stringify(evidence)},'TERM');process.exit(0)});console.log('ready');setInterval(()=>{},1000);`;
+      const parentCode = `const {spawn}=require('node:child_process');process.on('SIGTERM',()=>{const p=spawn(process.execPath,['-e',${JSON.stringify(childCode)}],{detached:true,stdio:['ignore','pipe','ignore']});p.stdout.once('data',()=>process.exit(0));});console.log('ready');setInterval(()=>{},1000);`;
+      const parent = spawn(process.execPath, ["-e", parentCode], {
+        detached: true,
+        env: { PATH: MIN_PATH, [RUN_ID_ENV_MARKER]: runId },
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+      startedPids.add(parent.pid!);
+      await new Promise<void>((resolve) => parent.stdout!.once("data", () => resolve()));
+
+      const startedAt = Date.now();
+      const result = await terminateRunMarkedProcesses(runId, { graceMs: 2_000, pollMs: 25 });
+
+      expect(result.found.length).toBe(2);
+      expect(result.forceKilled).toEqual([]);
+      expect(result.survivors).toEqual([]);
+      expect(readFileSync(evidence, "utf8")).toBe("TERM");
+      expect(Date.now() - startedAt).toBeLessThan(2_000 + 1_500);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the grace period bounded when late children keep appearing", async () => {
+    const runId = newRunId();
+    // Each process ignores SIGTERM and starts a new marked child every 50 ms.
+    const code = `const {spawn}=require('node:child_process');process.on('SIGTERM',()=>{});setInterval(()=>{spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{detached:true,stdio:'ignore'}).unref()},50);console.log('ready');`;
+    const parent = spawn(process.execPath, ["-e", code], {
+      detached: true,
+      env: { PATH: MIN_PATH, [RUN_ID_ENV_MARKER]: runId },
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    startedPids.add(parent.pid!);
+    await new Promise<void>((resolve) => parent.stdout!.once("data", () => resolve()));
+
+    const startedAt = Date.now();
+    const result = await terminateRunMarkedProcesses(runId, { graceMs: 500, pollMs: 25 });
+
+    expect(Date.now() - startedAt).toBeLessThan(500 + 1_500);
+    expect(result.forceKilled.map((entry) => entry.pid)).toContain(parent.pid);
+    expect(await waitFor(() => !isAlive(parent.pid!), 2_000)).toBe(true);
+  });
+
+  describe("session and group ownership (procfs fixture)", () => {
+    // Fixture PIDs far above any real PID so the ancestor walk never meets them.
+    const leader = { pid: 4_000_001, ppid: 4_000_000, pgid: 4_000_001, sid: 4_000_001, startTime: 1_000 };
+
+    async function withFixture(run: (procRoot: string) => Promise<void>) {
+      const procRoot = await fs.mkdtemp(path.join(os.tmpdir(), "run-descendants-proc-"));
+      try {
+        await fs.writeFile(path.join(procRoot, "uptime"), "50.00 0.00\n");
+        await run(procRoot);
+      } finally {
+        await fs.rm(procRoot, { recursive: true, force: true });
+      }
+    }
+
+    it("owns an unmarked member of a dead leader's session that started before the leader was seen gone", async () => {
+      await withFixture(async (procRoot) => {
+        const runId = newRunId();
+        await writeFixtureProcess(procRoot, { ...leader, environ: `${RUN_ID_ENV_MARKER}=${runId}\0` });
+        const lineage = new RunProcessLineage(runId);
+        expect(lineage.sample(readRunProcessTable({ procRoot })).map((entry) => entry.pid)).toEqual([leader.pid]);
+
+        // The leader exits; a member it started (cleared env, reparented to
+        // init) keeps its session. Another member starts after the leader
+        // was seen gone (uptime 50 s = 5000 ticks).
+        await fs.rm(path.join(procRoot, String(leader.pid)), { recursive: true });
+        const member = { pid: 4_000_002, ppid: 1, pgid: 4_000_002, sid: leader.sid, startTime: 1_200 };
+        await writeFixtureProcess(procRoot, member);
+        expect(lineage.sample(readRunProcessTable({ procRoot })).map((entry) => entry.pid)).toEqual([member.pid]);
+
+        const late = { pid: 4_000_003, ppid: 1, pgid: 4_000_003, sid: leader.sid, startTime: 6_000 };
+        await writeFixtureProcess(procRoot, late);
+        expect(lineage.sample(readRunProcessTable({ procRoot })).map((entry) => entry.pid)).toEqual([member.pid]);
+      });
+    });
+
+    it("does not own members once the leader PID is reused by another process", async () => {
+      await withFixture(async (procRoot) => {
+        const runId = newRunId();
+        await writeFixtureProcess(procRoot, { ...leader, environ: `${RUN_ID_ENV_MARKER}=${runId}\0` });
+        const lineage = new RunProcessLineage(runId);
+        lineage.sample(readRunProcessTable({ procRoot }));
+
+        await writeFixtureProcess(procRoot, { ...leader, ppid: 1, startTime: 9_000 });
+        const member = { pid: 4_000_002, ppid: 1, pgid: leader.pid, sid: leader.sid, startTime: 9_100 };
+        await writeFixtureProcess(procRoot, member);
+        expect(lineage.sample(readRunProcessTable({ procRoot }))).toEqual([]);
+      });
+    });
+
+    it("never owns through the session or group of this process or its ancestors", async () => {
+      await withFixture(async (procRoot) => {
+        const runId = newRunId();
+        const self = process.pid;
+        // This process is (in the fixture) a marked session leader.
+        await writeFixtureProcess(procRoot, {
+          pid: self, ppid: 1, pgid: self, sid: self, startTime: 100, environ: `${RUN_ID_ENV_MARKER}=${runId}\0`,
+        });
+        await writeFixtureProcess(procRoot, { pid: 4_000_005, ppid: 1, pgid: self, sid: self, startTime: 200 });
+        const lineage = new RunProcessLineage(runId, [{ pid: self, startTime: "100", leader: true }]);
+        expect(lineage.sample(readRunProcessTable({ procRoot }))).toEqual([]);
+      });
+    });
+
+    it("does not own an excluded process group or a child of it", async () => {
+      await withFixture(async (procRoot) => {
+        const runId = newRunId();
+        await writeFixtureProcess(procRoot, { ...leader, environ: `${RUN_ID_ENV_MARKER}=${runId}\0` });
+        const service = { pid: 4_000_010, ppid: leader.pid, pgid: 4_000_010, sid: leader.sid, startTime: 1_100 };
+        await writeFixtureProcess(procRoot, service);
+        await writeFixtureProcess(procRoot, { pid: 4_000_011, ppid: service.pid, pgid: service.pid, sid: leader.sid, startTime: 1_200 });
+        const lineage = new RunProcessLineage(runId);
+        expect(
+          lineage.sample(readRunProcessTable({ procRoot }), { excludeProcessGroupIds: [service.pgid] }).map((entry) => entry.pid),
+        ).toEqual([leader.pid]);
+      });
+    });
   });
 
   // Root cause: runChildProcess signals only the CLI's process group, and on a

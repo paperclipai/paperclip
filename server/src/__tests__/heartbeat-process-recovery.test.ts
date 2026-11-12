@@ -1,5 +1,6 @@
 import { persistHeartbeatRunProcessMetadata } from "../services/heartbeat/run-lifecycle.js";
 import { BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS } from "../services/heartbeat/retries.js";
+import { forgetTrackedRunLineageForTests, trackRunDescendants } from "../services/heartbeat/run-descendant-reaper.js";
 import { SERVER_RESTART_RETRY_MAX_ATTEMPTS, SERVER_RESTART_RETRY_WINDOW_MS } from "../services/execution-recovery-attempt.js";
 import { enableRunFailureReporting } from "./helpers/run-failure-reporting.js";
 import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
@@ -549,6 +550,42 @@ function isZombiePid(pid: number) {
   } catch {
     return true;
   }
+}
+
+/**
+ * Starts a marked stand-in for a run's CLI that spawns a detached child with
+ * a cleared environment (`env -i`). Returns both PIDs and a function that
+ * makes the CLI exit, after which the child is reparented and unmarked.
+ */
+async function spawnCliWithEnvClearedChild(runId: string) {
+  const code = `const {spawn}=require('node:child_process');const c=spawn('/usr/bin/env',['-i','PATH=/usr/bin:/bin','sleep','300'],{detached:true,stdio:'ignore'});c.unref();console.log(c.pid);process.stdin.on('data',()=>process.exit(0));`;
+  const cli = spawn(process.execPath, ["-e", code], {
+    env: { PATH: "/usr/bin:/bin", PAPERCLIP_RUN_ID: runId },
+    stdio: ["pipe", "pipe", "ignore"],
+    detached: true,
+  });
+  const childPid = await new Promise<number>((resolve, reject) => {
+    let text = "";
+    cli.stdout!.on("data", (chunk) => {
+      text += chunk;
+      const pid = Number.parseInt(text, 10);
+      if (text.includes("\n") && Number.isInteger(pid)) resolve(pid);
+    });
+    cli.once("error", reject);
+  });
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const environ = await fs.readFile(`/proc/${childPid}/environ`, "utf8").catch(() => "PAPERCLIP_RUN_ID");
+    if (!environ.includes("PAPERCLIP_RUN_ID")) break;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  const exitCli = async () => {
+    if (cli.exitCode !== null || cli.signalCode !== null) return;
+    const exited = new Promise((resolve) => cli.once("exit", resolve));
+    cli.stdin!.write("exit\n");
+    await exited;
+  };
+  return { cliPid: cli.pid!, childPid, exitCli };
 }
 
 /** Failure retry accounting with every automatic failure retry already used. */
@@ -3437,6 +3474,20 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   );
 
   it.skipIf(process.platform !== "linux")(
+    "stops a lost process-adapter run's setsid descendant during process-loss recovery",
+    async () => {
+      const { runId } = await seedRunFixture({ agentStatus: "idle", adapterType: "process", processPid: 999_999_999 });
+      const descendantPid = await spawnEscapedRunDescendant(runId);
+      cleanupPids.add(descendantPid);
+
+      const result = await heartbeatService(db).reapOrphanedRuns();
+
+      expect(result.runIds).toEqual([runId]);
+      expect(await waitForDescendantExit(descendantPid)).toBe(true);
+    },
+  );
+
+  it.skipIf(process.platform !== "linux")(
     "stops a legacy run's setsid descendant when the run is cancelled after a server restart",
     async () => {
       const { runId } = await seedRunFixture({ agentStatus: "running", processPid: 999_999_999 });
@@ -3450,6 +3501,28 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
       expect(await waitForDescendantExit(descendantPid)).toBe(true);
       expect(isPidAlive(unrelatedPid)).toBe(true);
+    },
+  );
+
+  it.skipIf(process.platform !== "linux")(
+    "stops an environment-cleared descendant from the saved lineage when the run is cancelled after a restart",
+    async () => {
+      const { runId } = await seedRunFixture({ agentStatus: "running", processPid: 999_999_999 });
+      const { cliPid, childPid, exitCli } = await spawnCliWithEnvClearedChild(runId);
+      cleanupPids.add(cliPid);
+      cleanupPids.add(childPid);
+      // The live server records the run's processes, then restarts: the CLI
+      // is gone and only the saved lineage knows the unmarked child.
+      trackRunDescendants({ runId, rootPid: cliPid });
+      await exitCli();
+      forgetTrackedRunLineageForTests();
+      expect(isPidAlive(childPid)).toBe(true);
+      const environ = await fs.readFile(`/proc/${childPid}/environ`, "utf8");
+      expect(environ).not.toContain("PAPERCLIP_RUN_ID");
+
+      await heartbeatService(db).cancelRun(runId, "Operator Stop");
+
+      expect(await waitForDescendantExit(childPid)).toBe(true);
     },
   );
 

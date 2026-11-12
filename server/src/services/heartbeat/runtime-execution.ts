@@ -59,7 +59,7 @@ import { heartbeatRuns, nativeRunFinalizations, workspaceOperations } from "@pap
 import { conflict } from "../../errors.js";
 import { getStartupTraceContext } from "../../instrumentation.js";
 import { logger } from "../../middleware/logger.js";
-import { reapRunDescendants } from "./run-descendant-reaper.js";
+import { reapRunDescendants, trackRunDescendants } from "./run-descendant-reaper.js";
 import {
   buildNativeProviderEnvironment,
   executePaperclipNativeSession,
@@ -941,6 +941,12 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
                   // A sandbox runner's spawn metadata names a sandbox PID.
                   targetKind: executionTarget?.kind ?? "local",
                 });
+                // Record the run's processes from the CLI down while the run
+                // is live, so teardown still finds a descendant that later
+                // clears its environment or is reparented.
+                if ((executionTarget?.kind ?? "local") === "local") {
+                  trackRunDescendants({ runId: run.id, rootPid: meta.pid });
+                }
               },
               authToken: authToken ?? undefined,
             }));
