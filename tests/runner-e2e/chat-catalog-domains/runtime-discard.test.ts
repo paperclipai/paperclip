@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { gradeDiscard, promptCarries, replyLinkHrefs } from "./runtime-discard.js";
+import { documentContactRemoved, gradeDiscard, promptCarries, replyLinkHrefs } from "./runtime-discard.js";
 function valid() {
   const neighbour = { position: 0, comment: { id: "font", body: "Use a readable font.", authorUserId: "human", authorAgentId: null } };
   return { scenarioId: "steering.discard-queued-message", origin: "http://fixture.invalid", companyId: "company", leadId: "ceo", agents: [], links: [], humanQueries: [], reply: "",
@@ -68,4 +68,29 @@ it("rejects a native prompt that carries other comments but not the direction co
 it("rejects an unbound later worker in the grade when its prompt lacks the direction", () => {
   const o = valid(); o.state.cancelDirectionRunBound = promptCarries(`{"body":${JSON.stringify("unrelated")}}`, "Remove the contact section.\nKeep fonts.");
   expect(gradeDiscard(o).passed).toBe(false);
+});
+const label = "78f7e3a6c6ec-1";
+const initialPlan = "# Website Plan (Initial)\n\n## Status\n\nInitial plan document created.\n\n## Accessible font guidance (retained)\n\n- Readable base size.\n";
+const consumedPlan = `# Website Plan\n\n## Human direction\n\n- Add a contact section to the saved website plan, labelled \`${label}\`.\n\n## Contact section (label: ${label})\n\n- **Purpose:** give visitors a clear way to reach the site owner.\n\n## Accessible font guidance (retained)\n\n- Readable base size.\n`;
+const revs = (finalBody: string, extraSave?: string) => [
+  { id: "r1", revisionNumber: 1, createdByRunId: "initial", body: initialPlan },
+  { id: "r2", revisionNumber: 2, createdByRunId: "consumer", body: consumedPlan },
+  ...(extraSave ? [{ id: "r3", revisionNumber: 3, createdByRunId: "consumer", body: extraSave }] : []),
+  { id: "final", revisionNumber: 4, createdByRunId: "final", body: finalBody },
+];
+it("full cohort 6: the labelled heading is gone and a superseded note may still name the label", () => {
+  const final = `# Website Plan\n\n## Human direction\n\n- No contact section is included; the earlier \`${label}\` contact-section request has been superseded.\n\n## Accessible font guidance (retained)\n\n- Readable base size.\n`;
+  expect(documentContactRemoved(revs(final), "final", "consumer", label)).toBe(true);
+});
+it("fails while a heading still carries the label, kept or renamed", () => {
+  expect(documentContactRemoved(revs(consumedPlan), "final", "consumer", label)).toBe(false);
+  expect(documentContactRemoved(revs(consumedPlan.replace(`## Contact section (label: ${label})`, `### Reach us (${label})`)), "final", "consumer", label)).toBe(false);
+});
+it("compares against the plan from before the consuming run first saved the label, across its repeated saves", () => {
+  expect(documentContactRemoved(revs(initialPlan, `${consumedPlan}\n## Next steps\n\nConfirm contact details.\n`), "final", "consumer", label)).toBe(true);
+  expect(documentContactRemoved(revs(consumedPlan, `${consumedPlan}\n## Next steps\n\nConfirm contact details.\n`), "final", "consumer", label)).toBe(false);
+});
+it("fails when no labelled section was ever saved, so removal cannot be shown", () => {
+  const unlabelled = consumedPlan.replace(`## Contact section (label: ${label})`, "## Contact section");
+  expect(documentContactRemoved([...revs(initialPlan)].map(row => row.id === "r2" ? { ...row, body: unlabelled } : row), "final", "consumer", label)).toBe(false);
 });
