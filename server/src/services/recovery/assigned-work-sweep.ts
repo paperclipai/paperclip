@@ -646,19 +646,29 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
     }
     // Agents whose slots are held by native runs no live owner renews: their
     // queued work never dispatches, the same failure seen from the agent.
-    const stalledSlots = await db.execute<{ agentName: string; stalledRuns: number; queuedRuns: number }>(sql`
-      select a.name as "agentName", count(distinct r.id)::int as "stalledRuns",
-        (select count(*)::int from heartbeat_runs q where q.company_id = a.company_id and q.agent_id = a.id and q.status = 'queued') as "queuedRuns"
-      from heartbeat_runs r
-      inner join native_run_finalizations f on f.run_id = r.id
-      inner join agents a on a.id = r.agent_id
-      where r.company_id = ${companyId} and r.status = 'running' and r.runtime_mode = 'native'
-        and f.result_id is null and f.recovery_state is not null
-        and (f.lease_expires_at is null or f.lease_expires_at < ${new Date(at.getTime() - NATIVE_STALL_MS).toISOString()}::timestamptz)
-        and f.updated_at < ${new Date(at.getTime() - NATIVE_STALL_MS).toISOString()}::timestamptz
-      group by a.id, a.name, a.company_id order by count(distinct r.id) desc limit 20`);
-    const slotRows = Array.isArray(stalledSlots) ? stalledSlots : (stalledSlots as { rows?: unknown[] }).rows ?? [];
-    return { ...summary, agentsWithStalledSlots: slotRows as Array<{ agentName: string; stalledRuns: number; queuedRuns: number }> };
+    // Every count passes through the caller's issue-read filter: runs are
+    // joined to their task, so a private task's runs are never counted.
+    const stallCutoff = new Date(at.getTime() - NATIVE_STALL_MS);
+    const stalledRows = await db.select({ agentId: agents.id, agentName: agents.name,
+      stalledRuns: sql<number>`count(distinct ${heartbeatRuns.id})::int` }).from(heartbeatRuns)
+      .innerJoin(nativeRunFinalizations, eq(nativeRunFinalizations.runId, heartbeatRuns.id))
+      .innerJoin(agents, eq(agents.id, heartbeatRuns.agentId))
+      .innerJoin(issues, and(eq(issues.id, nativeRunFinalizations.issueId), eq(issues.companyId, heartbeatRuns.companyId)))
+      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "running"), eq(heartbeatRuns.runtimeMode, "native"),
+        isNull(nativeRunFinalizations.resultId), sql`${nativeRunFinalizations.recoveryState} is not null`,
+        or(isNull(nativeRunFinalizations.leaseExpiresAt), sql`${nativeRunFinalizations.leaseExpiresAt} < ${stallCutoff.toISOString()}::timestamptz`),
+        sql`${nativeRunFinalizations.updatedAt} < ${stallCutoff.toISOString()}::timestamptz`, options.readCondition))
+      .groupBy(agents.id, agents.name).orderBy(desc(sql`count(distinct ${heartbeatRuns.id})`)).limit(20);
+    const queuedRows = stalledRows.length ? await db.select({ agentId: heartbeatRuns.agentId, queuedRuns: sql<number>`count(*)::int` })
+      .from(heartbeatRuns).innerJoin(issues, and(eq(issues.companyId, heartbeatRuns.companyId),
+        sql`${issues.id}::text = ${heartbeatRuns.contextSnapshot}->>'issueId'`))
+      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "queued"),
+        inArray(heartbeatRuns.agentId, stalledRows.map(row => row.agentId)), options.readCondition))
+      .groupBy(heartbeatRuns.agentId) : [];
+    const queuedByAgent = new Map(queuedRows.map(row => [row.agentId, Number(row.queuedRuns)]));
+    const slotRows = stalledRows.map(row => ({ agentName: row.agentName, stalledRuns: Number(row.stalledRuns),
+      queuedRuns: queuedByAgent.get(row.agentId) ?? 0 }));
+    return { ...summary, agentsWithStalledSlots: slotRows };
   }
 
   return { checkIssue, listSuspects, report, loadFacts, flushPassLog: passLog.flush };

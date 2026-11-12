@@ -518,6 +518,11 @@ describePostgres("assigned-work invariant sweep", () => {
     const report = await sweep.report(f.companyId);
     expect(report.violations).toMatchObject({ native_run_stalled: 1 });
     expect(report.agentsWithStalledSlots).toEqual([{ agentName: "Builder", stalledRuns: 1, queuedRuns: 1 }]);
+    // A caller who cannot read those tasks sees none of their runs counted.
+    const hiddenIds = [stuck, waiting];
+    const filtered = await sweep.report(f.companyId, { readCondition: sqlTag<boolean>`${issues.id} not in (${sqlTag.join(hiddenIds.map(id => sqlTag`${id}::uuid`), sqlTag`, `)})` });
+    expect(filtered.violations.native_run_stalled ?? 0).toBe(0);
+    expect(filtered.agentsWithStalledSlots).toEqual([]);
   }, 60_000);
 
   it("stops scheduling a task once it leaves eligibility", async () => {
