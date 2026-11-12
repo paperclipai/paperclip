@@ -1059,6 +1059,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     // remote create request is its dispatch boundary. Report it before the
     // request can block so continuation gates may release their issue lock.
     ctx.onDispatch?.();
+    // Join the host's cancellation lifecycle before the create request so an
+    // operator Stop during rate-limit backoff aborts the retry loop instead
+    // of creating a remote run after Paperclip marks the run cancelled.
+    await ctx.onCancellationReady?.();
+    if (ctx.signal?.aborted) {
+      return {
+        exitCode: null, signal: null, timedOut: false,
+        errorCode: "cancelled",
+        errorMessage: "Stopped before provider startup",
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      };
+    }
     let created: unknown;
     let rateLimitAttempt = 0;
     // Gateway rate-limit bursts (many seat wakes landing in the same minute)
@@ -1090,7 +1102,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           // 429: swallow the sink error and keep the backoff schedule.
         }
         await delay(delayMs, ctx.signal);
-        if (ctx.signal?.aborted) throw err;
+        if (ctx.signal?.aborted) {
+          return {
+            exitCode: null, signal: null, timedOut: false,
+            errorCode: "cancelled",
+            errorMessage: "Stopped during rate-limit backoff before run create",
+            executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+          };
+        }
         rateLimitAttempt += 1;
       }
     }

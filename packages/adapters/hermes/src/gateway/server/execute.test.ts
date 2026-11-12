@@ -807,6 +807,48 @@ describe("execute", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it("aborts the retry loop when cancelled during rate-limit backoff", async () => {
+    vi.useFakeTimers();
+    try {
+      let createCalls = 0;
+      const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/v1/runs") && init?.method === "POST") {
+          createCalls += 1;
+          return new Response(
+            JSON.stringify({ error: { message: "Too many concurrent runs (max 10)", type: "rate_limit_error", code: "rate_limit_exceeded" } }),
+            { status: 429, headers: { "retry-after": "1" } },
+          );
+        }
+        return new Response(JSON.stringify({ status: "completed" }), { status: 200 });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const controller = new AbortController();
+      const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 60 });
+      ctx.onCancellationReady = vi.fn(async () => { ctx.signal = controller.signal; });
+      ctx.onDispatch = vi.fn();
+
+      const runPromise = execute(ctx);
+      // Let the first create request fire and get the 429.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(createCalls).toBe(1);
+      // The retry loop is now in the backoff delay. Abort the run.
+      controller.abort();
+      // Let the abort listener resolve the delay promise.
+      await vi.advanceTimersByTimeAsync(0);
+      const result = await runPromise;
+
+      expect(result.exitCode).toBe(null);
+      expect(result.errorCode).toBe("cancelled");
+      expect(result.executionRecovery).toEqual({ kind: "bootstrap", providerWorkStarted: false });
+      expect(ctx.onCancellationReady).toHaveBeenCalledOnce();
+      // Only the initial 429'd attempt — no retry after cancellation.
+      expect(createCalls).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("includes network causes in connection failure messages", async () => {
     const cause = Object.assign(new Error("getaddrinfo ENOTFOUND host.docker.internal"), { code: "ENOTFOUND" });
     vi.stubGlobal("fetch", vi.fn(async () => {
