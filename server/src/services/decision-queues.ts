@@ -420,30 +420,33 @@ export function decisionQueueService(db: Db) {
       }
     }
 
-    // Most calls find each match in its queue already. One read says which
+    // Most calls find each match in its queue already. Two reads say which
     // queues exist and which matches they hold, and only a seed with a queue
-    // or a member to add opens a transaction.
+    // or a member to add opens a transaction. The first read takes the share
+    // lock of each queue: a removal that holds the queue lock has deleted a
+    // member that a read still sees until the removal commits. The share lock
+    // waits for that commit, as the queue lock of the transaction below does,
+    // so the second read sees what the removal left.
     const memberKey = (sourceKind: string, sourceId: string) => `${sourceKind}:${sourceId}`;
     const seeded = new Map<string, { seedRulesEnabled: boolean; members: Set<string> }>();
-    if (matches.size > 0) {
-      const rows = await db
-        .select({
-          key: decisionQueues.key,
-          seedRulesEnabled: decisionQueues.seedRulesEnabled,
-          sourceKind: decisionQueueItems.sourceKind,
-          sourceId: decisionQueueItems.sourceId,
-        })
-        .from(decisionQueues)
-        .leftJoin(decisionQueueItems, and(
-          eq(decisionQueueItems.queueId, decisionQueues.id),
+    const seededQueues = matches.size === 0 ? [] : await db
+      .select({ id: decisionQueues.id, key: decisionQueues.key, seedRulesEnabled: decisionQueues.seedRulesEnabled })
+      .from(decisionQueues)
+      .where(and(eq(decisionQueues.companyId, companyId), inArray(decisionQueues.key, [...matches.keys()])))
+      .for("share");
+    if (seededQueues.length > 0) {
+      const keyByQueueId = new Map(seededQueues.map(queue => [queue.id, queue.key]));
+      for (const queue of seededQueues) seeded.set(queue.key, { seedRulesEnabled: queue.seedRulesEnabled, members: new Set() });
+      const members = await db
+        .select({ queueId: decisionQueueItems.queueId, sourceKind: decisionQueueItems.sourceKind, sourceId: decisionQueueItems.sourceId })
+        .from(decisionQueueItems)
+        .where(and(
           eq(decisionQueueItems.companyId, companyId),
+          inArray(decisionQueueItems.queueId, [...keyByQueueId.keys()]),
           inArray(decisionQueueItems.sourceId, [...new Set([...matches.values()].flat().map(item => item.sourceId))]),
-        ))
-        .where(and(eq(decisionQueues.companyId, companyId), inArray(decisionQueues.key, [...matches.keys()])));
-      for (const row of rows) {
-        const queue = seeded.get(row.key) ?? { seedRulesEnabled: row.seedRulesEnabled, members: new Set<string>() };
-        if (row.sourceKind && row.sourceId) queue.members.add(memberKey(row.sourceKind, row.sourceId));
-        seeded.set(row.key, queue);
+        ));
+      for (const member of members) {
+        seeded.get(keyByQueueId.get(member.queueId)!)!.members.add(memberKey(member.sourceKind, member.sourceId));
       }
     }
 
