@@ -85,6 +85,28 @@ async function recordUnknownTurnOutcome(db: Db, run: { companyId: string; id: st
 /** Automatic continuation is requested at most once per chain of runs. */
 export const RESTART_RETRY_KEY_PREFIX = "restart-interrupted-turn:";
 
+const MAX_RETRY_CHAIN = 32;
+
+async function chainUsedAutomaticRetry(db: Db, run: { companyId: string; id: string; retryOfRunId: string | null;
+  contextSnapshot: Record<string, unknown> | null }) {
+  const visited = new Set<string>();
+  let current: typeof run | undefined = run;
+  while (current && !visited.has(current.id) && visited.size < MAX_RETRY_CHAIN) {
+    visited.add(current.id);
+    const retryId = current.contextSnapshot?.taskRetryRequestId;
+    if (typeof retryId === "string") {
+      const [receipt] = await db.select({ key: agentWakeupRequests.idempotencyKey }).from(agentWakeupRequests).where(and(
+        eq(agentWakeupRequests.companyId, run.companyId), sql`${agentWakeupRequests.id}::text = ${retryId}`));
+      if (receipt?.key?.startsWith(`task-retry:${RESTART_RETRY_KEY_PREFIX}`)) return true;
+    }
+    if (!current.retryOfRunId) return false;
+    [current] = await db.select({ companyId: heartbeatRuns.companyId, id: heartbeatRuns.id, retryOfRunId: heartbeatRuns.retryOfRunId,
+      contextSnapshot: heartbeatRuns.contextSnapshot }).from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, current.retryOfRunId)));
+  }
+  return visited.size >= MAX_RETRY_CHAIN;
+}
+
 type Outcome = { requested: true; requestId: string } | { requested: false; reason: string };
 
 /**
@@ -137,6 +159,7 @@ export async function requestInterruptedNativeTurnRetry(db: Db, runId: string): 
     if (!wake || reason === "task_retry" || !run.responsibleUserId
       || !(owedRedelivery || await hasProvenNoProviderTurn(db, run, runnerExit)))
       return { requested: false, reason: "not_user_request" };
+    if (owedRedelivery && await chainUsedAutomaticRetry(db, run)) return { requested: false, reason: "automatic_retry_used" };
     actorId = run.responsibleUserId;
   } else if (reason === "task_retry") {
     // A Retry this hook already requested gets no second automatic attempt.

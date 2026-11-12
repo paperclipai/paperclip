@@ -102,6 +102,26 @@ describe("a remote Runner that died in the middle of a provider turn", () => {
   }, 30_000);
 
   it.each([
+    { title: "inherits the hook's Retry intent", inherit: true },
+    { title: "reaches the hook's Retry run through its retry chain", inherit: false },
+  ])("gives no second automatic Retry to a system retry that $title and then lost its Runner mid-turn", async ({ inherit }) => {
+    const f = await runnerLostMidTurn({ wake: "system_retry" });
+    const current = await run(f.runId);
+    const [hookIntent] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId,
+      source: "on_demand", triggerDetail: "manual", reason: "task_retry", status: "completed",
+      idempotencyKey: `task-retry:restart-interrupted-turn:${randomUUID()}`, requestedByActorType: "user",
+      requestedByActorId: "local-board", payload: { issueId: f.issueId } }).returning();
+    await db.update(heartbeatRuns).set({ contextSnapshot: { ...current.contextSnapshot, wakeReason: "task_retry",
+      taskRetryRequestId: hookIntent.id } }).where(eq(heartbeatRuns.id, current.retryOfRunId!));
+    if (inherit) await db.update(heartbeatRuns).set({ contextSnapshot: { ...current.contextSnapshot,
+      taskRetryRequestId: hookIntent.id } }).where(eq(heartbeatRuns.id, f.runId));
+    expect(await requestRestartInterruptedTurnRetry(db, f.claim)).toEqual({ requested: false, reason: "automatic_retry_used" });
+    expect(await unknownOutcomeEvents(f.runId)).toHaveLength(0);
+    expect((await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, f.companyId),
+      eq(agentWakeupRequests.reason, "task_retry")))).filter(retry => retry.id !== hookIntent.id)).toHaveLength(0);
+  }, 30_000);
+
+  it.each([
     { title: "the refusal did not prove the Runner process gone", wake: "user" as const, refusal: "process_identity_changed" as const,
       reason: "provider_turn_unsettled" },
     { title: "no reattachment refusal was recorded", wake: "user" as const, refusal: null, reason: "provider_turn_unsettled" },
