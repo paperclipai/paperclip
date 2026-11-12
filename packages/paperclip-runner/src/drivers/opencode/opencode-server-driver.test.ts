@@ -3101,6 +3101,40 @@ describe("OpenCodeServerDriver", () => {
     await session.close({ reason: "test" });
   });
 
+  it.each([
+    ["answer-before-finish-then-rewrite", "Work on [COM-1 Website task](/COM/issues/COM-1) stopped at 06:57 UTC, about 90 seconds after starting: its run's local runner process exited unexpectedly (`runnerd exited unexpectedly`), all 3 automatic recovery attempts were exhausted, and Paperclip marked the task **blocked** with cause `native_session_retry_exhausted`. The human-supplied website brief had also not arrived, so no brief was saved.\n\n[The assigned agent, Morgan,](https://example.invalid) is in an error state. To resume, open COM-1 and use **Retry** on that task; it rechecks gates and preserves the failed attempt's evidence. Agents cannot retry it for you."],
+    ["status-before-finish-then-answer", "Updated the [Launch blockers status card](/COM/status/status-card-launch) with current Synthetic Launch Notes verification.\n\n- **COM-1 \u2014 Mobile Safari checkout regression blocks launch** \u2014 `blocked`\n- Payment approval is now recorded as received; the mobile Safari checkout regression remains the blocker.\n- Only COM-1 appears in the bounded changed-issue set; no other Launch blockers were added."],
+  ])("saves only the later message when %s writes its own answer after the completion call", async (prompt, expected) => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-driver-"));
+    const workspace = await mkdtemp(join(tmpdir(), "paperclip-opencode-workspace-"));
+    roots.push(root, workspace);
+    const driver = new OpenCodeServerDriver({
+      model: "openrouter/deepseek/deepseek-v4-flash-0731",
+      runtimeDirectory: root,
+      command: fixture,
+      environment: { PATH: process.env.PATH, OPENROUTER_API_KEY: "fixture-key" },
+    });
+    const session = await driver.openSession({
+      runId: `run-${prompt}`,
+      normalizedSessionId: prompt,
+      workingDirectory: workspace,
+    });
+    await session.startTurn({ message: { role: "user", text: prompt } });
+    const events = await collectTurnEvents(session.events());
+    const finalMessages = events.filter(
+      (event) =>
+        event.eventType === "item.completed" &&
+        event.payload.kind === "agentMessage" &&
+        event.payload.channel === "final",
+    );
+    // The completion tool names the later message as the final response; a
+    // planning note or an earlier copy of the answer is not saved with it.
+    expect(finalMessages.map((event) => event.payload.text)).toEqual([expected]);
+    expect(finalMessages[0]?.itemId).toBe("part-reference");
+    await session.close({ reason: "test" });
+  });
+
   it.each(["session.idle", "session.status", "session.error", "aborted"])("settles accepted completion before a racing %s event", async terminalType => {
     await chmod(fixture, 0o755);
     const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-completion-race-"));

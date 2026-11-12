@@ -23,7 +23,6 @@ import { getCACertificates } from "node:tls";
 import { pipeline } from "node:stream/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
-import { restatesEarlierReply } from "./restated-reply.js";
 import { parseOpenCodeReasoningMode, type OpenCodeReasoningMode } from "./reasoning-mode.js";
 import { attributeUnsupportedToolMedia } from "./tool-media-attribution.js";
 import { openCodeProviderFailure } from "./provider-failure.js";
@@ -526,6 +525,8 @@ class OpenCodeHarnessSession implements HarnessSession {
   readonly #streamingParts = new Map<string, Record<string, unknown>>();
   readonly #completedTextPartIds = new Set<string>();
   readonly #completedReasoningPartIds = new Set<string>();
+  /** Trimmed text of each completed reasoning part in the current run. */
+  readonly #completedReasoningTexts = new Set<string>();
   readonly #completedTextParts: Array<{
     partId: string;
     messageId: string | null;
@@ -698,6 +699,7 @@ class OpenCodeHarnessSession implements HarnessSession {
     this.#lastNonTerminalToolSourceSeq = 0;
     this.#completedTextPartIds.clear();
     this.#completedReasoningPartIds.clear();
+    this.#completedReasoningTexts.clear();
     this.#completedTextParts.length = 0;
     this.#outputLimitedMessageIds.clear();
     // `#terminalTurns` clears here for its own persisted-snapshot bookkeeping.
@@ -820,6 +822,18 @@ class OpenCodeHarnessSession implements HarnessSession {
     this.#emit("turn.failed", { status: "failed", error: { code, message, retryable: false } }, { turnId });
     this.#terminalTurns.set(turnId, canonicalJson({ status: "failed" }));
     this.#activeTurnId = null;
+  }
+
+  /**
+   * Whether assistant text repeats a completed reasoning part: the whole part
+   * once the text is complete, or the start of one while it still streams.
+   */
+  #echoesReasoning(content: string, completed: boolean): boolean {
+    const value = completed ? content.trim() : content.trimStart();
+    if (!value) return false;
+    for (const reasoning of this.#completedReasoningTexts)
+      if (completed ? reasoning === value : reasoning.startsWith(value)) return true;
+    return false;
   }
 
   /** A response cut off at the output limit is incomplete, so it is never a final answer. */
@@ -2132,8 +2146,16 @@ class OpenCodeHarnessSession implements HarnessSession {
     }
     const content = text(part.text, text(part.output));
     const previous = this.#partText.get(partId) ?? "";
-    this.#partText.set(partId, content);
-    if (partType === "text" && content.length > 0) {
+    const completedAt = record(part.time).end;
+    const completed = Number.isFinite(completedAt);
+    // Some OpenRouter models (DeepSeek v4.1 flash, for one) end a step by
+    // repeating their reasoning as an ordinary text part. That copy is
+    // planning, not prose for the person, so it never streams as progress
+    // and never becomes the reply. Hold a text part while it still matches
+    // the start of a completed reasoning part, and release it once it differs.
+    const reasoningEcho = partType === "text" && this.#echoesReasoning(content, completed);
+    if (!reasoningEcho) this.#partText.set(partId, content);
+    if (partType === "text" && content.length > 0 && !reasoningEcho) {
       for (const reference of paperclipWorkspaceFileReferencesFromText(
         this.#workingDirectory,
         content,
@@ -2151,7 +2173,7 @@ class OpenCodeHarnessSession implements HarnessSession {
     const delta = content.startsWith(previous)
       ? content.slice(previous.length)
       : content;
-    if (delta) {
+    if (delta && !reasoningEcho) {
       // OpenCode calls assistant prose a `text` part, but `text` is not a PRP
       // item identity and is consequently ignored by the task projection.
       // Until settlement selects one completed part as the final response,
@@ -2195,14 +2217,14 @@ class OpenCodeHarnessSession implements HarnessSession {
         { turnId, itemId: partId },
       );
     }
-    const completedAt = record(part.time).end;
     if (
       partType === "reasoning" &&
       content.trim().length > 0 &&
-      Number.isFinite(completedAt) &&
+      completed &&
       !this.#completedReasoningPartIds.has(partId)
     ) {
       this.#completedReasoningPartIds.add(partId);
+      this.#completedReasoningTexts.add(content.trim());
       this.#emit(
         "item.completed",
         {
@@ -2224,10 +2246,20 @@ class OpenCodeHarnessSession implements HarnessSession {
     if (
       partType === "text" &&
       content.trim().length > 0 &&
-      Number.isFinite(completedAt) &&
+      completed &&
       !this.#completedTextPartIds.has(partId)
     ) {
       this.#completedTextPartIds.add(partId);
+      if (reasoningEcho) {
+        // Without this copy the turn may hold no answer; the empty-response
+        // correction then asks the model for one with reasoning disabled.
+        this.#emit(
+          "harness.diagnostic",
+          { code: "opencode_reasoning_echo_discarded", message: "OpenCode repeated a reasoning part as assistant text; the copy was not used as a response." },
+          { turnId },
+        );
+        return;
+      }
       this.#completedTextParts.push({
         partId,
         messageId,
@@ -2297,22 +2329,21 @@ class OpenCodeHarnessSession implements HarnessSession {
       afterResult[0]?.part ??
       null;
     if (!selected) return;
-    // A later message after the terminal call is only the closing part of the
-    // reply when the model already wrote prose after its last work tool and
-    // before that call: the person saw both, and the later message often just
-    // refers back ("Answered above"). Structure cannot tell an answer from
-    // commentary, so keep every eligible part rather than drop the answer.
+    // The completion tool asks for the final response after the call, so a
+    // later message is the reply. The prose written between the last work tool
+    // and that call stays in the reply only when the later message is a short
+    // closing line that leans on it ("Answered above", "Commands above are
+    // ready"). A later message at least half as long as that prose is the
+    // model's own answer: keeping the earlier prose too would save a planning
+    // note or a second copy of the answer.
     const candidatePreface =
       this.#semanticResultProviderMessageId !== null &&
       correlatedAfterResult.length === 0 &&
       uncorrelatedAfterResult[0]?.part === selected
         ? beforeResult.map(({ part }) => part)
         : [];
-    const preface =
-      candidatePreface.length &&
-      restatesEarlierReply(candidatePreface.map((part) => part.text.trim()).join("\n\n"), selected.text)
-        ? []
-        : candidatePreface;
+    const prefaceText = candidatePreface.map((part) => part.text.trim()).join("\n\n");
+    const preface = selected.text.trim().length * 2 < prefaceText.length ? candidatePreface : [];
     const text = preface.length
       ? [...preface, selected].map((part) => part.text.trim()).filter(Boolean).join("\n\n")
       : selected.text;
