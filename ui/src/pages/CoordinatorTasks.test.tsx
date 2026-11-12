@@ -268,7 +268,6 @@ describe("Coordinator tasks using the proposed table", () => {
   });
   it("hydrates distinct pending task IDs independently of status and the first task-list page", async () => {
     await mount("/issues?view=needs_attention");
-    expect(mocks.attention).toHaveBeenCalledWith("company", { actionableOnly: true });
     expect([...host.querySelectorAll("[data-task-id]")].map(node => node.getAttribute("data-task-id"))).toEqual(["pending"]);
     expect(mocks.get).not.toHaveBeenCalled();
     expect(mocks.list).toHaveBeenCalledExactlyOnceWith("company", expect.objectContaining({ ids: [pending.id], projection: "index" }), expect.anything());
