@@ -230,6 +230,9 @@ export const queryKeys = {
     installed: (companyId: string) =>
       ["team-catalog", "installed", companyId] as const,
   },
+  departments: {
+    list: (companyId: string) => ["departments", companyId] as const,
+  },
   agents: {
     projectAccess: (id: string) => ["agents", "detail", id, "project-access"] as const,
     identity: (id: string) => ["agents", "identity", id] as const,

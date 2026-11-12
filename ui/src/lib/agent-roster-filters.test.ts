@@ -1,6 +1,6 @@
 import type { Agent, AiConnectionList } from "@paperclipai/shared";
 import { describe, expect, it } from "vitest";
-import { buildAgentRosterIndex, emptyAgentRosterFilters, matchesAgentRosterFilters } from "./agent-roster-filters";
+import { AGENT_DEPARTMENT_UNASSIGNED, buildAgentRosterIndex, departmentNamesForAgent, emptyAgentRosterFilters, matchesAgentRosterFilters, matchesDepartmentFilter } from "./agent-roster-filters";
 
 const connectionId = "11111111-1111-4111-8111-111111111111";
 const otherConnectionId = "22222222-2222-4222-8222-222222222222";
@@ -61,5 +61,22 @@ describe("agent roster filters", () => {
     const { byAgentId } = buildAgentRosterIndex(agents, { connections } as AiConnectionList);
     expect(byAgentId.size).toBe(1000);
     expect(reads).toBe(500);
+  });
+});
+
+describe("department roster filter", () => {
+  const departments = [
+    { id: "accounting", name: "Accounting", agentIds: ["shared", "books"] },
+    { id: "paperclip", name: "Paperclip", agentIds: ["shared", "dev"] },
+  ];
+
+  it("matches every department an agent belongs to and treats no rows as unassigned", () => {
+    expect(matchesDepartmentFilter("shared", "accounting", departments)).toBe(true);
+    expect(matchesDepartmentFilter("shared", "paperclip", departments)).toBe(true);
+    expect(matchesDepartmentFilter("dev", "accounting", departments)).toBe(false);
+    expect(matchesDepartmentFilter("books", AGENT_DEPARTMENT_UNASSIGNED, departments)).toBe(false);
+    expect(matchesDepartmentFilter("visitor", AGENT_DEPARTMENT_UNASSIGNED, departments)).toBe(true);
+    expect(matchesDepartmentFilter("visitor", "", departments)).toBe(true);
+    expect(departmentNamesForAgent("shared", departments)).toEqual(["Accounting", "Paperclip"]);
   });
 });

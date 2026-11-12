@@ -30,6 +30,7 @@ import type {
 import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS, supportedEnvironmentDriversForAdapter, isValidBrowserCode, ADAPTER_AUTH_MISSING_CHECK_CODE } from "@paperclipai/shared";
 import type { AdapterModel } from "../api/agents";
 import { agentsApi } from "../api/agents";
+import { AgentDepartmentsField } from "./agents/AgentDepartmentsField";
 import { ApiError } from "../api/client";
 import { describeError } from "@/api/errors";
 import { environmentsApi } from "../api/environments";
@@ -1709,6 +1710,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 chooseLabel="Choose manager…"
               />
             </Field>
+            <AgentDepartmentsField companyId={props.agent.companyId} agentId={props.agent.id} />
             {isLocal && !props.hidePromptTemplate && (
               <>
                 <Field label="Prompt Template" hint={help.promptTemplate}>

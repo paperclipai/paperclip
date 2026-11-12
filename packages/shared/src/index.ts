@@ -2894,6 +2894,19 @@ export * from "./browser-use.js";
 export * from "./types/skill-source.js";
 export * from "./validators/skill-source.js";
 export * from "./validators/agent-commentary.js";
+export {
+  AGENT_DEPARTMENT_MAX_MEMBERSHIPS,
+  DEPARTMENT_NAME_MAX_LENGTH,
+  UNASSIGNED_DEPARTMENT,
+  createDepartmentSchema,
+  normalizeDepartmentName,
+  setAgentDepartmentsSchema,
+  updateDepartmentSchema,
+  type CreateDepartment,
+  type Department,
+  type SetAgentDepartments,
+  type UpdateDepartment,
+} from "./validators/department.js";
 export * from "./github-skill-repository.js";
 export * from "./public-mcp.js";
 export * from "./mcp-setup.js";

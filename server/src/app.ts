@@ -108,6 +108,7 @@ import { summarySlotRoutes } from "./routes/summary-slots.js";
 import { statusCardRoutes } from "./routes/status-cards.js";
 import { teamsCatalogRoutes } from "./routes/teams-catalog.js";
 import { agentRoutes } from "./routes/agents.js";
+import { departmentRoutes } from "./routes/departments.js";
 import { agentInteractionPermissionRoutes } from "./routes/agent-interaction-permissions.js";
 import { agentPermissionGrantRoutes } from "./routes/agent-permission-grants.js";
 import { resolveAgentRunnerTargetForCompany } from "./services/agent-runner-selection.js";
@@ -808,6 +809,7 @@ export async function createApp(
   );
   api.use(agentPermissionGrantRoutes(db));
   api.use(agentInteractionPermissionRoutes(db));
+  api.use(departmentRoutes(db));
   api.use(assetRoutes(db, opts.storageService));
   api.use(agentProfileAvatarRoutes(db, opts.storageService));
   api.use(projectToolRoutes(db));
