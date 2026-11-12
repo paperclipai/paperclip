@@ -8,7 +8,7 @@ import { AgentAvatar } from "@/components/AgentAvatar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Link, useNavigate } from "@/lib/router";
-import { agentRouteRef, cn } from "@/lib/utils";
+import { agentRouteRef, cn, formatDateTime } from "@/lib/utils";
 
 export interface AgentConversationSidebarProps {
   agents: Agent[];
@@ -82,7 +82,7 @@ export function AgentConversationSidebar({ agents, chats, onSelectHistory, exist
             <span className="flex min-w-0 items-center gap-2"><span className="min-w-0 flex-1 truncate">{chat.title}</span>
               {(chat.unreadMessageCount ?? 0) > 0 ? <Badge variant="ghost" aria-label={`${chat.unreadMessageCount} unread ${chat.unreadMessageCount === 1 ? "message" : "messages"} in ${chat.title}`} className="shrink-0 bg-primary font-mono tabular-nums text-primary-foreground">{chat.unreadMessageCount}</Badge>
                 : chat.isUnreadForMe && <span role="img" aria-label={`Unread messages in ${chat.title}`} className="size-2 shrink-0 rounded-full bg-primary" />}
-            </span><span className="text-xs text-muted-foreground">{agent.name} · {new Date(chat.createdAt).toLocaleString()}</span>
+            </span><span className="text-xs text-muted-foreground">{agent.name} · <span className="font-mono">{formatDateTime(chat.createdAt)}</span></span>
           </Link>)}
       </nav>}
       <p className="px-2 text-(length:--text-micro) font-medium uppercase tracking-widest text-muted-foreground">

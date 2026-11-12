@@ -16,7 +16,7 @@ import { useDialogActions } from "@/context/DialogContext";
 import { useSidebar } from "@/context/SidebarContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { Link, useLocation } from "@/lib/router";
-import { agentRouteRef, cn, projectRouteRef, SIDEBAR_RAIL_HIDDEN_LABEL } from "@/lib/utils";
+import { agentRouteRef, cn, formatDateTime, projectRouteRef, SIDEBAR_RAIL_HIDDEN_LABEL } from "@/lib/utils";
 import { SidebarCompanyMenu } from "./SidebarCompanyMenu";
 import { SidebarNavItem } from "./SidebarNavItem";
 import { RecentTaskNavItem } from "./RecentTaskNavItem";
@@ -211,7 +211,7 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
         {recents.map(item => item.kind === "task"
           ? <RecentTaskNavItem className="design-sidebar-item" key={item.id} task={item.task} label={item.task.title} iconNode={<StatusIcon {...taskStatusIconProps(item.task)} />} />
           : item.kind === "chat"
-            ? <SidebarNavItem className="design-sidebar-item" key={item.id} to={`/chats/${encodeURIComponent(agentRouteRef(item.agent))}/${item.id}`} label={`${item.chat.title} · ${item.agent.name} · ${new Date(item.chat.createdAt ?? item.chat.updatedAt).toLocaleString()}`} iconNode={<AgentAvatar agent={item.agent} size={16} />} />
+            ? <SidebarNavItem className="design-sidebar-item" key={item.id} to={`/chats/${encodeURIComponent(agentRouteRef(item.agent))}/${item.id}`} label={`${item.chat.title} · ${item.agent.name} · ${formatDateTime(item.chat.createdAt ?? item.chat.updatedAt)}`} iconNode={<AgentAvatar agent={item.agent} size={16} />} />
             : <ProjectRecent key={item.id} project={item.project} />)}
         </RecentNavigationList>
       </SidebarSection></div>}
