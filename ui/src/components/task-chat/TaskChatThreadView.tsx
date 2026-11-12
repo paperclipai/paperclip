@@ -161,7 +161,9 @@ function renderItem(
         />
       ) : undefined;
       // MCP Apps views ride with the reply, outside the folded tool history.
-      const appViews = item.author === "agent" && item.sourceRunId ? <McpAppTurnViews runId={item.sourceRunId} /> : null;
+      const appViews = item.author === "agent" && item.sourceRunId
+        ? <McpAppTurnViews runId={item.sourceRunId} notBeforeMs={item.createdAtIso ? Date.parse(item.createdAtIso) : undefined} />
+        : null;
       const bubble = (
         <TaskChatBubble
           item={item}
