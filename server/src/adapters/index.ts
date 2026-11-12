@@ -9,6 +9,7 @@ export {
   registerServerAdapter,
   unregisterServerAdapter,
   requireServerAdapter,
+  waitForExternalAdapters,
 } from "./registry.js";
 export type {
   ServerAdapterModule,

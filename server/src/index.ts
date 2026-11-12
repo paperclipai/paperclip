@@ -1678,7 +1678,11 @@ async function startServerWithDatabaseTeardown(
       const startupHeartbeatRecovery = (async () => {
         // Legacy remote recovery releases sandbox leases. Wait for provider
         // workers before cleanup or retry admission, including unmanaged installs.
-        await timeStartupRecovery("plugin_workers", () => app.locals.bundledPluginsStartup);
+        await timeStartupRecovery("plugin_workers", async () => {
+          await app.locals.bundledPluginsStartup;
+          const { waitForExternalAdapters } = await import("./adapters/registry.js");
+          await waitForExternalAdapters();
+        });
         try {
           const nativeRecovery = await timeStartupRecovery("native_recovery", () => heartbeat.recoverNativeRunsAfterRestart(new Date(), undefined, { skipDelegatedWork: true }));
           if (nativeRecovery.dispositions.length > 0) {

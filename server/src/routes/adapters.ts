@@ -23,6 +23,10 @@ import { companies, type Db } from "@paperclipai/db";
 import { adapterSettingsService } from "../services/adapter-settings.js";
 import { logActivity, publishActivity, type ActivityPublication } from "../services/activity-log.js";
 import {
+  CONVERSATION_ADAPTER_TYPES,
+  isConversationAdapter,
+} from "../services/conversation-continuation.js";
+import {
   listServerAdapters,
   findServerAdapter,
   findActiveServerAdapter,
@@ -106,6 +110,7 @@ interface AdapterCapabilities {
   supportsLocalAgentJwt: boolean;
   requiresMaterializedRuntimeSkills: boolean;
   supportsAcp: boolean;
+  supportsConversationContinuation?: boolean;
   /**
    * The projected login capability. It is present only when the adapter
    * declares an interactive login capability. It is absent otherwise.
@@ -165,14 +170,23 @@ function readAdapterPackageVersionFromDisk(record: AdapterPluginRecord): string 
  * only the safe scalar fields; it drops the function members and the completion
  * claim, so the response holds no secret and no code.
  */
+function isEligibleForConversationContinuation(adapter: ServerAdapterModule): boolean {
+  if (BUILTIN_ADAPTER_TYPES.has(adapter.type) && !(CONVERSATION_ADAPTER_TYPES as readonly string[]).includes(adapter.type)) {
+    return false;
+  }
+  return isConversationAdapter(adapter.type) || (adapter.supportsConversationContinuation === true && !isOverridePaused(adapter.type));
+}
+
 export function buildAdapterCapabilities(adapter: ServerAdapterModule): AdapterCapabilities {
-  const login = adapter.loginCapability;
+  const active = findActiveServerAdapter(adapter.type) ?? adapter;
+  const login = active.loginCapability;
   return {
-    supportsInstructionsBundle: adapter.supportsInstructionsBundle ?? false,
-    supportsSkills: Boolean(adapter.listSkills || adapter.syncSkills),
-    supportsLocalAgentJwt: adapter.supportsLocalAgentJwt ?? false,
-    requiresMaterializedRuntimeSkills: adapter.requiresMaterializedRuntimeSkills ?? false,
-    supportsAcp: Boolean(adapter.acp),
+    supportsInstructionsBundle: active.supportsInstructionsBundle ?? false,
+    supportsSkills: Boolean(active.listSkills || active.syncSkills),
+    supportsLocalAgentJwt: active.supportsLocalAgentJwt ?? false,
+    requiresMaterializedRuntimeSkills: active.requiresMaterializedRuntimeSkills ?? false,
+    supportsAcp: Boolean(active.acp),
+    supportsConversationContinuation: isEligibleForConversationContinuation(active),
     ...(login
       ? {
           login: {

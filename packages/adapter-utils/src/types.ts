@@ -517,6 +517,7 @@ export interface ServerAdapterModule {
   /** Selected harness can resume its conversation with this run's tool bindings. */
   supportsToolRefreshOnResume?: boolean | ((config: Record<string, unknown>) => boolean);
   supportsLocalAgentJwt?: boolean;
+  supportsConversationContinuation?: boolean;
   /** How this adapter receives Paperclip's run-scoped control tools. */
   runtimeToolDelivery?: AdapterRuntimeToolDelivery;
   models?: AdapterModel[];
