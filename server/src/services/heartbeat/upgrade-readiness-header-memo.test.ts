@@ -22,6 +22,8 @@ describe("upgrade readiness header memo", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>, db: Db;
   /** `db`, counting the header material that reaches this process. */
   let observed: Db, materials = 0;
+  /** Runs once, after a header query returns and before its rows are inspected: the next query, or the one after `skip`. */
+  let afterQuery: { skip: number; run: () => void } | undefined;
   let template = "", companyId = "", agentId = "";
   let decryptions = 0;
   const seeded: string[] = [];
@@ -36,6 +38,7 @@ describe("upgrade readiness header memo", () => {
           return async (...args: unknown[]) => {
             const rows = await inner.execute(...args);
             if (Array.isArray(rows)) materials += rows.filter(row => (row as { material?: unknown }).material).length;
+            if (Array.isArray(rows) && rows.length && afterQuery && afterQuery.skip-- === 0) { afterQuery.run(); afterQuery = undefined; }
             return rows;
           };
         } })), options);
@@ -60,6 +63,8 @@ describe("upgrade readiness header memo", () => {
     finally { await core.stop(); await rm(root, { recursive: true, force: true }); }
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   afterEach(async () => {
+    afterQuery = undefined;
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY_FILE", undefined);
     vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", KEY);
     if (!seeded.length) return;
     await db.delete(agentTaskSessions).where(eq(agentTaskSessions.companyId, companyId));
@@ -211,6 +216,56 @@ describe("upgrade readiness header memo", () => {
     // It was written under the key that is now current: the next probe finds it readable.
     vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", OTHER_KEY);
     expect(await probe(runs)).toMatchObject({ materials: 2, decryptions: 2, report: { recoverableRuns: 1, blockingRuns: 1 } });
+  });
+
+  const replaceKey = () => { vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", OTHER_KEY); };
+  const removeKey = () => {
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "");
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY_FILE", join(tmpdir(), `missing-secrets-key-${randomUUID()}`));
+  };
+  it.each([
+    ["replaced", "run", replaceKey, 0], ["removed", "run", removeKey, 0],
+    ["replaced", "retained session", replaceKey, 1], ["removed", "retained session", removeKey, 1],
+  ] as const)("refuses a remembered header when the secrets key is %s before the %s headers are inspected", async (_change, _query, change, skip) => {
+    const restore = () => {
+      vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY_FILE", undefined);
+      vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", KEY);
+    };
+    const runs = await seed(3);
+    await seed(2, false);
+    expect((await probe(runs)).report).toMatchObject({ ready: true, recoverableRuns: 3 });
+    expect((await probe(runs)).materials).toBe(0);
+    // The key changes while the probe waits for its query. A direct read decrypts after that, and fails.
+    afterQuery = { skip, run: change };
+    const warm = await probe(runs);
+    restore();
+    afterQuery = { skip, run: change };
+    const direct = await probe(runs, directNativeRunnerUpgradeHeaderRead());
+    // Headers inspected before the change still count; those inspected after it do not.
+    expect(direct).toMatchObject({ materials: 5, report: { ...(skip ? { ready: true, recoverableRuns: 3 }
+      : { ready: false, recoverableRuns: 0, blockingRuns: 3 }), nativeControllerRecovery: { retained: {
+      selectedRetainedEvidence: 0, reasons: { checkpoint_binding_missing: 2 } } } } });
+    expect(warm.report).toEqual(direct.report);
+    expect(warm.decryptions).toBe(0);
+    // Nothing from that probe is remembered: with the key back, every header is read again.
+    restore();
+    expect(await probe(runs)).toMatchObject({ materials: 5, decryptions: 5, report: { ready: true, recoverableRuns: 3 } });
+    expect(await probe(runs)).toMatchObject({ materials: 0, report: { ready: true, recoverableRuns: 3 } });
+
+    // The same at the memo: an answer offered before the change is not served after it.
+    const memo = createNativeRunnerUpgradeHeaderMemo();
+    await probe(runs, memo.read());
+    const read = memo.read();
+    const offered = Object.entries(JSON.parse(read.known) as Record<string, string>);
+    expect(offered).toHaveLength(5);
+    change();
+    for (const [binding, revision] of offered) {
+      const [, issueId, runId] = binding.split("/");
+      expect(read.inspect({ companyId, issueId, runId }, revision, null)).toBeNull();
+    }
+    restore();
+    read.finish();
+    expect(memo.size).toBe(0);
   });
 
   it("reads retained headers of the inventory page only, and only once", async () => {

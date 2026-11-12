@@ -478,10 +478,19 @@ export function createNativeRunnerUpgradeHeaderMemo(limits: { maxEntries?: numbe
     get size() { return entries.size; },
     get bytes() { return bytes; },
     read(): NativeRunnerUpgradeHeaderRead {
-      // Only a read that can load the key reuses an answer.
       let keyIdentity = entries.size ? upgradeHeaderKeyIdentity() : undefined;
       const usable = new Map([...entries].filter(([, entry]) => entry.keyIdentity === keyIdentity));
       const reused = new Set<string>(), decrypted = new Map<string, Answer>();
+      let keyChanged = false;
+      // A direct read loads the key for each header, after the query. An answer from memory
+      // is as conservative only if the key is loaded and unchanged when the answer is used.
+      const sameKey = () => {
+        const now = upgradeHeaderKeyIdentity();
+        if (keyIdentity === undefined) keyIdentity = now;
+        const same = now !== null && now === keyIdentity;
+        if (!same) keyChanged = true;
+        return same;
+      };
       return {
         known: JSON.stringify(Object.fromEntries([...usable].map(([key, entry]) => [key, entry.revision]))),
         inspect(binding, revision, material) {
@@ -489,22 +498,22 @@ export function createNativeRunnerUpgradeHeaderMemo(limits: { maxEntries?: numbe
           if (!material) {
             // The query withholds material only for a revision this read offered.
             const entry = usable.get(key);
-            if (entry?.revision !== revision) return null;
+            if (entry?.revision !== revision || !sameKey()) return null;
             reused.add(key);
             return entry.identity;
           }
-          if (keyIdentity === undefined) keyIdentity = upgradeHeaderKeyIdentity();
+          const before = sameKey();
           const result = inspectUpgradeHeaderMaterial(binding, material);
           const identity = upgradeHeaderIdentity(result.identity);
-          if (result.decrypted) decrypted.set(key, { revision, identity });
+          if (result.decrypted && before && sameKey()) decrypted.set(key, { revision, identity });
           else decrypted.delete(key);
           return identity;
         },
         finish() {
-          // Every decryption of this read ran under one key, or none of them is remembered.
-          const current = keyIdentity && (!decrypted.size || upgradeHeaderKeyIdentity() === keyIdentity) ? keyIdentity : null;
+          // A read that saw the key missing or changed keeps and remembers nothing.
+          const current = keyChanged || !keyIdentity ? null : keyIdentity;
           for (const [key, entry] of entries) {
-            if (!reused.has(key) || (current && entry.keyIdentity !== current)) forget(key);
+            if (!reused.has(key) || entry.keyIdentity !== current) forget(key);
           }
           for (const [key, answer] of current ? decrypted : []) {
             const size = 2 * (key.length + answer.revision.length + current!.length

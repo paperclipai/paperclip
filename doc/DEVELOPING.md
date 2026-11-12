@@ -3528,7 +3528,8 @@ reads its header's row revision (`xmin`, `ctid`, `updated_at` and stored size)
 and returns the encrypted material only for a revision the process has not
 inspected. The memo in `native-runner-checkpoint.ts` keeps four identifiers per
 header, is bounded in entries and bytes, and forgets a header that the latest
-probe did not inspect. It reuses an answer only under the same secrets key, and
+probe did not inspect. It loads the secrets key again for each answer it reuses, as a direct read
+does for each header, and refuses the answer when the key is missing or changed. It
 never remembers a header that failed to decrypt. Measure a probe with
 `pnpm --filter @paperclipai/server exec tsx scripts/benchmark-upgrade-readiness.ts --baseline-ref=<pre-fix-commit>`.
 The harness runs both revisions over the same PostgreSQL rows, reports bytes
