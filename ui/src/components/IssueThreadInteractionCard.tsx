@@ -4005,7 +4005,7 @@ function RequestItemVerdictsCard({
       <div className="space-y-4">
         <DecisionPanel>
           {payload.prompt === (interaction.title ?? payload.prompt) ? null : (
-            <div className="text-(length:--text-compact) leading-5 text-foreground">{payload.prompt}</div>
+            <div className="text-(length:--text-compact) leading-5 text-foreground"><PromptText>{payload.prompt}</PromptText></div>
           )}
           {payload.detailsMarkdown ? (
             <DecisionPanelMarkdown markdown={payload.detailsMarkdown} lead={false} externalReferences={externalReferences} />
@@ -4076,7 +4076,7 @@ function RequestItemVerdictsCard({
       {/* Prompt + details (S1) */}
       <div className="space-y-3 rounded-sm border border-border/70 bg-background/75 p-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="text-sm leading-6 text-foreground">{payload.prompt}</div>
+          <div className="min-w-0 text-sm leading-6 text-foreground"><PromptText>{payload.prompt}</PromptText></div>
           <VerdictProgressBadge progress={progress} pendingReason={invalidDraftIds.size > 0} />
         </div>
         {payload.detailsMarkdown ? (
@@ -4528,7 +4528,7 @@ export function IssueThreadInteractionCard({
       <CompactArtifactRowContext.Provider value={compactDecision ? artifactRow : null}>
       <div data-presentation={presentationVariant} className={compactDecision ? "coordinator-decision-content space-y-4" : cn("rounded-lg border p-5 shadow-none", styles.shell)}>
         {compactDecision ? <>
-          {!bodyNamesDecision ? <h2 data-decision-prompt className="text-base font-medium">{compactTitle}</h2> : null}
+          {!bodyNamesDecision ? <CompactDecisionAsk><PromptText>{compactTitle}</PromptText></CompactDecisionAsk> : null}
           {/* Questions and confirmations put the note under their ask (UI1). */}
           {interaction.summary && !summaryIsRepeated && !bodyNamesDecision && !connectionAuthorization && interaction.kind !== "connection_intent" ? <p className="text-sm text-muted-foreground">{interaction.summary}</p> : null}
           {interaction.status === "pending" ? <div className={addressedElsewhere && !audienceStated ? undefined : "sr-only"}><InteractionAudienceLine audience={audience} variant="compact" /></div> : null}

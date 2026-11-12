@@ -534,7 +534,7 @@ export function ConnectionIntentInteractionBody({
             <NeedsYouPanelRow icon={serviceLogo} title={plainConnect ? interaction.payload.serviceName : headline}
               meta={plainConnect ? authorizing ? "Authorizing…" : "Not connected" : undefined} />
             {needsRetry ? <NeedsYouPanelNote>{retryMessage}</NeedsYouPanelNote>
-              : plainConnect ? <NeedsYouPanelNote>Requested by {interaction.payload.requestingAgentName}. Access is added only for this agent.</NeedsYouPanelNote> : null}
+              : plainConnect ? <NeedsYouPanelNote>Requested by {interaction.payload.requestingAgentName}.</NeedsYouPanelNote> : null}
           </NeedsYouPanel>
         </div> : <div className="flex items-start gap-3">
           <AppLogo

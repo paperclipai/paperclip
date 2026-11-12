@@ -13,7 +13,7 @@ import { ApprovalResolver } from "@/components/AttentionQueueRow";
 import { CoordinatorReviewPanel, needsYouArtifact, needsYouMentionedArtifact } from "./CoordinatorReviewPanel";
 
 vi.mock("@/api/issues", () => ({ issuesApi: { getDocument: vi.fn(), getDocumentRevision: vi.fn(), listInteractions: vi.fn() } }));
-vi.mock("@/components/AttentionInteractionResolver", () => ({ AttentionInteractionResolver: () => null }));
+vi.mock("@/components/AttentionInteractionResolver", () => ({ AttentionInteractionResolver: () => <div data-testid="panel-interaction-resolver" /> }));
 vi.mock("@/api/agents", () => ({ agentsApi: { list: vi.fn(async () => [{ id: "mgr", name: "Dottabot" }]) } }));
 vi.mock("@/api/approvals", () => ({ approvalsApi: { approve: vi.fn(), reject: vi.fn(), requestRevision: vi.fn(), get: vi.fn() } }));
 
@@ -85,6 +85,18 @@ describe("ApprovalResolver shared between a card and its side panel (PAP-775)", 
     expect(approvalsApi.approve).toHaveBeenCalledTimes(1);
     expect(approvalsApi.approve).toHaveBeenCalledWith("appr-1", "Looks right");
     await act(async () => resolveApprove({}));
+    client.clear();
+  });
+
+  it.each([["ask_user_questions", false, null], ["request_checkbox_confirmation", false, null], ["request_item_verdicts", false, null], ["suggest_tasks", false, null], ["request_confirmation", true, null], ["request_confirmation", true, "deliverable"], ["request_confirmation", false, "tool_action"], ["request_confirmation", false, "secret"], ["request_confirmation", false, "connection"]] as const)("shares only synchronized %s actions in the artifact panel", async (kind, shared, requestKind) => {
+    const question = { ...item, sourceKind: "issue_thread_interaction", subject: { ...item.subject, metadata: { issueId: "task", kind, requestKind } } } as AttentionItem;
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => root.render(<QueryClientProvider client={client}>
+      <CoordinatorReviewPanel companyId="company" item={question} artifact={{ kind: "images" }} agentMap={new Map()} currentUserId="scott"
+        onOpenTask={vi.fn()} onResolved={vi.fn()} />
+    </QueryClientProvider>));
+    expect(Boolean(container.querySelector('[data-testid="panel-interaction-resolver"]'))).toBe(shared);
+    expect(container.textContent?.includes("Answer on the inbox card")).toBe(!shared);
     client.clear();
   });
 

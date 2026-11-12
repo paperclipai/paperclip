@@ -138,6 +138,11 @@ function CoordinatorReviewPanelContent({ companyId, item, artifact, agentMap, cu
   const interactionIssueId = item.sourceKind === "issue_thread_interaction"
     ? item.relatedIssue?.id ?? (typeof item.subject.metadata?.issueId === "string" ? item.subject.metadata.issueId : null)
     : null;
+  // Confirmation drafts/actions synchronize across views. Other interaction
+  // kinds keep one editable form on the card while their artifact is open.
+  const requestKind = item.subject.metadata?.requestKind;
+  const sharedInteractionActions = interactionIssueId && item.subject.metadata?.kind === "request_confirmation"
+    && (requestKind == null || requestKind === "deliverable");
   return <div className="flex min-h-full flex-col gap-4" data-coordinator-review-panel={item.id} data-artifact={artifact.kind}>
     <div className="min-h-0 flex-1">
       {artifact.kind === "document" ? <DocumentArtifact issueId={artifact.issueId} documentKey={artifact.key} label={label} revisionId={artifact.documentTarget?.revisionId} />
@@ -152,14 +157,14 @@ function CoordinatorReviewPanelContent({ companyId, item, artifact, agentMap, cu
     </button> : null}
     {/* The card's own actions, pinned to the bottom of the artifact. */}
     {/* Only the buttons the card itself offers (UX1). */}
-    {interactionIssueId || (item.sourceKind === "approval" && isInlineResolvable(item)) ? <div className="coordinator-review-actions sticky bottom-0 -mx-4 border-t border-border bg-card px-4 py-3">
+    {sharedInteractionActions || (item.sourceKind === "approval" && isInlineResolvable(item)) ? <div className="coordinator-review-actions sticky bottom-0 -mx-4 border-t border-border bg-card px-4 py-3">
       <AttentionForOtherGate key={`${item.id}:${item.audience?.userId}`} item={item} currentUserId={currentUserId} userLabelMap={userLabelMap}>
-      {interactionIssueId ? <AttentionInteractionResolver presentation="coordinator-decision" companyId={companyId} issueId={interactionIssueId} interactionId={item.subject.id} shareReviseDraft
+      {sharedInteractionActions ? <AttentionInteractionResolver presentation="coordinator-decision" companyId={companyId} issueId={interactionIssueId!} interactionId={item.subject.id} shareReviseDraft
         agentMap={agentMap} currentUserId={currentUserId} userLabelMap={userLabelMap}
         onResolved={resolved => { if (resolved && resolved.status !== "pending") onResolved(); }} />
         : <ApprovalResolver item={item} companyId={companyId} toggle={null} presentation="panel" shareDraft onResolved={onResolved} />}
       </AttentionForOtherGate>
-    </div> : null}
+    </div> : interactionIssueId ? <p className="text-sm text-muted-foreground">Answer on the inbox card while reviewing this artifact.</p> : null}
   </div>;
 }
 

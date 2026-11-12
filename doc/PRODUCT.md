@@ -453,13 +453,16 @@ at `/decisions`. The previous Inbox destination under More is removed.
 Inbox opens with **Assigned to you**. Its assignee filter can show all accessible
 assignees, a particular person, ownerless requests, or company alerts. Cards for
 someone else prepend that person's name to the action label; your own cards omit
-your name. Routing does not grant permission to answer a request.
+your name. Routing validates who may reassign a request and whether its recipient
+may answer it.
 
 Decision, problem, and update cards use the compact Paper design. Each type keeps
 its own context and supported actions, with the primary action at the right of
 the footer. Plans, documents, attachments, and approval details open in sidebar
-tabs and highlight their source card. Revision drafts and in-flight submissions
-are shared with the task view, preventing duplicate answers. Claim, transfer,
+tabs and highlight their source card. Confirmation and approval revision drafts
+and pending submissions synchronize across review views. Other requests keep one
+editable form on the inbox card while their supporting artifact is open, so a
+second form cannot submit an older answer. Claim, transfer,
 personal archive/snooze, withdrawal, receipts, and personal history retain their
 multiplayer behavior and update open views through live events.
 

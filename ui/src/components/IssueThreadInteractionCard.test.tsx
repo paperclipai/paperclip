@@ -750,6 +750,23 @@ describe("IssueThreadInteractionCard", () => {
     expect(prompt?.textContent).not.toContain("[two screenshots]");
   });
 
+  it.each([
+    ["checkbox", false, "coordinator-decision"], ["checkbox", true, "coordinator-decision"],
+    ["items", false, "coordinator-decision"], ["items", true, "coordinator-decision"],
+    ["items", false, "default"], ["items", true, "default"],
+  ] as const)("renders %s Markdown prompts with a separate title %s in %s", (kind, separateTitle, presentationVariant) => {
+    const interaction = structuredClone(kind === "checkbox" ? pendingRequestCheckboxConfirmationInteraction : pendingRequestItemVerdictsInteraction);
+    interaction.title = separateTitle ? "Review this request" : null;
+    interaction.payload.prompt = "Review **carefully** and [read the plan](https://example.com/plan).\n\n- Verify the work\n- Check the result\n\n![Reference](https://example.com/reference.png)";
+    const host = renderCard({ interaction, presentationVariant });
+    const prompt = host.querySelector('a[href="https://example.com/plan"]')?.closest('.paperclip-markdown');
+    expect(prompt?.querySelector('strong')?.textContent).toBe('carefully');
+    expect(prompt?.querySelectorAll('li')).toHaveLength(2);
+    expect(prompt?.querySelector('[data-markdown-image-reference]')).not.toBeNull();
+    expect(prompt?.querySelector('img')).toBeNull();
+    expect(host.querySelector('h2 .paperclip-markdown')).toBeNull();
+  });
+
   it("requires a revision note when the request confirmation payload asks for one", async () => {
     const onRejectInteraction = vi.fn(async () => undefined);
     const host = renderCard({
