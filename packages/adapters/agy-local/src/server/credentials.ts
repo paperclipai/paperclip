@@ -18,6 +18,25 @@ export interface AgyCredentialReadiness {
 }
 
 /**
+ * Candidate Antigravity CLI OAuth token locations, in search order, without
+ * touching the filesystem. Both the adapter's own resolver and the server's
+ * isolated-login check iterate this list, so the search order has exactly
+ * one owner and login checks cannot drift from execution as supported
+ * paths change.
+ */
+export function listAgyOAuthTokenPaths(
+  homedir: string = os.homedir(),
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
+  return [
+    env.ANTIGRAVITY_CLI_HOME ? path.join(env.ANTIGRAVITY_CLI_HOME, "antigravity-oauth-token") : null,
+    env.GEMINI_CLI_HOME ? path.join(env.GEMINI_CLI_HOME, "antigravity-oauth-token") : null,
+    path.join(homedir, ".gemini", "antigravity-cli", "antigravity-oauth-token"),
+    path.join(homedir, ".gemini", "antigravity", "antigravity-oauth-token"),
+  ].filter((p): p is string => Boolean(p));
+}
+
+/**
  * Searches for the Antigravity CLI OAuth token file across standard locations:
  * - $ANTIGRAVITY_CLI_HOME/antigravity-oauth-token
  * - $GEMINI_CLI_HOME/antigravity-oauth-token
@@ -28,14 +47,7 @@ export function resolveAgyOAuthTokenPath(
   homedir: string = os.homedir(),
   env: NodeJS.ProcessEnv = process.env,
 ): string | null {
-  const candidatePaths = [
-    env.ANTIGRAVITY_CLI_HOME ? path.join(env.ANTIGRAVITY_CLI_HOME, "antigravity-oauth-token") : null,
-    env.GEMINI_CLI_HOME ? path.join(env.GEMINI_CLI_HOME, "antigravity-oauth-token") : null,
-    path.join(homedir, ".gemini", "antigravity-cli", "antigravity-oauth-token"),
-    path.join(homedir, ".gemini", "antigravity", "antigravity-oauth-token"),
-  ].filter((p): p is string => Boolean(p));
-
-  for (const candidate of candidatePaths) {
+  for (const candidate of listAgyOAuthTokenPaths(homedir, env)) {
     try {
       if (fs.existsSync(candidate)) {
         return candidate;
@@ -235,37 +247,21 @@ export function evaluateAgyCredentialReadiness(
 }
 
 /**
- * True only when the source token provably belongs to the same grant as
- * the destination token: both carry the identical refresh token. That
- * equality is the one same-account signal a token file can offer without
- * trusting unauthenticated data — decoded id_token claims and payload
- * identity fields are NOT proof, because anyone who can write the token
- * file (e.g. a file-capable remote run) can forge them, and this merge
- * gates rotation of the managed company secret. A refresh of one grant
- * keeps its refresh token; a different grant — including a re-login whose
- * refresh token rotated — never shares it, so such sources keep the
- * destination credential instead of replacing it.
- */
-function hasSameAgyGrant(
-  source: ReturnType<typeof parseAgyOAuthToken>,
-  dest: ReturnType<typeof parseAgyOAuthToken>,
-): boolean {
-  return Boolean(
-    source.refreshToken &&
-      dest.refreshToken &&
-      source.refreshToken === dest.refreshToken,
-  );
-}
-
-/**
   Exit code 10: Replace destination credential with source.
   Exit code 20: Keep destination credential.
-  
-  The sandbox copy only wins when it is a refresh of the SAME grant as
-  the host credential, proven by an identical refresh token: a later
-  expiry alone proves nothing, non-JSON token content proves nothing,
-  and decoded identity claims are forgeable by whoever wrote the file,
-  so none of those may replace a working host login.
+
+  The sandbox copy wins ONLY when the host has no working credential
+  (destination missing or unparseable): that is the first-sync bootstrap.
+  A working host credential is never replaced by sandbox-written bytes.
+  Refresh-token equality proves the source belongs to the same grant, but
+  it cannot prove the sandbox's access token was issued by Google for that
+  grant: a file-capable run can keep the refresh token, forge an arbitrary
+  access token with a later expiry, and replace the host login. Decoded
+  identity claims and payload identity fields are equally forgeable, so
+  none of those may authorize a replacement either. The host keeps its own
+  credential instead; a stale access token self-heals because the CLI
+  refreshes it on next use with the intact refresh token
+  (parseAgyOAuthToken treats expired-with-refresh as valid).
   */
 export async function decideAgyAuthMerge(
   sourcePath: string,
@@ -286,20 +282,8 @@ export async function decideAgyAuthMerge(
     const dest = parseAgyOAuthToken(destContent);
     if (!dest.valid) return 10;
 
-    // parseAgyOAuthToken's non-JSON fallback yields a string payload; such
-    // content cannot prove which account it belongs to.
-    if (typeof source.payload === "string") return 20;
-    if (!hasSameAgyGrant(source, dest)) return 20;
-
-    if (source.expiryMs && dest.expiryMs) {
-      if (source.expiryMs > dest.expiryMs) return 10;
-      if (source.expiryMs < dest.expiryMs) return 20;
-    }
-
-    if (source.accessToken !== dest.accessToken || source.refreshToken !== dest.refreshToken) {
-      return 10;
-    }
-
+    // The destination is a working credential. Sandbox bytes must never
+    // replace it (see above): keep the host credential.
     return 20;
   } catch {
     return 20;

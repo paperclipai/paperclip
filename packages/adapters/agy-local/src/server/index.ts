@@ -29,6 +29,7 @@ export {
 } from "./parse.js";
 export {
   evaluateAgyCredentialReadiness,
+  listAgyOAuthTokenPaths,
   resolveAgyOAuthTokenPath,
   hasUsableAgyOAuthToken,
   parseAgyOAuthToken,

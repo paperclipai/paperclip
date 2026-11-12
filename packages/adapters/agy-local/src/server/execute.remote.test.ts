@@ -334,7 +334,7 @@ describe("agy-local execute (remote execution)", () => {
     expect(bridgeStopSpy).toHaveBeenCalled();
   });
 
-  it("restores remote workspace and merges refreshed sandbox token back to host", async () => {
+  it("restores remote workspace and keeps the working host token instead of sandbox bytes", async () => {
     const rootDir = await makeTmpDir();
     const workspaceDir = path.join(rootDir, "workspace");
     await fs.mkdir(workspaceDir, { recursive: true });
@@ -384,8 +384,57 @@ describe("agy-local execute (remote execution)", () => {
     await execute(ctx);
 
     expect(restoreWorkspaceSpy).toHaveBeenCalled();
+    // Sandbox-written bytes never replace a working host credential, even
+    // when the sandbox token is newer: a later expiry cannot prove the
+    // sandbox's access token was issued by Google for this grant. The host
+    // keeps its own token; a stale access token self-heals via CLI refresh.
     const hostTokenContent = JSON.parse(await fs.readFile(hostTokenPath, "utf8"));
-    expect(hostTokenContent.access_token).toBe("refreshed-sandbox-token");
+    expect(hostTokenContent.access_token).toBe("old-host-token");
+  });
+
+  it("reports a remote workspace restore failure instead of hiding it behind a successful result", async () => {
+    const rootDir = await makeTmpDir();
+    const workspaceDir = path.join(rootDir, "workspace");
+    await fs.mkdir(workspaceDir, { recursive: true });
+
+    restoreWorkspaceSpy.mockRejectedValueOnce(new Error("syncOut failed"));
+
+    const ctx: AdapterExecutionContext = {
+      runId: "run-remote-restore-fail",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Remote Agent",
+        adapterType: "agy_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {},
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+        },
+      },
+      executionTarget: makeSandboxTarget(),
+      onLog: async () => {},
+    };
+
+    const result = await execute(ctx);
+
+    expect(restoreWorkspaceSpy).toHaveBeenCalled();
+    // The provider turn succeeded, but the result must carry the restore
+    // failure so the server retains the sandbox for repair instead of
+    // reporting successful work that never arrived on the host.
+    expect(result.errorCode).toBe("workspace_restore_failed");
+    const resultJson = result.resultJson as Record<string, unknown> | undefined;
+    expect(resultJson?.workspaceRestoreFailure).toBe("restore_failed");
+    const beforeRestore = resultJson?.executionBeforeRestore as Record<string, unknown> | undefined;
+    expect(beforeRestore?.exitCode).toBe(0);
   });
 
   it("resumes session when remote execution identity matches, but resets session when identity differs", async () => {

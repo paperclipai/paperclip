@@ -254,12 +254,21 @@ export async function prepareAgyRemoteRun(
       const realGeminiDir = remoteHomeDir ? path.posix.join(remoteHomeDir, ".gemini") : null;
       const realConfigDir = remoteHomeDir ? path.posix.join(remoteHomeDir, ".gemini", "config") : null;
 
-      await runAdapterExecutionTargetShellCommand(
+      // runAdapterExecutionTargetShellCommand returns the exit code as data
+      // (it does not throw on a failed command), so a failed mkdir or cp
+      // must fail setup here: otherwise the run starts against a missing
+      // MCP home and logs success for servers that were never installed.
+      const setupResult = await runAdapterExecutionTargetShellCommand(
         runId,
         executionTarget,
         `mkdir -p ${JSON.stringify(isolatedConfigDir)}; ${realGeminiDir ? `ln -s ${JSON.stringify(path.posix.join(realGeminiDir, "antigravity-cli"))} ${JSON.stringify(path.posix.join(isolatedHomeDir, ".gemini", "antigravity-cli"))} 2>/dev/null || true; ln -s ${JSON.stringify(path.posix.join(realGeminiDir, "antigravity"))} ${JSON.stringify(path.posix.join(isolatedHomeDir, ".gemini", "antigravity"))} 2>/dev/null || true; ` : ""}${realConfigDir ? `if [ -d ${JSON.stringify(realConfigDir)} ]; then for e in ${JSON.stringify(realConfigDir)}/*; do if [ -e "$e" ] && [ "$(basename "$e")" != "mcp_config.json" ]; then ln -s "$e" ${JSON.stringify(isolatedConfigDir)}/ 2>/dev/null || true; fi; done; fi; ` : ""}cp -a ${JSON.stringify(stagedMcpFile)} ${JSON.stringify(targetMcpConfig)}`,
         { cwd: effectiveExecutionCwd, env, timeoutSec, graceSec, onLog },
       );
+      if (setupResult.exitCode !== 0) {
+        throw new Error(
+          `Failed to configure isolated Antigravity MCP home on the remote target (exit ${setupResult.exitCode ?? "unknown"}); expected the run's MCP config at ${targetMcpConfig}.`,
+        );
+      }
       effectiveRemoteHomeDir = isolatedHomeDir;
       env.HOME = isolatedHomeDir;
       await onLog(

@@ -5,6 +5,7 @@ import { describe, expect, it, afterEach } from "vitest";
 import {
   evaluateAgyCredentialReadiness,
   hasUsableAgyOAuthToken,
+  listAgyOAuthTokenPaths,
   resolveAgyOAuthTokenPath,
   parseAgyOAuthToken,
   ensureAgyApiKeySettings,
@@ -105,6 +106,29 @@ describe("evaluateAgyCredentialReadiness", () => {
 
     const res = evaluateAgyCredentialReadiness({ homedir: fakeHome, env: {} as NodeJS.ProcessEnv });
     expect(res.ready).toBe(false);
+  });
+});
+
+describe("listAgyOAuthTokenPaths", () => {
+  it("lists the adapter-owned search order without touching the filesystem", () => {
+    const paths = listAgyOAuthTokenPaths("/home/test", {
+      ANTIGRAVITY_CLI_HOME: "/cli/home",
+      GEMINI_CLI_HOME: "/gemini/home",
+    } as NodeJS.ProcessEnv);
+    expect(paths).toEqual([
+      "/cli/home/antigravity-oauth-token",
+      "/gemini/home/antigravity-oauth-token",
+      "/home/test/.gemini/antigravity-cli/antigravity-oauth-token",
+      "/home/test/.gemini/antigravity/antigravity-oauth-token",
+    ]);
+  });
+
+  it("scopes to the given home only when env is empty", () => {
+    const paths = listAgyOAuthTokenPaths("/isolated/agy", {});
+    expect(paths).toEqual([
+      "/isolated/agy/.gemini/antigravity-cli/antigravity-oauth-token",
+      "/isolated/agy/.gemini/antigravity/antigravity-oauth-token",
+    ]);
   });
 });
 
@@ -214,7 +238,7 @@ describe("decideAgyAuthMerge", () => {
     expect(decision).toBe(10);
   });
 
-  it("returns 10 (use source) when source has newer expiry", async () => {
+  it("returns 20 (keep destination) when source has newer expiry but the destination is working", async () => {
     const dir = makeTmpDir();
     const source = path.join(dir, "source.json");
     const dest = path.join(dir, "dest.json");
@@ -232,7 +256,7 @@ describe("decideAgyAuthMerge", () => {
 
     const { decideAgyAuthMerge } = await import("./credentials.js");
     const decision = await decideAgyAuthMerge(source, dest);
-    expect(decision).toBe(10);
+    expect(decision).toBe(20);
   });
 
   it("returns 20 when the newer source belongs to a different account", async () => {
@@ -414,7 +438,7 @@ describe("copyBackAgyAuth", () => {
     tmpDirs.length = 0;
   });
 
-  it("copies newer token from sandbox to host (decision 10)", async () => {
+  it("keeps the working host token even when the sandbox token is newer (decision 20)", async () => {
     const dir = makeTmpDir();
     const hostTokenPath = path.join(dir, "antigravity-oauth-token");
     const now = Date.now();
@@ -444,10 +468,14 @@ describe("copyBackAgyAuth", () => {
       },
     });
 
-    expect(outcome).toBe("copied");
-    const updated = JSON.parse(fs.readFileSync(hostTokenPath, "utf8"));
-    expect(updated.access_token).toBe("new-sandbox-token");
-    expect(logs.some((l) => l.includes("updated host credential"))).toBe(true);
+    // Sandbox-written bytes never replace a working host credential: a
+    // later expiry cannot prove the sandbox's access token was issued by
+    // Google for this grant. The stale host access token self-heals via
+    // CLI refresh on next use.
+    expect(outcome).toBe("kept-host");
+    const kept = JSON.parse(fs.readFileSync(hostTokenPath, "utf8"));
+    expect(kept.access_token).toBe("old-host-token");
+    expect(logs.some((l) => l.includes("kept host"))).toBe(true);
   });
 
   it("retains host token when host token is newer (decision 20)", async () => {

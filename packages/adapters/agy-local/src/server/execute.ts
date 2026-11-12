@@ -39,9 +39,8 @@ import {
   refreshPaperclipWorkspaceEnvForExecution,
   renderPaperclipWakePrompt,
   renderTemplate,
-  resolveLegacyPaperclipDesiredSkillNames,
-  stringifyPaperclipWakePayload,
 } from "@paperclipai/adapter-utils/server-utils";
+import { withWorkspaceRestore } from "@paperclipai/adapter-utils/workspace-restore-result";
 import {
   describeAgyDeniedActions,
   detectAgyAuthRequired,
@@ -271,7 +270,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const linkedIssueIds = Array.isArray(context.issueIds)
     ? context.issueIds.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
     : [];
-  const wakePayloadJson = stringifyPaperclipWakePayload(context.paperclipWake);
   const issueWorkMode = readPaperclipIssueWorkModeFromContext(context);
   if (wakeTaskId) env.PAPERCLIP_TASK_ID = wakeTaskId;
   if (issueWorkMode) env.PAPERCLIP_ISSUE_WORK_MODE = issueWorkMode;
@@ -280,7 +278,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (approvalId) env.PAPERCLIP_APPROVAL_ID = approvalId;
   if (approvalStatus) env.PAPERCLIP_APPROVAL_STATUS = approvalStatus;
   if (linkedIssueIds.length > 0) env.PAPERCLIP_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
-  if (wakePayloadJson) env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;
+  // PAPERCLIP_WAKE_PAYLOAD_JSON is retired: wake context travels in the
+  // prompt (renderPaperclipWakePrompt below), and a configured copy can
+  // exceed OS process-launch limits (E2BIG) for large histories. Do not
+  // re-add it here; hermes and cursor-cloud delete it for the same reason.
 
   refreshPaperclipWorkspaceEnvForExecution({
     env,
@@ -639,7 +640,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (project) {
       args.push("--project", project);
     }
-    const effectivePrintTimeout = printTimeoutConfig || (timeoutSec > 0 ? `${timeoutSec}s` : "24h");
+    const effectivePrintTimeout = printTimeoutConfig ||
+      (timeoutSec > 0 ? `${resolveAgyPrintTimeoutSec(timeoutSec)}s` : "24h");
     if (effectivePrintTimeout) {
       args.push("--print-timeout", effectivePrintTimeout);
     }
@@ -854,83 +856,90 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `[paperclip] Configured ${runtimeMcpServers.length} Paperclip-managed MCP server(s) in ${mcpResult.configPath}.\n`,
       );
     } catch (err) {
+      // The run's assigned MCP servers are required, not optional: without
+      // them agy starts unable to use its Paperclip connection tools, yet
+      // the run would report success. Fail the run instead of degrading.
+      const message = err instanceof Error ? err.message : String(err);
       await onLog(
         "stdout",
-        `[paperclip] Warning: could not write Antigravity MCP config: ${
-          err instanceof Error ? err.message : String(err)
-        }\n`,
+        `[paperclip] Could not write Antigravity MCP config: ${message}\n`,
       );
+      throw new Error(`Failed to configure Antigravity MCP config for this run: ${message}`);
     }
   }
 
-  try {
-    const initial = await runAttempt(sessionId);
-    const initialFailed =
-      !initial.proc.timedOut && resolveAgyRunOutcome(initial.parsed, initial.proc.exitCode).failed;
+  return await withWorkspaceRestore(
+    async () => {
+      try {
+        const initial = await runAttempt(sessionId);
+        const initialFailed =
+          !initial.proc.timedOut && resolveAgyRunOutcome(initial.parsed, initial.proc.exitCode).failed;
 
-    let finalAttempt: Attempt = initial;
-    let finalResult: AdapterExecutionResult;
-    if (
-      sessionId &&
-      initialFailed &&
-      (isAgyUnknownSessionError({
-        stdout: initial.proc.stdout,
-        stderr: initial.rawStderr,
-        errorMessage: initial.parsed.errorMessage,
-      }) ||
-        isAgySessionUnrecoverableError(initial.proc.stdout, initial.rawStderr))
-    ) {
-      await onLog(
-        "stdout",
-        `[paperclip] Antigravity conversation "${sessionId}" is unavailable; retrying with a fresh session.\n`,
-      );
-      const retry = await runAttempt(null);
-      finalAttempt = retry;
-      finalResult = toResult(retry, true);
-    } else {
-      finalResult = toResult(initial);
-    }
+        let finalAttempt: Attempt = initial;
+        let finalResult: AdapterExecutionResult;
+        if (
+          sessionId &&
+          initialFailed &&
+          (isAgyUnknownSessionError({
+            stdout: initial.proc.stdout,
+            stderr: initial.rawStderr,
+            errorMessage: initial.parsed.errorMessage,
+          }) ||
+            isAgySessionUnrecoverableError(initial.proc.stdout, initial.rawStderr))
+        ) {
+          await onLog(
+            "stdout",
+            `[paperclip] Antigravity conversation "${sessionId}" is unavailable; retrying with a fresh session.\n`,
+          );
+          const retry = await runAttempt(null);
+          finalAttempt = retry;
+          finalResult = toResult(retry, true);
+        } else {
+          finalResult = toResult(initial);
+        }
 
-    if (finalAttempt.parsed.deniedActions.length > 0) {
-      await onLog("stdout", `[paperclip] ${describeAgyDeniedActions(finalAttempt.parsed.deniedActions)}\n`);
-    }
+        if (finalAttempt.parsed.deniedActions.length > 0) {
+          await onLog("stdout", `[paperclip] ${describeAgyDeniedActions(finalAttempt.parsed.deniedActions)}\n`);
+        }
 
-    if (finalResult.sessionId && !executionTargetIsRemote) {
-      const cliHomeDirs = [
-        runtimeEnv.ANTIGRAVITY_CLI_HOME,
-        runtimeEnv.GEMINI_CLI_HOME,
-        runtimeEnv.HOME ? path.join(runtimeEnv.HOME, ".gemini", "antigravity-cli") : null,
-      ].filter((dir): dir is string => typeof dir === "string" && dir.trim().length > 0);
-      const artifacts = await discoverAgySessionArtifacts(finalResult.sessionId, cliHomeDirs);
-      if (artifacts.length > 0) {
-        await onLog(
-          "stdout",
-          `[paperclip] Discovered ${artifacts.length} Antigravity artifact(s):\n${artifacts.map((a) => `  - ${a}`).join("\n")}\n`,
-        );
-        finalResult.resultJson = {
-          ...(finalResult.resultJson as Record<string, unknown> | undefined),
-          artifacts,
-        };
+        if (finalResult.sessionId && !executionTargetIsRemote) {
+          const cliHomeDirs = [
+            runtimeEnv.ANTIGRAVITY_CLI_HOME,
+            runtimeEnv.GEMINI_CLI_HOME,
+            runtimeEnv.HOME ? path.join(runtimeEnv.HOME, ".gemini", "antigravity-cli") : null,
+          ].filter((dir): dir is string => typeof dir === "string" && dir.trim().length > 0);
+          const artifacts = await discoverAgySessionArtifacts(finalResult.sessionId, cliHomeDirs);
+          if (artifacts.length > 0) {
+            await onLog(
+              "stdout",
+              `[paperclip] Discovered ${artifacts.length} Antigravity artifact(s):\n${artifacts.map((a) => `  - ${a}`).join("\n")}\n`,
+            );
+            finalResult.resultJson = {
+              ...(finalResult.resultJson as Record<string, unknown> | undefined),
+              artifacts,
+            };
+          }
+        }
+
+        return finalResult;
+      } finally {
+        await mcpCleanup?.().catch(() => undefined);
+        try {
+          await providerStop.collectBeforeRestore();
+        } catch {}
+        try {
+          await paperclipBridge?.stop();
+        } catch {}
+        if (stagedAgyHomeDir) {
+          await fs.rm(stagedAgyHomeDir, { recursive: true, force: true }).catch(() => {});
+        }
+        if (stagedMcpConfigDir) {
+          await fs.rm(stagedMcpConfigDir, { recursive: true, force: true }).catch(() => {});
+        }
       }
-    }
-
-    return finalResult;
-  } finally {
-    await mcpCleanup?.().catch(() => undefined);
-    try {
-      await providerStop.collectBeforeRestore();
-    } catch {}
-    try {
-      await paperclipBridge?.stop();
-    } catch {}
-    try {
+    },
+    async () => {
       await restoreRemoteWorkspace?.();
-    } catch {}
-    if (stagedAgyHomeDir) {
-      await fs.rm(stagedAgyHomeDir, { recursive: true, force: true }).catch(() => {});
-    }
-    if (stagedMcpConfigDir) {
-      await fs.rm(stagedMcpConfigDir, { recursive: true, force: true }).catch(() => {});
-    }
-  }
+    },
+  );
 }

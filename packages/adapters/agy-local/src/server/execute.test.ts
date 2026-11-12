@@ -585,7 +585,7 @@ describe("agy-local execute", () => {
     expect(commandArgs).toContain("--disable-slash-commands");
   });
 
-  it("defaults --print-timeout to 24h when timeoutSec is 0 or aligns to timeoutSec", async () => {
+  it("defaults --print-timeout to 24h when timeoutSec is 0 or to a margin below timeoutSec", async () => {
     let capturedMeta: AdapterInvocationMeta | null = null;
 
     const ctx: AdapterExecutionContext = {
@@ -623,7 +623,48 @@ describe("agy-local execute", () => {
     expect(capturedMeta).not.toBeNull();
     const commandArgs = capturedMeta!.commandArgs as string[];
     expect(commandArgs).toContain("--print-timeout");
-    expect(commandArgs[commandArgs.indexOf("--print-timeout") + 1]).toBe("360s");
+    expect(commandArgs[commandArgs.indexOf("--print-timeout") + 1]).toBe("342s");
+  });
+
+  it("defaults --print-timeout to 3420s when timeoutSec is 3600", async () => {
+    let capturedMeta: AdapterInvocationMeta | null = null;
+
+    const ctx: AdapterExecutionContext = {
+      runId: "run-timeout-margin",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Test Agent",
+        adapterType: "agy_local",
+        adapterConfig: {
+          timeoutSec: 3600,
+        },
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {},
+      context: {
+        paperclipWorkspace: {
+          cwd: "/tmp/workspace",
+        },
+      },
+      onLog: async () => {},
+      onMeta: async (meta) => {
+        capturedMeta = meta;
+      },
+    };
+
+    const result = await execute(ctx);
+    expect(result.exitCode).toBe(0);
+
+    expect(capturedMeta).not.toBeNull();
+    const commandArgs = capturedMeta!.commandArgs as string[];
+    expect(commandArgs).toContain("--print-timeout");
+    expect(commandArgs[commandArgs.indexOf("--print-timeout") + 1]).toBe("3420s");
   });
 });
 
@@ -876,6 +917,60 @@ describe("agy-local execute run outcome", () => {
       // The process runs with the private per-run HOME, never the shared one.
       expect(lastCallOptions?.env?.HOME).toBe(path.join(tempHome, "run-home"));
       expect(result.sessionParams?.mcpServerIdentity).toBeDefined();
+
+      writeMcpSpy.mockRestore();
+    } finally {
+      await fs.rm(tempHome, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+
+  it("fails the run when MCP home preparation throws instead of starting without assigned tools", async () => {
+    const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "agy-exec-mcp-fail-"));
+
+    try {
+      const writeMcpSpy = vi.spyOn(mcpModule, "prepareAgyLocalRunMcpHome").mockRejectedValueOnce(
+        new Error("host mcp_config.json is not valid JSON"),
+      );
+
+      const ctx: AdapterExecutionContext = {
+        runId: "run-mcp-fail",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Test Agent",
+          adapterType: "agy_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          env: {
+            HOME: tempHome,
+          },
+        },
+        context: {},
+        runtimeMcp: {
+          getServers: () => [
+            {
+              name: "Paperclip connections",
+              url: "https://api.paperclip.test/mcp/connections",
+              token: "tok-123",
+              connectionId: "conn-123",
+            },
+          ],
+        },
+        onLog: async () => {},
+        onMeta: async () => {},
+      };
+
+      const callsBefore = vi.mocked(runChildProcess).mock.calls.length;
+      await expect(execute(ctx)).rejects.toThrow(/Failed to configure Antigravity MCP config/);
+      // The agent process must never start without its assigned servers.
+      expect(vi.mocked(runChildProcess).mock.calls.length).toBe(callsBefore);
 
       writeMcpSpy.mockRestore();
     } finally {

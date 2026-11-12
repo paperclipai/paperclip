@@ -4,7 +4,7 @@ import path from "node:path";
 import { readIsolatedClaudeKeychainToken } from "@paperclipai/adapter-claude-local/server";
 import { readCodexAuthInfo, fetchCodexQuota } from "@paperclipai/adapter-codex-local/server";
 import { parseGrokAuthPayload, hasUsableGrokAuthValue } from "@paperclipai/adapter-grok-local/server";
-import { resolveAgyOAuthTokenPath, parseAgyOAuthToken } from "@paperclipai/adapter-agy-local/server";
+import { resolveAgyOAuthTokenPath, listAgyOAuthTokenPaths, parseAgyOAuthToken } from "@paperclipai/adapter-agy-local/server";
 import type { AiProvider } from "@paperclipai/shared";
 import { unprocessable } from "../errors.js";
 import { verifyAntigravityCredential } from "../vendor/paperclip-runner/index.js";
@@ -61,11 +61,13 @@ export async function readVerifiedLocalAiCredential(provider: AiProvider, loginH
     if (provider === "antigravity") {
       let raw: string | null = null;
       if (loginHome) {
-        for (const candidate of [
-          path.join(loginHome, ".gemini", "antigravity-cli", "antigravity-oauth-token"),
-          path.join(loginHome, "antigravity-oauth-token"),
-          path.join(loginHome, ".gemini", "antigravity", "antigravity-oauth-token"),
-        ]) {
+        // The token-file search order is owned by the adapter: iterate its
+        // candidate list so login checks and execution cannot drift as
+        // supported paths change. The empty env keeps the lookup scoped to
+        // this isolated login home instead of the operator's ambient CLI
+        // homes. Reads stay readFile-based (never the adapter's existsSync
+        // resolver) so the check works on the isolated home as presented.
+        for (const candidate of listAgyOAuthTokenPaths(loginHome, {})) {
           try {
             raw = await fs.readFile(candidate, "utf8");
             if (raw) break;
