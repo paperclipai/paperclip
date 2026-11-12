@@ -16676,7 +16676,9 @@ async function createRunnerdBackendWithinSessionClaim(
     const probe = await remoteCommandRunner.execute({
       command: "sh",
       args: ["-c",
-        'set -eu; test -d "$1" && test ! -L "$1" || exit 1; for path in "$2" "$3"; do if test -e "$path" || test -L "$path"; then exit 1; fi; done',
+        // An archived authority epoch holds a real session's Runner state, so
+        // any Runner state or launch marker anywhere under the root fails closed.
+        'set -eu; test -d "$1" && test ! -L "$1" || exit 1; for path in "$2" "$3" "$1/authority-epochs"; do if test -e "$path" || test -L "$path"; then exit 1; fi; done; found=$(find "$1" \\( -name runner-state.json -o -name runner-process.identity \\) -print); test -z "$found"',
         "paperclip-runner-unlaunched-bootstrap", remoteSessionRoot,
         posix.join(remoteStateDirectory, "runner-state.json"), posix.join(remoteStateDirectory, "runner-process.identity")],
       bypassSession: true,

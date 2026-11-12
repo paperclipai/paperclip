@@ -21304,7 +21304,8 @@ describe("runnerd provider runtime wiring", () => {
       "interrupted_bootstrap_unprepared_other_run", "interrupted_bootstrap_unprepared_suspended", "interrupted_bootstrap_unprepared_backup",
       "interrupted_bootstrap_unprepared_unrecorded", "interrupted_bootstrap_unprepared_connected"]
       .map(scenario => ({ outcome: "resumed", scenario, homeMode: "isolated" })),
-    ...["interrupted_bootstrap_unlaunched", "interrupted_bootstrap_unlaunched_marker", "interrupted_bootstrap_unlaunched_backup"]
+    ...["interrupted_bootstrap_unlaunched", "interrupted_bootstrap_unlaunched_marker", "interrupted_bootstrap_unlaunched_backup",
+      "interrupted_bootstrap_unlaunched_archived", "interrupted_bootstrap_unlaunched_nested_state"]
       .map(scenario => ({ outcome: "resumed", scenario, homeMode: "isolated" })),
     { outcome: "created", scenario: "interrupted_bootstrap", homeMode: "isolated" },
     { outcome: "created", scenario: "interrupted_bootstrap_unprepared", homeMode: "isolated" },
@@ -21334,6 +21335,15 @@ describe("runnerd provider runtime wiring", () => {
       if (scenario.endsWith("_marker")) {
         await mkdir(join(sessionRoot, "runner"), { recursive: true });
         await writeFile(join(sessionRoot, "runner", "runner-process.identity"), "launchednonce\n4242\n");
+      }
+      if (scenario.endsWith("_archived")) {
+        // An authority rotation archived the live Runner state of a real session.
+        await mkdir(join(sessionRoot, "authority-epochs", "epoch-previous"), { recursive: true });
+        await writeFile(join(sessionRoot, "authority-epochs", "epoch-previous", "runner-state.json"), "{}");
+      }
+      if (scenario.endsWith("_nested_state")) {
+        await mkdir(join(sessionRoot, "filesystem", "elsewhere"), { recursive: true });
+        await writeFile(join(sessionRoot, "filesystem", "elsewhere", "runner-state.json"), "{}");
       }
     }
     const syncIn = vi.fn(async () => undefined);
@@ -21494,7 +21504,7 @@ describe("runnerd provider runtime wiring", () => {
         expect(await readdir(sessionRoot)).toEqual([]);
         expect(remoteExecute.mock.calls.filter(([command]) => command.args?.[2] === "paperclip-runner-claim-unstarted-session")).toHaveLength(1);
       } else {
-        // A launch marker or a failover backup keeps the run fail-closed.
+        // A launch marker, any saved Runner state or a failover backup keeps the run fail-closed.
         await expect(options.prepareExternalRunnerState()).rejects.toThrow("runner_harness_state_mismatch: resumed_unavailable");
         expect(await restartAsides()).toEqual([]);
         expect(remoteExecute.mock.calls.some(([command]) => command.args?.[2] === "paperclip-runner-bootstrap-restart")).toBe(false);
