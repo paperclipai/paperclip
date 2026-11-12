@@ -3518,6 +3518,8 @@ verdicts remain history. The new requests, reviewer wake intents, retirement of
 pending requests and status projection commit together. An accepted request does
 not resume the owner while another request from the same round is pending; a
 rejection can resume work immediately.
+Conversation turns and authorized external-chat review presentations retain
+their existing review and response-publication lifecycle.
 
 A prepared remote workspace interrupted before the executor's first durable
 claim may resume its untouched bootstrap on the same run. This requires attempt

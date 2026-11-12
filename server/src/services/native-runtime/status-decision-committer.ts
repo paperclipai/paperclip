@@ -2111,13 +2111,17 @@ export async function commitNativeStatusDecision(input: {
         throw new NativeStatusRaceError();
       }
     }
-    const [reviewOwnerRun] = await tx.select({ agentId: heartbeatRuns.agentId }).from(heartbeatRuns)
-      .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId)));
-    const renewedReview = await prepareNativeReviewRenewal(tx as unknown as Db, {
-      companyId: input.companyId, issueId: input.issueId, runId: input.runId,
-      agentId: reviewOwnerRun?.agentId ?? null, issueStatus: issue.status,
-      assigneeAgentId: issue.assigneeAgentId, responsibleUserId: issue.responsibleUserId, decision: input.decision,
-    });
+    let renewedReview: Awaited<ReturnType<typeof prepareNativeReviewRenewal>> = null;
+    if (!input.reviewResponsePresentation && !isConversation(issue) && input.decision.statusAction === "in_review" &&
+        input.decision.effects.some(effect => effect.kind === "create_interaction" && effect.gate?.kind === "interaction")) {
+      const [reviewOwnerRun] = await tx.select({ agentId: heartbeatRuns.agentId }).from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId)));
+      renewedReview = await prepareNativeReviewRenewal(tx as unknown as Db, {
+        companyId: input.companyId, issueId: input.issueId, runId: input.runId,
+        agentId: reviewOwnerRun?.agentId ?? null, issueStatus: issue.status,
+        assigneeAgentId: issue.assigneeAgentId, responsibleUserId: issue.responsibleUserId, decision: input.decision,
+      });
+    }
     if (renewedReview) input = { ...input, decision: renewedReview.decision };
     let externalChatReviewPresentation = null;
     if (

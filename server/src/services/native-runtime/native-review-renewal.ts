@@ -33,10 +33,11 @@ export async function hasPendingNativeReviewSiblings(db: Db, input: {
 export async function prepareNativeReviewRenewal(tx: Db, input: {
   companyId: string; issueId: string; runId: string; agentId: string | null;
   issueStatus: string; assigneeAgentId: string | null; responsibleUserId: string | null;
+  conversation?: boolean;
   decision: NativeStatusDecision;
 }) {
   const effect = input.decision.effects.find(effect => effect.kind === "create_interaction" && effect.gate?.kind === "interaction");
-  if (!effect || effect.kind !== "create_interaction" || !effect.gate || input.issueStatus !== "in_review" ||
+  if (input.conversation || !effect || effect.kind !== "create_interaction" || !effect.gate || input.issueStatus !== "in_review" ||
       input.decision.statusAction !== "in_review" || !input.agentId || input.agentId !== input.assigneeAgentId) return null;
   const [gate] = await tx.select().from(issueThreadInteractions).where(and(
     eq(issueThreadInteractions.id, effect.gate.id), eq(issueThreadInteractions.companyId, input.companyId),

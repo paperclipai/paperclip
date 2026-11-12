@@ -56,7 +56,7 @@ describe("native completion review renewal", () => {
     });
     expect(renewal?.decision.effects).toEqual([expect.objectContaining({ kind: "bind_reviewer" })]);
   });
-  it.each([{ agentId: "other-owner" }, { issueStatus: "done" }])("does not renew without current owner authority: %j", async change => {
+  it.each([{ agentId: "other-owner" }, { issueStatus: "done" }, { conversation: true }])("does not renew without current task authority: %j", async change => {
     expect(await prepareNativeReviewRenewal(database([]), { ...input, ...change })).toBeNull();
   });
   it("does not renew a card created by the current run", async () => {
