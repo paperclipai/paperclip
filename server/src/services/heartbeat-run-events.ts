@@ -6,7 +6,7 @@ import { isNativeResponseEvidence, notifyNativeResponsePresentation } from "./na
 import { isSafeNativeChatProgressEventType } from "./safe-native-chat-progress.js";
 import { notifyChatNativeProgress } from "./chat-native-progress-notifications.js";
 import { boundRunIssueIdSql } from "./run-task-binding.js";
-import { and, asc, eq, getTableColumns, or, sql } from "drizzle-orm";
+import { and, asc, eq, getTableColumns, max, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { heartbeatRunEvents, heartbeatRuns } from "@paperclipai/db";
 import { nativeSha256 } from "./native-runtime/canonical.js";
@@ -63,6 +63,13 @@ export class HeartbeatRunEventConflictError extends Error {
   }
 }
 
+function reconciledHeartbeatRunEventSeq(db: Db, runId: string) {
+  const persistedMax = db.select({ seq: max(heartbeatRunEvents.seq) })
+    .from(heartbeatRunEvents)
+    .where(eq(heartbeatRunEvents.runId, runId));
+  return sql`greatest(${heartbeatRuns.nextEventSeq}, coalesce((${persistedMax}), 0) + 1)`;
+}
+
 /**
  * Atomically reserve the next event sequence on the run row. Both native PRP
  * ingestion and legacy/direct-adapter writers use this allocator so the
@@ -78,7 +85,7 @@ export async function allocateHeartbeatRunEventSeq(
     .update(heartbeatRuns)
     .set({
       ...runUpdate,
-      nextEventSeq: sql`${heartbeatRuns.nextEventSeq} + 1`,
+      nextEventSeq: sql`${reconciledHeartbeatRunEventSeq(db, runId)} + 1`,
       updatedAt: new Date(),
     })
     .where(eq(heartbeatRuns.id, runId))
@@ -104,7 +111,7 @@ export async function appendHeartbeatRunEvent(
   if (!input.runUpdate && !input.nativeSource && !input.retryExhaustion && !projectsProgress && !projectsResponse && !projectsReassessment && !projectsRecovery && !projectsRetention) {
     const allocated = db.$with("allocated_run_event", {}).as(sql`
       update ${heartbeatRuns}
-      set next_event_seq = ${heartbeatRuns.nextEventSeq} + 1,
+      set next_event_seq = ${reconciledHeartbeatRunEventSeq(db, input.runId)} + 1,
           updated_at = ${sql.param(new Date(), heartbeatRuns.updatedAt)}
       where ${heartbeatRuns.id} = ${input.runId}
         and ${heartbeatRuns.companyId} = ${input.companyId}

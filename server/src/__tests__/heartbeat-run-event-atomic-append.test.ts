@@ -62,6 +62,36 @@ describeEmbeddedPostgres("atomic ordinary run events", () => {
     }
   });
 
+  it.each(["ordinary", "native", "retry-exhaustion"])("reconciles a stale cursor for %s events", async (kind) => {
+    const runId = await makeRun();
+    await db.insert(heartbeatRunEvents).values([1, 2].map(seq => ({
+      companyId, agentId, runId, seq, eventType: "lifecycle", message: `original-${seq}`,
+    })));
+    const original = await readEvents(runId);
+    const exhaustion = { retryReason: "transient_failure", scheduledRetryAttempt: 1, maxAttempts: 1 };
+    const input = {
+      companyId, agentId, runId, eventType: "lifecycle",
+      ...(kind === "native" ? { nativeSource: {
+        sourceInstanceId: "stale-writer", sourceEventId: "recovered", sourceSeq: 1,
+        protocolSchemaVersion: 1, canonicalPayload: { recovered: true },
+      } } : kind === "retry-exhaustion" ? {
+        message: "Bounded retry exhausted after one attempt", payload: exhaustion, retryExhaustion: exhaustion,
+      } : {}),
+    };
+    const receipt = await appendHeartbeatRunEvent(db, input);
+    expect(receipt.row.seq).toBe(3);
+    expect((await readRun(runId)).nextEventSeq).toBe(4);
+    expect(await readEvents(runId)).toEqual([...original, receipt.row]);
+    if (kind !== "ordinary") {
+      expect((await appendHeartbeatRunEvent(otherDb, input)).disposition).toBe("duplicate");
+      expect((await readRun(runId)).nextEventSeq).toBe(4);
+    }
+    await db.update(heartbeatRuns).set({ nextEventSeq: 10 }).where(eq(heartbeatRuns.id, runId));
+    const next = await appendHeartbeatRunEvent(otherDb, { companyId, agentId, runId, eventType: "lifecycle" });
+    expect(next.row.seq).toBe(10);
+    expect((await readRun(runId)).nextEventSeq).toBe(11);
+  });
+
   it("persists a decoded receipt in one executed statement", async () => {
     const runId = await makeRun();
     const statements: string[] = [];

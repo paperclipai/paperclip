@@ -1,4 +1,5 @@
 import { notifyNativeResultCommit } from "../native-result-commit-notifications.js";
+import { allocateHeartbeatRunEventSeq } from "../heartbeat-run-events.js";
 import { notifyNativeWorkspaceFinalization } from "../native-workspace-finalization-notifications.js";
 import { isNativeResponseEvidence, notifyNativeResponsePresentation } from "../native-response-presentation-notifications.js";
 import { notifyNativeFinalizationWork } from "../native-finalization-notifications.js";
@@ -303,7 +304,7 @@ export class NativeRunCoordinatorStore {
       if (isNativeResponseEvidence(event.eventType, canonicalPayload)) {
         await notifyNativeResponsePresentation(tx, this.#binding);
       }
-      const cursor = run.nextEventSeq;
+      const cursor = await allocateHeartbeatRunEventSeq(tx as unknown as Db, this.#binding.runId);
       const [inserted] = await tx
         .insert(heartbeatRunEvents)
         .values({
@@ -323,10 +324,6 @@ export class NativeRunCoordinatorStore {
         })
         .returning({ seq: heartbeatRunEvents.seq });
       if (!inserted) throw new Error("native_event_not_persisted");
-      await tx
-        .update(heartbeatRuns)
-        .set({ nextEventSeq: cursor + 1, updatedAt: new Date() })
-        .where(eq(heartbeatRuns.id, this.#binding.runId));
       return {
         disposition: "committed" as const,
         cursor: inserted.seq,
