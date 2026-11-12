@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import {
-  agentWakeupRequests, agents, approvals, companies, documentRevisions, documents, executionWorkspaces, heartbeatRunEvents, heartbeatRuns, issueApprovals,
+  agentWakeupRequests, agents, approvals, companies, documentRevisions, documents, executionWorkspaces, heartbeatRuns, issueApprovals,
   issueComments, issueRecoveryActions, issueThreadInteractions, issues, nativeRunFinalizations, toolInvocations, type Db,
 } from "@paperclipai/db";
 import {
@@ -8,6 +8,7 @@ import {
 } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
+import { taskHistoryReadsForRun } from "./queued-comment-delivery.js";
 import { FRESH_CONTINUATION_SUPERSEDED_KEY } from "../agent-run-cancellation.js";
 import { isAcknowledgedNativeReassignmentStop, isAcknowledgedNativeStop } from "./acknowledged-native-stop.js";
 import { adapterExecutionControls } from "./adapter-execution-control.js";
@@ -198,16 +199,10 @@ async function unverifiedActions(tx: Db, run: typeof heartbeatRuns.$inferSelect)
 export type FreshContinuationCreatedObjects = { subtasks: string[]; comments: string[]; documents: string[]; readFollowUps?: string[] };
 
 /** Comment ids the run read through get_task_history, with the read time (the
- * `task_history.read` run-log event). One function, so the queued-comment
- * owner's read helper can replace it in one line. */
+ * queued-comment owner's `task_history.read` reader). */
 async function taskHistoryReadsOfRun(tx: Db, run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId">) {
-  const events = await tx.select({ payload: heartbeatRunEvents.payload, createdAt: heartbeatRunEvents.createdAt })
-    .from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
-      eq(heartbeatRunEvents.eventType, "task_history.read"))).orderBy(asc(heartbeatRunEvents.createdAt)).limit(50);
-  const firstReadAt = new Map<string, Date>();
-  for (const event of events) for (const commentId of Object.keys(object(object(event.payload).comments)))
-    if (!firstReadAt.has(commentId)) firstReadAt.set(commentId, event.createdAt);
-  return firstReadAt;
+  const reads = await taskHistoryReadsForRun(tx, { companyId: run.companyId, runId: run.id });
+  return new Map(reads.map(read => [read.commentId, read.readAt]));
 }
 
 const quoted = (value: string, max = 80) => `"${value.replace(/\s+/g, " ").trim().slice(0, max)}${value.length > max ? "..." : ""}"`;
