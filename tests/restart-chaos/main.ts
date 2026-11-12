@@ -57,6 +57,7 @@ import { checkCrossServer, readCrossServerEvidence } from "./multi-server.js";
 import { ReleaseSwapRun } from "./release-swap-schedule.js";
 import { startReleaseSwap } from "./release-swap-setup.js";
 import { finishReleaseSwap } from "./release-swap-finish.js";
+import { isHostedCommand } from "./hosted-config.js";
 import { runnerBindFaultServerEnvironment, sessionFaultServerEnvironment } from "./session-faults.js";
 import { controllerLogNames, gradeWarmShutdown, isWarmWave, warmShutdownMarkdown, type WarmShutdownCleanup } from "./warm-shutdown.js";
 import type { FaultKind, FaultReceipt, OracleArtifacts, TriggerId, WavePlan } from "./types.js";
@@ -1014,4 +1015,5 @@ async function main(): Promise<number> {
   return anyFailure ? 1 : 0;
 }
 
-process.exit(await main().catch(error => { console.error(error); return 2; }));
+process.exit(await (isHostedCommand(process.argv.slice(2)) ? import("./hosted-main.js").then(hosted => hosted.runHosted(process.argv.slice(2))) : main())
+  .catch(error => { console.error(error); return 2; }));
