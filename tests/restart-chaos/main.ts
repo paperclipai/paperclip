@@ -53,7 +53,7 @@ import { isBrokenStdoutError, markTimelineEchoBroken, Timeline } from "./timelin
 import { guardedRunnerOutputs, worktreeFingerprint } from "./wave-guard.js";
 import { checkCrossServer, readCrossServerEvidence } from "./multi-server.js";
 import { ReleaseSwapRun } from "./release-swap-schedule.js";
-import { ReleaseSwapDriver, pgRunReader } from "./release-swap-driver.js";
+import { startReleaseSwap } from "./release-swap-setup.js";
 import { finishReleaseSwap } from "./release-swap-finish.js";
 import { runnerBindFaultServerEnvironment, sessionFaultServerEnvironment } from "./session-faults.js";
 import { controllerLogNames, gradeWarmShutdown, isWarmWave, warmShutdownMarkdown, type WarmShutdownCleanup } from "./warm-shutdown.js";
@@ -464,8 +464,9 @@ async function main(): Promise<number> {
       } });
     spendTarget = { api, companyId: lab.companyId };
     if (plan.options.releaseSwap) releaseSwapDb = createDb(waveDatabaseUrl());
-    const releaseSwap = plan.options.releaseSwap && releaseSwapDb ? new ReleaseSwapDriver({ options: plan.options.releaseSwap, companyId: lab.companyId,
-      adapters: plan.options.adapters, agents: lab.agents, reader: pgRunReader(releaseSwapDb), record: (kind, data) => timeline.add(kind, data) }) : null;
+    const releaseSwap = plan.options.releaseSwap && releaseSwapDb ? await startReleaseSwap({ options: plan.options.releaseSwap, env: plan.options.env,
+      adapters: plan.options.adapters, lab, api, db: releaseSwapDb, timeline, temporaryRoot: supervisor.paths.temporaryRoot,
+      freshHome: plan.options.k15FreshHome === true, cancelled: () => interrupted }) : null;
     supervisor.swapHook = releaseSwap?.hook ?? null;
     // --db-pressure: contend with the wave's running run rows from outside the server (contention.ts).
     if (plan.options.dbPressure) {
@@ -752,6 +753,7 @@ async function main(): Promise<number> {
 
     if (releaseSwap && releaseSwapDb) {
       const graded = await finishReleaseSwap({ driver: releaseSwap, settleMs: plan.options.releaseSwap!.settleMs, companyId: lab.companyId, api, db: releaseSwapDb, board,
+        drainCapMs: plan.options.releaseSwap!.drainMs ?? Math.max(0, ...observers.map(observer => observer.definition.budgetMs)) + plan.options.releaseSwap!.settleMs,
         timeline: timeline.entries, issueIdForTask: new Map(launched.flatMap(observer => observer.record.issueId ? [[observer.plan.taskId, observer.record.issueId] as const] : [])),
         serverWindows: supervisor.serverWindows, waveDir, cancelled: () => interrupted, record: (kind, data) => timeline.add(kind, data) });
       releaseSwapSection = graded.markdown;

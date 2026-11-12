@@ -29,6 +29,7 @@ export interface ReleaseSwapFinishInput {
   cancelled: () => boolean;
   record: (kind: string, data: Record<string, unknown>) => void;
   pollMs?: number;
+  drainCapMs?: number;
 }
 
 type Client = Pick<Db, "$client">;
@@ -40,6 +41,25 @@ const text = (value: unknown) => value === null || value === undefined ? null : 
 
 async function waitUntil(at: number, cancelled: () => boolean): Promise<void> {
   while (!cancelled() && Date.now() < at) await delay(Math.min(5_000, at - Date.now()));
+}
+
+export const PROGRESS_WINDOW_MS = 5 * 60_000;
+
+async function drainRuns(input: ReleaseSwapFinishInput, lastStop: number): Promise<{ reason: "quiet" | "cap" | "cancelled"; at: string; progressing: number }> {
+  const settledAt = lastStop + input.settleMs;
+  const capAt = Math.max(settledAt, lastStop + (input.drainCapMs ?? input.settleMs));
+  const window = Math.min(input.settleMs, PROGRESS_WINDOW_MS);
+  input.record("release_swap_settling", { settleUntil: new Date(settledAt).toISOString(), capAt: new Date(capAt).toISOString() });
+  await waitUntil(settledAt, input.cancelled);
+  for (;;) {
+    const now = Date.now();
+    const progressing = (await companyRuns(input.db, input.companyId)).filter(run => ["queued", "running", "scheduled_retry"].includes(String(run.status))
+      && (num(run.lastActivityAt) ?? 0) >= now - window).length;
+    if (input.cancelled()) return { reason: "cancelled", at: new Date(now).toISOString(), progressing };
+    if (!progressing) return { reason: "quiet", at: new Date(now).toISOString(), progressing };
+    if (now >= capAt) return { reason: "cap", at: new Date(now).toISOString(), progressing };
+    await delay(Math.min(input.pollMs ?? 30_000, Math.max(1, capAt - now)));
+  }
 }
 
 async function companyRuns(db: Client, companyId: string): Promise<Row[]> {
@@ -164,9 +184,9 @@ async function duplicateFacts(input: ReleaseSwapFinishInput, facts: readonly Swa
 export async function finishReleaseSwap(input: ReleaseSwapFinishInput): Promise<{ headline: string; pass: boolean; markdown: string }> {
   const { driver, db, companyId } = input;
   await driver.drain(input.cancelled);
-  const lastStop = Math.max(0, ...driver.swaps.map(swap => swap.stoppedAt ?? swap.requestedAt));
-  input.record("release_swap_settling", { until: new Date(Math.max(Date.now(), lastStop + input.settleMs)).toISOString() });
-  await waitUntil(lastStop + input.settleMs, input.cancelled);
+  const lastStop = driver.swaps.length ? Math.max(...driver.swaps.map(swap => swap.stoppedAt ?? swap.requestedAt)) : Date.now();
+  const drained = await drainRuns(input, lastStop);
+  input.record("release_swap_drained", drained);
   const clicks = observedClicks(input.timeline, input.issueIdForTask);
   const views = new Map<string, Json>();
   const readViews = async (ids: readonly string[]) => {
@@ -245,5 +265,5 @@ export async function finishReleaseSwap(input: ReleaseSwapFinishInput): Promise<
   await writeFile(path.join(input.waveDir, "release-swap-summary.md"), markdown, { mode: 0o600 });
   input.record("release_swap_graded", { headline: result.headline, byVerdict: result.byVerdict, retry: result.retry,
     failedPerSwap: metrics.map(metric => metric.failedRuns.length), lostWhileOldAlive: metrics.map(metric => metric.lostWhileOldAlive.length) });
-  return { headline: result.headline, pass: result.uncollected === 0 && result.started > 0 && result.completedWithoutHuman === result.started, markdown };
+  return { headline: result.headline, pass: result.uncollected === 0 && result.stillRunning === 0 && result.started > 0 && result.completedWithoutHuman === result.started, markdown };
 }

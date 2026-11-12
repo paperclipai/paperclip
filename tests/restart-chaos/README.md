@@ -576,10 +576,13 @@ so state saved during swap N is resumed after swaps N+1 and N+2.
   swap settled; then they drain. The next swap never starts before the previous outgoing server has exited, and the
   spacing must leave the overlap plus 2 minutes for the incoming server's boot. The cell plans its own swaps, so it refuses `--faults`, `--storm-minutes`,
   `--k15-overlap-seconds`, `--k15-hold-seconds`, `--replay`, `--crash-point`, `--matrix` and `--upgrade-from`.
-- **The outgoing server starts runs** (`release-swap-driver.ts`). The harness creates small probe tasks
-  (the A1 brief) through A's own port, not the edge: one when B is spawned, one when B enters its startup
-  recovery pass (`/api/ready` reports `recovering`), and one timed so that its run starts about 20 s before A's
-  SIGTERM (the wake goes out 20 s plus the swap's measured wake-to-start latency early). Every 2 s from B's spawn
+- **The outgoing server starts runs** (`release-swap-driver.ts`, `release-swap-setup.ts`). The harness hires one
+  probe agent per adapter, a copy of the seeded agent with its own concurrency (10 locally, 4 on Daytona), so
+  probes never queue behind the workload. It creates small probe tasks (the A1 brief) for it through A's own port,
+  not the edge: one when B is spawned, then one every 2 s locally (10 s on Daytona, at most 10 or 4) and one when B
+  enters its startup recovery pass (`/api/ready` reports `recovering`) while B boots, and one timed so that its run
+  starts about 20 s before A's SIGTERM (the wake goes out 20 s plus the swap's measured wake-to-start latency
+  early). Every 2 s from B's spawn
   until 60 s after A stopped, the harness samples the wave's runs and their owning controller's PID. Each swap
   records which runs A and B started during the overlap, whether the late probe's run was started by A within the
   60 s before its SIGTERM, and whether a run A started was still preparing (`execution_stage` `preparing` or
@@ -598,9 +601,16 @@ so state saved during swap N is resumed after swaps N+1 and N+2.
 | `--release-swap-spacing-minutes` | 40 | 2–120; must exceed the overlap plus 2 minutes |
 | `--release-swap-overlap-seconds` | 510 | 30–600 |
 | `--release-swap-settle-minutes` | 15 | 1–60 |
+| `--release-swap-drain-minutes` | the longest task budget plus the settle | 1–240 |
+
+**Disk.** On Daytona (`--k15-fresh-home`) each swap removes the outgoing generation's instance home once that
+server has stopped (the first home holds the database and stays). Every swap records the temporary root's size
+(`release_swap_disk`). The wave's temporary root is removed when the wave ends; what stays is `results/<wave>`.
 
 **Grading** (`release-swap-grade.ts`, `release-swap-finish.ts`) runs once, after the last swap plus the settle
-period, over every task of the wave's company that had a run (probes and agent-created subtasks included), the
+period and a bounded drain: the grader waits until no started task has a queued or running run with activity in the
+last 5 minutes, or until the drain cap. A task still running at the cap is not counted in the number; the headline
+reports how many with the age of their last activity, and the wave fails. The single read then covers every task of the wave's company that had a run (probes and agent-created subtasks included), the
 way the board shows it:
 
 | Verdict | When |

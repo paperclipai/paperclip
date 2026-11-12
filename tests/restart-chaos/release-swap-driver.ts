@@ -99,6 +99,9 @@ const LATE_WINDOW_MS = 60_000;
 const SAMPLE_MS = 2_000;
 const SAMPLE_TAIL_MS = 60_000;
 export const SWAP_ABANDON_AFTER_MS = 15 * 60_000;
+export const PREP_INTERVAL_MS = 2_000;
+export const PREP_PROBE_CAP = 10;
+export const PROBE_AGENT_CONCURRENCY = 10;
 
 export function isPreparing(sample: RunSampleRow): boolean {
   if (sample.status !== "running") return false;
@@ -186,6 +189,9 @@ export interface ReleaseSwapDriverInput {
   apiFor?: (baseUrl: string) => Pick<ChaosApi, "post">;
   sampleMs?: number;
   abandonAfterMs?: number;
+  probeAgents?: Partial<Record<AdapterId, { id: string }>>;
+  prepIntervalMs?: number;
+  prepProbeCap?: number;
 }
 
 export class ReleaseSwapDriver {
@@ -274,15 +280,19 @@ export class ReleaseSwapDriver {
 
   private async watchIncoming(swap: SwapRecord): Promise<void> {
     let prepProbes = 1;
+    let lastProbeAt = Date.now();
+    const interval = this.input.prepIntervalMs ?? PREP_INTERVAL_MS;
+    const cap = this.input.prepProbeCap ?? PREP_PROBE_CAP;
     while (swap.toUrl && swap.stopRequestedAt === null && !this.ended(swap)) {
       const phase = await fetch(`${swap.toUrl}/api/ready`, { signal: AbortSignal.timeout(1_000), cache: "no-store" })
         .then(async response => String(((await response.json()) as { status?: string }).status ?? response.status)).catch(() => "unreachable");
       const last = swap.incomingPhases[swap.incomingPhases.length - 1]?.phase;
       if (phase !== last) {
         swap.incomingPhases.push({ phase, at: Date.now() });
-        if (phase === "recovering" && prepProbes < 3) { prepProbes += 1; this.background.push(this.probe(swap, "prep")); }
+        if (phase === "recovering" && prepProbes < cap) { prepProbes += 1; lastProbeAt = Date.now(); this.background.push(this.probe(swap, "prep")); }
       }
       if (phase === "ready") return;
+      if (prepProbes < cap && Date.now() - lastProbeAt >= interval) { prepProbes += 1; lastProbeAt = Date.now(); this.background.push(this.probe(swap, "prep")); }
       await delay(250);
     }
   }
@@ -306,7 +316,8 @@ export class ReleaseSwapDriver {
   }
 
   private async probe(swap: SwapRecord, kind: ProbeRecord["kind"]): Promise<void> {
-    const adapters = this.input.adapters.filter(adapter => this.input.agents[adapter]);
+    const agents = this.input.probeAgents ?? this.input.agents;
+    const adapters = this.input.adapters.filter(adapter => agents[adapter]);
     const adapter = adapters[this.probeCount % Math.max(1, adapters.length)]!;
     this.probeCount += 1;
     const nonce = randomBytes(4).toString("hex");
@@ -317,7 +328,7 @@ export class ReleaseSwapDriver {
     try {
       const issue = await api.post<{ id: string; identifier?: string | null }>(`/api/companies/${this.input.companyId}/issues`, {
         title: `Release swap ${swap.index} ${kind} probe ${nonce}`, description: definition.description(nonce),
-        status: "todo", priority: "medium", assigneeAgentId: this.input.agents[adapter]!.id });
+        status: "todo", priority: "medium", assigneeAgentId: agents[adapter]!.id });
       probe.issueId = String(issue.id);
       probe.identifier = issue.identifier ?? null;
       probe.createdAt = Date.now();
@@ -362,6 +373,34 @@ export function pgRunReader(db: Db): SwapRunReader {
         errorCode: row.errorCode === null ? null : String(row.errorCode), createdAt: ms(row.createdAt), startedAt: ms(row.startedAt),
         finishedAt: ms(row.finishedAt), ownerPid: ms(row.ownerPid), executionStage: row.executionStage === null ? null : String(row.executionStage),
         nativePhase: row.nativePhase === null ? null : String(row.nativePhase), lastOutputSeq: Number(row.lastOutputSeq ?? 0), at: Number(row.at) }));
+    },
+  };
+}
+
+export async function hireProbeAgents(api: Pick<ChaosApi, "post">, companyId: string,
+  agents: Partial<Record<AdapterId, { id: string; name: string; body?: Record<string, unknown> }>>, maxConcurrentRuns: number):
+  Promise<Partial<Record<AdapterId, { id: string; createdAt: number }>>> {
+  const hired: Partial<Record<AdapterId, { id: string; createdAt: number }>> = {};
+  for (const [adapter, source] of Object.entries(agents) as Array<[AdapterId, { id: string; name: string; body?: Record<string, unknown> }]>) {
+    if (!source.body) continue;
+    const runtimeConfig = (source.body.runtimeConfig ?? {}) as Record<string, unknown>;
+    const created = await api.post<{ id: string }>(`/api/companies/${companyId}/agents`, { ...source.body, name: `${source.name} swap probe`,
+      runtimeConfig: { ...runtimeConfig, heartbeat: { ...((runtimeConfig.heartbeat ?? {}) as Record<string, unknown>), maxConcurrentRuns } } });
+    hired[adapter] = { id: String(created.id), createdAt: Date.now() };
+  }
+  return hired;
+}
+
+export function homeCleanupPlugin(input: { temporaryRoot: string; freshHome: boolean; remove: (directory: string) => Promise<void>;
+  diskUsageKb: (directory: string) => Promise<number | null>; record: (kind: string, data: Record<string, unknown>) => void }): SwapPlugin {
+  return {
+    name: "home-cleanup",
+    async onPhase(swap, info) {
+      if (info.phase !== "stopped") return;
+      const generation = swap.index - 1;
+      const removed = input.freshHome && generation >= 1 ? `${input.temporaryRoot}/home-g${generation}` : null;
+      if (removed) await input.remove(removed);
+      input.record("release_swap_disk", { swap: swap.index, removed, temporaryRootKb: await input.diskUsageKb(input.temporaryRoot) });
     },
   };
 }

@@ -108,6 +108,15 @@ describe("release swap task grade", () => {
     expect(gradeReleaseSwapTask({ ...stuck, scheduledRetry: true, runs: [failed] }).verdict).toBe("still_working");
   });
 
+  it("keeps a task still running past the drain cap out of the number and reports it with its last activity", () => {
+    const running = gradeReleaseSwapTask(task({ status: "in_progress", now: 1_000_000, staleAfterMs: 900_000,
+      runs: [{ runId: "r5", status: "running", errorCode: null, createdAt: 0, startedAt: 1, finishedAt: null, lastActivityAt: 940_000 }] }));
+    expect(running).toMatchObject({ verdict: "still_working", lastActivityAgeMs: 60_000, label: null });
+    expect(running.detail).toContain("last activity 60 s ago");
+    expect(summarizeGrades([gradeReleaseSwapTask(task()), running])).toMatchObject({ started: 1, stillRunning: 1,
+      headline: "1 / 1 tasks completed without human action; 1 still running past the drain cap, not counted (last activity 60 s ago)" });
+  });
+
   it("says the number is incomplete when task views could not be read", () => {
     expect(summarizeGrades([gradeReleaseSwapTask(task())], 2)).toMatchObject({ uncollected: 2,
       headline: "1 / 1 tasks completed without human action (incomplete: 2 task(s) could not be read and are not counted)" });

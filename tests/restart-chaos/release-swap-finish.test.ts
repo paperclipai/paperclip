@@ -64,6 +64,29 @@ describe("release swap end-of-wave grade", () => {
     expect(events).toContain("release_swap_views_unreadable");
   });
 
+  it("waits out runs still making progress after the settle, up to the drain cap, before the single read", async () => {
+    let reads = 0;
+    const db = { $client: { unsafe: async (sql: string) => {
+      if (sql.includes("from issues i")) return [{ id: "d1", identifier: "CHA-1", title: "d" }];
+      if (sql.includes("left(r.error")) { reads += 1; return [{ runId: "r1", issueId: "d1", status: reads < 3 ? "running" : "succeeded", lastActivityAt: Date.now() }]; }
+      return [];
+    } } } as unknown as ReleaseSwapFinishInput["db"];
+    const quiet = await finish({ db, drainCapMs: 60_000, api: { get: async () => ({ status: "done" }), post: async () => ({}) } as unknown as ReleaseSwapFinishInput["api"] });
+    expect(reads).toBeGreaterThanOrEqual(3);
+    expect(quiet.result.headline).toBe("1 / 1 tasks completed without human action");
+    const busy = { $client: { unsafe: async (sql: string) => {
+      if (sql.includes("from issues i")) return [{ id: "d1", identifier: "CHA-1", title: "d" }];
+      if (sql.includes("left(r.error")) return [{ runId: "r1", issueId: "d1", status: "running", createdAt: 0, lastActivityAt: Date.now() }];
+      return [];
+    } } } as unknown as ReleaseSwapFinishInput["db"];
+    const started = Date.now();
+    const capped = await finish({ db: busy, drainCapMs: 400, api: { get: async () => ({ status: "in_progress" }), post: async () => ({}) } as unknown as ReleaseSwapFinishInput["api"] });
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(capped.events).toContain("release_swap_drained");
+    expect(capped.result.headline).toMatch(/^0 \/ 0 tasks completed without human action; 1 still running past the drain cap/);
+    expect(capped.result.pass).toBe(false);
+  });
+
   it("grades a pending question from the database as a person's wait, and passes a clean wave", async () => {
     const { json } = await finish({ api: { get: async () => ({ status: "blocked" }), post: async () => ({}) } as unknown as ReleaseSwapFinishInput["api"],
       db: fakeDb({ issues: [{ id: "q1", identifier: "CHA-3", title: "q" }], runs: () => [{ runId: "r1", issueId: "q1", status: "succeeded" }], questions: ["q1"] }) });

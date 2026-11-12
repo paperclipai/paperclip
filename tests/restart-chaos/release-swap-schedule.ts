@@ -5,6 +5,7 @@ export interface ReleaseSwapOptions {
   spacingMs: number;
   overlapMs: number;
   settleMs: number;
+  drainMs?: number;
 }
 
 export const RELEASE_SWAP_DEFAULTS: ReleaseSwapOptions = { swaps: 6, spacingMs: 40 * 60_000, overlapMs: 510_000, settleMs: 15 * 60_000 };
@@ -17,6 +18,7 @@ const FLAGS = {
   "release-swap-spacing-minutes": { key: "spacingMs", unit: 60_000, min: 2, max: 120 },
   "release-swap-overlap-seconds": { key: "overlapMs", unit: 1_000, min: 30, max: 600 },
   "release-swap-settle-minutes": { key: "settleMs", unit: 60_000, min: 1, max: 60 },
+  "release-swap-drain-minutes": { key: "drainMs", unit: 60_000, min: 1, max: 240 },
 } as const;
 
 const REPLACED = ["storm-minutes", "faults", "k15-overlap-seconds", "k15-hold-seconds", "replay", "crash-point", "matrix", "upgrade-from"];
