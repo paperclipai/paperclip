@@ -28,6 +28,7 @@ import {
   type PluginFreshWorkspace,
 } from "@paperclipai/plugin-sdk";
 import { callWorkspaceProvider } from "./plugin-workspace-preparation.js";
+import { withPluginWorkspaceReplay } from "./plugin-workspace-replay-context.js";
 import { pluginRegistryService } from "./plugin-registry.js";
 import { notifyTerminalWorkspaceWork } from "./terminal-workspace-work.js";
 import { withExecutionWorkspaceLifecycleLock } from "./execution-workspace-lifecycle-lock.js";
@@ -519,7 +520,7 @@ async function reconcilePluginWorkspaceReservation(
   const owner = workspace.metadata?.workspaceProviderOwner;
   const retired = typeof owner === "string" ? await retireAbandonedPluginWorkspaceReservation(db, workspace) : null;
   if (retired) return retired;
-  if (typeof owner !== "string" || !workspace.metadata?.workspaceProviderSource)
+  if (typeof owner !== "string" || !workspace.projectId || !workspace.metadata?.workspaceProviderSource)
     throw conflict("Workspace storage reservation is unavailable");
   const operation = workspaceProviderOperationSchema.parse({
     kind: "prepare",
@@ -532,12 +533,16 @@ async function reconcilePluginWorkspaceReservation(
     existing: null,
     ...(workspace.metadata?.workspaceProviderFresh ? { fresh: workspace.metadata.workspaceProviderFresh as PluginFreshWorkspace } : {}),
   });
-  const result = await callWorkspaceProvider(db, workers, {
+  if (operation.kind !== "prepare") throw conflict("Workspace preparation is unavailable");
+  const result = await withPluginWorkspaceReplay({
+    pluginId: owner, companyId: workspace.companyId, projectId: workspace.projectId,
+    projectWorkspaceId: operation.source.id, executionWorkspaceId: workspace.id,
+  }, () => callWorkspaceProvider(db, workers, {
     workspace,
     pluginId: owner,
     ...readPreparationPlacement(workspace),
     operation,
-  });
+  }));
   if (result.kind !== "prepared")
     throw conflict("Workspace reconciliation is incomplete");
   const { workspaceProviderPreparationPlacement: _placement, ...metadata } = workspace.metadata ?? {};

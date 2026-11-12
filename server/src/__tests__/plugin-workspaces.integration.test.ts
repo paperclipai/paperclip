@@ -1,3 +1,4 @@
+import { isPluginWorkspaceReplay } from "../services/plugin-workspace-replay-context.js";
 import { createPluginWorkspaceFixture } from "./helpers/plugin-workspaces.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -686,7 +687,15 @@ const support = await getEmbeddedPostgresTestSupport();
       });
       if (recovery === "inspect") {
         await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, f.runId));
-        await expect(inspectPluginWorkspace(db, f.workers, reservation)).resolves.toMatchObject({ remotelyRecoverable: true });
+        const workers = { ...f.workers, call: vi.fn<WorkspaceWorkers["call"]>(async (...args) => {
+          const request = args[2] as (typeof f.calls)[number];
+          expect(isPluginWorkspaceReplay({
+            pluginId: f.pluginId, companyId: f.companyId, projectId: f.input.projectId,
+            projectWorkspaceId: f.input.projectWorkspaceId, executionWorkspaceId: reservation.id,
+          })).toBe(request.operation.kind === "prepare");
+          return f.workers.call(...args);
+        }) };
+        await expect(inspectPluginWorkspace(db, workers, reservation)).resolves.toMatchObject({ remotelyRecoverable: true });
       } else if (recovery === "retry") {
         await expect(preparePluginWorkspace(db, f.workers, { ...input, existingWorkspaceId: reservation.id })).resolves.toMatchObject({ id: reservation.id });
       } else {

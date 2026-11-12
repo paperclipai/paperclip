@@ -187,7 +187,9 @@ run and agent, plus the task placement when present. Inspection replays the
 saved request. A retry with the same run, agent, and placement uses the same
 operation ID. When a retry acquires a different task, Core records its
 placement and prepares the same workspace. The provider settles the prior
-preparation before using the retained checkout.
+preparation before using the retained checkout. Reservation reconciliation
+uses project Git consent while keeping the original run and agent in the
+provider request.
 
 A portable restore uses the durable ownership claim and the same account
 identity after a credential refresh or controller replacement. It starts a
