@@ -15,6 +15,7 @@ import { heartbeatService } from "../services/heartbeat.js";
 import { createOwnershipReportState, runOwnershipReconciliationPass } from "../services/recovery/ownership-invariant-report.js";
 import { applyOwnershipReportBackstops } from "../services/native-runtime/native-finalization-reconciler.js";
 import { promoteDeferredWorkIntents, TEMPORARY_REFUSAL_TRIGGERS, WORK_INTENT_TERMINAL_OUTCOMES } from "../services/work-intent-outbox.js";
+import { deliveredQueuedCommentIds } from "../services/queued-comment-delivery.js";
 import { PaperclipRunnerToolAuthority } from "../services/native-runtime/paperclip-runner-tool-authority.js";
 import { recoveryPostgresSupport, startRecoveryPostgres } from "./helpers/recovery-postgres.js";
 
@@ -770,7 +771,10 @@ describePostgres("saved intents while another run's accounting is pending", () =
       source: "issue.comment", wakeReason: "issue_commented" },
   });
 
-  it("consumes a message the closing run read mid-turn, so its stale queued run reopens nothing", async () => {
+  it.each([
+    { shape: "read unchanged", edit: false, delivered: 0 },
+    { shape: "edited after the read", edit: true, delivered: 1 },
+  ])("settles a stale queued run of a message the closing run read mid-turn ($shape)", async ({ edit, delivered }) => {
     const f = await seedHeldComment();
     await runningNativeSource(f);
     const [wake] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId, source: "automation",
@@ -782,6 +786,8 @@ describePostgres("saved intents while another run's accounting is pending", () =
         wakeCommentIds: [f.commentId], wakeReason: "issue_commented", source: "issue.comment" } }).returning();
     await db.update(agentWakeupRequests).set({ runId: stale!.id }).where(eq(agentWakeupRequests.id, wake!.id));
     await readHistoryDuringTurn(f);
+    if (edit) await db.update(issueComments).set({ body: "Edited: also include the FOLLOWUP line twice.",
+      updatedAt: new Date(Date.now() + 500) }).where(eq(issueComments.id, f.commentId));
     await closeSourceRun(f);
     await db.update(issues).set({ executionRunId: null, executionLockedAt: null }).where(eq(issues.id, f.issueId));
     await settle(f); await settle(f);
@@ -790,10 +796,29 @@ describePostgres("saved intents while another run's accounting is pending", () =
     await db.update(agentWakeupRequests).set({ updatedAt: new Date(Date.now() - 60_000) })
       .where(and(eq(agentWakeupRequests.companyId, f.companyId), eq(agentWakeupRequests.status, "deferred_issue_execution")));
     await settle(f); await settle(f);
-    expect(deliveries(f.commentId)).toHaveLength(0);
+    expect(deliveries(f.commentId)).toHaveLength(delivered);
+    await settle(f);
+    expect(deliveries(f.commentId)).toHaveLength(delivered);
     expect(await issueStatus(f)).toBe("done");
     const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
     expect(report.violations.filter(row => row.recordId === f.commentId)).toEqual([]);
+  }, 180_000);
+
+  it.each([
+    { outcome: "succeeded", edit: false, consumed: true },
+    { outcome: "succeeded", edit: true, consumed: false },
+    { outcome: "failed", edit: false, consumed: false },
+  ])("counts a mid-turn history read as delivery only for a run that $outcome on the read revision (edited: $edit)", async ({ outcome, edit, consumed }) => {
+    const f = await seedHeldComment();
+    await runningNativeSource(f);
+    await readHistoryDuringTurn(f);
+    if (edit) await db.update(issueComments).set({ body: "Edited after the read.", updatedAt: new Date(Date.now() + 500) })
+      .where(eq(issueComments.id, f.commentId));
+    await db.update(heartbeatRuns).set({ status: outcome, finishedAt: new Date(Date.now() + 1_000),
+      ...(outcome === "failed" ? { errorCode: "adapter_failed" } : {}) }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    const delivered = await deliveredQueuedCommentIds(db, { companyId: f.companyId, issueId: f.issueId, agentId: f.agentId,
+      commentIds: [f.commentId] });
+    expect(delivered.has(f.commentId)).toBe(consumed);
   }, 180_000);
 
   it("holds a message behind a run another server is executing instead of queueing a run of its own", async () => {
