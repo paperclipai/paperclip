@@ -5451,7 +5451,7 @@
       "chat-catalog-domains/runtime-support.ts",
       "chat-scenarios/steering.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.runtime.approval-delivery.v6",
+    "oracleVersion": "paperclip.chat-catalog.runtime.approval-delivery.v7",
     "coverageGaps": [],
     "expectedRunCount": 5,
     "minimumRunCount": 4,

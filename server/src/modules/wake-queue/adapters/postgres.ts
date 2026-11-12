@@ -34,6 +34,7 @@ import {
   nativeRunFinalizations,
 } from "@paperclipai/db";
 import { hasConversationContinuationPolicy } from "../../../services/conversation-continuation.js";
+import { readQueuedInteractionResponse } from "../../../services/queued-interaction-response.js";
 import { legacyExecutionNeedsReconciliationWithEvidence } from "../../../services/legacy-execution-recovery.js";
 import {
   authorizeFailedChatRunRetryWake,
@@ -450,6 +451,18 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
       };
     },
 
+    async owedInteractionAnswer({ companyId, issueId, payload }) {
+      const response = await readQueuedInteractionResponse(tx as unknown as Db, companyId, issueId, payload);
+      if (!response || response.toolActionOutcome || !response.comment.authorUserId) return null;
+      const [task] = await tx.select({ completedAt: issues.completedAt }).from(issues)
+        .where(and(eq(issues.companyId, companyId), eq(issues.id, issueId)));
+      const answeredAt = new Date(response.comment.createdAt);
+      if (!task || (task.completedAt && answeredAt.getTime() > task.completedAt.getTime())) return null;
+      // in_progress is refused while blockers are unresolved, and reopening would throw inside this drain.
+      const readiness = await issuesSvc.getDependencyReadiness(issueId, tx);
+      return readiness.unresolvedBlockerIssueIds.length > 0 ? "blocked" : "deliver";
+    },
+
     async getCommentSelfAuthorship({ companyId, issueId, finishingRunId, commentIds }) {
       const rows = await tx
         .select({ createdByRunId: issueComments.createdByRunId })
@@ -500,8 +513,8 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
       return isCompletedOnboardingHandoffWake(tx, input);
     },
 
-    async reopenIssue({ companyId, issueId }) {
-      const updated = await issuesSvc.updateForCompany(issueId, companyId, { status: "todo", executionState: null }, tx);
+    async reopenIssue({ companyId, issueId, status = "todo" }) {
+      const updated = await issuesSvc.updateForCompany(issueId, companyId, { status, executionState: null }, tx);
       return updated ? toIssueSnapshot(updated as unknown as IssueRow) : null;
     },
 
