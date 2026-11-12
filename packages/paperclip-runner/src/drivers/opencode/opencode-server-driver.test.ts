@@ -58,6 +58,8 @@ beforeAll(async () => {
   fixtureRoot = await mkdtemp(join(tmpdir(), "paperclip-opencode-fixture-"));
   fixture = join(fixtureRoot, "fake-opencode-server.mjs");
   await copyFile(resolve("test/fixtures/fake-opencode-server.mjs"), fixture);
+  // Tests launch the fixture directly; it must not depend on run order.
+  await chmod(fixture, 0o755);
 });
 
 const TURN_TERMINAL_EVENT_TYPES = new Set([
@@ -371,6 +373,36 @@ describe("OpenCodeServerDriver", () => {
     }
   });
 
+  it("delivers configured task values without ambient credentials or driver-owned overrides", async () => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-task-env-"));
+    roots.push(root);
+    const command = join(root, "configured-task-opencode.mjs");
+    const canaryReceipt = join(root, "task-canary.json");
+    await writeFile(command, `#!${process.execPath}\nimport { writeFile } from "node:fs/promises";\nawait writeFile(${JSON.stringify(canaryReceipt)}, JSON.stringify({ present: process.env.PUBLISHING_API_KEY === "synthetic-task-canary" }));\nawait import(${JSON.stringify(fixture)});\n`, { mode: 0o755 });
+    const driver = new OpenCodeServerDriver({
+      model: "openrouter/test-model", command, runtimeDirectory: root,
+      environment: {
+        ...configuredEnvironmentProjection({ PUBLISHING_API_KEY: "synthetic-task-canary",
+          OPENCODE_SERVER_PASSWORD: "must-not-override", XDG_CONFIG_HOME: "/must-not-override" }),
+        PATH: process.env.PATH, UNRELATED_SECRET: "must-not-leak", PAPERCLIP_API_KEY: "must-not-leak",
+      },
+    });
+    const session = await driver.openSession({ runId: "task-env", normalizedSessionId: "task-env", workingDirectory: root });
+    try {
+      const environment = JSON.parse(await readFile(join(root, "task-env", "data", "fake-environment.json"), "utf8"));
+      expect(environment.keys).not.toContain("UNRELATED_SECRET");
+      expect(environment.keys).not.toContain("PAPERCLIP_API_KEY");
+      expect(dirname(environment.home)).toBe(join(root, "task-env", "homes"));
+      expect(environment.configHome).toBe(join(root, "task-env", "config"));
+      expect(session.ids()).toMatchObject({ providerSessionId: "ses_fake_1" });
+      expect(JSON.parse(await readFile(canaryReceipt, "utf8"))).toEqual({ present: true });
+      expect(environment.keys).toContain("PUBLISHING_API_KEY");
+    } finally {
+      await session.close({ reason: "test" });
+    }
+  });
+
   it.each([false, true])("uses the native MCP client ceiling only for durable tool requests (%s)", async durableToolRequests => {
     await chmod(fixture, 0o755);
     const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-tool-budget-"));
@@ -648,6 +680,8 @@ describe("OpenCodeServerDriver", () => {
           { status: 200, headers: { "Content-Type": "text/event-stream" } },
         );
       }
+      if (method === "GET" && url.pathname === "/mcp")
+        return json({ paperclip: { status: "connected" } });
       if (method === "POST" && url.pathname === "/session")
         return json({ id: providerSessionId });
       if (method === "GET" && url.pathname === "/question") return json([]);
@@ -936,6 +970,71 @@ describe("OpenCodeServerDriver", () => {
       expect(environment.keys).not.toContain("PAPERCLIP_AI_PROVIDER_KEY");
     } finally {
       await session.close({ reason: "test" });
+    }
+  });
+
+  it("forwards an unreadable tool-result image as a tool outcome, not as a user message", async () => {
+    // Shape OpenCode 1.18.34 sends through @ai-sdk/openai-compatible after a
+    // text-only model reads a screenshot (chat-eval run 42704461144).
+    const received: unknown[] = [];
+    const upstream = createHttpServer((request, response) => {
+      void (async () => {
+        const chunks = [];
+        for await (const chunk of request) chunks.push(Buffer.from(chunk));
+        received.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        response.end("data: [DONE]\n\n");
+      })().catch(() => response.destroy());
+    });
+    await new Promise<void>(resolve => upstream.listen(0, "127.0.0.1", resolve));
+    const address = upstream.address();
+    if (!address || typeof address === "string") throw new Error("Missing fixture address");
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-media-"));
+    roots.push(root);
+    let session: Awaited<ReturnType<OpenCodeServerDriver["openSession"]>> | undefined;
+    try {
+      const driver = new OpenCodeServerDriver({
+        model: "paperclip/team/model-alias", runtimeDirectory: root, command: fixture,
+        environment: { PATH: process.env.PATH, PAPERCLIP_AI_PROVIDER_URL: `http://127.0.0.1:${address.port}/v1`, PAPERCLIP_AI_PROVIDER_KEY: "gateway-key" },
+      });
+      session = await driver.openSession({ runId: "media", normalizedSessionId: "media", workingDirectory: root });
+      const config = JSON.parse(await readFile(join(root, "media", "config", "opencode", "opencode.json"), "utf8"));
+      const { baseURL, apiKey } = config.provider.paperclip.options;
+      const prefix = [
+        { role: "system", content: "system" },
+        { role: "user", content: "Build the launch page and verify it." },
+        { role: "assistant", content: "", tool_calls: [{ id: "call_read", type: "function", function: { name: "read", arguments: "{\"filePath\":\"/tmp/opencode/website-preview.png\"}" } }] },
+        { role: "tool", tool_call_id: "call_read", content: "Image read successfully" },
+      ];
+      const payload = {
+        model: "team/model-alias",
+        stream: true,
+        messages: [...prefix, {
+          role: "user",
+          content: [
+            { type: "text", text: "Attached media from tool result:" },
+            { type: "text", text: "ERROR: Cannot read image (this model does not support image input). Inform the user." },
+          ],
+        }],
+      };
+      const result = await fetch(`${baseURL}/chat/completions`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      expect(result.status).toBe(200);
+      await result.text();
+      const forwarded = received[0] as { messages: Array<{ role: string; content: unknown }> };
+      expect(forwarded.messages.slice(0, 3)).toEqual(prefix.slice(0, 3));
+      expect(forwarded.messages).toHaveLength(prefix.length);
+      expect(forwarded.messages.at(-1)?.role).toBe("tool");
+      const toolContent = String(forwarded.messages.at(-1)?.content);
+      expect(toolContent).toMatch(/^Image read successfully\n\n\[Paperclip runner: This tool result included an image attachment/);
+      expect(toolContent).toContain("not from the user");
+      expect(JSON.stringify(forwarded)).not.toContain("Inform the user");
+    } finally {
+      await session?.close({ reason: "test" });
+      await new Promise<void>(resolve => { upstream.close(() => resolve()); upstream.closeAllConnections(); });
     }
   });
 
@@ -2549,6 +2648,25 @@ describe("OpenCodeServerDriver", () => {
     await session.close({ reason: "test" });
   });
 
+  it("names the expected revision in a repairable stale-revision tool error", async () => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-revision-"));
+    const workspace = await mkdtemp(join(tmpdir(), "paperclip-opencode-workspace-"));
+    roots.push(root, workspace);
+    const driver = new OpenCodeServerDriver({ model: "openrouter/deepseek/deepseek-v4-flash-0731", runtimeDirectory: root, command: fixture, environment: { PATH: process.env.PATH, OPENROUTER_API_KEY: "fixture-key" }, taskEnvelope: createCodexTaskEnvelope({ objective: "Apply the accepted decision", contractRevision: "approval-v2", criteria: [{ id: "human_response", requirement: "Apply the approved response" }] }) });
+    const session = await driver.openSession({ runId: "revision-repair", normalizedSessionId: "revision-repair", workingDirectory: workspace });
+    await session.startTurn({ message: { role: "user", text: "repair-revision" } });
+    const events = await collectTurnEvents(session.events());
+    const results = events.filter((event) => event.eventType === "run.result.proposed");
+    expect(results).toHaveLength(1);
+    expect(results[0].payload).toMatchObject({ completionClaim: { contractRevision: "approval-v2" } });
+    const files = await readdir(root, { recursive: true });
+    const evidence = files.find((name) => name.endsWith("fake-revision-repair.json"));
+    expect(evidence).toBeDefined();
+    expect(JSON.parse(await readFile(join(root, evidence!), "utf8"))).toMatchObject({ result: { isError: true, content: [{ text: expect.stringContaining('Use contractRevision "approval-v2"') }] } });
+    await session.close({ reason: "test" });
+  });
+
   it.each(["monitor", "response_wake"] as const)("resolves an omitted %s through the real OpenCode MCP boundary only from current server state", async kind => {
     for (const eligible of [true, false]) {
     await chmod(fixture, 0o755);
@@ -2897,9 +3015,89 @@ describe("OpenCodeServerDriver", () => {
         event.payload.channel === "final",
     );
     expect(finalMessages).toHaveLength(1);
+    // Structure cannot tell commentary from an answer, so the saved reply keeps
+    // all prose written after the last work tool, in order, as the person saw it.
     expect(finalMessages[0]?.payload.text).toBe(
-      "This is the complete substantive answer emitted after the accepted completion tool call.",
+      "This deliberately long pre-tool commentary discusses possible schema corrections, retries, compatibility details, and several implementation alternatives, but it is not the provider's final response.\n\nThis is the complete substantive answer emitted after the accepted completion tool call.",
     );
+    await session.close({ reason: "test" });
+  });
+  it("keeps an answer written before the completion call when a later message only refers back to it", async () => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-driver-"));
+    const workspace = await mkdtemp(
+      join(tmpdir(), "paperclip-opencode-workspace-"),
+    );
+    roots.push(root, workspace);
+    const driver = new OpenCodeServerDriver({
+      model: "openrouter/deepseek/deepseek-v4-flash-0731",
+      runtimeDirectory: root,
+      command: fixture,
+      environment: {
+        PATH: process.env.PATH,
+        OPENROUTER_API_KEY: "fixture-key",
+      },
+    });
+    const session = await driver.openSession({
+      runId: "run-answer-then-reference",
+      normalizedSessionId: "answer-then-reference",
+      workingDirectory: workspace,
+    });
+    await session.startTurn({
+      message: { role: "user", text: "answer-before-finish-then-reference" },
+    });
+    const events = await collectTurnEvents(session.events());
+    const finalMessages = events.filter(
+      (event) =>
+        event.eventType === "item.completed" &&
+        event.payload.kind === "agentMessage" &&
+        event.payload.channel === "final",
+    );
+    expect(finalMessages).toHaveLength(1);
+    // The saved reply must hold the answer the person saw, not only "Answered above".
+    expect(finalMessages[0]?.payload.text).toBe(
+      "Two inbox items need you: [COM-2](/COM/issues/COM-2) is blocked and [COM-1](/COM/issues/COM-1) is waiting for review.\n\nAnswered above: two inbox items need your attention.",
+    );
+    expect(finalMessages[0]?.itemId).toBe("part-reference");
+    await session.close({ reason: "test" });
+  });
+
+  it("saves an answer once when the model restates it after the completion call", async () => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-driver-"));
+    const workspace = await mkdtemp(
+      join(tmpdir(), "paperclip-opencode-workspace-"),
+    );
+    roots.push(root, workspace);
+    const driver = new OpenCodeServerDriver({
+      model: "openrouter/deepseek/deepseek-v4-flash-0731",
+      runtimeDirectory: root,
+      command: fixture,
+      environment: {
+        PATH: process.env.PATH,
+        OPENROUTER_API_KEY: "fixture-key",
+      },
+    });
+    const session = await driver.openSession({
+      runId: "run-answer-then-restatement",
+      normalizedSessionId: "answer-then-restatement",
+      workingDirectory: workspace,
+    });
+    await session.startTurn({
+      message: { role: "user", text: "answer-before-finish-then-restatement" },
+    });
+    const events = await collectTurnEvents(session.events());
+    const finalMessages = events.filter(
+      (event) =>
+        event.eventType === "item.completed" &&
+        event.payload.kind === "agentMessage" &&
+        event.payload.channel === "final",
+    );
+    expect(finalMessages).toHaveLength(1);
+    expect(finalMessages[0]?.payload.text).toBe(
+      "I can't change agent budgets from chat — that's board-only, and agent credentials get 403. Two agents also match \"Morgan,\" so choose the intended one and set $50/month on its budget tab: [Morgan budgets](/COM/agents/agent-morgan/budgets) or [Morgan Research budgets](/COM/agents/agent-morgan-research/budgets).",
+    );
+    expect(finalMessages[0]?.itemId).toBe("part-reference");
     await session.close({ reason: "test" });
   });
 

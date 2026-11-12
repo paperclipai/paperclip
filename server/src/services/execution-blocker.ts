@@ -1,6 +1,7 @@
 import { isPreDispatchReviewWait, neverStartedDispatchCancellationPredicate } from "./pre-dispatch-review-wait.js";
 import { canonicalExecutionUuid } from "./execution-identity.js";
 import { preDispatchExecutionWaitRecoveryActionPredicate } from "./pre-dispatch-execution-wait.js";
+import { legacyShutdownBeforeDispatchCondition } from "./legacy-shutdown-before-dispatch.js";
 import { and, desc, eq, gt, inArray, not, or, sql, type SQL } from "drizzle-orm";
 import { conversationRecoveryActionPredicate, getConversationOwnershipBlocker } from "./conversation-continuation.js";
 import { z } from "zod";
@@ -8,13 +9,17 @@ import { agentWakeupRequests, chatConversations, chatEndpoints, environmentLease
 import { canContinueCancelledRun, readRunCancellation } from "./run-cancellation.js";
 import { canRetryStoppedRun } from "./cancelled-native-startup.js";
 import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
-import { EXECUTION_RECONCILIATION_CAUSES, type ExecutionBlocker } from "@paperclipai/shared";
+import { EXECUTION_RECONCILIATION_CAUSES, readRunFailureCause, withoutSqlStatementText, type ExecutionBlocker } from "@paperclipai/shared";
 import { hasRequiredWorkspaceRecovery, LEGACY_WORKSPACE_RECOVERY_SCHEMA, nativeRunHasNoWorkspaceAccess } from "./workspace-restore-recovery-state.js";
 import { unreconciledNativeExportPredicate } from "./native-runtime/native-workspace-reconstruction.js";
 import { hasRecoveredCleanupStopReceipt, hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { readNativeWorkspaceSyncReference } from "./native-runtime/native-workspace-sync.js";
 import { completedWorkspaceRecoveryCondition, hasVerifiedWorkspaceRepair, workspaceRecoveryDisplay } from "./workspace-recovery-receipt.js";
 import { nativeManualAdmissionHoldsExecution } from "./native-runtime/native-runner-ownership.js";
+import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED } from "./native-local-process-stop.js";
+import { NATIVE_CLEANUP_SETTLING_MESSAGE, NATIVE_SESSION_CLEANUP_QUARANTINED } from "./native-runtime/completed-turn-cleanup.js";
+import { EXECUTION_FINALIZATION_DEADLINE_EXCEEDED, EXECUTION_FINALIZATION_DEADLINE_MESSAGE } from "./execution-control-deadline.js";
+import { NATIVE_HUMAN_SELF_HANDOFF_KEY } from "./native-runtime/native-human-self-handoff.js";
 
 const blockerContextKeys = ["issueId", "taskId", "source", "connectionIntentResolution",
   "interactionKind", "interactionStatus", "mutation", "interactionId"] as const;
@@ -67,6 +72,10 @@ const blockerRunFields = {
   runnerProfileJson: blockerProfileColumn,
 };
 
+/** Appended when the person can retry the stopped run on this task. */
+export const EXECUTION_BLOCKER_PERSON_RETRY_ACTION =
+  "A person can use Retry on this task, or send it a new message, to continue once the previous execution has stopped. Agents cannot retry it for them.";
+
 export async function hasPendingRunCleanup(db: Db, companyId: string, runId: string): Promise<boolean> {
   if (await nativeManualAdmissionHoldsExecution(db, { companyId, runId })) return true;
   // Recovery saved the files and re-stopped this sandbox before queueing its
@@ -75,7 +84,11 @@ export async function hasPendingRunCleanup(db: Db, companyId: string, runId: str
     eq(environmentLeases.companyId, companyId), eq(environmentLeases.heartbeatRunId, runId),
     sql`${environmentLeases.metadata}->'workspaceRecoveryCleanup' is not null`,
   ))).filter(hasRecoveredCleanupStopReceipt).map(lease => lease.id);
-  const [state] = await db.execute<{ pending: boolean }>(sql`SELECT
+  // A missing predecessor row owns nothing: deleting a run nulls its leases'
+  // run reference and removes its finalization coordinator. Failing closed on
+  // absence stranded the successor with no next action (invariants 3 and 7).
+  const [state] = await db.execute<{ pending: boolean }>(sql`SELECT EXISTS (SELECT 1 FROM ${heartbeatRuns}
+    WHERE ${heartbeatRuns.companyId} = ${companyId} AND ${heartbeatRuns.id} = ${runId} AND (
     ${heartbeatRuns.runnerProfileJson}->>'nativeWorkspaceFinalizationOwner' IS NOT NULL
     OR EXISTS (SELECT 1 FROM ${environmentLeases}
       WHERE ${environmentLeases.companyId} = ${companyId} AND ${environmentLeases.heartbeatRunId} = ${runId}
@@ -93,13 +106,12 @@ export async function hasPendingRunCleanup(db: Db, companyId: string, runId: str
                   OR (${environmentLeases.provider} = 'ssh' AND ${environmentLeases.metadata}->>'driver' = 'ssh'
                     AND ${environmentLeases.providerLeaseId} LIKE 'ssh://%')))))
             OR (${environmentLeases.status} = 'retained' AND ${environmentLeases.leasePolicy} = 'reuse_by_environment'
-              AND ${environmentLeases.cleanupStatus} = 'success'), false))))
+              AND ${environmentLeases.cleanupStatus} = 'success'), false))))))
     OR EXISTS (SELECT 1 FROM ${nativeRunFinalizations}
       WHERE ${nativeRunFinalizations.companyId} = ${companyId} AND ${nativeRunFinalizations.runId} = ${runId}
         AND (${nativeRunFinalizations.leaseOwner} IS NOT NULL
-          OR ${nativeRunFinalizations.phase} NOT IN ('committed', 'applied', 'terminal_failure'))) AS pending
-    FROM ${heartbeatRuns} WHERE ${heartbeatRuns.companyId} = ${companyId} AND ${heartbeatRuns.id} = ${runId} LIMIT 1`);
-  return state?.pending !== false;
+          OR ${nativeRunFinalizations.phase} NOT IN ('committed', 'applied', 'terminal_failure'))) AS pending`);
+  return state?.pending === true;
 }
 
 /** Resolved recovery bookkeeping can still carry an effective no-replay hold. */
@@ -107,6 +119,17 @@ export function executionBlockerPredicate() {
   return and(
     not(conversationRecoveryActionPredicate()!),
     not(preDispatchExecutionWaitRecoveryActionPredicate()),
+    // Holds saved before shutdown certified pre-dispatch interruptions carry
+    // the same row proof; they have no unknown outcome to reconcile.
+    sql`not (${issueRecoveryActions.cause} = 'legacy_execution_requires_reconciliation' and exists (
+      select 1 from ${heartbeatRuns}
+      where ${heartbeatRuns.companyId} = ${issueRecoveryActions.companyId}
+        and ${heartbeatRuns.id} = ${canonicalExecutionUuid(sql`coalesce(${issueRecoveryActions.evidence}->>'runId', ${issueRecoveryActions.evidence}->>'sourceRunId')`)}
+        and ${issueRecoveryActions.sourceIssueId} = ${canonicalExecutionUuid(sql`${heartbeatRuns.contextSnapshot}->>'issueId'`)}
+        and ${legacyShutdownBeforeDispatchCondition()}
+        and coalesce(${issueRecoveryActions.evidence}->>'workspaceRestoreFailure', '') <> 'restore_unsafe_archive'
+        and ${issueRecoveryActions.evidence}->'workspaceRestoreRecovery' is null
+    ))`,
     sql`not (${issueRecoveryActions.cause} = 'legacy_execution_requires_reconciliation' and exists (
       select 1 from ${heartbeatRuns}
       where ${heartbeatRuns.companyId} = ${issueRecoveryActions.companyId}
@@ -179,15 +202,61 @@ export function stoppedBeforeProviderTurnCondition() {
       where result.company_id = stopped.company_id and result.run_id = stopped.id))`;
 }
 
+export function interruptedPreparationBeforeProviderWorkCondition() {
+  return sql`(stopped.status = 'interrupted' and stopped.runtime_mode = 'legacy'
+    and stopped.runtime_mode_resolved_at is null and stopped.execution_stage = 'preparing'
+    and stopped.runner_profile_json#>>'{adapterDispatch,adapterType}' = 'paperclip_runner'
+    and stopped.runner_profile_json->'nativeExecutionInput' is null
+    and stopped.process_pid is null and stopped.process_group_id is null and stopped.process_started_at is null
+    and stopped.session_id_after is null and stopped.native_issue_id is null and stopped.native_session_id is null
+    and (stopped.controller_lease_expires_at is null or stopped.controller_lease_expires_at <= now())
+    and (stopped.runner_profile_json->'remoteWorkspace' is null or exists (
+      select 1 from jsonb_array_elements_text(case when jsonb_typeof(${issueRecoveryActions.evidence}#>'{systemRecovery,preservationOperationIds}') = 'array'
+        then ${issueRecoveryActions.evidence}#>'{systemRecovery,preservationOperationIds}' else '[]'::jsonb end) saved(id)
+      join ${workspaceOperations} op on op.id::text = saved.id
+      where op.company_id = stopped.company_id and op.heartbeat_run_id = stopped.id and op.status = 'succeeded'
+        and op.metadata->>'snapshotId' = stopped.runner_profile_json#>>'{remoteWorkspace,snapshotId}'))
+    and coalesce(stopped.result_json#>'{executionRecovery,providerWorkStarted}', 'false'::jsonb) = 'false'::jsonb
+    and case when stopped.result_json->'cancellation' is null then stopped.error_code = 'server_shutdown_interrupted'
+      else stopped.result_json#>>'{cancellation,initiator,type}' = 'system'
+        and coalesce(stopped.result_json#>>'{cancellation,source}', '') <> 'operator'
+        and (stopped.result_json#>>'{cancellation,source}' = 'shutdown'
+          or stopped.result_json#>'{cancellation,expected}' = 'false'::jsonb) end
+    and not exists (select 1 from ${heartbeatRunEvents} work
+      where work.company_id = stopped.company_id and work.run_id = stopped.id
+        and (work.source_event_id is not null
+          or work.event_type in ('adapter.invoke', ${PROCESS_START_REQUESTED}, ${PROCESS_IDENTITY_RECORDED})
+          or ${providerTurnWorkEventCondition(sql`work.event_type`, sql`work.source_event_id`)}))
+    and not exists (select 1 from ${nativeRunFinalizations} coordinator
+      where coordinator.company_id = stopped.company_id and coordinator.run_id = stopped.id)
+    and not exists (select 1 from ${nativeRunResults} result
+      where result.company_id = stopped.company_id and result.run_id = stopped.id)
+    and not exists (select 1 from ${environmentLeases} lease
+      where lease.company_id = stopped.company_id and lease.heartbeat_run_id = stopped.id
+        and not coalesce(lease.released_at is not null and lease.cleanup_status = 'success'
+          and lease.status in ('released', 'expired', 'failed')
+          and coalesce(lease.metadata->>'pendingCleanupInFlight', 'false') = 'false'
+          and (lease.provider = 'local' or (
+            lease.metadata#>>'{remoteExecutionTermination,schema}' = 'paperclip.remote-termination.v1'
+            and lease.metadata#>>'{remoteExecutionTermination,companyId}' = lease.company_id::text
+            and lease.metadata#>>'{remoteExecutionTermination,runId}' = stopped.id::text
+            and lease.metadata#>>'{remoteExecutionTermination,leaseId}' = lease.id::text
+            and lease.metadata#>>'{remoteExecutionTermination,provider}' = lease.provider
+            and lease.metadata#>>'{remoteExecutionTermination,providerLeaseId}' = lease.provider_lease_id
+            and lease.metadata#>>'{remoteExecutionTermination,state}' in ('stopped', 'destroyed'))), false)))`;
+}
+
 /**
  * A file-preservation hold binds a newer task owner only until automatic
  * recovery saved the stopped run's files. That owner's turn is a fresh
  * assignment, not a replay: the stopped run's unknown outcomes stay with its
- * own agent, which keeps the hold. A Stop fenced before any provider turn has
- * no unknown outcome, so its hold releases for the same agent too. The proof is
+ * own agent, which keeps the hold. A Stop fenced before any provider turn, or a
+ * shutdown that interrupted preparation before any provider work, has no
+ * unknown outcome, so its hold releases for the same agent too. The proof is
  * the durable completed-recovery receipt bound to this action, so later reuse
  * of the workspace by the current owner (new epoch, writer or snapshot) cannot
- * re-arm the hold.
+ * re-arm the hold. A person who received the task through the stopped run's
+ * own recorded hand-off is released the same way.
  */
 export function restoreHoldReleasedForCurrentOwnerPredicate() {
   const sourceRunId = sql`coalesce(${issueRecoveryActions.evidence}->>'runId', ${issueRecoveryActions.evidence}->>'sourceRunId')`;
@@ -204,13 +273,20 @@ export function restoreHoldReleasedForCurrentOwnerPredicate() {
         and stopped.id::text = ${sourceRunId}
         and stopped.status in ('failed', 'timed_out', 'interrupted', 'cancelled')
         and stopped.finished_at is not null
-        and task.assignee_agent_id is not null
-        and ((task.assignee_agent_id <> stopped.agent_id
-          and not coalesce(task.status = 'in_review'
-            and task.execution_state->>'status' = 'pending'
-            and task.execution_state->'currentParticipant'->>'type' = 'agent'
-            and task.execution_state->'currentParticipant'->>'agentId' = stopped.agent_id::text, false))
-          or ${stoppedBeforeProviderTurnCondition()}))`,
+        and ((task.assignee_agent_id is not null
+          and ((task.assignee_agent_id <> stopped.agent_id
+            and not coalesce(task.status = 'in_review'
+              and task.execution_state->>'status' = 'pending'
+              and task.execution_state->'currentParticipant'->>'type' = 'agent'
+              and task.execution_state->'currentParticipant'->>'agentId' = stopped.agent_id::text, false))
+            or ${stoppedBeforeProviderTurnCondition()} or ${interruptedPreparationBeforeProviderWorkCondition()}))
+          -- The stopped run handed this task to the person who owns it now
+          -- (its own recorded hand-off). Its remaining outcomes were never
+          -- that person's work; once its files are saved, the hold releases.
+          or (task.assignee_agent_id is null and task.assignee_user_id is not null
+            and jsonb_typeof(stopped.result_json->'${sql.raw(NATIVE_HUMAN_SELF_HANDOFF_KEY)}') = 'object'
+            and stopped.result_json->'${sql.raw(NATIVE_HUMAN_SELF_HANDOFF_KEY)}'->>'issueId' = task.id::text
+            and stopped.result_json->'${sql.raw(NATIVE_HUMAN_SELF_HANDOFF_KEY)}'->>'assigneeUserId' = task.assignee_user_id)))`,
     completedWorkspaceRecoveryCondition(sourceRunId),
     // Copyback put the files back into the task workspace that the new owner
     // reuses. A snapshot-only save needs an explicit fresh-workspace request
@@ -221,7 +297,26 @@ export function restoreHoldReleasedForCurrentOwnerPredicate() {
   )}), false)`;
 }
 
-export async function getExecutionBlocker(db: Db, companyId: string, issueId: string, options?: { conversationResetCommentId?: string | null }): Promise<ExecutionBlocker | null> {
+/**
+ * The coordinator's own scheduled resume of one native run: the active action
+ * that its failure wrote for that run and whose wake policy resumes that same
+ * run. It is the authority for that resume, not a hold against it. A saved
+ * governed wait whose shutdown confirmation is still pending records a
+ * reconciliation cause here, and its same-run resume is what settles it.
+ * Strictly true or false, because callers negate it.
+ */
+function ownNativeResumePredicate(runId: string) {
+  return sql`coalesce((${issueRecoveryActions.status} = 'active'
+    and ${issueRecoveryActions.wakePolicy}->>'kind' = 'resume_native_run'
+    and ${issueRecoveryActions.wakePolicy}->>'runId' = ${runId}
+    and ${issueRecoveryActions.evidence}->>'runId' = ${runId}), false)`;
+}
+
+export async function getExecutionBlocker(db: Db, companyId: string, issueId: string, options?: {
+  conversationResetCommentId?: string | null;
+  /** The native run being dispatched; its own scheduled resume does not block it. */
+  resumingNativeRunId?: string | null;
+}): Promise<ExecutionBlocker | null> {
   const [conversation] = await db.select({ agentId: issues.conversationAgentId,
     boundaryId: issues.conversationBoundaryCommentId, status: issues.status,
     assigneeAgentId: issues.assigneeAgentId, statusVersion: issues.statusVersion,
@@ -264,6 +359,7 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
     executionBlockerPredicate(),
     not(restoreHoldReleasedForCurrentOwnerPredicate()),
     boundary ? or(gt(issueRecoveryActions.createdAt, boundary.createdAt), nativeExecutionRecoveryActionPredicate()) : undefined,
+    options?.resumingNativeRunId ? not(ownNativeResumePredicate(options.resumingNativeRunId)) : undefined,
   )).orderBy(desc(issueRecoveryActions.updatedAt), desc(issueRecoveryActions.id)).limit(1);
   if (!action) return null;
   const parsedRunId = z.string().guid().safeParse(action.evidence.runId ?? action.evidence.sourceRunId);
@@ -321,9 +417,14 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
     !["done", "cancelled"].includes(conversation.status) && await canRetryStoppedRun(db, run));
   const runError = run && canRetry && isPreDispatchReviewWait(run)
     ? "Waiting for review; this continuation never started."
+    // Earlier releases saved operator-facing text for the cleanup gate. Show
+    // the plain wording from the code instead of the stored message.
+    : run?.errorCode === NATIVE_SESSION_CLEANUP_QUARANTINED ? NATIVE_CLEANUP_SETTLING_MESSAGE
+    : run?.errorCode === EXECUTION_FINALIZATION_DEADLINE_EXCEEDED ? EXECUTION_FINALIZATION_DEADLINE_MESSAGE
     : cancellation?.reason ?? (run?.status === "cancelled"
       ? "Execution was cancelled; its source was not recorded."
-      : run?.error);
+      // Rows written before SQL text was kept out of run errors still carry it.
+      : run?.error ? withoutSqlStatementText(run.error, readRunFailureCause(run.resultJson)) : run?.error);
   const [chatBinding] = eligibleContinuation || canRetry ? await db.select({
     state: chatConversations.state, endpointStatus: chatEndpoints.status,
     connectionStatus: toolConnections.status, connectionEnabled: toolConnections.enabled,
@@ -334,8 +435,11 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
   )).where(and(
     eq(chatConversations.companyId, companyId), eq(chatConversations.issueId, issueId),
   )).limit(1) : [];
-  let nextAction = action.nextAction;
-  if (canRetry && !eligibleContinuation) nextAction += " Try again or send a new message to continue once the previous execution has stopped.";
+  let nextAction = action.status === "active" && action.cause === EXECUTION_FINALIZATION_DEADLINE_EXCEEDED
+    ? EXECUTION_FINALIZATION_DEADLINE_MESSAGE : action.nextAction;
+  // Retry is a person's control on this task. Say so, so an agent reading this
+  // record points the person to it instead of re-running the work itself.
+  if (canRetry && !eligibleContinuation) nextAction += ` ${EXECUTION_BLOCKER_PERSON_RETRY_ACTION}`;
   if (chatBinding && !restoreHold) {
     if (chatBinding.state === "endpoint_removed" || !chatBinding.endpointStatus || chatBinding.endpointStatus === "archived") {
       nextAction = "This chat connection was removed. Inspect the stopped run and create a new task to continue the work.";

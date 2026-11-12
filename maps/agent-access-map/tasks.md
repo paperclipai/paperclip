@@ -4,6 +4,12 @@ Product map: [Task creation and lifecycle](../feature-map/tasks.md).
 
 Feature ID: `tasks`.
 
+Optional [agent interaction restrictions](../../doc/agent-interaction-permissions.md)
+add sender and recipient checks to assignments, comments, task mutations and
+structured mentions. Current assignment establishes ownership. Self-claim and
+reassignment also check the previous owner; child placement checks the parent.
+These restrictions add no grants and leave absent settings unrestricted.
+
 Source revision: `3bbc2104b65caf9f7763938a01260a5673e12f7a`.
 
 Review depth and executed proof are separate. The operation records enumerate the named behavior and access boundaries. Their evidence states describe the reviewed sources; run results and environment limits belong in the PR or verification artifacts. A listed API or source test does not establish a live authorized journey. Follow the [map contract](../README.md).
@@ -187,7 +193,7 @@ API: `present` — PATCH /api/issues/{id} assigneeAgentId/assigneeUserId.
 
 Agent access: `partial` — REST/call_api; CLI agent assignment only; native reassign_task for another eligible task, never own active task.
 
-Policy: tasks:assign with exact target/project/parent; eligible agent or active person, single assignee. Stop old run before transfer; unconfirmed stop409. Narrow signed legacy current-run self→human handoff can finish; late outgoing edits denied; board/native/key/agent transfer keeps stop rules. Native reassignment requires a retry key, reason, expected owner and status version, denies current task/conversations/terminal/in_review/pending review; preserves blocked/backlog and durable wake replay.
+Policy: tasks:assign with exact target/project/parent; eligible agent or active person, single assignee. Stop old run before transfer; unconfirmed stop409. Narrow signed legacy or native current-run self→human handoff can finish; late outgoing edits denied; a native finalizer preserves the person's task; board/key/agent transfer keeps stop rules. Native reassignment requires a retry key, reason, expected owner and status version, denies current task/conversations/terminal/in_review/pending review; preserves blocked/backlog and durable wake replay.
 
 Evidence: `source-only` — reviewed at `3bbc2104b65caf9f7763938a01260a5673e12f7a`; [issues.ts](../../server/src/routes/issues.ts), [paperclip-runner-tool-authority.ts](../../server/src/services/native-runtime/paperclip-runner-tool-authority.ts), [issue.ts](../../cli/src/commands/client/issue.ts), [reassign-task.ts](../../packages/paperclip-runner/src/protocol-actions/reassign-task.ts), [issue-agent-mutation-ownership-routes.test.ts](../../server/src/__tests__/issue-agent-mutation-ownership-routes.test.ts), [task-reassignment.test.ts](../../server/src/services/native-runtime/task-reassignment.test.ts). No live execution claimed.
 

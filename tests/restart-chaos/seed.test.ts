@@ -1,9 +1,11 @@
+import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChaosApi } from "./api.js";
-import { seedChaosLab } from "./seed.js";
+import { cloneWorkspaceRepository, createFixtureRepository, inheritingEnvironmentConfig, seedChaosLab, waitForAgentsReady } from "./seed.js";
 import { Timeline } from "./timeline.js";
 
 type Call = { method: string; route: string; body?: unknown };
@@ -16,6 +18,7 @@ function fakeApi(experimentalResponse: (body: Record<string, unknown>) => Record
     get: async (route: string) => {
       calls.push({ method: "GET", route });
       if (route.includes("/environments")) return [{ id: "environment-1", driver: "local" }];
+      if (route.startsWith("/api/agents/")) return { id: route.split("/")[3], lifecycleState: "ready" };
       throw new Error(`unexpected GET ${route}`);
     },
     post: async (route: string, body?: unknown) => {
@@ -44,6 +47,27 @@ describe("seedChaosLab workspace isolation", () => {
 
   const seed = (api: ChaosApi) => seedChaosLab({ api, env: "local", adapters: ["codex"], concurrency: 2,
     budgetCents: 3_000, fixtureRoot, waveId: "w-test", timeline: new Timeline(null) });
+
+  it("waits for each seeded agent to reach lifecycleState ready only when the wave asks for it", async () => {
+    const waiting = fakeApi(body => ({ ...body }));
+    const timeline = new Timeline(null);
+    await seedChaosLab({ api: waiting.api, env: "local", adapters: ["codex"], concurrency: 2, budgetCents: 3_000,
+      fixtureRoot: path.join(fixtureRoot, "waiting"), waveId: "w-test", timeline, waitForReadyAgents: true });
+    expect(waiting.calls.some(call => call.method === "GET" && call.route.startsWith("/api/agents/"))).toBe(true);
+    expect(timeline.entries.filter(entry => entry.kind === "seed_agent_ready")).toEqual([expect.objectContaining({ adapter: "codex" })]);
+    const skipping = fakeApi(body => ({ ...body }));
+    await seed(skipping.api);
+    expect(skipping.calls.some(call => call.method === "GET" && call.route.startsWith("/api/agents/"))).toBe(false);
+  });
+
+  it("registers a remote git source, with no host folder, for a Daytona workspace repository", async () => {
+    const { api, calls } = fakeApi(body => ({ ...body }));
+    await seedChaosLab({ api, env: "local", adapters: ["codex"], concurrency: 2, budgetCents: 3_000, fixtureRoot: path.join(fixtureRoot, "remote"),
+      waveId: "w-test", timeline: new Timeline(null), workspaceGitUrl: "https://github.com/paperclipai/paperclip.git", workspaceCommit: "a".repeat(40) });
+    const project = calls.find(call => call.method === "POST" && call.route.endsWith("/projects"));
+    expect((project!.body as { workspace: unknown }).workspace).toEqual({ name: "Primary", sourceType: "git_repo",
+      repoUrl: "https://github.com/paperclipai/paperclip.git", repoRef: "a".repeat(40), isPrimary: true });
+  });
 
   // RC-21: the project's git_worktree policy is gated behind the instance's
   // isolated-workspaces setting. Without it every repo task ran in the shared
@@ -102,5 +126,87 @@ describe("seedChaosLab RC-06 mask", () => {
     await seed(api, timeline);
     expect(calls.some(isPolicyCall)).toBe(false);
     expect(timeline.entries.some(entry => entry.kind === "seed_mask_rc06")).toBe(false);
+  });
+});
+
+describe("inheritingEnvironmentConfig", () => {
+  it("drops the lifecycle and lease pins and keeps everything else", () => {
+    const fixture = { provider: "daytona", image: "img", runnerLifecycleMode: "per_turn", reuseLease: false };
+    expect(inheritingEnvironmentConfig(fixture)).toEqual({ provider: "daytona", image: "img" });
+    expect(fixture).toHaveProperty("runnerLifecycleMode", "per_turn");
+  });
+});
+
+describe("cloneWorkspaceRepository", () => {
+  it("clones a fresh, shallow working copy of the source repository", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "restart-chaos-clone-"));
+    try {
+      const source = await createFixtureRepository(path.join(root, "source"));
+      const clone = cloneWorkspaceRepository(source, path.join(root, "clone"));
+      expect(existsSync(path.join(clone, "chaoscli/cli.py"))).toBe(true);
+      expect(execFileSync("git", ["rev-parse", "--is-shallow-repository"], { cwd: clone, encoding: "utf8" }).trim()).toBe("true");
+      const first = execFileSync("git", ["rev-parse", "HEAD"], { cwd: source, encoding: "utf8" }).trim();
+      expect(execFileSync("git", ["rev-parse", "HEAD"], { cwd: clone, encoding: "utf8" }).trim()).toBe(first);
+      execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "--quiet", "--allow-empty", "-m", "later"], { cwd: source });
+      const pinned = cloneWorkspaceRepository(source, path.join(root, "pinned"), first);
+      expect(execFileSync("git", ["rev-parse", "HEAD"], { cwd: pinned, encoding: "utf8" }).trim()).toBe(first);
+      expect(() => cloneWorkspaceRepository(source, path.join(root, "missing"), "0".repeat(40))).toThrow(/no longer has commit/);
+      for (const copy of [clone, pinned]) {
+        expect(execFileSync("git", ["remote"], { cwd: copy, encoding: "utf8" }).trim()).toBe("");
+        expect(() => execFileSync("git", ["push", "--quiet", "origin", "HEAD:refs/heads/agent-push"], { cwd: copy, stdio: "pipe" })).toThrow();
+      }
+      expect(execFileSync("git", ["branch", "--list", "agent-push"], { cwd: source, encoding: "utf8" }).trim()).toBe("");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("waitForAgentsReady", () => {
+  it("waits for each new agent to finish lifecycle verification and records how long it took", async () => {
+    let reads = 0;
+    const api = { get: async () => ({ lifecycleState: ++reads >= 3 ? "ready" : "verifying" }) } as unknown as ChaosApi;
+    const timeline = new Timeline(null);
+    await waitForAgentsReady(api, { codex: { id: "a1" } }, timeline, 5_000, 1);
+    expect(reads).toBe(3);
+    expect(timeline.entries.find(entry => entry.kind === "seed_agent_ready")).toMatchObject({ adapter: "codex", agentId: "a1" });
+  });
+
+  it("measures each agent's verification from its own creation and stops waiting when the harness is interrupted", async () => {
+    const api = { get: async () => ({ lifecycleState: "ready" }) } as unknown as ChaosApi;
+    const timeline = new Timeline(null);
+    const now = Date.now();
+    await waitForAgentsReady(api, { codex: { id: "a1", createdAt: now - 9_000 }, claude: { id: "a2", createdAt: now - 1_000 } }, timeline, 5_000, 1);
+    const ready = Object.fromEntries(timeline.entries.filter(entry => entry.kind === "seed_agent_ready").map(entry => [entry.adapter, entry.readyAfterMs as number]));
+    expect(ready.codex).toBeGreaterThanOrEqual(9_000);
+    expect(ready.claude).toBeGreaterThanOrEqual(1_000);
+    expect(ready.claude).toBeLessThan(9_000);
+    const stuck = { get: async () => ({ lifecycleState: "verifying" }) } as unknown as ChaosApi;
+    let polls = 0;
+    await expect(waitForAgentsReady(stuck, { codex: { id: "a3" } }, new Timeline(null), 60_000, 1, () => ++polls > 2)).rejects.toThrow(/interrupted/);
+  });
+
+  it("keeps waiting through a deferred verification error and passes once the retry makes the agent ready", async () => {
+    let reads = 0;
+    const api = { get: async () => (++reads < 3 ? { lifecycleState: "verifying", lifecycleError: "host busy" } : { lifecycleState: "ready" }) } as unknown as ChaosApi;
+    const timeline = new Timeline(null);
+    await waitForAgentsReady(api, { codex: { id: "a1" } }, timeline, 5_000, 1);
+    expect(timeline.entries.filter(entry => entry.kind === "seed_agent_lifecycle_error")).toEqual([expect.objectContaining({ adapter: "codex", error: "host busy" })]);
+  });
+
+  it("names the last read error when an agent never becomes ready", async () => {
+    const broken = { get: async () => { throw new Error("401 unauthorized"); } } as unknown as ChaosApi;
+    await expect(waitForAgentsReady(broken, { codex: { id: "a1" } }, new Timeline(null), 20, 5)).rejects.toThrow(/codex \(last read error: 401 unauthorized\)/);
+    const deferred = { get: async () => ({ lifecycleState: "verifying", lifecycleError: "host busy" }) } as unknown as ChaosApi;
+    await expect(waitForAgentsReady(deferred, { codex: { id: "a1" } }, new Timeline(null), 20, 5)).rejects.toThrow(/codex \(last lifecycle error: host busy\)/);
+  });
+
+  it("fails the wave when an agent fails verification or never becomes ready", async () => {
+    const parked = { get: async () => ({ lifecycleState: "verifying", lifecycleError: "hello probe failed" }) } as unknown as ChaosApi;
+    await expect(waitForAgentsReady(parked, { claude: { id: "a2" } }, new Timeline(null), 20, 5)).rejects.toThrow(/claude \(last lifecycle error: hello probe failed\)/);
+    const rejected = { get: async () => ({ lifecycleState: "rejected", lifecycleError: "hire rejected" }) } as unknown as ChaosApi;
+    await expect(waitForAgentsReady(rejected, { claude: { id: "a2" } }, new Timeline(null), 5_000, 1)).rejects.toThrow(/hire rejected/);
+    const stuck = { get: async () => ({ lifecycleState: "verifying" }) } as unknown as ChaosApi;
+    await expect(waitForAgentsReady(stuck, { claude: { id: "a3" } }, new Timeline(null), 20, 5)).rejects.toThrow(/never reached lifecycleState ready/);
   });
 });

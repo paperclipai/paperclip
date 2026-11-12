@@ -36,6 +36,7 @@ import plugin, {
   __getDaytonaWritableDirsForTest,
   __setDaytonaPluginContextForTest,
   WARM_IDLE_AUTO_STOP_MARGIN_MINUTES,
+  STUCK_STOPPING_FORCE_AFTER_MS,
 } from "./plugin.js";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { environmentSyncErrorData, readEnvironmentSyncErrorDiagnostic, withEnvironmentSyncErrorCapture, environmentCreationCleanupErrorData, readEnvironmentCreationCleanupError, readEnvironmentAcquisitionDiagnostic, PluginEnvironmentStopError, environmentStopErrorData, readEnvironmentStopFailure } from "@paperclipai/plugin-sdk";
@@ -276,6 +277,172 @@ describe("Daytona idle eligibility", () => {
     expect(await plugin.definition.onIdleDrain!(signal)).toBe("present");
     finishSecond(); await stopSecond;
     expect(await plugin.definition.onIdleDrain!(signal)).toBe("none");
+  });
+
+  describe("a sandbox in a state change during workspace realize", () => {
+    beforeEach(() => { vi.stubEnv("DAYTONA_API_KEY", "host-key"); });
+    const realize = (timeoutMs = 300_000) => plugin.definition.onEnvironmentRealizeWorkspace!({
+      driverKey: "daytona", companyId: "company-1", environmentId: "env-1",
+      config: { timeoutMs, reuseLease: false },
+      lease: { providerLeaseId: "sandbox-transition", metadata: { remoteCwd: "/home/daytona/paperclip-workspace" } },
+      workspace: { localPath: "/tmp/workspace" },
+    } as never);
+    const stateChangeInProgress = () => Object.assign(new Error("Sandbox state change in progress"), { statusCode: 409 });
+
+    it("waits for a stopping sandbox to settle, then starts it", async () => {
+      const sandbox = createMockSandbox({ id: "sandbox-transition", state: "stopping" });
+      mockGet.mockResolvedValue(sandbox);
+      sandbox.refreshData.mockImplementation(async () => { sandbox.state = "stopped"; });
+      sandbox.start.mockImplementation(async () => {
+        if (sandbox.state !== "stopped") throw stateChangeInProgress();
+        sandbox.state = "started";
+      });
+      await expect(realize()).resolves.toMatchObject({ cwd: "/home/daytona/paperclip-workspace" });
+      expect(sandbox.start).toHaveBeenCalledTimes(1);
+      expect(sandbox.fs.createFolder).toHaveBeenCalledWith("/home/daytona/paperclip-workspace", "755");
+    });
+
+    it("retries a start the provider rejected while its state was changing", async () => {
+      const sandbox = createMockSandbox({ id: "sandbox-transition", state: "stopped" });
+      mockGet.mockResolvedValue(sandbox);
+      sandbox.start.mockRejectedValueOnce(stateChangeInProgress())
+        .mockImplementationOnce(async () => { sandbox.state = "started"; });
+      await expect(realize()).resolves.toMatchObject({ cwd: "/home/daytona/paperclip-workspace" });
+      expect(sandbox.start).toHaveBeenCalledTimes(2);
+    });
+
+    it("gives up when the state change outlasts the start deadline", async () => {
+      const sandbox = createMockSandbox({ id: "sandbox-transition", state: "stopping" });
+      mockGet.mockResolvedValue(sandbox);
+      sandbox.start.mockRejectedValue(stateChangeInProgress());
+      await expect(realize(1_000)).rejects.toThrow("is still stopping at its start deadline");
+      expect(sandbox.start).not.toHaveBeenCalled();
+      expect(sandbox.fs.createFolder).not.toHaveBeenCalled();
+    });
+
+    it("gives the start only the budget the wait left", async () => {
+      const sandbox = createMockSandbox({ id: "sandbox-transition", state: "stopping" });
+      mockGet.mockResolvedValue(sandbox);
+      let reads = 0;
+      sandbox.refreshData.mockImplementation(async () => { if (++reads === 2) sandbox.state = "stopped"; });
+      sandbox.start.mockImplementation(async () => { sandbox.state = "started"; });
+      await expect(realize(4_000)).resolves.toMatchObject({ cwd: "/home/daytona/paperclip-workspace" });
+      expect(reads).toBe(2);
+      expect(sandbox.start.mock.calls[0]![0]).toBeLessThanOrEqual(2);
+    });
+
+    it("does not force a stop that settles on its own", async () => {
+      const sandbox = createMockSandbox({ id: "sandbox-transition", state: "stopping" });
+      mockGet.mockResolvedValue(sandbox);
+      sandbox.refreshData.mockImplementation(async () => { sandbox.state = "stopped"; });
+      sandbox.start.mockImplementation(async () => { sandbox.state = "started"; });
+      await expect(realize()).resolves.toMatchObject({ cwd: "/home/daytona/paperclip-workspace" });
+      expect(sandbox.stop).not.toHaveBeenCalled();
+    });
+
+    it("force-stops a sandbox stuck stopping, then starts it", async () => {
+      // A graceful stop whose processes ignore SIGTERM can leave Daytona in
+      // `stopping` for many minutes. Only a forced stop completes it.
+      const sandbox = createMockSandbox({ id: "sandbox-transition", state: "stopping" });
+      mockGet.mockResolvedValue(sandbox);
+      sandbox.refreshData.mockImplementation(async () => {});
+      sandbox.stop.mockImplementation(async (_timeout?: number, force?: boolean) => {
+        if (!force) throw stateChangeInProgress();
+        sandbox.state = "stopped";
+      });
+      sandbox.start.mockImplementation(async () => { sandbox.state = "started"; });
+      vi.useFakeTimers();
+      try {
+        const realized = realize();
+        await vi.advanceTimersByTimeAsync(STUCK_STOPPING_FORCE_AFTER_MS + 5_000);
+        await expect(realized).resolves.toMatchObject({ cwd: "/home/daytona/paperclip-workspace" });
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(sandbox.stop).toHaveBeenCalledTimes(1);
+      expect(sandbox.stop.mock.calls[0]![1]).toBe(true);
+      expect(sandbox.start).toHaveBeenCalledTimes(1);
+    });
+
+    it("sends one forced stop for parallel callers and starts nothing until it settles", async () => {
+      const sandbox = createMockSandbox({ id: "sandbox-transition", state: "stopping" });
+      mockGet.mockResolvedValue(sandbox);
+      sandbox.refreshData.mockImplementation(async () => {});
+      let finishStop!: () => void;
+      sandbox.stop.mockImplementation(() => new Promise<void>(resolve => {
+        finishStop = () => { sandbox.state = "stopped"; resolve(); };
+      }));
+      sandbox.start.mockImplementation(async () => { sandbox.state = "started"; });
+      vi.useFakeTimers();
+      try {
+        const first = realize();
+        const second = realize();
+        await vi.advanceTimersByTimeAsync(STUCK_STOPPING_FORCE_AFTER_MS + 5_000);
+        expect(sandbox.stop).toHaveBeenCalledTimes(1);
+        // The forced stop outlives its own liveness bound; no caller may start
+        // the sandbox while that request could still land.
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(sandbox.stop).toHaveBeenCalledTimes(1);
+        expect(sandbox.start).not.toHaveBeenCalled();
+        finishStop();
+        await vi.advanceTimersByTimeAsync(2_000);
+        await expect(first).resolves.toMatchObject({ cwd: "/home/daytona/paperclip-workspace" });
+        await expect(second).resolves.toMatchObject({ cwd: "/home/daytona/paperclip-workspace" });
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(sandbox.stop).toHaveBeenCalledTimes(1);
+      expect(sandbox.start.mock.invocationCallOrder[0]!).toBeGreaterThan(sandbox.stop.mock.invocationCallOrder[0]!);
+    });
+
+    it("forces a new stuck stop after the sandbox restarted, inside the cooldown", async () => {
+      const sandbox = createMockSandbox({ id: "sandbox-transition", state: "stopping" });
+      mockGet.mockResolvedValue(sandbox);
+      sandbox.refreshData.mockImplementation(async () => {});
+      sandbox.stop.mockImplementation(async (_timeout?: number, force?: boolean) => {
+        if (force) sandbox.state = "stopped";
+      });
+      sandbox.start.mockImplementation(async () => { sandbox.state = "started"; });
+      vi.useFakeTimers();
+      try {
+        for (let cycle = 0; cycle < 2; cycle++) {
+          sandbox.state = "stopping"; // The next graceful stop is stuck again.
+          const realized = realize();
+          await vi.advanceTimersByTimeAsync(STUCK_STOPPING_FORCE_AFTER_MS + 5_000);
+          await expect(realized).resolves.toMatchObject({ cwd: "/home/daytona/paperclip-workspace" });
+        }
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(sandbox.stop).toHaveBeenCalledTimes(2);
+      expect(sandbox.start).toHaveBeenCalledTimes(2);
+    });
+
+    it("keeps waiting to the deadline when the forced stop is refused", async () => {
+      const sandbox = createMockSandbox({ id: "sandbox-transition", state: "stopping" });
+      mockGet.mockResolvedValue(sandbox);
+      sandbox.refreshData.mockImplementation(async () => {});
+      sandbox.stop.mockRejectedValue(stateChangeInProgress());
+      vi.useFakeTimers();
+      try {
+        const realized = realize(STUCK_STOPPING_FORCE_AFTER_MS + 20_000);
+        const outcome = expect(realized).rejects.toThrow("is still stopping at its start deadline");
+        await vi.advanceTimersByTimeAsync(STUCK_STOPPING_FORCE_AFTER_MS + 40_000);
+        await outcome;
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(sandbox.stop).toHaveBeenCalledTimes(1);
+      expect(sandbox.start).not.toHaveBeenCalled();
+    });
+
+    it("fails other start errors at once", async () => {
+      const sandbox = createMockSandbox({ id: "sandbox-transition", state: "stopped" });
+      mockGet.mockResolvedValue(sandbox);
+      sandbox.start.mockRejectedValue(new Error("quota exceeded"));
+      await expect(realize()).rejects.toThrow("quota exceeded");
+      expect(sandbox.start).toHaveBeenCalledTimes(1);
+    });
   });
 
   it("keeps a stale stopped reply from clearing a start that finished during the read", async () => {
@@ -1183,11 +1350,11 @@ describe("Daytona sandbox provider plugin", () => {
       mockGet.mockImplementation(() => new Promise(() => {}));
       let settled = false;
       const pending = plugin.definition.onEnvironmentAcquireLease!(params).catch(error => { settled = true; return error; });
-      await vi.advanceTimersByTimeAsync(304_999);
+      await vi.advanceTimersByTimeAsync(94_999);
       expect(settled).toBe(false);
       await vi.advanceTimersByTimeAsync(1);
       const error = await pending;
-      expect(readEnvironmentAcquisitionDiagnostic(error)).toEqual({ phase: "create", elapsedMs: 300_000, budgetMs: 300_000, providerState: "unavailable" });
+      expect(readEnvironmentAcquisitionDiagnostic(error)).toEqual({ phase: "create", elapsedMs: 90_000, budgetMs: 90_000, providerState: "unavailable" });
       expect(error.message).toBe("Daytona lease acquisition timed out; allocation cleanup is pending");
     });
 
@@ -1239,22 +1406,125 @@ describe("Daytona sandbox provider plugin", () => {
       expect(await plugin.definition.onEnvironmentAcquireLease!(params)).not.toHaveProperty("acquisitionDiagnostic");
     });
 
+    it("ends a create still pending at 90 seconds instead of waiting out five minutes", async () => {
+      mockCreate.mockImplementation(() => new Promise(() => {}));
+      let found: ReturnType<typeof ownedCreation> | undefined;
+      mockGet.mockImplementation(async () => (found = ownedCreation("creating")));
+      let settled = false;
+      const pending = plugin.definition.onEnvironmentAcquireLease!(params).catch(error => { settled = true; return error; });
+      await vi.advanceTimersByTimeAsync(89_999);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      const error = await pending;
+      expect(error.message).toBe("Daytona lease acquisition timed out; allocation cleanup is pending");
+      expect(readEnvironmentAcquisitionDiagnostic(error)).toEqual({ phase: "create", elapsedMs: 90_000, budgetMs: 90_000, providerState: "creating" });
+      expect(readEnvironmentCreationCleanupError(error)?.providerLeaseId).toBe(mockCreate.mock.calls[0][0].name);
+      expect(found!.getWorkDir).not.toHaveBeenCalled();
+    });
+
+    it("adopts a create that started by 90 seconds although its SDK wait is still pending", async () => {
+      let rejectCreate!: (error: Error) => void;
+      mockCreate.mockImplementation(() => new Promise((_resolve, reject) => { rejectCreate = reject; }));
+      let found: ReturnType<typeof ownedCreation> | undefined;
+      mockGet.mockImplementation(async () => (found ??= ownedCreation("started")));
+      const pending = plugin.definition.onEnvironmentAcquireLease!(params);
+      await vi.advanceTimersByTimeAsync(90_000);
+      const lease = await pending;
+      expect(lease).toMatchObject({ providerLeaseId: found!.id });
+      expect(found!.getWorkDir).toHaveBeenCalled();
+      rejectCreate(new MockDaytonaTimeoutError("late SDK wait"));
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(found!.delete).not.toHaveBeenCalled();
+    });
+
+    it("uses a create that succeeds while its 90 second lookup is still pending", async () => {
+      const sandbox = createMockSandbox();
+      mockCreate.mockImplementation(() => new Promise(resolve => setTimeout(() => resolve(sandbox), 91_000)));
+      mockGet.mockImplementation(() => new Promise(() => {}));
+      const pending = plugin.definition.onEnvironmentAcquireLease!(params).catch(error => error);
+      await vi.advanceTimersByTimeAsync(96_000);
+      expect(await pending).toMatchObject({ providerLeaseId: sandbox.id });
+      expect(sandbox.getWorkDir).toHaveBeenCalled();
+      expect(sandbox.delete).not.toHaveBeenCalled();
+    });
+
+    it("never adopts a sandbox whose failed create already started its cleanup", async () => {
+      const createError = new MockDaytonaTimeoutError("SDK wait ended");
+      mockCreate.mockImplementation(() => new Promise((_resolve, reject) => setTimeout(() => reject(createError), 91_000)));
+      let found: ReturnType<typeof ownedCreation> | undefined;
+      mockGet.mockImplementationOnce(() => new Promise(resolve => setTimeout(() => resolve(found ??= ownedCreation("started")), 3_000)))
+        .mockImplementation(async () => (found ??= ownedCreation("started")));
+      let settled = false;
+      const pending = plugin.definition.onEnvironmentAcquireLease!(params).then(
+        lease => { settled = true; return lease; }, error => { settled = true; return error; });
+      await vi.advanceTimersByTimeAsync(95_000);
+      expect(settled).toBe(true);
+      expect(await pending).toBe(createError);
+      expect(found!.delete).toHaveBeenCalledOnce();
+      expect(found!.getWorkDir).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["missing", () => undefined],
+      ["expired", () => new Date(Date.now() - 1_000).toISOString()],
+      ["too distant", () => new Date(Date.now() + 120 * 60_000).toISOString()],
+    ])("rejects and deletes an adopted sandbox whose creation TTL is %s", async (_label, autoDestroyAt) => {
+      mockCreate.mockImplementation(() => new Promise(() => {}));
+      let found: ReturnType<typeof ownedCreation> | undefined;
+      mockGet.mockImplementation(async () => {
+        if (!found) { found = ownedCreation("started"); found.autoDestroyAt = autoDestroyAt(); }
+        return found;
+      });
+      const pending = plugin.definition.onEnvironmentAcquireLease!({ ...params, config: { ...params.config, ttlMinutes: 30 } })
+        .catch(error => error);
+      await vi.advanceTimersByTimeAsync(91_000);
+      const error = await pending;
+      expect(error.message).toBe("Daytona did not confirm the configured creation TTL.");
+      expect(found!.refreshData).toHaveBeenCalled();
+      expect(found!.getWorkDir).not.toHaveBeenCalled();
+      expect(found!.delete).toHaveBeenCalledOnce();
+    });
+
+    it("admits an adopted sandbox whose creation TTL is confirmed", async () => {
+      mockCreate.mockImplementation(() => new Promise(() => {}));
+      let found: ReturnType<typeof ownedCreation> | undefined;
+      mockGet.mockImplementation(async () => {
+        if (!found) { found = ownedCreation("started"); found.autoDestroyAt = new Date(Date.now() + 20 * 60_000).toISOString(); }
+        return found;
+      });
+      const pending = plugin.definition.onEnvironmentAcquireLease!({ ...params, config: { ...params.config, ttlMinutes: 30 } });
+      await vi.advanceTimersByTimeAsync(91_000);
+      expect(await pending).toMatchObject({ providerLeaseId: found!.id });
+      expect(found!.delete).not.toHaveBeenCalled();
+    });
+
+    it("keeps waiting for a create that is still preparing its snapshot at 90 seconds", async () => {
+      const sandbox = createMockSandbox();
+      mockCreate.mockImplementation(() => new Promise(resolve => setTimeout(() => resolve(sandbox), 120_000)));
+      mockGet.mockImplementation(async () => ownedCreation("pulling_snapshot"));
+      const pending = plugin.definition.onEnvironmentAcquireLease!(params);
+      await vi.advanceTimersByTimeAsync(121_000);
+      expect(await pending).toMatchObject({ providerLeaseId: sandbox.id });
+    });
+
     it("allows a slow create and setup that finish inside the total budget", async () => {
       const sandbox = createMockSandbox();
-      mockCreate.mockImplementation(() => new Promise(resolve => setTimeout(() => resolve(sandbox), 280_000)));
+      mockCreate.mockImplementation(() => new Promise(resolve => setTimeout(() => resolve(sandbox), 160_000)));
+      mockGet.mockImplementation(async () => ownedCreation("pulling_snapshot"));
       sandbox.process.executeCommand.mockImplementation(() => new Promise(resolve => setTimeout(() => resolve({ result: "bash" }), 15_000)));
       const pending = plugin.definition.onEnvironmentAcquireLease!(params);
-      await vi.advanceTimersByTimeAsync(295_000);
+      await vi.advanceTimersByTimeAsync(175_000);
       expect(await pending).toMatchObject({ providerLeaseId: sandbox.id });
       expect(vi.getTimerCount()).toBe(0);
     });
 
     it("journals ownership before the host deadline when setup outlasts creation", async () => {
       const sandbox = createMockSandbox();
-      mockCreate.mockImplementation(() => new Promise(resolve => setTimeout(() => resolve(sandbox), 280_000)));
+      mockCreate.mockImplementation(() => new Promise(resolve => setTimeout(() => resolve(sandbox), 160_000)));
+      mockGet.mockImplementation(async () => ownedCreation("pulling_snapshot"));
       sandbox.process.executeCommand.mockImplementation(() => new Promise(resolve => setTimeout(() => resolve({ result: "bash" }), 55_000)));
       const pending = plugin.definition.onEnvironmentAcquireLease!(params).catch(error => error);
-      await vi.advanceTimersByTimeAsync(300_000);
+      await vi.advanceTimersByTimeAsync(180_000);
       const cleanup = readEnvironmentCreationCleanupError(await pending);
       expect(cleanup).toMatchObject({ companyId: params.companyId, environmentId: params.environmentId,
         runId: params.runId, observedProviderLeaseId: sandbox.id, providerLeaseId: mockCreate.mock.calls[0][0].name });
@@ -1303,7 +1573,7 @@ describe("Daytona sandbox provider plugin", () => {
         observedProviderLeaseId: sandbox.id, companyId: params.companyId, runId: params.runId,
       });
       expect(vi.getTimerCount()).toBe(0);
-      expect(readEnvironmentAcquisitionDiagnostic(error)).toEqual({ phase: "workspace", elapsedMs: 0, budgetMs: 300_000 });
+      expect(readEnvironmentAcquisitionDiagnostic(error)).toEqual({ phase: "workspace", elapsedMs: 0, budgetMs: 180_000 });
     });
   });
 
@@ -1637,7 +1907,7 @@ describe("Daytona sandbox provider plugin", () => {
     expect(sandbox.fs.uploadFile).toHaveBeenCalledWith(
       expect.any(Buffer),
       "/home/daytona/paperclip-workspace/.paperclip-runtime/reusable-sandbox-lease.json",
-      300,
+      180,
     );
   });
 
@@ -2446,6 +2716,39 @@ describe("Daytona sandbox provider plugin", () => {
     expect(sandbox.process.executeCommand.mock.calls[0][0]).toBe(`cat '${sentinelPath}'`);
     expect(sandbox.fs.createFolder).not.toHaveBeenCalled();
     expect(sandbox.fs.uploadFile).not.toHaveBeenCalled();
+    expect(mockCreate).not.toHaveBeenCalled();
+    expect(sandbox.delete).not.toHaveBeenCalled();
+  });
+
+  it("resumes a retained sandbox stuck stopping by forcing the stop", async () => {
+    const sandbox = createMockSandbox({ id: "sandbox-retained", state: "stopping" });
+    const allocationRoot = "/home/daytona/paperclip-workspace";
+    const workspaceId = "6028a46b-b65a-421f-952d-66b9c002b8e2";
+    const remoteCwd = `${allocationRoot}/.paperclip-workspaces/${workspaceId}`;
+    const sentinelPath = `${allocationRoot}/.paperclip-runtime/reusable-sandbox-lease.json`;
+    sandbox.process.executeCommand.mockImplementation(async command => ({ exitCode: 0,
+      result: command.startsWith("cat ") ? JSON.stringify({ token: "sentinel-token" }) : "bash" }));
+    sandbox.refreshData.mockImplementation(async () => {});
+    sandbox.stop.mockImplementation(async (_timeout?: number, force?: boolean) => {
+      if (force) sandbox.state = "stopped";
+    });
+    sandbox.start.mockImplementation(async () => { sandbox.state = "started"; });
+    mockGet.mockResolvedValue(sandbox);
+    vi.useFakeTimers();
+    try {
+      const resuming = plugin.definition.onEnvironmentResumeLease!({
+        driverKey: "daytona", companyId: "company-1", environmentId: "env-1", providerLeaseId: sandbox.id,
+        config: { apiKey: "fixture-key", reuseLease: true }, requestedCwd: remoteCwd, leaseMetadata: { remoteCwd,
+          remoteWorkspaceId: workspaceId, sandboxId: sandbox.id, reuseLease: true, workspaceSentinel: { path: sentinelPath,
+            token: "sentinel-token", runId: "fixture-run", providerLeaseId: sandbox.id, result: "written" } },
+      });
+      await vi.advanceTimersByTimeAsync(STUCK_STOPPING_FORCE_AFTER_MS + 5_000);
+      await expect(resuming).resolves.toMatchObject({ providerLeaseId: sandbox.id });
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(sandbox.stop).toHaveBeenCalledWith(expect.any(Number), true);
+    expect(sandbox.start).toHaveBeenCalledTimes(1);
     expect(mockCreate).not.toHaveBeenCalled();
     expect(sandbox.delete).not.toHaveBeenCalled();
   });
@@ -3387,6 +3690,26 @@ describe("Daytona sandbox provider plugin", () => {
       expect(freshSessionId).not.toBe(staleSessionId);
       const lastExec = sandbox.process.executeSessionCommand.mock.calls.at(-1)!;
       expect(lastExec[0]).toBe(freshSessionId);
+    });
+
+    it("opens a fresh session after a restart outside the plugin that realize waited out", async () => {
+      vi.stubEnv("DAYTONA_API_KEY", "host-key");
+      const sandbox = autoStoppedSandbox();
+      mockGet.mockResolvedValue(sandbox);
+      await plugin.definition.onEnvironmentExecute?.(sessionExecParams());
+      const staleSessionId = sandbox.process.createSession.mock.calls[0]![0] as string;
+      sandbox.state = "starting";
+      sandbox.refreshData.mockImplementationOnce(async () => { sandbox.state = "started"; });
+      await plugin.definition.onEnvironmentRealizeWorkspace?.({
+        driverKey: "daytona", companyId: "company-1", environmentId: "env-1",
+        config: { timeoutMs: 300000, reuseLease: false },
+        lease: { providerLeaseId: "sandbox-123", metadata: { remoteCwd: "/home/daytona/paperclip-workspace" } },
+        workspace: { localPath: "/tmp/workspace" },
+      } as never);
+      expect(sandbox.start).not.toHaveBeenCalled();
+      await plugin.definition.onEnvironmentExecute?.(sessionExecParams());
+      expect(sandbox.process.createSession).toHaveBeenCalledTimes(2);
+      expect(sandbox.process.createSession.mock.calls[1]![0]).not.toBe(staleSessionId);
     });
 
     it("opens a fresh session after sync-in restarts an auto-stopped sandbox", async () => {

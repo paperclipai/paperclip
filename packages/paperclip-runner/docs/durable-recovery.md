@@ -83,7 +83,20 @@ a scripted harness, removes the controller's launch files, then recovers the
 same process and provider session and completes another turn. This exercises the
 real transport; it does not qualify a hosted OpenCode or ACPX deployment.
 
+## Warm Runner release
+
+Before parking a settled Runner, the controller waits for its durable drain
+receipt within the same 30-second budget used for warm admission. A Claude
+turn-end provider restart can delay that receipt beyond one second. The wait
+returns as soon as the drain is proved; it adds no fixed delay to a ready Runner.
+
 ## ACPX checkpoints after a rejected turn start
+
+Recovered ACPX shutdown uses the same bounded five-second lifetime-fence proof
+as suspension. It waits for a transient listener holder to release the original
+quorum, then returns immediately when cleanup is proved. A timeout leaves
+`providerExitUnconfirmed` set and refuses reuse. Live-session shutdown and normal
+task dispatch keep their existing paths.
 
 A matching `turn.start` response with `SESSION_RESUME_REQUIRED` and
 `retryable: true` can retain the exact saved conversation. The session must have
@@ -99,6 +112,92 @@ unconfirmed cleanup do not qualify. Error messages cannot authorize recovery.
 An arbitrary `closed` provider state stays closed. This path does not establish
 recovery for a Runner killed during an accepted turn.
 
+## ACPX turn starts cut off before the prompt left
+
+A turn start can fail without a definite answer: the sidecar's reply is lost or
+late (for example, a host freeze outlasts the request deadline), or the sidecar
+or Runner dies while the start is in flight. Resending the prompt could
+duplicate it, and a continuation could lose it.
+
+The sidecar's runtime port keeps a prompt-dispatch journal,
+`paperclip-turn-dispatch.jsonl`, in the session's private runtime directory
+(`turnDispatchJournalFile` and `turnDispatchJournalRecord` in the sidecar
+schema). When it starts a turn, before any provider work, it truncates the file
+and writes a `received` record. Immediately before ACPX writes the turn's first
+`session/prompt` request to the provider, it appends a `dispatched` record and
+fsyncs it. ACPX calls the host's `onAcpMessage("outbound")` hook synchronously
+before it writes the bytes. ACPX 0.22 ignores errors from that hook, so the port
+keeps a failed journal write and throws it from the turn's `assertActive`, which
+ACPX calls next, before the write. A failed journal write therefore aborts the
+prompt write.
+
+The Runner reads the journal only after it acquires the provider lifetime fence,
+which proves that the sidecar and the provider are gone.
+
+- A lone, complete `received` record for the turn proves that the prompt never
+  reached the provider. A start that failed in flight saves the session
+  `prepared`, with no active turn, and fails the command with
+  `ACPX turn start failed before its prompt reached the provider`. The run's
+  next `turn.start` reopens the conversation and sends the prompt once. A
+  Runner that died while the session was `turn_starting` restores the session
+  idle, emits `session.resumed` and no `turn.failed`, and the same-run resume
+  starts the turn once.
+- A `dispatched` record, a record of another turn, a torn or malformed file, or
+  no file (an older sidecar) proves nothing. The earlier behavior applies
+  unchanged: a failed start closes the session, and a killed Runner uses
+  lost-turn recovery.
+- A session this run closed cannot reopen for the same run. The failed start,
+  and every later `turn.start` of the run, fail with the closed class
+  `provider_session_closed` in the command result. The controller records
+  `native_provider_session_closed`, stops same-run retries, and the board offers
+  Retry at once. Retry starts a new run with a fresh provider conversation and
+  the saved task context. An older Runner sends the same text without the class; the
+  controller then keeps its bounded same-run retries, because the same text
+  also covers a session that can reopen after a restart.
+- A definite `session.open` failure whose command result carries a startup
+  `providerFailure` with `retryability: requires_action` and category
+  `authentication`, `permission` or `invalid_request` records
+  `native_provider_startup_rejected`. No provider work began, so the
+  controller stops same-run bootstrap retries and the board offers Retry at once
+  with the provider message. On a remote execution target, a definite
+  `session.open` failure with a startup `providerFailure` keeps a same-run
+  bootstrap retry only when the transport's close settled the runner and
+  observed its exit (`runnerExitConfirmed`); restart recovery accepts that proof
+  as it accepts a runner's own exit. Without it, or when the failure repeats the
+  previous attempt's startup error, it records the same code, because a remote
+  same-run bootstrap cannot then prove ownership. On a local
+  target, other startup failures (unknown, transient, rate limit, quota, model)
+  keep the bounded same-run startup retries and end as
+  `native_session_retry_exhausted` with Retry. A run an older release held on
+  `ambiguous_remote_recovery_evidence` after such a rejection offers Retry once
+  its saved workspace is recovered; no migration is needed.
+
+Until a proof settles it, the saved session stays `turn_starting`, so a Runner
+killed during the proof restores through the same check. The cut-off command is
+never executed again. Saved state gains no field, so an older Runner reading it
+mid-deploy sees only lifecycles it already handles.
+
+On the normal path the journal costs one small unsynced write when the turn
+starts and one append and fsync just before the prompt is written. It adds no
+wait, round trip or file transfer.
+
+## ACPX cancellation without a reply
+
+The Runner serves controller commands one at a time. It therefore waits at most
+five seconds for the sidecar's reply to `turn.cancel`, not the 30-second request
+bound. The provider's turn terminal settles a cancelled turn; the reply does
+not. When the reply is missing, the Runner keeps the transport, retires the
+runtime from warm reuse, and keeps polling. It ignores the late reply if one
+arrives. A repeated interruption while that cancel is unanswered sends nothing
+and returns at once. A provider that never stops is still reaped by `turn.stop` and the
+lifetime-fence proof. A rejected reply or a transport error still fails closed.
+
+A tool result can reach the sidecar after the session's own `turn.cancel`
+retired that call. The sidecar rejects it as stale (`ACPX_TOOL_CALL_STALE`).
+The Runner then keeps the durable result, as it does for a result that arrives
+after a polled terminal. The same rejection without that cancellation still
+fails closed.
+
 ## Settled ACPX sessions across a Runner upgrade
 
 Saved ACPX provider state records the digest of the launch profile that wrote
@@ -110,10 +209,23 @@ digest, so restore cannot tell which part changed.
 Restore re-binds a saved session to the current launch profile, and keeps the
 conversation, only when all of these are true:
 
-- The session is suspended. It has no active turn, pending runtime request,
-  undelivered provider event, or unconfirmed provider exit.
+- The session is in one of these two states:
+  - **Suspended.** It has no active turn, pending runtime request, undelivered
+    provider event, or unconfirmed provider exit.
+  - **An interrupted turn or open session of the same heartbeat run.** The
+    deploy restarted the runner and the same run resumes. There is no accepted
+    semantic result, no pending runtime request, no unconfirmed provider exit,
+    and no active goal. Same-build recovery then runs unchanged. It reopens an
+    open session. For an active turn it uses lost-turn recovery: the
+    conversation is restored once the original provider lifetime loses its
+    fence quorum, and otherwise the lost turn is closed. An active turn or open
+    session saved by a different run stays strict.
 - The startup has no candidate admission.
-- The saved descriptor names this startup's sidecar command and arguments.
+- The saved descriptor names the same launch as this startup: the same
+  executable and sidecar file names, and identical non-path arguments. The
+  files may be installed under a different directory, as an `npx` versioned
+  cache, a new image layout or a new checkout does. The re-bind then records
+  this startup's runner-owned paths in the saved descriptor.
 
 Every other binding stays exact. The saved descriptor must match this build's
 qualified agent profile (ACPX version, agent server package and version, and
@@ -134,6 +246,84 @@ protected launch argument fails with the closed classification
 `provider_side_effect_pending`. Neither refusal changes the saved state. The
 controller never opens a replacement session after either class, whatever the
 checkpoint's recovery policy, and stops the run for an operator.
+
+A remote session whose saved working directory is not the run's assigned
+workspace root (its workspace epoch was abandoned, so the saved version was
+restored into a new root) cannot resume there. The driver declines it before
+any Runner or provider process starts. An idle session reports
+`provider_state_incompatible`: a replacement opens in the assigned root when the
+checkpoint allows it, and otherwise the run fails with
+`native_provider_state_incompatible`. A session with an unfinished provider turn
+or a pending runtime request reports `provider_side_effect_pending` and stops
+for an operator, whatever its recovery policy.
+
+A restart can kill the runner after it journaled a run's own cold `run.attach`
+and before the attachment finished. The restored runner settles that command as
+`execution_indeterminate` and never executes it again. When the journal shows no
+provider work after it, the
+controller's same-run resume queues a new `run.attach` with the same payload.
+"No provider work" means that every later command is recovery maintenance as
+`isRunnerRecoveryMaintenanceCommand` defines it (`session.snapshot`,
+`session.goal.get`, `runner.drain`, `runner.suspend`, `runner.shutdown` and
+`turn.stop`, none of which starts a turn), and that no turn, item, tool-input or
+runtime-request event is committed.
+Attaching starts no turn, and the runner admits the new command only for a
+settled session, so the run continues instead of failing on the old command.
+Warm transitions and staged attachments keep their exact replay paths.
+
+A restart can kill the runner inside `runner.suspend` in the same way. The
+next runner replays it from the welcome as `execution_indeterminate`, sends it
+as `failed`, and still treats it as terminal: it records `suspended` and exits
+once the controller acknowledges the result. The controller therefore keeps the
+terminal fence for that result (it lifts the fence only for a suspension the
+runner refused), and its acknowledgement names the runner's journal status
+`indeterminate`. Current runners accept either `indeterminate` or `failed`; older
+runners accept only `indeterminate` and otherwise exit with "terminal command
+result acknowledgement changed its durable identity".
+
+That runner exits before it accepts any command of the new attempt. During
+startup, the controller restarts it in place once, so the attempt continues.
+It does this only when the runner's durable journal proves the exit: its last
+command is exactly the suspend that an earlier attempt journaled, the
+controller has settled that suspend, the runner rests `suspended` with no
+terminal or provider cleanup fence, and no command of this attempt has a
+result. The runner file is read only after such an exit. Any other exit keeps
+its earlier failure.
+
+A kill during that attachment's provider launch can also leave a `spawned`
+startup fence over a `prepared` state that holds a saved thread. The next runner
+retires that fence once the recorded provider process and its group have exited,
+as it does for an open or active session.
+
+A restart can also kill the runner and Codex while `turn/start` is in flight.
+The runner marks the start ambiguous before it sends the request, so after the
+restart neither journal says whether Codex created the turn, and the resumed
+thread reports no active turn either way. Codex records a turn in the thread
+before it runs anything, so the restored runner reads the newest turn of the
+thread history (`thread/turns/list`, one turn, metadata only). If there is none,
+or it is a turn Paperclip already settled, the start never created a turn: the
+runner clears the ambiguity, emits the `ambiguous_turn_start_not_created`
+diagnostic and restores an idle session. The old `turn.start` stays settled as
+`execution_indeterminate` and never runs again; the same-run resume then starts
+the run's turn once, as for any recovered session without an active turn. If
+the newest turn is one Paperclip never settled, Codex did create the turn and it
+may have done work. The runner still fails closed and never starts that work
+again by itself; continuing is a person's decision (Retry or a new message).
+
+A follow-up run that a prior owner's unproven runner state refuses
+(`runner_state_identity_mismatch: prior_owner_*`) fails before it asks for a
+runner, so it never had a process. The server records
+`native.prior_owner_fence_refused` for it, and Retry and new messages after it
+continue without waiting for a stop record of that run. A task Retry always
+starts a fresh provider conversation, so it never resumes or trips over the
+stuck conversation's saved or quarantined runner state.
+If this server process still holds the owner's provider-session cleanup
+quarantine (its close could not prove suspension once the runner died),
+Retry, like a new message, first proves the owner's runner, Codex and tools
+stopped and then releases that quarantine (`native.stopped_conversation_verified`).
+That proof also reads the fence's single quarantined copy of the owner's
+state, and accepts a provider restore that failed its own admission once its
+process and process group are gone.
 
 Saved OpenCode and Cursor Cloud provider state binds the digest of its own
 qualified launch profile (command, proxy script and, for OpenCode, the
@@ -173,8 +363,13 @@ Each provider declares how in `ACPX_RELEASE_ATTESTATIONS`
 
 `generate:acpx-profiles` writes the computed digests and `check:acpx-profiles`
 refuses a stale one, so a digest changes only with its upstream release. Every
-ACPX harness binds the shared ACPX layer the same way: saved inputs must match
-the current ACPX version, and the provider pack's `contractDigest` binds the
+ACPX harness binds the shared ACPX layer the same way. Saved sessions carry
+forward across an ACPX upgrade when the new ACPX loads the records the old one
+wrote: Runner moves a saved descriptor that names a release in
+`CARRIED_ACPX_RELEASES` to the current one, and the session identity keeps its
+original ACPX value, so the saved session key and identity record still match.
+A session saved by any other ACPX release is refused as
+`provider_state_incompatible`. The provider pack's `contractDigest` binds the
 Runner's ACPX patch with the other Runner contracts. Runner source changes
 change no provider digest.
 
@@ -499,8 +694,30 @@ has a matching completed result-delivery command and the provider has drained.
 A callback rejected before business dispatch can report
 `semantic_tool_not_dispatched`. A callback rejected after dispatch has an
 unknown outcome; the controller must not invent a failure or execute it again.
-After controller restart, an already committed input without a result remains
-unsettled. It requires authoritative reconciliation, not an automatic retry.
+After controller restart, an already committed input without a result requires
+authoritative reconciliation, not an automatic retry. Recovery passes
+`admission` to `recoverSemanticToolInput`: `this_controller` when this
+controller instance dispatched the callback live, `earlier_controller` when it
+restored the input from an earlier controller's journal. The server replays a
+durable receipt when one exists. Otherwise `recoverToolCallback`
+(`control-plane/orphaned-tool-callback.ts`) settles an `earlier_controller`
+callback that this process is not running (`dispatchToolCallback`) as
+`tool_call_interrupted_by_restart`, an error result with an unknown outcome. The
+earlier controller can never record a result, so this is the callback's only
+settlement, and it never executes the operation again. Every other unresolved
+input stays unsettled.
+
+`write_document` needs neither fallback. Its revision and its idempotency
+receipt commit in one transaction under the run and issue row locks, and the
+revision is compare-and-swap on `baseRevisionId`. The receipt is therefore the
+durable outcome record: present means the write applied, absent means it did
+not. Recovery runs the same receipt-guarded mutation, whichever controller
+admitted the callback. It returns the saved result when the receipt exists and
+applies the write once when it does not. A stale base, a reused key or invalid
+input is the call's real outcome and settles as a tool error. Any other failure
+leaves the call unsettled. A late original callback then replays the receipt,
+so the document is never written twice.
+
 A different case is a runner crash after the controller saved the result but
 before its delivery command completed. Codex/OpenCode explicitly opt in to
 reconciling that exact `semantic_tool.result` command through their durable tool

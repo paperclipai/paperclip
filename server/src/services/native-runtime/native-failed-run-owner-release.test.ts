@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
 import {
   activityLog,
@@ -12,12 +12,15 @@ import {
   environmentLeases,
   heartbeatRuns,
   issues,
+  issueRecoveryActions,
   nativeRunFinalizations,
   subscribeDatabaseWork,
 } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
+import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { agentExecutionsHaveStopped } from "../agent-execution-stop.js";
 import { readProcessStartedAt } from "../hot-restart.js";
+import { currentProcessSpaceHash } from "../controller-process-identity.js";
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
 import { environmentService } from "../environments.js";
 import { executionControlSchedule } from "../execution-control-work.js";
@@ -29,6 +32,8 @@ import {
   resetAbandonedNativeOwnerReleaseForTests,
   settleUnstartedNativeSessionResume,
 } from "./native-failed-run-owner-release.js";
+
+import * as controllerProcess from "../controller-process-identity.js";
 
 const LEASE_FAILURE = 'Failed to acquire lease for environment "Managed computer" (sandbox): Sandbox creation has failed';
 
@@ -62,9 +67,10 @@ describe("failed native run owner release", () => {
     errorCode?: string;
     error?: string;
     coordinator: Partial<typeof nativeRunFinalizations.$inferInsert>;
+    runId?: string;
   }) {
     const issueId = randomUUID();
-    const runId = randomUUID();
+    const runId = input.runId ?? randomUUID();
     await db.insert(issues).values({ id: issueId, companyId, title: "Resume the native run", status: "in_progress",
       assigneeAgentId: agentId, workMode: "standard" });
     await db.insert(heartbeatRuns).values({
@@ -79,8 +85,10 @@ describe("failed native run owner release", () => {
           providerSessionId: "provider-session", activeTurnId: "active-turn" },
       },
     });
+    const current = await controllerProcess.currentControllerProcess();
+    expect(current.hostHash).not.toBe("unknown");
     await db.insert(nativeRunFinalizations).values({ runId, companyId, issueId, phase: "observed", attempt: 1,
-      ...input.coordinator } as typeof nativeRunFinalizations.$inferInsert);
+      controllerHostHash: current.hostHash, ...input.coordinator } as typeof nativeRunFinalizations.$inferInsert);
     return { runId, issueId };
   }
 
@@ -162,6 +170,194 @@ describe("failed native run owner release", () => {
       failureDetail: expect.objectContaining({ releasedOwner: { reason: "expired_owner", leaseOwner, attempt: 1 } }) });
     expect(await agentExecutionsHaveStopped(db, [agentId])).toBe(true);
     // Nothing is left to schedule once the owner is settled.
+    expect(await nextAbandonedNativeOwnerReleaseAt(db)).toBeNull();
+  });
+
+  it.each(["null", "foreign", "unknown-current"] as const)("keeps a failed namespace-held source out of automatic expired-owner release: %s", async mode => {
+    const actual = await controllerProcess.currentControllerProcess();
+    expect(actual.hostHash).not.toBe("unknown");
+    const recordedPid = 2_000_000_001;
+    const { runId } = await nativeRun({ status: "failed", errorCode: "setup_failed",
+      coordinator: { leaseOwner: `foreign-controller:${randomUUID()}`, leaseExpiresAt: new Date(0),
+        controllerBootId: randomUUID(), controllerPid: recordedPid,
+        controllerHostHash: mode === "null" ? null : mode === "foreign" ? `foreign:${actual.hostHash}` : actual.hostHash,
+        recoveryState: "awaiting_evidence" } });
+    await db.update(heartbeatRuns).set({ processPid: recordedPid, processGroupId: recordedPid })
+      .where(eq(heartbeatRuns.id, runId));
+    const before = await coordinator(runId);
+    const originalKill = process.kill.bind(process);
+    const probes: number[] = [];
+    const probe = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+      if (Math.abs(pid) === recordedPid && signal === 0) {
+        probes.push(pid);
+        throw Object.assign(new Error("controlled local PID absent; not foreign stop proof"), { code: "ESRCH" });
+      }
+      return originalKill(pid, signal);
+    });
+    const identity = mode === "unknown-current" ? vi.spyOn(controllerProcess, "currentProcessSpaceHash")
+      .mockReturnValue("unknown") : null;
+    try {
+      expect(await releaseAbandonedNativeOwners(db)).toBe(0);
+      expect(probes).toEqual([]);
+      expect(await coordinator(runId)).toEqual(before);
+      const [attention] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, before.issueId));
+      expect(attention).toMatchObject({ cause: "native_restart_recovery_blocked", attemptCount: 0, wakePolicy: null, monitorPolicy: null,
+        evidence: { runId, reason: "controller_process_space_unverified" } });
+      for (let inspection = 0; inspection < 3; inspection++) {
+        expect(await releaseAbandonedNativeOwners(db)).toBe(0);
+        expect(await nextAbandonedNativeOwnerReleaseAt(db)).toBeNull();
+        expect(await executionControlSchedule(db).finalization()).toBeNull();
+      }
+      expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, before.issueId))).toEqual([attention]);
+      expect(await db.select().from(activityLog).where(and(eq(activityLog.companyId, companyId),
+        eq(activityLog.action, "native.failed_run_owner_released")))).toHaveLength(0);
+    } finally { identity?.mockRestore(); probe.mockRestore(); }
+  });
+
+  it.each(["timed_out", "interrupted"] as const)("publishes quiet operator attention after an already %s owner expires", async status => {
+    const { runId, issueId } = await nativeRun({ status, coordinator: { leaseOwner: `foreign:${randomUUID()}`,
+      controllerBootId: randomUUID(), controllerHostHash: null, leaseExpiresAt: new Date(0) } });
+    expect(await releaseAbandonedNativeOwners(db)).toBe(0);
+    const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(action).toMatchObject({ ownerType: "board", cause: "native_restart_recovery_blocked", attemptCount: 0,
+      evidence: { runId, reason: "controller_process_space_unverified", controllerAuthority: { digest: expect.any(String) } } });
+    expect(await nextAbandonedNativeOwnerReleaseAt(db)).toBeNull();
+    expect(await coordinator(runId)).toMatchObject({ phase: "observed", leaseOwner: expect.any(String) });
+  });
+
+  it("keeps empty deadline and release scans from stamping controller ownership", async () => {
+    const stamped = vi.fn();
+    const unsubscribe = controllerProcess.onControllerStamp(stamped);
+    try {
+      expect(await nextAbandonedNativeOwnerReleaseAt(db)).toBeNull();
+      expect(await releaseAbandonedNativeOwners(db)).toBe(0);
+      expect(await nextAbandonedNativeOwnerReleaseAt(db)).toBeNull();
+      expect(stamped).not.toHaveBeenCalled();
+    } finally { unsubscribe(); }
+  });
+
+  it("retains a foreign owner's original deadline until its returned unstarted claim settles", async () => {
+    const leaseExpiresAt = new Date(Date.now() + 60_000);
+    const leaseOwner = `default:resume:${randomUUID()}`;
+    // This dispatched claim returned before the executor took an attempt. Its
+    // exact returned token/attempt, not the PID or lease age, authorizes release.
+    const { runId, issueId } = await nativeRun({ status: "failed", errorCode: "setup_failed",
+      coordinator: { leaseOwner, leaseExpiresAt, controllerBootId: randomUUID(),
+        controllerHostHash: `foreign:${currentProcessSpaceHash()}` } });
+    const before = await coordinator(runId);
+    expect((await nextAbandonedNativeOwnerReleaseAt(db))?.getTime()).toBe(leaseExpiresAt.getTime());
+    expect(await releaseAbandonedNativeOwners(db)).toBe(0);
+    expect(await coordinator(runId)).toEqual(before);
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toEqual([]);
+    expect(await settleUnstartedNativeSessionResume(db, { runId, leaseOwner, attempt: before.attempt })).toBe(true);
+    expect(await coordinator(runId)).toMatchObject({ phase: "terminal_failure", leaseOwner: null });
+    expect(await nextAbandonedNativeOwnerReleaseAt(db)).toBeNull();
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toEqual([]);
+  });
+
+  it("surfaces a foreign owner only at its original expiry without stamping or probing it", async () => {
+    const leaseExpiresAt = new Date(Date.now() + 60_000);
+    const recordedPid = 2_000_000_001;
+    const { runId, issueId } = await nativeRun({ status: "failed", coordinator: {
+      leaseOwner: `foreign:${randomUUID()}`, leaseExpiresAt, controllerBootId: randomUUID(),
+      controllerPid: recordedPid, controllerHostHash: null } });
+    const before = await coordinator(runId);
+    const stamped = vi.fn();
+    const unsubscribe = controllerProcess.onControllerStamp(stamped);
+    const kill = process.kill.bind(process);
+    const probes: number[] = [];
+    const probe = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+      if (Math.abs(pid) === recordedPid && signal === 0) {
+        probes.push(pid);
+        throw Object.assign(new Error("foreign PID is not local stop evidence"), { code: "ESRCH" });
+      }
+      return kill(pid, signal);
+    });
+    try {
+      expect((await nextAbandonedNativeOwnerReleaseAt(db))?.getTime()).toBe(leaseExpiresAt.getTime());
+      expect(await releaseAbandonedNativeOwners(db, new Date(leaseExpiresAt.getTime() - 1))).toBe(0);
+      expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toEqual([]);
+      expect(await releaseAbandonedNativeOwners(db, leaseExpiresAt)).toBe(0);
+      const [attention] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
+      expect(attention).toMatchObject({ status: "active", ownerType: "board", attemptCount: 0,
+        wakePolicy: null, monitorPolicy: null, evidence: { runId, reason: "controller_process_space_unverified" } });
+      expect(await nextAbandonedNativeOwnerReleaseAt(db)).toBeNull();
+      expect(await releaseAbandonedNativeOwners(db, leaseExpiresAt)).toBe(0);
+      expect(await coordinator(runId)).toEqual(before);
+      expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toEqual([attention]);
+      expect(probes).toEqual([]);
+      expect(stamped).not.toHaveBeenCalled();
+    } finally { probe.mockRestore(); unsubscribe(); }
+  });
+
+  it("finishes each requested namespace inspection pass and preserves the original local deadline", async () => {
+    const foreign = [];
+    for (let index = 0; index < 5; index++) foreign.push(await nativeRun({ status: "failed", coordinator: {
+      leaseOwner: `foreign:${randomUUID()}`, controllerHostHash: null, leaseExpiresAt: new Date(0) } }));
+    const localDeadline = new Date(Date.now() + 600_000);
+    await nativeRun({ status: "failed", coordinator: { leaseOwner: `local:${randomUUID()}`, leaseExpiresAt: localDeadline } });
+    for (let page = 0; page < 2; page++) {
+      expect(await releaseAbandonedNativeOwners(db, new Date(), 2)).toBe(0);
+      expect((await nextAbandonedNativeOwnerReleaseAt(db))!.getTime()).toBeLessThan(localDeadline.getTime());
+    }
+    expect(await releaseAbandonedNativeOwners(db, new Date(), 2)).toBe(0);
+    expect((await nextAbandonedNativeOwnerReleaseAt(db))?.getTime()).toBe(localDeadline.getTime());
+    const rows = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.companyId, companyId));
+    expect(rows).toHaveLength(foreign.length);
+    expect(rows.every(row => row.attemptCount === 0 && row.wakePolicy === null && row.monitorPolicy === null)).toBe(true);
+    // Deadline reads do not request another pass or turn surfaced holds into timers.
+    for (let read = 0; read < 2; read++) {
+      expect((await nextAbandonedNativeOwnerReleaseAt(db))?.getTime()).toBe(localDeadline.getTime());
+    }
+    // A later explicit mutation inspection must recheck all retained authorities.
+    // Finish its known three-page pass before expecting the local timer again.
+    expect(await releaseAbandonedNativeOwners(db, new Date(), 2)).toBe(0);
+    expect((await nextAbandonedNativeOwnerReleaseAt(db))!.getTime()).toBeLessThan(localDeadline.getTime());
+    expect(await releaseAbandonedNativeOwners(db, new Date(), 2)).toBe(0);
+    expect((await nextAbandonedNativeOwnerReleaseAt(db))!.getTime()).toBeLessThan(localDeadline.getTime());
+    expect(await releaseAbandonedNativeOwners(db, new Date(), 2)).toBe(0);
+    expect((await nextAbandonedNativeOwnerReleaseAt(db))?.getTime()).toBe(localDeadline.getTime());
+    const reinspected = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.companyId, companyId));
+    const byId = (a: typeof rows[number], b: typeof rows[number]) => a.id.localeCompare(b.id);
+    expect(reinspected.sort(byId)).toEqual([...rows].sort(byId));
+  });
+
+  it("keeps a lower-sorting arrival durable when its notification coalesces between inspection pages", async () => {
+    for (let index = 1; index <= 4; index++) await nativeRun({ status: "failed",
+      runId: `ffffffff-ffff-4fff-8fff-${String(index).padStart(12, "0")}`, coordinator: {
+        leaseOwner: `foreign:${randomUUID()}`, controllerHostHash: null, leaseExpiresAt: new Date(0) } });
+    expect(await releaseAbandonedNativeOwners(db, new Date(), 2)).toBe(0);
+    const lower = await nativeRun({ status: "failed", runId: "00000000-0000-4000-8000-000000000001", coordinator: {
+      leaseOwner: `foreign:${randomUUID()}`, controllerHostHash: null, leaseExpiresAt: new Date(0) } });
+    // Simulate one coalesced dirty signal by continuing the actual existing
+    // page, not resetting its cursor or creating a second artificial worker.
+    expect(await releaseAbandonedNativeOwners(db, new Date(), 2)).toBe(0);
+    expect(await nextAbandonedNativeOwnerReleaseAt(db)).not.toBeNull();
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, lower.issueId))).toEqual([]);
+    expect(await releaseAbandonedNativeOwners(db, new Date(), 2)).toBe(0);
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, lower.issueId))).toHaveLength(1);
+    expect(await releaseAbandonedNativeOwners(db, new Date(), 5)).toBe(0);
+    expect(await nextAbandonedNativeOwnerReleaseAt(db)).toBeNull();
+  });
+
+  it("surfaces a preserved namespace waiter when an unrelated action is actually resolved", async () => {
+    const { runId, issueId } = await nativeRun({ status: "failed", coordinator: {
+      leaseOwner: `foreign:${randomUUID()}`, controllerHostHash: null, leaseExpiresAt: new Date(0) } });
+    const service = issueRecoveryActionService(db);
+    const unrelated = await service.upsertSourceScoped({ companyId, sourceIssueId: issueId, kind: "active_run_watchdog",
+      cause: "independent-test-recovery", fingerprint: "independent-test-identity", ownerType: "board",
+      nextAction: "Resolve this independently owned action first.", wakePolicy: null, monitorPolicy: null, attemptCount: 0 });
+    expect(await releaseAbandonedNativeOwners(db)).toBe(0);
+    expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId)))[0].id).toBe(unrelated.id);
+    expect(await nextAbandonedNativeOwnerReleaseAt(db)).toBeNull();
+    expect(await committedWakes(DELIVERY_QUEUES.executionFinalization, () => service.resolveActiveForIssue({ companyId,
+      sourceIssueId: issueId, actionId: unrelated.id, status: "resolved", outcome: "restored" }))).toBeGreaterThan(0);
+    expect(await releaseAbandonedNativeOwners(db)).toBe(0);
+    const rows = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(rows).toHaveLength(2);
+    expect(rows.find(row => row.id === unrelated.id)).toMatchObject({ status: "resolved", fingerprint: "independent-test-identity" });
+    expect(rows.find(row => row.id !== unrelated.id)).toMatchObject({ attemptCount: 0,
+      evidence: { runId, reason: "controller_process_space_unverified" } });
     expect(await nextAbandonedNativeOwnerReleaseAt(db)).toBeNull();
   });
 
@@ -252,6 +448,32 @@ describe("failed native run owner release", () => {
       unrelated.kill("SIGKILL");
       await exited;
     }
+  });
+
+  // Phase 2: run processes and controllers are judged by the shared prover.
+  it("never releases on a dead PID recorded in another PID space", async () => {
+    const { runId } = await nativeRun({ status: "failed", errorCode: "adapter_failed",
+      coordinator: { leaseOwner: `default:resume:${randomUUID()}`, leaseExpiresAt: new Date(0) } });
+    await db.update(heartbeatRuns).set({ processPid: 2_000_000_001, processGroupId: null,
+      processStartedAt: new Date(Date.now() - 60_000), processHostHash: "another-pid-space" })
+      .where(eq(heartbeatRuns.id, runId));
+    await expect(releaseAbandonedNativeOwners(db)).resolves.toBe(0);
+    expect(await coordinator(runId)).toMatchObject({ phase: "observed" });
+    await db.update(heartbeatRuns).set({ processHostHash: currentProcessSpaceHash() }).where(eq(heartbeatRuns.id, runId));
+    await expect(releaseAbandonedNativeOwners(db)).resolves.toBe(1);
+    expect(await db.select().from(activityLog).where(and(eq(activityLog.runId, runId),
+      eq(activityLog.action, "legacy_host_unknown_dead_pid_proof")))).toEqual([]);
+  });
+
+  it("keeps the one-release fallback for a run process saved before its PID space, and records it", async () => {
+    const { runId } = await nativeRun({ status: "failed", errorCode: "adapter_failed",
+      coordinator: { leaseOwner: `default:resume:${randomUUID()}`, leaseExpiresAt: new Date(0) } });
+    await db.update(heartbeatRuns).set({ processPid: 2_000_000_001, processGroupId: null,
+      processStartedAt: new Date(Date.now() - 60_000), processHostHash: null }).where(eq(heartbeatRuns.id, runId));
+    await expect(releaseAbandonedNativeOwners(db)).resolves.toBe(1);
+    const proofs = await db.select().from(activityLog).where(and(eq(activityLog.runId, runId),
+      eq(activityLog.action, "legacy_host_unknown_dead_pid_proof")));
+    expect(proofs.map(proof => proof.details)).toEqual([{ reason: "pid_dead", source: "native_failed_run_process" }]);
   });
 
   // `ps -o lstart` on macOS reports whole seconds, while a recorded start can

@@ -1,9 +1,19 @@
+import { readPluginLoginCredential } from "./plugin-login-credential.js";
+import { ENVIRONMENT_LEASE_CONTROLLER_KEY } from "./environment-lease-controller.js";
+import { RetainedSandboxAbsentError, resumeReplyConfirmsAbsence } from "./retained-sandbox-absent-error.js";
 import { readNativeWorkspaceMigration } from "./native-runtime/native-workspace-migration.js";
 import { ReusableSandboxResumeError } from "./reusable-sandbox-resume-error.js";
+import { NATIVE_PREDECESSOR_RETIREMENT_UNPROVEN_CODE, readReplaceBeforeReuseMarker } from "./native-runtime/predecessor-retirement.js";
+import {
+  REUSABLE_SANDBOX_RESUME_BUDGET_MS,
+  retireReplacedReusableSandboxLease,
+  reusableSandboxReplacementIsSafe,
+  sandboxStateTransitionFailure,
+} from "./reusable-sandbox-resume-replacement.js";
 import { PluginWorkerUnavailableError } from "./plugin-worker-unavailable-error.js";
 import { HttpError } from "../errors.js";
 import { captureEnvironmentAcquisitionDiagnostic } from "./environment-acquisition-diagnostics.js";
-import { createOwnedSandbox, recoverSandboxCreations, recoverableTaskCreation } from "./sandbox-creation-operations.js";
+import { createOwnedSandbox, recoverSandboxCreations, recoverablePluginCreation } from "./sandbox-creation-operations.js";
 import { dueRunLeaseReleaseCondition, pendingRunLeaseReleaseCondition } from "./environment-lease-release-state.js";
 import { flushDeferredEnvironmentCleanup, registerDeferredEnvironmentCleanup, writeEnvironmentCleanup } from "./environment-cleanup-notifications.js";
 import { executeEnvironmentTask, pluginEnvironmentSupportsTasks, settleDispatchedEnvironmentTask } from "./environment-task-runtime.js";
@@ -14,7 +24,7 @@ import { beginIdleTrackedWork } from "./task-admission.js";
 import { historicalProviderCredentials } from "./historical-provider-credentials.js";
 import { ownedWorkspaceRecoveryLease, type WorkspaceRecoverySourceIdentity } from "./workspace-recovery-source.js";
 import type { NativeWorkspaceFinalizationOwnership } from "./native-runtime/native-workspace-finalization-ownership.js";
-import { hasStopOnlyCleanup, prepareSandboxStopAndRetain, readStopOnlyCleanup, settleStopOnlyCleanup, stopOnlyCleanupKey } from "./sandbox-stop-and-retain.js";
+import { hasStopOnlyCleanup, prepareSandboxStopAndRetain, readStopOnlyCleanup, SANDBOX_STOP_AND_RETAIN_KEY, settleStopOnlyCleanup, stopOnlyCleanupKey } from "./sandbox-stop-and-retain.js";
 import { JsonRpcCallError, readEnvironmentAcquisitionDiagnostic, readEnvironmentCreationCleanupError } from "@paperclipai/plugin-sdk";
 import { preserveEnvironmentSyncOutErrorDiagnostic } from "./environment-sync-out-error.js";
 import { remoteTerminationReceipt } from "./remote-execution-termination.js";
@@ -58,7 +68,7 @@ import {
   runWithRuntimeParent,
   type StartupSpanContext,
 } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
-import { environmentService } from "./environments.js";
+import { environmentService, KEPT_SANDBOX_LEASE_POLICIES } from "./environments.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { hasSandboxSnapshotQualification, qualifiedSandboxSnapshotId, usesManagedCloudSandboxImage, type SandboxTemplateIdentity } from "./sandbox-snapshot-qualification.js";
 import { verifyRecoverableNativeHarnessBackup } from "./native-runtime/native-harness-backup-storage.js";
@@ -109,6 +119,7 @@ import {
   type SandboxOrphanCleanupSpool,
 } from "./sandbox-orphan-cleanup-spool.js";
 import { logger } from "../middleware/logger.js";
+import { crashPoint } from "@paperclipai/shared/crash-points";
 
 // The constant error kind for the durable orphan-cleanup-write-failed log. The
 // log never reads the caught exception, because the exception can carry a
@@ -451,6 +462,8 @@ function stripSecretRefValuesFromPluginLeaseMetadata(input: {
 }
 
 export interface EnvironmentDriverAcquireInput {
+  purpose?: "run" | "login";
+  loginCommandKey?: import("@paperclipai/plugin-sdk").PluginLoginCommandKey;
   companyId: string;
   environment: Environment;
   /** Saved environment before run-only lease retention settings. */
@@ -669,6 +682,13 @@ export interface EnvironmentRuntimeDriver {
   /** True when the lease's plugin worker advertises both sync verbs. */
   supportsSync?(input: EnvironmentDriverLeaseInput): boolean;
   /**
+   * True when a new lease for this environment can be reusable: the provider
+   * declares reusable leases and, for a plugin, its running worker verifies the
+   * reuse methods. It uses the acquisition path's rule without waiting for a
+   * worker; a worker that is not running yet reads false.
+   */
+  providerSupportsReusableLeases?(environment: Pick<Environment, "driver" | "config">): Promise<boolean>;
+  /**
    * Resolve the effective eight-field capability snapshot for this driver and
    * lease. Every driver implements this general method, so a caller never
    * needs to branch on the driver name to read a capability.
@@ -762,6 +782,7 @@ export type ProviderResourceDisposition =
   | "destroy";
 
 const DEFAULT_PLUGIN_SANDBOX_WORKER_READY_TIMEOUT_MS = 5_000;
+const DEFAULT_PLUGIN_SANDBOX_WORKER_RESUME_WAIT_MS = 60_000;
 const DEFAULT_PLUGIN_SANDBOX_WORKER_READY_POLL_MS = 100;
 
 const DEFAULT_DEFERRED_ORPHAN_CLEANUP_BUFFER_LIMIT = 256;
@@ -780,6 +801,8 @@ function transientSandboxResumeFailure(error: unknown): boolean {
       ? candidate.statusCode
       : null;
   if (status === 429 || (status !== null && status >= 500)) return true;
+  // A sandbox still stopping, archiving, or starting can be started shortly.
+  if (sandboxStateTransitionFailure(error)) return true;
   const code = typeof candidate.code === "string" ? candidate.code.toUpperCase() : "";
   if (["ETIMEDOUT", "ECONNRESET", "ECONNREFUSED", "EAI_AGAIN", "ENETUNREACH"].includes(code)) {
     return true;
@@ -1078,6 +1101,37 @@ function reusableSandboxLeaseScopeMatches(input: {
   });
 }
 
+const SETTLING_REUSABLE_LEASE_WAIT_MS = 20_000;
+const SETTLING_REUSABLE_LEASE_RECENT_MS = 2 * 60_000;
+
+async function waitForSettlingReusableLease(db: Db, input: {
+  companyId: string; environmentId: string; executionWorkspaceId: string | null; issueId: string | null;
+  agentId: string; heartbeatRunId: string;
+}) {
+  const deadline = Date.now() + SETTLING_REUSABLE_LEASE_WAIT_MS;
+  for (;;) {
+    const [settling] = await db.select({ id: environmentLeases.id }).from(environmentLeases)
+      .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.id, environmentLeases.heartbeatRunId),
+        eq(heartbeatRuns.companyId, environmentLeases.companyId)))
+      .where(and(
+        eq(environmentLeases.companyId, input.companyId),
+        eq(environmentLeases.environmentId, input.environmentId),
+        eq(environmentLeases.leasePolicy, "reuse_by_environment"),
+        or(eq(environmentLeases.status, "active"), and(eq(environmentLeases.status, "pending_cleanup"),
+          sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) ? ${SANDBOX_STOP_AND_RETAIN_KEY}`)),
+        ne(environmentLeases.heartbeatRunId, input.heartbeatRunId),
+        input.executionWorkspaceId
+          ? eq(environmentLeases.executionWorkspaceId, input.executionWorkspaceId)
+          : and(sql`${environmentLeases.executionWorkspaceId} is null`, eq(environmentLeases.issueId, input.issueId!)),
+        sql`${environmentLeases.metadata}->>'agentId' = ${input.agentId}`,
+        inArray(heartbeatRuns.status, ["succeeded", "failed", "cancelled", "timed_out"]),
+        sql`${heartbeatRuns.finishedAt} > now() - make_interval(secs => ${SETTLING_REUSABLE_LEASE_RECENT_MS / 1000})`,
+      )).limit(1);
+    if (!settling || Date.now() >= deadline) return;
+    await new Promise(resolve => setTimeout(resolve, 250));
+  }
+}
+
 function reusableLeaseCanBeResumed(input: {
   lease: Pick<EnvironmentLease, "status" | "heartbeatRunId">;
   heartbeatRunId: string | null;
@@ -1121,6 +1175,7 @@ function createLocalEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
         heartbeatRunId: input.heartbeatRunId,
         leasePolicy: "ephemeral",
         provider: "local",
+        assertCompanyBinding: input.assertCompanyBinding,
         metadata: {
           ...(input.agentId ? { agentId: input.agentId } : {}),
           driver: input.environment.driver,
@@ -1195,6 +1250,7 @@ function createSshEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
         heartbeatRunId: input.heartbeatRunId,
         leasePolicy: "ephemeral",
         provider: "ssh",
+        assertCompanyBinding: input.assertCompanyBinding,
         providerLeaseId: `ssh://${parsed.config.username}@${parsed.config.host}:${parsed.config.port}${remoteCwd}`,
         metadata: {
           ...(input.agentId ? { agentId: input.agentId } : {}),
@@ -1283,6 +1339,7 @@ function createSandboxEnvironmentDriver(
     readOnlyInspection?: boolean;
     pluginWorkerReadyTimeoutMs?: number;
     pluginWorkerReadyPollMs?: number;
+    pluginWorkerResumeWaitMs?: number;
     deferredOrphanCleanupBufferLimit?: number;
     orphanCleanupSpool?: SandboxOrphanCleanupSpool;
     orphanCleanupSpoolDir?: string;
@@ -1291,6 +1348,7 @@ function createSandboxEnvironmentDriver(
   const pluginWorkerManager = options.pluginWorkerManager;
   const pluginWorkerReadyTimeoutMs = options.pluginWorkerReadyTimeoutMs ?? DEFAULT_PLUGIN_SANDBOX_WORKER_READY_TIMEOUT_MS;
   const pluginWorkerReadyPollMs = options.pluginWorkerReadyPollMs ?? DEFAULT_PLUGIN_SANDBOX_WORKER_READY_POLL_MS;
+  const pluginWorkerResumeWaitMs = options.pluginWorkerResumeWaitMs ?? DEFAULT_PLUGIN_SANDBOX_WORKER_RESUME_WAIT_MS;
   // The buffer holds at least one orphan, so a zero or negative override never
   // drops every buffered record.
   const deferredOrphanCleanupBufferLimit = Math.max(
@@ -1451,7 +1509,10 @@ function createSandboxEnvironmentDriver(
     if (input.pluginId) {
       const pinned = await resolvePluginSandboxProviderDriverById({ db, pluginId: input.pluginId, driverKey: input.provider });
       if (!pinned) return { state: "missing" as const, resolved: null };
-      if (pinned.plugin.status !== "ready") return { state: "not_ready" as const, resolved: pinned };
+      if (pinned.plugin.status !== "ready") {
+        return pluginWorkerManager?.requestActivationTimeoutRecovery?.(pinned.plugin)
+          ? { state: "worker_unavailable" as const, resolved: pinned } : { state: "not_ready" as const, resolved: pinned };
+      }
       if (!pluginWorkerManager?.isRunning(pinned.plugin.id)) return { state: "worker_unavailable" as const, resolved: pinned };
       return { state: "running" as const, resolved: pinned };
     }
@@ -1476,7 +1537,8 @@ function createSandboxEnvironmentDriver(
     }
 
     if (installed.plugin.status !== "ready") {
-      return { state: "not_ready" as const, resolved: installed };
+      return pluginWorkerManager?.requestActivationTimeoutRecovery?.(installed.plugin)
+        ? { state: "worker_unavailable" as const, resolved: installed } : { state: "not_ready" as const, resolved: installed };
     }
 
     if (!pluginWorkerManager) {
@@ -1724,6 +1786,12 @@ function createSandboxEnvironmentDriver(
         // We also filter out leases whose policy is not reuse_by_environment
         // and whose status is not reusable so non-reusable, cleanup-pending,
         // or terminal rows cannot be matched.
+        if (supportsReusableLeases && parsed.config.reuseLease && input.heartbeatRunId !== null
+          && (input.executionWorkspaceId !== null || input.issueId !== null) && input.agentId !== null) {
+          await waitForSettlingReusableLease(db, { companyId: input.companyId, environmentId: input.environment.id,
+            executionWorkspaceId: input.executionWorkspaceId, issueId: input.issueId, agentId: input.agentId,
+            heartbeatRunId: input.heartbeatRunId });
+        }
         const reusableCandidateLeases =
           supportsReusableLeases &&
           parsed.config.reuseLease &&
@@ -1783,6 +1851,7 @@ function createSandboxEnvironmentDriver(
           : null;
 
         let providerLease: PluginEnvironmentLease | null = null;
+        let replacingUnretiredOwner = false;
         let replacementReason:
           | "not_found"
           | "expired"
@@ -1808,12 +1877,26 @@ function createSandboxEnvironmentDriver(
               providerLeaseId: reusableLease.providerLeaseId,
             });
           }
-          try {
-            const configuredResumeTimeoutMs =
+          // A run that could not retire its predecessor's Runner on this
+          // sandbox asked for a fresh one. Replace it under the same safety
+          // rule as a failed resume; otherwise resume it as before.
+          replacingUnretiredOwner = readReplaceBeforeReuseMarker(reusableLease.metadata) !== null
+            && await reusableSandboxReplacementIsSafe({
+              db, lease: reusableLease, companyId: input.companyId, heartbeatRunId: input.heartbeatRunId,
+              executionWorkspaceId: input.executionWorkspaceId, adapterType: input.adapterType,
+              cause: new Error(NATIVE_PREDECESSOR_RETIREMENT_UNPROVEN_CODE),
+            });
+          if (replacingUnretiredOwner) replacementReason = "resume_failed";
+          else try {
+            // One run spends a bounded budget resuming, retries included; the
+            // provider's own start deadline (five minutes on Daytona) is not it.
+            const configuredResumeTimeoutMs = Math.min(
               resolvePluginSandboxRpcTimeoutMs(
                 workerConfig,
                 pluginProvider.resolved.driver.defaultAcquireTimeoutMs,
-              ) ?? 60_000;
+              ) ?? 60_000,
+              REUSABLE_SANDBOX_RESUME_BUDGET_MS,
+            );
             const resumeDeadline = Date.now() + configuredResumeTimeoutMs;
             let retryDelayMs = 250;
             let resumed: PluginEnvironmentLease;
@@ -1865,13 +1948,21 @@ function createSandboxEnvironmentDriver(
                   : "expired";
             }
           } catch (error) {
-            throw new ReusableSandboxResumeError({
-              provider: parsed.config.provider,
-              providerLeaseId: reusableLease.providerLeaseId,
-              cause: error,
-            });
+            // A refusal is not proof the sandbox is lost. Replace it only when
+            // nothing lives solely on it; otherwise preserve it for the retry.
+            if (!await reusableSandboxReplacementIsSafe({
+              db, lease: reusableLease, companyId: input.companyId, heartbeatRunId: input.heartbeatRunId,
+              executionWorkspaceId: input.executionWorkspaceId, adapterType: input.adapterType, cause: error,
+            })) {
+              throw new ReusableSandboxResumeError({
+                provider: parsed.config.provider,
+                providerLeaseId: reusableLease.providerLeaseId,
+                cause: error,
+              });
+            }
+            replacementReason = "resume_failed";
           }
-          if (!providerLease) {
+          if (!providerLease && replacementReason !== "resume_failed") {
             if (
               input.adapterType === "paperclip_runner" &&
               !await verifyRecoverableNativeHarnessBackup({ db, companyId: reusableLease.companyId,
@@ -1988,6 +2079,7 @@ function createSandboxEnvironmentDriver(
               ? {
                   outcome: "replacement",
                   reason: replacementReason ?? "resume_failed",
+                  ...(replacingUnretiredOwner ? { cause: NATIVE_PREDECESSOR_RETIREMENT_UNPROVEN_CODE } : {}),
                 }
               : {
                   outcome: "created",
@@ -2002,7 +2094,7 @@ function createSandboxEnvironmentDriver(
             : {}),
           ...(reusableScope ? { reusableSandboxLease: reusableScope } : {}),
         };
-        return await environmentsSvc.acquireLease({
+        const recordedLease = await environmentsSvc.acquireLease({
           creationOperationId: providerLease ? undefined : acquiredLease.metadata?.creationOperationId as string | undefined,
           companyId: input.companyId,
           environmentId: input.environment.id,
@@ -2029,7 +2121,15 @@ function createSandboxEnvironmentDriver(
               ? reusableLease?.id
               : null,
         });
-
+        // Retire the unresumable sandbox only once its replacement, which
+        // carries the harness backup, is recorded. A failed creation or a
+        // restart before this point leaves it eligible for the next attempt.
+        if (replacementReason === "resume_failed" && reusableLease && input.heartbeatRunId) {
+          await retireReplacedReusableSandboxLease({
+            db, lease: reusableLease, companyId: input.companyId, heartbeatRunId: input.heartbeatRunId,
+          });
+        }
+        return recordedLease;
       }
 
       // Built-in sandbox provider path. Same guard as the plugin-backed path:
@@ -2063,6 +2163,12 @@ function createSandboxEnvironmentDriver(
               providerConfig: providerConfigForLease,
             })
           : null;
+      if (supportsReusableLeases && parsed.config.reuseLease && input.heartbeatRunId !== null
+        && (input.executionWorkspaceId !== null || input.issueId !== null) && input.agentId !== null) {
+        await waitForSettlingReusableLease(db, { companyId: input.companyId, environmentId: input.environment.id,
+          executionWorkspaceId: input.executionWorkspaceId, issueId: input.issueId, agentId: input.agentId,
+          heartbeatRunId: input.heartbeatRunId });
+      }
       const reusableCandidateLeases =
         supportsReusableLeases &&
         parsed.config.reuseLease &&
@@ -2285,6 +2391,7 @@ function createSandboxEnvironmentDriver(
       } catch {
         cleanupStatus = "failed";
       }
+      if (cleanupStatus === "success") crashPoint("environment.lease_release.after_provider_before_lease");
       const releaseStatus = input.lease.leasePolicy === "retain_on_failure" && input.status === "failed"
         ? "retained" as const
         : input.status;
@@ -2594,6 +2701,16 @@ function createSandboxEnvironmentDriver(
     async resumeRunLease(input) {
       const pluginId = readString(input.lease.metadata?.pluginId);
       const providerKey = readString(input.lease.metadata?.provider);
+      if (input.lease.metadata?.sandboxProviderPlugin && pluginWorkerManager && pluginId && providerKey
+        && !pluginWorkerManager.isRunning(pluginId)) {
+        const plugin = await resolvePluginSandboxProviderDriverById({ db, pluginId, driverKey: providerKey });
+        if (plugin && (plugin.plugin.status === "ready" || pluginWorkerManager.requestActivationTimeoutRecovery?.(plugin.plugin))) {
+          const deadline = Date.now() + Math.max(0, pluginWorkerResumeWaitMs);
+          while (!pluginWorkerManager.isRunning(pluginId) && Date.now() < deadline) await delay(Math.max(1, pluginWorkerReadyPollMs));
+          if (!pluginWorkerManager.isRunning(pluginId)) throw new PluginWorkerUnavailableError({ pluginId, workerStatus: pluginWorkerManager.getWorker(pluginId)?.status ?? null,
+            message: `Sandbox provider "${providerKey}" is installed via plugin "${plugin.plugin.pluginKey}", but its worker is not running.` });
+        }
+      }
       if (!input.lease.metadata?.sandboxProviderPlugin || !pluginWorkerManager || !pluginId || !providerKey
         || !input.lease.providerLeaseId || input.lease.environmentId !== input.environment.id
         || !pluginWorkerVerifiesLifecycleMethod(pluginId, "environmentResumeLease")
@@ -2617,6 +2734,7 @@ function createSandboxEnvironmentDriver(
         ...(input.requestedCwd !== undefined ? { requestedCwd: input.requestedCwd } : {}),
       }, resolvePluginSandboxRpcTimeoutMs(config) ?? 60_000);
       if (resumed?.providerLeaseId !== input.lease.providerLeaseId) {
+        if (resumeReplyConfirmsAbsence(resumed)) throw new RetainedSandboxAbsentError();
         throw new Error("The provider did not confirm the exact retained sandbox. No replacement was acquired.");
       }
       return resumed;
@@ -2696,6 +2814,31 @@ function createSandboxEnvironmentDriver(
         }
       }
       throw new Error("Sandbox driver does not support direct command execution for built-in providers.");
+    },
+
+    async providerSupportsReusableLeases(environment) {
+      let parsed: ReturnType<typeof parseEnvironmentDriverConfig>;
+      try {
+        parsed = parseEnvironmentDriverConfig(environment as Environment);
+      } catch {
+        return false; // Acquisition reports the invalid config; the default stays off.
+      }
+      if (parsed.driver !== "sandbox") return false;
+      const provider = parsed.config.provider;
+      if (isBuiltinSandboxProvider(provider)) {
+        return resolveDeclaredSandboxCapabilities({
+          supportsReusableLeases: getBuiltinSandboxProvider(provider)?.supportsReusableLeases,
+        }).reusableLeases === true;
+      }
+      if (!pluginWorkerManager) return false;
+      // Same rule as acquisition, without its worker-ready wait.
+      const running = await resolvePluginSandboxProviderDriverByKey({
+        db, driverKey: provider, workerManager: pluginWorkerManager, requireRunning: true,
+      });
+      if (!running) return false;
+      return resolveDeclaredSandboxCapabilities(running.driver).reusableLeases === true
+        && capabilityIsVerified("reusableLeases",
+          new Set(pluginWorkerManager.getWorker(running.plugin.id)?.supportedMethods ?? []));
     },
 
     supportsSync(input) {
@@ -3023,6 +3166,8 @@ function createSandboxEnvironmentDriver(
     } else {
       cleanupStatus = "failed";
     }
+    // Daytona and other plugin providers release here, not in the built-in path.
+    if (cleanupStatus === "success") crashPoint("environment.lease_release.after_provider_before_lease");
 
     // A failed release verification leaves the provider resource active. The
     // cleanup reaper retries only `pending_cleanup` leases, so route a failed
@@ -3110,6 +3255,8 @@ function createSandboxEnvironmentDriver(
     } catch {
       cleanupStatus = "failed";
     }
+    // Only a destroy the provider confirmed reaches this gap.
+    if (cleanupStatus === "success") crashPoint("environment.teardown.after_destroy_before_lease");
 
     return await environmentsSvc.releaseLease(
       input.lease.id,
@@ -3195,6 +3342,8 @@ const INTERNAL_PLUGIN_SANDBOX_CONFIG_KEYS = new Set([
   "sandboxLeaseAcquisition",
   "nativeHarnessBackup",
   "nativeWorkspaceSync",
+  // The host process that holds the lease (ownership proof); never provider config.
+  ENVIRONMENT_LEASE_CONTROLLER_KEY,
 ]);
 
 // Drop the host-internal and per-lease runtime keys from a sandbox config
@@ -3311,6 +3460,30 @@ function createPluginEnvironmentDriver(
     };
   }
 
+  async function releasePluginRunLease(input: EnvironmentDriverReleaseInput, executionStopObserved = false) {
+    await db.update(environmentLeases).set({ metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || '{"pluginLeaseCleanupMethod":"release"}'::jsonb` }).where(and(eq(environmentLeases.id, input.lease.id), eq(environmentLeases.companyId, input.lease.companyId)));
+    const settled = await settleDispatchedEnvironmentTask(db, workerManager, input.lease, { executionStopObserved });
+    const taskStopped = settled !== false ||
+      (input.lease.metadata?.runnerTaskLease === true && input.lease.metadata?.runnerTaskDispatched !== true && !input.lease.metadata?.runnerTaskStartup && !input.lease.metadata?.runnerTaskStartupCleanup);
+    if (settled !== "completed") {
+      const { plugin, driverKey, driverConfig } = await resolvePluginDriverForRelease(input);
+      await workerManager.call(plugin.id, "environmentReleaseLease", {
+        driverKey,
+        companyId: input.lease.companyId,
+        environmentId: input.environment.id,
+        issueId: input.lease.issueId,
+        config: driverConfig,
+        providerLeaseId: input.lease.providerLeaseId,
+        leaseMetadata: input.lease.metadata ?? undefined,
+      });
+    }
+    return await environmentsSvc.releaseLease(input.lease.id, input.status, {
+      cleanupStatus: "success",
+      ...(taskStopped ? { remoteExecutionTermination: remoteTerminationReceipt(input.lease,
+        { providerLeaseId: input.lease.providerLeaseId, state: "stopped" }) } : {}),
+    });
+  }
+
   return {
     driver: "plugin",
 
@@ -3329,7 +3502,7 @@ function createPluginEnvironmentDriver(
         driver.warmTaskVersion === 1 && !!input.issueId && !!input.agentId && !!input.heartbeatRunId &&
         workerManager.getWorker(plugin.id)?.supportedMethods.includes("environmentResumeLease");
       const lifecyclePolicy = warm ? { mode: "warm", idleTimeoutMs: parsed.config.runnerIdleTimeoutMs ?? 300_000 } : { mode: "per_turn", idleTimeoutMs: null };
-      const fingerprint = createHash("sha256").update(JSON.stringify([parsed.config, input.agentId, input.runnerTaskProjectIds ?? []])).digest("hex");
+      const fingerprint = createHash("sha256").update(JSON.stringify([parsed.config, input.agentId, input.runnerTaskProjectIds ?? [], ...(input.purpose ? [input.purpose, input.loginCommandKey] : [])])).digest("hex");
       const candidates = warm ? await db.select().from(environmentLeases).where(and(
         eq(environmentLeases.companyId, input.companyId), eq(environmentLeases.environmentId, input.environment.id),
         eq(environmentLeases.status, "retained"), eq(environmentLeases.issueId, input.issueId!),
@@ -3352,7 +3525,7 @@ function createPluginEnvironmentDriver(
           providerLeaseId: previous.providerLeaseId, leaseMetadata: previous.metadata ?? undefined,
         });
         if (!resumed?.providerLeaseId) {
-          await this.releaseRunLease({ environment: input.environment, lease: toEnvironmentLeaseSnapshot(previous), status: "released" });
+          await releasePluginRunLease({ environment: input.environment, lease: toEnvironmentLeaseSnapshot(previous), status: "released" }, true);
           resumed = undefined;
         }
       }
@@ -3361,7 +3534,8 @@ function createPluginEnvironmentDriver(
         issueId: input.issueId, executionWorkspaceId: input.executionWorkspaceId,
         provider: `plugin:${parsed.config.pluginKey}:${parsed.config.driverKey}`, pluginId: plugin.id, driverKey: parsed.config.driverKey,
         config: {}, timeoutMs: rpcTimeoutMs, requestKey: fingerprint,
-        metadata: { driver: "plugin", pluginId: plugin.id, pluginKey: parsed.config.pluginKey, driverKey: parsed.config.driverKey },
+        metadata: { driver: "plugin", pluginId: plugin.id, pluginKey: parsed.config.pluginKey, driverKey: parsed.config.driverKey,
+          ...(input.purpose ? { purpose: input.purpose, loginCommandKey: input.loginCommandKey } : {}) },
       }, identity => workerManager.call(plugin.id, "environmentAcquireLease", {
         driverKey: parsed.config.driverKey,
         companyId: input.companyId,
@@ -3370,6 +3544,7 @@ function createPluginEnvironmentDriver(
         config: parsed.config.driverConfig,
         runId: identity.runId,
         creationOperationId: identity.id,
+        ...(input.purpose ? { purpose: input.purpose, loginCommandKey: input.loginCommandKey } : {}),
         workspaceMode: input.executionWorkspaceMode ?? undefined,
         agentId: input.agentId ?? undefined,
         executionWorkspaceId: input.executionWorkspaceId ?? undefined,
@@ -3401,8 +3576,9 @@ function createPluginEnvironmentDriver(
           ...(warm ? {runnerTaskProjectIds:[...input.runnerTaskProjectIds ?? []]} : {}),remoteCwd:".",
           ...(input.agentId ? { agentId: input.agentId } : {}),
           providerMetadata: providerLease.metadata ?? {},
+          ...(input.purpose ? { purpose: input.purpose, loginCommandKey: input.loginCommandKey } : {}),
           environmentId: input.environment.id,
-          ...(input.adapterType === "paperclip_runner" && driver.supportsTasks === true ? { runnerTaskLease: true } : {}),
+          ...(input.purpose !== "login" && input.adapterType === "paperclip_runner" && driver.supportsTasks === true ? { runnerTaskLease: true } : {}),
           driver: input.environment.driver,
           executionWorkspaceMode: input.executionWorkspaceMode,
           pluginId: plugin.id,
@@ -3412,25 +3588,8 @@ function createPluginEnvironmentDriver(
       });
     },
 
-    async releaseRunLease(input) {
-      await db.update(environmentLeases).set({ metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || '{"pluginLeaseCleanupMethod":"release"}'::jsonb` }).where(and(eq(environmentLeases.id, input.lease.id), eq(environmentLeases.companyId, input.lease.companyId)));
-      const taskStopped = await settleDispatchedEnvironmentTask(db, workerManager, input.lease) ||
-        (input.lease.metadata?.runnerTaskLease === true && input.lease.metadata?.runnerTaskDispatched !== true && !input.lease.metadata?.runnerTaskStartup && !input.lease.metadata?.runnerTaskStartupCleanup);
-      const { plugin, driverKey, driverConfig } = await resolvePluginDriverForRelease(input);
-      await workerManager.call(plugin.id, "environmentReleaseLease", {
-        driverKey,
-        companyId: input.lease.companyId,
-        environmentId: input.environment.id,
-        issueId: input.lease.issueId,
-        config: driverConfig,
-        providerLeaseId: input.lease.providerLeaseId,
-        leaseMetadata: input.lease.metadata ?? undefined,
-      });
-      return await environmentsSvc.releaseLease(input.lease.id, input.status, {
-        cleanupStatus: "success",
-        ...(taskStopped ? { remoteExecutionTermination: remoteTerminationReceipt(input.lease,
-          { providerLeaseId: input.lease.providerLeaseId, state: "stopped" }) } : {}),
-      });
+    releaseRunLease(input) {
+      return releasePluginRunLease(input);
     },
 
     async resumeRunLease(input) {
@@ -3632,6 +3791,7 @@ export function environmentRuntimeService(
     readOnlyInspection?: boolean;
     pluginWorkerReadyTimeoutMs?: number;
     pluginWorkerReadyPollMs?: number;
+    pluginWorkerResumeWaitMs?: number;
     deferredOrphanCleanupBufferLimit?: number;
     orphanCleanupSpool?: SandboxOrphanCleanupSpool;
     orphanCleanupSpoolDir?: string;
@@ -3649,6 +3809,7 @@ export function environmentRuntimeService(
       readOnlyInspection: options.readOnlyInspection,
       pluginWorkerReadyTimeoutMs: options.pluginWorkerReadyTimeoutMs,
       pluginWorkerReadyPollMs: options.pluginWorkerReadyPollMs,
+      pluginWorkerResumeWaitMs: options.pluginWorkerResumeWaitMs,
       deferredOrphanCleanupBufferLimit: options.deferredOrphanCleanupBufferLimit,
       orphanCleanupSpool: options.orphanCleanupSpool,
       orphanCleanupSpoolDir: options.orphanCleanupSpoolDir,
@@ -3684,6 +3845,26 @@ export function environmentRuntimeService(
       );
     }
     return driver;
+  }
+
+  function renewCleanupClaim(leaseId: string, attemptId: string, failure: string): ReturnType<typeof setInterval> {
+    let renewalInFlight = false;
+    const renewal = setInterval(() => {
+      if (renewalInFlight) return;
+      renewalInFlight = true;
+      void db.update(environmentLeases).set({
+        metadata: sql`${environmentLeases.metadata} || ${JSON.stringify({
+          pendingCleanupLeaseExpiresAtMs: Date.now() + 15 * 60_000,
+        })}::jsonb`,
+      }).where(and(eq(environmentLeases.id, leaseId), eq(environmentLeases.status, "pending_cleanup"),
+        sql`${environmentLeases.metadata}->>'pendingCleanupAttemptId' = ${attemptId}`,
+        sql`${environmentLeases.metadata}->>'pendingCleanupInFlight' = 'true'`,
+      )).then(() => {}).catch(() => {
+        logger.warn({ leaseId }, failure);
+      }).finally(() => { renewalInFlight = false; });
+    }, 30_000);
+    renewal.unref();
+    return renewal;
   }
 
   async function destroyClaimedSandboxLease(input: {
@@ -3735,23 +3916,10 @@ export function environmentRuntimeService(
     )).returning(), { companyId: input.leaseRow.companyId, runId: input.leaseRow.heartbeatRunId ?? undefined });
     if (!claimed) return null;
     const lease = toEnvironmentLeaseSnapshot(claimed);
-    let renewalInFlight = false;
-    const renewal = setInterval(() => {
-      if (renewalInFlight) return;
-      renewalInFlight = true;
-      void db.update(environmentLeases).set({
-        metadata: sql`${environmentLeases.metadata} || ${JSON.stringify({
-          pendingCleanupLeaseExpiresAtMs: Date.now() + 15 * 60_000,
-        })}::jsonb`,
-      }).where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.status, "pending_cleanup"),
-        sql`${environmentLeases.metadata}->>'pendingCleanupAttemptId' = ${attemptId}`,
-        sql`${environmentLeases.metadata}->>'pendingCleanupInFlight' = 'true'`,
-      )).then(() => {}).catch(() => {
-        logger.warn({ leaseId: lease.id }, "scoped cleanup ownership renewal failed");
-      }).finally(() => { renewalInFlight = false; });
-    }, 30_000);
-    renewal.unref();
+    const renewal = renewCleanupClaim(lease.id, attemptId, "scoped cleanup ownership renewal failed");
     try {
+      // Kill mode leaves the claim in flight; fail mode (restart chaos only) is a provider destroy that did not finish.
+      crashPoint("environment.teardown.after_claim_before_destroy", { fail: () => new Error("sandbox teardown incomplete: provider destroy did not finish") });
       const driver = getDriver(getLeaseDriverKey(lease, input.environment));
       if (!driver?.destroyRunLease) return lease;
       const released = await driver.destroyRunLease({
@@ -3821,6 +3989,8 @@ export function environmentRuntimeService(
     },
 
     async acquireRunLease(input: {
+      purpose?: "run" | "login";
+      loginCommandKey?: import("@paperclipai/plugin-sdk").PluginLoginCommandKey;
       companyId: string;
       environment: Environment;
       /** Saved environment before run-only lease retention settings. */
@@ -3877,6 +4047,8 @@ export function environmentRuntimeService(
         executionWorkspaceMode: leaseContext.executionWorkspaceMode,
         executionWorkspaceSettings: input.executionWorkspaceSettings ?? null,
         runnerTaskProjectIds: input.runnerTaskProjectIds,
+        purpose: input.purpose,
+        loginCommandKey: input.loginCommandKey,
         adapterType: input.adapterType ?? null,
         resolveSnapshotIdentity: input.resolveSnapshotIdentity,
         applyCustomImageTemplate: input.applyCustomImageTemplate ?? false,
@@ -3970,17 +4142,23 @@ export function environmentRuntimeService(
               sql`${environmentLeases.metadata}->${intentKey} = ${JSON.stringify(leaseSnapshot.metadata?.[intentKey])}::jsonb`,
             )).returning(), { companyId: leaseRow.companyId, runId: leaseRow.heartbeatRunId ?? undefined });
             if (!claimed) continue;
+            crashPoint("environment.stop_retain.after_claim_before_stop");
             const snapshot = toEnvironmentLeaseSnapshot(claimed);
+            const renewal = renewCleanupClaim(snapshot.id, attemptId, "stop-only cleanup ownership renewal failed");
             try {
               const driver = requireDriverKey(getLeaseDriverKey(snapshot, environment));
               if (!driver.retryPendingSandboxTeardown) throw new Error("Workspace export recovery requires stop-only cleanup.");
               const receipt = await driver.retryPendingSandboxTeardown({ environment, lease: snapshot });
+              clearInterval(renewal);
               const lease = await settleStopOnlyCleanup(db, snapshot, { attemptId, receipt });
               if (lease && environment) released.push({ environment, lease: toEnvironmentLeaseSnapshot(lease),
                 leaseContext: { executionWorkspaceId: lease.executionWorkspaceId, executionWorkspaceMode: null } });
             } catch (error) {
+              clearInterval(renewal);
               await settleStopOnlyCleanup(db, snapshot, { attemptId });
               throw error;
+            } finally {
+              clearInterval(renewal);
             }
             continue;
           }
@@ -4143,8 +4321,8 @@ export function environmentRuntimeService(
     async flushDeferredOrphanCleanups(): Promise<{ recovered: number; pending: number }> {
       orphanRecoveryFlush ??= (async () => {
         await recoverSandboxCreations(db, async operation => {
-          const taskCreation = recoverableTaskCreation(operation);
-          if (!operation.pluginId || (operation.metadata.sandboxProviderPlugin !== true && !taskCreation)) return null;
+          const allocationCreation = recoverablePluginCreation(operation);
+          if (!operation.pluginId || (operation.metadata.sandboxProviderPlugin !== true && !allocationCreation)) return null;
           if (!options.pluginWorkerManager) throw new Error("Sandbox creation recovery worker is unavailable");
           const plugin = await pluginRegistryService(db).getById(operation.pluginId);
           const driver = plugin?.manifestJson.environmentDrivers?.find(value => value.driverKey === operation.driverKey);
@@ -4153,7 +4331,7 @@ export function environmentRuntimeService(
             !options.pluginWorkerManager.getWorker(operation.pluginId)?.supportedMethods.includes("environmentInspectLease")) {
             throw new Error("Sandbox creation recovery worker is unavailable");
           }
-          if (taskCreation) return options.pluginWorkerManager.call(operation.pluginId, "environmentInspectLease", {
+          if (allocationCreation) return options.pluginWorkerManager.call(operation.pluginId, "environmentInspectLease", {
             driverKey: operation.driverKey, companyId: operation.companyId, environmentId: operation.originalEnvironmentId,
             config: operation.config, providerLeaseId: operation.id, creationOperation: { id: operation.id, runId: operation.runId },
             leaseMetadata: { ...operation.metadata, runId: operation.runId },
@@ -4286,19 +4464,40 @@ export function environmentRuntimeService(
      * throw leaves the lease in place — so the caller re-checks the blast
      * radius instead of trusting these counts for the delete decision.
      */
+    /**
+     * The operator consented to deleting this environment and the files only
+     * its restore sources hold (the delete dialog says so). That consent is the
+     * decision that releases the restore protection: drop `workspaceRestoreRecovery`
+     * from every row on each of the environment's restore-source sandboxes, and
+     * record who released it, so the consented teardown can destroy them.
+     * Without this, every teardown refuses a protected restore source and the
+     * delete stays blocked with nothing the operator can do.
+     */
+    async releaseRestoreSourcesForEnvironmentDelete(input: { environmentId: string; consentedBy: string }): Promise<number> {
+      return await releaseRestoreSourcesForEnvironmentDelete(db, input);
+    },
+
     async destroyReusableSandboxLeasesForEnvironment(input: {
       environmentId: string;
       failureReason?: string;
+      /** The operator who consented to the delete; releases restore protection. */
+      consentedBy?: string;
     }): Promise<{ destroyed: number; failed: number; skippedLiveRun: number }> {
       const environment = await environmentsSvc.getById(input.environmentId);
       if (!environment) return { destroyed: 0, failed: 0, skippedLiveRun: 0 };
+      if (input.consentedBy) {
+        await releaseRestoreSourcesForEnvironmentDelete(db, { environmentId: input.environmentId, consentedBy: input.consentedBy });
+      }
       const leaseRows = await db
         .select()
         .from(environmentLeases)
         .where(
           and(
             eq(environmentLeases.environmentId, input.environmentId),
-            eq(environmentLeases.leasePolicy, "reuse_by_environment"),
+            // Reusable sandboxes, and retain-on-failure sandboxes kept stopped as
+            // workspace-restore sources: both outlive their run, so a deleted
+            // environment must tear them down or they are orphaned.
+            inArray(environmentLeases.leasePolicy, [...KEPT_SANDBOX_LEASE_POLICIES]),
             // A failed run may have stopped its reusable sandbox without
             // destroying it; that provider handle still needs scoped teardown.
             inArray(environmentLeases.status, ["active", "released", "retained", "failed"]),
@@ -4337,7 +4536,8 @@ export function environmentRuntimeService(
           skippedLiveRun += 1;
           continue;
         }
-        const lease = await destroyClaimedSandboxLease({ environment, leaseRow, failureReason });
+        const lease = await destroyClaimedSandboxLease({ environment, leaseRow, failureReason, anyLeasePolicy: true,
+          scopeCondition: inArray(environmentLeases.leasePolicy, [...KEPT_SANDBOX_LEASE_POLICIES]) });
         if (!lease) {
           // Lost to a racing resume or a concurrent terminal transition — the
           // lease is no longer ours to destroy.
@@ -4399,6 +4599,10 @@ export function environmentRuntimeService(
       return await driver.realizeWorkspace(input);
     },
 
+    async readLoginCredential(input: { environment: Environment; lease: EnvironmentLease }): Promise<Buffer> {
+      return readPluginLoginCredential({ db, workerManager: options.pluginWorkerManager, ...input });
+    },
+
     async execute(input: EnvironmentDriverExecuteInput): Promise<PluginEnvironmentExecuteResult> {
       const driver = requireDriverKey(getLeaseDriverKey(input.lease, input.environment));
       if (!driver.execute) {
@@ -4410,6 +4614,11 @@ export function environmentRuntimeService(
     supportsSync(input: EnvironmentDriverLeaseInput): boolean {
       const driver = getDriver(getLeaseDriverKey(input.lease, input.environment));
       return driver?.supportsSync?.(input) ?? false;
+    },
+
+    /** See {@link EnvironmentRuntimeDriver.providerSupportsReusableLeases}; false for a driver without it. */
+    async providerSupportsReusableLeases(environment: Pick<Environment, "driver" | "config">): Promise<boolean> {
+      return await getDriver(environment.driver)?.providerSupportsReusableLeases?.(environment) ?? false;
     },
 
     /**
@@ -4485,5 +4694,31 @@ export function environmentRuntimeService(
     },
   };
 }
+
+async function releaseRestoreSourcesForEnvironmentDelete(db: Db, input: { environmentId: string; consentedBy: string }): Promise<number> {
+  const sources = await db.select({ provider: environmentLeases.provider, providerLeaseId: environmentLeases.providerLeaseId })
+    .from(environmentLeases).where(and(
+      eq(environmentLeases.environmentId, input.environmentId),
+      eq(environmentLeases.leasePolicy, "retain_on_failure"),
+      inArray(environmentLeases.status, ["released", "retained", "failed", "pending_cleanup"]),
+      sql`${environmentLeases.metadata} ? 'workspaceRestoreRecovery'`,
+      sql`${environmentLeases.providerLeaseId} is not null`,
+    ));
+  let released = 0;
+  for (const source of sources) {
+    const rows = await db.update(environmentLeases).set({ updatedAt: new Date(),
+      metadata: sql`(${environmentLeases.metadata} - 'workspaceRestoreRecovery') || ${JSON.stringify({
+        restoreSourceReleasedByEnvironmentDelete: { consentedBy: input.consentedBy, releasedAt: new Date().toISOString() },
+      })}::jsonb`,
+    }).where(and(
+      sql`${environmentLeases.provider} is not distinct from ${source.provider}`,
+      eq(environmentLeases.providerLeaseId, source.providerLeaseId!),
+      sql`${environmentLeases.metadata} ? 'workspaceRestoreRecovery'`,
+    )).returning({ id: environmentLeases.id });
+    released += rows.length;
+  }
+  return released;
+}
+
 
 export type EnvironmentRuntimeService = ReturnType<typeof environmentRuntimeService>;

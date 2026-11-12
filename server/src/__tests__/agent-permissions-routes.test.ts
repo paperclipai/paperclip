@@ -49,6 +49,7 @@ const mockAgentService = vi.hoisted(() => ({
   activatePendingApproval: vi.fn(),
   terminate: vi.fn(),
   update: vi.fn(),
+  updateAndTransition: vi.fn(),
   rollbackConfigRevision: vi.fn(),
   updatePermissions: vi.fn(),
   getChainOfCommand: vi.fn(),
@@ -87,6 +88,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
   getRun: vi.fn(),
   cancelRun: vi.fn(),
   cancelInvocationsForAgents: vi.fn(),
+  cancelActiveForAgent: vi.fn(),
 }));
 
 const mockIssueApprovalService = vi.hoisted(() => ({
@@ -244,6 +246,7 @@ function createDbStub(options: { requireBoardApprovalForNewAgents?: boolean } = 
             Promise.resolve(resolve([{
               id: companyId,
               name: "Paperclip",
+              issuePrefix: "PAP",
               requireBoardApprovalForNewAgents: options.requireBoardApprovalForNewAgents ?? false,
             }])),
           ),
@@ -1275,6 +1278,42 @@ describe("agent permission routes", () => {
     expect(mockLogActivity).not.toHaveBeenCalled();
   });
 
+  it.each(["agents", "agent-hires"])("tells a denied agent that its hiring denial is final and where a person can act via %s", async (route) => {
+    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
+      allowed: input.action !== "agents:create",
+      action: input.action,
+      reason: input.action === "agents:create" ? "deny_missing_grant" : "allow_test",
+      explanation: input.action === "agents:create" ? "Missing permission: agents:create." : "Allowed in test.",
+    }));
+    const app = createApp({ type: "agent", agentId, companyId, source: "agent_jwt" });
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/companies/${companyId}/${route}`)
+      .send({ name: "Morgan", role: "qa", adapterType: "process", adapterConfig: {} }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toContain("Missing permission: agents:create.");
+    expect(res.body.error).toContain("no other route overrides this denial");
+    expect(res.body.error).toContain("A board user can hire the agent directly");
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+    expect(mockApprovalService.create).not.toHaveBeenCalled();
+  });
+
+  it("keeps the plain denial on agents:create checks that are not hiring", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
+      allowed: input.action !== "agents:create",
+      action: input.action,
+      reason: input.action === "agents:create" ? "deny_missing_grant" : "allow_test",
+      explanation: input.action === "agents:create" ? "Missing permission: agents:create." : "Allowed in test.",
+    }));
+    const app = createApp({ type: "agent", agentId, companyId, source: "agent_jwt" });
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/companies/${companyId}/adapters/process/test-environment`)
+      .send({ adapterConfig: {} }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Missing permission: agents:create.");
+  });
+
   it.each(["agents", "agent-hires"])("rejects agent-supplied Codex host commands before resolving the runner via %s", async (route) => {
     mockAccessService.hasPermission.mockResolvedValue(true);
     mockInstanceSettingsService.get.mockRejectedValue(new Error("Denied requests must not inspect execution targets"));
@@ -1331,7 +1370,7 @@ describe("agent permission routes", () => {
       expect.objectContaining({
         status: "idle",
       }),
-      { runnerResolved: true, aiConnectionInstall: undefined, createdByUserId: "agent-admin-user", responsibleUserId: "agent-admin-user", claudeLogin: { storedSessionId: null, ownerUserId: "agent-admin-user", applyExistingWithoutClaim: false } },
+      { runnerResolved: true, aiConnectionInstall: undefined, createdByAgentId: null, interactionTexts: [expect.any(String)], createdByUserId: "agent-admin-user", responsibleUserId: "agent-admin-user", claudeLogin: { storedSessionId: null, ownerUserId: "agent-admin-user", applyExistingWithoutClaim: false } },
     );
     expect(mockAccessService.setPrincipalPermission).toHaveBeenCalledWith(
       companyId,
@@ -1461,7 +1500,7 @@ describe("agent permission routes", () => {
           },
         },
       }),
-      { runnerResolved: true, aiConnectionInstall: undefined, createdByUserId: "board-user", responsibleUserId: "board-user", claudeLogin: { storedSessionId: null, ownerUserId: "board-user", applyExistingWithoutClaim: false } },
+      { runnerResolved: true, aiConnectionInstall: undefined, createdByAgentId: null, interactionTexts: [expect.any(String)], createdByUserId: "board-user", responsibleUserId: "board-user", claudeLogin: { storedSessionId: null, ownerUserId: "board-user", applyExistingWithoutClaim: false } },
     );
   });
 
@@ -1498,7 +1537,7 @@ describe("agent permission routes", () => {
           model: DEFAULT_OPENCODE_LOCAL_MODEL,
         }),
       }),
-      { runnerResolved: true, aiConnectionInstall: undefined, createdByUserId: "board-user", responsibleUserId: "board-user", claudeLogin: { storedSessionId: null, ownerUserId: "board-user", applyExistingWithoutClaim: false } },
+      { runnerResolved: true, aiConnectionInstall: undefined, createdByAgentId: null, interactionTexts: [expect.any(String)], createdByUserId: "board-user", responsibleUserId: "board-user", claudeLogin: { storedSessionId: null, ownerUserId: "board-user", applyExistingWithoutClaim: false } },
     );
   });
 
@@ -1537,7 +1576,7 @@ describe("agent permission routes", () => {
           model: "anthropic/claude-sonnet-4-5",
         }),
       }),
-      { runnerResolved: true, aiConnectionInstall: undefined, createdByUserId: "board-user", responsibleUserId: "board-user", claudeLogin: { storedSessionId: null, ownerUserId: "board-user", applyExistingWithoutClaim: false } },
+      { runnerResolved: true, aiConnectionInstall: undefined, createdByAgentId: null, interactionTexts: [expect.any(String)], createdByUserId: "board-user", responsibleUserId: "board-user", claudeLogin: { storedSessionId: null, ownerUserId: "board-user", applyExistingWithoutClaim: false } },
     );
   });
 
@@ -1579,6 +1618,8 @@ describe("agent permission routes", () => {
       {
         runnerResolved: true,
         aiConnectionInstall: undefined,
+        createdByAgentId: null,
+        interactionTexts: [expect.any(String)],
         createdByUserId: "board-user", responsibleUserId: "board-user",
         claudeLogin: {
           storedSessionId: null,
@@ -1708,6 +1749,169 @@ describe("agent permission routes", () => {
     expect(mockAgentService.terminate).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["PATCH status", (base: string) => request(base).patch(`/api/agents/${agentId}`).send({ status: "terminated" })],
+    ["POST terminate", (base: string) => request(base).post(`/api/agents/${agentId}/terminate`).send({})],
+  ])("keeps agent termination board-only through %s, even for an agent allowed to configure the target", async (_route, send) => {
+    mockAgentService.getById.mockResolvedValue({ ...baseAgent, status: "idle" });
+    const app = await createApp({
+      type: "agent",
+      agentId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await requestApp(app, send);
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("only a board user can terminate an agent");
+    expect(res.body.error).toContain(`[the agent's profile](/PAP/agents/${agentId})`);
+    expect(mockAgentService.terminate).not.toHaveBeenCalled();
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.cancelInvocationsForAgents).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("still lets a board user terminate through PATCH status", async () => {
+    mockAgentService.getById.mockResolvedValue({ ...baseAgent, status: "idle" });
+    mockAgentService.updateAndTransition.mockResolvedValue({ ...baseAgent, status: "terminated" });
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}`)
+      .send({ status: "terminated" }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.status).toBe("terminated");
+    expect(mockAgentService.updateAndTransition).toHaveBeenCalledWith(agentId, "terminate", expect.anything(), expect.anything());
+  });
+
+  it.each([
+    ["PATCH status", (base: string) => request(base).patch(`/api/agents/${agentId}`).send({ status: "paused" })],
+    ["POST pause", (base: string) => request(base).post(`/api/agents/${agentId}/pause`).send({})],
+  ])("keeps pausing an agent board-only through %s, even for an agent allowed to configure the target", async (_route, send) => {
+    mockAgentService.getById.mockResolvedValue({ ...baseAgent, status: "running" });
+    const app = await createApp({
+      type: "agent",
+      agentId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await requestApp(app, send);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Board access required");
+    expect(res.body.code).toBe("board_access_required");
+    expect(res.body.remediation).toContain("this denial is final");
+    expect(res.body.remediation).toContain(`[Open the agent's profile](/<prefix>/agents/${agentId})`);
+    expect(mockAgentService.updateAndTransition).not.toHaveBeenCalled();
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.cancelActiveForAgent).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("still lets a board user pause through PATCH status", async () => {
+    mockAgentService.getById.mockResolvedValue({ ...baseAgent, status: "idle" });
+    mockAgentService.updateAndTransition.mockResolvedValue({ ...baseAgent, status: "paused" });
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}`)
+      .send({ status: "paused" }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.updateAndTransition).toHaveBeenCalledWith(agentId, "pause", expect.anything(), expect.anything());
+  });
+
+  it("applies the resume change-grant decision to PATCH status idle from an agent", async () => {
+    mockAgentService.getById.mockResolvedValue({ ...baseAgent, status: "paused" });
+    mockAccessService.decide.mockImplementation(async (input: { action?: string; scope?: { requiresChangeGrant?: boolean } }) => {
+      const allowed = !input.scope?.requiresChangeGrant;
+      return {
+        allowed,
+        action: input.action,
+        reason: allowed ? "allow_explicit_grant" : "deny_missing_consent",
+        explanation: allowed ? "Allowed by test grant" : "Accepted consent is required for this suggested change.",
+      };
+    });
+    const app = await createApp({
+      type: "agent",
+      agentId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}`)
+      .send({ status: "idle" }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+      action: "agent_config:update",
+      scope: { requiresChangeGrant: true },
+    }));
+    expect(mockAgentService.updateAndTransition).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("lets a granted agent resume through PATCH status idle", async () => {
+    mockAgentService.getById.mockResolvedValue({ ...baseAgent, status: "paused" });
+    mockAgentService.updateAndTransition.mockResolvedValue({ ...baseAgent, status: "idle" });
+    const app = await createApp({
+      type: "agent",
+      agentId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}`)
+      .send({ status: "idle" }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.updateAndTransition).toHaveBeenCalledWith(agentId, "resume", expect.anything(), expect.anything());
+  });
+
+  it("keeps the invalid-org-chain resume guard on PATCH status idle", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...baseAgent,
+      status: "paused",
+      orgChainHealth: { status: "invalid_org_chain", reason: "missing_manager", repairGuidance: "Repair the reporting chain first." },
+    });
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}`)
+      .send({ status: "idle" }));
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("Repair the reporting chain first.");
+    expect(mockAgentService.updateAndTransition).not.toHaveBeenCalled();
+  });
+
   it("terminates directly when no open hire approval is linked", async () => {
     const idleAgent = { ...baseAgent, status: "idle" };
     const terminatedAgent = { ...baseAgent, status: "terminated" };
@@ -1790,7 +1994,7 @@ describe("agent permission routes", () => {
       expect.objectContaining({
         defaultEnvironmentId: environmentId,
       }),
-      { runnerResolved: true, aiConnectionInstall: undefined, createdByUserId: "board-user", responsibleUserId: "board-user", claudeLogin: { storedSessionId: null, ownerUserId: "board-user", applyExistingWithoutClaim: false } },
+      { runnerResolved: true, aiConnectionInstall: undefined, createdByAgentId: null, interactionTexts: [expect.any(String)], createdByUserId: "board-user", responsibleUserId: "board-user", claudeLogin: { storedSessionId: null, ownerUserId: "board-user", applyExistingWithoutClaim: false } },
     );
   });
 
@@ -1877,7 +2081,7 @@ describe("agent permission routes", () => {
           adapterType: expectedAdapterType,
           defaultEnvironmentId: environmentId,
         }),
-        { runnerResolved: true, aiConnectionInstall: undefined, createdByUserId: "board-user", responsibleUserId: "board-user", claudeLogin: { storedSessionId: null, ownerUserId: "board-user", applyExistingWithoutClaim: false } },
+        { runnerResolved: true, aiConnectionInstall: undefined, createdByAgentId: null, interactionTexts: [expect.any(String)], createdByUserId: "board-user", responsibleUserId: "board-user", claudeLogin: { storedSessionId: null, ownerUserId: "board-user", applyExistingWithoutClaim: false } },
       );
       if (["codex_local", "claude_local", "opencode_local", "pi_local"].includes(adapterCase.adapterType)) {
         if (adapterCase.adapterType === "codex_local") expect(mockAgentService.create.mock.calls[0][1].adapterConfig).toMatchObject({ provider: "codex" });
@@ -2101,8 +2305,78 @@ describe("agent permission routes", () => {
     expect(mockAgentService.updatePermissions).toHaveBeenCalledWith(agentId, {
       canCreateAgents: false,
       canAssignTasks: true,
-    });
+    }, { actorAgentId: null });
     expect(res.body.permissions.canCreateSkills).toBe(false);
+  });
+
+  it("does not let a CEO denied hiring restore it for itself or grant it to another agent", async () => {
+    const ceo = { ...baseAgent, id: "ceo-agent", role: "ceo", permissions: { canCreateAgents: false, canCreateSkills: true,
+      ceoHiringDeniedBy: { actorType: "user", actorId: "board-user", at: "2026-11-08T00:00:00.000Z" } } };
+    const worker = { ...baseAgent, permissions: { canCreateAgents: false, canCreateSkills: true } };
+    mockAgentService.getById.mockImplementation(async (id: string) => (id === ceo.id ? ceo : id === worker.id ? worker : null));
+    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
+      allowed: input.action !== "agents:create",
+      action: input.action,
+      reason: input.action === "agents:create" ? "deny_missing_grant" : "allow_test",
+      explanation: input.action === "agents:create" ? "Missing permission: agents:create." : "Allowed in test.",
+    }));
+    const app = createApp({ type: "agent", agentId: ceo.id, companyId, runId: "run-1", source: "agent_jwt" });
+
+    for (const target of [ceo.id, worker.id]) {
+      const res = await requestApp(app, (baseUrl) => request(baseUrl)
+        .patch(`/api/agents/${target}/permissions`)
+        .send({ canCreateAgents: true, canAssignTasks: true }));
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.error).toContain("Missing permission: agents:create.");
+    }
+    expect(mockAgentService.updatePermissions).not.toHaveBeenCalled();
+    expect(mockAccessService.setPrincipalPermission).not.toHaveBeenCalled();
+  });
+
+  it("records the board user who saves a CEO's hiring as off", async () => {
+    const ceo = { ...baseAgent, role: "ceo", permissions: { canCreateAgents: true, canCreateSkills: true } };
+    mockAgentService.getById.mockResolvedValue(ceo);
+    mockAgentService.updatePermissions.mockResolvedValue({ ...ceo, permissions: { canCreateAgents: false, canCreateSkills: true } });
+    const app = await createApp({ type: "board", userId: "board-user", source: "local_implicit", isInstanceAdmin: true, companyIds: [companyId] });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}/permissions`)
+      .send({ canCreateAgents: false, canAssignTasks: true }));
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.updatePermissions).toHaveBeenCalledWith(agentId, expect.objectContaining({
+      canCreateAgents: false,
+      ceoHiringDeniedBy: expect.objectContaining({ actorType: "user", actorId: "board-user", at: expect.any(String) }),
+    }), { actorAgentId: null });
+
+    // The toggle is authoritative: turning it off also removes an explicit agents:create grant.
+    expect(mockAccessService.setPrincipalPermission).toHaveBeenCalledWith(companyId, "agent", agentId, "agents:create", false, null);
+
+    // A low-trust CEO moved to standard trust while the visible toggle stays off is recorded too.
+    mockAgentService.updatePermissions.mockClear();
+    mockAgentService.getById.mockResolvedValue({ ...ceo, permissions: { canCreateAgents: false, trustPreset: "low_trust_review" } });
+    await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}/permissions`)
+      .send({ canCreateAgents: false, canAssignTasks: true, trustPreset: "standard" }));
+    expect(mockAgentService.updatePermissions).toHaveBeenCalledWith(agentId, expect.objectContaining({
+      trustPreset: "standard", canCreateAgents: false, ceoHiringDeniedBy: expect.objectContaining({ actorId: "board-user" }),
+    }), { actorAgentId: null });
+
+    // An earlier record is kept rather than restamped.
+    const earlier = { actorType: "user", actorId: "first-board-user", at: "2026-11-01T00:00:00.000Z" };
+    mockAgentService.updatePermissions.mockClear();
+    mockAgentService.getById.mockResolvedValue({ ...ceo, permissions: { canCreateAgents: false, ceoHiringDeniedBy: earlier } });
+    await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}/permissions`)
+      .send({ canCreateAgents: false, canCreateSkills: false, canAssignTasks: true }));
+    expect(mockAgentService.updatePermissions).toHaveBeenCalledWith(agentId, expect.objectContaining({ ceoHiringDeniedBy: earlier }), { actorAgentId: null });
+
+    // Other roles get no record.
+    mockAgentService.updatePermissions.mockClear();
+    mockAgentService.getById.mockResolvedValue({ ...baseAgent, permissions: { canCreateAgents: true } });
+    await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}/permissions`)
+      .send({ canCreateAgents: false, canAssignTasks: true }));
+    expect(mockAgentService.updatePermissions).toHaveBeenCalledWith(agentId, { canCreateAgents: false, canAssignTasks: true }, { actorAgentId: null });
   });
 
   it("rejects CEO permission updates outside the caller company scope", async () => {
@@ -2370,6 +2644,80 @@ describe("agent permission routes", () => {
     });
   });
 
+  it.each([
+    ["its own budget", agentId, 0],
+    ["its own budget", agentId, 5000],
+    ["another agent's budget as a CEO", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", 5000],
+  ])("budget authority: PATCH /agents/:id never lets an agent change %s (%s, %i)", async (_case, actorAgentId, amount) => {
+    mockAgentService.getById.mockImplementation(async (id: string) => id === agentId
+      ? { ...baseAgent, budgetMonthlyCents: 500 }
+      : { ...baseAgent, id, role: "ceo", permissions: { canCreateAgents: true } });
+    const app = createApp({ type: "agent", agentId: actorAgentId, companyId, source: "agent_key", runId: "run-1" });
+    const response = await requestApp(app, url => request(url).patch(`/api/agents/${agentId}`).send({ budgetMonthlyCents: amount }));
+    expect(response.status, JSON.stringify(response.body)).toBe(403);
+    expect(response.body.code).toBe("board_access_required");
+    expect(response.body.remediation).toContain("this denial is final");
+    expect(response.body.remediation).toContain(`[Open the agent's budget](/<prefix>/agents/${agentId}/budgets)`);
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+    expect(mockBudgetService.upsertPolicy).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+  it("budget authority: a configuration rollback never lets an agent restore a different budget", async () => {
+    mockAgentService.getById.mockResolvedValue({ ...baseAgent, budgetMonthlyCents: 500 });
+    mockAgentService.getConfigRevision.mockResolvedValue({
+      id: "33333333-3333-4333-8333-333333333333",
+      afterConfig: { adapterType: "process", adapterConfig: {}, runtimeConfig: {}, budgetMonthlyCents: 50000 },
+    });
+    const app = createApp({ type: "agent", agentId, companyId, source: "agent_key", runId: "run-1" });
+    const response = await requestApp(app, url => request(url).post(`/api/agents/${agentId}/config-revisions/33333333-3333-4333-8333-333333333333/rollback`));
+    expect(response.status, JSON.stringify(response.body)).toBe(403);
+    expect(response.body.code).toBe("board_access_required");
+    expect(response.body.remediation).toContain(`[Open the agent's budget](/<prefix>/agents/${agentId}/budgets)`);
+    expect(mockAgentService.rollbackConfigRevision).not.toHaveBeenCalled();
+  });
+  it("budget authority: accepts an unchanged legacy amount with an unrelated title edit", async () => {
+    const app = createApp({ type: "agent", agentId, companyId, source: "agent_key" });
+    const response = await requestApp(app, url => request(url).patch(`/api/agents/${agentId}`).send({ budgetMonthlyCents: 0, title: "New title" }));
+    expect(response.status).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalled();
+  });
+  it.each(["agents", "agent-hires"])("budget authority: rejects agent immediate creation budgets through %s", async route => {
+    mockAccessService.hasPermission.mockResolvedValue(true);
+    const app = createApp({ type: "agent", agentId, companyId, source: "agent_key" });
+    const response = await requestApp(app, url => request(url).post(`/api/companies/${companyId}/${route}`).send({ name: "New employee", role: "engineer", adapterType: "process", budgetMonthlyCents: 5000 }));
+    expect(response.status, JSON.stringify(response.body)).toBe(403);
+    expect(response.body.code).toBe("board_access_required");
+    expect(response.body.remediation).toContain("[Open budgets](/<prefix>/activity/budgets)");
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+    expect(mockBudgetService.upsertPolicy).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+  it("budget authority: preserves a proposed budget without applying a policy before approval", async () => {
+    mockAccessService.hasPermission.mockResolvedValue(true);
+    mockAgentService.create.mockResolvedValue({ ...baseAgent, status: "pending_approval", budgetMonthlyCents: 5000 });
+    mockApprovalService.create.mockResolvedValue({ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", status: "pending", type: "hire_agent", companyId });
+    const app = createApp({ type: "agent", agentId, companyId, source: "agent_key" }, { requireBoardApprovalForNewAgents: true });
+    const response = await requestApp(app, url => request(url).post(`/api/companies/${companyId}/agent-hires`).send({ name: "Proposed employee", role: "engineer", adapterType: "process", budgetMonthlyCents: 5000 }));
+    expect(response.status).toBe(201);
+    expect(response.body.approval.status).toBe("pending");
+    expect(mockApprovalService.create).toHaveBeenCalledWith(companyId, expect.objectContaining({ payload: expect.objectContaining({ budgetMonthlyCents: 5000 }) }));
+    expect(mockBudgetService.upsertPolicy).not.toHaveBeenCalled();
+  });
+  it("budget authority: forwards the actual board identity on legacy updates", async () => {
+    const app = createApp({ type: "board", userId: "operator-user", source: "session", companyIds: [companyId] });
+    const response = await requestApp(app, url => request(url).patch(`/api/agents/${agentId}`).send({ budgetMonthlyCents: 5000 }));
+    expect(response.status).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(agentId, expect.objectContaining({ budgetMonthlyCents: 5000 }), expect.objectContaining({ recordRevision: expect.objectContaining({ createdByUserId: "operator-user", createdByAgentId: null }) }));
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ actorType: "user", actorId: "operator-user", agentId: null }));
+  });
+  it.each(["agents", "agent-hires"])("budget authority: records the real board actor for immediate %s budgets", async route => {
+    mockAgentService.create.mockResolvedValue({ ...baseAgent, budgetMonthlyCents: 5000 });
+    const app = createApp({ type: "board", userId: "operator-user", source: "local_implicit", companyIds: [companyId] });
+    const response = await requestApp(app, url => request(url).post(`/api/companies/${companyId}/${route}`).send({ name: "New employee", role: "engineer", adapterType: "process", budgetMonthlyCents: 5000 }));
+    expect(response.status).toBe(201);
+    expect(mockAgentService.create).toHaveBeenCalledWith(companyId, expect.objectContaining({ budgetMonthlyCents: 5000 }), expect.objectContaining({ createdByUserId: "operator-user" }));
+    expect(mockBudgetService.upsertPolicy).not.toHaveBeenCalled();
+  });
   it("rejects heartbeat cancellation outside the caller company scope", async () => {
     mockHeartbeatService.getRun.mockResolvedValue({
       id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -2400,5 +2748,6 @@ vi.mock("../services/agent-lifecycle.js", async (importOriginal) => {
     requestHire: (...args: unknown[]) => mockAgentService.create(...args),
     approveHire: (...args: unknown[]) => mockAgentService.activatePendingApproval(...args),
     terminateAgent: (...args: unknown[]) => mockAgentService.terminate(...args),
+    updateAndTransition: (...args: unknown[]) => mockAgentService.updateAndTransition(...args),
   }) };
 });

@@ -1,5 +1,6 @@
 import { appendWithByteCap, MAX_EXCERPT_BYTES, parseObject } from "../../adapters/utils.js";
-import { redactSensitiveText, sanitizeRecord } from "../../redaction.js";
+import { REDACTED_EVENT_VALUE, redactSensitiveText, sanitizeRecord } from "../../redaction.js";
+import { redactInvitationTokens } from "../../middleware/invitation-token-redaction.js";
 import { redactCurrentUserText, redactCurrentUserValue, type CurrentUserRedactionOptions } from "../../log-redaction.js";
 
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
@@ -105,11 +106,21 @@ function redactInlineBase64ImageData(chunk: string) {
   );
 }
 
+// The run log is a plain-file diagnostic copy that local agents running as the
+// same OS user can read. Invitation join links are bearer credentials, so the
+// log keeps the route and drops the token, as HTTP logs do. The reply the
+// person reads is built from database run events, not from this file.
+function redactRunLogInvitationTokens(text: string, enabled: boolean) {
+  return enabled ? redactInvitationTokens(text, REDACTED_EVENT_VALUE) : text;
+}
+
 export function compactRunLogChunk(
   chunk: string,
   maxChars = MAX_PERSISTED_LOG_CHUNK_CHARS,
+  options: { redactInvitations?: boolean } = {},
 ) {
-  const normalized = redactSensitiveText(redactInlineBase64ImageData(chunk));
+  const normalized = redactRunLogInvitationTokens(
+    redactSensitiveText(redactInlineBase64ImageData(chunk)), options.redactInvitations !== false);
   if (normalized.length <= maxChars) return normalized;
 
   const headChars = Math.max(0, Math.floor(maxChars * 0.6));
@@ -123,6 +134,8 @@ export function compactRunLogChunk(
 interface CanonicalNativeLogRedaction {
   redactIdentity: <T>(value: T) => T;
   currentUser: CurrentUserRedactionOptions;
+  /** False only to reproduce logs written before invite tokens were redacted. */
+  redactInvitations?: boolean;
 }
 
 function omitCanonicalImageData(value: unknown): unknown {
@@ -153,19 +166,26 @@ export function redactCanonicalNativeRunLogChunk(chunk: string, options: Canonic
   const projected = redactCurrentUserValue(
     options.redactIdentity(omitCanonicalImageData(envelope)), options.currentUser,
   );
-  return `${JSON.stringify(sanitizeRecord(projected as Record<string, unknown>))}\n`;
+  // Token characters never need JSON escaping and the marker adds none, so
+  // redacting the encoded record keeps it valid JSON.
+  return `${redactRunLogInvitationTokens(JSON.stringify(sanitizeRecord(projected as Record<string, unknown>)),
+    options.redactInvitations !== false)}\n`;
 }
 
 /** New complete-value forms first; old text projections are computed only when
  * an archive needs them. An old malformed projection never repairs evidence.
  */
 export function* canonicalNativeRunLogRedactionForms(chunk: string, options: CanonicalNativeLogRedaction) {
-  for (const enabled of [false, true])
-    yield redactCanonicalNativeRunLogChunk(chunk, {
-      ...options, currentUser: { ...options.currentUser, enabled },
-    });
-  for (const enabled of [false, true])
-    yield compactRunLogChunk(redactCurrentUserText(options.redactIdentity(chunk), {
-      ...options.currentUser, enabled,
-    }), Number.MAX_SAFE_INTEGER);
+  // Current invite-token redaction first; logs written by an earlier release
+  // kept the token and must still verify after an upgrade.
+  for (const redactInvitations of [true, false]) {
+    for (const enabled of [false, true])
+      yield redactCanonicalNativeRunLogChunk(chunk, {
+        ...options, redactInvitations, currentUser: { ...options.currentUser, enabled },
+      });
+    for (const enabled of [false, true])
+      yield compactRunLogChunk(redactCurrentUserText(options.redactIdentity(chunk), {
+        ...options.currentUser, enabled,
+      }), Number.MAX_SAFE_INTEGER, { redactInvitations });
+  }
 }

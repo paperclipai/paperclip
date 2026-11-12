@@ -3,6 +3,7 @@ import { notifyDeferredExecutionWork } from "../../../services/deferred-executio
 import { hasRequiredWorkspaceRecovery } from "../../../services/workspace-restore-recovery-state.js";
 import { readNativeWorkspaceSyncReference } from "../../../services/native-runtime/native-workspace-sync.js";
 import { isPreDispatchExecutionWaitVerified } from "../../../services/pre-dispatch-execution-wait.js";
+import { isAgentDirectoryPreparationWait } from "../../../services/pre-dispatch-execution-evidence.js";
 import { isUserCommentContinuationReason } from "../../../services/explicit-native-continuation.js";
 import { queuedCommentIdsFromRunContext, withQueuedCommentIdsInRunContext, withQueuedCommentIdsInWakePayload } from "../../../services/issue-queued-comment-queue.js";
 import { notifyExternalAgentSettlement } from "../../external-agents/index.js";
@@ -41,6 +42,9 @@ import { evaluateAgentInvokabilityFromDb } from "../../../services/agent-invokab
 import { budgetService, budgetServiceInTransaction, recheckAdmittedRunBudgetReadOnly } from "../../../services/budgets.js";
 import { lockRunBudgetRecoveryOwnerInTransaction, recheckRunBudgetReservationInTransaction } from "../../../services/budget-reservations.js";
 import { isCompletedOnboardingHandoffWake } from "../../../services/chat-completion-delivery.js";
+import { isUnstartedTaskQuestionAnswer } from "../../../services/unstarted-task-question-answer.js";
+import { isVerifiedDependencyInteractionResponse } from "../../../services/queued-interaction-response.js";
+import { agentBlockingQuestionState } from "../../../services/blocked-question-answer.js";
 import { isHeartbeatWakeOnDemandEnabled } from "../../../services/heartbeat-policy.js";
 import { notifyChatRunMilestones } from "../../../services/chat-run-milestone-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../../services/delivery-work-notifications.js";
@@ -50,6 +54,7 @@ import { legacyDispositionEpisode, legacyDispositionFingerprint } from "../../..
 import { appendHeartbeatRunEvent } from "../../../services/heartbeat-run-events.js";
 import { emitAgentTaskRun } from "../../../services/agent-task-run-telemetry.js";
 import { issueService } from "../../../services/issues.js";
+import { verifyBlockerStallWake } from "../../../services/recovery/blocker-stall-wakeups.js";
 import {
   issueTreeControlService,
   isVerifiedIssueTreeControlInteractionWake,
@@ -224,6 +229,7 @@ export function createPostgresRunDispatchAdapter(
     onMissing: () => T,
     operation: (tx: Db, run: HeartbeatRun, publications: ActivityPublication[]) => Promise<T>,
     mode: "accounting" | "ownership",
+    isolation: "snapshot" | "read committed" = "snapshot",
   ): Promise<T> {
     // Queue editing and claiming already use issue -> wake -> run. Read the
     // immutable issue reference without a lock first, then acquire issue ->
@@ -279,7 +285,8 @@ export function createPostgresRunDispatchAdapter(
         return { kind: "value" as const, value: await operation(typedTx, run, publications) };
       };
       const result: { kind: "missing" | "retry" } | { kind: "value"; value: T } = mode === "accounting"
-        ? await withOperationAccountingTransaction(db, input.companyId, locked)
+        ? await withOperationAccountingTransaction(db, input.companyId, locked,
+          isolation === "read committed" ? { isolationLevel: "read committed" } : {})
         : await db.transaction(tx => locked(tx as unknown as Db, []));
 
       if (result.kind === "missing") return onMissing();
@@ -291,12 +298,21 @@ export function createPostgresRunDispatchAdapter(
     );
   }
 
+  /** Accounting phase under issue -> run locks. Gate decisions that combine
+   * many facts (retry promotion, stale-run cancellation) keep one repeatable-
+   * read snapshot. The final dispatch gate passes READ COMMITTED: run-log
+   * appends and output progress update a running row while it waits, and a
+   * snapshot taken before the run lock went stale on each one until every
+   * retry was spent. Its mutable reads all follow the admission fences and the
+   * issue/run locks, budget exposure is one statement, and its ownership phase
+   * re-reads the staleness facts at READ COMMITTED under the same locks. */
   function withIssueThenRunLocks<T>(
     input: { runId: string; companyId: string; recoveryLeaseOwner?: string; enforceContinuationOwnership?: boolean },
     onMissing: () => T,
     operation: (tx: Db, run: HeartbeatRun, publications: ActivityPublication[]) => Promise<T>,
+    isolation: "snapshot" | "read committed" = "snapshot",
   ) {
-    return withRunOwnershipLocks(input, onMissing, operation, "accounting");
+    return withRunOwnershipLocks(input, onMissing, operation, "accounting", isolation);
   }
 
   async function loadGateFacts(
@@ -478,8 +494,25 @@ export function createPostgresRunDispatchAdapter(
 
     const dependencyReadiness = await issuesSvcForRead.listDependencyReadiness(input.companyId, [issueId]);
     const readiness = dependencyReadiness.get(issueId);
+    // A verified stall wake runs while its stalled dependency is unresolved,
+    // including after a resource wait replaced it with a scheduled retry.
+    const stallAdmitted = readiness && !readiness.isDependencyReady && input.contextSnapshot.blockerStall
+      ? await verifyBlockerStallWake(db, { companyId: input.companyId, issueId, contextSnapshot: input.contextSnapshot,
+          requestedByActorType: input.wakeupRequestId ? await db.select({ actor: agentWakeupRequests.requestedByActorType })
+            .from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, input.companyId),
+              eq(agentWakeupRequests.id, input.wakeupRequestId))).then(rows => rows[0]?.actor ?? null) : null })
+      : false;
+    const responseAdmitted = readiness && !readiness.isDependencyReady
+      && input.contextSnapshot.dependencyBlockedInteraction === true
+      && await isVerifiedDependencyInteractionResponse(dbOrTx, { companyId: input.companyId,
+        issueId, agentId: input.agentId, context: input.contextSnapshot });
+    const preparationWait = input.contextSnapshot.preparationWait;
+    const preparationWaitAdmitted = Boolean(readiness && !readiness.isDependencyReady
+      && input.contextSnapshot.dependencyBlockedInteraction === true
+      && preparationWait && typeof preparationWait === "object" && !Array.isArray(preparationWait)
+      && typeof (preparationWait as Record<string, unknown>).kind === "string");
     facts.dependenciesBlocked =
-      readiness && !readiness.isDependencyReady
+      readiness && !readiness.isDependencyReady && !stallAdmitted && !responseAdmitted && !preparationWaitAdmitted
         ? {
             unresolvedBlockerIssueIds: readiness.unresolvedBlockerIssueIds,
             unresolvedBlockerCount: readiness.unresolvedBlockerCount,
@@ -645,9 +678,13 @@ export function createPostgresRunDispatchAdapter(
     const retryReasonKind = classifyRetryReasonKind(retryReason);
     // Dependency edges can change after scheduled promotion without changing
     // the displayed status. Read them again under the queued/final issue lock.
-    const readiness = issue && retryReasonKind === "native_safe_replacement"
+    const replacementReadiness = issue && retryReasonKind === "native_safe_replacement"
       ? (await issueService(dbOrTx).listDependencyReadiness(input.companyId, [issueId])).get(issueId)
       : null;
+    const readiness = replacementReadiness && !replacementReadiness.isDependencyReady && context.blockerStall
+      && await verifyBlockerStallWake(dbOrTx as unknown as Db, { companyId: input.companyId, issueId,
+        contextSnapshot: context, requestedByActorType: null })
+      ? null : replacementReadiness;
     return {
       runId: input.runId,
       runAgentId: input.agentId,
@@ -666,6 +703,15 @@ export function createPostgresRunDispatchAdapter(
       issueExecutionRunId: issue?.executionRunId ?? null,
       issueCheckoutRunId: issue?.checkoutRunId ?? null,
       isResolvedInteractionContinuation,
+      isDependencyBlockedInteractionResponse: Boolean(isResolvedInteractionContinuation && issue?.status === "blocked"
+        && context.dependencyBlockedInteraction === true
+        && await isVerifiedDependencyInteractionResponse(dbOrTx, { companyId: input.companyId, issueId,
+          agentId: input.agentId, context })),
+      isAgentBlockingQuestionAnswer: Boolean(isResolvedInteractionContinuation && issue?.status === "blocked"
+        && await agentBlockingQuestionState(dbOrTx, { companyId: input.companyId, issueId,
+          agentId: input.agentId, context })),
+      isUnstartedTaskQuestionAnswer: Boolean(isResolvedInteractionContinuation && issue?.status === "todo" &&
+        await isUnstartedTaskQuestionAnswer(dbOrTx, { companyId: input.companyId, issueId, interactionId: context.interactionId })),
       isConnectionContinuation: (isResolvedInteractionContinuation && context.interactionKind === "connection_intent")
         || context.source === "connection_tools.refreshed",
       isInteractionWake,
@@ -992,7 +1038,8 @@ export function createPostgresRunDispatchAdapter(
       const recovery = parseObject(parent.resultJson?.executionRecovery);
       const unstarted = parent.errorCode === WORKSPACE_BUSY_RETRY_REASON
         ? recovery.kind === "workspace_wait" && recovery.providerWorkStarted === false
-        : parent.errorCode === "execution_reconciliation_required" && await isPreDispatchExecutionWaitVerified(tx, parent);
+        : isAgentDirectoryPreparationWait(parent)
+        || (parent.errorCode === "execution_reconciliation_required" && await isPreDispatchExecutionWaitVerified(tx, parent));
       if (!unstarted) return null;
       const [wake] = await tx.select().from(agentWakeupRequests).where(and(
         eq(agentWakeupRequests.companyId, run.companyId), eq(agentWakeupRequests.agentId, run.agentId),
@@ -1241,7 +1288,12 @@ export function createPostgresRunDispatchAdapter(
         } };
       }
     }
-    const recovery = await getExecutionBlocker(tx, run.companyId, issueId, { conversationResetCommentId: deriveCommentId(contextSnapshot) });
+    // A native run's own scheduled resume is not a hold against that run: the
+    // same-run attempt is how its saved state (e.g. a governed wait) settles.
+    const recovery = await getExecutionBlocker(tx, run.companyId, issueId, {
+      conversationResetCommentId: deriveCommentId(contextSnapshot),
+      resumingNativeRunId: run.runtimeMode === "native" ? run.id : null,
+    });
     if (recovery) return { issueId, facts: null, executionBlocker: recovery, decision: { stale: true as const,
       errorCode: "execution_reconciliation_required" as const, reason: recovery.nextAction,
       details: { issueId, recoveryActionId: recovery.recoveryActionId },
@@ -1449,6 +1501,7 @@ export function createPostgresRunDispatchAdapter(
         );
       },
       dispatchLockedRun,
+      "read committed",
     );
     if (!admission.dispatched) return admission;
     // Accounting has committed. Close the separate issue/run ownership race

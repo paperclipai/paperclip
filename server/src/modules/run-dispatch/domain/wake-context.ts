@@ -20,6 +20,14 @@ export const WORKSPACE_BUSY_RETRY_REASON = "workspace_busy";
 export const AI_CONNECTION_POOL_WAIT_RETRY_REASON = "ai_connection_pool_wait";
 export const AI_CONNECTION_BUSY_RETRY_REASON = "ai_connection_busy";
 export const RUNNER_REVISION_WAIT_RETRY_REASON = "runner_revision_wait";
+export const STORAGE_UNAVAILABLE_WAIT_RETRY_REASON = "storage_unavailable_wait";
+export const AGENT_DIRECTORY_BUSY_RETRY_REASON = "agent_directory_busy";
+export const PREPARATION_WAIT_RETRY_REASONS: ReadonlySet<string> = new Set([
+  RUNNER_REVISION_WAIT_RETRY_REASON, STORAGE_UNAVAILABLE_WAIT_RETRY_REASON,
+]);
+export function isPreparationWaitRetryReason(reason: string | null | undefined): boolean {
+  return typeof reason === "string" && PREPARATION_WAIT_RETRY_REASONS.has(reason);
+}
 export const INTERACTION_CONTINUATION_INFRA_RETRY_REASON = "interaction_continuation_infra_retry";
 export const INTERACTION_CONTINUATION_INFRA_WAKE_REASON = "interaction_continuation_infra_retry";
 export const WAKE_COMMENT_IDS_KEY = "wakeCommentIds";
@@ -28,6 +36,9 @@ export const RESOLVED_INTERACTION_CONTINUATION_STATUSES = new Set([
   "answered",
   "cancelled",
   "rejected",
+]);
+const RESOLVED_INTERACTION_RESOURCE_WAIT_REASONS = new Set([
+  WORKSPACE_BUSY_RETRY_REASON, AI_CONNECTION_BUSY_RETRY_REASON, AI_CONNECTION_POOL_WAIT_RETRY_REASON,
 ]);
 
 // A run silent for this long no longer counts as the shared-workspace holder
@@ -102,7 +113,8 @@ export function isNonAssigneeWorkspaceBusyRetry(
     (retryReason === WORKSPACE_BUSY_RETRY_REASON &&
       contextSnapshot.workspaceBusyDeferredWhileAssignee === false) ||
     ((retryReason === AI_CONNECTION_BUSY_RETRY_REASON || retryReason === AI_CONNECTION_POOL_WAIT_RETRY_REASON) &&
-      contextSnapshot.aiConnectionBusyDeferredWhileAssignee === false)
+      contextSnapshot.aiConnectionBusyDeferredWhileAssignee === false) ||
+    (retryReason === AGENT_DIRECTORY_BUSY_RETRY_REASON && contextSnapshot.preparationWaitDeferredWhileAssignee === false)
   );
 }
 
@@ -168,6 +180,24 @@ export function allowsIssueInteractionWake(
   return Boolean(deriveCommentId(contextSnapshot));
 }
 
+/**
+ * Whether a wake may run while its issue still has unresolved blockers: a
+ * verified comment or human-response interaction, or a stalled child or blocker
+ * (`issue_blocker_stalled`, once per stall), which the assignee must be able
+ * to re-delegate, escalate or block on while that dependency is stuck. The
+ * caller verifies the stall against server state (`verifyBlockerStallWake`);
+ * the wake reason string alone never qualifies. Pause holds are separate and
+ * do not use this rule.
+ */
+export function allowsDependencyBlockedWake(
+  contextSnapshot: Record<string, unknown> | null | undefined,
+  interactionWakeReasons: ReadonlySet<string>,
+  verifiedBlockerStall: boolean,
+  verifiedInteractionResponse = false,
+): boolean {
+  return allowsIssueInteractionWake(contextSnapshot, interactionWakeReasons) || verifiedBlockerStall || verifiedInteractionResponse;
+}
+
 export function isResolvedInteractionContinuationWakeContext(contextSnapshot: unknown): boolean {
   const context = parseObject(contextSnapshot);
   const interactionId = readNonEmptyString(context.interactionId);
@@ -183,7 +213,9 @@ export function isResolvedInteractionContinuationWakeContext(contextSnapshot: un
   const retryReason = readNonEmptyString(context.retryReason);
   return (
     (mutation === "interaction" && wakeReason === "issue_commented") ||
-    (mutation === "interaction" && retryReason === RUNNER_REVISION_WAIT_RETRY_REASON) ||
+    (mutation === "interaction" && isPreparationWaitRetryReason(retryReason)) ||
+    (mutation === "interaction" && context.dependencyBlockedInteraction === true && retryReason !== null
+      && RESOLVED_INTERACTION_RESOURCE_WAIT_REASONS.has(retryReason)) ||
     wakeReason === INTERACTION_CONTINUATION_INFRA_WAKE_REASON ||
     retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON
   );

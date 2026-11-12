@@ -1,4 +1,5 @@
 import { notifyExternalConversationSettlement } from "../external-conversation-settlement-notifications.js";
+import { promoteDeferredWorkIntents } from "../work-intent-outbox.js";
 import { notifyStrandedAgentStatus } from "../live-run-recovery-notifications.js";
 import { notifyNativeEnvironmentSettlement } from "../native-environment-settlement-notifications.js";
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
@@ -14,7 +15,6 @@ import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-pre
 import { notifyUnsafeWorkspaceExportRunChange } from "../unsafe-workspace-export-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
-import { notifyDeferredWakesForIssue } from "../deferred-execution-notifications.js";
 import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
 import { isNewTerminalRunFailure, reportRunFailure } from "../run-failure-report.js";
@@ -206,7 +206,7 @@ export async function projectCommittedRun(input: {
       .returning();
     if (after) {
       await settleNativeTerminalWake(tx, after);
-      await notifyDeferredWakesForIssue(tx, { companyId: input.run.companyId, issueId: input.coordinator.issueId });
+      await promoteDeferredWorkIntents(tx, { companyId: input.run.companyId, trigger: "lock_released", issueId: input.coordinator.issueId });
     }
     return after ? { before, after } : null;
   });

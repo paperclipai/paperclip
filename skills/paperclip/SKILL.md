@@ -163,7 +163,7 @@ If `currentParticipant` does not match you, do not try to advance the stage — 
 - Ask for information only when it prevents the next useful action. Optional reproduction details, an example of a past failure, or a preferred test case do not block general inspection and verification. Continue the independent work; explain what remains unverified if the specific example is still unavailable. Keep real access restrictions and approval gates authoritative.
 - Leave durable progress in comments, issue documents, or work products, then update the issue state/path to a clear final disposition before you exit.
 - Treat comments, documents, screenshots, work products, and `Remaining` bullets as evidence. They are not valid liveness paths by themselves.
-- Use child issues for parallel or long delegated work; do not busy-poll agents, sessions, child issues, or processes waiting for completion.
+- Continue work on the current issue. Do not busy-poll agents, sessions, child issues, or processes waiting for completion.
 - If your heartbeat creates a pending board/user interaction or approval before more work can proceed, leave the source issue in an explicit waiting posture before you exit. Prefer `in_review` for review, approval, `request_confirmation`, `ask_user_questions`, and `suggest_tasks` waits. Use `blocked` with `blockedByIssueIds` when another issue is the blocker.
 - For a real blocker, use `blockedByIssueIds` or an `unblockDescriptor` with your own `owner: { "agentId": "<your-agent-id>" }` and an exact `action`. Agents cannot set board/user or other-agent unblock owners. Human-input waits use a saved pending interaction and `in_review`; prose alone is not a waiting path. See [Questions and waiting for human input](references/api-reference.md#questions-and-waiting-for-human-input) for valid payloads.
 - Human authority or missing permission does not imply a manager handoff. Keep ownership, identify the missing capability, and use the human-input payload below when a person must decide. Verify actual capability and permission before suggesting delegation.
@@ -227,7 +227,7 @@ Before ending any heartbeat, apply this final-disposition checklist:
 - `done`: the requested work is complete, verification is recorded, and no follow-up remains on this issue.
 - `in_review`: a real reviewer path exists, such as a typed execution participant, board/user owner, linked approval, pending interaction, or an actually-scheduled issue monitor (non-null `monitorNextCheckAt`, not merely described in a comment) that will wake the assignee later. Assignment to yourself plus a "please review" comment is not a review path.
 - `blocked`: work cannot continue until first-class `blockedByIssueIds` resolve or a named owner takes a concrete unblock action.
-- Delegated follow-up: create the follow-up issue directly, link it with `parentId`/`goalId`, and use blockers when the current issue must wait for that work. A follow-up created from an ordinary execution task without `parentId` is parented to that task by default; pass `parentId: null` only for intentionally standalone work.
+- If work is delegated, use blockers when the current issue must wait for that work. A follow-up created from an ordinary execution task without `parentId` is parented to that task by default; pass `parentId: null` only for intentionally standalone work.
 - Explicit continuation: keep the issue `in_progress` only when there is an active run, queued continuation, or a real scheduled monitor/recovery path (not a narrated one) that will wake the responsible assignee. Successful artifact work left in `in_progress` with no live path is invalid; update the status/path instead.
 
 When writing issue descriptions or comments, follow the ticket-linking rule in **Comment Style** below.
@@ -280,7 +280,7 @@ response. Moving a task that has its own children under another task is skipped
 the same way. Use `blockedByIssueIds` (or `blockParentUntilDone`) when your task
 must wait for the new work; nesting is not a wait. Board users are not limited.
 
-**Step 9 — Delegate if needed.** For ordinary execution tasks, create subtasks with `POST /api/companies/{companyId}/issues` and set `parentId` and `goalId`. If you omit `parentId` while running an ordinary execution task, the server sets `parentId` to your current task and records that default in the creation activity (if you may not create a child under that task, for example under a protected assignment policy, the task stays standalone instead); send `parentId: null` only when the new task is intentionally top-level work (CLI: `--standalone`). Either way the follow-up keeps run provenance, and the task page shows "Created from <your task> by <you>" without implying a blocker. For conversation tasks, use the project handoff above instead. When a follow-up issue needs to stay on the same code change but is not a true child task, set `inheritExecutionWorkspaceFromIssueId` to the source issue. Set `billingCode` for cross-team work.
+**Step 9 — Optional task creation.** `POST /api/companies/{companyId}/issues` supports `parentId` and `goalId`. If you omit `parentId` while running an ordinary execution task, the server sets `parentId` to your current task and records that default in the creation activity (if you may not create a child under that task, for example under a protected assignment policy, the task stays standalone instead); send `parentId: null` only when the new task is intentionally top-level work (CLI: `--standalone`). Either way the follow-up keeps run provenance, and the task page shows "Created from <your task> by <you>" without implying a blocker. For conversation tasks, use the project handoff above instead. Every subtask gets its own workspace from the project base, never your checkout, branch or unmerged changes; to hand a subtask code, push or merge it first. Set `billingCode` for cross-team work.
 
 ### Delegating review tasks
 
@@ -291,7 +291,7 @@ Run-scoped writes are subtree-scoped: the delegate's run can write to its own is
 - Make the review issue's description **self-contained** — the delegate may not be able to read your issue or its documents. Put the full instructions, acceptance criteria, and material to review (or repo-relative pointers) in the description.
 - Block your issue on the review issue (`blockedByIssueIds`) so you wake when the verdict lands.
 
-**Courier pattern (lateral coordination):** to nudge or hand context to an agent whose issues you cannot write to, create a new issue assigned to that agent carrying complete, self-contained instructions. Issue-CREATE is company-scoped and always available; commenting into another agent's boundary is not.
+**Lateral coordination:** use an authorized comment on the existing task to pass context. If access is denied, report the missing permission on your current task.
 
 ## Managing A User's Inbox
 
@@ -616,8 +616,8 @@ Exact response fields are documented in `skills/paperclip/references/api-referen
 - **Honor "send it back to me" requests from board users.** If a board/user asks for review handoff (e.g. "let me review it", "assign it back to me"), reassign to them with `assigneeAgentId: null` and `assigneeUserId: "<requesting-user-id>"`, typically setting status to `in_review` instead of `done`. Resolve the user id from the triggering comment's `authorUserId` when available, else the issue's `createdByUserId` if it matches the requester context.
 - **Start actionable work before planning-only closure.** Do concrete work in the same heartbeat unless the task asks for a plan or review only.
 - **Leave a next action.** Every progress comment should make clear what is complete, what remains, and who owns the next step.
-- **Prefer child issues over polling.** Create bounded child issues for long or parallel delegated work and rely on Paperclip wake events or comments for completion.
-- **Preserve workspace continuity for follow-ups.** Child issues inherit execution workspace from `parentId` server-side. For non-child follow-ups on the same checkout/worktree, send `inheritExecutionWorkspaceFromIssueId` explicitly.
+- **Do not busy-poll.** For existing delegated work, rely on Paperclip wake events or comments for completion.
+- **Subtasks get their own workspace.** A child issue keeps its parent's project and workspace strategy, but the server always realizes a separate workspace for it from the project base. It never shares the parent's checkout, branch or unsaved files, and `inheritExecutionWorkspaceFromIssueId` does not change that. Share code between tasks through pushed branches or merged changes.
 - **Never cancel cross-team tasks.** If you question the task, follow the requester-directed decision flow in [Receiving cross-team work](references/api-reference.md#receiving-cross-team-work). Keep the task assigned to yourself; do not automatically hand it to a manager.
 - **Use first-class blockers** (`blockedByIssueIds`) rather than free-text "blocked by X" comments.
 - **Say only what you actually scheduled.** Never tell a user a "watcher"/monitor will wake you unless you scheduled a real issue monitor (non-null `monitorNextCheckAt`), and never imply a live watcher on a task you mark `done` — see **Monitors and Watchers**.

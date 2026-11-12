@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Db, agents, agentTaskSessions, heartbeatRuns } from "@paperclipai/db";
-import { FAST_RESPONSE_AGENT_GUIDANCE, fastResponseHistoryBody } from "@paperclipai/shared";
+import { FAST_RESPONSE_AGENT_GUIDANCE, fastResponseHistoryBody, isValidIanaTimeZone } from "@paperclipai/shared";
 import type { PaperclipTurnContext } from "@paperclipai/adapter-utils/server-utils";
 import { parseObject } from "../../adapters/utils.js";
 import { isConversation } from "../agent-conversations.js";
@@ -37,7 +37,7 @@ export interface HeartbeatTaskContextInput {
   policy: {
     recovering?: boolean;
     trustPreset: Pick<TrustPresetResolution, "kind">;
-    experimentalInstanceSettings: { enableSimplifiedEnglishInteractions?: boolean; enableCases?: boolean };
+    experimentalInstanceSettings: { enableSimplifiedEnglishInteractions?: boolean; enableCases?: boolean; enableConferenceRoomChat?: boolean; enableStatusCards?: boolean };
   };
   services: {
     issuesSvc: Pick<ReturnType<typeof issueService>, "getAncestors">;
@@ -230,17 +230,34 @@ export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskCo
     issueContext?.chatAssignedAgentId === agent.id
       ? issueContext.chatCommunicationGuidance
       : null;
-  // Use the standing chat owner's saved presentation choice, never worker text.
-  // Recovery retains the admitted choice instead of silently changing its prompt.
+  // Use the standing chat owner's saved preferences, never worker text.
+  // Recovery retains the admitted choices instead of silently changing its prompt.
+  const conversationOwnerPreference = isConversation(issueContext) && issueContext?.conversationUserId
+    && !input.policy.recovering
+    ? await workspacePreferenceService(db).get(issueContext.conversationUserId)
+    : null;
   const coordinatorWorkspace = agent.adapterType === "paperclip_runner" && isConversation(issueContext)
     && issueContext?.conversationUserId
     ? input.policy.recovering
       ? context.paperclipCoordinatorWorkspaceEnabled === true
-      : (await workspacePreferenceService(db).get(issueContext.conversationUserId)).coordinatorWorkspaceEnabled
+      : conversationOwnerPreference?.coordinatorWorkspaceEnabled === true
     : false;
   context.paperclipCoordinatorWorkspaceEnabled = Boolean(coordinatorWorkspace);
+  const savedPersonTimeZone = input.policy.recovering
+    ? readNonEmptyString(context.paperclipConversationTimeZone)
+    : conversationOwnerPreference?.timeZone ?? null;
+  const personTimeZone = isConversation(issueContext) && issueContext?.conversationUserId
+    && savedPersonTimeZone && isValidIanaTimeZone(savedPersonTimeZone)
+    ? savedPersonTimeZone
+    : null;
+  if (personTimeZone) context.paperclipConversationTimeZone = personTimeZone;
+  else delete context.paperclipConversationTimeZone;
   const taskMarkdownInput = {
     coordinatorWorkspace: Boolean(coordinatorWorkspace),
+    personTimeZone,
+    conferenceRoomEnabled: experimentalInstanceSettings.enableConferenceRoomChat === true,
+    statusCardsEnabled: experimentalInstanceSettings.enableStatusCards === true,
+    casesEnabled: experimentalInstanceSettings.enableCases === true,
     conversationConfirmations: issueRef && isConversation(issueContext)
       ? await getConversationConfirmationContext({ db, companyId: agent.companyId, issueId: issueRef.id, agentId: agent.id })
       : null,

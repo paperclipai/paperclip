@@ -167,30 +167,68 @@ export {
   type ResponsibleUserDenialTone,
 } from "./responsible-user-denial.js";
 export type {
+  AttentionAudience,
+  AttentionAudienceKind,
+  AttentionAudienceReason,
+  AttentionAlreadyClosedDetails,
+  AttentionClaimableSourceKind,
+  AttentionClaimResult,
+  AttentionCloseInput,
+  AttentionCloseMode,
+  AttentionCloseResult,
   AttentionDecisionVerb,
+  AttentionTransferInput,
+  AttentionTransferResult,
   DecisionHistoryItem,
+  DecisionHistoryOutcomeFilter,
   DecisionHistoryQuery,
+  DecisionHistoryScope,
   DecisionHistoryPage,
+  DecisionHistoryResultOutcome,
+  DecisionHistoryAction,
   AttentionDetailImage,
   AttentionFeed,
   AttentionSummary,
   AttentionTaskIndex,
+  AttentionFeedView,
   AttentionItem,
   AttentionItemDetail,
   AttentionItemDismissal,
   AttentionFeedQuery,
+  AttentionPersonalView,
   AttentionProjectRef,
   AttentionQueueRef,
   AttentionResolverAudience,
   AttentionSeverity,
   AttentionSortMode,
   AttentionSourceKind,
+  AttentionStale,
+  AttentionStaleReason,
+  AttentionHandledDetails,
+  AttentionReceipt,
+  AttentionRequester,
+  AttentionCardKind,
+  AttentionCardType,
+  AttentionRequestKind,
+  AttentionReceiptOutcome,
   AttentionSubject,
   AttentionSubjectKind,
   AttentionTriageAttribution,
+  AttentionViewCounts,
   AttentionWorkspaceRef,
 } from "./types/attention.js";
-export { ATTENTION_SOURCE_KINDS } from "./types/attention.js";
+export {
+  ATTENTION_CLAIMABLE_SOURCE_KINDS,
+  attentionCardKind,
+  attentionCardType,
+  ATTENTION_CLOSE_MODES,
+  ATTENTION_PERSONAL_VIEWS,
+  ATTENTION_RECEIPT_DAYS,
+  ATTENTION_RECEIPT_OUTCOMES,
+  ATTENTION_SOURCE_KINDS,
+  DECISION_HISTORY_OUTCOME_FILTERS,
+  DECISION_HISTORY_SCOPES,
+} from "./types/attention.js";
 export { questionSetToAskUserQuestionsPayload } from "./question-set.js";
 export type {
   DecisionQueue,
@@ -368,6 +406,7 @@ export {
   ISSUE_STATUSES,
   ISSUE_DISPLAY_STATUSES,
   ISSUE_SUMMARIES_MAX_IDS,
+  ISSUE_CHAT_BOOTSTRAP_MAX_IDS,
   INBOX_MINE_ISSUE_STATUSES,
   INBOX_MINE_ISSUE_STATUS_FILTER,
   ISSUE_PRIORITIES,
@@ -404,6 +443,8 @@ export {
   ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
   ISSUE_RECOVERY_ACTION_STATUSES,
   ISSUE_RECOVERY_ACTION_OWNER_TYPES,
+  ISSUE_BLOCKER_STALLED_WAKE_REASON,
+  ISSUE_BLOCKER_STALL_RELATIONS,
   ISSUE_RECOVERY_ACTION_OUTCOMES,
   pluginOperationIssueOriginKind,
   isPluginOperationIssueOriginKind,
@@ -597,6 +638,7 @@ export {
   type IssueRecoveryActionKind,
   type IssueRecoveryActionStatus,
   type IssueRecoveryActionOwnerType,
+  type IssueBlockerStallRelation,
   type IssueRecoveryActionOutcome,
   type IssueRelationType,
   type IssueTreeControlMode,
@@ -940,6 +982,7 @@ export type {
   ProjectBudgetSummary,
   ProjectRepository,
   ProjectRepositoryOptions,
+  ProjectEnvironmentOptions,
   ProjectGitAuthorization,
   ProjectCodebase,
   ProjectCodebaseOrigin,
@@ -1122,6 +1165,7 @@ export type {
   IssueBlockedInboxSeverity,
   IssueBlockedInboxState,
   IssueRecoveryAction,
+  IssueBlockerStalledWakeContext,
   IssueWatchdog,
   IssueWatchdogStatus,
   IssueWatchdogSummary,
@@ -1148,6 +1192,8 @@ export type {
   IssueExecutionDecision,
   IssueComment,
   IssueRecentComments,
+  IssueChatBootstrap,
+  IssueChatBootstrapItem,
   IssueQueuedCommentEntry,
   IssueQueuedCommentProtocol,
   IssueQueuedCommentQueue,
@@ -1220,6 +1266,7 @@ export type {
   IssueDocument,
   IssueDocumentSummary,
   DocumentRevision,
+  ExactDocumentRevision,
   DocumentFormat,
   LegacyPlanDocument,
   IssueAttachment,
@@ -1968,6 +2015,7 @@ export {
   type CompanySearchQuery,
   createIssueSchema,
   issueSummariesQuerySchema,
+  issueChatBootstrapQuerySchema,
   setIssueTitleSchema,
   type SetIssueTitle,
   createIssueInputSchema,
@@ -1994,6 +2042,9 @@ export {
   taskRetrySchema,
   reconstructWorkspaceSchema,
   resumeWorkspaceFinalizationSchema,
+  confirmNativeControllerStoppedSchema,
+  confirmRunStoppedSchema,
+  confirmOwnerGoneSchema,
   issueReviewRequestSchema,
   issueExecutionWorkspaceSettingsSchema,
   checkoutIssueSchema,
@@ -2146,6 +2197,7 @@ export {
   resolveBudgetIncidentSchema,
   resolveApprovalSchema,
   requestApprovalRevisionSchema,
+  cancelApprovalSchema,
   resubmitApprovalSchema,
   addApprovalCommentSchema,
   type CreateApproval,
@@ -2153,8 +2205,13 @@ export {
   type ResolveBudgetIncident,
   type ResolveApproval,
   type RequestApprovalRevision,
+  type CancelApproval,
   type ResubmitApproval,
   type AddApprovalComment,
+  attentionCloseSchema,
+  attentionTransferSchema,
+  type AttentionClose,
+  type AttentionTransfer,
   envBindingPlainSchema,
   envBindingSecretRefSchema,
   envBindingUserSecretRefSchema,
@@ -2367,6 +2424,8 @@ export {
   updateCompanyMemberWithPermissionsSchema,
   archiveCompanyMemberSchema,
   updateMemberPermissionsSchema,
+  updateAgentPermissionGrantSchema,
+  type UpdateAgentPermissionGrant,
   searchAdminUsersQuerySchema,
   updateUserCompanyAccessSchema,
   type CreateCostEvent,
@@ -2612,6 +2671,7 @@ export {
 export {
   adapterSupportsRemoteManagedEnvironments,
   getEnvironmentCapabilities,
+  environmentSupportsLoginPty,
   getAdapterEnvironmentSupport,
   isEnvironmentDriverSupportedForAdapter,
   isSandboxProviderSupportedForAdapter,
@@ -2797,6 +2857,7 @@ export * from "./types/voice-sessions.js";
 export * from "./validators/voice-sessions.js";
 
 export * from "./agent-appearance.js";
+export * from "./attention-audience.js";
 export * from "./ai-connections.js";
 export * from "./ai-connection-router.js";
 export * from "./ai-connection-usage.js";
@@ -2851,7 +2912,7 @@ export { updatePrimaryAgentSchema, type UpdatePrimaryAgent, type PrimaryAgentPre
 export * from "./agent-avatar-upload.js";
 
 export type { DotBinding, DotInvitation, DotConnection, DotPairing } from "./dot-invitations.js";
-export { agentHarnessType, agentRuntimeSettingsHarness, agentRunner, paperclipRunnerProfileForHarness, paperclipRunnerSupportsPlatform, PAPERCLIP_RUNNER_MINIMUM_GLIBC_VERSION, type AgentRunnerChoice, type AgentRunner, type AgentRunnerAvailability } from "./agent-runner.js";
+export { agentHarnessType, agentRuntimeSettingsHarness, agentRunner, paperclipRunnerCreationLifecycle, paperclipRunnerProfileForHarness, paperclipRunnerSupportsPlatform, PAPERCLIP_RUNNER_MINIMUM_GLIBC_VERSION, type AgentRunnerChoice, type AgentRunner, type AgentRunnerAvailability } from "./agent-runner.js";
 export { normalizeClaudeRunnerOptions, type AgentConfigurationWarning } from "./runner-configuration-warnings.js";
 export { EXTERNAL_AGENT_TOOL_GUIDANCE, DOT_AGENT_TOOL_GUIDANCE, GROK_BOT_AGENT_TOOL_GUIDANCE } from "./external-agent-guidance.js";
 
@@ -2876,7 +2937,7 @@ export * from "./prompt-injection-prevention.js";
 
 export * from "./workspace-provider.js";
 export * from "./workflows.js";
-export { updateWorkspacePreferenceSchema, type UpdateWorkspacePreference, type WorkspacePreference } from "./workspace-preferences.js";
+export { isValidIanaTimeZone, updateWorkspacePreferenceSchema, WORKSPACE_PREFERENCE_TIME_ZONE_MAX_LENGTH, type UpdateWorkspacePreference, type WorkspacePreference } from "./workspace-preferences.js";
 export * from "./agent-configuration.js";
 export {
   remoteWorkspaceSourceSchema,
@@ -2893,3 +2954,10 @@ export { readProviderFailure, type ProviderFailure } from "./provider-failure.ge
 export type { BoardBootstrap, BoardBootstrapSession } from "./types/board-bootstrap.js";
 export { readBoardBootstrap } from "./board-bootstrap.js";
 export * from "./provider-rate-limits.js";
+export * from "./agent-interaction-permissions.js";
+export * from "./run-failure-cause.js";
+export {
+  TASK_IDENTITY_CHANGED_FIELD,
+  issueActivityChangesTaskIdentity,
+} from "./issue-activity-identity.js";
+export { recognizeLinkPreview, type LinkPreviewTarget, type LinkPreviewState, type LinkPreview, type LinkPreviewResult } from "./link-preview.js";

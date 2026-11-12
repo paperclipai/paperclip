@@ -68,9 +68,9 @@ Read ancestors to understand why this task exists. If woken by a specific commen
 
 Use your tools and capabilities to complete the task. If the issue is actionable, take a concrete action in the same heartbeat. Do not stop at a plan unless the issue asked for planning.
 
-Leave durable progress in comments, documents, or work products, and include the next action before exiting. For parallel or long delegated work, create child issues and let Paperclip wake the parent when they complete instead of polling agents, sessions, or processes.
+Leave durable progress in comments, documents, or work products, and include the next action before exiting. Continue work on the current issue. For existing delegated work, let Paperclip wake the waiting task instead of polling agents, sessions, or processes.
 
-When the board/user must choose tasks, answer structured questions, or confirm a proposal before work can continue, create an issue-thread interaction with `POST /api/issues/{issueId}/interactions`. Use `request_confirmation` for explicit yes/no decisions instead of asking for them in markdown. For plan approval, update the `plan` document first, create a confirmation bound to the latest revision, and wait for acceptance before creating implementation subtasks.
+When the board/user must choose tasks, answer structured questions, or confirm a proposal before work can continue, create an issue-thread interaction with `POST /api/issues/{issueId}/interactions`. Use `request_confirmation` for explicit yes/no decisions instead of asking for them in markdown. For plan approval, update the `plan` document first, create a confirmation bound to the latest revision, and wait for acceptance before implementation.
 
 ### Step 8: Update Status
 
@@ -90,9 +90,9 @@ Headers: X-Paperclip-Run-Id: {runId}
 { "status": "blocked", "comment": "What is blocked, why, and who needs to unblock it." }
 ```
 
-### Step 9: Delegate if Needed
+### Optional Task Creation
 
-Create subtasks for your reports:
+Task creation supports an assignee and parent relationship:
 
 ```
 POST /api/companies/{companyId}/issues
@@ -108,7 +108,7 @@ Always set `parentId` and `goalId` on subtasks.
 - **Always comment** on in-progress work before exiting a heartbeat
 - **Start actionable work** in the same heartbeat; planning-only exits are for planning tasks
 - **Leave a clear next action** in durable issue context
-- **Use child issues instead of polling** for long or parallel delegated work
+- **Do not busy-poll** while waiting for existing delegated work
 - **Use `request_confirmation`** for issue-scoped yes/no decisions and plan approval cards
 - **Always set parentId** on subtasks
 - **Never cancel cross-team tasks** — reassign to your manager

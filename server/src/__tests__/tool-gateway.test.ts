@@ -738,6 +738,60 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     } finally { await remote.close(); }
   });
 
+  it("defaults GitHub repository creation to the only installed organization for agents and connection tests", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const remote = await startFakeRemoteMcpServer(({ body }) => ({ body: {
+      jsonrpc: "2.0", id: body?.id, result: { content: [{ type: "text", text: "Repository created" }] },
+    } }));
+    try {
+      const { application, connection, catalogEntry } = await createRemoteMcpTool(db, company.id, {
+        url: remote.url, applicationKey: "github", toolName: "create_repository", riskLevel: "write",
+        connectionConfig: { sourceTemplateKey: "github", connectionMethodKey: "managed" },
+      });
+      await db.update(toolCatalogEntries).set({ inputSchema: {
+        type: "object", required: ["name"], additionalProperties: false, properties: {
+          name: { type: "string" },
+          organization: { type: "string", description: "Organization to create the repository in (omit to create in your personal account)" },
+        },
+      } }).where(eq(toolCatalogEntries.id, catalogEntry.id));
+      const github = { userId: "1", login: "octocat", installationCount: 1, repositoryCount: 1,
+        repositorySelection: "all" as const, installationIds: ["9"], installationOwnerLogins: ["acme"],
+        repositories: [{ id: "10", fullName: "acme/site", installationId: "9", ownerType: "organization" as const }] };
+      await db.update(connectionGrants).set({ providerTenant: { github } })
+        .where(eq(connectionGrants.connectionId, connection.id));
+      const toolName = expectedConnectedToolName({ applicationKey: application.applicationKey,
+        connectionId: connection.id, toolName: catalogEntry.toolName });
+      await allowToolsForAgent(db, company.id, agent.id, [toolName]);
+      const gateway = createTestToolGatewayService(db);
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      const listed = (await gateway.listToolsForSession(session.token)).find((tool) => tool.name === toolName);
+      expect((listed?.parametersSchema as { properties?: Record<string, { description?: string }> } | undefined)
+        ?.properties?.organization?.description).toMatch(/installed only on one organization; then Paperclip uses that organization/);
+
+      await gateway.executeTool({ sessionToken: session.token, tool: toolName, parameters: { name: "agent-site" } });
+      await gateway.executeTool({ sessionToken: session.token, tool: toolName,
+        parameters: { name: "chosen-site", organization: "globex" } });
+      await createActiveMember(db, company.id, "test-user");
+      const testCall = await gateway.executeTestCall({ companyId: company.id, connectionId: connection.id,
+        agentId: agent.id, userId: "test-user", toolName, parameters: { name: "test-site" } });
+      expect(testCall).toMatchObject({ decision: "allowed" });
+      // With the App also on the personal account, GitHub's personal default applies.
+      await db.update(connectionGrants).set({ providerTenant: { github: { ...github, installationOwnerLogins: ["octocat", "acme"] } } })
+        .where(eq(connectionGrants.connectionId, connection.id));
+      await gateway.executeTool({ sessionToken: session.token, tool: toolName, parameters: { name: "personal-site" } });
+
+      expect(remote.requests.filter((entry) => entry.body?.method === "tools/call")
+        .map((entry) => (entry.body?.params as { arguments?: unknown } | undefined)?.arguments)).toEqual([
+        { name: "agent-site", organization: "acme" },
+        { name: "chosen-site", organization: "globex" },
+        { name: "test-site", organization: "acme" },
+        { name: "personal-site" },
+      ]);
+    } finally { await remote.close(); }
+  });
+
   it.each(["config", "transport", "application", "legacy_application"])("records an actionable GitHub access error from %s metadata after one approved call and keeps the connection usable", async source => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
@@ -3865,7 +3919,7 @@ rl.on("line", (line) => {
             previewMarkdown: approvalRequest.previewMarkdown,
             argumentsSummaryJson: expect.stringContaining('"value":"original"'),
             argumentsHash: approvalRequest.canonicalArgumentsHash,
-            expiresAt: approvalRequest.expiresAt!.toISOString(),
+            expiresAt: null,
           },
         },
       });
@@ -4350,7 +4404,7 @@ rl.on("line", (line) => {
       expect(freshRequest).toBeTruthy();
       expect(freshRequest!.status).toBe("pending");
       expect(freshRequest!.signedArguments).not.toBeNull();
-      expect(freshRequest!.expiresAt).not.toBeNull();
+      expect(freshRequest!.expiresAt).toBeNull();
 
       // The tool never executed while the approval stayed pending.
       expect(fake.requests).toHaveLength(0);
@@ -4570,6 +4624,154 @@ rl.on("line", (line) => {
       expect(persisted).not.toContain(rotatedCredential);
     } finally {
       await fake.close();
+    }
+  });
+
+  for (const scenario of ["slow success", "default deadline", "explicit deadline", "peer reset", "cyclic peer reset", "primitive peer reset"] as const) {
+    it(`records remote SSE ${scenario} without confusing a call deadline with a broken transport`, async () => {
+      const company = await createCompany(db);
+      const agent = await createAgent(db, company.id);
+      const { run } = await createIssueAndRun(db, company.id, agent.id);
+      const { connection } = await createRemoteMcpTool(db, company.id);
+      await allowAllToolsForAgent(db, company.id, agent.id);
+      const reading = Promise.withResolvers<void>();
+      let bodyController!: ReadableStreamDefaultController<Uint8Array>;
+      let requestId!: string;
+      let signal!: AbortSignal;
+      const progress = 'data: {"jsonrpc":"2.0","method":"notifications/progress","params":{"progress":1}}\n\n';
+      const cause = Object.assign(new Error("peer failure Authorization: Bearer fixture-private-value"), { code: "ECONNRESET" });
+      const failure = Object.assign(new Error("aborted", { cause }), { code: "ECONNRESET" });
+      if (scenario === "cyclic peer reset") Object.assign(cause, { cause: failure });
+      const gateway = createTestToolGatewayService(db, {
+        remoteHttpRequest: async (_url, init) => {
+          requestId = JSON.parse(String(init.body)).id;
+          signal = init.signal!;
+          const body = new ReadableStream<Uint8Array>({
+            start(controller) {
+              bodyController = controller;
+              controller.enqueue(new TextEncoder().encode(progress));
+              init.signal!.addEventListener("abort", () => controller.error(failure), { once: true });
+            },
+            pull() { reading.resolve(); },
+          }, { highWaterMark: 0 });
+          return new Response(body, { headers: { "content-type": "text/event-stream", "x-request-id": "sse-request" } });
+        },
+      });
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      const tool = (await gateway.listToolsForSession(session.token)).find((entry) => entry.providerType === "mcp_remote_http")!;
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const call = gateway.executeTool({
+        sessionToken: session.token, tool: tool.name, parameters: { key: "a", value: "b" },
+        ...(scenario === "explicit deadline" ? { timeoutMs: 1500 } : {}),
+      }).then((value) => ({ value, error: null }), (error: unknown) => ({ value: null, error }));
+      try {
+        await reading.promise;
+        if (scenario.includes("peer reset")) bodyController.error(scenario === "primitive peer reset" ? "peer reset" : failure);
+        else await vi.advanceTimersByTimeAsync(scenario === "slow success" ? 12_000 : scenario === "explicit deadline" ? 1500 : 30_000);
+        if (scenario === "slow success") {
+          expect(signal.aborted).toBe(false);
+          bodyController.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ jsonrpc: "2.0", id: requestId, result: { content: [{ type: "text", text: "completed after twelve seconds" }] } })}\n\n`));
+        }
+        const result = await call;
+        const [event] = await db.select().from(toolCallEvents).where(eq(toolCallEvents.eventType, scenario === "slow success" ? "call_completed" : "call_failed"));
+        const [stored] = await db.select().from(toolConnections).where(eq(toolConnections.id, connection.id));
+        if (scenario === "slow success") {
+          expect(result.error).toBeNull();
+          expect(JSON.stringify(result.value)).toContain("completed after twelve seconds");
+          expect(stored.healthStatus).toBe("ok");
+          expect(event.metadata).toMatchObject({ execution: { stream: { eventsReceived: 2, matchedResponse: true, ended: false } } });
+        } else {
+          const timeout = scenario === "default deadline" || scenario === "explicit deadline";
+          expectGatewayError(result.error, timeout ? 504 : 502, timeout ? "tool_timeout" : "mcp_remote_fetch_failed");
+          expect(stored.healthStatus).toBe("ok");
+          expect(event.metadata).toMatchObject({ execution: {
+            failureKind: timeout ? "invocation_timeout" : "transport_failure",
+            deadline: { timeoutMs: scenario === "explicit deadline" ? 1500 : 30_000, aborted: timeout },
+            error: scenario === "primitive peer reset"
+              ? { name: null, message: "peer reset", code: null, cause: null }
+              : { name: "Error", message: "aborted", code: "ECONNRESET", cause: { name: "Error", code: "ECONNRESET" } },
+            response: { httpStatus: 200, contentType: "text/event-stream", upstreamRequestId: "sse-request" },
+            stream: { bytesReceived: Buffer.byteLength(progress), chunksReceived: 1, eventsReceived: 1, matchedResponse: false, ended: false },
+          } });
+          expect(JSON.stringify(event.metadata)).not.toContain("fixture-private-value");
+          if (scenario !== "primitive peer reset") expect(JSON.stringify(event.metadata)).toContain("peer failure");
+          if (scenario === "cyclic peer reset") expect(JSON.stringify(event.metadata)).toContain("[Circular cause]");
+        }
+      } finally {
+        vi.useRealTimers();
+        bodyController.error(new Error("fixture cleanup"));
+        await call;
+      }
+    });
+  }
+
+  async function startRemoteCallWithControlledBody(respond: (body: ReadableStream<Uint8Array>) => Response, waitForRead = true) {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    await createRemoteMcpTool(db, company.id);
+    await allowAllToolsForAgent(db, company.id, agent.id);
+    const reading = Promise.withResolvers<void>();
+    let bodyController!: ReadableStreamDefaultController<Uint8Array>;
+    let requestId!: string;
+    const gateway = createTestToolGatewayService(db, {
+      remoteHttpRequest: async (_url, init) => {
+        requestId = JSON.parse(String(init.body)).id;
+        return respond(new ReadableStream<Uint8Array>({
+          start(controller) { bodyController = controller; },
+          pull() { reading.resolve(); },
+        }, { highWaterMark: 0 }));
+      },
+    });
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+    const tool = (await gateway.listToolsForSession(session.token)).find((entry) => entry.providerType === "mcp_remote_http")!;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const call = gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters: { key: "a", value: "b" }, timeoutMs: 1500 })
+      .then((value) => ({ value, error: null }), (error: unknown) => ({ value: null, error }));
+    if (waitForRead) await reading.promise;
+    const failedEvent = async () => (await db.select().from(toolCallEvents).where(eq(toolCallEvents.eventType, "call_failed")))[0];
+    return { call, failedEvent, body: () => bodyController, requestId: () => requestId };
+  }
+
+  it("keeps a tool question when the call deadline passes while the question is recorded", async () => {
+    const remote = await startRemoteCallWithControlledBody((body) => new Response(body, { headers: { "content-type": "text/event-stream" } }));
+    try {
+      await vi.advanceTimersByTimeAsync(1500);
+      const question = { jsonrpc: "2.0", id: "question-1", method: "elicitation/create", params: { message: "Which folder?", requestedSchema: { type: "object" } } };
+      remote.body().enqueue(new TextEncoder().encode(`data: ${JSON.stringify(question)}\n\n`));
+      expectGatewayError((await remote.call).error, 409, "elicitation_required");
+    } finally {
+      vi.useRealTimers();
+      remote.body().error(new Error("fixture cleanup"));
+      await remote.call;
+    }
+  });
+
+  it("records a transport failure kind when the remote hostname does not resolve", async () => {
+    const remote = await startRemoteCallWithControlledBody(() => {
+      throw new ToolGatewayHttpError(502, "Remote MCP connection hostname did not resolve", "remote_http_dns_failed");
+    }, false);
+    try {
+      expectGatewayError((await remote.call).error, 502, "remote_http_dns_failed");
+      expect((await remote.failedEvent()).metadata).toMatchObject({ execution: { failureKind: "transport_failure" } });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("records the bytes of an error response body that fails partway", async () => {
+    const remote = await startRemoteCallWithControlledBody((body) => new Response(body, { status: 503, headers: { "content-type": "text/plain" } }));
+    try {
+      const partial = "upstream overloaded, partial";
+      remote.body().enqueue(new TextEncoder().encode(partial));
+      remote.body().error(Object.assign(new Error("aborted"), { code: "ECONNRESET" }));
+      expectGatewayError((await remote.call).error, 502, "mcp_remote_fetch_failed");
+      expect((await remote.failedEvent()).metadata).toMatchObject({ execution: {
+        failureKind: "transport_failure",
+        response: { httpStatus: 503, bodySizeBytes: Buffer.byteLength(partial) },
+      } });
+    } finally {
+      vi.useRealTimers();
     }
   });
 

@@ -1,3 +1,4 @@
+import { RetainedSandboxAbsentError } from "../services/retained-sandbox-absent-error.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import * as remoteWorkspaces from "../services/remote-workspaces.js";
@@ -31,6 +32,7 @@ vi.mock("../services/workspace-realization.js", () => ({
 }));
 
 vi.mock("../services/environments.js", () => ({
+  assertEnvironmentCompanyBinding: vi.fn(async () => {}),
   environmentService: vi.fn(() => ({
     ensureLocalEnvironment: vi.fn(),
     getById: mockGetEnvironment,
@@ -281,6 +283,15 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
       "run-1", "released", expect.any(Function), "stop_and_retain",
       ...(cancelActiveWork ? [true] : []),
     );
+  });
+
+  it("enforces company bindings when a caller acquires a lease directly", async () => {
+    const runtime = makeMockRuntime();
+    await environmentRunOrchestrator(mockDb, { environmentRuntime: runtime }).acquireLease({
+      companyId: "company-1", environment: makeEnvironment(), issueId: null, agentId: "agent-1", heartbeatRunId: "run-1",
+      persistedExecutionWorkspace: null, executionWorkspaceSettings: null, adapterType: null,
+    });
+    expect(runtime.acquireRunLease).toHaveBeenCalledWith(expect.objectContaining({ assertCompanyBinding: true }));
   });
 
   it("realizes an enrolled remote workspace in place and persists its authoritative remote root", async () => {
@@ -850,6 +861,34 @@ describe("native runner lifecycle changes before lease acquisition", () => {
     expect(coldAgain.lease.leasePolicy).toBe("ephemeral");
   });
 
+  // The remote-sandbox warm default asks the provider before it requests a
+  // reusable lease, and asks only for a run whose lifecycle nobody chose.
+  it.each([
+    ["a provider with reusable leases", {}, true, true, true],
+    ["a provider without reusable leases (E2B, Modal, fake)", {}, false, true, false],
+    ["an explicit per-turn agent", { lifecycleMode: "per_turn" }, true, false, false],
+    ["a managed Claude account", { provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-4-6", managed: true }, true, false, false],
+  ] as const)("defaults an inheriting sandbox run to warm only on %s", async (_name, agent, supported, probed, warm) => {
+    const environment = { ...makeEnvironment("sandbox"), config: { provider: "daytona", reuseLease: false } };
+    mockGetEnvironment.mockResolvedValue(environment);
+    const acquireRunLease = vi.fn(async (input) => ({ environment: input.environment, lease: makeLease(), leaseContext: { executionWorkspaceId: null, executionWorkspaceMode: null } }));
+    const providerSupportsReusableLeases = vi.fn(async () => supported);
+    const orchestrator = environmentRunOrchestrator({} as never, {
+      environmentRuntime: { ...makeMockRuntime({ acquireRunLease }), providerSupportsReusableLeases } as never,
+    });
+    const { managed, ...adapterConfig } = { managed: false, ...agent };
+    await orchestrator.acquireForRun({
+      companyId: "company-1", selectedEnvironmentId: "env-1", localEnvironmentId: "local", adapterType: "paperclip_runner",
+      adapterConfig, managedAiCredentialIdentity: managed ? "account:generation" : undefined,
+      issueId: "task-1", heartbeatRunId: "run-1", agentId: "agent-1",
+      persistedExecutionWorkspace: null, executionWorkspaceSettings: null,
+    });
+    expect(providerSupportsReusableLeases).toHaveBeenCalledTimes(probed ? 1 : 0);
+    expect(acquireRunLease.mock.calls[0][0].environment.config.reuseLease).toBe(warm);
+    expect(acquireRunLease.mock.calls[0][0].warmRunnerIdleTimeoutMs).toBe(warm ? 300_000 : undefined);
+    expect(environment.config.reuseLease).toBe(false);
+  });
+
   it.each([
     ["paperclip_runner", undefined, undefined, false],
     ["paperclip_runner", "inherit", "per_turn", false],
@@ -1015,6 +1054,13 @@ describe("live remote runner lease reattachment", () => {
       expect(mockUpdateLeaseMetadata).not.toHaveBeenCalled();
     },
   );
+  it("names a provider-confirmed missing sandbox as a lease mismatch without acquiring a replacement", async () => {
+    const runtime = makeMockRuntime({ resumeRunLease: vi.fn(async () => { throw new RetainedSandboxAbsentError(); }) });
+    await expect(environmentRunOrchestrator({} as never, { environmentRuntime: runtime }).acquireForRun(input))
+      .rejects.toThrow(new Error("native_remote_recovery_lease_mismatch: stage=environment_resume field=lease_expired"));
+    expect(runtime.acquireRunLease).not.toHaveBeenCalled();
+    expect(runtime.execute).not.toHaveBeenCalled();
+  });
   it("preserves a retained sandbox startup failure without acquiring a replacement", async () => {
     const error = new Error("retained sandbox startup timed out");
     const runtime = makeMockRuntime({ resumeRunLease: vi.fn(async () => { throw error; }) });

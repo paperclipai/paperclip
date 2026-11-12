@@ -4,6 +4,7 @@ import { agents, dotRunnerAssignments, grokBotDispatches, heartbeatRuns, nativeR
 import { captureRunFailure, type RunFailureStatus } from "../sentry.js";
 import {
   collectRunFailureDiagnostics,
+  collectRunFailureHostTokenSecrets,
   collectRunFailureSecretValues,
   redactRunFailureSecretValues,
   sanitizeRunFailureDiagnostics,
@@ -19,6 +20,7 @@ import { RESTRICTED_WORKSPACE_SOURCE_REASON } from "./workspace-source-restricti
 import { PLUGIN_RUNNER_AI_CONNECTION_REQUIRED } from "./plugin-runner-ai-connection.js";
 import { NATIVE_PROVIDER_OVERLOADED_CODE } from "./native-runtime/native-provider-failure.js";
 import { PROJECT_ACCESS_DENIED } from "./project-access-denial.js";
+import { REVIEWED_CHAT_BINDING_NOT_READY } from "./reviewed-chat-binding-diagnostics.js";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
 
@@ -288,6 +290,16 @@ async function isScheduledNativeCapacityRetry(db: Db, run: HeartbeatRun, options
   return retry !== undefined;
 }
 
+/**
+ * A reviewed chat attestation exhausted its short lock or delivery wait before
+ * provider dispatch, and the setup path scheduled the bounded retry. The retry
+ * owns recovery; an exhausted or unscheduled wait stays reportable.
+ */
+function isScheduledReviewedChatRetry(run: HeartbeatRun, options: RunFailureReportOptions): boolean {
+  return run.status === "failed" && run.errorCode === REVIEWED_CHAT_BINDING_NOT_READY &&
+    options.reviewedChatRetry === "scheduled";
+}
+
 const providerAuthErrorCodes = new Set(["claude_auth_required", "acpx_auth_required"]);
 
 /**
@@ -341,6 +353,8 @@ export function reportRunFailure(db: Db, run: HeartbeatRun, options: RunFailureR
   if (run.status === "cancelled" && !isUnexpectedRunCancellation(run)) return Promise.resolve();
   // The terminal write that ends the retry reports instead (`isNewTerminalRunFailure`).
   if (isPendingNativeRetry(run)) return Promise.resolve();
+  // The setup path reports this run again once it has decided the retry.
+  if (options.reviewedChatRetry === "pending") return Promise.resolve();
   if (mode === "unexpected" && (
     isMissingSecretConfigurationBlocker(run, options) ||
     isAiConnectionSelectionBlocker(run, options) ||
@@ -352,6 +366,7 @@ export function reportRunFailure(db: Db, run: HeartbeatRun, options: RunFailureR
     isProviderQuotaFailure(run, options) ||
     isCodexAcpModelCapacityFailure(run, options) ||
     isAcpProviderAccessFailure(run, options) ||
+    isScheduledReviewedChatRetry(run, options) ||
     isRestartInterruptedSetup(run)
   )) return Promise.resolve();
   const runStatus = run.status;
@@ -376,9 +391,11 @@ async function captureTerminalRunFailure(
       errorCode: run.errorCode ?? null,
       diagnostics: collectRunFailureDiagnostics(run, options),
     }, [...new Set([
-      ...collectRunFailureSecretValues(process.env),
+      // The server's own environment: short host settings under unknown
+      // names are private only as whole tokens (see collectHostEnvironmentTokenSecrets).
+      ...collectRunFailureSecretValues(process.env, [], { hostProcess: true }),
       ...(options.secretValues ?? []),
-    ])].sort((a, b) => b.length - a.length));
+    ])].sort((a, b) => b.length - a.length), collectRunFailureHostTokenSecrets(process.env));
     const agent = await db
       .select({ adapterType: agents.adapterType })
       .from(agents)

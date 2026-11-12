@@ -1503,22 +1503,30 @@ describe("NewIssueDialog", () => {
     act(() => root.unmount());
   });
 
-  it("shows the create-task loading state only in the submit button", async () => {
+  it.each([
+    { name: "description only", defaults: { description: "Pending task" } },
+    { name: "explicit title", defaults: { title: "Pending task" } },
+    { name: "sub-task", defaults: { description: "Pending task", parentId: "parent-1", parentTitle: "Parent task" } },
+  ])("keeps the composer layout stable while submitting a task with $name", async ({ defaults }) => {
     mockIssuesApi.create.mockReturnValue(new Promise(() => undefined));
-    dialogState.newIssueDefaults = { title: "Pending task" };
+    dialogState.newIssueDefaults = defaults;
 
     const { root } = renderDialog(container);
     await flush();
 
     const submitButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.getAttribute("aria-label") === "Create task");
+      .find((button) => button.getAttribute("data-testid") === "task-chat-composer-send");
     expect(submitButton).not.toBeUndefined();
+    const composer = container.querySelector(".paperclip-task-chat-composer")!;
+    const sections = Array.from(composer.children);
 
     await act(async () => {
       submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flush();
 
+    expect(mockIssuesApi.create).toHaveBeenCalledTimes(1);
+    expect(Array.from(composer.children)).toEqual(sections);
     expect(submitButton?.querySelector(".animate-spin")).not.toBeNull();
     expect(submitButton?.getAttribute("aria-busy")).toBe("true");
     expect(container.textContent).not.toContain("Creating issue");

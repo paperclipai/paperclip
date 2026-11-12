@@ -13,6 +13,7 @@ import type { StorageService } from "../../storage/types.js";
 import { lockNativeRunnerCheckpointOwner, validateNativeRunnerCheckpointOwner, type NativeRunnerCheckpointFenceOwner } from "./native-runner-checkpoint.js";
 import { loadConfig } from "../../config.js";
 import { getStorageService } from "../../storage/index.js";
+import { storageOutageWaitFor, waitOutStorageOutages } from "../../storage/storage-unavailable.js";
 import { readNativeHarnessBackupStamp, verifyNativeHarnessBackupStamp } from "./native-harness-backup-stamp.js";
 import { captureNativeHarnessArchive, restoreNativeHarnessArchive, MAX_NATIVE_HARNESS_OBJECT_BYTES } from "./native-harness-backup-archive.js";
 import { removeNativeHarnessBackup } from "./native-harness-backup-cleanup.js";
@@ -57,7 +58,7 @@ export async function verifyRecoverableNativeHarnessBackup(input: {
   const storage = durableNativeHarnessStorage();
   if (!storage) return verifyNativeHarnessBackupStamp(stamp, input.providerLeaseId);
   const durable = await verifyDurableNativeHarnessBackup({ db: input.db, storage, companyId: input.companyId,
-    scopeDigest: stamp.sessionScopeSha256, manifestSha256: stamp.manifestSha256, signal: AbortSignal.timeout(300_000) });
+    scopeDigest: stamp.sessionScopeSha256, manifestSha256: stamp.manifestSha256, downloadIdleTimeoutMs: NATIVE_HARNESS_DOWNLOAD_IDLE_TIMEOUT_MS });
   return durable || process.env.PAPERCLIP_EPHEMERAL_SERVER !== "true" && verifyNativeHarnessBackupStamp(stamp, input.providerLeaseId);
 }
 function reference(row: Row): Reference {
@@ -193,12 +194,18 @@ export async function assertNativeHarnessBackupOwner(db: Db, owner: NativeRunner
   await db.transaction(tx => fence(tx, owner));
 }
 
-export async function persistNativeHarnessBackup(input: {
+type PersistNativeHarnessBackupInput = {
   db: Db; storage: StorageService; owner: NativeRunnerCheckpointFenceOwner | OfflineOwner | SettledControllerArchiveOwner | SettledNativeHarnessBackupOwner;
   scopeDigest: string; root: string; signal?: AbortSignal; maxArchiveBytes?: number;
   inactiveSource?: { normalizedSessionId: string; runnerInstanceId: string; providerLeaseId: string };
   providerArtifacts?: NativeProviderArtifactSource;
-}): Promise<void> {
+};
+
+export function persistNativeHarnessBackup(input: PersistNativeHarnessBackupInput): Promise<void> {
+  return waitOutStorageOutages(() => storageOutageWaitFor("saving the provider session", () => persistNativeHarnessBackupOnce(input)));
+}
+
+async function persistNativeHarnessBackupOnce(input: PersistNativeHarnessBackupInput): Promise<void> {
   if (!/^[a-f0-9]{64}$/.test(input.scopeDigest)) fail("scope_invalid");
   if ("kind" in input.owner && input.owner.kind === "settled_native_harness_backup"
     && (input.scopeDigest !== input.owner.scopeDigest || input.root !== input.owner.root)) fail("preservation_source_changed");
@@ -242,7 +249,9 @@ export async function persistNativeHarnessBackup(input: {
     });
     await input.storage.putFile({ companyId: ref.companyId, namespace: "native-harness-backups", objectKey: ref.objectKey,
       originalFilename: null, contentType: "application/octet-stream", body: createReadStream(encrypted),
-      byteSize: ref.byteSize, sha256: ref.sha256, signal: input.signal });
+      // The file source lets a request-rate limit (503 SlowDown) or a dropped
+      // connection resend the upload; a stream body can be sent only once.
+      byteSize: ref.byteSize, sha256: ref.sha256, sourceFile: encrypted, signal: input.signal });
     await receive(input.storage, ref, undefined, input.signal);
     await input.db.transaction(async tx => {
       await fence(tx, input.owner, inactiveSource, input.signal);
@@ -287,7 +296,82 @@ export async function persistNativeHarnessBackup(input: {
   } finally { key.fill(0); await removeNativeHarnessBackup(scratch); }
 }
 
+/** How long a durable read may go without progress. */
+export const NATIVE_HARNESS_DOWNLOAD_IDLE_TIMEOUT_MS = 300_000;
+/** Outer bound for one whole restore or verification, including local steps. */
+export const NATIVE_HARNESS_RESTORE_MAX_MS = 30 * 60_000;
+export const NATIVE_HARNESS_DOWNLOAD_STALLED = "native_harness_storage_download_stalled";
+export const NATIVE_HARNESS_RESTORE_DEADLINE_EXCEEDED = "native_harness_storage_restore_deadline_exceeded";
+
+/**
+ * Bound each durable read by inactivity, not by a short total time. A large or
+ * slow backup keeps restoring while bytes flow through the read; a read that
+ * makes no progress for the idle window aborts the whole restore with a named
+ * error. A generous outer bound keeps a hung local step diagnosable. Caller
+ * cancellation (Stop) keeps its own reason.
+ */
+async function withDownloadProgressDeadline<T>(
+  input: { storage: StorageService; signal?: AbortSignal; downloadIdleTimeoutMs?: number; restoreMaxMs?: number },
+  run: (storage: StorageService, signal: AbortSignal | undefined) => Promise<T>,
+): Promise<T> {
+  const idleMs = input.downloadIdleTimeoutMs;
+  if (idleMs === undefined) return run(input.storage, input.signal);
+  if (!Number.isSafeInteger(idleMs) || idleMs <= 0) throw new Error("native_harness_storage_idle_timeout_invalid");
+  const stall = new AbortController();
+  const outer = setTimeout(() => stall.abort(new Error(NATIVE_HARNESS_RESTORE_DEADLINE_EXCEEDED)),
+    input.restoreMaxMs ?? Math.max(idleMs, NATIVE_HARNESS_RESTORE_MAX_MS));
+  outer.unref?.();
+  const signal = input.signal ? AbortSignal.any([input.signal, stall.signal]) : stall.signal;
+  const base = input.storage;
+  const getObject: StorageService["getObject"] = async (companyId, objectKey, options) => {
+    let timer: NodeJS.Timeout | undefined;
+    const disarm = () => { if (timer) clearTimeout(timer); timer = undefined; };
+    const arm = () => {
+      disarm();
+      timer = setTimeout(() => stall.abort(new Error(NATIVE_HARNESS_DOWNLOAD_STALLED)), idleMs);
+      timer.unref?.();
+    };
+    arm();
+    let object: Awaited<ReturnType<StorageService["getObject"]>>;
+    try {
+      object = await base.getObject(companyId, objectKey, {
+        ...options, signal: options?.signal ? AbortSignal.any([options.signal, signal]) : signal });
+    } catch (error) { disarm(); throw error; }
+    arm();
+    // Chunks pass through as the consumer reads them, so a read is idle when
+    // neither the store nor the local writer makes progress.
+    const observed = new Transform({
+      transform(bytes, _encoding, callback) { arm(); callback(null, bytes); },
+      flush(callback) { disarm(); callback(); },
+    });
+    observed.once("close", disarm);
+    pipeline(object.stream, observed, { signal }).catch(() => disarm());
+    return { ...object, stream: observed };
+  };
+  // Forward every other member to the real service so its own state stays intact.
+  const storage = new Proxy(base, {
+    get(target, property) {
+      if (property === "getObject") return getObject;
+      const value = Reflect.get(target, property, target) as unknown;
+      return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+    },
+  });
+  try {
+    return await run(storage, signal);
+  } catch (error) {
+    if (stall.signal.aborted && !input.signal?.aborted) throw stall.signal.reason;
+    throw error;
+  } finally { clearTimeout(outer); }
+}
+
 export async function restoreDurableNativeHarnessBackup(input: {
+  db: Db; storage: StorageService; companyId: string; scopeDigest: string;
+  backupRoot: string; signal?: AbortSignal; downloadIdleTimeoutMs?: number; restoreMaxMs?: number;
+}): Promise<boolean> {
+  return withDownloadProgressDeadline(input, (storage, signal) => restoreCurrentNativeHarnessBackup({ ...input, storage, signal }));
+}
+
+async function restoreCurrentNativeHarnessBackup(input: {
   db: Db; storage: StorageService; companyId: string; scopeDigest: string;
   backupRoot: string; signal?: AbortSignal;
 }): Promise<boolean> {
@@ -332,6 +416,8 @@ export async function restoreDurableNativeHarnessBackup(input: {
     const pending = join(input.backupRoot, `.durable-${randomUUID()}`);
     try {
       await cp(restored, pending, { recursive: true, preserveTimestamps: true, verbatimSymlinks: true, errorOnExist: true, force: false });
+      // A deadline or Stop that fired during the local copy must not publish.
+      input.signal?.throwIfAborted();
       await publishNativeHarnessBackup({ db: input.db, companyId: input.companyId, scopeDigest: input.scopeDigest,
         backupRoot: input.backupRoot, pendingRoot: pending });
     } finally { await removeNativeHarnessBackup(pending); }
@@ -340,13 +426,14 @@ export async function restoreDurableNativeHarnessBackup(input: {
 }
 
 export async function verifyDurableNativeHarnessBackup(input: {
-  db: Db; storage: StorageService; companyId: string; scopeDigest: string; manifestSha256: string; backupId?: string; signal?: AbortSignal;
+  db: Db; storage: StorageService; companyId: string; scopeDigest: string; manifestSha256: string; backupId?: string;
+  signal?: AbortSignal; downloadIdleTimeoutMs?: number;
 }): Promise<boolean> {
   const [row] = await input.db.select().from(nativeHarnessBackups).where(and(scope(input),
     eq(nativeHarnessBackups.manifestSha256, input.manifestSha256), input.backupId ? eq(nativeHarnessBackups.id, input.backupId) : undefined,
     inArray(nativeHarnessBackups.status, ["current", "superseded"]))).limit(1);
   if (!row) return false;
-  await receive(input.storage, reference(row), undefined, input.signal);
+  await withDownloadProgressDeadline(input, (storage, signal) => receive(storage, reference(row), undefined, signal));
   return true;
 }
 

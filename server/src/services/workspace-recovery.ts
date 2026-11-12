@@ -35,10 +35,17 @@ import { preserveWorkspaceSnapshot } from "./workspace-recovery-snapshot.js";
 import { adoptHistoricalWorkspaceRecoveries } from "./workspace-recovery-backfill.js";
 import { canAdoptNativeSourceRetention, retainNativeRecoverySource, settleRecoveredNativeSourceRetention } from "./native-runtime/native-source-retention.js";
 import { saveRemoteWorkspace } from "./remote-workspaces.js";
+import { continueFromLastSavedWorkspace, isUnverifiableSourceFailure, recordRetainedSourceFallbackDeferral, settleExhaustedRetainedHold } from "./workspace-recovery-fallback.js";
+import { capturePolicyRearmDueCondition, retainedSourceFallbackDueCondition, stopProofRearmDueCondition } from "./workspace-recovery-fallback-discovery.js";
+import { rearmExhaustedCapturePolicy } from "./workspace-recovery-capture-policy.js";
+import { rearmExhaustedStopProof } from "./workspace-recovery-stop-proof.js";
+import { settleRecoveredWorkspaceRestoreHolds } from "./workspace-restore-hold-settlement.js";
 
 const exportCauses = ["native_workspace_sync_out_unrecoverable", "native_workspace_sync_out_retry_exhausted"];
 const terminal = ["failed", "interrupted", "timed_out", "cancelled", "succeeded"];
 const sandboxDiskFull = /No space left on device|Disk quota exceeded/i;
+export const SANDBOX_DISK_FULL_RECOVERY_CAUSE = { label: "sandbox_disk_full", code: "ENOSPC", status: null } as const;
+const isSandboxDiskFullSave = (error: unknown) => error instanceof Error && error.message === REMOTE_WORKSPACE_SANDBOX_DISK_FULL;
 type Source = { companyId: string; issueId: string; runId: string; actionId: string };
 
 type StopEvidenceSource = Omit<Source, "actionId"> & { actionId?: string };
@@ -115,6 +122,42 @@ export function observeStoppedWorkspaceRecovery(db: Db, source: StopEvidenceSour
   return recheckStoppedWorkspaceRecovery(db, source, true);
 }
 
+/**
+ * Ownership-reconciler settle for the RC-50 copyback-owner hold. The recorded
+ * owner was proven gone by the shared prover, so the waiting recheck is due
+ * now instead of after its backoff. It grants no attempt and settles nothing
+ * itself: the worker still proves the owner and its copyback process group
+ * before it takes ownership. Returns whether the recheck was woken.
+ */
+export async function wakeCopybackOwnerRecheck(db: Db, input: {
+  companyId: string; actionId: string; now: Date;
+  owner: { pid: number | null; processStartedAt: string | null; bootId: string | null; processSpace: string | null };
+}): Promise<boolean> {
+  return db.transaction(async tx => {
+    const [action] = await tx.select().from(issueRecoveryActions).where(and(
+      eq(issueRecoveryActions.companyId, input.companyId), eq(issueRecoveryActions.id, input.actionId),
+      inArray(issueRecoveryActions.status, ["active", "escalated"]))).for("update");
+    const hold = action?.evidence?.workspaceOwnerRecovery as { state?: unknown; owner?: Record<string, unknown> } | undefined;
+    const owner = hold?.owner;
+    if (!action || hold?.state !== "operator_required" || !owner || owner.pid !== input.owner.pid
+      || owner.processStartedAt !== input.owner.processStartedAt
+      || (owner.controllerBootId ?? null) !== input.owner.bootId || (owner.hostHash ?? null) !== input.owner.processSpace) return false;
+    const current = readSystemRecovery(action.evidence);
+    const runId = action.evidence.runId;
+    const now = input.now.getTime();
+    if (!current || typeof runId !== "string" || current.sourceRunId !== runId || current.state !== "awaiting_evidence"
+      || current.failure?.code !== "copyback_stop_unconfirmed"
+      || (current.deadlineAt !== null && now >= current.deadlineAt)) return false;
+    const due = Math.max(now, current.providerCooldownAt ?? 0);
+    if (current.nextAttemptAt !== null && current.nextAttemptAt <= due) {
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.workspaceRecovery);
+      return true;
+    }
+    return updateSystemRecovery(tx as unknown as Db, { companyId: input.companyId, issueId: action.sourceIssueId,
+      runId, actionId: action.id }, current, { ...current, revision: current.revision + 1, nextAttemptAt: due });
+  });
+}
+
 /** Admission records intent only. No request handler runs physical recovery. */
 export async function requestWorkspaceRecovery(input: Source & { db: Db; idempotencyKey: string; actorId: string }) {
   return input.db.transaction(async tx => {
@@ -159,7 +202,19 @@ export async function requestWorkspaceRecovery(input: Source & { db: Db; idempot
 export async function recoverRetainedWorkspace(input: Source & { db: Db; environmentRuntime: EnvironmentRuntimeService }) {
   const { db } = input;
   await adoptSystemRecovery(db, input);
-  const initial = await loadSystemRecovery(db, input);
+  let initial = await loadSystemRecovery(db, input);
+  // A hold whose files a sibling saved, or whose source is refused permanently
+  // (including holds saved by older releases), settles without a person.
+  // An adoptable native source keeps its retention path; only the sibling
+  // settlement applies to it.
+  if (initial?.state === "exhausted"
+    && await settleExhaustedRetainedHold(input, initial, { fallback: !canAdoptNativeSourceRetention(initial) })) return;
+  // An exhausted wait for stop proof is re-armed, bounded, once the run is over.
+  if (initial?.state === "exhausted" && await rearmExhaustedStopProof(db, input, initial))
+    initial = await loadSystemRecovery(db, input);
+  // A save exhausted under an older capture policy is retried once under the current one.
+  if (initial?.state === "exhausted" && await rearmExhaustedCapturePolicy(db, input, initial))
+    initial = await loadSystemRecovery(db, input);
   if (initial?.state === "exhausted" && !canAdoptNativeSourceRetention(initial)) {
     // A budget spent before this hold existed still names its receipt, so the
     // board confirmation in its handoff can release it (RC-50 wave databases).
@@ -205,6 +260,7 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
           sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,attemptId}' = ${reserved.attemptId}`));
     };
     let observing = Promise.resolve();
+    let cacheReclaimUnconfirmed = false;
     const observer = setInterval(() => { observing = observing.then(observeActive).catch(() => undefined); }, 15_000);
     try {
       await observeActive();
@@ -315,13 +371,18 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
             let saved: Awaited<ReturnType<typeof save>>;
             try { saved = await save(); }
             catch (error) {
-              if (!(error instanceof Error) || error.message !== REMOTE_WORKSPACE_SANDBOX_DISK_FULL) throw error;
+              if (!isSandboxDiskFullSave(error)) throw error;
               let reclaimed = false;
               try {
-                reclaimed = await reclaimInactiveNativeProviderCache({ db, companyId: input.companyId,
+                const reclaim = await reclaimInactiveNativeProviderCache({ db, companyId: input.companyId,
                   issueId: input.issueId, runId: input.runId, workspaceId: workspace.id, target,
                   assertOwned: ownership.assertHeld });
-              } catch { logger.warn({ runId: input.runId }, "Retained provider cache cleanup could not be confirmed"); }
+                reclaimed = reclaim.changed;
+                cacheReclaimUnconfirmed = !reclaim.confirmed;
+              } catch {
+                cacheReclaimUnconfirmed = true;
+                logger.warn({ runId: input.runId }, "Retained provider cache cleanup could not be confirmed");
+              }
               if (!reclaimed) throw error;
               await ownership.assertHeld();
               saved = await save();
@@ -402,6 +463,9 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
           throw new Error("workspace_recovery_generation_changed");
         if (inspected.action.evidence.nativeSourceRetention && !await settleRecoveredNativeSourceRetention(tx as unknown as Db, input, next.preservationOperationIds))
           throw new SystemRecoveryFailure("effect_unresolved", "recheck_evidence");
+        // A settled restore hold returns its warm sandbox to reuse. A hold that
+        // fails any guard keeps its protection; the saved files still count.
+        await settleRecoveredWorkspaceRestoreHolds(tx as unknown as Db, input);
         return persistActivity(tx as unknown as Db, { companyId: input.companyId, actorType: "system", actorId: "workspace-recovery",
           action: "issue.workspace_recovered", entityType: "issue", entityId: input.issueId, runId: input.runId,
           details: { recoveryActionId: input.actionId, summary: "Saved work recovered." } });
@@ -415,7 +479,9 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
         return;
       }
       const classification = classifyNativeWorkspaceFailure(error);
+      const diskFull = !(error instanceof SystemRecoveryFailure) && !cacheReclaimUnconfirmed && isSandboxDiskFullSave(error);
       const failure = error instanceof SystemRecoveryFailure ? error
+        : diskFull ? new SystemRecoveryFailure("export_interrupted", "user_action_required")
         : classifyWorkspaceRestoreFailure(error) === "restore_invalid_metadata"
           ? new SystemRecoveryFailure("snapshot_verification_failed", "service_required")
         : classification.code === "workspace_sync_out_unsafe_archive"
@@ -429,11 +495,21 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
       // A classified failure already names its subsystem.
       const generic = !(error instanceof SystemRecoveryFailure) && failure.retryClass === "retry_transient"
         && (failure.code === "provider_unavailable" || failure.code === "export_interrupted");
-      const cause = generic ? sandboxProviderFailureLabel(error) : undefined;
-      await updateSystemRecovery(db, input, current!, failSystemRecovery(current!, failure, {
+      const cause = diskFull ? { ...SANDBOX_DISK_FULL_RECOVERY_CAUSE } : generic ? sandboxProviderFailureLabel(error) : undefined;
+      const failed = failSystemRecovery(current!, failure, {
         ...(typeof retryAfterAt === "number" && Number.isFinite(retryAfterAt) ? { retryAfterAt } : {}),
         ...(cause ? { cause } : {}),
-      }));
+      });
+      const recorded = await updateSystemRecovery(db, input, current!, failed);
+      // A permanent refusal of the recorded source repeats on every retry.
+      // Continue from the last save in this same pass, under this ownership.
+      if (recorded && failed.state === "exhausted" && isUnverifiableSourceFailure(failed.failure)) {
+        const fallback = await continueFromLastSavedWorkspace({ ...input, ownership }).catch(fallbackError => {
+          logger.warn({ err: fallbackError, runId: input.runId }, "Continuing from the last save was deferred; the hold remains");
+          return { kind: "ineligible" as const, reason: "fallback_failed" };
+        });
+        if (fallback.kind === "ineligible") await recordRetainedSourceFallbackDeferral(db, input, fallback.reason);
+      }
       if (failure.retryClass === "recheck_evidence" && ["agent_stop_unconfirmed", "copyback_stop_unconfirmed"].includes(failure.code))
         await recheckStoppedWorkspaceRecovery(db, input, false);
       logger.warn({ err: error, runId: input.runId, failureCode: failure.code, failureCause: cause?.label, phase: current!.phase }, "Workspace preservation deferred; source retained");
@@ -468,15 +544,24 @@ async function recordCopybackOwnerHold(db: Db, input: Source, generationId: stri
     .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId)));
   const owner = source?.owner;
   if (!owner || typeof owner !== "object" || typeof (owner as { token?: unknown }).token !== "string") return;
-  await db.update(issueRecoveryActions).set({
-    // A confirmation names one receipt; a newer unverified owner needs its own.
-    evidence: sql`(${issueRecoveryActions.evidence} - 'workspaceOwnerStop') || jsonb_build_object('workspaceOwnerRecovery',
-      jsonb_build_object('state', 'operator_required', 'owner', ${JSON.stringify(owner)}::jsonb))`,
-    updatedAt: new Date(),
-  }).where(and(eq(issueRecoveryActions.companyId, input.companyId), eq(issueRecoveryActions.id, input.actionId),
+  const target = and(eq(issueRecoveryActions.companyId, input.companyId), eq(issueRecoveryActions.id, input.actionId),
     eq(issueRecoveryActions.sourceIssueId, input.issueId),
     sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,generationId}' = ${generationId}`,
-    sql`${issueRecoveryActions.evidence}#>'{workspaceOwnerRecovery,owner}' is distinct from ${JSON.stringify(owner)}::jsonb`));
+    sql`${issueRecoveryActions.evidence}#>'{workspaceOwnerRecovery,owner}' is distinct from ${JSON.stringify(owner)}::jsonb`);
+  await db.transaction(async tx => {
+    const [action] = await tx.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(target).for("update");
+    if (!action) return;
+    // Wake the ownership worker (on any server) before the hold it announces,
+    // so a quiet worker judges this owner and can wake the recheck.
+    await notifyDeliveryWork(tx, DELIVERY_QUEUES.ownershipInvariantReport,
+      JSON.stringify({ companyId: input.companyId, runId: input.runId, actionId: input.actionId }));
+    await tx.update(issueRecoveryActions).set({
+      // A confirmation names one receipt; a newer unverified owner needs its own.
+      evidence: sql`(${issueRecoveryActions.evidence} - 'workspaceOwnerStop') || jsonb_build_object('workspaceOwnerRecovery',
+        jsonb_build_object('state', 'operator_required', 'owner', ${JSON.stringify(owner)}::jsonb))`,
+      updatedAt: new Date(),
+    }).where(target);
+  });
 }
 
 const cursors = new WeakMap<Db, string>();
@@ -512,7 +597,11 @@ export async function scheduleRecoveredWorkspaceCleanup(db: Db, run: typeof hear
     sql`${environmentLeases.metadata} = ${JSON.stringify(lease.metadata)}::jsonb`,
     sql`${environmentLeases.metadata}->>'workspaceRecoveryCleanup' is null`)), { companyId: run.companyId, runId: run.id });
 }
-export function retainedWorkspaceCandidates(db: Db, cursor?: string, unfinishedOnly = false, obligationsOnly = false, inFlightRunIds: string[] = []) {
+/** `dueOnly` narrows the obligations to exhausted holds whose re-arm or
+ * fallback is due now. Cleanup, interrupted preparation and saved input that
+ * waits stay with the obligation pass. */
+export function retainedWorkspaceCandidates(db: Db, cursor?: string, unfinishedOnly = false, obligationsOnly = false, inFlightRunIds: string[] = [],
+  dueOnly = false) {
   const cleanup = sql`(((${heartbeatRuns.runnerProfileJson}#>>'{nativeWorkspaceSync,resourceDisposition}' = 'destroy'
     and ${heartbeatRuns.runnerProfileJson}#>>'{nativeWorkspaceSync,leaseId}' is not null)
     or (${heartbeatRuns.runnerProfileJson}->>'nativeResourceDisposition' = 'destroy'
@@ -545,6 +634,8 @@ export function retainedWorkspaceCandidates(db: Db, cursor?: string, unfinishedO
       and ${issues.executionRunId} is null and ${issues.checkoutRunId} is null
       and (${issues.status} <> 'blocked' or
         ${issueRecoveryActions.evidence}#>>'{nativeBootstrapFailureBlock,statusVersion}' = ${issues.statusVersion}::text)))`;
+  const now = Date.now();
+  const dueHold = sql`(${retainedSourceFallbackDueCondition(now)} or ${stopProofRearmDueCondition(now)} or ${capturePolicyRearmDueCondition(now)})`;
   return db.select({ action: issueRecoveryActions, run: heartbeatRuns }).from(issueRecoveryActions)
     .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.companyId, issueRecoveryActions.companyId), eq(heartbeatRuns.id,
       sql`case when ${issueRecoveryActions.evidence}->>'runId' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
@@ -556,10 +647,12 @@ export function retainedWorkspaceCandidates(db: Db, cursor?: string, unfinishedO
           and ${issueRecoveryActions.evidence}->>'bootstrapPreparationSettledAt' is not null
           and coalesce(${issueRecoveryActions.evidence}->>'bootstrapPreparationContinuation', 'pending') = 'pending'))` : undefined,
       obligationsOnly ? sql`(${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' in ('scheduled', 'running', 'awaiting_evidence')
-        or (${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' = 'complete' and (${cleanup} or ${interruptedPreparation})) or ${waitingInput})` : undefined,
+        or (${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' = 'complete' and (${cleanup} or ${interruptedPreparation})) or ${waitingInput}
+        or ${dueHold})` : undefined,
+      dueOnly ? dueHold : undefined,
       sql`(${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' in ('scheduled', 'running', 'awaiting_evidence', 'complete', 'exhausted')
         and (${issueRecoveryActions.evidence}#>'{systemRecovery,nextAttemptAt}' = 'null'::jsonb
-          or ${issueRecoveryActions.evidence}#>'{systemRecovery,nextAttemptAt}' <= to_jsonb(${Date.now()}::bigint)))`,
+          or ${issueRecoveryActions.evidence}#>'{systemRecovery,nextAttemptAt}' <= to_jsonb(${now}::bigint)))`,
       sql`(${issueRecoveryActions.evidence}#>>'{workspaceRecovery,status}' is distinct from 'recovered' or
         ${cleanup} or ${waitingInput} or ${interruptedPreparation})`,
       cursor ? gt(issueRecoveryActions.id, cursor) : undefined,
@@ -567,11 +660,30 @@ export function retainedWorkspaceCandidates(db: Db, cursor?: string, unfinishedO
     )).orderBy(asc(issueRecoveryActions.id)).limit(5);
 }
 
+/**
+ * The worker's lane positions, kept in memory: a restart starts every lane
+ * from its first candidate, so no persisted state or migration is involved.
+ * `cursor`, `complete` and `restart` belong to the obligation pass; `dueCursor`
+ * to the due lane; `firstLane` names the lane that has priority in the next run.
+ */
+export type PassiveSweep = { cursor?: string; complete?: boolean; restart?: boolean; dueCursor?: string; firstLane?: number };
+
+type CandidateRow = Awaited<ReturnType<typeof retainedWorkspaceCandidates>>[number];
+type CandidateLane = { rows: CandidateRow[]; index: number; advance: (actionId: string) => void };
+
 /** Bounded discovery shares the periodic recovery lifecycle. A repaired source
- * still owes cleanup even without saved input or after task reconciliation. */
+ * still owes cleanup even without saved input or after task reconciliation.
+ *
+ * Candidates come from lanes, each an ordered page that a cursor advances:
+ * unfinished saves; for the worker, exhausted holds whose re-arm or fallback
+ * is due; and the obligation pass (cleanup, interrupted preparation, saved
+ * input that waits, and the same due holds). Each lane with work takes one
+ * free slot before any lane takes a second, and the worker rotates which lane
+ * goes first, so no kind of load (a save another server owns, a long local
+ * export, hundreds of waiting holds) starves another. */
 export async function reconcileRetainedWorkspaces(db: Db, runtime: EnvironmentRuntimeService,
   onRecovered: (run: typeof heartbeatRuns.$inferSelect) => Promise<void>, obligationsOnly = false,
-  onFinished?: (continueSweep: boolean) => void, passiveSweep?: { cursor?: string }) {
+  onFinished?: (continueSweep: boolean) => void, passiveSweep?: PassiveSweep) {
   await adoptHistoricalWorkspaceRecoveries(db);
   let pending = workInFlight.get(db);
   if (!pending) { pending = new Set(); workInFlight.set(db, pending); }
@@ -579,23 +691,79 @@ export async function reconcileRetainedWorkspaces(db: Db, runtime: EnvironmentRu
   // Locally running exports already own their slot. Exclude them before
   // pagination so a page containing only held work cannot prevent wrapping.
   const inFlightRunIds = [...pending];
-  let rows = await retainedWorkspaceCandidates(db, unfinishedCursors.get(db), true, false, inFlightRunIds);
-  if (!rows.length) rows = await retainedWorkspaceCandidates(db, undefined, true, false, inFlightRunIds);
-  const unfinished = rows.length > 0;
-  if (!rows.length) rows = await retainedWorkspaceCandidates(db, passiveSweep ? passiveSweep.cursor : cursors.get(db), false, obligationsOnly, inFlightRunIds);
-  if (!rows.length && !passiveSweep) rows = await retainedWorkspaceCandidates(db, undefined, false, obligationsOnly, inFlightRunIds);
+  let unfinishedRows = await retainedWorkspaceCandidates(db, unfinishedCursors.get(db), true, false, inFlightRunIds);
+  if (!unfinishedRows.length) unfinishedRows = await retainedWorkspaceCandidates(db, undefined, true, false, inFlightRunIds);
+  const unfinished: CandidateLane = { rows: unfinishedRows, index: 0, advance: id => unfinishedCursors.set(db, id) };
+  let rows = await retainedWorkspaceCandidates(db, passiveSweep ? passiveSweep.cursor : cursors.get(db), false, obligationsOnly, inFlightRunIds);
+  if (passiveSweep && !rows.length && passiveSweep.restart) {
+    Object.assign(passiveSweep, { cursor: undefined, restart: false });
+    rows = await retainedWorkspaceCandidates(db, undefined, false, obligationsOnly, inFlightRunIds);
+  }
+  if (passiveSweep) passiveSweep.complete = !rows.length;
+  else if (!rows.length) rows = await retainedWorkspaceCandidates(db, undefined, false, obligationsOnly, inFlightRunIds);
+  const sweep: CandidateLane = { rows, index: 0,
+    advance: id => { if (passiveSweep) passiveSweep.cursor = id; else cursors.set(db, id); } };
+  const lanes = [unfinished];
+  if (passiveSweep) {
+    // The due lane wraps at its tail like the unfinished lane. A hold that
+    // becomes due by time alone (a lease expiry, a re-arm backoff) is reached
+    // even after the obligation pass completed with no committed change.
+    let dueRows = await retainedWorkspaceCandidates(db, passiveSweep.dueCursor, false, true, inFlightRunIds, true);
+    if (!dueRows.length && passiveSweep.dueCursor)
+      dueRows = await retainedWorkspaceCandidates(db, undefined, false, true, inFlightRunIds, true);
+    const due: CandidateLane = { rows: dueRows, index: 0, advance: id => { passiveSweep.dueCursor = id; } };
+    lanes.push(due, sweep);
+    // Priority rotates across all three lanes, so each lane is first in one
+    // run of three. With one free slot (a long local export holds the other),
+    // a save that keeps finding its run's lock busy cannot take it every run.
+    const first = (passiveSweep.firstLane ?? 0) % lanes.length;
+    lanes.push(...lanes.splice(0, first));
+    passiveSweep.firstLane = (first + 1) % lanes.length;
+  } else lanes.push(sweep);
   const work: Promise<void>[] = [];
-  let hasUnvisited = false;
-  for (const { action, run } of rows) {
-    if (pending.size >= 2) { hasUnvisited = true; break; }
-    if (unfinished) unfinishedCursors.set(db, action.id);
-    else if (passiveSweep) passiveSweep.cursor = action.id;
-    else cursors.set(db, action.id);
-    if (pending.has(run.id)) continue;
-    pending.add(run.id);
+  // Several actions of one run (an export hold and a later no-replay hold)
+  // run one after another in that run's job. Skipping the later one would
+  // starve it while the earlier one stays selectable (for example while saved
+  // input waits for the later one to settle).
+  const groups = new Map<string, { run: typeof heartbeatRuns.$inferSelect; actions: (typeof issueRecoveryActions.$inferSelect)[] }>();
+  const join = (lane: CandidateLane) => {
+    for (; lane.index < lane.rows.length; lane.index += 1) {
+      const { action, run } = lane.rows[lane.index]!;
+      const group = groups.get(run.id);
+      if (!group) return lane.rows[lane.index]!;
+      if (!group.actions.some(item => item.id === action.id)) group.actions.push(action);
+      lane.advance(action.id);
+    }
+    return undefined;
+  };
+  // Takes the lane's next run into a free slot. Actions of a run already taken
+  // (by any lane) join its job without a slot.
+  const take = (lane: CandidateLane) => {
+    const next = join(lane);
+    if (!next || pending.size >= 2) return false;
+    lane.index += 1;
+    lane.advance(next.action.id);
+    pending.add(next.run.id);
+    groups.set(next.run.id, { run: next.run, actions: [next.action] });
+    return true;
+  };
+  for (let taken = true; taken && pending.size < 2;) {
+    taken = false;
+    for (const lane of lanes) if (pending.size < 2 && take(lane)) taken = true;
+  }
+  for (const lane of lanes) join(lane);
+  const hasUnvisited = lanes.some(lane => lane.index < lane.rows.length);
+  for (const { run, actions } of groups.values()) {
     const finish = beginIdleTrackedWork();
-    const physical = ["scheduled", "running", "awaiting_evidence"].includes(readSystemRecovery(action.evidence)?.state ?? "");
+    const physical = actions.some(action => ["scheduled", "running", "awaiting_evidence"].includes(readSystemRecovery(action.evidence)?.state ?? ""));
     work.push((async () => { try {
+      for (const action of actions) await recoverRunAction(action, run);
+    } finally { pending.delete(run.id); finish(); onFinished?.(physical || hasUnvisited); } })());
+  }
+  return work;
+
+  async function recoverRunAction(action: typeof issueRecoveryActions.$inferSelect, run: typeof heartbeatRuns.$inferSelect) {
+    try {
       await recoverRetainedWorkspace({ db, environmentRuntime: runtime, companyId: action.companyId, issueId: action.sourceIssueId, runId: run.id, actionId: action.id });
       const [updated] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id));
       const recovered = readWorkspaceRecovery(updated?.evidence ?? null)?.status === "recovered";
@@ -614,7 +782,5 @@ export async function reconcileRetainedWorkspaces(db: Db, runtime: EnvironmentRu
         }
       }
     } catch { logger.warn({ runId: run.id }, "Retained workspace remains pending"); }
-    finally { pending.delete(run.id); finish(); onFinished?.(physical || hasUnvisited); } })());
   }
-  return work;
 }

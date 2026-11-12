@@ -7,9 +7,14 @@ import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notificatio
 import { nativeSessionProviderEvidence } from "./native-runtime/native-session-resume.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import os from "node:os";
+import { currentProcessSpaceHash } from "./controller-process-identity.js";
+import { proveOwnerGone } from "./owner-proof.js";
 
 export const PROCESS_START_REQUESTED = "native.process_start_requested";
 export const PROCESS_IDENTITY_RECORDED = "native.process_identity_recorded";
+/** Server-authored: the runner-state fence refused this run before it asked for
+ * a runner, because a prior run's saved state could not be proven finished. */
+export const PRIOR_OWNER_FENCE_REFUSED = "native.prior_owner_fence_refused";
 const LOCAL_PROCESS_STOPPED = "native.local_process_stopped";
 const SETTLED_RUN_STATUSES = ["failed", "cancelled", "timed_out", "interrupted"];
 const SETTLED_COORDINATOR_PHASES = ["committed", "terminal_failure"];
@@ -26,7 +31,7 @@ function absent(pid: number): boolean {
 /** A fresh workspace is not process containment. Bind an OS observation to
  * the original host, process birth, and launch event before accepting it. */
 export async function recordedLocalExecutionStopped(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect,
-  "id" | "companyId" | "processPid" | "processGroupId" | "processStartedAt">) {
+  "id" | "companyId" | "processPid" | "processGroupId" | "processStartedAt"> & { processHostHash?: string | null }) {
   const [identity] = await db.select({ eventType: heartbeatRunEvents.eventType, payload: heartbeatRunEvents.payload }).from(heartbeatRunEvents).where(and(
     eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
     inArray(heartbeatRunEvents.eventType, [PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED]),
@@ -36,8 +41,15 @@ export async function recordedLocalExecutionStopped(db: Db, run: Pick<typeof hea
   if (identity?.eventType !== PROCESS_IDENTITY_RECORDED || recorded?.targetKind !== "local" || recorded.hostname !== os.hostname() ||
       recorded.processPid !== run.processPid || recorded.processGroupId !== run.processGroupId ||
       !run.processStartedAt || recorded.processStartedAt !== run.processStartedAt.toISOString()) return false;
-  return Boolean(run.processPid && absent(run.processPid) &&
-    (!run.processGroupId || absent(-run.processGroupId)));
+  if (!run.processPid) return false;
+  // The shared prover judges the bound identity: the PID is dead or reused by
+  // a later process, and its group is empty or led by a later process. The
+  // recorded PID space is used when the row has one; older rows were bound to
+  // this host by the launch event above.
+  const proof = await proveOwnerGone({ kind: "local", scope: "native_local_process", generation: null, host: null,
+    processSpace: run.processHostHash ?? currentProcessSpaceHash(), bootId: null, pid: run.processPid,
+    processStartedAt: run.processStartedAt.toISOString(), processGroupId: run.processGroupId });
+  return proof.verdict === "gone";
 }
 
 /**
@@ -100,26 +112,30 @@ export async function hasNativeLocalProcessStop(db: Db, companyId: string, runId
 /**
  * A local runner launch can be requested and the server killed before the
  * runner's process identity is recorded. With no PID to check, prove on this
- * host that no runner for the run exists and that it never wrote runner state
- * (no provider can start before that), then record the stop like a verified
- * PID. A later launch request invalidates the receipt as usual.
+ * host that no runner for the run exists and that this launch wrote no runner
+ * state (no provider can start before that), then record the stop like a
+ * verified PID. A later launch request invalidates the receipt as usual.
  */
 export async function recordUnidentifiedLocalRunnerStop(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect,
   "id" | "companyId" | "agentId" | "runtimeMode" | "processPid" | "processGroupId" | "runnerProfileJson">,
   options: { record: boolean } = { record: true }): Promise<boolean> {
   if (run.runtimeMode !== "native" || run.processPid || run.processGroupId) return false;
-  const [latest] = await db.select({ eventType: heartbeatRunEvents.eventType, payload: heartbeatRunEvents.payload }).from(heartbeatRunEvents).where(and(
+  const [latest, previous] = await db.select({ eventType: heartbeatRunEvents.eventType, payload: heartbeatRunEvents.payload }).from(heartbeatRunEvents).where(and(
     eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
     isNull(heartbeatRunEvents.sourceEventId),
     inArray(heartbeatRunEvents.eventType, [PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED, LOCAL_PROCESS_STOPPED]),
-  )).orderBy(desc(heartbeatRunEvents.seq)).limit(1);
+  )).orderBy(desc(heartbeatRunEvents.seq)).limit(2);
   // Only the host that requested the launch can inspect its process table.
   if (latest?.eventType !== PROCESS_START_REQUESTED || latest.payload?.hostname !== os.hostname()) return false;
   const leases = await db.select({ provider: environmentLeases.provider }).from(environmentLeases)
     .where(and(eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id)));
   if (leases.some(lease => lease.provider !== "local")) return false;
+  const requestedAt = typeof latest.payload?.requestedAt === "string" ? Date.parse(latest.payload.requestedAt) : Number.NaN;
+  const launchRequestedAt = (!previous || previous.eventType === LOCAL_PROCESS_STOPPED) && Number.isFinite(requestedAt)
+    ? requestedAt : null;
   const { unidentifiedLocalRunnerProvenAbsent } = await import("./native-runtime/native-session-executor.js");
-  if (!await unidentifiedLocalRunnerProvenAbsent({ runId: run.id, execution: run.runnerProfileJson?.nativeExecutionInput })) return false;
+  if (!await unidentifiedLocalRunnerProvenAbsent({ runId: run.id, execution: run.runnerProfileJson?.nativeExecutionInput,
+    launchRequestedAt })) return false;
   if (!options.record) return true;
   await appendHeartbeatRunEvent(db, {
     companyId: run.companyId,
@@ -128,23 +144,160 @@ export async function recordUnidentifiedLocalRunnerStop(db: Db, run: Pick<typeof
     eventType: LOCAL_PROCESS_STOPPED,
     stream: "system",
     level: "info",
-    message: "Verified that no runner for this run exists on this host and none saved runner state.",
+    message: "Verified that no runner for this run exists on this host and none saved runner state after the launch request.",
     payload: { processPid: null, processGroupId: null, processStartedAt: null, basis: "unidentified_runner_absent" },
   });
   return true;
 }
 
-/** A native run that an admission fence refused before it requested any
- * runner launch (a quarantined prior-session cleanup is checked before the
- * provider starts) never had a process: there is nothing to stop. Any launch
- * request or identity record keeps the normal stop proofs. */
-export async function nativeRunRefusedBeforeLaunch(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect,
-  "id" | "companyId" | "runtimeMode" | "status" | "errorCode" | "processPid" | "processGroupId">): Promise<boolean> {
-  if (run.runtimeMode !== "native" || run.status !== "failed" || run.processPid || run.processGroupId ||
-      run.errorCode !== "native_session_cleanup_quarantined") return false;
+export class UnidentifiedRunnerStopRefusedError extends Error {
+  constructor(readonly code: string, message: string) {
+    super(message);
+    this.name = "UnidentifiedRunnerStopRefusedError";
+  }
+}
+
+type UnidentifiedLaunchRun = Pick<typeof heartbeatRuns.$inferSelect,
+  "id" | "companyId" | "runtimeMode" | "status" | "finishedAt" | "processPid" | "processGroupId">;
+type LaunchRefusal = { code: string; message: string } | "already_stopped" | null;
+
+export async function unidentifiedLocalLaunchRefusals(db: Db, runs: UnidentifiedLaunchRun[]): Promise<Map<string, LaunchRefusal>> {
+  const result = new Map<string, LaunchRefusal>();
+  const candidates: UnidentifiedLaunchRun[] = [];
+  for (const run of runs) {
+    if (run.runtimeMode !== "native" || !run.finishedAt || !FINISHED_RUN_STATUSES.has(run.status))
+      result.set(run.id, { code: "run_not_finished", message: "Only a finished run's stop can be confirmed." });
+    else if (run.processPid || run.processGroupId)
+      result.set(run.id, { code: "process_identity_recorded", message: "This run recorded its process. Paperclip verifies that process itself." });
+    else candidates.push(run);
+  }
+  if (!candidates.length) return result;
+  const ids = candidates.map(run => run.id);
+  const companyIds = [...new Set(candidates.map(run => run.companyId))];
+  const latest = await db.selectDistinctOn([heartbeatRunEvents.runId], { runId: heartbeatRunEvents.runId,
+    eventType: heartbeatRunEvents.eventType, payload: heartbeatRunEvents.payload }).from(heartbeatRunEvents).where(and(
+    inArray(heartbeatRunEvents.companyId, companyIds), inArray(heartbeatRunEvents.runId, ids),
+    isNull(heartbeatRunEvents.sourceEventId),
+    inArray(heartbeatRunEvents.eventType, [PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED, LOCAL_PROCESS_STOPPED]),
+  )).orderBy(heartbeatRunEvents.runId, desc(heartbeatRunEvents.seq));
+  const remote = new Set((await db.select({ runId: environmentLeases.heartbeatRunId }).from(environmentLeases).where(and(
+    inArray(environmentLeases.companyId, companyIds), inArray(environmentLeases.heartbeatRunId, ids),
+    sql`${environmentLeases.provider} is distinct from 'local'`,
+  ))).map(row => row.runId));
+  const latestByRun = new Map(latest.map(row => [row.runId, row]));
+  for (const run of candidates) {
+    const event = latestByRun.get(run.id);
+    result.set(run.id, event?.eventType === LOCAL_PROCESS_STOPPED ? "already_stopped"
+      : event?.eventType !== PROCESS_START_REQUESTED
+        ? { code: "no_unidentified_launch", message: "This run has no unconfirmed runner launch to stop." }
+        : record(event.payload).hostname !== os.hostname()
+          ? { code: "launch_on_other_host", message: "The runner was launched on another host. Confirm the stop there." }
+          : remote.has(run.id)
+            ? { code: "remote_environment", message: "This run used a remote environment. Its environment cleanup confirms the stop." }
+            : null);
+  }
+  return result;
+}
+
+export async function unidentifiedLocalLaunchRefusal(db: Db, run: UnidentifiedLaunchRun): Promise<LaunchRefusal> {
+  return (await unidentifiedLocalLaunchRefusals(db, [run])).get(run.id) ?? null;
+}
+
+export async function confirmUnidentifiedLocalRunnerStopped(db: Db, input: {
+  companyId: string; issueId: string; runId: string; actorId: string;
+}): Promise<{ runId: string; alreadyStopped: boolean }> {
+  const refuse = (code: string, message: string) => { throw new UnidentifiedRunnerStopRefusedError(code, message); };
+  const [run] = await db.select().from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId)));
+  if (!run || ![run.issueId, run.nativeIssueId, record(run.contextSnapshot).issueId].includes(input.issueId))
+    return refuse("run_not_found", "This run does not belong to the task.");
+  const refusal = await unidentifiedLocalLaunchRefusal(db, run);
+  if (refusal === "already_stopped") return { runId: run.id, alreadyStopped: true };
+  if (refusal) return refuse(refusal.code, refusal.message);
+  const { noLocalRunnerProcessForRun } = await import("./native-runtime/native-session-executor.js");
+  if (!await noLocalRunnerProcessForRun(run.id))
+    return refuse("runner_still_running", "A runner for this run is still running on this host. Stop it first.");
+  await db.transaction(async tx => {
+    const [locked] = await tx.select().from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, run.id))).for("update");
+    const current = locked ? await unidentifiedLocalLaunchRefusal(tx as unknown as Db, locked) : null;
+    if (!locked || current === "already_stopped" || current !== null || locked.finishedAt?.getTime() !== run.finishedAt?.getTime())
+      return refuse("run_changed", "This run changed while its stop was being confirmed. Check it again.");
+    await appendHeartbeatRunEvent(tx as unknown as Db, {
+      companyId: run.companyId,
+      runId: run.id,
+      agentId: run.agentId,
+      eventType: LOCAL_PROCESS_STOPPED,
+      stream: "system",
+      level: "info",
+      message: "A board operator confirmed that this run's runner and its agent processes have stopped.",
+      payload: { processPid: null, processGroupId: null, processStartedAt: null, basis: "operator_attested",
+        attestedByUserId: input.actorId },
+    });
+    await notifyDeliveryWork(tx as unknown as Db, DELIVERY_QUEUES.accounting, run.companyId);
+  });
+  return { runId: run.id, alreadyStopped: false };
+}
+
+const FINISHED_RUN_STATUSES = new Set(["failed", "cancelled", "timed_out", "succeeded", "interrupted"]);
+
+function record(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+/** A settled native run that never had a runner has nothing to stop:
+ * - an admission fence (a quarantined prior-session cleanup) refused it before
+ *   it requested a launch;
+ * - the runner-state fence refused it before it requested a launch because a
+ *   previous run still owns the conversation's saved runner state and that
+ *   owner could not be proven finished. The executor records
+ *   PRIOR_OWNER_FENCE_REFUSED before it fails the run. The root belonged to
+ *   another run, so this run started nothing; or
+ * - it failed before native selection (for example a refused budget
+ *   reservation or a failed preparation query). Selection records the run's
+ *   native issue, native session, runner instance and coordinator, and a
+ *   runner launch needs them, so without any of them no runner or provider for this run can exist,
+ *   in any build.
+ * Any launch request, identity record or runner event keeps the normal stop
+ * proofs. */
+async function hasRunEvent(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId">, eventType: string) {
+  const [event] = await db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
+    eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
+    isNull(heartbeatRunEvents.sourceEventId), eq(heartbeatRunEvents.eventType, eventType),
+  )).limit(1);
+  return Boolean(event);
+}
+
+export async function nativeRunNeverLaunched(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect,
+  "id" | "companyId" | "runtimeMode" | "status" | "errorCode" | "processPid" | "processGroupId" |
+  "nativeSessionId" | "runnerInstanceId" | "nativeIssueId">): Promise<boolean> {
+  if (run.runtimeMode !== "native" || !SETTLED_RUN_STATUSES.includes(run.status) || run.processPid || run.processGroupId) return false;
+  const refusedBeforeLaunch = run.status === "failed" && (run.errorCode === "native_session_cleanup_quarantined" ||
+    await hasRunEvent(db, run, PRIOR_OWNER_FENCE_REFUSED));
+  if (!refusedBeforeLaunch) {
+    // A coordinator row requires the run's native issue (foreign key), so the
+    // native issue also rules out a coordinator.
+    if (run.nativeSessionId || run.runnerInstanceId || run.nativeIssueId) return false;
+  }
   const [launch] = await db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
     eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
-    inArray(heartbeatRunEvents.eventType, [PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED]),
+    or(isNotNull(heartbeatRunEvents.sourceEventId),
+      inArray(heartbeatRunEvents.eventType, ["adapter.invoke", PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED])),
+  )).limit(1);
+  return !launch;
+}
+
+/** A native run the cleanup gate refused before it asked for a runner. Its
+ * process fields may name its predecessor's process, copied at admission for
+ * the same session; that process is checked separately. This run launched
+ * nothing of its own. */
+export async function nativeGatedRunNeverLaunched(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect,
+  "id" | "companyId" | "runtimeMode" | "status" | "errorCode">): Promise<boolean> {
+  if (run.runtimeMode !== "native" || run.status !== "failed" || run.errorCode !== "native_session_cleanup_quarantined") return false;
+  const [launch] = await db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
+    eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
+    or(isNotNull(heartbeatRunEvents.sourceEventId),
+      inArray(heartbeatRunEvents.eventType, ["adapter.invoke", PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED])),
   )).limit(1);
   return !launch;
 }
@@ -193,6 +346,19 @@ export async function withReleasedNativeRunProcess<T extends {
 }
 
 /** Recover the exact stopped identity after the mutable run fields were cleared. */
+export async function readUnidentifiedLocalRunnerStop(db: Db, companyId: string, runId: string): Promise<boolean> {
+  const [latest, launch] = await db.select({ eventType: heartbeatRunEvents.eventType, payload: heartbeatRunEvents.payload })
+    .from(heartbeatRunEvents)
+    .where(and(eq(heartbeatRunEvents.companyId, companyId), eq(heartbeatRunEvents.runId, runId),
+      isNull(heartbeatRunEvents.sourceEventId),
+      inArray(heartbeatRunEvents.eventType, [PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED, LOCAL_PROCESS_STOPPED])))
+    .orderBy(desc(heartbeatRunEvents.seq)).limit(2);
+  if (latest?.eventType !== LOCAL_PROCESS_STOPPED || latest.payload?.basis !== "unidentified_runner_absent" ||
+      launch?.eventType !== PROCESS_START_REQUESTED || launch.payload?.hostname !== os.hostname()) return false;
+  const { noLocalRunnerProcessForRun } = await import("./native-runtime/native-session-executor.js");
+  return noLocalRunnerProcessForRun(runId);
+}
+
 export async function readNativeLocalProcessStop(db: Db, companyId: string, runId: string) {
   const [event] = await db.select({ eventType: heartbeatRunEvents.eventType, payload: heartbeatRunEvents.payload })
     .from(heartbeatRunEvents)

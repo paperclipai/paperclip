@@ -1,4 +1,4 @@
-import { createLiveEventDelivery } from "./live-event-delivery.js";
+import { createLiveEventDelivery, sharedDeliveryRead, type LiveDeliveryReads } from "./live-event-delivery.js";
 import { skillAccessService } from "../services/skill-access.js";
 import { createHash } from "node:crypto";
 import type { IncomingMessage, Server as HttpServer } from "node:http";
@@ -7,7 +7,7 @@ import type { Duplex } from "node:stream";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentApiKeys, companyMemberships, instanceUserRoles, heartbeatRuns, projects } from "@paperclipai/db";
-import type { DeploymentMode, LiveEvent } from "@paperclipai/shared";
+import { issueActivityChangesTaskIdentity, type DeploymentMode, type LiveEvent } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "../middleware/logger.js";
 import { activityToastIdentity } from "./activity-toast-identity.js";
@@ -283,52 +283,57 @@ export function setupLiveEventsWebSocketServer(
     }
 
     const access = authorizationService(db);
-    async function visibleEvent(event: LiveEvent): Promise<LiveEvent | null> {
+    async function visibleEvent(event: LiveEvent, reads: LiveDeliveryReads): Promise<LiveEvent | null> {
       if (event.payload.entityType === "case" && (typeof event.payload.entityId !== "string"
         || !(await canActorReadCase(db, context!.actor, { id: event.payload.entityId, companyId: event.companyId })))) return null;
       if (context!.actor.source === "local_implicit") {
         if (event.type === "activity.logged" && event.payload.entityType === "issue") {
           return { ...event, payload: { ...event.payload,
+            taskIdentityChanged: issueActivityChangesTaskIdentity(event.payload.action, event.payload.details),
             ...await activityToastIdentity(db, event.companyId, event.payload) } };
         }
         return event;
       }
-      if (context!.apiKeyId) {
-        const active = await db.select({ id: agentApiKeys.id }).from(agentApiKeys)
-          .where(and(eq(agentApiKeys.id, context!.apiKeyId), isNull(agentApiKeys.revokedAt))).limit(1);
-        if (!active.length) return null;
-      } else {
+      const principalActive = await sharedDeliveryRead(reads, "principal", async () => {
+        if (context!.apiKeyId) {
+          const active = await db.select({ id: agentApiKeys.id }).from(agentApiKeys)
+            .where(and(eq(agentApiKeys.id, context!.apiKeyId), isNull(agentApiKeys.revokedAt))).limit(1);
+          return active.length > 0;
+        }
         const membership = await db.select({ id: companyMemberships.id }).from(companyMemberships)
           .where(and(eq(companyMemberships.companyId, context!.companyId), eq(companyMemberships.principalType, "user"),
             eq(companyMemberships.principalId, context!.actorId), eq(companyMemberships.status, "active"))).limit(1);
         const admin = context!.actor.source !== "cloud_tenant" && await db.select({ id: instanceUserRoles.id }).from(instanceUserRoles)
           .where(and(eq(instanceUserRoles.userId, context!.actorId), eq(instanceUserRoles.role, "instance_admin"))).limit(1).then(rows => rows.length > 0);
-        if (!membership.length && !admin) return null;
-      }
+        return membership.length > 0 || admin;
+      });
+      if (!principalActive) return null;
       const payload = event.payload;
       const issueId = typeof payload.issueId === "string" ? payload.issueId
         : payload.entityType === "issue" && typeof payload.entityId === "string" ? payload.entityId : null;
       const runId = typeof payload.runId === "string" ? payload.runId
         : payload.entityType === "heartbeat_run" && typeof payload.entityId === "string" ? payload.entityId : null;
       if (event.type === "heartbeat.run.event" || event.type === "heartbeat.run.log") {
-        const decision = await access.decide({ actor: context!.actor, action: "company_scope:read",
-          resource: { type: "company", companyId: event.companyId } });
-        if (!decision.allowed) return null;
+        const allowed = await sharedDeliveryRead(reads, "transcript-scope", async () => (await access.decide({
+          actor: context!.actor, action: "company_scope:read",
+          resource: { type: "company", companyId: event.companyId } })).allowed);
+        if (!allowed) return null;
       }
       const readBindings: Parameters<typeof getHeartbeatRunReadDecisions>[3][number][] = [];
       if (issueId) {
         readBindings.push({ companyId: event.companyId, scopeKind: "issue", issueId });
       }
       if (runId) {
-        const [run] = await db.select({
+        const run = await sharedDeliveryRead(reads, `run:${runId}`, async () => (await db.select({
           companyId: heartbeatRuns.companyId,
           scopeKind: heartbeatRuns.scopeKind,
           issueId: heartbeatRuns.issueId,
-        }).from(heartbeatRuns).where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, event.companyId)));
+        }).from(heartbeatRuns).where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, event.companyId))))[0]);
         if (!run) return null;
         readBindings.push(run);
       }
-      if ((await getHeartbeatRunReadDecisions(db, access, context!.actor, readBindings)).some(allowed => !allowed)) return null;
+      if (!(await sharedDeliveryRead(reads, `read:${issueId ?? ""}:${runId ?? ""}`, async () =>
+        (await getHeartbeatRunReadDecisions(db, access, context!.actor, readBindings)).every(Boolean)))) return null;
       if (["company_skill", "company_skill_source"].includes(String(payload.entityType)) && typeof payload.entityId === "string") {
         try {
           const skills = skillAccessService(db, context!.actor);
@@ -351,6 +356,11 @@ export function setupLiveEventsWebSocketServer(
         // A handoff can attach the first case to a task. Its already-authorized
         // task identity lets an empty cases panel refresh without exposing content.
         ...(payload.entityType === "case" && String(payload.action).startsWith("case.handoff_") && issueId ? { issueId } : {}),
+        // A closed boolean derived from details, so task pickers can tell a
+        // created, deleted, hidden or renamed task from routine progress.
+        ...(payload.entityType === "issue"
+          ? { taskIdentityChanged: issueActivityChangesTaskIdentity(payload.action, payload.details) }
+          : {}),
         // The task read check above authorizes attribution, but not arbitrary details.
         ...(issueId ? await activityToastIdentity(db, event.companyId, payload) : {}),
       } };
@@ -360,12 +370,12 @@ export function setupLiveEventsWebSocketServer(
       if (event.type.startsWith("plugin.")) return event;
       return null;
     }
-    const delivery = createLiveEventDelivery({ socket, authorize: async event => {
-      const visible = await visibleEvent(event);
+    const delivery = createLiveEventDelivery({ socket, authorize: async (event, reads) => {
+      const visible = await visibleEvent(event, reads);
       if (!visible || visible.type !== "heartbeat.run.event") return visible;
       const payload = visible.payload.payload;
       if (!payload || typeof payload !== "object" || Array.isArray(payload) || !("prpEvent" in payload)) return visible;
-      return redactRunEvent(visible);
+      return redactRunEvent(visible, reads);
     },
       decorate: async visible => {
         let toastEligible = false;

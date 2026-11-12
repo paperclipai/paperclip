@@ -1,3 +1,4 @@
+import { notifyQueuedRunDispatch } from "../run-dispatch-notifications.js";
 import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { companies, environmentLeases, executionWorkspaces, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, nativeRunResults, workspaceOperations, type Db } from "@paperclipai/db";
 import { remoteWorkspaceAuthoritySchema, remoteWorkspaceRunReferenceSchema } from "@paperclipai/shared";
@@ -174,6 +175,7 @@ export async function pinFailedObservedWorkspace(db: Db, companyId: string, runI
       && lease.metadata?.workspaceRecoveryCleanup == null;
     if (!active) return false;
     await notifyNativeEnvironmentSettlement(tx, { companyId, runId, issueId: task.id });
+    await notifyDeliveryWork(tx, DELIVERY_QUEUES.ownershipInvariantReport, JSON.stringify({ companyId, runId }));
     const retained = await recordRequiredWorkspaceRestoreFailure(tx, run, { workspaceRestoreFailure: "restore_failed" }, lease);
     if (!retained || !hasRequiredWorkspaceRecovery(retained.resultJson)) throw new Error("observed_workspace_retention_missing");
     const [action] = await tx.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.companyId, companyId),
@@ -205,6 +207,7 @@ export async function settleStoppedObservedWorkspace(db: Db, companyId: string, 
       || !hasRemoteTerminationReceipt(lease) || !hasConfirmedSandboxStopAndRetain(lease)) return false;
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.workspaceRecovery);
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionFinalization);
+    await notifyQueuedRunDispatch(tx, { companyId });
     const [settled] = await tx.update(nativeRunFinalizations).set({ phase: "terminal_failure", leaseOwner: null,
       leaseExpiresAt: null, controlDeadlineAt: null, nextAttemptAt: null, recoveryState: "blocked",
       failureCode: "native_continuation_requires_reconciliation", updatedAt: new Date() }).where(and(

@@ -1,3 +1,4 @@
+import { CHAT_OPENCODE_MODEL } from "./chat-runtime-profile.js";
 import { describe, expect, it } from "vitest";
 import { chatFeatureExecutionRuns, gradeChatFeature, type ChatFeatureObservation } from "./chat-feature-scoring.js";
 import { chatFeatureScenarios, readChatFeatureScenarios } from "./chat-feature-cases.js";
@@ -107,18 +108,16 @@ describe("chat feature saved-state oracle", () => {
 });
 
 describe("chat feature selection", () => {
-  it("preserves the four authored subscription and production OpenCode cells", () => {
-    const cells = runnerMatrix.filter(cell => cell.suite.id === "chat-features" && cell.profile.id !== "runner-opencode-deepseek-1017");
+  it("preserves the historical OpenCode aliases beside the two shipped subscription cells", () => {
+    const cells = runnerMatrix.filter(cell => cell.suite.id === "chat-features" && cell.profile.id !== "runner-opencode-deepseek-1017" && ["create-backlog", "delegate-announcement"].includes(cell.task.id));
     expect(cells).toHaveLength(4);
-    const stock = runnerProfiles.find(profile => profile.id === "runner-opencode")!;
-    expect(cells.filter(cell => cell.profile.id === stock.id).map(cell => cell.profile.model)).toEqual([stock.model, stock.model]);
-    for (const cell of cells.filter(cell => cell.profile.id === stock.id)) {
-      const payload = cell.profile.buildAgent({ environmentId: "env", environmentFixtureId: "local", workspacePath: "/tmp/fixture", executionId: cell.id, secretRefs: { OPENROUTER_API_KEY: { type: "secret_ref", secretId: "fixture-openrouter", version: "latest" } } });
-      expect(payload.adapterConfig).toMatchObject({ model: stock.model, modelReasoningEffort: "low", timeoutSec: 120 });
-    }
+    const historical = cells.filter(cell => cell.profile.id === "runner-opencode");
+    expect(historical.map(cell => cell.profile.model)).toEqual([CHAT_OPENCODE_MODEL, CHAT_OPENCODE_MODEL]);
     for (const cell of cells) {
       expect(cell.environment.id).toBe("local");
-      expect(cell.requiredCredentials).toEqual([cell.profile.id === "runner-opencode" ? "OPENROUTER_API_KEY" : "CODEX_AUTH_JSON"]);
+      const historical = cell.profile.id === "runner-opencode";
+      expect(cell.requiredCredentials).toEqual([historical ? "OPENROUTER_API_KEY" : "CODEX_AUTH_JSON"]);
+      expect(cell.profile.provider).toBe(historical ? "opencode" : "codex");
       expect(cell.task.automaticRetryPolicy).toBe("single_attempt");
       expect(cell.task.buildPrompt("nonce")).toBe(chatFeatureScenarios.find(row => row.id === `tasks.${cell.task.id}`)!.query);
       expect(selectRunnerExecutions(parseRunnerSelectors(["--id", cell.id])).map(row => row.id)).toEqual([cell.id]);

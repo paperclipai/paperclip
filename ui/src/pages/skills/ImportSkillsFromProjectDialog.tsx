@@ -31,7 +31,6 @@ import { normalizeAgentUrlKey } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { ApiError } from "../../api/client";
 import { companySkillsApi } from "../../api/companySkills";
-import { projectsApi } from "../../api/projects";
 import { useToastActions } from "../../context/ToastContext";
 import { queryKeys } from "../../lib/queryKeys";
 import { skillStudioRoute } from "../../lib/company-skill-routes";
@@ -49,6 +48,7 @@ import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { EmptyState } from "../../components/EmptyState";
 import { cn } from "../../lib/utils";
 import { describeError } from "@/api/errors";
+import { companyProjectsQuery } from "@/lib/company-projects-query";
 
 type Step = "pick" | "scanning" | "select" | "result";
 export type SkillSelection = { workspaceId: string; path: string; slug?: string };
@@ -295,8 +295,7 @@ export function ImportSkillsFromProjectDialog({
   const scanTokenRef = useRef(0);
 
   const projectsQuery = useQuery({
-    queryKey: queryKeys.projects.list(companyId),
-    queryFn: () => projectsApi.list(companyId),
+    ...companyProjectsQuery(companyId),
     enabled: open,
   });
   const projectsView = useQueryView(projectsQuery);

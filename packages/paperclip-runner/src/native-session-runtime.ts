@@ -18,7 +18,7 @@ import type {
   NativeSession,
   NativeSessionBackend,
 } from "./contracts/native-session-backend.js";
-import type { PersistedNativeSession } from "./contracts/native-session-backend.js";
+import type { NativeSessionRecoveryResult, PersistedNativeSession } from "./contracts/native-session-backend.js";
 import {
   PROVIDER_ATTACH_REFUSED,
   PROVIDER_SIDE_EFFECT_PENDING,
@@ -29,10 +29,12 @@ import {
   NativeProviderSideEffectPendingError,
   NativeProviderStateIncompatibleError,
   NativeProviderTerminalFailure,
+  NativeGovernedWaitSettlementPendingError,
   NativeSessionCloseUnrecoverableError,
   NativeSessionCleanupQuarantinedError,
   NativeSessionProtocolIntegrityError,
   isNativeRestartInterruption,
+  nativeRestartContinuationInFlight,
   nativeRestartInterruptedTurnId,
 } from "./contracts/native-session-backend.js";
 import {
@@ -304,6 +306,18 @@ export interface ExecuteNativeSessionOptions {
   resumeInterruptedTurn?: boolean;
   /** Read bounded task history only after recovery requires a fresh conversation. */
   getFreshSessionHandoff?: () => Promise<string | null>;
+  /**
+   * Seals this run's first-turn input immediately before `turn.start` and
+   * returns user messages that arrived while the run was preparing.
+   */
+  getFirstTurnQueuedInput?: () => Promise<string | null>;
+  prepareWakeAttachmentPrompt?: () => Promise<string>;
+  /**
+   * Steered messages the provider acknowledged but the model never read, read
+   * when a restart continuation starts. The provider lost them with the
+   * interrupted turn, so the continuation delivers them.
+   */
+  getUnreadSteeredMessages?: () => Promise<Array<{ id: string; text: string }>>;
   /** Durable launch intent, after cleanup admission and before provider calls. */
   onSessionAdmission?: () => Promise<void>;
   input: NativeExecutionInput;
@@ -404,6 +418,36 @@ function isTurnTerminal(event: PrpEvent): boolean {
   ].includes(event.eventType);
 }
 
+/**
+ * The only provider facts a governed-wait accounting drain persists after its
+ * trigger: usage, the turn terminal and cancellation acknowledgements of the
+ * parked turn. The drain discards every other numbered event, so the saved
+ * replay has sequence gaps exactly where those discarded events were.
+ */
+/**
+ * A parked turn's terminal proves the provider stopped its work. An interrupted
+ * or cancelled terminal does unless the provider never confirmed it. A failed
+ * terminal does only when Runnerd reports the turn lost on restore: it emits
+ * that cause after proving the old provider lifetime ended and restoring the
+ * conversation (ACPX reports a restart-killed turn this way; Codex reports it
+ * interrupted). That event carries `providerTerminalObserved: false`, because
+ * the provider itself sent no terminal; the restart proof stands in for it.
+ */
+function governedWaitTerminalProven(event: PrpEvent): boolean {
+  if (event.eventType === "turn.failed") return isNativeRestartInterruption(event.payload.error);
+  return event.payload.providerTerminalObserved !== false;
+}
+
+function isGovernedDrainRetainedEvent(event: PrpEvent, turnId: string | undefined): boolean {
+  if (event.turnId !== turnId) return false;
+  return isTurnTerminal(event)
+    || (event.eventType === "item.completed"
+      && (event.payload.kind === "usage" || event.payload.kind === "interrupt_acknowledgement"))
+    || event.eventType === "runtime_request.cancelled"
+    || event.eventType === "runtime_request.expired"
+    || (event.eventType === "run.terminal" && ["failed", "cancelled"].includes(String(event.payload.runTerminalState)));
+}
+
 function terminalFromEvent(
   event: PrpEvent,
   disposition: PrpTerminalState["reportedWorkDisposition"],
@@ -438,6 +482,7 @@ function terminalFromEvent(
 async function attemptOptionalSessionCancellation(
   session: NativeSession,
   reason: string,
+  failure: unknown,
 ): Promise<{ settlement: Promise<PromiseSettledResult<void>[]> } | null> {
   if (session.cancel === undefined) return null;
   const cancellationAbort = new AbortController();
@@ -449,6 +494,7 @@ async function attemptOptionalSessionCancellation(
     cleanup = session.cancel({
       reason,
       signal: cancellationAbort.signal,
+      ...(failure instanceof NativeSessionProtocolIntegrityError ? {} : { failureCleanup: true }),
     }).cleanup;
   } catch {
     return null;
@@ -1098,6 +1144,7 @@ async function consumeTurn(
   initialGovernedWait?: PersistedNativeSession["governedWait"],
   /** Settles a compaction-only turn, which reports no semantic result. */
   compactionResult?: PrpStructuredRunResult,
+  supersededTerminal?: (event: PrpEvent, signal: AbortSignal) => Promise<boolean>,
 ) {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const appendAbort = new AbortController();
@@ -1191,14 +1238,10 @@ async function consumeTurn(
           if (next.done || drainAbort.signal.aborted) return;
           const trailing = next.value;
           const terminal = isTurnTerminal(trailing);
-          const usage = trailing.eventType === "item.completed" && trailing.payload.kind === "usage";
-          // These already-numbered cancellation facts carry no new work
-          // authority. Retain them so later receipts have contiguous replay.
-          const cancellation = trailing.eventType === "runtime_request.cancelled"
-            || trailing.eventType === "runtime_request.expired"
-            || (trailing.eventType === "item.completed" && trailing.payload.kind === "interrupt_acknowledgement")
-            || (trailing.eventType === "run.terminal" && ["failed", "cancelled"].includes(String(trailing.payload.runTerminalState)));
-          if (trailing.turnId === event.turnId && (usage || terminal || cancellation)) {
+          // Usage, the terminal and already-numbered cancellation facts carry
+          // no new work authority. Everything else is discarded, leaving gaps
+          // that governed-wait recovery replay accepts only for these facts.
+          if (isGovernedDrainRetainedEvent(trailing, event.turnId)) {
             const receipt = await controlPlane.appendEvent(trailing, {
               signal: drainAbort.signal,
               ...(terminal && trailing.turnId && trailing.eventType !== "turn.failed" && trailing.payload.providerTerminalObserved !== false
@@ -1208,7 +1251,7 @@ async function consumeTurn(
             eventCount += receipt.disposition === "committed" ? 1 : 0;
             highestContiguousSourceSeq = Math.max(highestContiguousSourceSeq, receipt.highestContiguousSourceSeq);
             if (terminal) {
-              if (trailing.eventType === "turn.failed" || trailing.payload.providerTerminalObserved === false) {
+              if (!governedWaitTerminalProven(trailing)) {
                 throw new NativeProviderTerminalFailure("governed_wait_provider_terminal_unproven", false);
               }
               governedProviderTerminalObserved = true;
@@ -1217,26 +1260,51 @@ async function consumeTurn(
           }
         }
       })();
-      await Promise.race([
-        drained.catch(error => {
-          quarantineSession("governed_accounting_drain_failed");
-          if (error instanceof NativeProviderTerminalFailure) throw error;
-        }),
-        new Promise<void>(resolve => { drainTimer = setTimeout(() => {
-          drainAbort.abort(new Error("governed accounting drain timed out"));
-          quarantineSession("governed_accounting_drain_timed_out");
-          resolve();
-        }, drainMs); }),
-      ]).finally(() => {
+      const observedDrain = drained.catch(error => {
+        quarantineSession("governed_accounting_drain_failed");
+        if (error instanceof NativeProviderTerminalFailure || error instanceof NativeSessionProtocolIntegrityError) throw error;
+        throw new NativeGovernedWaitSettlementPendingError({ cause: error });
+      });
+      try {
+        await Promise.race([
+          observedDrain,
+          new Promise<void>(resolve => { drainTimer = setTimeout(() => {
+            quarantineSession("governed_accounting_drain_timed_out");
+            resolve();
+          }, drainMs); }),
+        ]);
+        clearTimeout(drainTimer);
+        if (!governedProviderTerminalObserved) {
+          const settlement = await runAbortableOperationWithin({
+            timeoutMs: MAX_GOVERNED_ACCOUNTING_DRAIN_MS,
+            timeoutMessage: "governed wait shutdown settlement timed out",
+            timeoutError: () => new NativeGovernedWaitSettlementPendingError(),
+            signal: appendAbort.signal,
+            operation: async signal => {
+              let receipt;
+              try {
+                receipt = await session.settleCancelledTurn?.({ turnId: event.turnId!, reason });
+              } catch (error) {
+                if (error instanceof NativeSessionProtocolIntegrityError) throw error;
+                throw new NativeGovernedWaitSettlementPendingError({ cause: error });
+              }
+              signal.throwIfAborted();
+              if (!receipt) throw new NativeGovernedWaitSettlementPendingError();
+              if (receipt.runId !== event.runId || receipt.normalizedSessionId !== event.normalizedSessionId
+                || receipt.turnId !== event.turnId) throw new NativeSessionProtocolIntegrityError("source_event_replay_conflict");
+              await observedDrain;
+              signal.throwIfAborted();
+              return receipt;
+            },
+          });
+          await checkpointGovernedWait?.({ sourceEvent: event, result, settlement }, appendAbort.signal);
+          appendAbort.signal.throwIfAborted();
+          quarantineSession("governed_wait_session_retired");
+        }
+      } finally {
         clearTimeout(drainTimer);
         appendAbort.signal.removeEventListener("abort", stopDrain);
         drainAbort.abort();
-      });
-      // A durable wait and complete usage cannot prove that the provider
-      // stopped. Leave the journaled wait recoverable, without a successful
-      // result or an accounting-completion boundary, if shutdown is unproven.
-      if (!governedProviderTerminalObserved) {
-        throw new NativeProviderTerminalFailure("governed_wait_provider_terminal_unproven", false);
       }
       return {
         event,
@@ -1491,6 +1559,7 @@ async function consumeTurn(
         }
       }
       if (isTurnTerminal(event)) {
+        if (await supersededTerminal?.(event, appendAbort.signal)) continue;
         if (providerFailure) throw providerFailure;
         if (compactionResult && event.eventType === "turn.completed") {
           return {
@@ -1562,6 +1631,7 @@ async function consumeTurn(
       const deferredCancellation = await attemptOptionalSessionCancellation(
         session,
         "Native session event consumption failed.",
+        error,
       );
       deferredSessionCancellationSettlement =
         deferredCancellation?.settlement ?? null;
@@ -1848,6 +1918,61 @@ function checkpointCursor(cursor: string | null | undefined): number {
   if (cursor === undefined || cursor === null || cursor === "") return 0;
   const parsed = Number(cursor);
   return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0;
+}
+
+/**
+ * A follow-up after a governed wait normally requires the same provider
+ * session. When the Runner proved the saved session state is gone, and nothing
+ * proves this run started provider work of its own, a fresh session cannot
+ * repeat a turn or a tool side effect: only the earlier conversation context is
+ * lost. Every other case keeps the named refusal. The reconciled checkpoint must
+ * be the untouched rebind of the previous run (no cursor progress, turn,
+ * runtime request, result, terminal or governed wait of this run), and the
+ * control plane must prove durably, across runner instances, that the run has
+ * no provider event, tool invocation or accepted result. A control plane
+ * without that proof, or a checkpoint missing those fields, keeps the refusal.
+ */
+const GOVERNED_WAIT_PROVIDER_WORK_PROOF_TIMEOUT_MS = 30_000;
+
+async function governedWaitFollowUpMayStartFresh(input: {
+  input: NativeExecutionInput;
+  checkpoint: PersistedNativeSession;
+  recovery: NativeSessionRecoveryResult;
+  restartInterruption: boolean;
+  controlPlane: ControlPlanePort;
+  timeoutMs: number;
+}): Promise<boolean> {
+  const { checkpoint, recovery } = input;
+  if (
+    checkpoint.providerRecoveryPolicy !== "allow_replacement_after_governed_wait" ||
+    ("homeMode" in input.input && input.input.homeMode === "preconfigured") ||
+    recovery.failureClass !== PROVIDER_STATE_INCOMPATIBLE ||
+    recovery.resumeStateUnavailable !== true ||
+    input.restartInterruption ||
+    checkpoint.identity.runId !== input.input.binding.runId ||
+    !(checkpoint.cursor === null || checkpoint.cursor === "0") ||
+    checkpoint.activeTurnId !== null ||
+    !Array.isArray(checkpoint.terminalTurns) || checkpoint.terminalTurns.length > 0 ||
+    !Array.isArray(checkpoint.pendingRuntimeRequests) || checkpoint.pendingRuntimeRequests.length > 0 ||
+    checkpoint.semanticResult !== null ||
+    checkpoint.terminal !== null ||
+    checkpoint.governedWait !== undefined ||
+    checkpoint.dispositionOnlyRecoveryConsumed !== false ||
+    !input.controlPlane.provesNoRunProviderWork
+  ) return false;
+  const controlPlane = input.controlPlane;
+  // A proof that fails or expires is no proof: keep the named refusal and its
+  // Retry rather than surfacing a generic interruption.
+  const timeoutMs = Math.min(input.timeoutMs, GOVERNED_WAIT_PROVIDER_WORK_PROOF_TIMEOUT_MS);
+  try {
+    return await runAbortableOperationWithin({
+      timeoutMs,
+      timeoutMessage: `native session provider-work proof timed out after ${timeoutMs}ms`,
+      operation: (signal) => controlPlane.provesNoRunProviderWork!({ signal }),
+    }) === true;
+  } catch {
+    return false;
+  }
 }
 
 async function reconcileRecoveryCheckpoint(input: {
@@ -2292,14 +2417,22 @@ export async function executeNativeSession(
       timeoutMessage: "native governed-wait recovery replay timed out",
       operation: async signal => {
         let afterSourceSeq = event.sourceSeq - 1;
+        let gapObserved = false;
         while (true) {
           const page = await options.controlPlane.replayEvents({ runId: identity.runId,
             sourceInstanceId: options.runnerInstanceId, afterSourceSeq, limit: 1_000 }, { signal });
           signal.throwIfAborted();
           if (!page.events.length) break;
           for (const entry of page.events) {
+            // The trigger must be the first replayed event. After it, the
+            // accounting drain persisted only facts of the parked turn and
+            // discarded the rest, so a gap is legitimate only when every later
+            // event is one of those facts. Identity never relaxes.
+            if (entry.sourceSeq !== afterSourceSeq + 1) gapObserved = true;
             if (entry.runId !== identity.runId || entry.normalizedSessionId !== identity.sessionId
-              || entry.sourceInstanceId !== event.sourceInstanceId || entry.sourceSeq !== afterSourceSeq + 1
+              || entry.sourceInstanceId !== event.sourceInstanceId || !Number.isSafeInteger(entry.sourceSeq)
+              || entry.sourceSeq <= afterSourceSeq || (gapObserved && (governedReplay.length === 0 || !event.turnId
+                || !isGovernedDrainRetainedEvent(entry, event.turnId)))
               || governedReplay.length >= 10_000) throw new Error("native_governed_wait_replay_mismatch");
             governedReplay.push(entry);
             afterSourceSeq = entry.sourceSeq;
@@ -2311,6 +2444,9 @@ export async function executeNativeSession(
     if (governedReplay.some(entry => entry.eventType === "turn.started" && entry.turnId !== event.turnId)) {
       throw new Error("native_governed_wait_turn_mismatch");
     }
+    const settlement = governedWait.settlement;
+    if (settlement && (settlement.runId !== event.runId || settlement.normalizedSessionId !== event.normalizedSessionId
+      || settlement.turnId !== event.turnId)) throw new NativeSessionProtocolIntegrityError("source_event_replay_conflict");
   }
   let recovered = false;
   let session: NativeSession | null = null;
@@ -2321,7 +2457,7 @@ export async function executeNativeSession(
   } | null = null;
   let reconciledRecoveryCheckpoint: PersistedNativeSession | null = null;
   const checkpointedInterruption = persistedSession && nativeRestartInterruptedTurnId(persistedSession);
-  if (checkpointedInterruption && persistedSession) {
+  if (persistedSession && (checkpointedInterruption || nativeRestartContinuationInFlight(persistedSession))) {
     // The turn failed because its process vanished; the conversation is still
     // usable. Keep its terminal fingerprint so replay cannot execute it twice.
     persistedSession = { ...persistedSession, terminal: null };
@@ -2339,6 +2475,10 @@ export async function executeNativeSession(
       const attach = async (signal?: AbortSignal) => {
         signal?.throwIfAborted();
         await options.existingSession!.attachRun!({ identity,
+        completionContract: {
+          revision: input.completionContract.contract.revision,
+          criterionIds: input.completionContract.contract.criteria.map((criterion) => criterion.id),
+        },
         ...(input.provider.kind === "acpx" && input.provider.agent === "copilot"
           ? { currentRunGrant: { runtimeContext: "runtimeContext" in input ? input.runtimeContext : null,
               instructions: nativeSystemInstructions(input) } }
@@ -2438,16 +2578,30 @@ export async function executeNativeSession(
       if (recovery.failureClass === PROVIDER_ATTACH_REFUSED) {
         throw new NativeProviderStateIncompatibleError(recovery.reason ?? "unknown");
       }
-      if (!replacementAllowed) {
+      const governedWaitFollowUpLostState = !replacementAllowed && await governedWaitFollowUpMayStartFresh({
+        input,
+        checkpoint: providerRecoveryCheckpoint,
+        recovery,
+        restartInterruption: Boolean(checkpointedInterruption),
+        controlPlane: options.controlPlane,
+        timeoutMs: recoveryTimeoutMs,
+      });
+      if (!replacementAllowed && !governedWaitFollowUpLostState) {
         if (recovery.failureClass === PROVIDER_STATE_INCOMPATIBLE) {
           throw new NativeProviderStateIncompatibleError(recovery.reason ?? "unknown");
         }
-        throw new Error(
+        const failure = new Error(
           `native_session_recovery_failed: ${recovery.reason ?? "unknown"}`,
         );
+        if (recovery.runnerExitConfirmed === true) {
+          Object.defineProperty(failure, "runnerExitConfirmed", { value: true, enumerable: false });
+        }
+        throw failure;
       }
       continuityBreak = {
-        reason: recovery.reason ?? "provider session is no longer recoverable",
+        reason: governedWaitFollowUpLostState
+          ? `saved provider state is unavailable, so the follow-up continues in a fresh provider session without the earlier conversation context (${recovery.reason ?? "unknown"})`
+          : recovery.reason ?? "provider session is no longer recoverable",
         previousDriverSessionId: providerRecoveryCheckpoint.sessionId,
         previousProviderSessionId:
           providerRecoveryCheckpoint.providerSessionId ?? null,
@@ -2645,18 +2799,23 @@ export async function executeNativeSession(
       return snapshot;
     };
     const recoveredSnapshot = await session.snapshot();
-    const restartContinuation = () => ({
+    const restartContinuation = (steeredMessages: Array<{ id: string; text: string }>, attachmentPrompt?: string) => ({
       message: { role: "user" as const, text: JSON.stringify({
         schema: "paperclip.native-continuation.v1",
         events: [
-          "This is a resumed session after a Paperclip control-plane restart. Paperclip restored this same conversation and workspace; the restart interrupted the previous turn.",
+          "This is a resumed session. The process running the previous turn was lost, for example in a Paperclip restart. Paperclip restored this same conversation and workspace; that loss interrupted the previous turn.",
           "Continue the current user request from the recorded progress and preserved workspace.",
+          ...(steeredMessages.length > 0 ? [
+            "During the interrupted turn the user sent the messages in steeredMessages. The interruption happened before you read them. Handle each one in this turn, oldest first, together with the current request.",
+          ] : []),
           "Shell commands and background processes started in earlier turns may no longer be running, and their tool sessions may be gone. Do not block only because such a process or its tool session cannot be found or inspected.",
           "Reconcile any unfinished tool or command before proceeding: check the workspace for the outputs or artifacts it should have produced. If the expected output is present, use it. If the expected output is missing, re-run the command.",
           "Do not repeat completed work. Before you repeat an action with external effects, such as a push, a message or a deployment, check whether it already took effect. If you cannot determine that, report the specific blocker.",
           "Finish in this turn. Nothing resumes this conversation after the turn ends, so do not end it to wait for a background command or a notification; wait for or check that work first.",
           "Then invoke exactly one paperclip_finish or paperclip_block with the accurate disposition.",
+          ...(attachmentPrompt ? ["", attachmentPrompt] : []),
         ].join("\n"),
+        ...(steeredMessages.length > 0 ? { steeredMessages: steeredMessages.map(message => message.text) } : {}),
         completion: {
           revision: input.completionContract.contract.revision,
           criterionIds: input.completionContract.contract.criteria.map(criterion => criterion.id),
@@ -2690,6 +2849,9 @@ export async function executeNativeSession(
     };
     let restartContinuationStarted = false;
     let borrowedContinuationTurnId: string | null = null;
+    let restartContinuationTurnId: string | null = null;
+    let settleStartupDecision: () => void = () => undefined;
+    const startupDecision = new Promise<void>(resolve => { settleStartupDecision = resolve; });
     let continuationDispositionRequested = false;
     // The consumer may already be running when a continuation starts, and the
     // continuation can complete before its start checkpoint settles. A
@@ -2701,7 +2863,12 @@ export async function executeNativeSession(
       continuationSetup = (async () => {
         // The driver reports the borrowed marker with the accepted turn; a
         // later snapshot may already show the marker returned.
-        const started = await session.startTurn(restartContinuation());
+        const steeredMessages = await options.getUnreadSteeredMessages?.() ?? [];
+        signal?.throwIfAborted();
+        const attachmentPrompt = await options.prepareWakeAttachmentPrompt?.();
+        signal?.throwIfAborted();
+        const started = await session.startTurn(restartContinuation(steeredMessages, attachmentPrompt));
+        restartContinuationTurnId = started.turnId;
         if (started.borrowedDispositionMarker === true) borrowedContinuationTurnId = started.turnId;
         await checkpoint(signal);
       })();
@@ -2723,6 +2890,18 @@ export async function executeNativeSession(
       await session.startTurn(continuationDispositionTurn());
       await checkpoint(signal);
       return true;
+    };
+    const supersededByRestartContinuation = async (event: PrpEvent, signal: AbortSignal) => {
+      if (!recovered || event.eventType !== "turn.failed" ||
+          !isNativeRestartInterruption(event.payload.error) || !event.turnId) return false;
+      if (checkpointedInterruption) {
+        await startupDecision;
+        signal.throwIfAborted();
+      }
+      if (!restartContinuationStarted) return false;
+      await continuationSetup?.catch(() => undefined);
+      signal.throwIfAborted();
+      return restartContinuationTurnId !== null && event.turnId !== restartContinuationTurnId;
     };
     const resumeInterruptedTurn = async (event: PrpEvent, signal: AbortSignal) => {
       if (await requestContinuationDisposition(event, signal)) return true;
@@ -2780,11 +2959,14 @@ export async function executeNativeSession(
 
     const governedTerminal = governedWait ? governedReplay.find(event =>
       event.turnId === governedWait!.sourceEvent.turnId && isTurnTerminal(event)) : undefined;
-    if (governedTerminal?.eventType === "turn.failed" || governedTerminal?.payload.providerTerminalObserved === false) {
+    if (governedTerminal && !governedWaitTerminalProven(governedTerminal)) {
       throw new NativeProviderTerminalFailure("governed_wait_provider_terminal_unproven", false);
     }
     if (governedWait && recoveredActiveTurnId && recoveredActiveTurnId !== governedWait.sourceEvent.turnId) {
       throw new Error("native_governed_wait_turn_mismatch");
+    }
+    if (governedWait?.settlement && recoveredActiveTurnId) {
+      throw new NativeSessionProtocolIntegrityError("source_event_replay_conflict");
     }
     if (governedWait) {
       for (const event of governedReplay) {
@@ -2875,9 +3057,9 @@ export async function executeNativeSession(
         replayedDisposition?.terminal ?? dispositionFallback;
       const consumptionAbort = new AbortController();
       const consuming =
-        governedTerminal && governedWait
+        (governedTerminal || governedWait?.settlement) && governedWait
           ? Promise.resolve({ event: governedWait.sourceEvent, governedResult: governedWait.result,
-              eventCount: 0, highestContiguousSourceSeq: governedTerminal.sourceSeq })
+              eventCount: 0, highestContiguousSourceSeq: governedReplay.at(-1)?.sourceSeq ?? governedWait.sourceEvent.sourceSeq })
           : recoveryTerminal === null
           ? consumeTurn(
               session,
@@ -2909,6 +3091,7 @@ export async function executeNativeSession(
               options.sessionCompaction
                 ? sessionCompactionResult(input, options.sessionCompaction.requestId)
                 : undefined,
+              supersededByRestartContinuation,
             )
           : Promise.resolve({
               event: recoveryTerminal,
@@ -3015,6 +3198,16 @@ export async function executeNativeSession(
           if ("workspace" in modelEnvelope && modelEnvelope.workspace && recoveredSnapshot.workingDirectory) {
             modelEnvelope.workspace.cwd = recoveredSnapshot.workingDirectory;
           }
+          if (!dispositionOnlyRecovery || effectFreeInitialAcpxTurn) {
+            const attachments = await options.prepareWakeAttachmentPrompt?.();
+            const queuedInput = await options.getFirstTurnQueuedInput?.();
+            const supplemental = [attachments, queuedInput].filter(Boolean).join("\n\n");
+            if (supplemental && "task" in modelEnvelope) {
+              modelEnvelope.task.prompt = `${modelEnvelope.task.prompt}\n\n${supplemental}`;
+            } else if (supplemental && "events" in modelEnvelope) {
+              modelEnvelope.events = `${modelEnvelope.events}\n\n${supplemental}`;
+            }
+          }
           await session.startTurn({
             message: { role: "user", text: JSON.stringify(modelEnvelope) },
             ...(recovered && modelEnvelope.schema === "paperclip.native-continuation.v1"
@@ -3028,7 +3221,9 @@ export async function executeNativeSession(
           });
           await checkpoint();
         }
+        settleStartupDecision();
       } catch (error) {
+        settleStartupDecision();
         // Consumption starts before provider launch so eager events cannot be
         // lost. If launch or its checkpoint fails, abort any in-flight append
         // before joining cleanup so the failed turn cannot commit late or

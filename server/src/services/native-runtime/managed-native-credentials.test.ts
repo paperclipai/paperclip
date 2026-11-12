@@ -109,3 +109,18 @@ describe("managed native credential turns", () => {
     expect(remove).toHaveBeenCalledOnce();
   });
 });
+
+it("defers the durable final export until retirement and retains it for retry", async () => {
+  const session = { close: vi.fn(async () => {}) } as unknown as NativeSession;
+  const copyBack = vi.fn(async () => {}), remove = vi.fn(async () => {});
+  const retire = vi.fn().mockRejectedValueOnce(new Error("export unavailable")).mockResolvedValue(undefined);
+  bindManagedNativeCredentialTurn(session, { copyBack, retire, remove });
+  await completeManagedNativeCredentialTurn(session);
+  expect(retire).not.toHaveBeenCalled();
+  await expect(session.close({ reason: "idle" })).rejects.toThrow("export unavailable");
+  expect(remove).not.toHaveBeenCalled();
+  await session.close({ reason: "retry retirement" });
+  await session.close({ reason: "already retired" });
+  expect(retire).toHaveBeenCalledTimes(2);
+  expect(remove).toHaveBeenCalledOnce();
+});

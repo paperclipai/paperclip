@@ -6,7 +6,7 @@ import { writeExecutionControl } from "./execution-control-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { and, desc, eq, inArray, isNull, isNotNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { heartbeatRuns, issueRecoveryActions, workspaceOperations } from "@paperclipai/db";
+import { heartbeatRuns, issueRecoveryActions, nativeRunFinalizations, workspaceOperations } from "@paperclipai/db";
 import { isUuidLike } from "@paperclipai/shared";
 import type {
   IssueRecoveryAction,
@@ -17,6 +17,7 @@ import type {
 } from "@paperclipai/shared";
 
 import { isNativeWorkspaceFinalizationOperationActive } from "./workspace-operations.js";
+import { exhaustedSystemRecoveryAction, readSystemRecovery } from "./system-recovery-state.js";
 
 const ACTIVE_RECOVERY_ACTION_STATUSES = ["active", "escalated"] as const satisfies readonly IssueRecoveryActionStatus[];
 const MAX_UPSERT_RETRIES = 3;
@@ -87,6 +88,14 @@ export type ResolveIssueRecoveryActionInput = {
   resolutionNote?: string | null;
 };
 
+/** A spent saved-work recovery is described from its current state. Text saved
+ * by an older release could ask a person to inspect the run's environment. */
+function readModelNextAction(row: IssueRecoveryActionRow): string {
+  const system = readSystemRecovery(row.evidence);
+  return system?.state === "exhausted" && row.evidence?.workspaceRecovery
+    ? exhaustedSystemRecoveryAction(system, row.evidence) : row.nextAction;
+}
+
 function toReadModel(row: IssueRecoveryActionRow): IssueRecoveryAction {
   return {
     id: row.id,
@@ -103,7 +112,7 @@ function toReadModel(row: IssueRecoveryActionRow): IssueRecoveryAction {
     cause: row.cause,
     fingerprint: row.fingerprint,
     evidence: row.evidence,
-    nextAction: row.nextAction,
+    nextAction: readModelNextAction(row),
     wakePolicy: row.wakePolicy,
     monitorPolicy: row.monitorPolicy,
     attemptCount: row.attemptCount,
@@ -614,6 +623,15 @@ export function issueRecoveryActionService(db: DbOrTransaction) {
       const pending = await tx.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions)
         .where(and(...predicates)).limit(1);
       if (!pending.length) return [];
+      // Resolving another attention releases this issue's preserved Native
+      // waiter to one normal inspection. No recurring monitor or new turn.
+      const [waiter] = await tx.select({ id: nativeRunFinalizations.runId }).from(nativeRunFinalizations)
+        .innerJoin(heartbeatRuns, eq(heartbeatRuns.id, nativeRunFinalizations.runId)).where(and(
+          eq(nativeRunFinalizations.companyId, input.companyId), eq(nativeRunFinalizations.issueId, input.sourceIssueId),
+          eq(nativeRunFinalizations.phase, "observed"), isNull(nativeRunFinalizations.resultId),
+          isNotNull(nativeRunFinalizations.leaseOwner), inArray(heartbeatRuns.status, ["failed", "timed_out", "interrupted"]),
+        )).limit(1);
+      if (waiter) await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionFinalization);
       await notifyIssueRecovery(tx, { companyId: input.companyId });
       await notifyNativeRecoveryNotices(tx, { companyId: input.companyId, issueId: input.sourceIssueId });
       await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: input.companyId, issueId: input.sourceIssueId });

@@ -1,5 +1,7 @@
 import { and, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import { agentInteractionDenial, type AgentInteractionDenial, type AgentInteractionOperation } from "./agent-interaction-policy.js";
+import { currentPluginInteractionOrigin } from "./plugin-interaction-context.js";
 import { withHumanDirectedWork } from "./human-directed-work.js";
 import { hasOwnerChatInstructionAuthority } from "./owner-chat-instruction-authority.js";
 import { canonicalExecutionUuid } from "./execution-identity.js";
@@ -97,6 +99,7 @@ export type AuthorizationAction =
   | "agent_instructions:update"
   | "skill_config:update"
   | "agent:read"
+  | "attention:route"
   | "agent:wake"
   | "company_scope:read"
   | "decision_queue:manage"
@@ -135,7 +138,8 @@ export type AuthorizationDecision = {
   action: AuthorizationAction;
   explanation: string;
   inboxPolicyMode?: InboxAgentPolicyMode | "grant_override";
-  code?: "RESPONSIBLE_USER_UNAUTHORIZED" | "RESPONSIBLE_USER_UNAVAILABLE";
+  code?: "RESPONSIBLE_USER_UNAUTHORIZED" | "RESPONSIBLE_USER_UNAVAILABLE" | "agent_interaction_denied";
+  interactionDenial?: AgentInteractionDenial;
   reason:
     | "allow_low_trust_boundary"
     | "allow_local_board"
@@ -164,6 +168,7 @@ export type AuthorizationDecision = {
     | "deny_missing_consent"
     | "deny_no_grant"
     | "deny_policy_restricted"
+    | "deny_agent_interaction"
     | "deny_low_trust_boundary"
     | "deny_issue_private"
     | "deny_project_private"
@@ -192,6 +197,7 @@ function permissionForAction(action: AuthorizationAction): PermissionKey | null 
     return null;
   }
   if (
+    action === "attention:route" ||
     action === "agent:read" ||
     action === "agent:wake" ||
     action === "company_scope:read" ||
@@ -212,11 +218,13 @@ function permissionForAction(action: AuthorizationAction): PermissionKey | null 
 }
 
 function canCreateAgentsLegacy(agent: { role: string; permissions: unknown }) {
-  if (agent.role === "ceo") return true;
-  // Raw agent rows may predate permission normalization; apply the same
-  // defaults the agent service applies on read so enforcement matches what
-  // the API reports.
-  return normalizeAgentPermissions(agent.permissions).canCreateAgents;
+  // An explicit canCreateAgents value is the saved access policy, including
+  // for CEOs: the board can turn hiring off on any agent's permissions page,
+  // and the CEO title must not override that denial. The CEO role only fills
+  // in hiring authority for rows that never saved an explicit value. Raw rows
+  // may predate permission normalization; apply the same defaults the agent
+  // service applies on read so enforcement matches what the API reports.
+  return normalizeAgentPermissions(agent.permissions, { role: agent.role }).canCreateAgents;
 }
 
 function scopeValueList(value: unknown): string[] {
@@ -760,6 +768,7 @@ function scopeBoolean(scope: Record<string, unknown> | null | undefined, key: st
 
 export function authorizationDeniedDetails(decision: AuthorizationDecision) {
   return {
+    ...decision.interactionDenial,
     ...(decision.code ? { code: decision.code } : {}),
     reason: decision.reason,
   };
@@ -775,6 +784,22 @@ type ReadAuthorizationSnapshot = {
 };
 
 type ReadAuthorizationResource = Extract<AuthorizationResource, { type: "issue" | "project" | "company" }>;
+
+/** Per-resource decisions of one batched read that run at the same time. */
+export const READ_DECISION_CONCURRENCY = 8;
+
+/** Maps in input order with bounded concurrency; stops starting work after the first failure. */
+async function mapWithConcurrency<T, R>(items: readonly T[], concurrency: number, mapper: (item: T) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0, failed = false;
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (!failed && next < items.length) {
+      const index = next++;
+      try { results[index] = await mapper(items[index]!); } catch (error) { failed = true; throw error; }
+    }
+  }));
+  return results;
+}
 
 export function authorizationService(db: Db | DbTransaction) {
   return createAuthorizationService(db);
@@ -843,10 +868,13 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
     const results: AuthorizationDecision[][] = [];
     for (let index = 0; index < batchActors.length; index++) {
       const batch = createAuthorizationService(db, snapshots[index]);
-      const decisions: AuthorizationDecision[] = [];
-      for (const resource of resources) decisions.push(await batch.decide({ actor: batchActors[index], resource,
-        action: resource.type === "issue" ? "issue:read" : resource.type === "project" ? "project:read" : "company_scope:read" }));
-      results.push(decisions);
+      // The batch has already read what the resources share. Checks that stay
+      // per resource (a low-trust boundary's ancestry and mention grants) run
+      // a few at a time, so a long list neither waits on them one by one nor
+      // takes every pool connection at once.
+      results.push(await mapWithConcurrency(resources, READ_DECISION_CONCURRENCY, resource => batch.decide({
+        actor: batchActors[index], resource,
+        action: resource.type === "issue" ? "issue:read" : resource.type === "project" ? "project:read" : "company_scope:read" })));
     }
     return results;
   }
@@ -1991,6 +2019,11 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
       });
     }
 
+    if (input.action === "attention:route" && input.actor.type !== "board") {
+      return deny({ action: input.action, reason: "deny_unsupported_action",
+        explanation: "Only a human routing administrator can reroute another person's request." });
+    }
+
     if (input.action === "runtime:confirm_owner_stop" && input.actor.type !== "board") {
       return deny({ action: input.action, reason: "deny_unsupported_action",
         explanation: "Only a deployment administrator can confirm a workspace controller has stopped." });
@@ -2023,6 +2056,15 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
           reason: "allow_instance_admin",
           explanation: "Allowed because the actor is an instance admin.",
         });
+      }
+      if (input.action === "attention:route") {
+        const membership = await getActiveMembership(companyId, "user", input.actor.userId ?? "");
+        if (membership?.membershipRole === "owner" || membership?.membershipRole === "admin") {
+          return allow({ action: input.action, reason: "allow_role_default",
+            explanation: "Allowed by the active company owner or administrator role." });
+        }
+        return deny({ action: input.action, reason: "deny_missing_grant",
+          explanation: "Only a company owner, company administrator, or instance administrator can reroute another person's request." });
       }
       if (input.action === "runtime:confirm_owner_stop") {
         const membership = await getActiveMembership(companyId, "user", input.actor.userId ?? "");
@@ -2832,8 +2874,10 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
 
     const companyId = companyIdForResource(input.resource);
     // External authority always uses current membership, without the request's
-    // responsible-user memo or rollout exceptions for agent-owned grants.
-    const snapshot = await loadResponsibleUserSnapshot(companyId, authorizingUserId);
+    // responsible-user memo or rollout exceptions for agent-owned grants. A
+    // batch of read decisions reads that membership from the database once.
+    const snapshot = await batchRead(`responsible:${companyId}:${authorizingUserId}`,
+      () => loadResponsibleUserSnapshot(companyId, authorizingUserId));
     const userDecision = snapshot.userExists && snapshot.activeMembership
       ? await decideBase({
           ...input,
@@ -2859,10 +2903,33 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
     action: AuthorizationAction;
     resource: AuthorizationResource;
     scope?: Record<string, unknown> | null;
-  }): Promise<AuthorizationDecision> {
+  }, options?: { interactionPolicy: "defer_to_mutation" }): Promise<AuthorizationDecision> {
     const agentDecision = await measureWorkspaceAuthorization("authorization.base", () => decideBase(input));
     const responsibleDecision = await measureWorkspaceAuthorization("authorization.responsible_user", () => applyResponsibleUserIntersection(input, agentDecision));
     const intersectedDecision = await measureWorkspaceAuthorization("authorization.authorizing_user", () => applyAuthorizingUserIntersection(input, responsibleDecision));
+    const interactionActorId = currentPluginInteractionOrigin()?.agentId
+      ?? (input.actor.type === "agent" ? input.actor.agentId : undefined);
+    if (intersectedDecision.allowed && interactionActorId && options?.interactionPolicy !== "defer_to_mutation") {
+      const operation: AgentInteractionOperation | null = input.action === "tasks:assign" && input.resource.type === "issue" ? "assign"
+        : input.action === "issue:comment" && input.resource.type === "issue" ? "comment"
+        : (input.action === "issue:mutate" || input.action === "project:write_workspace") && input.resource.type === "issue" ? "edit"
+        : input.action === "agent_config:update" || input.action === "agent_instructions:update" ? "configure"
+        : null;
+      if (operation) {
+        const resource = input.resource;
+        const denial = await agentInteractionDenial(db, {
+          companyId: resource.companyId, actorAgentId: interactionActorId, operation,
+          ...(resource.type === "issue" ? {
+            issueId: resource.issueId, parentIssueId: operation === "assign" && !resource.issueId ? resource.parentIssueId : undefined,
+            targetAgentId: operation === "assign" ? resource.assigneeAgentId : undefined,
+            assigneeUserId: operation === "assign" ? resource.assigneeUserId : undefined,
+          } : resource.type === "agent" ? { targetAgentId: resource.agentId } : {}),
+        });
+        if (denial) return { allowed: false, action: input.action, reason: "deny_agent_interaction",
+          code: denial.code, interactionDenial: denial,
+          explanation: `Agent interaction is disabled by ${denial.permission}. A human permission manager can change this setting.` };
+      }
+    }
     if (
       input.action === "project:read"
       && input.resource.type === "project"

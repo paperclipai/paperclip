@@ -3,7 +3,7 @@ import type { DurableRecoveryIdentity } from "../../contracts/durable-recovery.j
 import type { NativeTurnControlCapabilities } from "../../contracts/types.js";
 import type { NativeRunRuntimeGrant } from "../../contracts/runtime-context.js";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import type { HarnessRuntimeRequestResolution } from "../../contracts/harness-driver.js";
+import type { HarnessRuntimeRequestResolution, HarnessSession } from "../../contracts/harness-driver.js";
 import { githubCredentialEnvironment } from "../../github-credential-environment.js";
 import { redactCodexDiagnostic } from "./diagnostic-redaction.js";
 
@@ -37,7 +37,9 @@ export type CodexServerRequestHandler = (
 ) => Promise<Record<string, unknown>>;
 
 export interface CodexAppServerTransport {
+  settleCancelledTurn?: HarnessSession["settleCancelledTurn"];
   supportsTurnReasoning?(): boolean;
+  downloadAttachment?: HarnessSession["downloadAttachment"];
   /** Runner-owned live capability projection; absent on native Codex transports. */
   turnControlCapabilities?(): NativeTurnControlCapabilities | null;
   request(
@@ -58,6 +60,9 @@ export interface CodexAppServerTransport {
    * controller checkpoints the turn; recovery uses this to adopt that turn.
    */
   controllerAcceptedTurnId?(): string | null;
+  /** The provider turn the latest completed turn.start accepted, live or not; the
+   * driver adopts it only when provider history shows that exact turn completed. */
+  controllerAcceptedCompletedTurnId?(): string | null;
   /**
    * Optional provider-neutral resolution path used when a transport has
    * already normalized a native server request behind another PRP boundary.
@@ -71,17 +76,22 @@ export interface CodexAppServerTransport {
    * Close the provider transport. The optional reason is controller-owned
    * diagnostic context; transports must not forward it to the provider.
    */
-  close(reason?: string): Promise<void>;
+  close(reason?: string, options?: { retainUnsettledRemoteRunner?: boolean }): Promise<void>;
+  /** After close: the runner settled and its process exit was observed. */
+  runnerExitConfirmed?(): boolean;
   /** Return the confirmed released source, or false when active use was not released. */
   release?(): Promise<DurableRecoveryIdentity | false>;
   /** Relinquish controller authority while leaving durable runner work alive. */
   detachControllerForRestart?(): Promise<void>;
   processInfo?(): CodexTransportProcessInfo;
+  beginRunAttachment?(input: { runId: string }): boolean;
   attachRun?(input: {
     runId: string;
     turnId: string;
     itemId: string;
     currentRunGrant?: NativeRunRuntimeGrant;
+    /** The attaching run's own completion contract. */
+    completionContract?: { revision: string; criterionIds: readonly string[] };
   }): Promise<void>;
   /** Records post-rehydration driver mapping without affecting run authority. */
   recordTraceInterpretation?(input: CodexTraceInterpretation): void;

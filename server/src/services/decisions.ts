@@ -1,3 +1,4 @@
+import { assertAgentInteraction } from "./agent-interaction-policy.js";
 import { decisionTargetService, notifyDecisionTargetWork } from "./decision-targets.js";
 import { randomUUID } from "node:crypto";
 import { and, asc, count, desc, eq, gte, inArray, sql } from "drizzle-orm";
@@ -475,6 +476,27 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
         const deniedOrigin = originAccess.find((access) => !access.allowed);
         if (!userAccess.allowed || deniedOrigin) return finish("failed", "deny_decision_intersection",
           { reason: "deny_decision_intersection", userReason: userAccess.reason, originReason: deniedOrigin?.reason ?? null });
+        const assignment = effect.type === "assign_issue" ? effect : effect.type === "create_issue" ? effect.draft : null;
+        await assertAgentInteraction(tx, {
+          companyId: decision.companyId, actorAgentId: decision.originAgentId,
+          operation: assignment ? "assign" : effect.type === "comment_on_issue" ? "comment" : "edit",
+          issueId: effect.type === "create_issue" ? undefined : target.id,
+          targetAgentId: assignment?.assigneeAgentId, assigneeUserId: assignment?.assigneeUserId,
+          parentIssueId: effect.type === "create_issue" ? effect.draft.parentId ?? target.id : undefined,
+          texts: [interpolate(JSON.stringify(effect), decision.inputValues ?? {})], lock: true,
+        });
+        const effectComment = effect.type === "cancel_issue_tree" ? effect.reasonComment
+          : "comment" in effect ? effect.comment : undefined;
+        if (effectComment) await assertAgentInteraction(tx, {
+          companyId: decision.companyId, actorAgentId: decision.originAgentId,
+          operation: "comment", issueId: target.id, texts: [interpolate(effectComment, decision.inputValues ?? {})], lock: true,
+        });
+        if (effect.type === "cancel_issue_tree") {
+          for (const child of referencedIssues.filter(item => item.id !== target.id)) {
+            await assertAgentInteraction(tx, { companyId: decision.companyId, actorAgentId: decision.originAgentId,
+              operation: "edit", issueId: child.id, lock: true });
+          }
+        }
         if (effect.staleness === "strict") {
           const staleReference = referencedIssues.some((item) => directReferencedIds.has(item.id) &&
             snapshots[item.id]?.updatedAt !== item.updatedAt.toISOString());
@@ -486,7 +508,7 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
         const values = decision.inputValues ?? {};
         let result: Record<string, unknown>;
         if (effect.type === "comment_on_issue") {
-          const comment = await svc.addComment(target.id, interpolate(effect.bodyMarkdown, values), { userId: decidedByUserId }, undefined, tx);
+          const comment = await svc.addComment(target.id, interpolate(effect.bodyMarkdown, values), { userId: decidedByUserId, runId: decision.originRunId }, { clientRequestId: lockKey }, tx);
           result = { commentId: comment.id };
         } else if (effect.type === "update_issue_status") {
           const updated = await svc.update(
@@ -496,7 +518,7 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
             postCommitActivityPublications,
             postCommitIssueActions,
           );
-          if (effect.comment) await svc.addComment(target.id, interpolate(effect.comment, values), { userId: decidedByUserId }, undefined, tx);
+          if (effect.comment) await svc.addComment(target.id, interpolate(effect.comment, values), { userId: decidedByUserId, runId: decision.originRunId }, { clientRequestId: lockKey }, tx);
           result = { issueId: updated?.id, status: updated?.status };
         } else if (effect.type === "assign_issue") {
           const updated = await svc.update(
@@ -510,7 +532,7 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
             postCommitActivityPublications,
             postCommitIssueActions,
           );
-          if (effect.comment) await svc.addComment(target.id, interpolate(effect.comment, values), { userId: decidedByUserId }, undefined, tx);
+          if (effect.comment) await svc.addComment(target.id, interpolate(effect.comment, values), { userId: decidedByUserId, runId: decision.originRunId }, { clientRequestId: lockKey }, tx);
           result = { issueId: updated?.id };
         } else if (effect.type === "resolve_blocker") {
           const current = await tx.select({ id: issueRelations.issueId }).from(issueRelations).where(and(eq(issueRelations.companyId, decision.companyId), eq(issueRelations.relatedIssueId, target.id), eq(issueRelations.type, "blocks")));
@@ -543,7 +565,7 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
               postCommitIssueActions,
             );
           }
-          await svc.addComment(target.id, interpolate(effect.reasonComment, values), { userId: decidedByUserId }, undefined, tx);
+          await svc.addComment(target.id, interpolate(effect.reasonComment, values), { userId: decidedByUserId, runId: decision.originRunId }, { clientRequestId: lockKey }, tx);
           result = { cancelledIssueIds: cancelled };
         }
         const activity = await effectAudit(tx as unknown as Db, decision, execution.id, effect, "executed", decidedByUserId, originResponsibleUserId, result);
@@ -681,7 +703,9 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
   }
 
   async function decide(input: { id: string; optionId: string; inputValues?: Record<string, string>; idempotencyKey?: string | null; decidedByUserId: string;
-    userActor: AuthorizationActor; dismissed?: boolean; dismissReason?: string | null }) {
+    userActor: AuthorizationActor; dismissed?: boolean; dismissReason?: string | null;
+    /** Extra activity details, e.g. the receipt for the person the card was for (PAP-749 plan §6). */
+    activityDetails?: Record<string, unknown> }) {
     const current = await get(input.id); if (!current) throw notFound("Decision not found");
     const metadata = current.metadata as Record<string, unknown>;
     if (!verifyDecisionSpec(spec({ id: current.id, options: current.options, targetSnapshots: current.targetSnapshots as Record<string, Snapshot> }), current.signedSpec)) throw forbidden("Decision signature verification failed");
@@ -713,21 +737,29 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
     await logActivity(db, { companyId: claimed.companyId, actorType: "system", actorId: "decision-executor", agentId: claimed.originAgentId, runId: claimed.originRunId,
       responsibleUserIdOverride: input.decidedByUserId, action: input.dismissed ? "decision.dismissed" : "decision.decided", entityType: "decision", entityId: claimed.id,
       details: { chosenOptionId: input.optionId, decidedByUserId: input.decidedByUserId, originResponsibleUserId: run?.responsibleUserId ?? null,
-        ...(input.dismissed ? { dismissed: true, dismissReason: input.dismissReason ?? null } : {}) } });
+        ...(input.dismissed ? { dismissed: true, dismissReason: input.dismissReason ?? null } : {}), ...input.activityDetails } });
     return resumeDecision(claimed, input.userActor);
   }
 
-  async function cancel(id: string, actor: { actorType: "agent" | "user"; actorId: string; runId?: string | null }) {
+  async function cancel(id: string, actor: { actorType: "agent" | "user"; actorId: string; runId?: string | null },
+    options: { reason?: string | null; activityDetails?: Record<string, unknown> } = {}) {
     const current = await get(id); if (!current) throw notFound("Decision not found");
     if (actor.actorType === "agent" && actor.actorId !== current.originAgentId) throw forbidden("Only the origin agent may cancel");
     if (current.status === "cancelled") {
       await continuations.deliver(current.id);
       return (await get(id))!;
     }
-    const [updated] = await writeDecisionChange(db, async tx => tx.update(decisions).set({ status: "cancelled", updatedAt: new Date(), metadata: { ...current.metadata,
+    // A person who withdraws an out-of-date decision (PAP-749) is recorded as
+    // its closer, with the reason, so history can say who withdrew it.
+    const reason = options.reason?.trim() || null;
+    const byUser = actor.actorType === "user" ? { decidedByUserId: actor.actorId, decidedAt: new Date() } : {};
+    const [updated] = await writeDecisionChange(db, async tx => tx.update(decisions).set({ status: "cancelled", ...byUser, updatedAt: new Date(), metadata: { ...current.metadata,
+      ...(reason ? { cancelReason: reason } : {}),
       ...(current.continuationPolicy === "wake_origin_agent" ? { continuationPending: true } : {}) } }).where(and(eq(decisions.id, id), eq(decisions.status, "open"))).returning(), { companyId: current.companyId, sourceId: id });
     if (!updated) throw conflict("decision_already_resolved", { code: "decision_already_resolved" });
-    await logActivity(db, { companyId: updated.companyId, actorType: actor.actorType, actorId: actor.actorId, runId: actor.runId, action: "decision.cancelled", entityType: "decision", entityId: id });
+    const details = { ...(reason ? { reason } : {}), ...options.activityDetails };
+    await logActivity(db, { companyId: updated.companyId, actorType: actor.actorType, actorId: actor.actorId, runId: actor.runId, action: "decision.cancelled", entityType: "decision", entityId: id,
+      ...(Object.keys(details).length > 0 ? { details } : {}) });
     await continuations.deliver(updated.id);
     return (await get(id))!;
   }

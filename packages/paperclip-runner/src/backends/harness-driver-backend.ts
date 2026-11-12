@@ -167,6 +167,8 @@ export class HarnessDriverBackend implements NativeSessionBackend {
         recovered: false,
         reason: recovered.reason,
         ...(recovered.failureClass ? { failureClass: recovered.failureClass } : {}),
+        ...(recovered.resumeStateUnavailable ? { resumeStateUnavailable: true as const } : {}),
+        ...(recovered.runnerExitConfirmed ? { runnerExitConfirmed: true as const } : {}),
       };
     }
     try {
@@ -402,6 +404,7 @@ class HarnessNativeSession implements NativeSession {
   readonly #session: HarnessSession;
   #terminal: PrpTerminalState | null = null;
   #explicitlyCancelled = false;
+  #stopRequested = false;
   #protocolIntegrityFailure: NativeSessionProtocolIntegrityError | null = null;
 
   #assertProtocolIntegrity(): void {
@@ -459,6 +462,10 @@ class HarnessNativeSession implements NativeSession {
     return structuredClone(this.#input.identity);
   }
 
+  downloadAttachment(grant: Parameters<NonNullable<NativeSession["downloadAttachment"]>>[0]) {
+    return this.#session.downloadAttachment?.(grant) ?? Promise.resolve(null);
+  }
+
   async capabilities() {
     const negotiated = this.#session.turnControlCapabilities?.();
     return {
@@ -480,9 +487,18 @@ class HarnessNativeSession implements NativeSession {
     };
   }
 
+  beginRunAttachment(input: { identity: OpenNativeSessionInput["identity"] }): boolean {
+    const currentIdentity = this.#input.identity;
+    if (this.#protocolIntegrityFailure !== null || this.#session.beginRunAttachment === undefined
+      || input.identity.sessionId !== currentIdentity.sessionId || input.identity.companyId !== currentIdentity.companyId
+      || input.identity.issueId !== currentIdentity.issueId || input.identity.agentId !== currentIdentity.agentId) return false;
+    return this.#session.beginRunAttachment({ runId: input.identity.runId });
+  }
+
   async attachRun(input: {
     identity: OpenNativeSessionInput["identity"];
     currentRunGrant?: NativeRunRuntimeGrant;
+    completionContract?: { revision: string; criterionIds: readonly string[] };
   }): Promise<void> {
     this.#assertProtocolIntegrity();
     const currentIdentity = this.#input.identity;
@@ -500,6 +516,7 @@ class HarnessNativeSession implements NativeSession {
     try {
       await this.#session.attachRun({ runId: input.identity.runId,
         ...(input.currentRunGrant ? { currentRunGrant: structuredClone(input.currentRunGrant) } : {}),
+        ...(input.completionContract ? { completionContract: structuredClone(input.completionContract) } : {}),
       });
       this.#assertProtocolIntegrity();
     } catch (error) {
@@ -509,6 +526,7 @@ class HarnessNativeSession implements NativeSession {
     this.#input = { ...this.#input, identity: structuredClone(input.identity) };
     this.#terminal = null;
     this.#explicitlyCancelled = false;
+    this.#stopRequested = false;
   }
 
   async release(): Promise<DurableRecoveryIdentity | false> {
@@ -764,9 +782,16 @@ class HarnessNativeSession implements NativeSession {
 
   revokeTurnPublication() {
     this.#explicitlyCancelled = true;
+    this.#stopRequested = true;
   }
 
-  cancel(input: { reason: string; signal: AbortSignal }) {
+  settleCancelledTurn(input: { turnId: string; reason: string }) {
+    this.#assertProtocolIntegrity();
+    if (!this.#explicitlyCancelled) throw new Error("native_turn_cancellation_required");
+    return this.#withProtocolIntegrity(() => this.#session.settleCancelledTurn?.(input) ?? null);
+  }
+
+  cancel(input: { reason: string; signal: AbortSignal; failureCleanup?: boolean }) {
     if (input.signal.aborted) {
       throw (
         input.signal.reason ?? new Error("native session cancellation aborted")
@@ -775,7 +800,8 @@ class HarnessNativeSession implements NativeSession {
     // This flag is the adapter's synchronous publication boundary. Provider
     // interruption happens afterward as passive cleanup, so a slow or broken
     // transport cannot synthesize or publish new accepted output for the turn.
-    this.revokeTurnPublication();
+    if (input.failureCleanup === true) this.#explicitlyCancelled = true;
+    else this.revokeTurnPublication();
     const interrupt = this.#session.interrupt;
     return {
       ...(this.terminalDrainTimeoutMs === undefined ? {} : { terminalDrainTimeoutMs: this.terminalDrainTimeoutMs }),
@@ -900,7 +926,7 @@ class HarnessNativeSession implements NativeSession {
   }
 
   close(input: { reason: string }) {
-    return this.#session.close(input);
+    return this.#session.close({ ...input, retainUnsettledRemoteRunner: !this.#stopRequested && this.#protocolIntegrityFailure === null });
   }
 }
 

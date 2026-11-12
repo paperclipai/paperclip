@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import os from "node:os";
-import { evaluateNativeControllerTakeover, type NativeControllerIdentity } from "./native-restart-recovery.js";
+import type { NativeControllerIdentity } from "./native-restart-recovery.js";
+import { currentProcessProbe, proveOwnerGone, type LocalOwnerStamp, type OwnerProof, type ProcessProbe } from "../owner-proof.js";
 
 /**
  * Same-host proof that a recorded workspace-copyback owner and every child it
@@ -13,7 +14,55 @@ import { evaluateNativeControllerTakeover, type NativeControllerIdentity } from 
 export type LocalWorkspaceOwner = {
   hostname: string; pid: number; processStartedAt: string;
   controllerBootId?: string; processGroupId?: number;
+  /** PID space of `pid`. Absent on receipts written before it was recorded. */
+  hostHash?: string;
 };
+
+/** The copyback owner receipt as a shared ownership stamp. A receipt without a
+ * PID space names none: it is judged only by `proveCopybackOwnerGone`, on its
+ * recorded host. The process group is left out: copyback children are proven
+ * separately (`proveLocalWorkspaceOwnerStopped`). */
+export function copybackOwnerStamp(owner: LocalWorkspaceOwner): LocalOwnerStamp {
+  return { kind: "local", scope: "copyback_owner", generation: null, host: owner.hostname,
+    processSpace: owner.hostHash ?? null, bootId: owner.controllerBootId ?? null, pid: owner.pid,
+    processStartedAt: owner.processStartedAt, processGroupId: null };
+}
+
+// Only a known foreign host or PID space. An unreadable PID space here
+// (`unknown_process_space`) is a local owner this server cannot judge, which
+// must stay blocked rather than take the board-attestation path.
+const HOST_UNPROVABLE = new Set(["different_host", "different_process_space"]);
+
+/** Whether an unprovable verdict only says the owner ran somewhere else. */
+export function copybackOwnerOnAnotherHost(proof: OwnerProof): boolean {
+  return proof.verdict === "unprovable" && HOST_UNPROVABLE.has(proof.reason);
+}
+
+/**
+ * Proves the recorded copyback controller gone with the shared prover. Its PID
+ * is judged only in the PID space the receipt recorded. A receipt written
+ * before that field is judged in this PID space only when it names this host,
+ * as the previous same-host proof did. Process start time must match; EPERM
+ * is alive.
+ */
+export async function proveCopybackOwnerGone(owner: LocalWorkspaceOwner, overrides: {
+  isProcessAlive?: (pid: number) => boolean;
+  readProcessStartedAt?: (pid: number) => Promise<Date | null>;
+} = {}): Promise<OwnerProof> {
+  const base = currentProcessProbe();
+  // No platform-deployment shortcut here: the caller checks deployments first.
+  const probe: ProcessProbe = { ...base, deployment: null,
+    pidExists: overrides.isProcessAlive ?? base.pidExists,
+    readStartedAt: overrides.readProcessStartedAt ?? base.readStartedAt };
+  const stamp = copybackOwnerStamp(owner);
+  // A known different hostname is decided first: an unreadable PID space
+  // (here or on the stamp) must not hide that the owner ran on another host.
+  if (owner.hostname !== os.hostname()) return { verdict: "unprovable", reason: "different_host" };
+  if (!stamp.processSpace) {
+    return proveOwnerGone({ ...stamp, host: null, processSpace: probe.processSpace }, probe);
+  }
+  return proveOwnerGone(stamp, probe);
+}
 export type LocalWorkspaceOwnerStop =
   | { status: "verified"; proof: { pid: number; processGroupId: number; reason: string; groupEvidence: "group_empty" | "no_descendant_members" } }
   | { status: "pending"; reason: "controller_live" | "group_members_live" }
@@ -68,20 +117,19 @@ export async function proveLocalWorkspaceOwnerStopped(input: {
 }): Promise<LocalWorkspaceOwnerStop> {
   const { owner, identity } = input;
   if (process.platform === "win32") return { status: "unsupported", reason: "platform" };
-  if (owner.hostname !== os.hostname()) return { status: "unsupported", reason: "foreign_host" };
+  if (!owner.hostHash && owner.hostname !== os.hostname()) return { status: "unsupported", reason: "foreign_host" };
   const pgid = owner.processGroupId;
   if (!Number.isInteger(pgid) || pgid! <= 1) return { status: "unsupported", reason: "process_group_unrecorded" };
   // This controller's own receipts are settled by its in-memory join state.
   if (owner.controllerBootId === identity.bootId && owner.pid === identity.pid) {
     return { status: "unsupported", reason: "current_controller" };
   }
-  const takeover = await evaluateNativeControllerTakeover({
-    owner: { leaseOwner: "workspace-owner", leaseExpiresAt: new Date(0), controllerPid: owner.pid,
-      controllerProcessStartedAt: new Date(owner.processStartedAt) },
-    now: new Date(), isProcessAlive: input.isProcessAlive, readProcessStartedAt: input.readProcessStartedAt,
-  });
-  if (!takeover.allowed) return { status: "pending", reason: "controller_live" };
-  const proof = { pid: owner.pid, processGroupId: pgid!, reason: takeover.reason };
+  const ownerProof = await proveCopybackOwnerGone(owner, {
+    isProcessAlive: input.isProcessAlive, readProcessStartedAt: input.readProcessStartedAt });
+  if (copybackOwnerOnAnotherHost(ownerProof)) return { status: "unsupported", reason: "foreign_host" };
+  if (ownerProof.verdict !== "gone") return { status: "pending", reason: "controller_live" };
+  const proof = { pid: owner.pid, processGroupId: pgid!,
+    reason: ownerProof.reason === "pid_reused" ? "controller_pid_recycled" : "controller_process_dead" };
   if ((input.isGroupAbsent ?? groupAbsent)(pgid!)) return { status: "verified", proof: { ...proof, groupEvidence: "group_empty" } };
   let rows: ProcessRow[];
   try { rows = await (input.listProcesses ?? listProcesses)(); }

@@ -3,6 +3,8 @@ import { QueryClient, QueryObserver } from "@tanstack/react-query";
 import {
   createCoalescingQueryClient,
   createInvalidationBatcher,
+  createLaneRoutingBatcher,
+  excludingQueryKeys,
 } from "./query-invalidation-batcher";
 
 function fakeClient() {
@@ -116,6 +118,77 @@ describe("createInvalidationBatcher", () => {
     batcher.schedule({ queryKey: ["a"] });
     batcher.flush();
     expect(client.invalidateQueries).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("createInvalidationBatcher with minimum spacing", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("flushes a quiet lane after the batch interval and spaces a busy lane", () => {
+    const { client } = fakeClient();
+    const batcher = createInvalidationBatcher(client, 300, { minSpacingMs: 5000 });
+    batcher.schedule({ queryKey: ["issues", "c1"] });
+    vi.advanceTimersByTime(300);
+    expect(client.invalidateQueries).toHaveBeenCalledTimes(1);
+    // A continuous stream after that flush waits for the spacing window.
+    for (let elapsed = 0; elapsed < 4500; elapsed += 500) {
+      batcher.schedule({ queryKey: ["issues", "c1"] });
+      vi.advanceTimersByTime(500);
+    }
+    expect(client.invalidateQueries).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(500);
+    expect(client.invalidateQueries).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns to the batch interval once the spacing window has passed", () => {
+    const { client } = fakeClient();
+    const batcher = createInvalidationBatcher(client, 300, { minSpacingMs: 5000 });
+    batcher.schedule({ queryKey: ["a"] });
+    vi.advanceTimersByTime(300);
+    vi.advanceTimersByTime(10_000);
+    batcher.schedule({ queryKey: ["a"] });
+    vi.advanceTimersByTime(300);
+    expect(client.invalidateQueries).toHaveBeenCalledTimes(2);
+  });
+
+  it("never drops an invalidation scheduled during the spacing window", async () => {
+    const { client, calls } = fakeClient();
+    const batcher = createInvalidationBatcher(client, 300, { minSpacingMs: 5000 });
+    batcher.schedule({ queryKey: ["a"] });
+    vi.advanceTimersByTime(300);
+    const pending = batcher.schedule({ queryKey: ["b"] });
+    await vi.advanceTimersByTimeAsync(5000);
+    await pending;
+    expect(calls).toEqual([{ queryKey: ["a"] }, { queryKey: ["b"] }]);
+  });
+});
+
+describe("createLaneRoutingBatcher", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("routes ambient keys to the spaced lane and every other filter to the fast lane", () => {
+    const { client, calls } = fakeClient();
+    const batcher = createLaneRoutingBatcher(
+      createInvalidationBatcher(client, 300),
+      createInvalidationBatcher(client, 300, { minSpacingMs: 5000 }),
+      (queryKey) => queryKey[0] === "issues" && queryKey[1] === "c1",
+    );
+    batcher.schedule({ queryKey: ["issues", "c1"] });
+    vi.advanceTimersByTime(300);
+    batcher.schedule({ queryKey: ["issues", "c1", "summaries"] });
+    batcher.schedule({ queryKey: ["issues", "detail", "t1"] });
+    batcher.schedule({});
+    vi.advanceTimersByTime(300);
+    // The detail and key-less filters do not wait behind the ambient spacing.
+    expect(calls).toEqual([{ queryKey: ["issues", "c1"] }, { queryKey: ["issues", "detail", "t1"] }, {}]);
+    vi.advanceTimersByTime(5000);
+    expect(calls.at(-1)).toEqual({ queryKey: ["issues", "c1", "summaries"] });
+    batcher.schedule({ queryKey: ["issues", "c1"] });
+    batcher.dispose();
+    vi.advanceTimersByTime(10_000);
+    expect(calls).toHaveLength(4);
   });
 });
 
@@ -262,5 +335,59 @@ describe("overlapping live invalidations", () => {
       unsubscribe();
       client.clear();
     }
+  });
+});
+
+describe("excludingQueryKeys", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("coalesces a burst of keyed exclusions into one invalidation per window", () => {
+    const { client } = fakeClient();
+    const batcher = createInvalidationBatcher(client, 300);
+    for (let i = 0; i < 25; i += 1) {
+      batcher.schedule({ queryKey: ["issues", "c1"], predicate: excludingQueryKeys(["issues", "c1", "mention-pool"]) });
+    }
+    vi.advanceTimersByTime(300);
+    expect(client.invalidateQueries).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps different exclusions separate", () => {
+    const { client } = fakeClient();
+    const batcher = createInvalidationBatcher(client, 300);
+    batcher.schedule({ queryKey: ["issues", "c1"], predicate: excludingQueryKeys(["issues", "c1", "a"]) });
+    batcher.schedule({ queryKey: ["issues", "c1"], predicate: excludingQueryKeys(["issues", "c1", "b"]) });
+    vi.advanceTimersByTime(300);
+    expect(client.invalidateQueries).toHaveBeenCalledTimes(2);
+  });
+
+  it("covers non-excluded children but never the excluded subtree", () => {
+    const { client, calls } = fakeClient();
+    const batcher = createInvalidationBatcher(client, 300);
+    const broad = { queryKey: ["issues", "c1"], predicate: excludingQueryKeys(["issues", "c1", "mention-pool"]) };
+    batcher.schedule(broad);
+    batcher.schedule({ queryKey: ["issues", "c1", "search", "q"] });
+    batcher.schedule({ queryKey: ["issues", "c1", "mention-pool"] });
+    batcher.schedule({ queryKey: ["issues", "c1"] });
+    vi.advanceTimersByTime(300);
+    // The plain prefix is not covered by the exclusion filter: it also reaches the pool.
+    expect(calls).toEqual([{ queryKey: ["issues", "c1"] }]);
+  });
+
+  it("is covered by a plain shorter prefix and covers a sibling child", () => {
+    const { client, calls } = fakeClient();
+    const batcher = createInvalidationBatcher(client, 300);
+    const broad = { queryKey: ["issues", "c1"], predicate: excludingQueryKeys(["issues", "c1", "mention-pool"]) };
+    batcher.schedule(broad);
+    batcher.schedule({ queryKey: ["issues", "c1", "search", "q"] });
+    batcher.schedule({ queryKey: ["issues", "c1", "mention-pool"] });
+    vi.advanceTimersByTime(300);
+    expect(calls).toEqual([broad, { queryKey: ["issues", "c1", "mention-pool"] }]);
+  });
+
+  it("skips excluded queries when matching", () => {
+    const predicate = excludingQueryKeys(["issues", "c1", "mention-pool"]);
+    expect(predicate({ queryKey: ["issues", "c1", "mention-pool"] })).toBe(false);
+    expect(predicate({ queryKey: ["issues", "c1", "search"] })).toBe(true);
   });
 });
