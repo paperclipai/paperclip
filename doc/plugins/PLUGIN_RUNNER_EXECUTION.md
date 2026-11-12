@@ -172,6 +172,13 @@ It does not qualify a deployed plugin, live account, or production WSS proxy.
 
 ## Workspace completion and maintenance
 
+When the selected task driver declares `sessionHandoffVersion: 1`, Core
+reserves the managed workspace before it acquires the run's task lease. Core
+reconciles placement ownership, then passes `taskLease` to the workspace
+preparation call. The plugin uses the same allocation for checkout and Runner
+admission. Finalization records that placement before calling the plugin and
+reuses it on retry.
+
 A portable restore uses the durable ownership claim and the same account
 identity after a credential refresh or controller replacement. It starts a
 new Runner on the target. Run attachment applies the current tools and

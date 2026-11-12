@@ -44,7 +44,6 @@ describe("native workspace finalization recovery", () => {
   let connectionString: string;
   let db: ReturnType<typeof createDb>;
   let workspaceRoot: string;
-  let priorLogRoot: string | undefined;
 
   const companyId = randomUUID();
   const foreignCompanyId = randomUUID();
@@ -123,11 +122,7 @@ describe("native workspace finalization recovery", () => {
     workspaceRoot = await fs.mkdtemp(
       path.join(os.tmpdir(), "paperclip-native-workspace-finalizer-"),
     );
-    priorLogRoot = process.env.WORKSPACE_OPERATION_LOG_BASE_PATH;
-    process.env.WORKSPACE_OPERATION_LOG_BASE_PATH = path.join(
-      workspaceRoot,
-      "operation-logs",
-    );
+    vi.stubEnv("WORKSPACE_OPERATION_LOG_BASE_PATH", path.join(workspaceRoot, "operation-logs"));
     const external = resolveExternalTestDatabaseUrl("PAPERCLIP_NATIVE_WORKSPACE_FINALIZER_TEST_DATABASE_URL");
     if (!external) temporary = await startEmbeddedPostgresTestDatabase("paperclip-native-workspace-finalizer-");
     connectionString = external ?? temporary!.connectionString;
@@ -168,11 +163,7 @@ describe("native workspace finalization recovery", () => {
     await db?.$client.end({ timeout: 1 });
     await temporary?.cleanup();
     await fs.rm(workspaceRoot, { recursive: true, force: true });
-    if (priorLogRoot === undefined) {
-      delete process.env.WORKSPACE_OPERATION_LOG_BASE_PATH;
-    } else {
-      process.env.WORKSPACE_OPERATION_LOG_BASE_PATH = priorLogRoot;
-    }
+    vi.unstubAllEnvs();
   });
 
   async function seedAbandonedCopyback() {
@@ -757,8 +748,37 @@ describe("native workspace finalization recovery", () => {
       hasLocalOnlyData: true, isMergedIntoBase: false, remotelyRecoverable: false });
     try {
       expect(await resumeNativeWorkspaceFinalization({ db, runId: seeded.runId })).toMatchObject({ status: "succeeded" });
-      if (providerType === "plugin") expect(inspect).toHaveBeenCalledWith(db, undefined, expect.objectContaining({ id: workspace.id }), { agentId, runId: seeded.runId });
+      if (providerType === "plugin") expect(inspect).toHaveBeenCalledWith(db, undefined,
+        expect.objectContaining({ id: workspace.id }), expect.objectContaining({ agentId, runId: seeded.runId }));
       else expect(inspect).not.toHaveBeenCalled();
+    } finally { inspect.mockRestore(); }
+  });
+
+  it("records the plugin task placement before dispatch and replays it after a lost reply", async () => {
+    const [workspace] = await db.insert(executionWorkspaces).values({
+      companyId, projectId, name: "Portable worktree", providerType: "plugin", providerRef: "provider:portable",
+      mode: "isolated_workspace", strategyType: "git_worktree", branchName: "task-branch",
+    }).returning();
+    const { runId } = await seedRun({ executionWorkspaceId: workspace.id, title: "Portable finalization retry" });
+    const taskLease = { environmentId: randomUUID(), driverKey: "portable", providerLeaseId: "task-1" };
+    const inspect = vi.spyOn(pluginWorkspaces, "finalizePluginWorkspace")
+      .mockImplementationOnce(async (_db, _workers, _workspace, context) => {
+        expect(context.taskLease).toBeUndefined();
+        await context.recordPlacement!(taskLease);
+        const [running] = await db.select().from(workspaceOperations).where(eq(workspaceOperations.heartbeatRunId, runId));
+        expect(running).toMatchObject({ status: "running", metadata: { pluginWorkspaceTaskLease: taskLease } });
+        throw new Error("fixture reply lost");
+      })
+      .mockImplementationOnce(async (_db, _workers, _workspace, context) => {
+        expect(context.taskLease).toEqual(taskLease);
+        return { kind: "finalized", branchName: "task-branch", headSha: "a".repeat(40) };
+      });
+    try {
+      expect(await resumeNativeWorkspaceFinalization({ db, runId })).toMatchObject({ status: "failed" });
+      expect(await resumeNativeWorkspaceFinalization({ db, runId })).toMatchObject({
+        status: "succeeded", metadata: { pluginWorkspaceTaskLease: taskLease },
+      });
+      expect(inspect).toHaveBeenCalledTimes(2);
     } finally { inspect.mockRestore(); }
   });
 

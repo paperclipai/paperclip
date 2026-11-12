@@ -106,6 +106,7 @@ import type { EffectiveRunSessionConfigMetadata } from "./workspaces.js";
 import type { ProviderResourceDisposition } from "../environment-runtime.js";
 import type { NativeExecutionInput, NativeSessionBackend } from "../../vendor/paperclip-runner/index.js";
 import type { PluginWorkerManager } from "../plugin-worker-manager.js";
+import type { PluginWorkspaceParams } from "@paperclipai/plugin-sdk";
 import type { RealizedExecutionWorkspace } from "../workspace-runtime.js";
 import type { reserveWarmNativeInstructionDirectory } from "../native-runtime/index.js";
 
@@ -297,7 +298,8 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
   let adapterFinalizeOutcome: "succeeded" | "failed" | null = null;
   let preserveRunGatewayTokens = false;
   let pluginWorkspaceFinalization: Record<string, unknown> | null = null;
-  const inspectFinalizeWorkspaceBranch = async () => {
+  let pluginWorkspaceTaskLease: PluginWorkspaceParams["taskLease"];
+  const inspectFinalizeWorkspaceBranch = async (placement: Parameters<typeof inspectPluginWorkspaceForFinalization>[5]) => {
     const workspaceRecord = persistedExecutionWorkspace?.id
       ? await executionWorkspacesSvc.getStoredById(
           agent.companyId,
@@ -305,7 +307,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
         )
       : persistedExecutionWorkspace;
     pluginWorkspaceFinalization = workspaceRecord
-      ? await inspectPluginWorkspaceForFinalization(db, options.pluginWorkerManager, workspaceRecord, agent.id, run.id)
+      ? await inspectPluginWorkspaceForFinalization(db, options.pluginWorkerManager, workspaceRecord, agent.id, run.id, placement)
       : null;
     if (pluginWorkspaceFinalization || readRemoteWorkspaceAuthority(workspaceRecord?.metadata)
       || workspaceRecord?.strategyType !== "git_worktree") return null;
@@ -335,14 +337,21 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
     await workspaceOperationRecorder.recordOperation({
       phase: "workspace_finalize", cwd: executionWorkspace.cwd,
       metadata: { adapterType: agent.adapterType, executionTargetKind: executionTarget?.kind ?? "local",
+        ...(pluginWorkspaceTaskLease ? { pluginWorkspaceTaskLease } : {}),
         ...(restore ? { owningService: "native_workspace_finalizer" } : {}), ...metadata },
-      run: async () => {
+      run: async reportProgress => {
         await restore?.();
         let finalizeBranchMetadata: Record<string, unknown> | null = null;
         let finalizeBranchRepairMetadata: Record<string, unknown> | null =
           null;
         if (status === "succeeded") {
-          const branchInspection = await inspectFinalizeWorkspaceBranch();
+          const branchInspection = await inspectFinalizeWorkspaceBranch({
+            taskLease: pluginWorkspaceTaskLease,
+            recordPlacement: async placement => {
+              await reportProgress({ metadata: { pluginWorkspaceTaskLease: placement } });
+              pluginWorkspaceTaskLease = placement;
+            },
+          });
           if (branchInspection) {
             let inspection = branchInspection.inspection;
             const initialManagedGitWorktreeBranch =
@@ -1231,7 +1240,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
         .where(eq(nativeRunFinalizations.runId, run.id))
         .limit(1)
         .then((rows) => rows[0]?.resultId ?? null);
-      if (proposedResult && (nativeWorkspaceSync || remoteWorkspaceAuthority)) {
+      if (proposedResult && (nativeWorkspaceSync || remoteWorkspaceAuthority || pluginWorkspaceTaskLease)) {
         const workspaceFailureMessage =
           adapterErr instanceof Error ? adapterErr.message : "";
         const unrecoverable =

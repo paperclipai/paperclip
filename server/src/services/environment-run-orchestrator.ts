@@ -50,6 +50,7 @@ import {
   type ProviderResourceDisposition,
 } from "./environment-runtime.js";
 import { ENVIRONMENT_DRIVER_TRAITS } from "./environment-driver-traits.js";
+import type { PluginTaskDescription } from "./environment-task-runtime.js";
 import { unlaunchedPortableTaskLease } from "./plugin-task-ownership.js";
 import {
   resolveEnvironmentExecutionTarget,
@@ -122,6 +123,7 @@ export interface EnvironmentAcquisitionResult {
   lease: EnvironmentLease;
   leaseContext: ReturnType<typeof buildEnvironmentLeaseContext>;
   executionTransport: Record<string, unknown> | null;
+  pluginTaskDescription?: PluginTaskDescription;
 }
 
 export interface EnvironmentRealizationResult {
@@ -467,6 +469,32 @@ export function environmentRunOrchestrator(
       lease: leaseRecord.lease,
       leaseContext: leaseRecord.leaseContext,
       executionTransport,
+    };
+  }
+
+  async function confirmWorkspaceTaskPlacement(acquisition: EnvironmentAcquisitionResult, input: {
+    companyId: string;
+    environmentId: string;
+    workspaceId: string;
+    signal?: AbortSignal;
+  }) {
+    const { environment, lease } = acquisition;
+    const driverKey = environment.config?.driverKey;
+    if (environment.id !== input.environmentId || typeof driverKey !== "string" || !lease.providerLeaseId) {
+      throw new Error("Workspace Launcher placement changed");
+    }
+    const description = await environmentRuntime.task({
+      companyId: input.companyId, leaseId: lease.id, operation: { kind: "describe" }, ownershipSignal: input.signal,
+    });
+    const current = await environmentsSvc.getLeaseById(lease.id);
+    if (description.kind !== "description" || !current || current.providerLeaseId !== description.taskId ||
+        current.status !== "active" || current.environmentId !== environment.id ||
+        current.executionWorkspaceId !== input.workspaceId) {
+      throw new Error("Workspace Launcher lease is no longer active");
+    }
+    return {
+      acquisition: { ...acquisition, lease: current, pluginTaskDescription: description },
+      taskLease: { driverKey, environmentId: environment.id, providerLeaseId: description.taskId },
     };
   }
 
@@ -880,6 +908,7 @@ export function environmentRunOrchestrator(
     acquireLease,
     resolveTransport,
     acquireForRun,
+    confirmWorkspaceTaskPlacement,
     realizeForRun,
     releaseForRun,
 

@@ -11,6 +11,7 @@ import { logger } from "../../middleware/logger.js";
 import fs from "node:fs/promises";
 import { and, desc, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import { pluginWorkspaceParamsSchema } from "@paperclipai/plugin-sdk";
 import {
   executionWorkspaces,
   heartbeatRuns,
@@ -157,6 +158,7 @@ export async function attemptNativeWorkspaceFinalization(input: {
       )).limit(1).then((rows) => rows[0] ?? null)
     : null;
   const cwd = workspace?.providerRef ?? workspace?.cwd ?? previous?.cwd ?? null;
+  const taskLease = pluginWorkspaceParamsSchema.shape.taskLease.parse(previous?.metadata?.pluginWorkspaceTaskLease);
 
   const recorder = workspaceOperationService(input.db).createRecorder({
     companyId: bound.companyId,
@@ -173,11 +175,12 @@ export async function attemptNativeWorkspaceFinalization(input: {
     metadata: {
       resumedFromOperationId: previous?.id ?? null,
       owningService: "native_workspace_finalizer",
+      ...(taskLease ? { pluginWorkspaceTaskLease: taskLease } : {}),
       observation: workspace?.strategyType === "git_worktree"
         ? "managed_git_worktree_branch"
         : "workspace_directory",
     },
-    run: async () => {
+    run: async reportProgress => {
       await ownership.assertHeld();
       const remoteAuthority = readRemoteWorkspaceAuthority(workspace?.metadata);
       if (remoteAuthority && workspace) {
@@ -307,7 +310,13 @@ export async function attemptNativeWorkspaceFinalization(input: {
       let pluginWorkspace: Record<string, unknown> | null;
       try {
         pluginWorkspace = workspace
-          ? await inspectPluginWorkspaceForFinalization(input.db, input.pluginWorkerManager, workspace, bound.agentId, input.runId)
+          ? await inspectPluginWorkspaceForFinalization(input.db, input.pluginWorkerManager, workspace, bound.agentId, input.runId, {
+              taskLease,
+              recordPlacement: async placement => {
+                await ownership.assertHeld();
+                await reportProgress({ metadata: { pluginWorkspaceTaskLease: placement } });
+              },
+            })
           : null;
       } catch (error) {
         await ownership.assertHeld();
