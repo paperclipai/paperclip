@@ -1,4 +1,5 @@
-import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
+import { createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
+import { decryptFileOffThread, digestFileOffThread, encryptFileOffThread, type FileDecryption, type FileDigest } from "../storage/file-crypto-pool.js";
 import { isStorageUnavailableError, sendThroughStorageOutage, storageOutageWaitFor, waitOutStorageOutages } from "../storage/storage-unavailable.js";
 import { measureRunPhase, type ExecutionPhase } from "./execution-preparation-timing.js";
 import { collectStorageRequestStats, newStorageRequestStats, type StorageRequestStats } from "../storage/request-stats.js";
@@ -56,11 +57,6 @@ function validateReference(ref: WorkspaceSnapshotRef) {
     || !/^[a-f0-9]{64}$/.test(ref.sha256) || !/^[a-f0-9]{64}$/.test(ref.manifestDigest)
     || !Number.isSafeInteger(ref.byteSize) || ref.byteSize < MAGIC.length + 12 + 16
     || !ref.key || typeof ref.key !== "object") failure("reference_invalid");
-}
-async function digestFile(file: string, signal?: AbortSignal) {
-  const digest = createHash("sha256"); let byteSize = 0;
-  for await (const part of createReadStream(file, { signal, highWaterMark: WORKSPACE_ARCHIVE_IO_BUFFER_BYTES })) { digest.update(part); byteSize += part.length; }
-  return { sha256: digest.digest("hex"), byteSize };
 }
 async function verifyStoredSize(storage: StorageService, ref: WorkspaceSnapshotRef, signal?: AbortSignal) {
   const head = await storage.headObject(ref.companyId, ref.objectKey, { signal });
@@ -245,17 +241,16 @@ async function uploadWorkspaceSnapshotTimed(input: WorkspaceSnapshotUpload): Pro
     const file = verified.find(saved => isDeepStrictEqual(saved.ref, ref))!.file;
     const wrapped = await snapshotKey(ref), handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     try {
-      const before = await handle.stat(), digest = createHash("sha256"); let bytes = 0;
+      const before = await handle.stat();
       if (!before.isFile() || (before.mode & 0o777) !== 0o600 || before.nlink !== 1
         || typeof process.getuid === "function" && before.uid !== process.getuid()) failure("readback_file_changed");
-      for await (const chunk of createReadStream(file, { fd: handle.fd, autoClose: false, signal: input.signal, highWaterMark: WORKSPACE_ARCHIVE_IO_BUFFER_BYTES })) {
-        digest.update(chunk); bytes += chunk.length;
-      }
+      // Digested through this open descriptor, off the server's thread.
+      const kept = await digestFileOffThread({ fd: handle.fd, algorithm: "sha256" }, input.signal);
       const after = await handle.stat(), named = await lstat(file);
       if (!named.isFile() || named.isSymbolicLink() || named.dev !== before.dev || named.ino !== before.ino
         || named.nlink !== 1 || named.mode !== before.mode || after.size !== before.size
         || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs
-        || bytes !== wrapped.plaintextBytes || digest.digest("hex") !== wrapped.plaintextSha256) failure("readback_file_changed");
+        || kept.bytes !== wrapped.plaintextBytes || kept.hex !== wrapped.plaintextSha256) failure("readback_file_changed");
       await assertParent(); input.signal?.throwIfAborted();
       await link(file, target);
     } finally { await handle.close(); }
@@ -321,32 +316,22 @@ async function uploadVerifiedWorkspaceSnapshot(input: WorkspaceSnapshotUpload, v
   const scratch = await mkdtemp(path.join(os.tmpdir(), "pc-workspace-encrypt-"));
   try {
     const encrypted = path.join(scratch, "archive.encrypted"), dataKey = randomBytes(32), iv = randomBytes(12);
-    const ciphertextDigest = createHash("sha256"), prefix = Buffer.concat([MAGIC, iv]);
-    let ciphertextBytes = prefix.length;
-    ciphertextDigest.update(prefix);
-    const cipher = createCipheriv("aes-256-gcm", dataKey, iv); cipher.setAAD(aad(identity));
-    const header = await open(encrypted, "wx", 0o600);
-    try { await header.writeFile(prefix); } finally { await header.close(); }
-    // One read of the archive both digests and encrypts it. An unchanged file
-    // identity across that read replaces the separate digest pass.
+    // One read of the archive digests it, encrypts it and digests the stored
+    // bytes, on a worker thread so the server's thread stays free. An unchanged
+    // file identity across that read replaces the separate digest pass.
     const before = await lstat(input.archivePath);
-    const incomingDigest = createHash("sha256"); let incomingBytes = 0;
-    const observed = new Transform({ transform(bytes, _encoding, callback) { incomingDigest.update(bytes); incomingBytes += bytes.length; callback(null, bytes); } });
-    const encryptedDigest = new Transform({ transform(bytes, _encoding, callback) {
-      ciphertextDigest.update(bytes); ciphertextBytes += bytes.length; callback(null, bytes);
-    } });
-    await timedStep(input.timing, "encryptMs", "storage.snapshot.encrypt", () => pipeline(createReadStream(input.archivePath, { signal: input.signal, highWaterMark: WORKSPACE_ARCHIVE_IO_BUFFER_BYTES }), observed, cipher, encryptedDigest, createWriteStream(encrypted, { flags: "a", mode: 0o600, highWaterMark: WORKSPACE_ARCHIVE_IO_BUFFER_BYTES }), { signal: input.signal }));
+    const sealed = await timedStep(input.timing, "encryptMs", "storage.snapshot.encrypt", () => encryptFileOffThread({
+      source: input.archivePath, target: encrypted, prefix: Buffer.concat([MAGIC, iv]), key: dataKey, iv, aad: aad(identity),
+    }, input.signal));
     const after = await lstat(input.archivePath);
-    if (!before.isFile() || before.isSymbolicLink() || incomingBytes !== before.size || after.dev !== before.dev || after.ino !== before.ino
+    if (!before.isFile() || before.isSymbolicLink() || sealed.plaintextBytes !== before.size || after.dev !== before.dev || after.ino !== before.ino
       || after.size !== before.size || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs) failure("archive_changed");
-    const plaintext = { sha256: incomingDigest.digest("hex"), byteSize: incomingBytes };
-    const tag = cipher.getAuthTag(); ciphertextDigest.update(tag); ciphertextBytes += tag.length;
-    const footer = await open(encrypted, "a"); try { await footer.writeFile(tag); } finally { await footer.close(); }
+    const plaintext = { sha256: sealed.plaintextSha256, byteSize: sealed.plaintextBytes };
     const { material } = await localEncryptedProvider.createVersion({ value: JSON.stringify({ schema: KEY_SCHEMA,
       ...identity, dataKey: dataKey.toString("base64"), plaintextSha256: plaintext.sha256, plaintextBytes: plaintext.byteSize }) });
     dataKey.fill(0);
     const content = await timedStep(input.timing, "digestMs", "storage.snapshot.digest", async () => ({
-      sha256: ciphertextDigest.digest("hex"), byteSize: ciphertextBytes,
+      sha256: sealed.sha256, byteSize: sealed.byteSize,
     }));
     if (input.timing) input.timing.bytes = content.byteSize;
     const attempt: UploadAttempt = { objectKey: `${identity.companyId}/workspace-snapshots/${identity.workspaceId}/${identity.id}/${randomUUID()}.pcws`,
@@ -432,7 +417,7 @@ async function loadWorkspaceSnapshotArchiveTimed(input: Parameters<typeof loadWo
   try {
     input.signal?.throwIfAborted();
     const ciphertext = path.join(scratch, "ciphertext"), plaintext = path.join(scratch, "plaintext");
-    let received = 0, digest = createHash("sha256");
+    let received = 0;
     const stalled = new DOMException("remote_workspace_snapshot_download_stalled", "TimeoutError");
     const idle = new AbortController();
     const signal = input.signal ? AbortSignal.any([input.signal, idle.signal]) : idle.signal;
@@ -443,13 +428,13 @@ async function loadWorkspaceSnapshotArchiveTimed(input: Parameters<typeof loadWo
       await timedStep(input.timing, "downloadMs", "storage.snapshot.download", () => sendThroughStorageOutage(async () => {
         if (attempts++ > 0) {
           timer.refresh();
-          received = 0; digest = createHash("sha256");
+          received = 0;
           await rm(ciphertext, { force: true });
         }
         const object = await input.storage.getObject(ref.companyId, ref.objectKey, { signal });
         const bounded = new Transform({ transform(bytes, _encoding, callback) {
           if (bytes.length > 0) timer.refresh();
-          received += bytes.length; digest.update(bytes);
+          received += bytes.length;
           callback(received > ref.byteSize ? new Error("remote_workspace_snapshot_object_size_mismatch") : null, bytes);
         } });
         try { await pipeline(object.stream, bounded, createWriteStream(ciphertext, { flags: "wx", mode: 0o600, highWaterMark: WORKSPACE_ARCHIVE_IO_BUFFER_BYTES }), { signal }); }
@@ -461,25 +446,42 @@ async function loadWorkspaceSnapshotArchiveTimed(input: Parameters<typeof loadWo
         ? Object.assign(new DOMException(stalled.message, stalled.name), { cause: error }) : stalled;
       throw error;
     } finally { clearTimeout(timer); }
-    if (received !== ref.byteSize || digest.digest("hex") !== ref.sha256) failure("object_hash_mismatch");
+    if (received !== ref.byteSize) failure("object_hash_mismatch");
     const file = await open(ciphertext, "r"), header = Buffer.alloc(MAGIC.length + 12), tag = Buffer.alloc(16);
     try { await file.read(header, 0, header.length, 0); await file.read(tag, 0, tag.length, ref.byteSize - tag.length); } finally { await file.close(); }
-    if (!header.subarray(0, MAGIC.length).equals(MAGIC)) failure("ciphertext_header_invalid");
-    const key = Buffer.from(wrapped.dataKey, "base64"); if (key.length !== 32) failure("key_invalid");
-    const decipher = createDecipheriv("aes-256-gcm", key, header.subarray(MAGIC.length));
-    decipher.setAAD(aad(ref)); decipher.setAuthTag(tag);
+    const key = Buffer.from(wrapped.dataKey, "base64");
+    // The downloaded object is digested and its ciphertext is decrypted into
+    // private scratch at the same time, on worker threads. Nothing they
+    // produced is used until the checks below pass, in the order they have
+    // always run. Both jobs end before the scratch files are removed.
+    let stored: FileDigest, opened: FileDecryption | undefined;
     try {
-      await timedStep(input.timing, "decryptMs", "storage.snapshot.decrypt", () => pipeline(createReadStream(ciphertext, { start: header.length, end: ref.byteSize - tag.length - 1, signal: input.signal, highWaterMark: WORKSPACE_ARCHIVE_IO_BUFFER_BYTES }),
-        decipher, createWriteStream(plaintext, { flags: "wx", mode: 0o600, highWaterMark: WORKSPACE_ARCHIVE_IO_BUFFER_BYTES }), { signal: input.signal }));
+      [stored, opened] = await timedStep(input.timing, "decryptMs", "storage.snapshot.decrypt", async () => {
+        const [digested, decrypted] = await Promise.allSettled([
+          digestFileOffThread({ file: ciphertext, algorithm: "sha256" }, input.signal),
+          key.length === 32 ? decryptFileOffThread({ source: ciphertext, target: plaintext, start: header.length,
+            end: ref.byteSize - tag.length, key, iv: header.subarray(MAGIC.length), aad: aad(ref), authTag: tag }, input.signal) : undefined,
+        ]);
+        if (digested.status === "rejected") throw digested.reason;
+        if (decrypted.status === "rejected") throw decrypted.reason;
+        return [digested.value, decrypted.value] as const;
+      });
     } finally { key.fill(0); }
-    const actual = await timedStep(input.timing, "plaintextVerifyMs", "storage.snapshot.verify_plaintext", () => digestFile(plaintext, input.signal));
-    if (actual.sha256 !== wrapped.plaintextSha256 || actual.byteSize !== wrapped.plaintextBytes) failure("plaintext_hash_mismatch");
-    // Publish a complete file without replacing an existing destination. A
-    // failed/cancelled relay cannot leave a plaintext cache that looks complete.
+    if (stored.bytes !== ref.byteSize || stored.hex !== ref.sha256) failure("object_hash_mismatch");
+    if (!header.subarray(0, MAGIC.length).equals(MAGIC)) failure("ciphertext_header_invalid");
+    if (!opened) failure("key_invalid");
+    if (opened!.authenticationFailure) throw Object.assign(new Error(opened!.authenticationFailure.message),
+      opened!.authenticationFailure.code ? { code: opened!.authenticationFailure.code } : {});
+    // The authenticated archive is digested while it is copied beside the
+    // destination, so the digest covers exactly the bytes that get published.
+    // Publication never replaces an existing destination, and a failed or
+    // cancelled relay cannot leave a plaintext cache that looks complete.
     const staged = path.join(path.dirname(input.targetPath), `.workspace-snapshot-${randomUUID()}.tmp`);
     try {
+      const actual = await timedStep(input.timing, "plaintextVerifyMs", "storage.snapshot.verify_plaintext", () =>
+        digestFileOffThread({ file: plaintext, algorithm: "sha256", copyTo: staged }, input.signal));
+      if (actual.hex !== wrapped.plaintextSha256 || actual.bytes !== wrapped.plaintextBytes) failure("plaintext_hash_mismatch");
       await timedStep(input.timing, "publishMs", "storage.snapshot.publish", async () => {
-        await pipeline(createReadStream(plaintext, { signal: input.signal, highWaterMark: WORKSPACE_ARCHIVE_IO_BUFFER_BYTES }), createWriteStream(staged, { flags: "wx", mode: 0o600, highWaterMark: WORKSPACE_ARCHIVE_IO_BUFFER_BYTES }), { signal: input.signal });
         input.signal?.throwIfAborted(); await link(staged, input.targetPath);
       });
     } finally { await rm(staged, { force: true }); }

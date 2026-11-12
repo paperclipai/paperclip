@@ -1327,6 +1327,7 @@ function runtimePort(
     pendingExternalIntent: boolean;
   };
   let runtimeClosed = false;
+  let runtimeShutdown: Promise<unknown | null> | undefined;
   let providerProcessLost = false;
   let runtimeCloseAttempt: RuntimeCloseAttempt | undefined;
   let lateReconciliationOwner: Promise<void> | undefined;
@@ -1431,6 +1432,7 @@ function runtimePort(
             attempt.reconciliationGeneration,
           );
           runtimeClosed = !hasUnreconciledLateFailure();
+          if (runtimeClosed) void shutdownClosedRuntime();
         }
         scheduleLateFailureReconciliation();
         return;
@@ -1451,6 +1453,11 @@ function runtimePort(
     });
   };
 
+  const shutdownClosedRuntime = (): Promise<unknown | null> => {
+    runtimeShutdown ??= boundedCloseOutcome(ownedRuntimeShutdownOutcome(runtime), runtimeCloseTimeoutMs);
+    return runtimeShutdown;
+  };
+
   async function closeRuntime(input: {
     reason: string;
     reconciliation?: {
@@ -1459,7 +1466,13 @@ function runtimePort(
     };
   }): Promise<void> {
     extensionBoundary.active?.controller.abort(new Error("ACPX runtime is closing"));
-    if (runtimeClosed) return;
+    if (runtimeClosed) {
+      const shutdownError = await shutdownClosedRuntime();
+      if (shutdownError !== null) {
+        throw new AggregateError([shutdownError], "ACPX runtime and provider cleanup failed");
+      }
+      return;
+    }
     if (
       runtimeCloseAttempt?.origin.kind === "reconciliation" &&
       input.reconciliation === undefined
@@ -1526,9 +1539,10 @@ function runtimePort(
     } else {
       runtimeClosed = false;
     }
+    const shutdownError = runtimeClosed ? await shutdownClosedRuntime() : null;
     scheduleLateFailureReconciliation();
-    if (closeError !== null || processErrors.length > 0) {
-      const errors = [closeError, ...processErrors].filter(
+    if (closeError !== null || processErrors.length > 0 || shutdownError !== null) {
+      const errors = [closeError, ...processErrors, shutdownError].filter(
         (error): error is unknown => error !== null,
       );
       throw new AggregateError(
@@ -1938,6 +1952,17 @@ function ownedRuntimeCloseOutcome(
       (error: unknown) => error,
     );
   return retainRuntimeCleanupOwner(cleanup);
+}
+
+function ownedRuntimeShutdownOutcome(runtime: AcpRuntime): Promise<unknown | null> {
+  return retainRuntimeCleanupOwner(
+    Promise.resolve()
+      .then(() => runtime.shutdown?.())
+      .then(
+        () => null,
+        (error: unknown) => error,
+      ),
+  );
 }
 
 function retainRuntimeCleanupOwner<T>(cleanup: Promise<T>): Promise<T> {

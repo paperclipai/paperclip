@@ -3,10 +3,13 @@ import { ENVIRONMENT_LEASE_CONTROLLER_KEY } from "./environment-lease-controller
 import { RetainedSandboxAbsentError, resumeReplyConfirmsAbsence } from "./retained-sandbox-absent-error.js";
 import { readNativeWorkspaceMigration } from "./native-runtime/native-workspace-migration.js";
 import { ReusableSandboxResumeError } from "./reusable-sandbox-resume-error.js";
+import { sandboxProviderFailureLabel } from "./remote-workspace-transport.js";
 import { NATIVE_PREDECESSOR_RETIREMENT_UNPROVEN_CODE, readReplaceBeforeReuseMarker } from "./native-runtime/predecessor-retirement.js";
 import {
+  REUSABLE_SANDBOX_IDLE_RESUME_BUDGET_MS,
   REUSABLE_SANDBOX_RESUME_BUDGET_MS,
   retireReplacedReusableSandboxLease,
+  reusableSandboxLeaseIsIdle,
   reusableSandboxReplacementIsSafe,
   sandboxStateTransitionFailure,
 } from "./reusable-sandbox-resume-replacement.js";
@@ -17,14 +20,13 @@ import { createOwnedSandbox, recoverSandboxCreations, recoverablePluginCreation 
 import { dueRunLeaseReleaseCondition, pendingRunLeaseReleaseCondition } from "./environment-lease-release-state.js";
 import { flushDeferredEnvironmentCleanup, registerDeferredEnvironmentCleanup, writeEnvironmentCleanup } from "./environment-cleanup-notifications.js";
 import { executeEnvironmentTask, pluginEnvironmentSupportsTasks, settleDispatchedEnvironmentTask } from "./environment-task-runtime.js";
-import type { PluginEnvironmentTaskOperation } from "@paperclipai/plugin-sdk";
 import { allowLegacyShutdownWorkspaceCleanup, legacyShutdownWorkspaceResourceProtected } from "./legacy-shutdown-workspace-settlement.js";
 import { nativeWorkspaceExportPendingForLease, nativeWorkspaceExportPendingForResource } from "./native-runtime/native-workspace-finalization-state.js";
 import { beginIdleTrackedWork } from "./task-admission.js";
 import { historicalProviderCredentials } from "./historical-provider-credentials.js";
 import { ownedWorkspaceRecoveryLease, type WorkspaceRecoverySourceIdentity } from "./workspace-recovery-source.js";
 import type { NativeWorkspaceFinalizationOwnership } from "./native-runtime/native-workspace-finalization-ownership.js";
-import { hasStopOnlyCleanup, prepareSandboxStopAndRetain, readStopOnlyCleanup, SANDBOX_STOP_AND_RETAIN_KEY, settleStopOnlyCleanup, stopOnlyCleanupKey } from "./sandbox-stop-and-retain.js";
+import { acceptedStopOnlyReceipt, hasStopOnlyCleanup, prepareSandboxStopAndRetain, readStopOnlyCleanup, SANDBOX_ALLOCATION_HOLDER_STATUSES, SANDBOX_STOP_AND_RETAIN_KEY, settleStopOnlyCleanup, stopOnlyCleanupKey } from "./sandbox-stop-and-retain.js";
 import { JsonRpcCallError, readEnvironmentAcquisitionDiagnostic, readEnvironmentCreationCleanupError } from "@paperclipai/plugin-sdk";
 import { preserveEnvironmentSyncOutErrorDiagnostic } from "./environment-sync-out-error.js";
 import { remoteTerminationReceipt } from "./remote-execution-termination.js";
@@ -481,6 +483,7 @@ export interface EnvironmentDriverAcquireInput {
   executionWorkspaceMode: ExecutionWorkspace["mode"] | null;
   executionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
   runnerTaskProjectIds?: readonly string[];
+  runnerTaskResumeSessionId?: string | null;
   /**
    * The harness/adapter type for this run (the agent's adapter). Drivers that
    * materialize a per-run sandbox use it to select the runtime image so a single
@@ -1890,14 +1893,17 @@ function createSandboxEnvironmentDriver(
           else try {
             // One run spends a bounded budget resuming, retries included; the
             // provider's own start deadline (five minutes on Daytona) is not it.
-            const configuredResumeTimeoutMs = Math.min(
-              resolvePluginSandboxRpcTimeoutMs(
-                workerConfig,
-                pluginProvider.resolved.driver.defaultAcquireTimeoutMs,
-              ) ?? 60_000,
-              REUSABLE_SANDBOX_RESUME_BUDGET_MS,
+            const providerStartTimeoutMs = resolvePluginSandboxRpcTimeoutMs(
+              workerConfig,
+              pluginProvider.resolved.driver.defaultAcquireTimeoutMs,
+            ) ?? 60_000;
+            const configuredResumeTimeoutMs = Math.min(providerStartTimeoutMs, REUSABLE_SANDBOX_RESUME_BUDGET_MS);
+            const resumeStartedAt = Date.now();
+            let resumeDeadline = resumeStartedAt + configuredResumeTimeoutMs;
+            const idleResumeDeadline = resumeStartedAt + Math.max(
+              configuredResumeTimeoutMs,
+              Math.min(providerStartTimeoutMs, REUSABLE_SANDBOX_IDLE_RESUME_BUDGET_MS),
             );
-            const resumeDeadline = Date.now() + configuredResumeTimeoutMs;
             let retryDelayMs = 250;
             let resumed: PluginEnvironmentLease;
             while (true) {
@@ -1921,10 +1927,17 @@ function createSandboxEnvironmentDriver(
                 );
                 break;
               } catch (error) {
-                if (
-                  !transientSandboxResumeFailure(error) ||
-                  Date.now() + retryDelayMs * 1.25 >= resumeDeadline
-                ) throw error;
+                if (!transientSandboxResumeFailure(error)) throw error;
+                const retryAt = Date.now() + retryDelayMs * 1.25;
+                if (retryAt >= resumeDeadline) {
+                  const waitForIdleStart = resumeDeadline < idleResumeDeadline && retryAt < idleResumeDeadline
+                    && sandboxProviderFailureLabel(error).label === "transport_timeout"
+                    && await reusableSandboxLeaseIsIdle({
+                      db, lease: reusableLease, companyId: input.companyId, heartbeatRunId: input.heartbeatRunId,
+                    });
+                  if (!waitForIdleStart) throw error;
+                  resumeDeadline = idleResumeDeadline;
+                }
                 const jitteredDelayMs = Math.max(
                   1,
                   Math.round(retryDelayMs * (0.75 + Math.random() * 0.5)),
@@ -2434,7 +2447,7 @@ function createSandboxEnvironmentDriver(
         const [current] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, input.lease.id)).limit(1);
         const [otherOwner] = await db.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
           ne(environmentLeases.id, input.lease.id), eq(environmentLeases.provider, input.lease.provider!),
-          eq(environmentLeases.providerLeaseId, input.lease.providerLeaseId!), inArray(environmentLeases.status, ["active", "retained", "pending_cleanup"]),
+          eq(environmentLeases.providerLeaseId, input.lease.providerLeaseId!), inArray(environmentLeases.status, [...SANDBOX_ALLOCATION_HOLDER_STATUSES]),
         )).limit(1);
         if (!current || current.status !== "pending_cleanup" || current.companyId !== input.lease.companyId
           || current.metadata?.pendingCleanupAttemptId !== input.lease.metadata?.pendingCleanupAttemptId
@@ -2508,7 +2521,7 @@ function createSandboxEnvironmentDriver(
             config: workerConfig, providerLeaseId: input.lease.providerLeaseId,
             leaseMetadata: input.lease.metadata ?? {}, cancelActiveWork: true, resourceDisposition: "stop_and_retain",
           }, Math.min(resolvePluginSandboxRpcTimeoutMs(workerConfig) ?? 60_000, 60_000)));
-          if (remoteTerminationReceipt(input.lease, receipt)?.state !== "stopped") {
+          if (!acceptedStopOnlyReceipt(input.lease, receipt)) {
             throw new Error("Workspace export recovery did not confirm the retained sandbox stopped.");
           }
           return receipt;
@@ -2561,7 +2574,7 @@ function createSandboxEnvironmentDriver(
         }
         await assertExportResumeOwnership();
         const receipt = await provider.stopLease({ config: cleanupConfig, providerLeaseId: input.lease.providerLeaseId });
-        if (remoteTerminationReceipt(input.lease, receipt)?.state !== "stopped") {
+        if (!acceptedStopOnlyReceipt(input.lease, receipt)) {
           throw new Error("Built-in sandbox stop did not confirm the exact retained allocation.");
         }
         return receipt;
@@ -3503,6 +3516,23 @@ function createPluginEnvironmentDriver(
         workerManager.getWorker(plugin.id)?.supportedMethods.includes("environmentResumeLease");
       const lifecyclePolicy = warm ? { mode: "warm", idleTimeoutMs: parsed.config.runnerIdleTimeoutMs ?? 300_000 } : { mode: "per_turn", idleTimeoutMs: null };
       const fingerprint = createHash("sha256").update(JSON.stringify([parsed.config, input.agentId, input.runnerTaskProjectIds ?? [], ...(input.purpose ? [input.purpose, input.loginCommandKey] : [])])).digest("hex");
+      if (driver.sessionHandoffVersion === 1 && input.adapterType === "paperclip_runner" && input.heartbeatRunId && input.purpose !== "login") {
+        // The run lease already records the placement to replay after a lost preparation reply.
+        const active = await db.select().from(environmentLeases).where(and(
+          eq(environmentLeases.companyId, input.companyId), eq(environmentLeases.environmentId, input.environment.id),
+          eq(environmentLeases.heartbeatRunId, input.heartbeatRunId), eq(environmentLeases.status, "active"),
+        )).limit(2);
+        if (active.length > 0) {
+          const lease = active[0]!;
+          if (active.length !== 1 || !lease.providerLeaseId || lease.releasedAt || lease.cleanupStatus ||
+              lease.expiresAt && lease.expiresAt.getTime() <= Date.now() ||
+              lease.issueId !== input.issueId || lease.executionWorkspaceId !== (input.executionWorkspaceId ?? null) ||
+              lease.metadata?.runnerTaskLease !== true || lease.metadata?.runnerTaskRetiring === true ||
+              lease.metadata?.pluginId !== plugin.id || lease.metadata?.driverKey !== parsed.config.driverKey ||
+              lease.metadata?.runnerTaskFingerprint !== fingerprint) throw new Error("Active plugin task placement changed");
+          return toEnvironmentLeaseSnapshot(lease);
+        }
+      }
       const candidates = warm ? await db.select().from(environmentLeases).where(and(
         eq(environmentLeases.companyId, input.companyId), eq(environmentLeases.environmentId, input.environment.id),
         eq(environmentLeases.status, "retained"), eq(environmentLeases.issueId, input.issueId!),
@@ -3510,14 +3540,25 @@ function createPluginEnvironmentDriver(
         sql`${environmentLeases.metadata}->>'agentId' = ${input.agentId!}`,
         sql`${environmentLeases.metadata}->>'pluginId' = ${plugin.id}`,
         sql`${environmentLeases.metadata}->>'driverKey' = ${parsed.config.driverKey}`,
+        sql`${environmentLeases.metadata}->'portableTaskSuccessor' is null`,
       )) : [];
       if (candidates.length > 1) throw new Error("Ambiguous retained plugin task ownership");
       const previous = candidates[0];
+      const previousSessionId = (previous?.metadata?.runnerTaskIdentity as { sessionId?: unknown } | undefined)?.sessionId;
+      const previousAccountIdentity = previous?.metadata?.runnerTaskAccountIdentity;
+      const freshPortableSession = driver.sessionHandoffVersion === 1 && input.runnerTaskResumeSessionId !== undefined &&
+        (input.runnerTaskResumeSessionId === null || input.runnerTaskResumeSessionId !== previousSessionId);
+      const handoffPrevious = !freshPortableSession && driver.sessionHandoffVersion === 1 && previous?.providerLeaseId &&
+        previous.metadata?.runnerTaskFingerprint === fingerprint &&
+        typeof previousAccountIdentity === "string" && previousAccountIdentity.trim().length > 0 &&
+        typeof (previous.metadata?.providerMetadata as { ownershipGeneration?: unknown } | undefined)?.ownershipGeneration === "string"
+        ? previous : undefined;
       let resumed: PluginEnvironmentLease | undefined;
-      if (previous?.providerLeaseId && previous.metadata?.runnerTaskFingerprint !== fingerprint) {
-        // A changed mount scope must retire the old process before checkpoint recovery.
+      if (!handoffPrevious && previous?.providerLeaseId &&
+          (freshPortableSession || previous.metadata?.runnerTaskFingerprint !== fingerprint)) {
+        // A fresh logical session or changed mount scope must retire the old process before provisioning.
         await this.releaseRunLease({environment:input.environment,lease:toEnvironmentLeaseSnapshot(previous),status:"released"});
-      } else if (previous?.providerLeaseId) {
+      } else if (!handoffPrevious && previous?.providerLeaseId) {
         // Resume only inspects the exact computer; an unavailable reply must not create a replacement.
         resumed = await workerManager.call(plugin.id, "environmentResumeLease", {
           driverKey: parsed.config.driverKey, companyId: input.companyId, environmentId: input.environment.id,
@@ -3576,6 +3617,7 @@ function createPluginEnvironmentDriver(
           ...(warm ? {runnerTaskProjectIds:[...input.runnerTaskProjectIds ?? []]} : {}),remoteCwd:".",
           ...(input.agentId ? { agentId: input.agentId } : {}),
           providerMetadata: providerLease.metadata ?? {},
+          ...(handoffPrevious ? { portableTaskPreviousLeaseId: handoffPrevious.id } : {}),
           ...(input.purpose ? { purpose: input.purpose, loginCommandKey: input.loginCommandKey } : {}),
           environmentId: input.environment.id,
           ...(input.purpose !== "login" && input.adapterType === "paperclip_runner" && driver.supportsTasks === true ? { runnerTaskLease: true } : {}),
@@ -3983,7 +4025,7 @@ export function environmentRuntimeService(
     },
 
     /** Dispatch plugin-provided Runner execution, including resource preparation and task lifecycle. */
-    async task(input: { companyId: string; leaseId: string; operation: PluginEnvironmentTaskOperation; executionContext?: unknown; expectedTaskId?: string }) {
+    async task(input: Parameters<typeof executeEnvironmentTask>[2]) {
       if (!options.pluginWorkerManager) throw new Error("Plugin-provided Runner execution worker manager unavailable");
       return executeEnvironmentTask(db, options.pluginWorkerManager, input);
     },
@@ -4002,6 +4044,7 @@ export function environmentRuntimeService(
       persistedExecutionWorkspace: Pick<ExecutionWorkspace, "id" | "mode"> | null;
       executionWorkspaceSettings?: IssueExecutionWorkspaceSettings | null;
       runnerTaskProjectIds?: readonly string[];
+      runnerTaskResumeSessionId?: string | null;
       /** The agent's adapter type for this run (mixed-harness environments). */
       adapterType?: string | null;
       resolveSnapshotIdentity?: boolean;
@@ -4047,6 +4090,7 @@ export function environmentRuntimeService(
         executionWorkspaceMode: leaseContext.executionWorkspaceMode,
         executionWorkspaceSettings: input.executionWorkspaceSettings ?? null,
         runnerTaskProjectIds: input.runnerTaskProjectIds,
+        runnerTaskResumeSessionId: input.runnerTaskResumeSessionId,
         purpose: input.purpose,
         loginCommandKey: input.loginCommandKey,
         adapterType: input.adapterType ?? null,

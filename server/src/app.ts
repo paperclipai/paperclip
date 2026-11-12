@@ -1110,8 +1110,12 @@ export async function createApp(
       );
       if (process.env.PAPERCLIP_SHARED_UI_ASSETS === "true") {
         const retained = retainedUiAssets(createStorageProviderFromConfig(loadStorageConfig()));
-        await publishRetainedUiAssetsAtStartup(retained, path.join(uiDist, "assets"), error =>
-          logger.error({ err: error }, "Shared UI assets could not be published because storage is unavailable; serving this build from local files"));
+        // Publish while the routes below are built; the outcome is awaited
+        // before the first background work starts. The promise settles to the
+        // failure instead of rejecting, so it is never an unhandled rejection.
+        app.locals.retainedUiAssetsPublication = trackIdleWork(publishRetainedUiAssetsAtStartup(retained, path.join(uiDist, "assets"), error =>
+          logger.error({ err: error }, "Shared UI assets could not be published because storage is unavailable; serving this build from local files"))
+          .then(() => null, (error: unknown) => ({ error })));
         staticUi.use("/assets", retained.serve);
       }
       // Serve root/index through the same runtime HTML transform as SPA routes.
@@ -1250,6 +1254,11 @@ export async function createApp(
 
   app.use(staticUi);
   app.use(errorHandler);
+
+  // A build whose asset names collide with different published bytes refuses
+  // to start, so the outcome is known before any job, queue, or run starts.
+  const retainedUiAssetsPublication = await (app.locals.retainedUiAssetsPublication as Promise<{ error: unknown } | null> | undefined);
+  if (retainedUiAssetsPublication) throw retainedUiAssetsPublication.error;
 
   jobCoordinator.start();
   const deliveryWork = createDeliveryWorkCoordinator({

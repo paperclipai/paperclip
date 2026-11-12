@@ -278,3 +278,17 @@ it("declares factual human attachments only for the two actual missing selected 
   // The refresh query already names Launch and the retained run selected it correctly.
   expect(integratorStatusCardsCases.find(row => row.scenarioId === "status-cards.refresh-card")!.queryAttachments).toBeUndefined();
 });
+it("counts a dedicated task tool result that holds the source task with its live status", () => {
+  const item = (runId: string, value: Record<string, unknown>) => ({ runId, payload: { prpEvent: { runId, payload: { item: value } } } });
+  const pair = (name: string, result: unknown, runId = "lead") => [item(runId, { id: "2", type: "tool_use", name, input: { query: "Payment approval blocks launch" } }), item(runId, { id: "2", type: "tool_result", tool_use_id: "2", result })];
+  const cohort6 = pair("search_tasks", { limit: 10, tasks: [{ id: "source", identifier: "COM-1", title: "Payment approval blocks launch", status: "done" }], hasMore: false });
+  expect(sourceTaskReads(cohort6, "source", "COM-1", "done")).toEqual({ live: true, unavailable: false });
+  expect(sourceTaskReads(pair("mcp__paperclip__paperclip_list_tasks", { task: { id: "source", status: "done" } }), "source", "COM-1", "done").live).toBe(true);
+  expect(sourceTaskReads(pair("search_tasks", { limit: 10, tasks: [], hasMore: false }), "source", "COM-1", "done").live).toBe(false);
+  expect(sourceTaskReads(pair("search_tasks", { tasks: [{ id: "other", status: "done" }] }), "source", "COM-1", "done").live).toBe(false);
+  expect(sourceTaskReads(pair("search_tasks", { tasks: [{ id: "source", status: "blocked" }] }), "source", "COM-1", "done").live).toBe(false);
+  expect(sourceTaskReads(pair("search_tasks", { tasks: [{ id: "source" }] }), "source", "COM-1").live).toBe(false);
+  expect(sourceTaskReads(pair("call_api", { tasks: [{ id: "source", status: "done" }] }), "source", "COM-1", "done").live).toBe(false);
+  expect(sourceTaskReads(pair("search_tasks", { ok: false, tasks: [{ id: "source", status: "done" }] }), "source", "COM-1", "done").live).toBe(false);
+  expect(sourceTaskReads([cohort6[1]!], "source", "COM-1", "done").live).toBe(false);
+});

@@ -1,5 +1,5 @@
 {
-  "id": "7267b434-7dfd-4538-9ccd-2d4880bbcce9",
+  "id": "671a422a-0b93-4155-b097-9d35a4fd2b2b",
   "prevId": "f0e17e47-6217-4080-b6b6-9d83b33e9ced",
   "version": "7",
   "dialect": "postgresql",
@@ -18938,12 +18938,6 @@
           "notNull": true,
           "default": "'[]'::jsonb"
         },
-        "security_override": {
-          "name": "security_override",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
         "enabled": {
           "name": "enabled",
           "type": "boolean",
@@ -22345,6 +22339,18 @@
         },
         "stopped_at": {
           "name": "stopped_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "dispatching_at": {
+          "name": "dispatching_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "dispatch_lease_expires_at": {
+          "name": "dispatch_lease_expires_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
