@@ -153,6 +153,8 @@ test("master promotes only after proof and otherwise builds exactly as before", 
   assert.ok(promote.indexOf("skopeo copy --all --preserve-digests") < promote.indexOf('echo "digest=$digest" >> "$GITHUB_OUTPUT"'),
     "the promoted digest becomes an output only after the exact bytes are pushed");
   assert.match(promote, /GITHUB_OUTPUT='' node scripts\/merge-group-image.mjs verify/);
+  assert.ok(promote.indexOf("command -v skopeo") < promote.indexOf("merge-group-image.mjs verify"),
+    "a runner without skopeo reports that promotion is unavailable before it tries");
   for (const name of ["Set up Docker Buildx", "Compute schema migration labels", "Docker meta", "Build and push by digest"]) {
     assert.match(step(name), /if: steps.promote.outputs.digest == ''/, `${name} runs whenever nothing was promoted`);
     assert.ok(order(name) > order("Promote the merge-queue image"));

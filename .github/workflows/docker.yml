@@ -275,6 +275,13 @@ jobs:
           IMAGE_NAME: ghcr.io/${{ github.repository }}
         run: |
           set -euo pipefail
+          # Say plainly when this runner image cannot promote, instead of
+          # failing later inside the copy.
+          if ! command -v skopeo >/dev/null; then
+            echo "::notice title=Merge-queue promotion unavailable::skopeo is not installed on this runner; building from source."
+            exit 1
+          fi
+          echo "Promoting with $(skopeo --version)"
           # Verify without writing a step output: the digest is set only after
           # the exact bytes are in the registry.
           verified="$(GITHUB_OUTPUT='' node scripts/merge-group-image.mjs verify --arch "$ARCH" --dir "$DIRECTORY")"

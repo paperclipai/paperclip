@@ -29,6 +29,12 @@ const sha256 = bytes => `sha256:${createHash("sha256").update(bytes).digest("hex
  * Choose the merge-queue build a master push may promote. Only a completed,
  * successful run of this repository's merge-group workflow, on a merge-queue
  * branch for master, for exactly this commit, qualifies.
+ *
+ * The commit must match, not only the tree: the image stamps the commit SHA
+ * (PAPERCLIP_BUILD_COMMIT, build-info.json, the provider pack revision). The
+ * merge queue lands the commit it tested for every merge method, squash
+ * included, by fast-forwarding master to it; a push that did not come through
+ * the queue has no matching run and builds from source.
  */
 export function selectVerifiedRun({ sha, runs }) {
   assert.match(sha ?? "", fullSha);
