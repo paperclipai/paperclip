@@ -69,7 +69,7 @@ const support = await getEmbeddedPostgresTestSupport();
     const resourceReadSessions: Array<string | null> = [];
     let failResourceReads = false;
     let expireNextResourceRead = false;
-    let initializeGate: Promise<void> | null = null;
+    let initializeGate: { wait: Promise<void>; entered: () => void } | null = null;
     let sessionCounter = 0;
     const request = vi.fn(async (url: string, init: RequestInit) => {
       const headers = new Headers(init.headers);
@@ -83,7 +83,10 @@ const support = await getEmbeddedPostgresTestSupport();
           initializeCapabilities.push(rpc.params?.capabilities);
           const gate = initializeGate;
           initializeGate = null;
-          if (gate) await gate;
+          if (gate) {
+            gate.entered();
+            await gate.wait;
+          }
           sessionCounter += 1;
           return Response.json({ jsonrpc: "2.0", id: rpc.id, result: { protocolVersion: "2025-06-18", capabilities: { tools: {}, resources: {} }, serverInfo: { name: "Circleback fixture", version: "1" } } },
             options.requireSession ? { headers: { "mcp-session-id": `fixture-session-${sessionCounter}` } } : undefined);
@@ -158,7 +161,14 @@ const support = await getEmbeddedPostgresTestSupport();
     return { company, agent, issue, run, gateway, session, request, app, initializeCapabilities, resourceReadSessions, connectionId: signedIn.connectionId,
       failResourceReads: (fail: boolean) => { failResourceReads = fail; },
       expireNextResourceRead: () => { expireNextResourceRead = true; },
-      holdNextInitialize: () => { let release!: () => void; initializeGate = new Promise<void>((resolve) => { release = resolve; }); return release; },
+      /** Holds the next initialize request; `entered` resolves once that request is being held. */
+      holdNextInitialize: () => {
+        let release!: () => void;
+        let markEntered!: () => void;
+        const entered = new Promise<void>((resolve) => { markEntered = resolve; });
+        initializeGate = { wait: new Promise<void>((resolve) => { release = resolve; }), entered: markEntered };
+        return { release, entered };
+      },
       otherAgent,
       setActor: (kind: "board" | "agent" | "teammate") => { actorKind = kind; } };
   }
@@ -295,14 +305,14 @@ const support = await getEmbeddedPostgresTestSupport();
       scopeKind: "issue", invocationSource: "on_demand", status: "running", contextSnapshot: { issueId: f.issue.id } }).returning();
     const otherSession = await f.gateway.createSession({ companyId: f.company.id, agentId: f.otherAgent.id, runId: otherRun.id, issueId: f.issue.id });
     const otherTool = (await f.gateway.listToolsForSession(otherSession.token)).find(tool => tool.upstreamToolName === "SearchMeetings")!;
-    const release = f.holdNextInitialize();
+    const held = f.holdNextInitialize();
     const otherCall = f.gateway.executeTool({ sessionToken: otherSession.token, tool: otherTool.name, parameters: {}, idempotencyKey: randomUUID() });
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await held.entered;
 
     // ... when the view read finds its session expired and starts a new one.
     f.expireNextResourceRead();
     await http(f.app).get(`/issues/${f.issue.id}/mcp-app-views/${viewId}`).expect(200);
-    release();
+    held.release();
     await expect(otherCall).resolves.toMatchObject({ status: "completed" });
   });
 });
