@@ -100,7 +100,7 @@ function modernServer(options: { ttlMs?: number; tools?: unknown[]; onList?: () 
 }
 
 /** A 2025-11-25 server with a session: no `server/discover`, no per-request metadata. */
-function legacyServer() {
+function legacyServer(options: { answerModernWithSupported?: string[] } = {}) {
   const requests: Recorded[] = [];
   let sessions = 0;
   const handle = async (_url: string, init: RequestInit): Promise<Response> => {
@@ -108,6 +108,9 @@ function legacyServer() {
     const body = JSON.parse(String(init.body));
     const headers = new Headers(init.headers);
     requests.push({ method: body.method, headers, body });
+    if (options.answerModernWithSupported && body.params?._meta?.["io.modelcontextprotocol/protocolVersion"]) {
+      return Response.json({ jsonrpc: "2.0", id: body.id, error: { code: -32022, message: "Unsupported protocol version", data: { supported: options.answerModernWithSupported } } }, { status: 400 });
+    }
     if (body.method === "initialize") {
       return Response.json({ jsonrpc: "2.0", id: body.id, result: { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "legacy", version: "1" } } },
         { headers: { "Mcp-Session-Id": `legacy-${++sessions}` } });
@@ -459,6 +462,32 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(toolCall.headers.get("mcp-session-id")).toMatch(/^legacy-/);
     expect(toolCall.headers.get("mcp-method")).toBe("tools/call");
     expect(toolCall.body.params._meta).toBeUndefined();
+  });
+
+  it("returns a saved stateless connection to the handshake when its server rolls back", async () => {
+    let rolledBack = false;
+    const modern = modernServer();
+    const legacy = legacyServer();
+    const { call, savedConfig, connected } = await connect((url, init) => (rolledBack ? legacy : modern).handle(url, init), "https://rollback.example.com/mcp");
+    expect(await savedConfig()).toMatchObject({ mcpProtocolVersion: MCP_MODERN_PROTOCOL_VERSION });
+    rolledBack = true;
+    forgetMcpHttpSessions(connected.connectionId);
+    expect(await call("lookup")).toMatchObject({ decision: "allowed", result: { data: { isError: false } } });
+    // Refused before running (no session), probed, then the handshake and one resend.
+    expect(legacy.methods()).toEqual(["tools/call", "server/discover", "initialize", "notifications/initialized", "tools/call"]);
+    expect(await savedConfig()).toMatchObject({ mcpProtocolVersion: MCP_PROTOCOL_VERSION });
+  });
+
+  it("uses the handshake when a stateless request is answered with only an older supported version", async () => {
+    let rolledBack = false;
+    const modern = modernServer();
+    const legacy = legacyServer({ answerModernWithSupported: ["2025-06-18"] });
+    const { call, savedConfig, connected } = await connect((url, init) => (rolledBack ? legacy : modern).handle(url, init), "https://rollback-32022.example.com/mcp");
+    rolledBack = true;
+    forgetMcpHttpSessions(connected.connectionId);
+    expect(await call("lookup")).toMatchObject({ decision: "allowed", result: { data: { isError: false } } });
+    expect(legacy.methods()).toEqual(["tools/call", "initialize", "notifications/initialized", "tools/call"]);
+    expect(await savedConfig()).toMatchObject({ mcpProtocolVersion: "2025-06-18" });
   });
 
   it("recovers a saved legacy connection whose server moved to 2026-07-28", async () => {

@@ -1922,7 +1922,7 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
   describe("local stdio MCP protocol versions", () => {
     // Each script records every message it receives, one JSON line per message,
     // so the tests can see exactly what Paperclip sent to each process.
-    function stdioScript(logPath: string, behavior: "modern" | "exit-on-probe" | "silent" | "upgrading" | "downgrading" | "broken") {
+    function stdioScript(logPath: string, behavior: "modern" | "exit-on-probe" | "silent" | "upgrading" | "downgrading" | "broken" | "modern-failing") {
       return `
 const fs = require("node:fs");
 const readline = require("node:readline");
@@ -1931,7 +1931,9 @@ const readline = require("node:readline");
 const switched = fs.existsSync(${JSON.stringify(`${logPath}.upgraded`)});
 const behavior = ${JSON.stringify(behavior)} === "upgrading" ? (switched ? "modern" : "legacy-quick")
   : ${JSON.stringify(behavior)} === "downgrading" ? (switched ? "legacy-strict" : "modern")
+  : ${JSON.stringify(behavior)} === "modern-failing" ? "modern"
   : ${JSON.stringify(behavior)};
+const failsCalls = ${JSON.stringify(behavior)} === "modern-failing";
 let initialized = false;
 const send = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
 readline.createInterface({ input: process.stdin }).on("line", (line) => {
@@ -1955,6 +1957,10 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
       send({ jsonrpc: "2.0", id: message.id, error: { code: -32002, message: "Server not initialized" } });
       return;
     }
+    if (failsCalls) {
+      send({ jsonrpc: "2.0", id: message.id, error: { code: -32603, message: "Internal error after writing" } });
+      return;
+    }
     const meta = message.params && message.params._meta;
     if (behavior === "modern" && !(meta && meta["io.modelcontextprotocol/protocolVersion"] === "2026-07-28")) {
       send({ jsonrpc: "2.0", id: message.id, error: { code: -32602, message: "Required per-request metadata is missing" } });
@@ -1966,7 +1972,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
 `;
     }
 
-    async function runStdio(behavior: "modern" | "exit-on-probe" | "silent" | "upgrading" | "downgrading" | "broken", calls: number, beforeCall?: (index: number, logPath: string) => void) {
+    async function runStdio(behavior: "modern" | "exit-on-probe" | "silent" | "upgrading" | "downgrading" | "broken" | "modern-failing", calls: number, beforeCall?: (index: number, logPath: string) => void) {
       const dir = mkdtempSync(join(tmpdir(), "paperclip-stdio-protocol-"));
       const logPath = join(dir, "messages.jsonl");
       try {
@@ -2038,6 +2044,14 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
         // Remembered as stateless, refused before running, probed again, then the handshake.
         "tools/call", "server/discover", "initialize", "notifications/initialized", "tools/call",
       ]);
+    });
+
+    it("never replays a call that a stateless stdio server failed after it may have run", async () => {
+      const { results, methods } = await runStdio("modern-failing", 2);
+      for (const result of results) {
+        expect(((result.result as { error?: ToolGatewayHttpError }).error)!.reasonCode).toBe("local_stdio_protocol_error");
+      }
+      expect(methods).toEqual(["server/discover", "tools/call", "tools/call"]);
     });
 
     it("gives up after one restart when a stdio server exits on both the probe and the handshake", async () => {

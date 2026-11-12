@@ -643,6 +643,19 @@ function connectionRequiresMcpSession(connection: { config: unknown }): boolean 
 const MCP_CONTINUATION_TTL_MS = 30 * 60_000;
 /** The most provider links one pending step shows (matches the legacy link flow). */
 const MCP_MAX_INPUT_LINKS = 8;
+/**
+ * JSON-RPC errors that show a server refused a call before running it: an
+ * unknown method, an invalid request, or a server that was never initialized.
+ * Anything else (an internal error, invalid params) may come after the tool
+ * ran, so such a call is never replayed.
+ */
+function callNeverRan(error: unknown): boolean {
+  const record = asRecord(error);
+  if (!record || typeof record.code !== "number") return false;
+  if (record.code === -32600 || record.code === -32601) return true;
+  return typeof record.message === "string" && /not\s+(?:been\s+)?initiali[sz]ed/i.test(record.message);
+}
+
 /** How long a stdio server may stay silent on `server/discover` before it is treated as legacy. */
 const STDIO_DISCOVER_PROBE_TIMEOUT_MS = 2_000;
 /** Context reads whose results carry the server's freshness hint. */
@@ -5701,7 +5714,7 @@ export function createToolGatewayService(
         // a call without a handshake with a JSON-RPC error, before running it.
         // Probe again. A process exit is not retried: the tool may have run.
         if (isModernMcpProtocolVersion(remembered) && error instanceof ToolGatewayHttpError
-          && error.reasonCode === "local_stdio_protocol_error" && error.details.error !== undefined) {
+          && error.reasonCode === "local_stdio_protocol_error" && callNeverRan(error.details.error)) {
           rememberedHandshakeRefused = true;
         }
         throw error;
@@ -5831,7 +5844,7 @@ export function createToolGatewayService(
     }
     const sendForNegotiation = (init: RequestInit) => dispatch({ ...init, redirect: "manual" });
     // Stateful (handshake) servers need the same MCP session setup as tool calls.
-    const sessionScope = connectionRequiresMcpSession(input.connection)
+    let sessionScope = connectionRequiresMcpSession(input.connection)
       ? `${input.connection.id}:grant:${grant.id}:actor:${input.session.agentId}:${endpoint}`
       : null;
     // The session this read used. On a 400/404 only that session is dropped:
@@ -5862,15 +5875,22 @@ export function createToolGatewayService(
     // Context reads are read-only, so a request a stateless server rejected for
     // its version or shape is retried once with a negotiated version.
     const modernRejection = await readMcpModernError(response);
-    if (modernRejection) {
-      const retryVersion = modernRejection.code === MCP_ERROR_UNSUPPORTED_PROTOCOL_VERSION && modernRejection.supported
+    const rolledBack = !modernRejection && response.status === 400 && isModernMcpProtocolVersion(protocolVersion);
+    if (modernRejection || rolledBack) {
+      const retryVersion = modernRejection?.code === MCP_ERROR_UNSUPPORTED_PROTOCOL_VERSION && modernRejection.supported
         ? selectMcpProtocolVersion(modernRejection.supported)
-        : !isModernMcpProtocolVersion(protocolVersion)
+        : rolledBack || !isModernMcpProtocolVersion(protocolVersion)
           ? (forgetMcpProtocolVersion(eraKey), await negotiateMcpProtocolVersion({ send: sendForNegotiation, headers, requestId: `${requestId}-version`, eraKey }))
           : null;
-      if (isModernMcpProtocolVersion(retryVersion) && retryVersion !== protocolVersion) {
-        rememberMcpProtocolVersion(eraKey, retryVersion);
-        await persistMcpProtocolVersion(input.connection, retryVersion);
+      const usable = retryVersion !== null && retryVersion !== protocolVersion
+        && (isModernMcpProtocolVersion(retryVersion) || isModernMcpProtocolVersion(protocolVersion));
+      if (usable) {
+        rememberMcpProtocolVersion(eraKey, retryVersion!);
+        await persistMcpProtocolVersion(input.connection, retryVersion!);
+        // Back on the handshake, the read needs a session like a tool call.
+        if (!isModernMcpProtocolVersion(retryVersion)) {
+          sessionScope ??= `${input.connection.id}:grant:${grant.id}:actor:${input.session.agentId}:${endpoint}`;
+        }
         protocolVersion = retryVersion;
         if (usedSession) forgetMcpHttpSession(usedSession);
         await response.body?.cancel().catch(() => undefined);
@@ -6821,23 +6841,36 @@ export function createToolGatewayService(
       // A stateless server rejects a request it cannot accept before running
       // anything (wrong version, or legacy request shape), so one retry with a
       // supported version is safe.
+      // A plain 400 to a stateless request means the server went back to the
+      // handshake (it rejected the request shape before running it).
       const modernRejection = await readMcpModernError(response);
-      if (modernRejection) {
-        const sentVersion = mcpProtocolVersionOf(requestHeaders);
+      const sentVersion = mcpProtocolVersionOf(requestHeaders);
+      const rolledBack = !modernRejection && response.status === 400 && isModernMcpProtocolVersion(sentVersion);
+      if (modernRejection || rolledBack) {
         let retryVersion: string | null = null;
-        if (modernRejection.code === MCP_ERROR_UNSUPPORTED_PROTOCOL_VERSION && modernRejection.supported) {
+        if (modernRejection?.code === MCP_ERROR_UNSUPPORTED_PROTOCOL_VERSION && modernRejection.supported) {
           retryVersion = selectMcpProtocolVersion(modernRejection.supported);
-        } else if (!isModernMcpProtocolVersion(sentVersion)) {
+        } else if (rolledBack || !isModernMcpProtocolVersion(sentVersion)) {
           forgetMcpProtocolVersion(eraKey);
           retryVersion = await negotiateMcpProtocolVersion({ send: sendForNegotiation, headers, requestId, eraKey });
         }
-        if (isModernMcpProtocolVersion(retryVersion) && retryVersion !== sentVersion) {
-          rememberMcpProtocolVersion(eraKey, retryVersion);
-          await persistMcpProtocolVersion(connection, retryVersion);
+        // A legacy version only helps when the stateless request was the problem.
+        const usable = retryVersion !== null && retryVersion !== sentVersion
+          && (isModernMcpProtocolVersion(retryVersion) || isModernMcpProtocolVersion(sentVersion));
+        if (usable) {
+          rememberMcpProtocolVersion(eraKey, retryVersion!);
+          await persistMcpProtocolVersion(connection, retryVersion!);
           if (mcpSession) forgetMcpHttpSession(mcpSession);
           mcpSession = undefined;
           await response.body?.cancel().catch(() => undefined);
-          requestHeaders = { ...headers, "MCP-Protocol-Version": retryVersion };
+          if (isModernMcpProtocolVersion(retryVersion)) {
+            requestHeaders = { ...headers, "MCP-Protocol-Version": retryVersion };
+          } else {
+            const scope = `${connection.id}:grant:${grant.id}:actor:${session.agentId}:${endpoint}`;
+            requestHeaders = await getMcpHttpSession({ scope, send: sendForNegotiation, headers, requestId: `${requestId}-version`, eraKey });
+            const sessionId = new Headers(requestHeaders).get("mcp-session-id");
+            if (sessionId) mcpSession = { scope, headers, sessionId };
+          }
           callRequestId = `${requestId}-version`;
           response = await dispatchRemote(endpoint, toolCallInit());
         }
