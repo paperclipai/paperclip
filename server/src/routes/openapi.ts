@@ -8008,6 +8008,15 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/companies/{companyId}/assigned-work-invariant",
+  tags: ["runs"],
+  summary: "Report open agent tasks without a live run, pending start or wait on a person (board only)",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/companies/{companyId}/live-runs",
   tags: ["runs"],
   summary: "List live runs for a company",
