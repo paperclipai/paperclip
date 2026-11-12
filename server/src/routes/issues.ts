@@ -7665,12 +7665,6 @@ export function issueRoutes(
     return runToInterrupt?.status === "running" ? runToInterrupt : null;
   }
 
-  /**
-   * The outgoing assignee's run that holds this task but has not started yet.
-   * Reassignment must release it too: otherwise the never-started run keeps the
-   * execution lock, the new assignee's wake waits behind it, and nothing runs
-   * until the queue finally reaches and withholds the stale run.
-   */
   async function resolveQueuedOutgoingAssigneeRun(issue: {
     companyId: string;
     assigneeAgentId: string | null;
@@ -15726,8 +15720,6 @@ export function issueRoutes(
               "Cancelled before issue reassignment",
               {
                 errorCode: "issue_reassigned",
-                // The new assignee's wake is the successor. Recovering the stopped
-                // run would re-queue the outgoing assignee and take the lock back.
                 suppressImmediateRecovery: true,
                 resultJson: { reassignmentStopConfirmed: true, issueMutationStopId },
                 eventMessage: "run cancelled before issue reassignment",

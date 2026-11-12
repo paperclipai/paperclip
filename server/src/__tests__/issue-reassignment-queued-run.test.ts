@@ -82,8 +82,6 @@ describeEmbeddedPostgres("reassigning a task whose previous assignee's run has n
     await db.insert(companyMemberships).values({
       companyId, principalType: "user", principalId: "board-owner", status: "active", membershipRole: "owner",
     });
-    // Both agents are busy elsewhere (the CEO in its chat), so no run here
-    // invokes a model and the task's assignment run stays queued.
     await db.insert(heartbeatRuns).values([ceoId, morganId].map(agentId => ({
       companyId, agentId, status: "running", startedAt: new Date(), contextSnapshot: { issueId: randomUUID() },
     })));
@@ -113,11 +111,9 @@ describeEmbeddedPostgres("reassigning a task whose previous assignee's run has n
       const morganWakes = await db.select().from(agentWakeupRequests).where(and(
         eq(agentWakeupRequests.companyId, f.companyId), eq(agentWakeupRequests.agentId, f.morganId)));
       expect(morganWakes).toHaveLength(1);
-      // Admitted for Morgan now, not parked behind the CEO's stale run.
       expect(morganWakes[0]!.status).not.toBe("deferred_issue_execution");
       expect(morganWakes[0]!.runId).toBeTruthy();
       const [morganRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, morganWakes[0]!.runId!));
-      // Admission is what this fix owns; the fixture has no runnable model.
       expect(morganRun).toMatchObject({ agentId: f.morganId });
       expect(morganRun!.status).not.toBe("cancelled");
       expect(morganRun!.contextSnapshot).toMatchObject({ issueId: f.issueId });
