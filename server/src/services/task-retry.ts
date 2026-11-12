@@ -520,7 +520,8 @@ async function continueRefusedTaskChatRetry(db: Db, wake: typeof agentWakeupRequ
     const [issue] = await tx.select().from(issues).where(and(eq(issues.id, issueId),
       eq(issues.companyId, wake.companyId))).for("update");
     if (!issue || issue.assigneeAgentId !== wake.agentId || ["done", "cancelled"].includes(issue.status)) return false;
-    const [latest] = await tx.select({ id: heartbeatRuns.id, finishedAt: heartbeatRuns.finishedAt }).from(heartbeatRuns).where(and(
+    const [latest] = await tx.select({ id: heartbeatRuns.id, finishedAt: heartbeatRuns.finishedAt, status: heartbeatRuns.status,
+      startedAt: heartbeatRuns.startedAt, errorCode: heartbeatRuns.errorCode, resultJson: heartbeatRuns.resultJson }).from(heartbeatRuns).where(and(
       eq(heartbeatRuns.companyId, wake.companyId), or(eq(heartbeatRuns.issueId, issueId), eq(heartbeatRuns.nativeIssueId, issueId),
         sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`)))
       .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(1);
@@ -535,12 +536,21 @@ async function continueRefusedTaskChatRetry(db: Db, wake: typeof agentWakeupRequ
         sql`${agentWakeupRequests.payload}#>'{taskRetry,initiatedBy}' is null`)).limit(1);
       if (!joined) return false;
     }
+    const heldBy = latest.status === "cancelled" && !latest.startedAt && latest.errorCode === "execution_reconciliation_required"
+      ? z.string().uuid().safeParse((latest.resultJson?.executionWait as Record<string, unknown> | undefined)?.recoveryActionId) : null;
+    const [blockingAction] = heldBy?.success ? await tx.select({ evidence: issueRecoveryActions.evidence })
+      .from(issueRecoveryActions).where(and(eq(issueRecoveryActions.companyId, wake.companyId),
+        eq(issueRecoveryActions.sourceIssueId, issueId), eq(issueRecoveryActions.id, heldBy.data))) : [];
+    const recoveredRunIds = [intent.sourceRunId, ...(typeof blockingAction?.evidence.runId === "string"
+      ? [blockingAction.evidence.runId] : [])];
     const recoveries = await tx.select({ evidence: issueRecoveryActions.evidence }).from(issueRecoveryActions).where(and(
       eq(issueRecoveryActions.companyId, wake.companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
-      sql`${issueRecoveryActions.evidence}->>'runId' = ${intent.sourceRunId}`));
-    if (!recoveries.some(({ evidence }) => readSystemRecovery(evidence)?.state === "complete" &&
-        readWorkspaceRecovery(evidence)?.runId === intent.sourceRunId &&
-        readWorkspaceRecovery(evidence)?.status === "recovered")) return false;
+      inArray(sql<string>`${issueRecoveryActions.evidence}->>'runId'`, recoveredRunIds)));
+    if (!recoveries.some(({ evidence }) => {
+      const workspace = readWorkspaceRecovery(evidence);
+      return readSystemRecovery(evidence)?.state === "complete" && workspace?.status === "recovered" &&
+        workspace.runId === evidence.runId && recoveredRunIds.includes(workspace.runId);
+    })) return false;
     if (!await taskRetryMutationAllowed(tx as unknown as Db, { companyId: wake.companyId, issueId,
       actorId: intent.actorId, actorSource: intent.actorSource })) return false;
     const [chatReceipt] = await tx.select({ status: agentWakeupRequests.status, runId: agentWakeupRequests.runId })

@@ -65892,7 +65892,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     },
   );
 
-  it.each(["person", "person_with_input_before_stop", "person_paused_after_accept", "restart_recovery", "restart_recovery_joined_by_person"] as const)("continues an accepted GitHub task Retry from recovered saved work when its chat replay is refused after the click: %s", async initiator => {
+  it.each(["person", "person_with_input_before_stop", "person_after_held_admission", "person_paused_after_accept", "restart_recovery", "restart_recovery_joined_by_person"] as const)("continues an accepted GitHub task Retry from recovered saved work when its chat replay is refused after the click: %s", async initiator => {
     const f = await currentGitHubTaskRetryFixture(initiator === "person_with_input_before_stop");
     try {
       const companyId = f.fixture.companyId, issueId = f.issue.id;
@@ -65938,6 +65938,18 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         executionWorkspaceId: workspaceId, phase: "workspace_recovery", status: "succeeded", finishedAt: new Date(),
         metadata: { recoveryActionId, leaseId, providerLeaseId, snapshotId, generation: 1, sha256: "c".repeat(64),
           storage: "remote_workspace", epoch: 2 } });
+      let sourceRunId = f.runId;
+      if (initiator === "person_after_held_admission") {
+        const [failed] = await readHeartbeatRunsById(f.runId);
+        const [held] = await db.insert(heartbeatRuns).values({ companyId, agentId: f.fixture.assignedAgentId,
+          status: "cancelled", errorCode: "execution_reconciliation_required", runtimeMode: "legacy", issueId,
+          wakeupRequestId: failed.wakeupRequestId, contextSnapshot: failed.contextSnapshot, finishedAt: new Date(),
+          createdAt: new Date(failed.createdAt.getTime() + 1_000),
+          resultJson: { stopReason: "execution_reconciliation_required", timeoutSource: "stale_queued_run_gate",
+            executionWait: { issueId, recoveryActionId } } }).returning();
+        await db.update(agentWakeupRequests).set({ runId: held.id }).where(eq(agentWakeupRequests.id, failed.wakeupRequestId!));
+        sourceRunId = held.id;
+      }
       const { getExecutionBlocker } = await import("../services/execution-blocker.js");
       const blocker = await getExecutionBlocker(db, companyId, issueId);
       const interruption = await taskInterruptionPresentation(db, f.issue);
@@ -65971,7 +65983,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       let request: Awaited<ReturnType<typeof requestTaskRetry>>;
       try {
         request = await requestTaskRetry({ db, companyId, issueId, actorId: "owner-user", actorSource: "cloud_tenant",
-          observedRunId: f.runId, idempotencyKey: randomUUID(), prepareChatRetry: f.service.prepareFailedChatRunRetry,
+          observedRunId: sourceRunId, idempotencyKey: randomUUID(), prepareChatRetry: f.service.prepareFailedChatRunRetry,
           ...(initiator.startsWith("person") ? {} : { initiatedBy: "restart_recovery" as const }) });
       } finally { await releaseIdentity(); }
       if (initiator === "restart_recovery_joined_by_person") {
@@ -66019,7 +66031,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect(admitted).toMatchObject({ status: "coalesced", runId: expect.any(String) });
       const [run] = await readHeartbeatRunsById(admitted.runId!);
       expect(run).toMatchObject({ status: "queued", contextSnapshot: { issueId, taskRetryRequestId: request.requestId } });
-      expect(await readFreshWorkspaceReadiness(db, run)).toMatchObject({ mode: "resume_preserved_workspace" });
+      if (sourceRunId === f.runId) expect(await readFreshWorkspaceReadiness(db, run)).toMatchObject({ mode: "resume_preserved_workspace" });
       expect((await readHeartbeatRunsByCompanyId(companyId))
         .filter(candidate => candidate.contextSnapshot?.taskRetryRequestId === request.requestId)).toHaveLength(1);
       const activity = await db.select().from(activityLog).where(and(eq(activityLog.entityId, issueId),
