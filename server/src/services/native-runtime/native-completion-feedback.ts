@@ -186,8 +186,6 @@ export async function nativeCompletionFeedback(
       signals.verification.some((entry) => entry.status === "failed") && "verification.failed",
       signals.actionableAttentionRequests.length > 0 && "attentionRequests.actionable",
     ].filter(Boolean).join(", ") : "";
-    // On a task whose configured stage requests the review, a done report that
-    // lists only that review as outstanding is finished work.
     if (result.completionClaim.objectiveSatisfied &&
         result.completionClaim.criteria.every(entry => entry.status === "satisfied") &&
         !signals.verification.some(entry => entry.status === "failed") &&
@@ -399,9 +397,7 @@ export async function nativeCompletionFeedback(
   const reviewStage = issue.executionState?.status !== "pending" && !isConversation(issue) &&
     completionReviewStageEntry(issue, run.agentId).kind === "starts";
   // Only a review of finished work belongs to the configured stage; a review
-  // needed before the work can continue keeps its own request path. A
-  // needs_review report on a satisfied objective lists the review it asks for
-  // as its blocking remaining work, so that work is the configured review.
+  // needed before the work can continue keeps its own request path.
   const workFinished = result.completionClaim.objectiveSatisfied &&
     result.completionClaim.criteria.every(entry => entry.status === "satisfied");
   if (reviewStage && workFinished && result.reportedWorkDisposition === "needs_review" &&

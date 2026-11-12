@@ -148,17 +148,13 @@ describe.skipIf(!support.supported)("native completion with a configured review 
 
   it("routes a finished needs_review report that lists only the review as blocking work to the configured stage", async () => {
     await finishVerifiedDone({ stage: "user", unprovenEvidence: true, beforeFinish: async (runId, result) => {
-      // The recorded report: the objective is satisfied and the only blocking
-      // remaining work is the independent review itself.
       const reviewOnly = { ...result.completionClaim,
         remainingWork: [{ description: "Independent human review of the prepared website.html deliverable.", blocksCompletion: true }] };
       const review = { kind: "review" as const, summary: "Independent human review of website.html by Riley.", ownerClass: "human" as const };
       await expect(nativeCompletionFeedback(db, runId, { ...result, reportedWorkDisposition: "needs_review",
         completionClaim: reviewOnly, attentionRequests: [review] })).rejects.toThrow("configured review stage with its own reviewer");
-      // Without a request it gets the stage guidance, not the generic named-reviewer error.
       await expect(nativeCompletionFeedback(db, runId, { ...result, reportedWorkDisposition: "needs_review", completionClaim: reviewOnly }))
         .rejects.toThrow("without listing that review as remaining work");
-      // A done report that still lists the review is steered to the stage, not back to needs_review.
       await expect(nativeCompletionFeedback(db, runId, { ...result, completionClaim: reviewOnly }))
         .rejects.toThrow("configured review stage with its own reviewer");
     } });
