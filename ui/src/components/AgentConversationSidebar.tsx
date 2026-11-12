@@ -1,8 +1,6 @@
 import { useId, useMemo, useRef, useState, type ReactNode } from "react";
-import { GripVertical, Plus, Search, Users, X } from "lucide-react";
-import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
-import { SortableContext, arrayMove, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
-import { CSS } from "@dnd-kit/utilities";
+import { Plus, Search, Users, X } from "lucide-react";
+import { SortablePinnedList, SortablePinnedRow } from "./PinnedNavigationList";
 import { Badge } from "./ui/badge";
 import type { Agent } from "@paperclipai/shared";
 import { AgentChatPicker } from "@/components/AgentChatPicker";
@@ -40,20 +38,6 @@ export interface AgentConversationSidebarProps {
 const NO_PINNED_AGENTS: readonly string[] = [];
 const contactRowClassName = "agent-pin-row agent-contact-pin-row group/agent-pin relative rounded-md";
 
-function ConversationRow({ agent, selected, hasUnread, reorderable, children }: { agent: Agent; selected: boolean; hasUnread: boolean; reorderable: boolean; children: ReactNode }) {
-  const sortable = useSortable({ id: agent.id, disabled: !reorderable, transition: null });
-  return <div ref={sortable.setNodeRef} style={{ transform: CSS.Transform.toString(sortable.transform) }}
-    className={cn(contactRowClassName, reorderable && "select-none", !sortable.isDragging && "motion-safe:transition-transform", sortable.isDragging && "z-10 opacity-80")}
-    data-selected={selected || undefined} data-has-unread={hasUnread || undefined} onDragStart={reorderable ? event => event.preventDefault() : undefined}>
-    {children}
-    {reorderable && <button ref={sortable.setActivatorNodeRef} type="button" {...sortable.attributes} {...sortable.listeners}
-      aria-label={`Reorder pinned ${agent.name}`} title={`Drag to reorder ${agent.name}`}
-      className="agent-chat-pin absolute right-2 top-1/2 flex size-8 -translate-y-1/2 touch-none cursor-grab items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover/agent-pin:opacity-100 group-focus-within/agent-pin:opacity-100 pointer-coarse:opacity-100 active:cursor-grabbing">
-      <GripVertical aria-hidden className="size-4" />
-    </button>}
-  </div>;
-}
-
 /** Searchable navigation for one conversation per agent. */
 export function AgentConversationSidebar({ agents, existingChatAgentIds, availableAgents = agents, activeId, previews = {}, unreadAgentIds = [], unreadMessageCounts, loading = false, error, onRetry, initialSearch = "", onSelect, onBrowse, onAddChat, historyLoading, historyError, onRetryHistory, onCreateAgent, renderAgentAction, pinnedAgentIds = NO_PINNED_AGENTS, onReorderPins }: AgentConversationSidebarProps) {
   const navigate = useNavigate();
@@ -72,15 +56,6 @@ export function AgentConversationSidebar({ agents, existingChatAgentIds, availab
   });
   const visible = [...pins, ...matching.filter(agent => !pinnedIds.has(agent.id))];
   const visiblePinnedIds = pins.map(agent => agent.id);
-  const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
-    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
-  );
-  function reorderPins({ active, over }: DragEndEvent) {
-    if (!over || active.id === over.id) return;
-    const from = visiblePinnedIds.indexOf(String(active.id)), to = visiblePinnedIds.indexOf(String(over.id));
-    if (from >= 0 && to >= 0) onReorderPins?.(arrayMove(visiblePinnedIds, from, to));
-  }
   function focusSearch() {
     setSearch("");
     searchRef.current?.focus();
@@ -109,8 +84,7 @@ export function AgentConversationSidebar({ agents, existingChatAgentIds, availab
           <div className="flex flex-1 flex-col gap-2"><div className="h-3 w-2/3 rounded-sm bg-muted" /><div className="h-2 w-full rounded-sm bg-muted" /></div>
         </div>)}
       </div> : visible.length ? <nav aria-label="Agent conversations" className="flex flex-col gap-1">
-        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={reorderPins}>
-        <SortableContext items={visiblePinnedIds} strategy={verticalListSortingStrategy}>
+        <SortablePinnedList keys={visiblePinnedIds} onReorder={onReorderPins}>
         {visible.map(agent => {
           const unreadCount = unreadMessageCounts?.get(agent.id) ?? 0;
           const hasUnread = unreadCount > 0 || unreadIds.has(agent.id);
@@ -128,10 +102,11 @@ export function AgentConversationSidebar({ agents, existingChatAgentIds, availab
           {unreadCount > 0 ? <Badge variant="ghost" aria-label={`${unreadCount} unread ${unreadCount === 1 ? "message" : "messages"} from ${agent.name}`} className="shrink-0 bg-primary font-mono tabular-nums text-primary-foreground">{unreadCount}</Badge>
             : unreadIds.has(agent.id) && <span role="img" aria-label={`Unread messages from ${agent.name}`} className="size-2 shrink-0 rounded-full bg-primary" />}
         </Link>{renderAgentAction?.(agent)}</>;
-          return <ConversationRow key={agent.id} agent={agent} selected={activeId === agent.id} hasUnread={hasUnread} reorderable={canReorder}>{content}</ConversationRow>;
+          return <SortablePinnedRow key={agent.id} id={agent.id} label={agent.name} disabled={!canReorder} className={contactRowClassName}
+            data-selected={activeId === agent.id || undefined} data-has-unread={hasUnread || undefined}
+            handleClassName="agent-chat-pin right-2 size-8 focus-visible:outline-none group-hover/agent-pin:opacity-100 group-focus-within/agent-pin:opacity-100" handleIconClassName="size-4">{content}</SortablePinnedRow>;
         })}
-        </SortableContext>
-        </DndContext>
+        </SortablePinnedList>
       </nav> : !agents.length && (historyLoading || historyError) ? null : <div className="flex flex-col items-start gap-2 px-2 py-6">
         <p className="text-sm font-medium">{agents.length ? "No agents found" : "No chats yet"}</p>
         <p className="text-xs leading-relaxed text-muted-foreground">{agents.length ? "Try another name or role." : "Choose an agent to start a conversation."}</p>
