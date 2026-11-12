@@ -92,7 +92,10 @@ const support = await getEmbeddedPostgresTestSupport();
       manifestJson: {
         agentLifecycle: true,
         capabilities: ["agents.lifecycle.manage", "environment.drivers.register"],
-        environmentDrivers: [{ driverKey: "tasks", requiresAgent: true, supportsTasks: true }],
+        environmentDrivers: [
+          { driverKey: "tasks", requiresAgent: true, supportsTasks: true },
+          { driverKey: "other", requiresAgent: true, supportsTasks: true },
+        ],
       } as never,
     });
   });
@@ -366,24 +369,27 @@ const support = await getEmbeddedPostgresTestSupport();
     });
 
     it("uses the same environment for lifecycle plugin selection and the provisioning request", async () => {
-      await boot();
+      await boot([defaultEntry, { ...remoteHostEntry, name: "Other Host", driverKey: "other" }]);
+      const other = await environmentService(db).findManagedPluginEnvironment({ pluginKey: PLUGIN_KEY, driverKey: "other" });
+      expect(other).toBeDefined();
       const sandboxId = await sandboxRow();
       const companyId = await company();
       const invoke = vi.fn(async (_pluginId: string, _method: string, request: { operationId: string; version: number }) =>
         ({ operationId: request.operationId, version: request.version, status: "complete" }));
       const driver = createLifecycleDriver(db, { call: invoke } as never);
       const store = createLifecycleStore(db, createAgentLifecycleEffects());
-      for (const environmentId of [null, sandboxId]) {
+      for (const environmentId of [null, other!.id, sandboxId]) {
         const id = await agent(companyId, environmentId, { lifecycleState: "preparing" });
         await db.update(agents).set({
           lifecycleOperation: { id: randomUUID(), hostComplete: false, completedPluginIds: [], attempts: 0 },
         }).where(eq(agents.id, id));
         const snapshot = (await store.get(id))!;
-        expect(await driver.requiredPluginIds(snapshot)).toEqual(environmentId ? [] : [pluginId]);
+        expect(await driver.requiredPluginIds(snapshot)).toEqual(environmentId === sandboxId ? [] : [pluginId]);
         await expect(driver.runPlugin(snapshot, pluginId)).resolves.toBe("complete");
       }
       expect(invoke.mock.calls[0]?.[2]).toMatchObject({ phase: "preparing", environmentDriverKey: "tasks" });
-      expect(invoke.mock.calls[1]?.[2]).not.toHaveProperty("environmentDriverKey");
+      expect(invoke.mock.calls[1]?.[2]).toMatchObject({ phase: "preparing", environmentDriverKey: "other" });
+      expect(invoke.mock.calls[2]?.[2]).not.toHaveProperty("environmentDriverKey");
     });
   });
 });

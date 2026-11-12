@@ -95,7 +95,10 @@ export const MANAGED_ENVIRONMENT_DRIVERS = ["sandbox", "plugin"] as const;
  *   including `instanceDefault`.
  */
 export const MANAGED_CONFIG_CAPABILITIES_SCHEMA_VERSION = 1;
-export const MANAGED_CONFIG_CAPABILITIES = ["pluginEnvironments"] as const;
+export const MANAGED_CONFIG_CAPABILITIES = [
+  "pluginEnvironments",
+  "pluginEnvironmentRunnerLifecycleMode",
+] as const;
 export type ManagedConfigCapability = (typeof MANAGED_CONFIG_CAPABILITIES)[number];
 
 function supportsCapability(capability: ManagedConfigCapability): boolean {
