@@ -9013,7 +9013,7 @@ function runnerIngressConnectionFailure(error: unknown, depth = 0): boolean {
   if (!error || typeof error !== "object" || depth > 5) return false;
   const value = error as Record<string, unknown>;
   if (typeof value.message === "string"
-    && /^runner_ingress_(?:auth_failed: Runner ingress did not complete PRP authentication before the deadline\.|unavailable: Runner ingress connection failed\.)$/.test(value.message)) return true;
+    && /^runner_ingress_(?:auth_failed|unavailable): (?:Runner ingress did not complete PRP authentication before the deadline|Runner ingress connection failed)\.$/.test(value.message)) return true;
   return runnerIngressConnectionFailure(value.cause, depth + 1);
 }
 
@@ -9150,11 +9150,9 @@ export async function nativeProviderRecoveryEvidence(input: {
     "provider_session_open_timeout",
     "local_runtime_api_listener_unavailable",
   ]).has(input.sourceFailureCode) || (input.sourceFailureCode === "runner_ingress_startup_failed"
-    && !checkpointExists && !providerEventsExist && !!input.bootstrap && !!run
-    && input.bootstrap.binding.runId === input.runId && run.companyId === input.bootstrap.binding.companyId
-    && run.nativeIssueId === input.bootstrap.binding.issueId && run.nativeSessionId === input.bootstrap.identity.normalizedSessionId
-    && run.runnerInstanceId === input.bootstrap.identity.runnerInstanceId
-    && await nativeRunnerNeverAuthenticated(input.db, input.bootstrap.binding, input.bootstrap.identity));
+    && !checkpointExists && !providerEventsExist && !!run?.nativeIssueId && !!run.nativeSessionId && !!run.runnerInstanceId
+    && await nativeRunnerNeverAuthenticated(input.db, { companyId: run.companyId, issueId: run.nativeIssueId, runId: run.id },
+      { runId: run.id, normalizedSessionId: run.nativeSessionId, runnerInstanceId: run.runnerInstanceId }));
   // A closed runtime API listener means this server stopped serving (a
   // graceful drain) before the attempt could reach its remote runner. A
   // follow-up may still carry its settled predecessor's provider session,

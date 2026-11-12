@@ -262,7 +262,8 @@ export async function loadNativeUnclaimedBootstrapCheckpoint(
 }
 
 export async function nativeRunnerNeverAuthenticated(
-  db: Pick<Db, "select">, binding: Binding, identity: DurableRecoveryIdentity,
+  db: Pick<Db, "select">, binding: Binding,
+  identity: Pick<DurableRecoveryIdentity, "runId" | "normalizedSessionId" | "runnerInstanceId">,
 ): Promise<boolean> {
   try {
     if (binding.runId !== identity.runId) return false;

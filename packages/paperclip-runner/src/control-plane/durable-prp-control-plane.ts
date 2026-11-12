@@ -597,12 +597,14 @@ export function inspectUnclaimedBootstrapCheckpoint(
   } catch { return null; }
 }
 
-function isUnauthenticatedBootstrapState(state: StoredCoreState, expected: DurableRecoveryIdentity): boolean {
+function isUnauthenticatedBootstrapState(state: StoredCoreState, expected: Partial<DurableRecoveryIdentity>): boolean {
   const history = state.bootstrapHistory;
+  const matches = (candidate: DurableRecoveryIdentity | undefined) => candidate !== undefined
+    && (Object.keys(expected) as Array<keyof DurableRecoveryIdentity>).every(key => candidate[key] === expected[key]);
   return !(state.schema !== coreStateSchema || state.checkpointEventPolicy !== "control-v1"
-      || canonicalJson(state.identity) !== canonicalJson(expected)
+      || !expected.runId || !matches(state.identity)
       || history?.schema !== "paperclip.runner.bootstrap-history.v1"
-      || canonicalJson(history.originIdentity) !== canonicalJson(expected)
+      || canonicalJson(history.originIdentity) !== canonicalJson(state.identity)
       || history.adopted !== false
       || state.warmTransition || state.completedWarmTransition || state.stagedRunAttachment
       || state.connectionCount !== 0 || state.ackedSourceSeq !== 0 || state.committedEvents.length !== 0
@@ -615,7 +617,7 @@ function isUnauthenticatedBootstrapState(state: StoredCoreState, expected: Durab
 }
 
 export function inspectUnauthenticatedBootstrapCheckpoint(
-  records: ReadonlyMap<string, string>, expected: DurableRecoveryIdentity,
+  records: ReadonlyMap<string, string>, expected: Partial<DurableRecoveryIdentity>,
 ): boolean {
   try {
     if ([...records.values()].reduce((bytes, value) => bytes + Buffer.byteLength(value), 0) > 8 * 1024 * 1024) return false;

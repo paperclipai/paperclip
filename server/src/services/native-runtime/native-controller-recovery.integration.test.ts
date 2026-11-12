@@ -285,9 +285,14 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
         providerEventsExist: false, checkpointExists: false });
       expect(nativeSessionFailureSourceCode(new RunnerIngressConnectionError("runner_connection_lease_expired",
         "The runner's connection lease expired before it was renewed."))).toBe("native_session_interrupted");
-      expect((await nativeProviderRecoveryEvidence({ db, runId, executionTargetKind: "remote",
-        sourceFailureCode: "runner_ingress_startup_failed",
-        bootstrap: { ...bootstrap, identity: { ...identity, turnId: "foreign-turn" } } })).recoveryMode).toBe("ambiguous_state");
+      expect(nativeSessionFailureSourceCode(new RunnerIngressConnectionError("runner_ingress_auth_failed",
+        "Runner ingress connection failed."))).toBe("runner_ingress_startup_failed");
+      expect(await nativeProviderRecoveryEvidence({ db, runId, metadataOnly: true,
+        sourceFailureCode: "runner_ingress_startup_failed" })).toMatchObject({ recoveryMode: "bootstrap_retry",
+        providerSessionEstablished: false, providerEventsExist: false, checkpointExists: false });
+      await db.update(heartbeatRuns).set({ runnerInstanceId: randomUUID() }).where(eq(heartbeatRuns.id, runId));
+      expect((await evidence()).recoveryMode).toBe("ambiguous_state");
+      await db.update(heartbeatRuns).set({ runnerInstanceId }).where(eq(heartbeatRuns.id, runId));
       await db.insert(heartbeatRunEvents).values({ companyId, runId, agentId, seq: 1, stream: "system", level: "info",
         eventType: "session.resumed" });
       expect((await evidence()).recoveryMode).toBe("ambiguous_state");
