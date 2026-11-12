@@ -811,7 +811,10 @@ const server = createServer(async (request, response) => {
         const shortAnswerBeforeFinishThenReference = String(parsedPrompt.message ?? "").includes("short-answer-before-finish-then-reference");
         const shortStatusBeforeFinishThenShortAnswer = String(parsedPrompt.message ?? "").includes("short-status-before-finish-then-short-answer");
         const shortAnswerRepeatedAfterFinish = String(parsedPrompt.message ?? "").includes("short-answer-repeated-after-finish");
-        const answerBeforeFinishText = shortAnswerBeforeFinishThenReference || shortAnswerRepeatedAfterFinish
+        const longAnswerBeforeFinishThenDone = String(parsedPrompt.message ?? "").includes("long-answer-before-finish-then-done");
+        const answerBeforeFinishText = longAnswerBeforeFinishThenDone
+          ? "Morgan's run on [COM-1](/COM/issues/COM-1) finished: the landing page is saved as `index.html` on the task, with the hero, features and signup sections from the brief."
+          : shortAnswerBeforeFinishThenReference || shortAnswerRepeatedAfterFinish
           ? "The result is 42."
           : shortStatusBeforeFinishThenShortAnswer
           ? "STATUS: Status card summary written successfully (revision 2)."
@@ -822,7 +825,9 @@ const server = createServer(async (request, response) => {
           : answerBeforeFinishThenRestatement
           ? "I can't set this from chat — changing an agent's monthly budget is a board-only action (agent credentials get 403). There are also two matching agents, so pick the intended one in the web app and set its monthly limit to $50 on the budget tab: [Morgan budgets](/COM/agents/agent-morgan/budgets) or [Morgan Research budgets](/COM/agents/agent-morgan-research/budgets). Tell me which Morgan you meant and I'll track the right one."
           : "Two inbox items need you: [COM-2](/COM/issues/COM-2) is blocked and [COM-1](/COM/issues/COM-1) is waiting for review.";
-        const answerAfterFinishText = shortAnswerBeforeFinishThenReference
+        const answerAfterFinishText = longAnswerBeforeFinishThenDone
+          ? "Done."
+          : shortAnswerBeforeFinishThenReference
           ? "Answered above."
           : shortAnswerRepeatedAfterFinish
           ? "The result is 42."
@@ -1036,7 +1041,7 @@ const server = createServer(async (request, response) => {
               },
             },
           });
-        } else if (answerBeforeFinishThenReference || answerBeforeFinishThenRestatement || answerBeforeFinishThenRewrite || statusBeforeFinishThenAnswer || shortStatusBeforeFinishThenShortAnswer || shortAnswerRepeatedAfterFinish) {
+        } else if (answerBeforeFinishThenReference || answerBeforeFinishThenRestatement || answerBeforeFinishThenRewrite || statusBeforeFinishThenAnswer || shortStatusBeforeFinishThenShortAnswer || shortAnswerRepeatedAfterFinish || longAnswerBeforeFinishThenDone) {
           emit({
             type: "message.part.updated",
             id: "event-answer-before-finish",

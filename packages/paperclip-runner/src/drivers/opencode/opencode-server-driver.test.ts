@@ -3088,6 +3088,34 @@ describe("OpenCodeServerDriver", () => {
     await session.close({ reason: "test" });
   });
 
+  it("keeps a full answer written before the completion call when the later message is only \"Done.\"", async () => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-driver-"));
+    const workspace = await mkdtemp(join(tmpdir(), "paperclip-opencode-workspace-"));
+    roots.push(root, workspace);
+    const driver = new OpenCodeServerDriver({
+      model: "openrouter/deepseek/deepseek-v4-flash-0731",
+      runtimeDirectory: root,
+      command: fixture,
+      environment: { PATH: process.env.PATH, OPENROUTER_API_KEY: "fixture-key" },
+    });
+    const session = await driver.openSession({
+      runId: "run-long-answer-then-done",
+      normalizedSessionId: "long-answer-then-done",
+      workingDirectory: workspace,
+    });
+    await session.startTurn({ message: { role: "user", text: "long-answer-before-finish-then-done" } });
+    const events = await collectTurnEvents(session.events());
+    const finalMessages = events.filter(
+      (event) => event.eventType === "item.completed" && event.payload.kind === "agentMessage" && event.payload.channel === "final",
+    );
+    expect(finalMessages).toHaveLength(1);
+    expect(finalMessages[0]?.payload.text).toBe(
+      "Morgan's run on [COM-1](/COM/issues/COM-1) finished: the landing page is saved as `index.html` on the task, with the hero, features and signup sections from the brief.\n\nDone.",
+    );
+    await session.close({ reason: "test" });
+  });
+
   it.each([
     ["short-status-before-finish-then-short-answer", "Updated the Launch blockers status card."],
     ["short-answer-repeated-after-finish", "The result is 42."],
