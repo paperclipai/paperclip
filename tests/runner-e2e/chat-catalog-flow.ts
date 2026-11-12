@@ -25,8 +25,9 @@ export async function runChatCatalogFlow(context: ChatCatalogContext) {
   // Cases grade provider work. A queued run retired by reassignment before it
   // started, whose task's new assignee ran, is lifecycle: cases do not see it,
   // while the conversation evidence and the run policy keep the raw ledger.
-  const rawRuns = context.allRuns.bind(context);
-  context.allRuns = async () => chatCatalogProviderRuns(await rawRuns(), context.issue());
+  const readRuns = context.allRuns;
+  const rawRuns = () => readRuns.call(context);
+  if (typeof readRuns === "function") context.allRuns = async () => chatCatalogProviderRuns(await rawRuns(), context.issue());
   const descriptor = findChatCatalogCase(scenario.id);
   if (!descriptor) throw new Error(`No executable chat scenario: ${scenario.id}`);
   const fingerprint = chatCatalogCaseFingerprint(descriptor, normalizedChatCatalogExecution(input.execution));
