@@ -26,7 +26,9 @@ import { idleWorkSnapshot } from "../services/task-admission.js";
 import { CONTROL_PLANE_CONFORMANCE_RESULT, CONTROL_PLANE_CONFORMANCE_TERMINAL } from "../vendor/paperclip-runner/testing.js";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
-vi.mock("../services/agent-task-run-telemetry.js", () => ({ emitAgentTaskRun: vi.fn(async () => undefined) }));
+vi.mock("../services/agent-task-run-telemetry.js", () => ({
+  emitAgentTaskRun: vi.fn(async () => undefined), emitAgentTaskCompleted: vi.fn(async () => undefined),
+}));
 vi.mock("../services/run-failure-report.js", async importOriginal => ({
   ...await importOriginal<typeof import("../services/run-failure-report.js")>(), reportRunFailure: vi.fn(async () => undefined),
 }));

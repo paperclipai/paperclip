@@ -33,6 +33,17 @@ vi.mock("@paperclipai/shared/telemetry", async () => {
   return { ...actual, trackAgentTaskCompleted: mockTrackAgentTaskCompleted };
 });
 
+const mockEmitAgentTaskCompleted = vi.hoisted(() => vi.fn());
+
+vi.mock("../agent-task-run-telemetry.js", async () => {
+  const actual = await vi.importActual<typeof import("../agent-task-run-telemetry.js")>(
+    "../agent-task-run-telemetry.js",
+  );
+  mockEmitAgentTaskCompleted.mockImplementation(actual.emitAgentTaskCompleted);
+  return { ...actual, emitAgentTaskCompleted: mockEmitAgentTaskCompleted };
+});
+
+import { emitAgentTaskCompleted } from "../agent-task-run-telemetry.js";
 import { commitNativeStatusDecision } from "./status-decision-committer.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -72,6 +83,10 @@ describeEmbeddedPostgres("native task completion telemetry", () => {
   afterEach(() => {
     vi.clearAllMocks();
   });
+
+  async function waitForTaskCompletedSend(times: number) {
+    await vi.waitFor(() => expect(mockTrackAgentTaskCompleted).toHaveBeenCalledTimes(times));
+  }
 
   afterAll(async () => {
     await tempDb?.cleanup();
@@ -114,7 +129,7 @@ describeEmbeddedPostgres("native task completion telemetry", () => {
 
     const committed = await commitDone(fixture);
     expect(committed.issue.status).toBe("done");
-    expect(mockTrackAgentTaskCompleted).toHaveBeenCalledTimes(1);
+    await waitForTaskCompletedSend(1);
     expect(mockTrackAgentTaskCompleted).toHaveBeenCalledWith(mockTelemetryClient, {
       agentRole: "engineer",
       agentId,
@@ -125,14 +140,30 @@ describeEmbeddedPostgres("native task completion telemetry", () => {
 
     const replayed = await commitDone(fixture);
     expect(replayed.replayed).toBe(true);
+    expect(mockEmitAgentTaskCompleted).toHaveBeenCalledTimes(1);
     expect(mockTrackAgentTaskCompleted).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns the committed decision while the task-completed send is still pending", async () => {
+    const fixture = await seedArbitratedRun();
+    vi.mocked(emitAgentTaskCompleted).mockImplementationOnce(() => new Promise<void>(() => undefined));
+
+    const committed = await commitDone(fixture);
+    expect(committed.issue.status).toBe("done");
+    expect(mockEmitAgentTaskCompleted).toHaveBeenCalledWith(expect.anything(), {
+      agentId,
+      issueId: fixture.issueId,
+    });
   });
 
   it("does not send agent.task_completed again for a task the issue route already closed", async () => {
     const fixture = await seedArbitratedRun("done");
 
-    await commitDone(fixture).catch(() => undefined);
+    const committed = await commitDone(fixture);
+    expect(committed.replayed).toBe(false);
+    expect(committed.issue.status).toBe("done");
     expect((await db.select().from(issues).where(eq(issues.id, fixture.issueId)))[0]?.status).toBe("done");
+    expect(mockEmitAgentTaskCompleted).not.toHaveBeenCalled();
     expect(mockTrackAgentTaskCompleted).not.toHaveBeenCalled();
   });
 });
