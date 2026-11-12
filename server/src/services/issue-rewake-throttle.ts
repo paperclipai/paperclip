@@ -103,7 +103,10 @@ export interface IssueRewakeCandidateInput {
   requestedByActorType?: "user" | "agent" | "system" | null;
   forceFreshSession: boolean;
   hasExplicitResume: boolean;
+  declaredContinuationKind?: string | null;
 }
+
+export const NATIVE_STATUS_COMMITTER_ACTOR_ID = "native-status-committer";
 
 /**
  * Whether a wake is even a candidate for throttling. Wakes that carry new
@@ -116,6 +119,7 @@ export function isThrottleCandidateIssueRewake(input: IssueRewakeCandidateInput)
   if (input.hasExplicitResume && input.requestedByActorType !== "agent") return false;
   if (input.wakeCommentId) return input.requestedByActorType === "agent";
   if (input.reason === null) return true;
+  if (input.reason === "issue_status_changed" && input.declaredContinuationKind) return true;
   return THROTTLED_ISSUE_REWAKE_REASONS.has(input.reason);
 }
 

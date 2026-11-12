@@ -5,6 +5,16 @@ instance-wide `idleSleepSafety` report for instance administrators and signed
 Cloud control callers. Ordinary task drains keep their existing behavior.
 Company members and agents cannot read this report.
 
+Cloud callers carrying full idle catalogs use `POST /api/instance/task-drain/status`
+with the same read query and `{ "idleCapabilities": ... }` JSON body. A short
+`task-drain:read-body` control JWT binds the exact raw-body SHA256. The existing
+10 MiB JSON limit, fatal UTF8 decoding, strict catalog parsing, stack/action/expiry
+checks and exact byte digest all apply before consuming the single-use request ID
+or installing any capability. Embedded catalogs and body digests cannot be mixed.
+Unsigned bodies and browser authority alone cannot authorize this Cloud-only read.
+GET remains compatible; POST drain start and DELETE stop are unchanged.
+
+
 Instance administrators and signed Cloud control callers may add
 `idleSleepDiagnostics=1` to an owned safety request for fixed-key blocker
 diagnostics. This explicit one-shot read evaluates all current predicates in
@@ -48,7 +58,7 @@ and `Retry-After: 1`. Health checks and authenticated task-drain control remain
 available. Ordinary deploy drains do not enable this HTTP gate. The host must
 handle retry/wake at its ingress before enabling automatic sleep.
 Health and control mutations remain tracked through completion, including
-signed bootstrap writes. Only the task-drain read skips request tracking.
+signed bootstrap writes. Only the exact GET task-drain read and POST task-drain/status body read skip request tracking.
 Its authentication finishes under a separate work token before entering the
 report, so it counts concurrent writes without blocking on its own scan.
 

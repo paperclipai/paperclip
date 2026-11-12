@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, agentWakeupRequests, chatActions, chatEndpoints, companies, createDb, applyPendingMigrations, heartbeatRuns, issueRecoveryActions,
+import { agents, agentWakeupRequests, chatActions, chatEndpoints, companies, createDb, applyPendingMigrations, environmentLeases, heartbeatRuns, issueRecoveryActions,
   issueRelations, issues,
   toolApplications, toolConnections,
   nativeRunFinalizations, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
@@ -188,6 +188,53 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
     expect((await taskInterruptionPresentation(db, task))?.retryWait?.reason).toBe("budget.blocked");
   });
 
+  // Shape saved by the previous release for a remote native run: the provider
+  // turn completed (checkpoint terminal), a same-run recovery was then refused by
+  // the cleanup gate. No migration rewrites it; the projection reads it as is.
+  it("reads a quarantine saved after a completed turn as settled work, not a failed attempt", async () => {
+    const companyId = randomUUID(), agentId = randomUUID(), runId = randomUUID(), otherRunId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Completed turn", issuePrefix: `K${companyId.slice(0, 7)}` });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Codie", adapterType: "paperclip_runner" });
+    const [task] = await db.insert(issues).values({ companyId, title: "Set up Storie", identifier: "CMP-7",
+      status: "blocked", assigneeAgentId: agentId }).returning();
+    const staged = (id: string, turnTerminalState: string) => ({ id, companyId, agentId, nativeIssueId: task.id, scopeKind: "issue",
+      status: "failed", runtimeMode: "native", errorCode: "native_session_cleanup_quarantined",
+      error: "native_session_cleanup_quarantined: prior session cleanup requires operator recovery; verify its retained process ownership and checkpoint before a controlled restart. Clearing a task session does not resolve this quarantine.",
+      finishedAt: new Date(Date.now() - 60_000),
+      resultJson: { apiToolReceipts: { receipt: { state: "completed" } }, semanticToolReceipts: { doc: { state: "completed" } } },
+      runnerProfileJson: { mode: "native", backend: "codex_app_server", sessionCheckpoint: {
+        cursor: "818", activeTurnId: null, semanticResult: null, driverKind: "codex_app_server", backendKind: "runner",
+        identity: { runId: id, agentId, issueId: task.id, companyId, sessionId: randomUUID() },
+        terminal: { schema: "paperclip.prp.terminal.v1", runTerminalState: "succeeded", turnTerminalState,
+          reportedWorkDisposition: "yielded" },
+        terminalTurns: [{ turnId: randomUUID(), fingerprint: "{}" }],
+      } } }) as typeof heartbeatRuns.$inferInsert;
+    await db.insert(heartbeatRuns).values(staged(runId, "completed"));
+    await db.insert(nativeRunFinalizations).values({ companyId, issueId: task.id, runId, phase: "terminal_failure",
+      attempt: 2, failureCode: "native_session_cleanup_quarantined" });
+    // Nothing settles a gate without an owner (s9107 t04): Retry is offered.
+    expect(await taskInterruptionPresentation(db, task)).toMatchObject({ state: "failed", canRetry: true });
+    // An unreleased remote environment is that owner: its termination receipt retires the gate.
+    const leaseId = randomUUID();
+    await db.insert(environmentLeases).values({ id: leaseId, companyId, heartbeatRunId: runId, provider: "daytona",
+      providerLeaseId: "sandbox" });
+    expect(await taskInterruptionPresentation(db, task)).toMatchObject({ state: "failed", canRetry: false,
+      retryWait: { reason: "cleanup_quarantined" } });
+    await db.update(environmentLeases).set({ status: "released", releasedAt: new Date() }).where(eq(environmentLeases.id, leaseId));
+    expect(await taskInterruptionPresentation(db, task)).toMatchObject({ state: "failed", canRetry: true });
+    // The task waits on an active child: it shows that wait, not a failed attempt.
+    const [child] = await db.insert(issues).values({ companyId, title: "Verify review", identifier: "CMP-8",
+      status: "in_progress", assigneeAgentId: agentId }).returning();
+    await db.insert(issueRelations).values({ companyId, issueId: child.id, relatedIssueId: task.id, type: "blocks" });
+    expect(await taskInterruptionPresentation(db, task)).toMatchObject({ state: "resolved", canRetry: false });
+    // A quarantine whose turn did not complete is still unfinished; with no
+    // owner settling its gate, Retry is the way forward.
+    await db.update(heartbeatRuns).set({ createdAt: new Date(Date.now() - 120_000) }).where(eq(heartbeatRuns.id, runId));
+    await db.insert(heartbeatRuns).values(staged(otherRunId, "interrupted"));
+    expect(await taskInterruptionPresentation(db, task)).toMatchObject({ state: "failed", canRetry: true,
+      observedRunId: otherRunId });
+  });
+
   it("shows a queued-message Interrupt as handing off, not as a failed attempt", async () => {
     const companyId = randomUUID(), agentId = randomUUID(), runId = randomUUID(), userId = "board-user";
     await db.insert(companies).values({ id: companyId, name: "Interrupted task", issuePrefix: `Q${companyId.slice(0, 7)}` });
@@ -351,6 +398,71 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
         expect(JSON.stringify(presentation)).not.toContain(secret);
       }
     } finally { vi.unstubAllEnvs(); }
+  });
+
+  it("names a failed setup command on task detail and list reads, redacted with the run's registry (CF1)", async () => {
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "a".repeat(64));
+    try {
+      const f = await seedInterruptionFixture(db, { selected: 1, history: 1, unrelated: 0, payloadBytes: 0 });
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId));
+      const secret = `private-setup-value-${randomUUID()}`;
+      const command = "bash ./scripts/provision-worktree.sh";
+      const output = `bash: ./scripts/provision-worktree.sh: No such file or directory (${secret})`;
+      await db.update(heartbeatRuns).set({ status: "failed", errorCode: "setup_failed",
+        error: `Execution workspace provision command "${command}" failed: ${output}`,
+        resultJson: { setupCommandFailure: { step: "workspace_provision", command, exitCode: 127, output } } }).where(eq(heartbeatRuns.id, run!.id));
+      await createRunSecretRedactionRegistry(db).register(f.companyId, run!.id, secret);
+      const read = async () => [(await taskInterruptionPresentations(db, f.companyId, f.input)).get(f.input[0]!.id),
+        await taskInterruptionPresentation(db, f.input[0]!)];
+      for (const presentation of await read()) {
+        expect(presentation).toMatchObject({ state: "failed", canRetry: true, setupFailure: { step: "workspace_provision", command, exitCode: 127 } });
+        expect(presentation?.setupFailure?.message).toContain(`The project's workspace provision command "${command}" failed with exit code 127`);
+        expect(presentation?.setupFailure?.output).toContain("REDACTED");
+        expect(JSON.stringify(presentation)).not.toContain(secret);
+      }
+      // A run recorded before the structured cause existed is named from its fixed message shape. Its
+      // registered secret crosses the 300-character cut; it is removed whole before shortening.
+      const longOutput = `${secret}${"z".repeat(290)}`;
+      await db.update(heartbeatRuns).set({ resultJson: {}, error: `Execution workspace provision command "${command}" failed: ${longOutput}` })
+        .where(eq(heartbeatRuns.id, run!.id));
+      for (const presentation of await read()) {
+        expect(presentation?.setupFailure).toMatchObject({ step: "workspace_provision", command, exitCode: null });
+        expect(presentation?.setupFailure?.output?.length).toBeLessThanOrEqual(300);
+        const text = JSON.stringify(presentation);
+        for (let index = 0; index + 8 <= secret.length; index += 1) expect(text).not.toContain(secret.slice(index, index + 8));
+      }
+      // A long older log still shows its final error line.
+      await db.update(heartbeatRuns).set({ error: `Execution workspace provision command "${command}" failed: ${"filler\n".repeat(800)}No such file or directory` })
+        .where(eq(heartbeatRuns.id, run!.id));
+      for (const presentation of await read()) expect(presentation?.setupFailure?.output).toMatch(/No such file or directory$/);
+      // A transient retry shows its setup_failed predecessor's cause.
+      const predecessorId = randomUUID();
+      await db.insert(heartbeatRuns).values({ id: predecessorId, companyId: f.companyId, agentId: run!.agentId, status: "failed",
+        errorCode: "setup_failed", resultJson: { setupCommandFailure: { step: "workspace_provision", command, exitCode: 1, output } },
+        createdAt: new Date(run!.createdAt.getTime() - 60_000) });
+      await createRunSecretRedactionRegistry(db).register(f.companyId, predecessorId, secret);
+      await db.update(heartbeatRuns).set({ status: "scheduled_retry", retryOfRunId: predecessorId, errorCode: null, error: null, resultJson: {},
+        scheduledRetryAt: new Date(Date.now() + 30_000), scheduledRetryAttempt: 1 }).where(eq(heartbeatRuns.id, run!.id));
+      for (const presentation of await read()) {
+        expect(presentation?.setupFailure).toMatchObject({ command, exitCode: 1 });
+        expect(JSON.stringify(presentation)).not.toContain(secret);
+      }
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it("names the configured model a provider rejected on task detail and list reads (CF3 model_id)", async () => {
+    const f = await seedInterruptionFixture(db, { selected: 1, history: 1, unrelated: 0, payloadBytes: 0 });
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId));
+    await db.update(heartbeatRuns).set({ status: "failed", errorCode: "native_provider_model_rejected",
+      runnerProfileJson: { nativeExecutionInput: { provider: { kind: "codex", model: "chaos-missing-model-1234" } } } }).where(eq(heartbeatRuns.id, run!.id));
+    for (const presentation of [(await taskInterruptionPresentations(db, f.companyId, f.input)).get(f.input[0]!.id),
+      await taskInterruptionPresentation(db, f.input[0]!)]) {
+      expect(presentation).toMatchObject({ responsibility: "user", state: "waiting_for_user", userAction: "choose_model",
+        rejectedModel: "chaos-missing-model-1234" });
+    }
+    // Only a model rejection discloses the configured model.
+    await db.update(heartbeatRuns).set({ errorCode: "adapter_failed" }).where(eq(heartbeatRuns.id, run!.id));
+    expect(await taskInterruptionPresentation(db, f.input[0]!)).not.toHaveProperty("rejectedModel");
   });
 
   it.each(["decryption failure", "expanded message"])("keeps task reads available after provider display %s", async scenario => {

@@ -1,4 +1,5 @@
 import type { IssueCommentMetadata, IssueCommentPresentation } from "@paperclipai/shared";
+import { ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE } from "../environment-provider-unavailable-error.js";
 import {
   agentLinkRow,
   keyValueRow,
@@ -281,7 +282,8 @@ export function buildStrandedRecoveryEscalationNotice(input: {
       ? agentLinkRow("Recovery owner", input.recoveryOwner)
       : keyValueRow(
           "Recovery owner",
-          "Board decision required",
+          // A pre-dispatch provider outage needs no board decision, only Retry.
+          input.recoveryCause === ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE ? "Retry when ready" : "Board decision required",
         ),
     keyValueRow(
       "Next action",

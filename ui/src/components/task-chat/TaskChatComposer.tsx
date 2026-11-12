@@ -553,6 +553,8 @@ export function TaskChatComposer({
     const previousId = previousQueuedEditIdRef.current;
     const nextEdit = queuedEdit;
     const nextId = nextEdit?.commentId ?? null;
+    // A save error belongs to the edit that produced it.
+    if (previousId !== nextId) setActionError(null);
 
     if (nextEdit && previousId !== nextId) {
       if (!queuedEditBackupRef.current) {
@@ -1055,7 +1057,15 @@ export function TaskChatComposer({
     try {
       if (queuedEdit) {
         if (!onSaveQueuedEdit) return;
-        await onSaveQueuedEdit(queuedEdit.commentId, fullBody);
+        setActionError(null);
+        try {
+          await onSaveQueuedEdit(queuedEdit.commentId, fullBody);
+        } catch (error) {
+          // A rejected edit keeps its text below; say why it was not saved.
+          if (mountedTaskKey.current === draftKey && queuedEditRef.current?.commentId === queuedEdit.commentId)
+            setActionError(describeError(error, { action: "save this queued message" }).body);
+          throw error;
+        }
         onCancelQueuedEdit?.();
         return;
       }
@@ -1453,7 +1463,7 @@ export function TaskChatComposer({
             <p
               className="px-1 text-xs text-destructive"
               role="alert"
-              data-testid={creation ? "task-chat-create-error" : "task-chat-composer-error"}
+              data-testid={creation ? "task-chat-create-error" : queuedEdit ? "task-chat-queued-edit-error" : "task-chat-composer-error"}
             >
               {actionError}
             </p>

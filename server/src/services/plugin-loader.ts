@@ -54,6 +54,7 @@ import type { PluginLifecycleManager } from "./plugin-lifecycle.js";
 import { pluginDatabaseService } from "./plugin-database.js";
 import { resolveBundledCatalogRoot } from "./bundled-plugins.js";
 import { managedPluginWorkerEnvGrant } from "./managed-plugin-worker-env.js";
+import { createWorkScheduler } from "./work-scheduler.js";
 
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -318,6 +319,29 @@ export interface PluginLoaderOptions {
    * Registry support is not yet implemented; this field is reserved.
    */
   registryUrl?: string;
+
+  /** Delays between retries of an activation whose worker `initialize` timed out. */
+  activationTimeoutRetryDelaysMs?: readonly number[];
+
+  /** Shortest interval between on-demand re-activations of a plugin errored by activation timeouts. */
+  activationTimeoutOnDemandIntervalMs?: number;
+}
+
+export const PLUGIN_ACTIVATION_TIMEOUT_ERROR_PREFIX = "Activation timed out";
+const DEFAULT_ACTIVATION_TIMEOUT_RETRY_DELAYS_MS = [5_000, 15_000, 45_000, 120_000] as const;
+const DEFAULT_ACTIVATION_TIMEOUT_ON_DEMAND_INTERVAL_MS = 60_000;
+
+export function isPluginActivationTimeout(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 6 && current instanceof Error; depth++) {
+    if ((current as { code?: unknown }).code === PLUGIN_RPC_ERROR_CODES.TIMEOUT) return true;
+    current = current.cause;
+  }
+  return false;
+}
+
+export function isPluginActivationTimeoutError(plugin: { status: string; lastError: string | null }): boolean {
+  return plugin.status === "error" && plugin.lastError?.startsWith(PLUGIN_ACTIVATION_TIMEOUT_ERROR_PREFIX) === true;
 }
 
 // ---------------------------------------------------------------------------
@@ -445,6 +469,7 @@ export interface PluginLoadSingleOptions {
 
 interface PluginActivateOptions {
   markErrorOnFailure: boolean;
+  activationTimeoutRetry?: number;
 }
 
 /**
@@ -645,6 +670,16 @@ export interface PluginLoader {
    * @see PLUGIN_SPEC.md §8.5 — Uninstall Process
    */
   unloadSingle(pluginId: string, pluginKey: string): Promise<void>;
+
+  /**
+   * Re-activate a plugin that is in `error` only because its worker's
+   * `initialize` timed out, at most once per interval. Returns whether an
+   * activation is now in flight; the caller treats the plugin as starting.
+   */
+  requestActivationTimeoutRecovery(plugin: { id: string; status: string; lastError: string | null }): boolean;
+
+  /** Cancel pending activation-timeout retries and await the ones already running. */
+  stopActivationTimeoutRecovery(): Promise<void>;
 
   /**
    * Stop all managed plugin workers. Called during server shutdown.
@@ -1168,9 +1203,45 @@ export function pluginLoader(
     assertPackageActivation,
     resolvePackageRoot,
     prebuiltOnly = false,
+    activationTimeoutRetryDelaysMs = DEFAULT_ACTIVATION_TIMEOUT_RETRY_DELAYS_MS,
+    activationTimeoutOnDemandIntervalMs = DEFAULT_ACTIVATION_TIMEOUT_ON_DEMAND_INTERVAL_MS,
   } = options;
 
   const registry = pluginRegistryService(db);
+  const activationRetryScheduler = createWorkScheduler();
+  const activeActivationRecoveries = new Set<Promise<unknown>>();
+  const onDemandActivations = new Map<string, { at: number; inFlight: boolean }>();
+  let shuttingDown = false;
+
+  function trackActivationRecovery(work: () => Promise<unknown>, label: string, pluginId: string) {
+    const running = work().catch((err: unknown) => {
+      log.warn({ pluginId, err: err instanceof Error ? err.message : String(err) }, label);
+    });
+    activeActivationRecoveries.add(running);
+    void running.finally(() => activeActivationRecoveries.delete(running));
+  }
+
+  async function stopActivationTimeoutRecovery() {
+    shuttingDown = true;
+    activationRetryScheduler.stop();
+    while (activeActivationRecoveries.size > 0) await Promise.allSettled([...activeActivationRecoveries]);
+  }
+
+  async function activateForRecovery(plugin: PluginRecord, activationTimeoutRetry: number) {
+    const result = await activatePlugin(plugin, { markErrorOnFailure: true, activationTimeoutRetry });
+    if (!result.success) return;
+    const latest = (await registry.getById(plugin.id)) as PluginRecord | null;
+    if (latest?.status === "ready" && !shuttingDown) return;
+    log.info({ pluginId: plugin.id, pluginKey: plugin.pluginKey, status: latest?.status ?? null },
+      "plugin-loader: stopping a recovered plugin that an operator changed during its activation");
+    await teardownPluginRuntime(plugin.id, plugin.pluginKey);
+  }
+
+  async function discardFailedWorkerHandle(pluginId: string) {
+    const handle = runtimeServices?.workerManager.getWorker(pluginId);
+    if (!handle || (handle.status !== "crashed" && handle.status !== "stopped")) return;
+    await runtimeServices!.workerManager.stopWorker(pluginId);
+  }
   const manifestValidator = pluginManifestValidator();
   const capabilityValidator = pluginCapabilityValidator();
   const log = logger.child({ service: "plugin-loader" });
@@ -2143,7 +2214,31 @@ export function pluginLoader(
     // shutdownAll
     // -----------------------------------------------------------------------
 
+    requestActivationTimeoutRecovery(plugin) {
+      if (!runtimeServices || shuttingDown || !isPluginActivationTimeoutError(plugin)) return false;
+      const previous = onDemandActivations.get(plugin.id);
+      if (previous?.inFlight) return true;
+      if (previous && Date.now() - previous.at < activationTimeoutOnDemandIntervalMs) return false;
+      const attempt = { at: Date.now(), inFlight: true };
+      onDemandActivations.set(plugin.id, attempt);
+      trackActivationRecovery(async () => {
+        try {
+          const flipped = (await registry.updateStatusIf(plugin.id,
+            { status: "error", lastErrorPrefix: PLUGIN_ACTIVATION_TIMEOUT_ERROR_PREFIX }, { status: "ready" })) as PluginRecord | null;
+          if (!flipped || shuttingDown) return;
+          log.info({ pluginId: plugin.id, pluginKey: flipped.pluginKey },
+            "plugin-loader: re-activating a plugin errored by activation timeouts on demand");
+          await discardFailedWorkerHandle(plugin.id);
+          await activateForRecovery(flipped, activationTimeoutRetryDelaysMs.length);
+        } finally { attempt.inFlight = false; }
+      }, "plugin-loader: on-demand re-activation failed", plugin.id);
+      return true;
+    },
+
+    stopActivationTimeoutRecovery,
+
     async shutdownAll(): Promise<void> {
+      await stopActivationTimeoutRecovery();
       if (!runtimeServices) {
         throw new Error(
           "Cannot shutdownAll: no PluginRuntimeServices provided.",
@@ -2506,6 +2601,12 @@ export function pluginLoader(
         "plugin-loader: plugin activated successfully",
       );
 
+      if (activePlugin.lastError?.startsWith(PLUGIN_ACTIVATION_TIMEOUT_ERROR_PREFIX)) {
+        activePlugin = ((await registry.updateStatusIf(pluginId,
+          { status: "ready", lastErrorPrefix: PLUGIN_ACTIVATION_TIMEOUT_ERROR_PREFIX }, { status: "ready", lastError: null })) as PluginRecord | null)
+          ?? activePlugin;
+      }
+
       return { plugin: activePlugin, success: true, registered };
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
@@ -2515,13 +2616,39 @@ export function pluginLoader(
         "plugin-loader: failed to activate plugin",
       );
 
-      if (options.markErrorOnFailure) {
+      const timedOut = isPluginActivationTimeout(err);
+      const timeoutRetry = options.activationTimeoutRetry ?? 0;
+      if (options.markErrorOnFailure && timedOut && timeoutRetry < activationTimeoutRetryDelaysMs.length && !shuttingDown) {
+        const delayMs = activationTimeoutRetryDelaysMs[timeoutRetry]!;
+        try {
+          if (registered.worker) await teardownPluginRuntime(pluginId, pluginKey);
+          await discardFailedWorkerHandle(pluginId);
+          await registry.updateStatusIf(pluginId, { status: "ready" }, { status: "ready", lastError:
+            `${PLUGIN_ACTIVATION_TIMEOUT_ERROR_PREFIX}; retrying in ${Math.round(delayMs / 1000)}s `
+            + `(retry ${timeoutRetry + 1} of ${activationTimeoutRetryDelaysMs.length}): ${errorMessage}` });
+        } catch (retryErr) {
+          log.warn({ pluginId, pluginKey, err: retryErr instanceof Error ? retryErr.message : String(retryErr) },
+            "plugin-loader: could not record a timed-out activation before retrying it");
+        }
+        log.warn({ pluginId, pluginKey, delayMs, retry: timeoutRetry + 1 },
+          "plugin-loader: plugin activation timed out; retrying");
+        activationRetryScheduler.schedule(`plugin-activation:${pluginId}`, Date.now() + delayMs, () => {
+          trackActivationRecovery(async () => {
+            const current = (await registry.getById(pluginId)) as PluginRecord | null;
+            if (shuttingDown || !current || current.status !== "ready" || workerManager.isRunning(pluginId)) return;
+            await discardFailedWorkerHandle(pluginId);
+            await activateForRecovery(current, timeoutRetry + 1);
+          }, "plugin-loader: timed-out activation retry failed", pluginId);
+        });
+      } else if (options.markErrorOnFailure) {
         // Mark the plugin as errored in the database. The running process
         // leaves it inactive; the next boot's loadAll retries it once, and the
         // lifecycle enable() path can revive it sooner by hand.
         // markError also deactivates the plugin runtime in this process.
         try {
-          await lifecycleManager.markError(pluginId, `Activation failed: ${errorMessage}`);
+          await lifecycleManager.markError(pluginId, timedOut
+            ? `${PLUGIN_ACTIVATION_TIMEOUT_ERROR_PREFIX} after ${timeoutRetry} retries: ${errorMessage}`
+            : `Activation failed: ${errorMessage}`);
         } catch (markErr) {
           log.error(
             {

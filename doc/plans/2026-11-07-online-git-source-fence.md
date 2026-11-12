@@ -147,9 +147,12 @@ exact membership. The canonical maintenance request accepts the same bounded
 The journal shape is unchanged; older tools that enforce the
 eight-member bound refuse larger cohorts and must not regroup them.
 
-Completed parent captures retain scratch until atomic publication. A larger
-cohort can therefore retain up to four times the parent scratch of an
-eight-member cohort, even with the same worker limit. Select a larger cohort
+After a successful online cohort capture, members without archived repository
+intents release their parent archive, authenticated readback, fresh comparison
+archive and restored tree before the worker starts another member. The scratch
+root and nested-child verification areas remain until atomic publication, and
+the final fresh child checks still run. Archived repository intents retain their
+restored payload for the final publication proof. Select a larger cohort
 only after checking the actual parent capture footprint, its verification and
 restore scratch, and current free capacity on the target filesystem. The worker
-limit does not bound retained scratch. Keep the existing resource guards.
+limit does not bound retained nested-child scratch. Keep the existing resource guards.

@@ -1,6 +1,6 @@
 import { agentAvatarUrl } from "@/lib/agent-avatar-url";
 import { useState } from "react";
-import { resolveAgentAppearance, type AgentAppearance, type AgentAvatarSize, type CharacterState } from "@paperclipai/shared";
+import { resolveAgentAppearance, type AgentAppearance, type AgentAvatarSize, type AgentAvatarView, type CharacterState } from "@paperclipai/shared";
 import { cn } from "@/lib/utils";
 import { deriveInitials } from "./Identity";
 import { useAvatarInitials } from "./ui/avatar-initials";
@@ -17,19 +17,20 @@ export interface AgentAvatarProps {
   name?: string;
   label?: string;
   pose?: CharacterState;
+  view?: AgentAvatarView;
   muted?: boolean;
   className?: string;
 }
-export function AgentAvatar({ agent, appearance, size = 24, name, label, pose = "rest", muted = false, className }: AgentAvatarProps) {
+export function AgentAvatar({ agent, appearance, size = 24, name, label, pose = "rest", view = "front", muted = false, className }: AgentAvatarProps) {
   const identity = resolveAgentAppearance(appearance ?? agent?.appearance, agent?.id);
-  const src = agentAvatarUrl(identity, size, 1, pose, muted);
+  const src = agentAvatarUrl(identity, size, 1, pose, muted, "transparent", view);
   const [failedUrl, setFailedUrl] = useState<string | null>(null);
   const initials = useAvatarInitials(deriveInitials(name ?? agent?.name ?? "Agent"));
   return (
     <span data-slot="agent-avatar" className={cn("relative inline-flex shrink-0 items-center justify-center align-middle", avatarSizeClasses[size], className)}
       role={label ? "img" : undefined} aria-label={label} aria-hidden={label ? undefined : true}>
       {failedUrl === src ? <span className="text-xs text-muted-foreground">{initials}</span> :
-        <img src={src} srcSet={identity.customAvatarAssetId ? undefined : `${agentAvatarUrl(identity, size, 2, pose, muted)} 2x`} alt="" width={size} height={size}
+        <img src={src} srcSet={identity.customAvatarAssetId ? undefined : `${agentAvatarUrl(identity, size, 2, pose, muted, "transparent", view)} 2x`} alt="" width={size} height={size}
           decoding="async" loading="lazy" className="size-full object-contain" onError={() => setFailedUrl(src)} />}
     </span>
   );

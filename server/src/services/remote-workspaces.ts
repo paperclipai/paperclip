@@ -7,7 +7,9 @@ import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm, statfs } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { crashPoint } from "@paperclipai/shared/crash-points";
+import { sandboxDiskFullFaultTarget } from "./sandbox-disk-full-fault.js";
 import {
   companies, environmentLeases, executionWorkspaces, executionWorkspaceSnapshots, heartbeatRuns, issues, workspaceOperations, type Db,
 } from "@paperclipai/db";
@@ -34,7 +36,7 @@ import {
   type RemoteWorkspaceSavePhaseTiming,
 } from "./remote-workspace-transport.js";
 import {
-  beginWorkspaceSnapshot, getWorkspaceSnapshot, loadWorkspaceSnapshotArchive, newWorkspaceSnapshotStorageTiming, uploadWorkspaceSnapshot,
+  beginWorkspaceSnapshot, findUnchangedWorkspaceSnapshot, getWorkspaceSnapshot, loadWorkspaceSnapshotArchive, newWorkspaceSnapshotStorageTiming, uploadWorkspaceSnapshot,
   type WorkspaceSnapshotStorageTiming,
 } from "./remote-workspace-snapshot-storage.js";
 import { measureRunPhase } from "./execution-preparation-timing.js";
@@ -618,6 +620,12 @@ export async function prepareRemoteWorkspace(input: {
     return { workspace: savedWorkspace!, lease: savedLease! as EnvironmentLease, remoteRoot, reference: runReference };
   });
   target.remoteCwd = remoteRoot;
+  // Counted only for a preparation that published an unchanged baseline (a
+  // restore of a saved version), so the point exercises the saved-root handoff.
+  const publishedBaseline = readUnchangedBaseline(prepared.workspace.metadata);
+  if (publishedBaseline?.runId === input.runId && publishedBaseline.epoch === prepared.reference.epoch && !publishedBaseline.releasedAt) {
+    crashPoint("remote_workspace.prepare.after_publish_before_provision");
+  }
   if (restoredExport?.cleanupPending) await cleanupSavedExports({ db: input.db, companyId: input.workspace.companyId,
     workspaceId: input.workspace.id, location: readRemoteWorkspaceAuthority(prepared.workspace.metadata)!.location!, target,
     assertOwned: input.assertOwned ?? (async () => undefined) });
@@ -651,15 +659,20 @@ async function retireQuiescedSaves(tx: Transaction, workspace: Workspace, runId:
     || !authority.snapshotId || !sameExportLocation(authority.location, location)) return;
   const [final] = await tx.select({ id: executionWorkspaceSnapshots.id, generation: executionWorkspaceSnapshots.generation,
     operationId: workspaceOperations.id, metadata: workspaceOperations.metadata }).from(executionWorkspaceSnapshots)
-    .innerJoin(workspaceOperations, and(eq(workspaceOperations.id, executionWorkspaceSnapshots.sourceOperationId),
+    .innerJoin(workspaceOperations, and(or(eq(workspaceOperations.id, executionWorkspaceSnapshots.sourceOperationId),
+      sql`${workspaceOperations.metadata}->>'reusedSnapshotId' = ${executionWorkspaceSnapshots.id}::text`),
       eq(workspaceOperations.companyId, workspace.companyId), eq(workspaceOperations.executionWorkspaceId, workspace.id),
       eq(workspaceOperations.heartbeatRunId, runId), eq(workspaceOperations.phase, "remote_workspace_snapshot"),
       eq(workspaceOperations.status, "succeeded"), sql`${workspaceOperations.metadata}->>'boundary' = 'final'`,
       sql`${workspaceOperations.metadata}->>'epoch' = ${String(epoch)}`))
     .where(and(eq(executionWorkspaceSnapshots.companyId, workspace.companyId), eq(executionWorkspaceSnapshots.executionWorkspaceId, workspace.id),
-      eq(executionWorkspaceSnapshots.id, authority.snapshotId), eq(executionWorkspaceSnapshots.sourceRunId, runId),
-      eq(executionWorkspaceSnapshots.epoch, epoch), eq(executionWorkspaceSnapshots.status, "committed"))).limit(1);
+      eq(executionWorkspaceSnapshots.id, authority.snapshotId),
+      or(and(eq(executionWorkspaceSnapshots.sourceRunId, runId), eq(executionWorkspaceSnapshots.epoch, epoch)),
+        sql`${workspaceOperations.metadata}->>'reusedSnapshotId' = ${executionWorkspaceSnapshots.id}::text`),
+      eq(executionWorkspaceSnapshots.status, "committed"))).limit(1);
   if (!final || final.metadata?.snapshotId !== final.id || !sameExportLocation(final.metadata?.exportCleanup, location)) return;
+  const finalGeneration = final.metadata?.reusedSnapshotId === final.id ? Number(final.metadata.generation) : final.generation;
+  if (!Number.isSafeInteger(finalGeneration) || finalGeneration < final.generation) return;
   const candidates = await tx.select().from(workspaceOperations).where(and(
     eq(workspaceOperations.companyId, workspace.companyId), eq(workspaceOperations.executionWorkspaceId, workspace.id),
     eq(workspaceOperations.heartbeatRunId, runId), eq(workspaceOperations.phase, "remote_workspace_snapshot"),
@@ -671,7 +684,7 @@ async function retireQuiescedSaves(tx: Transaction, workspace: Workspace, runId:
       || !candidate.metadata?.lastFailure)) continue;
     const work = readSaveWork(candidate.metadata), generation = Number(candidate.metadata?.generation);
     if (!work || work.unknown || work.activeIds.length || !work.quiescedAt || candidate.metadata?.boundary === "final"
-      || !Number.isSafeInteger(generation) || generation >= final.generation
+      || !Number.isSafeInteger(generation) || generation >= finalGeneration
       || !sameExportLocation(candidate.metadata?.exportCleanup, location)) continue;
     const [snapshot] = await tx.select({ status: executionWorkspaceSnapshots.status, generation: executionWorkspaceSnapshots.generation,
       epoch: executionWorkspaceSnapshots.epoch, runId: executionWorkspaceSnapshots.sourceRunId }).from(executionWorkspaceSnapshots).where(and(
@@ -878,16 +891,42 @@ export async function saveRemoteWorkspace(input: {
       replayedCommittedSave = true;
       return { snapshotId: snapshot.id, generation: snapshot.generation, sha256: snapshot.sha256!, savedAt: snapshot.updatedAt.toISOString() };
     }
+    if (snapshot.status === "deleted" && snapshot.parentSnapshotId) {
+      const [completed] = await input.db.select().from(workspaceOperations).where(and(
+        eq(workspaceOperations.id, operation.id), eq(workspaceOperations.companyId, snapshot.companyId),
+        eq(workspaceOperations.executionWorkspaceId, snapshot.executionWorkspaceId),
+        eq(workspaceOperations.heartbeatRunId, input.runId), eq(workspaceOperations.phase, "remote_workspace_snapshot"),
+        eq(workspaceOperations.status, "succeeded"),
+        sql`${workspaceOperations.metadata}->>'boundary' = ${boundary}`,
+        sql`${workspaceOperations.metadata}->>'epoch' = ${String(expected.epoch)}`,
+        sql`${workspaceOperations.metadata}->>'reusedSnapshotId' = ${snapshot.parentSnapshotId}`));
+      if (completed?.finishedAt) {
+        const saved = await getWorkspaceSnapshot(input.db, { companyId: snapshot.companyId,
+          workspaceId: snapshot.executionWorkspaceId, snapshotId: snapshot.parentSnapshotId });
+        if (!saved || completed.metadata?.snapshotId !== saved.id || completed.metadata?.sha256 !== saved.sha256)
+          throw new Error("remote_workspace_snapshot_missing");
+        replayedCommittedSave = true;
+        return { snapshotId: saved.id, generation: saved.generation, sha256: saved.sha256,
+          savedAt: completed.finishedAt.toISOString(), unchanged: true as const };
+      }
+    }
     const existingUpload = snapshot.status === "uploaded" ? await getWorkspaceSnapshot(input.db, { companyId: input.workspace.companyId,
       workspaceId: input.workspace.id, snapshotId: snapshot.id }) : null;
     if (existingUpload) timing.reusedUpload = true;
-    captured = existingUpload ? null : await captureRemoteWorkspaceArchive({ target, remoteCwd: expected.location.remoteCwd,
+    captured = existingUpload ? null : await captureRemoteWorkspaceArchive({ remoteCwd: expected.location.remoteCwd,
+      // Test-only DF1 hook (sandbox-disk-full-fault.ts): the target itself unless a harness armed this save.
+      target: sandboxDiskFullFaultTarget(target, { boundary, issueId: operation.issueId, runId: input.runId }),
       operationId: operation.id, timing });
     await input.assertOwned();
     const uploadStarted = performance.now();
-    const saved = await uploadWorkspaceSnapshot({ db: input.db, storage: input.storage ?? getStorageService(), snapshotId: snapshot.id,
+    const storage = input.storage ?? getStorageService();
+    const storageTiming = timing.storage ??= newWorkspaceSnapshotStorageTiming();
+    const unchanged = captured && readSaveWork(operation.metadata)?.unknown === false
+      ? await findUnchangedWorkspaceSnapshot({ db: input.db, storage, snapshot, manifestDigest: captured.manifestDigest,
+        archiveSha256: captured.sha256, archiveBytes: captured.byteSize, timing: storageTiming }) : null;
+    const saved = unchanged ?? await uploadWorkspaceSnapshot({ db: input.db, storage, snapshotId: snapshot.id,
       companyId: input.workspace.companyId, workspaceId: input.workspace.id, archivePath: captured?.archivePath ?? "",
-      manifestDigest: existingUpload?.manifestDigest ?? captured!.manifestDigest, timing: timing.storage ??= newWorkspaceSnapshotStorageTiming() });
+      manifestDigest: existingUpload?.manifestDigest ?? captured!.manifestDigest, timing: storageTiming });
     timing.uploadMs = Math.max(0, Math.round(performance.now() - uploadStarted));
     await input.assertOwned();
     const publishStarted = performance.now();
@@ -903,15 +942,39 @@ export async function saveRemoteWorkspace(input: {
       await lockWorkspaceRunParents(tx, input.workspace.companyId, input.runId, operation.issueId);
       const workspace = await currentWorkspace(tx, input.workspace.companyId, input.workspace.id);
       const current = readRemoteWorkspaceAuthority(workspace.metadata);
-      if (!current || current.epoch !== expected.epoch || current.writerRunId !== input.runId || current.snapshotId !== snapshot.parentSnapshotId) {
-        if (current?.epoch === expected.epoch && current.snapshotId === saved.id) return;
+      if (unchanged) {
+        const [published] = await tx.select().from(workspaceOperations).where(and(eq(workspaceOperations.id, operation.id),
+          eq(workspaceOperations.companyId, workspace.companyId), eq(workspaceOperations.executionWorkspaceId, workspace.id),
+          eq(workspaceOperations.heartbeatRunId, input.runId))).for("update");
+        if (published?.status === "succeeded" && published.metadata?.reusedSnapshotId === saved.id) return;
+      }
+      if (!current || current.epoch !== expected.epoch || current.writerRunId !== input.runId || current.snapshotId !== snapshot.parentSnapshotId
+        || unchanged && !sameExportLocation(current.location, expected.location!)) {
+        if (!unchanged && current?.epoch === expected.epoch && current.snapshotId === saved.id) return;
         throw new Error("remote_workspace_publication_fenced");
+      }
+      if (unchanged) {
+        const [parent] = await tx.select({ id: executionWorkspaceSnapshots.id }).from(executionWorkspaceSnapshots).where(and(
+          eq(executionWorkspaceSnapshots.id, saved.id), eq(executionWorkspaceSnapshots.companyId, workspace.companyId),
+          eq(executionWorkspaceSnapshots.executionWorkspaceId, workspace.id), eq(executionWorkspaceSnapshots.status, "committed"),
+          eq(executionWorkspaceSnapshots.manifestDigest, saved.manifestDigest), eq(executionWorkspaceSnapshots.objectKey, saved.objectKey),
+          eq(executionWorkspaceSnapshots.sha256, saved.sha256), eq(executionWorkspaceSnapshots.byteSize, saved.byteSize),
+          eq(executionWorkspaceSnapshots.generation, saved.generation))).for("update");
+        if (!parent) throw new Error("remote_workspace_snapshot_publication_changed");
       }
       const authority: RemoteWorkspaceAuthority = { ...current, snapshotId: saved.id,
         dirty: boundary !== "final", writerRunId: boundary !== "final" ? input.runId : null };
-      const [committed] = await tx.update(executionWorkspaceSnapshots).set({ status: "committed", updatedAt: at }).where(and(
-        eq(executionWorkspaceSnapshots.id, saved.id), eq(executionWorkspaceSnapshots.companyId, workspace.companyId),
-        eq(executionWorkspaceSnapshots.executionWorkspaceId, workspace.id), eq(executionWorkspaceSnapshots.status, "uploaded"))).returning({ id: executionWorkspaceSnapshots.id });
+      const [committed] = unchanged
+        ? await tx.update(executionWorkspaceSnapshots).set({ status: "deleted", deleteAfter: null, updatedAt: at }).where(and(
+          eq(executionWorkspaceSnapshots.id, snapshot.id), eq(executionWorkspaceSnapshots.companyId, workspace.companyId),
+          eq(executionWorkspaceSnapshots.executionWorkspaceId, workspace.id), eq(executionWorkspaceSnapshots.status, "pending"),
+          isNull(executionWorkspaceSnapshots.objectKey), isNull(executionWorkspaceSnapshots.sha256),
+          isNull(executionWorkspaceSnapshots.byteSize), isNull(executionWorkspaceSnapshots.key), isNull(executionWorkspaceSnapshots.manifestDigest),
+          sql`coalesce(${executionWorkspaceSnapshots.metadata}->'uploads', '[]'::jsonb) = '[]'::jsonb`
+        )).returning({ id: executionWorkspaceSnapshots.id })
+        : await tx.update(executionWorkspaceSnapshots).set({ status: "committed", updatedAt: at }).where(and(
+          eq(executionWorkspaceSnapshots.id, saved.id), eq(executionWorkspaceSnapshots.companyId, workspace.companyId),
+          eq(executionWorkspaceSnapshots.executionWorkspaceId, workspace.id), eq(executionWorkspaceSnapshots.status, "uploaded"))).returning({ id: executionWorkspaceSnapshots.id });
       if (!committed) throw new Error("remote_workspace_snapshot_publication_changed");
       await notifyRemoteWorkspaceSnapshots(tx, `workspace:${workspace.id}`);
       if (boundary === "final") {
@@ -932,18 +995,20 @@ export async function saveRemoteWorkspace(input: {
         remoteWorkspaceSnapshotRepositories: { snapshotId: saved.id, repositories },
       }, updatedAt: at }).where(eq(executionWorkspaces.id, workspace.id));
       await tx.update(workspaceOperations).set({ status: "succeeded", finishedAt: at, updatedAt: at,
-        metadata: sql`coalesce(${workspaceOperations.metadata}, '{}'::jsonb) || ${JSON.stringify({ snapshotId: saved.id, sha256: saved.sha256 })}::jsonb` })
+        metadata: sql`coalesce(${workspaceOperations.metadata}, '{}'::jsonb) || ${JSON.stringify({ snapshotId: saved.id, sha256: saved.sha256,
+          ...(unchanged ? { reusedSnapshotId: saved.id } : {}) })}::jsonb` })
         .where(eq(workspaceOperations.id, operation.id));
       await persistRunReference(tx, workspace.companyId, input.runId, reference(workspace.id, authority, boundary === "final" ? "saved" : "prepared"));
       await persistActivity(tx as unknown as Db, { companyId: workspace.companyId, actorType: "system", actorId: "remote-workspaces",
-        action: "workspace.snapshot_saved", entityType: "execution_workspace", entityId: workspace.id, runId: input.runId,
+        action: unchanged ? "workspace.snapshot_skipped_unchanged" : "workspace.snapshot_saved", entityType: "execution_workspace", entityId: workspace.id, runId: input.runId,
         details: { snapshotId: saved.id, generation: saved.generation, epoch: current.epoch, boundary } });
-      if (snapshot.parentSnapshotId) await tx.update(executionWorkspaceSnapshots).set({ status: "superseded",
+      if (snapshot.parentSnapshotId && !unchanged) await tx.update(executionWorkspaceSnapshots).set({ status: "superseded",
         deleteAfter: new Date(at.getTime() + 7 * 86400_000), updatedAt: at }).where(and(eq(executionWorkspaceSnapshots.id, snapshot.parentSnapshotId),
         eq(executionWorkspaceSnapshots.companyId, workspace.companyId), eq(executionWorkspaceSnapshots.executionWorkspaceId, workspace.id)));
     });
     timing.publishMs = Math.max(0, Math.round(performance.now() - publishStarted));
-    return { snapshotId: saved.id, generation: saved.generation, sha256: saved.sha256, savedAt: at.toISOString() };
+    return { snapshotId: saved.id, generation: saved.generation, sha256: saved.sha256, savedAt: at.toISOString(),
+      ...(unchanged ? { unchanged: true as const } : {}) };
   } catch (error) {
     failure = remoteWorkspaceSaveFailure(error);
     throw error;

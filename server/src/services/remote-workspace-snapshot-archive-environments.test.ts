@@ -47,7 +47,7 @@ describe("reinstallable environments in portable workspace archives", () => {
     expect(await fs.readlink(path.join(venv, "bin", "python"))).toBe(process.execPath);
   });
 
-  it("keeps a deliberately tracked virtual environment and still rejects other absolute links", async () => {
+  it("keeps a deliberately tracked virtual environment and drops other absolute links", async () => {
     const cwd = await source(), venv = path.join(cwd, "env");
     await fs.mkdir(venv); await fs.writeFile(path.join(venv, "pyvenv.cfg"), "home = /usr/bin\n");
     await git(cwd, "init", "-q", "-b", "main"); await git(cwd, "add", "."); await git(cwd, "commit", "-qm", "tracked environment");
@@ -55,8 +55,11 @@ describe("reinstallable environments in portable workspace archives", () => {
     expect(await fs.readFile(path.join(restored, "env", "pyvenv.cfg"), "utf8")).toBe("home = /usr/bin\n");
     await fs.rm(path.join(root, "snapshot.pcws")); await fs.rm(restored, { recursive: true });
     // A directory without the PEP 405 marker is ordinary work, not an environment.
+    // Its absolute interpreter link is recorded and omitted, never followed.
     await fs.mkdir(path.join(cwd, "tools")); await fs.symlink(process.execPath, path.join(cwd, "tools", "node"));
-    await expect(capture(cwd)).rejects.toThrow("unsafe_symlink");
+    const snapshot = await capture(cwd);
+    expect(await excluded(snapshot.archivePath)).toEqual(["tools/node"]);
+    expect(await fs.readdir(path.join(await restore(snapshot), "tools"))).toEqual([]);
   });
 
   it("does not treat a linked pyvenv.cfg as an environment marker", async () => {
@@ -65,6 +68,11 @@ describe("reinstallable environments in portable workspace archives", () => {
     await fs.writeFile(path.join(cwd, "pyvenv.cfg"), "home = /usr/bin\n");
     await fs.symlink("../pyvenv.cfg", path.join(venv, "pyvenv.cfg"));
     await fs.symlink(process.execPath, path.join(venv, "bin", "python"));
-    await expect(capture(cwd)).rejects.toThrow("unsafe_symlink");
+    // The directory is saved as ordinary work; only its absolute link is omitted.
+    const snapshot = await capture(cwd);
+    expect(await excluded(snapshot.archivePath)).toEqual([".venv/bin/python"]);
+    const restored = await restore(snapshot);
+    expect(await fs.readlink(path.join(restored, ".venv", "pyvenv.cfg"))).toBe("../pyvenv.cfg");
+    expect(await fs.readdir(path.join(restored, ".venv", "bin"))).toEqual([]);
   });
 });
