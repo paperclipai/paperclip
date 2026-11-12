@@ -152,11 +152,13 @@ a reconnect requirement.
 
 ## Dedicated accounts and diagnostics
 
-Selection order is: the responsible person's own ("Just me") grant, then a dedicated-agent grant, then a standing delegation (ownerless runs only), then a shared company (organization) grant. Only the first tier that has a grant is used. Revoked, disabled, unavailable, or ambiguous grants in that tier do not fall back to a lower tier or another person's account. A dedicated-agent grant applies when the responsible person has not connected GitHub, or when the run has no responsible person. Removing a person's own connection hands selection to the dedicated grant, then to the shared company grant.
+An explicit dedicated-agent grant overrides personal selection. Revoked, disabled, unavailable, or ambiguous dedicated grants do not fall back to a person's account. Removing the dedicated configuration restores personal selection.
+
+Selection order is: a dedicated-agent grant, then the responsible person's own grant, then a standing delegation (ownerless runs only), then a shared company (organization) grant. Only the first tier that has a grant is used; an unavailable or ambiguous grant in that tier never falls back to a lower tier.
 
 Personal access token grants work for every managed operation, like sign-in grants. Paperclip records the token's GitHub account (`GET /user`) at setup and reconnect, or on first use for older tokens. That account authors managed commits and de-duplicates connections for the same account. Reconnecting a dedicated agent's token rotates the agent grant's own secret in place.
 
-Connection setup and permissions display: “This agent uses this GitHub account when the person giving instructions hasn’t connected their own GitHub account.”
+Connection setup and permissions display: “This agent uses this GitHub account for everyone's work, instead of the person giving instructions.”
 
 The GitHub permissions page shows repositories across all connected accounts in one scrollable list. It has no account filter or repository search. Repository icons, private-repository indicators, refresh, and GitHub configuration links remain available. The “Add More Repos on GitHub” button opens GitHub’s app installation and repository-access setup.
 

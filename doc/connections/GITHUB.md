@@ -92,9 +92,8 @@ continues the existing identity and requires its personal owner.
 Every MCP call, `gh` invocation, native Git operation, checkout, health check,
 and webhook binding uses the same order:
 
-1. The personal ("Just me") GitHub grant owned by the run's
-   `responsibleUserId`.
-2. A dedicated GitHub grant for the current agent.
+1. An active dedicated GitHub grant for the current agent.
+2. The active personal GitHub grant owned by the run's `responsibleUserId`.
 3. For automated work without a responsible user, a personal grant only when
    an existing standing delegation names the agent.
 4. A shared company GitHub grant (organization identity) on a connection
@@ -103,9 +102,9 @@ and webhook binding uses the same order:
    configured for the company.
 
 Only the first tier that has a grant is considered, so identities in different
-tiers never conflict. An unavailable or ambiguous identity in that tier fails
-visibly. It never falls through to a lower tier, another person, or a legacy
-token. Agent grants are company-scoped, have exactly one `subjectAgentId`,
+tiers never conflict. An unavailable or ambiguous managed identity fails
+visibly. It never falls through to another person, an organization credential,
+or a legacy token. Agent grants are company-scoped, have exactly one `subjectAgentId`,
 cannot be organization defaults, and are installed only for that agent.
 
 Both connection methods serve every operation above. A sign-in grant proves its

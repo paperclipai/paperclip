@@ -529,13 +529,14 @@ export async function resolveManagedGitHubIdentitySelection(
         return grants.filter((grant) => grant.kind === "user" && delegatedIds.has(grant.id));
       })
     : [];
-  // The responsible person's own ("Just me") identity wins, then the agent's
-  // dedicated identity, then a person's standing delegation (ownerless runs
-  // only), then a shared company identity. Only the first non-empty tier is
-  // considered, so identities in different tiers never conflict.
+  // An agent's dedicated identity is an explicit override and wins, then the
+  // responsible person's own identity, then a person's standing delegation
+  // (ownerless runs only), then a shared company identity. Only the first
+  // non-empty tier is considered, so identities in different tiers never
+  // conflict and an unavailable dedicated grant never falls back to a person.
   const tiers: Array<[GitHubIdentitySource, Array<typeof connectionGrants.$inferSelect>]> = [
-    ["personal", personal],
     ["dedicated", dedicated],
+    ["personal", personal],
     ["personal", delegated],
     ["shared", shared],
   ];
