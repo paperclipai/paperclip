@@ -238,6 +238,20 @@ describe("IssueRecoveryActionCard", () => {
     },
   );
 
+  it("puts an Inbox task link and the resolve action in one footer, link left and action right", () => {
+    const node = render(
+      <IssueRecoveryActionCard
+        action={buildAction({ kind: "active_run_watchdog", ownerType: "board", ownerAgentId: null, wakePolicy: null })}
+        onResolve={vi.fn()}
+        footerLeading={<a href="/PAP/issues/PAP-1" data-task-link>PAP-1</a>}
+      />,
+    );
+    const footers = node.querySelectorAll("[data-decision-footer]");
+    expect(footers).toHaveLength(1);
+    const items = [...footers[0]!.querySelectorAll("[data-task-link], [data-testid='recovery-action-resolve-trigger']")];
+    expect(items.map(item => item.hasAttribute("data-task-link") ? "link" : "resolve")).toEqual(["link", "resolve"]);
+  });
+
   it("retains the existing authorized controls for a board-owned watchdog", () => {
     const onResolve = vi.fn();
     const node = render(

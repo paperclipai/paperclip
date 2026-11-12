@@ -7,7 +7,7 @@ import type { Issue } from "@paperclipai/shared";
 import { isNativeWorkspaceExportRepairCause } from "@paperclipai/shared";
 import { useWorkspaceIsolationControls } from "@/hooks/useWorkspaceIsolationControls";
 import { requiresExecutionReconciliation } from "@paperclipai/shared";
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import type {
   Agent,
   GitWorktreeBranchAncestryVerdict,
@@ -134,6 +134,11 @@ export interface IssueRecoveryActionCardProps {
    * diagnosis, and action footer.
    */
   variant?: "full" | "compact";
+  /**
+   * Content for the left of the action footer, such as an Inbox card's task link. When set,
+   * the footer follows the decision-card layout: this content at the left, actions at the far right.
+   */
+  footerLeading?: ReactNode;
   className?: string;
 }
 
@@ -1007,6 +1012,7 @@ export function IssueRecoveryActionCard({
   reconcilePending = false,
   canFalsePositive = false,
   variant = "full",
+  footerLeading,
   className,
 }: IssueRecoveryActionCardProps) {
   const { visible: workspaceIsolationControlsVisible } = useWorkspaceIsolationControls();
@@ -1127,6 +1133,14 @@ export function IssueRecoveryActionCard({
     showReconcileForward ||
     showBreakGlass ||
     showRepairAction;
+
+  const resolveNote = showResolveActions ? (
+    <span className="block text-(length:--text-micro) text-muted-foreground">
+      {cardState === "observe_only"
+        ? "Recovery is observing without interrupting the live run."
+        : "The card stays open until an explicit decision is recorded."}
+    </span>
+  ) : null;
 
   if (requiresExecutionReconciliation(action.cause) || action.cause === "native_workspace_sync_out_unsafe_archive") return null;
 
@@ -1348,7 +1362,8 @@ export function IssueRecoveryActionCard({
       )}
       {divergence ? <DivergenceDiagnosis divergence={divergence} dividerClass={tone.divider} /> : null}
       {showFooter ? (
-        <div className={cn("flex flex-wrap items-center gap-2 border-t px-3 py-2.5 sm:px-4", tone.divider)}>
+        <div data-decision-footer={footerLeading ? "" : undefined} className={cn("flex flex-wrap items-center gap-2 border-t px-3 py-2.5 sm:px-4", tone.divider)}>
+          {footerLeading ? <div className="mr-auto min-w-0 flex-1 basis-48 space-y-1">{footerLeading}{resolveNote}</div> : null}
           {showResolveActions ? (
             <Popover>
               <PopoverTrigger asChild>
@@ -1500,17 +1515,7 @@ export function IssueRecoveryActionCard({
               onConfirm={(reason) => onBreakGlassOverride?.(reason)}
             />
           ) : null}
-          {showResolveActions ? (
-            cardState === "observe_only" ? (
-              <span className="text-(length:--text-micro) text-muted-foreground">
-                Recovery is observing without interrupting the live run.
-              </span>
-            ) : (
-              <span className="text-(length:--text-micro) text-muted-foreground">
-                The card stays open until an explicit decision is recorded.
-              </span>
-            )
-          ) : null}
+          {footerLeading ? null : resolveNote}
         </div>
       ) : null}
     </section>

@@ -1,14 +1,16 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useRef } from "react";
+import { useRef, type ReactNode } from "react";
 import type { Agent, AttentionItem } from "@paperclipai/shared";
 import { describeError } from "@/api/errors";
 import { issuesApi } from "@/api/issues";
 import { queryKeys } from "@/lib/queryKeys";
 import { IssueRecoveryActionCard, type RecoveryResolveOutcome } from "./IssueRecoveryActionCard";
 import { Button } from "./ui/button";
+import { DecisionCardFooter } from "./DecisionCardFooter";
 
-export function AttentionRecoveryResolver({ item, companyId, agentMap, onResolved }: {
-  item: AttentionItem; companyId: string; agentMap?: Map<string, Agent>; onResolved: () => void;
+/** `footerLeading` (an Inbox card's task link) shares one footer row with the recovery actions. */
+export function AttentionRecoveryResolver({ item, companyId, agentMap, onResolved, footerLeading }: {
+  item: AttentionItem; companyId: string; agentMap?: Map<string, Agent>; onResolved: () => void; footerLeading?: ReactNode;
 }) {
   const queryClient = useQueryClient();
   const resolving = useRef(false);
@@ -31,13 +33,14 @@ export function AttentionRecoveryResolver({ item, companyId, agentMap, onResolve
     resolving.current = true;
     resolution.mutate(outcome);
   };
-  if (!issueId || actions.isError) return <div role="alert"><p>Recovery actions could not be loaded.</p><Button onClick={() => void actions.refetch()}>Retry</Button></div>;
-  if (actions.isPending) return <p role="status">Loading recovery actions…</p>;
-  if (!action || !["active", "escalated"].includes(action.status)) return <p role="status">This recovery is no longer awaiting an action.</p>;
+  const withFooter = (content: ReactNode) => <>{content}{footerLeading ? <DecisionCardFooter leading={footerLeading} /> : null}</>;
+  if (!issueId || actions.isError) return withFooter(<div role="alert"><p>Recovery actions could not be loaded.</p><Button onClick={() => void actions.refetch()}>Retry</Button></div>);
+  if (actions.isPending) return withFooter(<p role="status">Loading recovery actions…</p>);
+  if (!action || !["active", "escalated"].includes(action.status)) return withFooter(<p role="status">This recovery is no longer awaiting an action.</p>);
   return <>
     {resolution.error ? <p role="alert" className="text-sm text-destructive">{describeError(resolution.error, { action: "resolve this recovery" }).body}</p> : null}
     <fieldset disabled={resolution.isPending} aria-busy={resolution.isPending}>
-      <IssueRecoveryActionCard action={action} agentMap={agentMap} onResolve={resolve} resolvePending={resolution.isPending} />
+      <IssueRecoveryActionCard action={action} agentMap={agentMap} onResolve={resolve} resolvePending={resolution.isPending} footerLeading={footerLeading} />
     </fieldset>
   </>;
 }
