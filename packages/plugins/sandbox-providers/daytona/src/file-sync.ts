@@ -1126,15 +1126,18 @@ async function syncInDirectoryMapping(input: {
           // The old copy really differs (a changed or damaged file). Its
           // read-only directories would make tar fail with "Cannot open: File
           // exists", so reopen them; the extract restores the archived modes.
-          `find ${shellQuote(mapping.targetPath)} -mindepth 1 -type d ! -perm -u+w -exec chmod u+w {} + || exit 43;`,
+          // Record exactly which ones were reopened so a failed repair re-seals
+          // only those and never touches writable user directories.
+          `reopened_list=${shellQuote(`${remoteTar}.reopened`)};`,
+          `find ${shellQuote(mapping.targetPath)} -mindepth 1 -type d ! -perm -u+w -print0 -exec chmod u+w {} + > "$reopened_list" || exit 43;`,
         ] : []),
         // BSD archives may revisit a directory after its parent's files. Keep
         // GNU tar from restoring a read-only skill directory's mode before all
         // of its children are extracted; final permissions remain unchanged.
         // A failed repair must not leave the read-only bundle writable.
         `tar -xf ${shellQuote(remoteTar)} --delay-directory-restore -C ${shellQuote(mapping.targetPath)} || { ${immutable
-          ? `find ${shellQuote(mapping.targetPath)} -mindepth 1 -type d -exec chmod a-w {} + ; ` : ""}echo "extract failed"; exit 43; };`,
-        `rm -f ${shellQuote(remoteTar)};`,
+          ? 'if [ -s "$reopened_list" ]; then xargs -0 chmod u-w < "$reopened_list"; fi; rm -f "$reopened_list"; ' : ""}echo "extract failed"; exit 43; };`,
+        `rm -f ${shellQuote(remoteTar)}${immutable ? ' "$reopened_list"' : ""};`,
       ].join("\n");
       // `extractTarball` span: one round trip — re-check the path, `tar -xf`, and
       // remove the scratch tarball.
