@@ -4,7 +4,7 @@ import path from "node:path";
 import { and, eq } from "drizzle-orm";
 import { describe, expect, it, vi } from "vitest";
 import type { AdapterSandboxExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
-import { agentWakeupRequests, heartbeatRunEvents, heartbeatRuns } from "@paperclipai/db";
+import { agentWakeupRequests, heartbeatRunEvents, heartbeatRuns, issueComments } from "@paperclipai/db";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { heartbeatService } from "./heartbeat.js";
 import { requestInterruptedNativeTurnRetry, requestRestartInterruptedTurnRetry } from "./heartbeat/restart-interrupted-turn.js";
@@ -31,14 +31,24 @@ const stagingRefusal = (reason: "process_not_running" | "process_identity_change
 describe("a remote Runner that died in the middle of a provider turn", () => {
   useWorkspaceRecoveryFixture(targets);
 
-  async function runnerLostMidTurn(input: { wake: "user" | "user_retry" | "system_retry" | "system_monitor";
+  async function runnerLostMidTurn(input: { wake: "user" | "user_retry" | "system_retry" | "system_monitor"
+      | "system_assignment" | "system_chat" | "user_chat";
     refusal?: "process_not_running" | "process_identity_changed" | null;
+    chatMessage?: "present" | "deleted" | "written_by_run";
     events?: string[]; refusalPayload?: Record<string, unknown> }) {
     const f = await seed("native");
     const original = await run(f.runId);
-    const system = input.wake !== "user" && input.wake !== "user_retry";
-    const reason = input.wake === "user" ? "issue_assigned" : input.wake === "user_retry" ? "task_retry"
+    const system = input.wake !== "user" && input.wake !== "user_retry" && input.wake !== "user_chat";
+    const chat = input.wake === "system_chat" || input.wake === "user_chat";
+    const reason = input.wake === "user" || input.wake === "system_assignment" ? "issue_assigned"
+      : input.wake === "user_retry" ? "task_retry"
+      : chat ? "External chat message received"
       : input.wake === "system_retry" ? "transient_failure_retry" : "issue_monitor_due";
+    // The chat bridge stores the inbound message as a task comment before it wakes the agent.
+    const [chatComment] = chat ? await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
+      body: "Can you also check the release notes?", authorType: "system",
+      ...(input.chatMessage === "deleted" ? { deletedAt: new Date() } : {}),
+      ...(input.chatMessage === "written_by_run" ? { createdByRunId: f.runId } : {}) }).returning() : [];
     const [retryIntent] = input.wake === "user_retry" ? await db.insert(agentWakeupRequests).values({ companyId: f.companyId,
       agentId: original.agentId, source: "on_demand", triggerDetail: "manual", reason: "task_retry", status: "completed",
       idempotencyKey: `task-retry:${randomUUID()}`, requestedByActorType: "user", requestedByActorId: "local-board",
@@ -48,13 +58,16 @@ describe("a remote Runner that died in the middle of a provider turn", () => {
       finishedAt: new Date(Date.now() - 50 * 60_000),
       errorCode: "environment_provider_unavailable", contextSnapshot: { issueId: f.issueId, wakeReason: "issue_assigned" } }).returning() : [];
     const [wake] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: original.agentId,
-      source: system ? "automation" : "assignment", triggerDetail: "system", reason, status: "failed", runId: f.runId,
+      source: system && input.wake !== "system_assignment" && !chat ? "automation" : "assignment", triggerDetail: "system",
+      reason, status: "failed", runId: f.runId,
       requestedByActorType: system ? "system" : "user", requestedByActorId: system ? null : "local-board",
-      finishedAt: new Date(), payload: { issueId: f.issueId } }).returning();
+      finishedAt: new Date(), payload: { issueId: f.issueId, ...(chatComment ? { commentId: chatComment.id } : {}) } }).returning();
     await db.update(heartbeatRuns).set({ errorCode: "native_continuation_requires_reconciliation",
       error: "runner_remote_process_identity_unavailable", wakeupRequestId: wake.id, responsibleUserId: "local-board",
       retryOfRunId: predecessor?.id ?? null, startedAt: new Date(Date.now() - 45 * 60_000),
-      contextSnapshot: { issueId: f.issueId, wakeReason: reason, ...(retryIntent ? { taskRetryRequestId: retryIntent.id,
+      contextSnapshot: { issueId: f.issueId, wakeReason: reason,
+        ...(chatComment ? { wakeCommentId: chatComment.id, commentId: chatComment.id, wakeSource: "assignment" } : {}),
+        ...(retryIntent ? { taskRetryRequestId: retryIntent.id,
         forceFreshSession: true } : {}), ...(predecessor ? { retryOfRunId: predecessor.id,
         retryReason: "transient_failure", scheduledRetryAttempt: 1 } : {}) },
     }).where(eq(heartbeatRuns.id, f.runId));
@@ -85,6 +98,11 @@ describe("a remote Runner that died in the middle of a provider turn", () => {
     { title: "a user's assignment", wake: "user" as const, viaClaim: true },
     { title: "an automatic retry of the assignment (the staging shape)", wake: "system_retry" as const, viaClaim: true },
     { title: "a same-run retry of a user's assignment", wake: "user" as const, viaClaim: false },
+    // Staging after the upgrade fix: a routine's system assignment and an
+    // external chat message, neither a retry, stayed blocked for a person.
+    { title: "a routine's system assignment", wake: "system_assignment" as const, viaClaim: true },
+    { title: "an external chat message from an unlinked sender", wake: "system_chat" as const, viaClaim: true },
+    { title: "an external chat message from a linked person", wake: "user_chat" as const, viaClaim: false },
   ])("continues $title once in a fresh session and records that the turn's outcome is unknown", async ({ wake, viaClaim }) => {
     const f = await runnerLostMidTurn({ wake });
     const request = () => viaClaim ? requestRestartInterruptedTurnRetry(db, f.claim) : requestInterruptedNativeTurnRetry(db, f.runId);
@@ -156,8 +174,16 @@ describe("a remote Runner that died in the middle of a provider turn", () => {
     { title: "no reattachment refusal was recorded", wake: "user" as const, refusal: null, reason: "provider_turn_unsettled" },
     { title: "the source was a monitor wake, not a retry of owed work", wake: "system_monitor" as const, refusal: "process_not_running" as const,
       reason: "not_user_request" },
-  ])("keeps the visible Retry and records nothing when $title", async ({ wake, refusal, reason }) => {
-    const f = await runnerLostMidTurn({ wake, refusal });
+    { title: "a system chat wake's message was deleted", wake: "system_chat" as const, refusal: "process_not_running" as const,
+      chatMessage: "deleted" as const, reason: "not_user_request" },
+    { title: "a system chat wake's message was written by a run", wake: "system_chat" as const,
+      refusal: "process_not_running" as const, chatMessage: "written_by_run" as const, reason: "not_user_request" },
+    { title: "a linked person's chat message was deleted", wake: "user_chat" as const, refusal: "process_not_running" as const,
+      chatMessage: "deleted" as const, reason: "message_unavailable" },
+    { title: "a system assignment's Runner was not proven gone", wake: "system_assignment" as const,
+      refusal: "process_identity_changed" as const, reason: "provider_turn_unsettled" },
+  ])("keeps the visible Retry and records nothing when $title", async ({ wake, refusal, reason, ...rest }) => {
+    const f = await runnerLostMidTurn({ wake, refusal, chatMessage: "chatMessage" in rest ? rest.chatMessage : undefined });
     expect(await requestRestartInterruptedTurnRetry(db, f.claim)).toEqual({ requested: false, reason });
     expect(await unknownOutcomeEvents(f.runId)).toHaveLength(0);
     expect(await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, f.companyId),
