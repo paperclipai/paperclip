@@ -54,6 +54,16 @@ describe("release swap end-of-wave grade", () => {
     expect(events).toContain("release_swap_retry_clicked");
   });
 
+  it("leaves a task whose view read failed out of the grade and marks the number incomplete", async () => {
+    const api = { get: async (route: string) => { if (route === "/api/issues/u1") throw new Error("GET /api/issues/u1 unreachable: timeout"); return { status: "done" }; },
+      post: async () => ({}) } as unknown as ReleaseSwapFinishInput["api"];
+    const { result, events, json } = await finish({ api, db: fakeDb({ issues: [{ id: "d1", identifier: "CHA-1", title: "d" }, { id: "u1", identifier: "CHA-2", title: "u" }],
+      runs: () => [{ runId: "r1", issueId: "d1", status: "succeeded" }, { runId: "r2", issueId: "u1", status: "succeeded" }] }) });
+    expect(result).toMatchObject({ pass: false, headline: "1 / 1 tasks completed without human action (incomplete: 1 task(s) could not be read and are not counted)" });
+    expect(json.grades.map((grade: any) => grade.issueId)).toEqual(["d1"]);
+    expect(events).toContain("release_swap_views_unreadable");
+  });
+
   it("grades a pending question from the database as a person's wait, and passes a clean wave", async () => {
     const { json } = await finish({ api: { get: async () => ({ status: "blocked" }), post: async () => ({}) } as unknown as ReleaseSwapFinishInput["api"],
       db: fakeDb({ issues: [{ id: "q1", identifier: "CHA-3", title: "q" }], runs: () => [{ runId: "r1", issueId: "q1", status: "succeeded" }], questions: ["q1"] }) });

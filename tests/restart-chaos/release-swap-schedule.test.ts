@@ -18,6 +18,20 @@ describe("release swap options", () => {
     expect(args).toEqual(["--env=daytona", "--storm-minutes", "10", "--faults", "K15", "--k15-overlap-seconds", "90", "--k15-fresh-home", "--ephemeral-server"]);
   });
 
+  it("takes the short hourly preset: 3 swaps 12 minutes apart with the full two-server overlap, and lets flags override it", () => {
+    const { args, releaseSwap } = expandReleaseSwapArgs(["--env", "local", "--release-swap-short"]);
+    expect(releaseSwap).toEqual({ swaps: 3, spacingMs: 720_000, overlapMs: 510_000, settleMs: 900_000 });
+    expect(args).toEqual(["--env", "local", "--storm-minutes", "36", "--faults", "K15", "--k15-overlap-seconds", "510"]);
+    expect(expandReleaseSwapArgs(["--release-swap-short", "--release-swap-settle-minutes", "5"]).releaseSwap).toMatchObject({ swaps: 3, settleMs: 300_000 });
+    expect(() => expandReleaseSwapArgs(["--release-swap-short", "--release-swap-overlap-seconds", "601"])).toThrow(/between 30 and 600/);
+    expect(() => expandReleaseSwapArgs(["--release-swap-short", "--release-swap-spacing-minutes", "10"])).toThrow(/spacing/);
+    const run = new ReleaseSwapRun(planReleaseSwaps(releaseSwap!), 0);
+    expect(run.commit(run.due(720_000)!, 720_000)).toBe(true);
+    expect(run.due(1_440_000)).toBeNull();
+    run.settled(1_500_000);
+    expect(run.due(1_500_000)).toBe(run.plan.faults[1]);
+  });
+
   it("refuses flags the cell plans itself, stray shape flags, and an overlap the spacing cannot hold", () => {
     expect(() => expandReleaseSwapArgs(["--release-swap", "--faults", "K1"])).toThrow(/--faults/);
     expect(() => expandReleaseSwapArgs(["--release-swap-count", "2"])).toThrow(/add --release-swap/);

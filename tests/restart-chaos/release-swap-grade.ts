@@ -8,6 +8,7 @@ export interface GradeRun {
   createdAt: number | null;
   startedAt: number | null;
   finishedAt: number | null;
+  lastActivityAt?: number | null;
 }
 
 export interface GradeInterruption {
@@ -40,7 +41,11 @@ export interface GradeTaskInput {
   pendingApproval: boolean;
   pendingQuestion: boolean;
   retryClicks: RetryClick[];
+  now?: number;
+  staleAfterMs?: number;
 }
+
+export type FailureLabel = "nothing pending" | "blocked for a non-person reason" | "needed Retry";
 
 export interface TaskGrade {
   issueId: string;
@@ -52,6 +57,7 @@ export interface TaskGrade {
   retry: { clicks: number; accepted: number; worked: boolean | null } | null;
   personReason: PersonReason | null;
   reason: string | null;
+  label: FailureLabel | null;
   failedRuns: string[];
 }
 
@@ -73,13 +79,19 @@ export function personReason(task: GradeTaskInput): PersonReason | null {
   return null;
 }
 
+export function staleRuns(task: GradeTaskInput): GradeRun[] {
+  if (task.now === undefined || task.staleAfterMs === undefined) return [];
+  return task.runs.filter(run => LIVE_RUN.has(run.status) && (run.lastActivityAt ?? run.createdAt ?? 0) < task.now! - task.staleAfterMs!);
+}
+
 function liveOwner(task: GradeTaskInput): string | null {
-  const live = task.runs.find(run => LIVE_RUN.has(run.status));
+  const stale = new Set(staleRuns(task).map(run => run.runId));
+  const live = task.runs.find(run => LIVE_RUN.has(run.status) && !stale.has(run.runId));
   if (live) return `run ${live.runId} ${live.status}`;
   if (task.queuedWakes > 0) return `${task.queuedWakes} queued wake(s)`;
   if (task.scheduledRetry) return "scheduled retry";
   const interruption = task.interruption;
-  if (interruption && (interruption.state === "working" || interruption.state === "retry_scheduled" || interruption.retryWait)) {
+  if (!stale.size && interruption && (interruption.state === "working" || interruption.state === "retry_scheduled" || interruption.retryWait)) {
     return `interruption ${interruption.retryWait ? "retry waiting on the system" : interruption.state}`;
   }
   if (task.activeRecoveryOwner && task.activeRecoveryOwner !== "board") return `${task.activeRecoveryOwner} recovery action`;
@@ -112,7 +124,11 @@ export function gradeReleaseSwapTask(task: GradeTaskInput): TaskGrade {
   const person = personReason(task);
   const base = { issueId: task.issueId, identifier: task.identifier, title: task.title, status: task.status, failedRuns,
     retry: retryOutcome(task), personReason: person, reason: namedReason(task, person) };
-  const verdict = (value: TaskVerdict, detail: string): TaskGrade => ({ ...base, verdict: value, detail });
+  const label = (value: TaskVerdict): FailureLabel | null => value === "needed_retry" ? "needed Retry"
+    : value === "open_no_owner" || value === "cancelled" ? "nothing pending" : value === "blocked_non_person" ? "blocked for a non-person reason" : null;
+  const verdict = (value: TaskVerdict, detail: string): TaskGrade => ({ ...base, verdict: value, detail, label: label(value) });
+  const stale = staleRuns(task);
+  const staleNote = stale.length ? `; ${stale.map(run => `run ${run.runId} ${run.status} with no activity for ${Math.round((task.now! - (run.lastActivityAt ?? run.createdAt ?? 0)) / 60_000)} min`).join(", ")}` : "";
   if (task.retryClicks.length) {
     const retry = base.retry!;
     return verdict("needed_retry", `${retry.clicks} Retry click(s), ${retry.accepted} accepted; ${retry.worked === null ? "still running" : retry.worked ? "worked" : "did not work"}; now ${task.status}`);
@@ -127,9 +143,9 @@ export function gradeReleaseSwapTask(task: GradeTaskInput): TaskGrade {
     || (interruption && (interruption.state === "failed" || interruption.state === "waiting_for_user"))) {
     const why = base.reason ?? "blocked with no named reason";
     const note = interruption?.responsibility === "user" ? " (the board asks a person, but this is not one of the grade's person reasons)" : "";
-    return verdict("blocked_non_person", `${task.status}: ${why}${note}`);
+    return verdict("blocked_non_person", `${task.status}: ${why}${note}${staleNote}`);
   }
-  return verdict("open_no_owner", `${task.status} with no live run, no queued wake and no named reason`);
+  return verdict("open_no_owner", `${task.status} with no live run, no queued wake and no named reason${staleNote}`);
 }
 
 export interface SwapWindow {
@@ -224,10 +240,19 @@ export interface ReleaseSwapResult {
   started: number;
   byVerdict: Record<TaskVerdict, number>;
   byReason: Record<string, number>;
+  byLabel: Record<string, number>;
+  uncollected: number;
   retry: { tasks: number; worked: number; didNotWork: number; pending: number };
 }
 
-export function summarizeGrades(grades: readonly TaskGrade[]): ReleaseSwapResult {
+export function retryLabel(grade: TaskGrade): string | null {
+  if (!grade.label) return null;
+  if (grade.label !== "needed Retry") return grade.label;
+  const worked = grade.retry?.worked;
+  return `needed Retry (${worked === true ? "click worked" : worked === false ? "click did not work" : "click result pending"})`;
+}
+
+export function summarizeGrades(grades: readonly TaskGrade[], uncollected = 0): ReleaseSwapResult {
   const byVerdict = { pass: 0, needed_retry: 0, open_no_owner: 0, blocked_non_person: 0, waiting_on_person: 0, still_working: 0, cancelled: 0 } as Record<TaskVerdict, number>;
   for (const grade of grades) byVerdict[grade.verdict] += 1;
   const byReason: Record<string, number> = {};
@@ -235,10 +260,16 @@ export function summarizeGrades(grades: readonly TaskGrade[]): ReleaseSwapResult
     const key = `${grade.verdict}: ${grade.reason ?? "none"}`;
     byReason[key] = (byReason[key] ?? 0) + 1;
   }
+  const byLabel: Record<string, number> = {};
+  for (const grade of grades) {
+    const key = retryLabel(grade);
+    if (key) byLabel[key] = (byLabel[key] ?? 0) + 1;
+  }
   const retried = grades.filter(grade => grade.retry);
   const completedWithoutHuman = byVerdict.pass;
-  return { headline: `${completedWithoutHuman} / ${grades.length} tasks completed without human action`, completedWithoutHuman, started: grades.length,
-    byVerdict, byReason, retry: { tasks: retried.length, worked: retried.filter(grade => grade.retry!.worked === true).length,
+  const incomplete = uncollected ? ` (incomplete: ${uncollected} task(s) could not be read and are not counted)` : "";
+  return { headline: `${completedWithoutHuman} / ${grades.length} tasks completed without human action${incomplete}`, completedWithoutHuman, started: grades.length,
+    byVerdict, byReason, byLabel, uncollected, retry: { tasks: retried.length, worked: retried.filter(grade => grade.retry!.worked === true).length,
       didNotWork: retried.filter(grade => grade.retry!.worked === false).length, pending: retried.filter(grade => grade.retry!.worked === null).length } };
 }
 
@@ -249,6 +280,7 @@ export function releaseSwapMarkdown(result: ReleaseSwapResult, metrics: readonly
     result.headline,
     "",
     `Verdicts: ${Object.entries(result.byVerdict).filter(([, count]) => count).map(([verdict, count]) => `${verdict} ${count}`).join(", ") || "none"}.`,
+    `Failing: ${Object.entries(result.byLabel).map(([label, count]) => `${label} ${count}`).join("; ") || "none"}.`,
     `Reasons: ${Object.entries(result.byReason).map(([reason, count]) => `${reason} ${count}`).join("; ") || "none"}.`,
     `Retry: ${result.retry.tasks} task(s) needed it; worked ${result.retry.worked}, did not work ${result.retry.didNotWork}, still running ${result.retry.pending}.`,
     `Duplicates: ${duplicates.overlappingRuns.length} overlapping run pair(s), ${duplicates.doubleExecutors.length} double executor(s), `
@@ -263,7 +295,7 @@ export function releaseSwapMarkdown(result: ReleaseSwapResult, metrics: readonly
     }),
     "",
     ...evidence.flatMap(swap => swap?.findings.map(finding => `- Swap ${swap.index}: ${finding}`) ?? []),
-    ...grades.filter(grade => grade.verdict !== "pass").map(grade => `- ${grade.identifier ?? grade.issueId} ${grade.verdict}: ${grade.detail}`),
+    ...grades.filter(grade => grade.verdict !== "pass").map(grade => `- ${grade.identifier ?? grade.issueId} ${retryLabel(grade) ?? grade.verdict}: ${grade.detail}`),
   ];
   return `${lines.join("\n")}\n`;
 }

@@ -552,7 +552,14 @@ node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local -
 # The default wave: 6 swaps, 40 minutes apart, 8.5-minute overlap, 15-minute settle, staging's volume-free shape.
 node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env daytona --daytona-image $IMG --storage s3 \
   --daytona-warm --daytona-cpu 2 --adapters opencode,codex,claude --release-swap --concurrency 12 --tasks 200 --seed 7100
+# The short form for hourly comparisons of fix PRs: 3 swaps, 12 minutes apart, the same 8.5-minute overlap, 15-minute settle.
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env daytona --daytona-image $IMG --storage s3 \
+  --daytona-warm --daytona-cpu 2 --adapters opencode,codex,claude --release-swap-short --concurrency 12 --tasks 200 --seed 7110
 ```
+
+`--release-swap` runs the full default (6 swaps, 40 minutes apart). `--release-swap-short` runs 3 swaps 12 minutes
+apart with the full 510 s overlap, so two servers run for most of each cycle. Either takes the `--release-swap-*`
+options below, which override the preset. Workload sizing (turn length, concurrency) comes from the workload flags.
 
 Staging takes a release about every 40 minutes as an overlap swap: the incoming server B starts with a new
 deployment identity and process space against the same database and storage while the outgoing server A keeps
@@ -566,7 +573,8 @@ so state saved during swap N is resumed after swaps N+1 and N+2.
   share the instance home.
 - **Schedule** (`release-swap-schedule.ts`): swap *k* starts *k* × spacing after the wave starts, never before
   the previous one settled. Tasks keep launching from the `--tasks` pool, during the overlap too, until the last
-  swap settled; then they drain. The cell plans its own swaps, so it refuses `--faults`, `--storm-minutes`,
+  swap settled; then they drain. The next swap never starts before the previous outgoing server has exited, and the
+  spacing must leave the overlap plus 2 minutes for the incoming server's boot. The cell plans its own swaps, so it refuses `--faults`, `--storm-minutes`,
   `--k15-overlap-seconds`, `--k15-hold-seconds`, `--replay`, `--crash-point`, `--matrix` and `--upgrade-from`.
 - **The outgoing server starts runs** (`release-swap-driver.ts`). The harness creates small probe tasks
   (the A1 brief) through A's own port, not the edge: one when B is spawned, one when B enters its startup
@@ -603,6 +611,12 @@ way the board shows it:
 | `blocked_non_person` | Blocked, held by an execution blocker or a board recovery action, or interrupted, for a reason that is not a person's. A board request such as `choose_model`, `assign_agent`, `resume` or `confirm_run_stopped` counts here: the board asks a person, but it is not one of the reasons below. |
 | `waiting_on_person` | Rests on approval or a question (pending records in the database), a dependency, review, a usage-limit wait, budget or a shared credential. |
 | `still_working` | Still has a live run, a queued wake, a scheduled retry or a system recovery action after the settle period. |
+
+Every failing task carries exactly one label, counted per wave on the summary's `Failing:` line: `nothing pending`
+(`open_no_owner`, or cancelled with no person asking), `blocked for a non-person reason` (`blocked_non_person`), or
+`needed Retry (click worked | click did not work | click result pending)`. A queued or running run with no run event
+and no update for the settle period is not a live owner. A task whose view cannot be read in time is left out of the
+grade, and the headline says how many: the number is then incomplete and the wave fails.
 
 Only `pass` counts as completed. Each grade names its reason, and the summary counts the non-passing tasks by
 verdict and reason, so a wave shows which failure each task rests in. The first line of `release-swap-summary.md` (also the top of `SUMMARY.md`) is

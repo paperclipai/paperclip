@@ -46,7 +46,8 @@ async function companyRuns(db: Client, companyId: string): Promise<Row[]> {
   return await db.$client.unsafe(
     `select r.id::text as "runId", r.issue_id::text as "issueId", r.status, r.error_code as "errorCode", left(r.error, 400) as error,
             floor(extract(epoch from r.created_at) * 1000) as "createdAt", floor(extract(epoch from r.started_at) * 1000) as "startedAt",
-            floor(extract(epoch from r.finished_at) * 1000) as "finishedAt", ci.pid as "ownerPid"
+            floor(extract(epoch from r.finished_at) * 1000) as "finishedAt", ci.pid as "ownerPid",
+            floor(extract(epoch from greatest(r.updated_at, (select max(e.created_at) from heartbeat_run_events e where e.run_id = r.id))) * 1000) as "lastActivityAt"
        from heartbeat_runs r left join native_run_finalizations f on f.run_id = r.id
        left join controller_instances ci on ci.boot_id = ${RUN_OWNER_BOOT_ID}
       where r.company_id::text = $1`, [companyId]) as Row[];
@@ -204,12 +205,15 @@ export async function finishReleaseSwap(input: ReleaseSwapFinishInput): Promise<
   const wakes = await queuedWakes(db, companyId);
   const runsByIssue = new Map<string, Row[]>();
   for (const run of runs) if (run.issueId) runsByIssue.set(String(run.issueId), [...(runsByIssue.get(String(run.issueId)) ?? []), run]);
-  const grades: TaskGrade[] = issues.map(issue => {
+  const now = Date.now();
+  const unreadable = issues.filter(issue => (views.get(String(issue.id)) ?? { status: "unreadable" }).status === "unreadable");
+  if (unreadable.length) input.record("release_swap_views_unreadable", { count: unreadable.length, issueIds: unreadable.map(issue => String(issue.id)) });
+  const grades: TaskGrade[] = issues.filter(issue => !unreadable.includes(issue)).map(issue => {
     const id = String(issue.id);
-    const current = views.get(id) ?? { status: "unreadable" };
-    return gradeReleaseSwapTask({ issueId: id, identifier: text(issue.identifier), title: String(issue.title), ...view(current),
+    const current = views.get(id)!;
+    return gradeReleaseSwapTask({ now, staleAfterMs: input.settleMs, issueId: id, identifier: text(issue.identifier), title: String(issue.title), ...view(current),
       runs: (runsByIssue.get(id) ?? []).map(run => ({ runId: String(run.runId), status: String(run.status), errorCode: text(run.errorCode),
-        createdAt: num(run.createdAt), startedAt: num(run.startedAt), finishedAt: num(run.finishedAt) })),
+        createdAt: num(run.createdAt), startedAt: num(run.startedAt), finishedAt: num(run.finishedAt), lastActivityAt: num(run.lastActivityAt) })),
       queuedWakes: wakes.get(id) ?? 0, retryClicks: clicks.get(id) ?? [], pendingApproval: person.approvals.has(id), pendingQuestion: person.questions.has(id) });
   });
   const traceOwner = new Map<string, number>();
@@ -227,7 +231,7 @@ export async function finishReleaseSwap(input: ReleaseSwapFinishInput): Promise<
       .map(fact => fact.runId) }]);
   const metrics = swapMetrics(windows, facts, await firstEventsAfter(db, stops), waveEnd);
   const duplicates = await duplicateFacts(input, facts, waveEnd);
-  const result = summarizeGrades(grades);
+  const result = summarizeGrades(grades, unreadable.length);
   const failed = runs.filter(run => ["failed", "timed_out", "interrupted"].includes(String(run.status)));
   const chains = await failureChains(db, failed.map(run => String(run.runId)));
   const failedRuns = failed.map(run => ({ runId: String(run.runId), issueId: text(run.issueId), status: String(run.status), errorCode: text(run.errorCode),
@@ -240,5 +244,5 @@ export async function finishReleaseSwap(input: ReleaseSwapFinishInput): Promise<
   await writeFile(path.join(input.waveDir, "release-swap-summary.md"), markdown, { mode: 0o600 });
   input.record("release_swap_graded", { headline: result.headline, byVerdict: result.byVerdict, retry: result.retry,
     failedPerSwap: metrics.map(metric => metric.failedRuns.length), lostWhileOldAlive: metrics.map(metric => metric.lostWhileOldAlive.length) });
-  return { headline: result.headline, pass: result.started > 0 && result.completedWithoutHuman === result.started, markdown };
+  return { headline: result.headline, pass: result.uncollected === 0 && result.started > 0 && result.completedWithoutHuman === result.started, markdown };
 }

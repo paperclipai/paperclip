@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { gradeReleaseSwapTask, overlappingRuns, personReason, releaseSwapMarkdown, summarizeGrades, swapMetrics, type GradeTaskInput, type SwapRunFact } from "./release-swap-grade.js";
+import { gradeReleaseSwapTask, overlappingRuns, personReason, releaseSwapMarkdown, retryLabel, summarizeGrades, swapMetrics, type GradeTaskInput, type SwapRunFact } from "./release-swap-grade.js";
 import { mergeRunSample, swapEvidence, type SwapRecord } from "./release-swap-driver.js";
 
 const task = (overrides: Partial<GradeTaskInput> = {}): GradeTaskInput => ({
@@ -79,6 +79,35 @@ describe("release swap task grade", () => {
     const question = gradeReleaseSwapTask(task({ status: "blocked", runs: [failed], pendingQuestion: true }));
     expect(summarizeGrades([model, question, gradeReleaseSwapTask(task())]).byReason)
       .toEqual({ "blocked_non_person: user action choose_model": 1, "waiting_on_person: question": 1 });
+  });
+
+  it("labels every failing task with exactly one of the three reported labels", () => {
+    const grades = [
+      gradeReleaseSwapTask(task({ status: "todo", runs: [failed] })),
+      gradeReleaseSwapTask(task({ status: "blocked", runs: [failed] })),
+      gradeReleaseSwapTask(task({ runs: [failed, { runId: "r2", status: "succeeded", errorCode: null, createdAt: 50, startedAt: 51, finishedAt: 60 }], retryClicks: [{ at: 40, accepted: true, via: "grader" }] })),
+      gradeReleaseSwapTask(task({ status: "todo", runs: [failed], retryClicks: [{ at: 40, accepted: false, via: "grader" }] })),
+      gradeReleaseSwapTask(task({ status: "cancelled", runs: [failed] })),
+    ];
+    expect(grades.map(retryLabel)).toEqual(["nothing pending", "blocked for a non-person reason", "needed Retry (click worked)",
+      "needed Retry (click did not work)", "nothing pending"]);
+    expect(retryLabel(gradeReleaseSwapTask(task()))).toBeNull();
+    expect(summarizeGrades(grades).byLabel).toEqual({ "nothing pending": 2, "blocked for a non-person reason": 1,
+      "needed Retry (click worked)": 1, "needed Retry (click did not work)": 1 });
+  });
+
+  it("does not count a run with no activity for the settle period as a live owner", () => {
+    const stuck = task({ status: "in_progress", now: 2_000_000, staleAfterMs: 900_000, interruption: interruption({ state: "working" }),
+      runs: [{ runId: "r9", status: "running", errorCode: null, createdAt: 0, startedAt: 1, finishedAt: null, lastActivityAt: 1_000_000 }] });
+    const grade = gradeReleaseSwapTask(stuck);
+    expect(grade).toMatchObject({ verdict: "open_no_owner", label: "nothing pending" });
+    expect(grade.detail).toContain("run r9 running with no activity for 17 min");
+    expect(gradeReleaseSwapTask({ ...stuck, runs: [{ ...stuck.runs[0]!, lastActivityAt: 1_500_000 }] }).verdict).toBe("still_working");
+  });
+
+  it("says the number is incomplete when task views could not be read", () => {
+    expect(summarizeGrades([gradeReleaseSwapTask(task())], 2)).toMatchObject({ uncollected: 2,
+      headline: "1 / 1 tasks completed without human action (incomplete: 2 task(s) could not be read and are not counted)" });
   });
 
   it("publishes one number: tasks completed without human action over tasks started", () => {

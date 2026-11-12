@@ -8,6 +8,7 @@ export interface ReleaseSwapOptions {
 }
 
 export const RELEASE_SWAP_DEFAULTS: ReleaseSwapOptions = { swaps: 6, spacingMs: 40 * 60_000, overlapMs: 510_000, settleMs: 15 * 60_000 };
+export const RELEASE_SWAP_SHORT: ReleaseSwapOptions = { swaps: 3, spacingMs: 12 * 60_000, overlapMs: 510_000, settleMs: 15 * 60_000 };
 export const RELEASE_SWAP_BOOT_ALLOWANCE_MS = 120_000;
 export const RELEASE_SWAP_LATE_LEAD_MS = 20_000;
 
@@ -28,12 +29,14 @@ export function expandReleaseSwapArgs(input: readonly string[]): { args: string[
   const rest: string[] = [];
   const values: Partial<Record<keyof typeof FLAGS, string>> = {};
   let enabled = false;
+  let short = false;
   for (let index = 0; index < input.length; index += 1) {
     const arg = input[index]!;
     const name = flagName(arg);
-    if (name === "release-swap") {
-      if (arg.includes("=")) throw new Error("--release-swap takes no value");
+    if (name === "release-swap" || name === "release-swap-short") {
+      if (arg.includes("=")) throw new Error(`--${name} takes no value`);
       enabled = true;
+      short ||= name === "release-swap-short";
       continue;
     }
     if (name && name in FLAGS) {
@@ -54,7 +57,7 @@ export function expandReleaseSwapArgs(input: readonly string[]): { args: string[
   const given = new Set(rest.map(flagName).filter((name): name is string => name !== null));
   const clash = REPLACED.find(name => given.has(name));
   if (clash) throw new Error(`--release-swap plans its own K15 swaps; do not combine it with --${clash}`);
-  const options: ReleaseSwapOptions = { ...RELEASE_SWAP_DEFAULTS };
+  const options: ReleaseSwapOptions = { ...(short ? RELEASE_SWAP_SHORT : RELEASE_SWAP_DEFAULTS) };
   for (const [flag, spec] of Object.entries(FLAGS) as Array<[keyof typeof FLAGS, (typeof FLAGS)[keyof typeof FLAGS]]>) {
     const raw = values[flag];
     if (raw === undefined) continue;
