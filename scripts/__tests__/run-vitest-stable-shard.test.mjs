@@ -567,8 +567,14 @@ test("the package lane manifest uses the general server duration schema", () => 
   assert.ok(Object.keys(manifest).every((key) => key in general));
   assert.equal(manifest.unit, "ms");
   assert.deepEqual(Object.keys(manifest.coverage), Object.keys(general.coverage));
+  // The weekly refresh samples merged-PR runs for this lane, and each such
+  // source records its pull request first (collectMergedPrSamples). Rejecting
+  // that key failed every scheduled refresh from 2026-11-02, which froze the
+  // server shard weights while new heavy suites landed on the median fallback.
   for (const source of manifest.sources) {
-    assert.deepEqual(Object.keys(source), ["run", "attempt", "sha", "url"]);
+    const keys = Object.keys(source);
+    assert.deepEqual(keys[0] === "pull" ? keys.slice(1) : keys, ["run", "attempt", "sha", "url"]);
+    if (keys[0] === "pull") assert.ok(Number.isSafeInteger(source.pull) && source.pull > 0);
     assert.match(source.sha, /^[a-f0-9]{40}$/);
   }
   const entries = Object.entries(manifest.durations);

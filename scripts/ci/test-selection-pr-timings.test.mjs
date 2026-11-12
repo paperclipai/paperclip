@@ -44,6 +44,36 @@ test("gh api opts into escape sequences, falls back for older gh, and strips col
   resetGhApiForTests();
 });
 
+test("gh api allows a large server shard log to finish downloading and never prints a partial log", async () => {
+  resetGhApiForTests();
+  const seen = [];
+  const capture = async (command, args, options) => {
+    seen.push(options);
+    return { stdout: "{}" };
+  };
+  await ghApi("/repos/x/actions/runs/1/jobs", { run: capture });
+  await ghApi("/repos/x/actions/jobs/1/logs", { json: false, run: capture });
+  // A 64 MB shard log took 59 s alone (actions run 43133035381); three at once
+  // overran the old 120 s limit and failed the weekly refresh.
+  assert.equal(seen[0].timeout, 120_000);
+  assert.ok(seen[1].timeout >= 600_000, `log timeout ${seen[1].timeout}`);
+  assert.ok(seen[1].maxBuffer >= 256 * 1024 * 1024, `log buffer ${seen[1].maxBuffer}`);
+
+  resetGhApiForTests();
+  const partial = "x".repeat(10_000);
+  const timedOut = async () => {
+    throw Object.assign(new Error(`Command failed: gh api /logs\n${partial}`),
+      { killed: true, signal: "SIGTERM", stdout: partial, stderr: "" });
+  };
+  await assert.rejects(ghApi("/repos/x/actions/jobs/2/logs", { json: false, run: timedOut }), error => {
+    assert.match(error.message, /\/repos\/x\/actions\/jobs\/2\/logs failed \(killed by SIGTERM\)/);
+    assert.ok(!error.message.includes(partial));
+    assert.equal(error.stdout, undefined);
+    return true;
+  });
+  resetGhApiForTests();
+});
+
 test("server timing parsing tolerates colour codes in fetched logs", () => {
   const file = "server/src/slow.test.ts";
   const log = `${esc}[2m${stamp(0)}${esc}[22m ${timingPrefix}${JSON.stringify({ version: 1, file, durationMs: 360 })}`;
