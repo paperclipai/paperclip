@@ -29,6 +29,7 @@ import * as photonClients from "../../services/photon/owned-client.js";
 import * as cloudConnectors from "../../services/paperclip-cloud-connector.js";
 import { createDeliveryWorkCoordinator } from "../../services/delivery-work-coordinator.js";
 import { idleWorkSnapshot } from "../../services/task-admission.js";
+import { notifyChatReceiver } from "../../services/chat-channels/runtime/receiver-work-notifications.js";
 
 import { createPhotonExternalStore } from "../../services/chat-channels/imessage-photon/external-store.js";
 import { createPhotonExternalOwner, PhotonLocalResources } from "../../services/chat-channels/imessage-photon/external-owner.js";
@@ -757,6 +758,96 @@ describe.skipIf(!external)("Photon normal configuration and retained receiver au
     expect(c.requests.filter(request => request.kind === "retire")).toHaveLength(2);
     for (const request of c.requests) expect(request.binding).toEqual(c.retained.binding);
     await expect(c.service.configure(c.endpoint.id, { action: "remove" }, f.userId)).rejects.toMatchObject({ status: 409 });
+  });
+
+
+  async function unrecordedSenderFixture() {
+    const persistenceFailure = new Error("controlled sender debt transaction rollback");
+    const closeFailure = new Error("controlled exact useful close failure");
+    let failDebtWrite = false, closeFails = false;
+    const debtWrites: number[] = [], normalStore = photonStores.createPhotonExternalStore;
+    vi.spyOn(photonStores, "createPhotonExternalStore").mockImplementation(database => {
+      const store = normalStore(database), retained = store.retained.bind(store);
+      return { ...store, retained: async (...args: Parameters<typeof store.retained>) => retained(args[0], current => {
+        const next = args[1](current);
+        if (failDebtWrite && next.failure?.code === "sender_close") { debtWrites.push(Date.now()); throw persistenceFailure; }
+        return next;
+      }, args[2]) };
+    });
+    const c = await managedConfiguration(), control = photonFixture();await c.reconstructExternal(control);
+    const runtime = c.runtime.get(c.endpoint.id);if (!runtime) throw new Error("normal retained sender runtime absent");
+    const adapter = runtime.getProviderAdapter();if (!(adapter instanceof PhotonChatAdapter)) throw new Error("normal Photon adapter absent");
+    control.client.close.mockImplementation(async () => { if (closeFails) throw closeFailure; });
+    const text = "Controlled successful useful result before unrecorded close debt",messageId = randomUUID();
+    const action = vi.fn(async (client: ReturnType<typeof photonFixture>["adapter"]["client"]) => client.messages.sendText(control.chat.guid,text,{clientMessageId:messageId}));
+    return { c, control, adapter, action, text, debtWrites, persistenceFailure,
+      arm(){failDebtWrite=true;closeFails=true;},restorePersistence(){failDebtWrite=false;},restoreClose(){closeFails=false;},
+      invoke:()=>adapter.withClient(action),
+      assertSingleSend(){expect(action).toHaveBeenCalledTimes(1);expect(control.client.messages.sendText.mock.calls.filter(call=>call[1]===text)).toHaveLength(1);},
+    };
+  }
+  it("normal receiver recovers unrecorded sender close debt after SQL restoration without repeating its successful provider action", async () => {
+    // Normal service/Runtime/adapter/client queue and locked SQL transaction.
+    // Only unary provider result, local close and transaction failure are controlled.
+    const t=await unrecordedSenderFixture();let primary:{error:unknown}|undefined,coordinator:ReturnType<typeof createDeliveryWorkCoordinator>|undefined;
+    try {
+      vi.useFakeTimers({toFake:["Date","setTimeout","clearTimeout","setInterval","clearInterval"],shouldAdvanceTime:true});
+      coordinator=createDeliveryWorkCoordinator({owner:db,canRun:()=>true,onError:()=>{}});coordinators.push(coordinator);
+      await t.c.service.registerReceiverWork(coordinator,()=>true).ready;
+      await vi.waitFor(()=>{expect(idleWorkSnapshot().active).toBe(0);expect(coordinator!.nextWakeAt()).toBeNull();},{timeout:5000});
+      t.arm();const result=await t.invoke();expect(result.guid).toBeTruthy();t.assertSingleSend();
+      expect(t.debtWrites.length).toBeGreaterThan(0);expect(readPhotonExternalState(await t.c.state.read(PHOTON_EXTERNAL_STATE))?.failure).toBeNull();
+      const original=readPhotonExternalState(await t.c.state.read(PHOTON_EXTERNAL_STATE));if(!original?.senderResource)throw new Error("normal prebirth sender descriptor absent");
+      const failedCloses=t.control.client.close.mock.calls.length;
+      t.restorePersistence();t.restoreClose();
+      // Restore only the controlled fault. No new message, action, explicit
+      // reconcile, notify, Retry or shutdown drives this recovery.
+      await vi.advanceTimersByTimeAsync(30_000);
+      await vi.waitFor(async()=>{
+        expect(t.control.client.close.mock.calls.length,"unrecorded cleanup must retry through the already-idle normal receiver owner after SQL restoration").toBeGreaterThan(failedCloses);
+        expect(readPhotonExternalState(await t.c.state.read(PHOTON_EXTERNAL_STATE))?.failure).toBeNull();
+        expect(idleWorkSnapshot().active).toBe(0);expect(coordinator!.nextWakeAt()).toBeNull();
+      },{timeout:5000});
+      const after=readPhotonExternalState(await t.c.state.read(PHOTON_EXTERNAL_STATE));expect(after?.senderResource?.id).toBe(original.senderResource.id);
+      expect(after?.identity).toEqual(original.identity);expect(after?.binding).toEqual(original.binding);t.assertSingleSend();
+    }catch(error){primary={error};}
+    finally{
+      t.restorePersistence();t.restoreClose();const cleanup:unknown[]=[];
+      try{await coordinator?.stop();}catch(error){cleanup.push(error);}vi.useRealTimers();
+      try{await t.c.runtime.removeEndpoint(t.c.endpoint.id);}catch(error){cleanup.push(error);}
+      try{await t.control.adapter.disconnect();}catch(error){cleanup.push(error);}
+      if(cleanup.length)throw new AggregateError([...(primary?[primary.error]:[]),...cleanup],"normal unrecorded sender cleanup remains owned");
+    }
+    if(primary)throw primary.error;
+  });
+
+
+  it("unrecorded sender debt respects normal worker error backoff and a future durable failure deadline", async () => {
+    const t=await unrecordedSenderFixture();let primary:{error:unknown}|undefined,coordinator:ReturnType<typeof createDeliveryWorkCoordinator>|undefined;
+    try{
+      vi.useFakeTimers({toFake:["Date","setTimeout","clearTimeout","setInterval","clearInterval"],shouldAdvanceTime:true});
+      const errors:unknown[]=[];coordinator=createDeliveryWorkCoordinator({owner:db,canRun:()=>true,onError:error=>errors.push(error)});coordinators.push(coordinator);
+      await t.c.service.registerReceiverWork(coordinator,()=>true).ready;
+      await vi.waitFor(()=>{expect(idleWorkSnapshot().active).toBe(0);expect(coordinator!.nextWakeAt()).toBeNull();},{timeout:5000});
+      t.arm();await t.invoke();
+      await vi.waitFor(()=>{expect(errors.length).toBeGreaterThan(0);expect(t.debtWrites.length).toBeGreaterThan(1);},{timeout:5000});
+      const attempts=t.debtWrites.length,failedCloses=t.control.client.close.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(2000);expect(t.debtWrites).toHaveLength(attempts);expect(t.control.client.close).toHaveBeenCalledTimes(failedCloses);
+      t.restorePersistence();const state=readPhotonExternalState(await t.c.state.read(PHOTON_EXTERNAL_STATE));if(!state)throw new Error("normal sender state absent");
+      const deadline=new Date(Date.now()+60_000).toISOString();await t.c.state.update(PHOTON_EXTERNAL_STATE,()=>({...state,failure:{code:"sender_close" as const,attempts:4,nextAttemptAt:deadline}}));
+      await db.transaction(tx=>notifyChatReceiver(tx,t.c.endpoint));t.restoreClose();await vi.advanceTimersByTimeAsync(30_000);
+      expect(t.control.client.close).toHaveBeenCalledTimes(failedCloses);expect(readPhotonExternalState(await t.c.state.read(PHOTON_EXTERNAL_STATE))?.failure).toEqual({code:"sender_close",attempts:4,nextAttemptAt:deadline});
+      await vi.advanceTimersByTimeAsync(30_001);
+      await vi.waitFor(async()=>{expect(t.control.client.close.mock.calls.length).toBeGreaterThan(failedCloses);expect(readPhotonExternalState(await t.c.state.read(PHOTON_EXTERNAL_STATE))?.failure).toBeNull();expect(coordinator!.nextWakeAt()).toBeNull();},{timeout:5000});t.assertSingleSend();
+    }catch(error){primary={error};}
+    finally{
+      t.restorePersistence();t.restoreClose();const cleanup:unknown[]=[];
+      try{await coordinator?.stop();}catch(error){cleanup.push(error);}vi.useRealTimers();
+      try{await t.c.runtime.removeEndpoint(t.c.endpoint.id);}catch(error){cleanup.push(error);}
+      try{await t.control.adapter.disconnect();}catch(error){cleanup.push(error);}
+      if(cleanup.length)throw new AggregateError([...(primary?[primary.error]:[]),...cleanup],"normal sender backoff cleanup remains owned");
+    }
+    if(primary)throw primary.error;
   });
 
   it("normal receiver retries the same useful sender close without another message and replacement never treats absence as closure", async () => {

@@ -185,29 +185,31 @@ export async function readProcessTable(startInspector?: () => ChildProcess): Pro
     let output = "";
     let settled = false;
     let truncated = false;
-    const finish = (value: ProcessObservation[] | null) => {
+    const finish = (value: ProcessObservation[] | null, reason?: "timeout" | "output_limit" | "spawn_error" | "nonzero_exit", code?: string | number | null, signal?: NodeJS.Signals | null) => {
       if (settled) return;
       settled = true;
       clearTimeout(inspectionTimeout);
+      if (reason) console.error("[runner-process-inspector] " + JSON.stringify({ reason, pid: inspector.pid ?? null, code: code ?? null, signal: signal ?? null, outputLength: output.length }));
       resolve(value);
     };
     const inspectionTimeout = setTimeout(() => {
       inspector.kill("SIGKILL");
-      finish(null);
+      finish(null, "timeout");
     }, 5_000);
     inspectionTimeout.unref();
     inspector.stdout?.setEncoding("utf8").on("data", (chunk: string) => {
       if (output.length + chunk.length > 1024 * 1024) {
         truncated = true;
         inspector.kill("SIGKILL");
-        finish(null);
+        finish(null, "output_limit");
         return;
       }
       output += chunk;
     });
-    inspector.once("error", () => finish(null));
-    inspector.once("close", (code) => {
-      if (code !== 0 || truncated) { finish(null); return; }
+    inspector.once("error", (error: NodeJS.ErrnoException) => finish(null, "spawn_error",
+      ["EAGAIN", "EMFILE", "ENFILE", "ENOENT", "EACCES", "EPERM"].includes(error.code ?? "") ? error.code : "other"));
+    inspector.once("close", (code, signal) => {
+      if (code !== 0 || truncated) { finish(null, truncated ? "output_limit" : "nonzero_exit", code, signal); return; }
       const observations = output
         .split(/\r?\n/)
         .map((line) =>

@@ -3,7 +3,9 @@ import type { ProcessProbe } from "../../services/owner-proof.js";
 import { randomUUID } from "node:crypto";
 import { queryObjects } from "node:v8";
 import { isDeepStrictEqual } from "node:util";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { photonFixture } from "./fixture.js";
+import * as photonClients from "../../services/photon/owned-client.js";
 import type { ChatSdkStatePersistence, ChatSdkStateRecord } from "../../services/chat-sdk-state.js";
 import { PhotonState } from "../../services/photon/state.js";
 import { PhotonUsefulClient } from "../../services/photon/useful-client.js";
@@ -286,6 +288,31 @@ describe("Photon actual resource join and useful-channel owner", () => {
     let opens = 0, closes = 0; const owner = new PhotonUsefulClient(() => { opens++; return { close: async () => { closes++; } }; });
     await owner.run(async () => "first-useful-result"); await owner.run(async () => "second-useful-result");
     expect({ opens, closes }).toEqual({ opens: 2, closes: 2 }); await owner.close(); expect(closes).toBe(2);
+  });
+  it("lazy useful ownership joins its original client and commits the held receipt before constructing or running later useful work", async () => {
+    const f = photonFixture();
+    const laterClient = { ...f.client, close: vi.fn(async () => {}) };
+    const create = vi.spyOn(photonClients, "createOwnedPhotonClient").mockReturnValue(laterClient as unknown as ReturnType<typeof photonClients.createOwnedPhotonClient>);
+    let enterReceipt = () => {}, releaseReceipt = () => {};
+    const entered = new Promise<void>(resolve => { enterReceipt = resolve; });
+    const receipt = new Promise<void>(resolve => { releaseReceipt = resolve; });
+    const order: string[] = [], providerAction = vi.fn(async () => { order.push("provider"); return "known-later-result"; });
+    let drain: Promise<void> | undefined, useful: Promise<string> | undefined;
+    try {
+      // Start with the real adapter's original local client and no useful queue.
+      // Drain must adopt that same object without allocating an SDK replacement.
+      drain = f.adapter.drainUsefulClient(async () => { order.push("receipt-entered"); enterReceipt(); await receipt; order.push("receipt-committed"); });
+      await entered;
+      expect(f.client.close).toHaveBeenCalledTimes(1); expect(create).not.toHaveBeenCalled();
+      useful = f.adapter.withClient(providerAction); await Promise.resolve();
+      expect(create).not.toHaveBeenCalled(); expect(providerAction).not.toHaveBeenCalled(); expect(laterClient.close).not.toHaveBeenCalled();
+      releaseReceipt(); await drain; expect(await useful).toBe("known-later-result");
+      expect(order).toEqual(["receipt-entered", "receipt-committed", "provider"]);
+      expect(create).toHaveBeenCalledTimes(1); expect(providerAction).toHaveBeenCalledTimes(1); expect(laterClient.close).toHaveBeenCalledTimes(1);
+    } finally {
+      releaseReceipt(); await Promise.allSettled([...(drain ? [drain] : []), ...(useful ? [useful] : [])]);
+      try { await f.adapter.disconnect(); } finally { create.mockRestore(); f.allocation.mockRestore(); }
+    }
   });
   it("known provider receipt survives cleanup refusal and old physical resource retries before new send", async () => {
     let opens = 0, closes = 0, sends = 0, debt = 0;

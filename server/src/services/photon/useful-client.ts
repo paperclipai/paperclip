@@ -15,20 +15,22 @@ export class PhotonUsefulClient<T extends { close(): Promise<void> | void }> {
     this.client = initial;
     this.unregister = registerIdleLocalWorkProbe(() => this.failed || this.unrecordedDebt ? "unknown" : this.pending || this.client ? "present" : "none");
   }
-  private async closeCurrent() {
+  private async closeCurrent(afterClose?: () => Promise<void>) {
     const client = this.client;
-    if (!client) {
-      if (this.unrecordedDebt) { await this.recordDebt(); this.unrecordedDebt = false; }
-      return;
+    if (client) {
+      try { await client.close(); this.client = undefined; this.failed = false; }
+      catch (error) {
+        this.failed = true; this.unrecordedDebt = true;
+        try { await this.recordDebt(); this.unrecordedDebt = false; } catch { /* Exact resource stays owned and the probe remains unknown. */ }
+        throw error;
+      }
     }
-    try { await client.close(); this.client = undefined; this.failed = false; }
-    catch (error) {
-      this.failed = true; this.unrecordedDebt = true;
-      try { await this.recordDebt(); this.unrecordedDebt = false; } catch { /* Exact resource stays owned and the probe remains unknown. */ }
-      throw error;
-    }
-    if (this.unrecordedDebt) { await this.recordDebt(); this.unrecordedDebt = false; }
+    // The exact cleanup receipt substitutes for recording debt after an actual
+    // successful close. A failed receipt stays pending and is not a close error.
+    if (afterClose) { await afterClose(); this.unrecordedDebt = false; }
+    else if (this.unrecordedDebt) { await this.recordDebt(); this.unrecordedDebt = false; }
   }
+  hasUnrecordedCleanupDebt(): boolean { return this.unrecordedDebt; }
   private enqueue<R>(action: () => Promise<R>): Promise<R> {
     this.pending += 1;
     const result = this.tail.then(action);
@@ -53,7 +55,7 @@ export class PhotonUsefulClient<T extends { close(): Promise<void> | void }> {
       return value;
     });
   }
-  drain(): Promise<void> { return this.enqueue(() => this.closeCurrent()); }
+  drain(afterClose?: () => Promise<void>): Promise<void> { return this.enqueue(() => this.closeCurrent(afterClose)); }
   close(): Promise<void> {
     this.stopped = true;
     return this.enqueue(async () => { await this.closeCurrent(); this.unregister(); });

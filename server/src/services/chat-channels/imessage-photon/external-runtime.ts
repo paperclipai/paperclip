@@ -359,7 +359,13 @@ export function createPhotonExternalRuntimeOwner(db: Db, options: {
           external = (await createPhotonExternalOwner({ store, broker, resources, notify: value => options.notify(value.endpointId) }).repair(external)).state;
         }
         const adapter = options.currentRuntime(id)?.getProviderAdapter();
-        if (adapter instanceof PhotonChatAdapter) await adapter.drainUsefulClient();
+        const drainedState = external;
+        if (adapter instanceof PhotonChatAdapter) await adapter.drainUsefulClient(async () => {
+          if (drainedState.failure?.code !== "sender_close") return;
+          // This exact pre-drain receipt cannot erase a concurrent future hold,
+          // authority/allocation/checkpoint update or a different failure.
+          await store.retained(drainedState, value => ({ ...value, failure: null }));
+        });
         else if (external.failure?.code === "sender_close") {
           const removed = await options.removeRuntime(id);
           const owner = createPhotonExternalOwner({ store, broker, resources, notify: value => options.notify(value.endpointId) });
@@ -370,7 +376,8 @@ export function createPhotonExternalRuntimeOwner(db: Db, options: {
             throw new Error("Photon original sender physical closure is unknown");
           }
         }
-        if (external.failure?.code === "sender_close") await store.retained(external, value => ({ ...value, failure: null }));
+        if (!(adapter instanceof PhotonChatAdapter) && external.failure?.code === "sender_close")
+          await store.retained(external, value => ({ ...value, failure: null }));
         return;
       }
       const runtime = await options.runtimeFor(record.endpoint, { requireDiscordOwnership: true });
@@ -430,21 +437,22 @@ export function createPhotonExternalRuntimeOwner(db: Db, options: {
     }
   };
   async function senderDebt(id: string, context?: RuntimeContext) {
-    const record = await options.endpointRecord(id);
-    if (!record) throw new Error("Photon sender debt has no retained endpoint");
-    const runtime = options.currentRuntime(id);
-    context ??= runtime ? options.context(runtime) : undefined;
-    const external = await store.read({ companyId: record.endpoint.companyId, endpointId: id });
-    // Debt is cleanup authority for the exact original runtime, including after
-    // pause/archive fences business and the registry moves it to retiring.
-    if (!external || !["external", "retiring"].includes(external.phase)
-      || !context?.endpointRuntime || options.context(context.endpointRuntime) !== context
-      || external.identity.runtimeGeneration !== context.generation
-      || external.identity.credentialReferences !== context.credentialFingerprint
-      || external.senderResource && !resources.owns(external.senderResource.id, context.endpointRuntime))
-      throw new Error("Photon sender debt has no exact retained owner");
-    await store.retained(external, value => ({ ...value, failure: { code: "sender_close", attempts: (value.failure?.attempts ?? 0) + 1, nextAttemptAt: new Date().toISOString() } }));
-    options.notify(id);
+    try {
+      const record = await options.endpointRecord(id);
+      if (!record) throw new Error("Photon sender debt has no retained endpoint");
+      const runtime = options.currentRuntime(id);
+      context ??= runtime ? options.context(runtime) : undefined;
+      const external = await store.read({ companyId: record.endpoint.companyId, endpointId: id });
+      // Debt is cleanup authority for the exact original runtime, including after
+      // pause/archive fences business and the registry moves it to retiring.
+      if (!external || !["external", "retiring"].includes(external.phase)
+        || !context?.endpointRuntime || options.context(context.endpointRuntime) !== context
+        || external.identity.runtimeGeneration !== context.generation
+        || external.identity.credentialReferences !== context.credentialFingerprint
+        || external.senderResource && !resources.owns(external.senderResource.id, context.endpointRuntime))
+        throw new Error("Photon sender debt has no exact retained owner");
+      await store.retained(external, value => ({ ...value, failure: { code: "sender_close", attempts: (value.failure?.attempts ?? 0) + 1, nextAttemptAt: new Date().toISOString() } }));
+    } finally { options.notify(id); }
   }
   async function retire(id: string, cleanup?: { responsibleUserId?: string | null; reauthorize(): Promise<void> }) {
     const record = await options.endpointRecord(id), broker = options.broker();
@@ -502,10 +510,18 @@ export function createPhotonExternalRuntimeOwner(db: Db, options: {
       const closedOriginalProcess = !changedExternal && state.phase === "external" && state.failure === null
         && state.localClosureConfirmed !== true && state.localResourceDebt?.nextAttemptAt === null
         && await photonResourceProcessEnded(state);
+      // In-memory retry hint is ONLY the exact current sender whose debt
+      // has not yet reached SQL. Existing durable failure/debt deadlines win.
+      const runtime = options.currentRuntime(row.endpointId), context = runtime ? options.context(runtime) : undefined;
+      const adapter = runtime?.getProviderAdapter();
+      const unrecordedSenderDebt = state.phase === "external" && !!state.senderResource && !state.senderResource.closed
+        && !!runtime && !!context && context.endpointRuntime === runtime && options.context(runtime) === context
+        && context.generation === state.identity.runtimeGeneration && context.credentialFingerprint === state.identity.credentialReferences
+        && resources.owns(state.senderResource.id, runtime) && adapter instanceof PhotonChatAdapter && adapter.hasUnrecordedUsefulClientDebt();
       values.push({ id: row.endpointId, companyId: row.companyId, connectionId: row.connectionId,
         dueAt: changedExternal || restoredRetirementPort || closedOriginalProcess ? 0 : state.failure ? (state.failure.nextAttemptAt ? Date.parse(state.failure.nextAttemptAt) : null)
           : state.localResourceDebt ? (state.localResourceDebt.nextAttemptAt ? Date.parse(state.localResourceDebt.nextAttemptAt) : null)
-          : state.phase === "external" ? null : 0 });
+          : unrecordedSenderDebt ? 0 : state.phase === "external" ? null : 0 });
     }
     return values;
   }

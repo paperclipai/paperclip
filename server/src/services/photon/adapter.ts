@@ -105,7 +105,10 @@ export class PhotonChatAdapter implements Adapter<PhotonThread, PhotonMessage> {
   private localClient?: GrpcAdvancedIMessage;
   private usefulClient?: PhotonUsefulClient<GrpcAdvancedIMessage>;
   onUsefulClientDebt?: () => Promise<void>;
-  async drainUsefulClient(): Promise<void> { await this.usefulClient?.drain(); }
+  async drainUsefulClient(afterClose?: () => Promise<void>): Promise<void> {
+    await this.externalClientOwner().drain(afterClose);
+  }
+  hasUnrecordedUsefulClientDebt(): boolean { return this.usefulClient?.hasUnrecordedCleanupDebt() ?? false; }
   private makeClient(): GrpcAdvancedIMessage {
     return createOwnedPhotonClient({ address: this.authentication.address, token: () => this.authentication.token(), tls: true,
       retry: false, autoIdempotency: false, timeout: 25_000,
@@ -116,10 +119,16 @@ export class PhotonChatAdapter implements Adapter<PhotonThread, PhotonMessage> {
     if (!this.localClient) throw new Error("Photon local client is closed");
     return this.localClient;
   }
+  private externalClientOwner(): PhotonUsefulClient<GrpcAdvancedIMessage> {
+    if (!this.usefulClient) {
+      if (!this.localClient) throw new Error("Photon useful cleanup has no original client owner");
+      this.usefulClient = new PhotonUsefulClient(() => this.makeClient(), this.localClient, async () => { if (!this.onUsefulClientDebt) throw new Error("Photon physical debt owner is unavailable"); await this.onUsefulClientDebt(); });
+      this.localClient = undefined;
+    }
+    return this.usefulClient;
+  }
   async useExternalIntake(): Promise<void> {
-    this.usefulClient ??= new PhotonUsefulClient(() => this.makeClient(), this.localClient, async () => { if (!this.onUsefulClientDebt) throw new Error("Photon physical debt owner is unavailable"); await this.onUsefulClientDebt(); });
-    this.localClient = undefined;
-    await this.usefulClient.drain();
+    await this.externalClientOwner().drain();
   }
   withClient<T>(action: (client: GrpcAdvancedIMessage) => Promise<T>): Promise<T> {
     return this.usefulClient ? this.usefulClient.run(action) : action(this.client);
