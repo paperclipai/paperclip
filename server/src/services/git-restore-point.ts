@@ -112,7 +112,10 @@ async function git(cwd: string, args: string[], options: GitOptions = {}): Promi
     timeout: 120_000,
     signal: options.signal,
   });
-  if (options.input !== undefined) child.child.stdin?.end(options.input);
+  if (options.input !== undefined) {
+    child.child.stdin?.on("error", () => {});
+    child.child.stdin?.end(options.input);
+  }
   const { stdout } = await child;
   return stdout as Buffer;
 }
