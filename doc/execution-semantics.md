@@ -1444,6 +1444,14 @@ progress", or still stopping or archiving at the provider's start deadline). A
 common cause is a follow-up that arrives while the provider is auto-stopping or
 archiving an idle sandbox.
 
+When a resume call only timed out and the preserved lease is idle (`released` or
+`retained`, with no live run holding it), the provider is usually still starting
+the sandbox. The run then keeps retrying the same sandbox up to the provider's
+start deadline (at most 330 seconds from the first attempt) instead of failing
+at 90 seconds. Each call still has at most 90 seconds. This applies whether or
+not the sandbox could be replaced, so a sandbox with unsaved work resumes in
+the same run instead of waiting behind a Retry.
+
 When the resume still fails, the run replaces the sandbox only when nothing lives
 solely on it: the lease is `released` or `retained` and no live run holds it, the
 task workspace is clean with a committed saved snapshot, and a native runner
