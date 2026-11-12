@@ -1369,25 +1369,34 @@ describe("remote runner launch fingerprint compatibility", () => {
   it.skipIf(!existsSync("/proc/self/cmdline"))("stops a live runner that still holds this state directory before launching", async () => {
     const root = await mkdtemp(join(tmpdir(), "remote-launch-fence-"));
     const stateDirectory = join(root, "state");
-    const runnerAt = (directory: string) => spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", "--", "--state-dir", directory],
+    const toolPidFile = join(root, "tool.pid");
+    // The stale Runner's provider tool runs in its own process group.
+    const staleScript = `const c=require("child_process").spawn(process.execPath,["-e","setInterval(()=>{},1000)"],{detached:true,stdio:"ignore"});`
+      + `require("fs").writeFileSync(${JSON.stringify(toolPidFile)},String(c.pid));setInterval(()=>{},1000)`;
+    const runnerAt = (directory: string, script = "setInterval(() => {}, 1000)") => spawn(process.execPath, ["-e", script, "--", "--state-dir", directory],
       { argv0: join(root, "bin", "paperclip-runnerd"), stdio: "ignore", detached: true });
-    const stale = runnerAt(stateDirectory);
+    const stale = runnerAt(stateDirectory, staleScript);
     const unrelated = runnerAt(join(root, "other-state"));
     const staleExit = new Promise<string>(resolveExit => stale.once("exit", (_code, signal) => resolveExit(String(signal))));
+    const gone = (pid: number) => { try { return readFileSync(`/proc/${pid}/stat`, "utf8").split(") ")[1]?.startsWith("Z") ?? true; } catch { return true; } };
+    let toolPid = 0;
     try {
       await vi.waitFor(async () => expect((await readFile(`/proc/${stale.pid}/cmdline`, "utf8")).split("\0")).toContain(stateDirectory));
       await vi.waitFor(async () => expect((await readFile(`/proc/${unrelated.pid}/cmdline`, "utf8")).split("\0")).toContain("--state-dir"));
+      await vi.waitFor(async () => { toolPid = Number(await readFile(toolPidFile, "utf8")); expect(toolPid).toBeGreaterThan(0); });
       const result = execFileSync("/bin/sh", ["-c", REMOTE_RUNNER_CHILD_LAUNCH_SCRIPT, "launch", join(root, "identity"), "nonce", "runner",
         join(root, "diagnostics"), "/bin/sh", "-c", "printf launched", "paperclip-runnerd", "--state-dir", stateDirectory], { encoding: "utf8" });
       expect(result).toBe("launched");
       expect(await Promise.race([staleExit, new Promise(resolveAlive => setTimeout(() => resolveAlive("alive"), 8_000))])).toBe("SIGTERM");
+      expect(gone(toolPid)).toBe(true);
       expect(() => process.kill(unrelated.pid!, 0)).not.toThrow();
     } finally {
       stale.kill("SIGKILL");
       unrelated.kill("SIGKILL");
+      if (toolPid) try { process.kill(toolPid, "SIGKILL"); } catch { /* already gone */ }
       await rm(root, { recursive: true, force: true });
     }
-  }, 20_000);
+  }, 30_000);
 });
 
 describe("remote runner process supervision", () => {

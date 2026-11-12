@@ -14818,8 +14818,21 @@ const REMOTE_RUNNER_PROCESS_STDERR_TRIM_SCRIPT =
  * just before an upgrade) can still hold that state and the ingress port, and
  * each new launch overwrites the identity marker that pointed at it. Stop any
  * live runnerd whose arguments name this exact state directory before the new
- * one starts. A normal launch finds none and pays one grep over /proc.
+ * one starts, together with its whole process lineage (providers and tools run
+ * in their own process groups). A normal launch finds none and pays one grep
+ * over /proc. When a holder cannot be stopped, the launch fails before it
+ * writes a marker, with a named reason in the process stderr log.
  */
+const REMOTE_RUNNER_STALE_LINEAGE_STOP_SCRIPT =
+  `const fs=require('fs'),root=Number(process.argv[1]);` +
+  `const stat=p=>{try{const s=fs.readFileSync('/proc/'+p+'/stat','utf8'),r=s.slice(s.lastIndexOf(')')+2).split(' ');return{state:r[0],ppid:Number(r[1])}}catch{return null}};` +
+  `const kids=new Map();for(const d of fs.readdirSync('/proc')){if(String(Number(d))!==d)continue;const s=stat(d);if(s){const k=kids.get(s.ppid)||[];k.push(Number(d));kids.set(s.ppid,k)}}` +
+  `const all=[root];for(let i=0;i<all.length;i+=1)for(const c of kids.get(all[i])||[])if(!all.includes(c))all.push(c);` +
+  `const alive=p=>{const s=stat(p);return s!==null&&s.state!=='Z'};` +
+  `const send=sig=>{for(const p of all)for(const t of[-p,p]){try{process.kill(t,sig)}catch{}}};` +
+  `const pause=new Int32Array(new SharedArrayBuffer(4));const wait=ms=>{const end=Date.now()+ms;while(Date.now()<end&&all.some(alive))Atomics.wait(pause,0,0,100)};` +
+  `send('SIGTERM');wait(5000);if(all.some(alive)){send('SIGKILL');wait(5000)}process.exit(all.some(alive)?1:0)`;
+
 const REMOTE_RUNNER_STALE_STATE_FENCE_SCRIPT =
   'state_dir=""; previous_arg=""; for arg in "$@"; do if test "$previous_arg" = "--state-dir"; then state_dir=$arg; fi; previous_arg=$arg; done; ' +
   'if test -n "$state_dir" && test -r /proc/self/cmdline; then ' +
@@ -14829,16 +14842,15 @@ const REMOTE_RUNNER_STALE_STATE_FENCE_SCRIPT =
   'stale_binary=$(head -z -n 1 "$stale_cmdline" 2>/dev/null | tr -d "\\000") || continue; ' +
   'test "${stale_binary##*/}" = "paperclip-runnerd" || continue; ' +
   'grep -q -s -z -F -x -- "--state-dir" "$stale_cmdline" || continue; ' +
-  'kill -TERM -- "-$stale_pid" 2>/dev/null || kill -TERM "$stale_pid" 2>/dev/null || continue; ' +
-  'stale_wait=0; while kill -0 "$stale_pid" 2>/dev/null && test "$stale_wait" -lt 50; do stale_wait=$((stale_wait + 1)); sleep 0.1; done; ' +
-  'if kill -0 "$stale_pid" 2>/dev/null; then kill -KILL -- "-$stale_pid" 2>/dev/null || kill -KILL "$stale_pid" 2>/dev/null || true; ' +
-  'stale_wait=0; while kill -0 "$stale_pid" 2>/dev/null && test "$stale_wait" -lt 50; do stale_wait=$((stale_wait + 1)); sleep 0.1; done; fi; ' +
+  `node -e "${REMOTE_RUNNER_STALE_LINEAGE_STOP_SCRIPT}" "$stale_pid" || { ` +
+  `printf "%s\\n" "runner_stale_state_holder_alive: runner $stale_pid still holds this state folder" >> "$diagnostics_directory/${REMOTE_RUNNER_PROCESS_STDERR_FILE}"; exit 75; }; ` +
   'done; fi; ';
 
 export const REMOTE_RUNNER_CHILD_LAUNCH_SCRIPT =
   'set -eu; identity_path=$1; identity_nonce=$2; runner_instance_id=$3; diagnostics_directory=$4; shift 4; umask 077; ' +
+  'test ! -L "$diagnostics_directory"; if test -e "$diagnostics_directory"; then test -d "$diagnostics_directory"; else mkdir -p -- "$diagnostics_directory"; fi; chmod 0700 "$diagnostics_directory"; ' +
   REMOTE_RUNNER_STALE_STATE_FENCE_SCRIPT +
-  'test ! -L "$diagnostics_directory"; if test -e "$diagnostics_directory"; then test -d "$diagnostics_directory"; else mkdir -p -- "$diagnostics_directory"; fi; chmod 0700 "$diagnostics_directory"; started_at=$(date -u +"%Y-%m-%dT%H:%M:%S.%3NZ"); pid=$$; process_fingerprint=""; if ' +
+  'started_at=$(date -u +"%Y-%m-%dT%H:%M:%S.%3NZ"); pid=$$; process_fingerprint=""; if ' +
   REMOTE_RUNNER_PROCESS_FINGERPRINT_SCRIPT +
   '; then :; else process_fingerprint=""; fi; ' +
   // Bounded stderr evidence: rotate an oversized file once, then trim it in place while runnerd runs.
