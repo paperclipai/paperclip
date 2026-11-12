@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
+import { useSidebar } from "../context/SidebarContext";
 import { SIDEBAR_SCROLL_RESET_STATE } from "../lib/navigation-scroll";
 import { cn } from "../lib/utils";
 import { useInboxBadge } from "../hooks/useInboxBadge";
@@ -21,6 +22,8 @@ import { Badge } from "@/components/ui/badge";
 
 interface MobileBottomNavProps {
   visible: boolean;
+  /** True on a chat route whose drawer holds the agent chats list. Chat then opens that list instead of re-navigating. */
+  chatListInDrawer?: boolean;
 }
 
 interface MobileNavLinkItem {
@@ -40,8 +43,9 @@ interface MobileNavActionItem {
 
 type MobileNavItem = MobileNavLinkItem | MobileNavActionItem;
 
-export function MobileBottomNav({ visible }: MobileBottomNavProps) {
+export function MobileBottomNav({ visible, chatListInDrawer = false }: MobileBottomNavProps) {
   const location = useLocation();
+  const { setSidebarOpen } = useSidebar();
   const { selectedCompanyId } = useCompany();
   const { openNewIssue } = useDialogActions();
   const { enabled: agentChatEnabled } = useAgentChatEnabled();
@@ -135,6 +139,12 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
               key={item.label}
               to={item.to}
               state={SIDEBAR_SCROLL_RESET_STATE}
+              onClick={item.to === "/chats" && chatListInDrawer ? (event) => {
+                // A chat is already open, so Chat opens the chats list.
+                // From any other page the first tap still opens the last chat.
+                event.preventDefault();
+                setSidebarOpen(true);
+              } : undefined}
               className={({ isActive }) =>
                 cn(
                   "relative flex min-w-0 flex-col items-center justify-center gap-1 rounded-md text-(length:--text-nano) font-medium transition-colors",

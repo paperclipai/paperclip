@@ -11,6 +11,7 @@ vi.mock("@/hooks/useAgentChatEnabled", () => ({ useAgentChatEnabled: () => ({ en
 vi.mock("@/hooks/useCombinedInboxTasksEnabled", () => ({ useCombinedInboxTasksEnabled: () => ({ enabled: false }) }));
 vi.mock("@/hooks/useInboxBadge", () => ({ useInboxBadge: () => ({ inbox: 0 }) }));
 vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: "company" }) }));
+vi.mock("@/context/SidebarContext", () => ({ useSidebar: () => ({ setSidebarOpen: vi.fn() }) }));
 vi.mock("@/context/DialogContext", () => ({ useDialogActions: () => ({ openNewIssue: vi.fn() }) }));
 vi.mock("@/lib/router", () => ({ useLocation: () => ({ pathname: "/chats" }), NavLink: ({ to, children }: { to: string; children: (state: { isActive: boolean }) => ReactNode }) => <a href={to}>{children({ isActive: false })}</a> }));
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
