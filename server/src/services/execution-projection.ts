@@ -339,7 +339,7 @@ export function projectExecution(
     Object.assign(projection, { phase, label });
   if (recoveryAction?.status === "resolved" && recoveryAction.evidence?.automaticRecovery) {
     projection.cause = recoveryAction.cause;
-    projection.nextAction = workspaceRecoveryDisplay(recoveryAction.evidence, run.id)?.message
+    projection.nextAction = workspaceRecoveryDisplay(recoveryAction.evidence, run.id, { status: run.status, retryOffered: false })?.message
       ?? recoveryAction.nextAction;
     const continuation = recoveryAction.evidence.explicitUserContinuation as
       { previousRunId?: unknown; runId?: unknown } | undefined;

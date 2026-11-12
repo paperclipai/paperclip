@@ -1034,6 +1034,8 @@ export function heartbeatService(
       // when its lane (for example interrupted_preparation after cleanup)
       // differs from the synchronous budget check below.
       if (outcome && result.outcome === "retry_exhausted") outcome.retryExhausted = true;
+      if (outcome && result.outcome === "not_scheduled" && "errorCode" in result
+        && result.errorCode === "continuation_user_authorization_missing") outcome.continuationRefused = true;
       return result.outcome === "scheduled" ? result.run : null;
     },
     // Mirrors scheduleBoundedRetryForRun's transient budget check: a failed
