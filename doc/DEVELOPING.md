@@ -2,23 +2,24 @@
 
 This project can run fully in local dev without setting up PostgreSQL manually.
 
-## Actionable coordinator inbox
+## Actionable attention projection
 
-The coordinator Inbox, its navigation count and attention task membership use
-the same `actionableOnly=true` attention projection. It includes questions,
-decisions, approvals, access requests, stalled reviews and recovery requests
-with supported resolution controls. Technical recovery requests remain eligible
-when an operator can resolve them through those controls. Notifications that
-only link to an agent or describe an automatic recovery are available in the
-ordinary attention feed and task diagnostics, without increasing this inbox's
-count. Completed and cancelled dependencies are not presented as current blockers.
-Board approvals that require their full approval page stay in the Inbox with a
-direct review action. Inline approvals also retain their full request link.
+The attention feed, summary and task-index APIs accept `actionableOnly=true`.
+That projection includes questions, decisions, approvals, access requests,
+stalled reviews and recovery requests with supported resolution controls.
+Technical recovery requests remain eligible when an operator can resolve them
+through those controls. Notifications that only link to an agent or describe an
+automatic recovery are left out. The coordinator Inbox does not request this
+projection: it also shows failed runs, budget alerts and blocked tasks, which
+have their own controls on the Inbox cards but are not part of the actionable
+set. Completed and cancelled dependencies are not presented as current blockers.
 
-Inbox controls use the existing domain APIs and retain their company, permission,
-governance and execution ownership checks. A rejected action remains visible with
-the server's reason; opening an agent page or dismissing a notice does not
-certify process cleanup or authorize replay of interrupted work.
+A recovery card with supported choices resolves in place through the recovery
+resolver; other recovery cards keep their link to the recovery. Inbox controls
+use the existing domain APIs and retain their company, permission, governance
+and execution ownership checks. A rejected action remains visible with the
+server's reason; opening an agent page or dismissing a notice does not certify
+process cleanup or authorize replay of interrupted work.
 
 ## Persistent case handoffs
 
