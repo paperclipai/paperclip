@@ -51,6 +51,8 @@ import {
   scrubGitCredentialText,
   type GitRemoteAuthProvider,
 } from "../git-credentials.js";
+import { isAzureDevOpsRemote, withAnonymousGitFallback } from "../git-credential-policy.js";
+import { isGitHubProjectRemote } from "../project-run-github-access.js";
 import {
   parseObject,
   asNumber,
@@ -452,6 +454,10 @@ export async function ensureManagedProjectWorkspace(input: {
   /** Optional git credential source for cloning private repos; null/absent preserves ambient behavior. */
   resolveGitAuth?: GitRemoteAuthProvider | null;
 }): Promise<{ cwd: string; warning: string | null }> {
+  if (input.repoUrl && isGitHubProjectRemote(input.repoUrl)) {
+    if (!input.resolveGitAuth || !await input.resolveGitAuth(input.repoUrl, input.projectId))
+      throw forbidden("Project GitHub authorization is unavailable. Reconnect and reselect the repository.");
+  }
   const defaultCwd = resolveManagedProjectWorkspaceDir({
     companyId: input.companyId,
     projectId: input.projectId,
@@ -526,6 +532,10 @@ export async function prepareProjectRepositoryWorkspaces(input: {
   const results = [];
   for (const workspace of selected) {
     const repoUrl = workspace.repoUrl!;
+    if (isGitHubProjectRemote(repoUrl)) {
+      if (!input.resolveGitAuth || !await input.resolveGitAuth(repoUrl, input.sharedBase?.projectId))
+        throw forbidden("Project GitHub authorization is unavailable. Reconnect and reselect the repository.");
+    }
     const key = managedProjectCheckoutName({ id: workspace.id, repoUrl, repoRef: workspace.repoRef, cwd: workspace.cwd });
     const cwd = path.join(root, key);
     const existing = await fs.lstat(cwd).catch(() => null);
@@ -536,6 +546,11 @@ export async function prepareProjectRepositoryWorkspaces(input: {
       throw new Error("Invalid project repository checkout path");
     }) : null;
     if (linked && !await isVerifiedNestedRepositoryBase(linked.base, baseCandidates!, repoUrl)) throw new Error("Invalid project repository checkout path");
+    // A linked checkout skips materialization, where Azure access is otherwise checked.
+    if (linked && isAzureDevOpsRemote(repoUrl)) {
+      const projectId = input.sharedBase?.projectId;
+      await withAnonymousGitFallback(input.resolveGitAuth ? (url) => input.resolveGitAuth!(url, projectId) : async () => null)(repoUrl);
+    }
     const configuredLocalSource = workspace.cwd && workspace.cwd !== REPO_ONLY_CWD_SENTINEL ? workspace.cwd : null;
     const localSource = configuredLocalSource
       && await fs.stat(configuredLocalSource).then((entry) => entry.isDirectory()).catch(() => false)
@@ -581,7 +596,7 @@ export async function prepareProjectRepositoryWorkspaces(input: {
  * create the managed checkout directory for the project. It throws only when the managed
  * checkout cannot be prepared (for example, a clone failure).
  */
-async function resolveConfiguredOrManagedProjectCwd(input: {
+export async function resolveConfiguredOrManagedProjectCwd(input: {
   companyId: string;
   projectId: string;
   cwd: string | null;
@@ -590,15 +605,25 @@ async function resolveConfiguredOrManagedProjectCwd(input: {
   prepareLocalSource?: PrepareManagedLocalSource;
 }): Promise<{ cwd: string; warning: string | null }> {
   const configuredCwd = readNonEmptyString(input.cwd);
+  const projectGitAuth: GitRemoteAuthProvider | null = input.resolveGitAuth
+    ? (url) => input.resolveGitAuth!(url, input.projectId) : null;
   if (configuredCwd && configuredCwd !== REPO_ONLY_CWD_SENTINEL) {
     await retainCurrentWorkspaceSource(configuredCwd);
+    const repoUrl = readNonEmptyString(input.repoUrl);
+    if (repoUrl && isAzureDevOpsRemote(repoUrl)) {
+      await withAnonymousGitFallback(projectGitAuth ?? (async () => null))(repoUrl);
+    }
+    if (repoUrl && isGitHubProjectRemote(repoUrl)) {
+      if (!projectGitAuth || !await projectGitAuth(repoUrl))
+        throw forbidden("Project GitHub authorization is unavailable. Reconnect and reselect the repository.");
+    }
     return { cwd: configuredCwd, warning: null };
   }
   return ensureManagedProjectWorkspace({
     companyId: input.companyId,
     projectId: input.projectId,
     repoUrl: readNonEmptyString(input.repoUrl),
-    resolveGitAuth: input.resolveGitAuth ?? null,
+    resolveGitAuth: projectGitAuth,
     prepareLocalSource: input.prepareLocalSource,
   });
 }
@@ -642,8 +667,8 @@ function defaultAdditionalProjectWorkspaceDeps(
         prepareLocalSource: input.prepareLocalSource ?? prepareLocalSource,
         resolveGitAuth:
           input.resolveGitAuth ??
-          resolveGitAuth ??
-          createGitRemoteAuthProvider(db, input.companyId),
+          (resolveGitAuth ? ((url) => resolveGitAuth(url, input.projectId)) :
+            createGitRemoteAuthProvider(db, input.companyId, { projectId: input.projectId })),
       }),
     ensureManagedProjectWorkspace: (input) =>
       ensureManagedProjectWorkspace({
@@ -651,8 +676,8 @@ function defaultAdditionalProjectWorkspaceDeps(
         prepareLocalSource: input.prepareLocalSource ?? prepareLocalSource,
         resolveGitAuth:
           input.resolveGitAuth ??
-          resolveGitAuth ??
-          createGitRemoteAuthProvider(db, input.companyId),
+          (resolveGitAuth ? ((url) => resolveGitAuth(url, input.projectId)) :
+            createGitRemoteAuthProvider(db, input.companyId, { projectId: input.projectId })),
       }),
     // A realized workspace must hold real content. An empty directory gives the agent an empty
     // referenced workspace, so treat an empty directory the same as a missing one.
@@ -3425,7 +3450,7 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
           repoUrl: workspace.repoUrl,
           prepareLocalSource: managedLocalSourceGuard(agent, input.issueId, input.runId),
           resolveGitAuth: createGitRemoteAuthProvider(db, agent.companyId, {
-            issueId: input.issueId, heartbeatRunId: input.runId, agentId: agent.id,
+            issueId: input.issueId, heartbeatRunId: input.runId, agentId: agent.id, projectId: workspace.projectId!,
             responsibleUserId: input.responsibleUserId,
           }),
         });

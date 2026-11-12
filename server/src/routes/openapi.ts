@@ -1385,6 +1385,7 @@ const RUNTIME_TOOLS_SECURITY: Array<Record<string, string[]>> = [
 
 const RUNTIME_TOOLS_OPERATIONS = new Set([
   "POST /runtime-tools/github/credentials",
+  "POST /runtime-tools/git/credentials",
   "GET /mcp/runtime-tools",
   "POST /mcp/runtime-tools",
   "POST /runtime-tools/connections/search",
@@ -1492,6 +1493,8 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "PUT /api/projects/{id}/repositories",
   "GET /api/projects/{id}/git-authorization",
   "PUT /api/projects/{id}/git-authorization",
+  "GET /api/projects/{id}/git-authorizations/{provider}/{scopeKey}",
+  "PUT /api/projects/{id}/git-authorizations/{provider}/{scopeKey}",
   "DELETE /api/issues/{id}/documents/{key}",
   "GET /api/companies/{companyId}/decisions",
   "GET /api/cloud/stacks",
@@ -1768,7 +1771,7 @@ function applyDocumentFixups(document: any): any {
       scheme: "bearer",
       bearerFormat: "Heartbeat-bound runtime tools token",
       description:
-        "Scoped token bound to an active heartbeat run and presented in the Authorization bearer header. The GitHub credential endpoint requires the distinct github_credentials scope.",
+        "Scoped token bound to an active heartbeat run and presented in the Authorization bearer header. Git credentials require the git_credentials scope; the legacy GitHub endpoint also accepts github_credentials.",
     },
     [AGENT_RUN_AUTH_SCHEME]: {
       type: "http",
@@ -5177,9 +5180,9 @@ registry.registerPath({
   method: "get",
   path: "/api/companies/{companyId}/project-repositories",
   tags: ["projects"],
-  summary: "Discover GitHub repositories available to the current board user",
+  summary: "Discover repositories available to the current user",
   description:
-    "Deduplicates repositories across usable personal and company-shared GitHub connections. Failed connections are reported without discarding successful results.",
+    "Lists repositories from usable GitHub and Azure DevOps connections. Failed connections are reported without discarding successful results.",
   request: { params: z.object({ companyId: z.string() }) },
   responses: {
     200: r.ok(
@@ -5187,6 +5190,7 @@ registry.registerPath({
         repositories: z.array(
           z.object({
             id: z.string(),
+            provider: z.string().optional(),
             fullName: z.string(),
             url: z.string(),
             private: z.boolean().optional(),
@@ -5200,6 +5204,23 @@ registry.registerPath({
     401: r.unauthorized,
     403: r.forbidden,
   },
+});
+
+const projectProviderGitAuthorizationResponse = z.object({
+  provider: z.string(), scopeKey: z.string(), grantId: z.string().uuid().nullable(), authorizedByUserId: z.string().nullable(),
+  options: z.array(z.object({ grantId: z.string().uuid(), connectionName: z.string(), organization: z.string() })),
+});
+registry.registerPath({
+  method: "get", path: "/api/projects/{id}/git-authorizations/{provider}/{scopeKey}", tags: ["projects"],
+  summary: "Read project Git authorization for a provider scope",
+  request: { params: z.object({ id: z.string(), provider: z.string(), scopeKey: z.string() }) },
+  responses: { 200: r.ok(projectProviderGitAuthorizationResponse), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+});
+registry.registerPath({
+  method: "put", path: "/api/projects/{id}/git-authorizations/{provider}/{scopeKey}", tags: ["projects"],
+  summary: "Authorize or revoke project Git access for a provider scope",
+  request: { params: z.object({ id: z.string(), provider: z.string(), scopeKey: z.string() }), body: jsonBody(z.object({ grantId: z.string().uuid().nullable() }).strict()) },
+  responses: { 200: r.ok(projectProviderGitAuthorizationResponse), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
 });
 
 const projectGitAuthorizationResponse = z.object({
@@ -5225,7 +5246,7 @@ registry.registerPath({
   method: "put",
   path: "/api/projects/{id}/repositories",
   tags: ["projects"],
-  summary: "Replace selected GitHub source repositories",
+  summary: "Replace selected source repositories",
   description:
     "Saves provider IDs transactionally, refreshes canonical names and URLs, and preserves legacy workspace URLs. Unavailable existing selections can remain; new selections must be available to the caller.",
   request: {
@@ -5259,7 +5280,7 @@ registry.registerPath({
   tags: ["projects"],
   summary: "Create a project",
   description:
-    "The optional repositoryIds field selects GitHub source repositories and requires a board caller. It cannot be combined with workspace. All selections are validated before the project and repository workspaces are created atomically.",
+    "The optional repositoryIds field selects available source repositories and requires a board caller. It cannot be combined with workspace. All selections are validated before the project and repository workspaces are created atomically.",
   request: {
     params: z.object({ companyId: z.string() }),
     body: jsonBody(createProjectSchema),
@@ -11640,10 +11661,19 @@ registerCurrentRoute({
 
 registerCurrentRoute({
   method: "post",
+  path: "/runtime-tools/git/credentials",
+  tags: ["connection-intents"],
+  summary: "Resolve Git credentials for an authorized repository and active run",
+  body: z.object({ repositoryUrl: z.string().max(2048) }).strict(),
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 409: r.conflict },
+});
+
+registerCurrentRoute({
+  method: "post",
   path: "/runtime-tools/github/credentials",
   tags: ["connection-intents"],
   summary:
-    "Resolve operation credentials using a run capability with github_credentials scope; browser sessions are rejected",
+    "Resolve GitHub operation credentials using a run capability; browser sessions are rejected",
   responses: {
     200: r.ok(),
     401: r.unauthorized,

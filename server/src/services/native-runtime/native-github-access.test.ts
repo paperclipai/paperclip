@@ -40,7 +40,8 @@ function localDuplexChannel(command: readonly string[], cwd: string): CommandMan
 async function broker(resolveCredentials = vi.fn(async (binding: ReturnType<typeof run>) => ({
   status: "available", env: { GH_TOKEN: `fixture-${binding.runId}` },
 })), remote = false, bridgeUnavailable = false, onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>,
-duplex?: { enabled?: boolean; capability: boolean; unavailable?: boolean; recorder?: DuplexObservabilityRecorder }) {
+duplex?: { enabled?: boolean; capability: boolean; unavailable?: boolean; recorder?: DuplexObservabilityRecorder },
+requireGitHubConnection = false) {
   const root = await mkdtemp(path.join(tmpdir(), "native-github-reuse-"));
   cleanups.push(() => rm(root, { recursive: true, force: true }));
   const bin = path.join(root, "real-bin");
@@ -69,7 +70,8 @@ duplex?: { enabled?: boolean; capability: boolean; unavailable?: boolean; record
     } } : {}) } : null;
   const bridgeModes: (string | undefined)[] = [];
   const result = await createNativeGitHubAccess({ scope, target, cwd: root,
-    env: { PATH: `${bin}:${path.dirname(process.execPath)}:/usr/bin:/bin`, PAPERCLIP_API_KEY: "old-run-api-key" }, resolveCredentials, onLog },
+    env: { PATH: `${bin}:${path.dirname(process.execPath)}:/usr/bin:/bin`, PAPERCLIP_API_KEY: "old-run-api-key" }, resolveCredentials, onLog,
+    requireGitHubConnection },
     bridgeUnavailable ? async () => { throw new Error("fixture bridge unavailable"); } : async input => {
       const bridge = await startAdapterExecutionTargetPaperclipBridge(input);
       bridgeModes.push(bridge?.env.PAPERCLIP_API_BRIDGE_MODE);
@@ -83,6 +85,14 @@ function request(broker: NativeGitHubAccess, extra: RequestInit = {}, endpoint =
     method: "POST", body: "{}", headers: { authorization: `Bearer ${broker.env.PAPERCLIP_GITHUB_BRIDGE_TOKEN}`, "content-type": "application/json" }, ...extra,
   });
 }
+it.each([false, true])("passes requireGitHubConnection=%s into the native gh launcher", async requireGitHubConnection => {
+  const b = await broker(undefined, false, false, undefined, undefined, requireGitHubConnection);
+  const launcher = path.join(b.env.PAPERCLIP_GITHUB_LAUNCHER_DIR!, "gh");
+  const source = await readFile(launcher, "utf8");
+
+  expect(b.requireGitHubConnection).toBe(requireGitHubConnection);
+  expect(source).toContain(`if (!${requireGitHubConnection ? "true" : "false"}) return false;`);
+});
 it.each([false, true])("resolves managed GitHub credentials from OpenCode shell operations (runner projection: %s)", async throughRunner => {
   const b = await broker();
   const command = path.join(b.root, "fake-opencode-server.mjs");
@@ -250,6 +260,26 @@ it.each([403, 409, 500])("preserves denial/steering without leaking errors (%s)"
   const response = await request(b);
   expect(response.status).toBe(status === 500 ? 503 : status);
   expect(await response.text()).not.toContain("secret-value");
+});
+
+it("rechecks a strict broker request after GitHub connection access is revoked", async () => {
+  const resolver = vi.fn()
+    .mockResolvedValueOnce({ status: "available", env: { GH_TOKEN: "first-request-token" } })
+    .mockRejectedValueOnce(Object.assign(new Error("connection revoked"), { status: 403 }));
+  const b = await broker(resolver, false, false, undefined, undefined, true);
+  b.activate(run("revoked-run"));
+
+  const first = await request(b);
+  expect(first.status).toBe(200);
+  expect(await first.json()).toMatchObject({ env: { GH_TOKEN: "first-request-token" } });
+
+  const second = await request(b);
+  expect(second.status).toBe(403);
+  const secondBody = await second.text();
+  expect(secondBody).toContain("GitHub credentials unavailable");
+  expect(secondBody).not.toContain("first-request-token");
+  expect(resolver).toHaveBeenCalledTimes(2);
+  expect(resolver.mock.calls).toEqual([[run("revoked-run")], [run("revoked-run")]]);
 });
 
 it.each([false, true])("keeps anonymous launchers usable when the remote broker cannot start (logging fails: %s)", async (loggingFails) => {

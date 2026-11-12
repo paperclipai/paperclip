@@ -1,11 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
-import { and, eq } from "drizzle-orm";
-import { isUuidLike } from "@paperclipai/shared";
+import { eq } from "drizzle-orm";
 import {
-  agents,
-  heartbeatRuns,
-  issues,
-  projects,
   runIdentityContexts,
   type Db,
 } from "@paperclipai/db";
@@ -16,8 +11,7 @@ import {
   resolveManagedGitHubCredential,
 } from "./git-credentials.js";
 import { secretService } from "./secrets.js";
-import { resolveCoreTrustPreset } from "./trust-preset-resolver.js";
-import { isLowTrustQuarantined } from "./source-trust.js";
+import { allowsGitCredentialExport } from "./git-credential-export-policy.js";
 
 export type GitHubCredentialSummary = {
   status: "available" | "absent" | "unavailable";
@@ -28,81 +22,6 @@ export type GitHubCredentialSummary = {
   grantId?: string;
   authenticationMode?: "managed" | "host" | "anonymous";
 };
-
-/** A raw GitHub token cannot enforce the low-trust read-only tool boundary. */
-async function allowsGitHubCredentialExport(
-  db: Db,
-  run: typeof heartbeatRuns.$inferSelect,
-) {
-  const issueId =
-    run.contextSnapshot?.issueId ??
-    run.contextSnapshot?.taskId ??
-    run.nativeIssueId;
-  if (
-    issueId !== undefined &&
-    issueId !== null &&
-    (typeof issueId !== "string" || !isUuidLike(issueId))
-  )
-    return false;
-  const [agent] = await db
-    .select({ companyId: agents.companyId, permissions: agents.permissions })
-    .from(agents)
-    .where(
-      and(eq(agents.id, run.agentId), eq(agents.companyId, run.companyId)),
-    );
-  if (!agent) return false;
-  const [issue] =
-    typeof issueId === "string"
-      ? await db
-          .select({
-            companyId: issues.companyId,
-            projectId: issues.projectId,
-            executionPolicy: issues.executionPolicy,
-            sourceTrust: issues.sourceTrust,
-          })
-          .from(issues)
-          .where(
-            and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)),
-          )
-      : [];
-  if (issueId !== undefined && issueId !== null && !issue) return false;
-  if (isLowTrustQuarantined(issue?.sourceTrust)) return false;
-  const projectId = issue?.projectId ?? run.contextSnapshot?.projectId;
-  if (
-    projectId !== undefined &&
-    projectId !== null &&
-    (typeof projectId !== "string" || !isUuidLike(projectId))
-  )
-    return false;
-  const [project] =
-    typeof projectId === "string"
-      ? await db
-          .select({
-            companyId: projects.companyId,
-            executionWorkspacePolicy: projects.executionWorkspacePolicy,
-          })
-          .from(projects)
-          .where(
-            and(
-              eq(projects.id, projectId),
-              eq(projects.companyId, run.companyId),
-            ),
-          )
-      : [];
-  if (projectId !== undefined && projectId !== null && !project) return false;
-  return (
-    resolveCoreTrustPreset({
-      companyId: run.companyId,
-      agent,
-      project,
-      issue,
-      run: {
-        companyId: run.companyId,
-        executionPolicy: run.contextSnapshot?.executionPolicy,
-      },
-    }).kind === "standard"
-  );
-}
 
 async function saveGitHubSummary(
   db: Db,
@@ -133,7 +52,7 @@ export async function resolveGitHubOperationCredentials(
   // not authorization to export that person's (or a dedicated bot's) token.
   // Re-read every policy source for each operation, including a run's retained
   // boundary after task policy edits. Deny before touching the credential store.
-  if (!(await allowsGitHubCredentialExport(db, run))) {
+  if (!(await allowsGitCredentialExport(db, run))) {
     summary = {
       status: "unavailable",
       reason:

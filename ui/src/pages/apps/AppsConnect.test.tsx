@@ -68,6 +68,7 @@ const ASANA_MANAGED = {
   ownershipAvailability: { ...ASANA.ownershipAvailability, platform_shared: true },
 };
 const BOX = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "box")!;
+const AZURE_DEVOPS = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "azure-devops")!;
 const POSTHOG = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "posthog")!;
 const NEON = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "neon")!;
 const SUPERAGENT = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "superagent")!;
@@ -1447,6 +1448,38 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await act(async () => { setInputValue(container.querySelector<HTMLInputElement>("#curated-oauth-client-id")!, "different-client"); });
     await flushReact();
     expect(buttonByText("Continue to sign in")?.disabled).toBe(true);
+  });
+
+  it("keeps Azure personal by default and offers explicit organization sharing", async () => {
+    listGalleryMock.mockResolvedValue({ apps: [AZURE_DEVOPS] });
+    mockParams.appKey = "azure-devops";
+    await render();
+    await openAccessAdvanced();
+    expect(radioContaining("Just me")?.getAttribute("aria-checked")).toBe("true");
+    const shared = radioContaining("Any human in the organization");
+    expect(shared?.getAttribute("aria-checked")).toBe("false");
+    expect(shared?.textContent).toContain("Limit it to selected members in the connection permissions after setup");
+    await act(async () => shared!.click());
+    expect(shared?.getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("offers Azure DevOps app registration instructions beside the callback URL", async () => {
+    listGalleryMock.mockResolvedValue({
+      apps: [{ ...AZURE_DEVOPS, methods: AZURE_DEVOPS.methods.filter((method) => method.key === "entra") }],
+      oauthCallbackUrl: "https://paperclip.example.test/api/tools/oauth/callback",
+    });
+    mockParams.appKey = "azure-devops";
+    await render();
+    await passAccessStep();
+
+    const details = container.querySelector<HTMLDetailsElement>("details");
+    expect(details?.open).toBe(false);
+    expect(details?.querySelector("summary")?.textContent).toContain("How to register the app");
+    expect(details?.querySelector('a[href^="https://entra.microsoft.com/"]')).toBeTruthy();
+    await act(async () => details!.querySelector("summary")!.click());
+    expect(details?.open).toBe(true);
+    expect(details?.textContent).toContain("Application (client) ID");
+    expect(container.textContent).toContain("https://paperclip.example.test/api/tools/oauth/callback");
   });
 
   it("collects customer-owned OAuth client details for a curated manual OAuth app", async () => {
@@ -3312,7 +3345,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
   it("does not treat a mismatched active connection as completed from the URL stage", async () => {
     const connectionId = "22222222-2222-4222-8222-222222222222";
-    mockSearch.value = `source=clickup&stage=complete&resume=${connectionId}`;
+    mockSearch.value = `source=clickup&stage=complete&resume=${connectionId}&oauth=failed`;
     listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
     listApplicationsMock.mockResolvedValueOnce({
       applications: [{
@@ -3341,6 +3374,18 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(mockNavigate).not.toHaveBeenCalledWith(`/apps/${connectionId}/permissions`, { replace: true });
     expect(connectAppMock).not.toHaveBeenCalled();
     expect(finishAppMock).not.toHaveBeenCalled();
+    expect(startOAuthMock).not.toHaveBeenCalled();
+  });
+
+  it("opens the existing connection when OAuth completed but post-sign-in setup failed", async () => {
+    const connectionId = "22222222-2222-4222-8222-222222222222";
+    mockSearch.value = `source=azure-devops&resume=${connectionId}&oauth=failed`;
+    listGalleryMock.mockResolvedValueOnce({ apps: [AZURE_DEVOPS] });
+    listApplicationsMock.mockResolvedValueOnce({ applications: [{ id: "app-azure", companyId: "company-1", status: "active", metadata: { sourceTemplateKey: "azure-devops" } }] });
+    listConnectionsMock.mockResolvedValueOnce({ connections: [{ id: connectionId, companyId: "company-1", applicationId: "app-azure", authKind: "oauth", credentialPolicy: "per_user", status: "active", config: { sourceTemplateKey: "azure-devops" }, transportConfig: {} }] });
+    await render();
+    await vi.waitFor(() => expect(mockNavigate).toHaveBeenCalledWith(`/apps/${connectionId}/permissions?oauth=failed`, { replace: true }));
+    expect(connectAppMock).not.toHaveBeenCalled();
     expect(startOAuthMock).not.toHaveBeenCalled();
   });
 

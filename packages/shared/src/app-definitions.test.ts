@@ -905,7 +905,8 @@ describe("AppDefinition catalog", () => {
       "ticktick",
       "xero",
     ]);
-    expect(APP_STORE_DEFINITIONS).toHaveLength(88);
+    expect(APP_STORE_DEFINITIONS).toHaveLength(89);
+    expect(getConnectableAppDefinition("azure-devops")?.slug).toBe("azure-devops");
     const connectableSlugs = new Set(
       CONNECTABLE_APP_DEFINITIONS.map((entry) => entry.slug),
     );
@@ -1452,6 +1453,9 @@ describe("AppDefinition catalog", () => {
       ),
     ).sort();
     expect(required).toEqual([
+      "azure-devops:entra-write:organization",
+      "azure-devops:entra:organization",
+      "azure-devops:pat:organization",
       "clickhouse:mcp-oauth:serviceId",
       "honcho:mcp-api-key:workspaceId",
       "make:mcp-api-token:zone",

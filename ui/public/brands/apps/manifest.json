@@ -40,6 +40,12 @@
       "localAsset": "/brands/apps/asana.svg"
     },
     {
+      "slug": "azure-devops",
+      "provider": "Azure DevOps",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/api-key-generic.svg"
+    },
+    {
       "slug": "bedrock",
       "provider": "Amazon Bedrock",
       "catalogVisible": true,

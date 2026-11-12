@@ -15,6 +15,7 @@ import { NativeSelect } from "./ui/select";
 import { Button } from "./ui/button";
 import { ProjectRepositoryInput, repositoryOptionsKey } from "./ProjectRepositoryInput";
 import { ConnectionSetupFlow } from "@/features/connections/ConnectionSetupFlow";
+import type { RepositoryProvider } from "./repository-providers";
 
 export function NewProjectDialog() {
   const { newProjectOpen, closeNewProject } = useDialog();
@@ -28,7 +29,7 @@ export function NewProjectForm({ companyId, onClose }: { companyId: string; onCl
   const [name, setName] = useState("");
   const [color] = useState(() => PROJECT_COLORS[Math.floor(Math.random() * PROJECT_COLORS.length)]!);
   const [repos, setRepos] = useState<ProjectRepository[]>([]);
-  const [connecting, setConnecting] = useState(false);
+  const [connecting, setConnecting] = useState<RepositoryProvider | null>(null);
   const input = useRef<HTMLInputElement>(null);
   const [selectedEnvironmentId, setSelectedEnvironmentId] = useState<string | null>(null);
   const environments = useQuery({ queryKey: queryKeys.projects.environments(companyId), queryFn: () => projectsApi.environmentOptions(companyId), gcTime: 0 });
@@ -53,10 +54,10 @@ export function NewProjectForm({ companyId, onClose }: { companyId: string; onCl
       className="flex max-h-(--sz-calc-18) flex-col gap-0 overflow-hidden p-0 shadow-sm sm:max-w-lg"
       onOpenAutoFocus={(event) => { event.preventDefault(); input.current?.focus(); }}>
       {connecting ? <div className="min-h-0 overflow-y-auto p-5">
-        <DialogTitle className="sr-only">Connect GitHub</DialogTitle>
-        <ConnectionSetupFlow host="dialog" serviceSlug="github" forceNewConnection onCancel={() => setConnecting(false)} onComplete={() => {
+        <DialogTitle className="sr-only">Connect {connecting.label}</DialogTitle>
+        <ConnectionSetupFlow host="dialog" serviceSlug={connecting.serviceSlug} forceNewConnection onCancel={() => setConnecting(null)} onComplete={() => {
           void client.invalidateQueries({ queryKey: repositoryOptionsKey(companyId) });
-          setConnecting(false);
+          setConnecting(null);
         }} />
       </div> : <form className="flex min-h-0 flex-col overflow-hidden" onSubmit={(event) => { event.preventDefault(); if (name.trim() && environmentReady && !create.isPending) create.mutate(); }}>
         <div className="flex shrink-0 flex-col gap-4 px-5 pb-4 pt-5">
@@ -86,7 +87,7 @@ export function NewProjectForm({ companyId, onClose }: { companyId: string; onCl
           {environmentView.kind === "error" && <QueryErrorState error={environmentView.error} size="inline" action="load project environments"
             className="mb-3" onRetry={environmentView.retry} retrying={environmentView.isFetching} />}
           {options?.error && !selectedGroup && <p role="alert" className="mb-3 text-sm text-destructive">{options.error}</p>}
-          <ProjectRepositoryInput companyId={companyId} selected={repos} onChange={setRepos} onConnect={() => setConnecting(true)} disabled={create.isPending} />
+          <ProjectRepositoryInput companyId={companyId} selected={repos} onChange={setRepos} onConnect={setConnecting} disabled={create.isPending} />
         </div>
         {create.status === "error" && <p role="alert" className="px-5 pt-3 text-sm text-destructive">{describeError(create.error).body}</p>}
         <div className="flex shrink-0 justify-between gap-2 px-5 py-5">

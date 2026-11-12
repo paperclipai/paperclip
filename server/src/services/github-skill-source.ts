@@ -12,13 +12,14 @@ import type { GitSkillSnapshot, GitSkillSnapshotOptions, GitSkillTreeEntry as Tr
 
 export interface GitHubRead {
   (apiPath: string, signal?: AbortSignal): Promise<unknown>;
+  readonly provider?: 'github' | 'azure-devops';
   withScan?: <T>(operation: () => Promise<T>) => Promise<T>;
   openSnapshot: (input: { repositoryUrl: string; ref: string; commitSha?: string }, options?: GitSkillSnapshotOptions) => Promise<GitSkillSnapshot>;
   readonly connectionId?: string | null;
   readonly grantId?: string | null;
 }
 export type DiscoveredSkill = SkillSourceCandidate & { files: CompanySkillVersionFileInventoryEntry[] };
-export type ScannedSkillSource = SkillSourceDiscovery & { skills: DiscoveredSkill[]; defaultBranch: string; treeSha?: string; downloadBytes?: number; scanBytes?: number; repositoryFiles?: CompanySkillVersionFileInventoryEntry[]; repositorySubset?: boolean };
+export type ScannedSkillSource = SkillSourceDiscovery & { skills: DiscoveredSkill[]; defaultBranch: string; treeSha?: string; downloadBytes?: number; scanBytes?: number; repositoryFiles?: CompanySkillVersionFileInventoryEntry[]; repositorySubset?: boolean; grantId?: string; credentialSecretId?: string; credentialSecretVersion?: number };
 const MAX_FILE_BYTES = 1024 * 1024;
 const MAX_SCAN_BYTES = MAX_SKILL_SNAPSHOT_BYTES;
 const MAX_SCAN_PACKAGES = 1_000;
@@ -38,7 +39,7 @@ export interface SkillScanOptions {
   repositorySubset?: boolean;
 }
 
-type SkillScanInput = { packageMode?: 'skills' | 'repository'; repositoryUrl: string; trackingRef?: string; commitSha?: string; onlySkillPath?: string };
+export type SkillScanInput = { packageMode?: 'skills' | 'repository'; repositoryUrl: string; trackingRef?: string; commitSha?: string; onlySkillPath?: string };
 
 export function scanGitHubSkills(input: SkillScanInput, providerRead: GitHubRead, options: SkillScanOptions = {}): Promise<ScannedSkillSource> {
   const scan = () => scanRepository(input, providerRead, options);
@@ -92,6 +93,34 @@ async function scanRepository(input: SkillScanInput, providerRead: GitHubRead, o
     signal: options.signal,
     onDownload: async download => { progress.download = download; await report(); },
   });
+  return scanGitSkillSnapshot(input, {
+    repo,
+    canonical,
+    trackingRef,
+    connectionId: providerRead.connectionId ?? null,
+    progress,
+    report,
+    snapshot,
+  }, options);
+}
+
+export interface GitSkillSnapshotScanMetadata {
+  repo: { id: number | string; full_name: string; default_branch: string };
+  canonical: { repositoryUrl: string };
+  trackingRef: string;
+  connectionId: string | null;
+  progress: SkillSourceScanProgress;
+  report: () => Promise<void>;
+  snapshot: GitSkillSnapshot;
+}
+
+/** Process an already-authorized immutable Git snapshot into the standard skill scan result. */
+export async function scanGitSkillSnapshot(
+  input: SkillScanInput,
+  metadata: GitSkillSnapshotScanMetadata,
+  options: SkillScanOptions = {},
+): Promise<ScannedSkillSource> {
+  const { repo, canonical, trackingRef, connectionId, progress, report, snapshot } = metadata;
   try {
     const commit = { sha: snapshot.commitSha };
     if (!/^[a-f0-9]{40}$/i.test(commit.sha)) throw unprocessable('Git did not return an immutable commit.');
@@ -107,7 +136,7 @@ async function scanRepository(input: SkillScanInput, providerRead: GitHubRead, o
     const roots = entries.filter(e => e.type === 'blob' && /(^|\/)skill\.md$/i.test(e.path) && ['100644', '100755'].includes(e.mode));
     if (!roots.length) {
       return { treeSha: snapshot.treeSha, downloadBytes: snapshot.downloadBytes, scanBytes: 0,
-        packageMode: input.packageMode, connectionId: providerRead.connectionId ?? null,
+        packageMode: input.packageMode, connectionId,
         repositoryId: String(repo.id), repositoryUrl: canonical.repositoryUrl, fullName: repo.full_name,
         trackingRef, commitSha: commit.sha, defaultBranch: repo.default_branch, candidates: [], warnings: [], skills: [] };
     }
@@ -300,7 +329,7 @@ async function scanRepository(input: SkillScanInput, providerRead: GitHubRead, o
       scanBytes: Math.min(MAX_SCAN_BYTES, snapshot.entries.reduce((sum, entry) => sum + (entry.type === 'blob' ? entry.size ?? MAX_SCAN_BYTES : 0), 0)),
       ...(input.packageMode ? { packageMode: input.packageMode } : {}), ...(repositoryPackage ? { repositoryPackage } : {}),
       ...(repositoryFiles && options.retainFiles !== false ? { repositoryFiles } : {}),
-      connectionId: providerRead.connectionId ?? null, repositoryId: String(repo.id), repositoryUrl: `https://github.com/${repo.full_name.toLowerCase()}`, fullName: repo.full_name, trackingRef, commitSha: commit.sha,
+      connectionId, repositoryId: String(repo.id), repositoryUrl: canonical.repositoryUrl, fullName: repo.full_name, trackingRef, commitSha: commit.sha,
       defaultBranch: repo.default_branch, candidates: skills.map(({ files: _files, ...candidate }) => candidate), warnings, skills };
   } finally { await snapshot.release(); }
 }

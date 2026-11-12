@@ -152,7 +152,12 @@ export interface HeartbeatRuntimeExecutionInput {
     observability?: AdapterExecutionContext["observability"];
     runtimeEnv: Selection["runtimeEnv"];
     useHostGitHub: boolean;
+    requireGitHubConnection?: boolean;
+    githubProjectRepositories?: string[];
+    githubProjectBindings?: Array<{ projectId: string; repositoryUrl: string }>;
+    azureProjectRepositories?: Array<{ projectId: string; repositoryUrl: string }>;
     githubSelection: { configured: boolean };
+    azureGitConfigured?: boolean;
   };
   session: {
     runtimeSessionParamsForAdapter: Record<string, unknown> | null;
@@ -246,7 +251,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
   const { nativeRuntimeResolution, nativeExecution, nativeRunnerInstanceId, adapter, runtimeForAdapter, getNativeFreshSessionHandoff, getFreshSessionHandoff, runOptions } = input.runtime;
   const { persistedExecutionWorkspace, executionWorkspace, executionTarget, workspaceOperationRecorder, nativeWorkspaceSync, workspaceRestoreSource, remoteExecution } = input.workspace;
   const remoteWorkspaceAuthority = readRemoteWorkspaceAuthority(persistedExecutionWorkspace?.metadata);
-  const { runtimeConfig, resolvedConfig, resolvedInstanceSettings, configuredTaskEnvironment, adapterEnv, agentIdentity, observability, managedAiRuntime, runtimeEnv, useHostGitHub, githubSelection } = input.config;
+  const { runtimeConfig, resolvedConfig, resolvedInstanceSettings, configuredTaskEnvironment, adapterEnv, agentIdentity, observability, managedAiRuntime, runtimeEnv, useHostGitHub, requireGitHubConnection, githubProjectRepositories, githubProjectBindings, azureProjectRepositories, githubSelection, azureGitConfigured } = input.config;
   const { runtimeSessionParamsForAdapter, configuredModel, sessionConfigMetadata, goalCheckpointSession } = input.session;
   const { nativeInstructionWorkingCopy, collectStoppedInstructions, nativeInstructionReservation, releaseInstructionCopy } = input.instructions;
   const { providerTraceCapture, nativeRunnerPreparationSpans, attestedQuestionResponseAtMs, attemptStartedAtMs, environmentAcquireStartedAtMs, environmentRealizeEndedAtMs } = input.trace;
@@ -690,7 +695,12 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
               // Bootstrap with executable/home discovery while keeping
               // configured provider values and the server-selected
               // workspace boundary authoritative.
-              managedGitHub: !useHostGitHub && githubSelection.configured,
+              managedGitHub: (!useHostGitHub && githubSelection.configured) || Boolean(azureGitConfigured),
+              hostGitHub: useHostGitHub && Boolean(azureGitConfigured),
+              requireGitHubConnection,
+              githubProjectRepositories,
+              githubProjectBindings,
+              azureProjectRepositories,
               billingIdentity: managedAiRuntime ? { provider: managedAiRuntime.attribution.provider, biller: managedAiRuntime.attribution.provider === "openai" ? resolveManagedOpenAiBilling(managedAiRuntime.config.managedAiRouting)?.biller ?? managedAiRuntime.attribution.provider : managedAiRuntime.attribution.provider, billingType: managedAiRuntime.attribution.method === "subscription" ? "subscription_included" : "metered_api" } : undefined,
               managedAiCredentialIdentity: managedAiRuntime?.identity,
               managedAiAccountIdentity: managedAiRuntime?.sessionIdentity,

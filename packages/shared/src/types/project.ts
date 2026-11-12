@@ -12,6 +12,14 @@ export interface ProjectGitAuthorization {
   options: Array<{ grantId: string; connectionName: string; login: string }>;
 }
 
+export interface ProjectProviderGitAuthorization {
+  provider: string;
+  scopeKey: string;
+  grantId: string | null;
+  authorizedByUserId: string | null;
+  options: Array<{ grantId: string; connectionName: string; organization: string }>;
+}
+
 export type ProjectWorkspaceSourceType = "local_path" | "git_repo" | "remote_managed" | "non_git_path";
 export type ProjectWorkspaceVisibility = "default" | "advanced";
 export type ProjectVisibility = "open" | "private";
@@ -180,6 +188,8 @@ export interface Project {
 /** GitHub identity is the provider's stable repository ID, never a credential. */
 export interface ProjectRepository {
   id: string;
+  /** Provider of the repository; omitted by legacy GitHub clients. */
+  provider?: string;
   fullName: string;
   /** Provider-confirmed ownership; absent on older repository observations. */
   ownerType?: "personal" | "organization";

@@ -1,8 +1,13 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import express from "express";
+import request from "supertest";
 import { companies, companyMemberships, companySecrets, connectionGrants, connectionGrantMembers, toolApplications, toolConnections, createDb, projects as projectTable, userSecretDefinitions } from "@paperclipai/db";
 import { eq } from "drizzle-orm";
 import { toolAccessService } from "../services/tool-access.js";
+import * as toolAccessModule from "../services/tool-access.js";
 import { projectService } from "../services/projects.js";
+import { projectRoutes } from "../routes/projects.js";
+import { errorHandler } from "../middleware/index.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 const personalTokens = vi.hoisted(() => new Map<string, string>());
@@ -17,13 +22,14 @@ const support = await getEmbeddedPostgresTestSupport();
   let db: ReturnType<typeof createDb>;
   let companyId: string;
   const repo = (id: string) => ({ id, fullName: `org/repo-${id}`, url: `https://github.com/org/repo-${id}`, connections: [] });
+  const otherRepo = (id: string) => ({ id: `gitlab:${id}`, provider: "gitlab", fullName: `org/repo-${id}`, url: `https://gitlab.com/org/repo-${id}`, private: false, connections: [] });
   beforeAll(async () => {
     temp = await startEmbeddedPostgresTestDatabase("paperclip-repositories-");
     db = createDb(temp.connectionString);
     [companyId] = (await db.insert(companies).values({ name: "Repositories", issuePrefix: "REPO" }).returning()).map((company) => company.id);
   }, 20_000);
   afterAll(async () => { await temp?.cleanup(); });
-  afterEach(() => { vi.unstubAllGlobals(); personalTokens.clear(); });
+  afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); personalTokens.clear(); });
 
   it("creates multiple source repos atomically and persists them across reads", async () => {
     const svc = projectService(db);
@@ -37,9 +43,19 @@ const support = await getEmbeddedPostgresTestSupport();
     const svc = projectService(db);
     const source = { ...repo("30"), private: true };
     const created = await svc.createWithRepositories(companyId, { name: "Visibility" }, [source]);
-    expect(created.workspaces[0].metadata).toMatchObject({ githubRepositoryPrivate: true, githubRepositoryUrl: source.url });
+    expect(created.workspaces[0].metadata).toMatchObject({ repositoryProvider: "github", repositoryId: source.id, repositoryPrivate: true, repositoryUrl: source.url, githubRepositoryPrivate: true, githubRepositoryUrl: source.url });
     const updated = await svc.replaceRepositories(created.id, [{ ...source, private: false }]);
     expect(updated?.workspaces[0]).toMatchObject({ id: created.workspaces[0].id, metadata: { githubRepositoryPrivate: false, githubRepositoryUrl: source.url } });
+  });
+  it("persists mixed providers independently and retains local workspace settings when detaching", async () => {
+    const svc = projectService(db);
+    const created = await svc.createWithRepositories(companyId, { name: "Mixed providers" }, [repo("40"), otherRepo("40")]);
+    const gitlabWorkspace = created.workspaces.find((workspace) => workspace.metadata?.repositoryProvider === "gitlab")!;
+    await svc.updateWorkspace(created.id, gitlabWorkspace.id, { cwd: "/tmp/gitlab-project", repoRef: "main", metadata: { ...gitlabWorkspace.metadata, retained: true } });
+    const updated = await svc.replaceRepositories(created.id, [repo("40")]);
+    expect(updated?.workspaces).toHaveLength(2);
+    expect(updated?.workspaces.find((workspace) => workspace.id === gitlabWorkspace.id)).toMatchObject({ cwd: "/tmp/gitlab-project", repoRef: "main", repoUrl: null, metadata: { retained: true } });
+    expect(updated?.workspaces.find((workspace) => workspace.metadata?.repositoryProvider === "github")?.metadata).toMatchObject({ repositoryId: "40", githubRepositoryId: "40" });
   });
   it("adds/removes repos, promotes the remaining primary, and preserves legacy and local config", async () => {
     const svc = projectService(db);
@@ -73,6 +89,103 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(updated?.workspaces).toHaveLength(1);
     expect(updated?.workspaces[0]).toMatchObject({ id: workspace.id, name: renamed.fullName, repoUrl: renamed.url, cwd: "/tmp/renamed-project", repoRef: "release", isPrimary: true, metadata: { githubRepositoryId: "22", retained: true } });
     expect(updated?.codebase.repoUrl).toBe(renamed.url);
+  });
+
+  it("preserves legacy GitHub URL registration without a catalog connection", async () => {
+    const catalog = vi.fn().mockResolvedValue({ repositories: [
+      { id: "201", provider: "github", fullName: "org/selected", url: "https://github.com/org/selected", private: true, connections: ["github-connection"] },
+    ], connections: [{ id: "github-connection", name: "GitHub" }], connectionCount: 1, failedConnectionCount: 0 });
+    vi.spyOn(toolAccessModule, "toolAccessService").mockImplementation(() => ({ listProjectRepositories: catalog } as any));
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => { req.actor = { type: "board", source: "local_implicit", userId: "alice", isInstanceAdmin: true }; next(); });
+    app.use("/api", projectRoutes(db));
+    app.use(errorHandler);
+
+    const created = await request(app).post(`/api/companies/${companyId}/projects`).send({
+      name: `Catalog project ${Date.now()}`, repositoryUrls: ["https://github.com/org/selected.git"],
+    });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    expect(catalog).not.toHaveBeenCalled();
+    const project = await projectService(db).getById(created.body.id);
+    expect(project?.workspaces).toHaveLength(1);
+    expect(project?.workspaces[0]).toMatchObject({ repoUrl: "https://github.com/org/selected" });
+
+    catalog.mockResolvedValueOnce({ repositories: [], connections: [], connectionCount: 0, failedConnectionCount: 0 });
+    const missingName = `Unconnected project ${Date.now()}`;
+    const denied = await request(app).post(`/api/companies/${companyId}/projects`).send({
+      name: missingName, repositoryUrls: ["https://github.com/org/missing"],
+    });
+    expect(denied.status).toBe(201);
+    expect(await db.select().from(projectTable).where(eq(projectTable.name, missingName))).toHaveLength(1);
+  });
+
+  it("retains legacy support for a workspace GitHub URL without a catalog connection", async () => {
+    const catalog = vi.fn().mockResolvedValue({ repositories: [
+      { id: "202", provider: "github", fullName: "org/workspace", url: "https://github.com/org/workspace", private: false, connections: ["github-connection"] },
+    ], connections: [{ id: "github-connection", name: "GitHub" }], connectionCount: 1, failedConnectionCount: 0 });
+    vi.spyOn(toolAccessModule, "toolAccessService").mockImplementation(() => ({ listProjectRepositories: catalog } as any));
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => { req.actor = { type: "board", source: "local_implicit", userId: "alice", isInstanceAdmin: true }; next(); });
+    app.use("/api", projectRoutes(db));
+    app.use(errorHandler);
+
+    const created = await request(app).post(`/api/companies/${companyId}/projects`).send({
+      name: `Workspace catalog project ${Date.now()}`, workspace: { name: "Source", repoUrl: "https://github.com/org/workspace.git", metadata: { githubRepositoryId: "202", repositoryId: "202", repositoryProvider: "github", retainedSetting: "keep" } },
+    });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    expect(created.body.workspaces?.[0] ?? (await projectService(db).getById(created.body.id))?.workspaces[0]).toMatchObject({
+      repoUrl: "https://github.com/org/workspace.git",
+    });
+    const existingWorkspace = (await projectService(db).getById(created.body.id))!.workspaces[0]!;
+    const changed = await request(app).patch(`/api/projects/${created.body.id}/workspaces/${existingWorkspace.id}`).send({ repoUrl: "https://github.com/org/another" });
+    expect(changed.status, JSON.stringify(changed.body)).toBe(200);
+    expect(changed.body.metadata).toMatchObject({ retainedSetting: "keep" });
+    expect(changed.body.metadata).not.toHaveProperty("githubRepositoryId");
+    expect(changed.body.metadata).not.toHaveProperty("repositoryId");
+
+    catalog.mockResolvedValueOnce({ repositories: [], connections: [], connectionCount: 0, failedConnectionCount: 0 });
+    const denied = await request(app).post(`/api/companies/${companyId}/projects`).send({
+      name: `Unconnected workspace ${Date.now()}`, workspace: { name: "Source", repoUrl: "https://github.com/org/unknown" },
+    });
+    expect(denied.status).toBe(201);
+  });
+
+  it("authorizes Azure DevOps workspace URLs from the active catalog and rejects missing entries", async () => {
+    const repositoryId = "azure-devops:12345678-1234-1234-1234-1234567890ab";
+    const repositoryUrl = "https://dev.azure.com/contoso/Platform/_git/repo";
+    const catalog = vi.fn().mockResolvedValue({ repositories: [
+      { id: repositoryId, provider: "azure-devops", fullName: "contoso/Platform/repo", url: repositoryUrl, private: true, connections: ["azure-connection"] },
+    ], connections: [{ id: "azure-connection", name: "Azure DevOps" }], connectionCount: 1, failedConnectionCount: 0 });
+    vi.spyOn(toolAccessModule, "toolAccessService").mockImplementation(() => ({ listProjectRepositories: catalog } as any));
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => { req.actor = { type: "board", source: "local_implicit", userId: "alice", isInstanceAdmin: true }; next(); });
+    app.use("/api", projectRoutes(db));
+    app.use(errorHandler);
+
+    const created = await request(app).post(`/api/companies/${companyId}/projects`).send({
+      name: `Azure workspace ${Date.now()}`, workspace: { name: "Azure source", repoUrl: repositoryUrl },
+    });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    const workspace = (await projectService(db).getById(created.body.id))?.workspaces[0];
+    expect(workspace).toMatchObject({ repoUrl: repositoryUrl, metadata: {
+      repositoryProvider: "azure-devops", repositoryId, repositoryUrl, repositoryPrivate: true,
+    } });
+    expect(workspace?.metadata).not.toHaveProperty("githubRepositoryId");
+
+    await projectService(db).updateWorkspace(created.body.id, workspace!.id, { metadata: { ...workspace!.metadata, retainedSetting: "keep" } });
+    const edited = await request(app).patch(`/api/projects/${created.body.id}/workspaces/${workspace!.id}`).send({ repoUrl: repositoryUrl });
+    expect(edited.status, JSON.stringify(edited.body)).toBe(200);
+    expect(edited.body.metadata).toMatchObject({ retainedSetting: "keep", repositoryProvider: "azure-devops", repositoryId });
+
+    catalog.mockResolvedValueOnce({ repositories: [], connections: [], connectionCount: 0, failedConnectionCount: 0 });
+    const denied = await request(app).post(`/api/companies/${companyId}/projects`).send({
+      name: `Unconnected Azure workspace ${Date.now()}`, workspace: { name: "Azure source", repoUrl: "https://dev.azure.com/contoso/Platform/_git/missing" },
+    });
+    expect(denied.status).toBe(422);
+    expect(denied.body.error).toMatch(/active provider connection/i);
   });
 
   it("loads only usable connection grants, deduplicates repos, and reports partial provider failures", async () => {

@@ -23,7 +23,13 @@ export async function createNativeGitHubAccess(input: {
   target: LauncherInput["target"];
   cwd: string;
   env: NodeJS.ProcessEnv;
+  hostGitHub?: boolean;
+  requireGitHubConnection?: boolean;
+  githubProjectRepositories?: string[];
+  githubProjectBindings?: Array<{ projectId: string; repositoryUrl: string }>;
+  azureProjectRepositories?: Array<{ projectId: string; repositoryUrl: string }>;
   resolveCredentials: (binding: Binding) => Promise<unknown>;
+  resolveGitCredentials?: (binding: Binding, repositoryUrl: string) => Promise<unknown>;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
 }, startBridge = startAdapterExecutionTargetPaperclipBridge) {
   const duplexRequested = adapterExecutionTargetEnablesSandboxDuplexBridge(input.target);
@@ -37,7 +43,6 @@ export async function createNativeGitHubAccess(input: {
   const server = createServer(async (req, res) => {
     res.setHeader("Cache-Control", "no-store");
     res.setHeader("Content-Type", "application/json");
-    req.resume();
     const reply = (status: number, body: unknown) => {
       res.writeHead(status);
       res.end(JSON.stringify(body));
@@ -50,7 +55,7 @@ export async function createNativeGitHubAccess(input: {
       reply(403, { error: "GitHub session authentication required" });
       return;
     }
-    if (req.method !== "POST" || req.url !== "/runtime-tools/github/credentials") {
+    if (req.method !== "POST" || (req.url !== "/runtime-tools/github/credentials" && req.url !== "/runtime-tools/git/credentials")) {
       reply(404, { error: "Unknown GitHub session operation" });
       return;
     }
@@ -61,7 +66,21 @@ export async function createNativeGitHubAccess(input: {
     }
     try {
       // Bind at receipt; body/headers cannot select a run or responsible user.
-      const result = await input.resolveCredentials({ ...binding });
+      let result: unknown;
+      if (req.url === "/runtime-tools/git/credentials") {
+        let body = "";
+        for await (const chunk of req) {
+          body += String(chunk);
+          if (body.length > 4096) throw new Error("Invalid Git request");
+        }
+        const payload = JSON.parse(body) as { repositoryUrl?: unknown };
+        if (!input.resolveGitCredentials || !payload || typeof payload.repositoryUrl !== "string" ||
+            payload.repositoryUrl.length > 2048 || Object.keys(payload).some(key => key !== "repositoryUrl")) throw new Error("Invalid Git request");
+        result = await input.resolveGitCredentials({ ...binding }, payload.repositoryUrl);
+      } else {
+        req.resume();
+        result = await input.resolveCredentials({ ...binding });
+      }
       if (active !== binding || stopped) {
         reply(403, { error: "GitHub run ended during credential acquisition" });
         return;
@@ -124,16 +143,22 @@ export async function createNativeGitHubAccess(input: {
     const env = await prepareGitHubOperationLaunchers({
       ...location, cwd: input.cwd,
       env: {
-        ...githubBrokerEnvironment({ PATH: input.env.PATH }, {
+        ...githubBrokerEnvironment(input.hostGitHub ? input.env : { PATH: input.env.PATH }, {
           url: ready ? bridge?.env.PAPERCLIP_API_URL ?? url : "",
           token: ready ? bridge?.env.PAPERCLIP_API_KEY ?? token : "",
-        }),
+        }, { preserveHostGitHub: input.hostGitHub }),
         // Never retain an old run's bridge authentication override.
         PAPERCLIP_GITHUB_BRIDGE_TOKEN: ready ? bridge?.env.PAPERCLIP_API_KEY ?? token : "",
       },
+      hostGitHub: input.hostGitHub,
+      requireGitHubConnection: input.requireGitHubConnection,
     });
     return {
       env,
+      requireGitHubConnection: Boolean(input.requireGitHubConnection),
+      githubProjectRepositoriesKey: JSON.stringify(input.githubProjectRepositories ?? []),
+      githubProjectBindingsKey: JSON.stringify(input.githubProjectBindings ?? null),
+      azureProjectRepositoriesKey: JSON.stringify(input.azureProjectRepositories ?? null),
       get ready() { return ready && !stopped && bridge?.readRunDisposition?.().failed !== true; },
       duplexRequested,
       activate(binding: Binding) {

@@ -78,6 +78,12 @@ describe("resolveGitHubApiCredential", () => {
 describe("createGitRemoteAuthProvider", () => {
   const githubUrl = "https://github.com/example/repo.git";
 
+  it("rejects Azure DevOps rather than falling back to local Git credentials", async () => {
+    const provider = createGitRemoteAuthProvider(fakeDb, "company-1", undefined, { secrets: buildSecretsFake({}), env: {} });
+    await expect(provider("https://dev.azure.com/org/project/_git/repo")).rejects.toThrow(/Azure DevOps/);
+    await expect(provider("git@ssh.dev.azure.com:v3/org/project/repo")).rejects.toThrow(/Azure DevOps/);
+  });
+
   it("prefers company secrets in declared order", async () => {
     const secrets = buildSecretsFake({ GH_TOKEN: "gh-token", PAPERCLIP_GITHUB_TOKEN: "pc-token" });
     const provider = createGitRemoteAuthProvider(fakeDb, "company-1", undefined, {
@@ -423,6 +429,8 @@ describe("createIssueGitRemoteAuthProvider", () => {
     await expect(provider(githubUrl)).resolves.toMatchObject({ source: "managed_connection" });
     expect(create).toHaveBeenCalledWith(db, "company-1", { issueId: "issue-1", responsibleUserId: "user-1", agentId: "agent-1" });
     expect(inner).toHaveBeenCalledWith(githubUrl);
+    await provider(githubUrl, "project-1");
+    expect(inner).toHaveBeenCalledWith(githubUrl, "project-1");
   });
 
   it("looks the issue up once across calls", async () => {

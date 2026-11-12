@@ -939,7 +939,8 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
         const service = projectService(tx as unknown as Db, { captureWorkspaceUpdates: false });
         const project = await service.create(companyId, data, environment);
         for (const repo of repositories) {
-          await service.createWorkspace(project.id, { name: repo.fullName, repoUrl: repo.url, metadata: { githubRepositoryId: repo.id, githubRepositoryUrl: repo.url, githubRepositoryPrivate: repo.private } });
+          const provider = repo.provider ?? "github";
+          await service.createWorkspace(project.id, { name: repo.fullName, repoUrl: repo.url, metadata: { repositoryProvider: provider, repositoryId: repo.id, repositoryUrl: repo.url, repositoryPrivate: repo.private, ...(provider === "github" ? { githubRepositoryId: repo.id, githubRepositoryUrl: repo.url, githubRepositoryPrivate: repo.private } : {}) } });
         }
         return (await service.getById(project.id))!;
       });
@@ -951,29 +952,39 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
         if (!project) return null;
         const service = projectService(tx as unknown as Db, { captureWorkspaceUpdates: false });
         const existing = await service.listWorkspaces(projectId);
-        const ids = new Set(repositories.map((repo) => repo.id));
+        const identity = (provider: string, id: string) => `${provider}:${id}`;
+        const providerOf = (repo: import("@paperclipai/shared").ProjectRepository) => repo.provider ?? "github";
+        const repositoryIdentity = (workspace: ProjectWorkspace) => {
+          const metadata = workspace.metadata ?? {};
+          const id = typeof metadata.repositoryId === "string" ? metadata.repositoryId : typeof metadata.githubRepositoryId === "string" ? metadata.githubRepositoryId : null;
+          if (!id) return null;
+          const provider = typeof metadata.repositoryProvider === "string" ? metadata.repositoryProvider : "github";
+          return identity(provider, id);
+        };
+        const ids = new Set(repositories.map((repo) => identity(providerOf(repo), repo.id)));
         for (const workspace of existing) {
-          const repoId = workspace.metadata?.githubRepositoryId;
-          if (typeof repoId === "string" && !ids.has(repoId)) {
+          const repoKey = repositoryIdentity(workspace);
+          if (repoKey && !ids.has(repoKey)) {
             // Keep local/runtime workspace configuration when detaching source.
             if (workspace.cwd || workspace.remoteWorkspaceRef) {
-              const { githubRepositoryId: _id, ...metadata } = workspace.metadata!;
+              const { repositoryProvider: _provider, repositoryId: _id, repositoryUrl: _url, repositoryPrivate: _private, githubRepositoryId: _githubId, githubRepositoryUrl: _githubUrl, githubRepositoryPrivate: _githubPrivate, ...metadata } = workspace.metadata!;
               await service.updateWorkspace(projectId, workspace.id, { repoUrl: null, metadata });
             } else await service.removeWorkspace(projectId, workspace.id);
           }
         }
         for (const repo of repositories) {
-          const retained = existing.find((workspace) => workspace.metadata?.githubRepositoryId === repo.id);
+          const provider = providerOf(repo);
+          const retained = existing.find((workspace) => repositoryIdentity(workspace) === identity(provider, repo.id));
           if (retained) {
-            if (retained.repoUrl !== repo.url || retained.name !== repo.fullName || retained.metadata?.githubRepositoryPrivate !== repo.private || retained.metadata?.githubRepositoryUrl !== repo.url) {
-              await service.updateWorkspace(projectId, retained.id, { name: repo.fullName, repoUrl: repo.url, metadata: { ...retained.metadata, githubRepositoryUrl: repo.url, githubRepositoryPrivate: repo.private } });
+            if (retained.repoUrl !== repo.url || retained.name !== repo.fullName || retained.metadata?.repositoryPrivate !== repo.private || retained.metadata?.repositoryUrl !== repo.url) {
+              await service.updateWorkspace(projectId, retained.id, { name: repo.fullName, repoUrl: repo.url, metadata: { ...retained.metadata, repositoryProvider: provider, repositoryId: repo.id, repositoryUrl: repo.url, repositoryPrivate: repo.private, ...(provider === "github" ? { githubRepositoryId: repo.id, githubRepositoryUrl: repo.url, githubRepositoryPrivate: repo.private } : {}) } });
             }
             continue;
           }
-          const legacy = existing.find((workspace) => !workspace.metadata?.githubRepositoryId && workspace.repoUrl?.replace(/\.git$/, "").replace(/\/$/, "").toLowerCase() === repo.url.toLowerCase());
+          const legacy = provider === "github" ? existing.find((workspace) => !repositoryIdentity(workspace) && workspace.repoUrl?.replace(/\.git$/, "").replace(/\/$/, "").toLowerCase() === repo.url.toLowerCase()) : undefined;
           if (legacy) {
-            await service.updateWorkspace(projectId, legacy.id, { metadata: { ...legacy.metadata, githubRepositoryId: repo.id, githubRepositoryUrl: repo.url, githubRepositoryPrivate: repo.private } });
-          } else await service.createWorkspace(projectId, { name: repo.fullName, repoUrl: repo.url, metadata: { githubRepositoryId: repo.id, githubRepositoryUrl: repo.url, githubRepositoryPrivate: repo.private } });
+            await service.updateWorkspace(projectId, legacy.id, { metadata: { ...legacy.metadata, repositoryProvider: provider, repositoryId: repo.id, repositoryUrl: repo.url, repositoryPrivate: repo.private, githubRepositoryId: repo.id, githubRepositoryUrl: repo.url, githubRepositoryPrivate: repo.private } });
+          } else await service.createWorkspace(projectId, { name: repo.fullName, repoUrl: repo.url, metadata: { repositoryProvider: provider, repositoryId: repo.id, repositoryUrl: repo.url, repositoryPrivate: repo.private, ...(provider === "github" ? { githubRepositoryId: repo.id, githubRepositoryUrl: repo.url, githubRepositoryPrivate: repo.private } : {}) } });
         }
         await tx.update(projects).set({ updatedAt: new Date() }).where(eq(projects.id, projectId));
         await recordProjectLifecycleEvent(tx as unknown as Db, project.companyId, projectId);
@@ -1231,6 +1242,7 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
       projectId: string,
       workspaceId: string,
       data: UpdateWorkspaceInput,
+      updateOptions?: { mergeRepositoryMetadata?: boolean; clearRepositoryMetadata?: boolean },
     ): Promise<ProjectWorkspace | null> => db.transaction(async tx => {
       const db = tx as unknown as Db;
       if (!await lockProjectRootMutation(tx, projectId)) return null;
@@ -1287,16 +1299,28 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
       if (data.remoteProvider !== undefined) patch.remoteProvider = readNonEmptyString(data.remoteProvider);
       if (data.remoteWorkspaceRef !== undefined) patch.remoteWorkspaceRef = nextRemoteWorkspaceRef;
       if (data.sharedWorkspaceKey !== undefined) patch.sharedWorkspaceKey = readNonEmptyString(data.sharedWorkspaceKey);
-      if (data.metadata !== undefined || data.runtimeConfig !== undefined) {
+      const clearRepositoryMetadata = updateOptions?.clearRepositoryMetadata && data.repoUrl !== undefined && data.repoUrl !== existing.repoUrl;
+      if (data.metadata !== undefined || data.runtimeConfig !== undefined || clearRepositoryMetadata) {
+        const { githubRepositoryId: _githubId, githubRepositoryUrl: _githubUrl, githubRepositoryPrivate: _githubPrivate,
+          repositoryProvider: _provider, repositoryId: _id, repositoryUrl: _url, repositoryPrivate: _private,
+          ...retainedMetadata } = (existing.metadata as Record<string, unknown> | null) ?? {};
+        const { githubRepositoryId: _inputGithubId, githubRepositoryUrl: _inputGithubUrl, githubRepositoryPrivate: _inputGithubPrivate,
+          repositoryProvider: _inputProvider, repositoryId: _inputId, repositoryUrl: _inputUrl, repositoryPrivate: _inputPrivate,
+          ...inputMetadata } = (data.metadata as Record<string, unknown> | null) ?? {};
+        const metadata = clearRepositoryMetadata
+          ? { ...retainedMetadata, ...inputMetadata }
+          : updateOptions?.mergeRepositoryMetadata
+          ? { ...retainedMetadata, ...(data.metadata ?? {}) }
+          : data.metadata;
         patch.metadata =
           data.runtimeConfig !== undefined
             ? mergeProjectWorkspaceRuntimeConfig(
-                data.metadata !== undefined
-                  ? (data.metadata as Record<string, unknown> | null | undefined)
+                data.metadata !== undefined || clearRepositoryMetadata
+                  ? (metadata as Record<string, unknown> | null | undefined)
                   : ((existing.metadata as Record<string, unknown> | null | undefined) ?? null),
                 data.runtimeConfig ?? null,
               )
-            : data.metadata;
+            : metadata;
       }
 
       if (["repoUrl", "repoRef", "defaultRef", "sourceType", "remoteProvider", "remoteWorkspaceRef"].some(key =>

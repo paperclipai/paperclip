@@ -13,6 +13,7 @@ import { resolveDefaultAgentWorkspaceDir } from "../../home-paths.js";
 import {
   createHeartbeatWorkspaceResolver,
   ensureManagedProjectWorkspace,
+  resolveConfiguredOrManagedProjectCwd,
   WorkspaceValidationFailure,
 } from "./workspaces.js";
 
@@ -170,6 +171,41 @@ describe("heartbeat workspace module", () => {
       } },
     });
     expect(await fs.stat(missingCwd).catch(() => null)).toBeNull();
+  });
+
+  it("requires current Azure DevOps authorization before reusing a configured project cwd", async () => {
+    const configuredCwd = path.join(testRoot, "configured-azure-project");
+    await fs.mkdir(configuredCwd);
+    const repoUrl = "https://dev.azure.com/contoso/Platform/_git/repository";
+    const resolveGitAuth = vi.fn(async (remote: string) => ({
+      configArgs: [], env: {}, source: "managed_connection" as const, secretName: null,
+      repositoryAuthority: { provider: "azure-devops", url: remote },
+    }));
+    await expect(resolveConfiguredOrManagedProjectCwd({ companyId: "company-one", projectId: "project-one",
+      cwd: configuredCwd, repoUrl, resolveGitAuth })).resolves.toEqual({ cwd: configuredCwd, warning: null });
+    expect(resolveGitAuth).toHaveBeenCalledExactlyOnceWith(repoUrl, "project-one");
+
+    await expect(resolveConfiguredOrManagedProjectCwd({ companyId: "company-one", projectId: "project-one",
+      cwd: configuredCwd, repoUrl, resolveGitAuth: vi.fn(async () => null) }))
+      .rejects.toThrow("Azure DevOps connection authorization is unavailable");
+    await expect(resolveConfiguredOrManagedProjectCwd({ companyId: "company-one", projectId: "project-one",
+      cwd: configuredCwd, repoUrl, resolveGitAuth: vi.fn(async remote => ({ configArgs: [], env: {},
+        source: "managed_connection" as const, secretName: null,
+        repositoryAuthority: { provider: "azure-devops", url: `${remote}/other` } })) }))
+      .rejects.toThrow("Azure DevOps connection authorization is unavailable");
+  });
+
+  it("requires GitHub authorization for configured repositories but not local-only cwd reuse", async () => {
+    const configuredCwd = path.join(testRoot, "configured-non-azure-project");
+    await fs.mkdir(configuredCwd);
+    const resolveGitAuth = vi.fn(async () => null);
+    await expect(resolveConfiguredOrManagedProjectCwd({ companyId: "company-one", projectId: "project-one",
+      cwd: configuredCwd, repoUrl: "https://github.com/team/repository", resolveGitAuth }))
+      .rejects.toThrow("Project GitHub authorization is unavailable");
+    await expect(resolveConfiguredOrManagedProjectCwd({ companyId: "company-one", projectId: "project-one",
+      cwd: configuredCwd, repoUrl: null, resolveGitAuth }))
+      .resolves.toEqual({ cwd: configuredCwd, warning: null });
+    expect(resolveGitAuth).toHaveBeenCalledExactlyOnceWith("https://github.com/team/repository", "project-one");
   });
 
   it("retains materialization diagnostics when a configured repository cannot be cloned", async () => {

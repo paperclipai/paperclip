@@ -1,7 +1,7 @@
 import { isAbsolute } from "node:path";
 
 /** Standalone source for local, SSH, and sandbox runtimes. No secrets in files. */
-export function githubLauncherSource(options: { brokerFile?: boolean; interpreterPath?: string } = {}): string {
+export function githubLauncherSource(options: { brokerFile?: boolean; interpreterPath?: string; hostGitHub?: boolean; requireGitHubConnection?: boolean } = {}): string {
   if (options.interpreterPath !== undefined && (typeof options.interpreterPath !== "string"
     || !isAbsolute(options.interpreterPath) || /[\s\0]/u.test(options.interpreterPath))) {
     throw new Error("GitHub launcher interpreter must be an absolute path without whitespace");
@@ -10,7 +10,7 @@ export function githubLauncherSource(options: { brokerFile?: boolean; interprete
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { spawn } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 // A PATH shim can capture this launcher's absolute path and call it again.
 // Reject that cycle before resolving another executable or capturing authority.
 if (process.env.PAPERCLIP_GITHUB_OPERATION_ACTIVE) {
@@ -50,6 +50,124 @@ function connectorRepositoryTool(args) {
   if (program !== 'gh' || args[0] !== 'repo' || args.includes('--help') || args.includes('-h')) return null;
   return connectorRepositoryTools.get(args[1]) || null;
 }
+// Resolve only common network operations. Unrecognized Azure remotes fail closed
+// because the isolated environment has no ambient credential helper.
+function azureRemote(args, env) {
+  if (program !== 'git' || isLocalGit(args)) return null;
+  const globalOptions = [];
+  let index = 0;
+  while (index < args.length && args[index].startsWith('-')) {
+    if (gitValueOptions.includes(args[index]) && args[index + 1]) { globalOptions.push(args[index], args[index + 1]); index += 2; continue; }
+    if (gitValueOptions.some(option => args[index].startsWith(option + '=')) || /^-[Cc].+/.test(args[index]) || gitFlagOptions.includes(args[index])) globalOptions.push(args[index]);
+    index++;
+  }
+  const command = args[index++];
+  const remaining = args.slice(index);
+  const isAzure = value => {
+    let host = '';
+    try { host = new URL(value).hostname.toLowerCase().replace(/\.+$/, ''); }
+    catch { host = (/^(?:[^@/:\s]+@)?([^/:\s]+):/.exec(value) || [])[1]?.toLowerCase().replace(/\.+$/, '') || ''; }
+    return host === 'dev.azure.com' || host === 'ssh.dev.azure.com' || host === 'visualstudio.com' || host.endsWith('.visualstudio.com');
+  };
+  const explicit = remaining.map(arg => arg.startsWith('--') && arg.includes('=') ? arg.slice(arg.indexOf('=') + 1) : arg).find(isAzure);
+  if (explicit) return explicit;
+  const remoteIndex = remaining.indexOf('--remote');
+  const optionValues = new Set(['--depth', '--deepen', '--shallow-since', '--shallow-exclude', '--jobs', '-j',
+    '--upload-pack', '--receive-pack', '--exec', '--server-option', '-o', '--filter', '--negotiation-tip',
+    '--refmap', '--push-option', '--bundle-uri', '--reference', '--reference-if-able']);
+  let positional;
+  for (let i = 0; i < remaining.length; i++) {
+    const value = remaining[i];
+    if (value === '--') { positional = remaining[i + 1]; break; }
+    if (optionValues.has(value)) { i++; continue; }
+    if (value.startsWith('-')) continue;
+    positional = value; break;
+  }
+  const destination = remaining.find(arg => arg.startsWith('--remote='))?.slice('--remote='.length) ||
+    (remoteIndex >= 0 ? remaining[remoteIndex + 1] : undefined) || positional;
+  const explicitOther = destination && /^(?:[a-z][a-z0-9+.-]*:\/\/|[^@/\s]+@[^/:\s]+:|\/|\.\.?\/|[^\s-][^\s]*\/)/i.test(destination) ? destination : null;
+  if (explicitOther) {
+    if (command === 'push') {
+      const rewrites = spawnSync(executable, [...globalOptions, 'config', '--get-regexp', '^url\\..*\\.pushinsteadof$'], {
+        env, encoding: 'utf8', timeout: 5000, maxBuffer: 4096, windowsHide: true,
+      });
+      if (rewrites.status !== 0 && rewrites.status !== 1) return 'paperclip:unresolved-git-remote';
+      if (rewrites.status === 0 && String(rewrites.stdout || '').trim().split(/\r?\n/).some(line => {
+        const match = /^url\..*\.pushinsteadof\s+(.+)$/i.exec(line);
+        return !match || explicitOther.startsWith(match[1]);
+      })) return 'paperclip:unresolved-git-remote';
+    }
+    const expanded = spawnSync(executable, [...globalOptions, 'ls-remote', '--get-url', '--', explicitOther], {
+      env, encoding: 'utf8', timeout: 5000, maxBuffer: 4096, windowsHide: true,
+    });
+    if (expanded.status !== 0 || !String(expanded.stdout || '').trim()) return 'paperclip:unresolved-git-remote';
+    const target = String(expanded.stdout).trim();
+    return isAzure(target) ? target : null;
+  }
+  if (!['clone', 'fetch', 'pull', 'push', 'ls-remote', 'archive'].includes(command)) return null;
+  if (command === 'archive' && !remaining.some(arg => arg === '--remote' || arg.startsWith('--remote='))) return null;
+  if (command === 'clone') return null;
+  // Remote names cannot contain options or control characters. Git determines
+  // the configured URL without running a shell or consulting credential helpers.
+  const remoteOption = remaining.indexOf('--remote');
+  const namedRemote = remaining.find(arg => arg.startsWith('--remote='))?.slice('--remote='.length) || (remoteOption >= 0 ? remaining[remoteOption + 1] : undefined);
+  let remote = namedRemote || (destination && /^[A-Za-z0-9_.-]+$/.test(destination) ? destination : undefined);
+  if (!remote && ['fetch', 'pull', 'push'].includes(command)) {
+    const readGit = extra => {
+      const result = spawnSync(executable, [...globalOptions, ...extra], { env, encoding: 'utf8', timeout: 5000, maxBuffer: 4096, windowsHide: true });
+      return result.status === 0 ? String(result.stdout || '').trim() : '';
+    };
+    const branch = readGit(['symbolic-ref', '--quiet', '--short', 'HEAD']);
+    const configured = key => readGit(['config', '--get', key]);
+    if (command === 'fetch' && readGit(['config', '--bool', '--get', 'fetch.all']) === 'true') return 'paperclip:unresolved-git-remote';
+    remote = (command === 'push' && branch ? configured('branch.' + branch + '.pushRemote') : '') ||
+      (command === 'push' ? configured('remote.pushDefault') : '') ||
+      (branch ? configured('branch.' + branch + '.remote') : '') || 'origin';
+  }
+  if (!remote || !/^[A-Za-z0-9_.-]+$/.test(remote) || remote === '.') return 'paperclip:unresolved-git-remote';
+  const lookup = spawnSync(executable, [...globalOptions, 'remote', 'get-url', ...(command === 'push' ? ['--push', '--all'] : []), '--', remote], {
+    env, encoding: 'utf8', timeout: 5000, maxBuffer: 4096, windowsHide: true,
+  });
+  const value = lookup.status === 0 ? String(lookup.stdout || '').trim() : '';
+  if (!value) return 'paperclip:unresolved-git-remote';
+  const destinations = value.split(/\r?\n/).filter(Boolean);
+  if (destinations.length !== 1) return 'paperclip:unresolved-git-remote';
+  return isAzure(destinations[0]) ? destinations[0] : null;
+}
+// Project-backed GitHub operations fail closed when the broker is unavailable.
+function requiresGitHubConnection(args, env) {
+  if (!${options.requireGitHubConnection ? 'true' : 'false'}) return false;
+  if (program === 'gh') return !args.some(arg => ['--version', '--help', '-h'].includes(arg));
+  if (isLocalGit(args)) return false;
+  const options = [];
+  let i = 0;
+  while (i < args.length && args[i].startsWith('-')) {
+    if (gitValueOptions.includes(args[i]) && args[i + 1]) { options.push(args[i], args[i + 1]); i += 2; continue; }
+    if (gitValueOptions.some(option => args[i].startsWith(option + '=')) || /^-[Cc].+/.test(args[i]) || gitFlagOptions.includes(args[i])) options.push(args[i]);
+    i++;
+  }
+  const command = args[i++], rest = args.slice(i);
+  if (command === 'archive' && !rest.some(arg => arg === '--remote' || arg.startsWith('--remote='))) return false;
+  if (['commit', 'tag', 'stash', 'rebase', 'merge', 'cherry-pick', 'revert'].includes(command) ||
+      (command === 'remote' && !rest.includes('update'))) return false;
+  const host = value => { try { return new URL(value).hostname.toLowerCase().replace(/\.+$/, ''); }
+    catch { return (/^(?:[^@/:\s]+@)?([^/:\s]+):/.exec(value) || [])[1]?.toLowerCase().replace(/\.+$/, '') || ''; } };
+  const explicit = rest.map(arg => arg.startsWith('--') && arg.includes('=') ? arg.slice(arg.indexOf('=') + 1) : arg)
+    .find(arg => /^(?:[a-z][a-z0-9+.-]*:\/\/|[^@/:\s]+@[^/:\s]+:)/i.test(arg));
+  if (explicit) return ['github.com', 'www.github.com'].includes(host(explicit));
+  if (['fetch', 'pull', 'push', 'archive', 'ls-remote'].includes(command)) {
+    if (rest.includes('--all') || rest.includes('--multiple')) return true;
+    const remoteIndex = rest.indexOf('--remote');
+    const remote = rest.find(arg => arg.startsWith('--remote='))?.slice('--remote='.length) ||
+      (remoteIndex >= 0 ? rest[remoteIndex + 1] : undefined) ||
+      rest.find(arg => !arg.startsWith('-') && /^[A-Za-z0-9_.-]+$/.test(arg)) || 'origin';
+    const lookup = spawnSync(executable, [...options, 'remote', 'get-url', ...(command === 'push' ? ['--push'] : []), '--', remote],
+      { env, encoding: 'utf8', timeout: 5000, maxBuffer: 4096, windowsHide: true });
+    if (lookup.status !== 0) return true;
+    return ['github.com', 'www.github.com'].includes(host(String(lookup.stdout || '').trim()));
+  }
+  return command !== 'clone' && command !== 'ls-remote';
+}
 async function main() {
   let env = { ...process.env };
 ${options.brokerFile ? String.raw`
@@ -65,6 +183,28 @@ ${options.brokerFile ? String.raw`
       env.PAPERCLIP_GITHUB_BROKER_TOKEN = broker.token;
     }
   } catch {}
+` : ''}
+  let hostAzureRemote = null;
+${options.hostGitHub ? String.raw`
+  // This mode is selected by the controller when staging the launcher, not by
+  // an agent-controlled environment variable. Azure still requires the broker.
+  const hostArgs = process.argv.slice(2);
+  if (program === 'git' && (hostArgs.includes('submodule') || (hostArgs.includes('remote') && hostArgs.includes('update')) ||
+      (hostArgs.includes('fetch') && (hostArgs.includes('--all') || hostArgs.includes('--multiple'))))) {
+    process.stderr.write('Paperclip: select one repository for this Git operation.\n');
+    process.exit(1);
+  }
+  hostAzureRemote = azureRemote(process.argv.slice(2), env);
+  if (!hostAzureRemote && !requiresGitHubConnection(process.argv.slice(2), env)) {
+    delete env.PAPERCLIP_GITHUB_BROKER_TOKEN;
+    delete env.PAPERCLIP_GITHUB_BRIDGE_TOKEN;
+    env.PATH = originalPath.join(path.delimiter);
+    const child = spawn(executable, process.argv.slice(2), { env, stdio: 'inherit' });
+    for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(signal, () => child.kill(signal));
+    child.once('error', () => { process.stderr.write('Paperclip: Git command could not start.\n'); process.exitCode = 1; });
+    child.once('exit', (code, signal) => { process.exitCode = code === null ? 128 : code; });
+    return;
+  }
 ` : ''}
   const diagnostic = (code) => process.stderr.write('Paperclip: GitHub ' + code + '; continuing without managed credentials.\n');
   let connected = false;
@@ -85,7 +225,7 @@ ${options.brokerFile ? String.raw`
   } catch { diagnostic('configuration_directory_unavailable'); }
   {
     for (const key of Object.keys(env)) {
-      if (/^(GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GITHUB_ENTERPRISE_TOKEN|PAPERCLIP_GIT_TOKEN|GIT_AUTHOR_.*|GIT_COMMITTER_.*|GIT_CONFIG_.*|GIT_ASKPASS|SSH_ASKPASS|SSH_AUTH_SOCK|GIT_SSH.*)$/.test(key)) delete env[key];
+      if (/^(GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GITHUB_ENTERPRISE_TOKEN|PAPERCLIP_GIT_TOKEN|PAPERCLIP_AZURE_GIT_.*|GIT_AUTHOR_.*|GIT_COMMITTER_.*|GIT_CONFIG_.*|GIT_ASKPASS|SSH_ASKPASS|SSH_AUTH_SOCK|GIT_SSH.*)$/.test(key)) delete env[key];
     }
     Object.assign(env, {
       GH_CONFIG_DIR: configDirectory, SSH_AUTH_SOCK: '',
@@ -99,10 +239,18 @@ ${options.brokerFile ? String.raw`
     });
     const base = env.PAPERCLIP_GITHUB_BROKER_URL || env.PAPERCLIP_API_URL;
     const askBroker = !isLocalGit(process.argv.slice(2));
+    const repositoryUrl = askBroker ? azureRemote(process.argv.slice(2), env) : null;
+    // Host URL rewrites do not apply once credentials are isolated, so Git would
+    // contact a different destination than the one that selected Azure.
+    if (hostAzureRemote && hostAzureRemote !== 'paperclip:unresolved-git-remote' && repositoryUrl !== hostAzureRemote) {
+      process.stderr.write('Paperclip: this Azure DevOps destination depends on host Git URL rewrites. Use the Azure DevOps repository URL.\n');
+      process.exit(1);
+    }
+    const strictGitHub = askBroker && !repositoryUrl && requiresGitHubConnection(process.argv.slice(2), env);
     try {
     let response;
     if (askBroker && base && env.PAPERCLIP_GITHUB_BROKER_TOKEN) {
-      const url = base.replace(/\/+$/, '').replace(/\/api$/, '') + '/runtime-tools/github/credentials';
+      const url = base.replace(/\/+$/, '').replace(/\/api$/, '') + (repositoryUrl ? '/runtime-tools/git/credentials' : '/runtime-tools/github/credentials');
       // A slow or restarting control plane must not cost the operation its
       // managed identity, so a failed request is retried before giving up.
       // Busy (409) responses and transport failures keep separate budgets, and
@@ -111,10 +259,12 @@ ${options.brokerFile ? String.raw`
       for (;;) {
         try {
           response = await fetch(url, {
-            method: 'POST', redirect: 'error', signal: AbortSignal.timeout(10000),
+            method: 'POST', redirect: 'error', signal: AbortSignal.timeout(strictGitHub ? 45000 : 10000),
             headers: { authorization: 'Bearer ' + (env.PAPERCLIP_GITHUB_BRIDGE_TOKEN || env.PAPERCLIP_API_KEY || env.PAPERCLIP_GITHUB_BROKER_TOKEN),
-              'x-paperclip-github-capability': env.PAPERCLIP_GITHUB_BROKER_TOKEN, 'content-type': 'application/json' },
-            body: '{}',
+              ...((env.PAPERCLIP_GITHUB_BRIDGE_TOKEN || env.PAPERCLIP_API_KEY) &&
+                (env.PAPERCLIP_GITHUB_BRIDGE_TOKEN || env.PAPERCLIP_API_KEY) !== env.PAPERCLIP_GITHUB_BROKER_TOKEN
+                ? { 'x-paperclip-github-capability': env.PAPERCLIP_GITHUB_BROKER_TOKEN } : {}), 'content-type': 'application/json' },
+            body: repositoryUrl ? JSON.stringify({ repositoryUrl }) : '{}',
           });
           if (response.status === 409 && conflicts < 29) {
             conflicts += 1;
@@ -131,9 +281,13 @@ ${options.brokerFile ? String.raw`
         }
       }
       if (!response.ok) {
+        if (strictGitHub) { process.stderr.write('Paperclip: GitHub repository authorization unavailable.\n'); process.exit(1); }
+        if (repositoryUrl) { process.stderr.write('Paperclip: Azure DevOps repository authorization unavailable.\n'); process.exit(1); }
         diagnostic(response.status === 401 || response.status === 403 ? 'capability_rejected' : 'broker_response_unavailable');
       } else {
+      if (strictGitHub && (result.status !== 'available' || !configReady || !(result.env?.PAPERCLIP_GIT_TOKEN || result.env?.GH_TOKEN || result.env?.GITHUB_TOKEN))) { process.stderr.write('Paperclip: GitHub repository authorization unavailable.\n'); process.exit(1); }
       if (result.status === 'unavailable') {
+        if (repositoryUrl) { process.stderr.write('Paperclip: Azure DevOps repository authorization unavailable.\n'); process.exit(1); }
         const reason = typeof result.reason === 'string'
           ? result.reason.replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, 500)
           : 'Check the GitHub connection in Paperclip';
@@ -142,12 +296,13 @@ ${options.brokerFile ? String.raw`
       connected = result.status === 'available';
       if (result.status === 'available' && configReady) {
         for (const [key, value] of Object.entries(result.env || {})) {
-          if (/^(GH_TOKEN|GITHUB_TOKEN|PAPERCLIP_GIT_TOKEN|GIT_TERMINAL_PROMPT|GIT_AUTHOR_(NAME|EMAIL)|GIT_COMMITTER_(NAME|EMAIL)|GIT_CONFIG_COUNT|GIT_CONFIG_(KEY|VALUE)_\d+)$/.test(key) && typeof value === 'string') env[key] = value;
+          if (/^(GH_TOKEN|GITHUB_TOKEN|PAPERCLIP_GIT_TOKEN|PAPERCLIP_AZURE_GIT_(TOKEN|PATH)|GIT_TERMINAL_PROMPT|GIT_CONFIG_NOSYSTEM|GIT_AUTHOR_(NAME|EMAIL)|GIT_COMMITTER_(NAME|EMAIL)|GIT_CONFIG_COUNT|GIT_CONFIG_(KEY|VALUE)_\d+)$/.test(key) && typeof value === 'string') env[key] = value;
         }
       }
+      if (repositoryUrl && (result.status !== 'available' || !configReady)) { process.stderr.write('Paperclip: Azure DevOps repository authorization unavailable.\n'); process.exit(1); }
       }
-    } else if (askBroker) { diagnostic('capability_missing'); }
-    } catch { diagnostic('broker_transport_unavailable'); }
+    } else if (askBroker) { if (repositoryUrl || strictGitHub) process.exit(1); diagnostic('capability_missing'); }
+    } catch { if (strictGitHub) { process.stderr.write('Paperclip: GitHub repository authorization unavailable.\n'); process.exit(1); } if (repositoryUrl) { process.stderr.write('Paperclip: Azure DevOps repository authorization unavailable.\n'); process.exit(1); } diagnostic('broker_transport_unavailable'); }
   }
   const connectorTool = connected ? connectorRepositoryTool(process.argv.slice(2)) : null;
   if (connectorTool) {
@@ -176,10 +331,18 @@ main().catch(() => { process.stderr.write('Paperclip: GitHub launcher_setup_fail
 }
 
 /** Override inherited credentials even when adapters merge the host environment later. */
-export function githubBrokerEnvironment(input: Record<string, unknown>, broker: { url: string; token: string }): Record<string, string> {
+export function githubBrokerEnvironment(input: Record<string, unknown>, broker: { url: string; token: string }, options: { preserveHostGitHub?: boolean } = {}): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(input)) if (typeof value === "string") env[key] = value;
-  for (const key of ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "PAPERCLIP_GIT_TOKEN", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_CONFIG_COUNT", "PAPERCLIP_GITHUB_OPERATION_ACTIVE"]) env[key] = "";
+  if (options.preserveHostGitHub) {
+    env.PAPERCLIP_GITHUB_OPERATION_ACTIVE = "";
+    env.PAPERCLIP_AZURE_GIT_TOKEN = "";
+    env.PAPERCLIP_AZURE_GIT_PATH = "";
+    env.PAPERCLIP_GITHUB_BROKER_URL = broker.url;
+    env.PAPERCLIP_GITHUB_BROKER_TOKEN = broker.token;
+    return env;
+  }
+  for (const key of ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "PAPERCLIP_GIT_TOKEN", "PAPERCLIP_AZURE_GIT_TOKEN", "PAPERCLIP_AZURE_GIT_PATH", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_CONFIG_COUNT", "PAPERCLIP_GITHUB_OPERATION_ACTIVE"]) env[key] = "";
   for (const key of Object.keys(env)) {
     if (/^GIT_CONFIG_(KEY|VALUE)_\d+$/.test(key)) env[key] = "";
   }

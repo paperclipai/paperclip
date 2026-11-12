@@ -17,6 +17,8 @@ import { localWorkspaceSourcePaths } from "./execution-workspace-source-roots.js
 import { managedProjectCheckoutName } from "./managed-project-checkout-name.js";
 import { nestedRepositoryBaseCandidates } from "./nested-repository-worktrees.js";
 import type { GitRemoteAuthProvider } from "./git-credentials.js";
+import { withAnonymousGitFallback } from "./git-credential-policy.js";
+export { withAnonymousGitFallback } from "./git-credential-policy.js";
 import { assertReproducibleGitFiles, assertReproducibleBaseGitStorage, assertReproducibleManagedCheckout, provenManagedCheckoutHistory, inspectGitCacheRecipe, inspectGitCacheRecipeForRestorePoint, readGitCacheRestoration, GIT_CACHE_RESTORATION_SCHEMA_V2,
   verifyRemoteGitCommit, gitCacheExpirationLockLocations, recoverGitCacheExpirationLocks, GitCacheRestorationFailure, type ManagedCheckoutProver, gitCacheCommand, readGitCacheExpiration, finishGitCacheTrash, type GitCacheExpiration, type GitCacheRestoration, GIT_CACHE_RESTORATION_KEY, GIT_CACHE_EXPIRATION_REASON } from "./git-workspace-restoration.js";
 
@@ -34,12 +36,9 @@ export function gitExpirationSkipReason(error: unknown) {
 }
 const skipReason = gitExpirationSkipReason;
 
-export function withAnonymousGitFallback(provider: GitRemoteAuthProvider): GitRemoteAuthProvider {
-  return async (remoteUrl) => provider(remoteUrl).catch(() => null);
-}
-
 function expirationGitAuth(db: Db, workspace: Workspace) {
-  return withAnonymousGitFallback(createIssueGitRemoteAuthProvider(db, workspace.companyId, workspace.sourceIssueId!));
+  const resolve = createIssueGitRemoteAuthProvider(db, workspace.companyId, workspace.sourceIssueId!);
+  return withAnonymousGitFallback((url) => resolve(url, workspace.projectId ?? undefined));
 }
 
 const EXPIRATION_KEY = "gitCacheExpiration";

@@ -124,7 +124,21 @@ does not import controller credentials into an SSH target. Sandbox, plugin,
 and low-trust executions do not receive this compatibility fallback. Once a
 managed connection is configured, unavailable or revoked access never falls
 back to host authentication. Switching modes replaces the provider process
-while preserving the settled conversation.
+while preserving the settled conversation. A run using a linked GitHub project
+workspace requires its own active managed GitHub authorization before the agent
+starts; if none is available, reconnect the account and retry. This startup
+check also applies to linked additional project workspaces. Managed GitHub
+operations in those runs recheck the connection and access to every linked GitHub
+workspace before issuing credentials; they fail if any required access becomes
+unavailable. Local Git commands and other repository providers remain usable.
+Provider-owned task runtimes that cannot enforce this policy are not supported
+for linked GitHub project repositories. After updating Paperclip, previously
+running task-scoped sessions using older GitHub capabilities must be restarted
+to receive a capability bound to their current project repositories.
+Paperclip checks the repository ID saved when the project was linked against the
+connection and GitHub before checkout and when credentials are requested. If an
+older workspace lacks that ID, reselect the repository in the project. Reopening
+a closed GitHub project workspace requires the project's active GitHub consent.
 
 Runner network access is independent of GitHub credentials. The controller
 enables networking for standard-trust execution. Low-trust runs and runners

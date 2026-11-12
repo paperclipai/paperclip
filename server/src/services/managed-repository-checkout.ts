@@ -11,6 +11,7 @@ import { classifyGitCloneFailure, GitConnectionFailureError, readGitConnectionFa
 import { isWorkspaceGitScanError, WorkspaceGitScanError } from "./workspace-git-operation-scheduler.js";
 import { measureRunPhase, recordRepositoryObjectCacheDetail } from "./execution-preparation-timing.js";
 import { resolveRepositoryObjectCache, readRepositoryObjectCache, publishRepositoryObjectCache } from "./repository-object-cache.js";
+import { isAzureDevOpsRemote, withAnonymousGitFallback } from "./git-credential-policy.js";
 
 const execFile = promisify(execFileCallback);
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
@@ -105,6 +106,14 @@ export async function materializeManagedProjectWorkspace(
     return { cwd, warning: null };
   }
 
+  const azureRemote = isAzureDevOpsRemote(input.repoUrl);
+  const resolveGitAuth = azureRemote
+    ? withAnonymousGitFallback(input.resolveGitAuth ?? (async () => null))
+    : input.resolveGitAuth;
+  let auth = azureRemote
+    ? await measureRunPhase("workspace.checkout.git_auth", () => resolveGitAuth!(input.repoUrl!))
+    : null;
+
   const hasAdoptableGitDir = () => measureRunPhase("workspace.checkout.lookup", () =>
     fs
       .stat(path.resolve(cwd, ".git"))
@@ -125,9 +134,8 @@ export async function materializeManagedProjectWorkspace(
     await fs.rm(cwd, { recursive: true, force: true });
   }
 
-  let auth = input.resolveGitAuth && !input.localSource && !input.gitObjectSource
-    ? await measureRunPhase("workspace.checkout.git_auth", () => input.resolveGitAuth!(input.repoUrl!))
-    : null;
+  if (!azureRemote && resolveGitAuth && !input.localSource && !input.gitObjectSource)
+    auth = await measureRunPhase("workspace.checkout.git_auth", () => resolveGitAuth(input.repoUrl!));
   const cloneTmpDir = await fs.mkdtemp(input.stagingParent
     ? path.join(input.stagingParent, `${path.basename(cwd)}.clone-`)
     : `${cwd}.clone-`);
@@ -167,7 +175,7 @@ export async function materializeManagedProjectWorkspace(
         if (!reference) throw error;
         for (const name of await fs.readdir(cloneTmpDir)) await fs.rm(path.join(cloneTmpDir, name), { recursive: true, force: true });
         objectCache = null;
-        auth = input.resolveGitAuth ? await input.resolveGitAuth(input.repoUrl) : null;
+        auth = resolveGitAuth ? await resolveGitAuth(input.repoUrl) : null;
         await clone(null);
       }
     } catch (error) {
@@ -217,6 +225,7 @@ export async function materializeManagedProjectWorkspace(
     const authNote = describeGitAuthFailure({
       error: reason,
       used: auth ? { source: auth.source, secretName: auth.secretName } : null,
+      provider: azureRemote ? "azure-devops" : undefined,
     });
     const message = scrubGitCredentialText(
       `Failed to prepare managed checkout for "${input.repoUrl}" at "${cwd}": ${reason}${authNote ? ` ${authNote}` : ""}`,

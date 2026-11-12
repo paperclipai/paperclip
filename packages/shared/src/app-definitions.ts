@@ -39,6 +39,7 @@ export const CONNECTABLE_APP_SLUGS = new Set([
   "google-workspace-search",
   "google-workspace",
   "github",
+  "azure-devops",
   "github-code-review-bot",
   "discord",
   "speko",

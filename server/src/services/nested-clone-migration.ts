@@ -295,7 +295,7 @@ function cloneLockLocations(checkout: string, branch: string | null): GitExpirat
 }
 
 async function fetchBase(base: string, repoUrl: string, resolveGitAuth: GitRemoteAuthProvider, signal?: AbortSignal) {
-  const auth = await resolveGitAuth(repoUrl).catch(() => null);
+  const auth = await withAnonymousGitFallback(resolveGitAuth)(repoUrl);
   await git(base, ["fetch", "--quiet", "--prune", "--no-write-fetch-head", "origin"], { auth, signal, timeout: FETCH_TIMEOUT_MS }).catch(() => undefined);
 }
 

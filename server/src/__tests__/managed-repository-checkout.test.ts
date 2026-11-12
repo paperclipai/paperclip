@@ -21,6 +21,26 @@ async function fixture() {
   return { root, source, target: path.join(root, "target") };
 }
 describe("atomic managed repository publication", () => {
+  it("does not clone Azure DevOps through ambient credentials when authorization is missing", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "paperclip-azure-auth-"));
+    directories.push(root);
+    vi.stubEnv("PATH", path.join(root, "missing-git"));
+    await expect(materializeManagedProjectWorkspace(path.join(root, "target"), {
+      repoUrl: "https://dev.azure.com/org/project/_git/repo", resolveGitAuth: async () => null,
+    })).rejects.toThrow(/Azure DevOps/);
+    expect(await readdir(root)).toEqual([]);
+  });
+  it("does not reuse an existing Azure checkout after authorization is lost", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "paperclip-azure-existing-"));
+    directories.push(root);
+    const target = path.join(root, "target");
+    await mkdir(path.join(target, ".git"), { recursive: true });
+    await writeFile(path.join(target, "work.txt"), "preserve me");
+    await expect(materializeManagedProjectWorkspace(target, {
+      repoUrl: "https://dev.azure.com/org/project/_git/repo", resolveGitAuth: async () => null,
+    })).rejects.toThrow(/Azure DevOps/);
+    expect(await readFile(path.join(target, "work.txt"), "utf8")).toBe("preserve me");
+  });
   it("keeps managed repositories separate without requiring Git or touching an ancestor", async () => {
     const { source, target } = await fixture();
     await mkdir(target);
