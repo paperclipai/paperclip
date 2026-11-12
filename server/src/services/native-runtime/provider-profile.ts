@@ -513,6 +513,10 @@ export function resolvePaperclipRunnerProviderProfile(
   }
 
   if (candidate === "opencode") {
+    // Legacy false inherits local OpenCode permission rules, which the isolated
+    // Runner cannot retain; its default permission mode would allow everything.
+    if (config.dangerouslySkipPermissions === false) throw new PaperclipRunnerProviderProfileError("agent_runner_config_incompatible",
+      "Paperclip Runner cannot honor these settings: dangerouslySkipPermissions. Remove them before retrying.");
     if (!model || !model.includes("/") || model.endsWith("/")) {
       throw new PaperclipRunnerProviderProfileError(
         "paperclip_runner_opencode_model_invalid",

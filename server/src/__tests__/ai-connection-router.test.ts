@@ -539,6 +539,17 @@ describe("durable, authorized connection routing", () => {
     const codex = { ...grok, runtimeConfig: { provider: "codex", model: "gpt-5.6-sol" } };
     expect(() => applyAiConnectionRouterTaskSettings(source, codex, "paperclip_runner")).toThrow("preserve");
   });
+  it("keeps the agent's disabled search while clearing other search tuning", () => {
+    const codex = { adapterType: "paperclip_runner", poolId: randomUUID(), memberId: randomUUID(), binding: members[1]!.binding,
+      runtimeConfig: { provider: "codex", model: "gpt-5.6-sol" }, notes: [] };
+    expect(applyAiConnectionRouterTaskSettings({ provider: "codex", model: "old", search: false }, codex, "paperclip_runner"))
+      .toEqual({ provider: "codex", model: "gpt-5.6-sol", search: false });
+    expect(applyAiConnectionRouterTaskSettings({ provider: "codex", model: "old", search: true }, codex, "paperclip_runner"))
+      .toEqual({ provider: "codex", model: "gpt-5.6-sol" });
+    const legacySearch = { ...codex, adapterType: "codex_local", runtimeConfig: { engine: "cli", model: "gpt-5.6-sol", search: true } };
+    expect(() => applyAiConnectionRouterTaskSettings({ engine: "cli", search: false }, legacySearch, "codex_local"))
+      .toThrow("cannot enable search");
+  });
   it("preserves the explicit CLI engine for Claude to Codex in-place workspace execution", async () => {
     const target = { poolId: randomUUID(), memberId: members[0]!.id, binding: members[0]!.binding,
       adapterType: "codex_local", runtimeConfig: poolMemberRuntimeConfig(members[0]!, "claude_local").config, notes: [] };
