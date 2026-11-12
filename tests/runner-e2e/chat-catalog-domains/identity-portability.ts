@@ -148,7 +148,7 @@ export const portabilityIdentityCases: readonly ChatCatalogCase[] = [
       if (typeof state.importedAgentId !== "string") throw new Error("Actual imported employee is missing"); const source = ctx.input.page.url();
       const links = await ctx.input.page.locator('[id^="comment-"] a[href]').evaluateAll(rows => rows.map(row => row.getAttribute("href")!));
       const imported = (await ctx.input.api.get<Array<Entity & { urlKey?: string }>>(`/api/companies/${ctx.input.fixtures.company.id}/agents`)).find(row => row.id === state.importedAgentId);
-      const link = imported && links.find(href => agentRouteNames(href, ctx.input.api.baseURL, ctx.input.fixtures.company.issuePrefix, imported));
+      const link = imported && links.find(href => agentRouteNames(href, ctx.input.api.baseURL, ctx.input.fixtures.company.issuePrefix ?? "", imported));
       if (!link) throw new Error("Real imported employee review link is missing from reply");
       await ctx.input.page.locator(`[id^="comment-"] a[href=${JSON.stringify(link)}]`).first().click();
       await expect(ctx.input.page.getByText("Morgan Package", { exact: true }).first()).toBeVisible(); state.importedAgentVisible = true;

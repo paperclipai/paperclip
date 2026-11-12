@@ -53,6 +53,6 @@ describe("explicit case terminal completion with normal review gates", () => {
     const unlinked = valid(); unlinked.renderedLinkEvidence[0]!.href = "/COM/issues/COM-1"; expect(gradeIntegratorCaseClose(unlinked).passed).toBe(false);
     const otherCase = valid(); otherCase.renderedLinkEvidence[0]!.href = "/COM/cases/COM-C2"; expect(gradeIntegratorCaseClose(otherCase).passed).toBe(false);
     const firstTurnLink = valid(); firstTurnLink.renderedLinkEvidence[0]!.commentId = "first-reply"; expect(gradeIntegratorCaseClose(firstTurnLink).passed).toBe(false);
-    const open = valid(); open.state.acceptedResult.caseRecord = { ...open.state.acceptedResult.caseRecord, status: "in_progress", completedAt: null }; expect(gradeIntegratorCaseClose(open).passed).toBe(false);
+    const open = valid(); open.state.acceptedResult.caseRecord = { ...open.state.acceptedResult.caseRecord, status: "in_progress", completedAt: "" }; expect(gradeIntegratorCaseClose(open).passed).toBe(false);
   });
 });
