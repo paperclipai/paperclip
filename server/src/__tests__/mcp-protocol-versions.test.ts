@@ -477,7 +477,7 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(toolCall.body.params._meta).toBeUndefined();
   });
 
-  it("returns a saved stateless connection to the handshake when its server rolls back", async () => {
+  it("repairs a saved stateless connection whose server rolled back, without replaying the call", async () => {
     let rolledBack = false;
     const modern = modernServer();
     const legacy = legacyServer();
@@ -485,10 +485,14 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await savedConfig()).toMatchObject({ mcpProtocolVersion: MCP_MODERN_PROTOCOL_VERSION });
     rolledBack = true;
     forgetMcpHttpSessions(connected.connectionId);
+    // A plain 400 does not prove the tool never ran: this call is not sent again,
+    // but the saved version is repaired so the next call uses the handshake.
+    expect(await call("lookup")).toMatchObject({ error: { reasonCode: "mcp_remote_status" } });
+    expect(legacy.methods()).toEqual(["tools/call", "server/discover"]);
+    expect(await savedConfig()).toMatchObject({ mcpProtocolVersion: MCP_PROTOCOL_VERSION, mcpSessionRequired: true });
     expect(await call("lookup")).toMatchObject({ decision: "allowed", result: { data: { isError: false } } });
-    // Refused before running (no session), probed, then the handshake and one resend.
     expect(legacy.methods()).toEqual(["tools/call", "server/discover", "initialize", "notifications/initialized", "tools/call"]);
-    expect(await savedConfig()).toMatchObject({ mcpProtocolVersion: MCP_PROTOCOL_VERSION });
+    expect(legacy.methods().filter((method) => method === "tools/call")).toHaveLength(2);
   });
 
   it("uses the handshake when a stateless request is answered with only an older supported version", async () => {

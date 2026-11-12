@@ -6858,7 +6858,16 @@ export function createToolGatewayService(
         // A legacy version only helps when the stateless request was the problem.
         const usable = retryVersion !== null && retryVersion !== sentVersion
           && (isModernMcpProtocolVersion(retryVersion) || isModernMcpProtocolVersion(sentVersion));
-        if (usable) {
+        if (usable && rolledBack) {
+          // A plain 400 does not prove the tool never ran, so the call is not
+          // sent again. Repair the saved version for the next explicit call:
+          // a server that refused a stateless request needs the handshake.
+          if (!isModernMcpProtocolVersion(retryVersion)) {
+            rememberMcpProtocolVersion(eraKey, retryVersion!);
+            const saved = await saveMcpNegotiation(db, connection, { mcpProtocolVersion: retryVersion!, mcpSessionRequired: true });
+            if (saved) { connection.config = saved.config; connection.transportConfig = saved.transportConfig; }
+          }
+        } else if (usable) {
           rememberMcpProtocolVersion(eraKey, retryVersion!);
           await persistMcpProtocolVersion(connection, retryVersion!);
           if (mcpSession) forgetMcpHttpSession(mcpSession);

@@ -68,7 +68,12 @@ elicitation, because only that era has a retry path for it (below).
      sent once more in modern shape. The server rejected it before running
      anything, so the retry cannot repeat a side effect.
    - `-32022` on a modern request: retried once with a version from the
-     server's `supported` list.
+     server's `supported` list, using the handshake when that version is older.
+   - A plain `400` to a stateless `tools/call`: the server is probed and the
+     saved version is repaired (handshake, session required), but the call is
+     not sent again, because a plain `400` does not prove the tool never ran.
+     The next explicit call uses the handshake. Context reads, which are
+     read-only, are sent again.
    - A remembered legacy server that now refuses `initialize` (`400`/`404`/`405`):
      probed again before the call fails.
    - Catalog refresh that gets `400` with a saved version: probed again and
