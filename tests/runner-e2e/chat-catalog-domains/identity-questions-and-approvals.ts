@@ -6,6 +6,8 @@ import { checks, project, entity, hasLink, putDocument, type Entity } from "./in
 import { identityDefinition, identityObservation, observeIdentity, openStandingChat, readAgentResource, waitForReply, remainingIdentityObservationBudget, type Interaction } from "./identity-support.js";
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
 import { createAuthenticatedPerson, enrollPrerequisitePerson } from "./identity-auth.js";
+/** The person's answer to the necessary product-name question: an invented, distinctive brand name. */
+export const NECESSARY_QUESTION_PRODUCT_NAME = "Quillmere";
 /** The setup-chosen person the wrong-reviewer card is addressed to. */
 export const WRONG_REVIEWER_ADDRESSEE = "Riley";
 const audiencePeople = new WeakMap<ChatCatalogContext, Awaited<ReturnType<typeof createAuthenticatedPerson>>>();
@@ -115,7 +117,43 @@ async function observeQuestion(ctx: ChatCatalogContext, state: Record<string, un
   }
   const brief = observed.tasks.find(row => `${row.title}\n${row.description}`.includes(String(state.answer)));
   state.taskBrief = brief ? await ctx.input.api.get(`/api/issues/${brief.id}`) : undefined;
+  if (ctx.scenario.id === "questions-and-approvals.necessary-question") state.answerDeliverables = await answerDeliverables(ctx, observed.tasks, String(state.answer));
   return observed;
+}
+/** A saved document revision or attachment on a task whose content carries the person's exact answer, with its
+ * saving agent, run and time. The answer can shape the resulting work there as well as in the task's brief. */
+export interface AnswerDeliverable { kind: "document" | "attachment"; id: string; issueId: string; companyId?: string; savedAt: string; agentId: string | null; runId: string | null; current: boolean }
+const TEXT_ATTACHMENT = /^(?:text\/|application\/(?:json|xml|xhtml\+xml|javascript)\b)/;
+async function answerDeliverables(ctx: ChatCatalogContext, tasks: Entity[], answer: string): Promise<AnswerDeliverable[]> {
+  const found: AnswerDeliverable[] = [];
+  if (!answer) return found;
+  for (const task of tasks.filter(row => row.companyId === ctx.input.fixtures.company.id).slice(0, 25)) {
+    for (const summary of await ctx.input.api.get<Array<{ key: string; body?: string }>>(`/api/issues/${task.id}/documents`)) {
+      const endpoint = `/api/issues/${task.id}/documents/${encodeURIComponent(summary.key)}`;
+      const [document, revisions] = await Promise.all([ctx.input.api.get<{ id: string; body: string; latestRevisionId?: string }>(endpoint),
+        ctx.input.api.get<Array<{ id: string; body: string; createdAt: string; createdByAgentId?: string | null; createdByRunId?: string | null }>>(`${endpoint}/revisions`)]);
+      // The earliest revision that carries the answer: when the answer first shaped this document.
+      const revision = [...revisions].sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt)).find(row => row.body?.includes(answer));
+      if (revision) found.push({ kind: "document", id: revision.id, issueId: task.id, companyId: task.companyId, savedAt: revision.createdAt,
+        agentId: revision.createdByAgentId ?? null, runId: revision.createdByRunId ?? null, current: document.body.includes(answer) });
+    }
+    for (const attachment of await ctx.input.api.get<Array<{ id: string; companyId: string; contentType: string; byteSize: number; contentPath: string; createdAt: string; createdByAgentId: string | null; originatingRunId?: string | null }>>(`/api/issues/${task.id}/attachments`)) {
+      if (!TEXT_ATTACHMENT.test(attachment.contentType) || attachment.byteSize > 2_097_152) continue;
+      const body = await ctx.input.api.bytes(attachment.contentPath).catch(() => undefined);
+      if (body?.toString("utf8").includes(answer)) found.push({ kind: "attachment", id: attachment.id, issueId: task.id, companyId: attachment.companyId, savedAt: attachment.createdAt,
+        agentId: attachment.createdByAgentId, runId: attachment.originatingRunId ?? null, current: true });
+    }
+  }
+  return found;
+}
+/** The person's answer shapes saved work: a linked task's deliverable that an agent of this company saved, with the
+ * exact answer, only after the person answered (and still carries it). */
+export function answerShapedDeliverable(o: NonNullable<ReturnType<typeof identityObservation>>, resolvedAt: string | null | undefined) {
+  const deliverables = Array.isArray(o.state.answerDeliverables) ? o.state.answerDeliverables as AnswerDeliverable[] : [];
+  return typeof resolvedAt === "string" && deliverables.some(row => row.current && row.companyId === o.companyId && Date.parse(row.savedAt) >= Date.parse(resolvedAt)
+    && !!row.agentId && (row.agentId === o.leadId || o.agents.some(agent => agent.id === row.agentId))
+    && (!row.runId || o.runs.some(run => run.id === row.runId && run.agentId === row.agentId && run.companyId === o.companyId))
+    && o.tasks.some(task => task.id === row.issueId && task.companyId === o.companyId && hasLink(o, "issues", task)));
 }
 export function multipartVisibleSummaries(value: unknown) {
   const o = identityObservation(value);
@@ -225,8 +263,11 @@ export function gradeQuestions(value: unknown) {
         && o.runs.some(run => run.id === original.sourceRunId && run.agentId === o.leadId && run.companyId === o.companyId && run.status === "succeeded") && !!necessary
         && (necessary.answerMode === "text" || necessary.customAnswer?.enabled === true),
         "The agent itself requires exactly one free-text answer, tied to its actual completed run; any other question on the card is optional. Whether that answer is the product name is proved by the saved brief carrying the person's answer.");
-      c.add("answer-in-saved-brief", o.tasks.some(row => `${row.title}\n${row.description}`.includes(String(o.state.answer)) && row.companyId === o.companyId && hasLink(o, "issues", row)),
-        "A saved, linked task brief uses the actual answer rather than merely acknowledging it in chat.");
+      // The contract is that the answer shapes the resulting work: a saved brief or a saved deliverable (document or
+      // attachment content) on the linked task carries the exact answer. Chat acknowledgement alone never counts.
+      const deliverable = answerShapedDeliverable(o, current?.resolvedAt);
+      c.add("answer-in-saved-brief", deliverable || o.tasks.some(row => `${row.title}\n${row.description}`.includes(String(o.state.answer)) && row.companyId === o.companyId && hasLink(o, "issues", row)),
+        "A saved, linked task brief or deliverable uses the actual answer rather than merely acknowledging it in chat.");
       c.add("one-bound-continuation", o.runs.filter(run => run.contextSnapshot?.interactionId === original?.id).length === 1
         || !!original?.payload.runtimeRequestId && original.idempotencyKey === `paperclip-runner-question:${original.sourceRunId}:${original.payload.runtimeRequestId}`
           && o.runs.filter(run => run.id === original.sourceRunId && run.status === "succeeded").length === 1,
@@ -235,10 +276,10 @@ export function gradeQuestions(value: unknown) {
       const beforeBriefs = o.state.beforeAnswerTasks as Array<{ id: string; title: string; description?: string }> | undefined;
       const beforeBrief = Array.isArray(beforeBriefs) ? beforeBriefs.find(row => row.id === brief?.id) : undefined;
       const savedAt = beforeBrief ? brief?.updatedAt : brief?.createdAt;
-      c.add("actual-answer-brief-provenance", !!brief?.id && brief.companyId === o.companyId && Array.isArray(beforeBriefs) && typeof current?.resolvedAt === "string" && typeof savedAt === "string"
+      c.add("actual-answer-brief-provenance", deliverable || !!brief?.id && brief.companyId === o.companyId && Array.isArray(beforeBriefs) && typeof current?.resolvedAt === "string" && typeof savedAt === "string"
         && Date.parse(savedAt) >= Date.parse(current.resolvedAt) && (!beforeBrief || !`${beforeBrief.title}\n${beforeBrief.description}`.includes(String(o.state.answer)))
         && `${brief.title}\n${brief.description}`.includes(String(o.state.answer)) && o.activity.some(row => row.entityId === brief.id && row.action === (beforeBrief ? "issue.updated" : "issue.created") && row.agentId === o.leadId),
-        "Before/after public brief snapshots and mutation attribution prove the actual agent saved the real answer only after the human resolved this question, including an eligible pre-existing draft.");
+        "Before/after public brief snapshots and mutation attribution, or the saving agent, run and time of the deliverable, prove the actual agent saved the real answer only after the human resolved this question.");
     }
   }
   return c.result();
@@ -282,9 +323,11 @@ export const questionIdentityCases = [
     const p = await project(ctx); const source = await openStandingChat(ctx);
     const existingBrief = "The requested single-page site presents a collaborative research workspace for independent researchers and small research teams. Visitors should join the early-access waitlist through an accessible signup form. Use a clear, welcoming visual style and a responsive layout for mobile and desktop.";
     await ctx.input.api.patch(`/api/issues/${source.id}`, { description: existingBrief });
-    return { project: p, sourceId: source.id, existingBrief, answer: `Acorn ${ctx.input.nonce}` };
+    // A realistic, distinctive product name a person would type and an agent would keep verbatim. The earlier
+    // `Acorn <nonce>` read like a placeholder: the agent saved "Acorn" and dropped the suffix as noise.
+    return { project: p, sourceId: source.id, existingBrief, answer: NECESSARY_QUESTION_PRODUCT_NAME };
   }, gradeQuestions, {
-    oracleVersion: "paperclip.chat-catalog.identity.necessary-question.v2", expectedRunCount: 4, minimumRunCount: 1, attemptTimeoutMs: 540_000,
+    oracleVersion: "paperclip.chat-catalog.identity.necessary-question.v3", expectedRunCount: 4, minimumRunCount: 1, attemptTimeoutMs: 540_000,
     observe: observeQuestion,
     async verifySetup(ctx, state) {
       const visible = await readAgentResource(ctx, `/api/issues/${state.sourceId}`);
@@ -292,7 +335,7 @@ export const questionIdentityCases = [
       const c = checks();
       c.add("accessible-existing-site-brief", visible.status === 200 && !!source && source.id === state.sourceId && source.companyId === ctx.input.fixtures.company.id
         && source.description === state.existingBrief, "The actual speaking agent can read the ordinary source brief with purpose, audience and signup intent before its question.");
-      c.add("product-name-not-supplied", typeof source?.description === "string" && !source.description.includes("Acorn") && !source.description.includes(ctx.input.nonce)
+      c.add("product-name-not-supplied", typeof source?.description === "string" && !source.description.includes(String(state.answer))
         && !(await ctx.input.api.get<Array<{ title: string }>>(`/api/companies/${ctx.input.fixtures.company.id}/issues`)).some(row => row.title.includes(String(state.answer))),
         "Neither the source brief nor a pre-created result task supplies the later human product name.");
       return c.result();

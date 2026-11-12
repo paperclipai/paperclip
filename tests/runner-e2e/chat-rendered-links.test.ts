@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { collectConversationLinks, conversationLinkBindings, mislabeledIssueLinks, readConversationDomLinks, readLatestConversationReplyRender, waitForLatestConversationReplyRender, waitForSavedTurnReplyRender, type ConversationLinkInput } from "./chat-rendered-links.js";
+import { collectConversationLinks, collectConversationLinksWithDiagnostics, conversationLinkBindings, mislabeledIssueLinks, readConversationDomLinks, readLatestConversationReplyRender, waitForLatestConversationReplyRender, waitForSavedTurnReplyRender, type ConversationLinkInput } from "./chat-rendered-links.js";
 
 const card = '<div data-thread-item-kind="project_created" data-thread-anchor="project-created:project"><article aria-label="Project created: Launch"><div><p>Project created</p><a href="/RUN/projects/project">Launch</a></div></article></div>';
 const thread = (content = card) => `<div data-testid="task-chat-thread"><div data-testid="task-chat-history-content"><div data-testid="task-chat-scroller"><div id="comment-human" data-thread-item-kind="human">Create a project called Launch for the new website.</div>${content}<div id="comment-reply" data-thread-item-kind="agent">Created the Launch project. No repositories are connected yet.</div></div></div></div>`;
@@ -155,5 +155,25 @@ describe("task links whose visible identifier names another task", () => {
   it("rejects a link whose label names a different task than it opens", () => {
     expect(mislabeledIssueLinks("Open tasks: [COM-2 Launch open website](/COM/issues/COM-1)... correction:")).toEqual(["[COM-2 Launch open website](/COM/issues/COM-1)"]);
     expect(mislabeledIssueLinks("[COM-2](/COM/issues/task-uuid)", id => id === "task-uuid" ? "COM-1" : undefined)).toHaveLength(1);
+  });
+});
+
+// Full cohort 4 (case-history, goals.explain-purpose, preview-service): a phase capture that saved no links could
+// not say whether the thread was closed, showed another conversation, or rendered the reply without anchors.
+describe("records thread and anchor diagnostics when a saved reply yields no rendered links", () => {
+  const page = () => ({ evaluate: async <T, A>(read: (arg: A) => T, arg: A) => read(arg) }) as unknown as Parameters<typeof collectConversationLinks>[0];
+  it("reports the rendered thread, its saved comment anchors and the reply's anchor count", async () => {
+    const value = input(); value.projects = []; value.activity = [];
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const result = await collectConversationLinksWithDiagnostics(page(), value);
+    expect(result.links).toEqual([]);
+    expect(result.diagnostics).toEqual({ render: "rendered", expectedReplyIds: ["reply"], savedCommentCount: 2,
+      threads: [{ testId: "task-chat-thread", visible: true, renderedCommentIds: ["human", "reply"], foreignCommentIds: [], replyAnchorCounts: { reply: 0 } }] });
+  });
+  it("adds no diagnostics when links were read", async () => {
+    document.querySelector('#comment-reply')!.innerHTML = '<a href="/RUN/issues/task">Task</a>';
+    const value = input(); value.projects = []; value.activity = [];
+    const result = await collectConversationLinksWithDiagnostics(page(), value);
+    expect(result.links.map(row => row.href)).toEqual(["/RUN/issues/task"]); expect(result.diagnostics).toBeUndefined();
   });
 });

@@ -175,15 +175,22 @@ export function gradeAccounting(value: unknown) {
     c.add("independent-scoped-week-ledger", o.state.receiptOrigin === "public-imported-synthetic-fixture" && totals?.length === 2 && totals[0]?.costCents === 137 && totals[1]?.costCents === 263
       && projects?.find(row => row.projectId === entity(o.state, "project").id)?.costCents === 400 && typeof o.state.weekFrom === "string" && typeof o.state.weekTo === "string",
       "Two explicitly imported synthetic USD API receipts total $4 in Launch's declared week, independently excluding the other-project and prior-week distractors; these are not live campaign/provider charges.");
-    // Requested facts (the per-agent dollars, the Launch total and the supporting receipt links) are
-    // graded from the reply; incomplete accounting is graded structurally: the reply must point at the
-    // record whose cost is unresolved (its task link or identifier, or the run) and must not give that
-    // record a zero dollar amount. Words such as "subscription" or "incomplete" are not required.
+    // Requested facts (the per-agent dollars, the Launch total and the supporting receipt links) are setup
+    // literals graded from the reply. The incomplete accounting is graded structurally, never by wording: the
+    // reply points at the record whose cost is unresolved (its rendered link, task identifier or run id), and a
+    // chat run actually read that record's saved accounting (its cost summary, its run record, or an unranged
+    // company cost report) before answering. A reply's "$0.00" is not matched: "unknown, not $0.00" is correct.
     c.add("actual-agent-breakdown-and-incomplete-total", /Morgan[\s\S]{0,120}(?:\$|USD\s*)?1\.37/i.test(o.reply) && /Riley[\s\S]{0,120}(?:\$|USD\s*)?2\.63/i.test(o.reply)
       && /(?:\$|USD\s*)4\.00/.test(o.reply)
-      && unresolvedRecordIdentifiedNotFree(o.reply, o.state.preflightTask as Entity | undefined, String(o.state.originalRunId ?? ""))
+      && unresolvedRecordIdentified(o, o.state.preflightTask as Entity | undefined, String(o.state.originalRunId ?? ""))
       && hasLink(o, "issues", entity(o.state, "morganReceiptTask")) && hasLink(o, "issues", entity(o.state, "rileyReceiptTask")),
-      "The actual answer breaks down the recorded scoped API dollars by real agent with supporting records, and points at the unresolved usage record without giving it a $0 amount.");
+      "The actual answer breaks down the recorded scoped API dollars by real agent with supporting records, and points at the record whose usage is unresolved.");
+    const calls = Array.isArray(o.state.leadApiCalls) ? o.state.leadApiCalls as LeadApiCall[] : undefined;
+    const savedRunRecords = Array.isArray(o.state.savedRunRecords) ? o.state.savedRunRecords as SavedRunRecord[] : [];
+    c.add("unresolved-record-read-from-saved-accounting", !!calls && o.runs.some(run => run.agentId === o.leadId && run.status === "succeeded"
+      && readSavedAccounting(calls, run.id, { companyId: o.companyId, task: o.state.preflightTask as Entity | undefined, originalRunId: String(o.state.originalRunId ?? ""),
+        citedRunReads: citedRunReads(run), savedRunRecords })),
+      "A chat run read the unresolved record's saved accounting through a product cost projection instead of inferring or inventing its cost.");
   } else if (o.scenarioId === "budgets-costs.repair-cost-recording") {
     c.add("real-human-saved-cost-retry", quality?.runs.some(row => row.runId === before?.id && row.reason === "retryable") === true && o.state.agentRetryStatus === 403
       && o.state.humanRetryHttpStatus === 200 && typeof o.state.retryAccounted === "boolean" && o.state.retryReceiptVisible === true
@@ -233,6 +240,15 @@ async function observeAccounting(ctx: ChatCatalogContext, state: Record<string, 
     state.issueCosts = await Promise.all(["morganReceiptTask", "rileyReceiptTask"].map(key => ctx.input.api.get<IssueCostSummary>(`/api/issues/${entity(state, key).id}/cost-summary`)));
     state.projectCosts = await ctx.input.api.get<CostByProject[]>(`/api/companies/${ctx.input.fixtures.company.id}/costs/by-project?from=${encodeURIComponent(String(state.weekFrom))}&to=${encodeURIComponent(String(state.weekTo))}`);
   }
+  if (ctx.scenario.id.endsWith("spend-breakdown")) {
+    const calls: LeadApiCall[] = []; const saved: SavedRunRecord[] = [];
+    for (const run of (await ctx.allRuns()).filter(row => row.agentId === ctx.input.fixtures.agent.id)) {
+      const events = await collectRunEvents<Record<string, unknown>>(afterSeq => ctx.input.api.get(`/api/heartbeat-runs/${run.id}/events?afterSeq=${afterSeq}&limit=1000`));
+      calls.push(...leadApiCalls(events.map(row => ({ ...row, runId: row.runId ?? run.id }))));
+      saved.push(...await savedRunRecordReads(ctx, run.id, ctx.input.fixtures.agent.id));
+    }
+    state.leadApiCalls = calls; state.savedRunRecords = saved;
+  }
   if (ctx.scenario.id.endsWith("repair-cost-recording") && state.finalReplyRunId) {
     const comments = await ctx.input.api.get<IssueComment[]>(`/api/issues/${ctx.issue()!.id}/comments?order=asc`);
     state.finalReply = comments.filter(row => row.authorAgentId === ctx.input.fixtures.agent.id && row.createdByRunId === state.finalReplyRunId).map(row => row.body ?? "").join("\n");
@@ -276,7 +292,7 @@ export const accountingIdentityCases: readonly ChatCatalogCase[] = [
     }
     await ctx.input.api.patch(`/api/issues/${ctx.issue()!.id}`, { description: `The requested reporting week is ${weekFrom} through ${weekTo} (UTC). Launch contains imported synthetic metered-API receipt tasks ${morganReceiptTask.identifier} (Morgan) and ${rileyReceiptTask.identifier} (Riley), plus actual completed native run ${state.originalRunId} with unresolved saved usage. Imported fixture receipts are not live provider/campaign billing. Other-project and earlier-week charges must be excluded; native subscription usage/fees are separate.` });
     return { ...state, riley, morganReceiptTask, rileyReceiptTask, weekFrom, weekTo, importedReceiptIds: receipts, receiptOrigin: "public-imported-synthetic-fixture" };
-  }, gradeAccounting, { authentication: "human-session", oracleVersion: "paperclip.chat-catalog.spend-breakdown.structural.v3", sourceFiles: sources, expectedRunCount: 2, attemptTimeoutMs: 600_000, observe: observeAccounting, verifyResult: verifyAccountingLink, verifySetup: verifyUnresolvedSetup,
+  }, gradeAccounting, { authentication: "human-session", oracleVersion: "paperclip.chat-catalog.spend-breakdown.structural.v4", sourceFiles: [...sources, "chat-catalog-domains/api-read-receipts.ts", "run-observations.ts"], expectedRunCount: 2, attemptTimeoutMs: 600_000, observe: observeAccounting, verifyResult: verifyAccountingLink, verifySetup: verifyUnresolvedSetup,
     setupPolicy: { funding: "standard", readiness: "all-ready", invariantCheckIds: ["genuine-unresolved-saved-native-usage"] } }),
   identityDefinition("budgets-costs.repair-cost-recording", async ctx => {
     try {
@@ -329,11 +345,15 @@ export const accountingIdentityCases: readonly ChatCatalogCase[] = [
 
 /** The reply identifies the record whose usage has no settled cost (its task by link or identifier,
  * or its run id), and no line or sentence that names it states a zero amount for it. */
-export function unresolvedRecordIdentifiedNotFree(reply: string, record: Entity | undefined, runId: string): boolean {
+/** The reply points at the unresolved record: a rendered link to its task or run, or its identifier or run id written out. */
+export function unresolvedRecordIdentified(o: { reply: string; links: string[]; origin: string }, record: Entity | undefined, runId: string): boolean {
   const keys = [record?.identifier, record?.id, runId || undefined, runId ? runId.slice(0, 8) : undefined].filter((key): key is string => typeof key === "string" && key.length > 0);
   if (!keys.length) return false;
-  const names = (segment: string) => keys.some(key => new RegExp(`(?<![\\w-])${key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w-])`).test(segment));
-  const segments = reply.split(/\n|(?<=[.!?])\s+/).filter(segment => names(segment));
-  // Only a stated $0 amount for the record fails; words such as "free" are not graded.
-  return segments.length > 0 && !segments.some(segment => /(?:\$|USD\s*)0(?:\.0+)?(?![.\d]*[1-9])/i.test(segment));
+  const linked = o.links.some(href => {
+    try {
+      const parts = new URL(href, o.origin).pathname.split("/").filter(Boolean).map(decodeURIComponent);
+      return parts.some((part, index) => index > 0 && (parts[index - 1] === "issues" && [record?.id, record?.identifier].includes(part) || parts[index - 1] === "runs" && part === runId));
+    } catch { return false; }
+  });
+  return linked || keys.some(key => new RegExp(`(?<![\\w-])${key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w-])`).test(o.reply));
 }

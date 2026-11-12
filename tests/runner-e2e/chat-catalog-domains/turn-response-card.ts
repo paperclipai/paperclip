@@ -1,5 +1,6 @@
 import { chatCatalogHumanQuestionPolicies } from "../chat-catalog-contract.js";
 import { askUserQuestionsPayloadSchema } from "../../../packages/shared/src/validators/issue.js";
+import { markdownLinkTargets } from "../chat-rendered-links.js";
 
 /**
  * The product's own run presentation decision when a run ends its turn on a card:
@@ -15,6 +16,9 @@ export interface TurnResponseCard {
   text: string;
   /** The exact record a confirmation card asks the person to review, when it names one. */
   target?: Record<string, unknown>;
+  /** Markdown link targets in the card fields the page renders as Markdown (a question form's description; a
+   * confirmation's prompt and details). Prompts, option labels and help text render as plain text, unlinked. */
+  links: string[];
 }
 
 interface RunLike { id: string; agentId?: string; status?: string; resultJson?: Record<string, unknown> | null }
@@ -66,11 +70,14 @@ export function turnResponseCards(input: { companyId: string; leadId: string; ru
       const answerable = parsed.data.questions.filter(question => !!question.prompt.trim()
         && (question.options.length >= 2 || question.options.some(option => option.freeText)));
       if (!answerable.length) continue;
-      cards.push({ id: row.id, kind: "ask_user_questions", runId: row.sourceRunId, text: strings(row.title, row.summary, ...displayedText(shownQuestionForm(payload))).join("\n") });
+      const form = record(shownQuestionForm(payload)?.questionSet);
+      cards.push({ id: row.id, kind: "ask_user_questions", runId: row.sourceRunId, text: strings(row.title, row.summary, ...displayedText(shownQuestionForm(payload))).join("\n"),
+        links: strings(form?.description).flatMap(markdownLinkTargets) });
     } else if (row.kind === "request_confirmation") {
       if (!payload || payload.toolAction || payload.secretProposal || payload.connectionAuthorization || typeof payload.prompt !== "string" || !payload.prompt.trim()) continue;
       cards.push({ id: row.id, kind: "request_confirmation", runId: row.sourceRunId,
         text: strings(row.title, row.summary, payload.prompt, payload.detailsMarkdown, payload.acceptLabel, payload.rejectLabel, payload.declineReasonPlaceholder).join("\n"),
+        links: strings(payload.prompt, payload.detailsMarkdown).flatMap(markdownLinkTargets),
         ...(record(payload.target) ? { target: record(payload.target) } : {}) });
     }
   }
@@ -80,4 +87,8 @@ export function turnResponseCards(input: { companyId: string; leadId: string; ru
 /** The written reply plus the text of cards that answered the person in its place. */
 export function replyOrCardText(reply: string, cards: readonly TurnResponseCard[]): string {
   return [reply, ...cards.map(card => card.text)].filter(text => !!text.trim()).join("\n");
+}
+/** The rendered reply links plus the links the response cards render, as one list for link checks. */
+export function replyOrCardLinks(links: readonly string[], cards: readonly TurnResponseCard[]): string[] {
+  return [...new Set([...links, ...cards.flatMap(card => card.links)])];
 }

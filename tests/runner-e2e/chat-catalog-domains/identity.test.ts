@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { companyIdentityCases, gradeCompanyRename } from "./identity-companies.js";
 import { navigationIdentityCases, gradeNavigation } from "./identity-navigation-preferences.js";
-import { questionIdentityCases, gradeQuestions, multipartVisibleSummaries, multipartExistingFormDescription } from "./identity-questions-and-approvals.js";
+import { questionIdentityCases, gradeQuestions, multipartVisibleSummaries, multipartExistingFormDescription, type AnswerDeliverable } from "./identity-questions-and-approvals.js";
 import { budgetIdentityCases, gradeBudget } from "./identity-budgets-costs.js";
 import { accessIdentityCases } from "./identity-access.js";
 import { toolReviewIdentityCases } from "./identity-tool-review.js";
@@ -191,6 +191,30 @@ describe("identity catalog independent oracle calibration", () => {
     // The answer must reach the saved brief: an asked-and-ignored question still fails.
     const ignored = valid("questions-and-approvals.necessary-question"); (ignored.state.original as Interaction).payload.questionSet!.questions = [name, optional];
     ignored.tasks[0]!.description = "An invented product name"; ignored.tasks[0]!.title = "Landing page"; expect(gradeQuestions(ignored).passed).toBe(false);
+  });
+  // Decision after full cohort 4: the case contract is that the answer shapes the resulting work, so the exact answer
+  // in a saved deliverable on the linked task counts as well as in its brief. Chat acknowledgement alone never does.
+  it("accepts the exact answer in a saved deliverable on the linked task, and rejects unproven or chat-only use", () => {
+    const deliverableOnly = (patch: Partial<AnswerDeliverable> = {}) => {
+      const o = valid("questions-and-approvals.necessary-question");
+      o.tasks[0]!.title = "Build the landing page"; o.tasks[0]!.description = "Single-page waitlist site for the research workspace.";
+      o.state.taskBrief = undefined;
+      o.state.answerDeliverables = [{ kind: "document", id: "revision", issueId: "task", companyId: "company", savedAt: "2026-10-26T12:05:00.000Z", agentId: "ceo", runId: "continue", current: true, ...patch }];
+      return o;
+    };
+    expect(gradeQuestions(deliverableOnly()).passed, JSON.stringify(gradeQuestions(deliverableOnly()).checks)).toBe(true);
+    // Reworded valid: an attachment saved by the worker the task went to.
+    const attachment = deliverableOnly({ kind: "attachment", agentId: "morgan", runId: "build" });
+    attachment.agents = [{ id: "morgan" }]; attachment.runs.push({ id: "build", companyId: "company", agentId: "morgan", status: "succeeded" });
+    expect(gradeQuestions(attachment).passed).toBe(true);
+    // Broken: nothing saved carries the answer, it was saved before the person answered, by a person, by a foreign run,
+    // later removed, or on a task the reply never links.
+    const chatOnly = deliverableOnly(); chatOnly.state.answerDeliverables = []; expect(gradeQuestions(chatOnly).passed).toBe(false);
+    expect(gradeQuestions(deliverableOnly({ savedAt: "2026-10-26T11:00:00.000Z" })).passed).toBe(false);
+    expect(gradeQuestions(deliverableOnly({ agentId: null })).passed).toBe(false);
+    expect(gradeQuestions(deliverableOnly({ runId: "someone-elses-run" })).passed).toBe(false);
+    expect(gradeQuestions(deliverableOnly({ current: false })).passed).toBe(false);
+    const unlinked = deliverableOnly(); unlinked.links = ["/ACORN/projects/project"]; expect(gradeQuestions(unlinked).passed).toBe(false);
   });
   it("approved read is graded on the provider nonce and one provider receipt, not the provider sentence", () => {
     const grade = (o: IdentityObservation) => toolReviewIdentityCases[0]!.grade(o).passed;
