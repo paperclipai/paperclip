@@ -207,11 +207,42 @@ function percentile(values: number[], fraction: number): number | null {
   return sorted[Math.min(sorted.length - 1, Math.floor(fraction * sorted.length))]!;
 }
 
-export function swapMetrics(swaps: readonly SwapWindow[], runs: readonly SwapRunFact[], firstEventAfterStop: ReadonlyMap<string, number>, waveEnd: number): SwapMetrics[] {
-  return swaps.map((swap, position) => {
-    const until = swaps[position + 1]?.requestedAt ?? waveEnd;
-    const failedRuns = runs.filter(run => FAILED_RUN.has(run.status) && run.finishedAt !== null && run.finishedAt >= swap.requestedAt && run.finishedAt < until)
-      .map(run => run.runId);
+export const RELEASE_FAILURE_WINDOW_MS = 15 * 60_000;
+
+export function failedAtSwap(swap: SwapWindow, run: SwapRunFact, windowMs = RELEASE_FAILURE_WINDOW_MS): boolean {
+  if (!FAILED_RUN.has(run.status) || run.finishedAt === null) return false;
+  const stop = swap.stopRequestedAt ?? swap.stoppedAt ?? swap.spawnedAt ?? swap.requestedAt;
+  const liveAtStop = run.startedAt !== null && run.startedAt <= stop && run.finishedAt >= stop;
+  return liveAtStop || (run.finishedAt >= swap.requestedAt && run.finishedAt <= stop + windowMs);
+}
+
+export function swapForFailedRun(swaps: readonly SwapWindow[], run: SwapRunFact, windowMs = RELEASE_FAILURE_WINDOW_MS): number | null {
+  const matching = swaps.filter(swap => failedAtSwap(swap, run, windowMs));
+  return matching.length ? matching[matching.length - 1]!.index : null;
+}
+
+export function failedOutsideSwaps(swaps: readonly SwapWindow[], runs: readonly SwapRunFact[], windowMs = RELEASE_FAILURE_WINDOW_MS): string[] {
+  return runs.filter(run => FAILED_RUN.has(run.status) && run.finishedAt !== null && swapForFailedRun(swaps, run, windowMs) === null).map(run => run.runId);
+}
+
+export const QUIET_PERIOD_MS = 90_000;
+
+export interface DrainRun { status: string; createdAt: number | null; finishedAt: number | null; lastActivityAt: number | null }
+
+export function drainState(runs: readonly DrainRun[], now: number, windowMs: number, quietMs = QUIET_PERIOD_MS): { progressing: number; lastChangeAt: number | null; quiet: boolean } {
+  const progressing = runs.filter(run => LIVE_RUN.has(run.status) && (run.lastActivityAt ?? 0) >= now - windowMs).length;
+  const changes = runs.flatMap(run => [run.createdAt, run.finishedAt]).filter((at): at is number => at !== null);
+  const lastChangeAt = changes.length ? Math.max(...changes) : null;
+  return { progressing, lastChangeAt, quiet: progressing === 0 && (lastChangeAt === null || now - lastChangeAt >= quietMs) };
+}
+
+export const AUTO_NOTICE = /^Prepared .+ for this response\.$/;
+export const isAutoNotice = (body: string) => AUTO_NOTICE.test(body.trim());
+
+export function swapMetrics(swaps: readonly SwapWindow[], runs: readonly SwapRunFact[], firstEventAfterStop: ReadonlyMap<string, number>, waveEnd: number,
+  failureWindowMs = RELEASE_FAILURE_WINDOW_MS): SwapMetrics[] {
+  return swaps.map(swap => {
+    const failedRuns = runs.filter(run => swapForFailedRun(swaps, run, failureWindowMs) === swap.index).map(run => run.runId);
     const aliveUntil = swap.stopRequestedAt ?? swap.stoppedAt;
     const lostWhileOldAlive = runs.filter(run => run.errorCode !== null && LOST_RUN_CODES.has(run.errorCode) && run.finishedAt !== null
       && swap.fromPid !== null && run.ownerPidBeforeEnd === swap.fromPid && aliveUntil !== null
@@ -234,6 +265,7 @@ export interface DuplicateFacts {
   doubleExecutors: string[];
   duplicateComments: Array<{ issueId: string; count: number }>;
   duplicateChildren: Array<{ parentId: string; title: string; count: number }>;
+  autoNoticeRepeats?: Array<{ issueId: string; count: number }>;
 }
 
 export function overlappingRuns(runs: ReadonlyArray<SwapRunFact>, waveEnd: number): DuplicateFacts["overlappingRuns"] {
@@ -303,7 +335,7 @@ export function summarizeGrades(grades: readonly TaskGrade[], uncollected = 0, d
 }
 
 export function releaseSwapMarkdown(result: ReleaseSwapResult, metrics: readonly SwapMetrics[], evidence: ReadonlyArray<{ index: number; lateOk: boolean; prepOk: boolean; findings: string[] } | null>,
-  duplicates: DuplicateFacts, grades: readonly TaskGrade[]): string {
+  duplicates: DuplicateFacts, grades: readonly TaskGrade[], failedOutside: readonly string[] = []): string {
   const seconds = (ms: number | null) => ms === null ? "–" : `${Math.round(ms / 1000)} s`;
   const lines = [
     result.headline,
@@ -313,7 +345,9 @@ export function releaseSwapMarkdown(result: ReleaseSwapResult, metrics: readonly
     `Reasons: ${Object.entries(result.byReason).map(([reason, count]) => `${reason} ${count}`).join("; ") || "none"}.`,
     `Retry: ${result.retry.tasks} task(s) needed it; worked ${result.retry.worked}, did not work ${result.retry.didNotWork}, still running ${result.retry.pending}.`,
     `Duplicates: ${duplicates.overlappingRuns.length} overlapping run pair(s), ${duplicates.doubleExecutors.length} double executor(s), `
-      + `${duplicates.duplicateComments.length} duplicated agent comment(s), ${duplicates.duplicateChildren.length} duplicated subtask title(s).`,
+      + `${duplicates.duplicateComments.length} duplicated agent comment(s), ${duplicates.duplicateChildren.length} duplicated subtask title(s)`
+      + `${duplicates.autoNoticeRepeats ? `; informational: ${duplicates.autoNoticeRepeats.length} task(s) repeat the "Prepared ... for this response." notice` : ""}.`,
+    `Failed outside a release window (more than ${RELEASE_FAILURE_WINDOW_MS / 60_000} min after a stop and not live at it): ${failedOutside.length ? failedOutside.join(", ") : "none"}.`,
     "",
     "| Swap | Failed runs | Lost while old alive | Survivors | Next event p50 | Next event max | No event | Late start on old | Prep during recovery |",
     "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",

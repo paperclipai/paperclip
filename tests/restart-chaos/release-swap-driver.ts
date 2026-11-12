@@ -8,6 +8,10 @@ import type { Db } from "../../packages/db/src/index.js";
 
 export type SwapPhase = "before_spawn" | "spawned" | "switched" | "stopping" | "stopped";
 
+export const SWAP_PHASE_MOMENT: Partial<Record<SwapPhase, string>> = {
+  spawned: "incoming_spawned", switched: "traffic_switched", stopping: "outgoing_sigterm", stopped: "outgoing_exited",
+};
+
 export interface SwapPhaseInfo {
   faultId: string;
   phase: SwapPhase;
@@ -114,7 +118,7 @@ function firstOwner(trace: RunTrace): number | null {
   return trace.samples.find(sample => sample.ownerPid !== null)?.ownerPid ?? null;
 }
 
-function startedBy(trace: RunTrace, swap: Pick<SwapRecord, "fromPid" | "toPid">): "old" | "new" | "unknown" {
+export function startedBy(trace: RunTrace, swap: Pick<SwapRecord, "fromPid" | "toPid">): "old" | "new" | "unknown" {
   const owner = firstOwner(trace);
   if (owner !== null && owner === swap.fromPid) return "old";
   if (owner !== null && owner === swap.toPid) return "new";
@@ -231,6 +235,8 @@ export class ReleaseSwapDriver {
     if (typeof root === "string") swap.serverRoot = root;
     this.input.record("release_swap_phase", { swap: swap.index, faultId: info.faultId, phase: info.phase, fromPid: info.fromPid, toPid: info.toPid,
       ...(root ? { serverRoot: root } : {}) });
+    const moment = SWAP_PHASE_MOMENT[info.phase];
+    if (moment) this.input.record(`swap_${moment}`, { swap: swap.index, faultId: info.faultId, at: new Date(info.at).toISOString(), fromPid: info.fromPid, toPid: info.toPid });
     if (info.phase === "spawned") this.onSpawned(swap, info);
     if (info.phase === "switched") this.onSwitched(swap, info);
     if (info.phase === "stopping") { swap.stopRequestedAt = info.at; this.launchOpen = false; }
@@ -290,6 +296,7 @@ export class ReleaseSwapDriver {
       const last = swap.incomingPhases[swap.incomingPhases.length - 1]?.phase;
       if (phase !== last) {
         swap.incomingPhases.push({ phase, at: Date.now() });
+        if (phase === "ready") this.input.record("swap_incoming_ready", { swap: swap.index, faultId: swap.faultId, at: new Date().toISOString(), toPid: swap.toPid });
         if (phase === "recovering" && prepProbes < cap) { prepProbes += 1; lastProbeAt = Date.now(); this.background.push(this.probe(swap, "prep")); }
       }
       if (phase === "ready") return;

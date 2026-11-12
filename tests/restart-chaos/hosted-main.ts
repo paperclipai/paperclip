@@ -3,7 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { ChaosApi } from "./api.js";
-import { HealthProbe, HostedApi, hostedToken, requestSamples } from "./hosted-api.js";
+import { apiRequests, HealthProbe, HostedApi, hostedToken, requestSamples } from "./hosted-api.js";
 import { parseHostedCommand, type HostedOptions } from "./hosted-config.js";
 import { gradeHosted } from "./hosted-grade.js";
 import { continuity, detectReleases, identityOf, releaseMarkdown, type DetectedRelease, type HealthSample } from "./hosted-release.js";
@@ -73,7 +73,7 @@ async function observe(options: HostedOptions, probe: HealthProbe, api: HostedAp
   while (!cancelled() && Date.now() - started < options.maxWaitMs && !releasesReached(detectReleases(probe.samples, { now: Date.now() }), options.releases)) await delay(LOOP_MS);
   await probe.stop();
   const releases = detectReleases(probe.samples, { now: Date.now() });
-  const lines = releaseMarkdown(releases, continuity(probe.samples), continuity(requestSamples(api.requests)));
+  const lines = releaseMarkdown(releases, continuity(probe.samples), continuity(requestSamples(apiRequests(api.requests))));
   await writeFile(path.join(dir, "SUMMARY.md"), `${lines.join("\n")}\n`, { mode: 0o600 });
   timeline.add("hosted_observed", { releases: releases.map(release => ({ shape: release.shape, firstNewAt: new Date(release.firstNewAt).toISOString(),
     lastOldAt: new Date(release.lastOldAt).toISOString(), failed: release.failedRequests, commitChanged: release.commitChanged })) });
@@ -137,7 +137,8 @@ export async function runHosted(argv: readonly string[]): Promise<number> {
     if (options.releases > 0 && !releasesReached(releases, options.releases)) timeline.add("hosted_releases_short", { wanted: options.releases, seen: releases.length });
     polling = keepPolling(workload);
     const graded = await gradeHosted({ api, companyId, agentIds: Object.values(state.agents).map(agent => agent!.id), releases,
-      health: () => continuity(probe.samples), apiContinuity: () => continuity(requestSamples(api.requests)),
+      health: () => continuity(probe.samples), apiContinuity: () => continuity(requestSamples(apiRequests(api.requests))), requests: () => api.requests,
+      quietMs: options.quietMs,
       stopObserver: () => polling!.stop(), observedClicks: () => observedClicks(workload.records), banners: () => new Map(workload.banners),
       agentNames: Object.values(state.agents).map(agent => agent!.name),
       lastReleaseAt: releases.at(-1)?.lastOldAt ?? Date.now(), settleMs: options.settleMs, drainMs: options.drainMs, dir, cancelled, record });
@@ -152,7 +153,8 @@ export async function runHosted(argv: readonly string[]): Promise<number> {
     await polling?.stop();
     await probe.stop();
     await writeFile(path.join(dir, "health-summary.json"), `${JSON.stringify({ releases: detectReleases(probe.samples), health: continuity(probe.samples),
-      api: continuity(requestSamples(api.requests)), inventory: census }, null, 2)}\n`, { mode: 0o600 });
+      api: continuity(requestSamples(apiRequests(api.requests))), inventory: census }, null, 2)}\n`, { mode: 0o600 });
+    await writeFile(path.join(dir, "requests.jsonl"), api.requests.map(record => JSON.stringify(record)).join("\n") + "\n", { mode: 0o600 });
     const cleaned = await finalizeHosted({ api, keep: options.keep, label: options.label, dir, state, record });
     if (cleaned && cleaned.errors.length) exit = Math.max(exit, 1);
     process.off("SIGINT", onSignal);
