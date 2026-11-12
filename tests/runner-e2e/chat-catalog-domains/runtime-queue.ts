@@ -4,6 +4,8 @@ import { createHash } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { inflateRawSync } from "node:zlib";
 import { pollUntil } from "../api.js";
+import { collectRunEvents } from "../run-observations.js";
+import type { ChatCatalogContext } from "../chat-catalog-contract.js";
 import { checks, type Entity } from "./internal-support.js";
 import { busyRuntimeWorker, releaseRuntimeWorker } from "./runtime-busy-worker.js";
 import { runtimeDefinition, runtimeObservation, observeRuntime, type RuntimeAgent } from "./runtime-support.js";
@@ -58,6 +60,31 @@ function jsonCarriesComment(value: unknown, comment: { id: string; body: string 
   return (row.id === comment.id && row.body === comment.body) || Object.values(row).some(item => jsonCarriesComment(item, comment, depth + 1));
 }
 /** Native continuations embed new comments as JSON (an envelope may nest it again as a string), so a body with quotes or newlines appears escaped. */
+export const TASK_HISTORY_READ_EVENT = "task_history.read";
+export function historyReadRevisions(events: ReadonlyArray<{ eventType?: unknown; payload?: unknown }>) {
+  const reads: Record<string, string> = {};
+  for (const row of events) {
+    if (row.eventType !== TASK_HISTORY_READ_EVENT) continue;
+    const comments = (row.payload as { comments?: unknown } | null | undefined)?.comments;
+    if (!comments || typeof comments !== "object" || Array.isArray(comments)) continue;
+    for (const [id, at] of Object.entries(comments as Record<string, unknown>))
+      if (typeof at === "string" && Number.isFinite(Date.parse(at)) && !(Date.parse(reads[id] ?? "") >= Date.parse(at))) reads[id] = at;
+  }
+  return reads;
+}
+export function readCurrentRevision(reads: Record<string, string> | undefined, comment: { id: string; updatedAt?: unknown } | undefined) {
+  if (!comment) return false;
+  const read = Date.parse(String(reads?.[comment.id] ?? "")), current = Date.parse(String(comment.updatedAt ?? ""));
+  return Number.isFinite(read) && Number.isFinite(current) && read >= current;
+}
+export async function runHistoryReads(ctx: ChatCatalogContext, runId: string) {
+  const events = await collectRunEvents<{ seq?: number; eventType?: unknown; payload?: unknown }>((afterSeq, limit) => ctx.input.api.get(`/api/heartbeat-runs/${runId}/events?afterSeq=${afterSeq}&limit=${limit}`));
+  return historyReadRevisions(events);
+}
+export function settledQueue<T>(accept: (value: T) => boolean, quietMs: number) {
+  let since: number | undefined;
+  return (value: T) => { if (!accept(value)) { since = undefined; return false; } since ??= Date.now(); return Date.now() - since >= quietMs; };
+}
 export function promptCarriesComment(prompt: string | undefined, comment: { id: string; body: string }) {
   return typeof prompt === "string" && prompt.includes(comment.id)
     && (prompt.includes(comment.body) || prompt.includes(JSON.stringify(comment.body).slice(1, -1)) || jsonCarriesComment(prompt, comment));
