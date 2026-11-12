@@ -373,7 +373,14 @@ export async function listExpiredNativeRunnerAuthorities(db: Db, now: Date, runI
         eq(nativeRunnerCheckpoints.issueId, nativeRunFinalizations.issueId),
         eq(nativeRunnerCheckpoints.companyId, nativeRunFinalizations.companyId)))),
         and(sql`${heartbeatRuns.runnerProfileJson}->'nativePreparationFencingVersion' = ${JSON.stringify(NATIVE_PREPARATION_FENCING_VERSION)}::jsonb`,
-          isNull(heartbeatRuns.processPid), isNull(heartbeatRuns.processGroupId), isNull(heartbeatRuns.processStartedAt)))));
+          isNull(heartbeatRuns.processPid), isNull(heartbeatRuns.processGroupId), isNull(heartbeatRuns.processStartedAt)),
+        // A graceful shutdown handed this run to the next controller. That
+        // handoff exists before any checkpoint (for example, a run stopped
+        // just after its claim), and a follow-up may carry its predecessor's
+        // Runner identity. Without it nothing but a later server boot would
+        // look at the run again. The restart claim still proves the takeover.
+        and(eq(nativeRunFinalizations.recoveryState, "awaiting_runner_reattach"),
+          sql`${nativeRunFinalizations.recoveryHistory} -> -1 ->> 'disposition' = 'restart_suspended'`))));
   return rows.map(row => row.runId);
 }
 
