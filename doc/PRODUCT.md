@@ -324,7 +324,7 @@ Canonical mode design and command expectations live in `doc/DEPLOYMENT-MODES.md`
 
 ## Further Detail
 
-See [SPEC.md](./SPEC.md) for the full technical specification and [TASKS.md](./TASKS.md) for the task management data model.
+See [TASKS.md](./TASKS.md) for the task management data model.
 
 ---
 
@@ -450,6 +450,22 @@ Coordinator navigation uses **Chat**, **Tasks**, and **Inbox**. Inbox uses the
 inbox icon and keeps the existing decision feed, its count, and decision history
 at `/decisions`. The previous Inbox destination under More is removed.
 
+Inbox opens with **Assigned to you**. Its assignee filter can show all accessible
+assignees, a particular person, ownerless requests, or company alerts. Cards for
+someone else prepend that person's name to the action label; your own cards omit
+your name. Routing validates who may reassign a request and whether its recipient
+may answer it.
+
+Decision, problem, and update cards use the compact Paper design. Each type keeps
+its own context and supported actions, with the primary action at the right of
+the footer. Plans, documents, attachments, and approval details open in sidebar
+tabs and highlight their source card. Confirmation and approval revision drafts
+and pending submissions synchronize across review views. Other requests keep one
+editable form on the inbox card while their supporting artifact is open, so a
+second form cannot submit an older answer. Claim, transfer,
+personal archive/snooze, withdrawal, receipts, and personal history retain their
+multiplayer behavior and update open views through live events.
+
 Tasks defaults to **All tasks**, with a saved view per person and company. Mine uses
 the previous Inbox's personal participation rules, mixed attention items,
 read/unread title weights, keyboard shortcuts, archive and undo, mobile
@@ -498,6 +514,8 @@ Standard agents can configure connections through the same domain APIs used by t
 The agent performs authorized setup, reuses saved accounts and drafts, and hands off only required human authentication, consent, credential entry or identity confirmation. Saved handoffs resume through existing task continuation after current authority is rechecked. Management, tool execution and approval remain separate. Private accounts, host commands and stored credentials retain their boundaries; agent-issued gateway clients preserve issuer and responsible-user restrictions at use time.
 
 Authorized policy administration includes user-requested changes that loosen the acting agent’s own tool controls. These writes remain bounded by management grants, resource scope and the responsible user’s current authority; they do not need an additional approval solely because the agent is a target. Subsequent tool calls obey the resulting policy. Agents cannot approve their own governed action requests or edit their own principal permission grants.
+
+Ordinary tool approvals remain reviewable without an implicit one-hour deadline. Authenticated OAuth refresh preserves a pending approval for the same saved action and authorization. Sign-in repair retains an accepted decision and resumes through connection-change events after revalidation; changed consent, permissions, credentials or action targets require a new review. Current access, explicit deadlines, task closure and execution receipts remain enforced. See [Delayed tool approvals](execution-semantics.md#delayed-tool-approvals).
 
 The implementation, operation inventory, permission matrix and fixture qualification are recorded in [Agent API parity for connection configuration](plans/2026-10-13-connection-api-parity.md). Provider fixtures establish API behavior; they do not constitute live provider setup or an empirical agent-success claim.
 

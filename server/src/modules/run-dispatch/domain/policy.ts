@@ -118,7 +118,8 @@ export type QueuedRunStalenessErrorCode =
   | "issue_execution_lock_changed"
   | "issue_blocked"
   | "issue_review_participant_changed"
-  | "issue_continuation_waiting_on_review";
+  | "issue_continuation_waiting_on_review"
+  | "issue_in_backlog";
 
 export type StalenessDecision =
   | { stale: false }
@@ -147,6 +148,9 @@ export type QueuedRunFacts = {
   isResolvedInteractionContinuation: boolean;
   /** Verified under the issue lock: an answer to a question no run asked, on a todo task that has never started. */
   isUnstartedTaskQuestionAnswer?: boolean;
+  /** The stored human response was verified again for bounded dependency interaction. */
+  isDependencyBlockedInteractionResponse?: boolean;
+  isAgentBlockingQuestionAnswer?: boolean;
   /** A connection resolution or tool refresh can resume an agent waiting in review. */
   isConnectionContinuation?: boolean;
   isInteractionWake: boolean;
@@ -514,9 +518,11 @@ export function decideQueuedRunStaleness(
   if (facts.isResolvedInteractionContinuation || facts.isConnectionContinuation) {
     // A todo task that has never started has no parked execution to protect.
     const startsUnstartedTask = facts.issueStatus === "todo" && facts.isUnstartedTaskQuestionAnswer === true;
+    const answersBlockedTask = facts.issueStatus === "blocked" &&
+      (facts.isDependencyBlockedInteractionResponse === true || facts.isAgentBlockingQuestionAnswer === true);
     const earlyStatus = decideIssueStatus({
       status: facts.issueStatus,
-      requiresInProgress: facts.issueStatus !== "in_review" && !startsUnstartedTask,
+      requiresInProgress: facts.issueStatus !== "in_review" && !startsUnstartedTask && !answersBlockedTask,
       terminalBypass: true,
     });
     if (earlyStatus === "not_in_progress") {
@@ -595,6 +601,15 @@ export function decideQueuedRunStaleness(
         previousAssigneeAgentId: facts.runAgentId,
         currentAssigneeAgentId: facts.issueAssigneeAgentId,
       },
+    };
+  }
+
+  if (facts.wakeReason === "issue_assigned" && facts.issueStatus === "backlog") {
+    return {
+      stale: true,
+      errorCode: "issue_in_backlog",
+      reason: "Cancelled because the task moved to backlog before its assignment run could start",
+      details: { issueId: facts.issueId, currentStatus: facts.issueStatus },
     };
   }
 

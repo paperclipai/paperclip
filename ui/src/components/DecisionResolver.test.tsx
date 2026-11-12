@@ -7,7 +7,8 @@ import type { DecisionOutcome } from "../api/decisions";
 
 const state = vi.hoisted(() => ({ issueStatus: "todo", queriedIssueIds: [] as string[] }));
 
-vi.mock("@tanstack/react-query", () => ({
+vi.mock("@tanstack/react-query", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@tanstack/react-query")>(),
   useQueryClient: () => ({ invalidateQueries: vi.fn(), setQueryData: vi.fn() }),
   useMutation: () => ({ isPending: false, error: null, mutate: vi.fn() }),
   useQuery: ({ queryKey }: { queryKey: readonly string[] }) => queryKey[1] === "detail"

@@ -9,6 +9,13 @@ describe("executionRecoverySettlementNote", () => {
     expect(note).toContain("after a server restart");
   });
 
+  it("does not claim a server restart for a hold a same-run retry created", () => {
+    const note = executionRecoverySettlementNote({ current: true, cause: "native_restart_recovery_blocked",
+      workspaceRestoreFailed: false, trigger: "same_run_retry" });
+    expect(note).not.toContain("server restart");
+    expect(note).toContain("Automatic retry of this run stopped");
+  });
+
   it("keeps the workspace repair note for other holds with a restore failure", () => {
     expect(executionRecoverySettlementNote({ current: true, cause: "execution_finalization_deadline_exceeded",
       workspaceRestoreFailed: true })).toContain("Workspace repair required");

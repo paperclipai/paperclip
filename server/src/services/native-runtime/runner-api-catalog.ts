@@ -34,8 +34,12 @@ const SYNONYMS: Record<string, string> = {
   blocker: "dependencies", blockers: "dependencies", files: "attachments",
 };
 
+// Function words carry no resource meaning; scoring them let any summary that
+// happens to say "for" or "the" outrank the operation a query names.
+const SEARCH_FUNCTION_WORDS = new Set(["a", "an", "the", "for", "of", "to", "in", "on", "at", "by", "with", "and", "or", "from"]);
+
 function words(text: string): string[] {
-  return text.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean)
+  return text.toLowerCase().split(/[^a-z0-9]+/).filter((word) => word.length > 0 && !SEARCH_FUNCTION_WORDS.has(word))
     .flatMap((word) => [word, ...(SYNONYMS[word] ? [SYNONYMS[word]] : [])])
     .map((word) => word.length > 3 && word.endsWith("s") ? word.slice(0, -1) : word);
 }
@@ -147,6 +151,16 @@ export function runnerApiOperation(id: string): RunnerApiOperation {
   const operation = runnerApiCatalog().find((entry) => entry.operationId === id);
   if (!operation) throw notFound("Unknown API operation; use search_api to discover its exact operationId");
   return operation;
+}
+
+/**
+ * Catalog text names company pages as /<prefix>/...; a model can copy that
+ * placeholder verbatim into a link. When the caller's company prefix is known,
+ * hand back real paths. Returns a copy; the shared catalog is never mutated.
+ */
+export function withCompanyPagePaths<T>(value: T, prefix: string | null | undefined): T {
+  if (!prefix || !/^[A-Za-z0-9]+$/.test(prefix)) return value;
+  return JSON.parse(JSON.stringify(value).replaceAll("/<prefix>/", `/${prefix}/`)) as T;
 }
 
 export const runnerApiSearchSchema = z.object({ query: z.string().trim().min(1).max(500), limit: z.number().int().min(1).max(10).default(5), cursor: z.string().max(200).optional() }).strict();

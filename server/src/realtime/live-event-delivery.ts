@@ -4,6 +4,18 @@ import { beginIdleTrackedWork } from "../services/task-admission.js";
 export const LIVE_DELIVERY_MAX_ITEMS = 1_000;
 export const LIVE_DELIVERY_MAX_BYTES = 1024 * 1024;
 const CONGESTION_DEADLINE_MS = 5_000;
+const SHARED_READS_MAX_AGE_MS = 250;
+const SHARED_READS_MAX_EVENTS = 100;
+export type LiveDeliveryReads = Map<string, Promise<unknown>>;
+export function sharedDeliveryRead<T>(reads: LiveDeliveryReads | undefined, key: string, read: () => Promise<T>): Promise<T> {
+  if (!reads) return read();
+  const existing = reads.get(key);
+  if (existing) return existing as Promise<T>;
+  const pending = read();
+  reads.set(key, pending);
+  pending.catch(() => { if (reads.get(key) === pending) reads.delete(key); });
+  return pending;
+}
 const transcript = (event: LiveEvent) => event.type === "heartbeat.run.event" || event.type === "heartbeat.run.log";
 const runId = (event: LiveEvent) => typeof event.payload.runId === "string" ? event.payload.runId : null;
 interface Socket {
@@ -15,7 +27,7 @@ interface Socket {
 
 export function createLiveEventDelivery(input: {
   socket: Socket;
-  authorize(event: LiveEvent): Promise<LiveEvent | null>;
+  authorize(event: LiveEvent, reads: LiveDeliveryReads): Promise<LiveEvent | null>;
   decorate(event: LiveEvent): Promise<LiveEvent>;
   onError(error: unknown): void;
 }) {
@@ -23,7 +35,21 @@ export function createLiveEventDelivery(input: {
   let negotiated = false;
   let revision = 0;
   let interests = new Set<string>();
-  let queued: Array<{ event: LiveEvent; bytes: number; epoch: number }> = [];
+  let queued: Array<{ event: LiveEvent; bytes: number; epoch: number; seq: number }> = [];
+  let enqueuedSeq = 0;
+  let reads: LiveDeliveryReads = new Map();
+  let readsCoverSeq = 0;
+  let readsOpenedAt = 0;
+  let readsServed = 0;
+  function readsFor(seq: number) {
+    const now = Date.now();
+    if (seq > readsCoverSeq || readsServed >= SHARED_READS_MAX_EVENTS || now - readsOpenedAt >= SHARED_READS_MAX_AGE_MS) {
+      reads = new Map(); readsCoverSeq = enqueuedSeq; readsOpenedAt = now; readsServed = 0;
+    }
+    readsServed += 1;
+    return reads;
+  }
+  function closeReads() { reads = new Map(); readsCoverSeq = 0; }
   let retainedBytes = 0;
   let retainedItems = 0;
   let epoch = 0;
@@ -42,7 +68,7 @@ export function createLiveEventDelivery(input: {
   function dispose() {
     disposed = true; epoch += 1;
     for (const item of queued) { retainedBytes -= item.bytes; retainedItems -= 1; }
-    queued = []; activityAt.clear();
+    queued = []; activityAt.clear(); closeReads();
     if (congestionTimer) clearTimeout(congestionTimer);
     if (pendingReadTimer) clearTimeout(pendingReadTimer);
     congestionTimer = pendingReadTimer = undefined;
@@ -99,7 +125,7 @@ export function createLiveEventDelivery(input: {
           if (item.epoch !== epoch || !wants(item.event)) continue;
           pendingReadTimer = setTimeout(closeBacklog, CONGESTION_DEADLINE_MS);
           pendingReadTimer.unref?.();
-          const visible = await input.authorize(item.event);
+          const visible = await input.authorize(item.event, readsFor(item.seq));
           if (!visible || item.epoch !== epoch || !wants(item.event) || !isOpen()) continue;
           const decorated = transcript(visible) || visible.type === "heartbeat.run.activity"
             ? visible : await input.decorate(visible);
@@ -124,6 +150,7 @@ export function createLiveEventDelivery(input: {
         }
       }
     } finally {
+      closeReads();
       try { draining = false; resync(); }
       finally { finishIdleWork(); }
     }
@@ -166,7 +193,7 @@ export function createLiveEventDelivery(input: {
       if (!event) return;
       const bytes = Buffer.byteLength(JSON.stringify(event));
       if (!room(bytes)) { overflow(); return; }
-      queued.push({ event, bytes, epoch }); retainedBytes += bytes; retainedItems += 1;
+      queued.push({ event, bytes, epoch, seq: ++enqueuedSeq }); retainedBytes += bytes; retainedItems += 1;
       void drain();
     },
     requestResync: () => overflow("controller_change"),

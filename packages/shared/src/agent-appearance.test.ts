@@ -17,7 +17,7 @@ describe("agent appearance", () => {
   it("uses a private asset URL for custom avatars while retaining the fallback palette", () => {
     const appearance = { ...appearanceForPalette("deep-tide"), customAvatarAssetId: "22222222-2222-4222-8222-222222222222" };
     expect(resolveAgentAppearance(appearance)).toEqual(appearance);
-    expect(agentAvatarUrl(appearance, 128, 2)).toBe("/api/assets/22222222-2222-4222-8222-222222222222/content");
+    expect(agentAvatarUrl(appearance, 128, 2, "rest", false, "transparent", "portrait")).toBe("/api/assets/22222222-2222-4222-8222-222222222222/content");
     expect(agentAppearanceSchema.safeParse({ ...appearance, customAvatarAssetId: "https://example.test/image" }).success).toBe(false);
   });
   it("renders without a browser and preserves logical-size detail at high density", () => {
@@ -33,6 +33,15 @@ describe("agent appearance", () => {
     expect(eyes).not.toContain('id="agent-candle-light"');
     expect(renderAgentSvg(appearance, 48, 1)).toContain('id="agent-candle-light"');
     expect(renderAgentSvg(appearance, 24, 2)).toBe(eyes);
+  });
+  it("renders a deterministic portrait angle with its own URL and keeps front as the default", () => {
+    const appearance = appearanceForPalette("coral-mint");
+    expect(agentAvatarUrl(appearance, 256, 2, "rest", false, "transparent", "portrait")).toBe("/api/agent-avatars/cap-v1/coral-mint/rest.png?size=256&scale=2&view=portrait");
+    const portrait = renderAgentSvg(appearance, 256, 2, "rest", false, "portrait");
+    expect(portrait).toContain('width="512"');
+    expect(portrait).toBe(renderAgentSvg(appearance, 256, 2, "rest", false, "portrait"));
+    expect(portrait).not.toBe(renderAgentSvg(appearance, 256, 2));
+    expect(renderAgentSvg(appearance, 256, 2)).toBe(renderAgentSvg(appearance, 256, 2, "rest", false, "front"));
   });
   it("uses a separate URL for opaque Slack exports without changing ordinary portraits", () => {
     const appearance = appearanceForPalette("cherry-pop");

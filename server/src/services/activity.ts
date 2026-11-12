@@ -20,10 +20,11 @@ import {
   issueWorkProducts,
   workspaceOperations,
 } from "@paperclipai/db";
-import { hasWorkspaceRestoreFailure, safeWorkspaceRestorePath, ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
+import { hasWorkspaceRestoreFailure, safeWorkspaceRestorePath, ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY, normalizeRunFailureCause, RUN_FAILURE_CAUSE_MAX_LENGTH } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
 import { classifyRunLiveness } from "./run-liveness.js";
+import { missingRunLivenessCandidatesQuery } from "./run-liveness-backfill-query.js";
 
 export interface ActivityFilters {
   companyId: string;
@@ -43,8 +44,27 @@ export function normalizeActivityLimit(limit: number | undefined) {
   return Math.max(1, Math.min(MAX_ACTIVITY_LIMIT, Math.floor(limit ?? DEFAULT_ACTIVITY_LIMIT)));
 }
 
+const RUN_LIVENESS_BACKFILL_BATCH = 20;
+// Runs finalize with a liveness classification. The backfill only repairs rows
+// that missed it (older rows or a failed finalization), so a delay is safe.
+const RUN_LIVENESS_CLEAN_TTL_MS = 10 * 60_000;
+const RUN_LIVENESS_CLEAN_MAX_ENTRIES = 10_000;
+
 export function activityService(db: Db) {
   const scheduledLivenessBackfills = new Set<string>();
+  // Issues whose last backfill pass left no missing liveness, keyed like
+  // `scheduledLivenessBackfills`. Values are the time the skip window ends.
+  // The map keeps insertion order, so the first entry is the oldest.
+  const livenessCleanUntil = new Map<string, number>();
+  function rememberLivenessClean(key: string) {
+    livenessCleanUntil.delete(key);
+    livenessCleanUntil.set(key, Date.now() + RUN_LIVENESS_CLEAN_TTL_MS);
+    while (livenessCleanUntil.size > RUN_LIVENESS_CLEAN_MAX_ENTRIES) {
+      const oldest = livenessCleanUntil.keys().next().value;
+      if (oldest === undefined) break;
+      livenessCleanUntil.delete(oldest);
+    }
+  }
   const issueIdAsText = sql<string>`${issues.id}::text`;
   const summarizedUsageJson = sql<Record<string, unknown> | null>`
     case
@@ -192,41 +212,9 @@ export function activityService(db: Db) {
   }
 
   async function backfillMissingRunLivenessForIssue(companyId: string, issueId: string) {
-    const runs = await db
-      .select({
-        id: heartbeatRuns.id,
-        companyId: heartbeatRuns.companyId,
-        status: heartbeatRuns.status,
-        contextSnapshot: heartbeatRuns.contextSnapshot,
-        resultJson: heartbeatRuns.resultJson,
-        stdoutExcerpt: heartbeatRuns.stdoutExcerpt,
-        stderrExcerpt: heartbeatRuns.stderrExcerpt,
-        error: heartbeatRuns.error,
-        errorCode: heartbeatRuns.errorCode,
-        continuationAttempt: heartbeatRuns.continuationAttempt,
-      })
-      .from(heartbeatRuns)
-      .where(
-        and(
-          eq(heartbeatRuns.companyId, companyId),
-          isNull(heartbeatRuns.livenessState),
-          sql`${heartbeatRuns.status} not in ('queued', 'running')`,
-          or(
-            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
-            sql`exists (
-              select 1
-              from ${activityLog}
-              where ${activityLog.companyId} = ${companyId}
-                and ${activityLog.entityType} = 'issue'
-                and ${activityLog.entityId} = ${issueId}
-                and ${activityLog.runId} = ${heartbeatRuns.id}
-            )`,
-          ),
-        ),
-      )
-      .limit(20);
+    const runs = await missingRunLivenessCandidatesQuery(db, companyId, issueId, RUN_LIVENESS_BACKFILL_BATCH);
 
-    if (runs.length === 0) return;
+    if (runs.length === 0) return 0;
 
     const issue = await db
       .select({
@@ -357,13 +345,24 @@ export function activityService(db: Db) {
         })
         .where(and(eq(heartbeatRuns.id, run.id), isNull(heartbeatRuns.livenessState)));
     }
+    return runs.length;
   }
 
   function scheduleRunLivenessBackfill(companyId: string, issueId: string) {
     const key = `${companyId}:${issueId}`;
     if (scheduledLivenessBackfills.has(key)) return;
+    const cleanUntil = livenessCleanUntil.get(key);
+    if (cleanUntil !== undefined) {
+      if (cleanUntil > Date.now()) return;
+      livenessCleanUntil.delete(key);
+    }
     scheduledLivenessBackfills.add(key);
     void backfillMissingRunLivenessForIssue(companyId, issueId)
+      .then((found) => {
+        // A partial batch means this pass classified every remaining candidate.
+        // Skip this issue for a while, so page reads do not repeat the lookup.
+        if (found < RUN_LIVENESS_BACKFILL_BATCH) rememberLivenessClean(key);
+      })
       .catch((err: unknown) => {
         logger.warn({ err, companyId, issueId }, "run liveness backfill failed");
       })
@@ -443,9 +442,19 @@ export function activityService(db: Db) {
       return limit === undefined ? query : query.limit(limit);
     },
 
-    runsForIssue: async (companyId: string, issueId: string, viewerUserId: string | null = null, limit?: number, selectedRunIds?: string[]) => {
+    runsForIssue: async (
+      companyId: string,
+      issueId: string,
+      viewerUserId: string | null = null,
+      limit?: number,
+      selectedRunIds?: string[],
+      // Read-only callers (the chat bootstrap) skip the background liveness
+      // backfill: it writes to runs and outlives the request's own limits.
+      // The task page's own `/runs` read still schedules it.
+      options: { skipLivenessBackfill?: boolean } = {},
+    ) => {
       if (selectedRunIds && !selectedRunIds.length) return [];
-      scheduleRunLivenessBackfill(companyId, issueId);
+      if (!options.skipLivenessBackfill) scheduleRunLivenessBackfill(companyId, issueId);
       const runsQuery = db
         .select({
           runId: heartbeatRuns.id,
@@ -468,6 +477,9 @@ export function activityService(db: Db) {
             then 'This credential is not shared with the responsible user' else null end`,
           usageJson: summarizedUsageJson,
           resultJson: summarizedResultJson(viewerUserId),
+          // Bounded cause of a generic failure code; validated below, legacy rows have none.
+          failureCause: sql<string | null>`case when jsonb_typeof(${heartbeatRuns.resultJson} -> 'failureCause') = 'string'
+            then left(${heartbeatRuns.resultJson} ->> 'failureCause', ${RUN_FAILURE_CAUSE_MAX_LENGTH + 1}) end`,
           logBytes: heartbeatRuns.logBytes,
           retryOfRunId: heartbeatRuns.retryOfRunId,
           scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
@@ -594,6 +606,7 @@ export function activityService(db: Db) {
               : null;
         return {
           ...run,
+          failureCause: normalizeRunFailureCause(run.failureCause),
           resultJson: run.resultJson ? {
             ...run.resultJson,
             ...(Object.hasOwn(run.resultJson, "workspaceRestorePath") ? {

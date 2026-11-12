@@ -139,6 +139,8 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
       issuePrefix,
       requireBoardApprovalForNewAgents: false,
     });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "board-user",
+      status: "active", membershipRole: "admin" });
     await db.insert(agents).values({
       id: agentId,
       companyId,
@@ -664,10 +666,6 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
 
   it.each(["post", "patch"] as const)("keeps a retry's live process and saved work owner when a %s comment arrives", async method => {
     const f = await seedIssueWithRetry({ retryStatus: "running" });
-    await db.insert(companyMemberships).values({
-      companyId: f.companyId, principalType: "user", principalId: "board-user",
-      membershipRole: "admin", status: "active",
-    });
     const child = spawn(process.execPath, ["-e", `
       process.on('message', message => {
         if (message === 'continue-work') process.send('work-continues');
@@ -781,6 +779,60 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
     });
   });
 
+  it("starts a scheduled retry now when the task Retry is clicked during its countdown", async () => {
+    const f = await seedIssueWithRetry();
+    await db.update(heartbeatRuns).set({ createdAt: new Date("2026-05-06T18:00:01.000Z") })
+      .where(eq(heartbeatRuns.id, f.retryRunId));
+    const app = createApp(boardActor(f.companyId));
+
+    const res = await request(app).post(`/api/issues/${f.issueId}/retry`)
+      .send({ idempotencyKey: randomUUID(), observedRunId: f.retryRunId });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(202);
+    expect(res.body).toMatchObject({ accepted: true, scheduledRetry: { outcome: "promoted" } });
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.retryRunId));
+    expect(run!.status).toBe("queued");
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.sourceRunId))).toHaveLength(1);
+  });
+
+  it("starts the scheduled retry when a saved task Retry is replayed after its promotion was lost", async () => {
+    const f = await seedIssueWithRetry();
+    await db.update(heartbeatRuns).set({ createdAt: new Date("2026-05-06T18:00:01.000Z") })
+      .where(eq(heartbeatRuns.id, f.retryRunId));
+    const app = createApp(boardActor(f.companyId));
+    const body = { idempotencyKey: randomUUID(), observedRunId: f.retryRunId };
+    const first = await request(app).post(`/api/issues/${f.issueId}/retry`).send(body);
+    expect(first.status, JSON.stringify(first.body)).toBe(202);
+    await db.update(heartbeatRuns).set({ status: "scheduled_retry", scheduledRetryAt: new Date(Date.now() + 60 * 60_000) })
+      .where(eq(heartbeatRuns.id, f.retryRunId));
+
+    const replay = await request(app).post(`/api/issues/${f.issueId}/retry`).send(body);
+
+    expect(replay.status, JSON.stringify(replay.body)).toBe(202);
+    expect(replay.body).toMatchObject({ accepted: true, requestId: first.body.requestId, scheduledRetry: { outcome: "promoted" } });
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.retryRunId));
+    expect(run!.status).toBe("queued");
+  });
+
+  it("refuses Retry now on a private task the member cannot see, like the task Retry", async () => {
+    const f = await seedIssueWithRetry();
+    await db.update(issues).set({ visibility: "private", createdByUserId: "task-owner", responsibleUserId: "task-owner" })
+      .where(eq(issues.id, f.issueId));
+    await db.insert(companyMemberships).values({ companyId: f.companyId, principalType: "user", principalId: "other-member",
+      status: "active", membershipRole: "member" });
+    const app = createApp({ ...boardActor(f.companyId), userId: "other-member",
+      memberships: [{ companyId: f.companyId, membershipRole: "member", status: "active" }] });
+
+    const retry = await request(app).post(`/api/issues/${f.issueId}/retry`)
+      .send({ idempotencyKey: randomUUID(), observedRunId: f.retryRunId });
+    const retryNow = await request(app).post(`/api/issues/${f.issueId}/scheduled-retry/retry-now`).send({});
+
+    expect(retry.status, JSON.stringify(retry.body)).toBe(404);
+    expect(retryNow.status, JSON.stringify(retryNow.body)).toBe(404);
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.retryRunId));
+    expect(run!.status).toBe("scheduled_retry");
+  });
+
   it("promotes the existing scheduled retry and treats duplicate clicks as idempotent", async () => {
     const { companyId, issueId, retryRunId } = await seedIssueWithRetry();
     const app = createApp(boardActor(companyId));
@@ -855,6 +907,8 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
       issuePrefix: "NONE",
       requireBoardApprovalForNewAgents: false,
     });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "board-user",
+      status: "active", membershipRole: "admin" });
     await db.insert(issues).values({
       id: issueId,
       companyId,

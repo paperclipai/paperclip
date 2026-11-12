@@ -194,4 +194,39 @@ describe("additive project access", () => {
     expect((await request(api).post(`/agents/${f.agentId}/project-access`).send({ projectIds: [f.selected[1]!.id] })).status).toBe(403);
     expect((await request(api).get(`/agents/${other.agentId}/project-access`)).status).toBe(404);
   });
+
+  it("runs a private task in its owner's personal project without granting that project", async () => {
+    const companyId = randomUUID(), agentId = randomUUID(), ownerId = `owner-${randomUUID()}`;
+    await db.insert(companies).values({ id: companyId, name: "Personal private tasks", issuePrefix: `P${companyId.slice(0, 6)}` });
+    await db.insert(agents).values({ id: agentId, companyId, name: "CEO", adapterType: "process", status: "idle" });
+    await db.insert(companyMemberships).values({ companyId, principalType: "agent", principalId: agentId, membershipRole: "member", status: "active" });
+    const [personal, shared] = await db.insert(projects).values([
+      { companyId, name: "My private tasks", visibility: "private", personalOwnerUserId: ownerId, privacyOwnerUserId: ownerId },
+      { companyId, name: "Private team project", visibility: "private", privacyOwnerUserId: ownerId },
+    ]).returning();
+    const task = async (projectId: string) => (await db.insert(issues).values({ companyId, title: "Private chat", status: "todo",
+      assigneeAgentId: agentId, projectId, visibility: "private", responsibleUserId: ownerId }).returning())[0]!;
+    const actor = { type: "agent" as const, source: "agent_key" as const, agentId, companyId };
+    const personalTask = await task(personal!.id);
+    await db.update(issues).set({ privacyRootIssueId: personalTask.id }).where(eq(issues.id, personalTask.id));
+
+    // The agent can work the task it was given; the personal project stays unreadable.
+    await expect(assertTaskWorkspaceExecutionAccess(db, actor, companyId, { issueId: personalTask.id })).resolves.toMatchObject({ task: { id: personalTask.id } });
+    await expect(assertTaskWorkspaceSourceProjectAccess(db, actor, companyId, personal!.id)).rejects.toThrow(/not an access member/);
+
+    // An execution workspace from the personal project is not a bare container.
+    const [ownerFiles] = await db.insert(executionWorkspaces).values({ companyId, projectId: personal!.id, name: "Owner workspace",
+      cwd: "/tmp/personal-owner-workspace", mode: "isolated_workspace", strategyType: "git_worktree" }).returning();
+    await db.update(issues).set({ executionWorkspaceId: ownerFiles!.id }).where(eq(issues.id, personalTask.id));
+    await expect(assertTaskWorkspaceExecutionAccess(db, actor, companyId, { issueId: personalTask.id, workspaceId: ownerFiles!.id }))
+      .rejects.toThrow(/not an access member/);
+    await db.update(issues).set({ executionWorkspaceId: null }).where(eq(issues.id, personalTask.id));
+
+    // A shared private project, or a personal project that provides files, still needs membership.
+    const sharedTask = await task(shared!.id);
+    await db.update(issues).set({ privacyRootIssueId: sharedTask.id }).where(eq(issues.id, sharedTask.id));
+    await expect(assertTaskWorkspaceExecutionAccess(db, actor, companyId, { issueId: sharedTask.id })).rejects.toThrow(/not an access member/);
+    await db.insert(projectWorkspaces).values({ companyId, projectId: personal!.id, name: "Owner files", cwd: "/tmp/personal-owner-files" });
+    await expect(assertTaskWorkspaceExecutionAccess(db, actor, companyId, { issueId: personalTask.id })).rejects.toThrow(/not an access member/);
+  });
 });

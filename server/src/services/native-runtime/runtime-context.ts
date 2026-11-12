@@ -11,8 +11,8 @@ import { restConnectorFor } from "../connectors/rest-registry.js";
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { and, eq } from "drizzle-orm";
-import { companySkillVersions, heartbeatRuns, type Db } from "@paperclipai/db";
+import { and, desc, eq } from "drizzle-orm";
+import { agentInstructionRevisions, agents, companySkillVersions, heartbeatRuns, type Db } from "@paperclipai/db";
 import type { PaperclipSkillEntry } from "@paperclipai/adapter-utils/server-utils";
 import { isToolConnectionAttentionHealth } from "@paperclipai/shared";
 import {
@@ -199,6 +199,51 @@ async function materializeSkillAsset(source: string) {
     return bundle;
 }
 
+async function localRuntimeAssetPresent(asset: NativeRuntimeAssetReference) {
+  const root = path.join(resolvePaperclipInstanceRoot(), "runtime-context-assets");
+  const manifest = await fs.readFile(path.join(root, "manifests", `${asset.digest}.json`), "utf8").catch(() => null);
+  return manifest !== null && sha256(manifest) === asset.manifestDigest
+    && (await fs.lstat(path.join(root, "bundles", asset.digest)).catch(() => null))?.isDirectory() === true;
+}
+
+function singleFileAssetDigest(entryPath: string, content: Buffer) {
+  return sha256(JSON.stringify([{ path: entryPath, sha256: sha256(content), mode: 0o444, size: content.byteLength }]));
+}
+
+export async function rehydratePinnedInstructionAsset(
+  db: Db,
+  binding: { companyId: string; agentId: string },
+  context: NativeRuntimeContextSnapshot,
+): Promise<NativeRuntimeContextSnapshot> {
+  const pinned = context.instructions.bundle;
+  if (pinned.rootPath !== path.join(resolvePaperclipInstanceRoot(), "runtime-context-assets", "bundles", pinned.digest)) return context;
+  if (await localRuntimeAssetPresent(pinned)) return context;
+  const matches = (bundle: NativeRuntimeAssetReference) => bundle.digest === pinned.digest
+    && bundle.manifestDigest === pinned.manifestDigest && bundle.fileCount === pinned.fileCount && bundle.totalBytes === pinned.totalBytes;
+  if (pinned.fileCount === 1) {
+    const rows = await db.select({ contentBase64: agentInstructionRevisions.contentBase64 }).from(agentInstructionRevisions)
+      .where(and(eq(agentInstructionRevisions.companyId, binding.companyId), eq(agentInstructionRevisions.agentId, binding.agentId),
+        eq(agentInstructionRevisions.entryFile, context.instructions.entryPath)))
+      .orderBy(desc(agentInstructionRevisions.createdAt)).limit(500);
+    for (const row of rows) {
+      const content = Buffer.from(row.contentBase64, "base64");
+      if (singleFileAssetDigest(context.instructions.entryPath, content) !== pinned.digest) continue;
+      const bundle = await materializeAsset([{ path: context.instructions.entryPath, content, mode: 0o444 }]);
+      if (matches(bundle)) return { ...context, instructions: { ...context.instructions, bundle } };
+    }
+  }
+  const [agent] = await db.select().from(agents).where(and(eq(agents.companyId, binding.companyId), eq(agents.id, binding.agentId)));
+  if (agent) {
+    for (const agentFiles of [true, false]) {
+      const rebuilt = await materializeInstructionBundle(db, agent, agentFiles).catch(() => null);
+      if (rebuilt && rebuilt.entryPath === context.instructions.entryPath && matches(rebuilt.bundle)) {
+        return { ...context, instructions: { ...context.instructions, bundle: rebuilt.bundle } };
+      }
+    }
+  }
+  return context;
+}
+
 export async function rehydratePinnedSkillAssets(
   db: Db,
   binding: { companyId: string; runId: string; agentId: string },
@@ -243,6 +288,36 @@ export async function rehydratePinnedSkillAssets(
     skills.push({ ...skill, bundle });
   }
   return { ...context, skills };
+}
+
+/**
+ * The admitted context names every skill by digest, so the Runner's copy is
+ * described without local files. Pinned skill files are rehydrated on this
+ * server now, or, when reconnecting to a live remote Runner that already holds
+ * them, only if a launch must stage them again.
+ */
+export async function prepareRuntimeContextSource(
+  db: Db,
+  binding: { companyId: string; runId: string; agentId: string },
+  context: NativeRuntimeContextSnapshot,
+  options: { deferUntilStaged: boolean },
+) {
+  // Defer only when preparation already checked access to every admitted skill:
+  // each one is pinned to its exact version in the run's saved selection.
+  const pinned = options.deferUntilStaged && context.skills.length > 0
+    ? await db.select({ contextSnapshot: heartbeatRuns.contextSnapshot }).from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, binding.companyId), eq(heartbeatRuns.id, binding.runId), eq(heartbeatRuns.agentId, binding.agentId)))
+      .then(([run]) => {
+        const pins = run?.contextSnapshot?.skillVersions;
+        return Boolean(pins && typeof pins === "object" && !Array.isArray(pins)
+          && context.skills.every(skill => skill.versionId && (pins as Record<string, unknown>)[skill.key] === skill.versionId));
+      })
+    : options.deferUntilStaged;
+  let staged = pinned ? null : await rehydratePinnedSkillAssets(db, binding, context);
+  return {
+    described: staged ?? context,
+    forStaging: async () => (staged ??= await rehydratePinnedSkillAssets(db, binding, context)),
+  };
 }
 
 export async function materializeSelectedSkills(runtimeConfig: Record<string, unknown>, entries: PaperclipSkillEntry[], omitLegacy: boolean) {

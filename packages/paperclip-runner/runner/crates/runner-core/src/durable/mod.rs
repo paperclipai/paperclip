@@ -51,6 +51,12 @@ pub const PROVIDER_ATTACH_REFUSED: &str = "provider_attach_refused";
 /// recorded result. Replacing the session could repeat or lose that action.
 pub const PROVIDER_SIDE_EFFECT_PENDING: &str = "provider_side_effect_pending";
 
+/// The runner closed this run's provider session after a turn start whose
+/// prompt may have reached the provider. No later `turn.start` of the same run
+/// can reopen it; only a new run's attachment can. Resending could duplicate
+/// the prompt, so the controller stops same-run retries and offers Retry.
+pub const PROVIDER_SESSION_CLOSED: &str = "provider_session_closed";
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DurableRunnerError(String, Option<serde_json::Value>, Option<&'static str>);
 
@@ -249,6 +255,10 @@ pub struct DurableRunnerConfig {
     pub reconnect_grace: Option<Duration>,
     /// Zero disables the total process lifetime limit.
     pub max_runtime: Duration,
+    /// The controller launched this Runner for one run (`--lifecycle-mode
+    /// per_turn`): the process exits with its run, so nothing reuses a provider
+    /// generation prepared after its turn settles.
+    pub turn_scoped: bool,
 }
 
 impl DurableRunnerConfig {
@@ -429,6 +439,7 @@ mod tests {
             reconnect_delay: Duration::from_millis(1),
             reconnect_grace: None,
             max_runtime: Duration::from_secs(60),
+            turn_scoped: false,
         }
     }
 

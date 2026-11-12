@@ -3,6 +3,7 @@ import { startMcpClientMirrorSync } from "./services/public-mcp/client-mirror-sy
 import { registerIdleMcpOwners } from "./services/public-mcp/idle-sleep-proof.js";
 import { startMcpRevocationIndexSync } from "./services/public-mcp/revocation-index-sync.js";
 import { startMcpIngressHandoffExpiry } from "./services/public-mcp/ingress-handoff-expiry.js";
+import { runnerAttachmentDownloadRoutes } from "./services/native-runtime/runner-attachment-download.js";
 import { nativeRunMcpRoutes } from "./routes/native-run-mcp.js";
 import { connectionEventWakeRoutes } from "./routes/connection-event-wake.js";
 import { registerGitHubReviewProjectionWork } from "./services/chat-channels/github/review-projection-work.js";
@@ -20,7 +21,7 @@ import { startAgentLifecycle } from "./services/agent-lifecycle.js";
 import { idleAdmissionMiddleware, trackIdleRequestHandlers } from "./middleware/idle-admission.js";
 import { databaseOperationMiddleware } from "./middleware/database-operation.js";
 import { staticUiFiles } from "./middleware/static-ui.js";
-import { retainedUiAssets } from "./retained-ui-assets.js";
+import { publishRetainedUiAssetsAtStartup, retainedUiAssets } from "./retained-ui-assets.js";
 import { createStorageProviderFromConfig } from "./storage/provider-registry.js";
 import { loadStorageConfig } from "./storage/config.js";
 import { isIdleTaskDrainActive, trackIdleWork } from "./services/task-admission.js";
@@ -106,6 +107,8 @@ import { summarySlotRoutes } from "./routes/summary-slots.js";
 import { statusCardRoutes } from "./routes/status-cards.js";
 import { teamsCatalogRoutes } from "./routes/teams-catalog.js";
 import { agentRoutes } from "./routes/agents.js";
+import { agentInteractionPermissionRoutes } from "./routes/agent-interaction-permissions.js";
+import { agentPermissionGrantRoutes } from "./routes/agent-permission-grants.js";
 import { resolveAgentRunnerTargetForCompany } from "./services/agent-runner-selection.js";
 import type { SetupTokenSessionService } from "./services/setup-token-session.js";
 import {
@@ -119,6 +122,7 @@ import { environmentService } from "./services/environments.js";
 import { environmentRuntimeService } from "./services/environment-runtime.js";
 import { projectRoutes } from "./routes/projects.js";
 import { issueRoutes } from "./routes/issues.js";
+import { linkPreviewRoutes } from "./routes/link-previews.js";
 import { issueTreeControlRoutes } from "./routes/issue-tree-control.js";
 import { caseRoutes } from "./routes/cases.js";
 import { caseHandoffRoutes } from "./routes/case-handoffs.js";
@@ -126,6 +130,7 @@ import { workflowRoutes } from "./routes/workflows.js";
 import { fileResourceRoutes } from "./routes/file-resources.js";
 import { createRemoteWorkspaceFiles } from "./services/remote-workspace-files.js";
 import { createSavedWorkspaceLoader } from "./services/remote-workspaces.js";
+import { createSavedWorkspaceArchiveOpener } from "./services/saved-workspace-archive.js";
 import { routineRoutes } from "./routes/routines.js";
 import { environmentRoutes } from "./routes/environments.js";
 import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
@@ -221,6 +226,7 @@ import { chatInboundWakeNoticeWork } from "./services/chat-inbound-wake-notice-w
 import { chatFailedRetryNoticeWork } from "./services/chat-failed-retry-notice-work.js";
 import { chatRunMilestoneWork } from "./services/chat-run-milestone-work.js";
 import { heartbeatService } from "./services/heartbeat.js";
+import { registerInterruptedTurnChatRetry } from "./services/heartbeat/restart-interrupted-turn.js";
 import { pluginLifecycleManager } from "./services/plugin-lifecycle.js";
 import { registerPluginLifecycleDelivery } from "./services/plugin-lifecycle-delivery.js";
 import { createPluginJobCoordinator } from "./services/plugin-job-coordinator.js";
@@ -242,6 +248,7 @@ import {
 } from "./http/body-limits.js";
 import { COMPANY_IMPORT_API_PATH } from "./routes/company-import-paths.js";
 import { apiCompression } from "./middleware/api-compression.js";
+import { apiServerTiming } from "./middleware/api-server-timing.js";
 import { chatWebhookBodyParser } from "./middleware/chat-webhook-body.js";
 import { createChatWebhookDiagnostics } from "./services/chat-webhook-diagnostics.js";
 
@@ -483,6 +490,8 @@ export async function createApp(
   },
 ) {
   const app = express();
+  // First, so the reported server time includes admission and database waits.
+  app.use("/api", apiServerTiming());
   app.use(databaseOperationMiddleware);
   app.use(idleAdmissionMiddleware);
   const staticUi = express.Router();
@@ -573,6 +582,7 @@ export async function createApp(
   // agent API key. Every request revalidates the active heartbeat row.
   app.use(runtimeConnectionIntentRoutes(db));
   app.use(nativeRunMcpRoutes());
+  app.use(runnerAttachmentDownloadRoutes(db, opts.storageService));
   const hostServicesDisposers = new Map<string, () => void>();
   let lifecyclePluginsReady = false;
   const agentLifecycle = startAgentLifecycle(db, createLifecycleDriver(db, workerManager), () => lifecyclePluginsReady && !isWarmStandby() && !isIdleTaskDrainActive());
@@ -594,6 +604,8 @@ export async function createApp(
     storage: opts.storageService,
   });
   if (opts.budgetResumeDelivery) opts.budgetResumeDelivery.prepareChatRetry = chatChannels.prepareFailedChatRunRetry;
+  // A restart's automatic Retry of a connected conversation needs the same callback.
+  registerInterruptedTurnChatRetry(chatChannels.prepareFailedChatRunRetry);
   // Voice capabilities are verified by the signed callback route, not by
   // board/agent bearer authentication. Mount before actorMiddleware so its
   // per-session Bearer cannot be mistaken for an agent API key.
@@ -751,6 +763,7 @@ export async function createApp(
   // start route drives a live login instead of the fixed 503.
   const setupTokenLoginTransport = buildSetupTokenLoginTransport({
     sandbox: createProductionSetupTokenSandboxProvider({
+      db,
       environments: environmentService(db),
       environmentRuntime: environmentRuntimeService(db, {
         pluginWorkerManager: workerManager,
@@ -792,6 +805,8 @@ export async function createApp(
       },
     }),
   );
+  api.use(agentPermissionGrantRoutes(db));
+  api.use(agentInteractionPermissionRoutes(db));
   api.use(assetRoutes(db, opts.storageService));
   api.use(agentProfileAvatarRoutes(db, opts.storageService));
   api.use(projectToolRoutes(db));
@@ -804,6 +819,7 @@ export async function createApp(
   api.use(fileResourceRoutes(db, { remoteFiles: createRemoteWorkspaceFiles(db, {
     environmentRuntime: environmentRuntimeService(db, { pluginWorkerManager: workerManager }),
     loadSavedWorkspace: createSavedWorkspaceLoader(db, opts.storageService),
+    openSavedWorkspaceArchive: createSavedWorkspaceArchiveOpener(db, opts.storageService),
   }) }));
   api.use(routineRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(
@@ -843,7 +859,10 @@ export async function createApp(
   api.use(costRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(activityRoutes(db));
   api.use(dashboardRoutes(db));
-  api.use(attentionRoutes(db));
+  api.use(attentionRoutes(db, {
+    pluginWorkerManager: workerManager,
+    decisionServiceOptions: opts.decisionServiceOptions,
+  }));
   api.use(decisionTrainingRoutes(db));
   api.use(decisionRoutes(db, opts.decisionServiceOptions));
   api.use(decisionQueueRoutes(db));
@@ -910,6 +929,7 @@ export async function createApp(
   api.use(decisionModelRoutes(db));
   api.use(agentObservabilityRoutes(db, { deploymentMode: opts.deploymentMode, deploymentExposure: opts.deploymentExposure }));
   api.use(fastResponseRoutes(db));
+  api.use(linkPreviewRoutes(db));
   api.use(promptInjectionPreventionRoutes(db));
   api.use(aiConnectionRoutes(db, { deploymentMode: opts.deploymentMode, deploymentExposure: opts.deploymentExposure, trustedLocalStdioRuntimeHost, pluginWorkerManager: workerManager }));
   api.use(
@@ -993,6 +1013,7 @@ export async function createApp(
     },
   );
   runtimePluginLoader = loader;
+  workerManager.setActivationTimeoutRecovery?.(plugin => loader.requestActivationTimeoutRecovery(plugin));
   const browserUse = browserUseService(db, undefined,
     { cancelWorkForScope: heartbeatService(db, { pluginWorkerManager: workerManager }).cancelBudgetScopeWork },
     (session, run) => toolGateway.browserUseSessionAuthorized({ ...session, runId: run.heartbeatRunId, invocationId: run.invocationId }));
@@ -1089,7 +1110,12 @@ export async function createApp(
       );
       if (process.env.PAPERCLIP_SHARED_UI_ASSETS === "true") {
         const retained = retainedUiAssets(createStorageProviderFromConfig(loadStorageConfig()));
-        await retained.publish(path.join(uiDist, "assets"));
+        // Publish while the routes below are built; the outcome is awaited
+        // before the first background work starts. The promise settles to the
+        // failure instead of rejecting, so it is never an unhandled rejection.
+        app.locals.retainedUiAssetsPublication = trackIdleWork(publishRetainedUiAssetsAtStartup(retained, path.join(uiDist, "assets"), error =>
+          logger.error({ err: error }, "Shared UI assets could not be published because storage is unavailable; serving this build from local files"))
+          .then(() => null, (error: unknown) => ({ error })));
         staticUi.use("/assets", retained.serve);
       }
       // Serve root/index through the same runtime HTML transform as SPA routes.
@@ -1228,6 +1254,11 @@ export async function createApp(
 
   app.use(staticUi);
   app.use(errorHandler);
+
+  // A build whose asset names collide with different published bytes refuses
+  // to start, so the outcome is known before any job, queue, or run starts.
+  const retainedUiAssetsPublication = await (app.locals.retainedUiAssetsPublication as Promise<{ error: unknown } | null> | undefined);
+  if (retainedUiAssetsPublication) throw retainedUiAssetsPublication.error;
 
   jobCoordinator.start();
   const deliveryWork = createDeliveryWorkCoordinator({
@@ -1383,6 +1414,7 @@ export async function createApp(
   const shutdownAppServices = (): Promise<void> => {
     if (appServicesShutdown) return appServicesShutdown;
     appServicesShutdown = finishServiceShutdown(() => scheduler.stop(), async () => {
+      await loader.stopActivationTimeoutRecovery();
       await agentLifecycle.stop();
       unregisterMcpOwners();
       await publicMcpEvents?.stop();

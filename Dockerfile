@@ -164,6 +164,12 @@ RUN rm -rf packages/paperclip-runner/runner/target
 FROM build AS runner-provider-pack
 # Unstamped local builds remain usable, but cannot qualify a remote pack.
 # Never invent a source revision to make an unqualified pack look verified.
+# Managed deployments can remap node's UID at startup, so the pack must stay
+# readable by any UID. Grant that here, in the same layer that writes the
+# files: COPY keeps these modes. A `chmod -R` after the COPY into production
+# rewrote every changed file into a second copy of the pack (187 MB compressed
+# and ~50 s of build time on amd64), and the production stage still checks
+# readability as an unrelated UID below.
 RUN mkdir -p /provider-pack /provider-pack-transport \
   && if [ -n "${PAPERCLIP_BUILD_COMMIT}" ]; then \
     PAPERCLIP_RUNNER_SOURCE_REVISION="${PAPERCLIP_BUILD_COMMIT}" node packages/paperclip-runner/scripts/build-provider-pack.mjs /provider-pack \
@@ -171,7 +177,8 @@ RUN mkdir -p /provider-pack /provider-pack-transport \
       && mv /provider-pack.archives /provider-pack.archive.json /provider-pack-transport/; \
   else \
     echo "Skipping remote provider pack: supply a full PAPERCLIP_BUILD_COMMIT to enable remote OpenCode/ACPX execution"; \
-  fi
+  fi \
+  && chmod -R a+rX /provider-pack
 
 FROM base AS production
 ARG USER_UID=1000
@@ -202,10 +209,10 @@ COPY --chown=0:0 --from=runner-provider-pack /provider-pack /opt/paperclip-runne
 COPY --from=runner-provider-pack /provider-pack-transport/ /opt/paperclip-runner/
 # Managed deployments can remap node's UID at startup. This immutable pack
 # contains public code and integrity metadata, never credentials; it must remain
-# readable afterward.
+# readable afterward. The runner-provider-pack stage grants a+rX before this
+# COPY, which preserves modes.
 # Keep it root-owned and verify access as an unrelated unprivileged UID.
-RUN chmod -R a+rX /opt/paperclip-runner/provider-pack \
-  && if [ -f /opt/paperclip-runner/provider-pack/provider-pack.json ]; then \
+RUN if [ -f /opt/paperclip-runner/provider-pack/provider-pack.json ]; then \
     gosu 65534:65534 node -e 'const fs = require("node:fs"); const path = require("node:path"); const root = "/opt/paperclip-runner/provider-pack"; const manifest = JSON.parse(fs.readFileSync(path.join(root, "provider-pack.json"), "utf8")); for (const artifact of Object.values(manifest.payload.artifacts)) fs.readFileSync(path.join(root, artifact.path)); fs.accessSync(path.join(root, manifest.payload.artifacts.nodeCommand.path), fs.constants.X_OK);'; \
   fi
 ENV PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH=/opt/paperclip-runner/provider-pack
