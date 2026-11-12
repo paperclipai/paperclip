@@ -96,7 +96,7 @@ describeEmbeddedPostgres("attention audience service (PAP-749 task 1a)", () => {
     originKind?: string;
     conversationAgentId?: string | null;
     conversationUserId?: string | null;
-    conversationState?: string | null;
+    conversationState?: typeof issues.$inferInsert.conversationState;
     executionState?: Record<string, unknown> | null;
   }) {
     const id = input.id ?? randomUUID();
