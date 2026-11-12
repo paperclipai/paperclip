@@ -163,6 +163,38 @@ it("attributes opened candidate sessions to the harness biller instead of the mo
   expect(provider("aws_agentcore", "codex", "global.anthropic.claude-sonnet-4-6")).toBe("aws");
 });
 
+it("uses one durable attachment command and an event for a settled download", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "runnerd-attachment-event-"));
+  let core!: DurablePrpControlPlane;
+  const { transport } = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(),
+    codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(directory),
+    stateDirectory: directory,
+    controlPlaneRegistration: async authority => {
+      core = authority;
+      await authority.start();
+      return { release: () => undefined };
+    },
+  });
+  try {
+    await transport.request("thread/start", { cwd: directory });
+    await expect(transport.downloadAttachment!(() => ({
+      url: "https://127.0.0.1:0/attachment", token: "a".repeat(43),
+      byteSize: 1, sha256: "0".repeat(64), contentType: "image/png",
+    }))).rejects.toThrow("runner_attachment_download_invalid_path");
+    const commands = core.store.state.commands.filter(command => command.type === "runner.attachment.download");
+    expect(commands).toHaveLength(1);
+    expect(commands[0]?.status).toBe("completed");
+    const events = core.store.state.committedEvents.filter(event => event.eventType === "runner.attachment.settled");
+    expect(events).toHaveLength(1);
+    expect(events[0]?.envelope.payload).toMatchObject({ payload: { status: "failed" } });
+  } finally {
+    await transport.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+}, 30_000);
+
 it("replaces an owned v1 runner with fresh v2 authorization before warm attachment", async () => {
   const directory = await mkdtemp(join(tmpdir(), "runnerd-v1-v2-replacement-"));
   const handles: durableControlPlane.RunnerProcessHandle[] = [];
@@ -371,6 +403,51 @@ it.each(["resolved", "rejected"] as const)(
   },
   15_000,
 );
+
+it("gives the process owner live evidence of the runner's own authenticated connection", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "runnerd-connection-evidence-"));
+  const specs: durableControlPlane.RunnerProcessLaunchSpec[] = [];
+  let child: ReturnType<typeof spawn> | undefined;
+  let exited: Promise<void> | undefined;
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(),
+    codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(directory),
+    stateDirectory: directory,
+    lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 },
+    runnerReconnectGraceMs: 60_000,
+    runnerProcessLauncher: spec => {
+      specs.push(spec);
+      const ownedChild = spawn(spec.command, [...spec.args], { cwd: spec.cwd, env: spec.environment, stdio: "ignore" });
+      child = ownedChild;
+      exited = new Promise(resolveExit => ownedChild.once("exit", () => resolveExit()));
+      return {
+        child: ownedChild,
+        completion: new Promise<durableControlPlane.RunnerProcessResult>(() => {}),
+        isExitConfirmed: () => false,
+      };
+    },
+  });
+  try {
+    await bundle.transport.request("thread/start", { cwd: directory });
+    expect(specs).toHaveLength(1);
+    expect(specs[0]!.isRunnerConnected?.()).toBe(true);
+    child!.kill("SIGKILL");
+    await exited;
+    await vi.waitFor(() => expect(specs[0]!.isRunnerConnected?.()).toBe(false), { timeout: 5_000 });
+  } finally {
+    const providerPid = bundle.evidence().codexPid;
+    if (providerPid) {
+      try { process.kill(providerPid, "SIGKILL"); } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+      }
+    }
+    await bundle.transport.detachControllerForRestart!();
+    child?.kill("SIGKILL");
+    await exited;
+    await rm(directory, { recursive: true, force: true });
+  }
+}, 15_000);
 
 it.each([
   "transport_reconnect_grace_exceeded",
@@ -1479,6 +1556,51 @@ it("refuses a terminal call that arrives before a held call's result (restart ch
     expect(handler).not.toHaveBeenCalled();
     expect(outcome).toMatchObject({ isError: true, result: { error: { code: "terminal_call_before_results", retryable: true } } });
     expect(JSON.stringify(outcome.result)).toContain("Those calls have now returned");
+  } finally {
+    coreSpy.mockRestore();
+    await bundle.transport.close().catch(() => undefined);
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+}, 20_000);
+
+it("refuses a finish once for a returned call that never reaches the agent, then accepts the next finish", async () => {
+  const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-unseen-once-"));
+  const OriginalCore = durableControlPlane.DurablePrpControlPlane;
+  let callbacks!: ConstructorParameters<typeof OriginalCore>[0];
+  let core!: DurablePrpControlPlane;
+  const coreSpy = vi.spyOn(durableControlPlane, "DurablePrpControlPlane").mockImplementation(function (options) {
+    callbacks = options;
+    return core = new OriginalCore(options);
+  });
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(stateDirectory), stateDirectory,
+  });
+  const handler = vi.fn(async () => ({ success: true, contentItems: [{ type: "inputText" as const, text: "{\"done\":true}" }] }));
+  bundle.transport.setServerRequestHandler(handler);
+  try {
+    await bundle.transport.request("thread/start", { cwd: tmpdir() });
+    const identity = core.store.state.identity;
+    let seq = 9200;
+    const commit = (eventType: string, payload: Record<string, unknown>) => {
+      seq += 1;
+      core.store.state.committedEvents.push({ sourceSeq: seq, sourceEventId: `unseen-once-${seq}`, eventType, priority: 1,
+        envelope: { payload: { eventType, turnId: identity.turnId, payload } }, deliveryCount: 1, logicalEffectCount: 1 });
+      return `unseen-once-${seq}`;
+    };
+    commit("tool.execution.started", { executionId: "exec-search", transport: "dynamic", name: "paperclip_search_assigned_tools", status: "running" });
+    core.queueCommand("semantic_tool.result", { callId: "exec-search", operationId: "paperclip_search_assigned_tools",
+      inputDigest: "sha256:search", result: { tools: [] }, isError: false }, "command_tool_unseen_once_search", true);
+    const finish = (n: number) => {
+      const sourceEventId = commit("tool.execution.started", { executionId: `exec-finish-${n}`, transport: "dynamic", name: "paperclip_finish", status: "running" });
+      return callbacks.onSemanticToolInput!({ callId: `exec-finish-${n}`, operationId: "paperclip_finish",
+        input: { summary: "Done" }, sourceEventId, sourceEventType: "semantic_tool.input", correlation: identity });
+    };
+    expect(await finish(1)).toMatchObject({ isError: true, result: { error: { code: "terminal_call_before_results" } } });
+    expect(handler).not.toHaveBeenCalled();
+    commit("tool.execution.completed", { executionId: "exec-finish-1", transport: "dynamic", name: "paperclip_finish", status: "failed" });
+    expect((await finish(2)).isError).not.toBe(true);
+    expect(handler).toHaveBeenCalledTimes(1);
   } finally {
     coreSpy.mockRestore();
     await bundle.transport.close().catch(() => undefined);

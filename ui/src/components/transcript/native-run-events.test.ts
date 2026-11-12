@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { HeartbeatRunEvent } from "@paperclipai/shared";
 import { nativeRunEventsToTranscript } from "./native-run-events";
-import { buildTurnTimelineRows, paperclipRunnerFinalResponse, paperclipRunnerTimelineItems, settledRunChildren, transcriptToTaskChatItems } from "../task-chat/transcript-adapter";
+import { buildTurnTimelineRows, omitProgressRepeatedByResponse, paperclipRunnerFinalResponse, paperclipRunnerTimelineItems, settledRunChildren, transcriptToTaskChatItems } from "../task-chat/transcript-adapter";
 
 const RUN_ID = "10000000-0000-4000-8000-000000000001";
 
@@ -1577,5 +1577,23 @@ describe("assistant progress messages that share one streamed item", () => {
       itemEvent(1, "item.delta", ITEM, { kind: "agentMessage", channel: "progress", text: "Reading" }),
       itemEvent(2, "item.delta", ITEM, { kind: "agentMessage", channel: "progress", text: " the code." }),
     ])).toEqual(["Reading the code."]);
+  });
+});
+
+describe("an OpenCode reply settled from an answer and a closing line", () => {
+  it("shows the saved reply once, without the answer repeated as progress", () => {
+    const answer = "Two inbox items need you: [COM-2](/COM/issues/COM-2) and [COM-1](/COM/issues/COM-1).";
+    const coda = "Answered above.";
+    const progress = (text: string) => ({ kind: "agentMessage", channel: "progress", providerPhase: "commentary", text });
+    const transcript = nativeRunEventsToTranscript([
+      itemEvent(1, "item.delta", "part-answer", progress(answer)),
+      itemEvent(2, "item.delta", "part-coda", progress(coda)),
+      itemEvent(3, "item.completed", "part-coda", { kind: "agentMessage", channel: "final", providerPhase: "final_answer", text: `${answer}\n\n${coda}` }),
+    ]);
+    const items = transcriptToTaskChatItems(transcript, { runId: RUN_ID, running: false });
+    const response = paperclipRunnerFinalResponse(items, { runId: RUN_ID });
+    expect(response?.text).toBe(`${answer}\n\n${coda}`);
+    const timeline = omitProgressRepeatedByResponse(paperclipRunnerTimelineItems(items), response?.text);
+    expect(JSON.stringify(timeline)).not.toContain("Two inbox items need you");
   });
 });

@@ -45,6 +45,7 @@ import {
   codexCommandEnvironment,
   createIsolatedCodexAppServerArgs,
   codexNetworkAccess,
+  usesExternalRunnerSandbox,
   createSecuredCodexThreadParams,
   createSkilllessCodexThreadConfig,
 } from "./codex-security-config.js";
@@ -372,6 +373,11 @@ export class CodexAppServerDriver implements HarnessDriver {
       await cancellation.close().catch(() => {});
       if (error instanceof NativeSessionProtocolIntegrityError) throw error;
       if (input.signal?.aborted) input.signal.throwIfAborted();
+      // The controller may retry this bootstrap on the same run only when the
+      // failed runner is proven gone; record that proof on the failure.
+      if (error && typeof error === "object" && transport.runnerExitConfirmed?.() === true) {
+        Object.defineProperty(error, "runnerExitConfirmed", { value: true, enumerable: false });
+      }
       if (error instanceof CodexRpcError && (this.#options.driverIdentity?.kind ?? DRIVER_KIND) === DRIVER_KIND) {
         const providerFailure = codexProviderFailure(error, "startup", this.#options.environment);
         if (providerFailure) Object.defineProperty(error, "providerFailure", { value: providerFailure, enumerable: false });
@@ -773,13 +779,16 @@ export class CodexAppServerDriver implements HarnessDriver {
       // resume it here. With nothing in flight, the runtime's recovery policy
       // decides, as for a moved workspace root. An in-flight session keeps the
       // unclassified failure.
-      const failureClass = runnerRecoveryFailureClass(error)
-        ?? (isRunnerResumeStateUnavailable(error) && !persistedSessionInFlight(snapshot)
-          ? PROVIDER_STATE_INCOMPATIBLE : undefined);
+      const classified = runnerRecoveryFailureClass(error);
+      const resumeStateUnavailable = !classified && isRunnerResumeStateUnavailable(error)
+        && !persistedSessionInFlight(snapshot);
+      const failureClass = classified ?? (resumeStateUnavailable ? PROVIDER_STATE_INCOMPATIBLE : undefined);
       return {
         recovered: false,
         reason: redactCodexDiagnostic(String(error)),
         ...(failureClass ? { failureClass } : {}),
+        ...(resumeStateUnavailable ? { resumeStateUnavailable: true as const } : {}),
+        ...(transport.runnerExitConfirmed?.() === true ? { runnerExitConfirmed: true as const } : {}),
       };
     } finally {
       cancellation.detach();
@@ -1013,7 +1022,7 @@ export class CodexAppServerDriver implements HarnessDriver {
         sandbox: {
           permissionProfile: boundedCodexValue(configuredPermissionProfile),
           legacyPolicy: boundedCodexValue(response.sandbox ?? null),
-          rootAccess: "none",
+          rootAccess: usesExternalRunnerSandbox(this.#options.environment ?? {}) ? (requestedMode === "plan" ? "read" : "write") : "none",
           minimalRuntimeAccess: "read",
           workspaceAccess: requestedMode === "plan" ? "read" : "write",
           networkAccess: codexNetworkAccess(this.#options.environment),

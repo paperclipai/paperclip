@@ -812,6 +812,7 @@ export const pluginManifestV1Schema = z.object({
   agentLifecycle: z.literal(true).optional(),
   workspaceProvider: z.object({
     finalizationVersion: z.literal(1).optional(),
+    workspaceVerificationVersion: z.literal(1).optional(),
     supportsMergeAncestry: z.boolean().optional(),
     recoveryPullRequestVersion: z.literal(1).optional(),
     freshWorkspaceVersion: z.literal(1).optional(),

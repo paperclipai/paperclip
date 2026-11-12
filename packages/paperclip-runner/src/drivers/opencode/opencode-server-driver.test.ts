@@ -680,6 +680,8 @@ describe("OpenCodeServerDriver", () => {
           { status: 200, headers: { "Content-Type": "text/event-stream" } },
         );
       }
+      if (method === "GET" && url.pathname === "/mcp")
+        return json({ paperclip: { status: "connected" } });
       if (method === "POST" && url.pathname === "/session")
         return json({ id: providerSessionId });
       if (method === "GET" && url.pathname === "/question") return json([]);
@@ -3013,9 +3015,89 @@ describe("OpenCodeServerDriver", () => {
         event.payload.channel === "final",
     );
     expect(finalMessages).toHaveLength(1);
+    // Structure cannot tell commentary from an answer, so the saved reply keeps
+    // all prose written after the last work tool, in order, as the person saw it.
     expect(finalMessages[0]?.payload.text).toBe(
-      "This is the complete substantive answer emitted after the accepted completion tool call.",
+      "This deliberately long pre-tool commentary discusses possible schema corrections, retries, compatibility details, and several implementation alternatives, but it is not the provider's final response.\n\nThis is the complete substantive answer emitted after the accepted completion tool call.",
     );
+    await session.close({ reason: "test" });
+  });
+  it("keeps an answer written before the completion call when a later message only refers back to it", async () => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-driver-"));
+    const workspace = await mkdtemp(
+      join(tmpdir(), "paperclip-opencode-workspace-"),
+    );
+    roots.push(root, workspace);
+    const driver = new OpenCodeServerDriver({
+      model: "openrouter/deepseek/deepseek-v4-flash-0731",
+      runtimeDirectory: root,
+      command: fixture,
+      environment: {
+        PATH: process.env.PATH,
+        OPENROUTER_API_KEY: "fixture-key",
+      },
+    });
+    const session = await driver.openSession({
+      runId: "run-answer-then-reference",
+      normalizedSessionId: "answer-then-reference",
+      workingDirectory: workspace,
+    });
+    await session.startTurn({
+      message: { role: "user", text: "answer-before-finish-then-reference" },
+    });
+    const events = await collectTurnEvents(session.events());
+    const finalMessages = events.filter(
+      (event) =>
+        event.eventType === "item.completed" &&
+        event.payload.kind === "agentMessage" &&
+        event.payload.channel === "final",
+    );
+    expect(finalMessages).toHaveLength(1);
+    // The saved reply must hold the answer the person saw, not only "Answered above".
+    expect(finalMessages[0]?.payload.text).toBe(
+      "Two inbox items need you: [COM-2](/COM/issues/COM-2) is blocked and [COM-1](/COM/issues/COM-1) is waiting for review.\n\nAnswered above: two inbox items need your attention.",
+    );
+    expect(finalMessages[0]?.itemId).toBe("part-reference");
+    await session.close({ reason: "test" });
+  });
+
+  it("saves an answer once when the model restates it after the completion call", async () => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-driver-"));
+    const workspace = await mkdtemp(
+      join(tmpdir(), "paperclip-opencode-workspace-"),
+    );
+    roots.push(root, workspace);
+    const driver = new OpenCodeServerDriver({
+      model: "openrouter/deepseek/deepseek-v4-flash-0731",
+      runtimeDirectory: root,
+      command: fixture,
+      environment: {
+        PATH: process.env.PATH,
+        OPENROUTER_API_KEY: "fixture-key",
+      },
+    });
+    const session = await driver.openSession({
+      runId: "run-answer-then-restatement",
+      normalizedSessionId: "answer-then-restatement",
+      workingDirectory: workspace,
+    });
+    await session.startTurn({
+      message: { role: "user", text: "answer-before-finish-then-restatement" },
+    });
+    const events = await collectTurnEvents(session.events());
+    const finalMessages = events.filter(
+      (event) =>
+        event.eventType === "item.completed" &&
+        event.payload.kind === "agentMessage" &&
+        event.payload.channel === "final",
+    );
+    expect(finalMessages).toHaveLength(1);
+    expect(finalMessages[0]?.payload.text).toBe(
+      "I can't change agent budgets from chat — that's board-only, and agent credentials get 403. Two agents also match \"Morgan,\" so choose the intended one and set $50/month on its budget tab: [Morgan budgets](/COM/agents/agent-morgan/budgets) or [Morgan Research budgets](/COM/agents/agent-morgan-research/budgets).",
+    );
+    expect(finalMessages[0]?.itemId).toBe("part-reference");
     await session.close({ reason: "test" });
   });
 

@@ -5,14 +5,19 @@ function secureEntryExcludesChat(clause: string): boolean {
   return !!excluded && !/\b(?:chat|conversation|message|here)\b/i.test(excluded[1]!) && secureTarget.test(excluded[1]!);
 }
 function positiveCredentialRequest(clause: string, hasKeyContext: boolean, needsChatDestination: boolean): boolean {
-  const request = needsChatDestination
+  const requestPattern = needsChatDestination
     ? /\b(?:paste|send|share|provide|enter)\b.{0,70}\b(?:key|credential|token)\b.{0,40}\b(?:chat|message|conversation|here)\b|\b(?:paste|send|share)\b.{0,20}\b(?:here|in chat)\b.{0,40}\b(?:key|credential|token)\b/i
     : /\b(?:paste|send|share|provide|enter)\b.{0,70}\b(?:key|credential|token)\b/i;
   const carried = needsChatDestination
     ? /\b(?:paste|send|share|provide|enter)\s+(?:(?:it|that|the value)\b.{0,40}\b(?:here|chat|message|conversation)\b|(?:here\b|(?:in|into|via|through)\s+(?:(?:the|this|your)\s+)?(?:chat|message|conversation)\b))/i
     : /\b(?:paste|send|share|provide|enter)\s+(?:(?:it|that|the value)\b|(?:here\b|(?:in|into|via|through)\s+(?:(?:the|this|your)\s+)?(?:chat|message|conversation)\b))/i;
-  const match = request.exec(clause) ?? (hasKeyContext ? carried.exec(clause) : null);
+  const match = requestPattern.exec(clause) ?? (hasKeyContext ? carried.exec(clause) : null);
   if (!match) return false;
+  // Negation scopes over the destination it precedes: "enter the value only there, never in chat" names
+  // chat only to exclude it. A chat destination counts only when at least one is not itself negated.
+  const request = clause.slice(match.index);
+  if (needsChatDestination && ![...request.matchAll(/\b(?:chat|message|conversation|here)\b/gi)].some(destination =>
+    !/\b(?:not|never|rather than|instead of)\s+(?:(?:in|into|via|through|to)\s+)?(?:(?:the|this|that|your|a)\s+)?$/i.test(request.slice(0, destination.index)))) return false;
   const before = clause.slice(0, match.index).trim();
   return !/(?:\b(?:do|should|must|can|could|will|would)\s+not(?:\s+ask\s+(?:you\s+)?to)?|\bdon.t|\bnever|\bnot)\s*$/i.test(before)
     && !/^\s*(?:please\s+)?(?:do not|don.t|never|you (?:should|must) not)\s+(?:(?:paste|send|share|provide|enter)\s*(?:,|or|and)\s*)*$/i.test(before);

@@ -54,8 +54,16 @@ exactly one authorized `artifactId` or task-workspace `path`, and an optional
 multipart `field`. No arbitrary URL, headers, authentication, or remote file URL
 can be supplied. Routes still validate payloads and enforce permissions.
 
-For lossless input to a local helper, set `saveResponse: true` on an authorized
-non-sensitive GET. This saves the complete response bytes as an immutable artifact
+Writes put every request field in `body`. A POST or PUT whose request schema
+names required fields, or a PATCH with a required body, is refused before it is
+sent when `body` (and `files`) are missing; the error names the received
+arguments and the shape to resend. `query` and the read-only options never carry
+request fields.
+
+For lossless input to a local helper, call the separate `save_api_response`
+tool with an authorized non-sensitive GET `operationId`, `pathParams` and
+`query`. It has no request body and cannot run a write, so `call_api`'s write
+path carries no read-only save option. This saves the complete response bytes as an immutable artifact
 even below the inline threshold. A zero-byte successful response instead returns
 `empty: true`, `byteSize: 0` and `data: null`, without an asset or storage
 reservation. JSON empty results such as `[]` are nonempty bytes and export normally.
@@ -69,8 +77,10 @@ to the helper instead of recreating JSON in model output. Pagination metadata re
 artifact contains one complete HTTP response, not all pages of a list. Continue
 list pagination explicitly. The file remains untrusted data.
 
-`saveResponse` cannot be combined with `responseText`, and is rejected before
-dispatch for mutations and sensitive endpoints. Denied or partial HTTP responses
+Sensitive endpoints are rejected before dispatch. Older saved `call_api` calls
+that carry `saveResponse: true` remain valid for recovery and follow the same
+rules; `saveResponse` cannot be combined with `responseText`, and is rejected
+before dispatch for mutations. Denied or partial HTTP responses
 are not exported. Failed response receipts include the full `byteSize` and a
 `truncated` flag when their inline diagnostic body is incomplete. It uses the same capture limits, storage admission, actor access
 and integrity validation as automatic large-response artifacts. The original
@@ -139,7 +149,10 @@ The result contains `data` as text (including JSON), plus `responseText` with
 until it is null. Windows end at UTF-8 boundaries. The limit defaults to 24 KiB
 and accepts 4–24,576 bytes. The server rejects binary content, invalid UTF-8,
 and offsets inside a code point or beyond the response. This option only works
-with GET; never repeat a mutation to retrieve another part of its response.
+with GET; never repeat a mutation to retrieve another part of its response. A
+new write call that carries `responseText` is refused before it is sent, like
+`saveResponse`: it never carries request fields, so resend the write once
+without it and with its fields in `body`. Older saved calls stay valid for recovery.
 Read the saved artifact for a stable snapshot instead of paging a changing live
 response. A text-window call against a live response above 24 KiB also returns
 that snapshot's artifact reference; continue on its content operation. A saved

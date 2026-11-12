@@ -23,6 +23,7 @@ import { getCACertificates } from "node:tls";
 import { pipeline } from "node:stream/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
+import { restatesEarlierReply } from "./restated-reply.js";
 import { parseOpenCodeReasoningMode, type OpenCodeReasoningMode } from "./reasoning-mode.js";
 import { attributeUnsupportedToolMedia } from "./tool-media-attribution.js";
 import { openCodeProviderFailure } from "./provider-failure.js";
@@ -417,6 +418,12 @@ export class OpenCodeServerDriver implements HarnessDriver {
           },
         });
         const fetcher = this.#options.fetch ?? globalThis.fetch;
+        const paperclipTools = ensurePaperclipMcpConnected(
+          fetcher,
+          runtime,
+          this.#options.onDiagnostic,
+        );
+        paperclipTools.catch(() => undefined);
         let providerSessionId =
           snapshot?.providerSessionId ?? snapshot?.driverSessionId ?? null;
         if (providerSessionId !== null) {
@@ -436,6 +443,7 @@ export class OpenCodeServerDriver implements HarnessDriver {
           if (!providerSessionId)
             throw new Error("OpenCode session creation omitted its id");
         }
+        await paperclipTools;
         session = new OpenCodeHarnessSession({
           runtime,
           fetcher,
@@ -758,7 +766,7 @@ class OpenCodeHarnessSession implements HarnessSession {
     return { turnId };
   }
 
-  async #submitPrompt(prompt: string): Promise<void> {
+  async #submitPrompt(prompt: string, reasoningMode: OpenCodeReasoningMode = this.#turnReasoningMode): Promise<void> {
     const [providerID, ...modelParts] = this.#model.split("/");
     const modelID = modelParts.join("/");
     await api(
@@ -780,7 +788,7 @@ class OpenCodeHarnessSession implements HarnessSession {
           // Always select the empty default variant on an ordinary turn so a
           // previous disabled turn cannot change this turn's provider defaults.
           ...(providerID === "openrouter"
-            ? { variant: this.#turnReasoningMode === "disabled" ? "paperclip-no-reasoning" : "paperclip-default" }
+            ? { variant: reasoningMode === "disabled" ? "paperclip-no-reasoning" : "paperclip-default" }
             : {}),
           // Keep question enabled in the isolated config. OpenCode 1.18.32
           // turns a prompt's deprecated `tools` map into replacement session
@@ -854,7 +862,7 @@ class OpenCodeHarnessSession implements HarnessSession {
     const opening = this.#turnHitOutputLimit(turnId)
       ? "Your previous response reached the output limit and was discarded as incomplete."
       : "Your response ended without a user-visible final answer or an accepted completion report.";
-    void this.#submitPrompt(`${opening} Continue this same request from the work already done. Give the user a concise final answer and submit paperclip_finish (or paperclip_block when blocked) with the current completion contract. Do not repeat completed actions.`)
+    void this.#submitPrompt(`${opening} Continue this same request from the work already done. Give the user a concise final answer and submit paperclip_finish (or paperclip_block when blocked) with the current completion contract. Do not repeat completed actions.`, "disabled")
       .catch(() => this.#failEmptyResponse(turnId, "OpenCode could not request a final response after an empty completion."));
     return true;
   }
@@ -2289,14 +2297,33 @@ class OpenCodeHarnessSession implements HarnessSession {
       afterResult[0]?.part ??
       null;
     if (!selected) return;
+    // A later message after the terminal call is only the closing part of the
+    // reply when the model already wrote prose after its last work tool and
+    // before that call: the person saw both, and the later message often just
+    // refers back ("Answered above"). Structure cannot tell an answer from
+    // commentary, so keep every eligible part rather than drop the answer.
+    const candidatePreface =
+      this.#semanticResultProviderMessageId !== null &&
+      correlatedAfterResult.length === 0 &&
+      uncorrelatedAfterResult[0]?.part === selected
+        ? beforeResult.map(({ part }) => part)
+        : [];
+    const preface =
+      candidatePreface.length &&
+      restatesEarlierReply(candidatePreface.map((part) => part.text.trim()).join("\n\n"), selected.text)
+        ? []
+        : candidatePreface;
+    const text = preface.length
+      ? [...preface, selected].map((part) => part.text.trim()).filter(Boolean).join("\n\n")
+      : selected.text;
     this.#emit(
       "item.completed",
       {
         kind: "agentMessage",
         channel: "final",
         providerPhase: "final_answer",
-        text: selected.text,
-        item: selected.item,
+        text,
+        item: preface.length ? bounded({ ...selected.item, text }) : selected.item,
       },
       { turnId, itemId: selected.partId },
     );
@@ -3057,9 +3084,45 @@ async function api(
   }
 }
 
+const PAPERCLIP_MCP_SERVER = "paperclip";
+const PAPERCLIP_MCP_RECONNECT_ATTEMPTS = 2;
+const PAPERCLIP_TOOLS_UNAVAILABLE = "paperclip_tools_unavailable";
+
+async function ensurePaperclipMcpConnected(
+  fetcher: typeof globalThis.fetch,
+  runtime: OpenCodeRuntime,
+  onDiagnostic?: (message: string) => void,
+): Promise<void> {
+  const status = async () => {
+    const entry = record(record(await api(fetcher, runtime, "/mcp"))[PAPERCLIP_MCP_SERVER]);
+    return { status: text(entry.status, "missing"), error: text(entry.error) };
+  };
+  let current: { status: string; error: string };
+  try {
+    current = await status();
+    for (let attempt = 1; current.status !== "connected" && attempt <= PAPERCLIP_MCP_RECONNECT_ATTEMPTS; attempt += 1) {
+      onDiagnostic?.(redact(
+        `OpenCode reported the Paperclip tools as ${current.status}${current.error ? ` (${current.error})` : ""}; reconnecting (attempt ${attempt}).`,
+        runtime.sensitiveValues,
+      ));
+      await api(fetcher, runtime, `/mcp/${PAPERCLIP_MCP_SERVER}/connect`, { method: "POST" });
+      current = await status();
+    }
+  } catch (error) {
+    current = { status: "unreachable", error: error instanceof Error ? error.message : String(error) };
+  }
+  if (current.status !== "connected") {
+    throw new Error(redact(
+      `${PAPERCLIP_TOOLS_UNAVAILABLE}: OpenCode could not load the Paperclip tools (${current.status}${current.error ? `: ${current.error}` : ""})`,
+      runtime.sensitiveValues,
+    ));
+  }
+}
+
 function retryableOpenCodeStartupError(error: unknown): boolean {
   const message = String(error);
   return (
+    message.includes(PAPERCLIP_TOOLS_UNAVAILABLE) ||
     message.includes("request failed") ||
     message.includes("did not become healthy") ||
     message.includes("exited during startup") ||

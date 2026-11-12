@@ -1,6 +1,7 @@
-import { questionHandoffWorkload } from "./question-handoff.js";
+import { questionHandoffWorkload, questionSequenceWorkload } from "./question-handoff.js";
 import { l1Workload } from "./contention.js";
 import { journeyWorkloadDefinitions } from "./journeys.js";
+import { rewakeWorkloadDefinitions } from "./rewake.js";
 import type { OracleArtifacts, OracleResult, WorkloadId } from "./types.js";
 
 /** Deterministic bench output: sum of squares 1..240. */
@@ -19,6 +20,7 @@ export interface WorkloadDefinition {
   title(nonce: string): string;
   description(nonce: string, agents?: WorkloadAgents): string;
   followUp?(nonce: string): string;
+  startComment?(nonce: string): string;
   stopBeforeFollowUp?: boolean;
   /** Files and commands the observer must collect for the T-oracle. */
   collect: { documents: string[]; files(nonce: string): string[]; commands: Array<{ name: string; argv: string[] | ((nonce: string) => string[]) }>;
@@ -70,8 +72,9 @@ export const T1_CLOCK_SLACK_MS = 5_000;
  */
 export function withT1CrossingCheck(oracle: OracleResult, plan: { taskId: string; workload: WorkloadId; nonce: string; fault: string },
   brief: string | null | undefined, faults: ReadonlyArray<{ requestedBy: string; startedAt: number; faultId: string }>): OracleResult {
-  // A matrix baseline (K0) expects no fault, and a provider message fault (PV*) restarts nothing of its own.
-  if (plan.workload !== "T1" || plan.fault === "K0" || plan.fault.startsWith("PV")) return oracle;
+  // A matrix baseline (K0) expects no fault, a provider message fault (PV*) restarts nothing of its own, and CR5
+  // stalls the plugin at launch, before the tool loop starts (class-r.ts).
+  if (plan.workload !== "T1" || plan.fault === "K0" || plan.fault.startsWith("PV") || plan.fault === "CR5") return oracle;
   const report = parseT1Report(plan.nonce, brief);
   // A storm task (K13) has no fault of its own: the storm's faults (requested by "storm") are the ones that cross it.
   const own = faults.filter(fault => fault.requestedBy === plan.taskId || (plan.fault === "K13" && fault.requestedBy === "storm"));
@@ -150,6 +153,41 @@ const briefDescription = (nonce: string) => [
   "Do not create files or other tasks. When the document is saved, mark this task done.",
 ].join("\n");
 
+/** H2: the brief, then the agent's own last step hands the task to the person who created it, in review. */
+const handoffDescription = (nonce: string) => [
+  "Write a short brief on why idempotent retries matter for background job queues.",
+  "Save it as this issue's document with key `brief` (title \"Brief\"), in markdown.",
+  `The document must contain the line \`${briefMarker(nonce)}\` exactly, on its own line,`,
+  "and at least three bullet points that start with \"- \".",
+  "Do not create files or other tasks. Do not mark this task done.",
+  "When the document is saved, hand this task to the person who created it for review, as your last step:",
+  "update this task with `assigneeAgentId` null, `assigneeUserId` set to the task's `createdByUserId`, and status `in_review`.",
+  "Then end your turn.",
+].join("\n");
+
+/**
+ * H2 (staging class H): the agent's own hand-off to a person must not cancel its run. The task rests in review with
+ * that person, every run of the task settled without `issue_reassigned`, and nothing blocks the task's execution.
+ */
+export function handoffChecks(artifacts: OracleArtifacts): OracleResult["checks"] {
+  const handoff = artifacts.handoff;
+  const runs = handoff?.runs ?? null;
+  const reassignedRuns = (runs ?? []).filter(run => run.errorCode === "issue_reassigned").map(run => run.id);
+  // A restart after the hand-off settles the run as failed (it is not resumed without the task); it must settle.
+  const unsettled = (runs ?? []).filter(run => !["succeeded", "cancelled", "failed", "timed_out"].includes(run.status));
+  return [
+    { name: "issue_in_review", ok: artifacts.issueStatus === "in_review", detail: `status=${artifacts.issueStatus ?? "unknown"}` },
+    { name: "handed_to_creator", ok: Boolean(handoff?.createdByUserId) && handoff!.assigneeAgentId === null
+        && handoff!.assigneeUserId === handoff!.createdByUserId,
+      detail: `agent=${handoff?.assigneeAgentId ?? "none"} user=${handoff?.assigneeUserId ?? "none"} creator=${handoff?.createdByUserId ?? "none"}` },
+    { name: "handoff_did_not_cancel_run", ok: Boolean(runs?.length) && reassignedRuns.length === 0 && unsettled.length === 0,
+      detail: runs === null ? "run history unavailable" : reassignedRuns.length ? `issue_reassigned=${reassignedRuns.join(",")}`
+        : `runs=${runs.map(run => `${run.id}:${run.status}`).join(",") || "none"}` },
+    { name: "no_execution_blocker", ok: Boolean(handoff) && !handoff!.executionBlocker && !handoff!.activeRecoveryAction,
+      detail: `blocker=${handoff?.executionBlocker ?? "unknown"} recovery=${handoff?.activeRecoveryAction ?? "unknown"}` },
+  ];
+}
+
 const delegateDescription = (nonce: string, agents?: WorkloadAgents) => {
   const self = agents?.self.name ?? "yourself";
   const other = agents?.other.name ?? "yourself";
@@ -215,8 +253,10 @@ function budgetChecks(artifacts: OracleArtifacts) {
 
 export const workloadDefinitions: Record<WorkloadId, WorkloadDefinition> = {
   Q1: questionHandoffWorkload,
+  Q4: questionSequenceWorkload,
   L1: l1Workload,
   ...journeyWorkloadDefinitions,
+  ...rewakeWorkloadDefinitions,
   G1: {
     id: "G1",
     label: "Approval-gated action across a restart",
@@ -242,6 +282,19 @@ export const workloadDefinitions: Record<WorkloadId, WorkloadDefinition> = {
     collect: { documents: ["brief"], files: () => [], commands: [] },
     grade(nonce, artifacts) {
       return result([statusCheck(artifacts), ...briefChecks(artifacts.documents.brief, [briefMarker(nonce)]), ...budgetChecks(artifacts)]);
+    },
+  },
+  H2: {
+    id: "H2",
+    label: "The agent's own hand-off to a person, in review",
+    usesRepository: false,
+    fireWindowMs: [10_000, 45_000],
+    budgetMs: 10 * 60_000,
+    title: nonce => `Chaos H2 handoff ${nonce}`,
+    description: handoffDescription,
+    collect: { documents: ["brief"], files: () => [], commands: [] },
+    grade(nonce, artifacts) {
+      return result([...handoffChecks(artifacts), ...briefChecks(artifacts.documents.brief, [briefMarker(nonce)])]);
     },
   },
   M1: {

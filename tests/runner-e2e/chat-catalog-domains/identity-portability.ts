@@ -19,6 +19,16 @@ export function savedAgentConfiguration(value: unknown) {
   const { status: _status, updatedAt: _updatedAt, ...configuration } = (value ?? {}) as Record<string, unknown>; return JSON.stringify(configuration);
 }
 function text(entry: CompanyPortabilityFileEntry) { return typeof entry === "string" ? entry : Buffer.from(entry.data, "base64").toString("utf8"); }
+/** A rendered link names this agent when it opens one of its agent pages: `/<prefix>/agents/<id or url key>[/<tab>]`
+ * on this origin and company. The product routes agents by url key (e.g. `/COM/agents/morgan-package`) as well as id. */
+export function agentRouteNames(href: string, origin: string, prefix: string, agent: { id: string; urlKey?: string }) {
+  let url: URL, parts: string[];
+  try { url = new URL(href, origin); parts = url.pathname.split("/").filter(Boolean).map(part => decodeURIComponent(part)); } catch { return false; }
+  if (url.origin !== new URL(origin).origin) return false;
+  const at = parts[0]?.toLowerCase() === prefix.toLowerCase() ? 1 : 0;
+  return parts[at] === "agents" && parts.length >= at + 2 && parts.length <= at + 3
+    && (parts[at + 1] === agent.id || !!agent.urlKey && parts[at + 1] === agent.urlKey);
+}
 export function gradePortability(value: unknown) {
   const c = checks(); const o = identityObservation(value); c.add("complete-portability-evidence", !!o, "Actual package files, public provenance, permitted actor and independently saved resources are required."); if (!o) return c.result();
   if (o.scenarioId === "companies.export-company") {
@@ -110,7 +120,7 @@ export const portabilityIdentityCases: readonly ChatCatalogCase[] = [
     return { sourceId: source.id, existing, existingConfiguration, sourcePackage, packageAttachment, actualPackageAttached: true,
       beforeAgentIds: (await ctx.input.api.get<Entity[]>(`/api/companies/${ctx.input.fixtures.company.id}/agents`)).map(row => row.id) };
   }, gradePortability, {
-    authentication: "human-session", sourceFiles: sources, oracleVersion: "paperclip.chat-catalog.identity.import-preview.v2", queryAttachments: [{ stateKey: "packageAttachment", filename: "company-package.json" }], expectedRunCount: 2, expectedHumanMessageCount: 2, attemptTimeoutMs: 420_000,
+    authentication: "human-session", sourceFiles: sources, oracleVersion: "paperclip.chat-catalog.identity.import-preview.v3", queryAttachments: [{ stateKey: "packageAttachment", filename: "company-package.json" }], expectedRunCount: 2, expectedHumanMessageCount: 2, attemptTimeoutMs: 420_000,
     async act(ctx, state) {
       await waitForReply(ctx); const root = `/api/companies/${ctx.input.fixtures.company.id}`;
       const current = await ctx.input.api.get<Entity[]>(`${root}/agents`); state.beforeChoiceUnchanged = JSON.stringify(current.map(row => row.id).sort()) === JSON.stringify([...(state.beforeAgentIds as string[])].sort())
@@ -137,7 +147,8 @@ export const portabilityIdentityCases: readonly ChatCatalogCase[] = [
     async verifyResult(ctx, state) {
       if (typeof state.importedAgentId !== "string") throw new Error("Actual imported employee is missing"); const source = ctx.input.page.url();
       const links = await ctx.input.page.locator('[id^="comment-"] a[href]').evaluateAll(rows => rows.map(row => row.getAttribute("href")!));
-      const link = links.find(href => new URL(href, ctx.input.api.baseURL).pathname.endsWith(`/agents/${state.importedAgentId}`));
+      const imported = (await ctx.input.api.get<Array<Entity & { urlKey?: string }>>(`/api/companies/${ctx.input.fixtures.company.id}/agents`)).find(row => row.id === state.importedAgentId);
+      const link = imported && links.find(href => agentRouteNames(href, ctx.input.api.baseURL, ctx.input.fixtures.company.issuePrefix ?? "", imported));
       if (!link) throw new Error("Real imported employee review link is missing from reply");
       await ctx.input.page.locator(`[id^="comment-"] a[href=${JSON.stringify(link)}]`).first().click();
       await expect(ctx.input.page.getByText("Morgan Package", { exact: true }).first()).toBeVisible(); state.importedAgentVisible = true;

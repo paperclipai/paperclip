@@ -4,13 +4,13 @@ import os from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { activityLog, agents, companies, heartbeatRuns, issues, companySkillRepositorySnapshots as snapshots,
+import { activityLog, agentInstructionRevisions, agents, companies, heartbeatRuns, issues, companySkillRepositorySnapshots as snapshots,
   nativeRunFinalizations, createDb } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import * as storageModule from "../storage/index.js";
 import { createStorageService } from "../storage/service.js";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
-import { materializeAsset, rehydratePinnedSkillAssets } from "../services/native-runtime/runtime-context.js";
+import { materializeAsset, rehydratePinnedInstructionAsset, rehydratePinnedSkillAssets } from "../services/native-runtime/runtime-context.js";
 import { nativeRuntimeContextFixture } from "../services/native-runtime/runtime-context.test-fixture.js";
 import { canonicalNativeRuntimeContextDigest, parseNativeExecutionInput } from "../vendor/paperclip-runner/index.js";
 import { preserveRuntimeSkillAssets, hasLocalRuntimeSkillObligations, migrateRuntimeSkillAssets } from "../services/native-runtime/runtime-skill-preservation.js";
@@ -240,5 +240,27 @@ describe("admitted unversioned runtime skill preservation", () => {
     expect(await hasLocalRuntimeSkillObligations(db)).toBe(false);
     expect(await db.select().from(snapshots).where(and(eq(snapshots.companyId, f.companyId), eq(snapshots.id, snapshot!.id))))
       .toHaveLength(1);
+  });
+
+  it("rebuilds an admitted instruction bundle that is missing on a new controller host", async () => {
+    const companyId = randomUUID(), agentId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Instruction rehydration", issuePrefix: `I${companyId.slice(0, 6)}` });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Rehydrated" });
+    const admitted = Buffer.from("# Admitted instructions\n");
+    for (const content of [admitted, Buffer.from("# Edited after admission\n")]) {
+      await db.insert(agentInstructionRevisions).values({ companyId, agentId, entryFile: "AGENTS.md", contentBase64: content.toString("base64"),
+        contentHash: "unused", byteLength: content.byteLength, source: "board" });
+    }
+    const bundle = await materializeAsset([{ path: "AGENTS.md", content: admitted, mode: 0o444 }]);
+    const context = nativeRuntimeContextFixture();
+    context.instructions = { entryPath: "AGENTS.md", bundle };
+    await removeRuntimeAssetTree(bundle.rootPath);
+    await fs.rm(path.join(home, "instances", "default", "runtime-context-assets", "manifests", `${bundle.digest}.json`), { force: true });
+    await expect(fs.lstat(bundle.rootPath)).rejects.toMatchObject({ code: "ENOENT" });
+    const rehydrated = await rehydratePinnedInstructionAsset(db, { companyId, agentId }, context);
+    expect(rehydrated.instructions.bundle).toEqual(bundle);
+    expect(await fs.readFile(path.join(bundle.rootPath, "AGENTS.md"), "utf8")).toBe("# Admitted instructions\n");
+    const elsewhere = { ...context, instructions: { ...context.instructions, bundle: { ...bundle, rootPath: "/other-home/runtime-context-assets/bundles/x" } } };
+    expect(await rehydratePinnedInstructionAsset(db, { companyId, agentId }, elsewhere)).toBe(elsewhere);
   });
 });

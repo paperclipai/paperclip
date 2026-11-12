@@ -4,6 +4,7 @@ import { heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db"
 import type { NativeSession } from "../../vendor/paperclip-runner/index.js";
 import { canonicalProviderPackJson, type ProviderPackIdentity } from "./remote-provider-pack-verification.js";
 import { assertNativeRunnerCheckpointOwner } from "./native-runner-checkpoint.js";
+import { isTransientLockContention, postgresErrorCode } from "../transient-lock-contention.js";
 
 type Selection = {
   admittedRunId: string;
@@ -123,13 +124,41 @@ export function admittedNativeProviderPack(session: NativeSession, identity: Nat
     ...(admittedRunId === actual.runId ? {} : { inheritedFromRunId: admittedRunId }) };
 }
 
-export async function recordNativeProviderPackAdmission(db: Db, input: {
+type AdmissionInput = {
   session: NativeSession;
   identity: NativeRunIdentity;
   admissionEpoch: string;
   claim: { leaseOwner: string; attempt: number; controllerGeneration: number; controllerBootId: string };
   waitForClaim?: boolean;
-}): Promise<boolean> {
+};
+
+/** Attempts of one admission write while its claim is contended. */
+export const NATIVE_PROVIDER_PACK_ADMISSION_ATTEMPTS = 5;
+
+export const nativeProviderPackAdmissionFailureCode = postgresErrorCode;
+
+/**
+ * Saves the session's verified provider-pack admission on its run row. A run
+ * that waits for its claim retries a contended write: the runner's durable
+ * checkpoint writes hold the same coordinator row, and on a loaded database one
+ * can outlast a single lock wait. Each attempt is a new transaction that
+ * re-proves the claim, the run and the admission epoch, so a retry never
+ * admits anything the first attempt would have refused. Only contention is
+ * retried; a stale claim still returns false and other errors still throw.
+ */
+export async function recordNativeProviderPackAdmission(db: Db, input: AdmissionInput): Promise<boolean> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await recordNativeProviderPackAdmissionOnce(db, input);
+    } catch (error) {
+      if (!input.waitForClaim || attempt >= NATIVE_PROVIDER_PACK_ADMISSION_ATTEMPTS
+        || !isTransientLockContention(error)) throw error;
+      await new Promise(resolve => setTimeout(resolve, 100 * attempt));
+    }
+  }
+}
+
+async function recordNativeProviderPackAdmissionOnce(db: Db, input: AdmissionInput): Promise<boolean> {
   const receipt = admittedNativeProviderPack(input.session, input.identity);
   return db.transaction(async tx => {
     // Bounds every lock wait below, including the run-row lock. A run-event

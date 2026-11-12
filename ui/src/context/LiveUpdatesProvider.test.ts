@@ -41,6 +41,86 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     }
     client.clear();
   });
+  it("refreshes cached tasks whose relation summaries embed a changed blocker", () => {
+    const client = new QueryClient();
+    const blocker = { id: "blocker-uuid", identifier: "PAP-3808", title: "Blocker", status: "blocked" };
+    const dependentKey = queryKeys.issues.detail("PAP-3797");
+    const dependentByIdKey = queryKeys.issues.detail("dependent-uuid");
+    const blockedTaskKey = queryKeys.issues.detail("PAP-3900");
+    const unrelatedKey = queryKeys.issues.detail("PAP-1");
+    client.setQueryData(dependentKey, { id: "dependent-uuid", identifier: "PAP-3797", blockedBy: [blocker], blocks: [] });
+    client.setQueryData(dependentByIdKey, { id: "dependent-uuid", identifier: "PAP-3797", blockedBy: [blocker], blocks: [] });
+    client.setQueryData(blockedTaskKey, { id: "blocked-uuid", identifier: "PAP-3900", blockedBy: [], blocks: [blocker] });
+    client.setQueryData(unrelatedKey, { id: "other-uuid", identifier: "PAP-1", blockedBy: [], blocks: [] });
+    // Authenticated events can carry only the UUID; the dependent cache is still found by its summary id.
+    __liveUpdatesTestUtils.invalidateActivityQueries(client, "company-1", {
+      entityType: "issue", entityId: "blocker-uuid", action: "issue.updated", actorType: "user", actorId: "user-1",
+      details: { status: "done", _previous: { status: "blocked" } },
+    }, { userId: "user-1", agentId: null });
+    expect(client.getQueryState(dependentKey)?.isInvalidated).toBe(true);
+    expect(client.getQueryState(dependentByIdKey)?.isInvalidated).toBe(true);
+    expect(client.getQueryState(blockedTaskKey)?.isInvalidated).toBe(true);
+    expect(client.getQueryState(unrelatedKey)?.isInvalidated).toBe(false);
+    client.clear();
+  });
+  describe("one record, many views (PAP-771)", () => {
+    // Signed-in sessions get only action, entityType and entityId; the
+    // server strips `details` from activity events.
+    const seed = (client: QueryClient, keys: ReadonlyArray<readonly unknown[]>) => {
+      for (const key of keys) client.setQueryData(key, { cached: true });
+    };
+    const invalidated = (client: QueryClient, key: readonly unknown[]) => client.getQueryState(key)?.isInvalidated === true;
+
+    it.each(["attention.claimed", "attention.transferred"])("refreshes the task's interactions after %s", action => {
+      const client = new QueryClient();
+      client.setQueryData(queryKeys.issues.detail("issue-1"), { id: "issue-1", identifier: "NEE-39" });
+      const feed = [...queryKeys.attention("company-1"), "user-2", "mine", "coordinator", "pending"];
+      seed(client, [queryKeys.issues.interactions("issue-1"), queryKeys.issues.interactions("NEE-39"), queryKeys.issues.interactions("issue-2"), feed]);
+      __liveUpdatesTestUtils.invalidateActivityQueries(client, "company-1", {
+        entityType: "issue", entityId: "issue-1", action,
+      }, { userId: "user-2", agentId: null });
+      expect(invalidated(client, queryKeys.issues.interactions("issue-1"))).toBe(true);
+      expect(invalidated(client, queryKeys.issues.interactions("NEE-39"))).toBe(true);
+      expect(invalidated(client, feed)).toBe(true);
+      expect(invalidated(client, queryKeys.issues.interactions("issue-2"))).toBe(false);
+      client.clear();
+    });
+
+    it("refreshes an open approval page when the approval is answered elsewhere", () => {
+      const client = new QueryClient();
+      const own = [queryKeys.approvals.detail("approval-1"), queryKeys.approvals.comments("approval-1"), queryKeys.approvals.issues("approval-1")];
+      seed(client, [...own, queryKeys.approvals.detail("approval-2")]);
+      __liveUpdatesTestUtils.invalidateActivityQueries(client, "company-1", {
+        entityType: "approval", entityId: "approval-1", action: "approval.approved",
+      }, { userId: "user-2", agentId: null });
+      for (const key of own) expect(invalidated(client, key)).toBe(true);
+      expect(invalidated(client, queryKeys.approvals.detail("approval-2"))).toBe(false);
+      client.clear();
+    });
+
+    it("refreshes an open decision, whose detail key sits outside the company prefix", () => {
+      const client = new QueryClient();
+      seed(client, [queryKeys.decisions.detail("decision-1"), queryKeys.decisions.detail("decision-2")]);
+      __liveUpdatesTestUtils.invalidateActivityQueries(client, "company-1", {
+        entityType: "decision", entityId: "decision-1", action: "decision.decided",
+      }, { userId: "user-2", agentId: null });
+      expect(invalidated(client, queryKeys.decisions.detail("decision-1"))).toBe(true);
+      expect(invalidated(client, queryKeys.decisions.detail("decision-2"))).toBe(false);
+      client.clear();
+    });
+
+    it.each(["budget.incident_resolved", "budget.hard_threshold_crossed", "budget.policy_upserted"])("refreshes the budget owner's Needs You after %s", action => {
+      const client = new QueryClient();
+      const feed = [...queryKeys.attention("company-1"), "scott", "mine", "coordinator", "pending"];
+      const keys = [feed, queryKeys.budgets.overview("company-1"), queryKeys.approvals.list("company-1", "pending"), queryKeys.approvals.detail("approval-9")];
+      seed(client, keys);
+      __liveUpdatesTestUtils.invalidateActivityQueries(client, "company-1", {
+        entityType: action === "budget.policy_upserted" ? "budget_policy" : "budget_incident", entityId: "incident-1", action,
+      }, { userId: "scott", agentId: null });
+      for (const key of keys) expect(invalidated(client, key)).toBe(true);
+      client.clear();
+    });
+  });
   it("drops cached decision content when its access is revoked", () => {
     const client = new QueryClient();
     const receiptKey = ["issues", "decision-receipts", "chat-1", "user-1"];

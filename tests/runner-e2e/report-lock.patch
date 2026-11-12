@@ -1,54 +1,516 @@
 diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
-index 851e65af..6d825f97 100644
+index d24edac1..83b26545 100644
 --- a/pnpm-lock.yaml
 +++ b/pnpm-lock.yaml
-@@ -28,7 +28,7 @@ patchedDependencies:
-     hash: x25bk7vvljpm57viwan5qoaddi
-     path: patches/@chat-adapter__github@4.39.0.patch
-   '@chat-adapter/slack@4.39.0':
--    hash: 226jj24akljccsfbw7bcxujz4u
-+    hash: eskb5kxp7eud5v3ostluhynfoa
-     path: patches/@chat-adapter__slack@4.39.0.patch
-   '@chat-adapter/teams@4.39.0':
-     hash: jfm44m5wrw3jrn2jijafzk7s5a
-@@ -934,7 +934,7 @@ importers:
-         version: 4.39.0(patch_hash=x25bk7vvljpm57viwan5qoaddi)(ai@7.0.130(zod@4.6.7))(zod@4.6.7)
-       '@chat-adapter/slack':
-         specifier: 4.39.0
--        version: 4.39.0(patch_hash=226jj24akljccsfbw7bcxujz4u)(ai@7.0.130(zod@4.6.7))(zod@4.6.7)
-+        version: 4.39.0(patch_hash=eskb5kxp7eud5v3ostluhynfoa)(ai@7.0.130(zod@4.6.7))(zod@4.6.7)
-       '@chat-adapter/teams':
-         specifier: 4.39.0
-         version: 4.39.0(patch_hash=jfm44m5wrw3jrn2jijafzk7s5a)(ai@7.0.130(zod@4.6.7))(zod@4.6.7)
-@@ -1015,7 +1015,7 @@ importers:
-         version: 2.2.0(@grpc/grpc-js@1.14.5)(nice-grpc-common@2.0.4)(nice-grpc@2.1.17)
-       '@vercel/connect':
-         specifier: 2.3.3
--        version: 2.3.3(@chat-adapter/slack@4.39.0(patch_hash=226jj24akljccsfbw7bcxujz4u)(ai@7.0.130(zod@4.6.7))(zod@4.6.7))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.7))(ai@7.0.130(zod@4.6.7))(better-auth@1.7.2(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.11)(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(kysely@0.29.5)(pg@8.18.0)(postgres@3.4.9(patch_hash=6q4cic6qawywsyeo2spgnjamda)))(pg@8.18.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(vitest@5.0.3(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(jsdom@30.0.1(@noble/hashes@2.4.0))(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))))
-+        version: 2.3.3(@chat-adapter/slack@4.39.0(patch_hash=eskb5kxp7eud5v3ostluhynfoa)(ai@7.0.130(zod@4.6.7))(zod@4.6.7))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.7))(ai@7.0.130(zod@4.6.7))(better-auth@1.7.2(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.11)(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(kysely@0.29.5)(pg@8.18.0)(postgres@3.4.9(patch_hash=6q4cic6qawywsyeo2spgnjamda)))(pg@8.18.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(vitest@5.0.3(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(jsdom@30.0.1(@noble/hashes@2.4.0))(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))))
-       acorn:
+@@ -39,12 +39,9 @@ patchedDependencies:
+   '@discordjs/ws@1.2.3':
+     hash: vbylpnnxt5av2zdnuqmf6hjyjy
+     path: patches/@discordjs__ws@1.2.3.patch
+-  acpx@0.12.0:
+-    hash: 6st5fzvttegjv64llnfegwwpca
+-    path: patches/acpx@0.12.0.patch
+-  acpx@0.13.1:
+-    hash: 25xv27loodfejozcsygclyiyau
+-    path: patches/acpx@0.13.1.patch
++  acpx@0.22.0:
++    hash: 7cirnxnu5r6knlf33oxlyqv52u
++    path: patches/acpx@0.22.0.patch
+   embedded-postgres@18.1.0-beta.16:
+     hash: 55uhvnotpqyiy37rn3pqpukhei
+     path: patches/embedded-postgres@18.1.0-beta.16.patch
+@@ -166,8 +163,8 @@ importers:
+         specifier: workspace:*
+         version: link:../shared
+       acpx:
+-        specifier: 0.12.0
+-        version: 0.12.0(patch_hash=6st5fzvttegjv64llnfegwwpca)
++        specifier: 0.22.0
++        version: 0.22.0(patch_hash=7cirnxnu5r6knlf33oxlyqv52u)
+       picocolors:
+         specifier: ^1.1.1
+         version: 1.1.1
+@@ -522,8 +519,8 @@ importers:
+         specifier: 0.160.0
+         version: 0.160.0
+       acpx:
+-        specifier: 0.13.1
+-        version: 0.13.1(patch_hash=25xv27loodfejozcsygclyiyau)
++        specifier: 0.22.0
++        version: 0.22.0(patch_hash=7cirnxnu5r6knlf33oxlyqv52u)
+       ajv:
+         specifier: ^8.20.0
+         version: 8.20.0
+@@ -1020,8 +1017,8 @@ importers:
          specifier: 8.18.0
          version: 8.18.0
-@@ -10043,7 +10043,7 @@ snapshots:
-       - workflow
-       - zod
+       acpx:
+-        specifier: 0.13.1
+-        version: 0.13.1(patch_hash=25xv27loodfejozcsygclyiyau)
++        specifier: 0.22.0
++        version: 0.22.0(patch_hash=7cirnxnu5r6knlf33oxlyqv52u)
+       ai:
+         specifier: 7.0.130
+         version: 7.0.130(zod@4.6.7)
+@@ -1418,13 +1415,13 @@ packages:
+     resolution: {integrity: sha512-2eF1mbs1gTqkZJSLYOun/pFDx37sYa7W63HOPezC37b/R8AYms5O1nfQu8lrqFSGDrwDZkASVORymLcqjCNqyA==}
+     hasBin: true
  
--  '@chat-adapter/slack@4.39.0(patch_hash=226jj24akljccsfbw7bcxujz4u)(ai@7.0.130(zod@4.6.7))(zod@4.6.7)':
-+  '@chat-adapter/slack@4.39.0(patch_hash=eskb5kxp7eud5v3ostluhynfoa)(ai@7.0.130(zod@4.6.7))(zod@4.6.7)':
-     dependencies:
-       '@chat-adapter/shared': 4.39.0(ai@7.0.130(zod@4.6.7))(zod@4.6.7)
-       '@slack/socket-mode': 2.0.7
-@@ -13803,11 +13803,11 @@ snapshots:
-     dependencies:
-       execa: 5.1.1
+-  '@agentclientprotocol/sdk@1.2.1':
+-    resolution: {integrity: sha512-jwYUdOQR7tc+Zfch53VL4JJyUNK/46q03uUTYb+PjECsmnNl94XFXOfYLJ8RBpMNidXd1rpOAVgb0vqD98xImA==}
++  '@agentclientprotocol/sdk@1.4.0':
++    resolution: {integrity: sha512-/eufudw+aFY1LKLolT6yFE6UMmYRl7fMJ/DEONSIyR6wI3slHWITBsANRGqXEY8FRzqUxwh7QEaGiZHcJPVThg==}
+     peerDependencies:
+       zod: ^3.25.0 || ^4.0.0
  
--  '@vercel/connect@2.3.3(@chat-adapter/slack@4.39.0(patch_hash=226jj24akljccsfbw7bcxujz4u)(ai@7.0.130(zod@4.6.7))(zod@4.6.7))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.7))(ai@7.0.130(zod@4.6.7))(better-auth@1.7.2(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.11)(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(kysely@0.29.5)(pg@8.18.0)(postgres@3.4.9(patch_hash=6q4cic6qawywsyeo2spgnjamda)))(pg@8.18.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(vitest@5.0.3(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(jsdom@30.0.1(@noble/hashes@2.4.0))(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))))':
-+  '@vercel/connect@2.3.3(@chat-adapter/slack@4.39.0(patch_hash=eskb5kxp7eud5v3ostluhynfoa)(ai@7.0.130(zod@4.6.7))(zod@4.6.7))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.7))(ai@7.0.130(zod@4.6.7))(better-auth@1.7.2(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.11)(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(kysely@0.29.5)(pg@8.18.0)(postgres@3.4.9(patch_hash=6q4cic6qawywsyeo2spgnjamda)))(pg@8.18.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(vitest@5.0.3(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(jsdom@30.0.1(@noble/hashes@2.4.0))(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))))':
+-  '@agentclientprotocol/sdk@1.4.0':
+-    resolution: {integrity: sha512-/eufudw+aFY1LKLolT6yFE6UMmYRl7fMJ/DEONSIyR6wI3slHWITBsANRGqXEY8FRzqUxwh7QEaGiZHcJPVThg==}
++  '@agentclientprotocol/sdk@1.9.0':
++    resolution: {integrity: sha512-saCOTPYBK1iqWqJFAYHXbg3+zCoFXyZZFoqQAwdTWkbrZZPpAETr80QOnYr2l+dzPwL0jpNhn3eDY8MoEIDbUA==}
+     peerDependencies:
+       zod: ^3.25.0 || ^4.0.0
+ 
+@@ -3451,6 +3448,70 @@ packages:
+     cpu: [x64]
+     os: [win32]
+ 
++  '@openclaw/fs-safe-darwin-arm64@0.27.2':
++    resolution: {integrity: sha512-df4XfjnN+tY94EZmo5K3G2nx1K97oJ3dW2lyQPVoFcuYk+Ik/9wtIVQ73tjx3tQRp12yPWzi4bscsZ2XwFgVeQ==}
++    engines: {node: '>=22'}
++    cpu: [arm64]
++    os: [darwin]
++
++  '@openclaw/fs-safe-darwin-x64@0.27.2':
++    resolution: {integrity: sha512-+lSL9O6DvJEizUlMfNKTW10FXgb3FCn+M0ijiVNE12TcikxUVkv2FFk8fZigTyC5K8h+hxH6rzyazby8TcX8zQ==}
++    engines: {node: '>=22'}
++    cpu: [x64]
++    os: [darwin]
++
++  '@openclaw/fs-safe-freebsd-arm64@0.27.2':
++    resolution: {integrity: sha512-UorPeKoUORvY9NHma2a3ow5zJ8N4/JmSecljlECjOuCwpKkP/qsahoWpaUfzzsSBb4XT++txaV7AUd7jOgg8Dg==}
++    engines: {node: '>=22'}
++    cpu: [arm64]
++    os: [freebsd]
++
++  '@openclaw/fs-safe-freebsd-x64@0.27.2':
++    resolution: {integrity: sha512-jNeVh7lSpCvTuoGsV+iC0xETXzZEp6dTf77QSojohPOXCP5nxNmVydV6RkiBW/Ua6xvD9PvxDaBMtoYeFWPCJA==}
++    engines: {node: '>=22'}
++    cpu: [x64]
++    os: [freebsd]
++
++  '@openclaw/fs-safe-linux-arm64-gnu@0.27.2':
++    resolution: {integrity: sha512-R2utdxmPxan42+n0FjRc+1P3LHgwei25DUOJHBqcXr1ch0nNKkpSnmV7aYeLEER9Q0eBseEIwB9YgTGtKawG4A==}
++    engines: {node: '>=22'}
++    cpu: [arm64]
++    os: [linux]
++
++  '@openclaw/fs-safe-linux-arm64-musl@0.27.2':
++    resolution: {integrity: sha512-6NEl+0nzqRfdyKQgggAh74CdxJRGZlchKzk8/OQxHKXuVyHpSPzeCXmAHQq8HwgZNvvSfLenhoGcCPCqrd+90A==}
++    engines: {node: '>=22'}
++    cpu: [arm64]
++    os: [linux]
++
++  '@openclaw/fs-safe-linux-x64-gnu@0.27.2':
++    resolution: {integrity: sha512-2OiwBdpzSqNbCFHWEZnqWirfcasEL1q6oGulrBKB/abPjXqyRAHgRgnVgTkTa5QEzoydAK+bCGLamLfHzKVAHw==}
++    engines: {node: '>=22'}
++    cpu: [x64]
++    os: [linux]
++
++  '@openclaw/fs-safe-linux-x64-musl@0.27.2':
++    resolution: {integrity: sha512-8phQ3/CpKx1BrWFUu7zaDLvkR3pcKpdfhWzfJUOgsqZ3RfTuMgSOoT0bSUqnaZve+lx8ulRuXZ+aPikWN/K3FQ==}
++    engines: {node: '>=22'}
++    cpu: [x64]
++    os: [linux]
++
++  '@openclaw/fs-safe-win32-arm64-msvc@0.27.2':
++    resolution: {integrity: sha512-xg7FBlFK5LIKbze/YrCQ89KWPtTazKQktTyAl/eC40iXsYB8D1DcakE3FCdYd4O6UA79OfBS0PJvxlrE9jyx8w==}
++    engines: {node: '>=22'}
++    cpu: [arm64]
++    os: [win32]
++
++  '@openclaw/fs-safe-win32-x64-msvc@0.27.2':
++    resolution: {integrity: sha512-vtwG04UXzIAZg2t+ykZMae4yWy+5P/MI1rekN4jtk8hRck+115mfqKzls1eNzc3YnT0TMo2s6KFjHe3a6wlDtg==}
++    engines: {node: '>=22'}
++    cpu: [x64]
++    os: [win32]
++
++  '@openclaw/fs-safe@0.27.2':
++    resolution: {integrity: sha512-OvehJrbjd8TpUsyaL7BCu25KcqLCccBtEkLk47YvlXyH87k6NrkmY1VJiC6/thJS2e914AWu266JeOQBbsMebw==}
++    engines: {node: '>=22'}
++
+   '@openrouter/ai-sdk-provider@3.1.0':
+     resolution: {integrity: sha512-BQy1TA9fKrh47s9ivsO6FY5QimN7GUF0i8Qon3pkxQclEgShso0dClpcWn8OIyPLEZZPFaFKgI8TW4S/O0p0Dw==}
+     engines: {node: '>=22'}
+@@ -5846,13 +5907,8 @@ packages:
+     engines: {node: '>=0.4.0'}
+     hasBin: true
+ 
+-  acpx@0.12.0:
+-    resolution: {integrity: sha512-APYpN04XFWrCGuSBvM4HTKWWFH8uSIuzc+qI7aCGeVdP9o4euZeBosFEkmNUHvBOop0XBemg6d8RsNvzXN3Mgw==}
+-    engines: {node: '>=22.13.0'}
+-    hasBin: true
+-
+-  acpx@0.13.1:
+-    resolution: {integrity: sha512-9zhvUrAR4XxSIgaLCiiWmrwmEWh+m6jxu2KUFC8BMOiK4sFsnrRL7H6VF54ZLTTpt0IHrZQju2V7+8wiMf9DXQ==}
++  acpx@0.22.0:
++    resolution: {integrity: sha512-dD+xgRwLFOfwL7/VEdn3zrVNFleFoIA0EUETK35w/e+MeYB5FN5+vKERoV60d4SUirTqX610yb/wN+2OFcjpMQ==}
+     engines: {node: '>=22.13.0'}
+     hasBin: true
+ 
+@@ -6328,6 +6384,9 @@ packages:
+   cookiejar@2.1.4:
+     resolution: {integrity: sha512-LDx6oHrK+PhzLKJU9j5S7/Y3jM/mUHvD/DeI1WQmJn652iPC5Y4TBzC9l+5OMOXlyTTA+SmVUPm0HQUwpD5Jqw==}
+ 
++  core-util-is@1.0.3:
++    resolution: {integrity: sha512-ZQBvi1DcpJ4GDqanjucZ2Hj3wEO5pZDS89BWbkcrvdxksJorwUDDZamX9ldFkp9aw2lmBDLgkObEA4DWNJ9FYQ==}
++
+   cors@2.8.6:
+     resolution: {integrity: sha512-tJtZBBHA6vjIAaF6EnIaq6laBBP9aq/Y3ouVJjEfoHbRBcHBAHYcMh/w8LDrk2PvIMMq8gmopa5D4V8RmbrxGw==}
+     engines: {node: '>= 0.10'}
+@@ -7186,6 +7245,9 @@ packages:
+     resolution: {integrity: sha512-IKXpvIzjnC9XTAUbVBcMfGS0EPaIXtW6v+zr+RRp+hqULEpo0owZax6wyRwPOJbWbzjYspQwusTsfVr0ifh4uQ==}
+     engines: {node: '>=0.10.0'}
+ 
++  immediate@3.0.6:
++    resolution: {integrity: sha512-XXOFtyqDjNDAQxVfYxuF7g9Il/IbWmmlQg2MYKOH8ExIT1qg6xc4zyS3HaEEATgs1btfzxq15ciUiY7gjSXRGQ==}
++
+   import-meta-resolve@4.2.0:
+     resolution: {integrity: sha512-Iqv2fzaTQN28s/FwZAoFq0ZSs/7hMAHJVX+w8PZl3cY19Pxk6jFFalxQoIfW2826i/fDLXv8IiEZRIT0lDuWcg==}
+ 
+@@ -7276,6 +7338,9 @@ packages:
+     resolution: {integrity: sha512-e6rvdUCiQCAuumZslxRJWR/Doq4VpPR82kqclvcS0efgt430SlGIk05vdCN58+VrzgtIcfNODjozVielycD4Sw==}
+     engines: {node: '>=16'}
+ 
++  isarray@1.0.0:
++    resolution: {integrity: sha512-VLghIWNM6ELQzo7zwmcg0NmTVyWKYjvIeM83yjp0wRDTmUnrM678fQbcKBo6n2CJEF0szoG//ytg+TKla89ALQ==}
++
+   isexe@2.0.0:
+     resolution: {integrity: sha512-RHxMLp9lnKHGHRng9QFhRCMbYAcVpn69smSGcq3f36xjgVVWThj4qqLbTLlq7Ssj8B+fIQ1EuCEGI2lKsyQeIw==}
+ 
+@@ -7351,6 +7416,9 @@ packages:
+     resolution: {integrity: sha512-MT/xP0CrubFRNLNKvxJ2BYfy53Zkm++5bX9dtuPbqAeQpTVe0MQTFhao8+Cp//EmJp244xt6Drw/GVEGCUj40g==}
+     engines: {node: '>=12', npm: '>=6'}
+ 
++  jszip@3.10.2:
++    resolution: {integrity: sha512-3l+rb15IOWtUhU0H5MFqES/T6Kh7abYwjosBey/vD6hDt8zoEffkSC5Ws5SGtgVw3gBx2NEbhTeSW1+kWkpyTQ==}
++
+   jwa@2.0.1:
+     resolution: {integrity: sha512-hRF04fqJIP8Abbkq5NKGN0Bbr3JxlQ+qhZufXVr0DvujKy93ZCbXZMHDL4EOtodSbCWxOqR8MS1tXA5hwqCXDg==}
+ 
+@@ -7399,6 +7467,9 @@ packages:
+     engines: {node: '>=16'}
+     hasBin: true
+ 
++  lie@3.3.0:
++    resolution: {integrity: sha512-UaiMJzeWRlEujzAuw5LokY1L5ecNQYZKfmyZ9L7wDHb/p5etKaxXhohBcrw0EYby+G/NA52vRSN4N39dxHAIwQ==}
++
+   light-my-request@6.6.0:
+     resolution: {integrity: sha512-CHYbu8RtboSIoVsHZ6Ye4cj4Aw/yg2oAFimlF7mNvfDV192LR7nDiKtSIfCuLT7KokPSTn/9kfVLm5OGN0A28A==}
+ 
+@@ -8118,6 +8189,9 @@ packages:
+   package-manager-detector@1.9.0:
+     resolution: {integrity: sha512-zAMfbta9nPA8AKkA4WdmNAT8R8s6Dk0/xwPsqNnRidMFcLo1YkLuPDTgs2f64XdzS8vbLNnoJ+uUIkgbz7oRHA==}
+ 
++  pako@1.0.11:
++    resolution: {integrity: sha512-4hLB8Py4zZce5s4yd9XzopqwVv/yGNhV1Bl8NTmCq1763HeK2+EwVTv+leGeL13Dnh2wfbqowVPXCIO0z4taYw==}
++
+   parse-entities@4.0.2:
+     resolution: {integrity: sha512-GG2AQYWoLgL877gQIKeRPGO1xF9+eG1ujIb5soS5gPvLQ1y2o8FL90w2QWNdf9I361Mpp7726c+lj3U0qK1uGw==}
+ 
+@@ -8271,6 +8345,9 @@ packages:
+     resolution: {integrity: sha512-Qb1gy5OrP5+zDf2Bvnzdl3jsTf1qXVMazbvCoKhtKqVs4/YK4ozX4gKQJJVyNe+cajNPn0KoC0MC3FUmaHWEmQ==}
+     engines: {node: ^10.13.0 || ^12.13.0 || ^14.15.0 || >=15.0.0}
+ 
++  process-nextick-args@2.0.1:
++    resolution: {integrity: sha512-3ouUOpQhtgrbOa17J7+uxOTpITYWaGP7/AhoR3+A+/1e9skrzelGi/dXzEYyvbxubEF6Wn2ypscTKiKJFFn1ag==}
++
+   process-warning@4.0.1:
+     resolution: {integrity: sha512-3c2LzQ3rY9d0hc1emcsHhfT9Jwz0cChib/QN89oME2R451w5fy3f0afAhERFZAwrbDU43wk12d0ORBpDVME50Q==}
+ 
+@@ -8456,6 +8533,9 @@ packages:
+     resolution: {integrity: sha512-PWaYA1L/q9u2u7xYQi+Y3L3Yfnie7XyLeaJICV1MGD6LprsBxcAqGjYyr0eY3p+QdsA+x/Irkt4Qif8D63+Sbw==}
+     engines: {node: '>=0.10.0'}
+ 
++  readable-stream@2.3.8:
++    resolution: {integrity: sha512-8p0AUk4XODgIewSi0l8Epjs+EVnWiK7NoDIEGU0HhE7+ZyY8D1IMY7odu5lRrFXGg71L15KG8QrPmum45RTtdA==}
++
+   readdirp@5.1.1:
+     resolution: {integrity: sha512-Kko+Y5XQ6fM+Ce3dq3m9YGxnacYZYl9cA1wZjaF3Vbry2L3i1qVg8+CAgNPsXRArPMUMCaOR7oa9Nqntc43JKA==}
+     engines: {node: '>= 20.19.0'}
+@@ -8570,6 +8650,9 @@ packages:
+     resolution: {integrity: sha512-xal3CZX1Xlo/k4ApwCFrHVACi9fBqJ7V+mwhBsuf/1IOKbBy098Fex+Wa/5QMubw09pSZ/u8EY8PWgevJsXp1A==}
+     engines: {node: '>=6'}
+ 
++  safe-buffer@5.1.2:
++    resolution: {integrity: sha512-Gd2UZBJDkXlY7GbJxfsE8/nvKkUEU1G38c1siN6QP6a9PT9MmHB8GnpscSmMJSoF8LOIrt8ud/wPtojys4G6+g==}
++
+   safe-buffer@5.2.1:
+     resolution: {integrity: sha512-rp3So07KcdmmKbGvgaNxQSJr7bGVSVk5S9Eq1F+ppbRo70+YeaDxkw5Dd8NPN+GD6bjnYm2VuPuCXmpuYvmCXQ==}
+ 
+@@ -8623,6 +8706,9 @@ packages:
+   set-cookie-parser@3.1.2:
+     resolution: {integrity: sha512-5/r/lTwbJ3zQ+qwdUFZYeRNqda7P5HD8zQKqlSjdGt1/S0cjLAphHusj4Y58ahDtWn/g32xrIS58/ikOvwl0Lw==}
+ 
++  setimmediate@1.0.5:
++    resolution: {integrity: sha512-MATJdZp8sLqDl/68LfQmbP8zKPLQNV6BIZoIgrscFDQ+RsvK/BxeDQOgyxKKoh0y/8h3BqVFnCqQ/gd+reiIXA==}
++
+   setprototypeof@1.2.0:
+     resolution: {integrity: sha512-E5LDX7Wrp85Kil5bhZv46j8jOeboKq5JMmYM3gVGdGH8xFpPWXUMsNrlODCrkoxMEeNi/XZIwuRvY4XNwYMJpw==}
+ 
+@@ -8677,11 +8763,6 @@ packages:
+   sisteransi@1.0.5:
+     resolution: {integrity: sha512-bLGGlR1QxBcynn2d5YmDX4MGjlZvy2MRBDRNHLJ8VI6l6+9FUiyTFNJ0IveOSP0bcXgVDPRcfGqA0pjaqUpfVg==}
+ 
+-  skillflag@0.2.0:
+-    resolution: {integrity: sha512-7ZmEpBeEoPLc+hqZ/StAnCO/hulgEPANzPyZgOM/CZ5zc3b0ApSp3URavY5POM/OKyi5d9+UC/Q21OoiYC2kJw==}
+-    engines: {node: '>=18'}
+-    hasBin: true
+-
+   skillflag@0.2.1:
+     resolution: {integrity: sha512-47lfgUr6xzgljtTD5XfJrS+6muNb9R44OEr+o31Nco2R65W1xOA8Pi6QSbLa90tDYE6TqW5Hrh3N1egserGrhQ==}
+     engines: {node: '>=18'}
+@@ -8752,6 +8833,9 @@ packages:
+     resolution: {integrity: sha512-wKyQRQpjJ0sIp62ErSZdGsjMJWsap5oRNihHhu6G7JVO/9jIB6UyevL+tXuOqrng8j/cxKTWyWUwvSTriiZz/g==}
+     engines: {node: '>=8'}
+ 
++  string_decoder@1.1.1:
++    resolution: {integrity: sha512-n/ShnvDi6FHbbVfviro+WojiFzv+s8MPMHBczVePfUpDJLwoLT0ht1l4YwBCbi8pJAveEEdnkHyPyTP/mzRfwg==}
++
+   stringify-entities@4.0.4:
+     resolution: {integrity: sha512-IwfBptatlO+QCJUo19AqvrPNqlVMpW9YEL2LIVY+Rpv2qsjCGxaDLNRgeGsQWJhfItebuJhsGSLjaBbNSQ+ieg==}
+ 
+@@ -9412,15 +9496,11 @@ snapshots:
+       vscode-jsonrpc: 9.0.1
+       zod: 4.4.3
+ 
+-  '@agentclientprotocol/sdk@1.2.1(zod@4.4.3)':
+-    dependencies:
+-      zod: 4.4.3
+-
+   '@agentclientprotocol/sdk@1.4.0(zod@4.4.3)':
      dependencies:
-       '@vercel/oidc': 3.8.9
-     optionalDependencies:
--      '@chat-adapter/slack': 4.39.0(patch_hash=226jj24akljccsfbw7bcxujz4u)(ai@7.0.130(zod@4.6.7))(zod@4.6.7)
-+      '@chat-adapter/slack': 4.39.0(patch_hash=eskb5kxp7eud5v3ostluhynfoa)(ai@7.0.130(zod@4.6.7))(zod@4.6.7)
-       '@modelcontextprotocol/sdk': 1.31.0(zod@4.6.7)
+       zod: 4.4.3
+ 
+-  '@agentclientprotocol/sdk@1.4.0(zod@4.6.7)':
++  '@agentclientprotocol/sdk@1.9.0(zod@4.6.7)':
+     dependencies:
+       zod: 4.6.7
+ 
+@@ -11676,6 +11756,50 @@ snapshots:
+   '@openai/codex@0.160.0-win32-x64':
+     optional: true
+ 
++  '@openclaw/fs-safe-darwin-arm64@0.27.2':
++    optional: true
++
++  '@openclaw/fs-safe-darwin-x64@0.27.2':
++    optional: true
++
++  '@openclaw/fs-safe-freebsd-arm64@0.27.2':
++    optional: true
++
++  '@openclaw/fs-safe-freebsd-x64@0.27.2':
++    optional: true
++
++  '@openclaw/fs-safe-linux-arm64-gnu@0.27.2':
++    optional: true
++
++  '@openclaw/fs-safe-linux-arm64-musl@0.27.2':
++    optional: true
++
++  '@openclaw/fs-safe-linux-x64-gnu@0.27.2':
++    optional: true
++
++  '@openclaw/fs-safe-linux-x64-musl@0.27.2':
++    optional: true
++
++  '@openclaw/fs-safe-win32-arm64-msvc@0.27.2':
++    optional: true
++
++  '@openclaw/fs-safe-win32-x64-msvc@0.27.2':
++    optional: true
++
++  '@openclaw/fs-safe@0.27.2':
++    optionalDependencies:
++      '@openclaw/fs-safe-darwin-arm64': 0.27.2
++      '@openclaw/fs-safe-darwin-x64': 0.27.2
++      '@openclaw/fs-safe-freebsd-arm64': 0.27.2
++      '@openclaw/fs-safe-freebsd-x64': 0.27.2
++      '@openclaw/fs-safe-linux-arm64-gnu': 0.27.2
++      '@openclaw/fs-safe-linux-arm64-musl': 0.27.2
++      '@openclaw/fs-safe-linux-x64-gnu': 0.27.2
++      '@openclaw/fs-safe-linux-x64-musl': 0.27.2
++      '@openclaw/fs-safe-win32-arm64-msvc': 0.27.2
++      '@openclaw/fs-safe-win32-x64-msvc': 0.27.2
++      jszip: 3.10.2
++
+   '@openrouter/ai-sdk-provider@3.1.0(ai@7.0.130(zod@4.6.7))(zod@4.6.7)':
+     dependencies:
        ai: 7.0.130(zod@4.6.7)
-       better-auth: 1.7.2(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.11)(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(kysely@0.29.5)(pg@8.18.0)(postgres@3.4.9(patch_hash=6q4cic6qawywsyeo2spgnjamda)))(pg@8.18.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(vitest@5.0.3(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(jsdom@30.0.1(@noble/hashes@2.4.0))(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1)))
+@@ -13887,21 +14011,10 @@ snapshots:
+ 
+   acorn@8.18.0: {}
+ 
+-  acpx@0.12.0(patch_hash=6st5fzvttegjv64llnfegwwpca):
+-    dependencies:
+-      '@agentclientprotocol/sdk': 1.2.1(zod@4.4.3)
+-      commander: 15.0.0
+-      skillflag: 0.2.0
+-      tsx: 4.23.15
+-      zod: 4.4.3
+-    transitivePeerDependencies:
+-      - bare-abort-controller
+-      - bare-buffer
+-      - react-native-b4a
+-
+-  acpx@0.13.1(patch_hash=25xv27loodfejozcsygclyiyau):
++  acpx@0.22.0(patch_hash=7cirnxnu5r6knlf33oxlyqv52u):
+     dependencies:
+-      '@agentclientprotocol/sdk': 1.4.0(zod@4.6.7)
++      '@agentclientprotocol/sdk': 1.9.0(zod@4.6.7)
++      '@openclaw/fs-safe': 0.27.2
+       commander: 15.0.0
+       skillflag: 0.2.1
+       tsx: 4.23.15
+@@ -14312,6 +14425,9 @@ snapshots:
+ 
+   cookiejar@2.1.4: {}
+ 
++  core-util-is@1.0.3:
++    optional: true
++
+   cors@2.8.6:
+     dependencies:
+       object-assign: 4.1.1
+@@ -15238,6 +15354,9 @@ snapshots:
+     dependencies:
+       safer-buffer: 2.1.2
+ 
++  immediate@3.0.6:
++    optional: true
++
+   import-meta-resolve@4.2.0: {}
+ 
+   indent-string@4.0.0: {}
+@@ -15299,6 +15418,9 @@ snapshots:
+     dependencies:
+       is-inside-container: 1.0.0
+ 
++  isarray@1.0.0:
++    optional: true
++
+   isexe@2.0.0: {}
+ 
+   isomorphic.js@0.2.5: {}
+@@ -15381,6 +15503,14 @@ snapshots:
+       ms: 2.1.3
+       semver: 7.8.5
+ 
++  jszip@3.10.2:
++    dependencies:
++      lie: 3.3.0
++      pako: 1.0.11
++      readable-stream: 2.3.8
++      setimmediate: 1.0.5
++    optional: true
++
+   jwa@2.0.1:
+     dependencies:
+       buffer-equal-constant-time: 1.0.1
+@@ -15428,6 +15558,11 @@ snapshots:
+     dependencies:
+       isomorphic.js: 0.2.5
+ 
++  lie@3.3.0:
++    dependencies:
++      immediate: 3.0.6
++    optional: true
++
+   light-my-request@6.6.0:
+     dependencies:
+       cookie: 1.1.1
+@@ -16408,6 +16543,9 @@ snapshots:
+ 
+   package-manager-detector@1.9.0: {}
+ 
++  pako@1.0.11:
++    optional: true
++
+   parse-entities@4.0.2:
+     dependencies:
+       '@types/unist': 2.0.11
+@@ -16573,6 +16711,9 @@ snapshots:
+       ansi-styles: 5.2.0
+       react-is: 17.0.2
+ 
++  process-nextick-args@2.0.1:
++    optional: true
++
+   process-warning@4.0.1: {}
+ 
+   process-warning@5.1.0: {}
+@@ -16823,6 +16964,17 @@ snapshots:
+ 
+   react@19.2.8: {}
+ 
++  readable-stream@2.3.8:
++    dependencies:
++      core-util-is: 1.0.3
++      inherits: 2.0.4
++      isarray: 1.0.0
++      process-nextick-args: 2.0.1
++      safe-buffer: 5.1.2
++      string_decoder: 1.1.1
++      util-deprecate: 1.0.2
++    optional: true
++
+   readdirp@5.1.1: {}
+ 
+   real-require@0.2.0: {}
+@@ -17002,6 +17154,9 @@ snapshots:
+     dependencies:
+       mri: 1.2.0
+ 
++  safe-buffer@5.1.2:
++    optional: true
++
+   safe-buffer@5.2.1: {}
+ 
+   safe-content-frame@0.0.31: {}
+@@ -17055,6 +17210,9 @@ snapshots:
+ 
+   set-cookie-parser@3.1.2: {}
+ 
++  setimmediate@1.0.5:
++    optional: true
++
+   setprototypeof@1.2.0: {}
+ 
+   sharp@0.35.4(@types/node@24.13.3):
+@@ -17152,15 +17310,6 @@ snapshots:
+ 
+   sisteransi@1.0.5: {}
+ 
+-  skillflag@0.2.0:
+-    dependencies:
+-      '@clack/prompts': 1.7.0
+-      tar-stream: 3.2.0
+-    transitivePeerDependencies:
+-      - bare-abort-controller
+-      - bare-buffer
+-      - react-native-b4a
+-
+   skillflag@0.2.1:
+     dependencies:
+       '@clack/prompts': 1.7.0
+@@ -17249,6 +17398,11 @@ snapshots:
+       is-fullwidth-code-point: 3.0.0
+       strip-ansi: 6.0.1
+ 
++  string_decoder@1.1.1:
++    dependencies:
++      safe-buffer: 5.1.2
++    optional: true
++
+   stringify-entities@4.0.4:
+     dependencies:
+       character-entities-html4: 2.1.0
