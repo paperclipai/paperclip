@@ -1,6 +1,5 @@
 import { chatCatalogHumanQuestionPolicies } from "../chat-catalog-contract.js";
 import { askUserQuestionsPayloadSchema } from "../../../packages/shared/src/validators/issue.js";
-import { markdownLinkTargets } from "../chat-rendered-links.js";
 
 /**
  * The product's own run presentation decision when a run ends its turn on a card:
@@ -43,6 +42,14 @@ function shownQuestionForm(payload: Row | undefined): Row | undefined {
   return questionSet !== undefined ? { ...rest, questionSet } : { ...rest, questions };
 }
 
+/** Link targets the card's Markdown renders as clickable links: inline links and autolinks outside code. Code spans
+ * and fenced blocks show their text literally, and a reference definition alone renders nothing. */
+export function renderedMarkdownLinks(text: string): string[] {
+  const prose = text.replace(/^(```|~~~)[^\n]*\n[\s\S]*?^\1[^\n]*$/gm, "").replace(/(`+)[\s\S]*?\1/g, "");
+  const unwrap = (target: string) => target.startsWith("<") && target.endsWith(">") ? target.slice(1, -1) : target;
+  return [...[...prose.matchAll(/(?<!!)\[[^\]\n]*\]\(\s*([^)\s]+)/g)].map(match => unwrap(match[1]!)),
+    ...[...prose.matchAll(/<((?:https?:\/\/|\/)[^>\s]+)>/g)].map(match => match[1]!)];
+}
 /** True when the product decided that a card owns this run's conversation response. */
 export function runEndedOnCard(run: RunLike): boolean {
   const decision = record(run.resultJson?.presentationDecision);
@@ -75,12 +82,12 @@ export function turnResponseCards(input: { companyId: string; leadId: string; ru
       const shown = shownQuestionForm(payload), form = record(shown?.questionSet);
       const prompts = [form?.questions, shown?.questions].flatMap(list => Array.isArray(list) ? list.map(question => record(question)?.prompt) : []);
       cards.push({ id: row.id, kind: "ask_user_questions", runId: row.sourceRunId, text: strings(row.title, row.summary, ...displayedText(shown)).join("\n"),
-        links: strings(form?.description, ...prompts).flatMap(markdownLinkTargets) });
+        links: strings(form?.description, ...prompts).flatMap(renderedMarkdownLinks) });
     } else if (row.kind === "request_confirmation") {
       if (!payload || payload.toolAction || payload.secretProposal || payload.connectionAuthorization || typeof payload.prompt !== "string" || !payload.prompt.trim()) continue;
       cards.push({ id: row.id, kind: "request_confirmation", runId: row.sourceRunId,
         text: strings(row.title, row.summary, payload.prompt, payload.detailsMarkdown, payload.acceptLabel, payload.rejectLabel, payload.declineReasonPlaceholder).join("\n"),
-        links: strings(payload.prompt, payload.detailsMarkdown).flatMap(markdownLinkTargets),
+        links: strings(payload.prompt, payload.detailsMarkdown).flatMap(renderedMarkdownLinks),
         ...(record(payload.target) ? { target: record(payload.target) } : {}) });
     }
   }

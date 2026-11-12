@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { INTERACTION_OWNS_RESPONSE, replyOrCardLinks, replyOrCardText, turnResponseCards } from "./turn-response-card.js";
+import { INTERACTION_OWNS_RESPONSE, renderedMarkdownLinks, replyOrCardLinks, replyOrCardText, turnResponseCards } from "./turn-response-card.js";
 import { grade_goals } from "./internal-goals.js";
 import { observation as internalObservation } from "./internal-support.js";
 
@@ -127,5 +127,14 @@ describe("links a response card renders", () => {
     const question = goalQuestion();
     question.payload.questions[0]!.options = [{ id: "com-1", label: "COM-1 in Launch project" }, { id: "com-2", label: "COM-2 in Experiments project" }];
     expect(cards([question])[0]!.links).toEqual([]);
+  });
+});
+describe("Markdown a card renders as clickable links", () => {
+  it("counts inline links and autolinks, not code, fenced blocks, images or bare reference definitions", () => {
+    expect(renderedMarkdownLinks("Open [Create organization](/onboarding) or <https://example.test/a>.")).toEqual(["/onboarding", "https://example.test/a"]);
+    expect(renderedMarkdownLinks("Type `[setup](/onboarding)` to see the syntax.")).toEqual([]);
+    expect(renderedMarkdownLinks("```\n[setup](/onboarding)\n```\nThen continue.")).toEqual([]);
+    expect(renderedMarkdownLinks("[setup]: /onboarding")).toEqual([]);
+    expect(renderedMarkdownLinks("![logo](/logo.png)")).toEqual([]);
   });
 });
