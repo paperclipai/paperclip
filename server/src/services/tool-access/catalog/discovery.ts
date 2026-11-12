@@ -263,12 +263,19 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
         );
       }
       const authenticate = response.headers.get("www-authenticate") ?? "";
-      // A bare 401 to a connection that sends no credential is the server's
+      // A bare 401 to a request that carried no credential is the server's
       // answer to "does it need a key?". Treat it like a challenge whose sign-in
       // Paperclip cannot discover, so the person is asked for a key instead of
-      // seeing a raw HTTP status.
+      // seeing a raw HTTP status. A request that carried a credential (stored
+      // secret, header, or a token or user info in the URL) keeps the raw
+      // rejection: that credential needs replacing, not a new key.
+      const sentUrl = new URL(endpoint);
       const bareCredentialChallenge =
-        !authenticate.trim() && connection.authKind === "none";
+        !authenticate.trim() &&
+        connection.authKind === "none" &&
+        connection.credentialSecretRefs.length === 0 &&
+        Object.keys(headers).length === 0 &&
+        !sentUrl.search && !sentUrl.username && !sentUrl.password;
       if (
         response.status === 401 &&
         (/bearer|oauth|authorization/i.test(authenticate) ||

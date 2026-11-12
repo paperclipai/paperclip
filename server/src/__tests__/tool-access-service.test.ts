@@ -16649,6 +16649,28 @@ describeEmbeddedPostgres("tool access service", () => {
     });
   });
 
+  it("keeps the raw rejection when a pasted link's own URL token is refused", async () => {
+    const company = await createCompany(db);
+    const app = createRouteApp(db);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: false,
+      status: 401,
+      headers: { get: () => null },
+      text: async () => "",
+      json: async () => ({}),
+    } as unknown as Response);
+
+    const res = await request(app)
+      .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .send({
+        link: "https://key.example.test/mcp?token=expired-url-token",
+        name: "URL token app",
+      });
+
+    expect(res.body?.details?.code).not.toBe("oauth_challenge");
+    expect(res.status).not.toBe(422);
+  });
+
   it.each(["catalog", "catalog/refresh", "health-check"])(
     "explains disabled Slack MCP access on %s without reporting a server error",
     async (path) => {
