@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { afterEach, expect, it } from "vitest";
-import { retainedUiAssets } from "../retained-ui-assets.js";
+import { isTransientStorageError, retainedUiAssets } from "../retained-ui-assets.js";
 import type { StorageProvider } from "../storage/types.js";
 import { staticUiFiles } from "../middleware/static-ui.js";
 import { idleAdmissionMiddleware, trackIdleRequestHandlers } from "../middleware/idle-admission.js";
@@ -65,4 +65,36 @@ it("refuses a build which reuses a published name for different bytes", async ()
   await fs.writeFile(path.join(root, "chunk-hash.js"), "collision");
   await expect(retained.publish(root)).rejects.toThrow("collides");
   expect(objects.get("ui-assets/v1/chunk-hash.js")?.toString()).toBe("original");
+});
+
+// Staging, 2026-11-11: the bucket answered "SlowDown" (HTTP 503) while a new
+// release published its assets. The stream body could not be replayed, the
+// error escaped, and every start of the server exited within a minute.
+it("retries an asset the storage throttled instead of failing the publication", async () => {
+  const root = await directory(), { provider, objects } = storage();
+  await fs.writeFile(path.join(root, "chunk-a.js"), "alpha");
+  await fs.writeFile(path.join(root, "chunk-b.js"), "beta");
+  const slowDown = () => Object.assign(new Error("Please reduce your request rate."), { name: "SlowDown", Code: "SlowDown", $metadata: { httpStatusCode: 503 } });
+  const put = provider.putObjectConditional!.bind(provider);
+  let refusals = 3;
+  provider.putObjectConditional = async input => {
+    if (refusals > 0) { refusals--; for await (const _chunk of input.body) { /* drain as a real client would */ } throw slowDown(); }
+    return put(input);
+  };
+  const waits: number[] = [];
+  await retainedUiAssets(provider, { sleep: async ms => { waits.push(ms); } }).publish(root);
+  expect(waits).toEqual([500, 1_000, 2_000]);
+  expect(objects.get("ui-assets/v1/chunk-a.js")?.toString()).toBe("alpha");
+  expect(objects.get("ui-assets/v1/chunk-b.js")?.toString()).toBe("beta");
+});
+
+it("gives up on storage that stays throttled, and reports it as a storage outage rather than a bad build", async () => {
+  const root = await directory(), { provider } = storage();
+  await fs.writeFile(path.join(root, "chunk-a.js"), "alpha");
+  provider.putObjectConditional = async () => { throw Object.assign(new Error("Please reduce your request rate."), { name: "SlowDown", $metadata: { httpStatusCode: 503 } }); };
+  const waits: number[] = [];
+  const failure = await retainedUiAssets(provider, { sleep: async ms => { waits.push(ms); } }).publish(root).catch(error => error);
+  expect(waits).toHaveLength(7);
+  expect(isTransientStorageError(failure)).toBe(true);
+  expect(isTransientStorageError(new Error("Static build asset name collides with different published bytes"))).toBe(false);
 });
