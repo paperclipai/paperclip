@@ -77,6 +77,7 @@ import { PhotonCloudClient, PhotonError } from "../../services/photon/cloud.js";
 import { photonFixture, photonEvent as livePhotonEvent, photonChat, stream } from "./fixture.js";
 import * as cloudConnectors from "../../services/paperclip-cloud-connector.js";
 import * as photonExternalRuntime from "../../services/chat-channels/imessage-photon/external-runtime.js";
+import * as photonOwnedClients from "../../services/photon/owned-client.js";
 import { PHOTON_EXTERNAL_STATE, photonStateFor } from "../../services/chat-channels/imessage-photon/external-store.js";
 import { readPhotonExternalState } from "../../services/chat-channels/imessage-photon/external-contract.js";
 
@@ -786,13 +787,57 @@ describe("iMessage Photon channel control plane", () => {
     expect(recovered).toMatchObject({ phase: "external", identity: original.identity, binding: original.binding, handoffId: original.handoffId });
     expect(requests).toHaveLength(1);
     expect(requests[0].enrollment).toMatchObject({ intakeAfter: original.binding.intakeAfter, handoffId: original.handoffId });
+    // Match the existing managed external fixture: each useful allocation owns
+    // its distinct controlled client; provider receipts stay on the same port.
+    const usefulClients: { client: GrpcAdvancedIMessage; joined: boolean; methods: string[];
+      close: ReturnType<typeof photonFixture>["client"]["close"] }[] = [];
+    vi.spyOn(photonOwnedClients, "createOwnedPhotonClient").mockImplementation(() => {
+      const owned = photonFixture();
+      const row = { client: owned.adapter.client, joined: false, methods: new Array<string>(), close: owned.client.close };
+      const close = async () => {
+        if (row.joined) return;
+        await owned.client.close();
+        row.joined = true;
+      };
+      const channel = (name: "chats" | "messages" | "attachments" | "groups" | "polls" | "events") => new Proxy(owned.adapter.client[name], {
+        get(target, key, receiver) {
+          const method = Reflect.get(target, key, receiver);
+          if (typeof method !== "function") return method;
+          return (...args: unknown[]) => {
+            if (row.joined) throw new Error("Controlled useful client used after its own close");
+            row.methods.push(`${name}.${String(key)}`);
+            const providerMethod = Reflect.get(t.f.adapter.client[name], key);
+            if (typeof providerMethod !== "function") throw new Error("Unexpected controlled useful method");
+            return Reflect.apply(providerMethod, t.f.adapter.client[name], args);
+          };
+        },
+      });
+      row.client = new Proxy(owned.adapter.client, { get(target, key, receiver) {
+        if (key === "close") return close;
+        if (key === "chats" || key === "messages" || key === "attachments" || key === "groups" || key === "polls" || key === "events") return channel(key);
+        return Reflect.get(target, key, receiver);
+      } });
+      usefulClients.push(row);
+      return row.client;
+    });
     const wakeups = t.wakeup.mock.calls.length;
     await t.deliver({ ...photonEvent(3), occurredAt: new Date(cutoff - 1) });
     expect(t.wakeup).toHaveBeenCalledTimes(wakeups);
+    expect(usefulClients).toHaveLength(0);
     await t.deliver({ ...photonEvent(4), occurredAt: new Date(cutoff) });
     expect(t.wakeup).toHaveBeenCalledTimes(wakeups + 1);
     await t.deliver({ ...photonEvent(4), occurredAt: new Date(cutoff) });
     expect(t.wakeup).toHaveBeenCalledTimes(wakeups + 1);
+    const currentAdapter = t.service.runtime.get(t.endpoint.id)?.getProviderAdapter();
+    if (!(currentAdapter instanceof PhotonChatAdapter)) throw new Error("Current normal Photon adapter absent");
+    await currentAdapter.drainUsefulClient();
+    expect(usefulClients.length).toBeGreaterThan(0);
+    expect(new Set(usefulClients.map(row => row.client)).size).toBe(usefulClients.length);
+    expect(usefulClients.some(row => row.methods.includes("chats.get"))).toBe(true);
+    for (const row of usefulClients) {
+      expect(row.joined).toBe(true);
+      expect(row.close).toHaveBeenCalledTimes(1);
+    }
   }, 30_000);
   it("restores group membership queued during pause before admitting fresh messages after resume", async () => {
     const t = await setup();
