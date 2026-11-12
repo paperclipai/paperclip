@@ -402,20 +402,20 @@ describe("Muse native visibility intersection", () => {
         .toEqual([{ owner: null, version: target.statusVersion }]);
       expect(enqueueWakeup).not.toHaveBeenCalled();
     };
-    await expect(authority.execute(call)).rejects.toThrow("The person who authorized this agent does not have permission to assign this task.");
+    await expect(authority.execute(call)).rejects.toThrow(/the person who authorized this agent.* assign this task\.$/i);
     await assertUnchanged();
     const [grant] = await db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "user", principalId: f.authorizer,
       permissionKey: "tasks:assign_scope", scope: { agentIds: [protectedAgent.id], projectIds: [randomUUID()] } }).returning();
-    await expect(authority.execute(call)).rejects.toThrow("The person who authorized this agent does not have permission to assign this task.");
+    await expect(authority.execute(call)).rejects.toThrow(/the person who authorized this agent.* assign this task\.$/i);
     await assertUnchanged();
     await db.update(principalPermissionGrants).set({ scope: { agentIds: [randomUUID()], projectIds: [project.id] } }).where(eq(principalPermissionGrants.id, grant.id));
-    await expect(authority.execute(call)).rejects.toThrow("The person who authorized this agent does not have permission to assign this task.");
+    await expect(authority.execute(call)).rejects.toThrow(/the person who authorized this agent.* assign this task\.$/i);
     await assertUnchanged();
     await db.update(principalPermissionGrants).set({ scope: { agentIds: [protectedAgent.id], projectIds: [project.id] } }).where(eq(principalPermissionGrants.id, grant.id));
     await expect(authority.execute(call)).resolves.toMatchObject({ disposition: "applied" });
     expect(enqueueWakeup).toHaveBeenCalledTimes(1);
     await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.id, grant.id));
-    await expect(authority.execute(call)).rejects.toThrow("The person who authorized this agent does not have permission to assign this task.");
+    await expect(authority.execute(call)).rejects.toThrow(/the person who authorized this agent.* assign this task\.$/i);
     expect(enqueueWakeup).toHaveBeenCalledTimes(1);
   });
 

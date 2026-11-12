@@ -208,10 +208,33 @@ function plainAuthorizationActionPhrase(action: AuthorizationAction): string {
   }
 }
 
-function plainDelegatedUserDenial(subject: string, decision: AuthorizationDecision, action: AuthorizationAction): string {
-  return decision.reason === "deny_missing_membership"
-    ? `${subject} is no longer an active member of this company.`
-    : `${subject} does not have permission to ${plainAuthorizationActionPhrase(action)}.`;
+const lowerFirst = (text: string) => `${text.charAt(0).toLowerCase()}${text.slice(1)}`;
+
+type AuthorizationDenialReason = Exclude<AuthorizationDecision["reason"], `allow_${string}`>;
+
+const PLAIN_DELEGATED_USER_DENIALS: Record<AuthorizationDenialReason, (subject: string, action: string) => string> = {
+  deny_missing_membership: (subject) => `${subject} is no longer an active member of this company.`,
+  deny_company_boundary: (subject) => `${subject} cannot act in this company.`,
+  deny_unauthenticated: (subject) => `Paperclip could not confirm who ${lowerFirst(subject)} is.`,
+  deny_missing_grant: (subject, action) => `${subject} does not have permission to ${action}.`,
+  deny_no_grant: (subject, action) => `${subject} does not have permission to ${action}.`,
+  deny_scope: (subject, action) => `${subject} does not have permission to ${action}.`,
+  deny_unsupported_action: (subject, action) => `${subject} does not have permission to ${action}.`,
+  deny_missing_consent: (subject) => `${subject} can propose this change, but it needs approval before it is applied.`,
+  deny_policy_restricted: (subject, action) => `This company's access policy does not let ${lowerFirst(subject)} ${action}.`,
+  deny_low_trust_boundary: (subject, action) => `This company's limits for this agent do not let ${lowerFirst(subject)} ${action}.`,
+  deny_agent_interaction: (_subject, action) => `Agents are not allowed to ${action} in this company; a person who manages permissions can change this.`,
+  deny_issue_private: (subject) => `${subject} cannot see this private task.`,
+  deny_project_private: (subject) => `${subject} cannot see this private project.`,
+  inbox_target_user_unresolved: () => "Paperclip could not tell whose inbox this is.",
+  inbox_management_disabled: () => "This person has turned off agent management of their inbox.",
+  inbox_agent_not_allowed: () => "This agent is not on the list of agents this person allows to manage their inbox.",
+};
+
+export function plainDelegatedUserDenial(subject: string, decision: Pick<AuthorizationDecision, "reason">, action: AuthorizationAction): string {
+  const phrase = plainAuthorizationActionPhrase(action);
+  const explain = decision.reason.startsWith("allow_") ? null : PLAIN_DELEGATED_USER_DENIALS[decision.reason as AuthorizationDenialReason];
+  return explain ? explain(subject, phrase) : `${subject} does not have permission to ${phrase}.`;
 }
 
 function permissionForAction(action: AuthorizationAction): PermissionKey | null {
