@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { AlarmClock, Archive, ArrowRightLeft, Ban, Clock, MoreHorizontal, ExternalLink, RotateCcw, UserRound } from "lucide-react";
 import type { AttentionItem } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
@@ -377,6 +377,13 @@ export function AttentionSnoozedGroup({
 /** The controls that act on a card; links only open something to read. */
 const ACTING_CONTROL_SELECTOR = 'button, [role="button"], [role="radio"], [role="checkbox"], input[type="submit"]';
 
+const AttentionActionConfirmationContext = createContext<() => Promise<void>>(() => Promise.resolve());
+
+/** Resolver callbacks must pass the same gate as pointer controls. */
+export function useAttentionActionConfirmation() {
+  return useContext(AttentionActionConfirmationContext);
+}
+
 /**
  * Before you act on a card for a different person, the UI asks first (PAP-749
  * plan §6). The card stays readable: its title and body show at once, and the
@@ -394,52 +401,89 @@ export function AttentionForOtherGate({
   userLabelMap?: ReadonlyMap<string, string> | null;
   children: ReactNode;
 }) {
-  const [confirmed, setConfirmed] = useState(false);
-  const [pending, setPending] = useState<HTMLElement | null>(null);
   const otherUserId = attentionOtherAudienceUserId(item, currentUserId);
+  const audienceKey = `${item.id}:${otherUserId ?? ""}`;
+  const [confirmedAudience, setConfirmedAudience] = useState<string | null>(null);
+  const confirmed = confirmedAudience === audienceKey;
+  const [pending, setPending] = useState<HTMLElement | null>(null);
+  const [submissionPending, setSubmissionPending] = useState(false);
+  const confirmation = useRef<{ promise: Promise<void>; resolve(): void; reject(error: Error): void } | null>(null);
+  const confirmAction = useCallback(() => {
+    if (!otherUserId || confirmed) return Promise.resolve();
+    if (confirmation.current) return confirmation.current.promise;
+    let resolve!: () => void;
+    let reject!: (error: Error) => void;
+    const promise = new Promise<void>((accept, cancel) => { resolve = accept; reject = cancel; });
+    confirmation.current = { promise, resolve, reject };
+    setSubmissionPending(true);
+    return promise;
+  }, [confirmed, otherUserId]);
+  useEffect(() => {
+    setPending(null);
+    setSubmissionPending(false);
+    return () => {
+      confirmation.current?.reject(new Error("Action cancelled."));
+      confirmation.current = null;
+    };
+  }, [audienceKey]);
   useEffect(() => {
     // Run the control that was held back once the person said Continue.
-    if (!confirmed || !pending) return;
-    const control = pending;
-    setPending(null);
-    if (control.isConnected) control.click();
+    if (!confirmed) return;
+    const waiting = confirmation.current;
+    confirmation.current = null;
+    setSubmissionPending(false);
+    waiting?.resolve();
+    if (pending) {
+      const control = pending;
+      setPending(null);
+      if (control.isConnected) control.click();
+    }
   }, [confirmed, pending]);
   if (!otherUserId) return <>{children}</>;
   // The wrapper stays after Continue, so the card is not remounted and keeps
   // what the person typed or picked.
   return (
-    <div
-      className="space-y-4"
-      data-attention-for-other-gate={confirmed ? "confirmed" : pending ? "asking" : "waiting"}
-      onClickCapture={(event) => {
-        if (confirmed) return;
-        const target = event.target instanceof Element ? event.target.closest<HTMLElement>(ACTING_CONTROL_SELECTOR) : null;
-        if (!target || !event.currentTarget.contains(target) || target.closest("[data-attention-for-other-prompt]")) return;
-        event.preventDefault();
-        event.stopPropagation();
-        setPending(target);
-      }}
-    >
-      {children}
-      {pending && !confirmed ? (
-        <div
-          role="group"
-          aria-live="polite"
-          data-attention-for-other-prompt
-          className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2 text-sm"
-        >
-          <span>{attentionForOtherText(attentionUserLabel(otherUserId, userLabelMap), "continue")}</span>
-          <span className="flex items-center gap-2">
-            <Button type="button" variant="ghost" size="xs" onClick={(event) => { event.stopPropagation(); setPending(null); }}>
-              Cancel
-            </Button>
-            <Button type="button" variant="outline" size="xs" onClick={(event) => { event.stopPropagation(); setConfirmed(true); }}>
-              Continue
-            </Button>
-          </span>
-        </div>
-      ) : null}
-    </div>
+    <AttentionActionConfirmationContext.Provider value={confirmAction}>
+      <div
+        className="space-y-4"
+        data-attention-for-other-gate={confirmed ? "confirmed" : pending || submissionPending ? "asking" : "waiting"}
+        onClickCapture={(event) => {
+          if (confirmed) return;
+          const target = event.target instanceof Element ? event.target.closest<HTMLElement>(ACTING_CONTROL_SELECTOR) : null;
+          if (!target || !event.currentTarget.contains(target) || target.closest("[data-attention-for-other-prompt]")) return;
+          event.preventDefault();
+          event.stopPropagation();
+          setPending(target);
+        }}
+      >
+        {children}
+        {(pending || submissionPending) && !confirmed ? (
+          <div
+            role="group"
+            aria-live="polite"
+            data-attention-for-other-prompt
+            className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2 text-sm"
+          >
+            <span>{attentionForOtherText(attentionUserLabel(otherUserId, userLabelMap), "continue")}</span>
+            <span className="flex items-center gap-2">
+              <Button type="button" variant="ghost" size="xs" onClick={(event) => {
+                event.stopPropagation();
+                const waiting = confirmation.current;
+                confirmation.current = null;
+                setPending(null);
+                setSubmissionPending(false);
+                waiting?.reject(new Error("Action cancelled."));
+              }}>
+                Cancel
+              </Button>
+              <Button type="button" variant="outline" size="xs" onClick={(event) => { event.stopPropagation(); setConfirmedAudience(audienceKey); }}>
+                Continue
+              </Button>
+            </span>
+          </div>
+        ) : null}
+      </div>
+    </AttentionActionConfirmationContext.Provider>
   );
 }
 

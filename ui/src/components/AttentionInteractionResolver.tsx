@@ -17,6 +17,7 @@ import {
   type RequestItemVerdictValue,
   type SuggestTasksInteraction,
 } from "../lib/issue-thread-interactions";
+import { useAttentionActionConfirmation } from "./AttentionCloseMenu";
 import { DecisionCardFooter } from "./DecisionCardFooter";
 import { IssueThreadInteractionCard } from "./IssueThreadInteractionCard";
 
@@ -78,6 +79,7 @@ export function AttentionInteractionResolver({
   onResolved,
 }: AttentionInteractionResolverProps) {
   const queryClient = useQueryClient();
+  const confirmAction = useAttentionActionConfirmation();
 
   const { data: interactions, isLoading, error } = useQuery({
     queryKey: queryKeys.issues.interactions(issueId),
@@ -176,18 +178,22 @@ export function AttentionInteractionResolver({
       agentMap={agentMap}
       currentUserId={currentUserId}
       userLabelMap={userLabelMap}
-      onAcceptInteraction={(target, selectedClientKeys, selectedOptionIds, rememberAction) =>
-        acceptMutation.mutateAsync({ interaction: target, selectedClientKeys, selectedOptionIds, rememberAction }).then(() => undefined)
-      }
-      onRejectInteraction={(target, reason) =>
-        rejectMutation.mutateAsync({ interactionId: target.id, reason }).then(() => undefined)
-      }
-      onSubmitInteractionAnswers={(target: AskUserQuestionsInteraction, answers) =>
-        respondMutation.mutateAsync({ interactionId: target.id, answers }).then(() => undefined)
-      }
-      onSubmitInteractionVerdicts={(target: RequestItemVerdictsInteraction, verdicts) =>
-        verdictsMutation.mutateAsync({ interactionId: target.id, verdicts }).then(() => undefined)
-      }
+      onAcceptInteraction={async (target, selectedClientKeys, selectedOptionIds, rememberAction) => {
+        await confirmAction();
+        await acceptMutation.mutateAsync({ interaction: target, selectedClientKeys, selectedOptionIds, rememberAction });
+      }}
+      onRejectInteraction={async (target, reason) => {
+        await confirmAction();
+        await rejectMutation.mutateAsync({ interactionId: target.id, reason });
+      }}
+      onSubmitInteractionAnswers={async (target: AskUserQuestionsInteraction, answers) => {
+        await confirmAction();
+        await respondMutation.mutateAsync({ interactionId: target.id, answers });
+      }}
+      onSubmitInteractionVerdicts={async (target: RequestItemVerdictsInteraction, verdicts) => {
+        await confirmAction();
+        await verdictsMutation.mutateAsync({ interactionId: target.id, verdicts });
+      }}
     />
   );
 }
