@@ -7800,6 +7800,11 @@ export function createToolGatewayService(
     invocation: typeof toolInvocations.$inferSelect,
   ): boolean {
     if (invocation.policyExplanation?.delegatedConnectionTest) return invocation.connectionId !== null && invocation.gatewayId === null;
+    // An MCP Apps view's tool call is a test-path call that carries its task,
+    // so its approval runs through the test path with that task's rules.
+    if (invocation.policyExplanation?.mcpAppViewCall) {
+      return invocation.actorType === "user" && invocation.runId === null && invocation.gatewayId === null && invocation.connectionId !== null;
+    }
     return (
       invocation.actorType === "user" &&
       invocation.runId === null &&
@@ -8122,9 +8127,13 @@ export function createToolGatewayService(
         resource: ConnectionManagementContext["resource"];
       } | undefined;
       const userId = delegated?.responsibleUserId ?? invocation.actorId ?? "board";
+      const mcpAppViewCall = asRecord(invocation.policyExplanation?.mcpAppViewCall);
       const session: ToolGatewaySession = {
         id: "test-call", token: "test-call", companyId: invocation.companyId, agentId,
-        runId: null, issueId: null, projectId: null, actorType: delegated ? "agent" : "user", actorId: delegated?.agentId ?? userId,
+        runId: null,
+        issueId: mcpAppViewCall && typeof mcpAppViewCall.issueId === "string" ? mcpAppViewCall.issueId : null,
+        projectId: mcpAppViewCall && typeof mcpAppViewCall.projectId === "string" ? mcpAppViewCall.projectId : null,
+        actorType: delegated ? "agent" : "user", actorId: delegated?.agentId ?? userId,
         responsibleUserId: userId, createdAt: new Date(), expiresAt: new Date(Date.now() + DEFAULT_SESSION_TTL_MS),
       };
       let managementContext: ConnectionManagementContext | undefined;
@@ -10011,6 +10020,14 @@ export function createToolGatewayService(
       );
       await policyService.writeAudit(decisionInput, accessDecision);
       const invocationId = recorded.invocation.id;
+      if (input.includeResultMeta) {
+        // MCP Apps view call: its approval must run through the test path
+        // (app-visible tools, viewer identity) with the view's task rules.
+        await db.update(toolInvocations).set({ policyExplanation: {
+          ...recorded.invocation.policyExplanation,
+          mcpAppViewCall: { issueId: input.issueId ?? null, projectId: input.projectId ?? null },
+        } }).where(eq(toolInvocations.id, invocationId));
+      }
       if (actingAgentId && input.managementContext) {
         await db.update(toolInvocations).set({ policyExplanation: {
           ...recorded.invocation.policyExplanation,

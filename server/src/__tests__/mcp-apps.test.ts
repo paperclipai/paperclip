@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 import express from "express";
 import http from "supertest";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
-  agents, companies, companyMemberships, connectionGrants, createDb, heartbeatRuns, issues, principalPermissionGrants, toolCatalogEntries, toolConnections, toolMcpAppViews, toolPolicies,
+  agents, approvals, companies, companyMemberships, connectionGrants, createDb, heartbeatRuns, issues, principalPermissionGrants, toolActionRequests, toolCatalogEntries, toolConnections, toolInvocations, toolMcpAppViews, toolPolicies,
 } from "@paperclipai/db";
 import { MCP_APP_MIME_TYPE, MCP_APPS_EXTENSION_ID } from "@paperclipai/shared";
 import { errorHandler } from "../middleware/error-handler.js";
@@ -238,6 +238,17 @@ const support = await getEmbeddedPostgresTestSupport();
     const held = await http(f.app).post(`/issues/${f.issue.id}/mcp-app-views/${viewId}/tool-calls`)
       .send({ name: "RefreshMeetingCards", arguments: { meetingIds: ["m1"] } }).expect(200);
     expect(held.body).toMatchObject({ isError: true, content: [{ type: "text", text: expect.stringContaining("needs approval") }] });
+    // Approving the held app-only call runs it, with the task still attached.
+    const [pending] = await db.select().from(toolActionRequests)
+      .where(and(eq(toolActionRequests.companyId, f.company.id), eq(toolActionRequests.status, "pending")));
+    expect(pending).toBeTruthy();
+    if (pending.approvalId) await db.update(approvals).set({ status: "approved", decidedByUserId: actor.actorId, decidedAt: new Date() }).where(eq(approvals.id, pending.approvalId));
+    const refreshCalls = () => f.request.mock.calls.filter(([, init]) => String(init.body).includes('"name":"RefreshMeetingCards"')).length;
+    const callsBefore = refreshCalls();
+    await f.gateway.approveActionRequest({ companyId: f.company.id, actionRequestId: pending.id, actor: { userId: actor.actorId } });
+    expect(refreshCalls()).toBe(callsBefore + 1);
+    const [approvedInvocation] = await db.select().from(toolInvocations).where(eq(toolInvocations.id, pending.invocationId));
+    expect(approvedInvocation).toMatchObject({ status: "succeeded", issueId: f.issue.id });
     await db.delete(toolPolicies).where(eq(toolPolicies.id, askFirst.id));
 
     // A model-only tool is never callable from a view.
