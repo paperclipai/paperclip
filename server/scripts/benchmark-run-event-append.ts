@@ -43,6 +43,7 @@ import { existsSync } from "node:fs";
 import { PerformanceObserver, performance, type PerformanceEntry } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import v8 from "node:v8";
+import vm from "node:vm";
 import { eq, sql as drizzleSql } from "drizzle-orm";
 import { companies, completionContracts, createDb, heartbeatRunEvents, heartbeatRuns, issues,
   startEmbeddedPostgresTestDatabase } from "../../packages/db/src/index.js";
@@ -85,6 +86,10 @@ function collectionsBetween(start: number, end: number) {
   return { count: within.length, ms: within.reduce((sum, entry) => sum + entry.duration, 0) };
 }
 const allocated = () => (v8.getHeapStatistics() as { total_allocated_bytes?: number }).total_allocated_bytes;
+// A full collection before each pass, without a command-line flag, so that
+// garbage from the pass before is not collected inside this one.
+v8.setFlagsFromString("--expose-gc");
+const collectGarbage = vm.runInNewContext("gc") as () => void;
 
 try {
   const [company] = await db.insert(companies).values({ name: "Append", issuePrefix: "APD" }).returning();
@@ -168,14 +173,17 @@ try {
   async function measure(name: keyof typeof scenarios, implementation: Implementation) {
     const streams = await scenarios[name](implementation);
     const events = streams.reduce((sum, stream) => sum + stream.events, 0);
-    globalThis.gc?.();
+    collectGarbage();
     const before = { statements: sent.statements, control: sent.control, cpu: process.cpuUsage(), loop: performance.eventLoopUtilization(),
       bytes: allocated(), at: performance.now() };
     await Promise.all(streams.map(stream => stream.run.append(stream.events)));
     const endedAt = performance.now(), wallMs = endedAt - before.at, cpu = process.cpuUsage(before.cpu);
     const loop = performance.eventLoopUtilization(before.loop), bytes = allocated();
     const statements = sent.statements - before.statements, control = sent.control - before.control;
-    // Every measurement stops here, before the stored rows are read back.
+    // Every measurement stops at endedAt, before the stored rows are read
+    // back. Node.js reports a collection from a later immediate, so wait one
+    // turn before draining; only collections that began in the window count.
+    await new Promise(resolve => setImmediate(resolve));
     const gc = collectionsBetween(before.at, endedAt);
     for (const stream of streams) {
       const rows = await db.select({ seq: heartbeatRunEvents.seq }).from(heartbeatRunEvents)
