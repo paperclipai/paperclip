@@ -48,7 +48,7 @@ import { StormRun, TASK_FAULT_LOG, observedFaultSchedule, planWave, replayOnCurr
 import { chaosLifecycleOverrides, seedChaosLab } from "./seed.js";
 import { ChaosSupervisor } from "./supervisor.js";
 import { planStagingMixWave } from "./staging-mix.js";
-import { StagingMixRun, stagingMixSeedOptions } from "./staging-mix-run.js";
+import { StagingMixRun, stagingMixSeedOptions, unfiredFaultSlots } from "./staging-mix-run.js";
 import { TimeShiftedApi } from "./time-faults.js";
 import type { RestartStep } from "./repeated-restarts.js";
 import { isBrokenStdoutError, markTimelineEchoBroken, Timeline } from "./timeline.js";
@@ -723,6 +723,11 @@ async function main(): Promise<number> {
     sandboxWatchStopped = true;
     await mix?.stop();
     await Promise.all(faultWork);
+    const unfired = mix && !interrupted ? unfiredFaultSlots(plan.tasks, faults) : [];
+    if (unfired.length) {
+      timeline.add("staging_mix_fault_slots_missed", { unfired });
+      harnessError ??= new Error(`Planned staging-mix fault slot(s) never fired, so the wave tested no restart there: ${unfired.join(", ")}`);
+    }
     if (storageTrigger) {
       const shortfall = storageTriggerShortfall(storageTrigger.finish(faults));
       storageSection = storageTriggerMarkdown(storageTrigger.receipts);

@@ -59,6 +59,11 @@ export function stagingMixSeedOptions(options: WaveOptions): { maxConcurrentRuns
   return options.stagingMix ? { maxConcurrentRunsByAdapter: agentRunCaps(options.stagingMix.ratio, options.stagingMix.runs) } : {};
 }
 
+export function unfiredFaultSlots(tasks: readonly TaskPlan[], faults: ReadonlyArray<{ requestedBy: string }>): string[] {
+  const fired = new Set(faults.map(fault => fault.requestedBy));
+  return tasks.filter(task => task.stagingMix && task.fault !== "K0" && !fired.has(task.taskId)).map(task => `${task.taskId}:${task.fault}`);
+}
+
 export class StagingMixRun {
   readonly samples: ResourceSample[] = [];
   ended = false;

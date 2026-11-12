@@ -1231,10 +1231,10 @@ the turn. Waves get long and expensive: keep them small.
 ## Staging mix (`--workload staging-mix`)
 
 ```sh
-# Smoke: 6 tasks, 5-minute turns, a K15 overlap deploy every 5 minutes.
+# Smoke: 6 tasks, 5-minute turns, a K15 overlap deploy at minutes 3 and 6.
 node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env daytona --daytona-image $IMG --daytona-warm --daytona-cpu 1 \
   --storage s3 --ephemeral-server --workload staging-mix --faults K15 --k15-overlap-seconds 30-150 \
-  --mix-runs 5 --mix-queue 1 --mix-minutes 15 --mix-turn-minutes 5 --mix-tasks 6 --mix-fault-spacing-minutes 5 --seed 7101
+  --mix-runs 5 --mix-queue 1 --mix-minutes 7 --mix-turn-minutes 5 --mix-tasks 6 --mix-fault-spacing-minutes 3 --mix-hold-minutes 2 --seed 7101
 # The full wave shape: 30 runs, a queue of 6, tasks arriving for 4 hours, a deploy every 40 minutes.
 RESTART_CHAOS_DAYTONA_VCPU_BUDGET=<org headroom> node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env daytona \
   --daytona-image $IMG --daytona-warm --daytona-cpu 1 --storage s3 --ephemeral-server --workload staging-mix --faults K15 \
@@ -1266,12 +1266,15 @@ so about `--mix-queue` tasks wait in Paperclip's own queue behind the running on
 for a smoke; otherwise the count fills the window.
 
 **Faults.** One task per `--mix-fault-spacing-minutes` (default 40, staging's deploy cadence) carries the planned
-fault. That task arrived at least a minute before the slot. Every fault still hits every task in flight. The other
-tasks are `K0`.
+fault. That task arrived at least a minute before the slot and its planned turn still runs at the slot. A plan with a
+slot that no task's turn covers is refused, and a planned slot that never fired (its task rested first) fails the wave
+as a harness error (`staging_mix_fault_slots_missed`). Every fault still hits every task in flight. The other tasks are
+`K0`.
 
 **Follow-ups and Retries.** About half of the tasks (`--mix-follow-up-share`) get a board comment while a run is
 running. The comment asks the agent to add `FOLLOWUP-<nonce>` to the ledger. A failed task's Retry is clicked the
-same way. Both are held until the next overlap window, but for at most `--mix-hold-minutes` (default 10). The
+same way. Both are held until the next overlap window, but for at most `--mix-hold-minutes` (default 10); a follow-up
+also goes out before the last 15% of the planned turn. A failed post is tried again on the next poll. The
 overlap window comes from `setOverlapProbe` in `staging-mix.ts`, which a swap driver registers. Without a probe, the
 window is any time a fault is in progress and the server still answers (a K15 overlap). The timeline records
 `staging_mix_follow_up` and `staging_mix_retry_in_overlap`.
@@ -1285,6 +1288,7 @@ not the status:
 | `ledger_rounds_verified` | a round is missing, ran under 80 s, or its hash differs from the harness's own computation (POSIX `cksum`, chained per tick) |
 | `rounds_once` | a round line appears twice (a tool ran again) |
 | `done_comment_once` | the `DONE-<nonce>` comment is missing or was posted twice |
+| `follow_up_posted` | a planned follow-up was never posted (the detail lists the post errors) |
 | `follow_up_served` | a follow-up was posted during a run and the ledger lacks its line |
 | `subtasks_once`, `subtask_<k>_done`, `parent_read_subtask_<k>` | a parent created more or fewer than two subtasks, a subtask's ledger fails, or the parent did not report a subtask's last hash |
 

@@ -6,7 +6,7 @@ import {
   planFaultCarriers, planStagingMixWave, plannedTaskCount, posixCksum, retryDue, roundCommand, ROUND_SECONDS, setOverlapProbe, stagingMixDescription,
   stagingMixStep, SUBTASK_ROUNDS, verifyLedger, type StagingMixTask,
 } from "./staging-mix.js";
-import { descendantsOf, parsePs, parseVmStat, StagingMixRun, stagingMixSeedOptions, type ResourceSample } from "./staging-mix-run.js";
+import { descendantsOf, parsePs, parseVmStat, StagingMixRun, stagingMixSeedOptions, unfiredFaultSlots, type ResourceSample } from "./staging-mix-run.js";
 import type { OracleArtifacts, TaskRecord, TaskSample } from "./types.js";
 
 const IMAGE = `ghcr.io/paperclipai/paperclip-daytona-runner@sha256:${"a".repeat(64)}`;
@@ -70,8 +70,19 @@ describe("staging-mix options", () => {
 
   it("parses a ratio and splits the agents' run caps to the runs", () => {
     const options = wave(["--workload", "staging-mix", "--faults", "K0", "--mix-ratio", "opencode=60,codex=25,claude=15", "--mix-runs", "30"]);
-    expect(stagingMixSeedOptions(options).maxConcurrentRunsByAdapter).toEqual({ opencode: 18, codex: 8, claude: 4 });
+    expect(stagingMixSeedOptions(options).maxConcurrentRunsByAdapter).toEqual({ opencode: 17, codex: 8, claude: 5 });
     expect(agentRunCaps([["opencode", 1], ["codex", 1], ["claude", 1]], 3)).toEqual({ opencode: 1, codex: 1, claude: 1 });
+  });
+
+  it("never gives the agents more runs than requested, even for an uneven ratio", () => {
+    expect(agentRunCaps([["opencode", 98], ["codex", 1], ["claude", 1]], 30)).toEqual({ opencode: 28, codex: 1, claude: 1 });
+    for (const runs of [3, 4, 7, 30, 31, 97]) {
+      for (const ratio of [[["opencode", 98], ["codex", 1], ["claude", 1]], [["opencode", 60], ["codex", 25], ["claude", 15]], [["opencode", 1], ["codex", 1000]]] as Array<Array<["opencode" | "codex" | "claude", number]>>) {
+        const caps = Object.values(agentRunCaps(ratio, runs));
+        expect(caps.reduce((sum, cap) => sum + cap, 0)).toBe(runs);
+        expect(Math.min(...caps)).toBeGreaterThanOrEqual(1);
+      }
+    }
     expect(() => wave(["--workload", "staging-mix", "--mix-ratio", "grok=5"])).toThrow(/adapter=weight/);
     expect(wave(["--workload", "staging-mix", "--faults", "K0", "--mix-ratio", "opencode=1,codex=0"]).adapters).toEqual(["opencode"]);
   });
@@ -100,13 +111,38 @@ describe("staging-mix planning", () => {
 
   it("puts one fault on the clock every spacing, on a task already running, cycling the kinds", () => {
     const arrivals = Array.from({ length: 60 }, (_, index) => index * 4 * 60_000);
-    const carriers = planFaultCarriers(arrivals, 40 * 60_000, 240 * 60_000, ["K15", "K1"]);
+    const { carriers, missedSlotsMs } = planFaultCarriers(arrivals.map(arriveAtMs => ({ arriveAtMs, turnMs: 20 * 60_000 })), 40 * 60_000, 240 * 60_000, ["K15", "K1"]);
+    expect(missedSlotsMs).toEqual([]);
     expect(carriers.size).toBe(5);
     const fired = [...carriers.entries()].map(([index, carrier]) => ({ at: arrivals[index]! + carrier.fireAfterMs, kind: carrier.kind, lead: carrier.fireAfterMs }));
     expect(fired.map(entry => entry.at)).toEqual([40, 80, 120, 160, 200].map(minutes => minutes * 60_000));
     expect(fired.map(entry => entry.kind)).toEqual(["K15", "K1", "K15", "K1", "K15"]);
     expect(fired.every(entry => entry.lead >= 60_000)).toBe(true);
-    expect(planFaultCarriers(arrivals, 40 * 60_000, 240 * 60_000, []).size).toBe(0);
+    expect(planFaultCarriers(arrivals.map(arriveAtMs => ({ arriveAtMs, turnMs: 20 * 60_000 })), 40 * 60_000, 240 * 60_000, []).carriers.size).toBe(0);
+  });
+
+  it("only puts a fault on a task still in its turn, and refuses a plan whose slot no task covers", () => {
+    const burst = Array.from({ length: 6 }, (_, index) => ({ arriveAtMs: index * 5_000, turnMs: 6 * 60_000 }));
+    const planned = planFaultCarriers(burst, 40 * 60_000, 240 * 60_000, ["K15"]);
+    expect(planned.carriers.size).toBe(0);
+    expect(planned.missedSlotsMs).toEqual([40, 80, 120, 160, 200].map(minutes => minutes * 60_000));
+    const options = wave(["--workload", "staging-mix", "--faults", "K15", "--mix-tasks", "6", "--mix-turn-minutes", "5", "--mix-minutes", "240"]);
+    expect(() => planStagingMixWave("w-20261112T000000-s1", options)).toThrow(/No planned task is still in its turn at the fault slot\(s\) 40 min/);
+    const smoke = wave(["--workload", "staging-mix", "--faults", "K15", "--mix-runs", "5", "--mix-queue", "1", "--mix-tasks", "6", "--mix-turn-minutes", "5",
+      "--mix-minutes", "7", "--mix-fault-spacing-minutes", "3"]);
+    const carriers = planStagingMixWave("w-20261112T000000-s1", smoke).tasks.filter(entry => entry.fault === "K15");
+    expect(carriers.map(entry => entry.stagingMix!.arriveAtMs + entry.fireAfterMs).sort((a, b) => a - b)).toEqual([3 * 60_000, 6 * 60_000]);
+    expect(carriers.every(entry => entry.fireAfterMs <= entry.stagingMix!.rounds * ROUND_SECONDS * 1_000)).toBe(true);
+  });
+
+  it("names every planned fault slot that never fired, so the wave fails instead of passing untested", () => {
+    const options = wave(["--workload", "staging-mix", "--faults", "K15", "--mix-runs", "5", "--mix-queue", "1", "--mix-tasks", "6", "--mix-turn-minutes", "5",
+      "--mix-minutes", "7", "--mix-fault-spacing-minutes", "3"]);
+    const tasks = planStagingMixWave("w-20261112T000000-s1", options).tasks;
+    const carriers = tasks.filter(entry => entry.fault === "K15").map(entry => entry.taskId);
+    expect(unfiredFaultSlots(tasks, [])).toEqual(carriers.map(id => `${id}:K15`));
+    expect(unfiredFaultSlots(tasks, [{ requestedBy: carriers[0]! }])).toEqual([`${carriers[1]}:K15`]);
+    expect(unfiredFaultSlots(tasks, carriers.map(requestedBy => ({ requestedBy })))).toEqual([]);
   });
 
   it("plans a deterministic wave where tasks start before a swap and are still running after the next two", () => {
@@ -164,9 +200,12 @@ describe("staging-mix deliverable", () => {
     expect(gradeStagingMix(nonce, task(), artifacts({ agentComments: [doneMarker(nonce)] })).verdict).toBe("fail");
     const twice = gradeStagingMix(nonce, task(), { ...base, agentComments: [doneMarker(nonce), doneMarker(nonce)] });
     expect(twice.checks.find(check => check.name === "done_comment_once")!.ok).toBe(false);
-    const withFollowUp = { ...base, stagingMix: { followUp: { at: 1, commentId: "c1", duringRun: true, inOverlap: true, error: null }, retries: [] } };
+    const withFollowUp = { ...base, stagingMix: { followUp: { at: 1, commentId: "c1", duringRun: true, inOverlap: true, error: null }, followUpErrors: [], retries: [] } };
     expect(gradeStagingMix(nonce, task(), withFollowUp).checks.find(check => check.name === "follow_up_served")!.ok).toBe(false);
-    expect(gradeStagingMix(nonce, task(), { ...withFollowUp, documents: { ledger: ledgerFor(nonce, 4, [followUpMarker(nonce)]) } }).verdict).toBe("pass");
+    expect(gradeStagingMix(nonce, task({ followUpAfterMs: 1 }), { ...withFollowUp, documents: { ledger: ledgerFor(nonce, 4, [followUpMarker(nonce)]) } }).verdict).toBe("pass");
+    const neverPosted = gradeStagingMix(nonce, task({ followUpAfterMs: 1 }), { ...base, stagingMix: { followUp: null, followUpErrors: ["HTTP 502"], retries: [] } });
+    expect(neverPosted.checks.find(check => check.name === "follow_up_posted")).toMatchObject({ ok: false, detail: "never posted; errors: HTTP 502" });
+    expect(gradeStagingMix(nonce, task({ followUpAfterMs: 1 }), base).checks.find(check => check.name === "follow_up_posted")!.ok).toBe(false);
 
     const children = [1, 2].map(part => ({ id: `c${part}`, title: `SM sub ${part} ${childNonce(nonce, part)}`, status: "done", assigneeAgentId: "a",
       documents: { ledger: ledgerFor(childNonce(nonce, part), SUBTASK_ROUNDS) } }));
@@ -187,9 +226,10 @@ describe("staging-mix board step", () => {
   const failed: TaskSample = { at: 0, reachable: true, serverReady: true, issueStatus: "blocked",
     interruption: { state: "failed", canRetry: true, retryWait: false, workspaceFailure: null, observedRunId: "r1", userAction: null },
     runs: [{ ...running.runs![0]!, status: "failed" }] };
-  const step = async (rec: TaskRecord, sample: TaskSample, now: number, faultInProgress: boolean, plan = task({ followUpAfterMs: 60_000 })) => {
+  const step = async (rec: TaskRecord, sample: TaskSample, now: number, faultInProgress: boolean, plan = task({ followUpAfterMs: 60_000 }),
+    reply: () => unknown = () => ({ id: "c1" })) => {
     const posted: string[] = [], retried: number[] = [], notes: string[] = [];
-    await stagingMixStep({ api: { post: async (_path: string, body: unknown) => { posted.push(JSON.stringify(body)); return { id: "c1" } as never; } },
+    await stagingMixStep({ api: { post: async (_path: string, body: unknown) => { posted.push(JSON.stringify(body)); return reply() as never; } },
       record: rec, task: plan, nonce: "n1", sample, now, faultInProgress, retry: async (_sample, at) => { retried.push(at); rec.retry = { at } as never; },
       note: kind => notes.push(kind) });
     return { posted, retried, notes };
@@ -207,6 +247,24 @@ describe("staging-mix board step", () => {
     const held = await step(late, running, 60_000 + 600_000, false);
     expect(held.posted.length).toBe(1);
     expect(late.stagingMix!.followUp!.inOverlap).toBe(false);
+  });
+
+  it("tries a failed follow-up again on the next poll and keeps every error for the grade", async () => {
+    const rec = record();
+    const failing = await step(rec, running, 80_000, true, undefined, () => { throw new Error("HTTP 502"); });
+    expect(failing.posted.length).toBe(1);
+    expect(rec.stagingMix!.followUp).toBeUndefined();
+    await step(rec, running, 83_000, true, undefined, () => ({}));
+    expect(rec.stagingMix!.followUpErrors).toEqual(["HTTP 502", "the comment response had no id"]);
+    expect((await step(rec, running, 86_000, true)).posted.length).toBe(1);
+    expect(rec.stagingMix!.followUp).toMatchObject({ commentId: "c1", at: 86_000 });
+  });
+
+  it("posts the follow-up before the turn's last rounds when no overlap comes", async () => {
+    const rec = record();
+    const plan = task({ rounds: 4, followUpAfterMs: 60_000 });
+    expect((await step(rec, running, 60_000 + 200_000, false, plan)).posted).toEqual([]);
+    expect((await step(rec, running, Math.round(4 * ROUND_SECONDS * 1_000 * 0.85), false, plan)).posted.length).toBe(1);
   });
 
   it("waits for an overlap to click a Retry, and holds the observer's own click until the hold runs out", async () => {

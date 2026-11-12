@@ -40,6 +40,7 @@ export interface StagingMixTask {
 }
 
 export interface StagingMixRecord {
+  followUpErrors?: string[];
   followUp?: { at: number; commentId: string | null; duringRun: boolean; inOverlap: boolean; error: string | null };
   retrySeenAt?: number | null;
   retries?: Array<{ at: number; inOverlap: boolean }>;
@@ -47,6 +48,7 @@ export interface StagingMixRecord {
 
 export interface StagingMixArtifacts {
   followUp: StagingMixRecord["followUp"] | null;
+  followUpErrors: string[];
   retries: NonNullable<StagingMixRecord["retries"]>;
 }
 
@@ -161,9 +163,11 @@ export function assignAdapters(ratio: ReadonlyArray<readonly [AdapterId, number]
 }
 
 export function agentRunCaps(ratio: ReadonlyArray<readonly [AdapterId, number]>, runs: number): Partial<Record<AdapterId, number>> {
+  if (runs < ratio.length) throw new Error(`${runs} runs cannot give each of the ${ratio.length} adapters one run`);
   const total = ratio.reduce((sum, [, weight]) => sum + weight, 0);
-  const shares = ratio.map(([adapter, weight]) => ({ adapter, exact: (runs * weight) / total }));
-  const caps = shares.map(share => ({ ...share, cap: Math.max(1, Math.floor(share.exact)) }));
+  const spare = runs - ratio.length;
+  const caps = ratio.map(([adapter, weight]) => ({ adapter, exact: (spare * weight) / total, cap: 1 }));
+  for (const entry of caps) entry.cap += Math.floor(entry.exact);
   let left = runs - caps.reduce((sum, entry) => sum + entry.cap, 0);
   const byRemainder = [...caps].sort((a, b) => (b.exact - Math.floor(b.exact)) - (a.exact - Math.floor(a.exact)));
   for (let index = 0; left > 0; index = (index + 1) % byRemainder.length, left -= 1) byRemainder[index]!.cap += 1;
@@ -196,19 +200,23 @@ export function planArrivals(count: number, burst: number, durationMs: number, n
   return arrivals.sort((a, b) => a - b);
 }
 
-export function planFaultCarriers(arrivals: readonly number[], spacingMs: number, durationMs: number, kinds: readonly FaultKind[]): Map<number, { kind: FaultKind; fireAfterMs: number }> {
+export interface LiveWindow { arriveAtMs: number; turnMs: number }
+
+export function planFaultCarriers(windows: readonly LiveWindow[], spacingMs: number, durationMs: number, kinds: readonly FaultKind[]) {
   const carriers = new Map<number, { kind: FaultKind; fireAfterMs: number }>();
-  if (!kinds.length) return carriers;
+  const missedSlotsMs: number[] = [];
+  if (!kinds.length) return { carriers, missedSlotsMs };
   for (let slot = 1; slot * spacingMs < durationMs; slot += 1) {
     const at = slot * spacingMs;
     let pick = -1;
-    arrivals.forEach((arrival, index) => {
-      if (arrival <= at - FAULT_LEAD_MS && !carriers.has(index) && (pick < 0 || arrival > arrivals[pick]!)) pick = index;
+    windows.forEach((window, index) => {
+      const live = window.arriveAtMs + FAULT_LEAD_MS <= at && at <= window.arriveAtMs + window.turnMs;
+      if (live && !carriers.has(index) && (pick < 0 || window.arriveAtMs > windows[pick]!.arriveAtMs)) pick = index;
     });
-    if (pick < 0) continue;
-    carriers.set(pick, { kind: kinds[(slot - 1) % kinds.length]!, fireAfterMs: at - arrivals[pick]! });
+    if (pick < 0) { missedSlotsMs.push(at); continue; }
+    carriers.set(pick, { kind: kinds[(slot - 1) % kinds.length]!, fireAfterMs: at - windows[pick]!.arriveAtMs });
   }
-  return carriers;
+  return { carriers, missedSlotsMs };
 }
 
 export const roundsFor = (minutes: number) => Math.max(1, Math.ceil((minutes * 60) / ROUND_SECONDS));
@@ -220,13 +228,20 @@ export function planStagingMixTasks(options: WaveOptions): TaskPlan[] {
   const durationMs = mix.minutes * 60_000;
   const arrivals = planArrivals(count, mix.runs + mix.queue, durationMs, rng.next);
   const adapters = assignAdapters(mix.ratio, count);
-  const carriers = planFaultCarriers(arrivals, mix.faultSpacingMinutes * 60_000, durationMs, options.faults);
-  return arrivals.map((arriveAtMs, index) => {
+  const drawn = arrivals.map(arriveAtMs => {
     const turnMinutes = rng.int(mix.turnMinutes[0], mix.turnMinutes[1]);
     const rounds = roundsFor(turnMinutes);
     const turnMs = rounds * ROUND_SECONDS * 1_000;
     const subtasks = rng.int(0, 99) < mix.subtaskShare ? SUBTASKS_PER_PARENT : 0;
     const followUpAfterMs = rng.int(0, 99) < mix.followUpShare ? rng.int(Math.round(turnMs * 0.25), Math.round(turnMs * 0.7)) : null;
+    return { arriveAtMs, turnMinutes, rounds, turnMs, subtasks, followUpAfterMs };
+  });
+  const { carriers, missedSlotsMs } = planFaultCarriers(drawn, mix.faultSpacingMinutes * 60_000, durationMs, options.faults);
+  if (missedSlotsMs.length) {
+    throw new Error(`No planned task is still in its turn at the fault slot(s) ${missedSlotsMs.map(at => `${Math.round(at / 60_000)} min`).join(", ")}; `
+      + "lengthen --mix-turn-minutes, add tasks, shorten --mix-minutes or change --mix-fault-spacing-minutes");
+  }
+  return drawn.map(({ arriveAtMs, turnMinutes, rounds, subtasks, followUpAfterMs }, index) => {
     const carrier = carriers.get(index);
     const fault: TaskFaultKind = carrier?.kind ?? "K0";
     return {
@@ -362,6 +377,11 @@ export function gradeStagingMix(nonce: string, task: StagingMixTask, artifacts: 
     { name: "rounds_once", ok: own.duplicates === 0, detail: `duplicates=${own.duplicates}` },
     { name: "done_comment_once", ok: doneComments === 1, detail: `comments=${doneComments}` },
   ];
+  if (task.followUpAfterMs !== null) {
+    const errors = artifacts.stagingMix?.followUpErrors ?? [];
+    checks.push({ name: "follow_up_posted", ok: Boolean(followUp?.commentId),
+      detail: followUp?.commentId ? `comment ${followUp.commentId}` : `never posted${errors.length ? `; errors: ${errors.slice(-3).join(" | ")}` : ""}` });
+  }
   if (followUp?.commentId && followUp.duringRun) {
     checks.push({ name: "follow_up_served", ok: (ledger ?? "").includes(followUpMarker(nonce)),
       detail: `posted ${new Date(followUp.at).toISOString()}${followUp.inOverlap ? " in overlap" : ""}` });
@@ -447,15 +467,18 @@ export async function stagingMixStep(input: StagingMixStepInput): Promise<void> 
   const running = (sample.runs ?? []).some(run => run.status === "running");
   if (task.followUpAfterMs !== null && !state.followUp && running) {
     const plannedAt = record.createdAt + task.followUpAfterMs;
-    if (now >= plannedAt && (overlap || now >= plannedAt + task.holdMs)) {
+    const latestAt = Math.min(plannedAt + task.holdMs, record.createdAt + Math.round(task.rounds * ROUND_SECONDS * 1_000 * 0.85));
+    if (now >= plannedAt && (overlap || now >= latestAt)) {
       const followUp: NonNullable<StagingMixRecord["followUp"]> = { at: now, commentId: null, duringRun: true, inOverlap: overlap, error: null };
       try {
         const comment = await input.api.post<{ id?: string }>(`/api/issues/${record.issueId}/comments`, { body: followUpComment(input.nonce) });
         followUp.commentId = typeof comment?.id === "string" ? comment.id : null;
+        if (!followUp.commentId) followUp.error = "the comment response had no id";
       } catch (error) {
         followUp.error = error instanceof Error ? error.message : String(error);
       }
-      state.followUp = followUp;
+      if (followUp.commentId) state.followUp = followUp;
+      else (state.followUpErrors ??= []).push(followUp.error!);
       input.note("staging_mix_follow_up", { ...followUp });
     }
   }
@@ -471,5 +494,5 @@ export async function stagingMixStep(input: StagingMixStepInput): Promise<void> 
 }
 
 export function stagingMixArtifacts(record: TaskRecord): StagingMixArtifacts {
-  return { followUp: record.stagingMix?.followUp ?? null, retries: record.stagingMix?.retries ?? [] };
+  return { followUp: record.stagingMix?.followUp ?? null, followUpErrors: record.stagingMix?.followUpErrors ?? [], retries: record.stagingMix?.retries ?? [] };
 }
