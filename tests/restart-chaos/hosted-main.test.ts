@@ -36,7 +36,7 @@ describe("hosted run control", () => {
       post: async <T>() => ({}) as T,
     };
     let stopped = false;
-    const graded = await gradeHosted({ api, companyId: "c1", agentIds: ["a1"], releases: [], health: continuity([]), apiContinuity: continuity([]),
+    const graded = await gradeHosted({ api, companyId: "c1", agentIds: ["a1"], releases: [], health: () => continuity([]), apiContinuity: () => continuity([]),
       stopObserver: async () => { stopped = true; record.retryClicks.push({ at: 0, accepted: true, via: "observer" }); },
       observedClicks: () => observedClicks([record]), lastReleaseAt: Date.now() - 1_000, settleMs: 5, drainMs: 5, dir, cancelled: () => false, record: () => {}, pollMs: 5 });
     expect(stopped).toBe(true);
@@ -89,6 +89,25 @@ describe("hosted run control", () => {
     expect(writes).toEqual(["PATCH /api/agents/a1", "POST /api/agents/a1/terminate", "DELETE /api/agents/a1", "DELETE /api/secrets/s1", "PATCH /api/projects/p1"]);
     expect(await finalizeHosted({ api, keep: true, label: "rc-x", dir, state: null, record: () => {} })).toBeNull();
   });
+  it("collects every page of a run agent's tasks before hiding any, so none is skipped as the list shrinks", async () => {
+    const hidden = new Set<string>();
+    const tasks = Array.from({ length: ISSUE_PAGE + 7 }, (_, index) => ({ id: `t${index}`, assigneeAgentId: "a1" }));
+    const api = {
+      get: async <T>(route: string) => {
+        if (route.endsWith("/agents")) return [{ id: "a1", name: "RC rc-x opencode", status: "terminated" }] as T;
+        if (route.includes("/issues?")) { const offset = Number(/offset=(\d+)/.exec(route)![1]); return tasks.filter(task => !hidden.has(task.id)).slice(offset, offset + ISSUE_PAGE) as T; }
+        if (route === "/api/agents/a1") return { id: "a1", status: "terminated" } as T;
+        return [] as T;
+      },
+      post: async <T>() => ({}) as T,
+      patch: async <T>(route: string) => { hidden.add(route.split("/").at(-1)!); return {} as T; },
+      delete: async () => {},
+    };
+    const report = await cleanupHosted({ api, label: "rc-x", companyId: "c1", state: null, record: () => {} });
+    expect(report).toMatchObject({ tasksArchived: ISSUE_PAGE + 7, errors: [] });
+    expect(hidden.size).toBe(ISSUE_PAGE + 7);
+  });
+
   it("reports a cleanup read that failed instead of counting the object as removed", async () => {
     const writes: string[] = [];
     const unavailable = (route: string) => new ChaosApiError(503, `GET ${route} returned 503`);

@@ -7,6 +7,7 @@ import { ChaosApiError } from "./api.js";
 import { CREDENTIAL_FOR_ADAPTER, PROFILE_FOR_ADAPTER } from "./config.js";
 import type { HostedApi } from "./hosted-api.js";
 import type { HostedOptions } from "./hosted-config.js";
+import { hostedIssues, type HostedIssueRow } from "./hosted-readers.js";
 import { chaosLifecycleOverrides } from "./seed.js";
 import { agentRunCaps } from "./staging-mix.js";
 import type { AdapterId } from "./types.js";
@@ -193,8 +194,10 @@ export async function cleanupHosted(input: { api: SetupApi; label: string; compa
     for (const run of runs.filter(run => run.agentId === agent.id && ["queued", "running", "scheduled_retry"].includes(String(run.status)))) {
       if (await attempt(`cancel run ${run.id}`, () => api.post(`/api/heartbeat-runs/${run.id}/cancel`))) report.runsCancelled += 1;
     }
-    const issues = await read(`read tasks of ${agent.id}`, `/api/companies/${companyId}/issues?assigneeAgentId=${agent.id}&includeAgentCreatedTasks=true&limit=1000`);
-    for (const issue of issues.filter(issue => issue.assigneeAgentId === agent.id && !issue.hiddenAt)) {
+    let issues: HostedIssueRow[] = [];
+    try { issues = await hostedIssues(api, companyId, [String(agent.id)]); }
+    catch (error) { report.errors.push(`read tasks of ${agent.id}: ${error instanceof Error ? error.message : String(error)}`.slice(0, 300)); }
+    for (const issue of issues.filter(issue => !issue.hidden)) {
       if (await attempt(`archive task ${issue.id}`, () => api.patch(`/api/issues/${issue.id}`, { hiddenAt: new Date().toISOString() }))) report.tasksArchived += 1;
     }
   }

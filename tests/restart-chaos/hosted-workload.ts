@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { createRng } from "./plan-primitives.js";import type { HostedApi } from "./hosted-api.js";
 import type { HostedOptions } from "./hosted-config.js";
 import { taskTag } from "./hosted-setup.js";
+import { hostedIssues } from "./hosted-readers.js";
 import type { RetryClick } from "./release-swap-grade.js";
 import { assignAdapters, followUpComment, followUpRequestId, roundsFor, ROUND_SECONDS, stagingMixDescription, SUBTASKS_PER_PARENT, type StagingMixTask } from "./staging-mix.js";
 import type { AdapterId } from "./types.js";
@@ -41,12 +42,12 @@ export interface HostedTaskRecord {
   followUp: { at: number; commentId: string | null; error: string | null } | null;
   retryClicks: RetryClick[];
   retriedRuns: string[];
-  banner: RetryBanner | null;
   doneAt: number | null;
 }
 
 const LIVE = new Set(["queued", "running", "scheduled_retry"]);
 const RESTING = new Set(["done", "cancelled", "blocked", "in_review"]);
+const TERMINAL = new Set(["done", "cancelled"]);
 export const IDLE_RELEASE_MS = 10 * 60_000;
 
 export function planHostedTasks(options: Pick<HostedOptions, "ratio" | "turnMinutes" | "subtaskShare" | "followUpShare" | "seed">, count: number): HostedTaskPlan[] {
@@ -70,6 +71,7 @@ export function inFlight(record: HostedTaskRecord, now: number): boolean {
 
 export class HostedWorkload {
   readonly records: HostedTaskRecord[] = [];
+  readonly banners = new Map<string, RetryBanner>();
   private next = 0;
 
   constructor(private readonly input: { api: WorkloadApi; label: string; companyId: string; projectId: string | null;
@@ -91,7 +93,7 @@ export class HostedWorkload {
       launched += 1;
       const agent = this.input.agents[plan.adapter]!;
       const record: HostedTaskRecord = { plan, issueId: null, identifier: null, createdAt: null, createError: null, status: "todo", lastLiveAt: null,
-        followUp: null, retryClicks: [], retriedRuns: [], banner: null, doneAt: null };
+        followUp: null, retryClicks: [], retriedRuns: [], doneAt: null };
       this.records.push(record);
       try {
         const issue = await this.input.api.post<{ id: string; identifier?: string }>(`/api/companies/${this.input.companyId}/issues`, {
@@ -112,8 +114,32 @@ export class HostedWorkload {
   }
 
   async poll(now = Date.now()): Promise<void> {
-    for (const record of this.active(now)) await this.step(record, now).catch(error =>
-      this.input.record("hosted_task_poll_failed", { issueId: record.issueId, error: error instanceof Error ? error.message : String(error) }));
+    const seen = new Set<string>();
+    for (const record of this.active(now)) {
+      seen.add(record.issueId!);
+      await this.step(record, now).catch(error =>
+        this.input.record("hosted_task_poll_failed", { issueId: record.issueId, error: error instanceof Error ? error.message : String(error) }));
+    }
+    await this.observe(now, seen).catch(error => this.input.record("hosted_banner_observe_failed", { error: error instanceof Error ? error.message : String(error) }));
+  }
+
+  async observe(now: number, seen: ReadonlySet<string> = new Set()): Promise<void> {
+    const agentIds = Object.values(this.input.agents).map(agent => agent!.id);
+    for (const issue of await hostedIssues(this.input.api, this.input.companyId, agentIds)) {
+      if (issue.hidden || seen.has(issue.id)) continue;
+      if (TERMINAL.has(issue.status) && !this.banners.get(issue.id)?.shown) continue;
+      this.noteBanner(issue.id, await this.input.api.get<Json>(`/api/issues/${issue.id}`), now);
+    }
+  }
+
+  private noteBanner(issueId: string, view: Json, now: number): void {
+    const offered = view.status !== "done" && view.interruption?.canRetry === true && !view.interruption?.retryWait;
+    const previous = this.banners.get(issueId) ?? null;
+    const change = trackBanner(previous, offered, now);
+    if (change.banner === previous) return;
+    const clicked = this.records.some(record => record.issueId === issueId && record.retryClicks.length > 0);
+    this.banners.set(issueId, change.cleared && clicked ? { ...change.banner!, clearedByItself: false } : change.banner!);
+    this.input.record(change.cleared ? "hosted_retry_banner_cleared" : "hosted_retry_banner_shown", { issueId, observedRunId: view.interruption?.observedRunId ?? null });
   }
 
   private async step(record: HostedTaskRecord, now: number): Promise<void> {
@@ -137,12 +163,7 @@ export class HostedWorkload {
       record.followUp = followUp;
       this.input.record("hosted_follow_up", { issueId: record.issueId, commentId: followUp.commentId, error: followUp.error });
     }
-    const offered = record.status !== "done" && issue.interruption?.canRetry === true && !issue.interruption?.retryWait;
-    const change = trackBanner(record.banner, offered, now);
-    if (change.banner !== record.banner) {
-      record.banner = change.cleared && record.retryClicks.length ? { ...change.banner!, clearedByItself: false } : change.banner;
-      this.input.record(change.cleared ? "hosted_retry_banner_cleared" : "hosted_retry_banner_shown", { issueId: record.issueId, observedRunId: issue.interruption?.observedRunId ?? null });
-    }
+    this.noteBanner(record.issueId!, issue, now);
     if (!this.input.retryDuringWave) return;
     const observedRunId = issue.interruption?.observedRunId ? String(issue.interruption.observedRunId) : null;
     if (record.status !== "done" && issue.interruption?.canRetry === true && !issue.interruption?.retryWait && !live && !record.retriedRuns.includes(observedRunId ?? "")) {

@@ -101,8 +101,9 @@ describe("hosted API readers", () => {
     api.post = async <T>(route: string, body?: unknown) => { if (route.endsWith("/retry")) retried = true; return post<T>(route, body); };
     const releases = detectReleases([{ at: 0, ok: true, status: 200, ms: 1, processStartedAt: "a", commit: "x" },
       { at: 1_000, ok: true, status: 200, ms: 1, processStartedAt: "b", commit: "y" }], { now: 1_000_000 });
-    const graded = await gradeHosted({ api, companyId: "c1", agentIds: ["a1"], releases, health: { requests: 2, failures: 0, slow: 0, longestGapMs: 1_000, longestGap: null },
-      apiContinuity: { requests: 0, failures: 0, slow: 0, longestGapMs: 0, longestGap: null }, stopObserver: async () => {}, observedClicks: () => new Map(), lastReleaseAt: Date.now() - 10_000,
+    let latestApi = { requests: 0, failures: 0, slow: 0, longestGapMs: 0, longestGap: null as { from: number; to: number } | null };
+    const graded = await gradeHosted({ api, companyId: "c1", agentIds: ["a1"], releases, health: () => ({ requests: 2, failures: 0, slow: 0, longestGapMs: 1_000, longestGap: null }),
+      apiContinuity: () => latestApi, stopObserver: async () => { latestApi = { requests: 9, failures: 3, slow: 1, longestGapMs: 4_000, longestGap: { from: 0, to: 4_000 } }; }, observedClicks: () => new Map(), lastReleaseAt: Date.now() - 10_000,
       settleMs: 5, drainMs: 5, dir, cancelled: () => false, record: () => {}, pollMs: 5 });
     expect(writes.filter(write => write.route.endsWith("/retry"))).toEqual([{ method: "POST", route: "/api/issues/i2/retry", body: { idempotencyKey: expect.any(String), observedRunId: "r2" } }]);
     expect(graded.headline).toBe("1 / 3 tasks completed hands-off");
@@ -113,6 +114,8 @@ describe("hosted API readers", () => {
     expect(json.result.byLabel).toEqual({ "needed Retry (click worked)": 1, "nothing pending": 1 });
     expect(json.failedRuns.map((failed: Json) => [failed.runId, failed.release])).toEqual([["r2", 1], ["r3", 1]]);
     expect(graded.markdown).toContain("Unavailable over the API:");
+    expect(graded.markdown).toContain("API requests: 9 requests, 3 failed, 1 slow, longest gap between answers 4.0 s.");
+    expect(json.api).toMatchObject({ requests: 9, failures: 3 });
     expect(releaseWindows(releases)[0]).toMatchObject({ index: 1, spawnedAt: 1_000, fromPid: null });
   });
 

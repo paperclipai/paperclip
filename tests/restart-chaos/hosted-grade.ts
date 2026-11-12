@@ -23,8 +23,8 @@ export interface HostedGradeInput {
   companyId: string;
   agentIds: string[];
   releases: DetectedRelease[];
-  health: ContinuityReport;
-  apiContinuity: ContinuityReport;
+  health: () => ContinuityReport;
+  apiContinuity: () => ContinuityReport;
   stopObserver: () => Promise<void>;
   agentNames?: string[];
   observedClicks: () => ReadonlyMap<string, RetryClick[]>;
@@ -145,6 +145,8 @@ export async function gradeHosted(input: HostedGradeInput): Promise<{ headline: 
   const failedRuns = [];
   for (const run of failed) failedRuns.push({ ...run, release: [...windows].reverse().find(window => (run.finishedAt ?? 0) >= window.requestedAt)?.index ?? null,
     chain: await failureChain(api, run.runId) });
+  const health = input.health();
+  const apiContinuity = input.apiContinuity();
   const markdown = [
     ...handsOff.lines,
     invariantLine(invariant),
@@ -152,14 +154,14 @@ export async function gradeHosted(input: HostedGradeInput): Promise<{ headline: 
     releaseSwapMarkdown(result, metrics, windows.map(() => null), duplicates, grades).trimEnd(),
     "",
     "Hosted mode: releases came from the instance's own deploys, detected by polling /api/health. Lost-while-old-alive and late/preparation probes are not measured (see Unavailable).",
-    ...releaseMarkdown(input.releases, input.health, input.apiContinuity),
+    ...releaseMarkdown(input.releases, health, apiContinuity),
     "",
     "Unavailable over the API:",
     ...UNAVAILABLE_OVER_API.map(item => `- ${item}`),
     "",
   ].join("\n");
   await writeFile(path.join(input.dir, "hosted-release-swap.json"), `${JSON.stringify({ schema: "paperclip.restart-chaos.hosted-release-swap/v1", result, handsOff: { ...handsOff, banners: Object.fromEntries(banners) }, invariant,
-    releases: input.releases, health: input.health, api: input.apiContinuity, metrics, duplicates, failedRuns, grades, drained,
+    releases: input.releases, health, api: apiContinuity, metrics, duplicates, failedRuns, grades, drained,
     unavailable: UNAVAILABLE_OVER_API }, null, 2)}\n`, { mode: 0o600 });
   await writeFile(path.join(input.dir, "SUMMARY.md"), markdown, { mode: 0o600 });
   input.record("hosted_graded", { headline: result.headline, byVerdict: result.byVerdict, byLabel: result.byLabel, retry: result.retry,

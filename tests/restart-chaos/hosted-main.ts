@@ -8,7 +8,7 @@ import { parseHostedCommand, type HostedOptions } from "./hosted-config.js";
 import { gradeHosted } from "./hosted-grade.js";
 import { continuity, detectReleases, identityOf, releaseMarkdown, type DetectedRelease, type HealthSample } from "./hosted-release.js";
 import { cleanupHosted, inventory, loadState, resolveCompany, setupHosted, type HostedState } from "./hosted-setup.js";
-import { HostedWorkload, planHostedTasks, type HostedTaskRecord, type RetryBanner } from "./hosted-workload.js";
+import { HostedWorkload, planHostedTasks, type HostedTaskRecord } from "./hosted-workload.js";
 import type { RetryClick } from "./release-swap-grade.js";
 import { waitForAgentsReady } from "./seed.js";
 import { Timeline } from "./timeline.js";
@@ -27,10 +27,6 @@ export function arrivalsDone(wanted: number, remaining: number, active: number, 
 
 export function observedClicks(records: readonly HostedTaskRecord[]): Map<string, RetryClick[]> {
   return new Map(records.flatMap(entry => entry.issueId && entry.retryClicks.length ? [[entry.issueId, [...entry.retryClicks]] as const] : []));
-}
-
-export function observedBanners(records: readonly HostedTaskRecord[]): Map<string, RetryBanner> {
-  return new Map(records.flatMap(entry => entry.issueId && entry.banner ? [[entry.issueId, entry.banner] as const] : []));
 }
 
 export function keepPolling(workload: Pick<HostedWorkload, "poll">, pollMs = POLL_MS): { stop: () => Promise<void> } {
@@ -141,8 +137,8 @@ export async function runHosted(argv: readonly string[]): Promise<number> {
     if (options.releases > 0 && !releasesReached(releases, options.releases)) timeline.add("hosted_releases_short", { wanted: options.releases, seen: releases.length });
     polling = keepPolling(workload);
     const graded = await gradeHosted({ api, companyId, agentIds: Object.values(state.agents).map(agent => agent!.id), releases,
-      health: continuity(probe.samples), apiContinuity: continuity(requestSamples(api.requests)),
-      stopObserver: () => polling!.stop(), observedClicks: () => observedClicks(workload.records), banners: () => observedBanners(workload.records),
+      health: () => continuity(probe.samples), apiContinuity: () => continuity(requestSamples(api.requests)),
+      stopObserver: () => polling!.stop(), observedClicks: () => observedClicks(workload.records), banners: () => new Map(workload.banners),
       agentNames: Object.values(state.agents).map(agent => agent!.name),
       lastReleaseAt: releases.at(-1)?.lastOldAt ?? Date.now(), settleMs: options.settleMs, drainMs: options.drainMs, dir, cancelled, record });
     console.info(`\n${graded.markdown}`);
