@@ -1193,7 +1193,7 @@
       "chat-accounting-fault.ts",
       "chat-archive-storage-fault.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.repair-cost-recording.structural.v4",
+    "oracleVersion": "paperclip.chat-catalog.repair-cost-recording.structural.v5",
     "expectedRunCount": 3,
     "expectedHumanMessageCount": 2,
     "turnTimeoutMs": 120000,
