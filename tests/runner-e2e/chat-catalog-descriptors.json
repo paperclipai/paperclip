@@ -1349,12 +1349,14 @@
     "scenarioId": "cases.close-case",
     "sourceFiles": [
       "chat-catalog-domains/integrator-case-close.ts",
+      "chat-catalog-domains/api-read-receipts.ts",
+      "run-observations.ts",
       "chat-catalog-domains/integrator-support.ts",
       "chat-catalog-domains/internal-support.ts",
       "chat-catalog-domains/internal-definition.ts",
       "chat-scenarios/cases.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.integrator.v1",
+    "oracleVersion": "paperclip.chat-catalog.integrator.close-case.v2",
     "expectedRunCount": 7,
     "expectedHumanMessageCount": 3,
     "minimumRunCount": 6,
