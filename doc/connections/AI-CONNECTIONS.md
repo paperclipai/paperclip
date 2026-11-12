@@ -405,7 +405,7 @@ path. Use a distinct writable path per agent: sharing one path can share
 credentials, plugin settings, and session files, and concurrent runs may write
 to it at the same time.
 
-Under **Advanced → Run policies**, local Claude agents have typed settings:
+Under **Claude configuration → Advanced**, local Claude agents have typed settings:
 `profileImportMode` (`off`, `copy`, `cache`), `profileSourceDir`,
 `transcriptRetentionEnabled`, and `transcriptRetentionDays` (a positive integer).
 The form and API reject zero, negative, fractional, or nonnumeric retention days,
@@ -1080,3 +1080,13 @@ uses its existing conditional transition to `stored`; a rejected transition
 rolls back the credentials and connection binding. Already-bound sessions return
 the existing connection without repeating the callback. Local and device login
 services continue to own their final states.
+
+
+Claude profile import and transcript retention are execution-configuration settings.
+Their shared `ClaudeRuntimePolicyFields` controls render under the Claude
+configuration's **Advanced** disclosure, outside agent heartbeat/run scheduling.
+A direct agent and a selected Legacy Claude pool member use the same typed
+adapter settings; per-member pool integration is tracked in PR #19481. Cache and
+transcript storage stay isolated per company, agent, task and account. Workspace
+project trust is a separate source-specific grant in PR #19216 and cannot be
+implicitly enabled by these configuration values.

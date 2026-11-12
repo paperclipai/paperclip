@@ -83,7 +83,7 @@ export function ClaudeLocalAdvancedFields(props: AdapterConfigFieldsProps) {
 
   return configFieldsForSection(section, (
     <>
-      {!managedSandboxOnly && <ClaudeRuntimePolicyFields {...props} configSection="runPolicy" />}
+      {!managedSandboxOnly && <ClaudeRuntimePolicyFields {...props} configSection="advanced" />}
       {/*
         The execution engine picks which binary runs on the execution host, and
         the ACP sub-fields below name host paths. The platform-managed

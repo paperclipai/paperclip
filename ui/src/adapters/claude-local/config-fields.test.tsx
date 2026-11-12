@@ -25,7 +25,7 @@ it.each(["create", "edit"] as const)("saves each profile import choice in %s mod
     });
     saved = mode === "create" ? buildClaudeLocalConfig(values) : config;
     return <TooltipProvider><ClaudeLocalAdvancedFields
-      section="runPolicy" mode={mode} isCreate={mode === "create"} adapterType="claude_local"
+      section="advanced" mode={mode} isCreate={mode === "create"} adapterType="claude_local"
       values={values} set={(patch) => setValues((previous) => ({ ...previous, ...patch }))}
       config={config} eff={(_group, key, fallback) => (config[key] ?? fallback) as typeof fallback}
       mark={(_group, key, value) => setConfig((previous) => ({ ...previous, [key]: value }))}
@@ -77,7 +77,7 @@ it("previews redacted environment defaults without pinning them when the environ
     saved = { ...original, env };
     return <TooltipProvider>
       <button onClick={() => setEnv({ PAPERCLIP_CLAUDE_PLUGIN_IMPORT_MODE: "off" })}>Change environment</button>
-      <ClaudeLocalAdvancedFields section="runPolicy" mode="edit" isCreate={false} adapterType="claude_local"
+      <ClaudeLocalAdvancedFields section="advanced" mode="edit" isCreate={false} adapterType="claude_local"
         config={original} values={null} set={null} displayDefaults={{ profileImportMode: "cache" }}
         eff={(_group, key, fallback) => (key === "env" ? env : fallback) as typeof fallback}
         mark={vi.fn()} models={[]} hideInstructionsFile />
@@ -99,4 +99,17 @@ it("previews redacted environment defaults without pinning them when the environ
   } finally {
     await act(async () => root.unmount());
   }
+});
+
+
+it("keeps Claude behavior fields in Advanced rather than agent run policy", async () => {
+  const host=document.createElement("div");document.body.append(host);const root=createRoot(host);
+  const props={mode:"edit" as const,isCreate:false,adapterType:"claude_local",config:{},values:null,set:null,eff:<T,>(_group: "adapterConfig", _key:string, fallback:T)=>fallback,mark:vi.fn(),models:[]};
+  try {
+    await act(async()=>root.render(<TooltipProvider><ClaudeLocalAdvancedFields {...props} section="runPolicy" /></TooltipProvider>));
+    expect(host.querySelector('[aria-label="Local Claude skills and plugins"]')).toBeNull();
+    await act(async()=>root.render(<TooltipProvider><ClaudeLocalAdvancedFields {...props} section="advanced" /></TooltipProvider>));
+    expect(host.querySelector('[aria-label="Local Claude skills and plugins"]')).toBeTruthy();
+    expect(host.querySelector('[aria-label="Keep Claude session transcripts"]')).toBeTruthy();
+  } finally {await act(async()=>root.unmount());host.remove();}
 });
