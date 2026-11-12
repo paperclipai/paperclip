@@ -2,6 +2,7 @@ import { execFile, spawn } from "node:child_process";
 import { nativeProviderRecoveryEvidence, nativeSessionFailureSourceCode, restoreRemoteSuspendedRunnerCheckpoint,
   verifyRemoteRunnerReattachment } from "./native-session-executor.js";
 import { readRemoteRunnerRecoveryError } from "./remote-runner-recovery-diagnostics.js";
+import { RunnerIngressConnectionError } from "../../realtime/runner-prp-outbound.js";
 import { nativeToolContractFingerprintForTarget, rebindNativeSessionCheckpoint } from "./native-session-resume.js";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -247,6 +248,55 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
     await db.insert(heartbeatRunEvents).values({ companyId, runId, agentId, seq: 1, stream: "system", level: "info",
       eventType: "session.resumed" });
     expect((await evidence("local_runtime_api_listener_unavailable")).recoveryMode).toBe("ambiguous_state");
+  });
+
+  it("retries a fresh remote start whose launched runner never authenticated through provider ingress", async () => {
+    const issueId = randomUUID(), runId = randomUUID(), runnerInstanceId = randomUUID();
+    const normalizedSessionId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Slow sandbox start", assigneeAgentId: agentId, status: "in_progress" });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running", runtimeMode: "native",
+      nativeIssueId: issueId, nativeSessionId: normalizedSessionId, runnerInstanceId,
+      runnerProfileJson: { nativePreparationFencingVersion: 1 } });
+    const identity = { runnerInstanceId, environmentLeaseId: randomUUID(), runId, normalizedSessionId,
+      turnId: `turn-${runId}`, itemId: `item-${runId}` };
+    const owner = { companyId, issueId, runId, authorityRunId: runId, bootId: randomUUID(), generation: 1, leaseOwner: randomUUID() };
+    await db.insert(nativeRunFinalizations).values({ companyId, issueId, runId, phase: "observed", controllerBootId: owner.bootId,
+      controllerGeneration: 1, leaseOwner: owner.leaseOwner, leaseExpiresAt: new Date(Date.now() + 60_000) });
+    const core = new DurablePrpControlPlane({ stateDirectory: join(root, runId), identity,
+      expectedRunnerVersion: "discovery-fixture", expectedRunnerDigest: `sha256:${"a".repeat(64)}` });
+    core.setCheckpointPersistence(nativeRunnerCheckpointWriter(db, owner));
+    const failure = new RunnerIngressConnectionError("runner_ingress_auth_failed",
+      "Runner ingress did not complete PRP authentication before the deadline.");
+    const bootstrap = { binding: { companyId, issueId, runId }, identity, transientIngressFailure: false };
+    const evidence = () => nativeProviderRecoveryEvidence({ db, runId, executionTargetKind: "remote",
+      sourceFailureCode: nativeSessionFailureSourceCode(failure), bootstrap });
+    try {
+      const template = { provider: { provider: "codex", command: "fixture" }, authorizedTools: {} };
+      core.persistRunAttachTemplate(template);
+      core.queueCommand("run.prepare", template);
+      core.queueCommand("session.open", { reuse: "same_session" });
+      core.issueBootstrapTicket(60_000);
+      core.issueBootstrapTicket(60_000);
+      await core.flushCheckpoint();
+      expect(nativeSessionFailureSourceCode(failure)).toBe("runner_ingress_startup_failed");
+      expect(nativeSessionFailureSourceCode(new Error("runner_ingress_unavailable: runnerd exited unexpectedly with code 1")))
+        .toBe("native_runner_process_exited");
+      expect(await evidence()).toMatchObject({ recoveryMode: "bootstrap_retry", providerSessionEstablished: false,
+        providerEventsExist: false, checkpointExists: false });
+      expect(nativeSessionFailureSourceCode(new RunnerIngressConnectionError("runner_connection_lease_expired",
+        "The runner's connection lease expired before it was renewed.", { cause: failure }))).toBe("native_session_interrupted");
+      expect(nativeSessionFailureSourceCode(new RunnerIngressConnectionError("runner_ingress_auth_failed",
+        "Runner ingress connection failed."))).toBe("runner_ingress_startup_failed");
+      expect(await nativeProviderRecoveryEvidence({ db, runId, metadataOnly: true,
+        sourceFailureCode: "runner_ingress_startup_failed" })).toMatchObject({ recoveryMode: "bootstrap_retry",
+        providerSessionEstablished: false, providerEventsExist: false, checkpointExists: false });
+      await db.update(heartbeatRuns).set({ runnerInstanceId: randomUUID() }).where(eq(heartbeatRuns.id, runId));
+      expect((await evidence()).recoveryMode).toBe("ambiguous_state");
+      await db.update(heartbeatRuns).set({ runnerInstanceId }).where(eq(heartbeatRuns.id, runId));
+      await db.insert(heartbeatRunEvents).values({ companyId, runId, agentId, seq: 1, stream: "system", level: "info",
+        eventType: "session.resumed" });
+      expect((await evidence()).recoveryMode).toBe("ambiguous_state");
+    } finally { await core.stop(); }
   });
 
   it("uses the database clock when an import finds an expired owner", async () => {
