@@ -3754,43 +3754,51 @@ return {
       voice.unregisterAgentTools();
       unregisterGitHubCloudIngress();
       unregisterSlackCloudIngress();
-      await photonExternalRuntimeOwner.close();
-      unregisterSlackFormWork();
-      unregisterSlackCloudEnrollment();
-      unregisterCommittedResponseAuthority();
-      await Promise.allSettled([...publicationEndpointTasks.values()]);
-      await Promise.allSettled([...backgroundMessageTasks]);
-      scheduledConversationDrains.clear();
-      liveInboundMessages.clear();
-      const ownedDiscordGateways = [...discordGatewayOwnerships.values()];
-      for (const ownership of ownedDiscordGateways) {
-        ownership.stopping = true;
-        if (ownership.renewTimer) {
-          clearInterval(ownership.renewTimer);
-          ownership.renewTimer = null;
+      let photonCloseFailure: { error: unknown } | undefined;
+      try { await photonExternalRuntimeOwner.close(); }
+      catch (error) { photonCloseFailure = { error }; }
+      try {
+        unregisterSlackFormWork();
+        unregisterSlackCloudEnrollment();
+        unregisterCommittedResponseAuthority();
+        await Promise.allSettled([...publicationEndpointTasks.values()]);
+        await Promise.allSettled([...backgroundMessageTasks]);
+        scheduledConversationDrains.clear();
+        liveInboundMessages.clear();
+        const ownedDiscordGateways = [...discordGatewayOwnerships.values()];
+        for (const ownership of ownedDiscordGateways) {
+          ownership.stopping = true;
+          if (ownership.renewTimer) {
+            clearInterval(ownership.renewTimer);
+            ownership.renewTimer = null;
+          }
         }
+        discordGatewayOwnerships.clear();
+        await Promise.allSettled(
+          ownedDiscordGateways
+            .map((ownership) => ownership.renewal)
+            .filter((renewal): renewal is Promise<void> => renewal !== null),
+        );
+        await Promise.allSettled([...discordGatewayStopTasks]);
+        // Stop every provider runtime before releasing leader rows. This gives a
+        // standby an immediate takeover path without overlapping Gateway sockets.
+        await runtime.shutdown();
+        await Promise.allSettled([...runtimeInitializations.values()].map(initialization => initialization.promise));
+        await slackRegistration.close();
+        await Promise.all(
+          ownedDiscordGateways.map((ownership) =>
+            releaseDiscordGatewayLeaseRow(ownership),
+          ),
+        );
+        if (runtimeInitializations.size > 0 || runtime.hasUnsettledLifecycle()) {
+          throw new Error("Chat runtime lifecycle is still unsettled after shutdown");
+        }
+        unregisterRuntimeIdleProbe();
+      } catch (error) {
+        if (photonCloseFailure) throw new AggregateError([photonCloseFailure.error, error], "Photon handoff and normal chat shutdown both failed");
+        throw error;
       }
-      discordGatewayOwnerships.clear();
-      await Promise.allSettled(
-        ownedDiscordGateways
-          .map((ownership) => ownership.renewal)
-          .filter((renewal): renewal is Promise<void> => renewal !== null),
-      );
-      await Promise.allSettled([...discordGatewayStopTasks]);
-      // Stop every provider runtime before releasing leader rows. This gives a
-      // standby an immediate takeover path without overlapping Gateway sockets.
-      await runtime.shutdown();
-      await Promise.allSettled([...runtimeInitializations.values()].map(initialization => initialization.promise));
-      await slackRegistration.close();
-      await Promise.all(
-        ownedDiscordGateways.map((ownership) =>
-          releaseDiscordGatewayLeaseRow(ownership),
-        ),
-      );
-      if (runtimeInitializations.size > 0 || runtime.hasUnsettledLifecycle()) {
-        throw new Error("Chat runtime lifecycle is still unsettled after shutdown");
-      }
-      unregisterRuntimeIdleProbe();
+      if (photonCloseFailure) throw photonCloseFailure.error;
     },
   };
 }

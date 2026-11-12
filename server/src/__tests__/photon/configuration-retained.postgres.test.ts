@@ -1400,4 +1400,57 @@ describe.skipIf(!external)("Photon normal configuration and retained receiver au
     } finally { await db.update(toolConnections).set({ credentialSecretRefs: original.credentialSecretRefs }).where(eq(toolConnections.id, c.connection.id)); }
   });
 
+  it("normal Photon service shutdown waits for every admitted handoff even when an earlier handoff rejects", async () => {
+    const originalFailure = new Error("controlled original Photon endpoint discovery refusal");
+    let failEntered!: () => void, heldEntered!: () => void, rejectFirst!: () => void, releaseHeld!: () => void;
+    const failingEntry = new Promise<void>(resolve => { failEntered = resolve; });
+    const heldEntry = new Promise<void>(resolve => { heldEntered = resolve; });
+    const failing = new Promise<void>(resolve => { rejectFirst = resolve; });
+    const held = new Promise<void>(resolve => { releaseHeld = resolve; });
+    let owner: ReturnType<typeof createPhotonExternalRuntimeOwner> | undefined;
+    const normalFactory = photonExternalRuntime.createPhotonExternalRuntimeOwner;
+    vi.spyOn(photonExternalRuntime, "createPhotonExternalRuntimeOwner").mockImplementation((database, options) => {
+      owner = normalFactory(database, { ...options, endpointRecord: async id => {
+        if (id === "controlled-shutdown-failure") { failEntered(); await failing; throw originalFailure; }
+        if (id === "controlled-shutdown-held") { heldEntered(); await held; return null; }
+        return options.endpointRecord(id);
+      } });
+      return owner;
+    });
+    const c = await managedConfiguration();
+    const originalRuntime = c.runtime.get(c.endpoint.id);
+    expect(originalRuntime).not.toBeNull();
+    const normalRuntimeShutdown = vi.spyOn(c.runtime, "shutdown"); // Calls through to the real registry.
+    if (!owner) throw new Error("Normal service did not construct its Photon handoff owner");
+    // Real normal owner/active map and service shutdown. Only endpoint discovery
+    // is controlled: no durable closure, SDK readiness or retirement is fabricated.
+    const admitted = [owner.reconcile("controlled-shutdown-failure"), owner.reconcile("controlled-shutdown-held")]
+      .map(task => task.catch(error => error));
+    await Promise.all([failingEntry, heldEntry]);
+    let closeEntered!: () => void;
+    const closing = new Promise<void>(resolve => { closeEntered = resolve; });
+    const normalClose = owner.close.bind(owner);
+    vi.spyOn(owner, "close").mockImplementation(() => { closeEntered(); return normalClose(); });
+    let settled = false;
+    const shutdown = c.service.shutdown().then(() => ({ error: null }), error => ({ error })).finally(() => { settled = true; });
+    try {
+      await closing; // Snapshot is now owned by the ACTUAL normal close call.
+      rejectFirst();
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(settled, "shutdown returned while the original second handoff is still held").toBe(false);
+      expect(normalRuntimeShutdown).not.toHaveBeenCalled();
+      releaseHeld();
+      const result = await shutdown;
+      const originals = (error: unknown): unknown[] => error instanceof AggregateError ? error.errors.flatMap(originals) : [error];
+      expect(originals(result.error)).toContain(originalFailure);
+      expect(normalRuntimeShutdown).toHaveBeenCalledTimes(1);
+      expect(c.runtime.get(c.endpoint.id)).toBeNull();
+      expect(c.runtime.hasUnsettledLifecycle()).toBe(false);
+    } finally {
+      rejectFirst(); releaseHeld();
+      await Promise.all(admitted);
+      await shutdown;
+    }
+  }, 25_000);
+
 });

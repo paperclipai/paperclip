@@ -688,7 +688,9 @@ export function createPhotonExternalRuntimeOwner(db: Db, options: {
     return !state.senderResource || resources.owns(state.senderResource.id, runtime);
   } };
   ingress.set(db, registration);
-  return { configurationRuntimeFor, reserveLocalRuntime, attachLocalRuntime, reserveSenderRuntime, attachSenderRuntime, senderRuntimeClosed, runtimeConstructionAborted, reconcile, placement, intakePlacement, senderDebt, retire, retained, cleanupFailure, retry, close() { if (ingress.get(db) === registration) ingress.delete(db); return Promise.all([...active.values()]).then(() => undefined); } };
+  return { configurationRuntimeFor, reserveLocalRuntime, attachLocalRuntime, reserveSenderRuntime, attachSenderRuntime, senderRuntimeClosed, runtimeConstructionAborted, reconcile, placement, intakePlacement, senderDebt, retire, retained, cleanupFailure, retry, async close() { if (ingress.get(db) === registration) ingress.delete(db); const joined = await Promise.allSettled([...active.values()]);
+    const errors = joined.flatMap(result => result.status === "rejected" ? [result.reason] : []);
+    if (errors.length) throw new AggregateError(errors, "Photon retained handoff work failed after every owned task joined"); } };
 }
 
 /** Called by normal configuration SQL with its actual authorized actor. Existing
