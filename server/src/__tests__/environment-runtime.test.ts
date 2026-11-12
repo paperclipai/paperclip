@@ -4036,11 +4036,28 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     const call = vi.fn();
     const requestActivationTimeoutRecovery = vi.fn(() => true);
     const workerManager = { isRunning: () => false, call, getWorker: () => undefined, requestActivationTimeoutRecovery } as unknown as PluginWorkerManager;
-    const error = await environmentRuntimeService(db, { pluginWorkerManager: workerManager })
+    const error = await environmentRuntimeService(db, { pluginWorkerManager: workerManager, pluginWorkerResumeWaitMs: 50, pluginWorkerReadyPollMs: 5 })
       .resumeRunLease({ environment: seeded.environment, lease }).catch(caught => caught);
     expect(error).toBeInstanceOf(PluginWorkerUnavailableError);
     expect(call).not.toHaveBeenCalled();
     expect(requestActivationTimeoutRecovery).toHaveBeenCalledTimes(status === "error" ? 1 : 0);
+  });
+
+  it("resumes the exact lease once a re-activating plugin's worker comes back within the wait", async () => {
+    const seeded = await seedReusablePluginSandboxLease("paperclip_runner");
+    await environmentService(db).releaseLease(seeded.reusableLease.id, "released", { cleanupStatus: "success" });
+    const lease = (await environmentService(db).getLeaseById(seeded.reusableLease.id))!;
+    let checks = 0;
+    const call = vi.fn(async (_id: string, method: string) => {
+      if (method !== "environmentResumeLease") throw new Error("Only exact resume is permitted");
+      return { providerLeaseId: lease.providerLeaseId, metadata: { remoteCwd: "/workspace" } };
+    });
+    const workerManager = { isRunning: () => ++checks > 3, call,
+      getWorker: () => ({ supportedMethods: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] }),
+    } as unknown as PluginWorkerManager;
+    await expect(environmentRuntimeService(db, { pluginWorkerManager: workerManager, pluginWorkerResumeWaitMs: 5_000, pluginWorkerReadyPollMs: 5 })
+      .resumeRunLease({ environment: seeded.environment, lease })).resolves.toMatchObject({ providerLeaseId: lease.providerLeaseId });
+    expect(call).toHaveBeenCalledOnce();
   });
 
   it.each([
