@@ -1448,7 +1448,8 @@ When a resume call only timed out and the preserved lease is idle (`released` or
 `retained`, with no live run holding it), the provider is usually still starting
 the sandbox. The run then keeps retrying the same sandbox up to the provider's
 start deadline (at most 330 seconds from the first attempt) instead of failing
-at 90 seconds. Each call still has at most 90 seconds. This applies whether or
+at 90 seconds. Each call still has at most 90 seconds. A retry that finds the
+stopped sandbox still settling the earlier, timed-out call is retried too. This applies whether or
 not the sandbox could be replaced, so a sandbox with unsaved work resumes in
 the same run instead of waiting behind a Retry.
 

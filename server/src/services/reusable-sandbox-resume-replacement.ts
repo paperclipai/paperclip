@@ -30,7 +30,7 @@ export const REUSABLE_SANDBOX_RESUME_REPLACED_REASON = "resume_failed";
 export function sandboxStateTransitionFailure(error: unknown): boolean {
   for (let cause = error, depth = 0; cause && depth < 4; cause = (cause as { cause?: unknown }).cause, depth++) {
     const message = cause instanceof Error ? cause.message : typeof cause === "string" ? cause : "";
-    if (/state change in progress|\bis still [a-z_]+ at its start deadline\b/i.test(message)) return true;
+    if (/state change in progress|\bis still [a-z_]+ at its start deadline\b|\bis still settling cancelled work\b/i.test(message)) return true;
   }
   return false;
 }

@@ -358,6 +358,24 @@ describeEmbeddedPostgres("reusable sandbox resume failure replacement", () => {
     expect(call).not.toHaveBeenCalledWith(seeded.pluginId, "environmentDestroyLease", expect.anything(), expect.anything());
   });
 
+  it("waits out the in-flight resume when a retry finds the stopped sandbox still settling", async () => {
+    const seeded = await seed({ leaseStatus: "released", dirty: true });
+    const clock = rpcTimeoutClock();
+    const { call, runtime } = worker(seeded, async (attempt, timeoutMs) => {
+      if (attempt === 1) throw clock.timeOut(timeoutMs);
+      if (attempt === 2) throw new JsonRpcCallError({ code: -32000,
+        message: "The stopped Daytona sandbox is still settling cancelled work. Retry shortly." });
+      return { providerLeaseId: seeded.providerLeaseId, metadata: { remoteCwd: "/home/daytona/paperclip-workspace" } };
+    });
+
+    const acquired = await acquire(seeded, runtime);
+
+    expect(acquired.lease.providerLeaseId).toBe(seeded.providerLeaseId);
+    expect(acquired.lease.metadata?.sandboxLeaseAcquisition).toEqual({ outcome: "resumed" });
+    expect(call.mock.calls.filter(([, method]) => method === "environmentResumeLease")).toHaveLength(3);
+    expect(call).not.toHaveBeenCalledWith(seeded.pluginId, "environmentAcquireLease", expect.anything(), expect.anything());
+  });
+
   it("stops waiting at the provider start deadline and keeps the sandbox when every resume times out", async () => {
     const seeded = await seed({ leaseStatus: "released", dirty: true });
     const clock = rpcTimeoutClock();
