@@ -65948,6 +65948,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           resultJson: { stopReason: "execution_reconciliation_required", timeoutSource: "stale_queued_run_gate",
             executionWait: { issueId, recoveryActionId } } }).returning();
         await db.update(agentWakeupRequests).set({ runId: held.id }).where(eq(agentWakeupRequests.id, failed.wakeupRequestId!));
+        await db.update(issues).set({ executionWorkspaceId: workspaceId }).where(eq(issues.id, issueId));
         sourceRunId = held.id;
       }
       const { getExecutionBlocker } = await import("../services/execution-blocker.js");
@@ -66031,7 +66032,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect(admitted).toMatchObject({ status: "coalesced", runId: expect.any(String) });
       const [run] = await readHeartbeatRunsById(admitted.runId!);
       expect(run).toMatchObject({ status: "queued", contextSnapshot: { issueId, taskRetryRequestId: request.requestId } });
-      if (sourceRunId === f.runId) expect(await readFreshWorkspaceReadiness(db, run)).toMatchObject({ mode: "resume_preserved_workspace" });
+      expect(await readFreshWorkspaceReadiness(db, run)).toMatchObject({ mode: "resume_preserved_workspace" });
       expect((await readHeartbeatRunsByCompanyId(companyId))
         .filter(candidate => candidate.contextSnapshot?.taskRetryRequestId === request.requestId)).toHaveLength(1);
       const activity = await db.select().from(activityLog).where(and(eq(activityLog.entityId, issueId),
