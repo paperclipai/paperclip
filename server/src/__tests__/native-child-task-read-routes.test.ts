@@ -17,6 +17,9 @@ describePostgres("a parent run reading a finished child through the issue routes
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   const companyId = randomUUID();
   const agentId = randomUUID();
+  const otherCompanyId = randomUUID();
+  const otherAgentId = randomUUID();
+  const otherRunId = randomUUID();
 
   beforeAll(async () => {
     database = await startEmbeddedPostgresTestDatabase("paperclip-native-child-read-routes-");
@@ -24,6 +27,12 @@ describePostgres("a parent run reading a finished child through the issue routes
     await db.insert(companies).values({ id: companyId, name: "Paperclip", issuePrefix: "CHR", defaultResponsibleUserId: "board-user",
       requireBoardApprovalForNewAgents: false });
     await db.insert(agents).values({ id: agentId, companyId, name: "Coder", role: "engineer", adapterType: "codex_local", status: "active" });
+    await db.insert(companies).values({ id: otherCompanyId, name: "Other", issuePrefix: "OTH", defaultResponsibleUserId: "board-user",
+      requireBoardApprovalForNewAgents: false });
+    await db.insert(agents).values({ id: otherAgentId, companyId: otherCompanyId, name: "Outsider", role: "engineer",
+      adapterType: "codex_local", status: "active" });
+    await db.insert(heartbeatRuns).values({ id: otherRunId, companyId: otherCompanyId, agentId: otherAgentId, status: "running",
+      runtimeMode: "native", startedAt: new Date(), contextSnapshot: {} });
   }, 30_000);
   afterAll(async () => { await database?.cleanup(); });
 
@@ -80,5 +89,17 @@ describePostgres("a parent run reading a finished child through the issue routes
     expect((await request(app(boardActor)).get(`/api/issues/${board.childId}`)).status).toBe(200);
     expect(await reads(board.runId)).toEqual([]);
     expect(await pending(board)).toBe(true);
+  });
+
+  it("does not record a read by another company's agent", async () => {
+    const f = await seed("done", 42);
+    const outsider = { type: "agent", companyId: otherCompanyId, agentId: otherAgentId, runId: otherRunId, source: "agent_jwt",
+      onBehalfOfUserId: null, onBehalfOfMemberships: [] } as Express.Request["actor"];
+    for (const suffix of ["", "/documents", "/documents/ledger"]) {
+      expect((await request(app(outsider)).get(`/api/issues/${f.childId}${suffix}`)).status).not.toBe(200);
+    }
+    expect(await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.eventType, CHILD_TASK_READ_EVENT))
+      .then(rows => rows.filter(row => row.runId === otherRunId || row.companyId === otherCompanyId))).toEqual([]);
+    expect(await pending(f)).toBe(true);
   });
 });
