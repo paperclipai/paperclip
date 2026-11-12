@@ -79,7 +79,7 @@ export const integratorCaseHistoryCases = [integratorDefinition("cases", "cases.
   const row = state.case as CaseRecord; const task = state.task as Issue;
   await inspectResult(ctx, `/${ctx.input.fixtures.company.issuePrefix}/cases/${row.identifier}`, row.title);
   await inspectResult(ctx, `/${ctx.input.fixtures.company.issuePrefix}/issues/${task.identifier}`, task.title);
-}, { expectedRunCount: 5, expectedHumanMessageCount: 2, attemptTimeoutMs: 1_200_000, cleanup, oracleVersion: "paperclip.chat-catalog.integrator.case-history.v4",
+}, { expectedRunCount: 5, expectedHumanMessageCount: 2, attemptTimeoutMs: 1_200_000, cleanup, oracleVersion: "paperclip.chat-catalog.integrator.case-history.v5",
   sourceFiles: ["chat-catalog-domains/integrator-case-history.ts", "chat-catalog-domains/integrator-support.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/internal-definition.ts", "chat-catalog-domains/identity-support.ts", "chat-rendered-links.ts", "chat-scenarios/cases.yaml"],
   async act(ctx, state) {
     await pollUntil({ label: "canonical diagnosis history answer before distinct missing-history question", deadlineAt: chatCatalogNativePhaseDeadline(ctx, Date.now() + 180_000), intervalMs: 1000,

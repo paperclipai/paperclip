@@ -93,6 +93,43 @@ describe("genuine immutable public skill update qualification", () => {
   });
 });
 
+// Full cohort 5 on 98c18784c6: this correct preview ("pending update ... v0.4 → v0.5", "Nothing has been applied yet")
+// failed because it did not say "installed" or "current" near 0.4; the DOM fallback then waited 547s for a bubble.
+const cohort5Preview = "Here's the pending update for **accessibility** (v0.4 → v0.5). Only `SKILL.md` changed; no other files, binaries, or executable content.\n\n**1. Version bump**\n```diff\n-  version: \"0.4\"\n+  version: \"0.5\"\n```\n\n**2. Maintenance wording tweak**\n```diff\n- ...so every build or release runs them.\n+ ...so every new build runs them.\n```\n\n**3. New \"Design considerations\" section** (entirely new):\n```diff\n+## Design considerations\n+\n+Avoid using patterns redundantly and/or heavily, like lots of cards, lists,\n+navigations, links, or buttons. Breathable layouts and texts are key. Design\n+long forms in a way that they can be broken up into small, individual steps.\n+Do not clutter a site with interactive elements, and use clear and\n+distinguishable icons appropriately. Never formulate development or\n+engineering requirements as UI elements.\n```\n\nNet effect: one new design-guidance section plus a heading and small wording edits. It doesn't touch your separate editable copy `accessibility-local-notes`, and installing the update won't overwrite it. Nothing has been applied yet — say the word and I'll update the skill to revision `4cffe22e`.";
+describe("names the installed revision from setup literals, not installed/current wording", () => {
+  const withPreview = (preview: string) => { const value = valid(bytes.old, bytes.next); value.state.reviewCheckpoint.reply = preview;
+    value.reply = `${preview}\nI updated the accessibility skill to the reviewed source version. The local copy is unchanged.`; return value; };
+  const review = (preview: string) => gradeIntegratorSkillUpdate(withPreview(preview)).checks.find(check => check.id === "review-diff-before-update")?.passed;
+  it("accepts the cohort 5 preview and a reworded preview that names the installed commit", () => {
+    expect(review(cohort5Preview)).toBe(true);
+    expect(gradeIntegratorSkillUpdate(withPreview(cohort5Preview)).passed).toBe(true);
+    expect(review(`Upgrading from ${pins.oldCommit.slice(0, 7)} adds continuous accessibility regression tests and splits long forms into smaller steps. Not applied.`)).toBe(true);
+  });
+  it("rejects a preview naming no installed revision, a listing without the diff, or one claiming the update was applied", () => {
+    expect(review(cohort5Preview.replaceAll("0.4", "the old version"))).toBe(false);
+    expect(review("Installed 0.4; latest 0.5 exists.")).toBe(false);
+    expect(review(cohort5Preview.replace("Nothing has been applied yet", "I have applied the update"))).toBe(false);
+    const premature = withPreview(cohort5Preview); premature.state.reviewCheckpoint.upstream.currentVersionId = "new";
+    expect(gradeIntegratorSkillUpdate(premature).checks.find(check => check.id === "review-diff-before-update")?.passed).toBe(false);
+  });
+  it("gives up on the rendered-completion fallback after a short bounded wait and records why", async () => {
+    const first = withPreview("The complete diff is shown above.").state.reviewCheckpoint as Omit<ReturnType<typeof valid>["state"]["reviewCheckpoint"], "runs"> & { runs: unknown[] };
+    const summary = first.reply;
+    first.runs = [{ id: "review-run", runtimeMode: "native", companyId: "company", agentId: "ceo", status: "succeeded", nativeIssueId: "source",
+      contextSnapshot: { issueId: "source", commentId: "human" }, resultJson: { summary, finalizationPhase: "committed", finalizationReasonCode: "conversation_turn_finished",
+        prpRunTerminalState: "succeeded", prpTurnTerminalState: "completed", nativeResult: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "done", summary } } }];
+    const evidence = vi.fn(async (_name: string, _value: unknown) => {});
+    const ctx = { observationDeadlineAt: Date.now() + 600_000, input: { page: { evaluate: async () => "" }, evidence } } as unknown as Parameters<typeof collectVisibleSkillReviewFallback>[0];
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout"] });
+    try {
+      const pending = collectVisibleSkillReviewFallback(ctx, first as never, "source");
+      await vi.advanceTimersByTimeAsync(16_000);
+      expect(await pending).toBeUndefined();
+    } finally { vi.useRealTimers(); }
+    expect(evidence).toHaveBeenCalledWith("chat-skill-review-visible-fallback.json", expect.objectContaining({ found: false, runId: "review-run" }));
+  });
+});
+
 it("requires the actual pinned update prerequisite before admitting the human request", async () => {
   const real = { supported: true, hasUpdate: true, currentRef: pins.oldCommit, latestRef: pins.newCommit, trackingRef: pins.newCommit };
   const evidence = vi.fn(async (_name: string, _value: unknown) => {});
@@ -130,7 +167,7 @@ it("actual review-update setup keeps the real prerequisite and then prepares the
   vi.stubGlobal("fetch", vi.fn(async (url: string) => new Response(url.includes(pins.oldCommit) ? bytes.old : bytes.next)));
   try {
     const f = setupFixture(false); const result = await integratorSkillUpdateCases[0]!.setup(f.ctx);
-    expect(integratorSkillUpdateCases[0]!.oracleVersion).toBe("paperclip.chat-catalog.integrator.v3");
+    expect(integratorSkillUpdateCases[0]!.oracleVersion).toBe("paperclip.chat-catalog.integrator.v4");
     expect(f.prerequisite).toHaveBeenCalledOnce(); expect(saveSkillConversationContext).toHaveBeenCalledOnce(); expect(result.source).toMatchObject({ trackingRef: pins.newCommit, lastScanCommit: pins.oldCommit });
   } finally { vi.unstubAllGlobals(); }
 });

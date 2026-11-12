@@ -49,11 +49,15 @@ export function readVisibleSkillReview(input: { runId: string; humanCommentId: s
   }).flatMap(turn => [...turn.querySelectorAll('[data-testid="task-chat-final-response"]')]
     .filter(node => visible(node)).map(node => (node as HTMLElement).innerText)).join("\n");
 }
-export async function waitForVisibleSkillReview(ctx: ChatCatalogContext, input: { runId: string; humanCommentId: string }) {
+/** The rendered completion is a fallback for a turn whose saved reply is incomplete; it renders with the turn or not at
+ * all, so a short bounded wait decides it instead of the whole observation budget. */
+export const VISIBLE_SKILL_REVIEW_WAIT_MS = 15_000;
+export async function waitForVisibleSkillReview(ctx: ChatCatalogContext, input: { runId: string; humanCommentId: string }, waitMs = VISIBLE_SKILL_REVIEW_WAIT_MS) {
   remainingIdentityObservationBudget(ctx);
-  return pollUntil({ label: "current visible skill-review completion", deadlineAt: ctx.observationDeadlineAt!, intervalMs: 250,
+  const deadlineAt = Math.min(ctx.observationDeadlineAt!, Date.now() + waitMs);
+  return pollUntil({ label: "current visible skill-review completion", deadlineAt, intervalMs: 250,
     load: () => ctx.input.page.evaluate(readVisibleSkillReview, input),
-    accept: text => Date.now() < ctx.observationDeadlineAt! && !!text.trim(),
+    accept: text => Date.now() < deadlineAt && !!text.trim(),
   });
 }
 export function skillReviewPreviewText(o: UpdateObservation) {
@@ -100,9 +104,13 @@ function claimsAppliedUpdate(reply: string) {
   return [...reply.matchAll(/\b(?:I (?:have )?(?:updated|applied|installed)|update (?:is |has been )?(?:applied|installed|complete))\b/gi)]
     .some(match => !/^update /i.test(match[0]) || !/\bno\s+$/i.test(reply.slice(0, match.index)));
 }
-function previewNarrativeCorrect(reply: string) {
-  return (reply.includes(accessibilityUpdatePins.oldCommit.slice(0, 7)) || /(?:installed|current|currently)[^\n]{0,80}\b0\.4\b|\b0\.4\b[^\n]{0,80}(?:installed|current)/i.test(reply))
-    && substantiveDiff(reply) && !claimsAppliedUpdate(reply);
+/** The preview names the installed revision: its commit or the pinned source's installed version literal (0.4).
+ * Saved state, not wording, proves that revision is still the installed snapshot. */
+function namesInstalledRevision(reply: string) {
+  return reply.includes(accessibilityUpdatePins.oldCommit.slice(0, 7)) || /(?<![\d.])0\.4(?!\d)/.test(reply);
+}
+export function previewNarrativeCorrect(reply: string) {
+  return namesInstalledRevision(reply) && substantiveDiff(reply) && !claimsAppliedUpdate(reply);
 }
 export async function collectVisibleSkillReviewFallback(ctx: ChatCatalogContext, base: InternalObservation, issueId: string): Promise<VisibleSkillReview | undefined> {
   // A complete persisted review is already the ordinary user-facing answer.
@@ -111,7 +119,14 @@ export async function collectVisibleSkillReviewFallback(ctx: ChatCatalogContext,
   const run = acceptedSkillReviewRun(base, issueId);
   if (!run) return undefined;
   const humanCommentId = run.contextSnapshot!.commentId as string;
-  const visibleText = await waitForVisibleSkillReview(ctx, { runId: run.id, humanCommentId });
+  let visibleText: string;
+  try { visibleText = await waitForVisibleSkillReview(ctx, { runId: run.id, humanCommentId }); }
+  catch (error) {
+    // The saved reply alone is graded; record why no rendered completion supplemented it.
+    await ctx.input.evidence("chat-skill-review-visible-fallback.json", { runId: run.id, issueId, humanCommentId, found: false,
+      reason: error instanceof Error ? error.message : String(error) });
+    return undefined;
+  }
   return { runId: run.id, issueId, humanCommentId, summary: run.resultJson!.summary as string, visibleText };
 }
 function previewCorrect(o: UpdateObservation) {
@@ -163,7 +178,7 @@ export const integratorSkillUpdateCases = [integratorDefinition("skills", "skill
   const selected = await saveSkillConversationContext(ctx, { description: `Selected upstream accessibility skill: ${upstream.name} (${upstream.id}), tracked source ${source.id}. Installed source revision ${upstream.sourceRef}; tracking reference ${source.trackingRef}. Separate editable local copy: ${localFork.name} (${localFork.id}).` });
   return { upstream, localFork, source, factualContextAttachment: selected.factualContextAttachment, localVersions: await readSkillVersionHistory(ctx.input.api, ctx.input.fixtures.company.id, localFork.id, localFork.currentVersionId) };
 }, observeUpdate, gradeIntegratorSkillUpdate, async (ctx, state) => { const skill = state.upstream as CompanySkillDetail; await inspectResult(ctx, `/${ctx.input.fixtures.company.issuePrefix}/skills/studio/${skill.id}`, skill.name); },
-{ oracleVersion: "paperclip.chat-catalog.integrator.v3", authentication: "human-session", queryAttachments: factualContextQueryAttachment("skill-context.md"), expectedRunCount: 2, expectedHumanMessageCount: 2, attemptTimeoutMs: 540_000,
+{ oracleVersion: "paperclip.chat-catalog.integrator.v4", authentication: "human-session", queryAttachments: factualContextQueryAttachment("skill-context.md"), expectedRunCount: 2, expectedHumanMessageCount: 2, attemptTimeoutMs: 540_000,
   sourceFiles: ["chat-catalog-domains/identity-support.ts", "chat-catalog-domains/integrator-skill-versions.ts", "chat-catalog-domains/integrator-skill-update.ts", "chat-catalog-domains/integrator-skill-source.ts", "chat-catalog-domains/integrator-support.ts", "chat-catalog-domains/internal-support.ts", "chat-scenarios/skills.yaml"],
   async act(ctx, state) {
     updateReceipts.delete(ctx);

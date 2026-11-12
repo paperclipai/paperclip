@@ -173,6 +173,29 @@ export async function waitForSavedTurnReplyRender(page: Pick<Page, "evaluate">, 
     await new Promise(resolve => setTimeout(resolve, intervalMs));
   }
 }
+/** What a turn's reply wait saw: the bounded wait in the open document and, when the saved reply was still not
+ * rendered there, the same wait after one reload. */
+export interface TurnReplyRenderWait {
+  result: ConversationReplyRender | "unsaved";
+  attempts: Array<{ phase: "open-document" | "after-reload"; result: ConversationReplyRender | "unsaved"; waitedMs: number }>;
+}
+/** A saved reply that the open conversation still has not rendered after the bounded wait is not waited for
+ * forever: reload once (a fresh document reads the saved conversation) and wait again. Both results are
+ * returned so evidence shows whether the reply needed the reload, which points at a live-update defect. */
+export async function waitForSavedTurnReplyRenderReloadingOnce(page: Pick<Page, "evaluate" | "reload">, input: Parameters<typeof waitForSavedTurnReplyRender>[1],
+  timeoutMs = TURN_REPLY_SAVE_WAIT_MS, intervalMs = 250): Promise<TurnReplyRenderWait> {
+  const attempts: TurnReplyRenderWait["attempts"] = [];
+  const attempt = async (phase: TurnReplyRenderWait["attempts"][number]["phase"]) => {
+    const started = Date.now();
+    const result = await waitForSavedTurnReplyRender(page, input, timeoutMs, intervalMs);
+    attempts.push({ phase, result, waitedMs: Date.now() - started });
+    return result;
+  };
+  const first = await attempt("open-document");
+  if (first !== "pending") return { result: first, attempts };
+  await page.reload({ waitUntil: "domcontentloaded" });
+  return { result: await attempt("after-reload"), attempts };
+}
 export async function collectConversationLinks(page: Page, input: ConversationLinkInput) {
   return (await collectConversationLinksWithDiagnostics(page, input)).links;
 }
