@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { parseCommand } from "./config.js";
 import { planWave } from "./scheduler.js";
-import { ReleaseSwapRun, RELEASE_SWAP_DEFAULTS, expandReleaseSwapArgs, planReleaseSwaps, swapDueAt } from "./release-swap-schedule.js";
+import { OVERLAP_LAUNCH_READY_MARGIN_MS, ReleaseSwapRun, RELEASE_SWAP_DEFAULTS, RELEASE_SWAP_SHORT, expandReleaseSwapArgs, overlapLaunchExtensionMs, planReleaseSwaps, swapDueAt } from "./release-swap-schedule.js";
 
 describe("release swap options", () => {
   it("expands the defaults into a storm of overlapping K15 swaps", () => {
@@ -85,6 +85,27 @@ describe("release swap scheduler", () => {
     expect(run.mayLaunch(2_000_001)).toBe(false);
     expect(run.exhaustedEarly(2_000_001)).toBe(false);
     expect(run.endIfDue(2_000_002)).toBe(false);
+  });
+
+  it("reports no task-pool shortfall once every swap settled, even before the drain is noticed", () => {
+    const run = new ReleaseSwapRun(plan, 0);
+    for (let index = 0; index < 3; index += 1) {
+      const at = swapDueAt(0, 600_000, index);
+      run.commit(run.due(at)!, at);
+      run.settled(at + 100_000);
+    }
+    expect(run.ended).toBe(false);
+    expect(run.exhaustedEarly(2_000_000)).toBe(false);
+  });
+
+  it("extends a task launched during the overlap by the time it overlapped the swap, for the full and short presets", () => {
+    for (const preset of [RELEASE_SWAP_DEFAULTS, RELEASE_SWAP_SHORT]) {
+      const switchedAt = 1_000_000;
+      const stoppedAt = switchedAt + preset.overlapMs + 2_000;
+      expect(overlapLaunchExtensionMs(switchedAt, stoppedAt)).toBe(preset.overlapMs + 2_000 + OVERLAP_LAUNCH_READY_MARGIN_MS);
+      expect(overlapLaunchExtensionMs(stoppedAt - 20_000, stoppedAt)).toBe(20_000 + OVERLAP_LAUNCH_READY_MARGIN_MS);
+      expect(preset.overlapMs).toBeGreaterThanOrEqual(510_000);
+    }
   });
 
   it("does not commit a swap that is not due", () => {

@@ -3,7 +3,7 @@ import { rm } from "node:fs/promises";
 import { promisify } from "node:util";
 import type { ChaosApi } from "./api.js";
 import { PREP_PROBE_CAP, PROBE_AGENT_CONCURRENCY, ReleaseSwapDriver, hireProbeAgents, homeCleanupPlugin, pgRunReader } from "./release-swap-driver.js";
-import { ReleaseSwapRun, type ReleaseSwapOptions } from "./release-swap-schedule.js";
+import { ReleaseSwapRun, overlapLaunchExtensionMs, type ReleaseSwapOptions } from "./release-swap-schedule.js";
 import { finishReleaseSwap, type ReleaseSwapFinishInput } from "./release-swap-finish.js";
 import { StormRun } from "./scheduler.js";
 import { setOverlapProbe } from "./staging-mix.js";
@@ -62,7 +62,23 @@ export class ReleaseSwapWave {
       timeline: input.timeline, temporaryRoot: input.supervisor.paths.temporaryRoot, freshHome: options.k15FreshHome === true, cancelled: input.cancelled });
     input.supervisor.swapHook = driver.hook;
     setOverlapProbe(() => driver.launchOpen);
-    return new ReleaseSwapWave(driver, db, input.plan, input.lab, input.api, input.timeline, input.supervisor, input.cancelled);
+    const wave = new ReleaseSwapWave(driver, db, input.plan, input.lab, input.api, input.timeline, input.supervisor, input.cancelled);
+    driver.plugins.push({ name: "overlap-launch-deadlines", onPhase: async (_swap, info) => { if (info.phase === "stopped") wave.extendOverlapLaunches(info.at); } });
+    return wave;
+  }
+
+  private overlapLaunches: Array<{ observer: Pick<TaskObserver, "extendDeadline" | "plan">; at: number }> = [];
+
+  noteLaunch(observer: Pick<TaskObserver, "extendDeadline" | "plan">, at = Date.now()): void {
+    if (this.driver.launchOpen) this.overlapLaunches.push({ observer, at });
+  }
+
+  extendOverlapLaunches(stoppedAt: number): void {
+    for (const { observer, at } of this.overlapLaunches.splice(0)) {
+      const ms = overlapLaunchExtensionMs(at, stoppedAt);
+      observer.extendDeadline(ms);
+      this.timeline.add("release_swap_deadline_extended", { taskId: observer.plan.taskId, ms });
+    }
   }
 
   async finish(input: { board: ReleaseSwapFinishInput["board"]; observers: readonly TaskObserver[]; launched: readonly TaskObserver[]; waveDir: string }): Promise<boolean> {

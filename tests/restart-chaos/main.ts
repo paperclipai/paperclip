@@ -657,7 +657,7 @@ async function main(): Promise<number> {
         // `--matrix`: no-fault baselines never share the server with a fault cell.
         && (!plan.options.matrix || matrixMayLaunch(pending[0]!.plan, active.filter(observer => !observer.done).map(observer => observer.plan)))) {
         const next = pending.shift()!;
-        launched.push(next);
+        launched.push(next); releaseSwap?.noteLaunch(next);
         launching = next.launch().finally(() => { launching = null; });
         await launching;
         if (plan.options.storageWindows && storageChaos && launched.length === 1) storageChaos.start();
