@@ -179,6 +179,9 @@ import {
   statusDecisionEffects,
   environmentLeases,
   environments,
+  executionWorkspaces,
+  executionWorkspaceSnapshots,
+  workspaceOperations,
   principalPermissionGrants,
   projects,
   projectWorkspaces,
@@ -65401,7 +65404,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
             status: "running", startedAt: new Date() });
           f.wakeup.mockImplementation(heartbeatService(db).wakeup);
         }
-        await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.runId));
+        if (process.env.EXPLORE_NOSTOP) await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.runId));
         await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
         const diagnostic = mode === "other_setup" ? "A different preparation failure" : "The workspace still has an unfinished writer or save operation.";
         await db.update(heartbeatRuns).set({ runtimeMode: "legacy", nativeIssueId: null, nativePhase: null,
@@ -65888,6 +65891,110 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       } finally { await f.service.shutdown(); }
     },
   );
+
+  it.each(["person", "restart_recovery"] as const)("continues an accepted GitHub task Retry from recovered saved work when its chat replay is refused after the click: %s", async initiator => {
+    const f = await currentGitHubTaskRetryFixture(false);
+    try {
+      const companyId = f.fixture.companyId, issueId = f.issue.id;
+      const leaseId = randomUUID(), providerLeaseId = randomUUID(), workspaceId = randomUUID(), snapshotId = randomUUID();
+      await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.runId));
+      await db.insert(executionWorkspaces).values({ id: workspaceId, companyId, sourceIssueId: issueId,
+        name: "Review workspace", providerType: "cloud_sandbox", mode: "isolated_workspace", strategyType: "project_primary",
+        cwd: `/workspaces/${workspaceId}`, metadata: { remoteWorkspace: { schema: "paperclip.remote-workspace.v1", epoch: 2,
+          snapshotId, source: { kind: "empty" }, location: null, writerRunId: null, dirty: false } } });
+      await db.insert(executionWorkspaceSnapshots).values({ id: snapshotId, companyId, executionWorkspaceId: workspaceId,
+        sourceOperationId: randomUUID(), sourceRunId: f.runId, generation: 1, epoch: 2, status: "committed", sha256: "c".repeat(64) });
+      await db.update(heartbeatRuns).set({ errorCode: "native_continuation_requires_reconciliation",
+        error: "runner_remote_process_identity_unavailable",
+        resultJson: { stopReason: "adapter_failed", workspaceRestoreFailure: "restore_failed", workspaceRestoreRecovery: {
+          schema: "paperclip.workspace-restore-recovery.v1", leaseIds: [leaseId] } },
+        runnerProfileJson: { remoteWorkspace: { schema: "paperclip.remote-workspace-run.v1", epoch: 2, state: "saved",
+          leaseId, providerLeaseId, remoteCwd: `/workspaces/${workspaceId}`, snapshotId, workspaceId } },
+      }).where(eq(heartbeatRuns.id, f.runId));
+      const lease = { id: leaseId, providerLeaseId, companyId, issueId, heartbeatRunId: f.runId, provider: "daytona",
+        status: "expired", cleanupStatus: "success", releasedAt: new Date(), leasePolicy: "ephemeral" };
+      await db.insert(environmentLeases).values({ ...lease, metadata: { remoteExecutionTermination:
+        remoteTerminationReceipt(lease, { providerLeaseId, state: "destroyed" }) } });
+      const recoveryActionId = randomUUID();
+      await db.insert(issueRecoveryActions).values({ id: recoveryActionId, companyId, sourceIssueId: issueId,
+        kind: "active_run_watchdog", status: "resolved", ownerType: "system", outcome: "blocked",
+        cause: "native_continuation_requires_reconciliation", fingerprint: `native-workspace:${f.runId}`,
+        nextAction: "The original sandbox is retained for workspace repair.", evidence: { runId: f.runId,
+          automaticRecovery: { runId: f.runId, policy: "preserve_without_replay_v1", replay: "blocked", actionOutcome: "unknown" },
+          systemRecovery: { ...createSystemRecovery(f.runId), state: "complete", phase: "reconcile_effects", attempts: 1,
+            preservationOperationIds: [randomUUID()] },
+          workspaceRecovery: { schema: "paperclip.workspace-recovery.v1", runId: f.runId, status: "recovered",
+            stage: "saving_receipts", attempt: 1, retryable: true, requestIds: [], attemptLimit: 6 },
+          continuationDelivery: "invalidated", workspaceRestoreFailure: "restore_failed",
+          workspaceRestoreRecovery: { schema: "paperclip.workspace-restore-recovery.v1", leaseIds: [leaseId] },
+        } });
+      await db.insert(workspaceOperations).values({ companyId, issueId, heartbeatRunId: f.runId,
+        executionWorkspaceId: workspaceId, phase: "workspace_recovery", status: "succeeded", finishedAt: new Date(),
+        metadata: { recoveryActionId, leaseId, providerLeaseId, snapshotId, generation: 1, sha256: "c".repeat(64),
+          storage: "remote_workspace", epoch: 2 } });
+      const { getExecutionBlocker } = await import("../services/execution-blocker.js");
+      const blocker = await getExecutionBlocker(db, companyId, issueId);
+      const interruption = await taskInterruptionPresentation(db, f.issue);
+      expect(interruption).toMatchObject({ state: "failed", canRetry: true });
+      expect(blocker).toMatchObject({ recoveryActionId, canRetry: true,
+        nextAction: "Saved work recovered. Retry continues from it.",
+        workspaceRecovery: { status: "recovered", message: "Saved work recovered. Retry continues from it." } });
+      expect(JSON.stringify(blocker)).not.toContain("Send a message");
+
+      const identityLock = `chat-identity:${companyId}:${f.action.principalId}`;
+      const holdLock = async (lock: (tx: Parameters<Parameters<typeof db.transaction>[0]>[0]) => Promise<unknown>) => {
+        let release = () => {}, locked = () => {};
+        const held = new Promise<void>(resolve => { release = resolve; });
+        const ready = new Promise<void>(resolve => { locked = resolve; });
+        const holder = db.transaction(async tx => { await lock(tx); locked(); await held; });
+        await ready;
+        return async () => { release(); await holder; };
+      };
+      const releaseIdentity = await holdLock(tx => tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${identityLock}, 0))`));
+      let request: Awaited<ReturnType<typeof requestTaskRetry>>;
+      try {
+        request = await requestTaskRetry({ db, companyId, issueId, actorId: "owner-user", actorSource: "cloud_tenant",
+          observedRunId: f.runId, idempotencyKey: randomUUID(), prepareChatRetry: f.service.prepareFailedChatRunRetry,
+          ...(initiator === "person" ? {} : { initiatedBy: initiator }) });
+      } finally { await releaseIdentity(); }
+      expect(request).toMatchObject({ accepted: true, stale: false, chatActionId: expect.any(String) });
+      const chatAction = async () => (await db.select().from(chatActions).where(eq(chatActions.id, request.chatActionId!)))[0];
+      expect((await chatAction()).payload.sourceAuthorizationPending).toBe(true);
+
+      const releaseAgent = await holdLock(tx => tx.select().from(agents)
+        .where(eq(agents.id, f.fixture.assignedAgentId)).for("update"));
+      try {
+        await vi.waitFor(async () => {
+          await f.service.processFailedChatRunRetry(request.chatActionId!);
+          expect((await chatAction()).status).toBe("failed");
+        }, { timeout: 30_000, interval: 250 });
+      } finally { await releaseAgent(); }
+      expect(await readAgentWakeupRequestsById(request.chatActionId!)).toHaveLength(0);
+
+      await reconcileTaskChatRetryReceipts(db, { companyId, settleOnly: true });
+      if (initiator !== "person") {
+        expect((await readAgentWakeupRequestsById(request.requestId!))[0]).toMatchObject({ status: "failed", runId: null });
+        expect((await readHeartbeatRunsByCompanyId(companyId))
+          .filter(candidate => candidate.contextSnapshot?.taskRetryRequestId === request.requestId)).toHaveLength(0);
+        return;
+      }
+      const [continued] = await readAgentWakeupRequestsById(request.requestId!);
+      expect(continued).toMatchObject({ status: "deferred_issue_execution", runId: null });
+      expect(taskRetryModule.readTaskRetryIntent(continued.payload)?.chatActionId).toBeUndefined();
+      await heartbeatService(db).resumeTaskRetry(companyId, request.requestId!);
+      const [admitted] = await readAgentWakeupRequestsById(request.requestId!);
+      expect(admitted).toMatchObject({ status: "coalesced", runId: expect.any(String) });
+      const [run] = await readHeartbeatRunsById(admitted.runId!);
+      expect(run).toMatchObject({ status: "queued", contextSnapshot: { issueId, taskRetryRequestId: request.requestId } });
+      expect(await readFreshWorkspaceReadiness(db, run)).toMatchObject({ mode: "resume_preserved_workspace" });
+      expect((await readHeartbeatRunsByCompanyId(companyId))
+        .filter(candidate => candidate.contextSnapshot?.taskRetryRequestId === request.requestId)).toHaveLength(1);
+      const activity = await db.select().from(activityLog).where(and(eq(activityLog.entityId, issueId),
+        eq(activityLog.action, "issue.retry_continued_from_saved_work")));
+      expect(activity).toHaveLength(1);
+      expect(activity[0].details).toMatchObject({ requestId: request.requestId, refusedChatActionId: request.chatActionId });
+    } finally { await f.service.shutdown(); }
+  }, 90_000);
 
   it.each(["legacy_receipt", "concurrent_clicks", "lost_dispatch_reply", "restart", "retry_failed_successor", "http", "handoff_rollback", "board_permission_wait", "peer_conversation", "backlog_51", "consumed_backlog_52"] as const)(
     "preserves one current GitHub Retry across %s", async mode => {

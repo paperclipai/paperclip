@@ -132,7 +132,7 @@ describe("execution truth projection", () => {
     const projected = projectExecution(source, coordinator({ phase: "terminal_failure" }), [], action, now);
     expect(projected).toMatchObject({
       phase: "recovery_needed", label: "Stopped", cause: action.cause,
-      nextAction: status === "recovered" ? "Saved work recovered. Send a message to continue."
+      nextAction: status === "recovered" ? "Saved work recovered. Retry continues from it."
         : status === "blocked" ? "The saved source cannot be read safely." : "Recovering saved work…",
       permittedActions: ["inspect_run"], successorRunId: null,
     });
