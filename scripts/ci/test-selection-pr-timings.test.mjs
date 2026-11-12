@@ -4,7 +4,7 @@ import test from "node:test";
 import { ghApi, resetGhApiForTests } from "./gh-api.mjs";
 import OversizedSpecReporter from "./oversized-test-files-playwright.mjs";
 import OversizedTestFileReporter, { oversizedAnnotation, oversizedThresholdMs } from "./oversized-test-files.mjs";
-import { attributeSpec, collectMergedPrSamples, completeShardSet, e2eShardJob, parseE2eLog, parseRunnerLog,
+import { assertManifestSource, attributeSpec, collectMergedPrSamples, completeShardSet, e2eShardJob, parseE2eLog, parseRunnerLog,
   runnerInventory, runnerPackageJob, validatePrRun, validatePull } from "./pr-run-durations.mjs";
 import { oversizedFiles, oversizedPlaceholder, parseArgs, parseTimings, renderPrBody, serverLane, updatedDurations } from "./refresh-test-durations.mjs";
 import { timingPrefix } from "./test-timing-reporter.mjs";
@@ -223,6 +223,12 @@ test("collection skips unmerged, absent, stale-head and incomplete runs, and sam
   const result = await collectMergedPrSamples({ gh, lanes, isMerged: merge => merge !== sha("c"), log: line => warnings.push(line) });
   assert.deepEqual(result.e2e.sources.map(source => source.run), [21]);
   assert.deepEqual(result.runner.sources, [{ pull: 2, run: 21, attempt: 1, sha: sha("2"), url: "https://example.test/21" }]);
+  // The checked-in manifest test uses this same check, so the format the
+  // collector writes stays accepted even while no manifest carries it yet.
+  for (const source of [...result.e2e.sources, ...result.runner.sources]) assertManifestSource(source);
+  assertManifestSource({ run: 21, attempt: 1, sha: sha("2"), url: "https://example.test/21" });
+  for (const bad of [{ run: 21, attempt: 1, sha: sha("2") }, { pull: 0, run: 21, attempt: 1, sha: sha("2"), url: "u" },
+    { run: 21, pull: 2, attempt: 1, sha: sha("2"), url: "u" }]) assert.throws(() => assertManifestSource(bad));
   assert.deepEqual(Object.fromEntries(result.e2e.samples[0]), { "tests/e2e/alpha.spec.ts": { ms: 15_000, complete: true } });
   assert.match(warnings.join("\n"), /e2e: skipped run 50 for PR #5: Parsed 4 of 9/);
   // PR 3 is not in this checkout and PR 4 never merged: neither is queried.
