@@ -29,7 +29,11 @@ export function hostedToken(target: HostedTarget, env: NodeJS.ProcessEnv = proce
     + "Ask the owner to approve a board sign-in for this host first (README: Hosted mode, Sign-in).");
 }
 
-export interface RequestRecord { at: number; ok: boolean; reachable: boolean; status: number | null; ms: number; method: string }
+export interface RequestRecord { at: number; ok: boolean; reachable: boolean; status: number | null; ms: number; method: string; kind: "health" | "api"; path: string }
+
+export function pathClass(route: string): string {
+  return route.split("?")[0]!.replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, ":id");
+}
 
 export class HostedApi {
   readonly requests: RequestRecord[] = [];
@@ -39,7 +43,7 @@ export class HostedApi {
 
   get baseUrl(): string { return this.target.baseUrl; }
 
-  private async once(method: string, route: string, body: unknown, timeoutMs: number): Promise<{ status: number | null; text: string; retryAfterMs: number | null }> {
+  private async once(method: string, route: string, body: unknown, timeoutMs: number): Promise<{ status: number | null; text: string; retryAfterMs: number | null; record: RequestRecord }> {
     const url = `${this.target.baseUrl}${route}`;
     assertSameOrigin(this.target, url);
     const started = Date.now();
@@ -49,11 +53,14 @@ export class HostedApi {
           ...(body === undefined ? {} : { "content-type": "application/json" }) },
         body: body === undefined ? undefined : JSON.stringify(body) });
       const text = await response.text();
-      this.requests.push({ at: started, ok: response.ok || ANSWERED_REFUSALS.has(response.status), reachable: response.status < 500, status: response.status, ms: Date.now() - started, method });
-      return { status: response.ok ? 200 : response.status, text, retryAfterMs: rateLimitDelayMs(response, text) };
+      const record: RequestRecord = { at: started, ok: response.ok || (route !== "/api/health" && ANSWERED_REFUSALS.has(response.status)), reachable: response.status < 500, status: response.status,
+        ms: Date.now() - started, method, kind: route === "/api/health" ? "health" : "api", path: pathClass(route) };
+      this.requests.push(record);
+      return { status: response.ok ? 200 : response.status, text, retryAfterMs: rateLimitDelayMs(response, text), record };
     } catch (error) {
-      this.requests.push({ at: started, ok: false, reachable: false, status: null, ms: Date.now() - started, method });
-      return { status: null, text: error instanceof Error ? error.message : String(error), retryAfterMs: null };
+      const record: RequestRecord = { at: started, ok: false, reachable: false, status: null, ms: Date.now() - started, method, kind: route === "/api/health" ? "health" : "api", path: pathClass(route) };
+      this.requests.push(record);
+      return { status: null, text: error instanceof Error ? error.message : String(error), retryAfterMs: null, record };
     }
   }
 
@@ -87,6 +94,7 @@ export class HostedApi {
       const body = JSON.parse(result.text) as { commit?: string; serverInfo?: { processStartedAt?: string } };
       return { at, ok: true, status: 200, ms, processStartedAt: body.serverInfo?.processStartedAt ?? null, commit: body.commit ?? null };
     } catch (error) {
+      result.record.ok = false;
       return { at, ok: false, status: 200, ms, processStartedAt: null, commit: null, error: `unparseable health: ${String(error)}` };
     }
   }
@@ -120,6 +128,27 @@ export class HealthProbe {
   }
 }
 
+export const apiRequests = (records: readonly RequestRecord[]) => records.filter(record => record.kind === "api");
+
 export function requestSamples(records: readonly RequestRecord[]): HealthSample[] {
   return records.map(record => ({ at: record.at, ok: record.ok, status: record.status, ms: record.ms, processStartedAt: null, commit: null }));
+}
+
+export interface RequestBreakdown {
+  requests: number;
+  failures: number;
+  byStatus: Record<string, number>;
+  insideReleases: number;
+  outsideReleases: number;
+  outside: Array<{ at: string; method: string; path: string; status: number | null }>;
+}
+
+export function requestBreakdown(records: readonly RequestRecord[], windows: ReadonlyArray<{ from: number; to: number }>): RequestBreakdown {
+  const failed = records.filter(record => !record.ok);
+  const inside = (at: number) => windows.some(window => at >= window.from && at <= window.to);
+  const byStatus: Record<string, number> = {};
+  for (const record of failed) byStatus[String(record.status ?? "no answer")] = (byStatus[String(record.status ?? "no answer")] ?? 0) + 1;
+  const outside = failed.filter(record => !inside(record.at));
+  return { requests: records.length, failures: failed.length, byStatus, insideReleases: failed.length - outside.length, outsideReleases: outside.length,
+    outside: outside.slice(0, 50).map(record => ({ at: new Date(record.at).toISOString(), method: record.method, path: record.path, status: record.status })) };
 }

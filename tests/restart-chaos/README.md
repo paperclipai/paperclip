@@ -610,7 +610,9 @@ server has stopped (the first home holds the database and stays). Every swap rec
 
 **Grading** (`release-swap-grade.ts`, `release-swap-finish.ts`) runs once, after the last swap plus the settle
 period and a bounded drain: the grader waits until no started task has a queued or running run with activity in the
-last 5 minutes, or until the drain cap. A task still running at the cap is not counted in the number; the headline
+last 5 minutes and no run was created or finished for a quiet period of 90 s (`QUIET_PERIOD_MS`), or until the drain
+cap. The quiet period lets a continuation the product wakes after a run ends (for example a parent woken when its
+subtasks finish) start before the read, so the task is graded by that continuation, not as `nothing pending`. A task still running at the cap is not counted in the number; the headline
 reports how many with the age of their last activity, and the wave fails. The grade uses the same 5-minute threshold:
 after the drain, a run with no event for 5 minutes, a queued wake, a scheduled retry or a working notice with no
 progressing run behind it is not pending work, so the task is `nothing pending`. The single read then covers every task of the wave's company that had a run (probes and agent-created subtasks included), the
@@ -634,12 +636,24 @@ grade, and the headline says how many: the number is then incomplete and the wav
 Only `pass` counts as completed. Each grade names its reason, and the summary counts the non-passing tasks by
 verdict and reason, so a wave shows which failure each task rests in. The first line of `release-swap-summary.md` (also the top of `SUMMARY.md`) is
 the wave's one number: `<pass> / <started> tasks completed without human action`. The table under it gives per
-swap the runs that failed (`failed`, `timed_out`, `interrupted`) between that swap and the next, the runs that
+swap the runs that failed (`failed`, `timed_out`, `interrupted`) at that swap: live at the outgoing server's SIGTERM, or
+failed within 15 minutes of it (`RELEASE_FAILURE_WINDOW_MS`). Other failed runs are listed on their own line as failed
+outside a release window. The table also gives the runs that
 failed with a lost-ownership code while the outgoing server was still alive and owned them, and the time from
 A's SIGTERM to the next event of each run that was live across it and did not fail. `release-swap.json` holds
 every grade, every failed run with its error code, message and last error events, each swap's run samples and
 probes, and the duplicates: two runs of one task executing at once, two Runner processes for one run, repeated
-identical agent comments and repeated subtask titles. The wave fails unless every task passed.
+identical agent comments and repeated subtask titles. The product's per-turn notice "Prepared <document> for this
+response." is not a duplicated comment; its repeats are counted on the same line as information only. The wave fails
+unless every task passed.
+
+**Swap moments.** Each swap has five moments, in the timeline as `swap_incoming_spawned`, `swap_incoming_ready`,
+`swap_traffic_switched`, `swap_outgoing_sigterm` and `swap_outgoing_exited`. `fault_started` marks only that the swap
+was requested (`marks: "swap_requested"`); it carries no signal for an overlap swap, and the outgoing server's real
+SIGTERM is `swap_outgoing_sigterm`. `incoming_ready` is the moment the supervisor confirmed readiness before switching
+traffic, or the readiness watcher's earlier answer, so it never falls after `traffic_switched`. The summary prints the five times per swap, then each run started during the swap
+with the two moments it started between and whether the outgoing or the incoming server started it
+(`release-swap-moments.ts`).
 
 ## Hosted mode (`--hosted-base-url`, `--hosted-allow`)
 
@@ -727,11 +741,16 @@ run's agents, the task view from `/api/issues/:id`, pending questions and approv
 approvals, failure chains and next events from `/api/heartbeat-runs/:id/events`, and duplicated comments and
 subtasks from comments and the issue list. Per release the table counts failed runs and the time from the old
 build's last answer to each surviving run's next event. Web and API continuity are reported for both the health
-probe and every API request the harness made: requests, failures, slow answers and the longest gap between
-successful answers. A health probe fails unless `/api/health` answers 200 with a readable body. An API request fails
+probe and every API request the harness made, counted separately: requests, failures, slow answers and the longest
+gap between successful answers. Every request, cleanup included, is saved at the end of every mode with its time, method, path
+with ids replaced by `:id`, status, duration, and whether it was a health probe. A run writes `requests.jsonl`;
+`--hosted-cleanup-only` and `--hosted-observe-only` write their own `requests-<mode>-<time>.jsonl`, so a later call never
+replaces a run's records. The summary breaks failures down by status and by
+inside or outside a release window (from the old build's last answer to 60 s after the new build answers). A health probe fails unless `/api/health` answers 200 with a readable body. An API request fails
 on no answer, a server error, or 401, 403, 408 or 429; a deliberate 400, 404, 409 or 422 answer is not a failure. Runs come from the company run list, or from every task's
 run list when that list is full, so no task's early runs are lost. A queued or running run with no activity for 5
-minutes is not a live owner, the same window the drain uses.
+minutes is not a live owner, the same window the drain uses. The drain also waits for the 90 s quiet period
+(`--hosted-quiet-seconds`), and the grade reads runs and task views again immediately before grading.
 
 These fields are unavailable over the API and are reported as unavailable, not guessed:
 
