@@ -75,7 +75,7 @@ export function skillSourceService(db: Db) {
   async function summaryRow(companyId: string, id: string, database: Db | Tx = db) {
     const { securityOverride: _override, ...columns } = getTableColumns(sources);
     const [source] = await database.select({ ...columns, securityOverride: sql<SkillSourceSecurityOverrideSummary | null>`case when ${sources.securityOverride} is null then null
-      else (${sources.securityOverride} - 'files') || jsonb_build_object('fileCount', jsonb_array_length(${sources.securityOverride} -> 'files')) end` })
+      else (${sources.securityOverride} - array['files', 'retained']) || jsonb_build_object('fileCount', jsonb_array_length(${sources.securityOverride} -> 'files')) end` })
       .from(sources).where(scope(companyId, id));
     if (!source || source.removedAt) throw notFound('Skill source not found.');
     return source;
@@ -142,6 +142,25 @@ export function skillSourceService(db: Db) {
       commit: recorded.commitSha, files: recorded.files, reason: recorded.reason, trustFutureUpdates: recorded.trustFutureUpdates,
       approvedByUserId: recorded.approvedByUserId, approvedAt: recorded.approvedAt,
     });
+  }
+  /**
+   * A new approval replaces the saved one, but publish can keep a skill on its older version, for example
+   * when the skill has another error at the new commit. Keep the replaced approvals that still cover an
+   * installed version so audits of those files keep accepting them.
+   */
+  async function retainReplacedApprovals(tx: Tx, source: SourceRow, recorded: SkillSourceSecurityOverride) {
+    const previous = source.securityOverride!;
+    const installed = await tx.select({ sourceRef: companySkills.sourceRef }).from(companySkills).where(and(
+      eq(companySkills.companyId, source.companyId), sql`${companySkills.metadata} ->> 'skillSourceId' = ${source.id}`));
+    const installedRefs = new Set(installed.flatMap(row => row.sourceRef ? [row.sourceRef.toLowerCase()] : []));
+    const byCommit = new Map<string, NonNullable<SkillSourceSecurityOverride['retained']>[number]>();
+    for (const grant of [{ commitSha: previous.commitSha, files: previous.files }, ...(previous.retained ?? [])]) {
+      const commit = grant.commitSha.toLowerCase();
+      if (commit === recorded.commitSha.toLowerCase() || !installedRefs.has(commit) || byCommit.has(commit)) continue;
+      byCommit.set(commit, { commitSha: commit, files: grant.files });
+    }
+    if (!byCommit.size) return;
+    await tx.update(sources).set({ securityOverride: { ...recorded, retained: [...byCommit.values()] } }).where(scope(source.companyId, source.id));
   }
   /** A recorded override that carried over to a later commit through the future-updates opt-in. */
   async function auditCarriedSecurityOverride(tx: Tx, sourceId: string, stored: SkillSourceSecurityOverride | null, scan: ScannedSkillSource, selectedPaths: string[], context: SkillSourceContext) {
@@ -453,6 +472,7 @@ export function skillSourceService(db: Db) {
             approvedCommit: locked.securityOverride?.commitSha ?? null, fileCount: locked.securityOverride?.files.length ?? 0 });
         } else await auditCarriedSecurityOverride(tx, id, locked.securityOverride ?? null, scan, selectedPaths, context);
         const result = await publish(tx, locked, scan, selectedPaths, selection?.excludedFolders ?? source.excludedFolders, context, Boolean(selection), prepared);
+        if (recorded && locked.securityOverride) await retainReplacedApprovals(tx, locked, recorded);
         if (selection || scan.connectionId !== undefined) await tx.update(sources).set({ ...(selection ? { enabled: true } : {}), connectionId: scan.connectionId ?? connectionId,
           ...(source.refreshGrantId === null && reader.grantId ? { refreshGrantId: reader.grantId } : {}),
           ...(selection?.connectionId !== undefined || (!source.refreshUserId && !source.refreshLocalTrusted && context.setup) ? { refreshUserId: context.setup?.userId, refreshAgentId: context.setup?.agentId ?? null, refreshLocalTrusted: context.setup?.localTrusted ?? false, refreshGrantId: reader.grantId ?? null } : {}) }).where(scope(companyId, id));

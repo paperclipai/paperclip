@@ -3625,8 +3625,12 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     if (!grant) return undefined;
     // Installed bytes that equal the approved bytes at the same path are accepted whatever commit they
     // were published from: renewing trust at a new commit can leave an unchanged package on its older sourceRef.
-    const accept = securityOverrideAcceptor([grant], grant.commitSha, toRepositoryPath);
-    if (!accept || skill.metadata?.packageMode !== "repository") return accept;
+    // Approvals a renewal replaced still cover the versions a refresh kept installed.
+    const acceptors = [grant, ...(grant.retained ?? []).map(retained => ({ ...retained, trustFutureUpdates: false }))]
+      .flatMap(entry => securityOverrideAcceptor([entry], entry.commitSha, toRepositoryPath) ?? []);
+    if (!acceptors.length) return undefined;
+    const accept = (filePath: string, sha256: string, code: string) => acceptors.some(candidate => candidate(filePath, sha256, code));
+    if (skill.metadata?.packageMode !== "repository") return accept;
     // The generated SKILL.md repeats the original entrypoint's frontmatter. Accept its findings only
     // when the installed original itself matches the approval.
     const original = await fs.readFile(path.join(installedRoot, REPOSITORY_CONTENT_DIR, ...entrypoint.split("/"))).catch(() => null);

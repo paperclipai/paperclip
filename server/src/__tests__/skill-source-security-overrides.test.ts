@@ -245,6 +245,35 @@ Do useful work.
     expect((await skillSourceService(db).discover(input, base)).canOverrideSecurity).toBe(false);
   });
 
+  it('keeps accepting a kept older version after a renewal replaces its approval', async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: 'Kept version', issuePrefix: `K${companyId.slice(0, 6)}` });
+    let files: Record<string, string> = { 'skills/one/SKILL.md': md('one'), 'skills/one/install.sh': hook };
+    let commit = first;
+    const context: SkillSourceContext = { actor: { type: 'user', userId: 'admin-user' }, authorize: async () => {}, audit: async () => {},
+      read: () => githubFixture(files, {}, commit), authorizeSecurityOverride: async () => {} };
+    const service = skillSourceService(db);
+    const created = await service.create(companyId, {
+      repositoryUrl: 'https://github.com/acme/skills', trackingRef: 'main', packageMode: 'skills', commitSha: first, selectedPaths: ['skills/one/SKILL.md'],
+      securityOverride: { commitSha: first, reason: 'Maintained by our platform team.', trustFutureUpdates: false, files: [{ path: 'skills/one/install.sh', sha256: hash(hook) }] },
+    }, context);
+    const skillId = created.source.entries.find(entry => entry.path === 'skills/one/SKILL.md')?.skillId;
+    // The new commit changes the approved file and adds a leak, so the skill keeps its first-commit version.
+    const changedHook = `${hook}
+echo updated`;
+    files = { 'skills/one/SKILL.md': md('one'), 'skills/one/install.sh': changedHook, 'skills/one/leak.sh': leak }; commit = second;
+    const { revision } = await service.detail(companyId, created.source.id);
+    await service.refresh(companyId, created.source.id, context, { revision, selectedPaths: ['skills/one/SKILL.md'], excludedFolders: [],
+      securityOverride: { commitSha: second, reason: 'Reviewed the new hook by hand.', trustFutureUpdates: false, files: [{ path: 'skills/one/install.sh', sha256: hash(changedHook) }] } });
+    const skills = companySkillService(db);
+    expect((await skills.getById(companyId, skillId!))?.sourceRef).toBe(first);
+    const audit = await skills.auditSkill(companyId, skillId!);
+    expect(audit?.findings.filter(finding => finding.code === 'remote_fetch_exec')).toEqual([expect.objectContaining({ path: 'install.sh', severity: 'warning' })]);
+    const listed = await service.detail(companyId, created.source.id);
+    expect(listed.securityOverride).not.toHaveProperty('retained');
+    expect(listed.securityOverride).toMatchObject({ commitSha: second, fileCount: 1 });
+  });
+
   it('keeps approved files viewable in the saved source', async () => {
     const { companyId, service, context } = await setup(false);
     const preview = await service.preview(companyId, { repositoryUrl: 'https://github.com/acme/skills', packageMode: 'repository', commitSha: first,
