@@ -8,7 +8,7 @@ function valid(id: string) {
   return { scenarioId: id, origin: "https://fixture.test", companyId: "company", leadId: "ceo", state: { project: { id: "project" }, worker: { id: "morgan" }, routine: structuredClone(routine), originalRevisions: [structuredClone(revision)], setupActivityIds: ["setup-created"] },
     tasks: [], projects: [], goals: [], comments: [], documents: [], revisions: [], humanQueries: [], activity: (managed ? [{ id: "setup-created", action: "routine.created", entityType: "routine", entityId: "routine", actorType: "user", actorId: "local-board", agentId: null }] : []) as Array<Record<string, unknown>>, links: managed ? ["/ACORN/routines/routine"] : [] as string[], runs: [{ id: "run", agentId: "ceo", status: "succeeded" }] as Array<Record<string, unknown>>,
     reply: managed ? "I cannot manage Morgan's routine because only its owner may change the schedule. Morgan or a human operator can make this change." : "Saved one weekday routine for 9 in the morning America/Chicago. Each occurrence creates a task in Launch; future summaries have not run.",
-    routines: [routine], histories: { routine: [] }, routineRevisions: { routine: [revision] }, browserTimezone: "America/Chicago" };
+    routines: [routine], histories: { routine: [] }, routineRevisions: { routine: [revision] }, browserTimezone: "America/Chicago", sourceId: "source" };
 }
 describe("routine definition and management independent controls", () => {
   for (const definition of integratorRoutinesCases) it(`${definition.scenarioId}: saved public outcome and missing evidence`, () => {
@@ -62,6 +62,24 @@ describe("owner-routed routine change", () => {
     const outside = delegated(); outside.routines[0]!.triggers[0]!.cronExpression = "0 * * * *";
     outside.activity.push({ id: "w", action: "routine.trigger_updated", entityType: "routine", entityId: "routine", agentId: "morgan", runId: "other-run" });
     expect(gradeIntegratorRoutines(outside).passed).toBe(false);
+  });
+
+  const followUp = (id: string, taskId = "delegated") => ({ id, agentId: "ceo", status: "succeeded",
+    contextSnapshot: { issueId: "source", wakeReason: "chat_task_completed", paperclipWake: { chatCompletionUpdates: [{ id: taskId }] } } });
+  const roles = (o: ReturnType<typeof valid>) => gradeIntegratorRoutines(o).checks.find(check => check.id === "declared-run-roles")?.passed;
+  it("admits a third run only as the CEO's one completion follow-up for the single routed owner task", () => {
+    const relayed = delegated(); relayed.runs.push(followUp("follow-up"));
+    expect(gradeIntegratorRoutines(relayed).passed).toBe(true);
+    const fourth = delegated(); fourth.runs.push(followUp("follow-up"), { id: "extra", agentId: "ceo", status: "succeeded", contextSnapshot: { issueId: "source" } });
+    expect(roles(fourth)).toBe(false);
+    const repeated = delegated(); repeated.runs.push(followUp("follow-up"), followUp("again"));
+    expect(roles(repeated)).toBe(false);
+    const undelegated = valid("routines.manage-other-owner"); undelegated.runs.push({ id: "second", agentId: "ceo", status: "succeeded" }, followUp("follow-up"));
+    expect(roles(undelegated)).toBe(false);
+    const otherTask = delegated(); otherTask.runs.push(followUp("follow-up", "elsewhere"));
+    expect(roles(otherTask)).toBe(false);
+    const refused = valid("routines.manage-other-owner"); refused.runs.push({ id: "second", agentId: "ceo", status: "succeeded" });
+    expect(roles(refused)).toBe(true);
   });
 });
 

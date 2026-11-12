@@ -1011,6 +1011,12 @@ describe("chat prompt policy", () => {
     const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: null, title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
     expect(prompt).toContain("blockedByIssueIds with PATCH /api/issues/{id}");
   });
+  it("tells chat to brief or delegate only the requested change and keep every other setting", () => {
+    const line = "When you relay or delegate a change, state only what the person asked to change, and keep every other setting, such as a time zone, owner or schedule detail, as it is.";
+    expect(AGENT_CHAT_DIRECTIVE).toContain(line);
+    const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: null, title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
+    expect(prompt).toContain(line);
+  });
   it("tells chat to link the profile of an agent it acted on without turning the link into a wake mention", () => {
     expect(AGENT_CHAT_DIRECTIVE).toContain("link its profile at /<prefix>/agents/<urlKey or id>");
     expect(AGENT_CHAT_DIRECTIVE).toContain("use agent:// only when you intend to notify that agent");
