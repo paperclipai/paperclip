@@ -14,6 +14,13 @@ import { taskWorkspaceSelectableCondition } from "./task-workspace-selection.js"
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
+type TaskWorkspaceBindingRow = {
+  projectId: string | null; executionWorkspaceId: string | null; projectWorkspaceId: string | null;
+  workspaceSelection: typeof issues.$inferSelect["workspaceSelection"];
+  workspacePendingSelection: typeof issues.$inferSelect["workspacePendingSelection"];
+  workspaceBindingRevision: number;
+};
+
 /** Read the project requirements of the next selected workspace, without
  * admitting execution or moving files. Batch only the tasks needing a denial
  * presentation; this adds at most three bounded reads, not queries per task. */
@@ -25,6 +32,18 @@ export async function taskWorkspaceProjectRequirements(db: Db, companyId: string
     workspaceSelection: issues.workspaceSelection, workspacePendingSelection: issues.workspacePendingSelection,
     workspaceBindingRevision: issues.workspaceBindingRevision,
   }).from(issues).where(and(eq(issues.companyId, companyId), inArray(issues.id, issueIds)));
+  const requirements = await resolveTaskWorkspaceProjects(db, companyId, tasks);
+  tasks.forEach((task, index) => {
+    const { projectIds, available } = requirements[index]!;
+    result.set(task.id, { projectIds, available });
+  });
+  return result;
+}
+
+/** Resolve the projects a task's next run reads: the task project plus the
+ * project of its bound or selected workspace and of that workspace's source.
+ * The rows need not be saved yet, so a write can check them first. */
+async function resolveTaskWorkspaceProjects(db: Db | DbTransaction, companyId: string, tasks: TaskWorkspaceBindingRow[]) {
   const selections = tasks.map(task => {
     const pending = task.workspacePendingSelection;
     const intent = pending?.intent ?? (!task.executionWorkspaceId ? task.workspaceSelection : null);
@@ -52,15 +71,17 @@ export async function taskWorkspaceProjectRequirements(db: Db, companyId: string
   const sourceRows = sourceIds.length ? await db.select({ id: projectWorkspaces.id, projectId: projectWorkspaces.projectId })
     .from(projectWorkspaces).where(and(eq(projectWorkspaces.companyId, companyId), inArray(projectWorkspaces.id, sourceIds))) : [];
   const sourceMap = new Map(sourceRows.map(source => [source.id, source]));
-  for (const row of sources) {
+  return sources.map(row => {
     const source = row.sourceId ? sourceMap.get(row.sourceId) : undefined;
-    result.set(row.task.id, {
-      projectIds: [...new Set([row.task.projectId, row.workspace?.projectId, source?.projectId].filter((id): id is string => Boolean(id)))],
+    const boundProjectIds = [...new Set([row.workspace?.projectId, source?.projectId].filter((id): id is string => Boolean(id)))];
+    return {
+      bound: Boolean(row.workspace || source),
+      boundProjectIds,
+      projectIds: [...new Set([row.task.projectId, ...boundProjectIds].filter((id): id is string => Boolean(id)))],
       available: row.available && (!row.workspaceId || Boolean(row.workspace)) && (!row.sourceId || Boolean(source))
         && (row.selection?.kind !== "existing" || row.workspace?.selectable === true),
-    });
-  }
-  return result;
+    };
+  });
 }
 
 /** The project access refusal run setup gives this actor for the project's
@@ -108,31 +129,51 @@ export function projectSuppliesWorkspaceFiles(db: Db | DbTransaction, companyId:
 /** Refuse an agent assignment whose runs would fail project access at setup.
  * Assignment grants the agent only the task, never the private project, so a
  * non-member would wake, fail setup and strand the task. This never changes
- * project access; a project access manager decides who joins the project. */
+ * project access; a project access manager decides who joins the project.
+ *
+ * Like run setup, a bound or selected workspace (or its source) requires
+ * access to its project, and then the task project is checked as the task's
+ * container. Without a binding, the task project is checked only when it
+ * supplies workspace files and the run does not use a task directory. */
 export async function assertAssigneeCanAccessTaskProject(
   db: Db | DbTransaction,
-  task: { companyId: string; projectId: string | null | undefined; assigneeAgentId: string | null | undefined;
-    workspaceSelection?: { selection?: { kind?: string } | null } | null },
+  task: { companyId: string; assigneeAgentId: string | null | undefined; projectId?: string | null;
+    executionWorkspaceId?: string | null; projectWorkspaceId?: string | null;
+    workspaceSelection?: TaskWorkspaceBindingRow["workspaceSelection"];
+    workspacePendingSelection?: TaskWorkspaceBindingRow["workspacePendingSelection"];
+    workspaceBindingRevision?: number | null },
 ) {
-  const { companyId, projectId, assigneeAgentId } = task;
-  if (!assigneeAgentId || !projectId) return;
-  // A task-directory run never reads the project's files.
-  if (task.workspaceSelection?.selection?.kind === "task_directory") return;
-  const [project] = await db.select({ id: projects.id }).from(projects).where(and(
-    eq(projects.id, projectId), eq(projects.companyId, companyId), eq(projects.visibility, "private"),
-    projectSuppliesWorkspaceFiles(db, companyId, projects.id),
-  ));
-  if (!project) return;
-  const denial = await taskWorkspaceProjectAccessDenial(db, { type: "agent", agentId: assigneeAgentId, companyId },
-    companyId, projectId, { taskContainerOnly: true });
-  if (denial?.reason !== "deny_project_private") return;
-  // Name neither the project nor its id: the caller may not be able to read it.
-  throw conflict(
-    "Cannot assign this task to that agent: the agent is not a project access member of the task's private project, "
-      + "so its runs cannot open the project's workspace. Ask someone who manages the project's access to add the agent "
-      + "as a project access member, or choose another assignee or project.",
-    { code: "agent_not_assignable", reason: "assignee_lacks_project_access", companyId, assigneeAgentId },
-  );
+  const { companyId, assigneeAgentId } = task;
+  if (!assigneeAgentId) return;
+  const projectId = task.projectId ?? null;
+  const [requirement] = await resolveTaskWorkspaceProjects(db, companyId, [{
+    projectId, executionWorkspaceId: task.executionWorkspaceId ?? null, projectWorkspaceId: task.projectWorkspaceId ?? null,
+    workspaceSelection: task.workspaceSelection ?? null, workspacePendingSelection: task.workspacePendingSelection ?? null,
+    workspaceBindingRevision: task.workspaceBindingRevision ?? 0,
+  }]);
+  const checks = requirement!.boundProjectIds.map(id => ({ projectId: id, taskContainerOnly: false }));
+  if (projectId && !requirement!.boundProjectIds.includes(projectId)) {
+    // A task-directory run never reads the project's files.
+    const checkContainer = requirement!.bound || (task.workspaceSelection?.selection?.kind !== "task_directory"
+      && (await db.select({ id: projects.id }).from(projects).where(and(
+        eq(projects.id, projectId), eq(projects.companyId, companyId),
+        projectSuppliesWorkspaceFiles(db, companyId, projects.id),
+      ))).length > 0);
+    if (checkContainer) checks.push({ projectId, taskContainerOnly: true });
+  }
+  const actor = { type: "agent" as const, agentId: assigneeAgentId, companyId };
+  for (const check of checks) {
+    const denial = await taskWorkspaceProjectAccessDenial(db, actor, companyId, check.projectId,
+      { taskContainerOnly: check.taskContainerOnly });
+    if (denial?.reason !== "deny_project_private") continue;
+    // Name neither the project nor its id: the caller may not be able to read it.
+    throw conflict(
+      "Cannot assign this task to that agent: the agent is not a project access member of the task's private project, "
+        + "so its runs cannot open the project's workspace. Ask someone who manages the project's access to add the agent "
+        + "as a project access member, or choose another assignee or project.",
+      { code: "agent_not_assignable", reason: "assignee_lacks_project_access", companyId, assigneeAgentId },
+    );
+  }
 }
 
 async function personalProjectHasNoWorkspaceFiles(db: Db | DbTransaction, companyId: string, projectId: string) {

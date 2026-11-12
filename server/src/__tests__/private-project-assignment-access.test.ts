@@ -11,8 +11,10 @@ import {
   companies,
   companyMemberships,
   createDb,
+  executionWorkspaces,
   heartbeatRuns,
   issueAccessGrants,
+  issueComments,
   issueRecoveryActions,
   issues,
   projectAccessMembers,
@@ -24,9 +26,16 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 
-// Spy on the wake boundary only. Project selection, privacy and assignment run for real.
+// Spy on the wake boundaries only. Project selection, privacy, assignment and
+// execution-stage transitions run for real.
 const wakeups = vi.hoisted(() => ({ queueIssueAssignmentWakeup: vi.fn() }));
 vi.mock("../services/issue-assignment-wakeup.js", () => wakeups);
+const heartbeatWakeup = vi.hoisted(() => vi.fn(async () => null));
+vi.mock("../services/heartbeat.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/heartbeat.js")>();
+  return { ...actual, heartbeatService: (...args: Parameters<typeof actual.heartbeatService>) =>
+    Object.assign(actual.heartbeatService(...args), { wakeup: heartbeatWakeup }) };
+});
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -66,12 +75,15 @@ describeEmbeddedPostgres("private project assignment admission", { concurrent: f
 
   afterEach(async () => {
     wakeups.queueIssueAssignmentWakeup.mockClear();
+    heartbeatWakeup.mockClear();
     await db.delete(activityLog);
     await db.delete(issueRecoveryActions);
     await db.delete(issueAccessGrants);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
+    await db.delete(issueComments);
     await db.delete(issues);
+    await db.delete(executionWorkspaces);
     await db.delete(projectAccessMembers);
     await db.delete(projectWorkspaces);
     await db.delete(projects);
@@ -140,6 +152,7 @@ describeEmbeddedPostgres("private project assignment admission", { concurrent: f
 
   async function expectNoRunSideEffects(fixture: Fixture) {
     expect(wakeups.queueIssueAssignmentWakeup).not.toHaveBeenCalled();
+    expect(heartbeatWakeup).not.toHaveBeenCalled();
     expect(await db.select().from(agentWakeupRequests)).toEqual([]);
     expect(await db.select().from(heartbeatRuns)).toEqual([]);
     expect(await db.select().from(issueRecoveryActions)).toEqual([]);
@@ -236,6 +249,133 @@ describeEmbeddedPostgres("private project assignment admission", { concurrent: f
     expect(moved.status, JSON.stringify(moved.body)).toBe(200);
     expect(moved.body.projectId).toBe(fixture.privateProject.id);
   }, 30_000);
+
+  it("rejects reassignment when a bound execution workspace belongs to a private project", async () => {
+    const fixture = await seedFixture();
+    // The task project supplies no files itself, but its retained workspace does.
+    const [workspace] = await db.insert(executionWorkspaces).values({
+      companyId: fixture.companyId, projectId: fixture.filelessPrivateProject.id, name: "Retained task workspace",
+      mode: "shared_workspace", strategyType: "project_primary", cwd: "/srv/example/retained-workspace",
+    }).returning();
+    await db.insert(projectAccessMembers).values({ companyId: fixture.companyId,
+      projectId: fixture.filelessPrivateProject.id, subjectType: "agent", subjectId: fixture.memberAgent.id });
+    const task = await seedIssue(fixture, { projectId: fixture.filelessPrivateProject.id, assigneeAgentId: fixture.memberAgent.id,
+      visibility: "private", executionWorkspaceId: workspace!.id,
+      workspaceSelection: { version: 1, source: "explicit", selection: { kind: "existing", workspaceId: workspace!.id } } });
+    const response = await request(fixture.app).patch(`/api/issues/${task.id}`).send({ assigneeAgentId: fixture.outsiderAgent.id });
+    expectAssignmentRejected(response, fixture);
+    expect(JSON.stringify(response.body)).not.toContain(fixture.filelessPrivateProject.id);
+    const [after] = await db.select().from(issues);
+    expect(after).toMatchObject({ assigneeAgentId: fixture.memberAgent.id, executionWorkspaceId: workspace!.id,
+      statusVersion: task.statusVersion });
+    await expectNoRunSideEffects(fixture);
+
+    // Run setup refuses the same outsider for this binding once it holds the
+    // task, as it would have on the base, and admits the member.
+    const { assertTaskWorkspaceExecutionAccess } = await import("../services/task-workspace-access.js");
+    const runtimeCheck = (agentId: string) => assertTaskWorkspaceExecutionAccess(db,
+      { type: "agent", agentId, companyId: fixture.companyId }, fixture.companyId, { issueId: task.id, workspaceId: workspace!.id });
+    await expect(runtimeCheck(fixture.memberAgent.id)).resolves.toBeTruthy();
+    await db.update(issues).set({ assigneeAgentId: fixture.outsiderAgent.id }).where(eq(issues.id, task.id));
+    await expect(runtimeCheck(fixture.outsiderAgent.id)).rejects.toThrow("Project is private and the actor is not an access member.");
+    await db.update(issues).set({ assigneeAgentId: fixture.memberAgent.id }).where(eq(issues.id, task.id));
+
+    // An access member of the bound project can still take the task.
+    const unassigned = await request(fixture.app).patch(`/api/issues/${task.id}`).send({ assigneeAgentId: null });
+    expect(unassigned.status, JSON.stringify(unassigned.body)).toBe(200);
+    const member = await request(fixture.app).patch(`/api/issues/${task.id}`).send({ assigneeAgentId: fixture.memberAgent.id });
+    expect(member.status, JSON.stringify(member.body)).toBe(200);
+    expect(member.body.assigneeAgentId).toBe(fixture.memberAgent.id);
+  }, 30_000);
+
+  describe("execution policy transitions", () => {
+    const agentPrincipal = (agentId: string) => ({ type: "agent" as const, agentId, userId: null });
+    const userPrincipal = (userId: string) => ({ type: "user" as const, agentId: null, userId });
+    const stage = (type: "review" | "approval", principal: ReturnType<typeof agentPrincipal> | ReturnType<typeof userPrincipal>) => ({
+      id: randomUUID(), type, approvalsNeeded: 1 as const, participants: [{ id: randomUUID(), ...principal }],
+    });
+    const policy = (...stages: ReturnType<typeof stage>[]) => ({ mode: "normal" as const, commentRequired: true, stages });
+    const pendingState = (current: ReturnType<typeof stage>, index: number, returnAgentId: string) => ({
+      status: "pending" as const, currentStageId: current.id, currentStageIndex: index, currentStageType: current.type,
+      currentParticipant: { type: current.participants[0]!.type, agentId: current.participants[0]!.agentId,
+        userId: current.participants[0]!.userId },
+      returnAssignee: agentPrincipal(returnAgentId), reviewRequest: null, completedStageIds: [],
+      lastDecisionId: null, lastDecisionOutcome: null,
+    });
+
+    async function expectTransitionRolledBack(response: request.Response, fixture: Fixture, before: typeof issues.$inferSelect) {
+      expectAssignmentRejected(response, fixture);
+      const [after] = await db.select().from(issues);
+      expect(after).toMatchObject({ status: before.status, assigneeAgentId: before.assigneeAgentId,
+        assigneeUserId: before.assigneeUserId, statusVersion: before.statusVersion });
+      expect(after?.executionState).toEqual(before.executionState);
+      expect(await db.select().from(issueComments)).toEqual([]);
+      await expectNoRunSideEffects(fixture);
+    }
+
+    it("refuses handing the executor's work to a review participant without project access", async () => {
+      const fixture = await seedFixture();
+      const executionPolicy = policy(stage("review", agentPrincipal(fixture.outsiderAgent.id)));
+      const task = await seedIssue(fixture, { projectId: fixture.privateProject.id, status: "in_progress",
+        assigneeAgentId: fixture.memberAgent.id, executionPolicy });
+      const response = await request(fixture.app).patch(`/api/issues/${task.id}`).send({ status: "in_review" });
+      await expectTransitionRolledBack(response, fixture, task);
+    }, 30_000);
+
+    it("hands the executor's work to a review participant who is an access member", async () => {
+      const fixture = await seedFixture();
+      const executor = (await db.insert(agents).values({ companyId: fixture.companyId, name: "Executor agent", role: "engineer",
+        status: "idle", adapterType: "process", adapterConfig: {}, runtimeConfig: {}, permissions: {} }).returning())[0]!;
+      await db.insert(projectAccessMembers).values({ companyId: fixture.companyId, projectId: fixture.privateProject.id,
+        subjectType: "agent", subjectId: executor.id });
+      const executionPolicy = policy(stage("review", agentPrincipal(fixture.memberAgent.id)));
+      const task = await seedIssue(fixture, { projectId: fixture.privateProject.id, status: "in_progress",
+        assigneeAgentId: executor.id, executionPolicy });
+      const response = await request(fixture.app).patch(`/api/issues/${task.id}`).send({ status: "in_review" });
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      expect(response.body).toMatchObject({ status: "in_review", assigneeAgentId: fixture.memberAgent.id });
+      await vi.waitFor(() => expect(heartbeatWakeup).toHaveBeenCalledWith(fixture.memberAgent.id, expect.anything()));
+    }, 30_000);
+
+    it("refuses returning requested changes to an executor without project access", async () => {
+      const fixture = await seedFixture();
+      const review = stage("review", userPrincipal(fixture.ownerId));
+      const task = await seedIssue(fixture, { projectId: fixture.privateProject.id, status: "in_review",
+        assigneeUserId: fixture.ownerId, executionPolicy: policy(review),
+        executionState: pendingState(review, 0, fixture.outsiderAgent.id) });
+      const response = await request(fixture.app).patch(`/api/issues/${task.id}`)
+        .send({ status: "in_progress", comment: "Please add the missing test." });
+      await expectTransitionRolledBack(response, fixture, task);
+
+      // The same decision returns the work when the executor is an access member.
+      await db.update(issues).set({ executionState: pendingState(review, 0, fixture.memberAgent.id) }).where(eq(issues.id, task.id));
+      const member = await request(fixture.app).patch(`/api/issues/${task.id}`)
+        .send({ status: "in_progress", comment: "Please add the missing test." });
+      expect(member.status, JSON.stringify(member.body)).toBe(200);
+      expect(member.body).toMatchObject({ status: "in_progress", assigneeAgentId: fixture.memberAgent.id });
+    }, 30_000);
+
+    it("refuses advancing to a next-stage participant without project access", async () => {
+      const fixture = await seedFixture();
+      const review = stage("review", userPrincipal(fixture.ownerId));
+      const blockedApproval = stage("approval", agentPrincipal(fixture.outsiderAgent.id));
+      const task = await seedIssue(fixture, { projectId: fixture.privateProject.id, status: "in_review",
+        assigneeUserId: fixture.ownerId, executionPolicy: policy(review, blockedApproval),
+        executionState: pendingState(review, 0, fixture.memberAgent.id) });
+      const response = await request(fixture.app).patch(`/api/issues/${task.id}`).send({ status: "done", comment: "Looks right." });
+      await expectTransitionRolledBack(response, fixture, task);
+
+      // The same approval advances when the next participant is an access member.
+      const memberApproval = stage("approval", agentPrincipal(fixture.memberAgent.id));
+      const executor = (await db.insert(agents).values({ companyId: fixture.companyId, name: "Executor agent", role: "engineer",
+        status: "idle", adapterType: "process", adapterConfig: {}, runtimeConfig: {}, permissions: {} }).returning())[0]!;
+      await db.update(issues).set({ executionPolicy: policy(review, memberApproval),
+        executionState: pendingState(review, 0, executor.id) }).where(eq(issues.id, task.id));
+      const member = await request(fixture.app).patch(`/api/issues/${task.id}`).send({ status: "done", comment: "Looks right." });
+      expect(member.status, JSON.stringify(member.body)).toBe(200);
+      expect(member.body).toMatchObject({ status: "in_review", assigneeAgentId: fixture.memberAgent.id });
+    }, 30_000);
+  });
 
   it("uses the same project access decision as run setup", async () => {
     const fixture = await seedFixture();
