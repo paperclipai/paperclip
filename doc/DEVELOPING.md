@@ -2,6 +2,31 @@
 
 This project can run fully in local dev without setting up PostgreSQL manually.
 
+## Native task context delivery
+
+`get_task_context` includes a bounded child-task overview. Child titles and
+descriptions can be excerpts, marked by `titleTruncated` or
+`descriptionTruncated`. Use `get_task_context` with `view: "full"` to read
+the complete authorized context JSON in bounded text pages, including child
+requirements and exact accepted/source plan revisions. Continue with the returned
+`nextOffset` and `contextDigest`; concatenate only pages with the same digest.
+If the context changes, discard those pages and restart. This route also works
+for native reviewers, Muse, and skill tests without adding a tool grant.
+`childTasksTruncated` reports when the overview omits rows. The full view still
+includes at most 100 visible children; broader task discovery remains subject to
+the profile's existing read permissions.
+The overview does not rewrite the source tasks or shorten the active task's
+scope and approval context.
+
+The complete response must fit the native tool-result delivery budget. If the
+remaining active-task or approval context is too large, the tool returns
+`paperclip_runner_task_context_too_large` with bounded approval references and
+the same scoped paging read instead
+of leaving a result that the Runner cannot deliver. This is an incomplete read,
+not evidence that omitted requirements or approval gates are absent. Existing
+saved session and journal identities are unchanged; pending reads from an older
+release still require the normal verified recovery path.
+
 ## Persistent case handoffs
 
 The Cases experiment supports prompt-driven agent workflows on one ordinary task.

@@ -38,6 +38,7 @@ import { NativeChatAttachmentReadScope, READ_CHAT_ATTACHMENT_TOOL_NAME } from ".
 import { buildLowTrustSourceTrust, buildPromotedSourceTrust, LOW_TRUST_QUARANTINED_BODY } from "../source-trust.js";
 import { CAPABILITY_SEMANTIC_TOOL_CATALOG, runnerCodexDynamicToolsFit } from "../../vendor/paperclip-runner/index.js";
 import { resolveLocalRuntimeApiUrl } from "../../runtime-api.js";
+import { RUNNER_TOOL_RESULT_MAX_BYTES } from "./runner-tool-results.js";
 
 describe("PaperclipRunnerToolAuthority", () => {
   const credentialDocumentBody = "Use a secret manager for credential handling.\nAuthorization: Bearer intentional-document-credential";
@@ -624,6 +625,60 @@ describe("PaperclipRunnerToolAuthority", () => {
       await db.delete(issues).where(inArray(issues.id, [completedChildId, activeChildId, unrelatedId, foreignChildId, ...hiddenChildIds]));
       await db.delete(companies).where(eq(companies.id, otherCompanyId));
     }
+  });
+
+  it("bounds child task context below its native delivery budget without losing task identities", async () => {
+    const ids = Array.from({ length: 21 }, () => randomUUID());
+    const description = '💊"\\\n'.repeat(4500);
+    const [original] = await db.select({ description: issues.description }).from(issues).where(eq(issues.id, issueId));
+    const activeDescription = "Keep the complete business scope and its approval gates.";
+    await db.update(issues).set({ description: activeDescription }).where(eq(issues.id, issueId));
+    await db.insert(issues).values(ids.map((id, index) => ({ id, companyId, parentId: issueId,
+      title: `Existing deliverable ${index}`, description, status: "done", assigneeAgentId: agentId })));
+    try {
+      const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
+      const context = await authority.execute({ tool: "get_task_context", callId: "large-child-context", arguments: {} }) as {
+        activeTask: { description: string }; childTasks: Array<{ id: string; description: string; descriptionTruncated?: boolean }>;
+        childTasksTruncated: boolean; delegationGuidance: string;
+      };
+      expect(Buffer.byteLength(JSON.stringify(context))).toBeLessThanOrEqual(RUNNER_TOOL_RESULT_MAX_BYTES);
+      expect(context.activeTask.description).toBe(activeDescription);
+      expect(new Set(context.childTasks.map(task => task.id))).toEqual(new Set(ids));
+      expect(context.childTasks.every(task => task.descriptionTruncated === true && !task.description.includes("�"))).toBe(true);
+      expect(context.delegationGuidance).toContain("get_task");
+      const first = await authority.execute({ tool: "get_task_context", callId: "full-child-context", arguments: { view: "full" } }) as { jsonText: string; contextDigest: string; nextOffset: number | null };
+      expect(first.jsonText).toBeTypeOf("string");
+      let text = first.jsonText;
+      let offset = first.nextOffset;
+      while (offset !== null) {
+        const page = await authority.execute({ tool: "get_task_context", callId: `full-child-${offset}`,
+          arguments: { view: "full", offset, contextDigest: first.contextDigest } }) as typeof first;
+        expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThan(RUNNER_TOOL_RESULT_MAX_BYTES);
+        expect(page.contextDigest).toBe(first.contextDigest);
+        text += page.jsonText;
+        offset = page.nextOffset;
+      }
+      const complete = JSON.parse(text);
+      expect(complete.childTasks.every((task: { description: string }) => task.description === description)).toBe(true);
+      expect(new Set(complete.childTasks.map((task: { id: string }) => task.id))).toEqual(new Set(ids));
+      const [saved] = await db.select({ description: issues.description }).from(issues).where(eq(issues.id, ids[0]!));
+      expect(saved.description).toBe(description);
+    } finally {
+      await db.delete(issues).where(inArray(issues.id, ids));
+      await db.update(issues).set({ description: original.description }).where(eq(issues.id, issueId));
+    }
+  });
+
+  it("advertises context paging to reviewers without adding task or API access", () => {
+    const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId,
+      nativeReview: { nativeReviewInteractionId: randomUUID(), nativeReviewDecisionId: randomUUID() } });
+    const definitions = authority.definitions();
+    expect(definitions.find(tool => tool.name === "get_task_context")).toMatchObject({
+      inputSchema: { properties: { view: { enum: ["full"] }, contextDigest: expect.any(Object) } },
+    });
+    expect(definitions.map(tool => tool.name)).not.toContain("get_task");
+    expect(definitions.map(tool => tool.name)).not.toContain("search_tasks");
+    expect(definitions.map(tool => tool.name)).not.toContain("call_api");
   });
 
   it("advertises API tools by default and preserves direct-chat file tools when disabled", () => {

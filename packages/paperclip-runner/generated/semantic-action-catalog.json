@@ -245,11 +245,26 @@
       "planning",
       "skill_test"
     ],
-    "description": "Read the active task, actor, wake context, ancestors, and budget summary.",
+    "description": "Read the active task and exact approved plan revision. Use view=full for omitted details as bounded JSON text pages. Concatenate pages only while contextDigest matches.",
     "effect": "read",
     "inputSchema": {
       "additionalProperties": false,
-      "properties": {},
+      "properties": {
+        "contextDigest": {
+          "pattern": "^[a-f0-9]{64}$",
+          "type": "string"
+        },
+        "offset": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "view": {
+          "enum": [
+            "full"
+          ],
+          "type": "string"
+        }
+      },
       "required": [],
       "type": "object"
     },

@@ -21,6 +21,7 @@ import type {
 import { createSkillAction } from "../protocol-actions/create-skill.js";
 import { searchApiAction } from "../protocol-actions/search-api.js";
 import { callApiAction } from "../protocol-actions/call-api.js";
+import { getTaskContextAction } from "../protocol-actions/get-task-context.js";
 import { projectIconSchema, projectRepositoryUrlSchema } from "../protocol-actions/create-project.js";
 
 const ALL_MODES = ["standard", "ask", "planning", "skill_test"] as const;
@@ -138,8 +139,8 @@ const descriptors: readonly PaperclipSemanticActionDescriptor[] = [
   descriptor({
     operationId: "get_task_context",
     title: "Get active task context",
-    description:
-      "Read the active task, actor, wake context, ancestors, and budget summary.",
+    description: getTaskContextAction.live.descriptor.description,
+    inputSchema: getTaskContextAction.live.descriptor.inputSchema,
   }),
   descriptor({
     operationId: "get_task_history",

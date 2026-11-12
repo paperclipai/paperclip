@@ -24,6 +24,14 @@ const packageRoot = resolve(
 );
 
 describe("semantic action catalog", () => {
+  it("advertises bounded context paging without adding another tool grant", () => {
+    const schema = paperclipSemanticAction("get_task_context")!.inputSchema;
+    const validate = new Ajv2020({ strict: true }).compile(schema);
+    expect(validate({})).toBe(true);
+    expect(validate({ view: "full", offset: 32_000, contextDigest: "a".repeat(64) })).toBe(true);
+    expect(validate({ view: "full", offset: -1 })).toBe(false);
+    expect(validate({ taskId: "another-task" })).toBe(false);
+  });
   it.each([readDocumentAction, writeDocumentAction, listDocumentRevisionsAction])(
     "$id uses the same normalized key contract on every tool surface",
     (action) => {

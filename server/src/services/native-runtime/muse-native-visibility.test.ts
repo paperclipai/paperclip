@@ -85,6 +85,13 @@ describe("Muse native visibility intersection", () => {
       :shape==="child_tasks"?(result as {childTasks:Array<{id:string}>}).childTasks.map(row=>row.id)
       :(result as {tasks:Array<{id:string}>}).tasks.map(row=>row.id);
     expect(ids).toContain(f.allowed.id);
+    if(shape==="child_tasks"){
+      const page=await f.authority.execute({tool:"get_task_context",callId:"full-private-context",arguments:{view:"full"}}) as {jsonText:string;nextOffset:number|null};
+      expect(page.nextOffset).toBeNull();
+      const full=JSON.parse(page.jsonText);
+      expect(full.childTasks.map((task:{id:string})=>task.id)).toContain(f.allowed.id);
+      if(restricted)for(const value of [f.outside.id,f.outside.title,f.outside.description])expect(page.jsonText).not.toContain(value);
+    }
     if(restricted){expect(ids).not.toContain(f.outside.id);for(const value of [f.outside.id,f.outside.title,f.outside.description])expect(JSON.stringify(result)).not.toContain(value);}
     else expect(ids).toContain(f.outside.id);
     if(shape==="search_tasks"){
