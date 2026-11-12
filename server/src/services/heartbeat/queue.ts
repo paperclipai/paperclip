@@ -7,6 +7,7 @@ import { deliveredQueuedCommentIds } from "../queued-comment-delivery.js";
 import { hasAutomaticInteractionDeliveryHold, INTERACTION_DELIVERY_DENIED, recheckQueuedRunInteractions, withInteractionDeliveryOrigin } from "../agent-interaction-delivery.js";
 import { deferredWorkIntentWait } from "../work-intent-outbox.js";
 import { notifyIssueRecovery } from "../issue-recovery-notifications.js";
+import { hasPendingNativeReviewSiblings } from "../native-runtime/native-review-renewal.js";
 import { createHeartbeatTimerPolicy } from "./timer-policy.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { PersistedExecutionWaitRefusal, writeDeferredExecutionWait } from "../deferred-execution-wait.js";
@@ -2866,6 +2867,10 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       }
       issueId = readNonEmptyString(enrichedContextSnapshot.issueId) ?? issueId;
     }
+    const resolvedReviewId = readNonEmptyString(enrichedContextSnapshot.interactionId) ?? readNonEmptyString(payload?.interactionId);
+    if (issueId && resolvedReviewId && await hasPendingNativeReviewSiblings(db, {
+      companyId: agent.companyId, issueId, agentId: agent.id, interactionId: resolvedReviewId,
+    })) return null;
     const effectiveTaskKey =
       readNonEmptyString(enrichedContextSnapshot.taskKey) ?? taskKey;
     const genericTimerWake =

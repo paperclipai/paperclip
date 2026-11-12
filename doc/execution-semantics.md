@@ -3511,6 +3511,14 @@ ordinary follow-ups. Reuse requires its exact company, task, workspace, provider
 owner, fresh-attempt identity and path. Mode-only isolation settings do not turn
 that directory into a Git worktree. Explicit strategy settings still apply.
 
+Native completion reviews are bound to a status decision. If another owner turn
+commits an in-review decision while an earlier completion review is pending,
+Paperclip creates new requests for all reviewers from that review round. Earlier
+verdicts remain history. The new requests, reviewer wake intents, retirement of
+pending requests and status projection commit together. An accepted request does
+not resume the owner while another request from the same round is pending; a
+rejection can resume work immediately.
+
 A prepared remote workspace interrupted before the executor's first durable
 claim may resume its untouched bootstrap on the same run. This requires attempt
 and controller generation zero, no prior owner, and no process, provider session,

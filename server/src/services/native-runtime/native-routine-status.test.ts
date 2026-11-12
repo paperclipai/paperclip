@@ -9,6 +9,7 @@ import { routineService } from "../routines.js";
 import { commitNativeStatusDecision } from "./status-decision-committer.js";
 import { NATIVE_STATUS_ARBITER_POLICY_VERSION, type NativeStatusDecision } from "./status-arbiter.js";
 import { INTERACTION_DELIVERY_DENIED } from "../agent-interaction-delivery.js";
+import { hasPendingNativeReviewSiblings } from "./native-review-renewal.js";
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_NATIVE_ROUTINE_STATUS_TEST_DATABASE_URL");
 const support = external ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
@@ -66,6 +67,48 @@ if (!support.supported) console.warn(`Skipping native routine status tests: ${su
     return commitNativeStatusDecision({ db: executor, companyId, issueId: f.issueId, runId: f.runId, assessmentId: f.assessmentId,
       priorStatus: "in_progress", priorStatusVersion: f.priorStatusVersion, priorDecisionId: f.priorDecisionId, decision });
   }
+  it("renews every reviewer atomically after another owner turn, without carrying an approval forward", async () => {
+    const f = await seed("ordinary");
+    const reviewers = [randomUUID(), randomUUID()];
+    await db.insert(agents).values(reviewers.map(id => ({ id, companyId, name: id, adapterType: "codex_local", status: "idle" })));
+    const original = await commitNativeStatusDecision({ db, companyId, ...f, priorStatus: "in_progress",
+      decision: { policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION, statusAction: "in_review", toStatus: "in_review",
+        reasonCode: "review_requested", unblockDescriptor: null,
+        effects: reviewers.map((ownerAgentId, index) => ({ kind: "bind_reviewer" as const, requestKey: String(index), prompt: "Review output", ownerAgentId })) } });
+    const cards = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, f.issueId));
+    await db.update(issueThreadInteractions).set({ status: "accepted", resolvedByAgentId: reviewers[0], resolvedAt: new Date() })
+      .where(eq(issueThreadInteractions.id, cards[0].id));
+    expect(await hasPendingNativeReviewSiblings(db, { companyId, issueId: f.issueId, agentId, interactionId: cards[0].id })).toBe(true);
+    const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    const runId = randomUUID(), resultId = randomUUID(), assessmentId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, nativeIssueId: f.issueId, runtimeMode: "native", status: "running",
+      completionContractId: source.completionContractId, completionContractSha256: source.completionContractSha256 });
+    await db.insert(nativeRunResults).values({ id: resultId, companyId, issueId: f.issueId, runId, completionContractId: source.completionContractId!,
+      serverFingerprint: resultId, schemaStatus: "accepted", resultJson: {}, canonicalSha256: resultId });
+    await db.insert(workAssessments).values({ id: assessmentId, companyId, issueId: f.issueId, runId, contractId: source.completionContractId!, resultId,
+      triggerKind: "native_result", triggerActorCompanyId: companyId, priorIssueStatus: "in_review", priorStatusVersion: original.issue.statusVersion,
+      policyVersion: "review-test", assessmentJson: {}, inputDigest: assessmentId });
+    await db.insert(nativeRunFinalizations).values({ runId, companyId, issueId: f.issueId, phase: "arbitrating", resultId });
+    const continuation = { companyId, issueId: f.issueId, runId, assessmentId, priorStatus: "in_review",
+      priorStatusVersion: original.issue.statusVersion, priorDecisionId: original.decision.id,
+      decision: { policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION, statusAction: "in_review", toStatus: "in_review",
+        reasonCode: "governed_response_waiting", unblockDescriptor: null,
+        effects: [{ kind: "create_interaction", gate: { kind: "interaction", id: cards[1].id } }] } as NativeStatusDecision };
+    await expect(db.transaction(async tx => {
+      await commitNativeStatusDecision({ db: tx as unknown as Db, ...continuation });
+      throw new Error("rollback renewal");
+    })).rejects.toThrow("rollback renewal");
+    expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, cards[1].id)))[0].status).toBe("pending");
+    const renewed = await commitNativeStatusDecision({ db, ...continuation });
+    const saved = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, f.issueId));
+    expect(saved.find(card => card.id === cards[0].id)?.status).toBe("accepted");
+    expect(saved.find(card => card.id === cards[1].id)?.status).toBe("cancelled");
+    expect(saved.filter(card => card.sourceRunId === runId)).toEqual(expect.arrayContaining(reviewers.map(id =>
+      expect.objectContaining({ status: "pending", addresseeAgentId: id, payload: expect.objectContaining({ target: expect.objectContaining({ revisionId: renewed.decision.id }) }) }))));
+    await commitNativeStatusDecision({ db, ...continuation });
+    expect(await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, f.issueId))).toHaveLength(4);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.reason, "native_completion_review"))).toHaveLength(4);
+  }, 120_000);
   it.each(["done", "blocked", "cancelled", "in_progress"] as const)("projects real %s task status into the exact routine invocation", async status => {
     const f = await seed(); const first = await commit(f, status);
     const [saved] = await db.select().from(routineRuns).where(eq(routineRuns.id, f.invocationId));
