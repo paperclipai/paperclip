@@ -62,7 +62,7 @@
     "packages/shared/src/aggregator-app-catalog.ts": "d6778b07a41356878c549d039ae316553ca9a22b",
     "packages/shared/src/aggregator-apps.ts": "2a69a54ee0cb305170275b6f4e97689c107defb1",
     "packages/shared/src/ai-connection-router.ts": "9fbd89c385a4d5827bc68e1c7f6a66e00453d413",
-    "packages/shared/src/ai-connection-usage.ts": "4b51573ee92f8a2ae0f80dd15288a0e59b4dddc7",
+    "packages/shared/src/ai-connection-usage.ts": "861f8ce0930ad00c2e01c56704d831fc46e09b49",
     "packages/shared/src/ai-connections.ts": "d16164c63068884655993ba3b92e1817d8651e7c",
     "packages/shared/src/ai-provider-routing.ts": "519c93bd489100125e9a4ad096611f25fd60af4e",
     "packages/shared/src/announcements.test.ts": "121ed97b560e0dd271fe6602c97e2415ee4e4bf7",
