@@ -23,7 +23,7 @@ import { assertPoolExecutionPlatform, resolvePoolExecutionPlatform } from "./ai-
 
 const usageCache = new Map<string, { expires: number; value: AiConnectionUsage }>();
 const usageInFlight = new Map<string, Promise<AiConnectionUsage | undefined>>();
-const routedRuntimeKeys = new Set(["provider", "acpxAgent", "model", "modelReasoningEffort", "reasoningEffort", "effort", "variant", "profileImportMode", "profileSourceDir", "transcriptRetentionEnabled", "transcriptRetentionDays"]);
+const routedRuntimeKeys = new Set(["provider", "acpxAgent", "model", "modelReasoningEffort", "reasoningEffort", "effort", "variant", "search", "fastMode", "profileImportMode", "profileSourceDir", "transcriptRetentionEnabled", "transcriptRetentionDays"]);
 const harnessCommandKeys = new Set(["command", "args", "extraArgs", "engine", "agentCommand", "acpAgentCommand"]);
 function poolHarnessChanges(config: Record<string, unknown>, sourceAdapterType: string, targetAdapterType: string, targetConfig: Record<string, unknown>) {
   return sourceAdapterType !== targetAdapterType ||

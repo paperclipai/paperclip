@@ -23,7 +23,9 @@ export function HarnessPoolRuntimeFields({ member, companyId, onChange, harnessF
   const config: Record<string, unknown> = { ...settings, model: member.model, provider, ...(provider === "acpx" ? { acpxAgent: member.harness.type === "claude_code" ? "claude" : "grok" } : {}) };
   function changeEngine(engine: unknown) {
     const { mode: _mode, nonInteractivePermissions: _permissions, warmHandleIdleMs: _idle, permissionMode: _policy, ...common } = settings;
-    onChange({ adapterConfig: engine === "cli" ? { ...common, engine } : { ...settings, engine: engine as Settings["engine"] } });
+    const next: Settings = engine === "cli" ? { ...common, engine: "cli" } : { ...settings, engine: engine as Settings["engine"] };
+    if (engine !== "cli") delete next.search;
+    onChange({ adapterConfig: next });
     setConfirmCli(false);
   }
   return <HarnessConfigPanels identity={<>
@@ -31,6 +33,7 @@ export function HarnessPoolRuntimeFields({ member, companyId, onChange, harnessF
     <Field label="Runner" hint="Changing runner resets its execution settings. The model and account stay selected."><SelectPopover aria-label="Runner" value={member.runner ?? "paperclip"}
       onValueChange={value => onChange({ runner: value === "legacy" ? "legacy" : "paperclip", adapterConfig: undefined })}
       options={[{ value: "legacy", label: "Legacy" }, { value: "paperclip", label: "Paperclip Runner" }]} /></Field>
+    {native && member.harness.type === "codex" && <p className="text-xs text-muted-foreground">Paperclip Runner manages execution and isolation. Choose Legacy for CLI/ACP-specific controls such as the execution engine, sandbox bypass and fast mode.</p>}
     {accountFields}
   </>} runtime={<>
     {confirmCli && <div className="space-y-2 text-sm"><p>Switch to CLI and remove ACP session and permission settings? Review CLI permissions before saving.</p><div className="flex gap-2"><Button variant="outline" onClick={() => setConfirmCli(false)}>Keep ACP settings</Button><Button onClick={() => changeEngine("cli")}>Switch to CLI</Button></div></div>}

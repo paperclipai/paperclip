@@ -91,3 +91,17 @@ it("applies Claude profile policy from the selected member and clears it on Code
   const fallback = applyAiConnectionRouterTaskSettings(effective, { ...selection, adapterType: "codex_local", runtimeConfig: { provider: "codex", model: "sol", engine: "cli" } }, "claude_local");
   for (const key of ["profileImportMode", "profileSourceDir", "transcriptRetentionEnabled", "transcriptRetentionDays"]) expect(fallback).not.toHaveProperty(key);
 });
+
+
+it("carries Codex CLI search and fast mode through selection into the real command builder", () => {
+  const member = { id: "codex", runner: "legacy" as const, adapterConfig: { engine: "cli" as const, search: true, fastMode: true }, profile: { provider: "codex" as const, model: "gpt-6-sol" }, binding: { mode: "shared" as const, provider: "openai" as const, method: "subscription" as const, connectionId: "connection", grantId: "grant" } };
+  const selected = poolMemberRuntimeConfig(member, "paperclip_runner");
+  const selection = { poolId: "pool", memberId: member.id, binding: member.binding, adapterType: selected.adapterType, runtimeConfig: selected.config, notes: [] };
+  const effective = applyAiConnectionRouterTaskSettings({ cwd: "/workspace", search: false, fastMode: false }, selection, "paperclip_runner");
+  expect(effective).toMatchObject({ engine: "cli", search: true, fastMode: true, cwd: "/workspace" });
+  const command = buildCodexExecArgs(effective);
+  expect(command.args).toContain("--search"); expect(command.fastModeApplied).toBe(true);
+  const next = applyAiConnectionRouterTaskSettings(effective, { ...selection, runtimeConfig: { provider: "codex", model: "gpt-6-sol", engine: "cli" } }, "codex_local");
+  expect(next).not.toHaveProperty("search");expect(next).not.toHaveProperty("fastMode");
+  expect(buildCodexExecArgs(next).args).not.toContain("--search");
+});

@@ -65,6 +65,26 @@ beforeEach(() => {
 });
 afterEach(() => { flushSync(() => root.unmount()); client.clear(); host.remove(); });
 
+it("exposes Codex controls for the selected runner and saves CLI search per member", async () => {
+  await mount({ ...draft(), runner: "paperclip", adapterConfig: { lifecycleMode: "per_turn" } });
+  expect(host.querySelector('[aria-label="Execution engine"]')).toBeNull();
+  expect(host.querySelector('[aria-label="Fast mode"]')).toBeNull();
+  expect(host.textContent).toContain("Choose Legacy for CLI/ACP-specific controls");
+  await open("Runner"); await choose("Legacy");
+  expect(host.querySelector('[aria-label="Execution engine"]')).toBeTruthy();
+  expect(host.querySelector('[aria-label="Bypass sandbox"]')).toBeTruthy();
+  expect(host.querySelector('[aria-label="Fast mode"]')).toBeTruthy();
+  expect(host.querySelector('[aria-label="Enable search"]')).toBeNull();
+  await open("Execution engine"); await choose("Codex CLI");
+  const search = host.querySelector<HTMLButtonElement>('[aria-label="Enable search"]')!;
+  expect(search).toBeTruthy(); flushSync(() => search.click()); await settle();
+  expect(latest.adapterConfig).toMatchObject({ engine: "cli", search: true });
+  expect(latest.connection).toEqual(binding("First")); expect(latest.model).toBe("gpt-6-sol");
+  await open("Execution engine"); await choose("ACP");
+  expect(host.querySelector('[aria-label="Enable search"]')).toBeNull();
+  expect(latest.adapterConfig).not.toHaveProperty("search");
+});
+
 it("groups harness and account fields separately from runtime settings in the shared agent panels", async () => {
   await mount({ ...draft(), runner: "legacy", adapterConfig: { engine: "cli" } });
   const identity = host.querySelector('[data-config-section="adapter"]')!;

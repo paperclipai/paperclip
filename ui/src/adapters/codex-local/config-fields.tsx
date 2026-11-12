@@ -811,7 +811,7 @@ export function CodexLocalConfigFields({
                   )
             }
           />
-          <ToggleField
+          {!acpSelected && <ToggleField configKey="search"
             label="Enable search"
             hint={help.search}
             checked={
@@ -824,7 +824,7 @@ export function CodexLocalConfigFields({
                 ? set!({ search: v })
                 : mark("adapterConfig", "search", v)
             }
-          />
+          />}
           <ToggleField configKey="fastMode"
             label="Fast mode"
             hint={help.fastMode}

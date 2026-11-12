@@ -8,6 +8,14 @@ const binding = { mode: "delegated" as const, provider: "openai" as const, metho
 const member = { id: "33333333-3333-4333-8333-333333333333", harness: { type: "codex" as const }, connection: binding, model: "configured-model" };
 const pool = { schemaVersion: 2 as const, kind: "harness_pool" as const, name: "Smart", enabled: true, mode: "failover" as const, members: [member] };
 
+it("round trips Codex CLI search but rejects it for native and ACP members", () => {
+  const configured = { ...pool, members: [{ ...member, runner: "legacy" as const, adapterConfig: { engine: "cli" as const, search: true } }] };
+  expect(decodeHarnessPoolConfig(harnessPoolToRuntimeConfig(configured))).toEqual({ kind: "harness_pool", config: configured });
+  for (const settings of [{ runner: "paperclip" }, { adapterConfig: { search: true } }, { adapterConfig: { engine: "acp", search: true } }]) {
+    expect(harnessPoolConfigSchema.safeParse({ ...pool, members: [{ ...configured.members[0], ...settings }] }).success).toBe(false);
+  }
+});
+
 describe("harness pool contracts", () => {
   it("projects Pool intent into the existing authorized connection boundary without mutating it", () => {
     const runtime = { harnessPool: { poolId: binding.connectionId } };

@@ -12,6 +12,7 @@ afterEach(() => document.body.replaceChildren());
 const cases = [
   { harness: "claude_code", runner: "legacy", adapter: "claude_local", profile: { provider: "acpx", acpxAgent: "claude" }, settings: { engine: "auto", permissionMode: "deny-all", mode: "oneshot" }, labels: ["Execution engine", "ACP permissions", "ACP session mode", "Skip permissions"] },
   { harness: "codex", runner: "legacy", adapter: "codex_local", profile: { provider: "codex" }, settings: { engine: "auto", fastMode: true }, labels: ["Execution engine", "ACP session mode", "Fast mode", "Bypass sandbox"] },
+  { harness: "codex", runner: "legacy", adapter: "codex_local", profile: { provider: "codex" }, settings: { engine: "cli", search: true, fastMode: true }, labels: ["Execution engine", "Enable search", "Fast mode", "Bypass sandbox"] },
   { harness: "claude_code", runner: "paperclip", adapter: "paperclip_runner", profile: { provider: "acpx", acpxAgent: "claude" }, settings: { acpxPermissionMode: "approve-reads", lifecycleMode: "warm" }, labels: ["Permission mode", "Runner lifecycle"] },
   { harness: "codex", runner: "paperclip", adapter: "paperclip_runner", profile: { provider: "codex" }, settings: { lifecycleMode: "warm" }, labels: ["Runner lifecycle"] },
 ] as const;

@@ -24,7 +24,7 @@ export const harnessPoolAdapterConfigSchema = z.object({
   profileSourceDir: z.string().trim().max(4096).optional(),
   transcriptRetentionEnabled: z.boolean().optional(),
   transcriptRetentionDays: z.number().int().positive().optional(),
-  chrome: z.boolean().optional(), fastMode: z.boolean().optional(),
+  chrome: z.boolean().optional(), fastMode: z.boolean().optional(), search: z.boolean().optional(),
   dangerouslySkipPermissions: z.boolean().optional(),
   dangerouslyBypassApprovalsAndSandbox: z.boolean().optional(),
   permissionMode: z.enum(["default", "approve-all", "approve-reads", "deny-all"]).optional(),
@@ -38,7 +38,7 @@ export function harnessPoolRuntimeConfigKeys(harness: "claude_code" | "codex" | 
   const common = ["timeoutSec", "graceSec"];
   const native = ["lifecycleMode", "idleTimeoutMs", harness === "codex" ? "codexPermissionMode" : harness === "opencode" ? "opencodePermissionMode" : "acpxPermissionMode"];
   const legacy = harness === "claude_code" ? ["engine", "mode", "nonInteractivePermissions", "warmHandleIdleMs", "permissionMode", "chrome", "maxTurnsPerRun", "dangerouslySkipPermissions", "profileImportMode", "profileSourceDir", "transcriptRetentionEnabled", "transcriptRetentionDays"]
-    : harness === "codex" ? ["engine", "mode", "nonInteractivePermissions", "warmHandleIdleMs", "fastMode", "dangerouslyBypassApprovalsAndSandbox"]
+    : harness === "codex" ? ["engine", "mode", "nonInteractivePermissions", "warmHandleIdleMs", "fastMode", "search", "dangerouslyBypassApprovalsAndSandbox"]
     : harness === "opencode" ? ["dangerouslySkipPermissions"] : [];
   return [...common, ...(runner === "legacy" ? legacy : native)];
 }
@@ -48,6 +48,7 @@ export function invalidHarnessPoolRuntimeSetting(
   harness: "claude_code" | "codex" | "grok" | "opencode",
 ): string | undefined {
   if (member.runner === "legacy" && member.adapterConfig?.engine === "cli" && member.adapterConfig.permissionMode !== undefined) return "permissionMode";
+  if (harness === "codex" && member.adapterConfig?.search !== undefined && (member.runner !== "legacy" || member.adapterConfig.engine !== "cli")) return "search";
   const allowed = new Set(harnessPoolRuntimeConfigKeys(harness, member.runner));
   return Object.keys(member.adapterConfig ?? {}).find(key => !allowed.has(key));
 }
