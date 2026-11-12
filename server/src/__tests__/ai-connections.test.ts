@@ -10,10 +10,11 @@ vi.mock("../services/subscription-refresh.js", () => ({ refreshSubscriptionConne
 const readdirHook = vi.hoisted(() => ({ current: undefined as undefined | ((target: string) => Promise<void>) }));
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
-  const readdir = (async (target: Parameters<typeof actual.readdir>[0], options?: Parameters<typeof actual.readdir>[1]) => {
-    await readdirHook.current?.(String(target));
-    return actual.readdir(target, options);
-  }) as typeof actual.readdir;
+  const realReaddir = actual.readdir as (...args: unknown[]) => Promise<unknown>;
+  const readdir = (async (...args: unknown[]) => {
+    await readdirHook.current?.(String(args[0]));
+    return realReaddir(...args);
+  }) as unknown as typeof actual.readdir;
   return { ...actual, default: { ...actual, readdir }, readdir };
 });
 import * as localCredentials from "../services/local-ai-credentials.js";
