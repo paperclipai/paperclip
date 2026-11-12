@@ -410,6 +410,16 @@ it("retains terminated agents' history by id without offering them for new chats
   expect([...document.querySelectorAll("[role=option]")].some(option => option.textContent?.includes("Retired"))).toBe(false);
 });
 
+it("opens a confirmed new chat when the picker was dismissed while it was being created", async () => {
+  let finishAlice!: (value: ReturnType<typeof chat>) => void;
+  state.ensure.mockImplementation(async (_company, id) => id === "alice"
+    ? new Promise(resolve => { finishAlice = resolve; }) : chat(id));
+  await render(); await addChat(); await choose("alice");
+  await act(async () => document.querySelector<HTMLButtonElement>('[data-slot="dialog-close"]')!.click());
+  expect(state.navigate).not.toHaveBeenCalled();
+  await act(async () => finishAlice(chat("alice")));
+  expect(state.navigate).toHaveBeenLastCalledWith("/chats/alice/chat-alice");
+});
 it("does not let a dismissed selection override a newer chat", async () => {
   let finishAlice!: (value: ReturnType<typeof chat>) => void;
   state.ensure.mockImplementation(async (_company, id) => id === "alice"

@@ -52,6 +52,7 @@ export function useOpenAgentChat(companyId: string | null, userId: string | null
   const navigate = useNavigate();
   const { isMobile, setSidebarOpen } = useSidebar();
   const scope = useRef({ companyId, userId, mounted: true });
+  const latestOpen = useRef(0);
   useEffect(() => {
     const current = { companyId, userId, mounted: true };
     scope.current = current;
@@ -65,6 +66,7 @@ export function useOpenAgentChat(companyId: string | null, userId: string | null
       throw new Error("Your account changed or is still loading. Try again.");
     }
     const current = scope.current;
+    const open = ++latestOpen.current;
     const request = createNew ? pendingChatCreate(companyId, userId, agent.id) : null;
     const completeCreate = () => { if (request) clearPendingSend(request.key, request.clientRequestId, "session"); };
     const chat = await (request ? agentChatsApi.create(companyId, agent.id, request.clientRequestId) : agentChatsApi.ensure(companyId, agent.id)).catch(error => {
@@ -77,7 +79,10 @@ export function useOpenAgentChat(companyId: string | null, userId: string | null
     client.setQueryData<Issue[]>(queryKeys.agentChats.list(companyId, userId), previous =>
       [chat, ...(previous ?? []).filter(item => item.id !== chat.id)]
         .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime() || b.id.localeCompare(a.id)));
-    if (!current.mounted || scope.current !== current || signal?.aborted) { completeCreate(); return; }
+    // Dismissing the picker cannot stop a create the server may already have committed. Open a
+    // confirmed new chat unless a newer selection replaced it; a dismissed default open stays closed.
+    const superseded = latestOpen.current !== open;
+    if (!current.mounted || scope.current !== current || (signal?.aborted && (!createNew || superseded))) { completeCreate(); return; }
     navigate(`/chats/${encodeURIComponent(agentRouteRef(agent))}${createNew ? `/${chat.id}` : ""}`);
     if (isMobile) setSidebarOpen(false);
     completeCreate();
