@@ -5068,7 +5068,7 @@
       "../../ui/src/pages/secrets/SetMyUserSecretDialog.tsx",
       "chat-scenarios/secrets.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.personal-secret.v17",
+    "oracleVersion": "paperclip.chat-catalog.personal-secret.v18",
     "expectedRunCount": 3,
     "expectedHumanMessageCount": 2,
     "minimumRunCount": 3,
