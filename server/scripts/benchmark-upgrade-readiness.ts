@@ -13,9 +13,10 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { eq, inArray } from "drizzle-orm";
-import { agents, agentTaskSessions, companies, createDb, heartbeatRuns, issues, nativeRunFinalizations,
+import { agentTaskSessions, companies, createDb, heartbeatRuns, issues, nativeRunFinalizations,
   nativeRunnerCheckpoints, startEmbeddedPostgresTestDatabase, type Db } from "@paperclipai/db";
 import { createLocalEncryptedCipher } from "../src/secrets/local-encrypted-provider.js";
+import { createAgentLifecycle } from "../src/services/agent-lifecycle.js";
 import { readUpgradeReadiness } from "../src/services/heartbeat/upgrade-readiness.js";
 import { currentNativeControllerIdentity } from "../src/services/native-runtime/native-restart-recovery.js";
 import { DurablePrpControlPlane } from "../src/vendor/paperclip-runner/index.js";
@@ -90,7 +91,8 @@ try {
   const cipher = createLocalEncryptedCipher("write");
   const companyId = randomUUID(), agentId = randomUUID();
   await db.insert(companies).values({ id: companyId, name: "Synthetic upgrade readiness", issuePrefix: `U${companyId.replaceAll("-", "")}` });
-  await db.insert(agents).values({ id: agentId, companyId, name: "Fixture", role: "engineer", adapterType: "paperclip_runner" });
+  await createAgentLifecycle(db).requestHire(companyId, { id: agentId, name: "Fixture", role: "engineer", status: "idle",
+    adapterType: "paperclip_runner", adapterConfig: {}, runtimeConfig: {}, permissions: {} }, { runnerResolved: true });
 
   // A header a real control plane wrote, then given each run's identity and a provider
   // attachment template of the scenario's size (the part that makes real headers large).
