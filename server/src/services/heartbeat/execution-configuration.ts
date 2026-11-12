@@ -70,6 +70,8 @@ export interface HeartbeatExecutionConfigurationInput {
     routineEnvContext: Awaited<ReturnType<ReturnType<typeof createHeartbeatRunPreparation>["getRoutineEnvForExecutionIssue"]>>;
     /** Resolved from the durable Studio test row by task-context, never wake input. */
     pinnedSkillTest?: { key: string; versionId: string } | null;
+    /** Restart recovery is reconnecting to this run's live remote Runner. */
+    adoptingLiveRunner?: boolean;
   };
   config: {
     sourceWorkspaceConfig: Record<string, unknown>;
@@ -298,6 +300,10 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
   const skillsPrepareStartedAtMs = Date.now();
   let skillsPrepareEndedAtMs = skillsPrepareStartedAtMs;
   let skillDeliveryConfig = effectiveResolvedConfig;
+  // A live remote Runner already holds the files of its admitted skill versions.
+  // Reuse that exact selection instead of re-downloading it on this server.
+  const reuseAdmittedSkills = input.task.adoptingLiveRunner === true && hasStoredVersions
+    && persistedNativeExecutionInput != null && "runtimeContext" in persistedNativeExecutionInput;
   const prepareSkills = async () => {
 
     try {
@@ -310,7 +316,7 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
       // pins and the Beta skills preference. Recovery keeps the admitted map.
       if (!hasStoredVersions && pinnedSkillTest) versionSelections.set(pinnedSkillTest.key, pinnedSkillTest.versionId);
       return await withSkillActor(skillActor, () => companySkills.withRuntimeSkillEntries(agent.companyId, {
-        versionSelections, snapshotLatest: true,
+        versionSelections, ...(reuseAdmittedSkills ? { admittedVersionsOnly: true } : { snapshotLatest: true }),
         ...(hasStoredVersions
           ? { onlyKeys: new Set(Object.keys(storedVersions)) }
           : { selectionConfig: effectiveResolvedConfig, includeLegacy: agent.adapterType !== "paperclip_runner" }),
@@ -369,7 +375,8 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
       throw error;
     }
   };
-  const skillsPreparation = (preconfiguredHome ? Promise.resolve([]) : time("configuration_skills", prepareSkills))
+  const skillsPreparation = (preconfiguredHome ? Promise.resolve([])
+    : time(reuseAdmittedSkills ? "configuration_skills_adopted" : "configuration_skills", prepareSkills))
     .finally(() => { skillsPrepareEndedAtMs = Date.now(); });
   const assignmentsPreparation = preconfiguredHome ? Promise.resolve([]) : time("configuration_connector_assignments", () => resolveConnectorAssignments(db, { companyId: agent.companyId, agentId: agent.id, runId: run.id, issueId: typeof context.issueId === "string" ? context.issueId : undefined }));
   const [preparedSkills, preparedAssignments, preparedInstructions] = await Promise.allSettled([
@@ -381,6 +388,11 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
   if (preparedAssignments.status === "rejected") throw preparedAssignments.reason;
   if (preparedInstructions.status === "rejected") throw preparedInstructions.reason;
   const runtimeSkillEntries = preparedSkills.value;
+  if (reuseAdmittedSkills) {
+    await appendRunEvent(run, { eventType: "lifecycle", stream: "system", level: "info",
+      message: "Reconnecting to the running agent with the skills it already has",
+      payload: { skillPreparation: "reused_admitted", skills: runtimeSkillEntries.length } });
+  }
   nativeRunnerPreparationSpans.push({
     name: "skills.prepare",
     parentName: "task.prepare",

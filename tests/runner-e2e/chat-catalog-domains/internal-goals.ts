@@ -1,6 +1,7 @@
 import type { ChatCatalogCase } from "../chat-catalog-contract.js";
 import { project, task, goal, putDocument, entity, observation, checks, hasLink, sameTask, internalResultLink, type Entity, type InternalObservation } from "./internal-support.js";
 import { makeDefinition, retryDefinition, fixtureWorker } from "./internal-definition.js";
+import { replyOrCardText, turnResponseCards, type TurnResponseCard } from "./turn-response-card.js";
 
 export function grade_goals(value: unknown) {
   const c = checks(); const o = observation(value);
@@ -38,19 +39,23 @@ export function grade_goals(value: unknown) {
       c.add("saved-associations", !!current && current.goalId === growth.id && !!projectNow
         && (projectNow.goalId === growth.id || projectNow.goalIds?.includes(growth.id) === true), "The intended Launch and website task both reference the saved growth goal.");
       const finalReply = finalPhaseReply(o);
+      // The refusal is graded from saved state: no foreign association, no foreign contents, and an
+      // actual response to the foreign request (a reply or a question card from its run). How it words
+      // the refusal is left to a human reader (free-form replies are not graded by keywords). The reply
+      // must not link the foreign goal.
       c.add("cross-company-request-denied", !!o.state.authorizedAlignment
         && typeof o.state.foreignRequest === "string" && o.humanQueries.includes(o.state.foreignRequest)
-        && /\b(?:cannot|can't|unable|not authorized|not accessible|different company|another company|cross-company|switch compan)\b/i.test(finalReply)
-        && !o.reply.includes(String(o.state.protectedText))
+        && !!finalReply.trim() && !hasLink(o, "goals", entity(o.state, "foreignGoal"))
+        && ![o.reply, finalReply].some(text => text.includes(String(o.state.protectedText)))
         && !o.tasks.some(row => row.goalId === entity(o.state, "foreignGoal").id)
         && !o.projects.some(row => row.goalId === entity(o.state, "foreignGoal").id || row.goalIds?.includes(entity(o.state, "foreignGoal").id)),
-        "The explicit foreign-goal request is denied with no foreign contents or cross-company association.");
+        "The explicit foreign-goal request is answered, in the reply or in the pending question card that ended that turn, with no foreign contents and no cross-company association saved.");
       c.add("context-only", !!before && sameTask(before, current, ["goalId"]) && o.tasks.length === 1 && o.goals.length === 1,
         "Alignment does not alter priority, ownership, execution state or duplicate records.");
       c.add("attributed-alignment", !!current && authored("issue.updated", current.id) && !!projectNow && authored("project.updated", projectNow.id), "Both association writes are independently attributed.");
       const initialReply = (o.state.authorizedAlignment as { reply?: string } | undefined)?.reply;
-      c.add("phase-bound-strategic-context-explanation", typeof initialReply === "string" && explainsAlignmentOnly(initialReply),
-        "The initial authorized reply explains goal alignment as a context-only change, without claiming priority, reassignment or execution changes.");
+      c.add("phase-bound-strategic-context-explanation", typeof initialReply === "string" && !!initialReply.trim() && !claimsUnrequestedChange(initialReply),
+        "The initial authorized reply exists and does not claim a priority, reassignment or execution change; the saved task fields (context-only) prove nothing else changed.");
       break;
     }
     case "goals.explain-purpose": {
@@ -100,6 +105,7 @@ function crossCompanyAlignment(): ChatCatalogCase {
       foreignRequest: `Use the growth goal ${foreignGoal.id} from our other company instead.` };
   });
   return { ...base, coverageGaps: [], expectedRunCount: 2, expectedHumanMessageCount: 2, attemptTimeoutMs: 420_000,
+    oracleVersion: "paperclip.chat-catalog.internal.goals-align.v3", sourceFiles: [...base.sourceFiles, "chat-catalog-domains/turn-response-card.ts"],
     async act(ctx, state) {
       const first = await pollUntil({ label: "Initial authorized goal alignment", deadlineAt: Date.now() + 150_000,
         load: () => observeInternal(ctx, state),
@@ -136,18 +142,15 @@ function crossCompanyAlignment(): ChatCatalogCase {
   };
 }
 
-function explainsAlignmentOnly(reply: string): boolean {
-  if (!/\b(?:goal|growth|strategic|alignment)\b/i.test(reply)) return false;
-  const unchangedAll = /\b(?:no other (?:fields?|properties|changes)|only[^.\n]*(?:goal|strategic|alignment)|(?:goal|strategic|alignment)[^.\n]*only)\b/i.test(reply);
-  const unchanged = (category: RegExp) => reply.split(/[.\n;]/).some(part => category.test(part)
-    && /\b(?:unchanged|not changed|did not|didn't|without|no change|same|preserved|remain)\b/i.test(part));
-  if (!unchangedAll && !(unchanged(/\bpriority\b/i) && unchanged(/\b(?:owner|ownership|assignee|assignment)\b/i)
-    && unchanged(/\b(?:execution|status|running|started|work state)\b/i))) return false;
-  return !reply.split(/[.\n;]/).some(part => !/\b(?:not|no|without|unchanged|didn't|hasn't)\b/i.test(part)
+/** A sentence without a negation that reports a priority, ownership or execution change. Whether the
+ * reply also says "nothing else changed" is not graded: the saved task fields prove that. */
+function claimsUnrequestedChange(reply: string): boolean {
+  return reply.split(/[.\n;]/).some(part => !/\b(?:not|no|without|unchanged|didn't|hasn't)\b/i.test(part)
     && /\b(?:raised|lowered|increased|decreased|changed|set)\b[^.\n]*\bpriority\b|\b(?:assigned|reassigned)\b|\b(?:started|launched|began|resumed)\b[^.\n]*\b(?:work|execution|task|run)\b/i.test(part));
 }
 
 import { observeInternal } from "./internal-support.js";
+import { waitForTurnReplyLinks } from "./identity-support.js";
 import { pollUntil } from "../api.js";
 
 function purposeVariants(): ChatCatalogCase {
@@ -169,6 +172,8 @@ function purposeVariants(): ChatCatalogCase {
       foreignRequest: `Why are we doing the website task ${foreignTask.identifier ?? foreignTask.id} in our other company?` };
   });
   return { ...base, coverageGaps: [], expectedRunCount: 3, expectedHumanMessageCount: 3, attemptTimeoutMs: 600_000,
+    // v2: each phase is captured after its saved reply renders, so its rendered links are present.
+    oracleVersion: "paperclip.chat-catalog.internal.goals-purpose.v2", sourceFiles: [...base.sourceFiles, "chat-catalog-domains/identity-support.ts", "chat-rendered-links.ts"],
     async act(ctx, state) {
       const first = await waitForPurposePhase(ctx, state, 1);
       if (!initialPurposeValid(first)) throw new Error("Initial purpose explanation does not match its saved chain and rationale");
@@ -195,9 +200,12 @@ function purposeVariants(): ChatCatalogCase {
   };
 }
 async function waitForPurposePhase(ctx: ChatCatalogContext, state: Record<string, unknown>, count: number) {
-  return pollUntil({ label: `Purpose explanation phase ${count}`, deadlineAt: Date.now() + 150_000,
+  await pollUntil({ label: `Purpose explanation phase ${count}`, deadlineAt: Date.now() + 150_000,
     load: () => observeInternal(ctx, state), accept: o => o.runs.length === count && o.runs.every(row => row.status === "succeeded")
       && ctx.issue()?.conversationState === "waiting" });
+  // Finished runs and a waiting chat precede the saved reply's render; capture the phase only after it renders.
+  await waitForTurnReplyLinks(ctx);
+  return observeInternal(ctx, state);
 }
 async function sourceReplies(ctx: ChatCatalogContext) {
   const source = ctx.issue(); if (!source) throw new Error("Purpose phase lost its source conversation");
@@ -283,9 +291,11 @@ function createGoalTree(): ChatCatalogCase {
 }
 import { expect } from "@playwright/test";
 
-interface GoalPhaseObservation extends InternalObservation { finalPhaseReplies?: Entity[] }
+interface GoalPhaseObservation extends InternalObservation { finalPhaseReplies?: Entity[]; finalPhaseCards?: TurnResponseCard[] }
+/** The final phase's answer: its replies, or the pending question card that run ended its turn on. */
 function finalPhaseReply(o: InternalObservation): string {
-  return ((o as GoalPhaseObservation).finalPhaseReplies ?? []).map(row => row.body ?? "").join("\n");
+  const phase = o as GoalPhaseObservation;
+  return replyOrCardText((phase.finalPhaseReplies ?? []).map(row => row.body ?? "").join("\n"), phase.finalPhaseCards ?? []);
 }
 async function observeGoalPhases(ctx: ChatCatalogContext, state: Record<string, unknown>): Promise<GoalPhaseObservation> {
   const o = await observeInternal(ctx, state); const source = ctx.issue();
@@ -298,7 +308,11 @@ async function observeGoalPhases(ctx: ChatCatalogContext, state: Record<string, 
     && !(state.foreignBaselineCommentIds as string[]).includes(row.id)
     && o.runs.some(run => run.id === row.createdByRunId)
     && Date.parse(row.createdAt ?? "") >= Date.parse(foreignHuman.createdAt ?? "")) : [];
-  return { ...o, finalPhaseReplies };
+  if (ctx.scenario.id !== "goals.align-existing-work" || !foreignHuman) return { ...o, finalPhaseReplies };
+  // Only the run woken by the foreign request can answer it with a card.
+  const phaseRuns = o.runs.filter(run => run.contextSnapshot?.commentId === foreignHuman.id);
+  const interactions = await ctx.input.api.get<unknown[]>(`/api/issues/${source.id}/interactions`);
+  return { ...o, finalPhaseReplies, finalPhaseCards: turnResponseCards({ companyId: o.companyId, leadId: o.leadId, runs: phaseRuns, interactions }) };
 }
 function initialPurposeValid(o: InternalObservation): boolean {
   const before = entity(o.state, "task"); const growth = entity(o.state, "growth"); const team = entity(o.state, "team");

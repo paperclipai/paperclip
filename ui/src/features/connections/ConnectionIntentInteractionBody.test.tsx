@@ -201,6 +201,12 @@ function button(label: string) {
   ) as HTMLButtonElement | undefined;
 }
 
+it("explains all-agent defaults consistently on compact connector cards", () => {
+  renderNode(<ConnectionIntentInteractionBody interaction={pendingConnectionIntentInteraction} currentUserId={issueThreadInteractionFixtureMeta.currentUserId} addresseeLabel="Carol" compact />);
+  expect(document.body.textContent).toContain("New connections default to all agents");
+  expect(document.body.textContent).not.toContain("Access is added only for this agent");
+});
+
 beforeEach(() => {
   sessionStorage.clear();
   emailCredentialsMock.mockReset().mockResolvedValue([]);

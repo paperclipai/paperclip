@@ -6,6 +6,12 @@ import { deferredProducer, requestDeferredProducer, sourceAdmissionJob, createRe
 const repository = "paperclipai/paperclip";
 const workflowPath = ".github/workflows/cloud-readiness.yml";
 export const sourceVerificationJob = "Cloud source verified v1";
+// Owner decision (2026-11-12): the Runner chaos evals run in the same Cloud
+// readiness run but are not a publication prerequisite. Their reusable-workflow
+// jobs are named "<this> / <inner job>". Their failure still fails their own
+// check and the run; it must not fail or cancel the source proof or the image.
+export const runnerChaosEvalsJob = "Runner chaos evals (not a publication gate)";
+const nonGating = job => typeof job.name === "string" && job.name.startsWith(`${runnerChaosEvalsJob} / `);
 export class SourceVerificationFailed extends Error {
   constructor(message, run) {
     super(message);
@@ -58,7 +64,7 @@ export async function readSourceVerification(sha, api, { failFast = false, onJob
   if (matches.length > 1) throw new Error("Cloud source verification job is ambiguous.");
   await onJobs?.(jobs.filter(job => job.head_sha === sha && job.run_id === run.id && job.run_attempt === run.run_attempt));
   if (failFast) {
-    const failure = jobs.find((job) => job.status === "completed" &&
+    const failure = jobs.find((job) => !nonGating(job) && job.status === "completed" &&
       ["failure", "cancelled", "timed_out", "action_required", "startup_failure", "stale"].includes(job.conclusion) &&
       job.head_sha === sha && job.run_id === run.id && job.run_attempt === run.run_attempt);
     if (failure) {

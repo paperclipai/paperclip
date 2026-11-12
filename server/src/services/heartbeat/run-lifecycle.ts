@@ -48,6 +48,7 @@ import { isWaitingConversation } from "../agent-conversations.js";
 import { PROCESS_IDENTITY_RECORDED } from "../native-local-process-stop.js";
 import {
   hasAcknowledgedNativeReassignmentStopIntent,
+  hasAcknowledgedNativeLifecycleStopIntent,
   hasAcknowledgedNativeStopIntent,
 } from "../acknowledged-native-stop.js";
 import { connectionIntentService } from "../connection-intents.js";
@@ -208,6 +209,7 @@ import type { recoveryService } from "../recovery/index.js";
 import type { companySkillService } from "../company-skills.js";
 import type { budgetService, BudgetServiceHooks } from "../budgets.js";
 import type { issueTreeControlService } from "../issue-tree-control.js";
+import { presentStorageFailureMessage } from "../../storage/storage-unavailable.js";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
 
@@ -369,6 +371,8 @@ export function decorateHeartbeatRunRuntimeStatus<
 
   return {
     ...run,
+    // Saved runs from earlier releases may promise a storage retry no wait owns.
+    ...("error" in run ? { error: presentStorageFailureMessage(run as { error?: string | null; errorCode?: string | null }) } : {}),
     currentStatusMessage: currentStatus?.message ?? null,
     currentStatusUpdatedAt: currentStatus?.updatedAt ?? null,
     currentToolName: currentStatus?.currentToolName ?? null,
@@ -1399,7 +1403,8 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
 
     // Teardown can beat the cancellation finalizer. Preserve the acknowledged
     // user intent instead of reporting an infrastructure interruption.
-    if (hasAcknowledgedNativeStopIntent(run) || hasAcknowledgedNativeReassignmentStopIntent(run)) terminalStatus = "cancelled";
+    if (hasAcknowledgedNativeStopIntent(run) || hasAcknowledgedNativeReassignmentStopIntent(run)
+      || hasAcknowledgedNativeLifecycleStopIntent(run)) terminalStatus = "cancelled";
 
     const message = `run terminalized on environment lease release: heartbeat_runs.status was still ${run.status} at teardown`;
     // Match both "running" and "queued". A queued run has released its lease but

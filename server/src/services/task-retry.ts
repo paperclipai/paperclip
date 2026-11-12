@@ -18,12 +18,14 @@ import { preserveNativeFailedWorkspace, preserveTaskRemoteWorkspaceWriter } from
 import { NativeWorkspaceFinalizationBusyError } from "./native-runtime/native-workspace-finalization-ownership.js";
 import { adapterExecutionControls } from "./adapter-execution-control.js";
 import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state.js";
-import { deferredChatInputPredicate, resumeDeferredChatWake } from "./durable-chat-wakeup.js";
+import { deferredChatInputPredicate, resumeDeferredChatWake, unadmittedChatWakeupCondition } from "./durable-chat-wakeup.js";
 import { notifyDeferredExecutionWork } from "./deferred-execution-notifications.js";
 import { hasPendingRunCleanup } from "./execution-blocker.js";
 import { PersistedExecutionWaitRefusal } from "./deferred-execution-wait.js";
+import { rearmExhaustedNativeFinalization } from "./native-runtime/exhausted-finalization-retry.js";
 import { NativeChatReviewPresentationContentionError } from "./native-runtime/native-chat-review-presentation.js";
 import { isExternalChatWaitAuthorizationContention } from "./native-runtime/chat-attachment-reuse.js";
+import { selectTaskRetryInput } from "./chat-channels/task-retry-input.js";
 
 export async function taskRetryMutationAllowed(db: Db, input: {
   companyId: string; issueId: string; actorId: string; actorSource: TaskRetryIntent["actorSource"];
@@ -223,14 +225,27 @@ export async function retireSupersededTaskRetry(db: Db, input: {
 type TaskRetryRequest = {
   db: Db; companyId: string; issueId: string; actorId: string;
   idempotencyKey: string; observedRunId: string | null; actorSource?: string;
-  /** Paperclip requests the user's Retry itself after a restart lost an unstarted turn. */
-  initiatedBy?: "restart_recovery";
+  /** Paperclip requests the user's Retry itself: after a restart lost an
+   * unstarted turn, or once a provider usage limit it waited on has reset. */
+  initiatedBy?: "restart_recovery" | "provider_limit_reset";
   prepareChatRetry?: (tx: Db, scope: { companyId: string; issueId: string; agentId: string;
     failedRunId: string; initiatedByUserId: string; retryIntentId?: string }) => Promise<{ actionId: string }>;
 };
 
+/** Activity actor for a Retry: the user, or the Paperclip hook acting for them. */
+function automaticRetryActor(input: Pick<TaskRetryRequest, "initiatedBy" | "actorId">) {
+  if (!input.initiatedBy) return { actorType: "user" as const, actorId: input.actorId };
+  return { actorType: "system" as const,
+    actorId: input.initiatedBy === "restart_recovery" ? "restart-recovery" : "provider-limit-reset" };
+}
+
 const TASK_RETRY_CONTENTION_ATTEMPTS = 10;
 const TASK_RETRY_CONTENTION_DELAY_MS = 100;
+
+function isExactChatReplayRefusal(error: unknown) {
+  return error instanceof HttpError && error.status === 409 &&
+    (error.details as Record<string, unknown> | undefined)?.code === "chat_failed_run_retry_not_authorized";
+}
 
 function isTaskRetryContention(error: unknown) {
   return error instanceof NativeChatReviewPresentationContentionError || isExternalChatWaitAuthorizationContention(error);
@@ -300,6 +315,38 @@ function admitTaskRetry(input: TaskRetryRequest) {
         .where(eq(agentWakeupRequests.id, active.id));
       active = undefined;
     }
+    // An accepted result that only failed to finalize is applied again, never
+    // replaced by a new provider run. The receipt coalesces into that run.
+    const finalizeId = randomUUID();
+    const savedResult = latest.runtimeMode === "native" && latest.status === "succeeded"
+      ? await rearmExhaustedNativeFinalization(db, { companyId: issue.companyId, issueId: issue.id, runId: latest.id,
+        generationId: active?.id ?? finalizeId, actorId: input.actorId })
+      : { kind: "not_eligible" as const };
+    if (savedResult.kind !== "not_eligible") {
+      // A later click joins the saved-result Retry already under way (or applied).
+      const canonicalId = (savedResult.kind === "joined" ? savedResult.generationId : null) ?? active?.id ?? null;
+      const finalizeIntent: TaskRetryIntent = { schema: "paperclip.task-retry.v1", generationId: canonicalId ?? finalizeId,
+        sourceRunId: latest.id, actorId: input.actorId,
+        actorSource: taskRetryIntentSchema.shape.actorSource.parse(input.actorSource ?? "session"), strategy: "finalize_result",
+        ...(canonicalId ? { canonicalIntentId: canonicalId } : {}) };
+      const settled = { status: "coalesced", runId: latest.id, finishedAt: new Date(), updatedAt: new Date() } as const;
+      // An unadmitted Retry for this run would start a provider turn; it joins the re-finalization instead.
+      if (active && !active.runId) await tx.update(agentWakeupRequests).set({ ...settled,
+        payload: sql`jsonb_set(${agentWakeupRequests.payload}, '{taskRetry,strategy}', '"finalize_result"'::jsonb)` })
+        .where(eq(agentWakeupRequests.id, active.id));
+      await tx.insert(agentWakeupRequests).values({ id: finalizeId, companyId: issue.companyId, agentId: issue.assigneeAgentId,
+        source: "on_demand", triggerDetail: "manual", reason: "task_retry", idempotencyKey: key,
+        requestedByActorType: "user", requestedByActorId: input.actorId, ...settled,
+        payload: { issueId: issue.id, taskRetry: finalizeIntent } });
+      await persistActivity(db, { companyId: issue.companyId, ...automaticRetryActor(input),
+        action: "issue.retry_requested", entityType: "issue", entityId: issue.id, runId: latest.id,
+        details: { requestId: canonicalId ?? finalizeId, sourceRunId: latest.id, attachedToExistingWork: Boolean(canonicalId),
+          strategy: "finalize_result",
+          ...(input.initiatedBy ? { initiatedBy: input.initiatedBy, onBehalfOfUserId: input.actorId } : {}) } });
+      const finalizing = savedResult.kind === "rearmed" || savedResult.finalizing;
+      return { requestId: canonicalId ?? finalizeId, accepted: true, stale: false, observedRunId: latest.id,
+        chatActionId: undefined, ...(finalizing ? { finalizeRunId: latest.id } : {}) };
+    }
     const busy = ["queued", "running", "scheduled_retry"].includes(latest.status);
     if (!busy) {
       await preserveTaskRemoteWorkspaceWriter(db, issue.companyId, issue.id);
@@ -336,10 +383,10 @@ function admitTaskRetry(input: TaskRetryRequest) {
     // A new deliberate click (new key) replaces it with a fresh attempt under the
     // clicker's current authority instead of joining it. Waits on shared state
     // (cleanup, recovery, an active run) keep coalescing: that intent starts by
-    // itself once the gate clears. The restart hook never replaces a user's click.
+    // itself once the gate clears. An automatic hook never replaces a user's click.
     let replacedRequestId: string | undefined;
     if (active && !busy && !active.runId && active.status === "deferred_issue_execution" &&
-        input.initiatedBy !== "restart_recovery" && activeIntent && !activeIntent.chatActionId &&
+        !input.initiatedBy && activeIntent && !activeIntent.chatActionId &&
         !activeIntent.queuedChatRequestId && isDeclinedTaskRetry(active.payload)) {
       await tx.update(agentWakeupRequests).set({ status: "skipped", error: "task_retry_replaced",
         finishedAt: new Date(), updatedAt: new Date() }).where(and(eq(agentWakeupRequests.id, active.id),
@@ -377,9 +424,15 @@ function admitTaskRetry(input: TaskRetryRequest) {
         await notifyDeferredExecutionWork(tx, { companyId: issue.companyId, requestId: id });
       }
     }
-    if (chat && !active && !busy && !boardMessageOrigin && !intent.queuedChatRequestId && (latest.contextSnapshot?.source === "issue.comment.reopen" || latest.contextSnapshot?.boardMessageRetry === true) &&
-        latest.responsibleUserId === input.actorId) {
-      throw conflict("This saved message cannot be retried safely. Send a new message on the task to continue from saved work.",
+    const savedBoardTurn = Boolean(chat && !active && !busy && !boardMessageOrigin && !intent.queuedChatRequestId &&
+      (latest.contextSnapshot?.source === "issue.comment.reopen" || latest.contextSnapshot?.boardMessageRetry === true) &&
+      latest.responsibleUserId === input.actorId);
+    const hasUnadmittedChatInput = async () => (await tx.select({ id: issues.id }).from(issues).where(and(eq(issues.id, issue.id),
+      eq(issues.companyId, issue.companyId), unadmittedChatWakeupCondition(issues.id, issues.companyId))).limit(1)).length > 0 ||
+      Boolean((await selectTaskRetryInput(tx, { companyId: issue.companyId, issueId: issue.id,
+        agentId: issue.assigneeAgentId!, failedRunId: latest.id }))?.sourceActionIds.length);
+    if (savedBoardTurn && (input.initiatedBy || await hasUnadmittedChatInput())) {
+      throw conflict("This saved message can't be repeated exactly as it was sent. Retry continues the task from its saved work instead.",
         { code: "chat_failed_run_retry_not_authorized", reason: "saved_board_message_not_replayable" });
     }
     await tx.insert(agentWakeupRequests).values({ id, companyId: issue.companyId, agentId: issue.assigneeAgentId,
@@ -388,12 +441,23 @@ function admitTaskRetry(input: TaskRetryRequest) {
       status: active || busy ? "coalesced" : "deferred_issue_execution",
       runId: active?.runId ?? (busy ? latest.id : null),
       payload: { issueId: issue.id, taskRetry: intent }, finishedAt: active || busy ? new Date() : null });
-    if (chat && !boardMessageOrigin && !intent.queuedChatRequestId && !active && !busy) {
-      if (!input.prepareChatRetry) throw conflict("Retry is unavailable for this connected conversation.");
-      intent.chatActionId = (await input.prepareChatRetry(db, { companyId: issue.companyId, issueId: issue.id,
-        agentId: issue.assigneeAgentId, failedRunId: latest.id, initiatedByUserId: input.actorId, retryIntentId: id })).actionId;
-      await tx.update(agentWakeupRequests).set({ payload: { issueId: issue.id, taskRetry: intent } })
-        .where(eq(agentWakeupRequests.id, id));
+    if (chat && !boardMessageOrigin && !intent.queuedChatRequestId && !active && !busy && !savedBoardTurn) {
+      if (!input.prepareChatRetry && input.initiatedBy) throw conflict("Retry is unavailable for this connected conversation.");
+      const prepareChatRetry = input.prepareChatRetry ?? (() => { throw conflict("Retry is unavailable for this connected conversation.",
+        { code: "chat_failed_run_retry_not_authorized" }); });
+      const scope = { companyId: issue.companyId, issueId: issue.id, agentId: issue.assigneeAgentId,
+        failedRunId: latest.id, initiatedByUserId: input.actorId, retryIntentId: id };
+      const prepared = await tx.transaction(savepoint => prepareChatRetry(savepoint as unknown as Db, scope))
+        .catch(async error => {
+          if (input.initiatedBy || !isExactChatReplayRefusal(error)) throw error;
+          if (await hasUnadmittedChatInput()) throw error;
+          return null;
+        });
+      if (prepared) {
+        intent.chatActionId = prepared.actionId;
+        await tx.update(agentWakeupRequests).set({ payload: { issueId: issue.id, taskRetry: intent } })
+          .where(eq(agentWakeupRequests.id, id));
+      }
     }
     if (!busy) {
       for (const action of records) {
@@ -427,13 +491,11 @@ function admitTaskRetry(input: TaskRetryRequest) {
           actionId: action.id }, previous, next);
       }
     }
-    const restartRecovery = input.initiatedBy === "restart_recovery";
-    await persistActivity(db, { companyId: issue.companyId, actorType: restartRecovery ? "system" : "user",
-      actorId: restartRecovery ? "restart-recovery" : input.actorId,
+    await persistActivity(db, { companyId: issue.companyId, ...automaticRetryActor(input),
       action: "issue.retry_requested", entityType: "issue", entityId: issue.id, runId: latest.id,
       details: { requestId: active?.id ?? id, sourceRunId: latest.id, attachedToExistingWork: Boolean(active || busy),
         ...(replacedRequestId ? { replacedRequestId } : {}),
-        ...(restartRecovery ? { initiatedBy: "restart_recovery", onBehalfOfUserId: input.actorId } : {}) } });
+        ...(input.initiatedBy ? { initiatedBy: input.initiatedBy, onBehalfOfUserId: input.actorId } : {}) } });
     return { requestId: active?.id ?? id, accepted: true, stale: false, observedRunId: latest.id,
       chatActionId: intent.chatActionId,
       ...(!active && latest.status === "scheduled_retry" ? { scheduledRetryRunId: latest.id } : {}) };

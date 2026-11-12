@@ -88,7 +88,7 @@ export function AgentBulkRoster({ companyId, agents, visibleAgents, renderAgent,
     <div className="overflow-x-auto"><table aria-label="Agent roster" className="agent-roster w-full text-left text-sm">
       <thead className="text-xs text-muted-foreground [&_th]:px-3 [&_th]:py-3 [&_th]:font-normal"><tr>
         <th className="w-10"><Checkbox aria-label="Select all visible editable agents" checked={all ? true : some ? "indeterminate" : false} disabled={!selectable.length} onCheckedChange={toggleAll} /></th>
-        <th scope="col">Agent</th>{renderChat && <th scope="col"><span className="sr-only">Chat</span></th>}<th scope="col">Status</th><th scope="col">Harness</th><th scope="col">Connection</th><th scope="col">Default model</th>
+        <th scope="col">{visible.length} {visible.length === 1 ? "agent" : "agents"}</th>{renderChat && <th scope="col"><span className="sr-only">Chat</span></th>}<th scope="col">Status</th><th scope="col">Harness</th><th scope="col">Default model</th><th scope="col">Connection</th>
       </tr></thead>
       <tbody>{visible.map(agent => {
         const metadata = rosterIndex.byAgentId.get(agent.id)!;
@@ -98,8 +98,8 @@ export function AgentBulkRoster({ companyId, agents, visibleAgents, renderAgent,
         {renderChat && <td>{renderChat(agent)}</td>}
         <td>{renderStatus ? renderStatus(agent) : <AgentStatusBadge status={agent.status} />}</td>
         <td className="whitespace-nowrap text-xs">{metadata.harness.label}</td>
+        <td className="text-xs">{metadata.model.label}</td>
         <td className="text-xs">{metadata.connection.label}</td>
-        <td className="font-mono text-xs">{metadata.model.label}</td>
       </tr>;
       })}</tbody>
     </table></div>

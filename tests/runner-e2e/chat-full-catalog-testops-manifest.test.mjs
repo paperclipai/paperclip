@@ -375,6 +375,11 @@ test('repair source metadata binds the corrected candidate and explicit changed 
     "agents.restore-instructions",
     "expectedOutcome"
   ],
+  // The fake sandbox control can never be saved; the case now contrasts advertised support with health.
+  [
+    "execution-environments.choose-capable-target",
+    "originalContext"
+  ],
   // Retargeted to read-and-route: member permission edits are board-only.
   [
     "access.manage-membership",
@@ -401,6 +406,50 @@ test('repair source metadata binds the corrected candidate and explicit changed 
   [
     "activity.routine-audit",
     "originalContext"
+  ],
+  // Agents keep delegated gateway and token authority and never receive token values (gateways-profiles.create-gateway, rotate-token).
+  [
+    "gateways-profiles.create-gateway",
+    "originalContext"
+  ],
+  [
+    "gateways-profiles.create-gateway",
+    "expectedOutcome"
+  ],
+  [
+    "gateways-profiles.rotate-token",
+    "originalContext"
+  ],
+  [
+    "gateways-profiles.rotate-token",
+    "expectedOutcome"
+  ],
+  [
+    "tasks.share-private-task",
+    "originalQuery"
+  ],
+  // Retargeted removed-feature case: Agent Chat is always on (#19360), so the instance experiment is Cases.
+  [
+    "instance-operations.instance-settings",
+    "originalQuery"
+  ],
+  [
+    "instance-operations.instance-settings",
+    "originalContext"
+  ],
+  [
+    "instance-operations.instance-settings",
+    "expectedOutcome"
+  ],
+  // Decision after full cohort 4: the answer shapes the resulting work, in its saved brief or saved deliverable.
+  [
+    "questions-and-approvals.necessary-question",
+    "expectedOutcome"
+  ],
+  // Full cohort 5: "this task" in a chat read as the chat itself; the query names the Website task.
+  [
+    "tasks.assignment-conflict",
+    "originalQuery"
   ]
 ]);
   for (const change of repair.changedFields) {

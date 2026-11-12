@@ -1,3 +1,5 @@
+import { sameRunResumeClaimEntry } from "./scheduled-resume-continuation.js";
+import { appendBoundedRecoveryHistory } from "./native-restart-recovery.js";
 import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
 import { currentControllerProcessStamp } from "../controller-process-identity.js";
 import { NATIVE_SESSION_RESUMPTION_ISSUE_STATUSES } from "./native-session-resumption-statuses.js";
@@ -27,6 +29,8 @@ import {
   type OwnershipReport,
 } from "../recovery/ownership-invariant-report.js";
 import { deferredWorkIntentWait, promoteDeferredWorkIntents, saveUndeliveredUserComments } from "../work-intent-outbox.js";
+import { notifyQueuedRunDispatch } from "../run-dispatch-notifications.js";
+import { QUEUED_RUN_NOT_DISPATCHED } from "../queued-run-dispatch-liveness.js";
 import { createHash, randomUUID } from "node:crypto";
 import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lt, lte, not, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -240,6 +244,7 @@ export async function claimNativeSessionResumptions(input: {
         const failureCode = originalFailureCode;
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, row.run.companyId);
         await notifyLiveRunRecovery(tx, { companyId: row.run.companyId, runId: row.run.id, agentId: row.run.agentId });
+        await notifyQueuedRunDispatch(tx, { companyId: row.run.companyId });
         await tx.update(nativeRunFinalizations).set({
           phase: "terminal_failure",
           leaseOwner: null,
@@ -309,15 +314,16 @@ export async function claimNativeSessionResumptions(input: {
 
       const leaseExpiresAt = new Date(now.getTime() + 20 * 60_000);
       await notifyLiveRunRecovery(tx, { companyId: row.run.companyId, runId: row.run.id, agentId: row.run.agentId });
+      const stamp = currentControllerProcessStamp();
+      const resumeClaim = sameRunResumeClaimEntry({ at: now, controllerBootId: stamp.bootId,
+        providerAttempt: row.coordinator.attempt, failureDetail: row.coordinator.failureDetail });
       const updated = await tx.update(nativeRunFinalizations).set({
         phase: "observed",
         leaseOwner,
         leaseExpiresAt,
-        ...(() => {
-          const stamp = currentControllerProcessStamp();
-          return { controllerBootId: stamp.bootId, controllerPid: stamp.pid, controllerHostHash: stamp.hostHash,
-            controllerProcessStartedAt: stamp.processStartedAt ? new Date(stamp.processStartedAt) : null };
-        })(),
+        controllerBootId: stamp.bootId, controllerPid: stamp.pid, controllerHostHash: stamp.hostHash,
+        controllerProcessStartedAt: stamp.processStartedAt ? new Date(stamp.processStartedAt) : null,
+        recoveryHistory: appendBoundedRecoveryHistory(resumeClaim),
         failureCode: null,
         failureDetail: null,
         nextAttemptAt: null,
@@ -862,6 +868,12 @@ export async function applyOwnershipReportBackstops(db: Db, report: OwnershipRep
   for (const companyId of companies) {
     await db.transaction(tx => promoteDeferredWorkIntents(tx, { companyId, trigger: "reconciler_backstop" }))
       .catch(error => { retryNeeded = true; logger.warn({ err: error, companyId }, "deferred intent backstop promotion failed"); });
+  }
+  const undispatched = new Set(report.newViolations.filter(violation => violation.reason === QUEUED_RUN_NOT_DISPATCHED)
+    .flatMap(violation => violation.companyId ? [violation.companyId] : []));
+  for (const companyId of undispatched) {
+    await db.transaction(tx => notifyQueuedRunDispatch(tx, { companyId }))
+      .catch(error => { retryNeeded = true; logger.warn({ err: error, companyId }, "queued run dispatch backstop failed"); });
   }
   return { retryNeeded };
 }

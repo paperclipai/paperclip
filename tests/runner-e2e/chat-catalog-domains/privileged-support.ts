@@ -2,12 +2,13 @@ import { chatCatalogNativePhaseDeadline, chatCatalogNativePhaseIsTimely } from "
 import type { ChatCatalogCase, ChatCatalogContext } from "../chat-catalog-contract.js";
 import { pollUntil } from "../api.js";
 import { observeInternal, observation, type Entity, type InternalObservation } from "./internal-support.js";
+import { turnResponseCards, type TurnResponseCard } from "./turn-response-card.js";
 
 /** These cases exercise only the launcher-owned instance or a rendered developer fixture. */
 export function privilegedDefinition(scenarioId: string, module: string, extra: Pick<ChatCatalogCase, "setup" | "grade" | "act" | "verifyResult">): ChatCatalogCase {
   return { scenarioId, oracleVersion: "paperclip.chat-catalog.privileged.v1", coverageGaps: [],
     authentication: "human-session", expectedRunCount: 1, turnTimeoutMs: 120_000, attemptTimeoutMs: 420_000,
-    sourceFiles: ["chat-catalog-domains/privileged-support.ts", `chat-catalog-domains/${module}.ts`, `chat-scenarios/${scenarioId.split(".")[0]}.yaml`],
+    sourceFiles: ["chat-catalog-domains/privileged-support.ts", "chat-catalog-domains/turn-response-card.ts", `chat-catalog-domains/${module}.ts`, `chat-scenarios/${scenarioId.split(".")[0]}.yaml`],
     observe: observeInternal, ...extra };
 }
 export function remainingPrivilegedObservationBudget(ctx: ChatCatalogContext): number {
@@ -16,11 +17,21 @@ export function remainingPrivilegedObservationBudget(ctx: ChatCatalogContext): n
   if (!Number.isFinite(deadline) || deadline! <= now) throw new Error("Original privileged observation budget exhausted or missing");
   return deadline! - now;
 }
-export async function settlePrivilegedChat(ctx: ChatCatalogContext, observationDeadlineAt?: number): Promise<InternalObservation> {
-  return pollUntil({ label: "Canonical privileged guidance settled", deadlineAt: chatCatalogNativePhaseDeadline(ctx, observationDeadlineAt ?? Date.now() + 150_000),
-    load: () => observeInternal(ctx, {}),
-    accept: o => chatCatalogNativePhaseIsTimely(ctx) && ((observationDeadlineAt === undefined || Date.now() < observationDeadlineAt) && o.runs.length === 1 && o.runs[0]?.status === "succeeded" && !!o.reply && ctx.issue()?.conversationState === "waiting"),
-    reject: o => o.runs.some(run => ["failed", "timed_out", "cancelled"].includes(run.status)) ? "Canonical guidance run failed" : undefined });
+/**
+ * The turn has settled once the one run succeeded and answered the person, either with a reply
+ * or with a pending question card the product chose as the turn's response. A card settles the
+ * turn only; each case still grades whether the reply (or card) is the guidance it requires.
+ */
+export async function settlePrivilegedChat(ctx: ChatCatalogContext, observationDeadlineAt?: number): Promise<InternalObservation & { responseCards: TurnResponseCard[] }> {
+  const settled = await pollUntil({ label: "Canonical privileged guidance settled", deadlineAt: chatCatalogNativePhaseDeadline(ctx, observationDeadlineAt ?? Date.now() + 150_000),
+    load: async () => {
+      const o = await observeInternal(ctx, {}), source = ctx.issue();
+      const interactions = source && !o.reply ? await ctx.input.api.get<unknown[]>(`/api/issues/${source.id}/interactions`) : [];
+      return { o, cards: turnResponseCards({ companyId: o.companyId, leadId: o.leadId, runs: o.runs, interactions }) };
+    },
+    accept: ({ o, cards }) => chatCatalogNativePhaseIsTimely(ctx) && ((observationDeadlineAt === undefined || Date.now() < observationDeadlineAt) && o.runs.length === 1 && o.runs[0]?.status === "succeeded" && (!!o.reply || cards.length > 0) && ctx.issue()?.conversationState === "waiting"),
+    reject: ({ o }) => o.runs.some(run => ["failed", "timed_out", "cancelled"].includes(run.status)) ? "Canonical guidance run failed" : undefined });
+  return { ...settled.o, responseCards: settled.cards };
 }
 export const privilegedObservation = observation;
 

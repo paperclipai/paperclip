@@ -9,7 +9,7 @@ The invariants and rules below record what has been decided so far. If you think
 
 Paperclip is a control plane for AI-agent companies.
 The code and its tests are the source of truth for current behavior.
-`doc/SPEC-implementation.md` and `doc/SPEC.md` are background. They can be out of date, so do not treat them as requirements when they disagree with the code or with the task.
+The focused docs under `doc/` are background. They can be out of date, so do not treat them as requirements when they disagree with the code or with the task.
 
 ## 2. Read This First
 
@@ -96,6 +96,9 @@ preflight", "Start Dev", "Quick Health Checks", and "Database in Dev" in
    - Budget hard-stop auto-pause behavior
    - Activity logging for mutating actions
 
+4. **Keep behavior with its owning module.**
+   Provider protocols, payload parsing, and feature-specific sequencing belong to the module that owns them. Shared code uses narrow, normalized contracts. Explain any substantive change outside the owning module. See [`rules/module-boundaries.mdc`](rules/module-boundaries.mdc).
+
 ## 6. Database Changes
 
 Follow "Schema change workflow" in `doc/DATABASE.md`: edit the schema, run
@@ -175,9 +178,9 @@ for the full workflow. Structural checks are not production acceptance.
 
 ## 8. API and Auth
 
-Every route under `server/src/routes/` checks company access and actor
-permissions, logs mutations to the activity log, and returns consistent HTTP
-errors. See [`rules/api-route-expectations.mdc`](rules/api-route-expectations.mdc).
+Every route under `server/src/routes/` that reads or writes company data checks
+company access and actor permissions, logs mutations to the activity log, and
+returns consistent HTTP errors. See [`rules/api-route-expectations.mdc`](rules/api-route-expectations.mdc).
 
 ## 9. UI Expectations
 

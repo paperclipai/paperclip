@@ -176,6 +176,8 @@ export const heartbeatRuns = pgTable(
     companyWakeCommentIdx: index("heartbeat_runs_company_wake_comment_idx")
       .on(table.companyId, sql`(${table.contextSnapshot}->>'wakeCommentId')`)
       .concurrently(),
+    queuedCreatedIdx: index("heartbeat_runs_queued_created_idx").on(table.companyId, table.createdAt, table.id)
+      .where(sql`${table.status} = 'queued'`).concurrently(),
     costAccountingPendingIdx: index("heartbeat_runs_cost_accounting_pending_idx").on(table.updatedAt, table.id).where(sql`${table.costAccountingPending} = true`),
     costDataQualityIdx: index("heartbeat_runs_cost_data_quality_idx")
       .on(table.companyId, sql`coalesce(${table.finishedAt}, ${table.createdAt}) desc`, table.id)
@@ -258,6 +260,14 @@ export const heartbeatRuns = pgTable(
       sql`(${table.contextSnapshot} ->> 'taskKey')`,
       table.createdAt.desc(),
     ),
+    // Runs that recorded an execution workspace in their legacy context. Workspace
+    // activity and cleanup checks probe it instead of decoding every run context.
+    // Partial, so it serves only queries that repeat the predicate and never
+    // competes with other company-scoped indexes.
+    companyCtxExecutionWorkspaceIdx: index("heartbeat_runs_company_ctx_execution_workspace_idx")
+      .on(table.companyId, sql`(${table.contextSnapshot} ->> 'executionWorkspaceId')`)
+      .where(sql`${table.contextSnapshot} ? 'executionWorkspaceId'`)
+      .concurrently(),
     companyCtxPaperclipIssueCreatedIdx: index("heartbeat_runs_company_ctx_paperclip_issue_created_idx")
       .on(table.companyId, sql`(${table.contextSnapshot} -> 'paperclipIssue' ->> 'id')`, table.createdAt.desc())
       .concurrently(),

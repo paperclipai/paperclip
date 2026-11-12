@@ -1,3 +1,4 @@
+import { REMOTE_WORKSPACE_CAPTURE_POLICY_VERSION } from "./remote-workspace-snapshot-archive.js";
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { cp, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
@@ -464,10 +465,13 @@ describe("retained source fallback", () => {
     expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(true);
     await db.update(issueRecoveryActions).set({ status: "resolved", resolvedAt: new Date() }).where(eq(issueRecoveryActions.id, f.actionId));
     const staleId = randomUUID(), now = Date.now();
+    // An export hold that names the task's Blocked status leaves the status to
+    // its saved result's finalization; the sibling settlement must not change it.
+    const [task] = await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, f.issueId)).returning();
     await db.insert(issueRecoveryActions).values({ id: staleId, companyId: f.companyId, sourceIssueId: f.issueId,
       kind: "active_run_watchdog", status: "active", ownerType: "board", cause: "native_workspace_sync_out_retry_exhausted",
       fingerprint: randomUUID(), nextAction: "Automatic recovery of saved work stopped after 6 attempts.",
-      evidence: { runId: f.runId,
+      evidence: { runId: f.runId, nativeFailureBlock: { runId: f.runId, statusVersion: Number(task.statusVersion) },
         systemRecovery: { schema: "paperclip.system-recovery.v1", policyVersion: 1, sourceRunId: f.runId, revision: 54,
           generationId: randomUUID(), intentId: null, phase: "preserve_files", state: "exhausted", attemptId: randomUUID(),
           attempts: 6, retriesUsed: 5, firstFailureAt: now - 60_000, nextAttemptAt: null, deadlineAt: now - 1, providerCooldownAt: null,
@@ -487,6 +491,7 @@ describe("retained source fallback", () => {
     const live = await db.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.sourceIssueId, f.issueId),
       inArray(issueRecoveryActions.status, ["active", "escalated"])));
     expect(live).toHaveLength(0);
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]!.status).toBe("blocked");
   }, 60_000);
 
   it("stops discovering a stale hold whose sibling receipt no longer verifies", async () => {
@@ -507,7 +512,8 @@ describe("retained source fallback", () => {
           generationId: randomUUID(), intentId: null, phase: "preserve_files", state: "exhausted", attemptId: randomUUID(),
           attempts: 6, retriesUsed: 5, firstFailureAt: now - 60_000, nextAttemptAt: null, deadlineAt: now - 1, providerCooldownAt: null,
           failure: { code: "export_interrupted", retryClass: "retry_transient", evidenceFingerprint: "c".repeat(64) },
-          preservationOperationIds: [], freshAttemptRunId: null },
+          // Exhausted under the current capture policy, so only the sibling rule applies.
+          preservationOperationIds: [], freshAttemptRunId: null, capturePolicyVersion: REMOTE_WORKSPACE_CAPTURE_POLICY_VERSION },
         workspaceRecovery: { schema: "paperclip.workspace-recovery.v1", runId: f.runId, status: "blocked", stage: "restoring_files",
           attempt: 6, attemptLimit: 6, retryable: true, requestIds: [] } } });
     const ids = async () => (await retainedWorkspaceCandidates(db, undefined, false, true)).map(row => row.action.id);

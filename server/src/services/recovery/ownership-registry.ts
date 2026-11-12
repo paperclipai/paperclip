@@ -48,8 +48,9 @@ import { legacyShutdownSettlementOwner, settleLegacyShutdownSettlementFence } fr
 import { nativeControllerOwnerStamp, runProcessOwnerStamp } from "../native-runtime/native-owner-stamps.js";
 import { settleIssueLock } from "./issue-lock-settlement.js";
 import { settleAgentLifecycleLease } from "./agent-lifecycle-lease-settlement.js";
-import { legacyControllerOwnerStamp, settleLegacyControllerLease } from "../legacy-controller-lease.js";
+import { finishedLegacyControllerOwnerStamp, legacyControllerOwnerStamp, settleLegacyControllerLease } from "../legacy-controller-lease.js";
 import { heldInterruptedPreparationWhere, settleHeldInterruptedPreparation } from "../interrupted-preparation-hold-settlement.js";
+import { completedTurnCleanupHoldWhere, settleCompletedTurnCleanupHolds } from "../native-runtime/completed-turn-cleanup-hold-settlement.js";
 import {
   nativeLeaseHolderStamp,
   readNativeLeaseHolder,
@@ -1064,7 +1065,8 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
   }, versionLock(heartbeatRuns)),
   {
     // A preparation a shutdown interrupted, held before its no-provider-work
-    // proof could exist. Its owner is the recorded controller process: the
+    // proof could exist, or one the orphan reaper ended as process_lost. Its
+    // owner is the recorded controller process: the
     // shared prover must prove it gone (a missing stamp, or one from another
     // host or PID space, is unprovable and stays held). The settle re-checks
     // the durable proof and replays the preparation exactly once.
@@ -1072,10 +1074,21 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
     // in a pass is released before this kind lists in that same pass.
     ...runKind("legacy_interrupted_preparation_hold", "Interrupted preparation held for replay", "ownership",
       heldInterruptedPreparationWhere(), row => {
-        const stamp = legacyControllerOwnerStamp(row);
+        // A preparation the orphan reaper ended has a revoked lease: its owner
+        // is still the recorded controller process.
+        const stamp = finishedLegacyControllerOwnerStamp(row);
         return stamp ? { kind: "process", stamp } : { kind: "none" };
       }),
     settle: settleHeldInterruptedPreparation,
+  },
+  {
+    // No-replay holds of a run that completed its turn and was then refused by
+    // the in-process cleanup gate. Its owner is the controller that closed the
+    // session (the coordinator's stamp); once that process is proven gone, so
+    // is its gate, and the holds settle without replaying anything.
+    ...nrfKind("native_completed_turn_cleanup_hold", "Completed-turn cleanup hold", "ownership",
+      completedTurnCleanupHoldWhere()),
+    settle: settleCompletedTurnCleanupHolds,
   },
   runKind("detached_process_marker", "Detached-process marker", "ownership",
     and(eq(heartbeatRuns.status, "running"), eq(heartbeatRuns.errorCode, "process_detached")),

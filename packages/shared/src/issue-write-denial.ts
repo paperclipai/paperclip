@@ -2,7 +2,8 @@
  * Copy contract for denied issue writes (open cross-task writes: failure UX).
  *
  * Cross-issue issue writes are default-open for standard-trust agents on issues
- * they can already read (see SPEC-implementation §9.3). The remaining walls are
+ * they can already read (see `doc/agent-permission-defaults.md`, "Shared
+ * default-open issue writes"). The remaining walls are
  * rare — but a real incident burned a full detour discovering a workaround
  * behind an opaque 403, so every one of them must say three things:
  *

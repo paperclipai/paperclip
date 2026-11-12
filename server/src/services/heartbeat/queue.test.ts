@@ -1026,6 +1026,19 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     expect(deps.executeRun).toHaveBeenCalledExactlyOnceWith(run.id);
   });
 
+  it("leaves a queued run for the next server when shutdown closes admission during the queue scan", async () => {
+    const { run, agent, wake } = await fixture("queued");
+    await db.update(heartbeatRuns).set({ responsibleUserId: "queue-test-user" }).where(eq(heartbeatRuns.id, run.id));
+    let admissionClosed = false;
+    const deps = callbacks(db);
+    deps.isRunAdmissionClosed = () => admissionClosed;
+    deps.getAgent.mockImplementation(async () => { admissionClosed = true; return agent; });
+    expect(await createHeartbeatQueue(db, deps).startNextQueuedRunForAgent(agent.id)).toEqual([]);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0]).toMatchObject({ status: "queued", startedAt: null });
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id)))[0].status).toBe(wake.status);
+    expect(deps.executeRun).not.toHaveBeenCalled();
+  });
+
   it("rechecks the connection hold when Stop races the queue scan", async () => {
     const { run, agent } = await fixture("queued");
     const deps = { ...callbacks(db), canStartNewExternalBotWork: vi.fn(async () => false) };

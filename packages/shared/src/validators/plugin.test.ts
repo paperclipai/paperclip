@@ -541,3 +541,14 @@ describe("plugin task side-panel declarations", () => {
     expect(pluginManifestV1Schema.safeParse({ ...manifest, apiRoutes }).success).toBe(false);
   });
 });
+
+
+describe("agent environment slot requirements", () => {
+  const slot = { type: "detailTab", id: "view", displayName: "View", exportName: "View", entityTypes: ["agent"], agentEnvironmentDriver: "tasks" };
+  it("preserves the optional driver requirement", () => {
+    expect(pluginUiSlotDeclarationSchema.parse(slot).agentEnvironmentDriver).toBe("tasks");
+  });
+  it.each([{ agentEnvironmentDriver: "" }, { entityTypes: ["issue"] }, { entityTypes: ["agent", "issue"] }, { type: "page" }])("rejects unsupported requirements %j", patch => {
+    expect(pluginUiSlotDeclarationSchema.safeParse({ ...slot, ...patch }).success).toBe(false);
+  });
+});

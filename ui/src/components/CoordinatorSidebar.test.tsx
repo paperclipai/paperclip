@@ -17,6 +17,11 @@ vi.mock("@/hooks/useAgentChatNavigation", () => ({ useAgentChatNavigation: () =>
 }) }));
 vi.mock("@/hooks/useRecentTasks", () => ({ useRecentTasks: () => ({ entries: fixture.recentTasks }) }));
 vi.mock("@/api/issues", () => ({ issuesApi: { listCompact: fixture.projectTasks } }));
+const taskPrefetch = vi.hoisted(() => vi.fn(() => Promise.resolve()));
+vi.mock("@/lib/issueDetailCache", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/issueDetailCache")>(),
+  prefetchIssueDetailForNavigation: taskPrefetch,
+}));
 vi.mock("@/context/DialogContext", () => ({ useDialogActions: () => ({ openNewIssue: fixture.openNewIssue }) }));
 vi.mock("@/context/SidebarContext", () => ({ useSidebar: () => ({ collapsed: fixture.collapsed, peeking: false, isMobile: false, setSidebarOpen: vi.fn() }) }));
 vi.mock("@/api/attention", () => ({ attentionApi: { list: fixture.attention, summary: fixture.summary } }));
@@ -35,7 +40,7 @@ const pending = (id: string) => ({ id, sourceKind: "issue_thread_interaction", s
   createdAt: "2026-10-20T12:00:00Z", activityAt: "2026-10-20T12:00:00Z" }) as AttentionItem;
 function feed(items: AttentionItem[]): AttentionFeed {
   return { companyId: "company", generatedAt: "2026-10-27T12:00:00Z", totalCount: items.length, deskBadgeCount: 0,
-    nextCursor: null, countsBySourceKind: {} as AttentionFeed["countsBySourceKind"], items };
+    viewCounts: { mine: items.length, unassigned: 0, company: 0, archived: 0, all: items.length }, nextCursor: null, countsBySourceKind: {} as AttentionFeed["countsBySourceKind"], items };
 }
 
 function summary(items: AttentionItem[]) {
@@ -90,6 +95,28 @@ describe("Coordinator task creation", () => {
 });
 
 describe("Coordinator pinned pages", () => {
+  it("matches pinned and recent agent avatar dimensions to task status icons", async () => {
+    fixture.agents = [{ id: "cto", companyId: "company", name: "CTO", urlKey: "cto", role: "cto", status: "idle" } as Agent];
+    const chat = { id: "chat-cto", conversationAgentId: "cto", updatedAt: "2026-11-11T12:00:00Z", isUnreadForMe: false };
+    fixture.chats = [chat];
+    fixture.recentTasks = [{ id: "task", companyId: "company", identifier: "TASK-1", title: "Recent task", status: "todo", recordedAt: 1 }];
+    localStorage.setItem("paperclip.coordinator.pinned-nav.v1:reviewer", JSON.stringify(["agent-chat:company:cto"]));
+
+    await renderSidebar();
+
+    const avatars = [...container.querySelectorAll<HTMLImageElement>('a[href="/chats/cto"] [data-slot="agent-avatar"] img')];
+    const taskIcon = container.querySelector('a[href="/issues/TASK-1"] [data-slot="sidebar-nav-icon"] svg');
+    expect(avatars).toHaveLength(2);
+    expect(taskIcon).not.toBeNull();
+    const width = Number(taskIcon!.getAttribute("width"));
+    const height = Number(taskIcon!.getAttribute("height"));
+    expect(width).toBeGreaterThan(0);
+    expect(height).toBeGreaterThan(0);
+    for (const avatar of avatars) {
+      expect(avatar.width).toBe(width);
+      expect(avatar.height).toBe(height);
+    }
+  });
   it("builds hundreds of agent pins with input reads proportional to list size", () => {
     const agents = Array.from({ length: 500 }, (_, index) => ({ id: `agent-${index}`, companyId: "company", name: `Agent ${index}`, urlKey: `agent-${index}` } as Agent));
     const pins = agents.map(agent => `agent-chat:company:${agent.id}`).reverse();
@@ -293,5 +320,10 @@ describe("Coordinator task status glyphs (BUG-07)", () => {
     expect(fixture.projectTasks).toHaveBeenCalledWith("company", expect.objectContaining({ projectId: "project-1", projection: "rows" }));
     expect(glyph("/issues/ONB-1")?.style.color).toBe("var(--status-task-icon-in_queue)");
     expect(glyph("/issues/ONB-3")?.getAttribute("aria-label")).toBe("Idle");
+    // A press on a project task warms its chat like a task list row does.
+    const link = container.querySelector<HTMLAnchorElement>('a[href="/issues/ONB-3"]');
+    taskPrefetch.mockClear();
+    await act(async () => link!.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0 })));
+    expect(taskPrefetch).toHaveBeenCalledWith(expect.anything(), "ONB-3", expect.objectContaining({ history: true }));
   });
 });

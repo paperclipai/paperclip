@@ -31,7 +31,12 @@ describe("catalog oracle contract", () => {
     // agent-chat.chat-disabled retargeted to the Conference Room gate (Agent Chat is always on since #19360);
     // agents.restore-instructions retargeted to no saved history (instruction saves keep none since #14420).
     // access.manage-membership retargeted to read-and-route; activity.routine-audit builds real same-morning history.
-    expect(chatCatalogInventoryDigest).toBe("57b3229de06d56a1681ddf795e57f46d91a6d628411a839f0b90e5e81185dd68");
+    // gateways-profiles.create-gateway and rotate-token: agents keep delegated gateway/token authority and never receive token values.
+    // instance-operations.instance-settings retargeted from the removed Agent Chat toggle (always on since #19360) to the Cases experiment.
+    // execution-environments.choose-capable-target: the second computer is a saved SSH target advertised for Claude Code but never tested.
+    // questions-and-approvals.necessary-question: the answer may shape the saved deliverable as well as the brief.
+    // tasks.assignment-conflict: the query names the Website task, since "this task" in a chat can mean the chat.
+    expect(chatCatalogInventoryDigest).toBe("9686d865ec65ae3c05652b7ce586286f9e7a5f79950b2dc0a3ec0f4512addccc");
     for (const implementation of chatCatalogCases) expect(chatCatalogScenarios.some(row => row.id === implementation.scenarioId)).toBe(true);
   });
 });

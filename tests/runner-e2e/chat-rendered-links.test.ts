@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { conversationLinkBindings, readConversationDomLinks, type ConversationLinkInput } from "./chat-rendered-links.js";
+import { collectConversationLinks, collectConversationLinksWithDiagnostics, conversationLinkBindings, mislabeledIssueLinks, readConversationDomLinks, readLatestConversationReplyRender, waitForLatestConversationReplyRender, waitForSavedTurnReplyRender, waitForSavedTurnReplyRenderReloadingOnce, type ConversationLinkInput } from "./chat-rendered-links.js";
 
 const card = '<div data-thread-item-kind="project_created" data-thread-anchor="project-created:project"><article aria-label="Project created: Launch"><div><p>Project created</p><a href="/RUN/projects/project">Launch</a></div></article></div>';
 const thread = (content = card) => `<div data-testid="task-chat-thread"><div data-testid="task-chat-history-content"><div data-testid="task-chat-scroller"><div id="comment-human" data-thread-item-kind="human">Create a project called Launch for the new website.</div>${content}<div id="comment-reply" data-thread-item-kind="agent">Created the Launch project. No repositories are connected yet.</div></div></div></div>`;
@@ -90,4 +90,131 @@ it("retains ordinary inline links in the supported classic issue-chat root", () 
   document.body.innerHTML=thread('').replace('task-chat-thread','thread-root');
   document.querySelector('#comment-reply')!.innerHTML='<a href="/RUN/issues/task">Task</a>';
   expect(collect().map(row=>[row.threadTestId,row.source,row.href])).toEqual([['thread-root','reply','/RUN/issues/task']]);
+});
+
+// Full cohort on 9296c74e8d (choose-primary, case-history, set-budget): the API saw the saved reply ~2s before
+// the open conversation rendered it, so links read in between were empty although the reply linked correctly.
+describe("waits for the latest saved reply to render before reading links", () => {
+  const page = () => ({ evaluate: async <T, A>(read: (arg: A) => T, arg: A) => read(arg) }) as unknown as Parameters<typeof collectConversationLinks>[0];
+  it("reads the reply's links once the reply renders after the API saw it", async () => {
+    document.querySelector('#comment-reply')!.remove();
+    setTimeout(() => document.querySelector('[data-testid="task-chat-scroller"]')!.insertAdjacentHTML("beforeend", '<div id="comment-reply"><a href="/RUN/issues/task">Task</a></div>'), 600);
+    const value = input(); value.projects = []; value.activity = [];
+    expect((await collectConversationLinks(page(), value)).map(row => row.href)).toEqual(["/RUN/issues/task"]);
+  });
+  it("does not wait when the conversation is not open, and waits at most once for a reply that never renders", async () => {
+    const bindings = conversationLinkBindings(input());
+    document.body.innerHTML = "<main>Other page</main>";
+    expect(readLatestConversationReplyRender({ anchors: bindings.anchors, latest: "reply" })).toBe("closed");
+    document.body.innerHTML = thread(); document.querySelector('#comment-reply')!.remove();
+    const p = page();
+    expect(await waitForLatestConversationReplyRender(p, bindings, 300, 50)).toBe("pending");
+    const started = Date.now(); expect(await waitForLatestConversationReplyRender(p, bindings, 5_000, 50)).toBe("pending"); expect(Date.now() - started).toBeLessThan(1_000);
+  });
+  // Cohort 3 on dfd2a6efca (access.other-company, teams.install-team and six more): the final evidence read
+  // ran on a freshly loaded conversation whose wait had expired in an earlier document, so it read instantly
+  // and saved no links although the reply rendered them. A new document gets its own bounded wait.
+  it("waits again in a newly loaded document after an earlier document's wait expired", async () => {
+    const bindings = conversationLinkBindings(input());
+    document.body.innerHTML = thread(); document.querySelector('#comment-reply')!.remove();
+    const p = page();
+    expect(await waitForLatestConversationReplyRender(p, bindings, 200, 50)).toBe("pending");
+    delete (window as typeof window & { __paperclipConversationLinkDocument?: string }).__paperclipConversationLinkDocument;
+    setTimeout(() => document.querySelector('[data-testid="task-chat-scroller"]')!.insertAdjacentHTML("beforeend", '<div id="comment-reply"><a href="/RUN/issues/task">Task</a></div>'), 300);
+    expect(await waitForLatestConversationReplyRender(p, bindings, 5_000, 50)).toBe("rendered");
+  });
+});
+
+// Full cohort 3 (fast-responses, choose-primary, set-budget): the run was recorded finished 0.2-1.3s before its
+// reply comment was saved, so a link read right after the run finished saw no reply at all.
+describe("waits for a finished run's reply to be saved, then rendered, before its links are read", () => {
+  const page = () => ({ evaluate: async <T, A>(read: (arg: A) => T, arg: A) => read(arg) }) as unknown as Parameters<typeof collectConversationLinks>[0];
+  it("waits for the reply saved after the run finished and for its render", async () => {
+    const saved = input().comments, before = saved.filter(row => row.id !== "reply");
+    document.querySelector('#comment-reply')!.remove();
+    let reads = 0; const comments = async () => (reads++ < 3 ? before : saved);
+    setTimeout(() => document.querySelector('[data-testid="task-chat-scroller"]')!.insertAdjacentHTML("beforeend", '<div id="comment-reply"><a href="/RUN/issues/task">Task</a></div>'), 400);
+    expect(await waitForSavedTurnReplyRender(page(), { comments, leadId: "ceo", runIds: ["run"] }, 3_000, 50)).toBe("rendered");
+    expect(reads).toBeGreaterThan(3);
+  });
+  it("reports a run that saved no reply in time, without waiting past its bound", async () => {
+    const before = input().comments.filter(row => row.id !== "reply");
+    const started = Date.now();
+    expect(await waitForSavedTurnReplyRender(page(), { comments: async () => before, leadId: "ceo", runIds: ["run"] }, 300, 50)).toBe("unsaved");
+    expect(Date.now() - started).toBeLessThan(1_500);
+  });
+});
+
+// Full cohort 5 on 98c18784c6 (cases.case-history, tasks.ambiguous-task): the final reply was saved by run
+// finalization after the run's terminal status and logged no comment_added, so the open conversation never
+// fetched it; the thread kept only the person's message. One reload reads the saved conversation.
+describe("reloads once when a saved reply never renders in the open conversation", () => {
+  const reloading = (onReload: () => void) => {
+    let reloads = 0;
+    const page = { evaluate: async <T, A>(read: (arg: A) => T, arg: A) => read(arg),
+      reload: async () => { reloads++; delete (window as typeof window & { __paperclipConversationLinkDocument?: string }).__paperclipConversationLinkDocument; onReload(); } };
+    return { page: page as unknown as Parameters<typeof waitForSavedTurnReplyRenderReloadingOnce>[0], reloads: () => reloads };
+  };
+  it("renders after the reload and records both waits", async () => {
+    const comments = async () => input().comments;
+    document.querySelector('#comment-reply')!.remove();
+    const p = reloading(() => document.querySelector('[data-testid="task-chat-scroller"]')!.insertAdjacentHTML("beforeend", '<div id="comment-reply"><a href="/RUN/issues/task">Task</a></div>'));
+    const wait = await waitForSavedTurnReplyRenderReloadingOnce(p.page, { comments, leadId: "ceo", runIds: ["run"] }, 300, 50);
+    expect(wait.result).toBe("rendered"); expect(p.reloads()).toBe(1);
+    expect(wait.attempts.map(row => [row.phase, row.result])).toEqual([["open-document", "pending"], ["after-reload", "rendered"]]);
+  });
+  it("waits for the reloaded app to mount the conversation before the second wait", async () => {
+    const comments = async () => input().comments;
+    document.querySelector('#comment-reply')!.remove();
+    const saved = document.body.innerHTML;
+    const p = reloading(() => {
+      document.body.innerHTML = "<main>Loading</main>";
+      setTimeout(() => { document.body.innerHTML = saved; document.querySelector('[data-testid="task-chat-scroller"]')!.insertAdjacentHTML("beforeend", '<div id="comment-reply"><a href="/RUN/issues/task">Task</a></div>'); }, 300);
+    });
+    const wait = await waitForSavedTurnReplyRenderReloadingOnce(p.page, { comments, leadId: "ceo", runIds: ["run"] }, 1_000, 50);
+    expect(wait.attempts.map(row => [row.phase, row.result])).toEqual([["open-document", "pending"], ["after-reload", "rendered"]]);
+  });
+  it("does not reload a reply that rendered live, and still reports a reply that never renders", async () => {
+    const comments = async () => input().comments;
+    const live = reloading(() => undefined);
+    expect((await waitForSavedTurnReplyRenderReloadingOnce(live.page, { comments, leadId: "ceo", runIds: ["run"] }, 300, 50)).result).toBe("rendered");
+    expect(live.reloads()).toBe(0);
+    document.querySelector('#comment-reply')!.remove();
+    const never = reloading(() => undefined);
+    const wait = await waitForSavedTurnReplyRenderReloadingOnce(never.page, { comments, leadId: "ceo", runIds: ["run"] }, 200, 50);
+    expect(wait.result).toBe("pending"); expect(never.reloads()).toBe(1); expect(wait.attempts).toHaveLength(2);
+  });
+});
+
+describe("task links whose visible identifier names another task", () => {
+  it("accepts links whose label names the task they open, or names no task", () => {
+    expect(mislabeledIssueLinks("Open [COM-1](/COM/issues/COM-1) in [Launch](/COM/projects/launch).")).toEqual([]);
+    expect(mislabeledIssueLinks("The [open COM-1 task](/COM/issues/com-1#document-plan) and [this one](/COM/issues/COM-2).")).toEqual([]);
+    expect(mislabeledIssueLinks("[COM-1 Launch open website](/COM/issues/task-uuid)", id => id === "task-uuid" ? "COM-1" : undefined)).toEqual([]);
+    expect(mislabeledIssueLinks("[SHA-256 notes for COM-1](/COM/issues/COM-1)")).toEqual([]);
+  });
+  it("rejects a link whose label names a different task than it opens", () => {
+    expect(mislabeledIssueLinks("Open tasks: [COM-2 Launch open website](/COM/issues/COM-1)... correction:")).toEqual(["[COM-2 Launch open website](/COM/issues/COM-1)"]);
+    expect(mislabeledIssueLinks("[COM-2](/COM/issues/task-uuid)", id => id === "task-uuid" ? "COM-1" : undefined)).toHaveLength(1);
+  });
+});
+
+// Full cohort 4 (case-history, goals.explain-purpose, preview-service): a phase capture that saved no links could
+// not say whether the thread was closed, showed another conversation, or rendered the reply without anchors.
+describe("records thread and anchor diagnostics when a saved reply yields no rendered links", () => {
+  const page = () => ({ evaluate: async <T, A>(read: (arg: A) => T, arg: A) => read(arg) }) as unknown as Parameters<typeof collectConversationLinks>[0];
+  it("reports the rendered thread, its saved comment anchors and the reply's anchor count", async () => {
+    const value = input(); value.projects = []; value.activity = [];
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const result = await collectConversationLinksWithDiagnostics(page(), value);
+    expect(result.links).toEqual([]);
+    expect(result.diagnostics).toEqual({ render: "rendered", expectedReplyIds: ["reply"], savedCommentCount: 2,
+      threads: [{ testId: "task-chat-thread", visible: true, renderedCommentIds: ["human", "reply"], foreignCommentIds: [], replyAnchorCounts: { reply: 0 } }] });
+  });
+  it("adds no diagnostics when links were read", async () => {
+    document.querySelector('#comment-reply')!.innerHTML = '<a href="/RUN/issues/task">Task</a>';
+    const value = input(); value.projects = []; value.activity = [];
+    const result = await collectConversationLinksWithDiagnostics(page(), value);
+    expect(result.links.map(row => row.href)).toEqual(["/RUN/issues/task"]); expect(result.diagnostics).toBeUndefined();
+  });
 });

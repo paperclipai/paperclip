@@ -1,6 +1,6 @@
 import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
-import { agentObservabilityRevisionSchema, updateAgentObservabilitySchema } from "@paperclipai/shared";
+import { agentObservabilityRevisionSchema, agentObservabilityStatus, updateAgentObservabilitySchema } from "@paperclipai/shared";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { canManageAiConnections } from "./ai-connections.js";
 import { forbidden } from "../errors.js";
@@ -21,6 +21,13 @@ export function agentObservabilityRoutes(db: Db, options: { deploymentMode?: str
   router.get("/companies/:companyId/observability", async (req, res) => {
     const { companyId, canManage } = await access(req, false);
     res.json({ canManage, settings: canManage ? await service.settings(companyId) : null });
+  });
+  // Agents and every member may read whether export is on; the destination and
+  // credentials stay with connection managers. Registered before the manage gate.
+  router.get("/companies/:companyId/observability/status", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    res.json(agentObservabilityStatus(await service.settings(companyId)));
   });
   router.use(path, async (req, _res, next) => { await access(req, true); next(); });
   router.put("/companies/:companyId/observability", validate(updateAgentObservabilitySchema), async (req, res) => {

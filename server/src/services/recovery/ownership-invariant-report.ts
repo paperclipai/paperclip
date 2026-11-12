@@ -2,15 +2,21 @@ import { and, asc, eq, inArray, isNotNull, isNull, lt, notExists, or, sql, type 
 import {
   agentWakeupRequests,
   heartbeatRuns,
+  issueComments,
   issueRecoveryActions,
   issues,
+  nativeRunFinalizations,
+  statusDecisions,
   type Db,
 } from "@paperclipai/db";
+import { NATIVE_RESPONSE_WAKE_WAITING_REASON } from "../native-runtime/status-arbiter.js";
 import { taskClosedByAgentSql, TEMPORARY_REFUSAL_TRIGGERS } from "../work-intent-outbox.js";
 import { deliveredQueuedCommentIds } from "../queued-comment-delivery.js";
 import { logger } from "../../middleware/logger.js";
 import { getServerProcessStartedAt } from "../../server-info.js";
 import { persistActivity } from "../activity-log.js";
+import { QUEUED_RUN_NOT_DISPATCHED, readQueuedRunExecutionWindow, readUndispatchedQueuedRuns,
+  type UndispatchedQueuedRunCursor } from "../queued-run-dispatch-liveness.js";
 import { currentProcessProbe, proveOwnerGone, type OwnerProof, type ProcessProbe } from "../owner-proof.js";
 import { LEGACY_OWNER_REASONS, recordVersionAttestations } from "./owner-gone-attestation.js";
 import {
@@ -98,7 +104,8 @@ const COVERAGE_GAPS: Record<string, string> = {
   I8_fast_turns: "Measured per run by the speed-budget check in the run log, not by this pass.",
   I7_scope: "I7 measures agent-assigned in_progress issues. todo, in_review and blocked issues are not measured yet.",
   record_cap: "Each kind and the I7 check read at most 2,000 records per pass; a larger kind is reported as truncated. "
-    + "The I3 and I4 scans read ten pages per pass and continue from a cursor on the next pass.",
+    + "The I3 and I4 scans read ten pages per pass and continue from a cursor on the next pass. The I7 queued-run "
+    + "check reads at most 2,000 undispatched queued runs per pass and continues from a cursor on the next pass.",
   wake_coverage: "Writers of workspace runtime services, remote workspace operations, snapshots, restore points, "
     + "git cache intents, provider artifacts and harness backups publish no work signal. Those kinds are read at "
     + "startup and on any other report wake. Phase 2 adds a signal when each kind moves to the shared settle path.",
@@ -122,11 +129,16 @@ export type OwnershipReportState = {
   admissionRunCursor: { at: string; id: string } | null;
   /** True when an I3 scan stopped with more rows to read. */
   admissionBacklog: boolean;
+  /** Keyset cursor of the I7 queued-run check (created_at, id); null starts over. */
+  queuedRunCursor: UndispatchedQueuedRunCursor | null;
+  /** Earliest grace deadline seen in the earlier slices of the current queued-run scan. */
+  queuedRunDueAt: Date | null;
 };
 
 export function createOwnershipReportState(): OwnershipReportState {
   return { goneLastPass: new Set(), reported: new Set(), intentCursor: null, unwritten: new Map(), intentBacklog: false,
-    admissionWakeCursor: null, admissionRunCursor: null, admissionBacklog: false };
+    admissionWakeCursor: null, admissionRunCursor: null, admissionBacklog: false, queuedRunCursor: null,
+    queuedRunDueAt: null };
 }
 
 const TERMINAL_RUN_STATUSES = ["succeeded", "failed", "cancelled", "timed_out", "interrupted"];
@@ -134,6 +146,8 @@ const TERMINAL_ISSUE_STATUSES = ["done", "cancelled"];
 const ACTIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"];
 /** An in-progress issue must show a next action within this time. */
 const NEXT_ACTION_GRACE_MS = 5 * 60_000;
+/** A queued run whose ready agent runs nothing should start within this time. */
+const QUEUED_RUN_DISPATCH_GRACE_MS = 5 * 60_000;
 /** Records read per kind (and per I3/I7 check) per pass; beyond this the
  * kind is reported truncated (a named coverage gap). */
 const MAX_RECORDS_PER_KIND = 2_000;
@@ -576,6 +590,23 @@ async function checkExactlyOnceIntents(db: Db, state: OwnershipReportState, now:
   return violations;
 }
 
+function parkedResponseWakeWait(db: Db) {
+  return db.select({ one: sql`1` }).from(statusDecisions)
+    .innerJoin(nativeRunFinalizations, and(eq(nativeRunFinalizations.runId, statusDecisions.runId),
+      eq(nativeRunFinalizations.companyId, statusDecisions.companyId), eq(nativeRunFinalizations.issueId, statusDecisions.issueId),
+      eq(nativeRunFinalizations.decisionId, statusDecisions.id), eq(nativeRunFinalizations.phase, "committed")))
+    .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.id, statusDecisions.runId), eq(heartbeatRuns.companyId, statusDecisions.companyId),
+      eq(heartbeatRuns.nativeIssueId, statusDecisions.issueId), eq(heartbeatRuns.agentId, issues.assigneeAgentId),
+      eq(heartbeatRuns.runtimeMode, "native"), eq(heartbeatRuns.status, "succeeded"), isNotNull(heartbeatRuns.startedAt)))
+    .where(and(eq(statusDecisions.id, issues.lastStatusDecisionId), eq(statusDecisions.companyId, issues.companyId),
+      eq(statusDecisions.issueId, issues.id), eq(statusDecisions.applicationState, "applied"),
+      eq(statusDecisions.reasonCode, NATIVE_RESPONSE_WAKE_WAITING_REASON), isNull(issues.assigneeUserId), isNull(issues.hiddenAt),
+      notExists(db.select({ one: sql`1` }).from(issueComments).where(and(
+        eq(issueComments.companyId, issues.companyId), eq(issueComments.issueId, issues.id),
+        eq(issueComments.authorType, "user"), isNull(issueComments.createdByRunId), isNull(issueComments.deletedAt),
+        sql`${issueComments.createdAt} > ${heartbeatRuns.startedAt}`)))));
+}
+
 /** An agent-assigned in-progress issue with no live run, no pending wake and
  * no open recovery action has no next action (invariant 7). Issues still in
  * their grace window return the time they become checkable. */
@@ -585,7 +616,7 @@ async function checkVisibleNextAction(db: Db, now: Date, limit: number): Promise
     const page = await db.select({ id: issues.id, companyId: issues.companyId, executionRunId: issues.executionRunId,
     updatedAt: issues.updatedAt })
     .from(issues).where(and(eq(issues.status, "in_progress"), isNotNull(issues.assigneeAgentId),
-      // A saved monitor deadline is a first-class wait path (SPEC-implementation).
+      // A saved monitor deadline is a first-class wait path (doc/execution-semantics.md §8).
       or(isNull(issues.monitorNextCheckAt), lt(issues.monitorNextCheckAt, now)),
       notExists(db.select({ one: sql`1` }).from(heartbeatRuns).where(and(
         eq(heartbeatRuns.companyId, issues.companyId), inArray(heartbeatRuns.status, ACTIVE_RUN_STATUSES),
@@ -597,6 +628,7 @@ async function checkVisibleNextAction(db: Db, now: Date, limit: number): Promise
       notExists(db.select({ one: sql`1` }).from(issueRecoveryActions).where(and(
         eq(issueRecoveryActions.companyId, issues.companyId), eq(issueRecoveryActions.sourceIssueId, issues.id),
         isNull(issueRecoveryActions.resolvedAt)))),
+      notExists(parkedResponseWakeWait(db)),
     )).orderBy(asc(issues.updatedAt), asc(issues.id)).limit(limit).offset(offset);
     rows.push(...page);
     if (page.length < limit) break;
@@ -613,6 +645,37 @@ async function checkVisibleNextAction(db: Db, now: Date, limit: number): Promise
       nextDueAt ??= new Date(row.updatedAt.getTime() + NEXT_ACTION_GRACE_MS);
     }
   }
+  return { violations, nextDueAt };
+}
+
+/** A queued run counts as an issue's next action only while dispatch can still
+ * start it. One that stays queued past the grace window while its ready agent
+ * runs nothing has lost its dispatch signal (invariant 7). */
+async function checkQueuedRunsDispatched(db: Db, state: OwnershipReportState, now: Date, limit: number):
+  Promise<{ violations: InvariantViolation[]; nextDueAt: Date | null }> {
+  const window = await readQueuedRunExecutionWindow(db);
+  if (!window.dispatches) {
+    state.queuedRunCursor = null; state.queuedRunDueAt = null;
+    return { violations: [], nextDueAt: null };
+  }
+  if (state.queuedRunDueAt && state.queuedRunDueAt <= now) { state.queuedRunCursor = null; state.queuedRunDueAt = null; }
+  const { runs, next } = await readUndispatchedQueuedRuns(db, { pageSize: limit, createdAfter: window.createdAfter,
+    after: state.queuedRunCursor, maxRuns: MAX_RECORDS_PER_KIND });
+  state.queuedRunCursor = next;
+  const carried = state.queuedRunDueAt;
+  const cutoff = now.getTime() - QUEUED_RUN_DISPATCH_GRACE_MS;
+  const violations: InvariantViolation[] = [];
+  let nextDueAt: Date | null = null;
+  for (const run of runs) {
+    if (run.createdAt.getTime() < cutoff) {
+      violations.push({ rule: "I7_visible_next_action", kind: "queued_run", recordId: run.runId, companyId: run.companyId,
+        runId: run.runId, issueId: run.issueId, reason: QUEUED_RUN_NOT_DISPATCHED });
+    } else {
+      nextDueAt ??= new Date(run.createdAt.getTime() + QUEUED_RUN_DISPATCH_GRACE_MS);
+    }
+  }
+  if (carried && (!nextDueAt || carried < nextDueAt)) nextDueAt = carried;
+  state.queuedRunDueAt = next ? nextDueAt : null;
   return { violations, nextDueAt };
 }
 
@@ -730,6 +793,11 @@ export async function runOwnershipReconciliationPass(db: Db, options: {
       if (result.nextDueAt && (!nextDueAt || result.nextDueAt < nextDueAt)) nextDueAt = result.nextDueAt;
       return result.violations;
     },
+    async () => {
+      const result = await checkQueuedRunsDispatched(db, state, now, limit);
+      if (result.nextDueAt && (!nextDueAt || result.nextDueAt < nextDueAt)) nextDueAt = result.nextDueAt;
+      return result.violations;
+    },
   ]) {
     try {
       violations.push(...await check());
@@ -754,7 +822,7 @@ export async function runOwnershipReconciliationPass(db: Db, options: {
 
   // Only a first proof needs a second pass; a record already reported for I2
   // is not a reason to keep scanning.
-  if (state.intentBacklog || state.admissionBacklog) retryNeeded = true;
+  if (state.intentBacklog || state.admissionBacklog || state.queuedRunCursor) retryNeeded = true;
   const awaitingSecondProof = [...goneThisPass].filter(key => !state.goneLastPass.has(key)).length;
   state.goneLastPass = goneThisPass;
   // Violations whose activity row failed last time are written again, even

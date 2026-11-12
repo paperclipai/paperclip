@@ -36,7 +36,7 @@ const decisionItems = [
   companyId: "storybook-company", subject: { ...item.subject, kind: "issue", id: item.id, companyId: "storybook-company", status: "in_review", href: null },
   decisionVerbs: [], inlineResolvable: false, entryRule: "", exitRule: "", dedupKey: item.id, dismissalKey: item.id,
   dismissal: null, rank: 0, activityAt: "2026-10-16T12:00:00Z", createdAt: "2026-10-16T12:00:00Z", updatedAt: "2026-10-16T12:00:00Z",
-  project: null, workspace: null, relatedIssue: null, detail: null, expiresAt: null, ruleKey: null, queues: [], shelf: false,
+  project: null, workspace: null, relatedIssue: null, audience: { kind: "pool", userId: null, reason: "none" }, stale: null, required: false, changeFingerprint: "fixture.other", closeModes: ["archive", "snooze"], obligationKey: null, obligationLeadId: null, detail: null, expiresAt: null, ruleKey: null, queues: [], shelf: false,
   retentionDays: 30, keep: false, archivedAt: null, retentionVersion: 1, decideBy: null, decideByAttribution: null, snoozedUntil: null, trainingExampleId: null,
 }));
 
