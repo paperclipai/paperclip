@@ -1,0 +1,247 @@
+export type TaskVerdict = "pass" | "needed_retry" | "open_no_owner" | "blocked_non_person" | "waiting_on_person" | "still_working" | "cancelled";
+export type PersonReason = "approval" | "question" | "dependency" | "review" | "usage_limit" | "budget" | "shared_credential";
+
+export interface GradeRun {
+  runId: string;
+  status: string;
+  errorCode: string | null;
+  createdAt: number | null;
+  startedAt: number | null;
+  finishedAt: number | null;
+}
+
+export interface GradeInterruption {
+  state: string;
+  canRetry: boolean;
+  retryWait: boolean;
+  userAction: string | null;
+  providerFailureCategory: string | null;
+}
+
+export interface RetryClick {
+  at: number;
+  accepted: boolean | null;
+  via: "observer" | "grader";
+}
+
+export interface GradeTaskInput {
+  issueId: string;
+  identifier: string | null;
+  title: string;
+  status: string;
+  runs: GradeRun[];
+  queuedWakes: number;
+  scheduledRetry: boolean;
+  interruption: GradeInterruption | null;
+  activeRecoveryOwner: string | null;
+  executionBlocker: boolean;
+  openBlockers: number;
+  pendingApproval: boolean;
+  pendingQuestion: boolean;
+  retryClicks: RetryClick[];
+}
+
+export interface TaskGrade {
+  issueId: string;
+  identifier: string | null;
+  title: string;
+  verdict: TaskVerdict;
+  detail: string;
+  status: string;
+  retry: { clicks: number; accepted: number; worked: boolean | null } | null;
+  personReason: PersonReason | null;
+  failedRuns: string[];
+}
+
+const LIVE_RUN = new Set(["queued", "running", "scheduled_retry"]);
+const FAILED_RUN = new Set(["failed", "timed_out", "interrupted"]);
+const SUCCEEDED_RUN = new Set(["succeeded"]);
+
+export function personReason(task: GradeTaskInput): PersonReason | null {
+  const action = task.interruption?.userAction ?? null;
+  if (action === "approval" || task.pendingApproval) return "approval";
+  if (action === "budget") return "budget";
+  if (action === "reconnect") return "shared_credential";
+  const category = task.interruption?.providerFailureCategory ?? null;
+  if (category === "rate_limit" || category === "quota_exhausted") return "usage_limit";
+  if (category === "authentication" || category === "permission") return "shared_credential";
+  if (task.pendingQuestion) return "question";
+  if (task.status === "in_review") return "review";
+  if (task.openBlockers > 0) return "dependency";
+  return null;
+}
+
+function liveOwner(task: GradeTaskInput): string | null {
+  const live = task.runs.find(run => LIVE_RUN.has(run.status));
+  if (live) return `run ${live.runId} ${live.status}`;
+  if (task.queuedWakes > 0) return `${task.queuedWakes} queued wake(s)`;
+  if (task.scheduledRetry) return "scheduled retry";
+  const interruption = task.interruption;
+  if (interruption && (interruption.state === "working" || interruption.state === "retry_scheduled" || interruption.retryWait)) {
+    return `interruption ${interruption.retryWait ? "retry waiting on the system" : interruption.state}`;
+  }
+  if (task.activeRecoveryOwner && task.activeRecoveryOwner !== "board") return `${task.activeRecoveryOwner} recovery action`;
+  return null;
+}
+
+function retryOutcome(task: GradeTaskInput): TaskGrade["retry"] {
+  if (!task.retryClicks.length) return null;
+  const accepted = task.retryClicks.filter(click => click.accepted === true);
+  const first = Math.min(...accepted.map(click => click.at));
+  const worked = accepted.length === 0 ? false
+    : task.status === "done" || task.runs.some(run => SUCCEEDED_RUN.has(run.status) && (run.createdAt ?? 0) >= first)
+      ? true : liveOwner(task) ? null : false;
+  return { clicks: task.retryClicks.length, accepted: accepted.length, worked };
+}
+
+export function gradeReleaseSwapTask(task: GradeTaskInput): TaskGrade {
+  const failedRuns = task.runs.filter(run => FAILED_RUN.has(run.status)).map(run => run.runId);
+  const base = { issueId: task.issueId, identifier: task.identifier, title: task.title, status: task.status, failedRuns,
+    retry: retryOutcome(task), personReason: personReason(task) };
+  const verdict = (value: TaskVerdict, detail: string): TaskGrade => ({ ...base, verdict: value, detail });
+  if (task.retryClicks.length) {
+    const retry = base.retry!;
+    return verdict("needed_retry", `${retry.clicks} Retry click(s), ${retry.accepted} accepted; ${retry.worked === null ? "still running" : retry.worked ? "worked" : "did not work"}; now ${task.status}`);
+  }
+  if (task.status === "done") return verdict("pass", failedRuns.length ? `done after ${failedRuns.length} failed run(s) recovered without a person` : "done");
+  if (task.status === "cancelled") return verdict("cancelled", "cancelled with no person asking");
+  const owner = liveOwner(task);
+  if (owner) return verdict("still_working", `${task.status}: ${owner}`);
+  if (base.personReason) return verdict("waiting_on_person", `${task.status}: waits on ${base.personReason}`);
+  const interruption = task.interruption;
+  if (task.status === "blocked" || task.executionBlocker || task.activeRecoveryOwner === "board"
+    || (interruption && (interruption.state === "failed" || interruption.state === "waiting_for_user"))) {
+    const why = interruption?.userAction ? `user action ${interruption.userAction}` : interruption ? `interruption ${interruption.state}`
+      : task.executionBlocker ? "execution blocker" : task.activeRecoveryOwner === "board" ? "board recovery action" : "blocked with no named reason";
+    return verdict("blocked_non_person", `${task.status}: ${why}`);
+  }
+  return verdict("open_no_owner", `${task.status} with no live run, no queued wake and no named reason`);
+}
+
+export interface SwapWindow {
+  index: number;
+  requestedAt: number;
+  spawnedAt: number | null;
+  stopRequestedAt: number | null;
+  stoppedAt: number | null;
+  fromPid: number | null;
+}
+
+export interface SwapRunFact {
+  runId: string;
+  issueId: string | null;
+  status: string;
+  errorCode: string | null;
+  startedAt: number | null;
+  finishedAt: number | null;
+  ownerPidBeforeEnd: number | null;
+}
+
+export const LOST_RUN_CODES: ReadonlySet<string> = new Set(["process_lost", "native_execution_ownership_unverified", "controller_lease_lost",
+  "runner_remote_process_identity_unavailable", "native_continuation_requires_reconciliation", "native_session_interrupted"]);
+
+export interface SwapMetrics {
+  index: number;
+  failedRuns: string[];
+  lostWhileOldAlive: string[];
+  survivors: Array<{ runId: string; nextEventAfterMs: number | null }>;
+  nextEventP50Ms: number | null;
+  nextEventMaxMs: number | null;
+  survivorsWithoutEvent: number;
+}
+
+function percentile(values: number[], fraction: number): number | null {
+  if (!values.length) return null;
+  const sorted = [...values].sort((left, right) => left - right);
+  return sorted[Math.min(sorted.length - 1, Math.floor(fraction * sorted.length))]!;
+}
+
+export function swapMetrics(swaps: readonly SwapWindow[], runs: readonly SwapRunFact[], firstEventAfterStop: ReadonlyMap<string, number>, waveEnd: number): SwapMetrics[] {
+  return swaps.map((swap, position) => {
+    const until = swaps[position + 1]?.requestedAt ?? waveEnd;
+    const failedRuns = runs.filter(run => FAILED_RUN.has(run.status) && run.finishedAt !== null && run.finishedAt >= swap.requestedAt && run.finishedAt < until)
+      .map(run => run.runId);
+    const aliveUntil = swap.stopRequestedAt ?? swap.stoppedAt;
+    const lostWhileOldAlive = runs.filter(run => run.errorCode !== null && LOST_RUN_CODES.has(run.errorCode) && run.finishedAt !== null
+      && swap.fromPid !== null && run.ownerPidBeforeEnd === swap.fromPid && aliveUntil !== null
+      && run.finishedAt >= (swap.spawnedAt ?? swap.requestedAt) && run.finishedAt < aliveUntil).map(run => run.runId);
+    const stop = swap.stopRequestedAt;
+    const survivors = stop === null ? [] : runs.filter(run => run.startedAt !== null && run.startedAt < stop
+      && (run.finishedAt === null || run.finishedAt > stop) && !FAILED_RUN.has(run.status) && run.status !== "cancelled")
+      .map(run => {
+        const at = firstEventAfterStop.get(`${swap.index}:${run.runId}`);
+        return { runId: run.runId, nextEventAfterMs: at === undefined ? null : at - stop };
+      });
+    const delays = survivors.flatMap(survivor => survivor.nextEventAfterMs === null ? [] : [survivor.nextEventAfterMs]);
+    return { index: swap.index, failedRuns, lostWhileOldAlive, survivors, nextEventP50Ms: percentile(delays, 0.5),
+      nextEventMaxMs: delays.length ? Math.max(...delays) : null, survivorsWithoutEvent: survivors.length - delays.length };
+  });
+}
+
+export interface DuplicateFacts {
+  overlappingRuns: Array<{ issueId: string; runIds: [string, string] }>;
+  doubleExecutors: string[];
+  duplicateComments: Array<{ issueId: string; count: number }>;
+  duplicateChildren: Array<{ parentId: string; title: string; count: number }>;
+}
+
+export function overlappingRuns(runs: ReadonlyArray<SwapRunFact>, waveEnd: number): DuplicateFacts["overlappingRuns"] {
+  const byIssue = new Map<string, SwapRunFact[]>();
+  for (const run of runs) {
+    if (!run.issueId || run.startedAt === null) continue;
+    byIssue.set(run.issueId, [...(byIssue.get(run.issueId) ?? []), run]);
+  }
+  const found: DuplicateFacts["overlappingRuns"] = [];
+  for (const [issueId, list] of byIssue) {
+    const sorted = [...list].sort((left, right) => left.startedAt! - right.startedAt!);
+    for (let index = 1; index < sorted.length; index += 1) {
+      const previous = sorted[index - 1]!;
+      const next = sorted[index]!;
+      if (next.startedAt! < (previous.finishedAt ?? waveEnd)) found.push({ issueId, runIds: [previous.runId, next.runId] });
+    }
+  }
+  return found;
+}
+
+export interface ReleaseSwapResult {
+  headline: string;
+  completedWithoutHuman: number;
+  started: number;
+  byVerdict: Record<TaskVerdict, number>;
+  retry: { tasks: number; worked: number; didNotWork: number; pending: number };
+}
+
+export function summarizeGrades(grades: readonly TaskGrade[]): ReleaseSwapResult {
+  const byVerdict = { pass: 0, needed_retry: 0, open_no_owner: 0, blocked_non_person: 0, waiting_on_person: 0, still_working: 0, cancelled: 0 } as Record<TaskVerdict, number>;
+  for (const grade of grades) byVerdict[grade.verdict] += 1;
+  const retried = grades.filter(grade => grade.retry);
+  const completedWithoutHuman = byVerdict.pass;
+  return { headline: `${completedWithoutHuman} / ${grades.length} tasks completed without human action`, completedWithoutHuman, started: grades.length,
+    byVerdict, retry: { tasks: retried.length, worked: retried.filter(grade => grade.retry!.worked === true).length,
+      didNotWork: retried.filter(grade => grade.retry!.worked === false).length, pending: retried.filter(grade => grade.retry!.worked === null).length } };
+}
+
+export function releaseSwapMarkdown(result: ReleaseSwapResult, metrics: readonly SwapMetrics[], evidence: ReadonlyArray<{ index: number; lateOk: boolean; prepOk: boolean; findings: string[] } | null>,
+  duplicates: DuplicateFacts, grades: readonly TaskGrade[]): string {
+  const seconds = (ms: number | null) => ms === null ? "–" : `${Math.round(ms / 1000)} s`;
+  const lines = [
+    result.headline,
+    "",
+    `Verdicts: ${Object.entries(result.byVerdict).filter(([, count]) => count).map(([verdict, count]) => `${verdict} ${count}`).join(", ") || "none"}.`,
+    `Retry: ${result.retry.tasks} task(s) needed it; worked ${result.retry.worked}, did not work ${result.retry.didNotWork}, still running ${result.retry.pending}.`,
+    `Duplicates: ${duplicates.overlappingRuns.length} overlapping run pair(s), ${duplicates.doubleExecutors.length} double executor(s), `
+      + `${duplicates.duplicateComments.length} duplicated agent comment(s), ${duplicates.duplicateChildren.length} duplicated subtask title(s).`,
+    "",
+    "| Swap | Failed runs | Lost while old alive | Survivors | Next event p50 | Next event max | No event | Late start on old | Prep during recovery |",
+    "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+    ...metrics.map((metric, position) => {
+      const swap = evidence[position];
+      return `| ${metric.index} | ${metric.failedRuns.length} | ${metric.lostWhileOldAlive.length} | ${metric.survivors.length} | ${seconds(metric.nextEventP50Ms)} | `
+        + `${seconds(metric.nextEventMaxMs)} | ${metric.survivorsWithoutEvent} | ${swap ? (swap.lateOk ? "yes" : "no") : "–"} | ${swap ? (swap.prepOk ? "yes" : "no") : "–"} |`;
+    }),
+    "",
+    ...evidence.flatMap(swap => swap?.findings.map(finding => `- Swap ${swap.index}: ${finding}`) ?? []),
+    ...grades.filter(grade => grade.verdict !== "pass").map(grade => `- ${grade.identifier ?? grade.issueId} ${grade.verdict}: ${grade.detail}`),
+  ];
+  return `${lines.join("\n")}\n`;
+}

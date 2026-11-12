@@ -7,6 +7,7 @@ import { isTimeFault, timeFaultHoldMs } from "./time-faults-config.js";
 import { isMultiServerFault, multiServerHoldMs } from "./multi-server.js";
 import { isRepeatedRestartFault, planRestartSteps, type RestartStep } from "./repeated-restarts.js";
 import { k15HoldMs } from "./redeploy.js";
+import { planReleaseSwaps } from "./release-swap-schedule.js";
 import { CR5_FIRE_WINDOW_MS, classRHoldMs, isClassRFault } from "./class-r.js";
 import { K4_MIN_HOLD_MS, type AdapterId, type FaultKind, type ScheduledFault, type StormFault, type StormPlan, type TaskFaultKind, type TaskPlan, type TriggerId, type WavePlan, type WaveOptions, type WorkloadId } from "./types.js";
 import type { ReplayRef } from "./config.js";
@@ -163,7 +164,8 @@ export function planWave(waveId: string, options: WaveOptions, createdAt = new D
     createdAt: createdAt.toISOString(), options, tasks: withProviderFaultRules(planTasks(options), options)
       // `--long-turn-minutes` is part of each task's plan, so a replay keeps it.
       .map(task => options.longTurnMinutes ? { ...task, longTurnMinutes: options.longTurnMinutes } : task),
-    ...(options.stormMinutes ? { storm: planStorm(options.seed, options.stormMinutes, options.faults, options.k4HoldMaxMs, options.k15HoldMs) } : {}) };
+    ...(options.stormMinutes ? { storm: options.releaseSwap ? planReleaseSwaps(options.releaseSwap)
+      : planStorm(options.seed, options.stormMinutes, options.faults, options.k4HoldMaxMs, options.k15HoldMs) } : {}) };
 }
 
 /** K13: the gap between one storm fault settling and the next one firing. */
