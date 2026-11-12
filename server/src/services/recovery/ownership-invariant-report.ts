@@ -623,7 +623,7 @@ async function checkVisibleNextAction(db: Db, now: Date, limit: number): Promise
  * start it. One that stays queued past the grace window while its ready agent
  * runs nothing has lost its dispatch signal (invariant 7). */
 async function checkQueuedRunsDispatched(db: Db, now: Date, limit: number): Promise<{ violations: InvariantViolation[]; nextDueAt: Date | null }> {
-  const runs = await listUndispatchedQueuedRuns(db, { limit: Math.min(limit, MAX_RECORDS_PER_KIND) });
+  const runs = await listUndispatchedQueuedRuns(db, { pageSize: limit });
   const cutoff = now.getTime() - QUEUED_RUN_DISPATCH_GRACE_MS;
   const violations: InvariantViolation[] = [];
   let nextDueAt: Date | null = null;

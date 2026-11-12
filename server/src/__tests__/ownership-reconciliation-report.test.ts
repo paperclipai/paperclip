@@ -28,6 +28,8 @@ import { currentControllerBootId, currentProcessSpaceHash } from "../services/co
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { applyOwnershipReportBackstops, registerOwnershipReconciliationWork } from "../services/native-runtime/native-finalization-reconciler.js";
 import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
+import { notifyNativeFinalizationWork } from "../services/native-finalization-notifications.js";
+import { releaseLapsedCoordinatorOwner } from "../services/workspace-recovery-stop-proof.js";
 import { subscribeDatabaseWork } from "@paperclipai/db/work-signals";
 import {
   createOwnershipReportState,
@@ -976,6 +978,52 @@ describe("report-only ownership reconciliation", () => {
         expect.objectContaining({ rule: "I7_visible_next_action", recordId: stranded!.id, runId: stranded!.id,
           issueId, companyId, reason: "queued_run_not_dispatched" })]);
       await applyOwnershipReportBackstops(db, report);
+      expect(signals).toContain("settled");
+    } finally { unsubscribe(); }
+  });
+
+  it("finds a stranded run behind older queued rows past the first page, and re-drives it only once", async () => {
+    const otherCompany = randomUUID();
+    const otherAgent = randomUUID();
+    await db.insert(companies).values({ id: otherCompany, name: "Held queue", issuePrefix: "HLD" });
+    await db.insert(agents).values({ id: otherAgent, companyId: otherCompany, name: "Held", role: "engineer", adapterType: "codex_local" });
+    await db.insert(heartbeatRuns).values([40, 39, 38].map(minutes =>
+      ({ companyId: otherCompany, agentId: otherAgent, status: "queued", invocationSource: "automation", createdAt: minutesAgo(minutes) })));
+    const [stranded] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "queued", invocationSource: "automation",
+      createdAt: minutesAgo(19) }).returning();
+    const state = createOwnershipReportState();
+    const first = await runOwnershipReconciliationPass(db, { state, limitPerKind: 2 });
+    expect(first.violations.filter(violation => violation.kind === "queued_run").map(violation => violation.recordId))
+      .toContain(stranded!.id);
+    const signals: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.queuedRunDispatch, event => signals.push(event));
+    try {
+      await applyOwnershipReportBackstops(db, first);
+      expect(signals).toContain("settled");
+      signals.length = 0;
+      const second = await runOwnershipReconciliationPass(db, { state, limitPerKind: 2 });
+      expect(second.violations.filter(violation => violation.kind === "queued_run")).toHaveLength(4);
+      await applyOwnershipReportBackstops(db, second);
+      expect(signals).toEqual([]);
+    } finally { unsubscribe(); }
+  });
+
+  it("signals queued-run dispatch when finalization work settles or a finished coordinator's lapsed owner is released", async () => {
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Settling", status: "in_progress", assigneeAgentId: agentId });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "succeeded", invocationSource: "automation",
+      runtimeMode: "native", nativeIssueId: issueId, finishedAt: minutesAgo(2) });
+    await db.insert(nativeRunFinalizations).values({ runId, companyId, issueId, phase: "committed",
+      leaseOwner: "native-finalizer:lapsed", leaseExpiresAt: minutesAgo(1) });
+    const signals: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.queuedRunDispatch, event => signals.push(event));
+    try {
+      await db.transaction(tx => notifyNativeFinalizationWork(tx, { companyId, runId, issueId }));
+      expect(signals).toContain("settled");
+      signals.length = 0;
+      const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId));
+      expect(await db.transaction(tx => releaseLapsedCoordinatorOwner(tx, { companyId, runId }, coordinator, new Date()))).toBe(true);
       expect(signals).toContain("settled");
     } finally { unsubscribe(); }
   });

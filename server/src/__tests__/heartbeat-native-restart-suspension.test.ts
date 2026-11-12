@@ -23,6 +23,7 @@ import { subscribeDatabaseWork } from "@paperclipai/db/work-signals";
 import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { resolveLocalRuntimeApiUrl } from "../runtime-api.js";
 import { heartbeatService } from "../services/heartbeat.js";
+import { environmentService } from "../services/environments.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { claimNativeRestartRecoveries, classifyNativeRunnerRecoveryEvidence, currentNativeControllerIdentity } from "../services/native-runtime/native-restart-recovery.js";
 import type { NativeSessionBackend } from "@paperclipai/paperclip-runner";
@@ -1420,9 +1421,7 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
 
     it("keeps plugin-runner leases without a checkpoint in their normal Stop recovery", async () => {
       const f = await seedClaim("CLAIM-PLUGIN-NO-CHECKPOINT", "expired", "foreign-process-space");
-      const [env] = await f.db.insert(environments).values({ companyId: fixture.current.companyId, name: "Daytona warm",
-      driver: "sandbox", config: { provider: "daytona", reuseLease: true } }).returning();
-    await f.db.insert(environmentLeases).values({ environmentId: env!.id, companyId: fixture.current.companyId, issueId: f.issueId,
+      await f.db.insert(environmentLeases).values({ companyId: fixture.current.companyId, issueId: f.issueId,
         heartbeatRunId: f.runId, provider: "plugin", status: "active", metadata: { runnerTaskLease: true } });
       const probe = observeOwnerPid();
       try {
@@ -1769,8 +1768,11 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
     expect((await leaseOf(f)).leaseExpiresAt).toEqual(f.leaseExpiresAt);
   }, 60_000);
 
-  it("starts a continuation that queued behind its predecessor's sandbox release after a graceful restart", async () => {
-    const f = await seedRecoverableRun("ACCEPTED-CONTINUE-THEN-SIGTERM", true);
+  it.each([
+    { settledBy: "lease release", signalled: true, startWithinMs: 5_000 },
+    { settledBy: "unsignalled write", signalled: false, startWithinMs: 75_000 },
+  ])("starts a continuation that queued behind its predecessor's sandbox release after a graceful restart ($settledBy)", async ({ settledBy, signalled, startWithinMs }) => {
+    const f = await seedRecoverableRun(`ACCEPTED-CONTINUE-THEN-SIGTERM-${settledBy}`, true);
     const [contract] = await f.db.select().from(completionContracts).where(eq(completionContracts.issueId, f.issueId));
     await f.db.update(heartbeatRuns).set({ completionContractId: contract.id,
       completionContractSha256: contract.canonicalSha256 }).where(eq(heartbeatRuns.id, f.runId));
@@ -1798,8 +1800,8 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
     });
     await f.db.insert(workspaceOperations).values({ companyId: fixture.current.companyId, issueId: f.issueId,
       heartbeatRunId: f.runId, phase: "workspace_finalize", status: "running", cwd: fixture.current.runtimeRoot });
-    const [environment] = await f.db.insert(environments).values({ companyId: fixture.current.companyId,
-      name: "Warm sandbox", driver: "sandbox", config: { provider: "daytona", reuseLease: true } }).returning();
+    const [environment] = await f.db.insert(environments).values({
+      name: `Warm sandbox ${settledBy}`, driver: "sandbox", config: { provider: "daytona", reuseLease: true } }).returning();
     const [warmLease] = await f.db.insert(environmentLeases).values({ environmentId: environment!.id,
       companyId: fixture.current.companyId, issueId: f.issueId, heartbeatRunId: f.runId, status: "active",
       leasePolicy: "reuse_by_environment", provider: "daytona", providerLeaseId: `sandbox-${randomUUID()}` }).returning();
@@ -1818,17 +1820,20 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
     expect(queued).toMatchObject({ status: "queued", startedAt: null });
     expect((await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0]?.status).toBe("succeeded");
 
-    await f.db.update(heartbeatRuns).set({ createdAt: new Date(Date.now() - 2 * 60_000) })
+    if (!signalled) await f.db.update(heartbeatRuns).set({ createdAt: new Date(Date.now() - 2 * 60_000) })
       .where(eq(heartbeatRuns.id, queued!.id));
     const coordinator = createDeliveryWorkCoordinator({ owner: f.db, canRun: () => true, onError: () => undefined });
     const later = heartbeatService(f.db, { nativeSessionBackendFactory: providerDispatch });
     try {
       await later.registerRunDispatchWork(coordinator, () => true).ready;
       expect((await successors())[0]?.status).toBe("queued");
-      await f.db.update(environmentLeases).set({ status: "retained", cleanupStatus: "success" })
+      const settledAt = Date.now();
+      if (signalled) await environmentService(f.db).releaseLease(warmLease!.id, "retained", { cleanupStatus: "success" });
+      else await f.db.update(environmentLeases).set({ status: "retained", cleanupStatus: "success" })
         .where(eq(environmentLeases.id, warmLease!.id));
-      await expect.poll(async () => (await successors())[0]?.startedAt ?? null, { timeout: 75_000, interval: 500 })
+      await expect.poll(async () => (await successors())[0]?.startedAt ?? null, { timeout: startWithinMs, interval: 250 })
         .not.toBeNull();
+      expect(Date.now() - settledAt).toBeLessThan(startWithinMs);
     } finally { await coordinator.stop(); await later.drainActiveRunExecutions(); }
   }, 150_000);
 });

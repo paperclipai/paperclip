@@ -1,6 +1,6 @@
 import { notifyStrandedAgentStatus } from "../../../services/live-run-recovery-notifications.js";
 import { notifyDeferredExecutionWork } from "../../../services/deferred-execution-notifications.js";
-import { notifyRunDispatch } from "../../../services/run-dispatch-notifications.js";
+import { notifyQueuedRunDispatch, notifyRunDispatch } from "../../../services/run-dispatch-notifications.js";
 import { notifyStatusCardIssueChange } from "../../../services/status-card-notifications.js";
 import { notifyExternalConversationSettlement } from "../../../services/external-conversation-settlement-notifications.js";
 import { notifyNativeStatusReassessment } from "../../../services/native-status-reassessment-notifications.js";
@@ -871,6 +871,7 @@ async function recordNativeTerminalRecoveryIfNeeded(tx: Db, run: ReleaseRun, iss
     }
   }
   if (!existing.length) {
+    await notifyQueuedRunDispatch(tx, { companyId: issue.companyId });
     await tx
       .update(nativeRunFinalizations)
       .set({

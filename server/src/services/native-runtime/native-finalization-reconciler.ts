@@ -244,6 +244,7 @@ export async function claimNativeSessionResumptions(input: {
         const failureCode = originalFailureCode;
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, row.run.companyId);
         await notifyLiveRunRecovery(tx, { companyId: row.run.companyId, runId: row.run.id, agentId: row.run.agentId });
+        await notifyQueuedRunDispatch(tx, { companyId: row.run.companyId });
         await tx.update(nativeRunFinalizations).set({
           phase: "terminal_failure",
           leaseOwner: null,
@@ -868,7 +869,7 @@ export async function applyOwnershipReportBackstops(db: Db, report: OwnershipRep
     await db.transaction(tx => promoteDeferredWorkIntents(tx, { companyId, trigger: "reconciler_backstop" }))
       .catch(error => { retryNeeded = true; logger.warn({ err: error, companyId }, "deferred intent backstop promotion failed"); });
   }
-  const undispatched = new Set(report.violations.filter(violation => violation.reason === QUEUED_RUN_NOT_DISPATCHED)
+  const undispatched = new Set(report.newViolations.filter(violation => violation.reason === QUEUED_RUN_NOT_DISPATCHED)
     .flatMap(violation => violation.companyId ? [violation.companyId] : []));
   for (const companyId of undispatched) {
     await db.transaction(tx => notifyQueuedRunDispatch(tx, { companyId }))
