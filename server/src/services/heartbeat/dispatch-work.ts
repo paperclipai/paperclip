@@ -2,7 +2,7 @@ import type { RunDispatchScope } from "../run-dispatch-notifications.js";
 import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import { registerDeadlineWork } from "../deadline-work.js";
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
-import { createQueuedRunRedriveSchedule, type UndispatchedQueuedRun } from "../queued-run-dispatch-liveness.js";
+import { createQueuedRunRedriveSchedule, type QueuedRunRedrivePlan, type UndispatchedQueuedRun } from "../queued-run-dispatch-liveness.js";
 
 export function registerRunDispatchWork(
   coordinator: ReturnType<typeof createDeliveryWorkCoordinator>,
@@ -56,12 +56,24 @@ export function registerRunDispatchWork(
       }
     },
     next: async () => {
+      if (!owner.listUndispatchedQueuedRuns) return null;
+      const list = owner.listUndispatchedQueuedRuns;
       const refreshed = dispatched;
       dispatched = new Set();
-      if (!owner.listUndispatchedQueuedRuns || await owner.schedulingSuppressed()) return null;
-      const runs = refreshed === "all" ? await owner.listUndispatchedQueuedRuns()
-        : (await Promise.all([...refreshed].map(companyId => owner.listUndispatchedQueuedRuns!({ companyId })))).flat();
-      const plan = redrive.refresh(refreshed, runs);
+      const keep = () => {
+        if (refreshed === "all" || dispatched === "all") dispatched = "all";
+        else for (const companyId of refreshed) dispatched.add(companyId);
+      };
+      let plan: QueuedRunRedrivePlan;
+      try {
+        if (await owner.schedulingSuppressed()) { keep(); return null; }
+        const runs = refreshed === "all" ? await list()
+          : (await Promise.all([...refreshed].map(companyId => list({ companyId })))).flat();
+        plan = redrive.refresh(refreshed, runs);
+      } catch (error) {
+        keep();
+        throw error;
+      }
       for (const companyId of plan.companyIds) scopes.add(JSON.stringify({ companyId }));
       return plan.nextAt;
     },
