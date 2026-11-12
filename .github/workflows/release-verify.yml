@@ -29,9 +29,9 @@ on:
 # the caller runs on canonical master and verifies that event's exact SHA.
 # The organization group also restricts these workflow files to master.
 jobs:
+  # Release callers keep the default and stay gated on these evals. Cloud
+  # readiness turns them off here and runs them beside its source proof.
   runner_chaos_evals:
-    # Release callers keep the default and stay gated on these evals. Cloud
-    # readiness turns them off here and runs them beside its source proof.
     if: ${{ !inputs.runner_binaries_only && inputs.runner_chaos_evals }}
     name: Pre-release Runner chaos evals
     uses: ./.github/workflows/runner-chaos-evals.yml
