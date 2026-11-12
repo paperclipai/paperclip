@@ -103,7 +103,7 @@ export function skillSourceService(db: Db) {
     await context.authorize('skills.import', { sourceType: 'git', sourceLocator: input.repositoryUrl });
     const { skills: _files, repositoryFiles: _repositoryFiles, repositorySubset: _subset, defaultBranch: _defaultBranch, treeSha: _tree, downloadBytes: _download, scanBytes: _scan, ...result } = await scanGitHubSkills(input, context.read(input.connectionId ?? null), { ...options, retainFiles: false });
     const canOverrideSecurity = Boolean(result.securityFindings?.some(finding => finding.overridable && !finding.accepted))
-      && await canApproveSecurityOverride(context, input.repositoryUrl);
+      && await canApproveSecurityOverride(context, result.repositoryUrl);
     return { ...result, canOverrideSecurity };
   }
   async function canApproveSecurityOverride(context: SkillSourceContext, sourceLocator: string) {
@@ -128,7 +128,11 @@ export function skillSourceService(db: Db) {
   /** A recorded override that carried over to a later commit through the future-updates opt-in. */
   async function auditCarriedSecurityOverride(tx: Tx, sourceId: string, stored: SkillSourceSecurityOverride | null, scan: ScannedSkillSource, context: SkillSourceContext) {
     if (!stored || stored.commitSha.toLowerCase() === scan.commitSha.toLowerCase()) return;
-    const files = (scan.securityFindings ?? []).filter(finding => finding.accepted && stored.files.some(file => file.path === finding.path));
+    const approvedPaths = new Set(stored.files.map(file => file.path));
+    const findings = scan.securityFindings ?? [];
+    // A file that still has a blocking finding stays out of the package, so its approval was not applied.
+    const blockedPaths = new Set(findings.filter(finding => !finding.accepted).map(finding => finding.path));
+    const files = findings.filter(finding => finding.accepted && approvedPaths.has(finding.path) && !blockedPaths.has(finding.path));
     if (!files.length) return;
     await context.audit(tx, sourceId, 'company.skill_source_security_override_applied', {
       commit: scan.commitSha, approvedCommit: stored.commitSha, approvedByUserId: stored.approvedByUserId, reason: stored.reason,
@@ -278,7 +282,11 @@ export function skillSourceService(db: Db) {
     const reader = context.read(input.connectionId ?? null);
     const scan = staged && !override ? staged
       : await scanGitHubSkills({ ...input, commitSha: override?.commitSha ?? input.commitSha }, reader, override ? { securityOverrides: [override] } : {});
-    if (override) verifySecurityOverride(override, scan);
+    if (override) {
+      // A branch URL is authorized as typed; policy rules match the canonical repository the scan resolved.
+      if (scan.repositoryUrl !== input.repositoryUrl) await approveSecurityOverride(context, scan.repositoryUrl, override);
+      verifySecurityOverride(override, scan);
+    }
     const recorded = override ? recordedSecurityOverride(override, scan.securityFindings ?? [], context.actor.userId ?? null) : null;
     if (!context.projectBindingId && scan.trackingRef === scan.defaultBranch && (await list(companyId)).some(source => source.repositoryUrl.toLowerCase() === scan.repositoryUrl.toLowerCase() && source.trackingRef === 'HEAD')) {
       throw conflict('This repository is already in Sources. Manage its skills there.');

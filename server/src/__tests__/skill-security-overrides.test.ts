@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { skillSecurityOverrideSchema, skillSourceCreateSchema, type SkillSecurityOverrideRequest } from '@paperclipai/shared';
+import { SKILL_SECURITY_OVERRIDE_MAX_PATH_BYTES, skillSecurityOverrideSchema, skillSourceCreateSchema, type SkillSecurityOverrideRequest } from '@paperclipai/shared';
+import { DEFAULT_JSON_BODY_LIMIT_BYTES } from '../http/body-limits.js';
 import { githubFixture } from './helpers/github-skills.js';
 import { scanGitHubSkills } from '../services/github-skill-source.js';
 import { securityOverrideAcceptor, verifySecurityOverride } from '../services/skill-security-overrides.js';
@@ -77,5 +78,14 @@ describe('skill security overrides', () => {
     expect(skillSecurityOverrideSchema.safeParse({ ...valid, files: [] }).success).toBe(false);
     expect(skillSecurityOverrideSchema.safeParse({ ...valid, files: [{ path: '../etc/passwd', sha256: hash(hook) }] }).success).toBe(false);
     expect(skillSecurityOverrideSchema.safeParse({ ...valid, files: [...valid.files, ...valid.files] }).success).toBe(false);
+  });
+
+  it('keeps a maximum-sized approval within the JSON body limit', () => {
+    const valid = override('a'.repeat(40), { 'hooks/install.sh': hook });
+    const longFiles = (count: number) => Array.from({ length: count }, (_, index) => ({ path: `${String(index).padStart(5, '0')}/${'x'.repeat(4000)}`, sha256: hash(hook) }));
+    const fitting = { ...valid, files: longFiles(Math.floor(SKILL_SECURITY_OVERRIDE_MAX_PATH_BYTES / 4006)) };
+    expect(skillSecurityOverrideSchema.safeParse(fitting).success).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify(fitting))).toBeLessThan(DEFAULT_JSON_BODY_LIMIT_BYTES / 2);
+    expect(skillSecurityOverrideSchema.safeParse({ ...valid, files: longFiles(3000) }).success).toBe(false);
   });
 });

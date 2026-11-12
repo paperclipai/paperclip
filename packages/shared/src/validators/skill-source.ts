@@ -14,11 +14,23 @@ export const skillSourcePreviewSchema = skillSourceDiscoverySchema.extend({
   filePath: repoPath.refine(value => value.length > 0, 'A file path is required'),
 });
 const sha = z.string().regex(/^[a-f0-9]{40}$/i);
-// Matches the server's repository scan file limit, so every flagged file in a supported repository can be approved at once.
+/**
+ * Path bytes one approval may carry. With the hashes this keeps an approval near 5 MB,
+ * well inside the server's 10 MB JSON body limit together with the selected paths.
+ */
+export const SKILL_SECURITY_OVERRIDE_MAX_PATH_BYTES = 4 * 1024 * 1024;
+const utf8 = new TextEncoder();
+export function skillSecurityOverridePathBytes(files: ReadonlyArray<{ path: string }>) {
+  let total = 0;
+  for (const file of files) total += utf8.encode(file.path).length;
+  return total;
+}
+// The count matches the server's repository scan file limit; the path budget above keeps the request within the body limit.
 export const skillSecurityOverrideSchema = z.object({
   commitSha: sha,
   files: z.array(z.object({ path: repoPath.refine(value => value.length > 0, 'A file path is required'), sha256: z.string().regex(/^[a-f0-9]{64}$/i) })).min(1).max(10_000)
-    .refine(files => new Set(files.map(file => file.path)).size === files.length, 'Each file can be approved once.'),
+    .refine(files => new Set(files.map(file => file.path)).size === files.length, 'Each file can be approved once.')
+    .refine(files => skillSecurityOverridePathBytes(files) <= SKILL_SECURITY_OVERRIDE_MAX_PATH_BYTES, 'Too many flagged files to approve in one request.'),
   reason: z.string().trim().min(10, 'Explain why this repository is trusted.').max(2000),
   trustFutureUpdates: z.boolean().default(false),
 });

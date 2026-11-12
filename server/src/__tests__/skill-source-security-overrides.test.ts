@@ -87,6 +87,24 @@ describe.skipIf(!support.supported)('skill source security overrides', () => {
     expect(await db.select().from(companySkillSources).where(eq(companySkillSources.companyId, companyId))).toEqual([]);
   });
 
+  it('checks the approval against the canonical repository when a branch URL was submitted', async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: 'Scoped deny', issuePrefix: `D${companyId.slice(0, 6)}` });
+    const files = { 'skills/one/SKILL.md': md('one'), 'hooks/install.sh': hook };
+    const checked: string[] = [];
+    const context: SkillSourceContext = { actor: { type: 'user', userId: 'admin-user' }, authorize: async () => {}, audit: async () => {}, read: () => githubFixture(files, {}, first),
+      authorizeSecurityOverride: async ({ sourceLocator }) => {
+        checked.push(sourceLocator);
+        if (sourceLocator === 'https://github.com/acme/skills') throw forbidden('Skill policy denies security overrides for this repository.');
+      } };
+    await expect(skillSourceService(db).create(companyId, {
+      repositoryUrl: 'https://github.com/acme/skills/tree/main', trackingRef: 'main', packageMode: 'repository', commitSha: first, selectedPaths: ['skills/one/SKILL.md'],
+      securityOverride: { commitSha: first, reason: 'Maintained by our platform team.', trustFutureUpdates: false, files: [{ path: 'hooks/install.sh', sha256: hash(hook) }] },
+    }, context)).rejects.toMatchObject({ status: 403 });
+    expect(checked).toEqual(['https://github.com/acme/skills/tree/main', 'https://github.com/acme/skills']);
+    expect(await db.select().from(companySkillSources).where(eq(companySkillSources.companyId, companyId))).toEqual([]);
+  });
+
   it('keeps approved files viewable in the saved source', async () => {
     const { companyId, service, context } = await setup(false);
     const preview = await service.preview(companyId, { repositoryUrl: 'https://github.com/acme/skills', packageMode: 'repository', commitSha: first,
@@ -125,5 +143,14 @@ describe.skipIf(!support.supported)('skill source security overrides', () => {
     expect(trusting.audits.find(entry => entry.action === 'company.skill_source_security_override_applied')?.details).toMatchObject({
       commit: second, approvedCommit: first, files: [{ path: 'hooks/install.sh', sha256: hash(changedHook) }],
     });
+  });
+
+  it('does not record a carried approval for a file that a blocking finding still keeps out', async () => {
+    const trusting = await setup(true);
+    trusting.setFiles({ 'skills/one/SKILL.md': md('one'), 'hooks/install.sh': `${hook}
+${leak}` }, second);
+    const refreshed = await trusting.service.refresh(trusting.companyId, trusting.result.source.id, { ...trusting.context, authorizeSecurityOverride: undefined });
+    expect(refreshed.source.repositoryPackage?.files.map(file => file.path)).toEqual(['skills/one/SKILL.md']);
+    expect(trusting.audits.some(entry => entry.action === 'company.skill_source_security_override_applied')).toBe(false);
   });
 });

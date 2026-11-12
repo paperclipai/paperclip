@@ -1,6 +1,6 @@
 import { useId, useMemo } from 'react';
 import { ShieldAlert, ShieldCheck } from 'lucide-react';
-import type { SkillSecurityFinding, SkillSecurityOverrideRequest, SkillSourceSecurityOverride } from '@paperclipai/shared';
+import { SKILL_SECURITY_OVERRIDE_MAX_PATH_BYTES, skillSecurityOverridePathBytes, type SkillSecurityFinding, type SkillSecurityOverrideRequest, type SkillSourceSecurityOverride } from '@paperclipai/shared';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Textarea } from '@/components/ui/textarea';
 
@@ -22,6 +22,11 @@ export function overridableSecurityFiles(findings: SkillSecurityFinding[] = []) 
     if (finding.overridable && !finding.accepted && !blocked.has(finding.path)) files.set(finding.path, finding);
   }
   return [...files.values()];
+}
+
+/** Whether one request can carry every flagged file; the server rejects larger approvals. */
+export function fitsSkillSecurityOverride(files: SkillSecurityFinding[]) {
+  return skillSecurityOverridePathBytes(files) <= SKILL_SECURITY_OVERRIDE_MAX_PATH_BYTES;
 }
 
 /**
@@ -52,11 +57,11 @@ export function SkillSecurityReview({ findings = NO_FINDINGS, repository, commit
   const id = useId();
   // A scan can report thousands of findings. Derive the groups and their rows once per scan,
   // not on every keystroke in the reason field.
-  const { overridable, blocked, accepted, blockedRows, overridableRows } = useMemo(() => {
+  const { overridable, overridableFits, blocked, accepted, blockedRows, overridableRows } = useMemo(() => {
     const overridable = overridableSecurityFiles(findings);
     const blocked = findings.filter(finding => !finding.overridable);
     const accepted = [...new Set(findings.filter(finding => finding.accepted).map(finding => finding.path))];
-    return { overridable, blocked, accepted,
+    return { overridable, overridableFits: fitsSkillSecurityOverride(overridable), blocked, accepted,
       blockedRows: blocked.map(finding => <li key={`${finding.path}:${finding.code}`} className="break-words">
         <span className="font-mono">{finding.path}</span> — {finding.message}
       </li>),
@@ -77,7 +82,8 @@ export function SkillSecurityReview({ findings = NO_FINDINGS, repository, commit
     {overridable.length > 0 && <div className="space-y-2">
       <p className="text-xs font-medium">Flagged patterns</p>
       <ul className="space-y-1 text-xs text-muted-foreground">{overridableRows}</ul>
-      {canOverride ? <div className="space-y-2">
+      {canOverride && !overridableFits ? <p className="text-xs text-muted-foreground">These flagged files have too many or too long paths to approve in one request. Remove or move some of them in the repository, then scan again.</p>
+      : canOverride ? <div className="space-y-2">
         <label className="flex items-start gap-2" htmlFor={`${id}-trust`}>
           <Checkbox id={`${id}-trust`} className="mt-0.5" checked={value.trusted} disabled={disabled}
             onCheckedChange={checked => onChange({ ...value, trusted: checked === true })} />

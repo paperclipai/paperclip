@@ -62,3 +62,13 @@ describe('SkillSecurityReview at realistic size', () => {
     expect(reads).toBe(initial);
   }, 30_000);
 });
+
+describe('SkillSecurityReview beyond one request', () => {
+  it('explains that the flagged files cannot be approved at once instead of offering trust', async () => {
+    const long = Array.from({ length: 1_100 }, (_, index) => ({ path: `${index}/${'x'.repeat(4000)}`, code: 'remote_fetch_exec', message: 'Flagged.', sha256: 'd'.repeat(64), overridable: true }));
+    host = document.createElement('div'); document.body.append(host); root = createRoot(host);
+    await act(async () => root.render(<SkillSecurityReview findings={long} repository="acme/skills" commitSha={'a'.repeat(40)} canOverride value={emptySkillSecurityTrust} onChange={() => {}} />));
+    expect(host.querySelector('button[role="checkbox"]')).toBeNull();
+    expect(host.textContent).toContain('too many or too long paths to approve in one request');
+  });
+});
