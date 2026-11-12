@@ -101,7 +101,7 @@ const SAMPLE_TAIL_MS = 60_000;
 const BOOT_SAMPLE_MS = 500;
 export const SWAP_ABANDON_AFTER_MS = 15 * 60_000;
 export const PREP_INTERVAL_MS = 2_000;
-export const PREP_PROBE_CAP = 40;
+export const PREP_PROBE_CAP = 6;
 export const PROBE_AGENT_CONCURRENCY = 10;
 
 export function isPreparing(sample: RunSampleRow): boolean {

@@ -108,6 +108,14 @@ describe("release swap task grade", () => {
     expect(gradeReleaseSwapTask({ ...stuck, scheduledRetry: true, runs: [failed] }).verdict).toBe("open_no_owner");
   });
 
+  it("reports an accepted Retry as pending while its scheduled retry is not yet due, and as not working once it is past due", () => {
+    const now = 10_000_000;
+    const base = { status: "todo", now, staleAfterMs: 300_000, runs: [failed], scheduledRetry: true, retryClicks: [{ at: 5, accepted: true, via: "grader" as const }] };
+    expect(gradeReleaseSwapTask(task({ ...base, scheduledRetryAt: now + 60_000 })).retry?.worked).toBeNull();
+    expect(gradeReleaseSwapTask(task({ ...base, scheduledRetryAt: now - 60_000 })).retry?.worked).toBe(false);
+    expect(gradeReleaseSwapTask(task({ ...base, scheduledRetry: false, queuedWakes: 1 })).retry?.worked).toBeNull();
+  });
+
   it("uses one staleness threshold after the drain: a 6-minute-silent run or a queued wake alone is nothing pending", () => {
     const now = 10_000_000;
     const silent = gradeReleaseSwapTask(task({ status: "in_progress", now, staleAfterMs: 300_000,
