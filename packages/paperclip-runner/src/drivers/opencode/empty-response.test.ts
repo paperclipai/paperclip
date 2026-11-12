@@ -61,7 +61,8 @@ it.each(["reply", "reply-no-finish", "reply-tool-finish", "two-turn-idle", "slow
             emit({ type: "message.part.updated", properties: { sessionID, part: reasoningPart } });
             emit({ type: "message.part.updated", properties: { sessionID, part: echo } });
             emit({ type: "message.part.delta", properties: { sessionID, messageID, partID: echo.id, field: "text", delta: recordedReasoning.slice(0, 40) } });
-            emit({ type: "message.part.updated", properties: { sessionID, part: { ...echo, text: recordedReasoning, time: { start: 3, end: 4 } } } });
+            emit({ type: "message.part.delta", properties: { sessionID, messageID, partID: echo.id, field: "text", delta: `${recordedReasoning.slice(40)}\n` } });
+            emit({ type: "message.part.updated", properties: { sessionID, part: { ...echo, text: `${recordedReasoning}\n`, time: { start: 3, end: 4 } } } });
             emit({ type: "session.idle", properties: { sessionID } });
             emit({ type: "session.status", properties: { sessionID, status: { type: "idle" } } });
             return;

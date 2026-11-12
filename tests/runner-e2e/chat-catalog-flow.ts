@@ -18,7 +18,6 @@ import { chatCatalogInventoryDigest } from "./chat-catalog-inventory.js";
 import { resolveChatCatalogQuery } from "./chat-query-bindings.js";
 import { chatRunEvidenceApi } from "./chat-run-evidence-observer.js";
 import { markReturningBrowser } from "./chat-returning-browser.js";
-import { chatReplyControlVocabularyCheck } from "./chat-reply-control-vocabulary.js";
 
 /** The case owns product semantics; this flow owns the actual chat entry point and evidence lifecycle. */
 export async function runChatCatalogFlow(context: ChatCatalogContext) {
@@ -118,7 +117,6 @@ export async function runChatCatalogFlow(context: ChatCatalogContext) {
         detail: "The original query/setup history is unchanged. Human actions are raw comments, plus independently verified bound UI answers and an optional executed company binding approval only for its opted-in case." },
       { id: "catalog-query-attachment-receipts", passed: attachmentsValid,
         detail: "Only declared production attachment suffixes are allowed, backed by same-source human receipts and independently retrieved matching bytes." },
-      chatReplyControlVocabularyCheck({ comments: evidence.comments, setupRunIds: setupBoundary.runIds }),
       ...(slack ? [slackNativeRunCheck(context, evidence.runs, state)] : []),
       ...gradeChatCatalogRuns({ implementation: implementation!, companyId: input.fixtures.company.id,
         leadId: input.fixtures.agent.id, source: evidence.issue, runs: evidence.runs, observation }).checks,

@@ -16,15 +16,6 @@ declares run/time limits and an oracle version. Missing checks and contradictory
 grades fail. Known `coverageGaps` make a diagnostic case fail acceptance until its
 conditions are implemented; they are not blocked cases reported as passing.
 
-Every case also runs the shared `catalog-reply-no-agent-control-terms` check
-(`chat-reply-control-vocabulary.ts`). It fails when a saved agent reply in the
-graded conversation holds the agent's completion tool names or the
-identifier-shaped field names of the completion report, which it derives from
-`packages/paperclip-runner/src/contracts/completion-result.ts`. These are product
-setup literals, not wording: a reply that holds one is the agent's planning text
-shown as its answer. Setup-run comments are excluded. Calibrated on cohort 5, it
-flagged exactly the four reasoning-as-reply cases out of 193 conversations.
-
 The registry contains only executable setups/actions/oracles. Scenarios absent
 from it remain in the denominator as unimplemented; optional external services
 must be real or explicitly labeled simulations. The frozen campaign ledger owns

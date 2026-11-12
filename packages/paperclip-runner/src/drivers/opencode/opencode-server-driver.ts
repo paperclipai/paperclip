@@ -829,7 +829,7 @@ class OpenCodeHarnessSession implements HarnessSession {
    * once the text is complete, or the start of one while it still streams.
    */
   #echoesReasoning(content: string, completed: boolean): boolean {
-    const value = completed ? content.trim() : content.trimStart();
+    const value = content.trim();
     if (!value) return false;
     for (const reasoning of this.#completedReasoningTexts)
       if (completed ? reasoning === value : reasoning.startsWith(value)) return true;
@@ -2333,9 +2333,10 @@ class OpenCodeHarnessSession implements HarnessSession {
     // later message is the reply. The prose written between the last work tool
     // and that call stays in the reply only when the later message is a short
     // closing line that leans on it ("Answered above", "Commands above are
-    // ready"). A later message at least half as long as that prose is the
-    // model's own answer: keeping the earlier prose too would save a planning
-    // note or a second copy of the answer.
+    // ready"): one under half that prose's length, or any short line with no
+    // link of its own. A longer later message, or a short one carrying its own
+    // link, is the model's own answer: keeping the earlier prose too would save
+    // a planning note or a second copy of the answer.
     const candidatePreface =
       this.#semanticResultProviderMessageId !== null &&
       correlatedAfterResult.length === 0 &&
@@ -2343,7 +2344,9 @@ class OpenCodeHarnessSession implements HarnessSession {
         ? beforeResult.map(({ part }) => part)
         : [];
     const prefaceText = candidatePreface.map((part) => part.text.trim()).join("\n\n");
-    const preface = selected.text.trim().length * 2 < prefaceText.length ? candidatePreface : [];
+    const selectedText = selected.text.trim();
+    const closingReference = selectedText.length <= 80 && !/\]\(|https?:\/\//.test(selectedText);
+    const preface = selectedText.length * 2 < prefaceText.length || closingReference ? candidatePreface : [];
     const text = preface.length
       ? [...preface, selected].map((part) => part.text.trim()).filter(Boolean).join("\n\n")
       : selected.text;
