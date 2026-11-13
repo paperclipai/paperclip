@@ -835,7 +835,9 @@ export class ChaosSupervisor {
       : overlapKillAfterMs(process.env.RESTART_CHAOS_K15_KILL_OLD_AFTER_SECONDS, overlapMs);
     for (const until = Date.now() + (killAfterMs ?? overlapMs); Date.now() < until && !this.shuttingDown;) await delay(Math.min(1_000, until - Date.now()));
     await swap("stopping", next);
-    const freezeMs = overlapKillAfterMs(process.env.RESTART_CHAOS_K15_FREEZE_NEW_SECONDS, 600_000);
+    const freezeSwaps = process.env.RESTART_CHAOS_K15_FREEZE_SWAPS?.split(",").map(Number) ?? null;
+    const freezeMs = freezeSwaps && !freezeSwaps.includes(this.rollingRedeploys) ? null
+      : overlapKillAfterMs(process.env.RESTART_CHAOS_K15_FREEZE_NEW_SECONDS, 600_000);
     const frozenAt = freezeMs !== null && next.pid ? Date.now() : null;
     if (frozenAt !== null) {
       process.kill(next.pid!, "SIGSTOP");
