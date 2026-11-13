@@ -150,9 +150,6 @@ for (const action of ["task_retry", "retry_after_reload", "inbox_retry", "messag
       expect(completed).toMatchObject({ status: "done", executionBlocker: null });
       const runs = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, company.id), eq(heartbeatRuns.agentId, agent.id)));
       expect(runs.filter(run => run.id !== sourceRunId)).toHaveLength(1);
-      // The source run is never replayed. Either the person's admission or the fallback's
-      // disposition worker may settle its hold first; when the fallback wins it only stamps
-      // the dead run as superseded (write authority revoked), which nothing shows to a person.
       const source = runs.find(run => run.id === sourceRunId)!;
       expect(source.status).toBe("failed");
       expect(Object.keys(source.resultJson ?? {}).filter(key => key !== "freshContinuationSupersededAt")).toEqual([]);
