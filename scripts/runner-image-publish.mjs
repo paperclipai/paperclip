@@ -508,7 +508,7 @@ async function output(values) {
   if (process.env.GITHUB_OUTPUT) await appendFile(process.env.GITHUB_OUTPUT, `${lines.join("\n")}\n`);
 }
 
-function environmentCredentials(env = process.env) {
+export function environmentCredentials(env = process.env) {
   const username = env.RUNNER_IMAGE_REGISTRY_USERNAME;
   const password = env.RUNNER_IMAGE_REGISTRY_PASSWORD;
   return username && password ? { username, password } : null;
