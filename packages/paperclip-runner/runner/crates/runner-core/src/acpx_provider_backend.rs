@@ -2484,10 +2484,7 @@ impl AcpxCommandExecutor {
             .as_ref()
             .and_then(|state| state.active_turn_id.clone());
         let Some(turn_id) = turn_id else {
-            return Ok(CommandExecution::result(json!({
-                "status": "already_settled",
-                "reason": reason,
-            })));
+            return Ok(self.settled_without_turn(reason));
         };
         self.session
             .as_mut()
@@ -2518,10 +2515,7 @@ impl AcpxCommandExecutor {
                 .as_ref()
                 .is_some_and(|state| state.descriptor.agent == "pi");
         if turn_id.is_none() && !stop_idle_pi {
-            return Ok(CommandExecution::result(json!({
-                "status": "already_settled",
-                "reason": reason,
-            })));
+            return Ok(self.settled_without_turn(reason));
         }
         let provider_lifetime_fence_candidates = {
             let session = self
@@ -3089,6 +3083,20 @@ impl AcpxCommandExecutor {
 }
 
 impl AcpxCommandExecutor {
+    fn settled_without_turn(&mut self, reason: &str) -> CommandExecution {
+        if let Some(session) = self.session.as_mut() {
+            session.end_provider_turn_wait();
+        }
+        let held = self.held_run_terminal.take();
+        CommandExecution {
+            result: json!({"status": "already_settled", "reason": reason}),
+            events: held
+                .map(|event| (event.event_type, event.priority, event.payload))
+                .into_iter()
+                .collect(),
+        }
+    }
+
     fn release_held_run_terminal(&mut self) -> Result<(), DurableRunnerError> {
         if self.held_run_terminal.is_none()
             || self

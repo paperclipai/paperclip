@@ -477,3 +477,73 @@ fn a_sidecar_that_dies_while_awaiting_ends_the_wait_with_the_held_run_terminal()
     assert!(!events.iter().any(|event| event["type"] == "turn.failed"));
     let _ = harness.executor.shutdown();
 }
+
+#[test]
+fn cancelling_or_stopping_the_run_while_awaiting_disarms_and_publishes_the_held_run_terminal() {
+    for command in ["run.cancel", "turn.interrupt", "turn.stop"] {
+        let mut harness = Harness::new();
+        harness
+            .fixture
+            .background("live provider-turn provider-turn-hold provider-turn-after-disarm");
+        let first = complete_turn_accepting_provider_turns(&mut harness, "first");
+        assert!(
+            !first.iter().any(|event| event["type"] == "run.terminal"),
+            "{command}"
+        );
+        let before = harness.fixture.journal().len();
+        let cancelled = harness.execute(
+            command,
+            json!({"turnId": "first", "reason": "Operator stop"}),
+        );
+        assert_eq!(
+            cancelled.result["status"],
+            json!("already_settled"),
+            "{command}"
+        );
+        let terminals = cancelled
+            .events
+            .iter()
+            .filter(|(kind, _, _)| kind == "run.terminal")
+            .collect::<Vec<_>>();
+        assert_eq!(terminals.len(), 1, "{command}");
+        assert_eq!(
+            terminals[0].2["turnTerminalState"],
+            json!("completed"),
+            "{command}"
+        );
+        let journal = harness.fixture.journal();
+        assert!(
+            journal[before..].iter().any(|line| {
+                line["command"] == "session.provider_turn"
+                    && line["params"]["armed"] == json!(false)
+            }),
+            "{command}"
+        );
+        let mut later = Vec::new();
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while Instant::now() < deadline {
+            match harness.executor.poll_events() {
+                Ok(events) => {
+                    later.extend(
+                        events
+                            .iter()
+                            .map(|event| json!({"type":event.event_type,"payload":event.payload})),
+                    );
+                    let _ = harness.executor.acknowledge_events(events.len());
+                }
+                Err(_) => break,
+            }
+        }
+        assert!(
+            !later
+                .iter()
+                .any(|event| event["payload"]["origin"] == "provider"),
+            "{command}: {later:?}"
+        );
+        assert!(
+            !later.iter().any(|event| event["type"] == "run.terminal"),
+            "{command}: {later:?}"
+        );
+        let _ = harness.executor.shutdown();
+    }
+}

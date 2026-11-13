@@ -63,7 +63,7 @@ async function awaitedTurn(tokens: string, providerStartedTurns: boolean) {
     await bundle.transport.request("thread/start", { cwd: root, model: "explicit-source-model", dynamicTools: [] });
     authority!.queueCommand("turn.start", { text: "Install and test.", turnId: "turn-own-1", ...(providerStartedTurns ? { providerStartedTurns: true } : {}) }, undefined, true);
     await vi.waitFor(async () => expect((await coreEvents()).some(event => event.eventType === "turn.completed")).toBe(true), { timeout: 10_000, interval: 50 });
-    return { coreEvents, calls, root };
+    return { coreEvents, calls, root, authority: authority! };
   } catch (error) {
     throw new Error(`${String(error)}\n${await readFile(join(root, "native.stderr"), "utf8").catch(() => "")}`, { cause: error });
   } finally {
@@ -78,6 +78,12 @@ async function awaitedTurn(tokens: string, providerStartedTurns: boolean) {
 }
 
 const cleanups: Array<() => Promise<void>> = [];
+
+const alive = (pid: number) => {
+  try { process.kill(pid, 0); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return false; throw error; }
+  try { return !execFileSync("ps", ["-p", String(pid), "-o", "stat="], { encoding: "utf8" }).trim().startsWith("Z"); }
+  catch (error) { if ((error as { status?: number }).status === 1) return false; throw error; }
+};
 
 const runTerminals = (events: Array<{ eventType: string; payload: Record<string, unknown> }>) => events.filter(event => event.eventType === "run.terminal");
 const commands = async (calls: () => Promise<Array<Record<string, unknown>>>) => (await calls()).map(entry => entry.command).filter(Boolean);
@@ -114,3 +120,23 @@ it.skipIf(process.platform === "win32")("emits run.terminal with the completed t
     expect(await commands(run.calls)).not.toContain("session.provider_turn");
   } finally { for (const cleanup of cleanups.splice(0)) await cleanup(); }
 }, 60_000);
+
+it.skipIf(process.platform === "win32")("cancelling the run during a wait disarms the provider, publishes the held terminal and admits no later provider turn", async () => {
+  try {
+    const run = await awaitedTurn("live provider-turn provider-turn-hold provider-turn-after-disarm", true);
+    expect(runTerminals(await run.coreEvents())).toHaveLength(0);
+    run.authority.queueCommand("run.cancel", { reason: "Operator stop" }, undefined, true);
+    await vi.waitFor(async () => expect(runTerminals(await run.coreEvents())).toHaveLength(1), { timeout: 10_000, interval: 100 });
+    expect(runTerminals(await run.coreEvents())[0]!.payload).toMatchObject({ turnTerminalState: "completed" });
+    expect((await run.calls()).some(entry => entry.command === "session.provider_turn" && (entry.params as { armed?: unknown }).armed === false)).toBe(true);
+    await new Promise(done => setTimeout(done, 1_000));
+    const events = await run.coreEvents();
+    expect(events.some(event => event.payload.origin === "provider")).toBe(false);
+    expect(runTerminals(events)).toHaveLength(1);
+    run.authority.queueCommand("session.close", { reason: "Run cancelled" }, undefined, true);
+    const processes = (await run.calls()).flatMap(entry => [entry.processStart, entry.childPid]).filter((pid): pid is number => typeof pid === "number");
+    expect(processes.length).toBeGreaterThan(0);
+    await vi.waitFor(() => { for (const pid of processes) expect(alive(pid)).toBe(false); }, { timeout: 10_000, interval: 100 });
+  } finally { for (const cleanup of cleanups.splice(0)) await cleanup(); }
+}, 60_000);
+

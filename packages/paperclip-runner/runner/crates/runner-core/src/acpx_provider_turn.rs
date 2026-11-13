@@ -41,6 +41,10 @@ impl AcpxProviderSession {
         self.background_tasks_live = false;
     }
 
+    pub fn end_provider_turn_wait(&mut self) {
+        self.disarm_provider_turn();
+    }
+
     pub(super) fn disarm_provider_turn(&mut self) {
         if self.awaiting_provider_turn && !self.transport_terminated {
             let _ = self.transport.request(

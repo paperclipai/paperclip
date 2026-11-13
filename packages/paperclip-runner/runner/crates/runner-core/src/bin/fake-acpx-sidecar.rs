@@ -255,6 +255,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 &json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,"id":id,"ok":true,
                     "result":{"armed":armed}}),
             )?;
+            if request["params"]["armed"] == json!(false)
+                && tokens
+                    .iter()
+                    .any(|token| token == "provider-turn-after-disarm")
+            {
+                if let Some(run) = pending_provider_run.take() {
+                    next_sequence = write_provider_turn(&mut stdout, next_sequence, &run)?;
+                }
+            }
             if armed
                 && tokens
                     .iter()
