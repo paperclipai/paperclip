@@ -87,6 +87,10 @@ const sourceUrl = new URL(
   import.meta.url,
 );
 const runner = (await import(sourceUrl.href)) as RunnerModule;
+export const readStoppedCodexThread = runner.readStoppedCodexThread;
+export const stoppedCodexSourceUnchanged = runner.stoppedCodexSourceUnchanged;
+export const proveClosedReadOnlyCodexThread = runner.proveClosedReadOnlyCodexThread;
+export const PAPERCLIP_SEMANTIC_ACTION_CATALOG = runner.PAPERCLIP_SEMANTIC_ACTION_CATALOG;
 export const taskDocumentKeySchema = runner.taskDocumentKeySchema;
 
 export const CURSOR_CLOUD_DEFAULT_TIMEOUT_MS = runner.CURSOR_CLOUD_DEFAULT_TIMEOUT_MS;

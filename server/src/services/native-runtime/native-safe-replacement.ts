@@ -457,6 +457,11 @@ export async function reconcileSafeNativeReplacements(
           const completedTaskControlCallIds = stoppedSession?.evidence.completedTaskControlCallIds;
           if (name === "paperclip_finish" && Array.isArray(completedTaskControlCallIds) &&
               completedTaskControlCallIds.includes(p.executionId)) return [];
+          // A closed saved conversation proved this exact dynamic call was a
+          // declared read, even when it failed before writing a receipt.
+          const readToolCalls = stoppedSession?.evidence.readToolCalls;
+          if (p.transport === "dynamic" && Array.isArray(readToolCalls) && readToolCalls.some(call =>
+            record(call).executionId === p.executionId && record(call).name === name)) return [];
           const receiptedRead = invocations.some(
             (row) =>
               (row.id === p.executionId ||

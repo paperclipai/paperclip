@@ -1,4 +1,5 @@
 export * from "./configured-environment.js";
+export * from "./drivers/codex/stopped-conversation.js";
 export * from "./catalog/index.js";
 export { taskDocumentKeySchema } from "./protocol-actions/task-document-key-schema.js";
 export { CURSOR_DISTRIBUTION_PINS } from "./drivers/acpx/generated-profiles.js";
