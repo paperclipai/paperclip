@@ -59,7 +59,7 @@ import {
 } from "../lib/inbox";
 import { cn, formatDurationMs, formatTokens } from "../lib/utils";
 import { SHOW_TASK_PRIORITY_UI } from "../lib/ui-flags";
-import { collectSubtreeLiveCounts } from "../lib/liveIssueIds";
+import { collectSubtreeLiveCounts, issueWaitingOf } from "../lib/liveIssueIds";
 import {
   InboxIssueMetaLeading,
   InboxIssueTrailingColumns,
@@ -2376,6 +2376,7 @@ function StreamlinedIssuesList({
                           <InboxIssueMetaLeading
                             issue={issue}
                             isLive={liveIssueIds?.has(issue.id) === true}
+                            waiting={issueWaitingOf(liveIssueIds, issue.id)}
                             subtreeLiveCount={subtreeLiveCounts.get(issue.id) ?? 0}
                             showStatus={false}
                             showIdentifier={false}
@@ -2411,6 +2412,7 @@ function StreamlinedIssuesList({
                             <InboxIssueMetaLeading
                               issue={issue}
                               isLive={liveIssueIds?.has(issue.id) === true}
+                            waiting={issueWaitingOf(liveIssueIds, issue.id)}
                               subtreeLiveCount={subtreeLiveCounts.get(issue.id) ?? 0}
                               showStatus={visibleIssueColumnSet.has("status") && availableIssueColumnSet.has("status")}
                               showIdentifier={visibleIssueColumnSet.has("id") && availableIssueColumnSet.has("id")}

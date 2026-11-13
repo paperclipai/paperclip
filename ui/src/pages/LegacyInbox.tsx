@@ -35,7 +35,7 @@ import {
   countActiveIssueFilters,
   type IssueFilterState,
 } from "../lib/issue-filters";
-import { collectLiveIssueIds, collectSubtreeLiveCounts } from "../lib/liveIssueIds";
+import { collectLiveIssueIds, collectSubtreeLiveCounts, issueWaitingOf } from "../lib/liveIssueIds";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import { buildCompanyUserLabelMap, buildCompanyUserProfileMap } from "../lib/company-members";
 import {
@@ -2740,6 +2740,7 @@ export function Inbox() {
                           <InboxIssueMetaLeading
                             issue={issue}
                             isLive={isLive}
+                            waiting={issueWaitingOf(liveIssueIds, issue.id)}
                             subtreeLiveCount={liveDescendantCount}
                             showSubtreeLiveChip={showSubtreeLiveChip}
                             showStatus={showStatus}
