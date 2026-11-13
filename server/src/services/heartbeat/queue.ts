@@ -2344,10 +2344,20 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         eq(agentWakeupRequests.requestedByActorType, "user")))
       : [];
     const userRequestIds = new Set(userRequests.map(row => row.id));
+    const oldestQueuedAt = new Date(Math.min(...queuedRuns.map(run => run.createdAt.getTime())));
+    const joinedUserRequests = queuedRuns.length > 1
+      ? await db.select({ runId: agentWakeupRequests.runId }).from(agentWakeupRequests).where(and(
+        eq(agentWakeupRequests.agentId, agent.id), gte(agentWakeupRequests.requestedAt, oldestQueuedAt),
+        eq(agentWakeupRequests.companyId, agent.companyId), eq(agentWakeupRequests.requestedByActorType, "user"),
+        inArray(agentWakeupRequests.runId, queuedRuns.map(run => run.id))))
+      : [];
+    const userRunIds = new Set(joinedUserRequests.flatMap(row => row.runId ? [row.runId] : []));
+    const requestedByUser = (run: typeof heartbeatRuns.$inferSelect) =>
+      userRunIds.has(run.id) || Boolean(run.wakeupRequestId && userRequestIds.has(run.wakeupRequestId));
     const sourceRunIdOf = (run: typeof heartbeatRuns.$inferSelect) =>
       readNonEmptyString(parseObject(run.contextSnapshot).previousRunId) ?? run.retryOfRunId ?? null;
     const recoveryRuns = queuedRuns.filter(run => isSystemRecoveryRun({ wakeReason: wakeReasonOf(run),
-      requestedByUser: Boolean(run.wakeupRequestId && userRequestIds.has(run.wakeupRequestId)) }));
+      requestedByUser: requestedByUser(run) }));
     const sourceRunIds = [...new Set(recoveryRuns.flatMap(run => sourceRunIdOf(run) ?? []))];
     const sourceRows = queuedRuns.length > 1 && sourceRunIds.length
       ? await db.select({ id: heartbeatRuns.id, finishedAt: heartbeatRuns.finishedAt }).from(heartbeatRuns)
@@ -2376,7 +2386,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         id: run.id,
         createdAt: run.createdAt,
         wakeReason: wakeReasonOf(run),
-        requestedByUser: Boolean(run.wakeupRequestId && userRequestIds.has(run.wakeupRequestId)),
+        requestedByUser: requestedByUser(run),
         sourceEndedAt: sourceRunId ? sourceEndedAt.get(sourceRunId) ?? null : null,
         readinessRank: issueId ? (ready ? (issue?.status === "in_progress" ? 0 : 1) : 3) : 2,
         priorityRank: issueRunPriorityRank(issue?.priority),

@@ -1,6 +1,7 @@
 import { and, asc, eq, gte, notInArray, sql } from "drizzle-orm";
 import { agents, companies, heartbeatRuns, type Db } from "@paperclipai/db";
 import { instanceSettingsService, isTruthyRuntimeEnvValue, resolveWorktreeRunExecutionActivation } from "./instance-settings.js";
+import { maxConcurrentRunsSql } from "./heartbeat/timer-policy.js";
 
 export const QUEUED_RUN_REDRIVE_AFTER_MS = 60_000;
 export const QUEUED_RUN_REDRIVE_MAX_INTERVAL_MS = 15 * 60_000;
@@ -42,9 +43,13 @@ async function listUndispatchedQueuedRunPage(db: Db, companyId: string | undefin
       eq(agents.lifecycleState, "ready"),
       notInArray(agents.status, NOT_READY_AGENT_STATUSES),
       after ? sql`(${heartbeatRuns.createdAt}, ${heartbeatRuns.id}) > (${after.at}::timestamptz, ${after.runId}::uuid)` : undefined,
-      sql`not exists (select 1 from ${heartbeatRuns} live
+      sql`(select count(*) from ${heartbeatRuns} live
         where live.company_id = ${heartbeatRuns.companyId} and live.agent_id = ${heartbeatRuns.agentId}
-          and live.status in ('running', 'scheduled_retry'))`,
+          and live.status in ('running', 'scheduled_retry')) < ${maxConcurrentRunsSql()}`,
+      sql`not exists (select 1 from ${heartbeatRuns} task_live
+        where task_live.company_id = ${heartbeatRuns.companyId}
+          and task_live.context_snapshot->>'issueId' = coalesce(${heartbeatRuns.issueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId')
+          and task_live.status in ('running', 'scheduled_retry'))`,
     ))
     .orderBy(asc(heartbeatRuns.createdAt), asc(heartbeatRuns.id))
     .limit(limit);
