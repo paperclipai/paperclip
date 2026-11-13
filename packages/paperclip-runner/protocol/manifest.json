@@ -35,7 +35,7 @@
     {
       "path": "schemas/command-v3.schema.json",
       "id": "https://paperclip.dev/schemas/prp/v3/command.schema.json",
-      "sha256": "3c8a2d55bfcd1151885ed74bfb4fe2994b9b56f4794d02e446606253d2e8870d"
+      "sha256": "0757002c91143e89b12efd46d80c981a00a739109adf22992038398c4f84e7c7"
     },
     {
       "path": "schemas/command.schema.json",
@@ -100,7 +100,7 @@
     {
       "path": "schemas/provider-turn.schema.json",
       "id": "https://paperclip.dev/schemas/prp/v3/provider-turn.schema.json",
-      "sha256": "e9570a60a91a47d3fd8b81705dc0ae208b783b23592eababe8954244b3208b83"
+      "sha256": "5112079cb5ba37b81728437d686cff22317b77cbbd039e1891a53cd37971e06c"
     },
     {
       "path": "schemas/question-adapter-fixture.schema.json",

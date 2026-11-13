@@ -2239,6 +2239,12 @@ impl AcpxCommandExecutor {
             .map(|state| PathBuf::from(&state.descriptor.cwd))
             .expect("ACPX state exists before turn start");
         let measure = payload.get("performance").and_then(Value::as_bool) == Some(true);
+        self.session
+            .as_mut()
+            .expect("ACPX session exists before turn start")
+            .accept_provider_started_turns(
+                payload.get("providerStartedTurns").and_then(Value::as_bool) == Some(true),
+            );
         let timing_started = std::time::Instant::now();
         let start_result = self
             .session

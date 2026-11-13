@@ -1200,6 +1200,30 @@ export const commandV3Schema = {
         },
         "type": "object"
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "turn.start"
+          }
+        },
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "properties": {
+              "providerStartedTurns": {
+                "$ref": "https://paperclip.dev/schemas/prp/v3/provider-turn.schema.json#/$defs/controllerOptIn"
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "type": "object"
+      }
     }
   ],
   "additionalProperties": true
@@ -7020,13 +7044,16 @@ export const providerTurnSchema = {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://paperclip.dev/schemas/prp/v3/provider-turn.schema.json",
   "title": "PRP provider-started turn markers",
-  "description": "Marks a turn the provider started without a controller turn.start, and a completed turn after which the Runner keeps the provider to await one.",
+  "description": "Marks a turn the provider started without a controller turn.start, a completed turn after which the Runner keeps the provider to await one, and the controller's per-turn opt-in on turn.start. Without the opt-in the Runner never awaits, never suppresses run.terminal and never surfaces a provider-started turn.",
   "$defs": {
     "origin": {
       "const": "provider"
     },
     "awaitingProviderTurn": {
       "const": true
+    },
+    "controllerOptIn": {
+      "type": "boolean"
     }
   }
 } as const;

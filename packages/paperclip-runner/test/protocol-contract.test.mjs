@@ -76,6 +76,10 @@ test("PRP v3 marks a provider-started turn and a completed turn that awaits one 
   assert.equal(validators.eventV3(event("turn.completed", { status: "completed", awaitingProviderTurn: true })), true);
   assert.equal(validators.eventV3(event("turn.completed", { status: "completed" })), true);
   assert.equal(validators.eventV3(event("turn.completed", { status: "completed", awaitingProviderTurn: false })), false);
+  const command = (payload) => ({ ...happy.commands[0], schema: "paperclip.prp.command.v3", type: "turn.start", payload });
+  assert.equal(validators.commandV3(command({ turnId: "turn-1", text: "Work.", providerStartedTurns: true })), true);
+  assert.equal(validators.commandV3(command({ turnId: "turn-1", text: "Work." })), true);
+  assert.equal(validators.commandV3(command({ turnId: "turn-1", text: "Work.", providerStartedTurns: "yes" })), false);
 });
 
 test("unknown additive fields remain compatible with PRP v1", async () => {

@@ -368,6 +368,9 @@ pub struct AcpxProviderSession {
     turn_start_replaced_provider: bool,
     awaiting_provider_turn: bool,
     background_tasks_live: bool,
+    accepts_provider_started_turns: bool,
+    run_result_reported: Option<String>,
+    armed_turn_id: String,
     generation_has_run_turn: bool,
     restarted_after_turn_from: Option<u32>,
     prepared_generation: Option<String>,
@@ -435,6 +438,9 @@ impl AcpxProviderSession {
             turn_start_replaced_provider: false,
             awaiting_provider_turn: false,
             background_tasks_live: false,
+            accepts_provider_started_turns: false,
+            run_result_reported: None,
+            armed_turn_id: String::new(),
             generation_has_run_turn: false,
             restarted_after_turn_from: None,
             prepared_generation: None,
@@ -690,7 +696,7 @@ impl AcpxProviderSession {
             && self.background_work_is_quiet();
         self.continues_in_process = false;
         self.quiet_turn_observed = false;
-        self.clear_provider_turn_continuation();
+        self.disarm_provider_turn();
         let restart_now = self.generation_has_run_turn && !continue_in_process;
         if restart_now {
             if let Err(error) = self.restart_idle_provider(None) {
@@ -993,6 +999,9 @@ impl AcpxProviderSession {
                         if let Err(error) = validate_reserved_terminal_result(&next_state, result) {
                             return Err(self.fail_closed(error));
                         }
+                        if result.ok {
+                            self.record_run_result();
+                        }
                         if let Err(error) =
                             next_reserved_bridge.apply_result(crate::provider_bridge::ToolResult {
                                 call_id: result.call_id.clone(),
@@ -1100,14 +1109,15 @@ impl AcpxProviderSession {
             }
         }
         let terminal_completed = self.completed_turn_observed;
-        let terminal_observed = reconciled_events
-            .iter()
-            .any(|event| matches!(event, AcpxProviderStateEvent::TurnTerminal { .. }));
+        let terminal_turn = reconciled_events.iter().find_map(|event| match event {
+            AcpxProviderStateEvent::TurnTerminal { turn_id, .. } => Some(turn_id.clone()),
+            _ => None,
+        });
         self.state = next_state;
         self.tool_bridge = next_bridge;
         self.reserved_tool_bridge = next_reserved_bridge;
-        if terminal_observed {
-            self.observe_terminal_background_tasks(terminal_completed, terminal_live);
+        if let Some(turn_id) = terminal_turn {
+            self.observe_terminal_background_tasks(&turn_id, terminal_completed, terminal_live);
         }
         Ok(Some((reconciled_events, terminal_goal)))
     }
@@ -1127,12 +1137,17 @@ impl AcpxProviderSession {
         };
         let duplicate = bridge.has_completed_call(&result.call_id);
         let detached = bridge.turn_closed();
+        let reported_run_result =
+            is_reserved_terminal_operation(&result.operation_id) && !result.is_error;
         bridge.apply_result(result.clone()).map_err(|error| {
             LocalRunnerError::invalid(format!(
                 "ACPX tool result for call {} operation {} is invalid: {error}",
                 result.call_id, result.operation_id
             ))
         })?;
+        if reported_run_result {
+            self.record_run_result();
+        }
         if duplicate {
             return Ok(());
         }
@@ -2341,6 +2356,9 @@ mod mode_tests {
             turn_start_replaced_provider: false,
             awaiting_provider_turn: false,
             background_tasks_live: false,
+            accepts_provider_started_turns: false,
+            run_result_reported: None,
+            armed_turn_id: String::new(),
             generation_has_run_turn: false,
             restarted_after_turn_from: None,
             prepared_generation: None,

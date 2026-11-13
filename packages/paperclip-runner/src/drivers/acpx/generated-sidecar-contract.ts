@@ -19,6 +19,7 @@ export const GENERATED_ACPX_SIDECAR_COMMANDS = [
   "session.goal.get",
   "session.goal.set",
   "session.goal.clear",
+  "session.provider_turn",
   "session.suspend",
   "session.close",
 ] as const;

@@ -216,19 +216,28 @@ identities. The report's shape is `$defs.backgroundTasks` in
 generated from it and tested against
 `protocol/fixtures/provider-boundary/acpx-background-tasks.json`.
 
-When a completed Claude turn's terminal reports `backgroundTasks: {"live": N}`
-with N above zero and the same restart conditions hold, Runner keeps the
-sidecar and awaits a provider-started turn instead of replacing it. Its PRP
-`turn.completed` carries `awaitingProviderTurn: true` and no `run.terminal`
-follows. When Claude starts its own cycle with no prompt in flight, the sidecar
-emits `runtime.turn_started` with `{"origin": "provider"}` and a sidecar-minted
-turn id. Runner admits it only while awaiting and only for Claude, with the same
-settled-identity and receipt rules as a controller turn, and publishes PRP
-`turn.started` with `origin: "provider"`. Any other provider-started turn fails
-the session closed. A controller `turn.start` while awaiting replaces the
-sidecar first. Park is refused while awaiting or while live tasks are known.
-The awaiting state is in memory only: a Runner restart resumes in a fresh
-process as before.
+A controller opts in per turn with `providerStartedTurns: true` on
+`turn.start`. Only then, when that completed Claude turn reported no accepted
+`paperclip_finish` or `paperclip_block` result for the run, its terminal reports
+`backgroundTasks: {"live": N}` with N above zero, and the same restart
+conditions hold, Runner sends the sidecar `session.provider_turn` with
+`armed: true` for that terminal. Only if the sidecar replies `armed: true` does
+Runner keep it and await a provider-started turn: the PRP `turn.completed`
+carries `awaitingProviderTurn: true` and no `run.terminal` follows. Without the
+opt-in, with a result, or when arming is refused, every event and the turn-end
+restart are exactly as before.
+
+The sidecar adopts Claude's own cycle only while armed. A cycle that starts
+after the terminal and before the arming command is held, with nothing lost,
+for at most 5 s; arming adopts it and anything else drops it. When armed, the
+sidecar emits `runtime.turn_started` with `{"origin": "provider"}` and a
+sidecar-minted turn id. Runner admits it only while awaiting and only for
+Claude, with the same settled-identity and receipt rules as a controller turn,
+and publishes PRP `turn.started` with `origin: "provider"`. Any other
+provider-started turn fails the session closed. A controller `turn.start` while
+awaiting disarms and replaces the sidecar first. Park is refused while awaiting
+or while live tasks are known. The awaiting state is in memory only: a Runner
+restart resumes in a fresh process as before.
 
 The check also inspects the live provider
 after that drain, so a late active-goal notification cannot be hidden by the

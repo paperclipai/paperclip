@@ -40,6 +40,7 @@
         "session.goal.get",
         "session.goal.set",
         "session.goal.clear",
+        "session.provider_turn",
         "session.suspend",
         "session.close"
       ]
@@ -82,6 +83,10 @@
         {
           "if": { "properties": { "command": { "const": "turn.steer" } } },
           "then": { "properties": { "params": { "$ref": "#/$defs/turnControl" } } }
+        },
+        {
+          "if": { "properties": { "command": { "const": "session.provider_turn" } } },
+          "then": { "properties": { "params": { "$ref": "#/$defs/providerTurnArming" } } }
         },
         {
           "if": { "properties": { "command": { "const": "session.open" } } },
@@ -274,6 +279,16 @@
           }
         }
       ]
+    },
+    "providerTurnArming": {
+      "description": "runnerd arms or disarms adoption of Claude's next own cycle. Arming names the completed terminal that reported live background tasks; the sidecar adopts a cycle only while armed and replies whether it is armed.",
+      "type": "object",
+      "required": ["turnId", "armed"],
+      "properties": {
+        "turnId": { "type": "string", "maxLength": 240, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$" },
+        "armed": { "type": "boolean" }
+      },
+      "additionalProperties": false
     },
     "providerTurnStarted": {
       "description": "Claude began its own cycle with no prompt in flight. runnerd admits it only while it awaits a provider-started turn.",

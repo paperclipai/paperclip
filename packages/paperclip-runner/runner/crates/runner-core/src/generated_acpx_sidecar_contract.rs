@@ -56,6 +56,7 @@ pub enum GeneratedAcpxSidecarCommand {
     SessionGoalGet,
     SessionGoalSet,
     SessionGoalClear,
+    SessionProviderTurn,
     SessionSuspend,
     SessionClose,
 }
@@ -77,6 +78,7 @@ impl GeneratedAcpxSidecarCommand {
             Self::SessionGoalGet => "session.goal.get",
             Self::SessionGoalSet => "session.goal.set",
             Self::SessionGoalClear => "session.goal.clear",
+            Self::SessionProviderTurn => "session.provider_turn",
             Self::SessionSuspend => "session.suspend",
             Self::SessionClose => "session.close",
         }

@@ -123,6 +123,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut provider_lost = false;
     let mut session_identity = Value::Null;
     let mut source_run = String::new();
+    let mut pending_provider_run: Option<String> = None;
+    let mut provider_rearmable = false;
     let mut source_pending_completion: Option<String> = None;
     let mut source_goal_revision = 0_u64;
     let mut runtime_directory: Option<std::path::PathBuf> = None;
@@ -216,6 +218,54 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 write_json(&mut stdout, &error)?;
                 continue;
             }
+        }
+        if command == "turn.cancel"
+            && provider_turn_tokens()
+                .iter()
+                .any(|token| token == "provider-turn-open")
+            && request["params"]["turnId"]
+                .as_str()
+                .is_some_and(|turn| turn.starts_with("provider-"))
+        {
+            let turn = request["params"]["turnId"].as_str().unwrap().to_owned();
+            write_json(
+                &mut stdout,
+                &json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,"id":id,"ok":true,
+                    "result":{"cancelled":true,"sessionClosed":true}}),
+            )?;
+            write_json(
+                &mut stdout,
+                &json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,"sequence":next_sequence,
+                    "eventType":"runtime.turn_terminal","runId":"run-1","turnId":turn,
+                    "payload":{"status":"cancelled","stopReason":"cancelled"}}),
+            )?;
+            next_sequence += 1;
+            continue;
+        }
+        if command == "session.provider_turn" {
+            if let Some(journal) = source_journal.as_mut() {
+                write_json(journal, &request)?;
+            }
+            let tokens = provider_turn_tokens();
+            let armed = request["params"]["armed"] == json!(true)
+                && (pending_provider_run.is_some() || provider_rearmable)
+                && !tokens.iter().any(|token| token == "provider-arm-reject");
+            write_json(
+                &mut stdout,
+                &json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,"id":id,"ok":true,
+                    "result":{"armed":armed}}),
+            )?;
+            if armed && tokens.iter().any(|token| token == "provider-turn-hold") {
+                continue;
+            }
+            if let (true, Some(run)) = (armed, pending_provider_run.take()) {
+                next_sequence = write_provider_turn(&mut stdout, next_sequence, &run)?;
+                provider_rearmable = tokens.iter().any(|token| token == "provider-terminal-live");
+            } else {
+                provider_rearmable = false;
+            }
+            pending_provider_run = None;
+            continue;
         }
         if let Some(journal) = source_journal.as_mut() {
             write_json(journal, &request)?;
@@ -452,7 +502,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     json!({"status":status}),
                 )?;
                 next_sequence += 1;
-                next_sequence = write_provider_turn(&mut stdout, next_sequence, &source_run)?;
+                next_sequence = offer_provider_turn(
+                    &mut stdout,
+                    next_sequence,
+                    &source_run,
+                    &mut pending_provider_run,
+                )?;
             }
             if command == "tool.resolve" {
                 let turn = source_pending_completion
@@ -959,9 +1014,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         "turns-tool-terminal"
                             | "turns-reused-tool-id-terminal"
                             | "turns-tool-result-terminal"
+                            | "turns-reserved-result-terminal"
                     )
                 {
-                    next_sequence = write_provider_turn(&mut stdout, next_sequence, "run-1")?;
+                    next_sequence = offer_provider_turn(
+                        &mut stdout,
+                        next_sequence,
+                        "run-1",
+                        &mut pending_provider_run,
+                    )?;
                 }
                 if command == "turn.start" && mode == "turns-multiple-tool-results-terminal" {
                     for index in 1..=2 {
@@ -1446,6 +1507,23 @@ fn provider_turn_tokens() -> Vec<String> {
         .unwrap_or_default()
 }
 
+fn offer_provider_turn(
+    output: &mut impl Write,
+    sequence: u64,
+    default_run: &str,
+    pending: &mut Option<String>,
+) -> io::Result<u64> {
+    let tokens = provider_turn_tokens();
+    if !tokens.iter().any(|token| token == "provider-turn") {
+        return Ok(sequence);
+    }
+    if tokens.iter().any(|token| token == "provider-turn-unarmed") {
+        return write_provider_turn(output, sequence, default_run);
+    }
+    *pending = Some(default_run.to_owned());
+    Ok(sequence)
+}
+
 fn write_provider_turn(
     output: &mut impl Write,
     mut sequence: u64,
@@ -1490,6 +1568,26 @@ fn write_provider_turn(
         )?;
         sequence += 1;
     }
+    if tokens.iter().any(|token| token == "provider-result") {
+        let result = valid_reserved_completion_result();
+        write_json(
+            output,
+            &frame(
+                sequence,
+                "runtime.tool_called",
+                json!({"callId":"call-provider-finish","operationId":"paperclip_finish","input":result.clone()}),
+            ),
+        )?;
+        write_json(
+            output,
+            &frame(
+                sequence + 1,
+                "runtime.event",
+                json!({"type":"semantic_result","callId":"call-provider-finish","operationId":"paperclip_finish","ok":true,"result":result}),
+            ),
+        )?;
+        sequence += 2;
+    }
     write_json(
         output,
         &frame(
@@ -1499,6 +1597,9 @@ fn write_provider_turn(
         ),
     )?;
     sequence += 1;
+    if tokens.iter().any(|token| token == "provider-turn-open") {
+        return Ok(sequence);
+    }
     write_json(
         output,
         &frame(

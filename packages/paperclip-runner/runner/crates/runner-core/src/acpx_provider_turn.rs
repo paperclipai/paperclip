@@ -4,7 +4,8 @@ use super::AcpxProviderSession;
 use crate::acpx_provider_state::AcpxProviderStateEvent;
 use crate::acpx_sidecar_transport::AcpxSidecarEvent;
 use crate::generated_acpx_sidecar_contract::{
-    read_generated_acpx_background_tasks, GENERATED_ACPX_PROVIDER_TURN_ORIGIN,
+    read_generated_acpx_background_tasks, GeneratedAcpxSidecarCommand,
+    GENERATED_ACPX_PROVIDER_TURN_ORIGIN,
 };
 use crate::local_runner::LocalRunnerError;
 
@@ -23,15 +24,45 @@ impl AcpxProviderSession {
         self.background_tasks_live
     }
 
+    pub fn accept_provider_started_turns(&mut self, accepted: bool) {
+        self.accepts_provider_started_turns = accepted;
+    }
+
+    pub fn run_result_reported(&self) -> bool {
+        self.run_result_reported.as_deref() == Some(self.state.run_id())
+    }
+
+    pub(super) fn record_run_result(&mut self) {
+        self.run_result_reported = Some(self.state.run_id().to_owned());
+    }
+
     pub(super) fn clear_provider_turn_continuation(&mut self) {
         self.awaiting_provider_turn = false;
         self.background_tasks_live = false;
     }
 
-    pub(super) fn observe_terminal_background_tasks(&mut self, completed: bool, live: Option<u64>) {
+    pub(super) fn disarm_provider_turn(&mut self) {
+        if self.awaiting_provider_turn && !self.transport_terminated {
+            let _ = self.transport.request(
+                GeneratedAcpxSidecarCommand::SessionProviderTurn,
+                json!({"turnId": self.armed_turn_id.clone(), "armed": false}),
+            );
+        }
+        self.clear_provider_turn_continuation();
+    }
+
+    pub(super) fn observe_terminal_background_tasks(
+        &mut self,
+        turn_id: &str,
+        completed: bool,
+        live: Option<u64>,
+    ) {
         self.background_tasks_live = live.is_some_and(|live| live > 0);
-        self.awaiting_provider_turn = completed
+        self.awaiting_provider_turn = false;
+        let eligible = completed
             && self.background_tasks_live
+            && self.accepts_provider_started_turns
+            && !self.run_result_reported()
             && self.config.agent == "claude"
             && self.config.candidate_admission.is_none()
             && !self.runtime_retired
@@ -41,6 +72,18 @@ impl AcpxProviderSession {
             && !self.state.settled_turn_identity_capacity_reached()
             && !self.tool_bridge.replay_history_blocks_admission()
             && !self.reserved_tool_bridge.replay_history_blocks_admission();
+        if !eligible {
+            return;
+        }
+        let armed = self.transport.request(
+            GeneratedAcpxSidecarCommand::SessionProviderTurn,
+            json!({"turnId": turn_id, "armed": true}),
+        );
+        self.awaiting_provider_turn = armed
+            .is_ok_and(|response| response.get("armed").and_then(Value::as_bool) == Some(true));
+        if self.awaiting_provider_turn {
+            self.armed_turn_id = turn_id.to_owned();
+        }
     }
 
     pub(super) fn admit_provider_turn(

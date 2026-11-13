@@ -228,8 +228,26 @@ fn a_full_settled_turn_ledger_still_rotates_through_a_restart() {
 }
 
 fn provider_session(scratch: &Scratch, background: &str, agent: &str) -> AcpxProviderSession {
+    provider_session_in(
+        scratch,
+        background,
+        agent,
+        "turns-tool-result-terminal",
+        true,
+    )
+}
+
+fn provider_session_in(
+    scratch: &Scratch,
+    background: &str,
+    agent: &str,
+    mode: &str,
+    accepts: bool,
+) -> AcpxProviderSession {
     scratch.background(background);
-    AcpxProviderSession::start(&config(&scratch.0, "turns-tool-result-terminal", agent)).unwrap()
+    let mut session = AcpxProviderSession::start(&config(&scratch.0, mode, agent)).unwrap();
+    session.accept_provider_started_turns(accepts);
+    session
 }
 
 fn poll_until_terminal(
@@ -303,13 +321,17 @@ fn a_provider_started_turn_that_leaves_shells_running_awaits_again() {
 fn an_unexpected_provider_started_turn_fails_closed_like_any_idle_event() {
     for (background, agent, expected) in [
         (
-            "quiet provider-turn",
+            "quiet provider-turn provider-turn-unarmed",
             "claude",
             "outside an awaited continuation",
         ),
-        ("provider-turn", "claude", "outside an awaited continuation"),
         (
-            "live provider-turn",
+            "provider-turn provider-turn-unarmed",
+            "claude",
+            "outside an awaited continuation",
+        ),
+        (
+            "live provider-turn provider-turn-unarmed",
             "codex",
             "outside an awaited continuation",
         ),
@@ -365,7 +387,7 @@ fn a_provider_started_turn_cannot_replay_a_settled_tool_call() {
 #[test]
 fn a_controller_turn_while_awaiting_restarts_the_provider_first() {
     let scratch = Scratch::new();
-    let mut session = provider_session(&scratch, "live", "claude");
+    let mut session = provider_session(&scratch, "live provider-turn", "claude");
     let pid = session.process_id();
     session
         .start_turn("turn-1", "Start background work", &std::env::temp_dir())
@@ -401,4 +423,123 @@ fn the_generated_reader_matches_the_shared_background_task_vectors() {
             "{vector}"
         );
     }
+}
+
+#[test]
+fn a_controller_without_the_capability_never_awaits_or_arms() {
+    let scratch = Scratch::new();
+    let mut session = provider_session_in(
+        &scratch,
+        "live provider-turn",
+        "claude",
+        "turns-tool-result-terminal",
+        false,
+    );
+    session
+        .start_turn("turn-1", "Start background work", &std::env::temp_dir())
+        .unwrap();
+    poll_until_terminal(&mut session, "turn-1");
+    assert!(!session.awaiting_provider_turn());
+    assert!(session
+        .poll_event(Duration::from_millis(200))
+        .unwrap()
+        .is_none());
+    session.shutdown("test complete").unwrap();
+}
+
+#[test]
+fn a_turn_that_reported_its_result_never_awaits_even_with_live_shells() {
+    let scratch = Scratch::new();
+    let mut session = provider_session_in(
+        &scratch,
+        "live provider-turn",
+        "claude",
+        "turns-reserved-result-terminal",
+        true,
+    );
+    session
+        .start_turn(
+            "turn-1",
+            "Finish with a shell still running",
+            &std::env::temp_dir(),
+        )
+        .unwrap();
+    poll_until_terminal(&mut session, "turn-1");
+    assert!(session.run_result_reported());
+    assert!(!session.awaiting_provider_turn());
+    assert!(session.background_tasks_live());
+    assert!(session
+        .poll_event(Duration::from_millis(200))
+        .unwrap()
+        .is_none());
+    session.shutdown("test complete").unwrap();
+}
+
+#[test]
+fn a_provider_started_turn_that_reports_a_result_settles_and_does_not_await_again() {
+    let scratch = Scratch::new();
+    let mut session = provider_session(
+        &scratch,
+        "live provider-turn provider-result provider-terminal-live",
+        "claude",
+    );
+    session
+        .start_turn("turn-1", "Start background work", &std::env::temp_dir())
+        .unwrap();
+    poll_until_terminal(&mut session, "turn-1");
+    assert!(session.awaiting_provider_turn());
+    session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+    let events = poll_until_terminal(&mut session, "provider-1");
+    assert!(events.iter().any(|event| matches!(
+        event,
+        AcpxProviderStateEvent::TurnTerminal { status, .. }
+            if *status == paperclip_runner_core::acpx_event_payload::AcpxTurnStatus::Completed
+    )));
+    assert!(session.run_result_reported());
+    assert!(session.background_tasks_live());
+    assert!(!session.awaiting_provider_turn());
+    session.shutdown("test complete").unwrap();
+}
+
+#[test]
+fn a_sidecar_that_cannot_arm_leaves_runnerd_not_awaiting() {
+    let scratch = Scratch::new();
+    let mut session =
+        provider_session(&scratch, "live provider-turn provider-arm-reject", "claude");
+    session
+        .start_turn("turn-1", "Start background work", &std::env::temp_dir())
+        .unwrap();
+    poll_until_terminal(&mut session, "turn-1");
+    assert!(!session.awaiting_provider_turn());
+    assert!(session.background_tasks_live());
+    session.shutdown("test complete").unwrap();
+}
+
+#[test]
+fn cancelling_a_provider_started_turn_settles_it_cancelled_and_retires_the_provider() {
+    let scratch = Scratch::new();
+    let mut session = provider_session(&scratch, "live provider-turn provider-turn-open", "claude");
+    session
+        .start_turn("turn-1", "Start background work", &std::env::temp_dir())
+        .unwrap();
+    poll_until_terminal(&mut session, "turn-1");
+    assert!(session.awaiting_provider_turn());
+    session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+    assert_eq!(session.state().active_turn_id(), Some("provider-1"));
+    let response = session
+        .interrupt_turn("provider-1", "Operator stop")
+        .unwrap();
+    assert_eq!(response["sessionClosed"], json!(true));
+    assert!(session.runtime_retired());
+    let events = poll_until_terminal(&mut session, "provider-1");
+    assert!(events.iter().any(|event| matches!(
+        event,
+        AcpxProviderStateEvent::TurnTerminal { status, .. }
+            if *status == paperclip_runner_core::acpx_event_payload::AcpxTurnStatus::Cancelled
+    )));
+    assert!(!session.awaiting_provider_turn());
+    assert!(session
+        .start_turn("turn-2", "Paperclip's next turn", &std::env::temp_dir())
+        .is_err());
+    let _ = session.shutdown("test complete");
 }
