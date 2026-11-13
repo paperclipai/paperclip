@@ -97,19 +97,16 @@ function renewInDatabase(db: Db): (stampedRecently: boolean) => Promise<RenewRes
     const expires = sql`now() + ${`${CONTROLLER_LEASE_TTL_MS} milliseconds`}::interval`;
     // Its own connection: a busy main pool (request bursts at a traffic switch,
     // a replacement's startup pass) must not delay the proof that this boot is
-    // alive. The server cancels the statement at the client's timeout, so a slow
-    // attempt never holds the connection the next attempt needs.
-    const rows = await controllerInstanceLeaseDb(db).transaction(async tx => {
-      await tx.execute(sql`select set_config('statement_timeout', ${`${RENEW_TIMEOUT_MS}ms`}, true)`);
-      return tx.execute(sql`
+    // alive. One statement per renewal, so an idle boot's last check stays a
+    // single round trip.
+    const rows = await controllerInstanceLeaseDb(db).execute(sql`
       insert into controller_instances (boot_id, process_space, pid, lease_expires_at)
       values (${bootId}, ${currentProcessSpaceHash()}, ${process.pid}, ${expires})
       on conflict (boot_id) do update set
         lease_expires_at = case when ${holds} then ${expires} else controller_instances.lease_expires_at end,
         renewed_at = case when ${holds} then now() else controller_instances.renewed_at end
       where controller_instances.fenced_at is null and controller_instances.stopped_at is null
-      returning epoch, ${holds} as holds, ${records} as records`);
-    }) as unknown as Array<{ epoch: string | number; holds: boolean; records: boolean }>;
+      returning epoch, ${holds} as holds, ${records} as records`) as unknown as Array<{ epoch: string | number; holds: boolean; records: boolean }>;
     const row = rows[0];
     if (!row) return "fenced";
     if (state) state.epoch = Number(row.epoch);
