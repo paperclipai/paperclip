@@ -135,8 +135,9 @@ export function CompanyAccess() {
       const reportsTo = input.reportsTo
         ? (() => {
           const [type, id] = input.reportsTo.split(":");
-          if ((type !== "agent" && type !== "user") || !id) return null;
-          return { type, id };
+          if (type !== "agent" && type !== "user") return null;
+          if (!id) return null;
+          return { type, id } as const;
         })()
         : null;
       return accessApi.updateMember(selectedCompanyId!, input.memberId, {

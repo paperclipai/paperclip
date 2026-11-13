@@ -146,6 +146,7 @@ export function buildConfigSnapshot(
     icon: row.icon,
     appearance: row.appearance,
     reportsTo: row.reportsTo,
+    reportsToUserId: row.reportsToUserId,
     capabilities: row.capabilities,
     adapterType: row.adapterType,
     adapterConfig,
