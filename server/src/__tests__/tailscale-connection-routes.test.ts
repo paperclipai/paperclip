@@ -84,7 +84,20 @@ describe("Tailscale connector routes", () => {
     const response = await request(app()).post(path).set("Origin", "http://localhost:3100").send({ name: "Home" });
     expect(response.status).toBe(201);
     expect(response.body.authorizationUrl).toContain("/connections/enroll");
-    expect(fixture.enrollment).toHaveBeenCalledWith(expect.objectContaining({ companyId, initiatedBy: "user:fixture-user", origin: "http://localhost:3100" }));
+    expect(fixture.enrollment).toHaveBeenCalledWith(expect.objectContaining({ companyId, initiatedBy: "user:fixture-user", origin: "http://localhost:3100", returnTo: "/apps/tailscale" }));
+    expect(fixture.service.start).not.toHaveBeenCalled();
+  });
+  it("checks origin, admin status, and company access before self-hosted enrollment", async () => {
+    fixture.configured.mockReturnValue(null);
+    for (const [actor, origin] of [
+      [board, "https://untrusted.example.test"],
+      [{ ...board, isInstanceAdmin: false }, "http://localhost:3100"],
+      [{ ...board, companyIds: [] }, "http://localhost:3100"],
+      [{ type: "agent", source: "agent_key", agentId: "fixture-agent", companyId }, "http://localhost:3100"],
+    ] as const) {
+      expect((await request(app(actor as any)).post(path).set("Origin", origin).send({ name: "Home" })).status).toBe(403);
+    }
+    expect(fixture.enrollment).not.toHaveBeenCalled();
     expect(fixture.service.start).not.toHaveBeenCalled();
   });
   it("prepares machine pairing for an authorized board user without returning a private key", async () => {

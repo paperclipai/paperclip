@@ -33,9 +33,8 @@ export function tailscaleConnectionRoutes(db: Db) {
     const origin = loadConfig().authPublicBaseUrl;
     if (!origin) throw unprocessable("Set this instance's public URL before connecting Tailscale.");
     if (!paperclipCloudConnectorConfigFromEnv()) {
-      const [company] = await db.select({ prefix: companies.issuePrefix }).from(companies).where(eq(companies.id, companyId));
       const enrollment = await startPaperclipCloudConnectorEnrollment({ origin, companyId, initiatedBy: paperclipCloudEnrollmentPrincipal(req.actor),
-        returnTo: `/${encodeURIComponent(company!.prefix)}/apps/tailscale`,
+        returnTo: "/apps/tailscale",
       });
       res.status(201).json({ authorizationUrl: enrollment.verificationUrl, expiresAt: enrollment.expiresAt });
       return;

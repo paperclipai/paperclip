@@ -63,8 +63,9 @@ The connection uses the Cloud OAuth broker profile `tailscale.tailnet`, with
 it does not publish agent tools or enter MCP discovery. Management requires an
 instance administrator with access to the company. Existing SSH environment
 access governs which agents can execute there. Self-hosted local
-instances first complete the existing Paperclip Cloud enrollment. Cloud stacks
-use their existing broker identity and handoff.
+instances first complete the existing Paperclip Cloud enrollment and return to
+their company's Tailscale connector page to continue network consent. Cloud
+stacks use their existing broker identity and handoff.
 
 Tailscale returns a single-use device enrollment token without a refresh token.
 The broker seals it to the originating instance. The instance validates the
