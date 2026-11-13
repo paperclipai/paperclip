@@ -435,15 +435,14 @@ const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
-/**
- * Sent only to a caller that did not write the queued comment: its author is the
- * only one who can discard it, and no board, admin or agent override exists. Say so with the task link, so an agent that tried can
- * relay the human route at once instead of searching for another endpoint.
- */
-function queuedCommentAuthorOnlyDenial(issue: { identifier?: string | null }) {
+function queuedCommentDiscardDenial(issue: { identifier?: string | null }, comment: { authorAgentId: string | null }) {
   const identifier = issue.identifier ?? null;
   const prefix = identifier && /^[A-Z][A-Z0-9]*-\d+$/.test(identifier) ? identifier.split("-")[0] : null;
   const where = identifier && prefix ? `[${identifier}](/${prefix}/issues/${identifier})` : "its task";
+  if (comment.authorAgentId) {
+    return `A board user with access to ${where} can discard this agent-authored queued message from its queue. `
+      + "The authoring agent can also cancel its own message. Do not try other agent routes.";
+  }
   return `Only the author of a queued comment can discard it, from that queued message's menu on ${where}. `
     + "This denial is final: no board, admin or agent override exists, so do not try other routes. "
     + `Tell the author to discard it there.`;
@@ -18269,7 +18268,7 @@ export function issueRoutes(
               + `DELETE /api/issues/${issue.id}/comments/${comment.id}?mode=cancel, not this board route.`,
           );
         }
-        throw forbidden(queuedCommentAuthorOnlyDenial(issue));
+        throw forbidden(queuedCommentDiscardDenial(issue, comment));
       }
       assertBoard(req);
       if (!req.actor.userId) throw forbidden("Board user context required");
@@ -18282,6 +18281,7 @@ export function issueRoutes(
         "Issue not found",
       );
       if (!issue) return;
+      if (!(await assertIssueReadAllowed(req, res, issue))) return;
       const actor = getActorInfo(req);
       const result = await runQueuedCommentMutation(() =>
         queuedCommentQueue.discardQueuedComment({
@@ -19547,7 +19547,7 @@ export function issueRoutes(
       if (!actorOwnsComment) {
         if (!(await assertIssueReadAllowed(req, res, issue))) return;
         res.status(403).json({
-          error: queuedCommentAuthorOnlyDenial(issue),
+          error: queuedCommentDiscardDenial(issue, comment),
         });
         return;
       }
