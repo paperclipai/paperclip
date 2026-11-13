@@ -3122,9 +3122,10 @@ impl CommandExecutor for AcpxCommandExecutor {
             || !state.pending_runtime_requests.is_empty()
             || (!state.goal_projection.is_null() && !goal_is_dormant(&state.goal_projection))
             || !state.descriptor.names_qualified_release()
-            || self.session.as_ref().is_some_and(|session| {
-                session.awaiting_provider_turn() || session.background_tasks_live()
-            })
+            || self
+                .session
+                .as_ref()
+                .is_some_and(AcpxProviderSession::awaiting_provider_turn)
             || self.candidate_admission().is_some()
             || !acpx_release_profile(&state.descriptor.agent)
                 .is_some_and(|profile| !profile.qualification_pending)

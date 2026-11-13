@@ -386,13 +386,20 @@ fn without_the_controller_capability_live_shells_behave_exactly_as_before() {
         harness.fixture.background(background);
         let pid = harness.opened["processId"].clone();
         let events = harness.complete_turn("first");
+        let park_ready_before_restart = harness.executor.host_park_ready().unwrap();
         let before = harness.fixture.journal().len();
         harness.executor.prepare_next_turn().unwrap();
         let commands = commands_after(&harness.fixture.journal(), before);
         let restarted = !alive(&pid);
         let park_ready = harness.executor.host_park_ready().unwrap();
         harness.executor.shutdown().unwrap();
-        (controller_view(&events), commands, restarted, park_ready)
+        (
+            controller_view(&events),
+            commands,
+            restarted,
+            park_ready,
+            park_ready_before_restart,
+        )
     };
     let live = outcome("live provider-turn");
     let unknown = outcome("");
@@ -400,6 +407,8 @@ fn without_the_controller_capability_live_shells_behave_exactly_as_before() {
     assert_eq!(live.1, unknown.1);
     assert!(live.2 && unknown.2);
     assert_eq!(live.3, unknown.3);
+    assert_eq!(live.4, unknown.4);
+    assert!(live.4);
     assert!(live.0.iter().any(|event| event["type"] == "run.terminal"));
     assert!(!live
         .0
