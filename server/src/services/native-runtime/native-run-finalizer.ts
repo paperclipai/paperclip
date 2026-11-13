@@ -76,6 +76,7 @@ import {
   type NativeStatusCommitFailpoint,
 } from "./status-decision-committer.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
+import { retryTransientLockContention } from "../transient-lock-contention.js";
 import { preservedResultHasStop, readPreservedNativeResultFinalization } from "./preserved-native-result-finalization.js";
 import { issueService } from "../issues.js";
 import { publishChatPublicationCommitSignal } from "../chat-publication-reconciliation.js";
@@ -478,7 +479,13 @@ async function recordRetryableFailure(input: {
         ? ("cancelled" as const)
         : ("failed" as const);
   let terminalRunToEmit: typeof heartbeatRuns.$inferSelect | null = null;
-  const outcome = await input.db.transaction(async (tx) => {
+  const admitted = input;
+  // The recovery-action insert locks the agent row for its foreign keys after
+  // this write already holds the run and task rows, so it can lose a deadlock.
+  // Postgres rolls the whole write back, and each attempt re-reads its state.
+  const outcome = await retryTransientLockContention(() => input.db.transaction(async (tx) => {
+    input = admitted;
+    terminalRunToEmit = null;
     // Admission snapshots cannot authorize a failure write after a different
     // owner committed success. Match status-committer lock ordering.
     const current = await tx.select().from(nativeRunFinalizations).where(and(
@@ -790,7 +797,7 @@ async function recordRetryableFailure(input: {
       failureCode,
       nextAttemptAt: supersededByNewerRun || exhausted ? null : nextAttemptAt,
     };
-  });
+  }));
   if (terminalRunToEmit) {
     await emitAgentTaskRun(input.db, terminalRunToEmit);
     void reportRunFailure(input.db, terminalRunToEmit);
