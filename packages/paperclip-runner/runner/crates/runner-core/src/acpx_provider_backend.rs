@@ -663,6 +663,35 @@ fn same_launch_shape(descriptor: &AcpxProviderDescriptor, profile: &AcpxLaunchPr
             })
 }
 
+/// Why a saved checkpoint is not settled. A settled checkpoint has a provider
+/// identity to resume, no active turn, no unconfirmed provider exit, and no
+/// undelivered event except the `session.resumed` notice of a restore, which
+/// `run.attach` consumes. Nothing from the old provider process is in flight,
+/// so a new run can attach to it and a new Runner build can adopt it.
+fn settled_checkpoint_blockers(state: &AcpxDurableState) -> Vec<&'static str> {
+    let mut blockers = Vec::new();
+    if state.lifecycle == "closed" {
+        blockers.push("durable_closed");
+    }
+    if state.provider_exit_unconfirmed {
+        blockers.push("provider_exit_unconfirmed");
+    }
+    if state.identity.is_none() {
+        blockers.push("provider_identity_unavailable");
+    }
+    if state.active_turn_id.is_some() {
+        blockers.push("durable_active_turn");
+    }
+    if state
+        .pending_events
+        .iter()
+        .any(|event| event.event_type != "session.resumed")
+    {
+        blockers.push("durable_pending_events");
+    }
+    blockers
+}
+
 impl AcpxDurableState {
     fn new(
         descriptor: AcpxProviderDescriptor,
@@ -698,6 +727,17 @@ impl AcpxDurableState {
         context: &AcpxEventProjectionContext,
         expected_launch_profile_digest: &str,
     ) -> Result<(), DurableRunnerError> {
+        self.validate_restored(context, expected_launch_profile_digest, &[])
+    }
+
+    /// `validate`, naming why restore did not re-bind a saved launch profile
+    /// digest to this startup when that digest is the mismatch.
+    fn validate_restored(
+        &self,
+        context: &AcpxEventProjectionContext,
+        expected_launch_profile_digest: &str,
+        rebind_blockers: &[&str],
+    ) -> Result<(), DurableRunnerError> {
         // The normalized session is the durable provider boundary. A settled
         // provider can outlive one heartbeat run and be attached to the next,
         // so its persisted descriptor legitimately carries the prior run ID
@@ -714,10 +754,13 @@ impl AcpxDurableState {
             }
         })?;
         if self.launch_profile_digest != expected_launch_profile_digest {
-            return Err(DurableRunnerError::invalid(
-                "ACPX durable launch profile digest does not match runner startup",
-            )
-            .with_classification(PROVIDER_STATE_INCOMPATIBLE));
+            let mut message =
+                "ACPX durable launch profile digest does not match runner startup".to_owned();
+            if !rebind_blockers.is_empty() {
+                message.push_str(&format!(" (not re-bound: {})", rebind_blockers.join(", ")));
+            }
+            return Err(DurableRunnerError::invalid(message)
+                .with_classification(PROVIDER_STATE_INCOMPATIBLE));
         }
         validate_pending_runtime_requests(&self.pending_runtime_requests)?;
         let mut ids = HashSet::new();
@@ -1095,10 +1138,14 @@ impl AcpxCommandExecutor {
     // A deploy changes the provider-pack authority and the sidecar and Node
     // artifact digests, so a saved digest from the previous build never
     // matches. The digest is a hash, so restore cannot tell which part
-    // changed. Re-bind only when no provider work is in flight:
-    // - The session is suspended. No turn, request, undelivered event, or
-    //   unconfirmed provider exit remains. Nothing from the old provider
-    //   process continues; the next launch only loads the conversation.
+    // changed. Re-bind only when no provider work is in flight, and return
+    // why not otherwise (empty when the digest is re-bound):
+    // - The checkpoint is settled (`settled_checkpoint_blockers`), whichever
+    //   run saved it: the same state `run.attach` admits. Nothing from the old
+    //   provider process continues; the next launch only loads the
+    //   conversation. Or it is an interrupted turn of this same run
+    //   (`rebinds_interrupted_turn`).
+    // - No runtime request is pending.
     // - The startup is ordinary. Candidate admission carries company, model
     //   and expiry authority in the digest, so candidate sessions stay
     //   exactly bound.
@@ -1107,35 +1154,39 @@ impl AcpxCommandExecutor {
     // validate() still binds the descriptor to this build's qualified agent
     // profile (ACPX, agent server and command digest), and session start
     // still verifies every artifact and the restored provider identity.
-    fn rebinds_settled_session(&self, state: &AcpxDurableState) -> bool {
-        self.launch_profile.as_ref().is_some_and(|profile| {
-            profile.candidate_admission.is_none() && same_launch_shape(&state.descriptor, profile)
-        }) && state.identity.is_some()
-            && !state.provider_exit_unconfirmed
-            && state.pending_runtime_requests.is_empty()
-            && ((state.lifecycle == "suspended"
-                && state.active_turn_id.is_none()
-                && state.pending_events.is_empty())
-                || self.rebinds_interrupted_turn(state))
+    fn launch_profile_rebind_blockers(&self, state: &AcpxDurableState) -> Vec<&'static str> {
+        let mut blockers = match self.launch_profile.as_ref() {
+            None => vec!["launch_profile_unavailable"],
+            Some(profile) if profile.candidate_admission.is_some() => {
+                vec!["candidate_admission"]
+            }
+            Some(profile) if !same_launch_shape(&state.descriptor, profile) => {
+                vec!["launch_shape_changed"]
+            }
+            Some(_) => Vec::new(),
+        };
+        if !state.pending_runtime_requests.is_empty() {
+            blockers.push("pending_runtime_requests");
+        }
+        if !self.rebinds_interrupted_turn(state) {
+            blockers.extend(settled_checkpoint_blockers(state));
+        }
+        blockers
     }
 
     // A deploy that restarts the runner mid-turn resumes the SAME heartbeat
-    // run with a saved active turn or open session. A same-build restart
-    // reopens an open session and recovers an active turn
-    // through `restore_conversation_after_lost_turn`; an upgraded build must
-    // take the same path instead of refusing the digest. Re-bind only when
-    // that recovery's own preconditions hold, so its provider-lifetime fence
-    // check still decides whether the conversation is restored or the turn is
+    // run with a saved active turn. A same-build restart recovers it through
+    // `restore_conversation_after_lost_turn`; an upgraded build must take the
+    // same path instead of refusing the digest. Re-bind only when that
+    // recovery's own preconditions hold, so its provider-lifetime fence check
+    // still decides whether the conversation is restored or the turn is
     // closed. A different run's active turn stays strict.
     fn rebinds_interrupted_turn(&self, state: &AcpxDurableState) -> bool {
         state.descriptor.run_id == self.context.run_id
-            && match state.lifecycle.as_str() {
-                "turn_starting" | "turn_active" => state.active_turn_id.is_some(),
-                // A same-build restart restores an open session between turns
-                // (also the state a lost-turn restore leaves behind).
-                "session_open" => state.active_turn_id.is_none(),
-                _ => false,
-            }
+            && matches!(state.lifecycle.as_str(), "turn_starting" | "turn_active")
+            && state.active_turn_id.is_some()
+            && state.identity.is_some()
+            && !state.provider_exit_unconfirmed
             && state.semantic_result.is_none()
             && (state.goal_projection.is_null() || goal_is_dormant(&state.goal_projection))
     }
@@ -1206,9 +1257,13 @@ impl AcpxCommandExecutor {
         })?;
         state.descriptor.carry_forward_acpx_release();
         let launch_profile_digest = self.restore_launch_profile_digest(&state)?;
-        if state.launch_profile_digest != launch_profile_digest
-            && self.rebinds_settled_session(&state)
-        {
+        let digest_changed = state.launch_profile_digest != launch_profile_digest;
+        let rebind_blockers = if digest_changed {
+            self.launch_profile_rebind_blockers(&state)
+        } else {
+            Vec::new()
+        };
+        if digest_changed && rebind_blockers.is_empty() {
             state.launch_profile_digest = launch_profile_digest.clone();
             // An upgrade may install the same launch files at a new path. The
             // runner-owned qualified profile is authoritative for where they
@@ -1220,7 +1275,7 @@ impl AcpxCommandExecutor {
             state.descriptor.sidecar_command = profile.command.clone();
             state.descriptor.sidecar_args = profile.args.clone();
         }
-        state.validate(&self.context, &launch_profile_digest)?;
+        state.validate_restored(&self.context, &launch_profile_digest, &rebind_blockers)?;
         self.state = Some(state);
         Ok(())
     }
@@ -1803,15 +1858,7 @@ impl AcpxCommandExecutor {
             durable_descriptor.instructions = previous_descriptor.instructions.clone();
             durable_descriptor.runtime_context = previous_descriptor.runtime_context.clone();
         }
-        let only_recovery_notice_pending = state
-            .pending_events
-            .iter()
-            .all(|event| event.event_type == "session.resumed");
-        if state.lifecycle == "closed"
-            || state.provider_exit_unconfirmed
-            || state.identity.is_none()
-            || state.active_turn_id.is_some()
-            || !only_recovery_notice_pending
+        if !settled_checkpoint_blockers(state).is_empty()
             || durable_descriptor != previous_descriptor
         {
             return Err(DurableRunnerError::invalid(
@@ -2637,20 +2684,12 @@ impl AcpxCommandExecutor {
         // but must first settle the same durable guards enforced by attach_run.
         // Do not consume events here: the durable runner commits and ACKs the
         // old authority's retained prefix before a later probe can report ready.
-        let mut warm_attach_blockers = Vec::new();
-        if state.lifecycle == "closed" {
-            warm_attach_blockers.push("durable_closed");
-        }
-        if state.provider_exit_unconfirmed {
-            warm_attach_blockers.push("provider_exit_unconfirmed");
-        }
-        if state.identity.is_none() {
-            warm_attach_blockers.push("provider_identity_unavailable");
-        }
-        if state.active_turn_id.is_some() {
-            warm_attach_blockers.push("durable_active_turn");
-        }
-        if !state.pending_events.is_empty() {
+        let mut warm_attach_blockers = settled_checkpoint_blockers(state);
+        // The probe also waits for the `session.resumed` notice that run.attach
+        // itself may consume, so that it too is committed and acknowledged.
+        if !state.pending_events.is_empty()
+            && !warm_attach_blockers.contains(&"durable_pending_events")
+        {
             warm_attach_blockers.push("durable_pending_events");
         }
         Ok(CommandExecution::result(json!({
@@ -4786,6 +4825,137 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn next_claude_run_attach_offers_relayed_gateway_tools_to_a_direct_gateway_checkpoint() {
+        next_run_attach_offers_relayed_gateway_tools("claude");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn next_pi_run_attach_offers_relayed_gateway_tools_to_a_direct_gateway_checkpoint() {
+        next_run_attach_offers_relayed_gateway_tools("pi");
+    }
+
+    #[cfg(unix)]
+    fn next_run_attach_offers_relayed_gateway_tools(agent: &str) {
+        let directory = temporary_directory(&format!("relayed-gateway-attach-{agent}"));
+        let runtime = directory.join("runtime");
+        let workspace = directory.join("workspace");
+        fs::create_dir_all(&runtime).unwrap();
+        fs::create_dir_all(&workspace).unwrap();
+        fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::set_permissions(&workspace, fs::Permissions::from_mode(0o700)).unwrap();
+        let marker = directory.join("provider-started");
+        let command = directory.join("sidecar");
+        write_artifact(
+            &command,
+            format!("#!/bin/sh\ntouch '{}'\n", marker.display()).as_bytes(),
+            true,
+        );
+        let launch_profile = AcpxLaunchProfile {
+            candidate_admission: None,
+            authority_digest: format!("sha256:{}", "d".repeat(64)),
+            command: command.clone(),
+            args: Vec::new(),
+            artifacts: vec![artifact(&command)],
+        };
+        let mut descriptor_value = descriptor(agent);
+        descriptor_value["sidecarCommand"] = json!(command);
+        descriptor_value["sidecarArgs"] = json!([]);
+        descriptor_value["runtimeDirectory"] = json!(runtime);
+        descriptor_value["cwd"] = json!(workspace);
+        descriptor_value["runtimeContext"] = json!({
+            "aggregateDigest": "a".repeat(64),
+            "prompt": {"revision": "pinned", "digest": "b".repeat(64)},
+            "mcp": {"assignmentSetId": "assignment-1", "digest": "e".repeat(64), "bindingId": "old-run-binding"},
+        });
+        let saved_descriptor: AcpxProviderDescriptor =
+            serde_json::from_value(descriptor_value.clone()).unwrap();
+        let identity = AcpxProviderSessionIdentity {
+            kind: "acpx".to_owned(),
+            normalized_session_id: "session-1".to_owned(),
+            acpx_record_id: "record-1".to_owned(),
+            backend_session_id: "backend-1".to_owned(),
+            agent_session_id: "agent-1".to_owned(),
+            profile_digest: saved_descriptor.command_digest.clone(),
+            workspace_digest: format!("sha256:{}", "a".repeat(64)),
+            requested_model: saved_descriptor.model.clone(),
+            effective_model: saved_descriptor.model.clone(),
+            permission_mode: Some(saved_descriptor.permission_mode),
+            mode: saved_descriptor.mode.clone(),
+            pi_thinking_level: saved_descriptor.pi_thinking_level,
+            claude_effort: saved_descriptor.claude_effort.clone(),
+            grok_effort: saved_descriptor.grok_effort.clone(),
+            grok_disable_web_search: saved_descriptor.grok_disable_web_search.clone(),
+            provider_lifetime_fence_candidates: [60_001, 60_002, 60_003],
+        };
+        let tool = |operation_id: &str| crate::provider_bridge::AuthorizedTool {
+            operation_id: operation_id.to_owned(),
+            version: 1,
+            description: format!("{operation_id} fixture"),
+            input_schema: json!({"type": "object"}),
+            response_schema: json!({"type": "object"}),
+        };
+        let tool_set =
+            |operations: Vec<crate::provider_bridge::AuthorizedTool>| AuthorizedToolSet {
+                schema: TOOL_SET_SCHEMA.to_owned(),
+                schema_version: 1,
+                catalog_digest: authorized_tool_catalog_digest(&operations).unwrap(),
+                operations,
+            };
+        let direct_gateway_tools = tool_set(vec![tool("get_task_context")]);
+        let relayed_tools = tool_set(vec![
+            tool("app_linear_create_issue_0123456789ab"),
+            tool("get_task_context"),
+        ]);
+        let mut state = AcpxDurableState::new(
+            saved_descriptor,
+            direct_gateway_tools,
+            launch_profile.canonical_digest().unwrap(),
+        );
+        state.lifecycle = "session_open".to_owned();
+        state.identity = Some(identity);
+        let saved_config = test_config(&directory, Some(launch_profile.clone()));
+        let mut saved = AcpxCommandExecutor::with_runner_config(&directory, &saved_config);
+        saved.state = Some(state);
+        saved.save_state().unwrap();
+
+        let mut next_config = saved_config.clone();
+        next_config.run_id = "run-2".to_owned();
+        let mut next = AcpxCommandExecutor::with_runner_config(&directory, &next_config);
+        next.restore().unwrap();
+        descriptor_value["runId"] = json!("run-2");
+        descriptor_value["runtimeContext"]["mcp"]["bindingId"] = json!("new-run-binding");
+        next.attach_run(&json!({
+            "provider": descriptor_value,
+            "authorizedTools": relayed_tools,
+        }))
+        .unwrap();
+        assert!(!marker.exists());
+        let attached = next.state.as_ref().unwrap();
+        assert_eq!(attached.descriptor.run_id, "run-2");
+        assert_eq!(attached.lifecycle, "suspended");
+        assert_eq!(attached.tool_set, relayed_tools);
+        let persisted: AcpxDurableState =
+            serde_json::from_slice(&fs::read(next.state_path()).unwrap()).unwrap();
+        assert_eq!(persisted.tool_set, relayed_tools);
+        let session_config = attached
+            .descriptor
+            .session_config(
+                attached.tool_set.clone(),
+                attached.identity.clone(),
+                Some(&launch_profile),
+            )
+            .unwrap();
+        assert!(session_config
+            .tool_set
+            .operations
+            .iter()
+            .any(|operation| operation.operation_id == "app_linear_create_issue_0123456789ab"));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn cursor_attachment_rotates_only_authenticated_run_grants() {
         authenticated_run_grant_attachment("cursor");
     }
@@ -6507,6 +6677,72 @@ mod tests {
         fs::remove_dir_all(directory).unwrap();
     }
 
+    /// A retired or parked Runner stops without `runner.suspend`, so the
+    /// settled checkpoint it leaves is often not `suspended`: an open session
+    /// whose turn proposed a result, a session saved idle as `prepared`, or one
+    /// with an undelivered restore notice. A follow-up from the next run on an
+    /// upgraded build re-binds each one, as `run.attach` admits each one.
+    #[cfg(unix)]
+    #[test]
+    fn settled_checkpoints_of_a_retired_runner_rebind_for_the_next_run_after_an_upgrade() {
+        let settled: [(&str, fn(&mut AcpxDurableState)); 3] = [
+            ("session_open_with_result", |state| {
+                state.lifecycle = "session_open".into();
+                state.semantic_result = Some(json!({"reportedWorkDisposition": "done"}));
+            }),
+            ("prepared_with_identity", |state| {
+                state.lifecycle = "prepared".into()
+            }),
+            ("pending_resume_notice", |state| {
+                state.lifecycle = "session_open".into();
+                state
+                    .push(NormalizedProviderEvent {
+                        event_type: "session.resumed".into(),
+                        priority: EventPriority::P0,
+                        payload: json!({}),
+                    })
+                    .unwrap();
+            }),
+        ];
+        for (label, seed) in settled {
+            let (directory, config, payload, saved) =
+                settled_session_after_runner_upgrade("upgrade-retired-settled");
+            let state_path = directory.join(ACPX_PROVIDER_STATE_FILE);
+            let mut prior: AcpxDurableState = serde_json::from_slice(&saved).unwrap();
+            seed(&mut prior);
+            fs::write(&state_path, serde_json::to_vec(&prior).unwrap()).unwrap();
+            let retained = fs::read(&state_path).unwrap();
+            let current_digest = config
+                .acpx_launch_profile
+                .as_ref()
+                .unwrap()
+                .canonical_digest()
+                .unwrap();
+            assert_ne!(prior.launch_profile_digest, current_digest, "{label}");
+
+            let mut recovered = AcpxCommandExecutor::with_runner_config(&directory, &config);
+            recovered
+                .restore()
+                .unwrap_or_else(|error| panic!("{label}: {error}"));
+            // The next run's Runner waits for run.attach before it starts a
+            // provider or rewrites the checkpoint.
+            assert!(recovered.session.is_none(), "{label}");
+            assert_eq!(fs::read(&state_path).unwrap(), retained, "{label}");
+            recovered
+                .attach_run(&payload)
+                .unwrap_or_else(|error| panic!("{label}: {error}"));
+            let attached: AcpxDurableState =
+                serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+            assert_eq!(attached.launch_profile_digest, current_digest, "{label}");
+            assert_eq!(attached.descriptor.run_id, "run-2", "{label}");
+            assert_eq!(attached.lifecycle, "suspended", "{label}");
+            assert_eq!(attached.identity, prior.identity, "{label}");
+            assert!(attached.semantic_result.is_none(), "{label}");
+            assert!(attached.pending_events.is_empty(), "{label}");
+            fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
     /// The same heartbeat run resumes after a deploy restarted its runner
     /// mid-turn (K14 upgrade mid-run). The old build saved an interrupted turn
     /// under its launch profile digest.
@@ -6706,17 +6942,24 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn unrestorable_saved_sessions_keep_strict_bindings_and_name_their_class() {
-        for field in [
-            "active_turn",
-            "pending_request",
-            "pending_event",
-            "session_open",
-            "exit_unconfirmed",
-            "no_identity",
-            "command_moved",
-            "args_changed",
-            "agent_server_release",
-            "acpx_release",
+        // Each case names why restore did not re-bind the saved digest; a
+        // release this build does not qualify fails its own check instead.
+        for (field, not_rebound) in [
+            ("active_turn", "durable_active_turn"),
+            (
+                "pending_request",
+                "pending_runtime_requests, durable_active_turn",
+            ),
+            ("pending_event", "durable_pending_events"),
+            (
+                "exit_unconfirmed",
+                "durable_closed, provider_exit_unconfirmed",
+            ),
+            ("no_identity", "provider_identity_unavailable"),
+            ("command_moved", "launch_shape_changed"),
+            ("args_changed", "launch_shape_changed"),
+            ("agent_server_release", ""),
+            ("acpx_release", ""),
         ] {
             let (directory, mut config, _, saved) =
                 settled_session_after_runner_upgrade("upgrade-strict");
@@ -6747,7 +6990,6 @@ mod tests {
                         payload: json!({}),
                     })
                     .unwrap(),
-                "session_open" => state.lifecycle = "session_open".into(),
                 "exit_unconfirmed" => {
                     state.lifecycle = "closed".into();
                     state.provider_exit_unconfirmed = true;
@@ -6777,11 +7019,13 @@ mod tests {
             let mut recovered = AcpxCommandExecutor::with_runner_config(&directory, &config);
             let error = recovered.restore().unwrap_err();
             let expected = if field.ends_with("_release") {
-                "does not match a qualified immutable profile"
+                "does not match a qualified immutable profile".to_owned()
             } else {
-                "launch profile digest does not match runner startup"
+                format!(
+                    "launch profile digest does not match runner startup (not re-bound: {not_rebound})"
+                )
             };
-            assert!(error.to_string().contains(expected), "{field}: {error}");
+            assert!(error.to_string().contains(&expected), "{field}: {error}");
             assert_eq!(
                 error.classification(),
                 Some(crate::durable::PROVIDER_STATE_INCOMPATIBLE),

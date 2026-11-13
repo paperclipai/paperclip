@@ -72,13 +72,15 @@ describe("initializeMcpHttpSession", () => {
       },
     });
 
+    // A legacy server does not answer `server/discover`, so it gets the handshake.
     expect(requests.map(({ payload }) => payload.method)).toEqual([
+      "server/discover",
       "initialize",
       "notifications/initialized",
     ]);
-    expect(requests[1]!.headers.get("authorization")).toBe("Bearer token");
-    expect(requests[1]!.headers.get("mcp-session-id")).toBe("session-123");
-    expect(requests[1]!.headers.get("mcp-protocol-version")).toBe(MCP_PROTOCOL_VERSION);
+    expect(requests[2]!.headers.get("authorization")).toBe("Bearer token");
+    expect(requests[2]!.headers.get("mcp-session-id")).toBe("session-123");
+    expect(requests[2]!.headers.get("mcp-protocol-version")).toBe(MCP_PROTOCOL_VERSION);
     expect(sessionHeaders).toMatchObject({
       Authorization: "Bearer token",
       "Mcp-Session-Id": "session-123",

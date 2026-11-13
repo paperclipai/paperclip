@@ -20,6 +20,7 @@ import { useHiddenSettings } from "./hooks/useHiddenSettings";
 import { OnboardingWizardVariant } from "./components/OnboardingWizardVariant";
 import { CloudAccessGate } from "./components/CloudAccessGate";
 import { ConnectionStatusBanner } from "./components/ConnectionStatusBanner";
+import { PageLoadTracker } from "./components/PageLoadTracker";
 import { ShellConfigurationGate } from "./components/ShellConfigurationGate";
 import { PaperclipLoading } from "./components/AnimatedPaperclipIcon";
 import { AGENT_FILTER_TABS } from "./lib/agent-filter-tabs";
@@ -775,10 +776,10 @@ export function App() {
     else if (/^\/[^/]+\/(issues|tasks)\/?$/.test(pathname)) void loadIssues().catch(() => undefined);
   }, [pathname]);
 
-  return (
+  // One route tree for both the router and the page-load measurement, so
+  // every page is measured under its route pattern.
+  const routeTree = (
     <>
-      <ConnectionStatusBanner />
-      <Suspense fallback={<PaperclipLoading />}><Routes>
         <Route path="oauth-handoff" element={<PaperclipCloudOAuthHandoffPage />} />
         <Route path="auth" element={<AuthPage />} />
         <Route path="board-claim/:token" element={<BoardClaimPage />} />
@@ -870,7 +871,14 @@ export function App() {
           <Route path="*" element={<NotFoundPage scope="global" />} />
           </Route>
         </Route>
-      </Routes></Suspense>
+    </>
+  );
+
+  return (
+    <>
+      <ConnectionStatusBanner />
+      <PageLoadTracker routes={routeTree} />
+      <Suspense fallback={<PaperclipLoading />}><Routes>{routeTree}</Routes></Suspense>
       <OnboardingWizardVariant />
     </>
   );

@@ -1153,23 +1153,31 @@ pub fn normalize_codex_notification_in(
                 .get("tokenUsage")
                 .and_then(|value| value.get("last"))
                 .or_else(|| params.get("last"));
-            push(
-                &mut events,
-                "usage.reported",
-                EventPriority::P0,
-                json!({
-                    "provider": "codex",
-                    "model": params.get("model").and_then(Value::as_str).map(|value| bounded_text(value, 240)),
-                    "providerSessionId": params.get("threadId").and_then(Value::as_str).map(|value| bounded_text(value, 240)),
-                    "providerRequestId": Value::Null,
-                    "cumulative": measurement(cumulative),
-                    // `total` is session-cumulative. Preserve whether Codex
-                    // supplied a per-run delta so consumers never relabel a
-                    // session total or a placeholder zero as run usage.
-                    "runDeltaAvailable": run_delta.is_some(),
-                    "runDelta": measurement(run_delta.unwrap_or(&Value::Null)),
-                }),
-            );
+            let usage_text = |name: &str| {
+                params
+                    .get("tokenUsage")
+                    .and_then(|value| value.get(name))
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty() && value.chars().count() <= 240)
+                    .map(str::to_owned)
+            };
+            let mut payload = json!({
+                "provider": "codex",
+                "model": params.get("model").and_then(Value::as_str).map(|value| bounded_text(value, 240)),
+                "providerSessionId": params.get("threadId").and_then(Value::as_str).map(|value| bounded_text(value, 240)),
+                "providerRequestId": usage_text("providerRequestId"),
+                "cumulative": measurement(cumulative),
+                // `total` is session-cumulative. Preserve whether Codex
+                // supplied a per-run delta so consumers never relabel a
+                // session total or a placeholder zero as run usage.
+                "runDeltaAvailable": run_delta.is_some(),
+                "runDelta": measurement(run_delta.unwrap_or(&Value::Null)),
+            });
+            if let Some(upstream_provider) = usage_text("upstreamProvider") {
+                payload["upstreamProvider"] = Value::String(upstream_provider);
+            }
+            push(&mut events, "usage.reported", EventPriority::P0, payload);
         }
         "warning"
             if params.get("classification").and_then(Value::as_str)
@@ -3657,5 +3665,34 @@ mod tests {
         assert_eq!(usage[0].payload["runDelta"]["inputTokens"], 7);
         assert_eq!(usage[0].payload["runDelta"]["outputTokens"], 4);
         assert_eq!(usage[0].payload["runDelta"]["providerCostUsd"], 0.004);
+    }
+
+    #[test]
+    fn carries_the_serving_host_and_generation_on_proxy_usage() {
+        let served = normalize_codex_notification(
+            "thread/tokenUsage/updated",
+            &json!({"tokenUsage": {
+                "total": {"inputTokens": 7, "outputTokens": 4},
+                "last": {"inputTokens": 7, "outputTokens": 4},
+                "upstreamProvider": "Novita",
+                "providerRequestId": "gen-1762981234-AbCdEfGh"
+            }}),
+        );
+        assert_eq!(served[0].payload["upstreamProvider"], "Novita");
+        assert_eq!(
+            served[0].payload["providerRequestId"],
+            "gen-1762981234-AbCdEfGh"
+        );
+
+        let unnamed = normalize_codex_notification(
+            "thread/tokenUsage/updated",
+            &json!({"tokenUsage": {
+                "total": {"inputTokens": 7},
+                "upstreamProvider": "",
+                "providerRequestId": 42
+            }}),
+        );
+        assert!(unnamed[0].payload.get("upstreamProvider").is_none());
+        assert_eq!(unnamed[0].payload["providerRequestId"], Value::Null);
     }
 }

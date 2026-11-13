@@ -147,7 +147,8 @@ export function createConnectionHealth(db: Db, { now, audit, getConnectionRow, d
             : canProbeWithoutAuthorization
               ? {}
               : undefined;
-        await remoteTools(connection, credentialHeaders, actor, undefined, unavailableServices);
+        // A health check must reach the server, never a cached tool list.
+        await remoteTools(connection, credentialHeaders, actor, undefined, unavailableServices, { live: true });
       } else if (connection.transport === "local_stdio") {
         await resolveCredentialHeaders(connection);
         await stdioTemplateId(connection.companyId, connection.config);

@@ -3597,6 +3597,12 @@ export const usageSchema = {
       ],
       "maxLength": 240
     },
+    "upstreamProvider": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240,
+      "description": "Host that served the request when the provider routes across hosts, such as an OpenRouter upstream provider."
+    },
     "cumulative": {
       "$ref": "#/$defs/measurement"
     },

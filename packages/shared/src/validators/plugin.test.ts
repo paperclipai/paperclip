@@ -55,6 +55,13 @@ describe("plugin manifest validators", () => {
     }
     expect(pluginManifestV1Schema.safeParse({ ...manifest, capabilities: ["environment.drivers.register"] }).success).toBe(false);
   });
+  it("accepts protected environment keys only as variable names", () => {
+    expect(pluginManifestV1Schema.parse(buildSandboxProviderManifest({ protectedEnvironmentKeys: ["DESKTOP_SESSION"] }))
+      .environmentDrivers?.[0]?.protectedEnvironmentKeys).toEqual(["DESKTOP_SESSION"]);
+    for (const keys of [["BAD-NAME"], ["1BAD"], "DESKTOP_SESSION", Array.from({ length: 65 }, (_, index) => `K${index}`)]) {
+      expect(pluginManifestV1Schema.safeParse(buildSandboxProviderManifest({ protectedEnvironmentKeys: keys })).success).toBe(false);
+    }
+  });
   it("retains the agent prerequisite on environment drivers", () => {
     const manifest = { ...buildSandboxProviderManifest({ requiresAgent: true }), agentLifecycle: true,
       capabilities: ["environment.drivers.register", "agents.lifecycle.manage"] };

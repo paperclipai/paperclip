@@ -201,6 +201,8 @@ export interface PluginEnvironmentDriverDeclaration {
   creationOperationVersion?: 1;
   /** Codex task retention and authorized run attachment, version 1. */
   warmTaskVersion?: 1;
+  sessionHandoffVersion?: 1;
+  protectedEnvironmentKeys?: string[];
   /** Stable driver key, unique within the plugin. Namespaced by plugin ID at runtime. */
   driverKey: string;
   /**

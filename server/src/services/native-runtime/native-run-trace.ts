@@ -787,9 +787,9 @@ export async function recordNativeProviderPerformanceSpans(trace: NativeRunTrace
   } catch { /* Diagnostics cannot replace the work's result. */ }
 }
 
-/** One local runner startup sub-step measured by the runner transport. */
+/** One runner startup sub-step measured by the runner transport. */
 export interface NativeRunnerStartupStep {
-  name: "runner.runtime.stage" | "runner.process.launch" | "provider.session.load";
+  name: "runner.control_plane.open" | "runner.runtime.stage" | "runner.process.launch" | "provider.session.load";
   mode: "bootstrap" | "resume";
   startedAtMs: number;
   endedAtMs: number;
@@ -802,14 +802,22 @@ export interface NativeRunnerStartupStep {
  * Telemetry. Detached: the run-log write never delays `turn.start`; the
  * trace settles it at finish.
  */
-export function recordNativeRunnerStartupStep(trace: NativeRunTrace | undefined, step: NativeRunnerStartupStep): void {
+export function recordNativeRunnerStartupStep(
+  trace: NativeRunTrace | undefined,
+  step: NativeRunnerStartupStep,
+  target: "local" | "remote" = "local",
+): void {
+  const name = target === "local" ? step.name
+    : step.name === "runner.runtime.stage" ? "runner.launch.prepare"
+      : step.name === "runner.control_plane.open" ? step.name : null;
+  if (!name) return;
   trace?.defer(() => trace.record({
-    name: step.name,
+    name,
     parentName: "runner.session.startup",
     startedAtMs: step.startedAtMs,
     endedAtMs: step.endedAtMs,
     outcome: step.outcome,
-    attributes: { mode: step.mode, target: "local" },
+    attributes: { mode: step.mode, target },
   }));
 }
 

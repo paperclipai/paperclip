@@ -1717,6 +1717,44 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(promotedRun?.agentId).toBe(peerAgentId);
   });
 
+  it("delivers a person's message saved behind a system continuation cancelled at claim because its task closed", async () => {
+    // The claim-time closed-task cancel must leave the same never-started proof as every other
+    // queued-run cancel; without it task release treats the run as unfinished provider work and
+    // never promotes the person's message waiting behind it.
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const [issue] = await db.insert(issues).values({ companyId, title: "Closed while its continuation waited",
+      status: "in_progress", assigneeAgentId: agentId }).returning();
+    const { runId, wakeupRequestId } = await seedQueuedRun({ companyId, agentId, issueId: issue.id,
+      wakeReason: "issue_continuation_needed", invocationSource: "automation" });
+    await db.update(issues).set({ status: "done", executionRunId: runId, executionLockedAt: new Date() })
+      .where(eq(issues.id, issue.id));
+    const [comment] = await db.insert(issueComments).values({ companyId, issueId: issue.id, authorType: "user",
+      authorUserId: "responsible-user", body: "Please also update the changelog" }).returning();
+    const [saved] = await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "comment",
+      triggerDetail: "manual", reason: "issue_execution_deferred", status: "deferred_issue_execution",
+      requestedByActorType: "user", requestedByActorId: "responsible-user",
+      payload: withQueuedCommentIdsInWakePayload({ issueId: issue.id, _paperclipWakeContext: {
+        issueId: issue.id, wakeReason: "issue_commented", wakeSource: "comment",
+      } }, [comment.id]),
+    }).returning();
+
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+
+    const [cancelled] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(cancelled).toMatchObject({ status: "cancelled", errorCode: "issue_closed_before_start",
+      resultJson: expect.objectContaining({ executionRecovery: { kind: "bootstrap", providerWorkStarted: false } }) });
+    expect(countExecuteCallsForRun(runId)).toBe(0);
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeupRequestId)))[0]?.status)
+      .toBe("skipped");
+    await vi.waitFor(async () => {
+      const [promoted] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, saved.id));
+      expect(promoted.status).not.toBe("deferred_issue_execution");
+      expect(promoted.runId).toBeTruthy();
+      expect(countExecuteCallsForRun(promoted.runId!)).toBe(1);
+    }, { timeout: 10_000 });
+  });
+
   it("cancels queued max-turn continuations when another continuation owns the issue lock", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const issueId = randomUUID();

@@ -125,6 +125,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
   reportRunActivity: vi.fn(async () => undefined),
   getRun: vi.fn(async (): Promise<unknown> => null),
   getActiveRunForAgent: vi.fn(async (): Promise<unknown> => null),
+  getQueuedAssignmentRunForIssue: vi.fn(async (): Promise<unknown> => null),
   cancelRun: vi.fn(async (): Promise<unknown> => null),
   resumeTaskRetry: vi.fn(async () => undefined),
 }));

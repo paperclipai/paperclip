@@ -188,7 +188,8 @@ export async function rewakeStep(input: RewakeStepInput): Promise<void> {
     const idleTimeoutMs = rewakeIdleTimeoutMs(plan.index);
     const change: NonNullable<RewakeRecord["configChange"]> = { at: now, idleTimeoutMs, httpStatus: null, error: null };
     try {
-      await input.api.patch(`/api/agents/${input.agentId}`, { adapterConfig: { idleTimeoutMs } });
+      const agent = await input.api.get<{ adapterConfig?: Record<string, unknown> | null }>(`/api/agents/${input.agentId}`);
+      await input.api.patch(`/api/agents/${input.agentId}`, { adapterConfig: { ...(agent.adapterConfig ?? {}), idleTimeoutMs }, replaceAdapterConfig: true });
       change.httpStatus = 200;
     } catch (error) {
       change.httpStatus = statusOf(error);

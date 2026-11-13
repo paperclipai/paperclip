@@ -838,6 +838,72 @@ describe("PaperclipControlPlanePort conformance", () => {
     expect(await readTaskPanelActivations(db, randomUUID(), identity.runId)).toEqual([]);
   });
 
+  it("persists each streamed event in one transaction of two statements and rolls back a revoked writer", async () => {
+    const identity = { ...CONTROL_PLANE_CONFORMANCE_OPEN.identity, runId: randomUUID(), sessionId: randomUUID() };
+    const runnerId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: identity.runId, companyId: identity.companyId, agentId: identity.agentId,
+      status: "running", runtimeMode: "native", nativeIssueId: identity.issueId,
+      nativeSessionId: identity.sessionId, runnerInstanceId: runnerId,
+      completionContractId: contractId, completionContractSha256: contractSha,
+      contextSnapshot: { issueId: identity.issueId },
+    });
+    let active = true;
+    const committed: number[] = [];
+    const port = new PaperclipControlPlanePort(db, {
+      ...identity, completionContractId: contractId, completionContractSha256: contractSha,
+      sourceInstanceId: runnerId, controlPlaneSourceInstanceId: `stream-${identity.runId}`,
+    }, {
+      assertControllerActive: () => { if (!active) throw new Error("controller_revoked"); },
+      onCommittedEvent: async (_event, cursor) => { committed.push(cursor); },
+    });
+    await port.openRun({ identity, backendKind: "mock", sourceInstanceId: runnerId });
+    const emittedAt = new Date().toISOString();
+    const delta = (sourceSeq: number): PrpEvent => ({
+      schema: "paperclip.prp.event.v1", sourceEventId: `${runnerId}:${sourceSeq}`, sourceSeq,
+      sourceInstanceId: runnerId, sourceKind: "runner", runId: identity.runId,
+      normalizedSessionId: identity.sessionId, turnId: "stream-turn", itemId: "stream-message",
+      eventType: "item.delta", schemaVersion: 1, priority: 1, emittedAt,
+      payload: { kind: "agentMessage", text: `chunk ${sourceSeq}` },
+    });
+    // Every statement the driver sends, transaction control included.
+    const options = db.$client.options as { debug?: unknown };
+    const statements: string[] = [];
+    options.debug = (_connection: number, text: string) => { statements.push(text.trim().replace(/\s+/g, " ")); };
+    try {
+      for (const sourceSeq of [1, 2, 3]) {
+        statements.length = 0;
+        await expect(port.appendEvent(delta(sourceSeq))).resolves.toEqual({
+          cursor: sourceSeq, highestContiguousSourceSeq: sourceSeq, disposition: "committed",
+        });
+        // BEGIN, the run lock, the append, COMMIT: no SAVEPOINT and no separate
+        // replay, sequence, insert or cursor statement.
+        expect(statements).toHaveLength(4);
+        expect(statements.filter(text => /^(begin|commit)/i.test(text))).toHaveLength(2);
+      }
+      statements.length = 0;
+      await expect(port.appendEvent(delta(2))).resolves.toEqual({ cursor: 2, highestContiguousSourceSeq: 3, disposition: "duplicate" });
+      expect(statements).toHaveLength(4);
+      // The controller loses the run while its append is in flight: the lock
+      // read is the first statement after the opening check.
+      options.debug = (_connection: number, text: string) => { if (/for no key update$/.test(text.trim())) active = false; };
+      await expect(port.appendEvent(delta(4))).rejects.toThrow("controller_revoked");
+    } finally { options.debug = undefined; }
+    active = true;
+    expect(committed).toEqual([1, 2, 3]);
+    const stored = () => db.select({ seq: heartbeatRunEvents.seq, sourceSeq: heartbeatRunEvents.sourceSeq })
+      .from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, identity.runId)).orderBy(asc(heartbeatRunEvents.seq));
+    expect(await stored()).toEqual([1, 2, 3].map(seq => ({ seq, sourceSeq: seq })));
+    // The rolled-back event took no sequence: a replacement writes it next.
+    const replacement = new PaperclipControlPlanePort(db, {
+      ...identity, completionContractId: contractId, completionContractSha256: contractSha,
+      sourceInstanceId: runnerId, controlPlaneSourceInstanceId: `stream-${identity.runId}`,
+    });
+    await replacement.openRun({ identity, backendKind: "mock", sourceInstanceId: runnerId });
+    await expect(replacement.appendEvent(delta(4))).resolves.toEqual({ cursor: 4, highestContiguousSourceSeq: 4, disposition: "committed" });
+    expect(await stored()).toEqual([1, 2, 3, 4].map(seq => ({ seq, sourceSeq: seq })));
+  });
+
   it("omits API credentials from persisted tool events and checkpoints without changing wire results", async () => {
     const identity = { ...CONTROL_PLANE_CONFORMANCE_OPEN.identity, runId: randomUUID(), sessionId: randomUUID() };
     const runnerId = randomUUID();

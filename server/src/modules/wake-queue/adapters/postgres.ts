@@ -18,6 +18,8 @@ import { nativeManualAdmissionHoldsExecution } from "../../../services/native-ru
 import { and, asc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import { readReleaseRun, type ReleaseRun } from "./release-run-read.js";
 import { isGovernancePauseStop } from "../../../services/governance-pause-stop.js";
+import { agentRunSupersededByFreshContinuation } from "../../../agent-run-cancellation.js";
+import { freshContinuationIsolatesRun } from "../../../services/fresh-continuation-fallback.js";
 import type { Db } from "@paperclipai/db";
 import { deliveredQueuedCommentIds, EXTERNAL_CHAT_MESSAGE_WAKE_MUTATION, EXTERNAL_CHAT_MESSAGE_WAKE_REASON } from "../../../services/queued-comment-delivery.js";
 import { extractIssueReferenceIdentifiers, isUuidLike } from "@paperclipai/shared";
@@ -927,8 +929,9 @@ async function recordNativeTerminalRecoveryIfNeeded(tx: Db, run: ReleaseRun, iss
       cause: "native_continuation_requires_reconciliation",
       fingerprint: `native-continuation:${run.id}`,
       evidence: { runId: run.id, originalFailureCode: run.errorCode, ...(nativeFailureBlock ? { nativeFailureBlock } : {}) },
-      nextAction:
-        "Inspect the original failure and reconcile the previous execution before continuing. Automatic recovery cannot start another incident.",
+      // The fresh-continuation fallback settles this hold unless its cause is
+      // the person's; the text never asks anyone to repair the run.
+      nextAction: "The run stopped before it finished. Paperclip continues the task from its last saved work.",
       maxAttempts: 3,
       wakePolicy: null,
       supersedeOnIdentityChange: true,
@@ -1283,7 +1286,10 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
               `,
         );
 
-        if (input.resumeStrandedQueue && run.runtimeMode === "native") {
+        // A run the fresh-continuation fallback replaced is settled for good: its
+        // finalization may stay terminal_failure (restart recovery ended it), and
+        // the saved input queued behind it is now the task's next turn.
+        if (input.resumeStrandedQueue && run.runtimeMode === "native" && !agentRunSupersededByFreshContinuation(run)) {
           const [finalized] = contextIssueId && run.nativeIssueId === contextIssueId
             ? await tx.select({ runId: nativeRunFinalizations.runId }).from(nativeRunFinalizations).where(and(
                 eq(nativeRunFinalizations.companyId, input.companyId), eq(nativeRunFinalizations.runId, run.id),
@@ -1292,10 +1298,16 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
             : [];
           if (!finalized) return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
-        if (await nativeManualAdmissionHoldsExecution(tx, { companyId: input.companyId, runId: run.id })) {
+        // These two holds protect the old executor's workspace and resources. A
+        // continuation in a new isolated workspace (or an abandoned remote epoch)
+        // reuses none of them, so they no longer hold the task's next turn; any
+        // other replacement still waits for them.
+        const isolatedReplacement = agentRunSupersededByFreshContinuation(run)
+          ? await freshContinuationIsolatesRun(tx, { companyId: input.companyId, runId: run.id }) : false;
+        if (!isolatedReplacement && await nativeManualAdmissionHoldsExecution(tx, { companyId: input.companyId, runId: run.id })) {
           return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
-        if (input.resumeStrandedQueue && await hasPendingRunCleanup(tx, input.companyId, run.id)) {
+        if (input.resumeStrandedQueue && !isolatedReplacement && await hasPendingRunCleanup(tx, input.companyId, run.id)) {
           return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
 
@@ -1447,13 +1459,25 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           && issueRow.status === "blocked" && issueRow.assigneeAgentId === run.agentId) {
           return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
-        if (!handoffAssigneeAgentId && await recordNativeTerminalRecoveryIfNeeded(tx, run, issueRow, input.now)) {
+        // The fallback already decided this run's continuation; a reconciliation
+        // incident would re-block the task it just released.
+        if (!handoffAssigneeAgentId && !agentRunSupersededByFreshContinuation(run)
+          && await recordNativeTerminalRecoveryIfNeeded(tx, run, issueRow, input.now)) {
           return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
 
         // A release must leave deferred messages intact while execution is held.
         // The finishing conversation may still own its lease until finally cleanup.
         // Allow only bounded retry planning in that case; admission stays gated.
+        // The fallback's isolated continuation runs before any saved input: it
+        // alone carries the marker that prepares the new workspace and binds it.
+        // Promoting the follow-up now would make it the task's next run without
+        // that isolation (and the delivery worker would then skip the
+        // continuation). The follow-up stays deferred and is promoted behind
+        // the continuation when that run is released.
+        if (isolatedReplacement && isolatedReplacement.continuationPending) {
+          return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
+        }
         const executionBlocker = await getExecutionBlocker(tx, issueRow.companyId, issueRow.id);
         const recoveryOnly = Boolean(executionBlocker &&
           executionBlocker.cause === "execution_owner_active" && executionBlocker.runId === run.id &&

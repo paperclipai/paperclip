@@ -3,7 +3,7 @@ import { chmod, mkdir, mkdtemp, readFile, readlink, rm, stat, writeFile } from "
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { assertControllerMatchesImage, assertProviderPackMismatch, copyImageToDir, extractFromLayers, prepareDaytonaImageArtifacts, normalizeLayerPath, walkTar, type LayerSource } from "./daytona-image.js";
+import { RUNNER_REVISION_LABEL, assertControllerMatchesImage, assertProviderPackMismatch, copyImageToDir, extractFromLayers, prepareDaytonaImageArtifacts, normalizeLayerPath, walkTar, type LayerSource } from "./daytona-image.js";
 
 type Entry =
   | { path: string; type: "file"; content: string; mode?: number }
@@ -266,18 +266,18 @@ describe("prepareDaytonaImageArtifacts with a shared cache", () => {
   const sha = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");
   const revision = "a".repeat(40);
 
-  async function fakeImage(root: string): Promise<string> {
+  async function fakeImage(root: string, image: { packRevision?: string; labels?: Record<string, string> } = {}): Promise<string> {
     const source = path.join(root, "image");
     await mkdir(source, { recursive: true });
     const elf = Buffer.alloc(64); elf.writeUInt32BE(0x7f454c46, 0); elf[4] = 2; elf[5] = 1; elf.writeUInt16LE(62, 18);
     const pack = JSON.stringify({ schema: "paperclip-runner/remote-provider-pack/v1", digest: `sha256:${"b".repeat(64)}`,
-      payload: { runnerSourceRevision: revision } });
+      payload: { runnerSourceRevision: image.packRevision ?? revision } });
     const layerBytes = tar([
       { path: RUNNERD, type: "file", content: elf.toString("latin1"), mode: 0o755 },
       { path: `${PACK}/provider-pack.json`, type: "file", content: pack },
     ]);
     const config = Buffer.from(JSON.stringify({ os: "linux", architecture: "amd64",
-      config: { Labels: { "io.paperclip.runner.content-id": "c".repeat(64), "org.opencontainers.image.revision": revision } } }));
+      config: { Labels: { "io.paperclip.runner.content-id": "c".repeat(64), "org.opencontainers.image.revision": revision, ...image.labels } } }));
     await writeFile(path.join(source, sha(layerBytes)), layerBytes);
     await writeFile(path.join(source, sha(config)), config);
     await writeFile(path.join(source, "manifest.json"), JSON.stringify({ config: { digest: `sha256:${sha(config)}` },
@@ -310,6 +310,33 @@ cp -R "${source}/." "$dest/"
       expect((await stat(receipt.runnerdPath)).isFile()).toBe(true);
       expect(await readFile(path.join(receipt.providerPackPath, "provider-pack.json"), "utf8")).toContain(revision);
     }
+  });
+
+  async function extract(image: { packRevision?: string; labels?: Record<string, string> }) {
+    const root = await mkdtemp(path.join(os.tmpdir(), "daytona-cache-"));
+    directories.push(root);
+    const skopeo = await fakeImage(root, image);
+    await writeFile(path.join(root, "barrier", "other"), "");
+    return prepareDaytonaImageArtifacts({ image: `ghcr.io/paperclipai/paperclip-daytona-runner@sha256:${"9".repeat(64)}`, cacheRoot: path.join(root, "cache"), skopeo });
+  }
+  const runnerCommit = "b".repeat(40);
+
+  it("accepts a pack another commit built when the image names that commit as its Runner's, and reads an empty label as absent", async () => {
+    const receipt = await extract({ packRevision: runnerCommit, labels: { [RUNNER_REVISION_LABEL]: runnerCommit } });
+    expect(receipt).toMatchObject({ sourceRevision: revision, providerPackRunnerSourceRevision: runnerCommit });
+    await expect(extract({ labels: { [RUNNER_REVISION_LABEL]: "" } })).resolves.toMatchObject({ sourceRevision: revision, providerPackRunnerSourceRevision: revision });
+  });
+
+  it.each<[string, { packRevision?: string; labels?: Record<string, string> }, RegExp]>([
+    ["the image names another Runner commit", { packRevision: runnerCommit, labels: { [RUNNER_REVISION_LABEL]: "e".repeat(40) } },
+      /built from b{40}, but the image label io\.paperclip\.runner\.source-revision is e{40}/],
+    ["the image names its Runner and carries its own commit's pack", { labels: { [RUNNER_REVISION_LABEL]: runnerCommit } },
+      /built from a{40}, but the image label io\.paperclip\.runner\.source-revision is b{40}/],
+    ["no Runner commit is named and the pack is another commit's", { packRevision: runnerCommit },
+      /built from b{40}, but the image label org\.opencontainers\.image\.revision is a{40}/],
+    ["the Runner commit is not a full commit", { labels: { [RUNNER_REVISION_LABEL]: "bbbbbbb" } }, /io\.paperclip\.runner\.source-revision is not a full commit/],
+  ])("refuses the image when %s", async (_label, image, message) => {
+    await expect(extract(image)).rejects.toThrow(message);
   });
 
   it("leaves a corrupt leftover in place and publishes beside it", async () => {

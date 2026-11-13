@@ -1,7 +1,8 @@
 name: CI runner-loss rerun
 
-# Self-hosted AWS runners are sometimes lost mid-job. When every failed job of
-# a first PR CI attempt lost its runner, re-run the failed jobs once. This is
+# Self-hosted AWS runners are sometimes lost mid-job. When every failed or
+# cancelled job of a first PR CI attempt lost its runner, re-run the failed
+# jobs once. A spot reclaim often concludes the run `cancelled`. This is
 # what a maintainer's "Re-run failed jobs" click does; github-actions[bot]
 # becomes attempt 2's triggering actor. See "Trusted PR Workflow" in
 # doc/DEVELOPING.md.
@@ -31,7 +32,8 @@ jobs:
       github.repository_id == '1170821064' &&
       github.event.workflow_run.event == 'pull_request' &&
       github.event.workflow_run.path == '.github/workflows/pr.yml' &&
-      github.event.workflow_run.conclusion == 'failure' &&
+      (github.event.workflow_run.conclusion == 'failure' ||
+      github.event.workflow_run.conclusion == 'cancelled') &&
       github.event.workflow_run.run_attempt == 1
     # GitHub-hosted on purpose: this job must not depend on the fleet it repairs.
     runs-on: ubuntu-latest

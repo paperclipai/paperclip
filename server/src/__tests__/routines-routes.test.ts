@@ -702,6 +702,17 @@ describe("routine routes", () => {
     });
   });
 
+  it("records an agent-started run as manual whatever source the agent sends, and keeps a board caller's source", async () => {
+    const agentApp = await createApp({ type: "agent", agentId, companyId });
+    const res = await request(agentApp).post(`/api/routines/${routineId}/run`).send({ source: "api" });
+    expect(res.status, JSON.stringify(res.body)).toBe(202);
+    expect(mockRoutineService.runRoutine).toHaveBeenLastCalledWith(routineId, expect.objectContaining({ source: "manual" }), expect.objectContaining({ agentId }));
+    mockAccessService.canUser.mockResolvedValue(true);
+    const boardApp = await createApp({ type: "board", userId: "board-user", source: "session", isInstanceAdmin: false, companyIds: [companyId] });
+    expect((await request(boardApp).post(`/api/routines/${routineId}/run`).send({ source: "api" })).status).toBe(202);
+    expect(mockRoutineService.runRoutine).toHaveBeenLastCalledWith(routineId, expect.objectContaining({ source: "api" }), expect.objectContaining({ userId: "board-user" }));
+  });
+
   it("allows routine creation when the board user has tasks:assign", async () => {
     mockAccessService.canUser.mockResolvedValue(true);
     const app = await createApp({

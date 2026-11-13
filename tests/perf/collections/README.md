@@ -61,6 +61,18 @@ navigation start to the first Mine row (two frames after mount) over
 a native scenario without request interception and a separate diagnostic scenario that delays
 workspace reads by 3 seconds. The timings are attached evidence, not budgets.
 
+`shell-read-waves.spec.ts` hard loads Mine with every API response delayed
+300 ms and counts the shell and inbox reads that used to repeat about 1.5–2.5 s
+after load (session, health, company list, agents, inbox dismissals, user
+directory, approvals, execution workspaces). With the saved query cache
+(`paperclip:query-cache:v1:<user>:<company>`, primed by one earlier visit in
+the same browser context) each read happens at most once and the live socket
+opens once. Without it, the socket's catch-up read may repeat reads that
+answered before the subscription, but never the session or health read. The
+fixture (`returning-visit-fixture.ts`) is a company with 24 Mine tasks and
+three pending board approvals, retained in
+`test-results/collections/mine-returning-visit-fixture.json`.
+
 `recent-task-open.spec.ts` covers opening a task from the sidebar's Recents.
 It gives eight fixture tasks twelve saved comments each and seeds them as the
 account's Recents. An idle Projects page must make exactly one

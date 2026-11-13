@@ -72,6 +72,7 @@ describe("persisted read cache", () => {
   });
 
   it("bounds saved PR reads and retains their original age through later saves", () => {
+    vi.useFakeTimers();
     let now = Date.now();
     const first = setup(undefined, () => now); seed(first.client);
     for (let i = 0; i < 120; i += 1) first.client.setQueryData(
@@ -529,6 +530,7 @@ describe("persisted read cache", () => {
   });
 
   it.each(["build", "expiry"])("discards snapshots after %s changes", kind => {
+    vi.useFakeTimers();
     const startedAt = Date.now();
     const first = setup(undefined, () => startedAt); seed(first.client); first.handle.flush();
     const restored = setup(first.storage, () => kind === "expiry" ? startedAt + QUERY_CACHE_MAX_AGE + 1 : startedAt, undefined, kind === "build" ? "build-two" : "build-one");

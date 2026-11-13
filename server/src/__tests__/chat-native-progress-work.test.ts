@@ -65,9 +65,11 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     }, { timeout: 10_000 });
   }
   async function quiet() {
-    const select = vi.spyOn(db, "select"), transaction = vi.spyOn(db, "transaction");
-    try { await vi.advanceTimersByTimeAsync(120_000); expect(select).not.toHaveBeenCalled(); expect(transaction).not.toHaveBeenCalled(); }
-    finally { select.mockRestore(); transaction.mockRestore(); }
+    const select = vi.spyOn(db, "select"), transaction = vi.spyOn(db, "transaction"), statement = vi.spyOn(db.$client, "unsafe");
+    try {
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(select).not.toHaveBeenCalled(); expect(transaction).not.toHaveBeenCalled(); expect(statement).not.toHaveBeenCalled();
+    } finally { select.mockRestore(); transaction.mockRestore(); statement.mockRestore(); }
   }
   function event(nativeSource = false, eventType = "item.completed") {
     return { companyId: f.companyId, agentId: f.agentId, runId, eventType,
@@ -212,8 +214,8 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
 
   it("retains failed startup selection through drain and retries after resume", async () => {
     await appendHeartbeatRunEvent(db, event(true));
-    const select = vi.spyOn(db, "select").mockImplementationOnce(() => { throw new Error("temporary read failure"); });
-    try { await start(); } finally { select.mockRestore(); }
+    const read = vi.spyOn(db.$client, "unsafe").mockImplementationOnce(() => { throw new Error("temporary read failure"); });
+    try { await start(); } finally { read.mockRestore(); }
     expect(errors.splice(0)).toHaveLength(1); canRun = false;
     await vi.advanceTimersByTimeAsync(30_000);
     await vi.waitFor(() => expect(idleWorkSnapshot().active).toBe(0));

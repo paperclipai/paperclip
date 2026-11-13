@@ -68,7 +68,12 @@ async function failedNativePreparation(db: Db, run: Run, coordinator: Coordinato
   return typeof issueId === "string" && leases.length > 0 && leases.every(lease => lease.issueId === issueId
     && lease.metadata?.pendingCleanupInFlight !== true && hasRemoteTerminationReceipt(lease))
     && await hasSettledFailedPreparationEvidence(db, run, historicalRetryAncestor)
-    && await hasVerifiedWorkspaceRepair(db, run);
+    && (!holdsPreparedFiles(run) || await hasVerifiedWorkspaceRepair(db, run));
+}
+
+function holdsPreparedFiles(run: Run) {
+  return run.runnerProfileJson?.remoteWorkspace != null || run.resultJson?.workspaceRestoreFailure != null
+    || hasRequiredWorkspaceRecovery(run.resultJson);
 }
 
 async function hasSettledFailedPreparationEvidence(db: Db, run: Run, historicalRetryAncestor = false): Promise<boolean> {

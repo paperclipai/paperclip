@@ -146,6 +146,8 @@ export interface TaskChatMessageItem {
   optimistic?: "pending" | "queued";
   /** Live run this queued message is waiting behind. */
   queueTargetRunId?: string | null;
+  /** Run that wrote this agent reply; its MCP Apps views show with the reply. */
+  sourceRunId?: string;
   /** Non-blocking verification limitations attached to the run's durable reply. */
   verificationCaveats?: Array<{
     commandOrCheck: string;

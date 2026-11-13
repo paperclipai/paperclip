@@ -74,6 +74,31 @@ export function chatCatalogProviderRuns(runs: ChatRun[], source?: ChatIssue): Ch
   const superseded = new Set(chatCatalogSupersededQueuedRuns(runs, source).map(run => run.id));
   return runs.filter(run => !superseded.has(run.id));
 }
+/**
+ * The product's automatic CEO follow-up on the source chat after a delegated
+ * task it created completed (`chat_task_completed`). The person's request was
+ * already answered; this later turn may start at any moment after the worker
+ * finishes, so a settled source can briefly show it queued or running. Only a
+ * lead run on the source whose every completion update names separate work in
+ * this ledger qualifies; any other source run must still have succeeded. The
+ * server records the updates only while it prepares the already-claimed turn,
+ * so a queued run, or a running run that is still being prepared, carries only
+ * its saved delivery IDs. It qualifies only while queued or running, woken by
+ * automation, after a separate worker run in this ledger succeeded.
+ */
+export function chatCatalogSourceCompletionFollowUp(run: ChatRun, input: { leadId: string; source?: ChatIssue; runs: ChatRun[] }): boolean {
+  const snapshot = record(run.contextSnapshot);
+  const updates = Array.isArray(snapshot.chatCompletionUpdates) ? snapshot.chatCompletionUpdates : record(snapshot.paperclipWake).chatCompletionUpdates;
+  const work = input.runs.filter(other => other.agentId !== input.leadId && typeof taskId(other) === "string" && taskId(other) !== input.source?.id);
+  const workTasks = new Set(work.map(taskId));
+  if (!input.source || run.agentId !== input.leadId || taskId(run) !== input.source.id || snapshot.wakeReason !== "chat_task_completed") return false;
+  if (updates === undefined || updates === null) {
+    const deliveries = snapshot.chatCompletionDeliveryIds;
+    return ["queued", "running"].includes(run.status) && snapshot.wakeSource === "automation" && Array.isArray(deliveries) && deliveries.length > 0
+      && deliveries.every(id => typeof id === "string" && id.length > 0) && work.some(other => other.status === "succeeded");
+  }
+  return Array.isArray(updates) && updates.length > 0 && updates.every(update => workTasks.has(record(update).id as string));
+}
 export function gradeChatCatalogRuns(input: {
   implementation: Pick<ChatCatalogCase, "expectedRunCount" | "minimumRunCount" | "runPolicy"> & CancellationCase;
   companyId: string; leadId: string; source?: ChatIssue; runs: ChatRun[];
@@ -103,6 +128,9 @@ export function gradeChatCatalogRuns(input: {
       detail: "The independently observed ledger matches every declared successful/cancelled/failed terminal outcome count (or its declared role-bound range)." });
   } else if (c.runPolicy?.kind === "source-settled-with-active-work") {
     const sourceRuns = runs.filter(run => taskId(run) === source?.id);
+    const followUps = sourceRuns.filter(run => chatCatalogSourceCompletionFollowUp(run, { leadId: input.leadId, source, runs }));
+    const answers = sourceRuns.filter(run => !followUps.includes(run));
+    const activeFollowUp = followUps.some(run => ["queued", "running"].includes(run.status));
     const handbacks = runs.filter(run => taskId(run) !== source?.id && run.agentId === input.leadId && run.contextSnapshot?.wakeReason === "case_handoff");
     const workers = runs.filter(run => taskId(run) !== source?.id && !handbacks.includes(run));
     const cancelled = runs.filter(run => run.status === "cancelled");
@@ -125,11 +153,13 @@ export function gradeChatCatalogRuns(input: {
     checks.push({ id: "catalog-exact-owned-worker-cancellation", passed: cancelled.length === 0 ? expected === undefined : declared && exact,
       detail: "Only the exact independently proved task-reassignment cancellation is accepted; final actor, chronology and saved-state proof remains mandatory in the case callback." });
     checks.push({ id: "catalog-settled-source-separate-work", passed: !!source && source.companyId === input.companyId
-      && source.conversationState === "waiting" && sourceRuns.length > 0 && sourceRuns.every(run => run.agentId === input.leadId && run.status === "succeeded")
+      && (source.conversationState === "waiting" || source.conversationState === "active" && activeFollowUp)
+      && answers.length > 0 && answers.every(run => run.agentId === input.leadId && run.status === "succeeded")
+      && followUps.length <= 1 && followUps.every(run => ["queued", "running", "succeeded"].includes(run.status))
       && workers.every(run => typeof taskId(run) === "string" && run.agentId !== input.leadId)
       && workers.filter(run => ["queued", "running"].includes(run.status)).length <= c.runPolicy.maximumActiveWorkerRuns
       && handbacks.length <= (c.runPolicy.maximumLeadCaseHandbackRuns ?? 0) && handbacks.every(run => typeof taskId(run) === "string"),
-      detail: "The CEO source is settled; unfinished worker runs are separately task-bound and bounded, and any CEO run outside the source is a declared case handback. The case oracle must additionally bind their exact task and assignee." });
+      detail: "The CEO source is settled; unfinished worker runs are separately task-bound and bounded, and any CEO run outside the source is a declared case handback. At most one product completion follow-up for that separate work may still be in flight on the source. The case oracle must additionally bind their exact task and assignee." });
   }
   return { passed: checks.every(check => check.passed), checks };
 }

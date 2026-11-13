@@ -178,6 +178,11 @@ function gitFilesystemRoots(source: NodeJS.ProcessEnv): { read: string[]; write:
   return { read: [...new Set(read)], write: [...new Set(write)] };
 }
 
+export const CODEX_PROVIDER_CREDENTIAL_ENVIRONMENT_KEYS: readonly string[] = [
+  "OPENAI_API_KEY", "CODEX_API_KEY", "PAPERCLIP_AI_PROVIDER_KEY",
+  "OTEL_EXPORTER_OTLP_LOGS_HEADERS", "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+];
+
 export function usesExternalRunnerSandbox(source: NodeJS.ProcessEnv): boolean {
   return source.PAPERCLIP_RUNNER_EXTERNAL_SANDBOX === "1";
 }
@@ -361,15 +366,16 @@ export function createIsolatedCodexAppServerArgs(
     `permissions.${CODEX_PLANNING_PERMISSION_PROFILE}.filesystem={${planningFilesystemRules}}`,
     "-c",
     `permissions.${CODEX_PLANNING_PERMISSION_PROFILE}.network.enabled=${networkAccess}`,
-    "-c",
-    `shell_environment_policy.inherit=${tomlString(hasProjectedEnvironment ? "all" : "none")}`,
-    "-c",
-    `shell_environment_policy.ignore_default_excludes=${hasProjectedEnvironment}`,
-    // Codex applies include_only after inheritance. Always emit the bounded
-    // allowlist: neither host mode nor a broker enables ambient secret access.
-    // Keep values in the process environment, never in argv/config diagnostics.
-    "-c",
-    `shell_environment_policy.include_only=${JSON.stringify(shellEnvironmentKeys)}`,
+    ...(externalRunnerSandbox
+      ? ["-c", 'shell_environment_policy.inherit="all"',
+          "-c", "shell_environment_policy.ignore_default_excludes=true",
+          "-c", `shell_environment_policy.exclude=${JSON.stringify(CODEX_PROVIDER_CREDENTIAL_ENVIRONMENT_KEYS)}`]
+      : ["-c", `shell_environment_policy.inherit=${tomlString(hasProjectedEnvironment ? "all" : "none")}`,
+          "-c", `shell_environment_policy.ignore_default_excludes=${hasProjectedEnvironment}`,
+          // Codex applies include_only after inheritance. Always emit the bounded
+          // allowlist: neither host mode nor a broker enables ambient secret access.
+          // Keep values in the process environment, never in argv/config diagnostics.
+          "-c", `shell_environment_policy.include_only=${JSON.stringify(shellEnvironmentKeys)}`]),
     ...(commandEnv.length > 0
       ? ["-c", `shell_environment_policy.set={${commandEnv}}`]
       : []),

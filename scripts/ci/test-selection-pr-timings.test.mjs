@@ -4,7 +4,7 @@ import test from "node:test";
 import { ghApi, resetGhApiForTests } from "./gh-api.mjs";
 import OversizedSpecReporter from "./oversized-test-files-playwright.mjs";
 import OversizedTestFileReporter, { oversizedAnnotation, oversizedThresholdMs } from "./oversized-test-files.mjs";
-import { attributeSpec, collectMergedPrSamples, completeShardSet, e2eShardJob, parseE2eLog, parseRunnerLog,
+import { assertManifestSource, attributeSpec, collectMergedPrSamples, completeShardSet, e2eShardJob, parseE2eLog, parseRunnerLog,
   runnerInventory, runnerPackageJob, validatePrRun, validatePull } from "./pr-run-durations.mjs";
 import { oversizedFiles, oversizedPlaceholder, parseArgs, parseTimings, renderPrBody, serverLane, updatedDurations } from "./refresh-test-durations.mjs";
 import { timingPrefix } from "./test-timing-reporter.mjs";
@@ -41,6 +41,36 @@ test("gh api opts into escape sequences, falls back for older gh, and strips col
   resetGhApiForTests();
   const failing = async () => { throw Object.assign(new Error("HTTP 404"), { stderr: "gh: Not Found (HTTP 404)" }); };
   await assert.rejects(ghApi("/missing", { run: failing }), /HTTP 404/);
+  resetGhApiForTests();
+});
+
+test("gh api allows a large server shard log to finish downloading and never prints a partial log", async () => {
+  resetGhApiForTests();
+  const seen = [];
+  const capture = async (command, args, options) => {
+    seen.push(options);
+    return { stdout: "{}" };
+  };
+  await ghApi("/repos/x/actions/runs/1/jobs", { run: capture });
+  await ghApi("/repos/x/actions/jobs/1/logs", { json: false, run: capture });
+  // A 64 MB shard log took 59 s alone (actions run 43133035381); three at once
+  // overran the old 120 s limit and failed the weekly refresh.
+  assert.equal(seen[0].timeout, 120_000);
+  assert.ok(seen[1].timeout >= 600_000, `log timeout ${seen[1].timeout}`);
+  assert.ok(seen[1].maxBuffer >= 256 * 1024 * 1024, `log buffer ${seen[1].maxBuffer}`);
+
+  resetGhApiForTests();
+  const partial = "x".repeat(10_000);
+  const timedOut = async () => {
+    throw Object.assign(new Error(`Command failed: gh api /logs\n${partial}`),
+      { killed: true, signal: "SIGTERM", stdout: partial, stderr: "" });
+  };
+  await assert.rejects(ghApi("/repos/x/actions/jobs/2/logs", { json: false, run: timedOut }), error => {
+    assert.match(error.message, /\/repos\/x\/actions\/jobs\/2\/logs failed \(killed by SIGTERM\)/);
+    assert.ok(!error.message.includes(partial));
+    assert.equal(error.stdout, undefined);
+    return true;
+  });
   resetGhApiForTests();
 });
 
@@ -193,6 +223,12 @@ test("collection skips unmerged, absent, stale-head and incomplete runs, and sam
   const result = await collectMergedPrSamples({ gh, lanes, isMerged: merge => merge !== sha("c"), log: line => warnings.push(line) });
   assert.deepEqual(result.e2e.sources.map(source => source.run), [21]);
   assert.deepEqual(result.runner.sources, [{ pull: 2, run: 21, attempt: 1, sha: sha("2"), url: "https://example.test/21" }]);
+  // The checked-in manifest test uses this same check, so the format the
+  // collector writes stays accepted even while no manifest carries it yet.
+  for (const source of [...result.e2e.sources, ...result.runner.sources]) assertManifestSource(source);
+  assertManifestSource({ run: 21, attempt: 1, sha: sha("2"), url: "https://example.test/21" });
+  for (const bad of [{ run: 21, attempt: 1, sha: sha("2") }, { pull: 0, run: 21, attempt: 1, sha: sha("2"), url: "u" },
+    { run: 21, pull: 2, attempt: 1, sha: sha("2"), url: "u" }]) assert.throws(() => assertManifestSource(bad));
   assert.deepEqual(Object.fromEntries(result.e2e.samples[0]), { "tests/e2e/alpha.spec.ts": { ms: 15_000, complete: true } });
   assert.match(warnings.join("\n"), /e2e: skipped run 50 for PR #5: Parsed 4 of 9/);
   // PR 3 is not in this checkout and PR 4 never merged: neither is queried.

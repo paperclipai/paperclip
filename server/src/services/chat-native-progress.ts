@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, gte, inArray, like, notExists, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, like, notExists, sql, type Param, type Placeholder } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import { agents, chatConversations, chatEndpoints, chatPublications, heartbeatRunEvents, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
@@ -9,6 +9,7 @@ import { resolveChatOriginPublicationBindings } from "./issues.js";
 import { boundRunIssueIdSql } from "./run-task-binding.js";
 import { allowsAutomaticRunPublication, chatRunProjectionWindow, type ChatRunProjectionScope } from "./chat-run-publication-policy.js";
 import { SAFE_NATIVE_CHAT_PROGRESS_EVENT_TYPES, safeNativeChatProgressForEvent } from "./safe-native-chat-progress.js";
+import { columnPlaceholder, preparedStatements } from "./prepared-statements.js";
 
 type SafeNativeChatProgressCandidate = {
   eventId: number;
@@ -29,7 +30,16 @@ const SAFE_NATIVE_CHAT_PROGRESS_CADENCE_MS = 20_000;
 type NativeProgressCursor = Pick<SafeNativeChatProgressCandidate, "eventCreatedAt" | "runId" | "conversationId">;
 type NativeProgressInput = { since?: Date; limit?: number; scope?: ChatRunProjectionScope; signal?: AbortSignal };
 
-function nativeProgressPages(db: Db, since: Date, scope?: ChatRunProjectionScope) {
+type Bound<Value> = Value | Placeholder;
+export type NativeProgressPageBinding = {
+  since: Date | Param;
+  companyId?: Bound<string>;
+  issueId?: Bound<string>;
+  cursor: { eventCreatedAt: Bound<string>; runId: Bound<string>; conversationId: Bound<string> } | null;
+  pageSize: Bound<number>;
+};
+
+export function nativeProgressPageQuery(db: Db, bind: NativeProgressPageBinding) {
   const basePublication = alias(
     chatPublications,
     "safe_native_progress_base_publication",
@@ -39,7 +49,7 @@ function nativeProgressPages(db: Db, since: Date, scope?: ChatRunProjectionScope
     "safe_native_progress_later_event",
   );
   const issueIdFromContext = boundRunIssueIdSql();
-  return async (pageSize: number, pageCursor: NativeProgressCursor | null): Promise<SafeNativeChatProgressCandidate[]> => await db
+  return db
       .select({
         eventId: heartbeatRunEvents.id,
         eventSeq: heartbeatRunEvents.seq,
@@ -106,9 +116,9 @@ function nativeProgressPages(db: Db, since: Date, scope?: ChatRunProjectionScope
           inArray(heartbeatRunEvents.eventType, [
             ...SAFE_NATIVE_CHAT_PROGRESS_EVENT_TYPES,
           ]),
-          gte(heartbeatRunEvents.createdAt, since),
-          scope ? eq(heartbeatRuns.companyId, scope.companyId) : undefined,
-          scope?.issueId ? eq(chatConversations.issueId, scope.issueId) : undefined,
+          gte(heartbeatRunEvents.createdAt, bind.since),
+          bind.companyId !== undefined ? eq(heartbeatRuns.companyId, bind.companyId) : undefined,
+          bind.issueId !== undefined ? eq(chatConversations.issueId, bind.issueId) : undefined,
           sql`${heartbeatRunEvents.createdAt} >= ${basePublication.createdAt} + interval '20 seconds'`,
           notExists(
             db
@@ -125,9 +135,9 @@ function nativeProgressPages(db: Db, since: Date, scope?: ChatRunProjectionScope
                 ),
               ),
           ),
-          pageCursor
+          bind.cursor
             ? sql`(${heartbeatRunEvents.createdAt}, ${heartbeatRuns.id}, ${chatConversations.id}) >
-                (${pageCursor.eventCreatedAt}::timestamptz, ${pageCursor.runId}::uuid, ${pageCursor.conversationId}::uuid)`
+                (${bind.cursor.eventCreatedAt}::timestamptz, ${bind.cursor.runId}::uuid, ${bind.cursor.conversationId}::uuid)`
             : undefined,
         ),
       )
@@ -136,7 +146,40 @@ function nativeProgressPages(db: Db, since: Date, scope?: ChatRunProjectionScope
         asc(heartbeatRuns.id),
         asc(chatConversations.id),
       )
-      .limit(pageSize);
+      .limit(bind.pageSize);
+}
+
+type NativeProgressPageInput = { since: Date; scope?: ChatRunProjectionScope; cursor: NativeProgressCursor | null; pageSize: number };
+type NativeProgressPageShape = `${"all" | "company" | "issue"}:${"first" | "after"}`;
+
+const nativeProgressPageStatements = preparedStatements((db, shape: NativeProgressPageShape) => nativeProgressPageQuery(db, {
+  since: columnPlaceholder("since", heartbeatRunEvents.createdAt),
+  companyId: shape.startsWith("all:") ? undefined : sql.placeholder("companyId"),
+  issueId: shape.startsWith("issue:") ? sql.placeholder("issueId") : undefined,
+  cursor: shape.endsWith(":after") ? { eventCreatedAt: sql.placeholder("cursorEventCreatedAt"),
+    runId: sql.placeholder("cursorRunId"), conversationId: sql.placeholder("cursorConversationId") } : null,
+  pageSize: sql.placeholder("pageSize"),
+}).prepare(`safe_native_chat_progress_page_${shape.replace(":", "_")}`));
+
+export function nativeProgressPageStatement(db: Db, input: NativeProgressPageInput) {
+  const filter = input.scope ? (input.scope.issueId ? "issue" : "company") : "all";
+  return {
+    statement: nativeProgressPageStatements(db, `${filter}:${input.cursor ? "after" : "first"}`),
+    values: {
+      since: input.since, pageSize: input.pageSize,
+      ...(input.scope ? { companyId: input.scope.companyId } : {}),
+      ...(input.scope?.issueId ? { issueId: input.scope.issueId } : {}),
+      ...(input.cursor ? { cursorEventCreatedAt: input.cursor.eventCreatedAt, cursorRunId: input.cursor.runId,
+        cursorConversationId: input.cursor.conversationId } : {}),
+    },
+  };
+}
+
+function nativeProgressPages(db: Db, since: Date, scope?: ChatRunProjectionScope) {
+  return async (pageSize: number, cursor: NativeProgressCursor | null): Promise<SafeNativeChatProgressCandidate[]> => {
+    const { statement, values } = nativeProgressPageStatement(db, { since, scope, cursor, pageSize });
+    return await statement.execute(values);
+  };
 }
 
 export async function loadNativeChatProgressScopes(db: Db, scope?: ChatRunProjectionScope, signal?: AbortSignal) {

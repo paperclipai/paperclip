@@ -1,4 +1,5 @@
 import { resolveLoginEnvironmentTarget } from "../services/login-environment.js";
+import { checkAgentProtectedEnvironmentKeys } from "../services/protected-environment-keys.js";
 import { assertProviderApiPlacementPolicy, managedCursorApiDefaultEnabled, resolveProviderApiPlacement } from "../services/native-runtime/provider-api-placement.js";
 import { isObjectJournalBusyError } from "../services/object-byte-journal.js";
 import { readTaskPanelActivations } from "../services/plugin-task-panels.js";
@@ -55,11 +56,13 @@ import { isAiConnectionCompatible } from "@paperclipai/shared";
 import { applyConnectorSkills, resolveConnectorAssignments, annotateConnectorSkills, isConnectorSkill } from "../services/connector-runtime.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
 import { canRetryStoppedRun } from "../services/cancelled-native-startup.js";
+import { rejectedModelRetryRefusal } from "../services/native-runtime/model-rejected-retry.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext, type NativeReviewAssignmentContext } from "../services/native-runtime/native-review-participant.js";
 import { paperclipRunnerTransitionConfig, normalizeLegacyRunnerProvider, isPaperclipRunnerProvider, PAPERCLIP_RUNNER_ACPX_PROFILES } from "@paperclipai/adapter-utils";
 import { applyMcpReasoningEffort } from "../services/public-mcp/agent-config.js";
 import { executionProjectionForRun, executionProjectionsForRuns } from "../services/execution-projection.js";
 import { issueRunPresenceService } from "../services/issue-run-presence.js";
+import { returnStoppedWaitingTaskToTodo } from "../services/heartbeat/stopped-waiting-task.js";
 import { selectDashboardRunIds } from "../services/dashboard-run-selection.js";
 import { Router, type NextFunction, type Request, type Response } from "express";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
@@ -165,8 +168,9 @@ import type { AdapterAuthSignal, AdapterAuthSignalResponse, CodexAccountBindingC
 import { adapterSettingsService } from "../services/adapter-settings.js";
 import { skillVersionSelectionMap } from "../services/runtime-skill-selections.js";
 import { isFixedClaudeOAuthBinding, secretService } from "../services/secrets.js";
-import { authorizationDeniedDetails } from "../services/authorization.js";
+import { authorizationDeniedDetails, issueReadSqlCondition } from "../services/authorization.js";
 import { providerTraceStore } from "../services/provider-trace-store.js";
+import { AGENT_TERMINATED_STOP_REASON } from "../services/governance-pause-stop.js";
 import {
   persistReprojectedWorkspaceDiffs,
   projectCodexWorkspaceDiffsFromTrace,
@@ -4172,6 +4176,7 @@ export function agentRoutes(
     const issuesSvc = issueService(db);
     const recoveryActionsSvc = issueRecoveryActionService(db);
     const rows = await issuesSvc.list(req.actor.companyId, {
+      readCondition: await issueReadSqlCondition(db, req.actor),
       assigneeAgentId: req.actor.agentId,
       status: "todo,in_progress,blocked",
       includeRoutineExecutions: true,
@@ -4221,13 +4226,24 @@ export function agentRoutes(
     const query = agentMineInboxQuerySchema.parse(req.query);
     const issuesSvc = issueService(db);
     const rows = await issuesSvc.list(req.actor.companyId, {
+      readCondition: await issueReadSqlCondition(db, req.actor),
       touchedByUserId: query.userId,
       inboxArchivedByUserId: query.userId,
       status: query.status,
       limit: ISSUE_LIST_DEFAULT_LIMIT,
     });
+    const decisions = await access.decideReads(req.actor, rows.map((issue) => ({
+      type: "issue" as const,
+      companyId: issue.companyId,
+      issueId: issue.id,
+      projectId: issue.projectId,
+      parentIssueId: issue.parentId,
+      assigneeAgentId: issue.assigneeAgentId,
+      assigneeUserId: issue.assigneeUserId,
+      status: issue.status,
+    })));
 
-    res.json(rows);
+    res.json(rows.filter((_, index) => decisions[index]?.allowed));
   });
 
   router.get("/agents/:id/identity", async (req, res) => {
@@ -4364,6 +4380,9 @@ export function agentRoutes(
       );
     }
 
+    const rollbackWarnings = await checkAgentProtectedEnvironmentKeys(db, rollbackAdapterConfig,
+      typeof rollbackConfig.defaultEnvironmentId === "string" ? rollbackConfig.defaultEnvironmentId : null);
+
     const actor = getActorInfo(req);
     const updated = await svc.rollbackConfigRevision(id, revisionId, {
       agentId: actor.agentId,
@@ -4387,7 +4406,7 @@ export function agentRoutes(
       details: { revisionId },
     });
 
-    res.json(redactAgentRowForResponse(updated));
+    res.json({ ...redactAgentRowForResponse(updated), ...(rollbackWarnings.length ? { configurationWarnings: rollbackWarnings } : {}) });
   });
 
   router.get("/agents/:id/runtime-state", async (req, res) => {
@@ -4629,6 +4648,7 @@ export function agentRoutes(
       allowedDrivers: allowedEnvironmentDriversForAgent(hireInput.adapterType),
       allowedSandboxProviders: allowedSandboxProvidersForAgent(hireInput.adapterType),
     });
+    configurationWarnings.push(...await checkAgentProtectedEnvironmentKeys(db, normalizedAdapterConfig, hireInput.defaultEnvironmentId));
 
     // Idempotency within a run: if this run already created a hire from this
     // exact request, return that hire instead of creating a duplicate. The
@@ -4949,6 +4969,7 @@ export function agentRoutes(
       allowedDrivers: allowedEnvironmentDriversForAgent(createInput.adapterType),
       allowedSandboxProviders: allowedSandboxProvidersForAgent(createInput.adapterType),
     });
+    configurationWarnings.push(...await checkAgentProtectedEnvironmentKeys(db, normalizedAdapterConfig, createInput.defaultEnvironmentId));
 
     const managedBinding = normalizedRuntimeConfig.aiConnection ? aiRuntimeConnectionBindingSchema.parse(normalizedRuntimeConfig.aiConnection) : undefined;
     const managedConnection = managedBinding && !setupId ? await validateManagedAgentBinding(req, companyId, agentId, createInput.adapterType, normalizedAdapterConfig, managedBinding, createInput.defaultEnvironmentId, "none", true) : undefined;
@@ -5814,16 +5835,19 @@ export function agentRoutes(
     }
     if (requestedRuntimeConfig) patchData.runtimeConfig = requestedRuntimeConfig;
     if (touchesAdapterConfiguration || Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId")) {
+      const nextDefaultEnvironmentId = Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId")
+        ? (typeof patchData.defaultEnvironmentId === "string" ? patchData.defaultEnvironmentId : null)
+        : existing.defaultEnvironmentId;
       await assertAgentDefaultEnvironmentSelection(
         existing.companyId,
-        Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId")
-          ? (typeof patchData.defaultEnvironmentId === "string" ? patchData.defaultEnvironmentId : null)
-          : existing.defaultEnvironmentId,
+        nextDefaultEnvironmentId,
         {
           allowedDrivers: allowedEnvironmentDriversForAgent(requestedAdapterType),
           allowedSandboxProviders: allowedSandboxProvidersForAgent(requestedAdapterType),
         },
       );
+      const protectedKeyWarnings = await checkAgentProtectedEnvironmentKeys(db, patchData.adapterConfig ?? existing.adapterConfig, nextDefaultEnvironmentId);
+      configurationWarnings.push(...protectedKeyWarnings.filter(warning => !configurationWarnings.some(existing => existing.field === warning.field)));
     }
     const touchesProfileFields = touchesAgentProfileChangeConsentFields(patchData);
     const profileOnlyChange = touchesProfileFields && Object.keys(patchData).every((key) =>
@@ -6053,7 +6077,7 @@ export function agentRoutes(
     const invalidOrgChainDescendantIds = listInvalidOrgChainDescendantIds(id, companyAgentRows);
     const cancellation = await heartbeat.cancelInvocationsForAgents(
       [id, ...invalidOrgChainDescendantIds],
-      "Cancelled because the agent was terminated or became invalid-org-chain under a terminated manager",
+      AGENT_TERMINATED_STOP_REASON,
     );
 
     await logActivity(db, {
@@ -6291,6 +6315,8 @@ export function agentRoutes(
         if (issue.assigneeAgentId !== agent.id && !retryNativeReviewContext) {
           throw conflict("The task is no longer assigned to this agent.");
         }
+        const modelRefusal = await rejectedModelRetryRefusal(db, { failedRun, agent, issue });
+        if (modelRefusal) throw conflict(modelRefusal.message, modelRefusal.details);
         if (issue.conversationAgentId) {
           // Agent Chat has no task description to replay. Recover the exact
           // request from the selected server-owned run, never caller markers.
@@ -7161,6 +7187,17 @@ export function agentRoutes(
     res.json(traces);
   });
 
+  // Operator read of the assigned-work invariant: how many open assigned tasks
+  // have nothing running, nothing pending and no one else's move. Read-only;
+  // the sweep repairs violations by itself. Expect 0 violations after a deploy.
+  router.get("/companies/:companyId/assigned-work-invariant", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    // Only tasks this caller may read count, so private tasks stay private.
+    res.json(await heartbeat.reportAssignedWorkInvariant(companyId, { readCondition: await issueReadSqlCondition(db, req.actor) }));
+  });
+
   router.get("/companies/:companyId/live-runs", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -7225,7 +7262,9 @@ export function agentRoutes(
           inArray(heartbeatRuns.status, ["queued", "running"]),
         ),
       )
-      .orderBy(desc(heartbeatRuns.createdAt));
+      // Running runs first: a deep queue must not push the work actually
+      // running past the limit.
+      .orderBy(sql`case when ${heartbeatRuns.status} = 'running' then 0 else 1 end`, desc(heartbeatRuns.createdAt));
 
     const liveRuns = distinctTasks ? [] : await liveRunsQuery.limit(limit);
     let rows = liveRuns;
@@ -7265,13 +7304,17 @@ export function agentRoutes(
     }
 
     const projections = await executionProjectionsForRuns(db, companyId, rows.map(run => run.id));
-    res.json(await runRedactions.redactForRuns(companyId, await Promise.all(rows.map(async (run) => !(await actorCanReadRun(req, run)) ? redactHeartbeatRunListRow(run) : ({
+    const readDecisions = await getHeartbeatRunReadDecisions(db, access, req.actor, rows);
+    const readableRuns = rows.filter((_, index) => readDecisions[index]);
+    const silences = await heartbeat.buildRunOutputSilences(readableRuns);
+    const silenceByRun = new Map(readableRuns.map((run, index) => [run.id, silences[index]!]));
+    res.json(await runRedactions.redactForRuns(companyId, rows.map((run, index) => !readDecisions[index] ? redactHeartbeatRunListRow(run) : ({
       ...heartbeat.decorateActiveRunStatus(run),
       agentAppearance: resolveAgentAppearance(run.agentAppearance, run.agentId),
       avatarUrl: agentAvatarUrl(resolveAgentAppearance(run.agentAppearance, run.agentId), 512),
       execution: projections.get(run.id) ?? null,
-      outputSilence: await heartbeat.buildRunOutputSilence(run),
-    }))), req.actor.type === "board" ? getActorInfo(req).actorId : null));
+      outputSilence: silenceByRun.get(run.id)!,
+    })), req.actor.type === "board" ? getActorInfo(req).actorId : null));
   });
 
   function readHeartbeatRunId(req: Request): string {
@@ -7330,6 +7373,11 @@ export function agentRoutes(
         entityId: run.id,
         details: { agentId: run.agentId },
       });
+      // Stop on a task still waiting in line: the run never started, so the
+      // task should not keep looking in progress.
+      if (existing.status === "queued") {
+        await returnStoppedWaitingTaskToTodo(db, run, { userId: req.actor.userId ?? null });
+      }
     }
 
     res.json(run ? await runRedactions.redactForRun(run.companyId, run.id, run,

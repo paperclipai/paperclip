@@ -789,6 +789,49 @@ describe("runChildProcess", () => {
     expect(finishedAt - startedAt).toBeGreaterThanOrEqual(spawnDelayMs);
   });
 
+  it("strips systemd service-manager vars (NOTIFY_SOCKET/LISTEN_FDS/LISTEN_PID/LISTEN_FDNAMES) from both inherited and caller-supplied env", async () => {
+    const SERVICE_MANAGER_VARS = ["NOTIFY_SOCKET", "LISTEN_FDS", "LISTEN_PID", "LISTEN_FDNAMES"] as const;
+    const originalValues: Record<string, string | undefined> = {};
+    for (const key of SERVICE_MANAGER_VARS) {
+      originalValues[key] = process.env[key];
+      process.env[key] = `inherited-${key}`;
+    }
+
+    try {
+      const result = await runChildProcess(
+        randomUUID(),
+        process.execPath,
+        ["-e", "process.stdout.write(JSON.stringify(process.env))"],
+        {
+          cwd: process.cwd(),
+          env: {
+            NOTIFY_SOCKET: "/run/caller-supplied.sock",
+            LISTEN_FDS: "1",
+            LISTEN_PID: "12345",
+            LISTEN_FDNAMES: "caller",
+          },
+          timeoutSec: 5,
+          graceSec: 1,
+          onLog: async () => {},
+        },
+      );
+
+      expect(result.exitCode).toBe(0);
+      const childEnv = JSON.parse(result.stdout) as Record<string, string | undefined>;
+      for (const key of SERVICE_MANAGER_VARS) {
+        expect(childEnv[key]).toBeUndefined();
+      }
+    } finally {
+      for (const key of SERVICE_MANAGER_VARS) {
+        if (originalValues[key] === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = originalValues[key];
+        }
+      }
+    }
+  });
+
   it.skipIf(process.platform === "win32")(
     "kills descendant processes on timeout via the process group",
     async () => {
@@ -2846,6 +2889,39 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt.indexOf("Open plan comments to incorporate:")).toBeLessThan(
       prompt.indexOf("New comments in order:"),
     );
+  });
+
+  it("warns that a delivered comment an earlier turn read may already be applied", () => {
+    const render = (readByEarlierTurn: boolean) => renderPaperclipWakePrompt({
+      reason: "issue_commented",
+      issue: { id: "issue-1", identifier: "PAP-1", title: "Website", status: "in_progress" },
+      commentIds: ["comment-1"],
+      latestCommentId: "comment-1",
+      commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
+      comments: [{ id: "comment-1", body: "Change the headline to Launch sooner.", author: { type: "user", id: "board-user-1" },
+        createdAt: "2026-06-01T12:05:00.000Z", ...(readByEarlierTurn ? { readByEarlierTurn: true } : {}) }],
+      fallbackFetchNeeded: false,
+    });
+    const note = "An earlier turn already read this comment and may have applied it.";
+    expect(render(true)).toContain(note);
+    expect(render(true).indexOf(note)).toBeGreaterThan(render(true).indexOf("Change the headline to Launch sooner."));
+    expect(render(false)).not.toContain(note);
+  });
+
+  it("keeps the earlier-read warning when the continuation context carries the comment", () => {
+    const body = "Change the headline to Launch sooner.";
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_commented",
+      issue: { id: "issue-1", identifier: "PAP-1", title: "Website", status: "in_progress" },
+      commentIds: ["comment-1"], latestCommentId: "comment-1",
+      commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
+      comments: [{ id: "comment-1", body, author: { type: "user", id: "board-user-1" }, createdAt: "2026-06-01T12:05:00.000Z", readByEarlierTurn: true }],
+      executionContinuation: { version: 1, issueId: "issue-1", objective: body,
+        messages: [{ id: "comment-1", body, authorType: "user", authorId: "board-user-1", sourceTrust: "user", createdByRunId: null }] },
+      fallbackFetchNeeded: false,
+    });
+    expect(prompt).not.toContain("New comments in order:");
+    expect(prompt).toContain("Messages comment-1: An earlier turn already read this comment and may have applied it.");
   });
 
   it("renders grouped non-plan document annotations with editing scope", () => {

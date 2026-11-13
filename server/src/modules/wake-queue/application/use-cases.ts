@@ -904,7 +904,8 @@ export function createAdmitWakeBehindIssueExecution(deps: {
       isSameExecutionAgent,
       shouldDeferFollowupWake,
       shouldQueueFollowupForRunningWake,
-      availableActiveExecutionRunPresent: availableActiveExecutionRun !== null,
+      availableActiveExecutionRunPresent: availableActiveExecutionRun !== null || (shouldDeferFollowupWake &&
+        isSameExecutionAgent && input.activeExecutionRun.status === "running" && Boolean(input.wakeCommentId)),
     });
 
     if (decision.kind === "proceed") return { kind: "proceed" };

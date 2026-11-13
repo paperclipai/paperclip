@@ -411,28 +411,24 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     event = redactRunnerApiEvent(event);
     const observerKey = JSON.stringify([event.sourceInstanceId, event.sourceEventId]);
     const pendingObservation = this.#deferredEventObservers.get(observerKey);
-    const persisted = await this.#db.transaction(async tx => {
-      this.#assertActive(options);
-      const receipt = await appendHeartbeatRunEvent(tx as unknown as Db, {
-        companyId: this.#binding.companyId,
-        runId: this.#binding.runId,
-        agentId: this.#binding.agentId,
-        eventType: event.eventType,
-        stream: "system",
-        level: event.eventType.includes("failed") ? "error" : "info",
-        payload: { prpEvent: event as unknown as Record<string, unknown> },
-        nativeSource: {
-          sourceInstanceId: event.sourceInstanceId,
-          sourceEventId: event.sourceEventId,
-          sourceSeq: event.sourceSeq,
-          protocolSchemaVersion: event.schemaVersion,
-          canonicalPayload: event as unknown as Record<string, unknown>,
-        },
-      });
-      // The nested append has no publication side effects. Revocation rolls
-      // back its event and sequence allocation before the outer commit.
-      this.#assertActive(options);
-      return receipt;
+    const persisted = await appendHeartbeatRunEvent(this.#db, {
+      companyId: this.#binding.companyId,
+      runId: this.#binding.runId,
+      agentId: this.#binding.agentId,
+      eventType: event.eventType,
+      stream: "system",
+      level: event.eventType.includes("failed") ? "error" : "info",
+      payload: { prpEvent: event as unknown as Record<string, unknown> },
+      nativeSource: {
+        sourceInstanceId: event.sourceInstanceId,
+        sourceEventId: event.sourceEventId,
+        sourceSeq: event.sourceSeq,
+        protocolSchemaVersion: event.schemaVersion,
+        canonicalPayload: event as unknown as Record<string, unknown>,
+      },
+      // The append has no publication side effects. Revocation rolls back
+      // its event and sequence allocation before the append commits.
+      assertWritable: () => this.#assertActive(options),
     });
     this.#assertActive(options);
     const persistenceEndedAt = persistenceStartedAt + performance.now() - persistenceClock;

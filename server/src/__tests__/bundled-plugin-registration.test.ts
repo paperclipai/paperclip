@@ -32,7 +32,11 @@ describePostgres("bundled image registration in PostgreSQL", () => {
   let db: ReturnType<typeof createDb>;
   let peer: ReturnType<typeof createDb>;
   const roots: string[] = [];
-  const fixture = () => { const result = bundledImageFixture(); roots.push(result.root); return result; };
+  const fixture = (...args: Parameters<typeof bundledImageFixture>) => {
+    const result = bundledImageFixture(...args);
+    roots.push(result.root);
+    return result;
+  };
   beforeAll(async () => {
     if (externalDatabaseUrl) {
       await applyPendingMigrations(externalDatabaseUrl);
@@ -71,6 +75,55 @@ describePostgres("bundled image registration in PostgreSQL", () => {
       enableLocalFilesystem: false, enableNpmDiscovery: false,
     }, services);
   }
+
+  it("forwards catalog credentials only to the verified bundle with the declaration", async () => {
+    const manifestOverrides = {
+      capabilities: ["environment.drivers.register"],
+      environmentDrivers: [{
+        driverKey: "fixture-tasks",
+        kind: "environment_driver",
+        displayName: "Fixture tasks",
+        configSchema: { type: "object", additionalProperties: false },
+      }],
+    } satisfies Partial<ReturnType<typeof fixture>["manifest"]>;
+    const image = fixture(manifestOverrides, { workerCredentialEnv: ["TEST_PROVIDER_API_KEY"] });
+    const imageWithoutGrant = fixture(manifestOverrides);
+    const { services } = runtime();
+    const managed = loaderFor(image, db, services as unknown as PluginRuntimeServices);
+    const managedWithoutGrant = loaderFor(imageWithoutGrant, db, services as unknown as PluginRuntimeServices);
+    const unmanaged = pluginLoader(db, {}, services as unknown as PluginRuntimeServices);
+    await managed.installPlugin({ localPath: image.packageRoot });
+    const registry = pluginRegistryService(db);
+    const row = (await registry.getByKey(image.manifest.id))!;
+    await registry.updateStatus(row.id, { status: "ready" });
+
+    vi.stubEnv("TEST_PROVIDER_API_KEY", "fixture-provider-key");
+    vi.stubEnv("TEST_OTHER_API_KEY", "fixture-other-key");
+    try {
+      expect((await managed.loadSingle(row.id)).success).toBe(true);
+      const worker = services.workerManager.startWorker.mock.lastCall?.[1];
+      expect(worker).toMatchObject({
+        entrypointPath: path.join(image.packageRoot, "dist", "worker.js"),
+        env: { TEST_PROVIDER_API_KEY: "fixture-provider-key" },
+      });
+      expect(worker).not.toHaveProperty("env.TEST_OTHER_API_KEY");
+
+      expect((await managedWithoutGrant.loadSingle(row.id)).success).toBe(true);
+      const workerWithoutGrant = services.workerManager.startWorker.mock.lastCall?.[1];
+      expect(workerWithoutGrant).toMatchObject({ entrypointPath: path.join(imageWithoutGrant.packageRoot, "dist", "worker.js") });
+      expect(workerWithoutGrant).not.toHaveProperty("env.TEST_PROVIDER_API_KEY");
+
+      const copy = path.join(image.root, "operator-copy");
+      cpSync(image.packageRoot, copy, { recursive: true });
+      await registry.update(row.id, { packagePath: copy });
+      expect((await unmanaged.loadSingle(row.id)).success).toBe(true);
+      const unverifiedWorker = services.workerManager.startWorker.mock.lastCall?.[1];
+      expect(unverifiedWorker).toMatchObject({ entrypointPath: path.join(copy, "dist", "worker.js") });
+      expect(unverifiedWorker).not.toHaveProperty("env.TEST_PROVIDER_API_KEY");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
 
   it("starts current-image workers after losing the old home and retains each company's config", async () => {
     const old = fixture();

@@ -7,6 +7,7 @@ import type { Db } from "@paperclipai/db";
 import {
   activityLog,
   agents,
+  authUsers,
   documentRevisions,
   documents,
   environmentLeases,
@@ -49,6 +50,16 @@ const RUN_LIVENESS_BACKFILL_BATCH = 20;
 // that missed it (older rows or a failed finalization), so a delay is safe.
 const RUN_LIVENESS_CLEAN_TTL_MS = 10 * 60_000;
 const RUN_LIVENESS_CLEAN_MAX_ENTRIES = 10_000;
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** A person-facing name for an activity actor, so readers never see a raw id such as local-board. */
+export function activityActorFallbackName(actorType: string, actorId: string) {
+  if (actorType === "user") return actorId === "local-board" ? "Board" : "A board member";
+  if (actorType === "agent") return "An agent";
+  if (actorType === "plugin") return "A plugin";
+  return "Paperclip";
+}
 
 export function activityService(db: Db) {
   const scheduledLivenessBackfills = new Set<string>();
@@ -425,6 +436,21 @@ export function activityService(db: Db) {
           sql`${activityLog.details}->>'duplicate' is distinct from 'true'`,
         ))
         .orderBy(commentId, activityLog.action, asc(activityLog.createdAt), asc(activityLog.id));
+    },
+
+    /** Adds actorName to each row; agents and API readers name the actor without its raw id. */
+    withActorNames: async <T extends { actorType: string; actorId: string; companyId: string }>(rows: T[]): Promise<Array<T & { actorName: string }>> => {
+      // actorId is free text; only a UUID can name a row in agents.
+      const agentIds = [...new Set(rows.filter(row => row.actorType === "agent" && UUID_PATTERN.test(row.actorId)).map(row => row.actorId))];
+      const userIds = [...new Set(rows.filter(row => row.actorType === "user" && row.actorId !== "local-board").map(row => row.actorId))];
+      const [agentRows, userRows] = await Promise.all([
+        agentIds.length ? db.select({ id: agents.id, companyId: agents.companyId, name: agents.name }).from(agents).where(inArray(agents.id, agentIds)) : [],
+        userIds.length ? db.select({ id: authUsers.id, name: authUsers.name }).from(authUsers).where(inArray(authUsers.id, userIds)) : [],
+      ]);
+      const agentNames = new Map(agentRows.map(row => [`${row.companyId}:${row.id}`, row.name]));
+      const userNames = new Map(userRows.filter(row => row.name?.trim()).map(row => [row.id, row.name!.trim()]));
+      return rows.map(row => ({ ...row, actorName: (row.actorType === "agent" ? agentNames.get(`${row.companyId}:${row.actorId}`)
+        : row.actorType === "user" ? userNames.get(row.actorId) : undefined) ?? activityActorFallbackName(row.actorType, row.actorId) }));
     },
 
     forIssue: (issueId: string, limit?: number) => {

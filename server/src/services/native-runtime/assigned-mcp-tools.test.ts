@@ -1,8 +1,28 @@
+import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import type { Db } from "@paperclipai/db";
 import { ToolGatewayHttpError, type ToolGatewayDescriptor, type ToolGatewayService } from "../tool-gateway.js";
-import { createAssignedMcpTools, getAssignedMcpGateway, registerAssignedMcpGateway } from "./assigned-mcp-tools.js";
+import {
+  ASSIGNED_SCHEMA_ADMISSION_CACHE_ENTRIES, ASSIGNED_SCHEMA_LISTING_BUDGET_BYTES, assignedSchemaAdmissionCacheSize,
+  createAssignedMcpTools, getAssignedMcpGateway, registerAssignedMcpGateway,
+} from "./assigned-mcp-tools.js";
+import { admitToolInputSchema } from "../../vendor/paperclip-runner/index.js";
 import { startOpenCodeMcpBridge } from "../../vendor/paperclip-runner/testing.js";
+
+vi.mock("../../vendor/paperclip-runner/index.js", async importOriginal => {
+  const actual = await importOriginal<typeof import("../../vendor/paperclip-runner/index.js")>();
+  return { ...actual, admitToolInputSchema: vi.fn(actual.admitToolInputSchema) };
+});
+
+function sizedSchema(bytes: number): Record<string, unknown> {
+  const marker = randomUUID();
+  return { type: "object", description: `${marker}${"x".repeat(Math.max(0, bytes - 80))}`, properties: { name: { type: "string" } } };
+}
+
+function compiledDescriptions(): string[] {
+  return vi.mocked(admitToolInputSchema).mock.calls.map(([schema]) => String(schema.description).slice(0, 36));
+}
 
 function descriptor(name: string, risk: ToolGatewayDescriptor["risk"] = "read"): ToolGatewayDescriptor {
   return { name, displayName: name, description: `Use ${name}`, parametersSchema: { type: "object", properties: { query: { type: "string" } } }, pluginId: "fixture", providerType: "mcp_remote_http", risk };
@@ -348,14 +368,17 @@ describe("assigned MCP runner tools", () => {
     const schema = { type: "object", description: "\u0000🙂".repeat(150_000), properties: {} };
     const f = fixture([{ ...descriptor("a_large"), parametersSchema: schema }, descriptor("z_small")]);
     const assigned = await createAssignedMcpTools(f);
-    const large = assigned.definitions()[0]!.name as string;
     const page = await assigned.execute({ tool: searchName, arguments: { query: "", limit: 1 } }) as {
       tools: Array<Record<string, unknown>>; nextOffset: number;
     };
+    const large = page.tools[0]!.name as string;
     expect(page.tools).toEqual([{ name: large, description: "a_large: Use a_large", inputSchemaRef: large }]);
     expect(page.nextOffset).toBe(1);
-    await expect(assigned.execute({ tool: searchName, arguments: { query: "", offset: page.nextOffset } }))
-      .resolves.toEqual({ tools: [assigned.definitions()[1]], nextOffset: null });
+    const rest = await assigned.execute({ tool: searchName, arguments: { query: "", offset: page.nextOffset } }) as {
+      tools: Array<Record<string, unknown>>; nextOffset: number | null;
+    };
+    expect(rest.tools.map(tool => tool.description)).toEqual(["z_small: Use z_small"]);
+    expect(rest.nextOffset).toBeNull();
     let schemaOffset: number | null = 0;
     let serialized = "";
     do {
@@ -388,6 +411,88 @@ describe("assigned MCP runner tools", () => {
     expect(getAssignedMcpGateway(firstDb)).toBe(first);
     registerAssignedMcpGateway(firstDb, second);
     expect(getAssignedMcpGateway(firstDb)).toBe(second);
+  });
+
+  it("never compiles an app schema over the Runner byte limit and serves that tool only through search", async () => {
+    const large = sizedSchema(600 * 1024), small = sizedSchema(200);
+    const f = fixture([{ ...descriptor("deploy:large"), parametersSchema: large }, { ...descriptor("deploy:small"), parametersSchema: small }]);
+    vi.mocked(admitToolInputSchema).mockClear();
+    const assigned = await createAssignedMcpTools(f);
+    expect(assigned.definitions().map(tool => tool.name)).toEqual(["paperclip_search_assigned_tools", "paperclip_call_assigned_tool"]);
+    expect(compiledDescriptions()).toEqual([String(small.description).slice(0, 36)]);
+    const page = await assigned.execute({ tool: searchName, arguments: { query: "deploy", limit: 20 } }) as { tools: Array<Record<string, unknown>> };
+    expect(page.tools.map(tool => tool.description)).toEqual(["deploy:large: Use deploy:large", "deploy:small: Use deploy:small"]);
+  });
+
+  it("stops compiling at the listing budget, keeps earlier tools offered, and serves the rest only through search", async () => {
+    const schemas = [300, 300, 300, 1].map(kib => sizedSchema(kib * 1024));
+    const listing = schemas.map((schema, index) => ({ ...descriptor(`deploy:tool_${index}`), parametersSchema: schema }));
+    expect(schemas.slice(0, 2).reduce((total, schema) => total + Buffer.byteLength(JSON.stringify(schema)), 0)).toBeLessThanOrEqual(ASSIGNED_SCHEMA_LISTING_BUDGET_BYTES);
+    expect(schemas.slice(0, 3).reduce((total, schema) => total + Buffer.byteLength(JSON.stringify(schema)), 0)).toBeGreaterThan(ASSIGNED_SCHEMA_LISTING_BUDGET_BYTES);
+    for (const attempt of [1, 2]) {
+      const f = fixture(listing);
+      vi.mocked(admitToolInputSchema).mockClear();
+      const assigned = await createAssignedMcpTools(f);
+      expect(compiledDescriptions()).toEqual(attempt === 1 ? schemas.slice(0, 2).map(schema => String(schema.description).slice(0, 36)) : []);
+      expect(assigned.definitions().map(tool => tool.name)).toEqual(["paperclip_search_assigned_tools", "paperclip_call_assigned_tool"]);
+      const found: Array<Record<string, unknown>> = [];
+      for (let offset: number | null = 0; offset !== null;) {
+        const page = await assigned.execute({ tool: searchName, arguments: { query: "deploy", offset, limit: 20 } }) as {
+          tools: Array<Record<string, unknown>>; nextOffset: number | null;
+        };
+        found.push(...page.tools);
+        offset = page.nextOffset;
+      }
+      expect(found.map(tool => tool.description)).toEqual(listing.map(tool => `${tool.name}: Use ${tool.name}`));
+      for (const tool of found) await assigned.execute({ tool: callName, arguments: { name: tool.name, arguments: { name: "site" } } });
+      expect(f.executeTool.mock.calls.map(([call]) => call.tool)).toEqual(listing.map(tool => tool.name));
+    }
+  });
+
+  it("compiles a new schema one time when several runs start together", async () => {
+    const listing = [{ ...descriptor("deploy:shared"), parametersSchema: sizedSchema(400) }];
+    vi.mocked(admitToolInputSchema).mockClear();
+    const assigned = await Promise.all([1, 2, 3, 4].map(() => createAssignedMcpTools(fixture(listing))));
+    expect(admitToolInputSchema).toHaveBeenCalledTimes(1);
+    for (const tools of assigned) expect(tools.definitions().map(tool => tool.description)).toEqual(["deploy:shared: Use deploy:shared"]);
+  });
+
+  it("does not compile an unchanged schema again and keeps the outcome cache bounded", async () => {
+    const listing = Array.from({ length: ASSIGNED_SCHEMA_ADMISSION_CACHE_ENTRIES + 10 }, (_, index) =>
+      ({ ...descriptor(`bulk:tool_${index}`), parametersSchema: sizedSchema(120) }));
+    vi.mocked(admitToolInputSchema).mockClear();
+    await createAssignedMcpTools(fixture(listing.slice(-5)));
+    await createAssignedMcpTools(fixture(listing.slice(-5)));
+    expect(admitToolInputSchema).toHaveBeenCalledTimes(5);
+    await createAssignedMcpTools(fixture(listing));
+    expect(assignedSchemaAdmissionCacheSize()).toBe(ASSIGNED_SCHEMA_ADMISSION_CACHE_ENTRIES);
+  }, 30_000);
+
+  it.each([undefined, "on_demand"] as const)("offers and executes every app schema the Runner validates and withholds the rest (%s)", async delivery => {
+    const shared = JSON.parse(readFileSync(new URL("../../../../packages/paperclip-runner/test/fixtures/tool-input-schema-fixtures.json", import.meta.url), "utf8")) as {
+      cases: Array<{ name: string; accepted: boolean; dialectUri?: string; schema: Record<string, unknown>; valid?: Record<string, unknown>[] }>;
+    };
+    const descriptors = shared.cases.map(entry => ({ ...descriptor(`deploy:${entry.name}`), parametersSchema: entry.schema }) as ToolGatewayDescriptor);
+    const f = fixture(descriptors);
+    const assigned = await createAssignedMcpTools({ ...f, ...(delivery ? { delivery } : {}) });
+    const offered = delivery
+      ? (await assigned.execute({ tool: searchName, arguments: { query: "", limit: 20 } }) as { tools: Array<Record<string, unknown>> }).tools
+      : assigned.definitions();
+    expect(offered.map(tool => tool.description)).toEqual(expect.arrayContaining(
+      shared.cases.filter(entry => entry.accepted).map(entry => expect.stringContaining(entry.name))));
+    expect(offered).toHaveLength(shared.cases.filter(entry => entry.accepted).length);
+    for (const entry of shared.cases) {
+      const tool = offered.find(candidate => String(candidate.description).endsWith(`deploy:${entry.name}`));
+      if (!entry.accepted) {
+        expect(tool).toBeUndefined();
+        continue;
+      }
+      expect((tool!.inputSchema as Record<string, unknown>).$schema).toBe(entry.dialectUri);
+      const args = entry.valid![0]!;
+      await assigned.execute(delivery ? { tool: callName, arguments: { name: tool!.name, arguments: args } } : { tool: String(tool!.name), arguments: args });
+      expect(f.executeTool).toHaveBeenLastCalledWith(expect.objectContaining({ tool: `deploy:${entry.name}`, parameters: args }));
+    }
+    expect(f.executeTool).toHaveBeenCalledTimes(shared.cases.filter(entry => entry.accepted).length);
   });
 
   it("projects only authorized gateway tools with stable bounded collision-resistant names", async () => {

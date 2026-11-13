@@ -7,7 +7,7 @@ import { distributionBundleDigest, readDistributionPluginCatalog } from "../../s
 import { derivePluginDatabaseNamespace } from "../../services/plugin-database.js";
 import { createBundledPluginPackageResolver } from "../../services/bundled-plugin-package.js";
 
-export function bundledImageFixture(manifestOverrides: Partial<PaperclipPluginManifestV1> = {}, options: { workerPrelude?: string } = {}) {
+export function bundledImageFixture(manifestOverrides: Partial<PaperclipPluginManifestV1> = {}, options: { workerPrelude?: string; workerCredentialEnv?: string[] } = {}) {
   const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), "bundled-image-")));
   const packageRoot = path.join(root, "distribution", "fixture");
   const manifest: PaperclipPluginManifestV1 = {
@@ -41,7 +41,7 @@ else {
     mkdirSync(path.join(packageRoot, manifest.database.migrationsDir), { recursive: true });
     writeFileSync(path.join(packageRoot, manifest.database.migrationsDir, "001_fixture.sql"), `CREATE TABLE ${derivePluginDatabaseNamespace(manifest.id)}.image_rows (id uuid PRIMARY KEY);`);
   }
-  const entry = { key: "fixture", pluginKey: manifest.id, version: manifest.version, directory: "fixture", digest: distributionBundleDigest(packageRoot) };
+  const entry = { key: "fixture", pluginKey: manifest.id, version: manifest.version, directory: "fixture", digest: distributionBundleDigest(packageRoot), workerCredentialEnv: options.workerCredentialEnv };
   writeFileSync(path.join(root, "distribution", "catalog.json"), JSON.stringify({ schemaVersion: 1, plugins: [entry] }));
   const catalog = readDistributionPluginCatalog(root, BUNDLED_PLUGIN_CATALOG);
   const installs = resolveBundledPluginInstalls(["fixture"], { catalogRoot: root, enforceCatalogRoot: true, env: {}, distributionPlugins: catalog });

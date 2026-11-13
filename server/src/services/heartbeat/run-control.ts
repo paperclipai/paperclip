@@ -1676,6 +1676,11 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
           level: "warn",
           message: options.eventMessage ?? "run cancelled",
           payload: { ...options.eventPayload, cancellation: readRunCancellation(cancelled.resultJson) },
+        }).catch((eventErr) => {
+          logger.warn(
+            { err: eventErr, runId: run.id },
+            "failed to append run event for cancellation",
+          );
         });
         await releaseIssueExecutionAndPromote(cancelled, {
           suppressImmediateRecovery: options.suppressImmediateRecovery,

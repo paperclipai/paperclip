@@ -1,4 +1,53 @@
-# Profile the complete PR suite
+# CI timing in Honeycomb
+
+CI CODEOWNER PRs send their CI timing to Honeycomb in two ways:
+
+| | Sampled (always on) | `profile-ci` label |
+| --- | --- | --- |
+| Which runs | One `PR` run in ten, by run number | Every run while the label is on |
+| CI scope | Whatever the PR normally runs | All lanes of the main PR suite |
+| Trace detail | Workflow, jobs, steps, outside checks | The same, plus test files and tests |
+| Sample rate on spans | 10 | 1 |
+
+Both are exported by the **CI profile** workflow after the `PR` run finishes,
+to the `paperclip-ci` dataset. Outside contributors' PRs are never exported.
+
+## Sampled runs
+
+A `PR` run is sampled when its run number ends in 0. Sampling keeps or drops a
+whole run: a sampled trace has every job and step. Each span carries a sample
+rate of 10, so Honeycomb's counts and sums scale back to all runs, and duration
+percentiles need no correction. `ci.profile_source` is `sampled`, and
+`ci.pr_number` identifies the PR. Sampled runs change nothing in the PR jobs
+and write no timing artifacts; job and step times come from the GitHub API.
+
+A particular PR's run is in Honeycomb only if it was sampled. To inspect one
+PR, add the label.
+
+## Outside checks and total time
+
+Every trace also has one span for each check on the PR's head commit that is
+not a job of the `PR` workflow:
+
+- `ci.kind=external_check`: reviews and scans from other apps, such as
+  Greptile, and commit statuses (`ci.check_app=commit-status`).
+- `ci.kind=workflow_check`: other workflows the PR started, one span each.
+
+The root span has two totals. `ci.workflow_ms` is the `PR` workflow, from run
+creation to its last job. `ci.all_checks_ms` runs from the same start to the
+last check of any kind, and `ci.last_to_finish` names it. `ci.slowest_check`
+and `ci.slowest_check_ms` name the longest outside check.
+
+If an outside app's check is still running when the `PR` workflow finishes,
+the exporter waits up to 15 minutes for it. It does not wait for other
+workflows. Checks still running at export have no span; they are counted in
+`ci.pending_check_count` and listed in `ci.pending_checks`, and
+`ci.all_checks_ms` excludes them. Checks that started more than a minute
+before the run, such as those from a push before a later label event, are
+counted in `ci.earlier_check_count` and left out. Reruns carry no outside
+checks. A workflow's completion time is its last update in GitHub.
+
+## Profile the complete PR suite
 
 Add the `profile-ci` label to a PR authored by a CI CODEOWNER. Adding the label starts a fresh `PR` workflow
 run. Further pushes while the label remains also run with profiling enabled.
@@ -20,8 +69,9 @@ A label on an outside contributor's PR does not enable profiling, even when a
 maintainer applies it. The PR still runs normal CI and needs no Honeycomb
 access. Failed identity lookups disable profiling.
 
-Ordinary PRs do not write timing artifacts or export traces. The exporter job is
-skipped for ordinary run names. Adding another label does not run the CI matrix.
+Ordinary PRs do not write timing artifacts. The exporter job is skipped for
+ordinary run names unless the run is sampled. Adding another label does not run
+the CI matrix.
 
 Profiling preserves the existing trusted AWS runner routing. Eligible PR jobs
 use `paperclip-public-pr-x64`. The synchronized maintainer admission roster
@@ -40,8 +90,8 @@ cannot be authorized. The separate post-run Honeycomb exporter also uses
 The workflow root measures elapsed time from run creation to the last job's
 completion. For reruns, it starts at that attempt's `run_started_at` instead of
 the original creation time. Every job is a child on the same wall clock, with
-its steps and available test details beneath it. All spans use a sample rate of
-one. There is no sampling within the selected attempt. For a compact Gantt view,
+its steps and available test details beneath it. Labelled runs use a sample
+rate of one. There is no sampling within the selected attempt. For a compact Gantt view,
 open a job row's menu and choose **Collapse spans at this depth**. Expand an
 individual job to inspect its steps and test files.
 
@@ -129,8 +179,16 @@ Create the repository label `profile-ci` if it does not exist.
 the exporter, installs no dependencies, and parses PR artifacts as bounded JSON
 without extracting or executing their contents. The PR jobs never receive the
 Honeycomb key. The exporter independently verifies CI CODEOWNER identities,
-the current label, repository, and exact tested PR revision before reading
-artifacts or sending data. Its credential is sent only in an HTTPS header to
+the repository, the exact tested PR revision and, for labelled runs, the
+current label before reading artifacts or sending data.
+
+The export job's condition is a first filter, evaluated before a runner starts
+or the environment is entered. It requires the main `PR` workflow on a branch
+of this repository, an actor and rerun actor on the `AWS_CI_ROUTING_USER_IDS`
+maintainer roster that CI routing uses, and a labelled or sampled run. A fork
+PR, or a run started or rerun by anyone off the roster, skips the job. The
+roster only filters: the CODEOWNERS check in the exporter decides. If the
+roster variable is empty, nothing is exported. Its credential is sent only in an HTTPS header to
 `api.honeycomb.io`; redirects are rejected. Exported fields are allowlisted.
 `CODEOWNERS` also covers `scripts/ci-profile/**`, so changes to the privileged
 exporter require infrastructure-owner review.

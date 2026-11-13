@@ -30,26 +30,26 @@ pub(crate) fn runtime_notification_codex_args(
     paths: &[PathBuf; 4],
 ) -> Vec<String> {
     let prefix = "shell_environment_policy.include_only=";
-    let Some(keys) = args.iter().rev().find_map(|arg| arg.strip_prefix(prefix)) else {
-        return vec![];
-    };
-    let Ok(mut keys) = serde_json::from_str::<Vec<String>>(keys) else {
-        return vec![];
-    };
-    for key in [
-        crate::runtime_notifications::CONTEXT_ENV,
-        crate::runtime_notifications::HELPER_ENV,
-    ] {
-        if !keys.iter().any(|existing| existing == key) {
-            keys.push(key.into());
+    let mut extra = Vec::new();
+    if let Some(keys) = args.iter().rev().find_map(|arg| arg.strip_prefix(prefix)) {
+        let Ok(mut keys) = serde_json::from_str::<Vec<String>>(keys) else {
+            return vec![];
+        };
+        for key in [
+            crate::runtime_notifications::CONTEXT_ENV,
+            crate::runtime_notifications::HELPER_ENV,
+        ] {
+            if !keys.iter().any(|existing| existing == key) {
+                keys.push(key.into());
+            }
         }
+        extra.extend([
+            "-c".into(),
+            format!("{prefix}{}", serde_json::to_string(&keys).unwrap()),
+            "-c".into(),
+            "shell_environment_policy.inherit=\"all\"".into(),
+        ]);
     }
-    let mut extra = vec![
-        "-c".into(),
-        format!("{prefix}{}", serde_json::to_string(&keys).unwrap()),
-        "-c".into(),
-        "shell_environment_policy.inherit=\"all\"".into(),
-    ];
     for profile in BTreeSet::from([profile, "paperclip-runner-workspace-read-only"]) {
         let prefix = format!("permissions.{profile}.filesystem=");
         let Some(value) = args.iter().rev().find_map(|arg| arg.strip_prefix(&prefix)) else {
@@ -5198,6 +5198,48 @@ mod tests {
             Value::Null
         )));
         assert!(!proves(page(json!([{"status": "completed"}]), Value::Null)));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn runtime_notification_grants_file_access_without_an_environment_allowlist() {
+        let profile = "paperclip-runner-workspace-read-only";
+        let args = vec![
+            "shell_environment_policy.inherit=\"all\"".to_string(),
+            "shell_environment_policy.exclude=[\"OPENAI_API_KEY\"]".to_string(),
+            format!("permissions.{profile}.filesystem={{\":root\"=\"none\"}}"),
+        ];
+        let paths = [
+            PathBuf::from("/runtime/runnerd"),
+            PathBuf::from("/state/private/runtime-notifications.json"),
+            PathBuf::from("/tmp/prn-channel/activity.lock"),
+            PathBuf::from("/tmp/prn-channel/activity.fifo"),
+        ];
+        let extra = runtime_notification_codex_args(&args, profile, &paths);
+        assert!(!extra
+            .iter()
+            .any(|arg| arg.starts_with("shell_environment_policy.include_only=")));
+        let prefix = format!("permissions.{profile}.filesystem=");
+        let value = extra
+            .iter()
+            .find_map(|arg| arg.strip_prefix(&prefix))
+            .unwrap();
+        let config = format!("filesystem={value}")
+            .parse::<toml_edit::DocumentMut>()
+            .unwrap();
+        let filesystem = config["filesystem"].as_inline_table().unwrap();
+        assert_eq!(
+            filesystem
+                .get("/tmp/prn-channel")
+                .and_then(toml_edit::Value::as_str),
+            Some("write")
+        );
+        assert_eq!(
+            filesystem
+                .get("/runtime/runnerd")
+                .and_then(toml_edit::Value::as_str),
+            Some("read")
+        );
     }
 
     #[test]

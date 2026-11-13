@@ -7,7 +7,7 @@ import { randomUUID } from "node:crypto";
 type Listener = (event: "intent" | "settled", hints?: ReadonlySet<string>) => void;
 type Transaction = { topics: Set<string>; hints: Map<string, Set<string>>; xid?: Promise<string>; uncertain: boolean };
 type Scope = { key: object; listeners: Map<string, Set<Listener>>; transactions: Set<Transaction>; root: Connection; notificationOrigin: string; notify: boolean };
-type Context = { scope: Scope; transaction?: Transaction };
+type Context = { scope: Scope; transaction?: Transaction; pending?: Map<string, string>; ended?: boolean };
 type Connection = { transaction: (...args: any[]) => Promise<any>; execute: (...args: any[]) => Promise<any> };
 const contexts = new WeakMap<object, Context>();
 
@@ -33,10 +33,21 @@ function install(connection: Connection, context: Context) {
     // savepoint must not wake a consumer before its parent commits.
     const state = context.transaction ?? { topics: new Set<string>(), hints: new Map<string, Set<string>>(), uncertain: false };
     try {
+      let level: Context | undefined;
       const result = await transaction.call(this, async (tx: Connection) => {
-        install(tx, { scope: context.scope, transaction: state });
-        return callback(tx);
+        const current: Context = { scope: context.scope, transaction: state, pending: new Map() };
+        level = current;
+        install(tx, current);
+        try {
+          const value = await callback(tx);
+          current.ended = true;
+          if (!context.transaction) await flushNotifications(tx, current.pending!);
+          return value;
+        } finally { current.ended = true; }
       }, ...options);
+      if (context.pending && level?.pending) {
+        for (const [key, payload] of level.pending) if (!context.pending.has(key)) context.pending.set(key, payload);
+      }
       if (!context.transaction) context.scope.transactions.delete(state);
       return result;
     } catch (error) {
@@ -74,11 +85,19 @@ export async function signalDatabaseWork(connection: object, topic: string, hint
   // Keep a failed acquisition distinguishable from an uncertain queue write.
   try { await state.xid; }
   catch (error) { state.xid = undefined; throw error; }
-  if (context.scope.notify) {
-    // PostgreSQL delivers only after the outer commit, including savepoints.
-    // Queue rows remain authoritative; notification payloads contain no data.
-    await (connection as Connection).execute(sql`select pg_notify(${DATABASE_WORK_CHANNEL}, ${notification(context.scope, topic)})`);
-  }
+  if (context.scope.notify) notifyAtCommit(context, notification(context.scope, topic));
+}
+
+function notifyAtCommit(context: Context, payload: string): void {
+  if (context.ended) throw new Error("Database work was signalled after its transaction or savepoint ended");
+  const key = `${DATABASE_WORK_CHANNEL}\u0000${payload}`;
+  if (!context.pending!.has(key)) context.pending!.set(key, payload);
+}
+
+async function flushNotifications(connection: Connection, pending: Map<string, string>): Promise<void> {
+  if (pending.size === 0) return;
+  await connection.execute(sql`select pg_notify(${DATABASE_WORK_CHANNEL}, payload)
+    from jsonb_array_elements_text(${JSON.stringify([...pending.values()])}::jsonb) as notification(payload)`);
 }
 
 export const DATABASE_WORK_CHANNEL = "paperclip_work_v1";
@@ -92,6 +111,18 @@ export function enableDatabaseWorkNotifications(owner: object): void {
   if (!scope) throw new Error("Database work notifications require createDb");
   scope.notify = true;
 }
+/**
+ * A commit-bound hint to other server processes, sent on the transaction's own connection. Unlike
+ * signalDatabaseWork it registers no local intent, so a failed transaction leaves nothing to reconcile
+ * on another pool. For writers whose correctness never depends on this hint (best-effort wakes).
+ */
+export async function notifyDatabaseWorkOnCommit(connection: object, topic: string): Promise<void> {
+  const context = contexts.get(connection);
+  if (!context?.scope.notify) return;
+  if (!context.transaction) throw new Error("Database work must be registered inside a transaction");
+  notifyAtCommit(context, notification(context.scope, topic));
+}
+
 /** A post-commit invalidation hint, for already-persisted live UI state. */
 export async function publishDatabaseWorkHint(owner: object, topic: string): Promise<void> {
   const scope = contexts.get(owner)?.scope;

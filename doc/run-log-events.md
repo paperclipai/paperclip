@@ -698,16 +698,16 @@ run phases:
 
 | Phase | Step |
 | --- | --- |
-| `storage.snapshot.download` | Get the encrypted archive from storage and hash it while it streams. |
-| `storage.snapshot.decrypt` | Decrypt the archive to private scratch. |
-| `storage.snapshot.verify_plaintext` | Hash the decrypted archive against its sealed digest. |
-| `storage.snapshot.publish` | Copy the verified archive to its destination. |
+| `storage.snapshot.download` | Get the encrypted archive from storage. |
+| `storage.snapshot.decrypt` | Hash the downloaded archive and decrypt it to private scratch, at the same time on worker threads. |
+| `storage.snapshot.verify_plaintext` | Hash the decrypted archive against its sealed digest while copying it beside its destination, on a worker thread. |
+| `storage.snapshot.publish` | Link the verified copy to its destination. |
 | `workspace.snapshot.sandbox_restore` | Upload and unpack the archive in the sandbox. |
 | `workspace.snapshot.sandbox_upload` | Inside `sandbox_restore`: copy the archive into the sandbox. |
 | `workspace.snapshot.sandbox_extract` | Inside `sandbox_restore`: verify and unpack the archive, then publish the restored folder. |
 | `storage.snapshot.prior_attempts` | Check whether an earlier upload attempt already landed. |
-| `storage.snapshot.encrypt` | Hash and encrypt the archive in one pass. |
-| `storage.snapshot.digest` | Hash the encrypted file that is uploaded. |
+| `storage.snapshot.encrypt` | Hash the archive, encrypt it and hash the encrypted file, in one pass on a worker thread. |
+| `storage.snapshot.digest` | Record the digest of the encrypted file. The `encrypt` pass computes it, so this step takes no time. |
 | `storage.snapshot.put` | Upload the encrypted archive (multipart above 16 MiB). |
 | `storage.snapshot.verify` | Confirm the stored object (its size when the backend checked every part, otherwise a full read-back). |
 
@@ -969,6 +969,48 @@ or message content. The event establishes the accounting baseline; it is not a
 new billable usage receipt or a user-facing provider warning. Other provider
 identity checks remain in force.
 
+## OpenRouter serving host
+
+OpenRouter can route one model across many hosts, which may serve different
+quantizations. OpenCode runs routed through OpenRouter record which host served
+each model call. The runner's provider proxy reads the top-level `provider` and
+`id` fields from the first streamed chunk, or from the whole JSON body when the
+response is not streamed. It forwards every byte to OpenCode unchanged and
+before it inspects them, so the first token is not delayed. It scans at most
+the first 64 KiB of a stream and 1 MiB of a JSON body. It skips encoded bodies,
+non-2xx responses, and any malformed or missing field. A recording failure
+never affects the response or the turn.
+
+Each `item.completed` usage event (`payload.kind: "usage"`) carries two fields
+in `payload.usage`:
+
+- `upstreamProvider`: the host that served the most recently finished model
+  call when the usage was reported, such as `Novita` or `DeepInfra`.
+- `providerRequestId`: that call's OpenRouter generation ID, such as
+  `gen-1762981234-AbCdEfGh`.
+
+The proxy records a call's host when that call's response ends, not when the
+request starts. OpenCode reports a step's usage only a few milliseconds before
+it sends the next model request, so a step's usage still names its own call's
+host while the next call is in flight. A call whose host the proxy could not
+read records no host when it ends, and a session clears the recorded host when
+it attaches another run. Such a call therefore carries neither field. It never
+inherits an earlier call's or an earlier run's values.
+
+The runner's internal `usage.reported` event carries the same values, using its
+existing `providerRequestId` field and an optional `upstreamProvider` field.
+The run's `usageJson.providerRequestId` and its cost event name the first
+generation ID the run reported. That value stays the same as later turns
+report, so a late usage receipt still matches the charge. Remote Runner runs carry
+the same ID in each saved usage receipt's producer event and in the receipt
+itself. A receipt saved before this field existed still replays when the
+Runner now names an ID. Per-call IDs and
+hosts remain in the run log. Runs whose provider reports no host carry neither
+field, and `usageJson.providerRequestId` stays `null` as before.
+
+These are run-log fields. They stay in the instance database and are not sent
+to Paperclip Telemetry or OpenTelemetry.
+
 ## AI subscription contention
 
 A fresh task execution cannot enter this wait. A run that already entered this
@@ -1001,6 +1043,60 @@ creates no Telemetry or OpenTelemetry export.
 
 Neither wait consumes the provider-failure retry allowance. Each stops after 30
 deferrals, after which the run follows the normal failure path.
+
+## Task history reads
+
+When a native run reads its task's comments through `get_task_history`, the
+server writes one `task_history.read` event (`stream: "system"`, level `info`)
+to that run's log. Its payload has one field, `comments`, which maps each
+returned comment ID to that comment's `updatedAt` timestamp. It contains no comment bodies or
+author identifiers. The event creates no Telemetry or OpenTelemetry export.
+
+Per-comment delivery (`deliveredQueuedCommentIds`) reads this event together
+with the run's `run.result.accepted` event. A read alone is not delivery: the
+run may have read the comment and set it aside. A comment counts as received
+only when a run of the task's assignee succeeded after reading the comment's
+current revision, and that run's accepted result cites the comment as a
+`comment:<id>` evidence reference (top-level `evidence[].ref` or a criterion's
+`evidenceRefs`). The comment's queued wake then neither reopens the finished
+task nor starts another turn. An edit after the read, a read by a run that did
+not succeed, or a read the result does not cite leaves the comment owed, so it
+is delivered once in a new turn. That turn's wake marks the comment
+`readByEarlierTurn` when an earlier finished run read its current revision, and
+the prompt asks the agent to check the current task state before acting so
+already-applied work is not repeated. `get_task_history` returns
+`arrivedDuringThisTurn` (the `comment:<id>` refs of comments that other authors
+posted or edited after the run started) with instructions to cite each applied
+comment. The check reads only the assignee's succeeded runs of that task that
+finished at or after the comment's current revision, through the existing
+run-binding and `(company_id, run_id)` event indexes. A saved follow-up
+resumed after a remote Stop uses the same rule. `taskHistoryReadsForRun` lists
+the comments one run read, with each read's time and the comment revision it
+saw, whatever the run's outcome. A failure to write the event leaves the
+comment owed in the same way.
+
+When a run reads a finished child task, the server writes one
+`child_task.read` event (`stream: "system"`, level `info`) to that run's log.
+The reads that count are `get_task_context` on the parent task, and a
+successful agent request with a run token for `GET /api/issues/:id`,
+`GET /api/issues/:id/documents` or `GET /api/issues/:id/documents/:key` of a
+child in `done`. The route writes the event only after the requested content
+has loaded, so a 400 or 404 records nothing. The payload has `parentIssueId`
+and `children`, which maps each finished child ID to the revision the run
+received: its `status`, `updatedAt` and `statusDecisionId`. It contains no
+titles, summaries or document bodies. The event creates no Telemetry or
+OpenTelemetry export.
+
+`hasPendingNativeChildCompletion` reads this event. A child-completion wake no
+longer keeps the parent's done claim open when the finishing run received that
+child in `done` at the completion the wake reports: the received
+`statusDecisionId` is the wake's completion decision, or the received
+`updatedAt` is at or after that decision was saved. The event's own write time
+does not count, so a delayed write of an older revision cannot deliver a newer
+completion. The wake is then cancelled at release instead of starting another
+parent turn. A read while the child was still open, a read of an older
+revision, a read by another run, or a failure to write the event leaves the
+child result owed.
 
 ## Managed Agent File Save Receipts
 

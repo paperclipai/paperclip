@@ -16,6 +16,8 @@ import { connectionGrants, toolApplications, toolCatalogEntries, toolConnections
 import type { ToolCatalogRefreshResult } from "@paperclipai/shared";
 import { getConnectableAppDefinition, isGoogleWorkspaceConnectorProfileId } from "@paperclipai/shared";
 import { HttpError, unprocessable } from "../../../errors.js";
+import { logger } from "../../../middleware/logger.js";
+import { mcpSkillsService } from "../../mcp-skills.js";
 import { isRailwayEndpoint, isRailwayToolBlocked } from "../../railway.js";
 
 import type { ToolAccessAudit } from "../audit.js";
@@ -39,6 +41,7 @@ type PublicationDependencies = {
   audit: ToolAccessAudit;
   getConnectionRow(idOrUid: string, companyId?: string): Promise<typeof toolConnections.$inferSelect>;
   discoverTools: ToolCatalogDiscovery["discoverTools"];
+  discoverSkills?: ToolCatalogDiscovery["discoverSkills"];
   assertConnectorConnectionSetupEnabled: ConnectionSetupPolicy["assertConnectorConnectionSetupEnabled"];
   updateConnectionHealth: ConnectionHealth["updateConnectionHealth"];
   vaultGrantForConnection: ConnectionCredentialAccess["vaultGrantForConnection"];
@@ -46,7 +49,24 @@ type PublicationDependencies = {
   enableCatalogEntriesByDefault: CatalogDefaultAccess["enableCatalogEntriesByDefault"];
 };
 
-export function createToolCatalogPublication(db: Db, { now, audit, getConnectionRow, discoverTools, assertConnectorConnectionSetupEnabled, updateConnectionHealth, vaultGrantForConnection, ensureRuntimeSlot, enableCatalogEntriesByDefault }: PublicationDependencies) {
+export function createToolCatalogPublication(db: Db, { now, audit, getConnectionRow, discoverTools, discoverSkills, assertConnectorConnectionSetupEnabled, updateConnectionHealth, vaultGrantForConnection, ensureRuntimeSlot, enableCatalogEntriesByDefault }: PublicationDependencies) {
+  /**
+   * MCP Skills: list the skills a server publishes and reconcile them. A
+   * skill problem never fails the tool catalog refresh it rides on.
+   */
+  async function refreshSkills(connection: typeof toolConnections.$inferSelect, actor?: ActorInfo) {
+    if (!discoverSkills) return;
+    try {
+      const listed = await discoverSkills(connection, actor);
+      if (!listed?.fresh) return;
+      await mcpSkillsService(db).reconcileListing(connection, listed.entries, actor?.actorId
+        ? { actorType: actor.actorType ?? "user", actorId: actor.actorId }
+        : undefined);
+    } catch (error) {
+      logger.warn({ err: error, connectionId: connection.id }, "Could not refresh the skills this app publishes");
+    }
+  }
+
   async function refreshCatalog(
     connectionId: string,
     actor?: ActorInfo,
@@ -224,7 +244,7 @@ export function createToolCatalogPublication(db: Db, { now, audit, getConnection
         id: existing?.id, companyId: connection.companyId, applicationId: connection.applicationId,
         connectionId: connection.id, name: existing?.name ?? descriptor.name, toolName: descriptor.name, entryKind: "tool",
         title: descriptor.title ?? null, description: descriptor.description ?? null,
-        inputSchema: descriptor.inputSchema ?? {}, annotations: descriptor.annotations ?? {}, riskLevel,
+        inputSchema: descriptor.inputSchema ?? {}, annotations: descriptor.annotations ?? {}, uiMeta: descriptor.ui ?? null, icons: descriptor.icons ?? null, riskLevel,
         isReadOnly: riskLevel === "read", isWrite: riskLevel === "write", isDestructive: riskLevel === "destructive",
         status, versionHash: hash, schemaHash, firstSeenAt: existing?.firstSeenAt ?? refreshedAt, lastSeenAt: refreshedAt,
         quarantinedAt: existing
@@ -247,7 +267,7 @@ export function createToolCatalogPublication(db: Db, { now, audit, getConnection
         const rows = await tx.insert(toolCatalogEntries).values(chunk)
           .onConflictDoUpdate({ target: [toolCatalogEntries.connectionId, toolCatalogEntries.name], set: {
             title: sql`excluded.title`, description: sql`excluded.description`, inputSchema: sql`excluded.input_schema`,
-            annotations: sql`excluded.annotations`, riskLevel: sql`excluded.risk_level`, isReadOnly: sql`excluded.is_read_only`,
+            annotations: sql`excluded.annotations`, uiMeta: sql`excluded.ui_meta`, icons: sql`excluded.icons`, riskLevel: sql`excluded.risk_level`, isReadOnly: sql`excluded.is_read_only`,
             isWrite: sql`excluded.is_write`, isDestructive: sql`excluded.is_destructive`,
             status: sql`CASE WHEN ${toolCatalogEntries.status} = 'disabled' AND ${toolCatalogEntries.quarantineReason} IS DISTINCT FROM 'mcp_tool_removed' THEN 'disabled' ELSE excluded.status END`,
             versionHash: sql`excluded.version_hash`, schemaHash: sql`excluded.schema_hash`, lastSeenAt: sql`excluded.last_seen_at`,
@@ -322,6 +342,7 @@ export function createToolCatalogPublication(db: Db, { now, audit, getConnection
         actor,
       }, tx));
     }
+    await refreshSkills(updatedConnection, actor);
     await audit({
       companyId: connection.companyId,
       connectionId: connection.id,

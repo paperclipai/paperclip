@@ -1,4 +1,4 @@
-import { CONFIGURED_ENVIRONMENT_KEYS, configuredEnvironment, configuredEnvironmentProjection } from './configured-environment.js';
+import { CONFIGURED_ENVIRONMENT_KEYS, SECRET_ENVIRONMENT_KEYS, configuredEnvironment, configuredEnvironmentProjection, configuredSecretEnvironment } from './configured-environment.js';
 import { describe, expect, it, vi } from 'vitest';
 import { createSanitizedCodexEnvironment } from './drivers/codex/app-server-transport.js';
 import { createIsolatedCodexAppServerArgs } from './drivers/codex/codex-security-config.js';
@@ -130,5 +130,37 @@ describe("configured environment authority", () => {
         expect(prepared.GH_TOKEN).toBeUndefined();
       }
     } finally { vi.unstubAllEnvs(); }
+  });
+});
+
+describe("configured secret names", () => {
+  const secretSource: NodeJS.ProcessEnv = { ...configuredEnvironmentProjection({ PUBLISHING_API_KEY: "delivered-secret-value", PLAIN_SETTING: "plain-value" }, ["PUBLISHING_API_KEY", "NOT_CONFIGURED"]), PATH: "/bin" };
+
+  it("marks only configured entries resolved from secrets, by name", () => {
+    expect(JSON.parse(secretSource[SECRET_ENVIRONMENT_KEYS]!)).toEqual(["PUBLISHING_API_KEY"]);
+    expect(secretSource[SECRET_ENVIRONMENT_KEYS]).not.toContain("delivered-secret-value");
+    expect(configuredSecretEnvironment(secretSource)).toEqual([{ name: "PUBLISHING_API_KEY", value: "delivered-secret-value" }]);
+    expect(configuredEnvironmentProjection({ PLAIN_SETTING: "plain-value" })[SECRET_ENVIRONMENT_KEYS]).toBeUndefined();
+  });
+
+  it("reads a projection from a controller that predates the marker as having no secrets", () => {
+    const legacy = { ...secretSource };
+    delete legacy[SECRET_ENVIRONMENT_KEYS];
+    expect(configuredSecretEnvironment(legacy)).toEqual([]);
+  });
+
+  it.each(["not-json", '["bad=name"]', '["PAPERCLIP_API_KEY"]'])("refuses a malformed secret marker %s", raw => {
+    expect(() => configuredSecretEnvironment({ ...secretSource, [SECRET_ENVIRONMENT_KEYS]: raw })).toThrow("Invalid secret environment projection");
+  });
+
+  it("carries the secret names across the runner spawn and OpenCode runner boundaries", () => {
+    let launched: NodeJS.ProcessEnv | undefined;
+    spawnRunner({ connection: { mode: 'connect', connectUrl: 'ws://127.0.0.1:43127' }, stateDirectory: '/tmp/runner-env-proof', identity, ticket: 'fake-ticket', maxOutboxBytes: 262144, p0ReserveBytes: 65536, runnerVersion: '0.3.0', runnerDigest: `sha256:${'a'.repeat(64)}`, environment: secretSource,
+      processLauncher: spec => { launched = spec.environment; return { child: { pid: 42, exitCode: null, signalCode: null, kill: () => true }, completion: Promise.resolve({ code: 0, signal: null, stdout: '', stderr: '' }) }; },
+    });
+    expect(configuredSecretEnvironment(launched)).toEqual([{ name: "PUBLISHING_API_KEY", value: "delivered-secret-value" }]);
+    const opencode = createCapabilityRunnerdProviderEnvironment({ provider: "opencode", options: { environment: secretSource }, identity, codexHome: "/isolated/home", runtimeContextPath: "/isolated/context", hasRuntimeContext: false });
+    expect(configuredSecretEnvironment(opencode)).toEqual([{ name: "PUBLISHING_API_KEY", value: "delivered-secret-value" }]);
+    expect(JSON.parse(opencode[CONFIGURED_ENVIRONMENT_KEYS]!)).not.toContain(SECRET_ENVIRONMENT_KEYS);
   });
 });

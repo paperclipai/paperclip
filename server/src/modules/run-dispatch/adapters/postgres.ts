@@ -1,5 +1,5 @@
 import { notifyExecutionRunWork } from "../../../services/execution-control-notifications.js";
-import { notifyDeferredExecutionWork } from "../../../services/deferred-execution-notifications.js";
+import { notifyDeferredExecutionWork, notifyDeferredWakesForIssue } from "../../../services/deferred-execution-notifications.js";
 import { hasRequiredWorkspaceRecovery } from "../../../services/workspace-restore-recovery-state.js";
 import { readNativeWorkspaceSyncReference } from "../../../services/native-runtime/native-workspace-sync.js";
 import { isPreDispatchExecutionWaitVerified } from "../../../services/pre-dispatch-execution-wait.js";
@@ -15,6 +15,7 @@ import { readClaimedNativeStopRecovery } from "../../../services/native-runtime/
 import { hasConversationContinuationPolicy } from "../../../services/conversation-continuation.js";
 import { recordedUserStop, userStopBoundaryAt } from "../../../services/run-cancellation.js";
 import { getExecutionBlocker } from "../../../services/execution-blocker.js";
+import { continueFreshInTransaction, recordFreshContinuationCheck } from "../../../services/fresh-continuation-fallback.js";
 import { validateReconstructedWorkspaceDispatch } from "../../../services/native-runtime/native-workspace-reconstruction.js";
 import { getNativeReviewAssignment } from "../../../services/native-runtime/native-review-participant.js";
 import { and, asc, eq, gte, inArray, isNull, lte, or, sql } from "drizzle-orm";
@@ -1247,6 +1248,9 @@ export function createPostgresRunDispatchAdapter(
             eq(issues.executionRunId, row.id),
           ),
         );
+      if (decision.errorCode === "issue_assignee_changed") {
+        await notifyDeferredWakesForIssue(tx, { companyId: row.companyId, issueId });
+      }
 
       await appendHeartbeatRunEvent(tx as unknown as Db, {
         companyId: row.companyId,
@@ -1377,6 +1381,19 @@ export function createPostgresRunDispatchAdapter(
     return { outcome: "deferred" as const, postCommitEffects: [statusEffect(waiting, run.status)] };
   }
 
+  async function settleOlderRunHold(tx: Db, run: HeartbeatRun, issueId: string,
+    blocker: NonNullable<Awaited<ReturnType<typeof getExecutionBlocker>>>, now: Date) {
+    if (!blocker.recoveryActionId || !blocker.runId || blocker.runId === run.id) return;
+    const [issue] = await tx.select({ conversationAgentId: issues.conversationAgentId }).from(issues)
+      .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)));
+    if (!issue || issue.conversationAgentId) return;
+    const fresh = await continueFreshInTransaction(tx, { companyId: run.companyId, runId: blocker.runId,
+      trigger: "continuation_wake", delivery: "record", now });
+    if (fresh.kind === "exact_recovery_pending")
+      await recordFreshContinuationCheck(tx, { companyId: run.companyId, actionId: blocker.recoveryActionId }, fresh, now);
+    await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionDisposition);
+  }
+
   async function cancelStaleQueuedRun(
     input: CancelStaleQueuedRunInput,
   ): Promise<CancelStaleQueuedRunOutcome> {
@@ -1401,7 +1418,9 @@ export function createPostgresRunDispatchAdapter(
         const deferred = await deferRetryForCleanupInTx(tx, run, issueId, input.now, executionBlocker);
         if (deferred) return deferred;
       }
-      return cancelStaleRunInTx(tx, run, issueId, decision, input.expectedStatus, input.now);
+      const cancelled = await cancelStaleRunInTx(tx, run, issueId, decision, input.expectedStatus, input.now);
+      if (cancelled.outcome === "cancelled" && executionBlocker) await settleOlderRunHold(tx, run, issueId, executionBlocker, input.now);
+      return cancelled;
     };
 
     return withIssueThenRunLocks(

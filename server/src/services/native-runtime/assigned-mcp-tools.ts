@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import type { Db } from "@paperclipai/db";
+import { logger } from "../../middleware/logger.js";
+import { admitToolInputSchema, canonicalToolInputSchema, TOOL_INPUT_SCHEMA_MAX_BYTES } from "../../vendor/paperclip-runner/index.js";
 import { deduplicateToolDescriptors, ToolGatewayHttpError, type ToolGatewayDescriptor, type ToolGatewayService } from "../tool-gateway.js";
 
 type WorkMode = "standard" | "planning" | "ask" | "skill_test";
@@ -45,8 +47,8 @@ function object(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function definition(name: string, tool: ToolGatewayDescriptor): ToolDefinition {
-  return { name, description: `${tool.displayName}: ${tool.description}`, inputSchema: structuredClone(tool.parametersSchema) };
+function definition(name: string, tool: ToolGatewayDescriptor, inputSchema: Record<string, unknown>): ToolDefinition {
+  return { name, description: `${tool.displayName}: ${tool.description}`, inputSchema: structuredClone(inputSchema) };
 }
 
 // Execution must use the app's configured gateway, including deployment
@@ -70,7 +72,14 @@ export async function resolveAssignedConnectionInstructionsForRun(db: Db, bindin
   return gateway ? gateway.resolveConnectionInstructionsForRun(binding) : null;
 }
 
-function assignedToolName(name: string): string {
+/** MCP Skills: approved skills of the agent's usable connections; none without a configured gateway. */
+export async function resolveMcpConnectionSkillsForRun(db: Db, binding: { companyId: string; agentId: string; runId: string }) {
+  const gateway = assignedMcpGateways.get(db);
+  return gateway ? gateway.resolveConnectionSkillsForRun(binding) : null;
+}
+
+/** The name native runners give a gateway tool; transcripts show this name. */
+export function assignedToolName(name: string): string {
   const sanitize = (value: string) => value.replace(/[^a-zA-Z0-9_]+/g, "_").replace(/^_+|_+$/g, "");
   const separator = name.lastIndexOf(":");
   const readable = separator >= 0
@@ -78,6 +87,36 @@ function assignedToolName(name: string): string {
     : sanitize(name).slice(0, 47) || "tool";
   const digest = createHash("sha256").update(name).digest("hex").slice(0, 12);
   return `app_${readable}_${digest}`;
+}
+
+export const ASSIGNED_SCHEMA_LISTING_BUDGET_BYTES = 768 * 1024;
+export const ASSIGNED_SCHEMA_ADMISSION_CACHE_ENTRIES = 1024;
+
+type AssignedSchemaOutcome = { ok: true } | { ok: false; reason: string };
+type AssignedSchemaAdmission = { ok: true; schema: Record<string, unknown> } | { ok: false; reason: string };
+const assignedSchemaOutcomes = new Map<string, AssignedSchemaOutcome>();
+
+export function assignedSchemaAdmissionCacheSize(): number {
+  return assignedSchemaOutcomes.size;
+}
+
+async function admitAssignedToolSchema(serialized: string, schema: Record<string, unknown>): Promise<AssignedSchemaAdmission> {
+  const key = createHash("sha256").update(serialized).digest("hex");
+  let outcome = assignedSchemaOutcomes.get(key);
+  if (!outcome) {
+    await new Promise<void>(resolve => setImmediate(resolve));
+    outcome = assignedSchemaOutcomes.get(key);
+  }
+  if (!outcome) {
+    const admission = admitToolInputSchema(schema);
+    outcome = admission.ok ? { ok: true } : { ok: false, reason: admission.reason };
+  }
+  assignedSchemaOutcomes.delete(key);
+  assignedSchemaOutcomes.set(key, outcome);
+  while (assignedSchemaOutcomes.size > ASSIGNED_SCHEMA_ADMISSION_CACHE_ENTRIES) {
+    assignedSchemaOutcomes.delete(assignedSchemaOutcomes.keys().next().value!);
+  }
+  return outcome.ok ? { ok: true, schema: canonicalToolInputSchema(schema)!.schema } : outcome;
 }
 
 /** Server-owned MCP bindings projected into the runner's existing tool channel. */
@@ -94,6 +133,10 @@ export async function createAssignedMcpTools(input: {
     bearerToken: input.bearerToken,
   });
   const tools = new Map<string, ToolGatewayDescriptor>();
+  const schemas = new Map<string, Record<string, unknown>>();
+  const unavailable: Array<{ tool: string; reason: string }> = [];
+  const unchecked: string[] = [];
+  let listingSchemaBytes = 0;
   for (const descriptor of deduplicateToolDescriptors(listed)) {
     const name = assignedToolName(descriptor.name);
     const previous = tools.get(name);
@@ -102,7 +145,32 @@ export async function createAssignedMcpTools(input: {
         `Assigned MCP tool name collision for ${JSON.stringify([previous.name, descriptor.name])}.`,
         "assigned_mcp_tool_name_collision");
     }
+    const raw = (descriptor.parametersSchema ?? { type: "object", properties: {} }) as Record<string, unknown>;
+    const serialized = JSON.stringify(raw);
+    const bytes = Buffer.byteLength(serialized, "utf8");
+    const compilable = bytes <= TOOL_INPUT_SCHEMA_MAX_BYTES
+      && (listingSchemaBytes += bytes) <= ASSIGNED_SCHEMA_LISTING_BUDGET_BYTES;
+    if (!compilable) {
+      tools.set(name, descriptor);
+      schemas.set(name, structuredClone(raw));
+      unchecked.push(descriptor.name);
+      continue;
+    }
+    const admission = await admitAssignedToolSchema(serialized, raw);
+    if (!admission.ok) {
+      unavailable.push({ tool: descriptor.name, reason: admission.reason });
+      continue;
+    }
     tools.set(name, descriptor);
+    schemas.set(name, admission.schema);
+  }
+  if (unavailable.length > 0) {
+    logger.warn({ gatewayPublicId: input.gatewayPublicId, unavailable },
+      "assigned MCP tools whose input schema the Runner cannot validate are not offered");
+  }
+  if (unchecked.length > 0) {
+    logger.warn({ gatewayPublicId: input.gatewayPublicId, unchecked },
+      "assigned MCP tools whose input schema is over the compile budget are offered only through assigned-tool search");
   }
   const permits = (tool: ToolGatewayDescriptor, mode: WorkMode = input.workMode ?? "standard") => mode === "standard" || tool.risk === "read";
   // OpenCode's HTTP bridge returns at most 64K JSON characters. Leave room
@@ -141,7 +209,7 @@ export async function createAssignedMcpTools(input: {
     if (hasSchemaTool) {
       const selected = authorized.find(([name]) => name === args.schemaTool);
       if (!selected) throw new Error("assigned_mcp_tool_unknown: schemaTool must match an authorized inputSchemaRef. Omit schemaTool to search assigned tools, then use an exact inputSchemaRef from the results.");
-      const schema = JSON.stringify(selected[1].parametersSchema);
+      const schema = JSON.stringify(schemas.get(selected[0]));
       const end = schemaOffset + schemaChunkCharacters;
       return {
         name: selected[0], schemaJson: schema.slice(schemaOffset, end),
@@ -162,7 +230,7 @@ export async function createAssignedMcpTools(input: {
         nextOffset += 1;
         continue;
       }
-      let next = definition(name, tool);
+      let next = definition(name, tool, schemas.get(name)!);
       if (Buffer.byteLength(JSON.stringify([next]), "utf8") > searchPageBytes) {
         // One large schema must not block browsing the tools after it. Expose
         // a reference whose schema can be fetched in bounded, reauthorized
@@ -180,8 +248,8 @@ export async function createAssignedMcpTools(input: {
 
   return {
     definitions(fits?: (definitions: ToolDefinition[]) => boolean): ToolDefinition[] {
-      const direct = [...tools].filter(([, tool]) => permits(tool)).map(([name, tool]) => definition(name, tool));
-      if (input.delivery !== "on_demand" && (!fits || fits(direct))) return direct;
+      const direct = [...tools].filter(([, tool]) => permits(tool)).map(([name, tool]) => definition(name, tool, schemas.get(name)!));
+      if (input.delivery !== "on_demand" && unchecked.length === 0 && (!fits || fits(direct))) return direct;
       const compact = structuredClone(ON_DEMAND_TOOLS);
       if (fits && !fits(compact)) throw new Error("assigned_mcp_tool_catalog_capacity_exceeded");
       return compact;

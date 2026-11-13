@@ -2048,6 +2048,9 @@ describe("Codex ACPX runtime adapter", () => {
         resolveRetainedClose = resolve;
       });
       vi.mocked(runtime.close).mockReturnValueOnce(retainedClose);
+      let finishPendingWork!: () => void;
+      const pendingWork = new Promise<void>((resolve) => { finishPendingWork = resolve; });
+      runtime.shutdown = vi.fn(() => pendingWork);
       const port = await openCodexAcpxRuntime(openOptions(fakeCommand()), {
         createRegistry: () => registry(),
         createStore: () => store(),
@@ -2063,15 +2066,62 @@ describe("Codex ACPX runtime adapter", () => {
       await close;
       expect(runtime.close).toHaveBeenCalledOnce();
 
+      expect(runtime.shutdown).not.toHaveBeenCalled();
+
       resolveRetainedClose();
       await vi.advanceTimersByTimeAsync(0);
+      expect(runtime.shutdown).toHaveBeenCalledOnce();
+      finishPendingWork();
       await expect(
         port.close({ reason: "observe late success" }),
       ).resolves.toBeUndefined();
       expect(runtime.close).toHaveBeenCalledOnce();
+      expect(runtime.shutdown).toHaveBeenCalledOnce();
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("does not finish closing until the runtime's abandoned turn work has stopped writing state", async () => {
+    const runtime = fakeRuntime();
+    vi.mocked(runtime.close).mockResolvedValue(undefined);
+    let finishPendingWork!: () => void;
+    const pendingWork = new Promise<void>((resolve) => { finishPendingWork = resolve; });
+    runtime.shutdown = vi.fn(() => pendingWork);
+    const port = await openCodexAcpxRuntime(openOptions(fakeCommand()), {
+      createRegistry: () => registry(),
+      createStore: () => store(),
+      createRuntime: () => runtime,
+    });
+
+    let closed = false;
+    let rejoined = false;
+    const close = port.close({ reason: "provider died mid-turn" }).then(() => { closed = true; });
+    await vi.waitFor(() => expect(runtime.shutdown).toHaveBeenCalledOnce());
+    const rejoin = port.close({ reason: "second caller" }).then(() => { rejoined = true; });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect([closed, rejoined]).toEqual([false, false]);
+
+    finishPendingWork();
+    await Promise.all([close, rejoin]);
+    expect(runtime.close).toHaveBeenCalledOnce();
+    expect(runtime.shutdown).toHaveBeenCalledOnce();
+  });
+
+  it("reports a runtime shutdown failure after the session itself closed", async () => {
+    const runtime = fakeRuntime();
+    vi.mocked(runtime.close).mockResolvedValue(undefined);
+    runtime.shutdown = vi.fn().mockRejectedValue(new Error("owned client close failed"));
+    const port = await openCodexAcpxRuntime(openOptions(fakeCommand()), {
+      createRegistry: () => registry(),
+      createStore: () => store(),
+      createRuntime: () => runtime,
+    });
+
+    await expect(port.close({ reason: "close" })).rejects.toThrow("ACPX runtime and provider cleanup failed");
+    await expect(port.close({ reason: "repeat" })).rejects.toThrow("ACPX runtime and provider cleanup failed");
+    expect(runtime.close).toHaveBeenCalledOnce();
+    expect(runtime.shutdown).toHaveBeenCalledOnce();
   });
 
   it("retains cleanup after guardian exit until provider exit is proven", async () => {

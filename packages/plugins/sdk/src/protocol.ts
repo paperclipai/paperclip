@@ -693,6 +693,7 @@ export interface PluginEnvironmentAcquireLeaseParams extends PluginEnvironmentDr
    * lifetime.
    */
   requestedExpiresAt?: string | null;
+  runnerLifecyclePolicy?: { mode: "warm"; idleTimeoutMs: number };
 }
 
 export interface PluginEnvironmentResumeLeaseParams extends PluginEnvironmentDriverBaseParams {

@@ -292,7 +292,7 @@ function valid(scenario: string): InternalObservation {
     case "documents-artifacts.resolve-feedback": {
       o.state.pricingThread = { id: "pricing" }; o.state.siblingThread = { id: "sibling" }; o.state.originalRevisionId = "v1"; o.state.supportText = "Support remains unchanged.";
       const body = "$19 monthly total for the entire team, not per user. Support remains unchanged.";
-      o.documents = [{ id: "doc", key: "plan", body, latestRevisionId: "v2" }]; o.revisions = [{ id: "v2", body, createdByAgentId: "ceo" }];
+      o.documents = [{ id: "doc", key: "plan", body, latestRevisionId: "v2" }]; o.revisions = [{ id: "v2", body, createdByAgentId: "ceo", createdAt: "2026-10-26T12:00:00Z" }];
       o.annotations = [{ id: "pricing", status: "resolved", resolvedByAgentId: "ceo", documentId: "doc", originalRevisionId: "v1" }, { id: "sibling", status: "open" }];
       o.activity = [{ ...event("issue.document_updated", "task"), createdAt: "2026-10-26T12:00:00Z" },
         { ...event("issue.document_annotation_thread_resolved", "task", { threadId: "pricing" }), createdAt: "2026-10-26T12:00:01Z" }]; break;

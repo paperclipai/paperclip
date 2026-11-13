@@ -465,6 +465,11 @@ function recommendedManagedConnectorMethod(
   );
 }
 
+// One-method sign-in skips the access step. These providers' warnings (Railway
+// project scope, Circleback sharing outside the workspace) must still be read
+// before authorizing, so the sign-in screen repeats them.
+const SIGN_IN_GUIDANCE_SLUGS = new Set(["railway", "circleback"]);
+
 function canUseAutomaticOAuthFastPath(entry: AppDefinition | null | undefined): boolean {
   if (!entry) return false;
   const methods = availableToolConnectionMethods(entry);
@@ -2337,7 +2342,7 @@ function StandardConnectionSetupFlow({
         } : undefined}
         authorizationHost={authorizationHost}
         authorizationUrl={authorizationFallbackUrl}
-        guidance={entry?.slug === "railway" && accessStepMethod ? (
+        guidance={entry && SIGN_IN_GUIDANCE_SLUGS.has(entry.slug) && accessStepMethod ? (
           <div className="space-y-3 text-sm text-muted-foreground">
             <p>{accessStepMethod.guidanceMd}</p>
             <ul className="list-disc space-y-2 pl-5">

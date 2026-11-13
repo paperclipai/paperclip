@@ -1856,7 +1856,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
           cleanliness: "dirty",
         }),
       }),
-      nextAction: expect.stringContaining("git worktree branch incoherence"),
+      nextAction: expect.stringContaining("workspace no longer matches its branch"),
       wakePolicy: expect.objectContaining({
         type: "board_escalation",
         reason: "workspace_validation_failed",

@@ -432,6 +432,33 @@ describe("native provider startup retry", () => {
     }
   });
 
+  it("records a timed-out step's own cause and settles the run through the failure classifier", async () => {
+    const seeded = await seedRun(await createAgent());
+    const expired = AbortSignal.timeout(1);
+    await new Promise(resolve => setTimeout(resolve, 20));
+    provider.execute.mockReset().mockImplementation(async () => { throw expired.reason; });
+    await expect(executePaperclipNativeSession({ db, execution: seeded.execution,
+      runnerInstanceId: seeded.runnerInstanceId,
+      backend: {
+        descriptor: async () => { throw new Error("Unexpected provider descriptor call"); },
+        openSession: async () => { throw new Error("Unexpected provider session call"); },
+      } })).rejects.toMatchObject({ name: "TimeoutError", message: "The operation was aborted due to timeout" });
+
+    const state = await read(seeded);
+    expect(state.coordinator).toMatchObject({
+      attempt: 1,
+      leaseOwner: null,
+      failureDetail: expect.objectContaining({
+        message: "The operation was aborted due to timeout",
+        originalFailureCode: "native_session_interrupted",
+        providerSessionEstablished: false,
+        providerEventsExist: false,
+      }),
+    });
+    expect(state.run).toMatchObject({ status: "failed", errorCode: state.coordinator.failureCode });
+    expect(state.run.errorCode).not.toBe("native_continuation_requires_reconciliation");
+  });
+
   it("retries a rejected session.open with growing backoff instead of blocking the task", async () => {
     const seeded = await seedRun(await createAgent());
 

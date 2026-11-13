@@ -52,6 +52,7 @@ import type { PluginJobStore } from "./plugin-job-store.js";
 import type { PluginToolDispatcher } from "./plugin-tool-dispatcher.js";
 import type { PluginLifecycleManager } from "./plugin-lifecycle.js";
 import { pluginDatabaseService } from "./plugin-database.js";
+import type { DistributionPlugin } from "./distribution-plugin-catalog.js";
 import { resolveBundledCatalogRoot } from "./bundled-plugins.js";
 import { managedPluginWorkerEnvGrant } from "./managed-plugin-worker-env.js";
 import { createWorkScheduler } from "./work-scheduler.js";
@@ -160,6 +161,8 @@ export function buildPluginWorkerEnv(input: {
   packageName?: string;
   /** Local install path (`PluginRecord.packagePath`); null for registry installs. */
   packagePath?: string | null;
+  /** Selected image distribution verified during managed package activation. */
+  verifiedDistribution?: Pick<DistributionPlugin, "workerCredentialEnv">;
   /** Test seam; defaults to the repo plugin tree and the bundled catalog root. */
   trustedLocalPluginRoots?: readonly string[];
   grantedEnvVars?: readonly string[];
@@ -194,7 +197,12 @@ export function buildPluginWorkerEnv(input: {
       )
       ? credentialEntry.envVars
       : [];
-  for (const key of [...ADAPTER_ENV_PASSTHROUGH, ...K8S_IN_CLUSTER_ENV_PASSTHROUGH, ...credentialKeys]) {
+  for (const key of [
+    ...ADAPTER_ENV_PASSTHROUGH,
+    ...K8S_IN_CLUSTER_ENV_PASSTHROUGH,
+    ...credentialKeys,
+    ...(input.verifiedDistribution?.workerCredentialEnv ?? []),
+  ]) {
     const value = processEnv[key];
     if (value && value.trim().length > 0) {
       env[key] = value;
@@ -281,7 +289,7 @@ function getDeclaredPageRoutePaths(manifest: PaperclipPluginManifestV1): string[
 export interface PluginLoaderOptions {
   resolvePackageRoot?: (plugin: PluginRecord) => string;
   prebuiltOnly?: boolean;
-  /** Image-owned deployment policy, checked before importing code and starting workers. */
+  /** Check image policy and return verified distribution evidence when available. */
   assertPackageActivation?: (input: {
     pluginKey?: string;
     packageRoot: string;
@@ -290,7 +298,7 @@ export interface PluginLoaderOptions {
     manifest?: PaperclipPluginManifestV1;
     /** Persisted grants, supplied before a runtime manifest refresh is saved. */
     previousManifest?: PaperclipPluginManifestV1;
-  }) => void;
+  }) => DistributionPlugin | void;
   /**
    * Path to the local plugin directory to scan.
    * Defaults to ~/.paperclip/plugins/
@@ -2370,7 +2378,7 @@ export function pluginLoader(
       assertPackageActivation?.({ pluginKey, packageRoot, installedPackagePath: activePlugin.packagePath });
       activePlugin = await refreshPluginManifestFromPackage(activePlugin, packageRoot);
       manifest = activePlugin.manifestJson;
-      assertPackageActivation?.({ pluginKey, packageRoot, installedPackagePath: activePlugin.packagePath, manifest });
+      const verifiedDistribution = assertPackageActivation?.({ pluginKey, packageRoot, installedPackagePath: activePlugin.packagePath, manifest });
       const workerEntrypoint = resolvePackageRoot
         ? path.resolve(packageRoot, manifest.entrypoints.worker)
         : resolveWorkerEntrypoint(activePlugin, localPluginDir);
@@ -2441,6 +2449,7 @@ export function pluginLoader(
           manifest,
           packageName: activePlugin.packageName,
           packagePath: resolvePackageRoot ? packageRoot : activePlugin.packagePath,
+          verifiedDistribution: resolvePackageRoot && verifiedDistribution ? verifiedDistribution : undefined,
           instanceInfo,
           grantedEnvVars: managedPluginWorkerEnvGrant(activePlugin.pluginKey),
         }),

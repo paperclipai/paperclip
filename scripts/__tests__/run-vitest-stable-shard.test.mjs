@@ -12,6 +12,7 @@ import {
   partitionGeneralServerSuites,
 } from "../general-server-shard.mjs";
 
+import { assertManifestSource } from "../ci/pr-run-durations.mjs";
 import { assertSelectedTests, partitionTestLines } from "../test-line-shard.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -567,10 +568,10 @@ test("the package lane manifest uses the general server duration schema", () => 
   assert.ok(Object.keys(manifest).every((key) => key in general));
   assert.equal(manifest.unit, "ms");
   assert.deepEqual(Object.keys(manifest.coverage), Object.keys(general.coverage));
-  for (const source of manifest.sources) {
-    assert.deepEqual(Object.keys(source), ["run", "attempt", "sha", "url"]);
-    assert.match(source.sha, /^[a-f0-9]{40}$/);
-  }
+  // The weekly refresh samples merged-PR runs for this lane, so its sources
+  // may lead with a pull number. test-selection-pr-timings.test.mjs passes the
+  // collector's real output through the same check.
+  for (const source of manifest.sources) assertManifestSource(source);
   const entries = Object.entries(manifest.durations);
   assert.ok(entries.length > 100);
   for (const [file, ms] of entries) {

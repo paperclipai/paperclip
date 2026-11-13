@@ -294,7 +294,7 @@ function preserveWorkspaceMetadataForPatch(
     }
     if (patch.metadata !== undefined) {
       nextPatch.metadata = { ...nextPatch.metadata };
-      for (const key of ["workspaceProvider", "workspaceProviderOwner", "workspaceProviderSource", "workspaceProviderDestinationRef", "workspaceProviderBaseSha", "workspaceProviderRemoved", "workspaceProviderBranchMode", "workspaceProviderRemoval", "workspaceProviderRetired", "workspaceProviderRestoration", "lifecycleGeneration", "reopenPendingConsumption", "reopenPendingConsumptionSince"] as const) {
+      for (const key of ["workspaceProvider", "workspaceProviderOwner", "workspaceProviderSource", "workspaceProviderPreparationPlacement", "workspaceProviderDestinationRef", "workspaceProviderBaseSha", "workspaceProviderRemoved", "workspaceProviderBranchMode", "workspaceProviderRemoval", "workspaceProviderRetired", "workspaceProviderRestoration", "lifecycleGeneration", "reopenPendingConsumption", "reopenPendingConsumptionSince"] as const) {
         if (current.metadata?.[key] !== undefined) nextPatch.metadata[key] = current.metadata[key];
         else delete nextPatch.metadata[key];
       }
@@ -1241,6 +1241,11 @@ function toExecutionWorkspace(
   runtimeServices: WorkspaceRuntimeService[] = [],
   deliveryState: ExecutionWorkspaceDeliveryState = "unknown",
 ): ExecutionWorkspace {
+  let metadata = row.metadata ?? null;
+  if (metadata?.workspaceProviderPreparationPlacement !== undefined) {
+    metadata = { ...metadata };
+    delete metadata.workspaceProviderPreparationPlacement;
+  }
   return {
     id: row.id,
     companyId: row.companyId,
@@ -1265,7 +1270,7 @@ function toExecutionWorkspace(
     cleanupEligibleAt: row.cleanupEligibleAt ?? null,
     cleanupReason: row.cleanupReason ?? null,
     config: readExecutionWorkspaceConfig((row.metadata as Record<string, unknown> | null) ?? null),
-    metadata: (row.metadata as Record<string, unknown> | null) ?? null,
+    metadata,
     runtimeServices,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,

@@ -23,9 +23,10 @@ export function registerTerminalWorkspaceWork(
 ) {
   let next: number | null = Date.now();
   let recovered = false;
-  // Server readiness waits for the first sweep. Compaction walks worktrees and
-  // deletes dependency trees, which can take seconds per workspace and is never
-  // needed to serve requests, so the first sweep skips it and later sweeps do it.
+  // The first sweep runs while the server finishes starting (it does not hold
+  // readiness). Compaction walks worktrees and deletes dependency trees, which
+  // can take seconds per workspace, so the first sweep skips it and later
+  // sweeps do it.
   let startupSweepStarted = false;
   const worker = coordinator.register(DELIVERY_QUEUES.terminalWorkspaces, {
     retryMs: TERMINAL_WORKSPACE_RETRY_MS,

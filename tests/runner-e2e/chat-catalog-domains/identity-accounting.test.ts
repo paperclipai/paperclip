@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { accountingIdentityCases, leadApiCalls, nativeAccountingPrerequisite, readSavedAccounting, citedRunReads, isCostsPagePath, type LeadApiCall } from "./identity-accounting.js";
+import { accountingIdentityCases, leadApiCalls, nativeAccountingPrerequisite, readSavedAccounting, citedRunReads, isCostsPagePath, runListPosition, type LeadApiCall } from "./identity-accounting.js";
 import { callApiInputDigest } from "./api-read-receipts.js";
 import type { IdentityObservation } from "./identity-support.js";
 const costRead = (runId: string, operationId: string, status = 200, digest = "d"): LeadApiCall => ({ runId, operationId, digest, ok: status < 300, status });
@@ -172,4 +172,32 @@ describe("company cost reads and task summaries bound to the repaired run", () =
 it("the browser check opens the same Costs links the grader accepts", () => {
   for (const path of ["/ACO/activity/costs", "/ACO/costs"]) expect(isCostsPagePath(path)).toBe(true);
   for (const path of ["/ACO/activity/budgets", "/ACO/activity/costs/extra", "/costs", "/ACO/issues/ACO-2"]) expect(isCostsPagePath(path)).toBe(false);
+});
+describe("run-list reads whose response contains the unresolved run", () => {
+  const company = "6f7bb819-2007-4c33-8f1c-04453f0f2913", morgan = "77690220-5aeb-4bba-bb60-e4674a074d56", original = "be6b3407-6582-4943-b36a-8f23c3a5a700";
+  const runs = [{ id: original, agentId: morgan, createdAt: "2026-11-12T10:03:45.598Z" }, { id: "lead", agentId: "ceo", createdAt: "2026-11-12T10:04:12.795Z", finishedAt: "2026-11-12T10:05:34.548Z" }];
+  const position = runListPosition(runs, original, runs[1]!)!;
+  const list = (input: Record<string, unknown>, status = 200) => costRead("lead", "GET /api/companies/{companyId}/heartbeat-runs", status, callApiInputDigest({ operationId: "GET /api/companies/{companyId}/heartbeat-runs", ...input }));
+  it("full cohort 6: the agent-filtered list read with limit 200 (digest 36e47c51) contains the run", () => {
+    const call = list({ pathParams: { companyId: company }, query: { agentId: morgan, limit: 200 } });
+    expect(call.digest.startsWith("36e47c51")).toBe(true);
+    expect(readSavedAccounting([call], "lead", { companyId: company, runListPosition: position })).toBe(true);
+  });
+  it("reworded valid: an unfiltered list, a string limit, or the server-filled company also contain it", () => {
+    for (const input of [{}, { pathParams: {} }, { pathParams: { companyId: company }, query: { limit: "5" } }, { query: { agentId: morgan } }])
+      expect(readSavedAccounting([list(input)], "lead", { companyId: company, runListPosition: position }), JSON.stringify(input)).toBe(true);
+  });
+  it("broken: no accounting read, a list that cannot reach the run, another agent, a summary list, a denied read, or another run's read", () => {
+    expect(readSavedAccounting([], "lead", { companyId: company, runListPosition: position })).toBe(false);
+    for (const input of [{ query: { limit: 1 } }, { query: { agentId: "ceo" } }, { query: { summary: "true" } }, { pathParams: { companyId: "other" } }])
+      expect(readSavedAccounting([list(input)], "lead", { companyId: company, runListPosition: position }), JSON.stringify(input)).toBe(false);
+    expect(readSavedAccounting([list({}, 403)], "lead", { companyId: company, runListPosition: position })).toBe(false);
+    expect(readSavedAccounting([{ ...list({}), runId: "other" }], "lead", { companyId: company, runListPosition: position })).toBe(false);
+    expect(readSavedAccounting([list({})], "lead", { companyId: company })).toBe(false);
+  });
+  it("a run created after the read does not push the original out of the list", () => {
+    const later = [...runs, { id: "later", agentId: morgan, createdAt: "2026-11-12T10:06:00.000Z" }];
+    expect(runListPosition(later, original, runs[1]!)).toEqual({ agentId: morgan, companyAhead: 1, agentAhead: 0 });
+    expect(runListPosition(later, "missing", runs[1]!)).toBeUndefined();
+  });
 });

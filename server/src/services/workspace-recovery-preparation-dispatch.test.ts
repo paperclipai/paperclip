@@ -48,7 +48,7 @@ describe("automatic retained workspace recovery", () => {
     const experimental = await instanceSettingsService(db).getExperimental();
     let stoppedWorker: Awaited<ReturnType<typeof stoppedWorkspaceWorker>> | undefined;
     let storage: { mockRestore(): void } | undefined;
-    const starts = vi.spyOn(agentStarts, "withAgentStartLock");
+    const starts = vi.spyOn(agentStarts, "dispatchForAgent");
     const retryResumes: Promise<void>[] = [];
     let resumeSpy: { mockRestore(): void } | undefined;
     let ownedHeartbeat: ReturnType<typeof heartbeatService> | undefined;
@@ -178,7 +178,8 @@ describe("automatic retained workspace recovery", () => {
       });
       const app = boardRecoveryApp(undefined, heartbeat);
       const gate = new Promise<void>(resolve => { releaseStart = resolve; });
-      heldStart = agentStarts.withAgentStartLock(source.agentId, () => gate);
+      heldStart = agentStarts.dispatchForAgent(source.agentId, { request: null, idle: undefined, merge: () => null,
+        run: async () => ({ value: await gate }) });
       const receipt = mode === "automatic_lost" ? null : (await request(app).post(`/api/issues/${f.issueId}/retry`)
         .send({ observedRunId: f.runId, idempotencyKey: randomUUID() }).expect(202)).body;
       if (mode === "automatic_lost") {
