@@ -189,17 +189,50 @@ describe("Runner image identity", () => {
  * the whole of what the build reads only while these three rules hold.
  */
 describe("Runner image stages", () => {
-  const stages = [...dockerfile.matchAll(/^FROM (\S+)(?: AS (\S+))?$/gm)].map((match, index, all) => ({
-    from: match[1],
-    name: match[2] ?? "",
-    lines: dockerfile.slice(match.index, all[index + 1]?.index ?? dockerfile.length).split("\n").filter((line) => !/^\s*#/.test(line)),
+  // BuildKit accepts an instruction in any case and with any indentation, and
+  // FROM with flags. A stage starts wherever BuildKit starts one; the first
+  // rule below then allows only the spelling the other rules can read.
+  const stagesOf = (text: string) => [...text.matchAll(/^[ \t]*from[ \t].*$/gim)].map((match, index, all) => ({
+    from: /^FROM (\S+)(?: AS \S+)?$/.exec(match[0])?.[1] ?? "",
+    // The name BuildKit gives the stage, however the line is spelt.
+    name: (/\sas\s+(\S+)\s*$/i.exec(match[0])?.[1] ?? "").toLowerCase(),
+    lines: text.slice(match.index, all[index + 1]?.index ?? text.length).split("\n").filter((line) => !/^\s*#/.test(line)),
   }));
+  type Stage = ReturnType<typeof stagesOf>[number];
+  /** The lines of a stage that read something and are not in the one spelling these rules read. */
+  const misspelt = (stage: Stage) => stage.lines.filter((line, index) => (index === 0
+    // No lowercase keyword, no indentation, no flag on FROM.
+    ? !/^FROM \S+ AS runner-artifacts[a-z-]*$/.test(line)
+    // No ADD or ONBUILD, no other flag, and no source on a continuation line.
+    : /^\s*(?:from|copy|add|onbuild)(?:\s|$)/i.test(line)
+      && !/^COPY (?:--link )?(?:--from=runner-artifacts[a-z-]* )?[^-\s]\S*(?: [^\s\\]+)+$/.test(line)));
+  const stages = stagesOf(dockerfile);
   const names = stages.map((stage) => stage.name);
   const runner = stages.filter((stage) => stage.name.startsWith("runner-artifacts"));
-  const copies = (stage: (typeof stages)[number]) => stage.lines.filter((line) => /^COPY\s/.test(line));
+  const copies = (stage: Stage) => stage.lines.filter((line) => /^COPY\s/.test(line));
+
+  it("spell every FROM and COPY the one way these rules read, and use no ADD or ONBUILD", () => {
+    expect(runner.length).toBeGreaterThan(3);
+    for (const stage of runner) expect(misspelt(stage), stage.name).toEqual([]);
+  });
+
+  it.each([
+    ["a lowercase stage keyword", "FROM scratch as runner-artifacts-extra\nCOPY secrets /\n"],
+    ["a lowercase from", "from scratch AS runner-artifacts-extra\n"],
+    ["a flag on FROM", "FROM --platform=linux/amd64 node:24 AS runner-artifacts-extra\n"],
+    ["a lowercase copy", "FROM scratch AS runner-artifacts-extra\ncopy secrets /\n"],
+    ["an indented COPY", "FROM scratch AS runner-artifacts-extra\n  COPY secrets /\n"],
+    ["an ADD in any case", "FROM scratch AS runner-artifacts-extra\n add secrets /\n"],
+    ["a COPY continued on the next line", "FROM scratch AS runner-artifacts-extra\nCOPY package.json \\\n  secrets /\n"],
+    ["a COPY with another flag", "FROM scratch AS runner-artifacts-extra\nCOPY --parents secrets /\n"],
+    ["an ONBUILD trigger", "FROM scratch AS runner-artifacts-extra\nONBUILD COPY secrets /\n"],
+  ])("would catch %s in a stage BuildKit reads as one of the Runner's", (_label, text) => {
+    const added = stagesOf(text).filter((stage) => stage.name.startsWith("runner-artifacts"));
+    expect(added).toHaveLength(1);
+    expect(misspelt(added[0])).not.toEqual([]);
+  });
 
   it("start only from each other, from scratch, or from an image pinned by digest", () => {
-    expect(runner.length).toBeGreaterThan(3);
     for (const stage of runner) {
       if (stage.from === "scratch" || names.includes(stage.from)) {
         expect(stage.from === "scratch" || stage.from.startsWith("runner-artifacts"), stage.name).toBe(true);

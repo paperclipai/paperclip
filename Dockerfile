@@ -303,10 +303,11 @@ COPY --from=runner-artifacts-identity /runner-image-identity.json /runner-image-
 # the Runner build but no provider pack, as in the `runner-provider-pack` stage.
 ARG PAPERCLIP_RUNNER_SOURCE_REVISION=""
 ARG PAPERCLIP_BUILD_COMMIT=""
-# Set to 1 only by the workflow that builds the image for publication. Only
-# then does the pack record `runnerInputsDigest`, the name of the published
-# image. Another image build that runs this stage inline, with
-# PAPERCLIP_BUILD_COMMIT, builds the same Runner but must not claim to be it.
+# Set to 1 only by .github/workflows/runner-image.yml, which builds the
+# publication form of the image. Only then does the pack record
+# `runnerInputsDigest`, the identity of this image. Another image build that
+# runs this stage inline, with PAPERCLIP_BUILD_COMMIT, builds the same Runner
+# but must not claim to be this image.
 ARG PAPERCLIP_RUNNER_IMAGE_PUBLICATION=""
 # One layer: the install tree and the pnpm store are removed before the layer
 # is committed, and the pack is granted a+rX in the layer that writes it (see
