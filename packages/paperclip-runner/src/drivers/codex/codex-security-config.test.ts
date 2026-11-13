@@ -522,7 +522,7 @@ describe("Codex security configuration", () => {
     expect(exclude).toEqual([...CODEX_PROVIDER_CREDENTIAL_ENVIRONMENT_KEYS]);
     expect(serialized).not.toContain("fixture-secret-value");
     expect(createIsolatedCodexAppServerArgs({ PAPERCLIP_CONFIGURED_ENV_KEYS: '["STRIPE_SECRET_KEY"]', STRIPE_SECRET_KEY: "fixture-secret-value" }).join("\n"))
-      .toContain('shell_environment_policy.include_only=["STRIPE_SECRET_KEY"]');
+      .toContain(`shell_environment_policy.include_only=${JSON.stringify([...CERTIFICATE_ENVIRONMENT_KEYS, "STRIPE_SECRET_KEY"].sort())}`);
   });
 
   it("excludes every credential the Runner passes to Codex", () => {
