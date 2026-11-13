@@ -180,13 +180,21 @@ describeEmbeddedPostgres("Stop on a task whose run is still waiting in line", ()
     return waiting;
   }
 
-  it("stops a waiting legacy run when another writer briefly holds its task row past the lock timeout", async () => {
+  // The board route attributes Stop to the user, which first supersedes the
+  // task's handoffs under the same task-row lock.
+  const stopCallers = [
+    { caller: "control plane", reason: "Cancelled by control plane", options: undefined },
+    { caller: "board", reason: "Cancelled by a board operator",
+      options: { resultJson: { cancelledByActorType: "user", cancelledByUserId: "responsible-user" } } },
+  ] as const;
+
+  it.each(stopCallers)("stops a waiting legacy run for the $caller when another writer briefly holds its task row past the lock timeout", async ({ reason, options }) => {
     const waiting = await queueBehindBusyTask();
     const lock = await holdTaskRow(waiting.issue.id);
     // Longer than one 1s lock_timeout, shorter than the bounded attempts.
     const releaseTimer = setTimeout(lock.release, 1_500);
     try {
-      const stopped = await heartbeat.cancelRun(waiting.run.id, "Cancelled by control plane");
+      const stopped = await heartbeat.cancelRun(waiting.run.id, reason, options);
       expect(stopped?.status).toBe("cancelled");
     } finally {
       clearTimeout(releaseTimer);
@@ -196,22 +204,25 @@ describeEmbeddedPostgres("Stop on a task whose run is still waiting in line", ()
     expect((await heartbeat.getRun(waiting.run.id))?.status).toBe("cancelled");
   }, 60_000);
 
-  it("answers a retryable conflict when the task row stays locked through every attempt", async () => {
+  it.each(stopCallers)("answers the $caller a retryable conflict when the task row stays locked through every attempt", async ({ reason, options }) => {
     const waiting = await queueBehindBusyTask();
     const lock = await holdTaskRow(waiting.issue.id);
     try {
-      const error = await heartbeat.cancelRun(waiting.run.id, "Cancelled by control plane").then(
+      const startedAt = Date.now();
+      const error = await heartbeat.cancelRun(waiting.run.id, reason, options).then(
         () => null, (caught: unknown) => caught);
       expect(error).toBeInstanceOf(HttpError);
       expect((error as HttpError).status).toBe(409);
       expect((error as HttpError).details).toMatchObject({ code: "run_stop_busy", runId: waiting.run.id });
+      // Bounded: three 1s waits plus short backoff, never an open-ended queue.
+      expect(Date.now() - startedAt).toBeLessThan(10_000);
     } finally {
       lock.release();
       await lock.holder;
     }
-    // The terminal write rolled back, so the same Stop succeeds once the writer is done.
+    // Nothing was committed, so the same Stop succeeds once the writer is done.
     expect((await heartbeat.getRun(waiting.run.id))?.status).toBe("queued");
-    const stopped = await heartbeat.cancelRun(waiting.run.id, "Cancelled by control plane");
+    const stopped = await heartbeat.cancelRun(waiting.run.id, reason, options);
     expect(stopped?.status).toBe("cancelled");
   }, 60_000);
 });
