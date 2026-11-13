@@ -2363,7 +2363,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     const oldestQueuedAt = new Date(Math.min(...queuedRuns.map(run => run.createdAt.getTime())));
     const joinedUserRequests = queuedRuns.length > 1
       ? await db.select({ runId: agentWakeupRequests.runId }).from(agentWakeupRequests).where(and(
-        eq(agentWakeupRequests.agentId, agent.id), gte(agentWakeupRequests.requestedAt, oldestQueuedAt),
+        eq(agentWakeupRequests.agentId, agent.id), gte(agentWakeupRequests.updatedAt, oldestQueuedAt),
         eq(agentWakeupRequests.companyId, agent.companyId), eq(agentWakeupRequests.requestedByActorType, "user"),
         inArray(agentWakeupRequests.runId, queuedRuns.map(run => run.id))))
       : [];

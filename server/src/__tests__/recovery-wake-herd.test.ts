@@ -136,6 +136,27 @@ suite("recovery wake herd", () => {
     }
   }, 120_000);
 
+  it("starts a queued run that adopted a person's comment saved before every queued run", async () => {
+    const agentId = await seedCompany(1);
+    const [saved] = await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "automation", triggerDetail: "system",
+      reason: "issue_commented", status: "deferred_issue_execution", requestedByActorType: "user", requestedByActorId: userId,
+      requestedAt: new Date(Date.now() - 90 * 60_000), createdAt: new Date(Date.now() - 90 * 60_000),
+      updatedAt: new Date(Date.now() - 90 * 60_000), payload: {} }).returning();
+    const older: Array<typeof heartbeatRuns.$inferSelect> = [];
+    for (let index = 0; index < 3; index += 1) older.push(await queuedSystemRun(agentId, 60 - index, "issue_assigned"));
+    const adopting = await queuedSystemRun(agentId, 50, "issue_commented");
+    await db.update(agentWakeupRequests).set({ runId: adopting.id, status: "queued", updatedAt: new Date(),
+      payload: { issueId: adopting.issueId } }).where(eq(agentWakeupRequests.id, saved!.id));
+    const heartbeat = heartbeatService(db);
+    try {
+      await heartbeat.resumeQueuedRuns();
+      expect((await readRun(adopting.id)).startedAt).not.toBeNull();
+      for (const run of older) expect(await readRun(run.id)).toMatchObject({ status: "queued", startedAt: null });
+    } finally {
+      await heartbeat.drainActiveRunExecutions();
+    }
+  }, 120_000);
+
   async function pendingContinuation(agentId: string, endedMinutesAgo: number) {
     const issue = await task(agentId, "todo");
     const source = await sourceRun(agentId, issue.id, endedMinutesAgo);
