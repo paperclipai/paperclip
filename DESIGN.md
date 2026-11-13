@@ -149,7 +149,10 @@ Runtime discovery must not replace the turn with a generic spinner or a
 
 A queued turn shows the same `Working` header and shimmering `Thinking` activity
 as a running turn, starting at message submission. Keep specific server holds,
-such as `Waiting for maintenance` or agent setup, visible during admission.
+such as `Waiting for maintenance`, agent setup, or another open task of the same
+routine, visible during admission. Admission normally starts a run within seconds,
+so this startup feedback lasts at most 30 seconds: a turn still queued after that
+with no named hold says `Waiting to start`, without spinner or shimmer.
 A run that waits for one of its agent's concurrency slots is a hold too: show
 `Waiting for <agent> · N slots max · P of Q in line · Configure` (the shared
 `AgentQueueWait` component) with no spinner or elapsed timer, link Configure to the

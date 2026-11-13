@@ -1,5 +1,5 @@
 import type { ExecutionProjection } from "@paperclipai/shared";
-import { Loader2 } from "lucide-react";
+import { Hourglass, Loader2 } from "lucide-react";
 import type { TranscriptEntry } from "../../adapters";
 import { cn } from "@/lib/utils";
 import { useSecondTick } from "@/hooks/useSecondTick";
@@ -9,6 +9,7 @@ import { isTerminalRunStatus } from "@/components/task-chat/transcript-adapter";
 import { useTaskChatShimmer } from "./TaskChatShimmer";
 import { AgentQueueWait } from "@/components/AgentQueueWait";
 import { agentQueueWaitOf } from "@/lib/agent-queue-wait";
+import { WAITING_TO_START_LABEL, useWaitingToStart } from "./useWaitingToStart";
 
 /**
  * "ran N commands, called M tools" for the live tail's status pill, counted off
@@ -66,6 +67,8 @@ export function TaskChatLiveRunPill({
   const agentQueue = status === "queued" ? agentQueueWaitOf(execution) : null;
   // A specific server hold (maintenance, agent setup) names the wait instead of "Working".
   const holdLabel = status === "queued" && execution?.cause ? execution.label : null;
+  // Past the startup grace period with no named hold, the turn says it waits.
+  const waitingToStart = useWaitingToStart(status === "queued" && !holdLabel && !agentQueue, startedAtMs);
   // One shared page-wide ticker drives the live elapsed readout, matching the
   // default view's `useLiveElapsed`.
   useSecondTick(active && startedAtMs != null && !agentQueue);
@@ -76,7 +79,7 @@ export function TaskChatLiveRunPill({
     ? formatDurationWords(elapsedMs)
     : null;
   const failed = ["failed", "timed_out", "cancelled", "interrupted"].includes(status);
-  const verb = active ? holdLabel ?? "Working" : failed ? "Stopped" : "Worked";
+  const verb = active ? holdLabel ?? (waitingToStart ? WAITING_TO_START_LABEL : "Working") : failed ? "Stopped" : "Worked";
   const suffix = elapsed ? `for ${elapsed}` : null;
 
   if (agentQueue) {
@@ -93,7 +96,11 @@ export function TaskChatLiveRunPill({
       data-testid="task-chat-live-run-pill"
     >
       <span className={cn("inline-flex items-center gap-2 text-sm font-medium text-foreground/80", active && !shimmer && "text-muted-foreground")}>
-        {active ? (
+        {active && waitingToStart ? (
+          <span className="flex size-5 shrink-0 items-center justify-center">
+            <Hourglass className="size-3.5 text-muted-foreground" aria-hidden="true" />
+          </span>
+        ) : active ? (
           <span className="flex size-5 shrink-0 items-center justify-center">
             <Loader2 className="size-4 animate-spin text-muted-foreground" />
           </span>
@@ -102,7 +109,7 @@ export function TaskChatLiveRunPill({
             <span className={cn("h-1.5 w-1.5 rounded-full", (failed || active) ? "bg-muted-foreground/40" : "bg-emerald-500/70")} />
           </span>
         )}
-        {active ? <span className={cn(shimmer && "shimmer-text")}>{verb}</span> : verb}
+        {active && !waitingToStart ? <span className={cn(shimmer && "shimmer-text")}>{verb}</span> : verb}
       </span>
       {suffix ? <span className="text-xs text-muted-foreground/60">{suffix}</span> : null}
       {toolSummary ? <span className="text-xs text-muted-foreground/40">· {toolSummary}</span> : null}

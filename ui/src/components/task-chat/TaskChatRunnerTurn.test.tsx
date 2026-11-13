@@ -111,6 +111,37 @@ describe("TaskChatRunnerTurn", () => {
     expect(container.textContent).not.toContain("Thinking");
   });
 
+  it("keeps startup feedback briefly, then says a queued turn with no named hold is waiting to start", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-11-13T17:39:05Z"));
+      render([], "queued");
+      expect(container.querySelector('[data-testid="task-chat-turn-status-header"]')?.textContent).toContain("Working");
+      expect(container.querySelector('[data-testid="task-chat-current-activity-label"]')?.textContent).toBe("Thinking");
+      // The fixture's run was queued 2 s before render: the grace ends at +28 s.
+      act(() => { vi.advanceTimersByTime(27_000); });
+      expect(container.textContent).not.toContain("Waiting to start");
+      act(() => { vi.advanceTimersByTime(2_000); });
+      expect(container.querySelector('[data-testid="task-chat-turn-status-header"]')?.textContent).toContain("Waiting to start");
+      expect(container.querySelector('[data-testid="task-chat-current-activity-label"]')?.textContent).toBe("Waiting to start");
+      expect(container.textContent).not.toContain("Working");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not call a running turn waiting, however long it runs", () => {
+    vi.useFakeTimers();
+    try {
+      render([], "running");
+      act(() => { vi.advanceTimersByTime(10 * 60_000); });
+      expect(container.textContent).not.toContain("Waiting to start");
+      expect(container.querySelector('[data-testid="task-chat-turn-status-header"]')?.textContent).toContain("Working");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   const resolvedQuestion = (
     id: string,
     prompt: string,
