@@ -1328,7 +1328,7 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
     } finally { await authority.stop(); }
   });
 
-  it.each((["idle", "preparing_successor", "unclaimed_successor", "claimed_successor", "expired_preparation", "dispatching_successor", "foreign_preparation", "foreign_native_preparation", "wrong_issue", "new_work", "replaced_controller", "unaccepted"] as const).flatMap(scenario =>
+  it.each((["idle", "preparing_successor", "unclaimed_successor", "claimed_successor", "expired_preparation", "dispatching_successor", "foreign_preparation", "foreign_native_preparation", "wrong_issue", "new_work", "replaced_controller", "unaccepted", "queued_successor", "scheduled_retry_successor", "queued_wrong_issue", "queued_new_work"] as const).flatMap(scenario =>
     (["runner.suspend", "turn.stop"] as const).map(command => ({ scenario, command }))))(
     "settles a completed warm checkpoint during early retirement without granting work: $scenario/$command",
     async ({ scenario, command }) => {
@@ -1365,17 +1365,19 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
         let nextRunId: string | null = null;
         if (scenario !== "idle") {
           nextRunId = randomUUID();
-          const preparing = scenario !== "claimed_successor" && scenario !== "unclaimed_successor";
-          const otherIssue = scenario === "wrong_issue" ? (await seedRun(`WARM-OTHER-ISSUE-${command}`)).issueId : fixture.issueId;
+          const waiting = scenario.startsWith("queued_") || scenario === "scheduled_retry_successor";
+          const preparing = !waiting && scenario !== "claimed_successor" && scenario !== "unclaimed_successor";
+          const otherIssue = scenario === "wrong_issue" || scenario === "queued_wrong_issue" ? (await seedRun(`WARM-OTHER-ISSUE-${scenario}-${command}`)).issueId : fixture.issueId;
           await fixture.db.insert(heartbeatRuns).values({ id: nextRunId, companyId, agentId,
             issueId: otherIssue, scopeKind: "issue", contextSnapshot: { issueId: otherIssue },
-            ...(preparing ? { runtimeMode: "legacy", executionStage: scenario === "dispatching_successor" ? "dispatching" : "preparing",
+            ...(waiting ? { status: scenario === "scheduled_retry_successor" ? "scheduled_retry" : "queued" } : {}),
+            ...(waiting ? {} : preparing ? { runtimeMode: "legacy", executionStage: scenario === "dispatching_successor" ? "dispatching" : "preparing",
               controllerBootId: scenario === "foreign_preparation" ? randomUUID() : legacyControllerBootId,
               controllerLeaseExpiresAt: scenario === "expired_preparation" ? new Date(0) : new Date(Date.now() + 60_000),
               ...(scenario === "foreign_native_preparation" ? { nativeIssueId: fixture.issueId } : {}),
             } : { runtimeMode: "native", nativeIssueId: fixture.issueId, nativeSessionId: randomUUID() }),
-            status: "running", invocationSource: "manual" });
-          if (!preparing || scenario === "foreign_native_preparation") await fixture.db.insert(nativeRunFinalizations).values({ runId: nextRunId, companyId, issueId: fixture.issueId,
+            ...(waiting ? {} : { status: "running" }), invocationSource: "manual" });
+          if ((!preparing && !waiting) || scenario === "foreign_native_preparation") await fixture.db.insert(nativeRunFinalizations).values({ runId: nextRunId, companyId, issueId: fixture.issueId,
               phase: "observed", ...(scenario === "claimed_successor" || scenario === "foreign_native_preparation" ? {
                 controllerBootId: scenario === "foreign_native_preparation" ? randomUUID() : successor.bootId,
                 controllerGeneration: 1, leaseOwner: "next-warm-owner", leaseExpiresAt: new Date(Date.now() + 60_000) } : {}),
@@ -1383,8 +1385,8 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
         }
         await fixture.db.update(issues).set({ executionRunId: nextRunId }).where(eq(issues.id, fixture.issueId));
         const before = (await loadNativeRunnerCheckpoint(fixture.db, binding))!;
-        authority.queueCommand(scenario === "new_work" ? "turn.start" : command, {}, `early-retirement-${scenario}`);
-        if (!["idle", "preparing_successor", "claimed_successor"].includes(scenario)) {
+        authority.queueCommand(scenario === "new_work" || scenario === "queued_new_work" ? "turn.start" : command, {}, `early-retirement-${scenario}`);
+        if (!["idle", "preparing_successor", "claimed_successor", "queued_successor", "scheduled_retry_successor"].includes(scenario)) {
           await expect(authority.flushCheckpoint()).rejects.toThrow("native_runner_checkpoint_owner_lost");
           expect((await loadNativeRunnerCheckpoint(fixture.db, binding))?.records).toEqual(before.records);
         } else {

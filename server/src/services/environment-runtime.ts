@@ -484,6 +484,7 @@ export interface EnvironmentDriverAcquireInput {
   executionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
   runnerTaskProjectIds?: readonly string[];
   runnerTaskResumeSessionId?: string | null;
+  replacementWorkspaceCreation?: string;
   /**
    * The harness/adapter type for this run (the agent's adapter). Drivers that
    * materialize a per-run sandbox use it to select the runtime image so a single
@@ -3473,27 +3474,43 @@ function createPluginEnvironmentDriver(
     };
   }
 
-  async function releasePluginRunLease(input: EnvironmentDriverReleaseInput, executionStopObserved = false) {
-    await db.update(environmentLeases).set({ metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || '{"pluginLeaseCleanupMethod":"release"}'::jsonb` }).where(and(eq(environmentLeases.id, input.lease.id), eq(environmentLeases.companyId, input.lease.companyId)));
+  async function cleanupPluginRunLease(input: { environment: Environment | null; lease: EnvironmentLease },
+    executionStopObserved = false) {
     const settled = await settleDispatchedEnvironmentTask(db, workerManager, input.lease, { executionStopObserved });
+    const [current] = await db.select().from(environmentLeases).where(and(eq(environmentLeases.id, input.lease.id),
+      eq(environmentLeases.companyId, input.lease.companyId)));
+    if (!current || current.providerLeaseId !== input.lease.providerLeaseId) throw new Error("Plugin lease cleanup ownership changed");
+    const lease = toEnvironmentLeaseSnapshot(current);
+    const { plugin, driverKey, driverConfig } = await resolvePluginDriverForRelease({ ...input, lease });
+    const environmentId = input.environment?.id ?? readString(lease.metadata?.environmentId);
+    if (!environmentId) throw new Error("Plugin lease cleanup has no saved environment identity");
+    const receipt = await workerManager.call(plugin.id, lease.metadata?.pluginLeaseCleanupMethod === "destroy" ? "environmentDestroyLease" : "environmentReleaseLease", {
+      driverKey, companyId: lease.companyId, environmentId, issueId: lease.issueId,
+      config: driverConfig, providerLeaseId: lease.providerLeaseId, leaseMetadata: lease.metadata ?? undefined,
+    });
     const taskStopped = settled !== false ||
-      (input.lease.metadata?.runnerTaskLease === true && input.lease.metadata?.runnerTaskDispatched !== true && !input.lease.metadata?.runnerTaskStartup && !input.lease.metadata?.runnerTaskStartupCleanup);
-    if (settled !== "completed") {
-      const { plugin, driverKey, driverConfig } = await resolvePluginDriverForRelease(input);
-      await workerManager.call(plugin.id, "environmentReleaseLease", {
-        driverKey,
-        companyId: input.lease.companyId,
-        environmentId: input.environment.id,
-        issueId: input.lease.issueId,
-        config: driverConfig,
-        providerLeaseId: input.lease.providerLeaseId,
-        leaseMetadata: input.lease.metadata ?? undefined,
-      });
+      (lease.metadata?.runnerTaskLease === true && lease.metadata?.runnerTaskDispatched !== true && !lease.metadata?.runnerTaskStartup && !lease.metadata?.runnerTaskStartupCleanup);
+    return remoteTerminationReceipt(lease, receipt) ? receipt
+      : taskStopped ? { providerLeaseId: lease.providerLeaseId, state: "stopped" } : undefined;
+  }
+
+  async function releasePluginRunLease(input: EnvironmentDriverReleaseInput, executionStopObserved = false) {
+    const scope = and(eq(environmentLeases.id, input.lease.id), eq(environmentLeases.companyId, input.lease.companyId));
+    await db.update(environmentLeases).set({ metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || '{"pluginLeaseCleanupMethod":"release"}'::jsonb` }).where(scope);
+    let receipt: Awaited<ReturnType<typeof cleanupPluginRunLease>>;
+    try {
+      receipt = await cleanupPluginRunLease(input, executionStopObserved);
+    } catch (error) {
+      await writeEnvironmentCleanup(db, tx => tx.update(environmentLeases).set({ status: "pending_cleanup", cleanupStatus: "failed",
+        failureReason: "release_cleanup_failed", releasedAt: new Date(), updatedAt: new Date(),
+      }).where(and(scope, inArray(environmentLeases.status, ["active", "retained"]),
+        eq(environmentLeases.providerLeaseId, input.lease.providerLeaseId!))),
+      { companyId: input.lease.companyId, runId: input.lease.heartbeatRunId ?? undefined });
+      throw error;
     }
     return await environmentsSvc.releaseLease(input.lease.id, input.status, {
       cleanupStatus: "success",
-      ...(taskStopped ? { remoteExecutionTermination: remoteTerminationReceipt(input.lease,
-        { providerLeaseId: input.lease.providerLeaseId, state: "stopped" }) } : {}),
+      remoteExecutionTermination: remoteTerminationReceipt(input.lease, receipt),
     });
   }
 
@@ -3574,7 +3591,9 @@ function createPluginEnvironmentDriver(
         companyId: input.companyId, environmentId: input.environment.id, heartbeatRunId: input.heartbeatRunId,
         issueId: input.issueId, executionWorkspaceId: input.executionWorkspaceId,
         provider: `plugin:${parsed.config.pluginKey}:${parsed.config.driverKey}`, pluginId: plugin.id, driverKey: parsed.config.driverKey,
-        config: {}, timeoutMs: rpcTimeoutMs, requestKey: fingerprint,
+        config: {}, timeoutMs: rpcTimeoutMs,
+        requestKey: input.replacementWorkspaceCreation && input.replacementWorkspaceCreation === input.executionWorkspaceId
+          ? `${fingerprint}:${input.executionWorkspaceId}` : fingerprint,
         metadata: { driver: "plugin", pluginId: plugin.id, pluginKey: parsed.config.pluginKey, driverKey: parsed.config.driverKey,
           ...(input.purpose ? { purpose: input.purpose, loginCommandKey: input.loginCommandKey } : {}) },
       }, identity => workerManager.call(plugin.id, "environmentAcquireLease", {
@@ -3694,18 +3713,7 @@ function createPluginEnvironmentDriver(
       } catch { return false; }
     },
 
-    async retryPendingSandboxTeardown(input) {
-      const taskStopped = await settleDispatchedEnvironmentTask(db, workerManager, input.lease) ||
-        (input.lease.metadata?.runnerTaskLease === true && input.lease.metadata?.runnerTaskDispatched !== true && !input.lease.metadata?.runnerTaskStartup && !input.lease.metadata?.runnerTaskStartupCleanup);
-      const { plugin, driverKey, driverConfig } = await resolvePluginDriverForRelease(input);
-      const environmentId = input.environment?.id ?? readString(input.lease.metadata?.environmentId);
-      if (!environmentId) throw new Error("Plugin lease cleanup has no saved environment identity");
-      const receipt = await workerManager.call(plugin.id, input.lease.metadata?.pluginLeaseCleanupMethod === "destroy" ? "environmentDestroyLease" : "environmentReleaseLease", {
-        driverKey, companyId: input.lease.companyId, environmentId, issueId: input.lease.issueId,
-        config: driverConfig, providerLeaseId: input.lease.providerLeaseId, leaseMetadata: input.lease.metadata ?? undefined,
-      });
-      return taskStopped ? { providerLeaseId: input.lease.providerLeaseId, state: "stopped" } : receipt;
-    },
+    retryPendingSandboxTeardown: cleanupPluginRunLease,
 
     async realizeWorkspace(input) {
       const { plugin, pluginKey, driverKey, driverConfig } = await resolvePluginDriverForRelease({
@@ -4045,6 +4053,7 @@ export function environmentRuntimeService(
       executionWorkspaceSettings?: IssueExecutionWorkspaceSettings | null;
       runnerTaskProjectIds?: readonly string[];
       runnerTaskResumeSessionId?: string | null;
+      replacementWorkspaceCreation?: string;
       /** The agent's adapter type for this run (mixed-harness environments). */
       adapterType?: string | null;
       resolveSnapshotIdentity?: boolean;
@@ -4091,6 +4100,7 @@ export function environmentRuntimeService(
         executionWorkspaceSettings: input.executionWorkspaceSettings ?? null,
         runnerTaskProjectIds: input.runnerTaskProjectIds,
         runnerTaskResumeSessionId: input.runnerTaskResumeSessionId,
+        replacementWorkspaceCreation: input.replacementWorkspaceCreation,
         purpose: input.purpose,
         loginCommandKey: input.loginCommandKey,
         adapterType: input.adapterType ?? null,

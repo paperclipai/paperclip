@@ -2868,7 +2868,7 @@ describe("remote provider pack manifest", () => {
     return JSON.stringify(value);
   };
 
-  it.each(["opencode", "opencode-new-durable", "opencode-new-durable-reset", "opencode-new-durable-inspect-reset", "opencode-new-durable-provider-reset", "opencode-new-durable-store-failed", "opencode-new-durable-publish-failed", "opencode-continuation", "opencode-continuation-missing", "opencode-continuation-no-receipt", "opencode-continuation-replacement", "opencode-continuation-cold", "opencode-continuation-legacy-durable", "opencode-dirty", "opencode-diagnostics", "opencode-diagnostics-stale", "cursor", "claude-x64", "claude-arm64"] as const)("uses the bundled Linux image authority for remote %s without controller overrides", async provider => {
+  it.each(["opencode", "opencode-new-durable", "opencode-new-durable-reset", "opencode-new-durable-inspect-reset", "opencode-new-durable-provider-reset", "opencode-new-durable-store-failed", "opencode-new-durable-publish-failed", "opencode-new-durable-slow-capture", "opencode-new-durable-ready", "opencode-continuation", "opencode-continuation-missing", "opencode-continuation-no-receipt", "opencode-continuation-replacement", "opencode-continuation-cold", "opencode-continuation-legacy-durable", "opencode-dirty", "opencode-diagnostics", "opencode-diagnostics-stale", "cursor", "claude-x64", "claude-arm64"] as const)("uses the bundled Linux image authority for remote %s without controller overrides", async provider => {
     const firstDurable = provider.startsWith("opencode-new-durable");
     // A sandbox connection drops once while the settled state is read out.
     let checkpointReadResets = provider === "opencode-new-durable-reset" ? 1 : 0;
@@ -2961,6 +2961,8 @@ describe("remote provider pack manifest", () => {
       const owner = vi.spyOn(harnessStorage, "nativeHarnessBackupOwner").mockResolvedValue({ runId: remoteExecution.binding.runId } as never);
       const validate = vi.spyOn(harnessStorage, "assertNativeHarnessBackupOwner").mockResolvedValue(undefined);
       const retain = vi.spyOn(providerArtifactStorage, "retainNativeProviderArtifacts").mockResolvedValue(newReceipt);
+      const ready = vi.spyOn(providerArtifactStorage, "retainReadyNativeProviderArtifacts")
+        .mockResolvedValue(provider === "opencode-new-durable-ready" ? newReceipt : null);
       const capture = vi.spyOn(providerArtifactCapture, "captureRemoteNativeProviderArtifacts");
       const backup = vi.spyOn(harnessStorage, "persistNativeHarnessBackup").mockImplementation(async input => {
         expect(JSON.parse(await readFile(join(input.root, "manifest.json"), "utf8")).providerArtifacts).toEqual(newReceipt);
@@ -2970,7 +2972,7 @@ describe("remote provider pack manifest", () => {
         if (provider === "opencode-new-durable-publish-failed") await rm(input.root, { recursive: true, force: true });
         return undefined as never;
       });
-      onTestFinished(() => { storage.mockRestore(); owner.mockRestore(); validate.mockRestore(); retain.mockRestore(); capture.mockRestore(); backup.mockRestore(); });
+      onTestFinished(() => { storage.mockRestore(); owner.mockRestore(); validate.mockRestore(); retain.mockRestore(); ready.mockRestore(); capture.mockRestore(); backup.mockRestore(); });
     }
     const execute = vi.fn(async (command: { command: string; args?: string[] }) => {
       const script = command.args?.[1] ?? "";
@@ -3058,7 +3060,21 @@ describe("remote provider pack manifest", () => {
       expect(execute.mock.calls.filter(([call]) => call.args?.[0] === "--build-metadata")).toHaveLength(1);
       if (firstDurable) {
         expect(managedBackend.providerAdmissionRequired?.()).toBe(true);
-        await managedBackend.providerAdmissionPersisted!();
+        const fiveMinutesElapsed = provider === "opencode-new-durable-slow-capture"
+          ? vi.spyOn(AbortSignal, "timeout").mockImplementation(() =>
+            AbortSignal.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError")))
+          : null;
+        const admissionStartedAt = performance.now();
+        try { await managedBackend.providerAdmissionPersisted!(); } finally { fiveMinutesElapsed?.mockRestore(); }
+        expect(providerArtifactStorage.retainReadyNativeProviderArtifacts).toHaveBeenCalledWith(expect.objectContaining({
+          manifest: installed, launchRoot, accountUid: 1000 }));
+        if (provider === "opencode-new-durable-ready") {
+          console.info(`[provider-artifact-gate] admission gate with a ready artifact took ${(performance.now() - admissionStartedAt).toFixed(1)} ms`);
+          expect(providerArtifactCapture.captureRemoteNativeProviderArtifacts).not.toHaveBeenCalled();
+          expect(providerArtifactStorage.retainNativeProviderArtifacts).not.toHaveBeenCalled();
+          expect(syncOut).not.toHaveBeenCalled();
+          return;
+        }
         expect(providerArtifactCapture.captureRemoteNativeProviderArtifacts).toHaveBeenCalledTimes(1);
         expect(providerArtifactCapture.captureRemoteNativeProviderArtifacts).toHaveBeenCalledWith(
           expect.objectContaining({ remoteCwd: "/workspace" }), expect.any(Function));
@@ -11314,6 +11330,44 @@ describe("native warm session supervision", () => {
     } finally {
       Object.assign(warmSessionReleaseWait, original);
       releaseGate();
+      await closeWarmNativeSessionsForEnvironment({ environmentId: identity, reason: "test cleanup" });
+    }
+  });
+
+  it("a follow-up that arrives while the idle timeout is closing the warm session waits for that close instead of failing busy", async () => {
+    const identity = "warm-idle-close-follow-up";
+    const warmExecution = { ...execution, binding: { ...execution.binding, runId: identity, executionWorkspaceId: `${identity}-workspace` },
+      session: { ...execution.session, normalizedSessionId: identity, lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 50 } },
+    } as NativeExecutionInputV1;
+    let closeStarted!: () => void, finishClose!: () => void;
+    const closing = new Promise<void>(resolve => { closeStarted = resolve; });
+    const closeGate = new Promise<void>(resolve => { finishClose = resolve; });
+    const session = { close: vi.fn(async () => { closeStarted(); await closeGate; }) };
+    state.execute.mockReset().mockImplementation(async (options) => {
+      await options.onSession?.(session);
+      return { result: { summary: "completed" }, terminal: { runTerminalState: "succeeded" },
+        turnId: identity, normalizedSessionId: identity, providerSessionId: identity,
+        driverKind: "test", driverVersion: "1", nativeEventCount: 1, highestContiguousSourceSeq: 1, usage: null };
+    });
+    const copy = (runId: string) => ({ runId, root: `/tmp/${identity}`, preparationKey: "same", hasChanges: async () => false,
+      collectStopped: async () => undefined });
+    try {
+      await executePaperclipNativeSession({ db: leaseDb(warmExecution), execution: warmExecution, runnerInstanceId: identity,
+        runnerExecutionTarget: { kind: "remote", transport: "sandbox", environmentId: identity, remoteCwd: `/tmp/${identity}` },
+        instructionWorkingCopy: copy(identity) });
+      await closing;
+      const followUpRunId = `${identity}-follow-up`;
+      const adopt = vi.fn(async () => copy(followUpRunId));
+      const followUp = claimWarmNativeInstructionCopy({ priorExecution: warmExecution,
+        companyId: warmExecution.binding.companyId, agentId: warmExecution.binding.agentId,
+        executionWorkspaceId: warmExecution.binding.executionWorkspaceId, workspace: warmExecution.workspace,
+        environmentId: identity, runId: followUpRunId, preparationKey: "same", adopt });
+      setTimeout(finishClose, 100);
+      await expect(followUp).resolves.toBeNull();
+      expect(adopt).not.toHaveBeenCalled();
+      expect(session.close).toHaveBeenCalledTimes(1);
+    } finally {
+      finishClose();
       await closeWarmNativeSessionsForEnvironment({ environmentId: identity, reason: "test cleanup" });
     }
   });

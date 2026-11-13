@@ -570,13 +570,15 @@ export async function executeEnvironmentTask(db: Db, workers: Pick<PluginWorkerM
           const receipt=remoteTerminationReceipt(owner,{providerLeaseId:taskId,state:"stopped"});
           if(!receipt) continue;
           await writeEnvironmentCleanup(db, tx => tx.update(environmentLeases).set({
-            ...(owner.status === "retained" ? {status:"released" as const,releasedAt:new Date(),cleanupStatus:"success" as const}:{}),
+            ...(owner.id !== lease.id && owner.status === "retained" ? {status:"released" as const,releasedAt:new Date(),cleanupStatus:"success" as const}:{}),
             metadata:sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({remoteExecutionTermination:receipt,runnerTaskExecutionStopped:true})}::jsonb`,
           }).where(and(eq(environmentLeases.id,owner.id),eq(environmentLeases.providerLeaseId,taskId))), { companyId: owner.companyId, runId: owner.heartbeatRunId ?? undefined });
         }
       }
       await db.update(environmentLeases).set({
-        metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || '{"runnerTaskDispatched":false}'::jsonb`,
+        metadata: sql`(case when ${environmentLeases.metadata}->>'runnerTaskPreparationStopped' = 'true'
+          then coalesce(${environmentLeases.metadata}, '{}'::jsonb) - 'runnerTaskStartup'
+          else coalesce(${environmentLeases.metadata}, '{}'::jsonb) end) || '{"runnerTaskDispatched":false}'::jsonb`,
       }).where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.companyId, input.companyId),
         eq(environmentLeases.providerLeaseId, taskId), sql`${environmentLeases.metadata}->>'runnerTaskExecutionStopped' = 'true'`));
     }
@@ -602,8 +604,11 @@ export async function settleDispatchedEnvironmentTask(db: Db, workers: PluginWor
     metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || '{"runnerTaskRetiring":true}'::jsonb`,
   }).where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.companyId, lease.companyId)))
     .returning({ metadata: environmentLeases.metadata, heartbeatRunId: environmentLeases.heartbeatRunId, taskId: environmentLeases.providerLeaseId });
-  const startup = current?.metadata?.runnerTaskStartup;
   const startupCleanup = current?.metadata?.runnerTaskStartupCleanup as { requiresPreparationStop?: boolean } | undefined;
+  const startup = current?.metadata?.runnerTaskStartup;
+  if (startupCleanup && current?.metadata?.runnerTaskExecutionStopped === true && current.metadata.runnerTaskDispatched === false &&
+      !current.metadata.runnerTaskAdmissionRejection && !startup &&
+      (!startupCleanup.requiresPreparationStop || current.metadata.runnerTaskPreparationStopped === true)) return "completed";
   if (current?.metadata?.runnerTaskDispatched !== true && !startup && !startupCleanup) {
     if (current?.metadata) await settlePluginTaskCredentialHandoff(db, {
       companyId: lease.companyId, leaseId: lease.id, expectedTaskId: current.taskId ?? undefined,

@@ -23,6 +23,7 @@ const support=external ? {supported:true} : await getEmbeddedPostgresTestSupport
   const companyId=randomUUID(),agentId=randomUUID(),issueId=randomUUID(),environmentId=randomUUID(),pluginId=randomUUID();
   let runId=randomUUID(),allocation=0,stopped=false,outage=false,releaseFails=false,unavailable=false;
   const calls:string[]=[],dispatched:Array<[string,string]>=[],failures=new Set<string>();
+  const releaseMetadata: unknown[] = [];
   let projectIds=[...initialProjects],providerExpiry=initialExpiry;
   const taskExpiries=new Map<string,string|undefined>(),acquireRequests:any[]=[];
   let resumeGate:Promise<void>|undefined,releaseResume:(()=>void)|undefined,resumes=0;
@@ -47,7 +48,7 @@ const support=external ? {supported:true} : await getEmbeddedPostgresTestSupport
     }
     if(method==="environmentResumeLease") {if(outage) throw Error("unreachable");
      if(resumeGate){if(++resumes===2)releaseResume!();await resumeGate;}return {providerLeaseId:stopped||unavailable?null:p.providerLeaseId,expiresAt:taskExpiries.get(p.providerLeaseId),metadata:{runId:p.runId}};}
-    if(method==="environmentReleaseLease") {if(releaseFails) throw Error("release unavailable");return {providerLeaseId:p.providerLeaseId,state:"stopped"};}
+    if(method==="environmentReleaseLease") {releaseMetadata.push(p.leaseMetadata);if(releaseFails) throw Error("release unavailable");return {providerLeaseId:p.providerLeaseId,state:"stopped"};}
     if(p.operation.kind==="status") return {kind:"status",taskId:p.taskId,phase:stopped?"completed":"running",executionStopped:stopped,sessionStateAvailable:stopped,preparationStopped:stopped};
     if(p.operation.kind==="read_state") return {kind:"state",taskId:p.taskId,state:{...p.operation.identity,lifecycle:"ready"}};
     if(p.operation.kind==="stop") stopped=true;
@@ -66,11 +67,11 @@ const support=external ? {supported:true} : await getEmbeddedPostgresTestSupport
    launch:{runnerVersion:"fixture",runnerDigest:`sha256:${"a".repeat(64)}`,maxOutboxBytes:262144,p0ReserveBytes:65536,lifecyclePolicy:{mode:"warm",idleTimeoutMs:300000}}}});
   await runtime().releaseRunLeases(runId,"released",undefined,"keep_running");
   await db.update(heartbeatRuns).set({status:"succeeded"}).where(eq(heartbeatRuns.id,runId));
-  return {companyId,first,identity,calls,dispatched,runtime,acquire,acquireRequests,
+  return {companyId,first,identity,calls,dispatched,runtime,acquire,acquireRequests,releaseMetadata,
    fail(kind:string){failures.add(kind);},unavailable(){unavailable=true;},
    setExpiry(next?:string){providerExpiry=next;},
    async nextRun(){runId=randomUUID();await db.insert(heartbeatRuns).values({id:runId,companyId,agentId,nativeIssueId:issueId,invocationSource:"manual",status:"running"});return runId;},
-   setProjects(next:string[]){projectIds=next;},stopped(){stopped=true;},failRelease(){releaseFails=true;},outage(){outage=true;},
+   setProjects(next:string[]){projectIds=next;},stopped(){stopped=true;},failRelease(){releaseFails=true;},restoreRelease(){releaseFails=false;},outage(){outage=true;},
    raceResume(){resumeGate=new Promise<void>(resolve=>{releaseResume=resolve;});}};
  }
  it("hands a retained process to a new run after controller reconstruction",async()=>{
@@ -118,7 +119,7 @@ const support=external ? {supported:true} : await getEmbeddedPostgresTestSupport
   if(prepared) await db.update(environmentLeases).set({metadata:sql`${environmentLeases.metadata} || ${JSON.stringify({runnerTaskStartup:{contextId:"settled-startup",deadlineAtMs:1,runId:f.identity.runId}})}::jsonb`}).where(eq(environmentLeases.id,f.first.lease.id));
   const calls=f.calls.length,dispatched=f.dispatched.length;
   const next=await f.acquire();
-  expect(f.calls.slice(calls)).toEqual(["environmentResumeLease","status","complete","environmentAcquireLease"]);
+  expect(f.calls.slice(calls)).toEqual(["environmentResumeLease","status","complete","environmentReleaseLease","environmentAcquireLease"]);
   expect(f.dispatched.slice(dispatched)).toEqual([["status",f.first.lease.providerLeaseId],["complete",f.first.lease.providerLeaseId]]);
   expect(next.lease.providerLeaseId).not.toBe(f.first.lease.providerLeaseId);
   const [old]=await db.select().from(environmentLeases).where(eq(environmentLeases.id,f.first.lease.id));
@@ -129,7 +130,7 @@ const support=external ? {supported:true} : await getEmbeddedPostgresTestSupport
   const f=await fixture();f.unavailable();await f.nextRun();
   const calls=f.calls.length;
   await f.acquire();
-  expect(f.calls.slice(calls)).toEqual(["environmentResumeLease","status","stop","status","complete","environmentAcquireLease"]);
+  expect(f.calls.slice(calls)).toEqual(["environmentResumeLease","status","stop","status","complete","environmentReleaseLease","environmentAcquireLease"]);
  });
  it.each([["status",false],["complete",false],["stop",true]] as const)("keeps a stopped retained task for cleanup retry when %s fails",async(kind,running)=>{
   const f=await fixture();if(running) f.unavailable(); else f.stopped();await f.nextRun();
@@ -142,6 +143,29 @@ const support=external ? {supported:true} : await getEmbeddedPostgresTestSupport
   const calls=f.calls.length;
   await expect(f.runtime().retryPendingSandboxTeardown({environment:null,lease:pending})).resolves.toEqual({providerLeaseId:f.first.lease.providerLeaseId,state:"stopped"});
   expect(f.calls.slice(calls)).toEqual(["stop","status","complete","environmentReleaseLease"]);
+ });
+ it("retries lease release after completed task settlement without repeating settlement", async () => {
+  const f = await fixture();
+  f.stopped();
+  f.failRelease();
+  await f.nextRun();
+  const before = f.calls.length;
+  await expect(f.acquire()).rejects.toThrow("release unavailable");
+  expect(f.calls.slice(before)).toEqual(["environmentResumeLease", "status", "complete", "environmentReleaseLease"]);
+  const pending = (await environmentService(db).getLeaseById(f.first.lease.id))!;
+  expect(pending).toMatchObject({
+   status: "pending_cleanup", cleanupStatus: "failed",
+   metadata: { runnerTaskDispatched: false, runnerTaskExecutionStopped: true },
+  });
+  const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.identity.runId));
+  expect(run.status).toBe("succeeded");
+  f.restoreRelease();
+  const retry = f.calls.length;
+  await expect(f.runtime().retryPendingSandboxTeardown({ environment: null, lease: pending }))
+   .resolves.toEqual({ providerLeaseId: f.first.lease.providerLeaseId, state: "stopped" });
+  expect(f.calls.slice(retry)).toEqual(["environmentReleaseLease"]);
+  expect(f.releaseMetadata).toHaveLength(2);
+  for (const metadata of f.releaseMetadata) expect(metadata).toMatchObject({ runnerTaskDispatched: false, runnerTaskExecutionStopped: true });
  });
  it("does not allocate a replacement when the retained computer cannot be inspected",async()=>{
   const f=await fixture();f.outage();await f.nextRun();

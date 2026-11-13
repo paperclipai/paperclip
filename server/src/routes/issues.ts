@@ -7746,6 +7746,21 @@ export function issueRoutes(
     // is a read-only receipt. It must never hide the user's own later
     // messages, which are separately queued and remain editable and sendable.
     let receipt: IssueQueueState | null = null;
+    let agentOnly: IssueQueueState | null = null;
+    const hasPersonMessage = async (wake: { payload: unknown }) => {
+      const ids = queuedCommentIdsFromWakePayload(wake.payload);
+      if (ids.length === 0) return false;
+      const [row] = await executor.select({ id: issueComments.id }).from(issueComments).where(and(
+        eq(issueComments.companyId, issue.companyId), eq(issueComments.issueId, issue.id),
+        inArray(issueComments.id, ids), eq(issueComments.authorType, "user"), isNull(issueComments.deletedAt),
+      )).limit(1);
+      return Boolean(row);
+    };
+    const pendingMessages = async (state: IssueQueueState) => {
+      if (await hasPersonMessage(state.wake)) return state;
+      agentOnly = state;
+      return null;
+    };
     for (const wake of rows) {
       if (
         readObject(wake.payload).issueId !== issue.id ||
@@ -7754,16 +7769,17 @@ export function issueRoutes(
         continue;
       const isReceipt = Boolean(queuedInteractionId(wake.payload));
       if (isReceipt && receipt) continue;
-      // A receipt a run already received is not pending; a later one may be.
+      if (!isReceipt && agentOnly) continue;
       const readReceipt = () => readQueuedInteractionResponse(executor as Db, wake.companyId, issue.id, wake.payload);
       if (wake.status === "deferred_issue_execution") {
         if (isReceipt) {
           const response = await readReceipt();
-          // A tool action's outcome is delivered, never listed (approve = run).
           if (response && !response.toolActionOutcome) receipt = { wake, state: "deferred", queueRun: null, response };
           continue;
         }
-        return { wake, state: "deferred", queueRun: null };
+        const messages = await pendingMessages({ wake, state: "deferred", queueRun: null });
+        if (messages) return messages;
+        continue;
       }
       if (!wake.runId) continue;
       const queueRun = await executor
@@ -7784,9 +7800,12 @@ export function issueRoutes(
         const response = await readReceipt();
         if (response && !response.toolActionOutcome) receipt = { wake, state: "queued", queueRun, response };
       }
-      else if (queueRun) return { wake, state: "queued", queueRun };
+      else if (queueRun) {
+        const messages = await pendingMessages({ wake, state: "queued", queueRun });
+        if (messages) return messages;
+      }
     }
-    return receipt;
+    return receipt ?? agentOnly;
   }
 
   async function queueCommentsForWake(

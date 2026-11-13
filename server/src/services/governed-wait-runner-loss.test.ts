@@ -9,11 +9,13 @@ import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { heartbeatService } from "./heartbeat.js";
 import { requestInterruptedNativeTurnRetry } from "./heartbeat/restart-interrupted-turn.js";
 import { getExecutionBlocker } from "./execution-blocker.js";
-import { taskInterruptionPresentation } from "./task-interruption-presentation.js";
+import { taskInterruptionPresentation, taskInterruptionPresentations } from "./task-interruption-presentation.js";
+import { pendingContinuationDecisionWaits } from "./explicit-native-continuation.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
 import { reconcileRetainedWorkspaces } from "./workspace-recovery.js";
-import { requestTaskRetry } from "./task-retry.js";
+import { readTaskRetryIntent, requestTaskRetry } from "./task-retry.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
+import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import { useWorkspaceRecoveryFixture, action, db, run, seed } from "./__tests__/workspace-recovery-fixture.js";
 
 const targets = vi.hoisted(() => new Map<string, AdapterSandboxExecutionTarget>());
@@ -204,4 +206,125 @@ describe("a held task with a pending decision after its remote runner was lost",
     expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.actionId)))[0].evidence)
       .not.toHaveProperty("explicitUserContinuation");
   }, 60_000);
+  describe("a Retry held on a confirmation the person resolves", () => {
+    const heldOnConfirmation = async () => {
+      const f = await lostRunnerWithPendingDecision("parkedQuestion");
+      await db.update(issueThreadInteractions).set({ kind: "request_confirmation",
+        payload: { version: 1, prompt: "Review sidebar subtask screenshots" } as never })
+        .where(eq(issueThreadInteractions.id, f.decision.id));
+      const receipt = await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issueId, actorId: "local-board",
+        actorSource: "local_implicit", idempotencyKey: randomUUID(), observedRunId: f.runId });
+      await f.service.resumeTaskRetry(f.companyId, receipt.requestId!);
+      expect({ successors: (await queuedSuccessors(f.companyId)).length, deferred: await deferredWaits(f.companyId) })
+        .toEqual({ successors: 0, deferred: ["decision_pending"] });
+      return { ...f, requestId: receipt.requestId! };
+    };
+    const savedResolution = (f: Awaited<ReturnType<typeof heldOnConfirmation>>) =>
+      db.update(issueThreadInteractions).set({ status: "rejected", resolvedByUserId: "local-board", resolvedAt: new Date(),
+        result: { version: 1, outcome: "rejected", reason: "what" } as never })
+        .where(eq(issueThreadInteractions.id, f.decision.id));
+    const currentIssue = async (issueId: string) => (await db.select().from(issues).where(eq(issues.id, issueId)))[0];
+    const retryReceipt = async (id: string) => (await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, id)))[0];
+
+    it.each(["accept", "reject"] as const)("releases the held Retry as soon as the person chooses %s", async choice => {
+      const f = await heldOnConfirmation();
+      const interactions = issueThreadInteractionService(db);
+      const issue = await currentIssue(f.issueId);
+      if (choice === "accept") await interactions.acceptInteraction(issue, f.decision.id, {}, { userId: "local-board" });
+      else await interactions.rejectInteraction(issue, f.decision.id, { reason: "what" }, { userId: "local-board" });
+      expect((await retryReceipt(f.requestId)).payload).not.toHaveProperty("executionWait");
+      expect(await deferredWaits(f.companyId)).not.toContain("decision_pending");
+      await f.service.resumeTaskRetry(f.companyId, f.requestId);
+      const [successor] = await queuedSuccessors(f.companyId);
+      expect(successor?.contextSnapshot).toMatchObject({ previousRunId: f.runId, taskRetryRequestId: f.requestId });
+    }, 60_000);
+
+    it("accepts the confirmation while the held Retry is admitted, without either aborting", async () => {
+      const f = await heldOnConfirmation();
+      const issue = await currentIssue(f.issueId);
+      const outcomes = await Promise.allSettled([
+        issueThreadInteractionService(db).acceptInteraction(issue, f.decision.id, {}, { userId: "local-board" }),
+        f.service.resumeTaskRetry(f.companyId, f.requestId),
+        f.service.resumeTaskRetry(f.companyId, f.requestId),
+      ]);
+      expect(outcomes.filter(outcome => outcome.status === "rejected")).toEqual([]);
+      await f.service.resumeTaskRetry(f.companyId, f.requestId);
+      expect({ successors: (await queuedSuccessors(f.companyId)).length, deferred: await deferredWaits(f.companyId) })
+        .toEqual({ successors: 1, deferred: [] });
+    }, 60_000);
+
+    it("never shows a resolved confirmation as the Retry's wait, and both projections offer the same Retry", async () => {
+      const f = await heldOnConfirmation();
+      await savedResolution(f);
+      await db.update(agentWakeupRequests).set({ requestedAt: new Date(Date.now() - 5 * 60_000) })
+        .where(eq(agentWakeupRequests.id, f.requestId));
+      const interruption = await taskInterruptionPresentation(db, await currentIssue(f.issueId));
+      const blocker = await getExecutionBlocker(db, f.companyId, f.issueId);
+      expect(interruption).toMatchObject({ state: "failed", canRetry: true });
+      expect(interruption?.retryWait).toBeUndefined();
+      expect(blocker?.canRetry).toBe(interruption?.canRetry);
+    }, 60_000);
+
+    it("a person's comment starts work and settles the held Retry once nothing is left to answer", async () => {
+      const f = await heldOnConfirmation();
+      await savedResolution(f);
+      const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
+        authorType: "user", authorUserId: "local-board", body: "answer me" }).returning();
+      await f.service.wakeup(f.agentId, {
+        source: "automation", triggerDetail: "system", reason: "issue_commented",
+        payload: { issueId: f.issueId, commentId: comment.id, mutation: "comment" },
+        requestedByActorType: "user", requestedByActorId: "local-board",
+        contextSnapshot: { issueId: f.issueId, taskId: f.issueId, wakeReason: "issue_commented", wakeCommentId: comment.id },
+      });
+      expect({ successors: (await queuedSuccessors(f.companyId)).length, deferred: await deferredWaits(f.companyId) })
+        .toEqual({ successors: 1, deferred: [] });
+      expect(await retryReceipt(f.requestId)).toMatchObject({ status: "skipped", error: "task_retry_superseded" });
+    }, 60_000);
+
+    it("starts a Retry at once when the confirmation was already open before the failed turn started", async () => {
+      const f = await lostRunnerWithPendingDecision("parkedQuestion");
+      const failed = await run(f.runId);
+      await db.update(issueThreadInteractions).set({ kind: "request_confirmation",
+        payload: { version: 1, prompt: "Review sidebar subtask screenshots" } as never,
+        createdAt: new Date(failed.createdAt.getTime() - 6 * 60_000) })
+        .where(eq(issueThreadInteractions.id, f.decision.id));
+      const receipt = await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issueId, actorId: "local-board",
+        actorSource: "local_implicit", idempotencyKey: randomUUID(), observedRunId: f.runId });
+      await f.service.resumeTaskRetry(f.companyId, receipt.requestId!);
+      expect({ successors: (await queuedSuccessors(f.companyId)).length, deferred: await deferredWaits(f.companyId) })
+        .toEqual({ successors: 1, deferred: [] });
+    }, 60_000);
+
+    it("reads every saved decision wait on a task list in one bounded query", async () => {
+      const f = await heldOnConfirmation();
+      const source = await currentIssue(f.issueId);
+      const listed = await db.insert(issues).values(Array.from({ length: 40 }, (_, index) => ({
+        ...source, id: randomUUID(), identifier: `${source.identifier}-${index}`, issueNumber: (source.issueNumber ?? 0) + 1000 + index,
+        executionRunId: null, checkoutRunId: null,
+      }))).returning();
+      await db.insert(agentWakeupRequests).values(listed.map(issue => ({ companyId: f.companyId, agentId: f.agentId,
+        source: "automation", triggerDetail: "system", reason: "issue_commented", status: "deferred_issue_execution",
+        requestedByActorType: "user", requestedByActorId: "local-board",
+        payload: { issueId: issue.id, executionWait: { reason: "decision_pending", message: "held" } } })));
+      const open = listed.slice(0, 20);
+      await db.insert(issueThreadInteractions).values(open.map(issue => ({ companyId: f.companyId, issueId: issue.id,
+        kind: "request_confirmation", status: "pending", continuationPolicy: "wake_assignee", createdByAgentId: f.agentId,
+        payload: { version: 1, prompt: "Review it?" } as never })));
+      const statements: string[] = [];
+      const client = db.$client.options;
+      const previous = client.debug;
+      client.debug = (_connection, query) => { if (query.includes("issue_thread_interactions")) statements.push(query); };
+      try {
+        await taskInterruptionPresentations(db, f.companyId, [source, ...listed]);
+      } finally { client.debug = previous; }
+      expect(statements.length).toBeLessThanOrEqual(2);
+      const waits = await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, f.companyId),
+        eq(agentWakeupRequests.status, "deferred_issue_execution")));
+      const held = await pendingContinuationDecisionWaits(db, f.companyId, waits.map(wait => ({ id: wait.id,
+        issueId: String(wait.payload?.issueId), actorId: wait.requestedByActorId!,
+        taskRetrySourceRunId: readTaskRetryIntent(wait.payload)?.sourceRunId ?? null })));
+      const heldIssues = new Set(waits.filter(wait => held.has(wait.id)).map(wait => String(wait.payload?.issueId)));
+      expect(heldIssues).toEqual(new Set([f.issueId, ...open.map(issue => issue.id)]));
+    }, 60_000);
+  });
 });

@@ -1,3 +1,4 @@
+import { hasPendingRunCleanup } from "../execution-blocker.js";
 import { runOwnerFenceHeldSql } from "../remote-workspace-writer-hold.js";
 import { AGENT_DIRECTORY_BUSY_ERROR_CODE, AGENT_DIRECTORY_BUSY_MAX_DEFERRALS, AGENT_DIRECTORY_BUSY_RETRY_REASON, AGENT_DIRECTORY_BUSY_RETRY_WAKE_REASON, agentDirectoryBusyRetryDelayMs, type AgentDirectoryPreparationDeferral } from "./agent-directory-busy.js";
 import { isInterruptedNativePreparation } from "../cancelled-native-startup.js";
@@ -855,6 +856,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     delete retryContextSnapshot.skillVersions;
     delete retryContextSnapshot.skillSelectionSnapshot;
     delete retryContextSnapshot.shadowedSkills;
+    delete retryContextSnapshot.retryWorkspaceRefusal;
     const responsibleUserId = await resolveResponsibleUserIdForRunContext(
       run,
       retryContextSnapshot,
@@ -882,6 +884,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
             | "issue_terminal_status"
             | "issue_not_in_progress"
             | "continuation_user_authorization_missing"
+            | "workspace_verification_cleanup_pending"
             | "issue_execution_lock_changed";
           issueId: string | null;
           details: Record<string, unknown>;
@@ -1165,6 +1168,11 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
           // A preparation that a shutdown or restart stopped before provider
           // work continues in the uncharged interrupted_preparation lane while
           // its failure budget is unspent, and in server_restart after that.
+          const refusal = parseObject(contextSnapshot.retryWorkspaceRefusal);
+          if (typeof refusal.leaseId === "string" && await hasPendingRunCleanup(tx as unknown as Db, run.companyId, run.id)) {
+            return { outcome: "not_scheduled", issueId, errorCode: "workspace_verification_cleanup_pending",
+              reason: "The previous workspace verification lease still requires cleanup.", details: {} };
+          }
           const continuation = issueId && (retryReason === "transient_failure" || retryReason === SERVER_RESTART_RETRY_REASON
             || retryReason === INTERRUPTED_PREPARATION_RETRY_REASON || isPreparationWaitRetryReason(retryReason)
             || retryReason === AGENT_DIRECTORY_BUSY_RETRY_REASON)
@@ -1180,6 +1188,10 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
           };
           retryContextSnapshot.explicitUserContinuation = continuation;
           retryContextSnapshot.previousRunId = continuation.previousRunId;
+          if (continuation.taskRetryRequestId && refusal.intentId === continuation.taskRetryRequestId &&
+              typeof refusal.workspaceId === "string") {
+            retryContextSnapshot.retryWorkspaceRefusal = { intentId: refusal.intentId, workspaceId: refusal.workspaceId, leaseId: null };
+          }
         }
 
         await notifyAttentionRetentionWork(tx, { companyId: run.companyId });

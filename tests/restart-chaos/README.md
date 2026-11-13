@@ -1518,6 +1518,14 @@ tried again on the next poll with the same `clientRequestId`. The overlap window
 `staging-mix.ts`, which a swap driver registers. Without a probe, the window is any time a fault is in progress and the
 server still answers (a K15 overlap). The timeline records `staging_mix_follow_up`.
 
+To aim a follow-up at the warm session's idle close instead, set `RESTART_CHAOS_MIX_FOLLOW_UP_AFTER_END_MS=<min>-<max>`
+(for example `298000-306000` for the 300 s idle timeout). The harness then posts the follow-up that long after the
+task's last run ended, `RESTART_CHAOS_MIX_FOLLOW_UP_COUNT` times (default 2), and waits for every post before the task
+counts as finished. A failed post is tried again with the same `clientRequestId`. The task budget grows by one
+maximum delay plus one turn per post. The grade check `after_end_follow_ups_served` needs every post, an agent comment
+after each post and the `FOLLOWUP-<nonce>` ledger line. The timeline records `staging_mix_follow_up_after_end` with the
+measured delay.
+
 **Retries: hands-off first.** By default the harness never clicks Retry during the wave or the settle, so the product's
 own continuation is what gets measured. A task that shows a Retry banner is kept under watch, not rested. Every banner
 is recorded per task: when it first showed, how long it stayed, and the error code behind it, even when the task then
