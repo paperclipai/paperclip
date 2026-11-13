@@ -35,6 +35,17 @@ export const environmentTaskCredentialSchema = z.discriminatedUnion("type", [
 ]);
 export type PluginEnvironmentTaskCredential = z.infer<typeof environmentTaskCredentialSchema>;
 
+/** Matches Runner's configured-environment name rule; Runner rejects reserved names at launch. */
+const configuredEnvironmentName = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,127}$/);
+const configuredEnvironmentKeys = z.array(configuredEnvironmentName).max(128)
+  .refine(names => new Set(names).size === names.length, "Duplicate configured environment names");
+const utf8 = new TextEncoder();
+/** The agent's resolved plain and secret variables. Transient RPC input: never persist or log values. */
+const configuredEnvironmentValues = z.record(configuredEnvironmentName, z.string().max(65_536).refine(value => !value.includes("\0")))
+  .refine(env => Object.keys(env).length <= 128, "Too many configured environment variables")
+  .refine(env => Object.entries(env).reduce((bytes, [name, value]) => bytes + utf8.encode(name).length + utf8.encode(value).length, 0) <= 262_144,
+    "Configured environment exceeds its bounded launch size");
+
 /** Runner owns this versioned data contract. The plugin resolves its execution-host locations. */
 export const environmentRunnerLaunchRequirementsSchema = z.object({
   schema: z.literal("paperclip.runner.launch-requirements.v1"),
@@ -68,6 +79,8 @@ export const environmentTaskOperationSchema = z.discriminatedUnion("kind", [
     recovery: preparedLaunch.optional(), resumeFrom: providerId.optional(),
     priorIdentity: durableIdentity.optional(), accountIdentity: z.string().min(1).max(1024).optional(),
     projectIds: z.array(z.string().uuid()).max(64).refine(ids => new Set(ids).size === ids.length, "Duplicate project IDs"),
+    /** Names `submit` will supply in `configuredEnvironment`; only after `configuredEnvironmentVersion: 1`. */
+    configuredEnvironmentKeys: configuredEnvironmentKeys.optional(),
   }).strict(),
   z.object({
     kind: z.literal("submit"),
@@ -89,6 +102,11 @@ export const environmentTaskOperationSchema = z.discriminatedUnion("kind", [
     /** Stable account selection; distinct from its current credential revision. */
     accountIdentity: z.string().min(1).max(1024).optional(),
     credential: environmentTaskCredentialSchema.optional(),
+    /**
+     * Only after `configuredEnvironmentVersion: 1`. Set each entry in the Runner process
+     * environment and list every name in `PAPERCLIP_CONFIGURED_ENV_KEYS`, with the plugin's own keys.
+     */
+    configuredEnvironment: configuredEnvironmentValues.optional(),
     /** Core supplies these protected launch inputs for native agent runs. */
     launch: z.object({
       runnerVersion: z.string().min(1), runnerDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
@@ -172,6 +190,8 @@ export const environmentTaskResultSchema = z.discriminatedUnion("kind", [
     projectAuthCheckVersion: z.literal(1).optional(),
     workspaceFileReadVersion: z.literal(1).optional(),
     githubCredentialBrokerVersion: z.literal(1).optional(),
+    /** The plugin applies `submit.configuredEnvironment` to the Runner process. */
+    configuredEnvironmentVersion: z.literal(1).optional(),
   }).strict(),
   z.object({
     kind: z.literal("status"), taskId: providerId,

@@ -9439,7 +9439,7 @@ describe("native terminal-turn accounting", () => {
     let authorityRunId = current.binding.runId;
     const driver = { get authorityRunId() { return authorityRunId; }, prepareLaunch: vi.fn(), runnerProcessLauncher: launcher, controlPlaneRegistration: registration };
     const owner = vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner").mockReturnValue(
-      { launcher, registration, driver, readWorkspaceFile: vi.fn(), isRetired: () => false, rebind: vi.fn() } as never);
+      { launcher, registration, driver, readWorkspaceFile: vi.fn(), isRetired: () => false, rebind: vi.fn(), deliveredConfiguredEnvironmentKeys: () => [] } as never);
     const task = vi.fn(async (operation: unknown) => {
       environmentTaskOperationSchema.parse(operation);
       return { kind: "description", launchPreparationVersion: 1, projectAuthCheckVersion: 1, taskId: "task",
@@ -9477,7 +9477,7 @@ describe("native terminal-turn accounting", () => {
     const launcher = vi.fn(), registration = vi.fn();
     const driver = { authorityRunId: current.binding.runId, prepareLaunch: vi.fn(), runnerProcessLauncher: launcher, controlPlaneRegistration: registration };
     const owner = vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner").mockReturnValue(
-      { launcher, registration, driver, readWorkspaceFile: vi.fn(), isRetired: () => false, rebind: vi.fn() } as never);
+      { launcher, registration, driver, readWorkspaceFile: vi.fn(), isRetired: () => false, rebind: vi.fn(), deliveredConfiguredEnvironmentKeys: () => [] } as never);
     const task = vi.fn(async (operation: unknown) => {
       environmentTaskOperationSchema.parse(operation);
       return { kind: "description", launchPreparationVersion: 1, projectAuthCheckVersion: 1, taskId: "task",
@@ -18314,7 +18314,7 @@ describe("runnerd provider runtime wiring", () => {
     state.toolAuthorityDefinitions.mockImplementation(async binding => binding.readRemoteTaskFile ? [{ name: "register_deliverable" }] as never : []);
     const readWorkspaceFile = vi.fn(async () => Buffer.from("proof"));
     const release = vi.fn(async () => {}), resume = vi.fn(async () => "resumed" as const);
-    const owner = vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner").mockReturnValue({ launcher, registration, driver, readWorkspaceFile, release, resume, isRetired: () => false, retireSupersededTask: async () => false, retiredBeforeClaim: () => false, credentialsUpdated: vi.fn(), rebind:vi.fn() });
+    const owner = vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner").mockReturnValue({ launcher, registration, driver, readWorkspaceFile, release, resume, isRetired: () => false, retireSupersededTask: async () => false, retiredBeforeClaim: () => false, credentialsUpdated: vi.fn(), rebind:vi.fn(), deliveredConfiguredEnvironmentKeys: () => [] });
     const description = { kind: "description" as const, launchPreparationVersion: 1 as const, projectAuthCheckVersion: 1 as const,
       releaseResumeVersion: 1 as const, ...(kind === "codex" ? { workspaceFileReadVersion: 1 as const } : {}),
       taskId: "task", runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } };
@@ -18377,6 +18377,45 @@ describe("runnerd provider runtime wiring", () => {
       expect(JSON.parse(new PgDialect().sqlToQuery(metadata).params[0] as string)).toMatchObject({
         runnerTaskIdentity: { turnId: identity.turnId, itemId: identity.itemId },
       });
+    } finally { owner.mockRestore(); }
+  });
+
+  it.each([1, undefined] as const)("hands a preconfigured-home plugin Runner launch the agent's configured environment (plugin version %s)", async configuredEnvironmentVersion => {
+    const taskExecution = { ...execution, schema: "paperclip.native-execution-input.v7" as const,
+      homeMode: "preconfigured" as const, executionMode: "default" as const, planningContext: null, runtimeContext: nativeRuntimeContextFixture(),
+      provider: { kind: "acpx", agent: "claude", model: "claude-sonnet-4-6", permissionMode: "deny-all" } } as unknown as NativeExecutionInput;
+    const launcher = vi.fn(), registration = vi.fn();
+    const driver = { prepareLaunch: vi.fn(), runnerProcessLauncher: launcher, controlPlaneRegistration: registration };
+    const owner = vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner").mockReturnValue({ launcher, registration, driver,
+      readWorkspaceFile: vi.fn(), release: vi.fn(), resume: vi.fn(), isRetired: () => false, retireSupersededTask: async () => false,
+      retiredBeforeClaim: () => false, credentialsUpdated: vi.fn(), rebind: vi.fn(),
+      deliveredConfiguredEnvironmentKeys: () => configuredEnvironmentVersion ? ["DAY_GITHUB_PUSH_TOKEN", "OPENAI_ADMIN_KEY_READONLY"] : [] } as never);
+    const task = vi.fn(async (operation: unknown) => {
+      environmentTaskOperationSchema.parse(operation);
+      return { kind: "description" as const, launchPreparationVersion: 1 as const, projectAuthCheckVersion: 1 as const,
+        ...(configuredEnvironmentVersion ? { configuredEnvironmentVersion } : {}),
+        taskId: "task", runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } };
+    });
+    const onLog = vi.fn(async () => {});
+    try {
+      await createRunnerdBackend({ db: leaseDb(execution), execution: taskExecution, runnerInstanceId: "runner", onLog,
+        runnerIngressAuthorized: true, runnerExecutionTarget: { kind: "remote", transport: "sandbox", providerKey: "plugin",
+          leaseId: "plugin-task-lease", remoteCwd: "/unused", runnerTask: task,
+          sandboxLeaseAcquisition: { outcome: "created", providerLeaseId: "task" } } as never,
+        runnerEnvironment: {
+          ...configuredEnvironmentProjection({ DAY_GITHUB_PUSH_TOKEN: "synthetic-push", OPENAI_ADMIN_KEY_READONLY: "synthetic-admin",
+            CLAUDE_CONFIG_DIR: "/controller/claude" }),
+          HOME: "/controller/private", PATH: "/controller/bin", AMBIENT_FLAG: "not-task-bound",
+        } });
+      const input = owner.mock.calls.at(-1)![0];
+      // Controller paths and ambient host variables stay behind; the marker is the plugin's to mint.
+      expect(input.configuredEnvironment).toEqual({ DAY_GITHUB_PUSH_TOKEN: "synthetic-push", OPENAI_ADMIN_KEY_READONLY: "synthetic-admin" });
+      expect(input.configuredEnvironmentVersion).toBe(configuredEnvironmentVersion);
+      if (configuredEnvironmentVersion) expect(onLog).not.toHaveBeenCalled();
+      else {
+        expect(onLog).toHaveBeenCalledWith("stderr", expect.stringContaining("Not set in this run: DAY_GITHUB_PUSH_TOKEN, OPENAI_ADMIN_KEY_READONLY."));
+        expect(JSON.stringify(onLog.mock.calls)).not.toContain("synthetic-");
+      }
     } finally { owner.mockRestore(); }
   });
 

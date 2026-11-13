@@ -489,6 +489,28 @@ Warm status monitoring relies on PRP after startup and does not poll an idle
 Launcher. ACPX uses this task-provider contract; other execution transports retain
 their provider-specific lifecycle policies.
 
+### Agent environment variables
+
+An agent's environment variables, plain and secret, reach its runs as described
+in [Using Secrets In Runs](../../docs/deploy/secrets.md). A plugin starts Runner on
+its own host, so Core hands them over explicitly. A task provider advertises
+`configuredEnvironmentVersion: 1` in its `describe` result. Core then sends:
+
+- `configuredEnvironmentKeys` (names only) in `prepare`, so the launch descriptor
+  can allow them, for example in a Codex shell environment policy.
+- `configuredEnvironment` (names and values) in `submit`.
+
+Set each entry in the Runner process environment. Set
+`PAPERCLIP_CONFIGURED_ENV_KEYS` to the sorted JSON array of these names together
+with any keys the plugin configures itself. Runner passes only listed names to the
+provider. Values are transient RPC input: never write them to plugin state,
+launch descriptors, logs, or files. Controller path variables (`CODEX_HOME`,
+`CLAUDE_CONFIG_DIR`, `XDG_*_HOME`) are not sent.
+
+Core sends neither field to a provider without the capability, because older
+providers reject unknown fields. The run log then names the variables that were
+not set.
+
 ### Operation-time GitHub credentials
 
 A task provider can advertise `githubCredentialBrokerVersion: 1` in its

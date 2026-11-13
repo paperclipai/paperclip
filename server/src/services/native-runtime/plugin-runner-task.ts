@@ -55,6 +55,9 @@ export function createPluginRunnerTaskOwner(input: {
   onRetired?: (identity: DurableRecoveryIdentity) => Promise<void>;
   githubBroker?: { url: string; token: string };
   githubCredentialBrokerVersion?: 1;
+  /** The agent's resolved task environment, without the names marker. */
+  configuredEnvironment?: Record<string, string>;
+  configuredEnvironmentVersion?: 1;
   adoptIdentity?: DurableRecoveryIdentity;
 }) {
   const taskId = input.taskId;
@@ -120,6 +123,11 @@ export function createPluginRunnerTaskOwner(input: {
     await checkProjectAuth(configurationId);
     preparedLaunchId = configurationId;
   };
+  // An older plugin rejects unknown operation fields, so send only what the current provider advertised.
+  const deliveredConfiguredEnvironment = () => input.configuredEnvironmentVersion === 1
+    && Object.keys(input.configuredEnvironment ?? {}).length > 0 ? input.configuredEnvironment : undefined;
+  // What the running Runner process received; a warm rebind does not change it.
+  let submittedConfiguredEnvironmentKeys: string[] | undefined;
   const prepareLaunch: RunnerLaunchPreparer = async (requirements, recovery) => {
     if (released || stopRequested) throw new Error("Plugin Runner preparation cancelled");
     // Reconnecting the previous authority must not prepare it through the new run's lease.
@@ -139,6 +147,7 @@ export function createPluginRunnerTaskOwner(input: {
     }
     const result = await call(environmentTaskOperationSchema.parse({ kind: "prepare", requirements,
       ...(input.githubBroker ? { githubBroker: input.githubBroker } : {}),
+      ...(deliveredConfiguredEnvironment() ? { configuredEnvironmentKeys: Object.keys(deliveredConfiguredEnvironment()!).sort() } : {}),
       projectIds: [...input.projectIds], ...(recovery ? { recovery } : {}),
       ...(input.resumeFrom && (!authorityRunId || !launchIdentity || launchIdentity.runId === authorityRunId || sourceRecovery)
         ? { resumeFrom: input.resumeFrom } : {}),
@@ -204,6 +213,7 @@ export function createPluginRunnerTaskOwner(input: {
       ...(input.credentialIdentity ? { credentialIdentity: input.credentialIdentity } : {}),
       ...(input.accountIdentity ? { accountIdentity: input.accountIdentity } : {}),
       ...(input.credential ? { credential: input.credential } : {}),
+      ...(deliveredConfiguredEnvironment() ? { configuredEnvironment: deliveredConfiguredEnvironment() } : {}),
       runner: { protocolMin: RUNNER_PRP_PROTOCOL_MIN, protocolMax: RUNNER_PRP_PROTOCOL_MAX,
         harness: input.harness,
         runnerId: native.identity.runnerInstanceId, leaseId: native.identity.environmentLeaseId,
@@ -217,6 +227,7 @@ export function createPluginRunnerTaskOwner(input: {
     });
     launchIdentity = native.identity;
     launched = true;
+    submittedConfiguredEnvironmentKeys = Object.keys(deliveredConfiguredEnvironment() ?? {}).sort();
     const child: RunnerProcessHandle["child"] = { exitCode: null, signalCode: null,
       kill: () => {
         stopRequested = true;
@@ -462,10 +473,14 @@ export function createPluginRunnerTaskOwner(input: {
     // stop request. Completion also proves credential/writeback obligations ran.
     isRetired: () => stoppedState?.executionStopped === true && completed && !detached,
     retiredBeforeClaim: () => retiredBeforeClaim,
+    /** Names this task's Runner process received; the warm process keeps its submitted set. */
+    deliveredConfiguredEnvironmentKeys: () => submittedConfiguredEnvironmentKeys ?? Object.keys(deliveredConfiguredEnvironment() ?? {}).sort(),
     rebind(next: typeof input) {
       if (!launched || stopRequested || stoppedState || detached || next.taskId !== taskId || next.harness !== input.harness ||
           input.accountIdentity !== next.accountIdentity || input.credentialIdentity !== next.credentialIdentity ||
           JSON.stringify(input.projectIds) !== JSON.stringify(next.projectIds)) throw new Error("Plugin warm task cannot be rebound");
+      // The process reuse key fences the values. The warm Runner process keeps the environment
+      // it was submitted with; later operations follow the current provider's capability.
       input = next;
       released = false;
       bindStartupAbort();
