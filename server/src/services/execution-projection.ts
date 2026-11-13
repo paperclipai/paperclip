@@ -22,6 +22,7 @@ import { getStartupRecoveryState, startupQueuedRunPassOutstanding } from "../sta
 import { hasPendingRunCleanup } from "./execution-blocker.js";
 import { isAgentAwaitingSetup } from "../modules/agent-lifecycle/index.js";
 import { NATIVE_RESPONSE_WAKE_WAITING_REASON } from "./native-runtime/status-arbiter.js";
+import { agentQueueLinesForRuns } from "./heartbeat/queued-run-line.js";
 const MAX_PREDECESSOR_CLEANUP_CHECKS = 16;
 const text = (v: unknown) => (typeof v === "string" ? v : null);
 const executionRunColumns = {
@@ -203,6 +204,11 @@ export async function executionProjectionsForRuns(
       retryRequired: sql<boolean>`coalesce(${agents.lifecycleOperation}->>'retryRequired', 'false') = 'true'` })
     .from(agents).where(and(eq(agents.companyId, companyId), inArray(agents.id, setupAgentIds)))) : [];
   const setupByAgent = new Map(setupAgents.map(agent => [agent.id, agent]));
+  // Only never-started runs wait on the agent's limit; their place in line is
+  // read once per full agent, not once per run.
+  const agentQueueByRun = queuedRuns.some(run => !run.startedAt)
+    ? await read(() => agentQueueLinesForRuns(db, companyId, queuedRuns.filter(run => !run.startedAt), now))
+    : new Map<string, NonNullable<ExecutionProjection["agentQueue"]>>();
   const issueIdOf = (run: Run) => run.nativeIssueId ?? text(run.contextSnapshot?.issueId);
   const queuedIssueIds = [...new Set(queuedRuns.map(issueIdOf).filter((id): id is string => !!id))];
   if (queuedIssueIds.length) {
@@ -278,6 +284,7 @@ export async function executionProjectionsForRuns(
         settlingPredecessorKeys.has(run.id),
         setupByAgent.get(run.agentId),
         currentResponseWait(run),
+        agentQueueByRun.get(run.id),
       ),
     );
   }
@@ -305,6 +312,7 @@ export function projectExecution(
   waitingForPredecessor = false,
   setupAgent?: { lifecycleState: string; lifecycleHolds: readonly string[]; retryRequired?: boolean },
   responseWaitCurrent = false,
+  agentQueue?: ExecutionProjection["agentQueue"],
 ): ExecutionProjection {
   const detail = coordinator?.failureDetail ?? {};
   const successorRunId = text(detail.successorRunId);
@@ -552,6 +560,12 @@ export function projectExecution(
     projection.cause = "previous_run_settling";
     projection.nextAction = "The previous run on this task is still releasing its runner. This turn starts automatically when it settles.";
     return set("queued", "Waiting for previous run to stop");
+  }
+  if (run.status === "queued" && !run.startedAt && agentQueue) {
+    projection.cause = "agent_at_capacity";
+    projection.agentQueue = agentQueue;
+    projection.nextAction = `${agentQueue.agentName} is running ${agentQueue.runningCount} of ${agentQueue.maxConcurrentRuns} tasks at once. This task is ${agentQueue.position} of ${agentQueue.queuedCount} in line and starts automatically when a slot frees.`;
+    return set("queued", `Waiting for ${agentQueue.agentName}`);
   }
   return projection;
 }

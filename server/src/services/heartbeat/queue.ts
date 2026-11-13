@@ -12,8 +12,8 @@ import { hasAutomaticInteractionDeliveryHold, INTERACTION_DELIVERY_DENIED, reche
 import { deferredWorkIntentWait } from "../work-intent-outbox.js";
 import { notifyIssueRecovery } from "../issue-recovery-notifications.js";
 import { createHeartbeatTimerPolicy } from "./timer-policy.js";
-import { OLDEST_DISPATCH_SHARE, PERSON_WAKE_REASONS, QUEUED_RUN_AGING_MS, RECOVERY_DISPATCH_SHARE, createQueuedRunDispatcher,
-  hasQueuedRunAged, isRecoveryWakeReason, isSystemRecoveryRun, oldestReadyQueuedRun } from "./queued-run-dispatch-order.js";
+import { QUEUED_RUN_AGING_MS, createQueuedRunDispatcher, hasQueuedRunAged } from "./queued-run-dispatch-order.js";
+import { queuedRunDispatchFacts } from "./queued-run-line.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { PersistedExecutionWaitRefusal, writeDeferredExecutionWait } from "../deferred-execution-wait.js";
 import { assignmentWakePayloadSql, isAssignmentWakePayload, notifyDeferredExecutionWork } from "../deferred-execution-notifications.js";
@@ -375,8 +375,6 @@ export function shouldQueueFollowupForRunningIssueWake(input: {
 
 /** Agent Chat outbox receipts. The outbox, not a skipped receipt, owns a capped message. */
 const CONVERSATION_COMMENT_KEY_PREFIX = "conversation-comment:";
-const RUN_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const PERSON_ORIGIN_CHAIN_DEPTH = 8;
 function dailyLimitConversationRefusal(cap: { reason: string; observed: number; limit: number }) {
   // No receipt is written, so the person's message stays owed in the outbox
   // until the limit resets (agent-conversations.ts conversationDeliveryHold).
@@ -596,21 +594,6 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
 
   const claimDueTimerHeartbeat = (agent: typeof agents.$inferSelect, now: Date, intervalSec: number) =>
     claimDueTimerHeartbeatForAgent(db, agent, now, intervalSec);
-
-  function issueRunPriorityRank(priority: string | null | undefined) {
-    switch (priority) {
-      case "critical":
-        return 0;
-      case "high":
-        return 1;
-      case "medium":
-        return 2;
-      case "low":
-        return 3;
-      default:
-        return 4;
-    }
-  }
 
   async function listQueuedRunDependencyReadiness(
     companyId: string,
@@ -2368,31 +2351,6 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     }
   }
 
-  async function listPersonOriginSourceRunIds(companyId: string, sourceRunIds: string[]) {
-    const uuidPattern = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$";
-    const result = await db.execute<{ root_id: string }>(sql`
-      with recursive chain(root_id, run_id, depth) as (
-        select source.id, source.id, 0 from ${heartbeatRuns} source
-        where source.company_id = ${companyId} and source.id in (${sql.join(sourceRunIds.map(id => sql`${id}::uuid`), sql`, `)})
-        union all
-        select chain.root_id, parent.id, chain.depth + 1
-        from chain
-        join ${heartbeatRuns} child on child.id = chain.run_id
-        join ${heartbeatRuns} parent on parent.company_id = ${companyId} and parent.id = coalesce(
-          case when child.context_snapshot->>'previousRunId' ~* ${uuidPattern}
-            then (child.context_snapshot->>'previousRunId')::uuid end,
-          child.retry_of_run_id)
-        where chain.depth < ${PERSON_ORIGIN_CHAIN_DEPTH}
-      )
-      select distinct chain.root_id from chain
-      join ${heartbeatRuns} run on run.id = chain.run_id
-      where run.context_snapshot->>'wakeReason' in (${sql.join([...PERSON_WAKE_REASONS].map(reason => sql`${reason}`), sql`, `)})
-        or run.context_snapshot->>'taskRetryRequestId' is not null
-        or exists (select 1 from ${agentWakeupRequests} wake where wake.company_id = ${companyId}
-          and wake.requested_by_actor_type = 'user' and (wake.run_id = run.id or wake.id = run.wakeup_request_id))`);
-    return [...result].map(row => String(row.root_id));
-  }
-
   async function queuedRunDispatcherForAgent(
     agent: typeof agents.$inferSelect,
     queuedRuns: Array<typeof heartbeatRuns.$inferSelect>,
@@ -2401,93 +2359,9 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
   ) {
     const now = new Date();
     pruneDeclinedAgedClaims(now);
-    const wakeReasonOf = (run: typeof heartbeatRuns.$inferSelect) =>
-      readNonEmptyString(parseObject(run.contextSnapshot).wakeReason);
-    const requestIds = [...new Set(queuedRuns.flatMap(run => run.wakeupRequestId ? [run.wakeupRequestId] : []))];
-    const userRequests = queuedRuns.length > 1 && requestIds.length
-      ? await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
-        eq(agentWakeupRequests.companyId, agent.companyId), inArray(agentWakeupRequests.id, requestIds),
-        eq(agentWakeupRequests.requestedByActorType, "user")))
-      : [];
-    const userRequestIds = new Set(userRequests.map(row => row.id));
-    const joinedUserRequests = queuedRuns.length > 1
-      ? await db.select({ runId: agentWakeupRequests.runId }).from(agentWakeupRequests).where(and(
-        eq(agentWakeupRequests.companyId, agent.companyId), inArray(agentWakeupRequests.runId, queuedRuns.map(run => run.id)),
-        eq(agentWakeupRequests.agentId, agent.id), eq(agentWakeupRequests.requestedByActorType, "user")))
-      : [];
-    const userRunIds = new Set(joinedUserRequests.flatMap(row => row.runId ? [row.runId] : []));
-    const joinedByUser = (run: typeof heartbeatRuns.$inferSelect) =>
-      userRunIds.has(run.id) || Boolean(run.wakeupRequestId && userRequestIds.has(run.wakeupRequestId));
-    const sourceRunIdOf = (run: typeof heartbeatRuns.$inferSelect) =>
-      readNonEmptyString(parseObject(run.contextSnapshot).previousRunId) ?? run.retryOfRunId ?? null;
-    const sourceRunIds = queuedRuns.length > 1
-      ? [...new Set(queuedRuns.flatMap(run => {
-        const sourceRunId = joinedByUser(run) ? null : sourceRunIdOf(run);
-        return sourceRunId && RUN_ID_PATTERN.test(sourceRunId) ? [sourceRunId] : [];
-      }))]
-      : [];
-    const sourceRows = sourceRunIds.length
-      ? await db.select({ id: heartbeatRuns.id, finishedAt: heartbeatRuns.finishedAt }).from(heartbeatRuns)
-        .where(and(eq(heartbeatRuns.companyId, agent.companyId), inArray(heartbeatRuns.id, sourceRunIds)))
-      : [];
-    const sourceEndedAt = new Map(sourceRows.map(row => [row.id, row.finishedAt]));
-    const personSourceRunIds = new Set(sourceRows.length
-      ? await listPersonOriginSourceRunIds(agent.companyId, sourceRows.map(row => row.id))
-      : []);
-    const requestedByUser = (run: typeof heartbeatRuns.$inferSelect) => {
-      if (joinedByUser(run)) return true;
-      const sourceRunId = sourceRunIdOf(run);
-      return Boolean(sourceRunId && personSourceRunIds.has(sourceRunId));
-    };
-    const facts = queuedRuns.map(run => {
-      const issueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
-      const ready = issueId ? (dependencyReadiness.get(issueId)?.isDependencyReady ?? true) : true;
-      const issue = issueId ? issueById.get(issueId) : null;
-      const sourceRunId = sourceRunIdOf(run);
-      return {
-        run,
-        id: run.id,
-        createdAt: run.createdAt,
-        wakeReason: wakeReasonOf(run),
-        requestedByUser: requestedByUser(run),
-        sourceEndedAt: sourceRunId ? sourceEndedAt.get(sourceRunId) ?? null : null,
-        readinessRank: issueId ? (ready ? (issue?.status === "in_progress" ? 0 : 1) : 3) : 2,
-        priorityRank: issueRunPriorityRank(issue?.priority),
-        shareDeferred: declinedAgedClaimAt.has(run.id),
-      };
-    });
-    const recoveryRuns = facts.filter(entry => isSystemRecoveryRun(entry));
-    const oldestReady = oldestReadyQueuedRun(facts);
-    const agedOldest = oldestReady && hasQueuedRunAged(oldestReady, now) ? oldestReady : null;
-    const countsRecovery = recoveryRuns.length > 0 && recoveryRuns.length < facts.length;
-    let startsSinceRecovery = 0;
-    let startsSinceOldest = 0;
-    if (countsRecovery || (agedOldest && facts.length > 1)) {
-      const oldestRecoveryAt = countsRecovery ? Math.min(...recoveryRuns.map(entry => entry.createdAt.getTime())) : Infinity;
-      const since = new Date(Math.min(oldestRecoveryAt, agedOldest?.createdAt.getTime() ?? Infinity));
-      const recentStarts = await db.select({ id: heartbeatRuns.id, wakeReason: sql<string | null>`${heartbeatRuns.contextSnapshot}->>'wakeReason'`,
-        startedAt: heartbeatRuns.startedAt, createdAt: heartbeatRuns.createdAt })
-        .from(heartbeatRuns)
-        .where(and(eq(heartbeatRuns.companyId, agent.companyId), eq(heartbeatRuns.agentId, agent.id),
-          isNotNull(heartbeatRuns.startedAt), gte(heartbeatRuns.startedAt, since)))
-        .orderBy(desc(heartbeatRuns.startedAt))
-        .limit(Math.max(RECOVERY_DISPATCH_SHARE, OLDEST_DISPATCH_SHARE));
-      const startsSince = (at: number) => recentStarts.filter(row => row.startedAt && row.startedAt.getTime() >= at);
-      if (countsRecovery) {
-        const starts = startsSince(oldestRecoveryAt).slice(0, RECOVERY_DISPATCH_SHARE);
-        const recoveryStartIds = starts.flatMap(row => isRecoveryWakeReason(row.wakeReason) ? [row.id] : []);
-        const personStarts = new Set(recoveryStartIds.length
-          ? await listPersonOriginSourceRunIds(agent.companyId, recoveryStartIds) : []);
-        const lastRecovery = starts.findIndex(row => isRecoveryWakeReason(row.wakeReason) && !personStarts.has(row.id));
-        startsSinceRecovery = lastRecovery < 0 ? starts.length : lastRecovery;
-      }
-      if (agedOldest && facts.length > 1) {
-        const starts = startsSince(agedOldest.createdAt.getTime()).slice(0, OLDEST_DISPATCH_SHARE);
-        const lastOldest = starts.findIndex(row => row.createdAt.getTime() <= agedOldest.createdAt.getTime());
-        startsSinceOldest = lastOldest < 0 ? starts.length : lastOldest;
-      }
-    }
-    const dispatcher = createQueuedRunDispatcher(facts, { now, startsSinceRecovery, startsSinceOldest });
+    const { facts, dispatchInput } = await queuedRunDispatchFacts(db, {
+      agent, queuedRuns, dependencyReadiness, issueById, now, shareDeferred: runId => declinedAgedClaimAt.has(runId) });
+    const dispatcher = createQueuedRunDispatcher(facts, dispatchInput);
     const byRun = new Map(facts.map(entry => [entry.run, entry]));
     return {
       next: () => dispatcher.next()?.run ?? null,
