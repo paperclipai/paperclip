@@ -93,6 +93,7 @@ import {
 } from "../drivers/acpx/usage-accounting.js";
 import { validatePrpStructuredRunResult } from "../protocol/replay-contract.js";
 import type { RunnerToolCall } from "../drivers/runner-tool-bridge.js";
+import { CLAUDE_TOOL_USE_META_KEY, ClaudeToolUseAdmission } from "../drivers/acpx/claude-tool-use-admission.js";
 import {
   acpxBootstrapBlockedError,
   acpxSidecarErrorCode,
@@ -191,6 +192,7 @@ let turnStartedInProcess = false;
  * this process's ids to keep them distinct from calls earlier in the run.
  */
 let callIdNamespace: string | null = null;
+let toolUseAdmission: ClaudeToolUseAdmission | null = null;
 let activeCopilotEvidence: CopilotToolEvidence | undefined;
 let sequence = 0;
 let requestSequence = 0;
@@ -306,6 +308,7 @@ async function dispatch(
     initializedAgent = agent;
     initializedModel = model;
     initializedCandidateAdmission = candidateAdmission;
+    toolUseAdmission = agent === "claude" ? new ClaudeToolUseAdmission() : null;
     return {
       protocolVersion: ACPX_SIDECAR_PROTOCOL_VERSION,
       sidecarPid: process.pid,
@@ -371,6 +374,7 @@ async function dispatch(
           // turn a queued write into a provider-visible failure and retry.
           // Runner lease expiry, turn cancellation and bridge close own them.
           timeoutMs: null,
+          ...(params.agent === "claude" ? { providerToolUseIdMetaKey: CLAUDE_TOOL_USE_META_KEY } : {}),
           ...(params.agent === "copilot" ? { captureSemanticReceipt: () => activeCopilotEvidence?.captureSemanticReceipt() } : {}),
         },
         onGoalUpdate: (goal) => {
@@ -442,6 +446,7 @@ async function dispatch(
     const activeAgent = openParams!.agent;
     turnId = currentTurnId;
     turnStartedInProcess = true;
+    toolUseAdmission?.beginTurn(currentTurnId);
     turnControls.begin(currentTurnId);
     let runtimeTurn: AcpxRuntimeTurn;
     const extensions = bindAcpxExtensionTurn({
@@ -494,6 +499,7 @@ async function dispatch(
       });
     } catch (error) {
       turnId = null;
+      toolUseAdmission?.endTurn(currentTurnId);
       throw error;
     }
     void pumpTurn(currentTurnId, runtimeTurn, activeHost, usageBefore, extensions.drain, activity, toolEvidence, sessionFailure);
@@ -735,6 +741,7 @@ async function pumpTurn(
       ? createClaudeSubagentLineageTracker<AcpRuntimeEventShape>((id) => stableProviderIdentity(id, "tool"))
       : null;
     for await (const event of runtimeTurn.events) {
+      toolUseAdmission?.observe(currentTurnId, event);
       toolEvidence?.tool(event);
       // Claude hook lifecycle rides on session_info_update `_meta`; publish it
       // as schema-validated display activity rather than a raw status event.
@@ -844,16 +851,24 @@ async function pumpTurn(
   emit("runtime.turn_terminal", terminal, currentTurnId);
 }
 
-async function waitForTool(call: RunnerToolCall): Promise<unknown> {
+async function waitForTool(call: RunnerToolCall, internal = false): Promise<unknown> {
   const activeTurnId = turnId;
   const activeRunId = runId;
   if (!activeTurnId || !activeRunId || call.signal.aborted) {
     throw new Error("ACPX tool call is not bound to an active turn");
   }
-  const providerCallId = boundedIdentity(call.callId, "callId");
-  const callId = callIdNamespace === null
-    ? providerCallId
-    : boundedIdentity(`${callIdNamespace}:${providerCallId}`, "callId");
+  let callId: string;
+  if (toolUseAdmission && !internal) {
+    callId = boundedIdentity(await toolUseAdmission.admit(activeTurnId, call.providerToolUseId, call.signal), "callId");
+    if (turnId !== activeTurnId || runId !== activeRunId || call.signal.aborted) {
+      throw new Error("ACPX tool call is not bound to an active turn");
+    }
+  } else {
+    const providerCallId = boundedIdentity(call.callId, "callId");
+    callId = callIdNamespace === null
+      ? providerCallId
+      : boundedIdentity(`${callIdNamespace}:${providerCallId}`, "callId");
+  }
   if (tools.has(callId) || normalizingTools.has(callId)) throw new Error("ACPX tool call is duplicated");
   const operationId = boundedIdentity(call.tool, "operationId");
   if (tools.size + normalizingTools.size >= MAX_PENDING_TOOLS) {
@@ -868,7 +883,7 @@ async function waitForTool(call: RunnerToolCall): Promise<unknown> {
     try {
       completionInput = await resolveCompletionContinuation(call.arguments, activeRunId, () => waitForTool({
         tool: "get_task_context", callId: `continuation:${randomUUID()}`, arguments: {}, signal: call.signal,
-      }));
+      }, true));
     } finally {
       normalizingTools.delete(callId);
     }
@@ -1105,6 +1120,7 @@ function elicitationResponse(
 }
 
 function rejectTurnWaiters(terminalTurnId: string, message: string): void {
+  toolUseAdmission?.endTurn(terminalTurnId);
   for (const [requestId, pending] of permissions) {
     if (pending.turnId !== terminalTurnId || !permissions.delete(requestId)) continue;
     pending.cleanup();
