@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, test } from "vitest";
 import { fileURLToPath } from "node:url";
-import { staleSdkPublicInputs, synchronizeSdkPublicInputs } from "./source-sdk-public-inputs.mjs";
+import { isSdkPublicInput, staleSdkPublicInputs, staleSdkPublicInputsInWorkingTree, staleSdkPublicInputsMessage, synchronizeSdkPublicInputs } from "./source-sdk-public-inputs.mjs";
 
 const registry = "tests/runner-e2e/source-sdk-public-inputs.json";
 const reportLock = "tests/runner-e2e/report-lock.json";
@@ -116,8 +116,35 @@ test("refuses a committed lock that the report-lock policy does not review", asy
 test("the committed SDK public source pins match this checkout's committed tree", async () => {
   const root = fileURLToPath(new URL("../..", import.meta.url));
   const stale = await staleSdkPublicInputs(root);
-  assert.deepEqual(stale, [], `${registry} is stale for ${stale.length} pinned input(s): ${stale.slice(0, 10).map(row => `${row.file} (${row.change})`).join(", ")}${stale.length > 10 ? ", ..." : ""}. `
-    + "Commit your change, run `node tests/runner-e2e/source-sdk-public-inputs.mjs $(git rev-parse HEAD) --write`, and commit the updated registry.");
+  assert.deepEqual(stale, [], staleSdkPublicInputsMessage(stale));
+});
+// pnpm verify reads the working tree, so an uncommitted or unpushed edit to a
+// pinned input is reported locally instead of failing the Runner support suite in CI.
+test("the working-tree drift guard sees uncommitted and untracked pinned inputs", async () => {
+  const { root, revision } = await fixture();
+  await synchronizeSdkPublicInputs(root, revision, { write: true }); commit(root, "resync");
+  assert.deepEqual(await staleSdkPublicInputsInWorkingTree(root), []);
+  await put(root, "packages/shared/src/schema.ts", "uncommitted synthetic edit\n");
+  await put(root, "packages/shared/src/untracked.ts", "untracked synthetic source\n");
+  await put(root, "packages/shared/src/ignored.ts", "ignored synthetic source\n"); await put(root, ".gitignore", "packages/shared/src/ignored.ts\n");
+  const stale = await staleSdkPublicInputsInWorkingTree(root);
+  assert.deepEqual(stale, [{ file: "packages/shared/src/schema.ts", change: "changed" }, { file: "packages/shared/src/untracked.ts", change: "unpinned" }]);
+  assert.match(staleSdkPublicInputsMessage(stale), /packages\/shared\/src\/schema\.ts \(changed\).*source-sdk-public-inputs\.mjs \$\(git rev-parse HEAD\) --write/);
+  assert.deepEqual(await staleSdkPublicInputs(root), [], "the committed-tree guard is unaffected by uncommitted edits");
+  git(root, "checkout", "--", "packages/shared/src/schema.ts");
+  await rm(path.join(root, "packages/shared/src/untracked.ts"));
+  // The reviewed restored lock overlay in the working tree is not drift; any other lock edit is.
+  await writeFile(path.join(root, "pnpm-lock.yaml"), "synthetic authenticated restored lock");
+  assert.deepEqual(await staleSdkPublicInputsInWorkingTree(root), []);
+  await writeFile(path.join(root, "pnpm-lock.yaml"), "synthetic unreviewed lock edit\n");
+  assert.deepEqual(await staleSdkPublicInputsInWorkingTree(root), [{ file: "pnpm-lock.yaml", change: "changed" }]);
+  // Committing the reviewed output lock without a registry refresh is drift: CI's committed-tree guard reports it, so must this one.
+  await writeFile(path.join(root, "pnpm-lock.yaml"), "synthetic authenticated restored lock"); commit(root, "commit reviewed output lock");
+  assert.deepEqual(await staleSdkPublicInputs(root), [{ file: "pnpm-lock.yaml", change: "changed" }]);
+  assert.deepEqual(await staleSdkPublicInputsInWorkingTree(root), [{ file: "pnpm-lock.yaml", change: "changed" }]);
+  assert.equal(isSdkPublicInput("packages/shared/src/types/heartbeat.ts"), true);
+  assert.equal(isSdkPublicInput("pnpm-lock.yaml"), true);
+  assert.equal(isSdkPublicInput("server/src/index.ts"), false);
 });
 test("the drift guard names changed, unpinned and removed inputs and clears after a resync", async () => {
   const { root, revision } = await fixture();

@@ -1,4 +1,5 @@
 import { createLiveEventDelivery, sharedDeliveryRead, type LiveDeliveryReads } from "./live-event-delivery.js";
+import { localAgentProcessBoundary } from "../middleware/local-agent-process-boundary.js";
 import { skillAccessService } from "../services/skill-access.js";
 import { createHash } from "node:crypto";
 import type { IncomingMessage, Server as HttpServer } from "node:http";
@@ -154,6 +155,7 @@ async function authorizeUpgrade(
   // Browser board context has no bearer token in local_trusted and authenticated modes.
   if (!token) {
     if (opts.deploymentMode === "local_trusted") {
+      if (!(await localAgentProcessBoundary().grantsImplicitBoard(req.socket))) return null;
       return {
         companyId,
         actorType: "board",

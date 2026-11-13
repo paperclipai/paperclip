@@ -172,16 +172,48 @@ It does not qualify a deployed plugin, live account, or production WSS proxy.
 
 ## Workspace completion and maintenance
 
+When the selected task driver declares `sessionHandoffVersion: 1`, Core
+reserves the managed workspace before it acquires the run's task lease. Core
+reconciles placement ownership, then passes `taskLease` to the workspace
+preparation call. The plugin uses the same allocation for checkout and Runner
+admission. Finalization records that placement before calling the plugin and
+reuses it on retry. If an interrupted finalization has no recorded placement,
+Core retries its original request without placement. This preserves the
+operation ID and the provider's established routing for requests made before
+this upgrade.
+
+Before dispatching preparation for an unbound workspace, Core records the
+run and agent, plus the task placement when present. Inspection replays the
+saved request. A retry with the same run, agent, and placement uses the same
+operation ID. When a retry acquires a different task, Core records its
+placement and prepares the same workspace. The provider settles the prior
+preparation before using the retained checkout. Reservation reconciliation
+uses project Git consent while keeping the original run and agent in the
+provider request.
+
+A portable restore uses the durable ownership claim and the same account
+identity after a credential refresh or controller replacement. It starts a
+new Runner on the target. Run attachment applies the current tools and
+runtime configuration to the restored provider session. After a confirmed
+workspace transfer, Core can use the same target to start a new conversation
+when its session compatibility check requires one. The new conversation
+starts without the prior provider checkpoint, and the ownership claim
+continues to fence the source.
+
 A storage provider can declare `workspaceProvider.workspaceVerificationVersion: 1`.
 Before creating a fresh workspace for an admitted Retry, Core may send the
 original task-owned workspace's `prepare` request with `verifyExisting: true`.
 Core sends verification through `workspaceOperation` with a 10-second
-deadline and a 12-second RPC timeout.
+deadline and a 12-second RPC timeout. Drivers with task placement receive the
+selected run's `taskLease` before Core describes the Runner task. Use that lease
+to select the same execution placement for verification and later preparation.
 The provider must verify a completed checkout without creating or fetching
 one and return `prepared` with `created: false`. Core checks prior writer
 settlement and continues normal preparation on the retained workspace after
-verification. A missing or unconfirmed checkout leaves the fresh retry
-fallback in place. Local workspaces use the same ownership and writer
+verification. Return the workspace failure reason `binding_mismatch` for a
+definitively missing or invalid checkout. Core can then release the verification
+lease and use the authorized fresh retry fallback. Transport failures and
+timeouts keep the current checkout decision retryable. Local workspaces use the same ownership and writer
 checks with Core's existing local Git verification.
 
 A storage provider can declare `workspaceProvider.finalizationVersion: 1`.
@@ -338,6 +370,11 @@ a Core-managed credential identity before lease acquisition. The saved warm
 preference does not bypass account ownership checks. Drivers without warm
 capability and setup probes remain ephemeral.
 
+For a warm lease, `onEnvironmentAcquireLease` receives `runnerLifecyclePolicy`
+with the idle window that Core records for the Runner. A provider with its own
+idle shutdown can use it to stop only after that window. Core does not send
+the field for other lifecycle modes.
+
 Plugin task execution uses the public, run-scoped GitHub credential broker
 when the provider advertises its versioned contract. Warm preparation updates
 the command capability before admitting the new run. Restart recovery retains
@@ -429,16 +466,17 @@ leaves its question's tool input unanswered by design. Once its Runner's
 sandbox lease has ended elsewhere, that committed park settles the input for
 retirement.
 
-Core ends a dispatched task lease with `stop`, `status`, and `complete`. When
-that sequence confirms the stop and completes the same task, Core does not also
-call `onEnvironmentReleaseLease`. Core still calls it when the release did not
-complete a dispatched task, and the cleanup retry calls it after any failure.
+Core settles a dispatched task with `stop`, `status`, and `complete`, then
+calls `onEnvironmentReleaseLease` to release the allocation. If the release
+hook fails after settlement, Core retries cleanup using the recorded settlement
+proof. The hook can use that proof to avoid repeating task operations. A
+retained lease stays available for handoff and Core calls the release hook
+when it releases the lease.
+
 When `onEnvironmentResumeLease` returns no provider lease, Core sends `status`
-first. It sends `stop` only when that `status` does not report
-`executionStopped: true` and any required `preparationStopped: true` proof.
-An old warm-start preparation marker does not force a repeated stop when both
-proofs are present. A driver must release task-scoped resources in its
-`status` or `complete` handling, not only in `onEnvironmentReleaseLease`.
+first. It sends `stop` only when that `status` lacks `executionStopped: true`
+or required `preparationStopped: true` proof. An old warm-start preparation
+marker does not force a repeated stop when both proofs are present.
 
 Termination receipts cover all run leases that owned the retired physical task.
 A stopped task gets a new provider task ID for checkpoint resumption. Inspection

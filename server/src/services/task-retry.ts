@@ -3,6 +3,7 @@ import { notifyExternalConversationSettlement } from "./external-conversation-se
 import { writeExecutionControl } from "./execution-control-notifications.js";
 import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import { z } from "zod";
+import { userStopBoundaryAt } from "./run-cancellation.js";
 import { readWorkspaceRecovery } from "./workspace-recovery-receipt.js";
 import { randomUUID } from "node:crypto";
 import { taskRetryRunAncestry } from "./recovery-run-ancestry.js";
@@ -10,7 +11,7 @@ import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { agentWakeupRequests, chatActions, chatConversations, chatEndpoints, heartbeatRuns, issues, issueComments, runIdentityContexts, issueRecoveryActions, type Db } from "@paperclipai/db";
 import { conflict, forbidden, notFound, HttpError } from "../errors.js";
 import { persistActivity } from "./activity-log.js";
-import { createSystemRecovery, readSystemRecovery } from "./system-recovery-state.js";
+import { createSystemRecovery, readSystemRecovery, savedFilesUnrecoverable } from "./system-recovery-state.js";
 import { adoptSystemRecovery, updateSystemRecovery } from "./system-recovery.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { notifyChatActionWork } from "./chat-work-notifications.js";
@@ -22,6 +23,7 @@ import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state
 import { deferredChatInputPredicate, resumeDeferredChatWake, unadmittedChatWakeupCondition } from "./durable-chat-wakeup.js";
 import { notifyDeferredExecutionWork } from "./deferred-execution-notifications.js";
 import { hasPendingRunCleanup } from "./execution-blocker.js";
+import { undeliveredContinuation } from "./fresh-continuation-retry-fold.js";
 import { PersistedExecutionWaitRefusal } from "./deferred-execution-wait.js";
 import { rearmExhaustedNativeFinalization } from "./native-runtime/exhausted-finalization-retry.js";
 import { NativeChatReviewPresentationContentionError } from "./native-runtime/native-chat-review-presentation.js";
@@ -224,9 +226,26 @@ export async function retireSupersededTaskRetry(db: Db, input: {
   return retired.length > 0;
 }
 
+export async function retireTaskRetriesContinuedBy(db: Db, input: {
+  companyId: string; issueId: string; agentId: string; sourceRunIds: string[];
+}) {
+  if (!input.sourceRunIds.length) return;
+  const held = and(eq(agentWakeupRequests.companyId, input.companyId), eq(agentWakeupRequests.agentId, input.agentId),
+    eq(agentWakeupRequests.reason, "task_retry"), eq(agentWakeupRequests.status, "deferred_issue_execution"),
+    isNull(agentWakeupRequests.runId), sql`${agentWakeupRequests.payload}->>'issueId' = ${input.issueId}`,
+    inArray(sql<string>`${agentWakeupRequests.payload}#>>'{taskRetry,sourceRunId}'`, input.sourceRunIds));
+  const [heldRetry] = await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(held).limit(1);
+  if (!heldRetry) return;
+  await notifyStrandedAgentStatus(db, { companyId: input.companyId, agentId: input.agentId });
+  await notifyExternalConversationSettlement(db, { companyId: input.companyId, issueId: input.issueId });
+  await db.update(agentWakeupRequests).set({ status: "skipped", error: "task_retry_superseded",
+    finishedAt: new Date(), updatedAt: new Date() }).where(held);
+}
+
 type TaskRetryRequest = {
   db: Db; companyId: string; issueId: string; actorId: string;
   idempotencyKey: string; observedRunId: string | null; actorSource?: string;
+  retryAction?: "move_forward";
   /** Paperclip requests the user's Retry itself: after a restart lost an
    * unstarted turn, or once a provider usage limit it waited on has reset. */
   initiatedBy?: "restart_recovery" | "provider_limit_reset";
@@ -301,6 +320,9 @@ function admitTaskRetry(input: TaskRetryRequest) {
         latest.agentId !== issue.assigneeAgentId || input.observedRunId !== latest.id) {
       return { requestId: null, accepted: false, stale: true, observedRunId: latest?.id ?? null, chatActionId: undefined };
     }
+    if (input.retryAction === "move_forward" && !["queued", "running"].includes(latest.status) &&
+        !(await undeliveredContinuation(tx, { companyId: issue.companyId, issueId: issue.id })))
+      return { requestId: null, accepted: false, stale: false, alreadyMovedOn: true, observedRunId: latest.id, chatActionId: undefined };
     let active = (await tx.select().from(agentWakeupRequests).where(and(
       eq(agentWakeupRequests.companyId, issue.companyId), eq(agentWakeupRequests.agentId, issue.assigneeAgentId),
       sql`${agentWakeupRequests.payload}->>'issueId' = ${issue.id}`,
@@ -467,7 +489,7 @@ function admitTaskRetry(input: TaskRetryRequest) {
         // A completed preservation still owns its snapshot evidence. Bind the
         // new intent so sibling holds can select that same continuation, without
         // repeating recovery or renewing its attempt budget.
-        if (previous.state === "complete" || previous.state === "running" || (previous.state === "exhausted"
+        if (previous.state === "complete" || previous.state === "running" || savedFilesUnrecoverable(previous) || (previous.state === "exhausted"
             && previous.failure?.retryClass === "use_alternative_strategy" && !previous.freshAttemptRunId)) {
           await updateSystemRecovery(db, { companyId: issue.companyId, issueId: issue.id, runId: previous.sourceRunId,
             actionId: action.id }, previous, { ...previous, intentId: active?.id ?? id });
@@ -520,11 +542,12 @@ async function continueRefusedTaskChatRetry(db: Db, wake: typeof agentWakeupRequ
     const [issue] = await tx.select().from(issues).where(and(eq(issues.id, issueId),
       eq(issues.companyId, wake.companyId))).for("update");
     if (!issue || issue.assigneeAgentId !== wake.agentId || ["done", "cancelled"].includes(issue.status)) return false;
-    const [latest] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+    const [latest] = await tx.select({ id: heartbeatRuns.id, finishedAt: heartbeatRuns.finishedAt, status: heartbeatRuns.status,
+      startedAt: heartbeatRuns.startedAt, errorCode: heartbeatRuns.errorCode, resultJson: heartbeatRuns.resultJson }).from(heartbeatRuns).where(and(
       eq(heartbeatRuns.companyId, wake.companyId), or(eq(heartbeatRuns.issueId, issueId), eq(heartbeatRuns.nativeIssueId, issueId),
         sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`)))
       .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(1);
-    if (latest?.id !== intent.sourceRunId) return false;
+    if (latest?.id !== intent.sourceRunId || !latest.finishedAt) return false;
     if (intent.initiatedBy) {
       const [joined] = await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
         eq(agentWakeupRequests.companyId, wake.companyId), eq(agentWakeupRequests.agentId, wake.agentId),
@@ -535,19 +558,38 @@ async function continueRefusedTaskChatRetry(db: Db, wake: typeof agentWakeupRequ
         sql`${agentWakeupRequests.payload}#>'{taskRetry,initiatedBy}' is null`)).limit(1);
       if (!joined) return false;
     }
+    const heldBy = latest.status === "cancelled" && !latest.startedAt && latest.errorCode === "execution_reconciliation_required"
+      ? z.string().uuid().safeParse((latest.resultJson?.executionWait as Record<string, unknown> | undefined)?.recoveryActionId) : null;
+    const [blockingAction] = heldBy?.success ? await tx.select({ evidence: issueRecoveryActions.evidence })
+      .from(issueRecoveryActions).where(and(eq(issueRecoveryActions.companyId, wake.companyId),
+        eq(issueRecoveryActions.sourceIssueId, issueId), eq(issueRecoveryActions.id, heldBy.data))) : [];
+    const recoveredRunIds = [intent.sourceRunId, ...(typeof blockingAction?.evidence.runId === "string"
+      ? [blockingAction.evidence.runId] : [])];
     const recoveries = await tx.select({ evidence: issueRecoveryActions.evidence }).from(issueRecoveryActions).where(and(
       eq(issueRecoveryActions.companyId, wake.companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
-      sql`${issueRecoveryActions.evidence}->>'runId' = ${intent.sourceRunId}`));
-    if (!recoveries.some(({ evidence }) => readSystemRecovery(evidence)?.state === "complete" &&
-        readWorkspaceRecovery(evidence)?.runId === intent.sourceRunId &&
-        readWorkspaceRecovery(evidence)?.status === "recovered")) return false;
+      inArray(sql<string>`${issueRecoveryActions.evidence}->>'runId'`, recoveredRunIds)));
+    if (!recoveries.some(({ evidence }) => {
+      const workspace = readWorkspaceRecovery(evidence);
+      return readSystemRecovery(evidence)?.state === "complete" && workspace?.status === "recovered" &&
+        workspace.runId === evidence.runId && recoveredRunIds.includes(workspace.runId);
+    })) return false;
     if (!await taskRetryMutationAllowed(tx as unknown as Db, { companyId: wake.companyId, issueId,
       actorId: intent.actorId, actorSource: intent.actorSource })) return false;
     const [chatReceipt] = await tx.select({ status: agentWakeupRequests.status, runId: agentWakeupRequests.runId })
       .from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, wake.companyId), eq(agentWakeupRequests.id, chat.id)));
     if (chatReceipt && (chatReceipt.runId || !["failed", "skipped", "cancelled"].includes(chatReceipt.status))) return false;
-    if (await taskHasUnadmittedChatInput(tx as unknown as Db, { companyId: wake.companyId, issueId,
-      agentId: wake.agentId, failedRunId: intent.sourceRunId })) return false;
+    const [unadmitted] = await tx.select({ id: issues.id }).from(issues).where(and(eq(issues.id, issueId),
+      eq(issues.companyId, wake.companyId), unadmittedChatWakeupCondition(issues.id, issues.companyId))).limit(1);
+    if (unadmitted) return false;
+    const savedInputIds = (await selectTaskRetryInput(tx, { companyId: wake.companyId, issueId, agentId: wake.agentId,
+      failedRunId: intent.sourceRunId }))?.sourceActionIds ?? [];
+    const stopBoundary = userStopBoundaryAt(latest);
+    const savedInputs = savedInputIds.length ? await tx.select({ id: chatActions.id, authorizedAt: issueComments.createdAt })
+      .from(chatActions).innerJoin(issueComments, and(eq(issueComments.companyId, chatActions.companyId),
+        eq(issueComments.issueId, issueId), sql`${issueComments.id}::text = ${chatActions.payload}->>'commentId'`))
+      .where(and(eq(chatActions.companyId, wake.companyId), inArray(chatActions.id, savedInputIds))) : [];
+    if (!stopBoundary || savedInputs.length !== savedInputIds.length ||
+        savedInputs.some(input => input.authorizedAt > stopBoundary)) return false;
     const { chatActionId: _replaced, initiatedBy: _automatic, ...continuation } = intent;
     await notifyDeferredExecutionWork(tx, { companyId: wake.companyId, requestId: wake.id });
     const [converted] = await tx.update(agentWakeupRequests).set({ updatedAt: new Date(),
@@ -558,9 +600,15 @@ async function continueRefusedTaskChatRetry(db: Db, wake: typeof agentWakeupRequ
         sql`${agentWakeupRequests.payload}#>>'{taskRetry,chatActionId}' = ${chat.id}`))
       .returning({ id: agentWakeupRequests.id });
     if (!converted) return false;
+    if (savedInputIds.length) await tx.update(agentWakeupRequests).set({ status: "coalesced", finishedAt: new Date(),
+      updatedAt: new Date(), payload: sql`coalesce(${agentWakeupRequests.payload}, '{}'::jsonb) || ${JSON.stringify({
+        coalescedIntoWakeupRequestId: wake.id })}::jsonb` }).where(and(eq(agentWakeupRequests.companyId, wake.companyId),
+      inArray(agentWakeupRequests.id, savedInputIds), eq(agentWakeupRequests.status, "deferred_issue_execution"),
+      isNull(agentWakeupRequests.runId)));
     await persistActivity(tx as unknown as Db, { companyId: wake.companyId, actorType: "system", actorId: "task-retry",
       action: "issue.retry_continued_from_saved_work", entityType: "issue", entityId: issueId, runId: intent.sourceRunId,
-      details: { requestId: wake.id, sourceRunId: intent.sourceRunId, refusedChatActionId: chat.id } });
+      details: { requestId: wake.id, sourceRunId: intent.sourceRunId, refusedChatActionId: chat.id,
+        ...(savedInputIds.length ? { heldInputRequestIds: savedInputIds } : {}) } });
     return true;
   });
 }

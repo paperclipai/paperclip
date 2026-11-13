@@ -328,6 +328,19 @@ missing successor. The acknowledgement keeps its contiguous-prefix rule without
 returning every historical sequence number. All events stay stored. Counting the
 index entries still grows with the stream length.
 
+A native source event commits in one transaction of two statements. The first
+statement locks the run row. The second statement finds a replayed event, or
+reserves the next sequence and inserts the event, and reads the count and
+maximum for the acknowledgement. The lock stays a separate statement: a
+statement that waits for the lock keeps the snapshot it took before the wait,
+and would miss an event that the lock holder committed. An event that wakes a
+queue looks for its replay in a statement of its own first, because a wake is
+registered before its write and a replayed event registers none. An ordinary
+event without a source identity commits in one statement. Each event commits
+before its append returns; no event waits for another. Measure the cost of one
+event with
+`TSX_DISABLE_CACHE=1 pnpm --filter @paperclipai/server exec tsx scripts/benchmark-run-event-append.ts`.
+
 Conversation recovery reads only the saved run fields used to settle a turn.
 Settlement locks and reads current conversation state without loading the task
 description or comment bodies. It still checks the durable reply or pending
@@ -493,6 +506,12 @@ by one of them, so it no longer walks the agent's run history. The two link
 indexes also serve the comment and delivery `on delete set null` actions. Issue
 lists share one external review-wait read per issue between the review and
 blocked-inbox attention maps.
+
+Migration 0476 builds `agent_wakeup_requests_company_run_idx` concurrently. It
+keys wake requests by company and `run_id`, partial on a non-null run. Queued-run
+dispatch finds the person wakes that joined or were adopted by each queued run
+through it, so the read is bounded by the queue size, not by the agent's wake
+history.
 
 Migration 0457 builds `heartbeat_runs_company_native_session_idx` concurrently.
 It keys runs by company and `native_session_id`, partial on a non-null session.
@@ -2106,6 +2125,26 @@ register before writing, or they can remain unseen until the next startup or
 another notification. Tests should verify both the producer and its outer
 transaction boundary.
 
+## Relational queries inside transactions
+
+Drizzle builds one relational query builder for every schema table when it
+creates a database object, and it creates one for each transaction and each
+savepoint. With the Paperclip schema that is about 100 KB per transaction.
+`createDb` therefore opens transactions through a second Drizzle client on the
+same postgres.js client, created without the schema, and builds `tx.query` the
+first time a transaction reads it (`packages/db/src/lazy-transaction-queries.ts`).
+`db.query`, `tx.query`, and `tx._` keep their contents. `BEGIN`, `SAVEPOINT`,
+commit, rollback, and connection reservation remain Drizzle's and the driver's.
+
+Measure the cost of a transaction and a savepoint with the command below. It
+needs Node.js 25 or later, because Node.js 24 has no V8 allocation counter, and
+it stops with that message on an older runtime:
+
+```sh
+cd packages/db
+TSX_DISABLE_CACHE=1 node --expose-gc --import tsx scripts/benchmark-transaction-allocation.ts
+```
+
 ### Installed skill packages
 
 `company_skill_repository_snapshots` retains its identity and company/content-hash
@@ -2389,8 +2428,13 @@ the optional live environment FK uses SET NULL. Company/run deletion must not
 erase an outstanding remote-resource obligation.
 
 The unique company/environment/run/request index fences duplicate creation and
-ambiguous successful lease commits. Normal lease attachment and operation transfer
-share a transaction. Recovery transfers one claimed cleanup lease after provider
+ambiguous successful lease commits. Since migration 0475 it covers only operations
+that are not `resolved`. A later attempt for the same run and request that meets an
+`attached` operation whose lease is closed checks the same stop proof same-run
+recovery requires (a termination receipt for that sandbox, stored or derived from a
+destroyed reusable successor); with it, one transaction resolves the operation and
+records the replacement.
+Normal lease attachment and operation transfer share a transaction. Recovery transfers one claimed cleanup lease after provider
 ownership lookup. The pending deadline index drives the existing cleanup worker.
 `needs_reconciliation` is a durable manual outcome, not an automatic retry or an
 idle blocker. See [cleanup ownership](idle-environment-cleanup.md).

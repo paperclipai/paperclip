@@ -1,4 +1,5 @@
 import { groupImageResources } from "./image-resources";
+import { McpAppTurnViews } from "@/components/mcp-app/McpAppTurnViews";
 import { TaskBrowserActivity } from "../task-side-panel/TaskBrowserActivity";
 import { TaskChatProjectCreatedCard } from "./TaskChatProjectCreatedCard";
 import { TaskChatSkillCreatedCard } from "./TaskChatSkillCreatedCard";
@@ -28,7 +29,7 @@ import { TaskMessageScroller, type ScrollingHistory } from "./TaskMessageScrolle
 import { TaskChatProtocolCard } from "./TaskChatProtocolCard";
 import { TaskChatProtocolActivityRow } from "./TaskChatProtocolActivityRow";
 import { TaskChatPlanPreviewCard } from "./TaskChatPlanPreviewCard";
-import { compactAdjacentErrors } from "./adjacent-errors";
+import { compactAdjacentErrors, isRetryableFailureMarker } from "./adjacent-errors";
 import { CoordinatorChatTaskHandoff } from "@/components/coordinator/CoordinatorChatTaskHandoffs";
 import { CoordinatorChatDecisionReceipt } from "@/components/coordinator/CoordinatorChatDecisionReceipts";
 import { CoordinatorChatPendingQuestion } from "@/components/coordinator/CoordinatorChatPendingQuestions";
@@ -159,7 +160,11 @@ function renderItem(
           }
         />
       ) : undefined;
-      return (
+      // MCP Apps views ride with the reply, outside the folded tool history.
+      const appViews = item.author === "agent" && item.sourceRunId
+        ? <McpAppTurnViews runId={item.sourceRunId} notBeforeMs={item.createdAtIso ? Date.parse(item.createdAtIso) : undefined} />
+        : null;
+      const bubble = (
         <TaskChatBubble
           item={item}
           // Hydration and live-to-durable reconciliation may move a logical
@@ -173,7 +178,7 @@ function renderItem(
                 : actions
           }
           queuedAction={renderQueuedAction?.(item)}
-          beforeTurn={item.attachedTurn?.standaloneHeader ? turn : undefined}
+          beforeTurn={item.attachedTurn?.standaloneHeader ? <>{turn}{appViews}</> : undefined}
           attachedTurn={item.attachedTurn?.standaloneHeader ? undefined : turn}
           hideAgentIdentity={Boolean(item.attachedTurn?.standaloneHeader)}
           onTryAgainNoLiveExecutionPath={onTryAgainNoLiveExecutionPath}
@@ -183,6 +188,7 @@ function renderItem(
           attachments={attachments}
         />
       );
+      return appViews && !item.attachedTurn?.standaloneHeader ? <>{appViews}{bubble}</> : bubble;
     }
     case "marker":
       return (
@@ -341,8 +347,7 @@ export function TaskChatThreadView({
           .find(
             (item) => {
               const marker = item.kind === "marker" ? item : retryMarkers.get(item.id);
-              return marker?.variant === "interrupted" &&
-                (marker.label === "Run failed" || marker.label === "Usage limit reached");
+              return !!marker && isRetryableFailureMarker(marker);
             },
           )?.id
       : undefined;

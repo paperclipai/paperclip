@@ -1,11 +1,11 @@
 import { createHash } from "node:crypto";
-import { drizzle as drizzlePg } from "drizzle-orm/postgres-js";
 import { readFile, readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import postgres from "postgres";
 import { installDatabaseWorkSignals } from "./work-signals.js";
 import { installDatabaseResponseCapture } from "./response-capture.js";
 import { installPreparedQueries } from "./prepared-queries.js";
+import { drizzleWithLazyTransactionQueries } from "./lazy-transaction-queries.js";
 import * as schema from "./schema/index.js";
 
 const MIGRATIONS_FOLDER = fileURLToPath(new URL("./migrations", import.meta.url));
@@ -163,6 +163,11 @@ export interface DatabaseClientOptions {
    * `postgres.js`).
    */
   applicationName?: string;
+  /**
+   * Connection-level `statement_timeout` in milliseconds, sent as a startup
+   * parameter (no extra round trip). For dedicated single-purpose pools only.
+   */
+  statementTimeoutMs?: number;
 }
 
 /**
@@ -256,9 +261,10 @@ export function postgresJsOptions(options: DatabaseClientOptions): Record<string
   if (options.idleTimeoutSeconds !== undefined) driverOptions.idle_timeout = options.idleTimeoutSeconds;
   if (options.connectTimeoutSeconds !== undefined) driverOptions.connect_timeout = options.connectTimeoutSeconds;
   if (options.maxLifetimeSeconds !== undefined) driverOptions.max_lifetime = options.maxLifetimeSeconds;
-  if (options.applicationName !== undefined) {
-    driverOptions.connection = { application_name: options.applicationName };
-  }
+  const connection: Record<string, string> = {};
+  if (options.applicationName !== undefined) connection.application_name = options.applicationName;
+  if (options.statementTimeoutMs !== undefined) connection.statement_timeout = String(options.statementTimeoutMs);
+  if (Object.keys(connection).length) driverOptions.connection = connection;
   return driverOptions;
 }
 
@@ -324,11 +330,42 @@ export function controllerLeaseDb(db: Db): Db {
   return created;
 }
 
+const controllerInstanceLeaseDbFactories = new WeakMap<object, (statementTimeoutMs: number | null) => Db>();
+const controllerInstanceLeaseDbs = new WeakMap<object, Db>();
+
+/** One private connection for the server's controller-instance lease, so its
+ * renewal never waits behind request or worker traffic on the main pool.
+ * `statementTimeoutMs` (first call wins) is a connection-level
+ * `statement_timeout`: the server cancels a slow renewal, so it never holds the
+ * single connection that the next renewal needs, at no extra round trip. */
+export function controllerInstanceLeaseDb(db: Db, options: { statementTimeoutMs?: number | null } = {}): Db {
+  const existing = controllerInstanceLeaseDbs.get(db);
+  if (existing) return existing;
+  const factory = controllerInstanceLeaseDbFactories.get(db);
+  if (!factory) return db;
+  const created = factory(options.statementTimeoutMs ?? null);
+  controllerInstanceLeaseDbs.set(db, created);
+  return created;
+}
+
+/** Replaces the lease connection with one that sends no `statement_timeout`
+ * startup parameter, for a connection pooler that refuses it. */
+export function controllerInstanceLeaseDbWithoutStatementTimeout(db: Db): Db {
+  const factory = controllerInstanceLeaseDbFactories.get(db);
+  if (!factory) return db;
+  const previous = controllerInstanceLeaseDbs.get(db);
+  const created = factory(null);
+  controllerInstanceLeaseDbs.set(db, created);
+  void previous?.$client.end({ timeout: 0 }).catch(() => undefined);
+  return created;
+}
+
 /** Ends the liveness pool if one was created. The ended pool stays cached, so
  * a late renewal fails like a query on the ended primary pool. */
 export async function closeLivenessDb(db: Db, timeoutSeconds: number): Promise<void> {
   await Promise.all([livenessDbs.get(db)?.$client.end({ timeout: timeoutSeconds }),
-    controllerLeaseDbs.get(db)?.$client.end({ timeout: timeoutSeconds })]);
+    controllerLeaseDbs.get(db)?.$client.end({ timeout: timeoutSeconds }),
+    controllerInstanceLeaseDbs.get(db)?.$client.end({ timeout: timeoutSeconds })]);
 }
 
 // Control checkpoints must not occupy the request or lease-renewal pools
@@ -392,7 +429,7 @@ function createDbClient(url: string, resolved: DatabaseClientOptions, owner?: ob
   // postgres.js calls that error "write CONNECTION_CLOSED" too, so the
   // message cannot establish that replay is safe. Leave retries to callers
   // that know the complete operation is idempotent.
-  const db = installDatabaseWorkSignals(drizzlePg(sql, { schema }), owner);
+  const db = installDatabaseWorkSignals(drizzleWithLazyTransactionQueries(sql, schema), owner);
   installDatabaseResponseCapture(db, schema);
   dedicatedDbFactories.set(db, () => createDbClient(url, {
     ...resolved, maxConnections: 1, applicationName: "paperclip-workspace-finalization-lock",
@@ -405,6 +442,10 @@ function createDbClient(url: string, resolved: DatabaseClientOptions, owner?: ob
   }, db));
   controllerLeaseDbFactories.set(db, () => createDbClient(url, {
     ...resolved, maxConnections: 1, applicationName: "paperclip-legacy-controller-lease",
+  }, db));
+  controllerInstanceLeaseDbFactories.set(db, statementTimeoutMs => createDbClient(url, {
+    ...resolved, maxConnections: 1, applicationName: "paperclip-controller-instance-lease",
+    ...(statementTimeoutMs !== null ? { statementTimeoutMs } : {}),
   }, db));
   checkpointDbFactories.set(db, () => createDbClient(url, {
     ...resolved, maxConnections: CHECKPOINT_POOL_MAX_CONNECTIONS, applicationName: "paperclip-runner-checkpoint",
@@ -648,6 +689,8 @@ const MIGRATIONS_WITH_TOP_LEVEL_STATEMENTS = new Set([
   "0460_workspace_activity_context_index.sql",
   "0461_created_from_legacy_origin_run_index.sql",
   "0470_heartbeat_runs_queued_created_index.sql",
+  "0472_runner_api_capture_pending_deletes.sql",
+  "0476_wakeup_request_run_index.sql",
   "0469_zippy_photon.sql",
 
 

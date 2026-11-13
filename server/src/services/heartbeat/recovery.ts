@@ -31,6 +31,7 @@ import { createHeartbeatAgentStatus } from "./agent-status.js";
 import { preserveWorkspaceRestoreRecoveryMetadataSql } from "../legacy-workspace-restore-recovery.js";
 import { preserveCancelledNativeWorkspaces, preserveOrphanedNativeWorkspace } from "../native-runtime/native-failed-workspace-recovery.js";
 import { nativeWorkspaceExportPendingForLease, pendingNativeWorkspaceFinalizationCondition } from "../native-runtime/native-workspace-finalization-state.js";
+import { expireAbandonedWorkspaceFileHoldsWhenDue, parkAbandonedWorkspaceFilesLease, recordAbandonedWorkspaceFilesRemoved } from "../remote-workspace-abandoned-files-hold.js";
 import { CHAT_COMPLETION_WAKE_REASON } from "../chat-completion-delivery.js";
 import {
   hasStopOnlyCleanup,
@@ -38,9 +39,11 @@ import {
 } from "../sandbox-stop-and-retain.js";
 import { discoverSettledNativeRunProcesses, PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED, recordNativeLocalProcessStopInTransaction, releaseSettledNativeRunProcess, retryPendingSettledNativeRunProcesses } from "../native-local-process-stop.js";
 import { pendingCaseHandoffForRun } from "./case-handoff-lifecycle.js";
+import { portableTaskPreparationLeaseId } from "../plugin-task-ownership.js";
 import { retireInheritedRemoteRunnerIdentity } from "../native-runtime/native-inherited-runner-retry.js";
 import {
   LEGACY_LIVE_OWNER_SETTLE_GRACE_MS,
+  handoffLegacyControllerPreparation,
   legacyControllerBootId,
   liveLegacyControllerExpiresAt,
   proveLegacyController,
@@ -70,6 +73,7 @@ import {
   ne,
   or,
   sql,
+  type SQL,
 } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -157,6 +161,7 @@ export interface HeartbeatRecoveryDependencies extends Pick<HeartbeatRetryDepend
   executeRun: (runId: string, options?: {
     nativeLeaseOwner?: string;
     nativeRestartRecovery?: NativeRestartRecoveryClaim;
+    portablePreparationLeaseId?: string;
     onNativeExecutionLeaseAcquired?: () => Promise<void>;
   }) => Promise<void>;
   scheduleNativeSessionResumeDispatch: (runId: string, nextAttemptAt: Date, mode?: "restart") => void;
@@ -170,7 +175,7 @@ export interface HeartbeatRecoveryDependencies extends Pick<HeartbeatRetryDepend
   }) => Promise<void>;
   setRunStatus: (runId: string, status: string, patch?: Partial<typeof heartbeatRuns.$inferInsert>) => Promise<HeartbeatRun | null>;
   setRunStatusFromLive: (runId: string, status: string, fromStatuses: string[], patch?: Partial<typeof heartbeatRuns.$inferInsert>,
-    failureReport?: undefined, cancellationCondition?: undefined, options?: { onlyWhileNativeLeaseLapsed?: true }) => Promise<{
+    failureReport?: undefined, cancellationCondition?: SQL, options?: { onlyWhileNativeLeaseLapsed?: true }) => Promise<{
     updated: boolean;
     run: HeartbeatRun | null;
   }>;
@@ -1269,6 +1274,13 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         restartSuspendedRunIds.push(run.id);
         return;
       }
+      if (agent.adapterType === "paperclip_runner" && run.runtimeMode === "legacy" && run.scopeKind === "issue" &&
+          run.issueId && run.executionStage === "preparing" && run.controllerBootId === legacyControllerBootId &&
+          await handoffLegacyControllerPreparation(db, run, portableTaskPreparationLeaseId(db, run),
+            () => markRunHandedOffForShutdown(run.id))) {
+        restartSuspendedRunIds.push(run.id);
+        return;
+      }
       const message = `Interrupted by graceful server shutdown (${signal})`;
       const running = runningProcesses.get(run.id);
       const control = run.runtimeMode === "legacy" ? adapterExecutionControls.get(run.id) : undefined;
@@ -1736,6 +1748,10 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       logger.warn({ errorKind: "teardown_claim_settle_failed" }, "teardown claim settle failed; a later sweep retries");
     });
 
+    if (!manualRetry) await expireAbandonedWorkspaceFileHoldsWhenDue(db).catch(() => {
+      logger.warn({ errorKind: "abandoned_workspace_files_expiry_failed" }, "abandoned workspace file expiry failed; a later sweep retries");
+    });
+
     const rows = await db
       .select()
       .from(environmentLeases)
@@ -1756,6 +1772,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     let capped = 0;
     for (const row of rows) {
       if (pendingCleanupAttemptsInFlight.has(row.id)) continue;
+      if (!hasStopOnlyCleanup(row) && await parkAbandonedWorkspaceFilesLease(db, row, ["pending_cleanup"])) continue;
       if (!hasStopOnlyCleanup(row) && await nativeWorkspaceExportPendingForLease(db, row)) {
         await deferPendingCleanupLease(row.id);
         continue;
@@ -1786,7 +1803,8 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       // path uses the provider and configuration recorded on the lease first;
       // the environment is lifecycle context and only a legacy fallback.
       const isOrphanEphemeralLease = lease.leasePolicy === "ephemeral";
-      const useRecordedTeardown = isOrphanEphemeralLease || !environment || hasStopOnlyCleanup(lease);
+      const useRecordedTeardown = isOrphanEphemeralLease || !environment || hasStopOnlyCleanup(lease) ||
+        (metadata.driver === "plugin" && metadata.pluginLeaseCleanupMethod === "release");
 
       // Do not consume a finite cleanup attempt while the provider plugin is
       // briefly unavailable. A plugin worker restart, a plugin reload, or a
@@ -1869,7 +1887,10 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
             failureReason: "pending_cleanup_retry",
             remoteExecutionTermination: remoteTerminationReceipt(lease, receipt),
           });
-          if (released) destroyed += 1;
+          if (released) {
+            destroyed += 1;
+            await recordAbandonedWorkspaceFilesRemoved(db, row);
+          }
         } else if (environment) {
           const result = await environmentRuntime.destroyRunLease({
             environment,
@@ -1878,6 +1899,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
           });
           if (result && result.status !== "pending_cleanup") {
             destroyed += 1;
+            if (result.cleanupStatus === "success") await recordAbandonedWorkspaceFilesRemoved(db, row);
           }
         }
       } catch (error) {
@@ -2467,6 +2489,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       nativeWorkspaceFinalizationPending,
     } of activeRuns) {
       if (run.runtimeMode === "native" && readNativeStartupCleanup(run)) continue;
+      if (run.runtimeMode === "legacy" && isRunHandedOffForShutdown(run.id)) continue;
       if (parseObject(run.contextSnapshot).nativeQuestionCancellation) continue;
       // Native recovery owns these dispositions. Its writes happened after this
       // inventory was read; do not reap or overwrite them using the old row.
@@ -2686,8 +2709,18 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         readNonEmptyString(runContext.wakeReason) === "issue_monitor_due" &&
         monitorNextCheckAt !== undefined &&
         (!monitorNextCheckAt || monitorNextCheckAt.getTime() <= now.getTime());
-      const revokedState = await revokeExpiredLegacyControllerWithState(db, run);
+      const reclaimPortablePreparation = priorBootSetupExpired && adapterType === "paperclip_runner" && run.scopeKind === "issue" && run.issueId
+        ? portableTaskPreparationLeaseId(db, run) : undefined;
+      const revokedState = await revokeExpiredLegacyControllerWithState(db, run, reclaimPortablePreparation);
       if (!revokedState) continue;
+      if (revokedState.portablePreparationLeaseId) {
+        const execution = executeRun(run.id, { portablePreparationLeaseId: revokedState.portablePreparationLeaseId }).catch(error => {
+          logger.error({ err: error, runId: run.id }, "portable task preparation recovery failed");
+        });
+        activeRunExecutionPromises.add(execution);
+        void execution.finally(() => activeRunExecutionPromises.delete(execution));
+        continue;
+      }
       // The scan snapshot can predate a child the old controller saved just
       // before it died. The child checks above used that snapshot, so a proven
       // gone controller is never enough here: when revocation reports a child

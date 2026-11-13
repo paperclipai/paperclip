@@ -25,12 +25,41 @@ const githubBroker = z.object({ url: z.string().url().max(2000).refine(value => 
     return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password && !url.search && !url.hash;
   } catch { return false; }
 }, "Expected a credential-free HTTP broker URL"), token: credentialValue }).strict();
+const claudeCredentialEnvironment = z.object({
+  CLAUDE_CODE_OAUTH_TOKEN: credentialValue.optional(), ANTHROPIC_API_KEY: credentialValue.optional(),
+}).strict().refine(env => Object.values(env).filter(Boolean).length === 1, "Select one Claude credential");
+export const MAX_CONFIGURED_ENVIRONMENT_KEYS = 128;
+export const MAX_CONFIGURED_ENVIRONMENT_ENTRY_BYTES = 65_536;
+export const MAX_CONFIGURED_ENVIRONMENT_BYTES = 262_144;
+const utf8 = new TextEncoder();
+const utf8Bytes = (value: string) => utf8.encode(value).byteLength;
+export const environmentTaskConfiguredEnvironmentSchema = z.record(
+  z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,127}$/),
+  z.string().refine(value => !value.includes("\0"), "Expected a NUL-free value"),
+).superRefine((environment, ctx) => {
+  const entries = Object.entries(environment);
+  if (entries.length > MAX_CONFIGURED_ENVIRONMENT_KEYS) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Too many configured environment variables" });
+    return;
+  }
+  let total = 0;
+  for (const [name, value] of entries) {
+    const size = utf8Bytes(name) + utf8Bytes(value);
+    total += size;
+    if (size > MAX_CONFIGURED_ENVIRONMENT_ENTRY_BYTES) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Configured environment variable is too large", path: [name] });
+    }
+  }
+  if (total > MAX_CONFIGURED_ENVIRONMENT_BYTES) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Configured environment is too large" });
+  }
+});
+export type PluginEnvironmentTaskConfiguredEnvironment = z.infer<typeof environmentTaskConfiguredEnvironmentSchema>;
+
 /** Only provider authentication is transferred. Paths and executable settings remain provider-owned. */
 export const environmentTaskCredentialSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("codex-auth-json"), authJson: credentialValue }).strict(),
-  z.object({ type: z.literal("claude-env"), environment: z.object({
-    CLAUDE_CODE_OAUTH_TOKEN: credentialValue.optional(), ANTHROPIC_API_KEY: credentialValue.optional(),
-  }).strict().refine(env => Object.values(env).filter(Boolean).length === 1, "Select one Claude credential") }).strict(),
+  z.object({ type: z.literal("claude-env"), environment: claudeCredentialEnvironment }).strict(),
 ]);
 export type PluginEnvironmentTaskCredential = z.infer<typeof environmentTaskCredentialSchema>;
 
@@ -88,6 +117,7 @@ export const environmentTaskOperationSchema = z.discriminatedUnion("kind", [
     /** Stable account selection; distinct from its current credential revision. */
     accountIdentity: z.string().min(1).max(1024).optional(),
     credential: environmentTaskCredentialSchema.optional(),
+    configuredEnvironment: environmentTaskConfiguredEnvironmentSchema.optional(),
     /** Core supplies these protected launch inputs for native agent runs. */
     launch: z.object({
       runnerVersion: z.string().min(1), runnerDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
@@ -114,7 +144,20 @@ export const environmentTaskOperationSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("status") }).strict(),
   z.object({ kind: z.literal("connection") }).strict(),
   z.object({ kind: z.literal("release"), identity: durableIdentity }).strict(),
-  z.object({ kind: z.literal("resume"), identity: durableIdentity, bootstrapTicket: credentialValue }).strict(),
+  z.object({ kind: z.literal("resume"), identity: durableIdentity, bootstrapTicket: credentialValue,
+    handoffCredential: z.object({ accountIdentity: z.string().min(1).max(1024), environment: claudeCredentialEnvironment }).strict().optional(),
+    credential: environmentTaskCredentialSchema.optional(),
+    configuredEnvironment: environmentTaskConfiguredEnvironmentSchema.optional(),
+  }).strict(),
+  z.object({
+    kind: z.literal("ensure_ownership"),
+    operationId: z.string().uuid(),
+    identity: durableIdentity,
+    sourceTaskId: providerId.max(1024),
+    sourceGeneration: providerId.max(1024),
+    targetGeneration: providerId.max(1024),
+    policy: z.enum(["ordinary", "reclaim_if_needed"]),
+  }).strict(),
   z.object({ kind: z.literal("complete") }).strict(),
   z.object({ kind: z.literal("stop") }).strict(),
 ]);
@@ -125,6 +168,14 @@ export const environmentTaskResultSchema = z.discriminatedUnion("kind", [
     reason: z.enum(["session_state_unavailable", "account_binding_mismatch"]) }).strict(),
   z.object({ kind: z.literal("released"), taskId: providerId }).strict(),
   z.object({ kind: z.literal("resume"), taskId: providerId, outcome: z.enum(["resumed", "unavailable"]) }).strict(),
+  z.object({
+    kind: z.literal("ownership"),
+    taskId: providerId,
+    operationId: z.string().uuid(),
+    targetGeneration: providerId.max(1024),
+    status: z.enum(["pending", "ready"]),
+    checkpointUnavailable: z.literal(true).optional(),
+  }).strict(),
   z.object({ kind: z.literal("copilot_metadata"), taskId: providerId, metadata: z.record(z.string(), z.unknown()),
     executionStopped: z.literal(true) }).strict(),
   z.object({ kind: z.literal("project_auth"), taskId: providerId, configurationId: providerId.max(1024),
@@ -142,6 +193,7 @@ export const environmentTaskResultSchema = z.discriminatedUnion("kind", [
     runner: z.object({ version: z.string().min(1), digest: z.string().regex(/^sha256:[a-f0-9]{64}$/) }).strict(),
     warmTaskVersion: z.literal(1).optional(),
     releaseResumeVersion: z.literal(1).optional(),
+    sessionHandoffVersion: z.literal(1).optional(),
     launchPreparationVersion: z.literal(1).optional(),
     executionContextVersion: z.literal(1).optional(),
     /** Each version attests stopped-source recovery for its provider independently. */
@@ -151,6 +203,8 @@ export const environmentTaskResultSchema = z.discriminatedUnion("kind", [
     projectAuthCheckVersion: z.literal(1).optional(),
     workspaceFileReadVersion: z.literal(1).optional(),
     githubCredentialBrokerVersion: z.literal(1).optional(),
+    configuredEnvironmentVersion: z.literal(1).optional(),
+    resumeCredentialVersion: z.literal(1).optional(),
   }).strict(),
   z.object({
     kind: z.literal("status"), taskId: providerId,
@@ -211,6 +265,13 @@ export interface PluginEnvironmentTaskParams extends Omit<PluginEnvironmentDrive
 /** An accepted stop is not proof of process termination. */
 export function parseEnvironmentTaskResult(operation: PluginEnvironmentTaskOperation, taskId: string, value: unknown): PluginEnvironmentTaskResult {
   const result = environmentTaskResultSchema.parse(value);
+  if (operation.kind === "ensure_ownership") {
+    if (result.kind !== "ownership" || result.taskId !== taskId || result.operationId !== operation.operationId ||
+        result.targetGeneration !== operation.targetGeneration) {
+      throw new Error("Invalid plugin-provided session ownership response");
+    }
+    return result;
+  }
   const expected = operation.kind === "release" ? "released" : operation.kind === "resume" ? "resume" : operation.kind === "read_file" ? "file" : operation.kind === "describe" ? "description" : operation.kind === "prepare" ? "prepared" : operation.kind === "check_project_auth" ? "project_auth" : ["read_state", "archive_state"].includes(operation.kind) ? "state" : ["status", "connection", "credentials", "copilot_metadata"].includes(operation.kind) ? operation.kind : "accepted";
   const rejectedSubmit = operation.kind === "submit" && result.kind === "admission_rejected";
   if (result.taskId !== taskId || (result.kind !== expected && !rejectedSubmit)) throw new Error("Invalid plugin-provided Runner execution response");

@@ -324,6 +324,8 @@ export function createSecretProposalsService(db: Db) {
     value: string;
     justification: string;
   }) {
+    if (typeof input.name !== "string") throw unprocessable("Secret name is required");
+    if (typeof input.justification !== "string") throw unprocessable("Justification is required");
     const name = input.name.trim();
     const justification = input.justification.trim();
     if (!SECRET_NAME_RE.test(name)) throw unprocessable("Secret name must be a slash-separated path without empty segments");
@@ -381,7 +383,9 @@ export function createSecretProposalsService(db: Db) {
     if (input.sourceConfigPath && !CONFIG_PATH_RE.test(input.sourceConfigPath)) {
       throw unprocessable("sourceConfigPath must use env.<KEY> or access.<ALIAS>");
     }
-    if (!input.justification.trim()) throw unprocessable("Justification is required");
+    if (typeof input.justification !== "string" || !input.justification.trim()) {
+      throw unprocessable("Justification is required");
+    }
     if (input.justification.trim().length > 20_000) throw unprocessable("Justification must be at most 20000 characters");
     const { run, originIssueId } = await loadRunContext(db, context);
     const targetAgentId = input.targetAgentId ?? run.agentId;
@@ -549,12 +553,17 @@ export function createSecretProposalsService(db: Db) {
   async function listForBoard(
     companyId: string,
     status?: string | null,
-    options: { limit?: number; offset?: number } = {},
+    options: { limit?: number; offset?: number; order?: "created" | "resolved" } = {},
   ) {
     const rows = await db.select().from(companySecretProposals).where(and(
       eq(companySecretProposals.companyId, companyId),
       status ? eq(companySecretProposals.status, status) : undefined,
-    )).orderBy(desc(companySecretProposals.createdAt))
+    )).orderBy(
+      // "resolved" puts the most recent decisions first; undecided rows follow by age.
+      ...(options.order === "resolved"
+        ? [sql`${companySecretProposals.resolvedAt} desc nulls last`, desc(companySecretProposals.createdAt)]
+        : [desc(companySecretProposals.createdAt)]),
+    )
       .limit(options.limit ?? DEFAULT_PROPOSAL_LIST_LIMIT)
       .offset(options.offset ?? 0);
     return Promise.all(rows.map(enrich));

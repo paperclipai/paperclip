@@ -19,6 +19,7 @@ replaying tasks, changing credentials, or deploying instrumentation.
 | --- | --- |
 | Why is a task slow before, during, or after model execution? | Application workflow below; [runtime setup](references/runtime.md) if spans are absent |
 | Why does an issue page load slowly? | Request spans plus browser timing, described below |
+| What is a page's real-user load time or SLO on a hosted instance? | Browser `page.load` spans in [browser performance tracing](../../../doc/browser-performance-tracing.md) |
 | Which CI jobs or test files delay the whole suite? | [CI profiling](references/ci.md) |
 | How should a trace be organized so a person can understand it? | Human-readable waterfall guidance below and [trace design](references/trace-design.md) |
 | Where should a new span go? | Instrumentation guidance below and [Observability contract](../../../doc/observability.md) |

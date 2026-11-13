@@ -90,6 +90,29 @@ export function describeExitedRemoteRunner(state: Record<string, unknown>): Pick
   };
 }
 
+/**
+ * The Runner exits with these codes after it stops its provider and saves its
+ * state, because only a new process with a fresh bootstrap ticket can
+ * reconnect. The replacement continues from the same cursor.
+ */
+const FRESH_BOOTSTRAP_RECOVERABLE_FAILURES = new Set([
+  "lease_expired_requires_bootstrap", "transport_reconnect_deadline_exceeded", "transport_reconnect_grace_exceeded",
+]);
+
+export function exitedRunnerRequestedFreshBootstrap(
+  diagnostic: Pick<RemoteRunnerRecoveryDiagnostic, "runnerLifecycle" | "runnerRecoverableFailure">,
+): boolean {
+  return diagnostic.runnerLifecycle === "recoverable_failure"
+    && FRESH_BOOTSTRAP_RECOVERABLE_FAILURES.has(diagnostic.runnerRecoverableFailure ?? "");
+}
+
+/** The saved state of an exited Runner that asked for a fresh bootstrap, re-read after its exit. */
+export function runnerStateRequestsFreshBootstrap(state: Record<string, unknown>): boolean {
+  return exitedRunnerRequestedFreshBootstrap({ ...describeExitedRemoteRunner(state),
+    ...describeExitedRemoteRunnerReason(state, text => text) })
+    && state.pendingTerminalDelivery == null && state.warmTransition == null;
+}
+
 const transportDiagnostics = new WeakMap<object, RemoteRunnerRecoveryDiagnostic>();
 
 export function attachRemoteRunnerRecoveryDiagnostic(error: unknown, diagnostic: RemoteRunnerRecoveryDiagnostic): unknown {

@@ -162,7 +162,9 @@ import {
   ISSUE_DETAIL_HEADER_PAINT_MARK,
   reportIssueDetailWebVitals,
   scheduleIssueDetailPaintMeasure,
+  useIssueDetailContentPaintedAt,
 } from "../lib/issue-detail-performance";
+import { usePageContentReady } from "../hooks/usePageContentReady";
 import {
   beginLocalInboxArchive,
   boundLocalInboxArchive,
@@ -206,6 +208,7 @@ import {
 } from "../lib/optimistic-issue-runs";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { recordRecentTask } from "../lib/recent-tasks";
+import { modelStillUnavailableToast } from "../lib/model-retry-refusal";
 import {
   relativeTime,
   cn,
@@ -1685,8 +1688,9 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         queryKey: queryKeys.issues.activeRun(issueQueryRef),
       });
     },
-    onError: (error) => {
-      pushToast({
+    onError: (error, runId) => {
+      const failedRun = resolvedLinkedRuns.find((run) => run.runId === runId);
+      pushToast(modelStillUnavailableToast(error, failedRun ? agentMap.get(failedRun.agentId) : undefined) ?? {
         title: "Run retry failed",
         body: error instanceof Error ? error.message : "Unable to retry run",
         tone: "error",
@@ -3526,6 +3530,11 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   useLayoutEffect(() => {
     beginIssueDetailNavigation();
   }, [issueId]);
+  // The task page is loaded when its conversation content has painted: the
+  // same point as the `issue-detail:navigate→content-paint` measure. An agent
+  // chat with no saved task never records that mark, so it uses the generic rule.
+  const contentPaintedAt = useIssueDetailContentPaintedAt();
+  usePageContentReady(contentPaintedAt !== null, contentPaintedAt, { enabled: Boolean(issueId) });
 
   useEffect(() => {
     if (!(import.meta.env.DEV || import.meta.env.MODE === "qa")) return;

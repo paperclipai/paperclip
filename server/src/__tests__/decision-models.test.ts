@@ -382,7 +382,12 @@ describe("company decision service", () => {
       locked(row.pid); await lockGate;
     });
     const pid = await acquired;
-    f.provider.mockImplementation(async () => { await providerGate; return structuredClone(outcome); });
+    let providersEntered = 0, bothEntered!: () => void;
+    const bothProvidersEntered = new Promise<void>(resolve => { bothEntered = resolve; });
+    f.provider.mockImplementation(async () => {
+      if (++providersEntered === 2) bothEntered();
+      await providerGate; return structuredClone(outcome);
+    });
     const first = f.service.decide(f.context, DECISION_TEST_REQUEST), second = f.service.decide(f.context, DECISION_TEST_REQUEST);
     try {
       // Both admission snapshots exist before either independent reservation commits.
@@ -391,7 +396,8 @@ describe("company decision service", () => {
         expect(row.count).toBe(2);
       }, { timeout: 3000 });
       unlock(); await holding;
-      await vi.waitFor(() => expect(f.provider).toHaveBeenCalledTimes(2));
+      await bothProvidersEntered;
+      expect(f.provider).toHaveBeenCalledTimes(2);
       const holds = await db.select().from(budgetReservations).where(eq(budgetReservations.companyId, f.companyId));
       expect(holds).toHaveLength(2);
       expect(holds.every(row => row.state === "held" && row.amountCents === "1.0000000")).toBe(true);

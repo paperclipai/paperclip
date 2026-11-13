@@ -38,7 +38,7 @@ export type TaskFaultKind = FaultKind | "K13" | "K0" | ProviderFaultKind | DiskF
  * H2: the agent's own last step hands the task to the person who created it, in review (staging class H).
  * W2, W2Q, W2C: the same task woken again 0–60 s after its run succeeded (rewake.ts), many tasks on one agent.
  */
-export const WORKLOAD_IDS = ["A1", "B1", "B5", "C1", "M1", "G1", "H1", "R1", "S1", "Q1", "L1", "Q2", "Q3", "Q4", "F1", "T1", "W2", "W2Q", "W2C", "H2"] as const;
+export const WORKLOAD_IDS = ["A1", "B1", "B5", "C1", "M1", "G1", "H1", "R1", "S1", "Q1", "L1", "Q2", "Q3", "Q4", "F1", "T1", "W2", "W2Q", "W2C", "H2", "SM"] as const;
 export type WorkloadId = (typeof WORKLOAD_IDS)[number];
 
 export const ADAPTER_IDS = ["codex", "claude", "opencode"] as const;
@@ -89,6 +89,7 @@ export interface WaveOptions {
   /** `--k15-fresh-home`: each deploy generation gets a new, empty instance home and no volume (redeploy.ts). */
   k15FreshHome?: boolean;
   ephemeralServer?: boolean;
+  releaseSwap?: import("./release-swap-schedule.js").ReleaseSwapOptions;
   runnerBindFault?: boolean;
   /** `--faults K0`: cells with no fault, for workloads whose shape is the fault (W2, W2Q, W2C). */
   baseline?: boolean;
@@ -179,6 +180,7 @@ export interface WaveOptions {
   rrGapMs?: [number, number];
   /** RR1–RR3 (`--rr-stop-on recovering`): stop each replacement on its first `recovering` status instead of after a gap. */
   rrStopOn?: "recovering";
+  stagingMix?: import("./staging-mix.js").StagingMixOptions;
 }
 
 export interface StormFault {
@@ -220,6 +222,7 @@ export interface TaskPlan {
   restartSteps?: RestartStep[];
   /** `--long-turn-minutes`: the first turn's tool work before the workload (long-turn.ts). */
   longTurnMinutes?: number;
+  stagingMix?: import("./staging-mix.js").StagingMixTask;
 }
 
 export interface ScheduledFault {
@@ -240,6 +243,7 @@ export interface WavePlan {
   tasks: TaskPlan[];
   /** K13 only: the seeded storm fault sequence. */
   storm?: StormPlan;
+  stagingMixSlots?: import("./staging-mix.js").StagingMixSlot[];
   /** Present when this wave replays one task of an earlier wave. */
   replayOf?: { waveId: string; taskId: string };
 }
@@ -290,6 +294,7 @@ export interface TaskSample {
   recoveryOwner?: string | null;
   executionBlocker?: boolean;
   scheduledRetry?: boolean;
+  waitingOnChildren?: boolean;
   runs?: RunSample[];
 }
 
@@ -381,6 +386,7 @@ export interface OracleArtifacts {
   runs?: import("./rewake.js").RewakeArtifacts["runs"];
   /** H2: who owns the task at rest, and how its runs ended. */
   handoff?: HandoffArtifacts;
+  stagingMix?: import("./staging-mix.js").StagingMixArtifacts;
 }
 
 /** H2: the task's owner and execution state at rest, and each run's terminal state. */
@@ -486,6 +492,7 @@ export interface TaskRecord {
   providerFaultAppliedAt?: number;
   /** DF1: when the fault was armed and cleared, and what the board showed at the disk-full rest. */
   diskFull?: DiskFullRecord;
+  stagingMix?: import("./staging-mix.js").StagingMixRecord;
 }
 
 export interface TaskGrade {

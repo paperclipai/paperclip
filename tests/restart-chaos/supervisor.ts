@@ -42,6 +42,8 @@ import { isMultiServerFault, runMultiServerFault, type MultiServerKind, type Mul
 import { generationHome, nextRedeployIdentity, redeployEnvironment, redeployIdentity, redeployNodeArgs, redeployReceipt, type RedeployIdentity } from "./redeploy.js";
 import { startEdgeProxy, type EdgeProxy } from "./edge-proxy.js";
 import { ephemeralServerEnvironment } from "./ephemeral-server.js";
+import { whileFrozen } from "./server-freeze.js";
+import type { SwapPhase, SwapPhaseInfo } from "./release-swap-driver.js";
 import { CLASS_R_PRE_FAULT_DEADLINE_MS, classRRedeploys, isClassRFault, runPluginStall, withReplacementPluginStall, type ClassRHooks } from "./class-r.js";
 
 /** First boot applies every migration; a loaded host can need longer (RESTART_CHAOS_HEALTH_TIMEOUT_MS). */
@@ -71,6 +73,12 @@ const PHASE_POLL_MS = 50;
 export function crashLoopShouldFire(target: (typeof CRASH_LOOP_TARGETS)[number], phase: string): boolean {
   if (target === "recovering") return phase === "recovering" || phase === "ready";
   return phase === "ready";
+}
+
+export function overlapKillAfterMs(raw: string | undefined, overlapMs: number, name = "RESTART_CHAOS_K15_KILL_OLD_AFTER_SECONDS"): number | null {
+  if (raw === undefined || raw === "") return null;
+  if (!/^[0-9]+$/.test(raw)) throw new Error(`${name} must be a whole number of seconds`);
+  return Math.min(Number(raw) * 1000, overlapMs);
 }
 
 /**
@@ -172,9 +180,10 @@ export class ChaosSupervisor {
    * before the next deploy starts, while the server is down. It must not throw.
    */
   redeployEvidence: ((faultId: string, phase: "stopped" | "before_start") => Promise<void>) | null = null;
-  /** K15 deploy shape (redeploy.ts `parseK15DeployShape`); main.ts sets it before `start`. */
   deployShape: { overlap: boolean; freshHome: boolean } = { overlap: false, freshHome: false };
   ephemeralServer = false;
+  swapHook: ((info: SwapPhaseInfo) => Promise<string | void>) | null = null;
+  private rollingRedeploys = 0;
   /** `--k15-fresh-home`: the instance home and config of the serving generation (generation 0 uses `paths`). */
   private serverHome: { home: string; configPath: string };
   /** `--k15-overlap-seconds`: the edge on the wave's port, and the serving generation's own port behind it. */
@@ -501,7 +510,7 @@ export class ChaosSupervisor {
     if (isRepeatedRestartFault(kind)) receipt.repeatedRestart = this.repeatedRestartRecord(kind, receipt, restartSteps, previous?.pid ?? null);
     this.faultInProgress = true;
     this.serverReady = false;
-    this.timeline.add("fault_started", { faultId: receipt.faultId, fault: kind, signal: receipt.signal, loadAvg1m: receipt.loadAvg1m, holdMs, requestedBy, previousPid: previous?.pid });
+    this.timeline.add("fault_started", { faultId: receipt.faultId, fault: kind, ...(kind === "K15" && this.deployShape.overlap ? { marks: "swap_requested" } : { signal: receipt.signal }), loadAvg1m: receipt.loadAvg1m, holdMs, requestedBy, previousPid: previous?.pid });
     this.log.write(`\n[restart-chaos] ${receipt.faultId} ${kind} ${receipt.signal} hold=${holdMs}ms requestedBy=${requestedBy} at ${new Date().toISOString()}\n`);
     // CR1 and CR2 with a hold replace the controller as a K15 deploy does (class-r.ts).
     const redeploys = kind === "K15" || classRRedeploys(kind, holdMs);
@@ -518,7 +527,6 @@ export class ChaosSupervisor {
       }
       if (kind === "TM1" || kind === "TM2") await this.freeze(kind, previous, holdMs, receipt);
       else if (isMultiServerFault(kind)) await this.multiServer(kind, previous, holdMs, receipt);
-      // `--k15-overlap-seconds`: the next deploy boots beside the old server; its hold is the overlap.
       else if (kind === "K15" && this.deployShape.overlap) await this.rollingRedeploy(previous, holdMs, receipt);
       else if (kind === "CR3" || kind === "CR5") {
         const stall = await runPluginStall({ serverPid: previous.pid, holdMs, cancelled: () => this.shuttingDown,
@@ -798,20 +806,18 @@ export class ChaosSupervisor {
     return { home, configPath };
   }
 
-  /**
-   * `--k15-overlap-seconds`: the staging deploy shape. The next generation boots beside the old server on its own
-   * port; once it is ready, the edge sends new connections to it; the old server keeps running for the overlap and
-   * then gets SIGTERM. There is no outage.
-   */
   private async rollingRedeploy(previous: ChildProcess, overlapMs: number, receipt: FaultReceipt): Promise<void> {
     if (!this.edge) throw new Error("--k15-overlap-seconds needs the edge proxy started with the wave");
     const fromPort = this.backendPort;
+    const swap = async (phase: SwapPhase, next?: ChildProcess) => this.swapHook?.({ faultId: receipt.faultId, phase, at: Date.now(), overlapMs, fromUrl: `http://127.0.0.1:${fromPort}`,
+      toUrl: phase === "before_spawn" ? null : `http://127.0.0.1:${this.backendPort}`, fromPid: previous.pid ?? null, toPid: next?.pid ?? null });
+    const nextRoot = await swap("before_spawn"); if (typeof nextRoot === "string") this.serverRoot = nextRoot;
     receipt.redeploy = await this.advanceDeploy(receipt.faultId);
     receipt.restartedAt = Date.now();
     this.timeline.add("fault_restarting", { faultId: receipt.faultId, overlapMs });
     const next = await this.spawnServer();
-    // Bound to the next generation: the old server keeps serving during the overlap and must not count hits.
     this.armPendingRecoveryStep(receipt, next.pid);
+    await swap("spawned", next);
     const backendUrl = `http://127.0.0.1:${this.backendPort}`;
     receipt.healthyAt = await this.waitForHealth(next, receipt.phases, backendUrl);
     const deadline = Date.now() + READY_TIMEOUT_MS;
@@ -823,10 +829,31 @@ export class ChaosSupervisor {
     }
     this.edge.target = this.backendPort;
     this.timeline.add("k15_traffic_switched", { faultId: receipt.faultId, fromPort, toPort: this.backendPort, overlapMs });
-    for (const until = Date.now() + overlapMs; Date.now() < until && !this.shuttingDown;) await delay(Math.min(1_000, until - Date.now()));
-    await this.stopper(previous, "SIGTERM");
-    receipt.stoppedAt = Date.now();
-    this.timeline.add("fault_server_down", { faultId: receipt.faultId, previousPid: previous.pid, overlapMs });
+    await swap("switched", next);
+    this.rollingRedeploys += 1;
+    const killSwaps = process.env.RESTART_CHAOS_K15_KILL_OLD_SWAPS?.split(",").map(Number) ?? null;
+    const killAfterMs = killSwaps && !killSwaps.includes(this.rollingRedeploys) ? null
+      : overlapKillAfterMs(process.env.RESTART_CHAOS_K15_KILL_OLD_AFTER_SECONDS, overlapMs);
+    for (const until = Date.now() + (killAfterMs ?? overlapMs); Date.now() < until && !this.shuttingDown;) await delay(Math.min(1_000, until - Date.now()));
+    await swap("stopping", next);
+    const freezeSwaps = process.env.RESTART_CHAOS_K15_FREEZE_SWAPS?.split(",").map(Number) ?? null;
+    const freezeMs = freezeSwaps && !freezeSwaps.includes(this.rollingRedeploys) ? null
+      : overlapKillAfterMs(process.env.RESTART_CHAOS_K15_FREEZE_NEW_SECONDS, 600_000, "RESTART_CHAOS_K15_FREEZE_NEW_SECONDS");
+    if (freezeMs !== null && next.pid) this.timeline.add("k15_new_server_frozen", { faultId: receipt.faultId, pid: next.pid, forMs: freezeMs });
+    const frozen = await whileFrozen({ pid: next.pid, freezeMs }, async () => {
+      if (killAfterMs === null) await this.stopper(previous, "SIGTERM");
+      else {
+        this.timeline.add("k15_old_server_killed", { faultId: receipt.faultId, previousPid: previous.pid, afterMs: killAfterMs });
+        await this.stopper.crashForRestart(previous);
+      }
+      receipt.stoppedAt = Date.now();
+      this.timeline.add("fault_server_down", { faultId: receipt.faultId, previousPid: previous.pid, overlapMs });
+    });
+    if (frozen.frozenAt !== null) {
+      this.timeline.add("k15_new_server_thawed", { faultId: receipt.faultId, pid: next.pid, frozenMs: frozen.thawedAt! - frozen.frozenAt,
+        afterOldExitMs: frozen.thawedAt! - receipt.stoppedAt! });
+    }
+    await swap("stopped", next);
     await this.redeployEvidence?.(receipt.faultId, "stopped");
   }
 
