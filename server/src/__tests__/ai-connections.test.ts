@@ -1860,6 +1860,45 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       expect(await t.cards(edge.issueId)).toEqual([]);
     });
 
+    it("counts genuine failures past many interleaved non-credential failures", async () => {
+      const t = await setup("crowded");
+      const attribution = await t.attributionFor(t.agentIds[0]!);
+      // More edge rejections than the scan limit must not hide a genuine failure.
+      for (let index = 0; index < 60; index += 1) await t.run(t.agentIds[0]!, "failed", "claude_edge_rejected", attribution);
+      const first = await t.run(t.agentIds[0]!, "failed", "claude_auth_required", attribution);
+      expect(await connectionIntentService(db).requestForRunAuthFailure(first.runId)).toBeNull();
+      const second = await t.run(t.agentIds[0]!, "failed", "claude_auth_required", attribution);
+      expect(await connectionIntentService(db).requestForRunAuthFailure(second.runId)).toMatchObject({ state: "needs_user_action" });
+      expect(await t.grantStatus()).toBe("needs_reauthorization");
+    });
+
+    it("counts and resets one credential generation across the users of a grant", async () => {
+      // The identity is "grant:user:generation". Another user's runs on the
+      // same grant and generation share the same credential, so they count
+      // toward, and reset, the same failure history.
+      const asOtherUser = (attribution: { identity: string }) => {
+        const [grantId, , generation] = attribution.identity.split(":");
+        return { ...attribution, responsibleUserId: `other-${randomUUID()}`, identity: `${grantId}:other-${randomUUID()}:${generation}` };
+      };
+      const reset = await setup("shared-reset");
+      const resetAttribution = await reset.attributionFor(reset.agentIds[0]!);
+      const before = await reset.run(reset.agentIds[0]!, "failed", "claude_auth_required", resetAttribution);
+      expect(await connectionIntentService(db).requestForRunAuthFailure(before.runId)).toBeNull();
+      await new Promise(resolve => setTimeout(resolve, 5));
+      await reset.run(reset.agentIds[0]!, "succeeded", null, asOtherUser(resetAttribution));
+      await new Promise(resolve => setTimeout(resolve, 5));
+      const after = await reset.run(reset.agentIds[0]!, "failed", "claude_auth_required", resetAttribution);
+      expect(await connectionIntentService(db).requestForRunAuthFailure(after.runId)).toBeNull();
+      expect(await reset.grantStatus()).toBe("active");
+
+      const combined = await setup("shared-combined");
+      const combinedAttribution = await combined.attributionFor(combined.agentIds[0]!);
+      await combined.run(combined.agentIds[0]!, "failed", "claude_auth_required", asOtherUser(combinedAttribution));
+      const own = await combined.run(combined.agentIds[0]!, "failed", "claude_auth_required", combinedAttribution);
+      expect(await connectionIntentService(db).requestForRunAuthFailure(own.runId)).toMatchObject({ state: "needs_user_action" });
+      expect(await combined.grantStatus()).toBe("needs_reauthorization");
+    });
+
     it("latches a shared connection exactly once when agents fail concurrently", async () => {
       const t = await setup("concurrent", 3);
       const attribution = await t.attributionFor(t.agentIds[0]!);

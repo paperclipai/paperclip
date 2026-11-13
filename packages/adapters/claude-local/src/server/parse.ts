@@ -251,8 +251,15 @@ const CLAUDE_EDGE_CHALLENGE_RE =
 // authentication error, or an invalid/expired/revoked credential message.
 // A bare "Failed to authenticate" or "authentication_failed" wrapper is not
 // evidence by itself: the CLI prints the same wrapper for an edge 403.
-const CLAUDE_GENUINE_AUTH_BODY_RE =
-  /(?:"type"\s*:\s*"authentication_error"|\bauthentication_error\b|invalid\s+(?:x-)?api[\s_-]?key|invalid\s+bearer\s+token|(?:invalid|expired|revoked)[\s\S]{0,40}(?:bearer|oauth|access|refresh)\s+token|(?:bearer|oauth|access|refresh)\s+token[\s\S]{0,40}(?:is\s+|has\s+)?(?:been\s+)?(?:invalid|expired|revoked)|oauth\s+session\s+(?:has\s+)?expired|not\s+logged\s+in|please\s+run\s+(?:`?claude\s+login`?|\/login))/i;
+// Structured credential evidence: an Anthropic authentication error, or an
+// invalid/expired/revoked key or token message. It outranks incidental edge
+// headers such as cf-ray, but never an HTML page.
+const CLAUDE_STRUCTURED_AUTH_BODY_RE =
+  /(?:"type"\s*:\s*"authentication_error"|\bauthentication_error\b|invalid\s+(?:x-)?api[\s_-]?key|invalid\s+bearer\s+token|(?:invalid|expired|revoked)[\s\S]{0,40}(?:bearer|oauth|access|refresh)\s+token|(?:bearer|oauth|access|refresh)\s+token[\s\S]{0,40}(?:is\s+|has\s+)?(?:been\s+)?(?:invalid|expired|revoked)|oauth\s+session\s+(?:has\s+)?expired)/i;
+// The CLI's generic sign-in hint. It counts as credential evidence for a bare
+// 403, but the CLI can print it after any rejection, so it does not outrank an
+// edge marker.
+const CLAUDE_LOGIN_HINT_RE = /(?:not\s+logged\s+in|please\s+run\s+(?:`?claude\s+login`?|\/login))/i;
 const CLAUDE_API_ERROR_STATUS_RE = /\bAPI\s+Error:?\s*(\d{3})\b/i;
 const CLAUDE_EDGE_RAY_ID_RE =
   /(?:\bcf-ray\s*[:=]\s*|\bray\s+id\s*[:#]?\s*(?:<[^>]{0,80}>\s*)*)([0-9a-f]{16}(?:-[a-z]{3})?)\b/i;
@@ -335,11 +342,15 @@ export function detectClaudeEdgeFailure(input: {
   if (status === 401) return null;
   const html = /<!doctype\s+html|<html[\s>]|<\/html>|<head[\s>]|<body[\s>]|<title[\s>]/i.test(surface);
   const edgeMarker = CLAUDE_EDGE_MARKER_RE.test(surface);
-  const genuineAuth = CLAUDE_GENUINE_AUTH_BODY_RE.test(surface);
-  // A real credential body wins over a bare 403, but not over an HTML page:
-  // an edge page is never a structured Anthropic authentication response.
-  if (!edgeMarker && !(status === 403 && !genuineAuth)) return null;
-  if (!edgeMarker && genuineAuth) return null;
+  const structuredAuth = CLAUDE_STRUCTURED_AUTH_BODY_RE.test(surface);
+  const genuineAuth = structuredAuth || CLAUDE_LOGIN_HINT_RE.test(surface);
+  // Structured credential evidence wins over incidental edge markers (a
+  // cf-ray header, a CDN name), but not over an HTML page: an edge page is
+  // never a structured Anthropic authentication response.
+  if (!html && structuredAuth) return null;
+  // Without an edge marker, only a 403 lacking any credential evidence is an
+  // edge rejection.
+  if (!edgeMarker && (status !== 403 || genuineAuth)) return null;
   return {
     status,
     contentType: html ? "text/html" : null,
@@ -375,7 +386,9 @@ export function extractClaudeRetryAfter(
     stdout: input.stdout ?? "",
     stderr: input.stderr ?? "",
   });
-  const match = surface.match(/\bretry[-_\s]after["']?\s*[:=]\s*["']?([^\n"',;]+)/i);
+  // An HTTP date contains a comma ("Fri, 13 Nov 2026 12:00:00 GMT"), so try
+  // that form first; otherwise the value ends at the first separator.
+  const match = surface.match(/\bretry[-_\s]after["']?\s*[:=]\s*["']?([A-Za-z]{3},\s*\d{1,2}\s+[A-Za-z]{3}\s+\d{4}\s+\d{2}:\d{2}:\d{2}\s+GMT|[^\n"',;]+)/i);
   if (!match) return null;
   const raw = (match[1] ?? "").trim();
   let delayMs: number | null = null;

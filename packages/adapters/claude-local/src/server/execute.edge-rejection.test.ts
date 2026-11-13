@@ -149,6 +149,17 @@ describe("claude_local edge rejections are not credential failures", () => {
     expect(result.errorCode).toBe("claude_auth_required");
   });
 
+  it("keeps a structured authentication_error a credential failure when an edge header is also present", async () => {
+    mockExecutionResult(buildProcResult(authFailure(403,
+      'Failed to authenticate. API Error: 403 {"type":"error","error":{"type":"authentication_error","message":"OAuth token has been revoked."}}'),
+      { stderr: "cf-ray: 8f2a1b3c4d5e6f70-LHR" }));
+
+    const result = await execute(buildContext() as never);
+
+    expect(result.errorCode).toBe("claude_auth_required");
+    expect(result.resultJson?.edgeFailure).toBeUndefined();
+  });
+
   it("keeps a rate limit on the rate-limit lane", async () => {
     mockExecutionResult(buildProcResult({ subtype: "success", is_error: true, api_error_status: 429,
       result: 'API Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"Rate limited"}}' }));
@@ -171,6 +182,17 @@ describe("claude_local edge rejections are not credential failures", () => {
     expect(retryAt).toBeGreaterThanOrEqual(before + 120_000);
     expect(retryAt).toBeLessThanOrEqual(Date.now() + 120_000);
     expect(result.resultJson?.retryNotBefore).toBe(result.retryNotBefore);
+  });
+
+  it("honours a Retry-After HTTP date on an edge rejection", async () => {
+    const at = new Date(Math.ceil((Date.now() + 10 * 60_000) / 1000) * 1000);
+    mockExecutionResult(buildProcResult(authFailure(403, "Failed to authenticate. API Error: 403 Attention Required! | Cloudflare"),
+      { stderr: `Retry-After: ${at.toUTCString()}` }));
+
+    const result = await execute(buildContext() as never);
+
+    expect(result.errorCode).toBe("claude_edge_rejected");
+    expect(result.retryNotBefore).toBe(at.toISOString());
   });
 
   it("classifies an unparsed HTML edge page on stderr without persisting the raw output", async () => {
