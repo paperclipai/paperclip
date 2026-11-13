@@ -1,4 +1,6 @@
 import { groupImageResources } from "./image-resources";
+import { AgentQueueWait } from "@/components/AgentQueueWait";
+import { agentQueueWaitOf } from "@/lib/agent-queue-wait";
 import { McpAppTurnViews, mcpAppRunRefreshKey } from "@/components/mcp-app/McpAppTurnViews";
 import { useRef, type ReactNode } from "react";
 import type { ExecutionProjection } from "@paperclipai/shared";
@@ -139,11 +141,15 @@ function runnerWaitingLabel({ runId, status, execution, preparationLabel }: Runn
   return status === "queued" && execution?.cause ? execution.label : null;
 }
 
+function agentQueueWaitFor({ status, execution }: Pick<RunnerHeaderProps, "status" | "execution">) {
+  return status === "queued" ? agentQueueWaitOf(execution) : null;
+}
+
 /** One identity stays mounted while admission discovers the run's renderer. */
 export function TaskChatRunnerHeader({ statusContent, ...props }: RunnerHeaderProps & { statusContent?: ReactNode }) {
   return <div className="flex min-h-8 min-w-0 items-center gap-2 pb-1 pt-2" data-testid="task-chat-runner-identity-row">
     {props.agentName ? <TaskChatAgentIdentity agentName={props.agentName} agentIcon={props.agentIcon} agent={props.agent} /> : null}
-    {statusContent ?? <RunnerTurnStatus status={props.status} startedAtMs={props.startedAtMs} finishedAtMs={props.finishedAtMs}
+    {statusContent ?? (agentQueueWaitFor(props) ? <AgentQueueWait queue={agentQueueWaitFor(props)!} /> : null) ?? <RunnerTurnStatus status={props.status} startedAtMs={props.startedAtMs} finishedAtMs={props.finishedAtMs}
       continuedAfterSteering={props.continuedAfterSteering} waitingLabel={runnerWaitingLabel(props)} />}
   </div>;
 }

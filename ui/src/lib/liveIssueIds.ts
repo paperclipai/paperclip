@@ -1,4 +1,5 @@
-import type { IssueStatus } from "@paperclipai/shared";
+import type { ExecutionAgentQueue, IssueStatus } from "@paperclipai/shared";
+import { agentQueueWaitOf, isWaitingToStart } from "./agent-queue-wait";
 import type { LiveRunForIssue } from "../api/heartbeats";
 
 function isLiveRunStatus(status: string): boolean {
@@ -58,16 +59,38 @@ function shouldReplaceIssueStatusSnapshot(
   return !isTerminalIssueStatus(existing.status) && isTerminalIssueStatus(candidate.status);
 }
 
+/** A task whose live runs have all not started yet; `queue` names the agent's line when the server reports it. */
+export interface IssueWaiting {
+  queue: ExecutionAgentQueue | null;
+}
+
+const waitingByIssueIds = new WeakMap<ReadonlySet<string>, ReadonlyMap<string, IssueWaiting>>();
+
 export function collectLiveIssueIds(
   liveRuns: readonly LiveRunForIssue[] | null | undefined,
   issues?: readonly LiveIssueStatusNode[] | null,
 ): Set<string> {
   const ids = new Set<string>();
+  const started = new Set<string>();
+  const waiting = new Map<string, IssueWaiting>();
   const statusByIssueId = collectIssueStatusById(issues);
   for (const run of liveRuns ?? []) {
-    if (run.issueId && isLiveIssueRun(run, statusByIssueId.get(run.issueId))) ids.add(run.issueId);
+    if (!run.issueId || !isLiveIssueRun(run, statusByIssueId.get(run.issueId))) continue;
+    ids.add(run.issueId);
+    if (!isWaitingToStart(run)) started.add(run.issueId);
+    else if (!waiting.get(run.issueId)?.queue) waiting.set(run.issueId, { queue: agentQueueWaitOf(run.execution) });
   }
+  for (const issueId of started) waiting.delete(issueId);
+  waitingByIssueIds.set(ids, waiting);
   return ids;
+}
+
+/** Whether a live task from {@link collectLiveIssueIds} is only waiting to start. */
+export function issueWaitingOf(
+  liveIssueIds: ReadonlySet<string> | null | undefined,
+  issueId: string,
+): IssueWaiting | null {
+  return liveIssueIds ? waitingByIssueIds.get(liveIssueIds)?.get(issueId) ?? null : null;
 }
 
 /**
@@ -94,6 +117,7 @@ export interface SubtreeLiveNode {
 export function collectSubtreeLiveCounts(
   issues: readonly SubtreeLiveNode[] | null | undefined,
   liveIssueIds: ReadonlySet<string>,
+  options: { startedOnly?: boolean } = {},
 ): Map<string, number> {
   const counts = new Map<string, number>();
   if (!issues || issues.length === 0 || liveIssueIds.size === 0) return counts;
@@ -102,8 +126,10 @@ export function collectSubtreeLiveCounts(
   for (const issue of issues) parentById.set(issue.id, issue.parentId);
 
   for (const liveId of liveIssueIds) {
-    // Only roll up live issues that belong to the loaded tree.
-    if (!parentById.has(liveId)) continue;
+    // Only roll up live issues that belong to the loaded tree. With
+    // `startedOnly`, a sub-task that only waits to start is not running below;
+    // it still counts as live work that covers a blocked parent.
+    if (!parentById.has(liveId) || (options.startedOnly && issueWaitingOf(liveIssueIds, liveId))) continue;
     const seen = new Set<string>([liveId]);
     let parentId = parentById.get(liveId) ?? null;
     while (parentId && !seen.has(parentId)) {

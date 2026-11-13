@@ -1,5 +1,16 @@
 import type { Issue, IssueBlockerAttention } from "@paperclipai/shared";
 
+/** The "n live below" chip: descendants whose run started (server count, else live count). */
+export function resolveIssueRunningDescendantCount(
+  issue: Pick<Issue, "liveDescendantCount" | "runningDescendantCount">,
+  loadedSubtreeRunningCount = 0,
+): number {
+  return Math.max(
+    normalizeLiveDescendantCount(issue.runningDescendantCount ?? issue.liveDescendantCount),
+    normalizeLiveDescendantCount(loadedSubtreeRunningCount),
+  );
+}
+
 type InboxLiveDescendantIssue = Pick<Issue, "status" | "blockerAttention" | "liveDescendantCount">;
 
 interface InboxLiveDescendantOptions {

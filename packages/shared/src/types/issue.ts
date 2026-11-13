@@ -1002,6 +1002,8 @@ export interface Issue {
   watchdog?: IssueWatchdogSummary | null;
   scheduledRetry?: IssueScheduledRetry | null;
   liveDescendantCount?: number;
+  /** Descendants whose run started; excludes runs still waiting for an agent slot. */
+  runningDescendantCount?: number;
   relatedWork?: IssueRelatedWorkSummary;
   referencedIssueIdentifiers?: string[];
   planDocument?: IssueDocument | null;
@@ -1077,6 +1079,8 @@ export type CompactIssue = Pick<
   blockedInboxAttention?: IssueBlockedInboxAttention | null;
   scheduledRetry?: IssueScheduledRetry | null;
   liveDescendantCount?: number;
+  /** Descendants whose run started; excludes runs still waiting for an agent slot. */
+  runningDescendantCount?: number;
   myLastTouchAt?: Date | null;
   lastExternalCommentAt?: Date | null;
   lastActivityAt?: Date | null;
