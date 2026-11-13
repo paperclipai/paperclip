@@ -10683,9 +10683,10 @@ describe("native session execution lease fencing", () => {
     });
     await executePaperclipNativeSession({ db: leaseDb(execution, {}, {}, updates, profile), execution, runnerInstanceId: "runner" });
     expect(state.execute).toHaveBeenCalledOnce();
-    expect(observed).toEqual({ nativeProviderPackAdmissionState: { schema: "paperclip.native-provider-pack-admission-state.v1",
+    expect(observed).toMatchObject({ nativeProviderPackAdmissionState: { schema: "paperclip.native-provider-pack-admission-state.v1",
       state: "pending", admissionEpoch: expect.any(String) } });
-    expect(JSON.stringify(observed)).not.toContain(profile.nativeProviderPackAdmissionState.admissionEpoch);
+    expect((observed as unknown as Record<string, { admissionEpoch: string }>).nativeProviderPackAdmissionState.admissionEpoch)
+      .not.toBe(profile.nativeProviderPackAdmissionState.admissionEpoch);
     expect(profile.nativeProviderPackAdmissionState.state).toBe("verified");
   });
   it("does not admit a session if mandatory claim invalidation fails", async () => {

@@ -704,6 +704,32 @@ describe("CompanyEnvironments — test provider button", () => {
     expect(buttons[1].disabled).toBe(true);
   });
 
+  it("defaults new SSH environments to the agent's Paperclip account", async () => {
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => { root!.render(renderCompanyEnvironments(queryClient, `${ENVIRONMENTS_PATH}/new`)); });
+    await waitForAssertion(() => {
+      const toggle = getEnvironmentFormPage()?.querySelector('[aria-label="Use authentication configured on the remote machine"]');
+      expect(toggle?.getAttribute("aria-checked")).toBe("false");
+      expect(toggle?.closest("details")?.open).toBe(false);
+    });
+  });
+
+  it.each([undefined, true, false])("preserves the remote-auth option when editing an existing SSH environment (saved=%s)", async useHostAuth => {
+    mockEnvironmentsApi.list.mockResolvedValue([{ id: "env-existing-ssh", name: "Existing SSH", driver: "ssh", description: null, envVars: {},
+      config: { ...(useHostAuth !== undefined ? { useHostAuth } : {}), host: "ssh.example.test", username: "developer", port: 22, remoteWorkspacePath: "/workspace", strictHostKeyChecking: true } }]);
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => { root!.render(renderCompanyEnvironments(queryClient, `${ENVIRONMENTS_PATH}/env-existing-ssh/edit`)); });
+    await waitForAssertion(() => {
+      expect(getEnvironmentFormPage()?.querySelector('[aria-label="Use authentication configured on the remote machine"]')?.getAttribute("aria-checked")).toBe(String(useHostAuth !== false));
+    });
+    await act(async () => { click(findButton(getEnvironmentFormPage()!, "Save environment")); });
+    await waitForAssertion(() => {
+      expect(mockEnvironmentsApi.update).toHaveBeenCalledWith("env-existing-ssh", expect.objectContaining({ config: expect.objectContaining({ useHostAuth: useHostAuth !== false }) }), "company-1");
+    });
+  });
+
   it("opens the add-environment form on a standalone page and closes it on cancel", async () => {
     root = createRoot(container);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });

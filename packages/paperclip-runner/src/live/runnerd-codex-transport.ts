@@ -4690,8 +4690,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     this.#recoverPendingSemanticInputsWhenReady();
   }
 
-  #recoverPendingSemanticInputsWhenReady(): void {
-    if (!this.#retainsSourceInputs() && this.options.recoveryPurpose !== "stop_cleanup" && this.#startupComplete && this.#handlerInstalled && this.#sourceRecoveryIdentity === null && this.#pendingWarmRecoveryCompletion === null) {
+  #recoverPendingSemanticInputsWhenReady(atAttach = false): void {
+    if (!this.#retainsSourceInputs() && this.options.recoveryPurpose !== "stop_cleanup"
+      && (atAttach || (this.#startupComplete && this.#handlerInstalled))
+      && this.#sourceRecoveryIdentity === null && this.#pendingWarmRecoveryCompletion === null) {
       void Promise.resolve().then(() => this.#core?.recoverPendingSemanticInputs())
         .catch(error => this.#failTransport(error instanceof Error ? error : new Error(String(error))));
     }
@@ -5879,6 +5881,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     let checkpointFailed = false;
     let releaseFailed = false;
     let processStopFailed = false;
+    let retirementFailed = false;
     try {
       await releaseRunnerProcessOwnership({
         runnerSettled,
@@ -5920,12 +5923,27 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
             throw error;
           }
         }),
-        retireController: () => this.#stopAndDrainAuthority(closeDeadline),
+        retireController: async () => {
+          try {
+            await this.#stopAndDrainAuthority(closeDeadline);
+          } catch (error) {
+            retirementFailed = true;
+            throw error;
+          }
+        },
       });
     } catch (error) {
       if (checkpoint && checkpointFailed && !releaseFailed && !processStopFailed) {
         this.#pendingCloseCheckpointRetry = {
           checkpoint: () => checkpoint(runnerSettled ? "settled" : "unsettled"),
+          finish: finishClose,
+        };
+      } else if (retirementFailed && !releaseFailed && !processStopFailed) {
+        this.#pendingCloseCheckpointRetry = {
+          checkpoint: async () => {
+            await this.#stopAndDrainAuthority(Date.now() + runnerCloseGraceMs(this.options));
+            await checkpoint?.(runnerSettled ? "settled" : "unsettled");
+          },
           finish: finishClose,
         };
       }
@@ -7386,6 +7404,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     }
     this.#assertStartupOpen();
     this.#startPump();
+    this.#recoverPendingSemanticInputsWhenReady(true);
     if (adoptedRunner) {
       await this.#awaitAdoptedRunnerConnection(
         adoptedRunner,
@@ -7469,7 +7488,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     if (this.#retainsSourceInputs() || (this.#authorityRunId() !== undefined && call.correlation.runId !== this.#authorityRunId())) return null;
     if (this.#sourceRecoveryIdentity) throw new NativeRunnerSourceReconciliationRequiredError("semantic");
     if (call.operationId === "paperclip_finish" || call.operationId === "paperclip_block") {
-      return this.#handleSemanticToolInput(call);
+      return this.#startupComplete && this.#handlerInstalled ? this.#handleSemanticToolInput(call) : null;
     }
     const outcome = await this.options.recoverSemanticToolInput?.(call);
     return outcome ? this.#bindSemanticToolOutcome(call, outcome) : null;
@@ -8081,6 +8100,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         }
         return progressAt;
       },
+      replayProgressAt: () => this.#core?.committedEventProgressAt() ?? null,
       describeStall: () => this.#core === null ? null : describeRunnerCommandStall({
         commands: this.#core.store.state.commands,
         commandId: commandId ?? this.#core.store.state.commands.find(candidate => candidate.type === type)?.commandId,
@@ -9728,6 +9748,7 @@ export class RunnerStallLedger {
 
 /** Shared polling path keeps startup cancellation separate from owned cleanup commands. */
 const RUNNER_ANSWERED_RESULT_STALL_MS = 30_000;
+export const RUNNER_REPLAY_PROGRESS_MAX_EXTENSION_MS = 300_000;
 
 export async function waitForRunnerCommand(input: {
   type: string;
@@ -9743,11 +9764,18 @@ export async function waitForRunnerCommand(input: {
   /** Bounded, content-free evidence of what the command waited behind. */
   describeStall?: () => string | null;
   answeredProgressAt?: () => number | null;
+  replayProgressAt?: () => number | null;
 }): Promise<void> {
   const now = () => input.clock ? input.clock.now() : Date.now();
   const answeredAndAdvancing = () => {
     const progressAt = input.answeredProgressAt?.() ?? null;
     return progressAt !== null && Date.now() - progressAt < RUNNER_ANSWERED_RESULT_STALL_MS;
+  };
+  const replayExtensionEndsAt = Date.now() + Math.max(0, input.deadline - now()) + RUNNER_REPLAY_PROGRESS_MAX_EXTENSION_MS;
+  const replayAdvancing = () => {
+    const progressAt = input.replayProgressAt?.() ?? null;
+    return progressAt !== null && Date.now() < replayExtensionEndsAt
+      && Date.now() - progressAt < RUNNER_ANSWERED_RESULT_STALL_MS;
   };
   let extended = false;
   const settled = () => {
@@ -9769,7 +9797,7 @@ export async function waitForRunnerCommand(input: {
     input.clock?.credit(Math.max(0, now() - input.deadline) + RUNNER_POST_STOP_GRACE_MS);
   };
   let observed = false;
-  while (now() < input.deadline || answeredAndAdvancing()) {
+  while (now() < input.deadline || answeredAndAdvancing() || replayAdvancing()) {
     observed = true;
     if (now() >= input.deadline) extended = true;
     input.throwIfFailed();

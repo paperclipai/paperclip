@@ -1,5 +1,6 @@
 import { sql, type SQL } from "drizzle-orm";
 import { heartbeatRuns } from "@paperclipai/db";
+import type { NativeTurnFailureDiagnostic } from "./native-provider-failure.js";
 
 /** Used when a native run reaches `failed` and no writer recorded a more specific cause. */
 export const NATIVE_RUN_FAILED_UNEXPLAINED = {
@@ -8,6 +9,26 @@ export const NATIVE_RUN_FAILED_UNEXPLAINED = {
 } as const;
 
 export type NativeRunFailureExplanation = { errorCode: string; error: string };
+
+const TURN_FAILURE_PROVIDER_LABELS = { codex: "Codex", opencode: "OpenCode" } as const;
+
+/**
+ * Name the cause of a failed turn that no provider classifier claimed, using
+ * only the diagnostic's closed vocabulary: a runner-issued failure code, else a
+ * specific Codex error kind. Returns null when the diagnostic has no such cause.
+ */
+export function explainNativeTurnFailure(diagnostic: NativeTurnFailureDiagnostic | null | undefined): NativeRunFailureExplanation | null {
+  if (!diagnostic) return null;
+  const runnerCode = diagnostic.runnerFailureCode;
+  const codexKind = diagnostic.provider === "codex" ? diagnostic.codexErrorInfo : undefined;
+  const cause = runnerCode && runnerCode !== "unrecognized" ? runnerCode
+    : codexKind && !["absent", "unrecognized", "other"].includes(codexKind) ? codexKind : null;
+  if (!cause) return null;
+  return {
+    errorCode: NATIVE_RUN_FAILED_UNEXPLAINED.errorCode,
+    error: `The ${TURN_FAILURE_PROVIDER_LABELS[diagnostic.provider]} turn failed (${cause}). Inspect the run events for the last recorded step.`,
+  };
+}
 
 /**
  * A failed run must always say why. These SET expressions keep an explanation

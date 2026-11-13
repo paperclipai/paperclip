@@ -231,6 +231,12 @@ async function runReleaseDrain(
 
     let liveness: { liveNonSelfCommentIds: string[]; containedSelfAuthoredComment: boolean; deliveredCommentIds?: string[] } =
       { liveNonSelfCommentIds: candidate.queuedCommentIds, containedSelfAuthoredComment: false };
+    // The message is an authorization edge for this independent response,
+    // even when an earlier turn already received the message itself.
+    const retainDeliveredCommentBindings = candidate.payload.mutation === "interaction" &&
+      Boolean(readNonEmptyString(candidate.deferredContextSeed.interactionId)) &&
+      ["accepted", "answered", "rejected"].includes(String(candidate.deferredContextSeed.interactionStatus)) &&
+      Boolean(readNonEmptyString(candidate.deferredContextSeed.source)?.startsWith("chat:"));
     if (
       !candidate.authorizedFailedChatRetry &&
       candidate.queuedCommentIds.length > 0
@@ -242,8 +248,12 @@ async function runReleaseDrain(
         finishingRunId: run.id,
         finishingRunAgentId: run.agentId,
         queuedCommentIds: candidate.queuedCommentIds,
+        ...(retainDeliveredCommentBindings ? { retainDeliveredCommentBindings: true } : {}),
       });
     }
+    // Retained messages a run already received only authorize the response.
+    // They are not fresh input, so they must not reopen a finished task.
+    const bindingOnlyCommentIds = new Set(retainDeliveredCommentBindings ? liveness.deliveredCommentIds ?? [] : []);
     // A length mismatch is the only way the lists can differ: the adapter derives `liveNonSelfCommentIds` with `.filter`, so it is always a subsequence of `queuedCommentIds`.
     const liveCommentIdsDiffer = liveness.liveNonSelfCommentIds.length !== candidate.queuedCommentIds.length;
 
@@ -324,7 +334,8 @@ async function runReleaseDrain(
     // Unreachable: decideWakeOutcome only returns "promote" when agentFound and invokable are both true.
     if (!deferredAgent) throw new Error("wake-queue: promoted a deferred wake with no invokable agent");
 
-    const promoted = await promoteDeferredWake(ports, run, issue, workingCandidate, deferredAgent, pauseHold, postCommitEffects, input);
+    const promoted = await promoteDeferredWake(ports, run, issue, workingCandidate, deferredAgent, pauseHold, postCommitEffects, input,
+      bindingOnlyCommentIds);
     if (!promoted) continue;
     return promoted;
   }
@@ -349,26 +360,29 @@ async function promoteDeferredWake(
   pauseHold: PauseHoldFacts,
   postCommitEffects: PostCommitEffect[],
   input: ReleaseIssueExecutionInput,
+  bindingOnlyCommentIds: ReadonlySet<string> = new Set(),
 ): Promise<ReleaseTransactionResult | null> {
   let currentIssue = issue;
   let shouldReopen = false;
+  const freshDeferredCommentIds = workingCandidate.deferredCommentIds.filter(id => !bindingOnlyCommentIds.has(id));
+  const freshQueuedCommentIds = workingCandidate.queuedCommentIds.filter(id => !bindingOnlyCommentIds.has(id));
   if (
     !workingCandidate.authorizedFailedChatRetry &&
-    workingCandidate.deferredCommentIds.length > 0 &&
+    freshDeferredCommentIds.length > 0 &&
     (currentIssue.status === "done" || currentIssue.status === "cancelled")
   ) {
     const selfAuthorship = await ports.transaction.getCommentSelfAuthorship({
       companyId: run.companyId,
       issueId: currentIssue.id,
       finishingRunId: run.id,
-      commentIds: workingCandidate.deferredCommentIds,
+      commentIds: freshDeferredCommentIds,
     });
     const agentFeedbackAfterCompletion =
       currentIssue.status === "done" &&
       workingCandidate.agentId === currentIssue.assigneeAgentId &&
       workingCandidate.requestedByActorType === "agent" &&
       workingCandidate.deferredContextSeed.resumeIntent === true &&
-      workingCandidate.queuedCommentIds.length > 0;
+      freshQueuedCommentIds.length > 0;
     shouldReopen =
       !selfAuthorship.allSelfAuthored &&
       (workingCandidate.requestedByActorType === "user" ||
@@ -380,7 +394,7 @@ async function promoteDeferredWake(
         (agentFeedbackAfterCompletion && run.agentId === currentIssue.assigneeAgentId &&
           !await ports.transaction.isWatcherCommentDuringFinishingRun({
             companyId: run.companyId, issueId: currentIssue.id, finishingRunId: run.id,
-            commentIds: workingCandidate.queuedCommentIds,
+            commentIds: freshQueuedCommentIds,
           })));
   }
 

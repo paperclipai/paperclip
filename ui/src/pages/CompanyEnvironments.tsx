@@ -249,7 +249,7 @@ function createEnvironmentFormFromEnvironment(environment: Environment): Environ
       ...createEmptyEnvironmentForm(),
       name: environment.name,
       description: environment.description ?? "",
-      driver: environment.driver,
+      driver: "ssh",
       tailscaleConnectionId: typeof environment.config.tailscaleConnectionId === "string" ? environment.config.tailscaleConnectionId : "",
       tailscaleDeviceId: typeof environment.config.tailscaleDeviceId === "string" ? environment.config.tailscaleDeviceId : "",
       sshUseHostAuth: ssh.useHostAuth,

@@ -181,13 +181,22 @@ async function appendNativeSourceEvent(
   // checkpoints, that are written for the same run while events stream.
   // Only progress needs the task binding. Other native/recovery events
   // must not read a potentially large context snapshot to append a log.
-  const [run] = await tx.execute<{ company_id: string; agent_id: string; runtime_mode?: string | null; issue_id?: string | null }>(
-    sql`select "company_id", "agent_id"${wakes.progress || wakes.response || wakes.reassessment ? sql`, "runtime_mode"` : sql.empty()}${
+  const [run] = await tx.execute<{ company_id: string; agent_id: string; source_cursor: string | number | null;
+    runtime_mode?: string | null; issue_id?: string | null }>(
+    sql`select "company_id", "agent_id", ("native_source_cursors" ->> ${source.sourceInstanceId})::bigint as "source_cursor"${
+      wakes.progress || wakes.response || wakes.reassessment ? sql`, "runtime_mode"` : sql.empty()}${
       wakes.progress ? sql`, ${boundRunIssueIdSql()} as "issue_id"` : sql.empty()
     } from "heartbeat_runs" where "id" = ${input.runId} for no key update`);
   if (!run || run.company_id !== input.companyId || run.agent_id !== input.agentId) {
     throw new Error("heartbeat_run_event_binding_mismatch");
   }
+  // The stored cursor says the run holds every event of this source up to it.
+  // An event at or just past it moves the cursor without counting the run's
+  // events; any other event, or a run without a cursor, recounts them.
+  const storedCursor = run.source_cursor === null || run.source_cursor === undefined ? null : Number(run.source_cursor);
+  const inOrderCursor = storedCursor !== null && source.sourceSeq <= storedCursor + 1
+    ? (source.sourceSeq === storedCursor + 1 ? source.sourceSeq : storedCursor)
+    : null;
   if (wakes.recovery) await notifyLiveRunRecovery(tx, input);
 
   const sourceHash = nativeSha256(source.canonicalPayload);
@@ -203,7 +212,7 @@ async function appendNativeSourceEvent(
     if (existing) {
       const row = decodeRunEventRow(existing);
       if (row.sourcePayloadSha256 !== sourceHash) throw new HeartbeatRunEventConflictError();
-      return { row, disposition: "duplicate", highestContiguousSourceSeq: await contiguousCursor(tx, input.runId,
+      return { row, disposition: "duplicate", highestContiguousSourceSeq: inOrderCursor ?? await contiguousCursor(tx, input.runId,
         source.sourceInstanceId, await retainedSourceRange(tx, input.runId, source.sourceInstanceId)) };
     }
     if (reassessment) await notifyNativeStatusReassessment(tx, { companyId: run.company_id, runId: input.runId });
@@ -214,13 +223,32 @@ async function appendNativeSourceEvent(
 
   // `existing` and `retained` read the snapshot from before this statement's
   // own insert. A replayed event reserves no sequence and inserts nothing.
+  const counted = source.sourceSeq >= 1 ? 1 : 0;
+  const cursorKey = sql`array[${source.sourceInstanceId}::text]`;
+  // An in-order event keeps the cursor without reading other events. Any
+  // other event recounts the source: it stores the cursor when the source has
+  // no gap and removes it otherwise, so the event that fills a gap recounts.
+  const cursorUpdate = inOrderCursor !== null
+    ? (inOrderCursor === storedCursor ? sql.empty() : sql`, native_source_cursors = jsonb_set(
+        coalesce(native_source_cursors, '{}'::jsonb), ${cursorKey}, to_jsonb(${inOrderCursor}::bigint))`)
+    : sql`, native_source_cursors = case
+        when retained.retained_count + ${counted}::integer
+          = greatest(coalesce(retained.retained_max, 0), ${counted ? source.sourceSeq : 0}::bigint)
+        then jsonb_set(coalesce(native_source_cursors, '{}'::jsonb), ${cursorKey},
+          to_jsonb(retained.retained_count + ${counted}::integer))
+        else coalesce(native_source_cursors, '{}'::jsonb) - ${source.sourceInstanceId}::text end`;
   const [result] = await tx.execute<Record<string, unknown>>(sql`
     with existing as (
       select * from heartbeat_run_events where ${replayed} limit 1
-    ), allocated as (
+    )${inOrderCursor !== null ? sql.empty() : sql`, retained as (
+      select count(*) as retained_count, max(source_seq) as retained_max
+      from heartbeat_run_events
+      where run_id = ${input.runId} and source_instance_id = ${source.sourceInstanceId} and source_seq >= 1
+    )`}, allocated as (
       update heartbeat_runs
       set next_event_seq = next_event_seq + 1,
-          updated_at = ${sql.param(new Date(), heartbeatRuns.updatedAt)}
+          updated_at = ${sql.param(new Date(), heartbeatRuns.updatedAt)}${cursorUpdate}
+      ${inOrderCursor !== null ? sql.empty() : sql`from retained`}
       where id = ${input.runId} and not exists (select 1 from existing)
       returning next_event_seq - 1 as seq
     ), appended as (
@@ -235,26 +263,28 @@ async function appendNativeSourceEvent(
         ${sourceHash}::text, ${source.protocolSchemaVersion}::integer
       from allocated
       returning *
-    ), retained as (
-      select count(*) as retained_count, max(source_seq) as retained_max
-      from heartbeat_run_events
-      where run_id = ${input.runId} and source_instance_id = ${source.sourceInstanceId} and source_seq >= 1
-    )
+    )${inOrderCursor !== null ? sql`
+    select true as appended, event.* from appended event
+    union all
+    select false as appended, event.* from existing event` : sql`
     select true as appended, event.*, retained.* from appended event cross join retained
     union all
-    select false as appended, event.*, retained.* from existing event cross join retained
+    select false as appended, event.*, retained.* from existing event cross join retained`}
   `);
   if (!result) throw new Error("heartbeat_run_event_not_persisted");
   const row = decodeRunEventRow(result);
   const appended = result.appended === true;
   if (!appended && row.sourcePayloadSha256 !== sourceHash) throw new HeartbeatRunEventConflictError();
-  const counted = appended && source.sourceSeq >= 1;
+  if (inOrderCursor !== null) {
+    return { row, disposition: appended ? "committed" : "duplicate", highestContiguousSourceSeq: inOrderCursor };
+  }
+  const countedHere = appended && counted === 1;
   return {
     row,
     disposition: appended ? "committed" : "duplicate",
     highestContiguousSourceSeq: await contiguousCursor(tx, input.runId, source.sourceInstanceId, {
-      count: Number(result.retained_count) + (counted ? 1 : 0),
-      max: Math.max(Number(result.retained_max ?? 0), counted ? source.sourceSeq : 0),
+      count: Number(result.retained_count) + (countedHere ? 1 : 0),
+      max: Math.max(Number(result.retained_max ?? 0), countedHere ? source.sourceSeq : 0),
     }),
   };
 }

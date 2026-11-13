@@ -1,6 +1,6 @@
 {
-  "id": "21aa8bdd-09c2-47d5-b7b4-531f2a1a3e1c",
-  "prevId": "627a20c7-a175-409a-94e3-16cd088b432e",
+  "id": "41eacc6a-6eab-4f01-965a-62aa0cd6778f",
+  "prevId": "55a8c37c-453c-4be4-b657-b703932836a0",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -18092,12 +18092,6 @@
           "notNull": true,
           "default": "'company'"
         },
-        "system_purpose": {
-          "name": "system_purpose",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "owner_user_id": {
           "name": "owner_user_id",
           "type": "text",
@@ -35266,6 +35260,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": 1
+        },
+        "native_source_cursors": {
+          "name": "native_source_cursors",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
         },
         "native_phase": {
           "name": "native_phase",

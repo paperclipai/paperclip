@@ -124,6 +124,74 @@ describe("startTracingSdk", () => {
     const traceparent = headersOf(fetchMock.mock.calls[0]!).get("traceparent")!;
     expect(traceparent.split("-")[1]).toBe(pageSpan!.spanContext().traceId);
   });
+
+  it("records no span and sends no traceparent for an API request made while no page load is measured", async () => {
+    const recorder = idleRecorder();
+    const flush = (recorder as PageLoadRecorder & { flushFrames(): void }).flushFrames;
+    recorder.begin({ routeTemplate: "/:companyPrefix/issues", loadType: "client", startTime: performance.now() });
+    flush();
+    handle = startTracingSdk(config, recorder, { exporter });
+
+    // Background polling with no navigation open.
+    await fetch(`${window.location.origin}/api/companies/abc/live-runs`);
+    await fetch(`${window.location.origin}/api/issues`, { method: "POST" });
+    // The next navigation's requests are recorded again.
+    recorder.begin({ routeTemplate: "/:companyPrefix/issues/:issueId", loadType: "client", startTime: performance.now() });
+    await fetch(`${window.location.origin}/api/issues/PAP-77`);
+
+    const headersOf = (call: unknown[]) => new Headers((call[1] as RequestInit | undefined)?.headers);
+    expect(headersOf(fetchMock.mock.calls[0]!).get("traceparent")).toBeNull();
+    expect(headersOf(fetchMock.mock.calls[1]!).get("traceparent")).toBeNull();
+    expect(headersOf(fetchMock.mock.calls[2]!).get("traceparent")).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/);
+
+    flush();
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    await handle.forceFlush();
+    const spans = exporter.getFinishedSpans();
+    const requests = spans.filter((span) => span.name !== "page.load");
+    expect(requests.map((span) => span.attributes["paperclip.api.area"])).toEqual(["issues"]);
+    const issuePage = spans.find((span) => span.name === "page.load" && span.attributes["paperclip.page.route"] === "/:companyPrefix/issues/:issueId")!;
+    expect(requests[0]!.parentSpanContext?.spanId).toBe(issuePage.spanContext().spanId);
+    // Every exported span is a page load, a vital, or a child of a page load.
+    const pageSpanIds = new Set(spans.filter((span) => span.name === "page.load").map((span) => span.spanContext().spanId));
+    for (const span of requests) expect(pageSpanIds.has(span.parentSpanContext!.spanId)).toBe(true);
+  });
+
+  it("sends request spans without per-request network timing events", async () => {
+    const recorder = idleRecorder();
+    recorder.begin({ routeTemplate: "/:companyPrefix/issues", loadType: "client", startTime: performance.now() });
+    handle = startTracingSdk(config, recorder, { exporter });
+    const url = `${window.location.origin}/api/issues`;
+    // The browser's Resource Timing entry for the request, which the fetch
+    // instrumentation turns into `fetchStart`, `responseEnd`, … events.
+    let timing: PerformanceResourceTiming | null = null;
+    fetchMock.mockImplementationOnce(async () => {
+      const start = performance.now();
+      timing = {
+        name: url, entryType: "resource", initiatorType: "fetch", startTime: start,
+        fetchStart: start, domainLookupStart: start, domainLookupEnd: start, connectStart: start,
+        secureConnectionStart: start, connectEnd: start, requestStart: start, responseStart: start + 0.1,
+        responseEnd: start + 0.2, encodedBodySize: 2, decodedBodySize: 2,
+      } as unknown as PerformanceResourceTiming;
+      return new Response("{}", { status: 200 });
+    });
+    const realGetEntriesByType = performance.getEntriesByType.bind(performance);
+    const getEntries = vi.spyOn(performance, "getEntriesByType").mockImplementation(((type: string) =>
+      type === "resource" && timing ? [timing] : realGetEntriesByType(type)) as typeof performance.getEntriesByType);
+    try {
+      await fetch(url);
+      (recorder as PageLoadRecorder & { flushFrames(): void }).flushFrames();
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      await handle.forceFlush();
+      // The instrumentation found the entry, so timing events could be added.
+      expect(getEntries).toHaveBeenCalledWith("resource");
+    } finally {
+      getEntries.mockRestore();
+    }
+    const [request] = exporter.getFinishedSpans().filter((span) => span.name === "GET");
+    expect(request).toBeDefined();
+    expect(request!.events.map((event) => event.name)).toEqual([]);
+  });
 });
 
 describe("hard-load API spans from Resource Timing", () => {

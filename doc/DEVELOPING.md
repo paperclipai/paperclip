@@ -332,8 +332,16 @@ repository's complete history.
 
 Server test costs are recorded in CI with tests, hooks, collection, setup and
 environment preparation included. The weekly **Refresh CI test durations**
-workflow reads two successful protected-master Cloud readiness runs and opens a
-timing-only PR. It never executes code from logs, changes test selection rules,
+workflow opens a timing-only PR. It reads the general server weights from the
+`General tests (server)` jobs of the two newest successful `PR` runs of merged
+PRs, pinned to each PR's final head. Each run must have the full shard count in
+`.github/ci-task-matrix.json` and cover at least 90% of the lane, so a run that
+selected a few files does not count. These jobs run files three at a time, and
+their contention changes relative file costs. Measured against two other PR
+runs, Cloud readiness weights placed the slowest of 12 shards at 1,748-1,770 s of
+summed file time, against a 1,595 s mean; PR-run weights placed it at 1,684-1,702 s. The
+serialized weights still come from two successful protected-master Cloud
+readiness runs. It never executes code from logs, changes test selection rules,
 or grants AWS access. GitHub may require a maintainer to approve the bot PR's
 workflow runs; the refresh never merges itself. An outstanding refresh PR pauses
 new refreshes. Both timing manifests include source runs and measurement coverage.
@@ -439,8 +447,19 @@ recovery behavior for the same reason. Unsharded local tests and route/authz
 lanes retain their existing file concurrency. Maintenance server cases overlap
 two owned server/database fixtures within their file; an explicit shared
 maintenance database keeps them serial. Sharded chat jobs run
-two independent partitions, each with its own embedded PostgreSQL, home and
-config; an explicit shared test database retains one partition per job.
+three independent partitions, each with its own embedded PostgreSQL, home and
+config; an explicit shared test database retains one partition per job. The
+partitions keep each source line whole and balance by the recorded time in
+`scripts/chat-shard-durations.json`; entries without a record take the median.
+Collected-case counts were a poor proxy because one `it.each` line can run many
+cases: one of six count-balanced partitions recorded 532 s of test time against
+a 377 s mean. To refresh the weights, add the `profile-ci` label to a PR, download
+the `ci-profile-*` artifacts of its three chat jobs into one directory, and run
+`node scripts/ci/refresh-chat-shard-durations.mjs --source=<run URL> <directory>`.
+Stale weights change only the balance, never which tests run. A chat job
+collects the suite once, then validates its three partitions' filters at the
+same time; each partition still checks that its filters select exactly its
+assigned tests.
 The Runner transport lease-expiry and cold-admission regressions live in their
 own file so those real-clock waits overlap other files in the existing pool.
 
@@ -1564,13 +1583,15 @@ It first runs the steps that write shared outputs, one at a time:
    (`typecheck-test-programs.mjs --prepare-only`).
 4. Typecheck the Runner. Its typecheck rebuilds the eval kernel, which other
    checks read, so it cannot run beside them.
+5. Run the CLI guidance test. It runs here, before the parallel checks, because
+   one of its cases took 17 seconds beside them against a 15 second timeout.
 
 Then it runs the remaining checks in parallel, as many as the machine has CPUs
 (default) or `--concurrency`. Each `tsc` uses one thread. The server
 declaration layers start first, because the test layers and the test projects
-read them. The test programs, the other build-gap workspaces and the CLI
-guidance test run at a lower CPU priority, so they use only the CPU that the
-server layers and the release registry tests leave free.
+read them. The test programs and the other build-gap workspaces run at a lower
+CPU priority, so they use only the CPU that the server layers and the release
+registry tests leave free.
 
 A passing check prints its output in a collapsed log group. A failing check
 prints its output in full, between `=== FAILED ...` and `=== end of ...`
@@ -1580,6 +1601,10 @@ of each check's start time, duration and result. If a preparation step fails,
 nothing else runs.
 
 To add a check to the job, add it to `planLane` in the script.
+
+PR runs take the workflow from `master` but check out the PR's merge commit. A
+stacked PR, whose base is another branch, can have a merge commit without this
+script. The job then runs the six earlier commands one after another instead.
 
 #### Typecheck test files outside the build
 
@@ -2572,6 +2597,11 @@ For `codex_local`, Paperclip assigns new and updated agents an isolated Codex ho
 - `~/.paperclip/instances/default/companies/<company-id>/agents/<agent-id>/codex-home`
 
 Paperclip also persists an empty `OPENAI_API_KEY` override for those agents so a host-level `OPENAI_API_KEY` cannot leak into Codex runs through process inheritance. If an operator explicitly configures `adapterConfig.env.CODEX_HOME`, it must not point at the shared company `codex-home`, `$CODEX_HOME`, or `~/.codex`.
+
+Codex shell commands keep sandbox-injected certificate-trust variables (for
+example `SSL_CERT_FILE` and `GIT_SSL_CAINFO`) even though the shell environment
+allowlist is constructed before the sandbox injects them. See
+[Codex shell certificate trust](sandbox-shell-environment.md).
 
 If the `codex` CLI is not installed or not on `PATH`, `codex_local` agent runs fail at execution time with a clear adapter error. Quota polling uses a short-lived `codex app-server` subprocess: when `codex` cannot be spawned, that provider reports `ok: false` in aggregated quota results and the API server keeps running (it must not exit on a missing binary).
 

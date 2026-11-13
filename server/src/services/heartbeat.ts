@@ -40,7 +40,7 @@ import { promptInjectionPreventionService } from "./prompt-injection-prevention.
 import { createHeartbeatAgentStatus } from "./heartbeat/agent-status.js";
 import { heartbeatExternalProvider, nativeRuntimeHasInstructionFilesystem } from "./heartbeat/external-provider.js";
 import { pendingCaseHandoffForRun, recordCaseHandoffExecutionReleased, recordLegacyCaseHandoffCleanupIntent, recordLegacyCaseHandoffCleanupVerified } from "./heartbeat/case-handoff-lifecycle.js";
-import { recordLegacyPreparationSettlement, recordLegacyProcessSettlement } from "./heartbeat/legacy-process-settlement.js";
+import { recordLegacyPreparationSettlement, recordLegacyProcessSettlement, recoverLegacyProcessSettlement } from "./heartbeat/legacy-process-settlement.js";
 import { hasStoppedLocalProcessTree, legacyAdapterNeedsLocalProcessSettlement } from "./heartbeat/process-settlement.js";
 import { dotRunnerBroker } from "./dot-runner-broker.js";
 import { withRunExecutionTiming, measureRunPhase, measureWorkspaceSyncPhase, isWorkspaceSyncDetailPhase } from "./execution-preparation-timing.js";
@@ -64,6 +64,7 @@ import { prepareHeartbeatWorkspace, RetryWorkspaceRefused } from "./heartbeat/wo
 import { nativeRecoveryClaimRelinquished, ownNativeExecutionLeaseLapsed, releaseLapsedNativeRestartClaim } from "./native-runtime/native-execution-lease.js";
 import { executeHeartbeatRuntime, NativeSessionResumeScheduledError, NativeWorkspaceFinalizeScheduledError } from "./heartbeat/runtime-execution.js";
 import { preserveNativeFailedWorkspace } from "./native-runtime/native-failed-workspace-recovery.js";
+import { startOverdueWorkspaceRecovery } from "./workspace-recovery.js";
 import { nativeRunHasNoWorkspaceAccess } from "./workspace-restore-recovery-state.js";
 import { prepareAndSelectHeartbeatRuntime } from "./heartbeat/runtime-selection.js";
 import { createHeartbeatRunCompletion } from "./heartbeat/run-completion.js";
@@ -1014,6 +1015,10 @@ export function heartbeatService(
   const budgetHooks = {
     cancelWorkForScope: cancelBudgetScopeWork,
   };
+  const recoverLegacyAccountingReceipt = (companyId: string, runId: string) =>
+    recoverLegacyProcessSettlement(db, companyId, runId, id =>
+      !activeRunExecutions.has(id) && !runningProcesses.has(id) && !adapterExecutionControls.has(id)
+      && !processRunCancellationSettlements.has(id) && !failedProcessRunCancellations.has(id));
   const reconcileCostAccounting = createCostAccountingReconciler(db, budgetHooks, async () => {
     const outcomes = await Promise.allSettled([
       decisionModelService(db, { budgetHooks }).recoverInterrupted(),
@@ -1028,6 +1033,7 @@ export function heartbeatService(
     liveRunExecutions,
     // Bound at call time: the heartbeat recovery module is created below.
     settleLostRunProcess: scope => recoverActiveExecutions(scope),
+    startSavedWorkRecovery: source => startOverdueWorkspaceRecovery(db, environmentRuntime, resumeRemoteStopComments, source),
     settleExplicitContinuationRetry: releaseIssueExecutionAndPromote,
     scheduleRecoveryRetry: async (runId, outcome) => {
       const [run] = await db
@@ -4321,6 +4327,7 @@ export function heartbeatService(
       } finally {
         controllerLease.stop();
         activeRunExecutions.delete(run.id);
+        heartbeatQueue.releaseClaimBackoffsForTask(run);
         if (restartClaimLapsed || detachedWithoutHandoff) scheduleNativeSessionResumeDispatch(run.id, new Date(), "restart");
         // A failed owned Stop remains visible until this exact executor settles,
         // including a graceful exit result arriving after the cancellation error.
@@ -4430,6 +4437,7 @@ export function heartbeatService(
   }
 
   return {
+    recoverLegacyAccountingReceipt,
     stopInvocationsForAgents,
     waitForRunExecutionDrain: async (
       runId: string,

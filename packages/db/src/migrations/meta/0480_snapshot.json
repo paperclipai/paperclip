@@ -1,6 +1,6 @@
 {
-  "id": "627a20c7-a175-409a-94e3-16cd088b432e",
-  "prevId": "30b22e52-4417-4a08-9d78-74857205f6f1",
+  "id": "55a8c37c-453c-4be4-b657-b703932836a0",
+  "prevId": "f5f852bd-0568-4b2d-bc35-0dac5d9c8c5b",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -35261,6 +35261,12 @@
           "notNull": true,
           "default": 1
         },
+        "native_source_cursors": {
+          "name": "native_source_cursors",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "native_phase": {
           "name": "native_phase",
           "type": "text",
@@ -55980,18 +55986,6 @@
         "secret_id": {
           "name": "secret_id",
           "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "credential_version": {
-          "name": "credential_version",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "credential_hash": {
-          "name": "credential_hash",
-          "type": "text",
           "primaryKey": false,
           "notNull": false
         },

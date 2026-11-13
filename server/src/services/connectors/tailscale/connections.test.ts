@@ -206,7 +206,7 @@ describe.skipIf(!support.supported)("durable Tailscale consent state", () => {
     const row = await enroll();
     await db.update(companySecrets).set({ systemPurpose: null }).where(eq(companySecrets.id, row.secretId!));
     const ordinary = await vault.create(companyId, { name: "Tailscale connection ordinary fixture", provider: "local_encrypted", value: "fixture-ordinary-secret" });
-    const migration = await readFile(new URL("../../../../../packages/db/src/migrations/0481_third_genesis.sql", import.meta.url), "utf8");
+    const migration = await readFile(new URL("../../../../../packages/db/src/migrations/0482_aberrant_rumiko_fujikawa.sql", import.meta.url), "utf8");
     await db.execute(sql.raw(migration.split("--> statement-breakpoint")[1]!));
     expect((await vault.getById(row.secretId!))?.systemPurpose).toBe("tailscale_network");
     expect((await vault.getById(ordinary.id))?.systemPurpose).toBeNull();
