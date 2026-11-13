@@ -161,7 +161,7 @@ function resultFor(task: DemoTask): Record<string, unknown> {
   }
   if (task.tool === "slow_report") {
     const topic = typeof task.arguments.topic === "string" && task.arguments.topic ? task.arguments.topic : "nothing in particular";
-    return text(`Report on ${topic}: finished after ${seconds} seconds and ${task.polls} status checks. Task ${task.taskId}.`, { topic, seconds, taskId: task.taskId });
+    return text(`Report on ${topic}: finished after ${seconds} seconds and ${task.polls} status checks.`, { topic, seconds });
   }
   return text(`${task.tool} finished after ${seconds} seconds.`, { seconds });
 }

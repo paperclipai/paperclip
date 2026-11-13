@@ -89,6 +89,8 @@ export function handleTasksDemoRpc(store: DemoTaskStore, message: RpcRequest, he
   const mcpMethod = headers["mcp-method"];
   if (typeof mcpMethod === "string" && mcpMethod !== method) return fail(400, id, HEADER_MISMATCH, "Mcp-Method does not match the request.");
   const declaredTasks = Boolean(record(record(record(meta[META_CAPABILITIES])?.extensions)?.[TASKS_EXTENSION_ID]));
+  const clientInfo = record(meta["io.modelcontextprotocol/clientInfo"]);
+  const client = typeof clientInfo?.name === "string" ? clientInfo.name : "unknown client";
 
   switch (method) {
     case "server/discover":
@@ -111,10 +113,10 @@ export function handleTasksDemoRpc(store: DemoTaskStore, message: RpcRequest, he
       const outcome = callDemoTool(store, name, record(params.arguments) ?? {}, declaredTasks);
       if (!outcome) return fail(200, id, INVALID_PARAMS, `Unknown tool: ${name}`);
       if (outcome.kind === "result") {
-        store.log({ method, tool: name, detail: "answered without a task" });
+        store.log({ method, tool: name, detail: declaredTasks ? "answered without a task" : `answered without a task: ${client} did not declare ${TASKS_EXTENSION_ID}` });
         return ok(id, outcome.result);
       }
-      store.log({ method, tool: name, taskId: outcome.task.taskId, detail: `returned task (${outcome.task.status})` });
+      store.log({ method, tool: name, taskId: outcome.task.taskId, detail: `returned task (${outcome.task.status}) to ${client}` });
       const view = taskView(store, outcome.task);
       return { status: 200, body: { jsonrpc: "2.0", id, result: { resultType: "task", ...view } } };
     }
