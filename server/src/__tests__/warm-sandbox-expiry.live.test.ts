@@ -90,7 +90,7 @@ describeLive("live Daytona warm sandbox expiry", () => {
     const runId = await run("running");
     const runtime = environmentRuntimeService(db, { pluginWorkerManager: manager() });
     const acquired = await runtime.acquireRunLease({ companyId: ids.company, environment, issueId: ids.issue,
-      agentId: ids.agent, heartbeatRunId: runId, adapterType: "paperclip_runner", warmRunnerIdleTimeoutMs: WINDOW_MS });
+      agentId: ids.agent, heartbeatRunId: runId, persistedExecutionWorkspace: null, adapterType: "paperclip_runner", warmRunnerIdleTimeoutMs: WINDOW_MS });
     const providerLeaseId = acquired.lease.providerLeaseId!;
     sandboxIds.add(providerLeaseId);
     await note(`${label}: acquired`, providerLeaseId, { providerLeaseId,
