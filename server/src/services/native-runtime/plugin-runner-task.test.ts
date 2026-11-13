@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import type { RunnerProviderLaunchRequirements } from "@paperclipai/paperclip-runner";
-import type { RunnerProcessLaunchSpec } from "../../vendor/paperclip-runner/index.js";
+import { configuredEnvironmentProjection, type RunnerProcessLaunchSpec } from "../../vendor/paperclip-runner/index.js";
 import { createPluginRunnerTaskOwner } from "./plugin-runner-task.js";
 import { NativeExecutionContext } from "./native-execution-context.js";
 
@@ -278,6 +278,31 @@ describe("plugin native Runner ownership", () => {
     registration.activate(); await registration.ready();
     await registration.release(); await registration.checkpoint("unsettled"); await handle.completion;
     expect(task.mock.calls.find(([op]) => op.kind === "submit")?.[0]).toMatchObject({ preparedLaunchId: "configuration" });
+  });
+  it.each([1, undefined] as const)("sends a preconfigured-home launch's configured environment only to a plugin that applies it (version %s)", async configuredEnvironmentVersion => {
+    const { task } = provider();
+    const configuredEnvironment = { OPENAI_ADMIN_KEY_READONLY: "synthetic-admin", DAY_GITHUB_PUSH_TOKEN: "synthetic-push" };
+    const owner = createPluginRunnerTaskOwner({ taskId: "task", projectAuthCheckVersion: 1, task, projectIds: [], harness: "claude", pollMs: 1,
+      configuredEnvironment, configuredEnvironmentVersion });
+    const preconfigured = launchRequirements("claude");
+    await prepare(owner, preconfigured);
+    ingress.connect.mockReturnValue({ ready: Promise.resolve(), close: async () => {} });
+    const registration = await owner.registration({} as never, "run");
+    const handle = owner.launcher(launchSpec());
+    registration.activate(); await registration.ready();
+    await registration.release(); await registration.checkpoint("unsettled"); await handle.completion;
+    const prepared = task.mock.calls.find(([op]) => op.kind === "prepare")![0];
+    const submitted = task.mock.calls.find(([op]) => op.kind === "submit")![0];
+    if (configuredEnvironmentVersion) {
+      expect(prepared.configuredEnvironmentKeys).toEqual(["DAY_GITHUB_PUSH_TOKEN", "OPENAI_ADMIN_KEY_READONLY"]);
+      expect(submitted.configuredEnvironment).toEqual(configuredEnvironment);
+      // What the plugin mints on its host alongside its own keys.
+      expect(JSON.parse(configuredEnvironmentProjection({ ...submitted.configuredEnvironment, CUA_SESSION: "Ada" }).PAPERCLIP_CONFIGURED_ENV_KEYS!))
+        .toEqual(["CUA_SESSION", "DAY_GITHUB_PUSH_TOKEN", "OPENAI_ADMIN_KEY_READONLY"]);
+    } else {
+      expect(prepared).not.toHaveProperty("configuredEnvironmentKeys");
+      expect(submitted).not.toHaveProperty("configuredEnvironment");
+    }
   });
   it("omits duplicate project validation only when the provider enforces it at submission", async () => {
     const { task } = provider();

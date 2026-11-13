@@ -55,6 +55,9 @@ export function createPluginRunnerTaskOwner(input: {
   onRetired?: (identity: DurableRecoveryIdentity) => Promise<void>;
   githubBroker?: { url: string; token: string };
   githubCredentialBrokerVersion?: 1;
+  /** The agent's resolved task environment, without the names marker. */
+  configuredEnvironment?: Record<string, string>;
+  configuredEnvironmentVersion?: 1;
   adoptIdentity?: DurableRecoveryIdentity;
 }) {
   const taskId = input.taskId;
@@ -120,6 +123,9 @@ export function createPluginRunnerTaskOwner(input: {
     await checkProjectAuth(configurationId);
     preparedLaunchId = configurationId;
   };
+  // An older plugin rejects unknown operation fields, so send only what it advertised.
+  const deliveredConfiguredEnvironment = () => input.configuredEnvironmentVersion === 1
+    && Object.keys(input.configuredEnvironment ?? {}).length > 0 ? input.configuredEnvironment : undefined;
   const prepareLaunch: RunnerLaunchPreparer = async (requirements, recovery) => {
     if (released || stopRequested) throw new Error("Plugin Runner preparation cancelled");
     // Reconnecting the previous authority must not prepare it through the new run's lease.
@@ -139,6 +145,7 @@ export function createPluginRunnerTaskOwner(input: {
     }
     const result = await call(environmentTaskOperationSchema.parse({ kind: "prepare", requirements,
       ...(input.githubBroker ? { githubBroker: input.githubBroker } : {}),
+      ...(deliveredConfiguredEnvironment() ? { configuredEnvironmentKeys: Object.keys(deliveredConfiguredEnvironment()!).sort() } : {}),
       projectIds: [...input.projectIds], ...(recovery ? { recovery } : {}),
       ...(input.resumeFrom && (!authorityRunId || !launchIdentity || launchIdentity.runId === authorityRunId || sourceRecovery)
         ? { resumeFrom: input.resumeFrom } : {}),
@@ -204,6 +211,7 @@ export function createPluginRunnerTaskOwner(input: {
       ...(input.credentialIdentity ? { credentialIdentity: input.credentialIdentity } : {}),
       ...(input.accountIdentity ? { accountIdentity: input.accountIdentity } : {}),
       ...(input.credential ? { credential: input.credential } : {}),
+      ...(deliveredConfiguredEnvironment() ? { configuredEnvironment: deliveredConfiguredEnvironment() } : {}),
       runner: { protocolMin: RUNNER_PRP_PROTOCOL_MIN, protocolMax: RUNNER_PRP_PROTOCOL_MAX,
         harness: input.harness,
         runnerId: native.identity.runnerInstanceId, leaseId: native.identity.environmentLeaseId,
@@ -463,7 +471,11 @@ export function createPluginRunnerTaskOwner(input: {
     rebind(next: typeof input) {
       if (!launched || stopRequested || stoppedState || detached || next.taskId !== taskId || next.harness !== input.harness ||
           input.accountIdentity !== next.accountIdentity || input.credentialIdentity !== next.credentialIdentity ||
-          JSON.stringify(input.projectIds) !== JSON.stringify(next.projectIds)) throw new Error("Plugin warm task cannot be rebound");
+          JSON.stringify(input.projectIds) !== JSON.stringify(next.projectIds)
+          // The warm Runner process keeps the environment it was submitted with.
+          || input.configuredEnvironmentVersion !== next.configuredEnvironmentVersion
+          || JSON.stringify(Object.entries(input.configuredEnvironment ?? {}).sort())
+            !== JSON.stringify(Object.entries(next.configuredEnvironment ?? {}).sort())) throw new Error("Plugin warm task cannot be rebound");
       input = next;
       released = false;
       bindStartupAbort();

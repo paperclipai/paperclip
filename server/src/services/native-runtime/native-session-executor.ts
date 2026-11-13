@@ -77,7 +77,7 @@ import {
   isKnownNativeSessionRootEntry,
 } from "./native-session-root-entries.js";
 import { createRunPreparationTiming } from "../execution-preparation-timing.js";
-import { configuredEnvironment, PROVIDER_CREDENTIAL_ENVIRONMENT_KEYS } from "../../vendor/paperclip-runner/index.js";
+import { CONFIGURED_ENVIRONMENT_KEYS, configuredEnvironment, PROVIDER_CREDENTIAL_ENVIRONMENT_KEYS } from "../../vendor/paperclip-runner/index.js";
 import { parseProviderPerformanceSpans } from "../../vendor/paperclip-runner/index.js";
 import { apiKeyBillingType } from "@paperclipai/adapter-utils/api-billing-type";
 import { agents } from "@paperclipai/db";
@@ -8537,6 +8537,9 @@ function updateReleasedWarmRunner(execution: NativeExecutionInput, source: Durab
   writeWarmNativeEnvelope(execution, envelope);
 }
 
+/** Paths from the controller's account cannot select a remote account's config. */
+const REMOTE_HOST_PATH_ENVIRONMENT_KEYS: ReadonlySet<string> = new Set(["CODEX_HOME", "CLAUDE_CONFIG_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"]);
+
 function persistWarmNativeCheckpoint(
   execution: NativeExecutionInput,
   configDigest: string,
@@ -16354,7 +16357,17 @@ async function createRunnerdBackendWithinSessionClaim(
       await registerPluginTaskCredentialHandoff(input.db, { companyId: input.execution.binding.companyId, leaseId: remoteTarget.leaseId },
         credentials.accountIdentity, input.managedAiCredentialWriteback);
     }
+    // The plugin starts Runner on its own host, so Core must hand over the
+    // agent's configured variables explicitly. Controller paths stay behind.
+    const pluginConfiguredEnvironment = Object.fromEntries(Object.entries(configuredEnvironment(input.runnerEnvironment))
+      .filter((entry): entry is [string, string] => entry[0] !== CONFIGURED_ENVIRONMENT_KEYS
+        && !REMOTE_HOST_PATH_ENVIRONMENT_KEYS.has(entry[0]) && typeof entry[1] === "string"));
+    if (Object.keys(pluginConfiguredEnvironment).length > 0 && description.configuredEnvironmentVersion !== 1) {
+      await input.onLog?.("stderr", `[paperclip] This environment's plugin cannot receive the agent's environment variables. `
+        + `Not set in this run: ${Object.keys(pluginConfiguredEnvironment).sort().join(", ")}. Update the environment plugin.\n`);
+    }
     const ownerInput: Parameters<typeof createPluginRunnerTaskOwner>[0] = { ...credentials, taskId: description.taskId,
+      configuredEnvironment: pluginConfiguredEnvironment, configuredEnvironmentVersion: description.configuredEnvironmentVersion,
       executionContext: input.executionContext?.pluginSupported ? input.executionContext : undefined,
       // Warm retirement can outlive the run's temporary credential home; complete uses the durable handoff.
       onCredentials: input.managedAiCredentialWriteback || input.execution.session.lifecyclePolicy.mode === "warm" ? undefined : credentials.onCredentials,
@@ -17949,8 +17962,7 @@ async function createRunnerdBackendWithinSessionClaim(
       if (discovered.exitCode !== 0 || discovered.timedOut || !home.startsWith("/") || /[\0\r\n]/.test(home)) {
         throw new Error("runner_preconfigured_remote_home_unavailable");
       }
-      // Paths from the controller's account cannot select a remote account's config.
-      const hostPathKeys = new Set(["CODEX_HOME", "CLAUDE_CONFIG_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"]);
+      const hostPathKeys = REMOTE_HOST_PATH_ENVIRONMENT_KEYS;
       const configured = configuredEnvironment(effectiveRunnerEnvironmentBase);
       for (const key of hostPathKeys) delete effectiveRunnerEnvironmentBase[key];
       if (configured.PAPERCLIP_CONFIGURED_ENV_KEYS !== undefined) {
