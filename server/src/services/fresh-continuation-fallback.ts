@@ -665,10 +665,63 @@ export function heldExecutionsAwaitingFreshContinuation(db: Db, now: Date, limit
     runId: sql<string>`coalesce(${issueRecoveryActions.evidence}->>'runId', ${issueRecoveryActions.evidence}->>'sourceRunId')` })
     .from(issueRecoveryActions).innerJoin(issues, and(eq(issues.id, issueRecoveryActions.sourceIssueId),
       eq(issues.companyId, issueRecoveryActions.companyId)))
-    .where(and(heldExecutionWhere(), freshContinuationCheckDue(now)))
-    .orderBy(asc(issueRecoveryActions.updatedAt), asc(issueRecoveryActions.id))
+    .where(and(heldExecutionWhere(), freshContinuationCheckDue(now), recentInterruptionSourceSql(now)))
+    // Newest interruption first: the most recent work is the work someone is waiting for.
+    .orderBy(desc(sql`(select source.finished_at from ${heartbeatRuns} source where source.company_id = ${issueRecoveryActions.companyId}
+      and source.id::text = coalesce(${issueRecoveryActions.evidence}->>'runId', ${issueRecoveryActions.evidence}->>'sourceRunId'))`),
+      asc(issueRecoveryActions.id))
     .limit(limit);
 }
+
+/**
+ * The backlog pass continues a held record only when it is a recent
+ * interruption: its source run ended within BACKLOG_CONTINUATION_MAX_AGE_MS
+ * and ended with a restart, deploy, lease, process-loss or recovery-refusal
+ * code. A configuration or provider failure, or anything older, stays exactly
+ * as it is for a person's Retry: re-running last week's failures is not
+ * "an interruption is invisible". Fresh interruptions reach the fallback
+ * through restart recovery and the disposition pass, not through this list.
+ */
+export const BACKLOG_CONTINUATION_MAX_AGE_MS = 24 * 60 * 60_000;
+export const BACKLOG_CONTINUATION_SOURCE_CODES = [
+  "native_restart_recovery_blocked", "native_continuation_requires_reconciliation", "native_session_interrupted",
+  "native_runner_process_exited", "server_shutdown_interrupted", "process_lost", "controller_lease_lost",
+  "execution_finalization_deadline_exceeded", "local_runtime_api_listener_unavailable",
+  "runner_remote_process_identity_unavailable", "continuation_user_authorization_missing",
+] as const;
+/** At most this many backlog continuations per server per rolling minute, and per pass. */
+export const BACKLOG_CONTINUATIONS_PER_MINUTE = 10;
+const BACKLOG_CONTINUATIONS_PER_PASS = 5;
+
+/** Holds the disposition pass (unresolvedExecutionDispositions) handles itself, whatever their age. */
+function liveDispositionHoldSql() {
+  return and(inArray(issueRecoveryActions.status, ["active", "escalated"]), eq(issueRecoveryActions.kind, "active_run_watchdog"))!;
+}
+
+/** The backlog pass's eligibility: the one predicate its listing and its deadline query share. */
+function recentInterruptionSourceSql(now: Date) {
+  return sql`exists (select 1 from ${heartbeatRuns} source where source.company_id = ${issueRecoveryActions.companyId}
+    and source.id::text = coalesce(${issueRecoveryActions.evidence}->>'runId', ${issueRecoveryActions.evidence}->>'sourceRunId')
+    and source.finished_at > ${new Date(now.getTime() - BACKLOG_CONTINUATION_MAX_AGE_MS).toISOString()}::timestamptz
+    and source.error_code in (${sql.join(BACKLOG_CONTINUATION_SOURCE_CODES.map(code => sql`${code}`), sql`, `)}))`;
+}
+
+/** Held records the backlog pass leaves for a person (older, or not an interruption). */
+async function countHeldExecutionsLeftAlone(db: Db, now: Date): Promise<number> {
+  const [row] = await db.select({ count: sql<number>`count(*)::int` }).from(issueRecoveryActions)
+    .innerJoin(issues, and(eq(issues.id, issueRecoveryActions.sourceIssueId), eq(issues.companyId, issueRecoveryActions.companyId)))
+    .where(and(heldExecutionWhere(), sql`not ${recentInterruptionSourceSql(now)}`));
+  return Number(row?.count ?? 0);
+}
+
+/** Per database client: one per server process in production, one per test database in tests. */
+const backlogContinuationTimes = new WeakMap<object, number[]>();
+export function resetBacklogContinuationPacingForTests(db?: Db) {
+  if (db) backlogContinuationTimes.delete(db);
+  lastLeftAloneLogAt = 0;
+}
+let lastLeftAloneLogAt = 0;
+const LEFT_ALONE_LOG_INTERVAL_MS = 10 * 60_000;
 
 /** Held reconciliation records of a task's latest unfinished run (joined to its task). */
 function heldExecutionWhere(options: { includeActive?: boolean } = {}) {
@@ -703,7 +756,7 @@ function heldExecutionWhere(options: { includeActive?: boolean } = {}) {
 }
 
 /** The earliest time a deferred check becomes due again, if any. */
-export async function nextFreshContinuationCheckAt(db: Db): Promise<number | null> {
+export async function nextFreshContinuationCheckAt(db: Db, now = new Date()): Promise<number | null> {
   // The same records the held-run query and the disposition pass would select;
   // a deadline on a record nothing would act on never schedules a scan.
   // That includes active holds that backed off: the disposition pass rechecks
@@ -712,7 +765,10 @@ export async function nextFreshContinuationCheckAt(db: Db): Promise<number | nul
     .from(issueRecoveryActions).innerJoin(issues, and(eq(issues.id, issueRecoveryActions.sourceIssueId),
       eq(issues.companyId, issueRecoveryActions.companyId)))
     .where(and(heldExecutionWhere({ includeActive: true }),
-      sql`${issueRecoveryActions.evidence}#>>'{freshContinuationCheck,nextCheckAt}' is not null`));
+      sql`${issueRecoveryActions.evidence}#>>'{freshContinuationCheck,nextCheckAt}' is not null`,
+      // A record the backlog pass leaves alone schedules nothing; active holds
+      // stay with the disposition pass, which rechecks them when due.
+      or(liveDispositionHoldSql(), recentInterruptionSourceSql(now))));
   return held?.at ? Number(held.at) : null;
 }
 
@@ -721,13 +777,26 @@ export async function nextFreshContinuationCheckAt(db: Db): Promise<number | nul
  * releases, so tasks already waiting continue after deploy without a Retry.
  * Runs on the execution-disposition worker. Bounded per pass.
  */
-export async function continueHeldExecutions(db: Db, now = new Date(), limit = 25) {
-  const candidates = await heldExecutionsAwaitingFreshContinuation(db, now, limit);
+export async function continueHeldExecutions(db: Db, now = new Date(), limit = BACKLOG_CONTINUATIONS_PER_PASS) {
+  if (now.getTime() - lastLeftAloneLogAt >= LEFT_ALONE_LOG_INTERVAL_MS) {
+    lastLeftAloneLogAt = now.getTime();
+    const leftAlone = await countHeldExecutionsLeftAlone(db, now).catch(() => null);
+    if (leftAlone) logger.info({ leftAlone, maxAgeHours: BACKLOG_CONTINUATION_MAX_AGE_MS / 3_600_000 },
+      "Held tasks left for a person: older than the backlog window or not an interruption");
+  }
+  // Per-server pacing: a backlog saved by older releases must not start a herd of runs.
+  let times = backlogContinuationTimes.get(db);
+  if (!times) backlogContinuationTimes.set(db, times = []);
+  while (times.length && times[0]! <= now.getTime() - 60_000) times.shift();
+  const room = Math.min(limit, BACKLOG_CONTINUATIONS_PER_MINUTE - times.length);
+  if (room <= 0) return { checked: 0, continued: 0 };
+  const candidates = await heldExecutionsAwaitingFreshContinuation(db, now, room);
   let continued = 0;
   const seen = new Set<string>();
   for (const candidate of candidates) {
     if (!candidate.runId || seen.has(candidate.runId)) continue;
     seen.add(candidate.runId);
+    times.push(now.getTime());
     try {
       const result = await ensureFreshContinuation(db, { companyId: candidate.companyId, runId: candidate.runId,
         trigger: "held_recovery", now });
