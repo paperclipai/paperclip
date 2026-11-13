@@ -7,7 +7,8 @@ import {
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import {
-  RECOVERY_CONTINUATIONS_PER_COMPANY_PER_PASS, RECOVERY_CONTINUATION_MAX_HOLD_MS, deliverReconciledExecutions,
+  RECOVERY_CONTINUATIONS_PER_COMPANY_PER_PASS, RECOVERY_CONTINUATION_DELIVERY_BOUND_MS, RECOVERY_CONTINUATION_MAX_HOLD_MS,
+  deliverReconciledExecutions,
 } from "../services/execution-recovery-resolution.js";
 import { assignedWorkSweep } from "../services/recovery/assigned-work-sweep.js";
 import { evaluateAssignedWork } from "../services/recovery/assigned-work-invariant.js";
@@ -270,6 +271,85 @@ suite("recovery wake herd", () => {
     expect(await deliveryOf(fresh.action.id)).toBe("delivered");
     for (let pass = 0; pass < 5; pass += 1) await deliverReconciledExecutions(db, wake as never);
     expect(await Promise.all(old.map(record => deliveryOf(record.action.id)))).toEqual(old.map(() => "delivered"));
+  }, 60_000);
+
+  async function holdPastBound(record: Awaited<ReturnType<typeof pendingContinuation>>, extraMs = 1_000) {
+    const heldSince = new Date(Date.now() - RECOVERY_CONTINUATION_MAX_HOLD_MS - extraMs).toISOString();
+    await db.update(issueRecoveryActions).set({ evidence: { ...record.action.evidence,
+      freshContinuation: { ...(record.action.evidence.freshContinuation as object), recordedAt: heldSince } } })
+      .where(eq(issueRecoveryActions.id, record.action.id));
+  }
+
+  it("delivers a continuation held past the bound while the agent's queue is full of recovery runs that never start", async () => {
+    const agentId = await seedCompany(1);
+    await queuedRecoveryRun(agentId, 240);
+    await db.insert(heartbeatRuns).values({ companyId, agentId, issueId: (await task(agentId)).id, invocationSource: "automation",
+      triggerDetail: "system", status: "queued", createdAt: new Date(Date.now() - 230 * 60_000),
+      contextSnapshot: { wakeReason: "issue_continuation_needed" } });
+    const record = await pendingContinuation(agentId, 200);
+    const wake = fakeWake();
+    await deliverReconciledExecutions(db, wake as never);
+    expect(wake).not.toHaveBeenCalled();
+    expect(await deliveryOf(record.action.id)).toBe("pending");
+
+    await holdPastBound(record);
+    await deliverReconciledExecutions(db, wake as never);
+    expect(wake).toHaveBeenCalledTimes(1);
+    expect(wake.mock.calls[0]![0]).toBe(agentId);
+    expect(await deliveryOf(record.action.id)).toBe("delivered");
+  }, 60_000);
+
+  it("delivers the continuation after a restart while it was pending past the bound with a full queue", async () => {
+    const agentId = await seedCompany(1);
+    await queuedRecoveryRun(agentId, 240);
+    const record = await pendingContinuation(agentId, 200);
+    await deliverReconciledExecutions(db, fakeWake() as never);
+    expect(await deliveryOf(record.action.id)).toBe("pending");
+    await holdPastBound(record, 3 * 60 * 60_000);
+
+    const restartedSchedule = executionControlSchedule(db);
+    const due = await restartedSchedule.continuation();
+    expect(due).not.toBeNull();
+    expect(due!).toBeLessThanOrEqual(Date.now() + 60_000);
+    const restartedWake = fakeWake();
+    await deliverReconciledExecutions(db, restartedWake as never);
+    expect(restartedWake).toHaveBeenCalledTimes(1);
+    expect(await deliveryOf(record.action.id)).toBe("delivered");
+    expect(await restartedSchedule.continuation()).toBeNull();
+  }, 60_000);
+
+  it("does not let a continuation whose wake cannot enter the queue hold back other continuations", async () => {
+    const agentId = await seedCompany(1);
+    const stuck: Array<Awaited<ReturnType<typeof pendingContinuation>>> = [];
+    for (let index = 0; index < RECOVERY_CONTINUATIONS_PER_COMPANY_PER_PASS; index += 1) {
+      const record = await pendingContinuation(await addAgent(1), 300);
+      await holdPastBound(record, 60 * 60_000);
+      stuck.push(record);
+    }
+    const sameAgentStuck = await pendingContinuation(agentId, 300);
+    await holdPastBound(sameAgentStuck, 60 * 60_000);
+    const waiting = await pendingContinuation(agentId, 10);
+    await holdPastBound(waiting);
+    const stuckIds = new Set([...stuck, sameAgentStuck].map(record => record.action.id));
+    const created = fakeWake();
+    const wake = vi.fn(async (wakeAgentId: string, opts: { contextSnapshot: Record<string, unknown> }) =>
+      stuckIds.has(String(opts.contextSnapshot.recoveryActionId)) ? null : created(wakeAgentId, opts));
+    await deliverReconciledExecutions(db, wake as never);
+    expect(created).toHaveBeenCalledTimes(1);
+    expect(await deliveryOf(waiting.action.id)).toBe("delivered");
+  }, 60_000);
+
+  it("does not show a task as working when its continuation is pending past the delivery bound and nothing runs", async () => {
+    const agentId = await seedCompany(1);
+    const record = await pendingContinuation(agentId, 240);
+    await holdPastBound(record, RECOVERY_CONTINUATION_DELIVERY_BOUND_MS);
+    const [issueRow] = await db.select().from(issues).where(eq(issues.id, record.issue.id));
+    const presentation = await taskInterruptionPresentation(db, issueRow!);
+    expect(presentation?.state).not.toBe("working");
+
+    const fresh = await pendingContinuation(agentId, 30);
+    const [freshRow] = await db.select().from(issues).where(eq(issues.id, fresh.issue.id));
+    expect(await taskInterruptionPresentation(db, freshRow!)).toMatchObject({ state: "working", canRetry: false });
   }, 60_000);
 
   it("reads a task whose continuation is held back as waiting for its agent, not idle and not needing Retry", async () => {

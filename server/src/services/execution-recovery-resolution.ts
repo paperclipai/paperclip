@@ -43,8 +43,11 @@ import { alias } from "drizzle-orm/pg-core";
 import { RECOVERY_WAKE_REASONS } from "./heartbeat/queued-run-dispatch-order.js";
 import { parseHeartbeatPolicy } from "./heartbeat/timer-policy.js";
 
-export const RECOVERY_CONTINUATIONS_PER_COMPANY_PER_PASS = 5;
-export const RECOVERY_CONTINUATION_MAX_HOLD_MS = 5 * 60_000;
+import { RECOVERY_CONTINUATIONS_PER_COMPANY_PER_PASS, RECOVERY_CONTINUATION_MAX_HOLD_MS,
+  recoveryContinuationHeldSince } from "./recovery-continuation-pacing.js";
+
+export { RECOVERY_CONTINUATIONS_PER_COMPANY_PER_PASS, RECOVERY_CONTINUATION_DELIVERY_BOUND_MS,
+  RECOVERY_CONTINUATION_MAX_HOLD_MS } from "./recovery-continuation-pacing.js";
 const RECOVERY_CONTINUATION_PAGES_PER_PASS = 8;
 
 /** An operator records observed outcomes; this is not permission to blindly retry. */
@@ -389,11 +392,11 @@ export async function deliverReconciledExecutions(
           seenActionIds.size ? not(inArray(issueRecoveryActions.id, [...seenActionIds])) : undefined,
           seenAgentIds.size ? sql`coalesce(${issueRecoveryActions.returnOwnerAgentId}::text, '') <> all(${sql.param([...seenAgentIds])}::text[])` : undefined,
           companies.length ? not(inArray(issueRecoveryActions.companyId, companies)) : undefined,
-          sql`not exists (select 1 from ${heartbeatRuns} queued_recovery
+          sql`(${heldSince} <= ${heldBound}::timestamptz or not exists (select 1 from ${heartbeatRuns} queued_recovery
             where queued_recovery.company_id = ${issueRecoveryActions.companyId}
               and queued_recovery.agent_id = ${issueRecoveryActions.returnOwnerAgentId}
               and queued_recovery.status = 'queued'
-              and queued_recovery.context_snapshot->>'wakeReason' in (${sql.join(recoveryReasons.map(reason => sql`${reason}`), sql`, `)}))`,
+              and queued_recovery.context_snapshot->>'wakeReason' in (${sql.join(recoveryReasons.map(reason => sql`${reason}`), sql`, `)})))`,
         ),
       )
       .orderBy(
@@ -412,19 +415,14 @@ export async function deliverReconciledExecutions(
     const [queued] = await db.select({ count: sql<number>`count(*)::int` }).from(heartbeatRuns).where(and(
       eq(heartbeatRuns.companyId, action.companyId), eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "queued")));
     if (Number(queued?.count ?? 0) < parseHeartbeatPolicy(agent).maxConcurrentRuns) return true;
-    const recordedAt = Date.parse(String((action.evidence.freshContinuation as { recordedAt?: unknown } | undefined)?.recordedAt ?? ""));
-    const heldSince = Number.isFinite(recordedAt) ? recordedAt : (action.resolvedAt ?? action.updatedAt).getTime();
-    return Date.now() - heldSince >= RECOVERY_CONTINUATION_MAX_HOLD_MS;
+    return Date.now() - recoveryContinuationHeldSince(action) >= RECOVERY_CONTINUATION_MAX_HOLD_MS;
   };
   for (let page = 0; page < RECOVERY_CONTINUATION_PAGES_PER_PASS; page += 1) {
     const pending = await readPendingPage();
     if (!pending.length) break;
     for (const action of pending) {
       seenActionIds.add(action.id);
-      if (action.returnOwnerAgentId) {
-        if (seenAgentIds.has(action.returnOwnerAgentId)) continue;
-        seenAgentIds.add(action.returnOwnerAgentId);
-      }
+      if (action.returnOwnerAgentId && seenAgentIds.has(action.returnOwnerAgentId)) continue;
       try {
         const decision = action.evidence.executionReconciliation as
           ExecutionReconciliation | undefined;
@@ -478,8 +476,10 @@ export async function deliverReconciledExecutions(
             continue;
           }
         }
-        if (!await agentHasRoom(action, action.returnOwnerAgentId)) continue;
-        admittedByCompany.set(action.companyId, (admittedByCompany.get(action.companyId) ?? 0) + 1);
+        if (!await agentHasRoom(action, action.returnOwnerAgentId)) {
+          seenAgentIds.add(action.returnOwnerAgentId);
+          continue;
+        }
         const run = await wake(action.returnOwnerAgentId, {
           source: "automation",
           triggerDetail: "system",
@@ -501,34 +501,36 @@ export async function deliverReconciledExecutions(
               ? { freshContinuationIsolation: action.id } : {}),
           },
         });
-        if (run)
-          await db.transaction(async (tx) => {
-            await tx
-              .update(heartbeatRuns)
-              .set({ retryOfRunId: decision.runId })
-              .where(
-                and(
-                  eq(heartbeatRuns.companyId, action.companyId),
-                  eq(heartbeatRuns.id, run.id),
-                  eq(heartbeatRuns.agentId, action.returnOwnerAgentId!),
-                  sql`${heartbeatRuns.contextSnapshot}->>'recoveryActionId' = ${action.id}`,
-                  sql`${heartbeatRuns.contextSnapshot}->>'previousRunId' = ${decision.runId}`,
-                ),
-              );
-            await tx
-              .update(issueRecoveryActions)
-              .set({
-                evidence: sql`${issueRecoveryActions.evidence} || ${JSON.stringify(
-                  {
-                    continuationDelivery: "delivered",
-                    continuationRunId: run.id,
-                  },
-                )}::jsonb`,
-              })
-              .where(pendingDecision);
-            await settleCoalescedFreshContinuationHolds(tx as unknown as Db, { companyId: action.companyId, primaryId: action.id,
-              delivery: "delivered", continuationRunId: run.id });
-          });
+        if (!run) continue;
+        seenAgentIds.add(action.returnOwnerAgentId);
+        admittedByCompany.set(action.companyId, (admittedByCompany.get(action.companyId) ?? 0) + 1);
+        await db.transaction(async (tx) => {
+          await tx
+            .update(heartbeatRuns)
+            .set({ retryOfRunId: decision.runId })
+            .where(
+              and(
+                eq(heartbeatRuns.companyId, action.companyId),
+                eq(heartbeatRuns.id, run.id),
+                eq(heartbeatRuns.agentId, action.returnOwnerAgentId!),
+                sql`${heartbeatRuns.contextSnapshot}->>'recoveryActionId' = ${action.id}`,
+                sql`${heartbeatRuns.contextSnapshot}->>'previousRunId' = ${decision.runId}`,
+              ),
+            );
+          await tx
+            .update(issueRecoveryActions)
+            .set({
+              evidence: sql`${issueRecoveryActions.evidence} || ${JSON.stringify(
+                {
+                  continuationDelivery: "delivered",
+                  continuationRunId: run.id,
+                },
+              )}::jsonb`,
+            })
+            .where(pendingDecision);
+          await settleCoalescedFreshContinuationHolds(tx as unknown as Db, { companyId: action.companyId, primaryId: action.id,
+            delivery: "delivered", continuationRunId: run.id });
+        });
       } catch {
         logger.warn(
           { recoveryActionId: action.id },
