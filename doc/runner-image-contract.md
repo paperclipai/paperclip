@@ -147,8 +147,12 @@ built.
 ### Choosing the Runner for an image build
 
 `scripts/runner-image-resolve.mjs` decides whether a build of a checkout can
-copy the published image. No build uses its answer yet. It has two commands,
-so that the one that builds reads no registry credential:
+copy the published image. No build uses its answer yet: on a `master` push,
+the `runner_image_report` job of `.github/workflows/docker.yml` runs it and
+writes the answer to the job summary, and nothing reads that job. The job
+runs on the committed files, holds no credential (the Runner package is
+public, so the lookup is anonymous) and cannot fail the run. The script has
+two commands, so that the one that builds reads no registry credential:
 
 ```sh
 node scripts/runner-image-resolve.mjs inputs --dir "$dir"
