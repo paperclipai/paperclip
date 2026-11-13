@@ -64,6 +64,18 @@ export const GENERATED_ACPX_SIDECAR_PROVIDER_POLICY_FIELDS = [
   "readOnly",
 ] as const;
 
+export const GENERATED_ACPX_BACKGROUND_TASKS_MAX_LIVE = 9007199254740991;
+
+export type GeneratedAcpxBackgroundTasks = { live: number };
+
+export function readGeneratedAcpxBackgroundTasks(value: unknown): GeneratedAcpxBackgroundTasks | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+  const keys = Object.keys(value);
+  const live = (value as Record<string, unknown>).live;
+  if (keys.length !== 1 || keys[0] !== "live" || typeof live !== "number" || !Number.isInteger(live)) return null;
+  return live >= 0 && live <= GENERATED_ACPX_BACKGROUND_TASKS_MAX_LIVE ? { live } : null;
+}
+
 export type GeneratedAcpxToolOperation =
   | "read"
   | "search"

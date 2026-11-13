@@ -5,6 +5,7 @@ import path from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, expect, it } from "vitest";
 import { runOwnedInstalledPreparation, admitsInstalledChat, installedChatTreeIdentity, refreshInstalledChatPins, validateChatInstallConfiguration, CHAT_INSTALL_PLAN } from "./chat-installed-lane.js";
+import { readProcessTable } from "./process-tree.js";
 import type { MatrixExecution } from "./types.js";
 const roots: string[] = []; const sha = (file: string) => createHash("sha256").update(readFileSync(file)).digest("hex");
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -52,6 +53,8 @@ it("retires the exact timed-out preparation child while retaining only the owned
   await expect(runOwnedInstalledPreparation(process.execPath, ["-e", source], { cwd: folder, env: { PATH: process.env.PATH }, timeout: 500 })).rejects.toThrow("preparation failed");
   const { pid, descendantPid } = JSON.parse(readFileSync(partial, "utf8"));
   expect(() => process.kill(pid, 0)).toThrow();
-  expect(() => process.kill(descendantPid, 0)).toThrow();
+  const table = await readProcessTable();
+  expect(table).not.toBeNull();
+  expect(table!.filter(row => row.pid === descendantPid && !row.state?.startsWith("Z"))).toEqual([]);
   rmSync(folder, { recursive: true, force: true });
 });
