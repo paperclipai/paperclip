@@ -508,6 +508,17 @@ Default runtime:
 - the worker process is a Node process
 - host and worker communicate over JSON-RPC on stdio
 
+The stdio transport uses UTF-8 JSONL. Only LF (`\n`) ends a record. CRLF is
+accepted. U+2028 and U+2029 inside JSON strings are payload, not delimiters.
+Use `@paperclipai/shared/jsonl-line-reader` instead of Node `readline` for
+protocol input. The receiver keeps its existing JSON validation and size limits.
+
+The LF reader adapts Pi commit
+[`e3adaf1bd9172fc4486883144c07eba8be44ffba`](https://github.com/earendil-works/pi/commit/e3adaf1bd9172fc4486883144c07eba8be44ffba).
+It preserves UTF-8 characters across chunks, the final record at EOF, and the
+existing close/pause lifecycle. Runner keeps a small local copy so that its
+standalone package does not need a dependency on the server's shared package.
+
 This design provides:
 
 - failure isolation
