@@ -62,8 +62,6 @@ vi.mock("../components/AttentionQueueRow", () => ({
   ),
 }));
 
-// One time for every card: the list sorts by time, so cards built across a
-// millisecond boundary would otherwise swap places and flake order assertions.
 const cardAt = new Date().toISOString();
 
 function card(id: string, audience: AttentionItem["audience"]) {
