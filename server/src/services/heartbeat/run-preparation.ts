@@ -93,6 +93,7 @@ import {
   type MissingRuntimeBinding,
 } from "../secrets.js";
 import { createToolGatewayService } from "../tool-gateway.js";
+import { getRegisteredToolGateway, listRegisteredPluginToolNames } from "../tool-gateway-registry.js";
 import { toolAccessService } from "../tool-access.js";
 import {
   buildDocumentReviewContext,
@@ -909,10 +910,10 @@ export async function buildPaperclipRuntimeMcpServers(input: {
   expectedAssignmentDigest?: string | null;
 }): Promise<AdapterRuntimeMcpServer[]> {
   const access = toolAccessService(input.db);
-  const effective = await access.getEffectiveToolAssignmentsForAgent(
-    input.agent.companyId,
-    input.agent.id,
-  );
+  const [effective, pluginToolNames] = await Promise.all([
+    access.getEffectiveToolAssignmentsForAgent(input.agent.companyId, input.agent.id),
+    listRegisteredPluginToolNames(input.db, { companyId: input.agent.companyId, agentId: input.agent.id, runId: input.runId }),
+  ]);
   const [runIdentity] = await input.db
     .select({
       issueId: boundRunIssueIdSql(),
@@ -1001,8 +1002,8 @@ export async function buildPaperclipRuntimeMcpServers(input: {
   const assignedTools = effective.allowedTools.filter((tool) =>
     assignedConnectionIds.has(tool.connectionId),
   );
-  const service = createToolGatewayService(input.db);
-  if (assignedConnections.length === 0) {
+  const service = getRegisteredToolGateway(input.db) ?? createToolGatewayService(input.db);
+  if (assignedConnections.length === 0 && pluginToolNames.length === 0) {
     await service.recordRuntimeMcpDeliveryDiagnostic({
       companyId: input.agent.companyId,
       agentId: input.agent.id,
@@ -1016,6 +1017,7 @@ export async function buildPaperclipRuntimeMcpServers(input: {
     agentId: input.agent.id,
     connections: assignedConnections.map((connection) => connection.id).sort(),
     tools: assignedTools.map((tool) => tool.id).sort(),
+    ...(pluginToolNames.length ? { pluginTools: pluginToolNames } : {}),
   };
   const assignmentDigest = createHash("sha256")
     .update(JSON.stringify(assignment))
@@ -1052,6 +1054,11 @@ export async function buildPaperclipRuntimeMcpServers(input: {
         .map((entry) => entry.connectionId!),
     );
     const entries = [
+      ...pluginToolNames.map((toolName) => ({
+        selectorType: "tool_name" as const,
+        effect: "include" as const,
+        toolName,
+      })),
       ...assignedConnections
         .filter((connection) => fullConnectionIds.has(connection.id))
         .map((connection) => ({

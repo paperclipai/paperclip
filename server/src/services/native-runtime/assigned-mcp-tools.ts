@@ -3,6 +3,9 @@ import type { Db } from "@paperclipai/db";
 import { logger } from "../../middleware/logger.js";
 import { admitToolInputSchema, canonicalToolInputSchema, TOOL_INPUT_SCHEMA_MAX_BYTES } from "../../vendor/paperclip-runner/index.js";
 import { deduplicateToolDescriptors, ToolGatewayHttpError, type ToolGatewayDescriptor, type ToolGatewayService } from "../tool-gateway.js";
+import { getRegisteredToolGateway } from "../tool-gateway-registry.js";
+
+export { registerToolGateway as registerAssignedMcpGateway } from "../tool-gateway-registry.js";
 
 type WorkMode = "standard" | "planning" | "ask" | "skill_test";
 type ToolDefinition = Record<string, unknown>;
@@ -54,21 +57,15 @@ function definition(name: string, tool: ToolGatewayDescriptor, inputSchema: Reco
 // Execution must use the app's configured gateway, including deployment
 // restrictions, OAuth refresh, and approval delivery. Never fall back to an
 // isolated gateway whose defaults differ from the running instance.
-const assignedMcpGateways = new WeakMap<Db, ToolGatewayService>();
-
-export function registerAssignedMcpGateway(db: Db, gateway: ToolGatewayService): void {
-  assignedMcpGateways.set(db, gateway);
-}
-
 export function getAssignedMcpGateway(db: Db): ToolGatewayService {
-  const gateway = assignedMcpGateways.get(db);
+  const gateway = getRegisteredToolGateway(db);
   if (!gateway) throw new Error("assigned_mcp_gateway_unavailable");
   return gateway;
 }
 
 /** No configured gateway means no authorized connection tools or instructions. */
 export async function resolveAssignedConnectionInstructionsForRun(db: Db, binding: { companyId: string; agentId: string; runId: string }) {
-  const gateway = assignedMcpGateways.get(db);
+  const gateway = getRegisteredToolGateway(db);
   return gateway ? gateway.resolveConnectionInstructionsForRun(binding) : null;
 }
 
@@ -172,7 +169,8 @@ export async function createAssignedMcpTools(input: {
     logger.warn({ gatewayPublicId: input.gatewayPublicId, unchecked },
       "assigned MCP tools whose input schema is over the compile budget are offered only through assigned-tool search");
   }
-  const permits = (tool: ToolGatewayDescriptor, mode: WorkMode = input.workMode ?? "standard") => mode === "standard" || tool.risk === "read";
+  const permits = (tool: ToolGatewayDescriptor, mode: WorkMode = input.workMode ?? "standard") =>
+    mode === "standard" || (tool.risk === "read" && tool.providerType !== "paperclip_plugin");
   // OpenCode's HTTP bridge returns at most 64K JSON characters. Leave room
   // for the envelope and for JSON escaping when returning a schema chunk.
   // Other harnesses retain the larger PRP page and chunk budgets.

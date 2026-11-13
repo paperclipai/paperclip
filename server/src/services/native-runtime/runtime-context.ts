@@ -9,6 +9,7 @@ import { boundRunIssueIdSql } from "../run-task-binding.js";
 import { isBrowserUseConnection } from "../browser-use-client.js";
 import { restConnectorFor } from "../connectors/rest-registry.js";
 import { createHash, randomUUID } from "node:crypto";
+import { listRegisteredPluginToolNames } from "../tool-gateway-registry.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { and, desc, eq } from "drizzle-orm";
@@ -335,7 +336,10 @@ export async function materializeSelectedSkills(runtimeConfig: Record<string, un
 }
 
 export async function resolveNativeRuntimeMcpSnapshot(input: { db: Db; agent: Pick<RuntimeAgent, "id" | "companyId">; runId: string }) {
-  const effective = await toolAccessService(input.db).getEffectiveToolAssignmentsForAgent(input.agent.companyId, input.agent.id);
+  const [pluginToolNames, effective] = await Promise.all([
+    listRegisteredPluginToolNames(input.db, { companyId: input.agent.companyId, agentId: input.agent.id, runId: input.runId }),
+    toolAccessService(input.db).getEffectiveToolAssignmentsForAgent(input.agent.companyId, input.agent.id),
+  ]);
   const permitted = new Set([...effective.entries.filter((entry) => entry.effect === "include" && entry.connectionId).map((entry) => entry.connectionId!), ...effective.allowedTools.map((tool) => tool.connectionId)]);
   const hasGitHubConnection = effective.installedConnections.some((connection) => {
     const config = connection.config && typeof connection.config === "object"
@@ -388,9 +392,10 @@ export async function resolveNativeRuntimeMcpSnapshot(input: { db: Db; agent: Pi
       .filter((tool) => availableConnectionIds.has(tool.connectionId))
       .map((tool) => tool.id)
       .sort(),
+    ...(pluginToolNames.length ? { pluginTools: pluginToolNames } : {}),
   };
   const assignmentDigest = sha256(JSON.stringify(assignment));
-  return { assignmentSetId: `sha256:${assignmentDigest}`, digest: assignmentDigest, bindingId: assignment.connections.length ? `native-mcp:${input.runId}` : null };
+  return { assignmentSetId: `sha256:${assignmentDigest}`, digest: assignmentDigest, bindingId: assignment.connections.length || pluginToolNames.length ? `native-mcp:${input.runId}` : null };
 }
 
 export async function buildNativeRuntimeContext(input: { db: Db; agent: RuntimeAgent; runId: string; runtimeConfig: Record<string, unknown>; runtimeSkillEntries: PaperclipSkillEntry[]; instructionWorkingCopy?: { rootPath: string; entryPath: string; kind?: "agent_files" } }): Promise<NativeRuntimeContextSnapshot> {

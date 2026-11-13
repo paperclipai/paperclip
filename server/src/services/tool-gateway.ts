@@ -11075,6 +11075,7 @@ export function createToolGatewayService(
     async listPluginToolsForAgent(input: {
       companyId: string;
       agentId: string;
+      runId?: string | null;
     }): Promise<AgentToolDescriptor[]> {
       await assertAgentInCompany(input.companyId, input.agentId);
       const decisions = await decideToolsForListing(pluginTools(), (tool) =>
@@ -11082,6 +11083,7 @@ export function createToolGatewayService(
           companyId: input.companyId,
           agentId: input.agentId,
           tool,
+          heartbeatRunId: input.runId,
         }),
       );
       const visibleTools = decisions
@@ -12803,6 +12805,23 @@ export function createToolGatewayService(
             toolName: storedInvocation.toolName,
           });
         }
+        const pluginDecisionInput = tool.providerType === "paperclip_plugin"
+          ? policyInputForTool({ session, tool, parameters: storedParameters })
+          : null;
+        const rejectPluginDenial = async (decisionInput: ToolAccessDecisionInput, accessDecision: ToolAccessDecision) => {
+          if (accessDecision.allowed || accessDecision.decision === "require_approval") return;
+          await policyService.writeAudit(decisionInput, accessDecision);
+          throw new ToolGatewayHttpError(
+            policyErrorStatus(accessDecision), accessDecision.explanation, accessDecision.reasonCode,
+            { invocationId: storedInvocation.id, actionRequestId: actionRequest.id, tool: tool.name },
+          );
+        };
+        if (pluginDecisionInput) {
+          await rejectPluginDenial(
+            pluginDecisionInput,
+            await policyService.decide(pluginDecisionInput, { admittedInvocationId: storedInvocation.id }),
+          );
+        }
         const claimedAt = new Date();
         const [claimed] = await writeToolReviewChange(db, actionRequest.companyId, tx => tx
           .update(toolActionRequests)
@@ -12824,6 +12843,21 @@ export function createToolGatewayService(
             "Tool action request was already consumed",
             "action_already_consumed",
           );
+        }
+        if (pluginDecisionInput) {
+          const claim: ToolApprovalClaim = {
+            actionRequestId: claimed.id, invocationId: storedInvocation.id, claimedAt: claimed.updatedAt,
+          };
+          try {
+            if (tool.risk !== "read") await bindVerifiedApprovalArguments(storedInvocation, claim, storedParameters);
+            await rejectPluginDenial(
+              pluginDecisionInput,
+              await policyService.admitInvocation(pluginDecisionInput, storedInvocation.id, claim),
+            );
+          } catch (error) {
+            await releaseToolApproval(db, claim);
+            throw error;
+          }
         }
         await reflectToolActionInteractionLifecycle({
           actionRequestId: claimed.id,
