@@ -1,7 +1,7 @@
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { subscribeDeliveryWork, DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { randomUUID } from "node:crypto";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { agents, agentWakeupRequests, chatCompletionDeliveries as deliveries, chatTaskHandoffs as handoffs,
   companies, createDb, documents, environmentLeases, executionWorkspaces, heartbeatRuns, issueComments, issueRecoveryActions, issueThreadInteractions, issues, workspaceOperations } from "@paperclipai/db";
@@ -62,8 +62,13 @@ import { createHeartbeatQueueTestDependencies } from "./helpers/heartbeat-queue.
     await db.insert(heartbeatRuns).values({ id: earlierRunId, companyId: f.companyId, agentId: f.agentId, status: "running",
       contextSnapshot: { issueId: f.sourceId, conversationSessionGeneration: 0 } });
     await f.finish();
+    // An owner change while done advances the version without a new completion.
+    await db.update(issues).set({ statusVersion: sql`${issues.statusVersion} + 1` }).where(eq(issues.id, f.task.id));
     const [done] = await db.select().from(issues).where(eq(issues.id, f.task.id));
     await recordCompletedHandoffRead(db, { companyId: f.companyId, agentId: f.agentId, runId: earlierRunId, task: done });
+    // Unrelated replies from other turns come first and must not hide the report.
+    await db.insert(issueComments).values(Array.from({ length: 25 }, (_, index) => ({ companyId: f.companyId, issueId: f.sourceId,
+      authorAgentId: f.agentId, createdByRunId: f.runId, body: `Other update ${index}`, createdAt: new Date(Date.now() + 500) })));
     const [reply] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.sourceId, authorAgentId: f.agentId,
       createdByRunId: earlierRunId, body: `The draft is finished: [${identifier}](/CHAT/issues/${identifier}).`, createdAt: new Date(Date.now() + 1000) }).returning();
     const prepared = await f.run();
