@@ -77,6 +77,7 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
 
 import { createPromptContextFixture } from "@paperclipai/adapter-utils/test-fixtures/prompt-context";
 import { execute } from "./execute.js";
+import { sessionCodec } from "./index.js";
 
 describe("codex remote execution", () => {
   const cleanupDirs: string[] = [];
@@ -156,13 +157,16 @@ describe("codex remote execution", () => {
     try {
       const first = await execute({ ...ctx, runId: "first", runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: "task-one" } });
       expect(first.sessionId).toBe("ssh-thread");
+      const saved = sessionCodec.deserialize(JSON.parse(JSON.stringify(sessionCodec.serialize(first.sessionParams!))))!;
+      expect(saved).toMatchObject({ remoteExecution: first.sessionParams!.remoteExecution,
+        sshCodexConversationId: first.sessionParams!.sshCodexConversationId, sshCodexAccountScope: first.sessionParams!.sshCodexAccountScope });
       expect(await readFile(path.join(home, "auth.json"), "utf8")).toBe(refreshed);
       await writeFile(path.join(secondHome, "auth.json"), refreshed);
       expect(await readdir(firstRemoteHome!)).toEqual(expect.arrayContaining(["sessions", "state_5.sqlite"]));
       expect(await readdir(firstRemoteHome!)).not.toContain("auth.json");
       const second = execute({ ...ctx, runId: "second", config: { ...ctx.config,
         managedAiConnection: { ...ctx.config.managedAiConnection, identity: "generation-two" }, env: { CODEX_HOME: secondHome, OPENAI_API_KEY: "" } },
-        runtime: { sessionId: first.sessionId!, sessionParams: first.sessionParams!, sessionDisplayId: first.sessionId!, taskKey: "task-one" } });
+        runtime: { sessionId: first.sessionId!, sessionParams: saved, sessionDisplayId: first.sessionId!, taskKey: "task-one" } });
       if (fails) await expect(second).rejects.toThrow("fixture provider failed");
       else expect((await second).sessionId).toBe("ssh-thread");
       expect(calls).toBe(2);
