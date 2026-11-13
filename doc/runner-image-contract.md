@@ -226,16 +226,55 @@ the committed files, before any step that rewrites `pnpm-lock.yaml`.
 - `build_contexts`: one `--build-context` value on each line, which replace
   the `runner-artifacts` and `runner-artifacts-slim` stages;
 - `labels`: `io.paperclip.runner.image` and
-  `io.paperclip.runner.inputs-digest`, for the image that copies the Runner.
+  `io.paperclip.runner.inputs-digest`, for the image that copies the Runner;
+- `build_args`: `PAPERCLIP_RUNNER_EXPECT_INPUTS_DIGEST=<digest>`, the build
+  argument with which a build checks the Runner it is given.
 
 `published` needs a complete publication whose full index names these inputs
-and both platforms. Every other answer is `inline`, with the last four values
+and both platforms. Every other answer is `inline`, with the last five values
 empty: the lockfile is behind the Runner's manifests (`lock-behind`), the
 image does not exist (`absent`), a publication is `incomplete` or `broken`,
 the full index does not match (`mismatch`), or the registry refused, failed
-or could not be reached (`unknown`). An inline build runs the Runner stages
-itself and carries neither label. The command does not wait for a publication
-and does not verify the attestation of the image.
+or could not be reached (`unknown`). A tree whose `Dockerfile` declares no
+`PAPERCLIP_RUNNER_EXPECT_INPUTS_DIGEST` argument is `inline` too
+(`unsupported`): its build could not refuse a Runner of other inputs, so
+`inputs` runs no build for it. An inline build runs the Runner stages itself
+and carries neither label. For an `inline` answer `resolve` prints a notice
+with the reason. The command does not verify the attestation of the image:
+the workflow that uses the answer does.
+
+### Waiting for a publication
+
+A `master` push starts its own run of `.github/workflows/runner-image.yml`,
+which may still be publishing when an image build of the same commit asks.
+`resolve --dir "$dir" --wait` is for that build. When the first answer is
+`absent` or `incomplete`, it lists the runs of that workflow for the push of
+`GITHUB_SHA` to `master` (the Actions API, with `GITHUB_TOKEN` and
+`actions: read`) and looks again when they end. Only a run of the `push`
+event on `master` in this repository counts: a run of the same commit for a
+pull request, for the weekly schedule or from a manual start publishes
+nothing and is never waited for. Every other first answer is final and starts
+no wait.
+
+- **A run, not a time.** When every run of the commit has completed, the
+  command looks up the image once more, and that answer is final. A run that
+  failed, was cancelled, or published nothing because the lockfile is behind
+  ends the wait as soon as it ends.
+- **Published before the run ends.** While a run is in progress the command
+  looks up the image every 30 seconds. The wait ends when the image is
+  published, not when the last job of the run ends.
+- **Not listed yet.** A run can be missing from the list just after the push.
+  The command looks for it for two minutes, measured from the start of the
+  wait. A commit with no run by then is not the head of a `master` push.
+- **Limit.** The wait ends 40 minutes after the push
+  (`RUNNER_IMAGE_WAIT_MINUTES` in the script). The push is the creation time
+  of the oldest run of the commit, so a build that starts late waits less, and
+  one that starts after the limit looks once and does not wait.
+- **Actions API.** Three failed requests in a row end the wait. Without a
+  token or a full commit SHA there is no wait.
+- **Never an error.** After every ending the command looks up the image one
+  last time. Without an image the answer is `inline`, with the reason of that
+  lookup and what the wait saw.
 
 ## Publication
 
