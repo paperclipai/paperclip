@@ -57,6 +57,7 @@ import { createWorkspaceRestoreTeardown } from "@paperclipai/adapter-utils/works
 import { buildLocalAdapterTestProbeEnv } from "./probe-env.js";
 import {
   CLAUDE_EDGE_REJECTED_ERROR_CODE,
+  type ClaudeEdgeFailureEvidence,
   describeClaudeEdgeFailure,
   detectClaudeEdgeFailure,
   detectClaudeLoginRequired,
@@ -446,9 +447,48 @@ const CLAUDE_AUTH_REQUIRED_ERROR_CODE = "claude_auth_required";
  * prompt. Provider diagnostics stay intact; the generic terminal-access
  * fallback instead explains that Claude needs sign-in.
  */
+/** Keep only the short, sanitised edge evidence; never the provider page. */
+function scrubClaudeAcpEdgeFailure(
+  result: AdapterExecutionResult,
+  evidence: ClaudeEdgeFailureEvidence,
+): AdapterExecutionResult {
+  const resultJson = result.resultJson ?? null;
+  const terminal = resultJson?.terminalSessionFailure;
+  return {
+    ...result,
+    errorMessage: describeClaudeEdgeFailure(evidence),
+    ...(resultJson && terminal && typeof terminal === "object"
+      ? {
+          resultJson: {
+            ...resultJson,
+            terminalSessionFailure: {
+              ...(terminal as Record<string, unknown>),
+              title: "Claude API edge rejection",
+              details: evidence.excerpt || null,
+            },
+            edgeFailure: evidence,
+          },
+        }
+      : {}),
+  };
+}
+
 export function mapClaudeAcpAuthErrorCode(
   result: AdapterExecutionResult,
 ): AdapterExecutionResult {
+  if (result.errorCode === CLAUDE_EDGE_REJECTED_ERROR_CODE) {
+    // Classified from the typed terminal failure. Its title and details can
+    // still carry the edge page, so replace them with the short evidence.
+    const resultJson = result.resultJson ?? null;
+    const terminal = resultJson && typeof resultJson.terminalSessionFailure === "object"
+      ? resultJson.terminalSessionFailure as { title?: unknown; details?: unknown } | null
+      : null;
+    const text = [terminal?.title, terminal?.details, result.errorMessage]
+      .filter((part): part is string => typeof part === "string" && part.length > 0)
+      .join("\n");
+    const edgeFailure = text ? detectClaudeEdgeFailure({ parsed: null, stdout: "", stderr: text }) : null;
+    return edgeFailure ? scrubClaudeAcpEdgeFailure(result, edgeFailure) : result;
+  }
   if (result.errorCode !== ACPX_AUTH_REQUIRED_ERROR_CODE) return result;
   // The shared engine labels any thrown "auth" text as auth required. An edge
   // rejection wrapped in "Failed to authenticate" is not a credential failure.
@@ -457,10 +497,9 @@ export function mapClaudeAcpAuthErrorCode(
     : null;
   if (edgeFailure) {
     return {
-      ...result,
+      ...scrubClaudeAcpEdgeFailure(result, edgeFailure),
       errorCode: CLAUDE_EDGE_REJECTED_ERROR_CODE,
       errorFamily: "transient_upstream",
-      errorMessage: describeClaudeEdgeFailure(edgeFailure),
     };
   }
   return {
