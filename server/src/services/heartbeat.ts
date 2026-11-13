@@ -4388,6 +4388,7 @@ export function heartbeatService(
               logger.warn({ err, runId: run.id }, "failed to deliver settled tool reviews after execution cleanup");
             });
         }
+        heartbeatQueue.releaseClaimBackoffsForTask(latestRun ?? run);
         await startNextQueuedRunForAgent(run.agentId);
         if (latestRun && isHeartbeatRunTerminalStatus(latestRun.status)) {
           await notifyOtherAgentsQueuedOnSettledIssue(db, latestRun).catch(err => {

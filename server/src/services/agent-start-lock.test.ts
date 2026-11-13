@@ -95,6 +95,21 @@ describe("agent dispatch passes", () => {
     expect(await dispatchForAgent(agentId, spec(false, async () => undefined))).toBe(3);
   });
 
+  it("lets a trigger stop a hung pass by the pass's start time when its deadline timer has not run", async () => {
+    vi.useFakeTimers({ toFake: ["performance"] });
+    const agentId = randomUUID();
+    const { stats, spec } = meter();
+    let hungSignal: AbortSignal | null = null;
+    void dispatchForAgent(agentId, spec(false, (signal) => {
+      hungSignal = signal;
+      return new Promise<void>(() => undefined);
+    }));
+    vi.advanceTimersByTime(AGENT_DISPATCH_PASS_DEADLINE_MS);
+    expect(await dispatchForAgent(agentId, spec(false, async () => undefined))).toBe(2);
+    expect(hungSignal!.aborted).toBe(true);
+    expect(stats.passes).toBe(2);
+  });
+
   it("does not wait on itself when a pass triggers its own agent", async () => {
     const agentId = randomUUID();
     const { stats, spec } = meter();

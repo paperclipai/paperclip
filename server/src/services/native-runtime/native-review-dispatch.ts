@@ -38,7 +38,7 @@ export async function claimQueuedNativeReviewRun(db: Db, input: {
     if ((run.contextSnapshot as Record<string, unknown> | null)?.issueId !== issueId) return null;
     await withExternalAdmissionGuard(tx, run.companyId, run.agentId, async () => {
       await assertNoExternalOverlap(tx, run.companyId, run.agentId);
-      await assertAgentRunSlotFree(tx, run.companyId, run.agentId);
+      await assertAgentRunSlotFree(tx, run);
     });
     const locked = await claimNativeReviewExecutionLock(tx as unknown as Db, {
       companyId: run.companyId, issueId, agentId: run.agentId, runId: run.id,

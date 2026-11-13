@@ -13,7 +13,7 @@ export type AgentDispatchPass<R, T> = {
 
 type Deferred<T> = { promise: Promise<T>; resolve(value: T): void; reject(err: unknown): void };
 type FollowUp = { request: unknown; spec: AgentDispatchPass<unknown, unknown>; done: Deferred<unknown> };
-type AgentDispatchState = { followUp: FollowUp | null };
+type AgentDispatchState = { followUp: FollowUp | null; startedAtMs: number; expire(): void };
 
 const dispatchStates = new Map<string, AgentDispatchState>();
 const dispatchingAgent = new AsyncLocalStorage<string>();
@@ -38,7 +38,11 @@ export function outsideAgentDispatch<T>(fn: () => T): T {
 }
 
 export function dispatchForAgent<R, T>(agentId: string, spec: AgentDispatchPass<R, T>): Promise<T> {
-  const state = dispatchStates.get(agentId);
+  let state = dispatchStates.get(agentId);
+  if (state && performance.now() - state.startedAtMs >= AGENT_DISPATCH_PASS_DEADLINE_MS) {
+    state.expire();
+    state = dispatchStates.get(agentId);
+  }
   if (!state) return startPass(agentId, spec, spec.request);
   if (state.followUp) {
     state.followUp.request = spec.merge(state.followUp.request as R, spec.request);
@@ -51,10 +55,10 @@ export function dispatchForAgent<R, T>(agentId: string, spec: AgentDispatchPass<
 }
 
 function startPass<R, T>(agentId: string, spec: AgentDispatchPass<R, T>, request: R): Promise<T> {
-  const state: AgentDispatchState = { followUp: null };
-  dispatchStates.set(agentId, state);
   const controller = new AbortController();
   const expired = deferred<void>();
+  const state: AgentDispatchState = { followUp: null, startedAtMs: performance.now(), expire: () => expire() };
+  dispatchStates.set(agentId, state);
   let released = false;
   const release = () => {
     if (released) return;
@@ -64,13 +68,16 @@ function startPass<R, T>(agentId: string, spec: AgentDispatchPass<R, T>, request
     state.followUp = null;
     if (next) startPass(agentId, next.spec, next.request).then(next.done.resolve, next.done.reject);
   };
-  const deadline = setTimeout(() => {
+  const expire = () => {
+    if (released) return;
+    clearTimeout(deadline);
     logger.warn({ agentId, deadlineMs: AGENT_DISPATCH_PASS_DEADLINE_MS },
       "queued-run dispatch pass passed its deadline; it stops claiming and the next pass may start");
     controller.abort();
     release();
     expired.resolve();
-  }, AGENT_DISPATCH_PASS_DEADLINE_MS);
+  };
+  const deadline = setTimeout(expire, AGENT_DISPATCH_PASS_DEADLINE_MS);
   deadline.unref?.();
   const pass = dispatchingAgent.run(agentId, () => spec.run(request, controller.signal)).then(
     async ({ value, settle }) => {

@@ -234,4 +234,56 @@ suite("queued-run dispatch under a trigger burst", () => {
       await heartbeat.drainActiveRunExecutions();
     }
   }, 60_000);
+
+  async function passesSettle() {
+    let last = -1;
+    await vi.waitFor(() => {
+      const settled = passes.started === last && !passes.active;
+      last = passes.started;
+      expect(settled).toBe(true);
+    }, { timeout: 30_000, interval: 1_000 });
+    return passes.started;
+  }
+
+  it("stops chaining passes once every refused run was tried", async () => {
+    passes.started = 0; passes.active = 0; passes.peak = 0;
+    const agentId = await seedAgent();
+    const otherTask = await task(agentId);
+    for (let index = 0; index < 60; index += 1) {
+      await queuedContinuation(agentId, { minutesAgo: 180 - index, wakeReason: "issue_continuation_needed", sourceIssueId: otherTask.id });
+    }
+    const heartbeat = heartbeatService(db);
+    try {
+      await heartbeat.resumeQueuedRunsForAgent(companyId, agentId);
+      expect(await passesSettle()).toBe(3);
+      expect(passes.peak).toBe(1);
+    } finally {
+      await heartbeat.drainActiveRunExecutions();
+    }
+  }, 120_000);
+
+  it("starts runnable work queued behind more refused person runs than one pass tries", async () => {
+    held.reset();
+    passes.started = 0; passes.active = 0; passes.peak = 0;
+    const agentId = await seedAgent();
+    const otherTask = await task(agentId);
+    for (let index = 0; index < 30; index += 1) {
+      await queuedContinuation(agentId, { minutesAgo: 90 - index, wakeReason: "task_retry", sourceIssueId: otherTask.id });
+    }
+    const runnable: string[] = [];
+    for (let index = 0; index < 3; index += 1) {
+      runnable.push((await queuedContinuation(agentId, { minutesAgo: 30 - index, wakeReason: "issue_assigned" })).id);
+    }
+    const heartbeat = heartbeatService(db);
+    try {
+      await heartbeat.resumeQueuedRunsForAgent(companyId, agentId);
+      expect(await passesSettle()).toBeLessThanOrEqual(3);
+      const started = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
+        .where(sql`${heartbeatRuns.id} in (${sql.join(runnable.map(id => sql`${id}::uuid`), sql`, `)}) and ${heartbeatRuns.startedAt} is not null`);
+      expect(started).toHaveLength(runnable.length);
+    } finally {
+      held.release();
+      await heartbeat.drainActiveRunExecutions();
+    }
+  }, 120_000);
 });
