@@ -418,7 +418,6 @@ async function handleRequest(
   const received = params.arguments ?? {};
   const admitted = admitToolInput(validator, received);
   const { args } = admitted;
-  if (admitted.coercedPaths) context.diagnoseInputCoercion(tool, callId, admitted.coercedPaths);
   const rejection = !admitted.schemaValid
     ? toolInputError(validator, args)
     // The completion tool's yielded-only continuation rule is not part of its
@@ -510,6 +509,7 @@ async function handleRequest(
       return withReceipt({ isError: true, content: [{ type: "text", text: safeError(error) }] });
     });
   if (!existing) {
+    if (admitted.coercedPaths) context.diagnoseInputCoercion(tool, callId, admitted.coercedPaths);
     context.calls.set(callKey, { fingerprint, promise: execution });
     context.controllers.set(callKey, controller!);
     void execution

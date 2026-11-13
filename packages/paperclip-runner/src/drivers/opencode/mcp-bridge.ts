@@ -364,7 +364,6 @@ async function handleRequest(
   const validator = context.validators.get(tool);
   const admitted = admitToolInput(validator, received);
   const { args, schemaValid } = admitted;
-  if (admitted.coercedPaths) context.diagnoseInputCoercion(tool, callId, admitted.coercedPaths);
   // The completion tool's yielded-only continuation rule is not part of its
   // advertised schema; some hosts hide a root conditional's arguments.
   const variantError = schemaValid && tool === PRP_COMPLETION_TOOL_NAME ? toolInputVariantError(tool, args) : null;
@@ -399,6 +398,7 @@ async function handleRequest(
     context.privateToolNames.has(tool) ? context.privateToolTimeoutMs : context.timeoutMs,
   );
   if (!existing) {
+    if (admitted.coercedPaths) context.diagnoseInputCoercion(tool, callId, admitted.coercedPaths);
     if (context.calls.size >= 2_048) context.calls.delete(context.calls.keys().next().value!);
     context.calls.set(callId, { fingerprint, promise: execution, waiting: new Set() });
     context.controllers.set(callId, controller!);

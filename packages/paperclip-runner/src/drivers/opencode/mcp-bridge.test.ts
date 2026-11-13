@@ -476,6 +476,24 @@ describe("repeated identical tool input rejections", () => {
     expect(JSON.stringify(coerced)).not.toContain("wait");
   });
 
+  it("records a coercion only for a newly admitted call, never for a rejected or replayed one", async () => {
+    const handler = vi.fn(async () => ({ accepted: true }));
+    const diagnostics: string[] = [];
+    const bridge = await startOpenCodeMcpBridge({ handler, onDiagnostic: message => diagnostics.push(message) });
+    bridges.push(bridge);
+    const coercions = () => diagnostics.map(message => JSON.parse(message)).filter(entry => entry.schema === "paperclip.runner.tool-input-coerced/v1");
+    const report = { summary: "s", completionClaim: { contractRevision: "r", objectiveSatisfied: true, criteria: [], remainingWork: [] }, evidence: [], verification: [] };
+    const continuation = JSON.stringify({ kind: "response_wake", summary: "wait", idempotencyKey: "k" });
+    const rejected = await call(bridge, "r1", { ...report, reportedWorkDisposition: "done", continuation }, "paperclip_finish");
+    expect(rejected.result.isError).toBe(true);
+    expect(coercions()).toEqual([]);
+    const sent = { ...report, reportedWorkDisposition: "yielded", continuation };
+    expect((await call(bridge, "y1", sent, "paperclip_finish")).result.isError).toBeUndefined();
+    expect((await call(bridge, "y1", sent, "paperclip_finish")).result.isError).toBeUndefined();
+    expect(handler).toHaveBeenCalledOnce();
+    expect(coercions()).toHaveLength(1);
+  });
+
   it("never parses text in a field that accepts text, nor text that is not an object", async () => {
     const handler = vi.fn(async () => ({ ok: true }));
     const bridge = await startOpenCodeMcpBridge({ tools: [{ name: "note", inputSchema: {
