@@ -13,8 +13,8 @@
  * no scripts) into `.artifact-sdk/`. Without it, the workspace SDK is used.
  */
 import { createHash } from "node:crypto";
-import { execFileSync } from "node:child_process";
-import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { closeSync, cpSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
@@ -84,12 +84,35 @@ cpSync(join(root, "README.md"), join(stage, "README.md"));
 const tarName = `paperclip-plugin-ntfy-notifier-${pkg.version}.tgz`;
 const tarPath = join(outRoot, tarName);
 // Deterministic tarball: sorted entries, fixed mtime/owner, no gzip timestamp.
-execFileSync("sh", [
-  "-c",
-  'tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner --mode="u+rwX,go+rX,go-w" -cf - package | gzip -n -9 > "$1"',
-  "sh",
-  tarPath,
-], { cwd: outRoot, stdio: "inherit" });
+// tar and gzip run as separate processes so a failure of either one stops the
+// build instead of producing a checksum for an empty or partial archive.
+const plainTar = join(outRoot, "package.tar");
+function fail(message) {
+  rmSync(plainTar, { force: true });
+  rmSync(tarPath, { force: true });
+  rmSync(`${tarPath}.sha256`, { force: true });
+  console.error(`build-artifact: ${message}`);
+  process.exit(1);
+}
+function run(cmd, args, stdout) {
+  const result = spawnSync(cmd, args, { cwd: outRoot, stdio: ["ignore", stdout, "inherit"] });
+  if (result.error) fail(`could not run ${cmd}: ${result.error.message}`);
+  if (result.status !== 0) {
+    fail(`${cmd} failed (${result.signal ? `signal ${result.signal}` : `exit status ${result.status}`})`);
+  }
+}
+const tarCheck = spawnSync("tar", ["--version"], { encoding: "utf8" });
+if (tarCheck.error || tarCheck.status !== 0 || !/GNU tar/.test(tarCheck.stdout ?? "")) {
+  fail("GNU tar is required for a reproducible archive (--sort=name, --mtime, --owner). Put GNU tar first on PATH as `tar` (on macOS: `brew install gnu-tar` and use its gnubin directory).");
+}
+run("tar", ["--sort=name", "--mtime=@0", "--owner=0", "--group=0", "--numeric-owner", "--mode=u+rwX,go+rX,go-w", "-cf", plainTar, "package"], "inherit");
+const tarFd = openSync(tarPath, "w");
+try {
+  run("gzip", ["-n", "-9", "-c", plainTar], tarFd);
+} finally {
+  closeSync(tarFd);
+}
+rmSync(plainTar, { force: true });
 
 const sha = createHash("sha256").update(readFileSync(tarPath)).digest("hex");
 writeFileSync(`${tarPath}.sha256`, `${sha}  ${tarName}\n`);
