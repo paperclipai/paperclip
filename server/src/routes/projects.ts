@@ -415,6 +415,11 @@ export function projectRoutes(db: Db) {
         ...collectProjectWorkspaceCommandPaths(workspace, "workspace"),
       ],
     );
+    assertNoAgentCompletionRequirementSupply(
+      req,
+      workspace?.defaultCompletionRequirement,
+      "the workspace default completion requirement",
+    );
     await assertNoManagedSandboxWorkspacePath(workspace);
     if (projectData.env !== undefined) {
       projectData.env = await secretsSvc.normalizeEnvBindingsForPersistence(
