@@ -305,7 +305,7 @@ describePostgres("a continuation that fails before doing any work is continued a
   } as const;
   const causes = { setup: "setup_failed", restart: "process_lost", permanent: "low_trust_boundary_mismatch", person: "codex_auth_required" } as const;
   const decision = (kind: keyof typeof runKinds, cause: keyof typeof causes) =>
-    cause === "restart" || (kind !== "firstAssignment" && cause === "setup");
+    cause === "restart" || (kind === "automatic" && cause === "setup");
   it.each(Object.keys(runKinds).flatMap(kind => Object.keys(causes).map(cause => [kind, cause] as [keyof typeof runKinds, keyof typeof causes])))(
     "every entry point makes the same decision for a %s run that failed with the %s cause", async (kind, cause) => {
     resetBacklogContinuationPacingForTests(db);
@@ -333,7 +333,7 @@ describePostgres("a continuation that fails before doing any work is continued a
     const sweep = await recovery.assignedWork.checkIssue({ companyId: f.companyId, issueId: escalated.id });
     expect(sweep?.outcome === "left_to_hold_owner").toBe(!continues);
     const fresh = await continuationsOf(escalatedRun.id);
-    if (continues && kind !== "firstAssignment") {
+    if (continues && kind === "automatic") {
       expect(fresh).toHaveLength(1);
       expect(queue.calls).not.toContain(escalated.id);
     }
@@ -343,7 +343,7 @@ describePostgres("a continuation that fails before doing any work is continued a
       expect((await taskRow(escalated.id)).status).toBe("blocked");
     }
 
-    if (kind !== "firstAssignment" && cause !== "restart") {
+    if (kind === "automatic" && cause !== "restart") {
       const open = await f.task();
       const failed = await f.run(open.id, { errorCode, error: errorCode, contextSnapshot: runKinds[kind] });
       await recovery.reconcileStrandedAssignedIssues({ companyId: f.companyId, issueId: open.id, skipRelatedRecovery: true });

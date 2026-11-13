@@ -35,7 +35,6 @@ export function isPersonOwnedFailureCode(code: string | null | undefined): boole
 
 export const AUTOMATIC_CONTINUATION_WAKE_REASONS = [
   "issue_continuation_needed", "issue_assignment_recovery", "issue_recovery_action_restored", "transient_failure_retry",
-  "task_retry",
 ] as const;
 
 export const PERMANENT_FAILURE_CODES = [
@@ -84,8 +83,9 @@ export function continuationCauseIsSystemOwned(run: Pick<ClassifiedRun, "status"
 
 export function isRecoveryRun(run: Pick<ClassifiedRun, "retryOfRunId" | "scheduledRetryReason" | "contextSnapshot">): boolean {
   const context = object(run.contextSnapshot);
+  if (context.explicitUserContinuation || context.wakeReason === "task_retry") return false;
   return Boolean(run.retryOfRunId || run.scheduledRetryReason || context.previousRunId || context.retryReason
-    || context.freshContinuationIsolation || context.explicitUserContinuation
+    || context.freshContinuationIsolation
     || (AUTOMATIC_CONTINUATION_WAKE_REASONS as readonly unknown[]).includes(context.wakeReason));
 }
 
@@ -123,10 +123,11 @@ export function continuationCauseIsSystemOwnedSql(alias: string): SQL {
 export function recoveryRunSql(alias: string): SQL {
   const column = (name: string) => sql.raw(`${alias}.${name}`);
   const context = column("context_snapshot");
-  return sql`(${column("retry_of_run_id")} is not null or ${column("scheduled_retry_reason")} is not null
-    or ${context} ? 'previousRunId' or ${context} ? 'retryReason' or ${context} ? 'freshContinuationIsolation'
-    or ${context} ? 'explicitUserContinuation'
-    or ${context}->>'wakeReason' in (${list(AUTOMATIC_CONTINUATION_WAKE_REASONS)}))`;
+  return sql`(not coalesce(${context} ? 'explicitUserContinuation', false)
+    and coalesce(${context}->>'wakeReason', '') <> 'task_retry'
+    and (${column("retry_of_run_id")} is not null or ${column("scheduled_retry_reason")} is not null
+      or ${context} ? 'previousRunId' or ${context} ? 'retryReason' or ${context} ? 'freshContinuationIsolation'
+      or ${context}->>'wakeReason' in (${list(AUTOMATIC_CONTINUATION_WAKE_REASONS)})))`;
 }
 
 export function continuesAutomaticallySql(alias: string): SQL {
