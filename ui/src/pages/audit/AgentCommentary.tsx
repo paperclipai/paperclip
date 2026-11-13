@@ -51,6 +51,7 @@ function UpvoteButton({ companyId, entry, canVote, className }: { companyId: str
   const queryClient = useQueryClient();
   const vote = useMutation({
     mutationFn: (voted: boolean) => voted ? agentCommentaryApi.vote(companyId, entry.id) : agentCommentaryApi.removeVote(companyId, entry.id),
+    meta: { errorToast: true },
     onSuccess: async (state) => {
       await queryClient.cancelQueries({ queryKey: queryKeys.agentCommentary.all(companyId), predicate: (query) => query.state.data !== undefined });
       queryClient.setQueriesData({ queryKey: queryKeys.agentCommentary.all(companyId) }, (data: unknown) => applyVote(data, state));

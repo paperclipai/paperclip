@@ -169,4 +169,16 @@ describe("Commentary links and pagination", () => {
     expect(dialogUpvote?.getAttribute("aria-pressed")).toBe("true");
     expect(dialogUpvote?.textContent).toBe("3");
   });
+
+  it("sends a failed vote to the readable error toast", async () => {
+    mocks.vote.mockRejectedValueOnce(new Error("Commentary not found"));
+    render();
+    const upvote = () => container.querySelector<HTMLButtonElement>('li button[aria-pressed]');
+    await vi.waitFor(() => expect(upvote()?.textContent).toBe("2"));
+    flushSync(() => upvote()!.click());
+    await vi.waitFor(() => expect(client.getMutationCache().getAll()[0]?.state.status).toBe("error"));
+    expect(client.getMutationCache().getAll()[0]?.meta).toEqual({ errorToast: true });
+    expect(upvote()?.getAttribute("aria-pressed")).toBe("false");
+    expect(upvote()?.textContent).toBe("2");
+  });
 });
