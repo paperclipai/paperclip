@@ -231,7 +231,7 @@ suite("automatic-run brake", () => {
     expect((await brake.refresh(db, companyId)).state).toBe("closed");
     const continuations = [...await queuedAutomatic(companyId, agentId!, 20), ...await queuedAutomatic(companyId, otherAgent!, 20)];
     expect(await heldCount(createAutomaticRunBrake(), continuations)).toBe(40);
-    expect(await brake.creationHeldUntil(db, companyId)).toBeNull();
+    expect(await brake.creationHeldUntil(db, companyId, { issueId: randomUUID(), sourceRunId: randomUUID() })).toBeNull();
 
     await db.update(heartbeatRuns).set({ status: "failed", errorCode: "environment_provider_unavailable", executionStage: "preparing",
       startedAt: sql`now() - interval '20 seconds'`, finishedAt: sql`now() - interval '5 seconds'`,
@@ -404,7 +404,7 @@ suite("automatic-run brake", () => {
     const brake = createAutomaticRunBrake({ loadRules });
     const queued = await queuedAutomatic(companyId, agentId!, 3);
     expect((await brake.refresh(db, companyId)).state).toBe("closed");
-    expect(await brake.creationHeldUntil(db, companyId)).toBeNull();
+    expect(await brake.creationHeldUntil(db, companyId, { issueId: randomUUID(), sourceRunId: randomUUID() })).toBeNull();
     expect(await heldCount(brake, queued)).toBe(3);
     expect(await brakeRow(companyId)).toBeUndefined();
   }, 60_000);

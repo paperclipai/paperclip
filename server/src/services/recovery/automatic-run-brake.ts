@@ -207,7 +207,7 @@ function trips(evidence: Evidence) {
     && evidence.failedBeforeStarting / evidence.counted >= AUTOMATIC_RUN_BRAKE.failureShare);
 }
 
-export type AutomaticWork = { sourceRunId?: string | null; issueId?: string | null };
+export type AutomaticWork = { issueId: string; sourceRunId: string | null };
 
 type CacheEntry = { snapshot: AutomaticRunBrakeSnapshot; readAt: number; skewMs: number; heldUntil: number };
 
@@ -380,7 +380,7 @@ export function createAutomaticRunBrake(options: { loadRules?: () => Promise<Aut
   }
 
   async function isPersonWork(db: Db, companyId: string, work: AutomaticWork) {
-    if (!work.issueId || !work.sourceRunId) return true;
+    if (!work.sourceRunId) return true;
     const personReasons = sql.join([...PERSON_WAKE_REASONS].map(reason => sql`${reason}`), sql`, `);
     const [asked] = [...await db.execute<{ asked: boolean }>(sql`
       with source as (select max(r.finished_at) as finished_at from heartbeat_runs r
@@ -399,7 +399,7 @@ export function createAutomaticRunBrake(options: { loadRules?: () => Promise<Aut
     return !rules || (await rules.listPersonOriginSourceRunIds(db, companyId, [work.sourceRunId])).includes(work.sourceRunId);
   }
 
-  async function creationHeldUntil(db: Db, companyId: string, work: AutomaticWork = {}): Promise<Date | null> {
+  async function creationHeldUntil(db: Db, companyId: string, work: AutomaticWork): Promise<Date | null> {
     const entry = await current(db, companyId);
     if (entry.snapshot.state !== "open") return null;
     if (await isPersonWork(db, companyId, work)) return null;
@@ -500,7 +500,7 @@ export function createAutomaticRunBrake(options: { loadRules?: () => Promise<Aut
 
 export const automaticRunBrake = createAutomaticRunBrake();
 
-export function automaticRunCreationHeldUntil(db: Db, companyId: string, work: AutomaticWork = {}) {
+export function automaticRunCreationHeldUntil(db: Db, companyId: string, work: AutomaticWork) {
   return automaticRunBrake.creationHeldUntil(db, companyId, work);
 }
 
