@@ -8,7 +8,7 @@ describe("provider task background work", () => {
       registered = task;
       return { ready: Promise.resolve(), wake: () => undefined, stop: async () => undefined };
     } };
-    const wakeup = vi.fn(async () => null);
+    const wakeup = vi.fn(async (_agentId: string, _options: { idempotencyKey: string }) => null);
     const gateway = {
       pollDueMcpTasks: vi.fn(async (input: { wake?: (task: never) => Promise<void> }) => {
         for (const wakeKey of ["mcp-task:t1:input:1", "mcp-task:t1:settled"]) {
@@ -20,7 +20,7 @@ describe("provider task background work", () => {
     };
     registerMcpTaskWork(coordinator as never, gateway as never, { wakeup } as never, () => true);
     await registered!.run(new AbortController().signal);
-    expect(wakeup.mock.calls.map(([, options]) => (options as { idempotencyKey: string }).idempotencyKey))
+    expect(wakeup.mock.calls.map(([, options]) => options.idempotencyKey))
       .toEqual(["mcp-task:t1:input:1", "mcp-task:t1:settled"]);
   });
 });
