@@ -153,6 +153,73 @@ suite("held interrupted preparations on the shared ownership path", () => {
     expect(audit?.details).toMatchObject({ reason: "native_bootstrap_stopped_before_provider", ownerProof: "pid_dead" });
   });
 
+  // Staging release-swap shape: a Runner preparation that was
+  // itself an automatic retry had prepared its remote workspace when the
+  // deploy's SIGTERM interrupted it. Workspace settlement then handed the
+  // workspace on at its saved version (the run never changed it), which turns
+  // the run's reference to `saved`. No restore is owed, but the preparation
+  // proof still demanded a workspace-repair receipt that only exists after a
+  // copy-back, so the hold never settled, every automatic continuation was
+  // refused ("could not start yet"), and the person's Retry waited forever on
+  // previous_execution_unverified.
+  async function shutdownPreparationWithUnchangedWorkspace(options: { released?: boolean } = {}) {
+    const released = options.released !== false;
+    const f = await interruptedPreparation({ run: { scheduledRetryAttempt: 1, scheduledRetryReason: "transient_failure" } });
+    const workspaceId = randomUUID(), leaseId = randomUUID(), snapshotId = randomUUID();
+    const source = { kind: "git", repoUrl: "https://github.com/paperclipai/paperclip.git", ref: "a".repeat(40),
+      branchMode: "create", branchName: "IPH-1-change" };
+    await db.insert(executionWorkspaces).values({ id: workspaceId, companyId, sourceIssueId: f.issueId, mode: "isolated_workspace",
+      strategyType: "git_worktree", name: "Remote workspace", status: "active", providerType: "git_worktree",
+      metadata: {
+        remoteWorkspace: { schema: "paperclip.remote-workspace.v1", epoch: 4, source, location: null, snapshotId,
+          dirty: !released, writerRunId: released ? null : f.runId },
+        remoteWorkspaceUnchangedBaseline: { schema: "paperclip.remote-workspace-unchanged-baseline.v1", epoch: 4,
+          runId: f.runId, snapshotId, ...(released ? { releasedAt: new Date().toISOString() } : {}) },
+      } });
+    await db.update(heartbeatRuns).set({
+      contextSnapshot: { issueId: f.issueId, retryReason: "transient_failure",
+        executionRetryAccounting: { version: 1, failureRetries: 1, maxTurnContinuations: 0 } },
+      runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" },
+        remoteWorkspace: { schema: "paperclip.remote-workspace-run.v1", state: released ? "saved" : "prepared",
+          workspaceId, epoch: 4, leaseId, providerLeaseId: `sandbox-${leaseId}`,
+          remoteCwd: `/home/daytona/paperclip-workspace/.paperclip-workspaces/${workspaceId}-4-${leaseId}`, snapshotId } } })
+      .where(eq(heartbeatRuns.id, f.runId));
+    return { ...f, workspaceId };
+  }
+
+  it("replays a shutdown-interrupted preparation whose remote workspace was handed on unchanged", async () => {
+    heartbeatService(db);
+    const f = await shutdownPreparationWithUnchangedWorkspace();
+    expect(await getExecutionBlocker(db, companyId, f.issueId)).toMatchObject({ cause: "legacy_execution_requires_reconciliation" });
+    expect(await pass()).toMatchObject({ inProgress: 1, settled: 1 });
+    expect(await hold(f.holdId)).toMatchObject({ status: "resolved", outcome: "false_positive" });
+    expect(await getExecutionBlocker(db, companyId, f.issueId)).toBeNull();
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]).toMatchObject({ status: "in_progress" });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.runId)))
+      .toEqual([expect.objectContaining({ scheduledRetryReason: "interrupted_preparation" })]);
+  });
+
+  it("keeps the hold while the interrupted preparation still holds its remote workspace unsaved", async () => {
+    heartbeatService(db);
+    const f = await shutdownPreparationWithUnchangedWorkspace({ released: false });
+    const before = await hold(f.holdId);
+    expect((await pass())?.settled ?? 0).toBe(0);
+    expect(await hold(f.holdId)).toEqual(before);
+  });
+
+  it("starts a person's Retry of a shutdown-interrupted preparation whose remote workspace was handed on", async () => {
+    const heartbeat = heartbeatService(db);
+    const f = await shutdownPreparationWithUnchangedWorkspace();
+    const receipt = await requestTaskRetry({ db, companyId, issueId: f.issueId, actorId: "local-board",
+      actorSource: "local_implicit", idempotencyKey: randomUUID(), observedRunId: f.runId });
+    expect(receipt).toMatchObject({ accepted: true });
+    await heartbeat.resumeTaskRetry(companyId, receipt.requestId!);
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.requestId!));
+    expect(wake?.status).not.toBe("deferred_issue_execution");
+    expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.issueId, f.issueId),
+      ne(heartbeatRuns.id, f.runId)))).not.toHaveLength(0);
+  }, 60_000);
+
   it.each([
     ["provider work may have started", async () => {
       const f = await interruptedPreparation();
