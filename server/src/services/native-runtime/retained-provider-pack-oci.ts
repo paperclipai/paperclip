@@ -30,7 +30,6 @@ export type RetainedPackProvenance = {
   imageConfigDigest: string;
   transportLayerDigest: string;
   transportLayerBytes: number;
-  /** Only when the source was the Runner image: `transportLayerDigest` is then the last of these layers, `transportLayerBytes` their total. */
   runnerImage?: { inputsDigest: string; transportLayerDigests: string[] };
 };
 
@@ -170,12 +169,6 @@ export async function receiveRetainedProviderPack(input: {
   const unpacked: Unpacked = { files: new Set(), bytes: 0 };
   const provenance = { schema: "paperclip.retained-provider-pack-source.v1" as const, sourceRevision: revision, providerPackDigest: selected.digest };
 
-  // A pack that names the inputs of its Runner image came out of that image.
-  // The full image is the slim image, named by digest in the full index, plus
-  // layers that hold the transport archives and nothing else
-  // (doc/runner-image-contract.md). When the image cannot be read, the
-  // application image of the pack's revision is tried, as before. An image
-  // that can be read and does not match fails.
   const inputsDigest = selected.payload.runnerInputsDigest;
   if (typeof inputsDigest === "string" && /^[a-f0-9]{64}$/.test(inputsDigest)) {
     const runner = await (async () => {

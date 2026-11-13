@@ -116,7 +116,6 @@ async function fixture(options: { wrongCode?: boolean; unsafeOverlay?: boolean; 
     [`/v2/paperclipai/paperclip/blobs/sha256:${hash(layer)}`, layer],
   ]);
   if (options.runnerImage && options.runnerImage !== "unpublished") {
-    // The full image is the slim image's layers, then layers that hold only transport content, as BuildKit writes them.
     const kind = options.runnerImage, repository = "/v2/paperclipai/paperclip-runner";
     const stable = transportNames.filter(name => /\/[0-9]+\.tar\.zst$/.test(name)), rest = transportNames.filter(name => !stable.includes(name));
     const archives = ["provider-pack.archives"];
@@ -213,7 +212,6 @@ it("installs the exact retained pack through the real uploader on an empty host 
 const fromRunnerImage = (route: string) => route.startsWith("/v2/paperclipai/paperclip-runner/");
 const fromApplicationImage = (route: string) => route.startsWith("/v2/paperclipai/paperclip/");
 
-/** The verified source of the retained pack, as the uploader receives it. Needs no GNU tar on the host. */
 async function importedSource(input: Awaited<ReturnType<typeof fixture>>) {
   const source = await resolveProviderPackUploadSource({ root: input.current.pack, sourceDigest: input.current.manifest.digest, manifest: input.selected.manifest });
   expect(source.archiveOnly).toBe(true);
@@ -227,14 +225,12 @@ async function importedSource(input: Awaited<ReturnType<typeof fixture>>) {
 
 const transportBlobs = (input: Awaited<ReturnType<typeof fixture>>) => input.requests.filter(fromRunnerImage).filter(route => route.includes("/blobs/"));
 
-it("reads a retained pack that names its Runner image from the layers that image adds to its slim image", async () => {
+it("reads a retained pack that names its Runner image from only the layers that image adds to its slim image, and never reads the slim tag", async () => {
   const input = await fixture({ runnerImage: "published" });
   const source = await importedSource(input);
-  // Both indexes and both platform manifests, then the two transport layers: neither pack layer, and nothing from the application image.
   expect(input.requests.filter(fromRunnerImage)).toHaveLength(6);
   expect(transportBlobs(input)).toHaveLength(2);
   expect(input.requests.filter(fromApplicationImage)).toEqual([]);
-  // The slim image is read by the digest the full index names, never by its tag.
   expect(input.requests.filter(route => route.endsWith("-slim"))).toEqual([]);
   expect((await fs.readdir(path.dirname(source.root))).sort()).toEqual(["provider-pack", "provider-pack.archive.json", "provider-pack.archives"]);
   const pointer = JSON.parse(await fs.readFile(path.join(path.dirname(path.dirname(source.root)), input.selected.manifest.digest.slice(7) + ".json"), "utf8"));

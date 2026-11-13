@@ -1094,7 +1094,10 @@ for …@sha256:…`), or check out the image's `org.opencontainers.image.revisio
 The harness also requires the image's provider pack to be the one a named
 commit built: the commit in the image's `io.paperclip.runner.source-revision`
 label, or, when the image has no such label, the image's own
-`org.opencontainers.image.revision`.
+`org.opencontainers.image.revision`. An image that copied its Runner names
+the commit that built it in that label; an image that built its own Runner
+has none. An empty label counts as absent, because an image can empty a label
+of its base but cannot drop it.
 
 **Setup** reuses runner-e2e: the bundled Daytona plugin (`installFixtureDaytonaProvider`,
 prepared outside the root workspace as CI does), the `daytona` environment

@@ -239,6 +239,9 @@ layers that hold transport content and nothing else.
   them.
 - The importer then checks every archive against the pack's manifest, as for
   any other source.
+- The record the server keeps of the source names the digest of inputs and
+  every transport layer under `runnerImage`. Its `transportLayerDigest` is
+  then the last of those layers and `transportLayerBytes` their total.
 
 When the image cannot be read (a tag or the slim index does not exist, or the
 registry refuses a request), the server reads the application image tagged

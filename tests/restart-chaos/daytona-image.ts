@@ -28,7 +28,6 @@ export const RUNNERD_PATH = "usr/local/bin/paperclip-runnerd";
 export const PROVIDER_PACK_PATH = "opt/paperclip-runner/provider-pack";
 export const CONTENT_ID_LABEL = "io.paperclip.runner.content-id";
 export const REVISION_LABEL = "org.opencontainers.image.revision";
-/** The commit that built the Runner the image copied. Absent on an image that built its own Runner, whose commit is the image's. */
 export const RUNNER_REVISION_LABEL = "io.paperclip.runner.source-revision";
 const RECEIPT_SCHEMA = "paperclip-restart-chaos/daytona-image-artifacts/v1";
 const IMMUTABLE_IMAGE = /^[a-z0-9.-]+(?::[0-9]+)?\/[a-z0-9._/-]+@sha256:([0-9a-f]{64})$/;
@@ -418,7 +417,6 @@ export async function prepareDaytonaImageArtifacts(input: { image: string; cache
     if (pack.schema !== "paperclip-runner/remote-provider-pack/v1" || !/^sha256:[0-9a-f]{64}$/.test(pack.digest ?? "")) {
       throw new Error("Image provider-pack.json is not a paperclip-runner/remote-provider-pack/v1 manifest");
     }
-    // An image cannot drop a label of its base, only empty it: empty is absent.
     const runnerLabel = config.config?.Labels?.[RUNNER_REVISION_LABEL] ? RUNNER_REVISION_LABEL : REVISION_LABEL;
     const runnerRevision = config.config?.Labels?.[runnerLabel] ?? "";
     if (!/^[0-9a-f]{40}$/.test(runnerRevision)) throw new Error(`Image label ${runnerLabel} is not a full commit`);

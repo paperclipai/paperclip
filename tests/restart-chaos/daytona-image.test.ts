@@ -312,7 +312,6 @@ cp -R "${source}/." "$dest/"
     }
   });
 
-  /** One extraction of an image whose pack and labels are given. */
   async function extract(image: { packRevision?: string; labels?: Record<string, string> }) {
     const root = await mkdtemp(path.join(os.tmpdir(), "daytona-cache-"));
     directories.push(root);
@@ -322,10 +321,9 @@ cp -R "${source}/." "$dest/"
   }
   const runnerCommit = "b".repeat(40);
 
-  it("accepts a pack another commit built when the image names that commit as its Runner's", async () => {
+  it("accepts a pack another commit built when the image names that commit as its Runner's, and reads an empty label as absent", async () => {
     const receipt = await extract({ packRevision: runnerCommit, labels: { [RUNNER_REVISION_LABEL]: runnerCommit } });
     expect(receipt).toMatchObject({ sourceRevision: revision, providerPackRunnerSourceRevision: runnerCommit });
-    // An image that built its own Runner has no such label, or an empty one: its own commit built the pack.
     await expect(extract({ labels: { [RUNNER_REVISION_LABEL]: "" } })).resolves.toMatchObject({ sourceRevision: revision, providerPackRunnerSourceRevision: revision });
   });
 
