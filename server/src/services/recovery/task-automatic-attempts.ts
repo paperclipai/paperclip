@@ -1,6 +1,6 @@
 import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
 import { activityLog, heartbeatRuns, type Db } from "@paperclipai/db";
-import { ASSIGNED_WORK_CONTINUED_ACTION, AUTOMATIC_RETRY_REASONS, SCHEDULER_TRANSIENT_RETRY_REASON, freshContinuationTimes } from "./continuation-ledger.js";
+import { ASSIGNED_WORK_CONTINUED_ACTION, AUTOMATIC_RETRY_REASONS, SCHEDULER_TRANSIENT_RETRY_REASON, freshContinuationTimes, startedOrPendingAutomaticRetry } from "./continuation-ledger.js";
 import { CONTINUATION_CAP, CONTINUATION_CAP_WINDOW_MS } from "./assigned-work-invariant.js";
 
 export { ASSIGNED_WORK_CONTINUED_ACTION, SCHEDULER_TRANSIENT_RETRY_REASON };
@@ -14,7 +14,8 @@ export async function taskAutomaticAttempts(db: Db, companyId: string, issueId: 
       .orderBy(desc(activityLog.createdAt)).limit(64),
     db.select({ createdAt: heartbeatRuns.createdAt }).from(heartbeatRuns).where(and(
       eq(heartbeatRuns.companyId, companyId), sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`,
-      inArray(heartbeatRuns.scheduledRetryReason, AUTOMATIC_RETRY_REASONS), gte(heartbeatRuns.createdAt, since)))
+      inArray(heartbeatRuns.scheduledRetryReason, AUTOMATIC_RETRY_REASONS), gte(heartbeatRuns.createdAt, since),
+      startedOrPendingAutomaticRetry()))
       .orderBy(desc(heartbeatRuns.createdAt)).limit(64),
   ]);
   const fresh = (await freshContinuationTimes(db, companyId, issueId, since))

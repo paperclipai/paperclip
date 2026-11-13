@@ -176,6 +176,7 @@ import {
   buildExecutionReviewParticipantRecoveryNoticeSeed,
   buildExecutionReviewParticipantUnavailableNoticeSeed,
   buildStrandedRecoveryEscalationNotice,
+  withoutRetryInstruction,
   buildNoRunningExecutionNoticeSeed,
   RETRY_FROM_SAVED_WORK_NEXT_ACTION,
   type StrandedRecoveryNoticeSeed,
@@ -185,6 +186,7 @@ import {
   isStrandedIssueRecoveryOriginKind,
 } from "./origins.js";
 import { withRecoveryContext } from "./status-only-context.js";
+import { getExecutionBlocker } from "../execution-blocker.js";
 import { currentRunFailureText } from "../native-runtime/native-exact-resume-failure.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
 import { rehomeStrandedLegacyWorkspaceTasks } from "./legacy-workspace-rehome.js";
@@ -4250,6 +4252,13 @@ export function recoveryService(
       recoveryCause,
       successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
     }, tx);
+    const executionBlocker = await getExecutionBlocker(tx as unknown as Db, input.issue.companyId, input.issue.id);
+    const retryOffered = !(executionBlocker && executionBlocker.canRetry === false);
+    if (!retryOffered && /\bretry\b/i.test(recoveryAction.nextAction ?? "")) {
+      recoveryAction.nextAction = withoutRetryInstruction(recoveryAction.nextAction!);
+      await tx.update(issueRecoveryActions).set({ nextAction: recoveryAction.nextAction })
+        .where(and(eq(issueRecoveryActions.companyId, input.issue.companyId), eq(issueRecoveryActions.id, recoveryAction.id)));
+    }
     const isProviderQuotaWait =
       recoveryCause === "provider_quota" &&
       !recoveryAction.ownerAgentId &&
@@ -4333,6 +4342,7 @@ export function recoveryService(
       fallbackBody: input.comment,
       recoveryCause,
       recoveryActionId: recoveryAction.id,
+      retryOffered,
       continuesAutomatically: Boolean(input.latestRun) && recoveryAction.kind === STRANDED_KIND
         && recoveryAction.ownerType === "board" && input.latestRun?.agentId === input.issue.assigneeAgentId
         && strandedRunCauseIsTemporary({

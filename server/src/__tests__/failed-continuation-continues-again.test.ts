@@ -414,4 +414,36 @@ describePostgres("a continuation that fails before doing any work is continued a
     expect(await sweep.checkIssue({ companyId: f.companyId, issueId: task.id })).toMatchObject({ outcome: "repaired" });
     expect(await continuationsOf(stopped.id)).toHaveLength(1);
   }, 60_000);
+
+  it("the sweep continues a blocked task whose system retry was refused at claim behind a recovered saved-work hold", async () => {
+    resetBacklogContinuationPacingForTests(db);
+    const f = await seed();
+    const blockedAt = new Date(Date.now() - 20 * MINUTE);
+    const task = await f.task({ status: "blocked", blockedTransitionAt: blockedAt, statusVersion: 3 });
+    const source = await f.run(task.id, { errorCode: "adapter_failed", error: "native_instruction_materialization_handoff_unavailable",
+      finishedAt: new Date(blockedAt.getTime() - 500), resultJson: { workspaceRestoreFailure: "restore_failed" },
+      contextSnapshot: { wakeReason: "issue_children_completed" } });
+    const [hold] = await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: task.id, kind: "active_run_watchdog",
+      status: "active", ownerType: "board", returnOwnerAgentId: f.agentId, cause: "legacy_execution_requires_reconciliation",
+      fingerprint: `legacy-execution:${source.id}`, nextAction: "Held.", createdAt: blockedAt,
+      evidence: { runId: source.id, originalFailureCode: "adapter_failed", workspaceRestoreFailure: "restore_failed",
+        systemRecovery: { ...createSystemRecovery(source.id), state: "complete" } } }).returning();
+    const refused = await f.run(task.id, { status: "cancelled", errorCode: "execution_reconciliation_required", startedAt: null,
+      retryOfRunId: source.id, finishedAt: new Date(blockedAt.getTime() + 1_000), createdAt: new Date(blockedAt.getTime() - 100), resultJson: {},
+      contextSnapshot: { wakeReason: "issue_continuation_needed", retryReason: "issue_continuation_needed" } });
+    const queue = wakeQueue();
+    const recovery = recoveryService(db, { enqueueWakeup: queue.enqueueWakeup, scheduleRecoveryRetry: async () => null });
+
+    expect((await recovery.assignedWork.listSuspects({ companyId: f.companyId }, null, 100)).map(row => row.id)).toContain(task.id);
+    expect(await recovery.assignedWork.checkIssue({ companyId: f.companyId, issueId: task.id }))
+      .toMatchObject({ outcome: "repaired", verdict: { kind: "violation" } });
+    const [record] = await continuationsOf(source.id);
+    expect(record?.id).toBe(hold!.id);
+    expect(record?.evidence).toMatchObject({ continuationDelivery: "pending", freshContinuation: { sourceRunId: source.id, trigger: "assigned_work" },
+      freshContinuationSettlement: { refusedAtDispatchRunId: refused.id, requestedBy: "system" } });
+    expect((await taskRow(task.id)).status).toBe("todo");
+    expect(queue.calls).toHaveLength(0);
+    expect(await recovery.assignedWork.checkIssue({ companyId: f.companyId, issueId: task.id }))
+      .toMatchObject({ outcome: "ok", verdict: { clause: "pending_intent" } });
+  }, 60_000);
 });
