@@ -123,6 +123,8 @@ test("canary can admit deferred exact-source checks while stable keeps full veri
   assert.match(canary, /ref: \$\{\{ github\.sha \}\}/);
   assert.match(canary, /SOURCE_SHA: \$\{\{ github\.sha \}\}/);
   assert.match(canary, /run: node scripts\/cloud-source-verification\.mjs "\$SOURCE_SHA"/);
+  // Two runner-loss retries of a deferred full readiness run fit inside the job.
+  assert.match(canary, /timeout-minutes: 100\n/);
   assert.doesNotMatch(canary, /release-verify\.yml|continue-on-error|always\(\)/);
   assert.match(releaseWorkflow, /publish_canary:\n\s+if: .*github\.event_name == 'push'.*\n\s+needs: \[verify_canary, release_runner_source, release_runner_binaries\]/);
   // The stable lane is gated on the stable channel since the nightly lane

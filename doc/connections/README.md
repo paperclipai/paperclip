@@ -17,9 +17,10 @@ Runtime authentication: [AI Connections](./AI-CONNECTIONS.md).
 MCP protocol versions (2026-07-28 stateless MCP and older handshake servers):
 [MCP-PROTOCOL-VERSIONS.md](./MCP-PROTOCOL-VERSIONS.md).
 
-MCP extensions: [MCP Apps](./MCP-APPS.md) (interactive views in the task chat)
-and [MCP Skills](./MCP-SKILLS.md) (skills that connected apps publish, reviewed
-by the board and delivered to agents).
+MCP extensions: [MCP Apps](./MCP-APPS.md) (interactive views in the task chat),
+[MCP Skills](./MCP-SKILLS.md) (skills that connected apps publish, reviewed
+by the board and delivered to agents), and [MCP Tasks](./MCP-TASKS.md) (long
+provider calls that survive timeouts, restarts, and deploys).
 
 Long-term memory: [Experimental memory connectors](./MEMORY.md).
 

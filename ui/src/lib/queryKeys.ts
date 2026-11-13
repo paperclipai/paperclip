@@ -59,6 +59,7 @@ export const queryKeys = {
     activity: (endpointId: string) => ["chat-endpoints", endpointId, "activity"] as const,
   },
   tools: {
+    providerIcons: (companyId: string) => ["tools", companyId, "provider-icons"] as const,
     aggregatorApps: (connectionId: string, userId: string | null) => ["tools", "aggregator-apps", connectionId, userId] as const,
     composioApps: (connectionId: string) => ["tools", "composio-apps", connectionId] as const,
     applications: (companyId: string) =>
@@ -322,6 +323,7 @@ export const queryKeys = {
       ["issues", id, "recovery-actions", actionId, runId] as const,
     allRecoveryActions: (id: string) => ["issues", id, "recovery-actions"] as const,
     list: (companyId: string) => ["issues", companyId] as const,
+    listIndex: (companyId: string) => ["issues", companyId, "list-index"] as const,
     onboardingFirstTask: (companyId: string) =>
       ["issues", companyId, "onboarding-first-task"] as const,
     starPromptDone: (companyId: string) =>

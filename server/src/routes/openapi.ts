@@ -37,6 +37,8 @@ import {
   browserUseViewportSchema,
   browserUseViewerSchema,
   mcpAppToolCallSchema,
+  mcpAppMessageSentSchema,
+  mcpAppModelContextUpdateSchema,
   approveCompanyMcpSkillSchema,
   mcpSkillFileQuerySchema,
   startVoiceSessionSchema, voiceCallbackPreferenceSchema, voicePhoneConfigurationSchema, voiceInboundDecisionSchema, VOICE_SESSION_STATES,
@@ -1447,6 +1449,8 @@ const mcpAppsOperations = [
   ["get", "/api/issues/{issueId}/mcp-app-views", "List a task's MCP Apps views", undefined],
   ["get", "/api/issues/{issueId}/mcp-app-views/{viewId}", "Read an MCP Apps view with its document", undefined],
   ["post", "/api/issues/{issueId}/mcp-app-views/{viewId}/tool-calls", "Call a tool from an MCP Apps view", mcpAppToolCallSchema],
+  ["put", "/api/issues/{issueId}/mcp-app-views/{viewId}/model-context", "Store an MCP Apps view's context for the task's next run", mcpAppModelContextUpdateSchema],
+  ["post", "/api/issues/{issueId}/mcp-app-views/{viewId}/messages", "Record that a viewer sent an MCP Apps view's message", mcpAppMessageSentSchema],
 ] as const;
 
 // MCP Skills from connected apps. Review is board only; agents in an active
@@ -12680,6 +12684,14 @@ registerCurrentRoute({
   path: "/api/tool-connections/{connectionId}/profile-configuration",
   tags: ["tool-access"],
   summary: "Read connection Permissions profile configuration without summaries or review counts",
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  method: "get",
+  path: "/api/companies/{companyId}/tool-icons",
+  tags: ["tool-access"],
+  summary: "List provider icons for the company's connected tools",
 });
 
 registerCurrentRoute({
