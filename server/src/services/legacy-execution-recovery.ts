@@ -100,11 +100,6 @@ export function legacyExecutionNeedsReconciliation(
   // provider action happened, so there is nothing to reconcile. Its
   // continuation is bounded by the server-restart lane, not the failure count.
   if (isReplacedPreparation({ ...run, controllerBootId: run.controllerBootId ?? null })) return false;
-  // The gateway refused a request of the turn, and the retry resumes the saved
-  // session, which holds every action the turn took before it: nothing is
-  // replayed. The last attempt's failure falls through to the hold below, and
-  // so does a turn that left a background task behind, which the session does
-  // not hold.
   if (
     isProviderRateLimitWindowRun(run) &&
     !providerRateLimitWindowRetriesSpent(run) &&
@@ -360,7 +355,6 @@ export async function terminalizeLegacyExecution(input: {
   });
 }
 
-/** One board notice per exhausted rate-limit window run; a later sweep finds it and posts none. */
 async function postRateLimitWindowNotice(
   db: Db,
   input: { issueId: string; run: Run; recoveryActionId: string },

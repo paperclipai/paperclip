@@ -24,15 +24,9 @@ const CLAUDE_TRANSIENT_UPSTREAM_RE =
   /(?:rate[-\s]?limit(?:ed)?|rate_limit_error|too\s+many\s+requests|\b429\b|overloaded(?:_error)?|server\s+overloaded|service\s+unavailable|\b503\b|\b529\b|high\s+demand|try\s+again\s+later|temporarily\s+unavailable|throttl(?:ed|ing)|throttlingexception|servicequotaexceededexception|out\s+of\s+extra\s+usage|extra\s+usage\b|claude\s+usage\s+limit\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|usage\s+limit\s+reached|usage\s+cap\s+reached)/i;
 const CLAUDE_PROVIDER_QUOTA_RE =
   /(?:you(?:'|’)ve\s+hit\s+your\s+(?:\w+\s+)?limit|session\s+limit\s+(?:reached|exceeded)|out\s+of\s+extra\s+usage|extra\s+usage\b|claude\s+usage\s+limit\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|usage\s+limit\s+reached|usage\s+cap\s+reached|servicequotaexceededexception)/i;
-// Databricks model serving rejects a request over a serving endpoint's rate
-// limit with a 429 and error_code REQUEST_LIMIT_EXCEEDED, and names no reset
-// time. The window reopens by itself, unlike a subscription quota.
 const DATABRICKS_RATE_LIMIT_RE =
   /(?:REQUEST_LIMIT_EXCEEDED|user[\s-]defined\s+rate\s+limit(?:\(s\)|s)?\s+exceeded|tokens[-\s]per[-\s](?:hour|minute)\b[^\n]{0,40}rate\s+limit)/i;
 const DATABRICKS_RATE_LIMIT_PER_MINUTE_RE = /per[-\s]minute|\b(?:tpm|qpm)\b/i;
-// An hourly window is tried again every quarter hour, so a retry lands inside
-// the one-hour prompt cache. A per-minute window is empty again within a
-// minute; two minutes leave room for other users of a shared workspace limit.
 export const CLAUDE_RATE_LIMIT_WINDOW_RETRY_DELAY_MS = 15 * 60_000;
 export const CLAUDE_RATE_LIMIT_PER_MINUTE_RETRY_DELAY_MS = 2 * 60_000;
 const CLAUDE_MODEL_NOT_FOUND_RE =
@@ -606,13 +600,6 @@ export function isClaudeProviderQuotaError(input: {
   return CLAUDE_PROVIDER_QUOTA_RE.test(haystack) || claudeRateLimitWindowRetryDelayMs(input) !== null;
 }
 
-/**
- * How long to wait before retrying a Databricks rate-limit rejection, or null
- * when the failure is anything else. Claude's own quota wording keeps its
- * reset time. Only the failure's own message and parsed result count: the
- * run's stdout and stderr hold whatever the agent printed, which may quote the
- * wording.
- */
 export function claudeRateLimitWindowRetryDelayMs(input: {
   parsed?: Record<string, unknown> | null;
   stdout?: string | null;

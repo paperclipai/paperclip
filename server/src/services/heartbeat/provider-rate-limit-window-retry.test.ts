@@ -159,7 +159,6 @@ function failedRun(shape: { errorCode: string; resultJson: Record<string, unknow
 }
 
 describe("scheduling the last attempt of a rate-limit window", () => {
-  // The exhaustion branch records the event and reads no row.
   it.each([
     ["a rate-limit window", rateLimitWindowRun, PROVIDER_RATE_LIMIT_WINDOW_RETRY_MAX_ATTEMPTS, PROVIDER_RATE_LIMIT_WINDOW_RETRY_MAX_ATTEMPTS],
     ["a Claude subscription quota", subscriptionQuotaRun, 2, BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS],

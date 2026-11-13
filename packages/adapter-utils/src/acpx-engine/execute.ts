@@ -387,7 +387,6 @@ export type AcpxTerminalFailureClassification = Pick<
   AdapterExecutionResult,
   "errorCode" | "errorFamily" | "retryNotBefore"
 > & {
-  /** The provider rejected the run for a rate-limit window that reopens by itself. */
   rateLimitWindow?: true;
 };
 

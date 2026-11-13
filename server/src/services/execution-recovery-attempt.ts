@@ -166,19 +166,8 @@ export function accountingForScheduledRetry(run: RetryRun, reason: string, attem
   return accounting;
 }
 
-/**
- * Failure retries of a run the adapter marked as rejected by a provider
- * rate-limit window (`resultJson.rateLimitWindow`). The window reopens on its
- * own, so such a run waits for `retryNotBefore` and tries again more often than
- * the bounded default allows: with quarter-hour windows the cap covers about
- * three hours of waiting before the board is asked.
- */
 export const PROVIDER_RATE_LIMIT_WINDOW_RETRY_MAX_ATTEMPTS = 12;
 
-/**
- * Agents on one model hit its limit together; a random delay up to this long
- * after `retryNotBefore` keeps their retries from landing on it together.
- */
 export const PROVIDER_RATE_LIMIT_WINDOW_RETRY_JITTER_MS = 60_000;
 
 export function isProviderRateLimitWindowRun(run: { errorCode?: string | null; resultJson?: unknown }): boolean {
@@ -188,7 +177,6 @@ export function isProviderRateLimitWindowRun(run: { errorCode?: string | null; r
     (resultJson as Record<string, unknown>).rateLimitWindow === true;
 }
 
-/** The run's rate-limit window rejected every retry it was given. */
 export function providerRateLimitWindowRetriesSpent(
   run: RetryRun & { errorCode?: string | null; resultJson?: unknown },
 ): boolean {

@@ -612,8 +612,6 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
           : serverRestartLane ? SERVER_RESTART_RETRY_MAX_ATTEMPTS : boundedRetryMaxAttemptsForRun(run)),
       ),
     );
-    // The adapter's retryNotBefore sets this wait, with a jitter on top; the
-    // bounded delay table only covers the first attempts of the default budget.
     const jitterMs = rateLimitWindow
       ? Math.floor(
           Math.min(Math.max((opts?.random ?? Math.random)(), 0), 1) *

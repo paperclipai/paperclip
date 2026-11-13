@@ -687,8 +687,6 @@ export function classifyAdapterFailureForRecovery(
   )
     return null;
 
-  // A rate-limit window that rejected every retry it was given is not waited
-  // out again: the sweep treats the run like any failed one and blocks.
   if (providerRateLimitWindowRetriesSpent(latestRun)) return null;
 
   const persistedRetryAt =
