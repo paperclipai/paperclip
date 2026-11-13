@@ -771,7 +771,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
         instructionWorkingCopy: instructionCopy ? { rootPath: instructionCopy.executionRoot, entryPath: instructionCopy.entryFile, ...(isAgentDirectoryCopy(instructionCopy) ? { kind: "agent_files" as const } : {}) } : undefined,
       }));
       getNativeFreshSessionHandoff = nativeReviewRequest ? undefined : getFreshSessionHandoff;
-      const nativeProviderConfig = nativeRuntimeResolution.profile.backend === "cursor_cloud_api"
+      const projectedNativeProviderConfig = nativeRuntimeResolution.profile.backend === "cursor_cloud_api"
         || nativeRuntimeResolution.profile.backend === "codex_app_server"
         || (nativeRuntimeResolution.profile.backend === "acpx_runtime" && ["claude_local", "grok_local"].includes(agentHarnessType(agent.adapterType, parseObject(agent.adapterConfig))))
         || nativeRuntimeResolution.profile.backend === "opencode_server"
@@ -784,6 +784,9 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
             managedAiRuntime ? readNonEmptyString(resolvedConfig.model) ?? undefined : undefined,
           )
         : agent.adapterConfig;
+      const nativeProviderConfig = agent.adapterType === "paperclip_runner" && runtimeConfig.homeMode !== undefined
+        ? { ...parseObject(projectedNativeProviderConfig), homeMode: runtimeConfig.homeMode }
+        : projectedNativeProviderConfig;
       const requestedNativeProvider = resolvePaperclipRunnerNativeProviderInput({
         companyId: agent.companyId,
         backend: nativeRuntimeResolution.profile.backend,

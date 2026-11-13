@@ -448,7 +448,19 @@ Existing environments without the field default to the remote machine's
 configured authentication and display the option as enabled when edited. No
 migration rewrites existing SSH records. Changing an explicit authentication source invalidates the saved
 SSH provider session identity for future runs; already admitted native recovery
-retains its original home contract.
+retains its original home contract. Fresh native Runner launch uses the effective
+SSH authentication choice. Native Codex Test uses that remote user's login in
+preconfigured mode, without reading or staging controller credentials. Remote
+home discovery uses the SSH shell, including on machines without `getent`.
+
+Codex CLI host-auth runs also receive the current Paperclip MCP configuration
+and authorized skills. Paperclip merges its managed block into the remote
+user's configuration and preserves other settings and manually installed skills.
+The native remote home retains authentication and conversation files; they are
+not uploaded from or copied back to the controller. This mode shares the remote
+user's configuration. Use separate SSH users when independent configuration is
+required. Run-specific skill files are removed at teardown, and the next run
+replaces or removes the managed skill links.
 
 Managed SSH runs stage the selected account into a randomly allocated directory
 with owner-only access and set the harness's home/configuration paths there.
@@ -457,7 +469,9 @@ process arguments. The existing account-specific refresh merge runs before
 per-turn directories are removed, including after provider or setup failure.
 Environment tests use the selected account and remove their temporary homes
 after probing. Managed Codex probes copy refreshed credentials to that account's
-local home before cleanup, even when the provider request fails. The merge rejects
+local home before cleanup, even when the provider request fails. Managed Codex
+ACP runs also copy back subscription refreshes when the controller has an API
+key; the selected run's authentication decides whether copyback is needed. The merge rejects
 credentials from another account. Routed accounts can omit `auth.json`; the SSH
 reader reports confirmed file absence as `ENOENT`, which needs no copyback.
 Connection and file-read failures still fail the probe. A disconnected target can prevent remote cleanup; the run reports
