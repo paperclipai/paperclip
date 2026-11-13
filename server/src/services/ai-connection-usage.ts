@@ -70,9 +70,6 @@ export async function readUsage(url: string, headers: Record<string, string>, re
   });
   if (!response.ok) {
     await response.body?.cancel();
-    // An HTML 403 comes from a network edge (for example a CDN challenge), not
-    // from the provider's permission check. Report it as temporarily
-    // unavailable instead of a credential or permission problem.
     const edgePage = /^\s*text\/html\b/i.test(response.headers.get("content-type") ?? "");
     throw new ProbeFailure(response.status === 401 ? "authentication_required"
       : response.status === 403 && edgePage ? "provider_unavailable"

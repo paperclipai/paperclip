@@ -8,8 +8,6 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 
 // The legacy login-prompt markers. The Claude CLI prints these words when it
-// asks the user to log in. The detector matches them only against the run's
-// own error surface (see collectClaudeErrorSurface), never the transcript.
 const CLAUDE_LOGIN_PROMPT_RE =
   /(?:not\s+logged\s+in|please\s+log\s+in|please\s+run\s+(?:`?claude\s+login`?|\/login)|login\s+required|requires\s+login|unauthorized|authentication\s+required|invalid\s+api\s+key[\s\S]{0,120}(?:\/login|claude\s+login|log\s+in))/i;
 
@@ -239,26 +237,12 @@ function claudeResultIndicatesAuthFailure(parsed: Record<string, unknown>): bool
   return extractClaudeErrorMessages(parsed).length > 0;
 }
 
-// Markers of an HTML page or a CDN/edge challenge (for example a Cloudflare
-// "Attention Required!" page). The Claude CLI can wrap such a response in
-// "Failed to authenticate. API Error: 403 ...", but the edge, not the
-// credential, rejected the request.
 const CLAUDE_EDGE_MARKER_RE =
   /(?:<!doctype\s+html|<html[\s>]|<\/html>|<head[\s>]|<body[\s>]|<title[\s>]|\bcloudflare\b|attention\s+required!?|just\s+a\s+moment\.\.\.|\bcf-ray\b|\bcf[-_]chl\w*|challenge-platform|\bray\s+id\b)/i;
 const CLAUDE_EDGE_CHALLENGE_RE =
   /(?:attention\s+required|just\s+a\s+moment|\bcf[-_]chl\w*|challenge-platform|enable\s+javascript\s+and\s+cookies|checking\s+your\s+browser)/i;
-// Genuine credential evidence. A 401 status, or a structured Anthropic
-// authentication error, or an invalid/expired/revoked credential message.
-// A bare "Failed to authenticate" or "authentication_failed" wrapper is not
-// evidence by itself: the CLI prints the same wrapper for an edge 403.
-// Structured credential evidence: an Anthropic authentication error, or an
-// invalid/expired/revoked key or token message. It outranks incidental edge
-// headers such as cf-ray, but never an HTML page.
 const CLAUDE_STRUCTURED_AUTH_BODY_RE =
   /(?:"type"\s*:\s*"authentication_error"|\bauthentication_error\b|invalid\s+(?:x-)?api[\s_-]?key|invalid\s+bearer\s+token|(?:invalid|expired|revoked)[\s\S]{0,40}(?:bearer|oauth|access|refresh)\s+token|(?:bearer|oauth|access|refresh)\s+token[\s\S]{0,40}(?:is\s+|has\s+)?(?:been\s+)?(?:invalid|expired|revoked)|oauth\s+session\s+(?:has\s+)?expired)/i;
-// The CLI's generic sign-in hint. It counts as credential evidence for a bare
-// 403, but the CLI can print it after any rejection, so it does not outrank an
-// edge marker.
 const CLAUDE_LOGIN_HINT_RE = /(?:not\s+logged\s+in|please\s+run\s+(?:`?claude\s+login`?|\/login))/i;
 const CLAUDE_API_ERROR_STATUS_RE = /\bAPI\s+Error:?\s*(\d{3})\b/i;
 const CLAUDE_EDGE_RAY_ID_RE =
@@ -266,15 +250,10 @@ const CLAUDE_EDGE_RAY_ID_RE =
 const CLAUDE_EDGE_TITLE_RE = /<title[^>]*>([^<]{0,200})<\/title>/i;
 
 export interface ClaudeEdgeFailureEvidence {
-  /** The HTTP status the CLI reported, when it reported one. */
   status: number | null;
-  /** "text/html" when the response body was an HTML page. */
   contentType: "text/html" | null;
-  /** True when the body carries a CDN/edge challenge marker. */
   challenge: boolean;
-  /** The edge request (ray) id, when present. It is not a secret. */
   requestId: string | null;
-  /** A short sanitised excerpt. It never contains raw HTML or credentials. */
   excerpt: string;
 }
 
@@ -287,17 +266,11 @@ function readClaudeApiErrorStatus(parsed: Record<string, unknown> | null, text: 
   return match ? Number.parseInt(match[1] ?? "", 10) || null : null;
 }
 
-// The run's own error surface: the parsed terminal result, error and errors
-// fields, stderr, and any stdout line that is not a stream-json event. The
-// agent transcript (assistant and tool events) is never scanned, so text that
-// an agent reads or writes cannot change the classification.
 function collectClaudeErrorSurface(input: {
   parsed: Record<string, unknown> | null;
   stdout: string;
   stderr: string;
 }): string {
-  // Under stream-json, tool output and assistant text travel inside JSON
-  // events. A plain stdout line is the CLI's own message.
   const stdoutPlain = input.stdout
     .split(/\r?\n/)
     .filter((line) => !parseJson(line.trim()))
@@ -308,7 +281,6 @@ function collectClaudeErrorSurface(input: {
     .join("\n");
 }
 
-/** Shorten provider text for persisted evidence. Never keep markup or secrets. */
 export function sanitizeClaudeEdgeExcerpt(text: string, maxLength = 160): string {
   const title = text.match(CLAUDE_EDGE_TITLE_RE)?.[1];
   const base = title ?? text;
@@ -324,12 +296,6 @@ export function sanitizeClaudeEdgeExcerpt(text: string, maxLength = 160): string
     .slice(0, maxLength);
 }
 
-/**
- * Detect a transient edge rejection: an HTML or CDN challenge response, or a
- * 403 without genuine credential evidence. A 401, or a structured
- * authentication error / invalid, expired or revoked credential body, is not
- * an edge failure: it stays a credential failure.
- */
 export function detectClaudeEdgeFailure(input: {
   parsed: Record<string, unknown> | null;
   stdout: string;
@@ -344,12 +310,7 @@ export function detectClaudeEdgeFailure(input: {
   const edgeMarker = CLAUDE_EDGE_MARKER_RE.test(surface);
   const structuredAuth = CLAUDE_STRUCTURED_AUTH_BODY_RE.test(surface);
   const genuineAuth = structuredAuth || CLAUDE_LOGIN_HINT_RE.test(surface);
-  // Structured credential evidence wins over incidental edge markers (a
-  // cf-ray header, a CDN name), but not over an HTML page: an edge page is
-  // never a structured Anthropic authentication response.
   if (!html && structuredAuth) return null;
-  // Without an edge marker, only a 403 lacking any credential evidence is an
-  // edge rejection.
   if (!edgeMarker && (status !== 403 || genuineAuth)) return null;
   return {
     status,
@@ -362,7 +323,6 @@ export function detectClaudeEdgeFailure(input: {
 
 export const CLAUDE_EDGE_REJECTED_ERROR_CODE = "claude_edge_rejected";
 
-/** A safe, human-readable run error for an edge rejection. */
 export function describeClaudeEdgeFailure(evidence: ClaudeEdgeFailureEvidence): string {
   const status = evidence.status ? `HTTP ${evidence.status}` : "an HTML response";
   const kind = evidence.challenge ? "an edge challenge page" : evidence.contentType ? "an HTML page" : "a non-authentication rejection";
@@ -371,11 +331,6 @@ export function describeClaudeEdgeFailure(evidence: ClaudeEdgeFailureEvidence): 
     + "This is a transient network or edge failure, not invalid credentials; the connection was not changed.";
 }
 
-/**
- * Read a provider Retry-After hint from the run's own error surface. Accepts
- * delta-seconds or an HTTP date. Values beyond the cap are clamped, so a
- * malformed hint cannot park a task for an unbounded time.
- */
 export function extractClaudeRetryAfter(
   input: { parsed?: Record<string, unknown> | null; stdout?: string | null; stderr?: string | null },
   now = new Date(),
@@ -386,8 +341,6 @@ export function extractClaudeRetryAfter(
     stdout: input.stdout ?? "",
     stderr: input.stderr ?? "",
   });
-  // An HTTP date contains a comma ("Fri, 13 Nov 2026 12:00:00 GMT"), so try
-  // that form first; otherwise the value ends at the first separator.
   const match = surface.match(/\bretry[-_\s]after["']?\s*[:=]\s*["']?([A-Za-z]{3},\s*\d{1,2}\s+[A-Za-z]{3}\s+\d{4}\s+\d{2}:\d{2}:\d{2}\s+GMT|[^\n"',;]+)/i);
   if (!match) return null;
   const raw = (match[1] ?? "").trim();
@@ -408,11 +361,6 @@ export function detectClaudeLoginRequired(input: {
 }): { requiresLogin: boolean; loginUrl: string | null } {
   const parsed = input.parsed ?? null;
 
-  // The legacy login-prompt markers match only the run's own error surface.
-  // The stream-json transcript carries tool output and the injected prompt,
-  // so scanning it let ordinary text such as "unauthorized" or "please log in"
-  // invalidate a healthy connection. A successful terminal result's answer
-  // text is not an error surface either.
   const promptSurface = parsed && !claudeResultIndicatesAuthFailure(parsed)
     ? collectClaudeErrorSurface({ parsed: null, stdout: input.stdout, stderr: input.stderr })
     : collectClaudeErrorSurface({ parsed, stdout: input.stdout, stderr: input.stderr });
@@ -430,9 +378,6 @@ export function detectClaudeLoginRequired(input: {
     claudeResultIndicatesAuthFailure(parsed) &&
     CLAUDE_AUTH_TOKEN_FAILURE_RE.test(collectClaudeTerminalText(parsed));
 
-  // An edge rejection (HTML/CDN challenge, or a 403 without a genuine
-  // credential body) is transient. It must never read as a login failure,
-  // even when the CLI wraps it in "Failed to authenticate".
   const edgeFailure = (loginPrompt || tokenFailure)
     && detectClaudeEdgeFailure({ parsed, stdout: input.stdout, stderr: input.stderr }) !== null;
 

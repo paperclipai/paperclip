@@ -713,8 +713,6 @@ describe("Claude ACP edge rejections", () => {
   });
 
   it("replaces the edge page in an already-classified ACP edge rejection", () => {
-    // The engine keeps the typed failure's title and details in the error and
-    // in resultJson; the classifier already chose claude_edge_rejected.
     const page = "<!DOCTYPE html><html><head><title>Attention Required! | Cloudflare</title><script>__cf_chl_opt={}</script></head><body>Ray ID: 8f2a1b3c4d5e6f70</body></html>";
     const mapped = mapClaudeAcpAuthErrorCode({
       exitCode: 1, signal: null, timedOut: false, errorCode: "claude_edge_rejected", errorFamily: "transient_upstream",
