@@ -32,7 +32,8 @@ export function registerMcpTaskWork(
           triggerDetail: "system",
           reason: "issue_commented",
           payload: { issueId: task.issueId, mutation: "tool_task" },
-          idempotencyKey: `mcp-task:${task.taskRecordId}:settled`,
+          // Distinct per reason: an input wake must never stand in for the completion wake.
+          idempotencyKey: task.wakeKey,
           requestedByActorType: "system",
           requestedByActorId: "tool_gateway",
           contextSnapshot: {
