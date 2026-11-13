@@ -503,6 +503,7 @@ export const personalSecretExternalCases = [
         "chat-catalog-domains/external-personal-secret.ts",
         "chat-catalog-domains/external-personal-secret-menu.ts",
         "chat-catalog-domains/external-personal-secret-link.ts",
+        "chat-catalog-domains/external-secret-setup-link.ts",
         "../../ui/src/pages/secrets/MyUserSecretsTab.tsx",
         "chat-catalog-domains/external-personal-secret-confirmation.ts",
         "chat-catalog-contract.ts",
