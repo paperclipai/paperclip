@@ -18,7 +18,7 @@ Before you start the recording:
 - The Tools & Access UI open at `/<prefix>/companies/<companyId>/tools`.
 - A browser tab open on the **Values UI** at `http://127.0.0.1:8848/` (you will open this in Step 1).
 
-All API requests use `Authorization: Bearer $BOARD_API_KEY` for board calls. Gateway calls use a dedicated session token via the `X-Paperclip-Tool-Gateway-Token` header — they do not use `Authorization`. See Step 5 for how the token is minted.
+All API requests use `Authorization: Bearer $BOARD_API_KEY` for board calls. Gateway calls use a dedicated session token, sent either via the `X-Paperclip-Tool-Gateway-Token` header (used throughout this script) or as `Authorization: Bearer pcgt_…` for runtimes that can only set a standard bearer. See Step 5 for how the token is minted.
 
 ## Step 0 — Frame the demo
 
@@ -157,7 +157,7 @@ In production, the agent obtains this token from its own run bootstrap (agent JW
 
 ## Step 5 — The read tool (allowed)
 
-Gateway calls use the session token via `X-Paperclip-Tool-Gateway-Token`. The body uses `tool` (string) and `parameters` (object).
+Gateway calls use the session token via `X-Paperclip-Tool-Gateway-Token`, or as `Authorization: Bearer $GATEWAY_TOKEN`. The body uses `tool` (string) and `parameters` (object).
 
 ```sh
 curl -fsS -X POST \
