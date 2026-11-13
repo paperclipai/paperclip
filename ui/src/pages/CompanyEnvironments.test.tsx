@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { CompanyEnvironments } from "./CompanyEnvironments";
 import { ApiError } from "@/api/client";
+import { queryKeys } from "@/lib/queryKeys";
 
 const xtermMocks = vi.hoisted(() => {
   class MockTerminal {
@@ -777,6 +778,32 @@ describe("CompanyEnvironments — test provider button", () => {
     // can observe the API call before that asynchronous success path settles.
     await waitForAssertion(() => {
       expect(getEnvironmentFormPage()).toBeNull();
+    });
+  });
+
+  it("refreshes the env var secret picker when the shared secrets list is invalidated", async () => {
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root!.render(renderCompanyEnvironments(queryClient));
+    });
+    await flushReact();
+    await act(async () => {
+      click(findAction(container, "Edit"));
+    });
+    await waitForAssertion(() => {
+      expect(getEnvironmentFormPage()?.textContent).toContain("Edit environment");
+    });
+    const listCallsBefore = mockSecretsApi.list.mock.calls.length;
+    expect(listCallsBefore).toBeGreaterThan(0);
+
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list("company-1") });
+    });
+
+    await waitForAssertion(() => {
+      expect(mockSecretsApi.list.mock.calls.length).toBeGreaterThan(listCallsBefore);
     });
   });
 
