@@ -7,6 +7,7 @@ import { notifyMergeConfirmationWork, type MergeConfirmationScope } from "./merg
 import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
 import { notifyIssueReviewState } from "./issue-review-state-notifications.js";
 import { notifyChatConfirmationResolution } from "./chat-confirmation-notifications.js";
+import { releaseDecisionHeldExecution } from "./deferred-execution-wait.js";
 import { notifyChatRunMilestones } from "./chat-run-milestone-notifications.js";
 import { notifyToolReviewChange } from "./tool-review-work-notifications.js";
 import { projectGitHubInteractionErrors } from "./tool-access/github-action-error-projection.js";
@@ -5685,6 +5686,7 @@ export function issueThreadInteractionService(
         }
         await assertInteractionRunWriteAllowed(tx as unknown as Db, issue, actor, [JSON.stringify(input)]);
         await notifyChatRunMilestones(tx, current);
+        await releaseDecisionHeldExecution(tx, current);
         await mutationOptions.beforeResolveInTransaction?.(tx);
         const resolvedAt = new Date();
         const [row] = await tx

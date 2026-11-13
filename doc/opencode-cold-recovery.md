@@ -33,11 +33,30 @@ files are excluded from each later harness archive. A pending upload records its
 exact encrypted object reference before upload, so an interrupted reply can be
 retired without guessing an object key.
 
-A ready company closure is reused. Concurrent first admissions may independently
-upload that closure: each admission retains its own cancellation, ownership fence,
-and pending receipt rather than depending on another controller's live transfer.
-Each capture has the 512 MiB limit and five-minute deadline; a run can retain at
-most three pending uploads. Publication selects one verified ready object under
+A ready company closure is reused. Before it copies anything, admission looks
+for a ready, verified company object whose descriptor has the same file paths
+and SHA-256 digests as the selected manifest. The database matches the target,
+paths and digests, so the lookup reads only matching objects, not every
+version the company keeps. When one exists, admission pins it
+for the run and records the run receipt in one transaction. No file leaves the
+sandbox, and nothing is encrypted, uploaded or downloaded. A durable artifact
+therefore still exists before the first turn. Concurrent first admissions on
+one server with the same company and manifest share one in-flight capture. The
+other admissions wait for it, then reuse its ready object under their own
+ownership fence. If the shared capture fails, each waiting admission captures on
+its own. Admissions on different servers may still upload the same closure
+independently.
+
+Each capture has the 512 MiB limit; a run can retain at most three pending
+uploads. There is no single deadline for the whole capture. Each network step
+has its own bound instead: each export command has 120 seconds, and the sandbox
+transfer keeps its provider's command timeouts. The upload and the download that
+verifies it each have the larger of 120 seconds and the time for the object at
+256 KiB per second. When an upload or download step exceeds its bound, the
+failure is `native_provider_artifacts_transfer_timeout` and names the step. The
+step is then retried from the local copy, up to three attempts in all, without
+copying the files out of the sandbox again. Stop interrupts the capture and the
+wait for a shared capture. Publication selects one verified ready object under
 the closure lock. A loser pins that winner before deleting only its own object.
 This bounds each admitted run, not total simultaneous company egress. A burst can
 therefore transfer duplicate bytes; distributed upload election is not included.

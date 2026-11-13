@@ -86,6 +86,7 @@ export async function preparePluginWorkspace(
     fresh?: PluginFreshWorkspace;
     expectedBindingRevision?: number;
     verifyExisting?: true;
+    assertOwned?: () => void;
     acquireTaskLease?: (workspace: Pick<ExecutionWorkspace, "id" | "mode">) => Promise<{ leaseId: string; taskLease: TaskPlacement }>;
     onTaskPrepared?: (ensure: EnsureTaskWorkspace) => void;
   },
@@ -165,6 +166,7 @@ export async function preparePluginWorkspace(
   const selectedProvider = await requireWorkspaceProviderWorker(db, workers, input.companyId, pluginId, true);
   if (input.environment) assertProjectStorageEnvironment(selectedProvider, input.environment);
   const declaration = selectedProvider.manifestJson.workspaceProvider!;
+  if (input.verifyExisting && declaration.workspaceVerificationVersion !== 1) return null;
   if (input.fresh && declaration.freshWorkspaceVersion !== 1)
     throw conflict("A fresh attempt is unavailable for this workspace storage provider. The existing workspace is retained.", { reason: "fresh_workspace_storage_unsupported" });
   if (
@@ -348,7 +350,7 @@ export async function preparePluginWorkspace(
     driver.driverKey === driverKey && driver.sessionHandoffVersion === 1)
     ? await input.acquireTaskLease?.({ id: workspace.id, mode: mode as ExecutionWorkspace["mode"] }) : undefined;
   const prepare = (workspace: Workspace, taskLease?: TaskPlacement, replacement?: { leaseId: string; assertOwned: () => void }) => withExecutionWorkspaceLifecycleLock(db, workspace.id, async (tx) => {
-    replacement?.assertOwned();
+    (replacement?.assertOwned ?? input.assertOwned)?.();
     const [current] = await tx
       .select()
       .from(executionWorkspaces)
@@ -401,7 +403,7 @@ export async function preparePluginWorkspace(
       runId: input.runId,
       agentId: input.agentId,
       taskLease,
-      assertOwned: replacement?.assertOwned,
+      assertOwned: replacement?.assertOwned ?? input.assertOwned,
       operation: {
         kind: "prepare",
         source: sourceInput,
@@ -430,8 +432,9 @@ export async function preparePluginWorkspace(
         (saved && result.binding.workspaceRef !== saved.workspaceRef) ||
         (workspace.branchName !== null && result.branchName !== workspace.branchName) ||
         (typeof savedBase === "string" && result.baseSha !== savedBase))) {
-      throw conflict("The existing checkout could not be verified");
+      return null;
     }
+    (replacement?.assertOwned ?? input.assertOwned)?.();
     await authorize();
     const [currentProject] = await tx
       .select()
@@ -485,12 +488,13 @@ export async function preparePluginWorkspace(
     return updated!;
   });
   const prepared = await prepare(workspace, placement?.taskLease);
-  if (placement && input.onTaskPrepared) {
+  if (prepared && placement && input.onTaskPrepared) {
     let preparedTaskId = placement.taskLease.providerLeaseId;
     let preparedWorkspace = prepared;
     input.onTaskPrepared((taskId, assertOwned) => {
       if (taskId === preparedTaskId) return;
       return prepare(preparedWorkspace, { ...placement.taskLease, providerLeaseId: taskId }, { leaseId: placement.leaseId, assertOwned }).then(updated => {
+        if (!updated) throw conflict("Workspace preparation is incomplete");
         preparedWorkspace = updated;
         preparedTaskId = taskId;
       });

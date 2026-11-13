@@ -329,6 +329,7 @@ export function createNativeRunnerExecutionDriver(input: NativeRunnerExecutionDr
             },
             startupFailureCode: "runner_ingress_unavailable" as const,
             checkpoint: input.checkpoint,
+            quiesce: () => { outbound?.quiesce(); },
             release: async () => {
               if (outbound) await outbound.close();
               else await transport.ingress.close();

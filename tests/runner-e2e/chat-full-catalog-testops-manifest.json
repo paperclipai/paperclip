@@ -1205,7 +1205,13 @@
           "key": "recovery.retry-exhausted",
           "field": "originalContext",
           "previous": "Automatic infrastructure attempts are exhausted and the source task exposes ordinary Retry to its authorized human.",
-          "current": "The website run stopped for a reason only a person can resolve (its selected model was rejected), and the person has since restored the configuration. The source task exposes ordinary Retry to its authorized human; an infrastructure fault would instead continue automatically."
+          "current": "The website run stopped for a reason only a person can resolve: the provider rejected its selected model, and that model is still selected. The source task exposes ordinary Retry to its authorized human; an infrastructure fault would instead continue automatically."
+        },
+        {
+          "key": "recovery.retry-exhausted",
+          "field": "expectedOutcome",
+          "previous": "The response directs or presents the supported human Retry action and explains the current state. One accepted retry rechecks execution gates and preserves earlier attempt evidence. The person is not asked to certify internal infrastructure facts, and failure remains visible if the new attempt cannot start.",
+          "current": "The response directs or presents the supported human Retry action and explains the current state. Retry rechecks the selected model before it starts anything: while the rejected model is still selected, no new attempt starts, the failure stays visible, and the person is told which setting to change, with a link to it. After the person selects a working model, one accepted retry of the original run starts with that model, preserves the earlier attempt evidence and completes the task. The person is not asked to certify internal infrastructure facts."
         },
         {
           "key": "recovery.source-action",
@@ -10728,8 +10734,8 @@
       "externalInput": null,
       "installedSource": null,
       "originalQuery": "Try the website task again.",
-      "expectedOutcome": "The response directs or presents the supported human Retry action and explains the current state. One accepted retry rechecks execution gates and preserves earlier attempt evidence. The person is not asked to certify internal infrastructure facts, and failure remains visible if the new attempt cannot start.",
-      "originalContext": "The website run stopped for a reason only a person can resolve (its selected model was rejected), and the person has since restored the configuration. The source task exposes ordinary Retry to its authorized human; an infrastructure fault would instead continue automatically.",
+      "expectedOutcome": "The response directs or presents the supported human Retry action and explains the current state. Retry rechecks the selected model before it starts anything: while the rejected model is still selected, no new attempt starts, the failure stays visible, and the person is told which setting to change, with a link to it. After the person selects a working model, one accepted retry of the original run starts with that model, preserves the earlier attempt evidence and completes the task. The person is not asked to certify internal infrastructure facts.",
+      "originalContext": "The website run stopped for a reason only a person can resolve: the provider rejected its selected model, and that model is still selected. The source task exposes ordinary Retry to its authorized human; an infrastructure fault would instead continue automatically.",
       "capabilities": [
         "recovery/exhaustion"
       ],
