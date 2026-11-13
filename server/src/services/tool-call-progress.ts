@@ -147,26 +147,40 @@ export function saveToolCallProgress(db: Db, companyId: string, invocationId: st
   };
 }
 
-/** The latest progress of a task's unfinished tool calls, for a reload mid-call. */
-export async function listRunningToolCallProgress(db: Db, companyId: string, issueId: string, now = new Date()): Promise<ToolCallProgressSnapshot[]> {
-  const rows = await db.select({
+/** Finished calls are reported for this long, so a chat that missed their end learns it. */
+const FINISHED_REPORT_MS = 60 * 60_000;
+
+/**
+ * The latest progress of a task's running tool calls, for a reload mid-call,
+ * plus its recently finished calls marked `done`. A chat drops a call only on
+ * `done`: a running call may not have saved its first update yet.
+ */
+export async function listToolCallProgress(db: Db, companyId: string, issueId: string, now = new Date()): Promise<ToolCallProgressSnapshot[]> {
+  const columns = {
     id: toolInvocations.id,
     runId: toolInvocations.runId,
     toolName: toolInvocations.toolName,
     progress: toolInvocations.progress,
     startedAt: toolInvocations.startedAt,
     createdAt: toolInvocations.createdAt,
-  }).from(toolInvocations).where(and(
-    eq(toolInvocations.companyId, companyId),
-    eq(toolInvocations.issueId, issueId),
-    isNull(toolInvocations.completedAt),
-    isNotNull(toolInvocations.progress),
-    isNotNull(toolInvocations.runId),
-    gte(toolInvocations.createdAt, new Date(now.getTime() - SNAPSHOT_MAX_AGE_MS)),
-  )).orderBy(desc(toolInvocations.createdAt)).limit(50);
-  return rows.flatMap((row) => {
+    completedAt: toolInvocations.completedAt,
+  };
+  const task = and(eq(toolInvocations.companyId, companyId), eq(toolInvocations.issueId, issueId), isNotNull(toolInvocations.runId));
+  const [running, finished] = await Promise.all([
+    db.select(columns).from(toolInvocations).where(and(task,
+      isNull(toolInvocations.completedAt),
+      isNotNull(toolInvocations.progress),
+      gte(toolInvocations.createdAt, new Date(now.getTime() - SNAPSHOT_MAX_AGE_MS)),
+    )).orderBy(desc(toolInvocations.createdAt)).limit(50),
+    db.select(columns).from(toolInvocations).where(and(task,
+      gte(toolInvocations.completedAt, new Date(now.getTime() - FINISHED_REPORT_MS)),
+    )).orderBy(desc(toolInvocations.completedAt)).limit(50),
+  ]);
+  return [...running, ...finished].flatMap((row) => {
+    const done = row.completedAt !== null;
     const savedAt = row.progress ? Date.parse(String(row.progress.updatedAt)) : NaN;
-    const progress = row.progress ? normalizeToolCallProgress(row.progress, Number.isFinite(savedAt) ? new Date(savedAt) : now) : null;
+    const at = done ? row.completedAt! : Number.isFinite(savedAt) ? new Date(savedAt) : now;
+    const progress = normalizeToolCallProgress(row.progress ?? (done ? { progress: 0 } : {}), at);
     if (!progress || !row.runId) return [];
     return [{
       ...progress,
@@ -175,7 +189,7 @@ export async function listRunningToolCallProgress(db: Db, companyId: string, iss
       toolName: row.toolName,
       nativeToolName: assignedToolName(row.toolName),
       startedAt: (row.startedAt ?? row.createdAt).toISOString(),
-      done: false,
+      done,
     }];
   });
 }

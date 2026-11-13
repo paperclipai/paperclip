@@ -80,14 +80,14 @@ describe("tool call progress matching", () => {
     expect([...store.entries()]).toHaveLength(50);
   });
 
-  it("a fresh read drops calls that finished unseen, but keeps newer live updates", () => {
+  it("a fresh read ends calls that finished unseen, and never drops a call it does not list", () => {
     const store = new ToolCallProgressStore();
     store.put(snapshot({ invocationId: "finished-while-hidden", updatedAt: "2026-11-13T10:00:05.000Z" }));
-    store.put(snapshot({ invocationId: "live-after-read", updatedAt: "2026-11-13T10:00:20.000Z" }));
-    store.applySaved([snapshot({ invocationId: "still-running", updatedAt: "2026-11-13T10:00:08.000Z" })], "2026-11-13T10:00:10.000Z");
-    expect([...store.entries()].map((entry) => entry.invocationId).sort()).toEqual(["live-after-read", "still-running"]);
-    // So a later call of the same tool never shows the finished call's progress.
-    expect(pickToolCallProgress(store.entries(), tool(), "run-1")?.invocationId).not.toBe("finished-while-hidden");
+    store.put(snapshot({ invocationId: "not-saved-yet", updatedAt: "2026-11-13T10:00:06.000Z" }));
+    // The read reports the finished call as done and does not list the other one yet.
+    for (const entry of [snapshot({ invocationId: "finished-while-hidden", done: true, updatedAt: "2026-11-13T10:00:09.000Z" })]) store.put(entry);
+    expect(pickToolCallProgress(store.entries(), tool(), "run-1")?.invocationId).toBe("not-saved-yet");
+    expect([...store.entries()].find((entry) => entry.invocationId === "finished-while-hidden")?.done).toBe(true);
   });
 
   it("reads live events defensively", () => {

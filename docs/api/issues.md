@@ -380,10 +380,10 @@ DELETE /api/attachments/{attachmentId}
 GET /api/issues/{issueId}/tool-call-progress
 ```
 
-Returns the latest progress of the task's connected-app tool calls that are still running, for a page that loads mid-call. Live updates arrive as `heartbeat.run.tool_progress` events on the company live-events socket.
+Returns the latest progress of the task's connected-app tool calls that are still running, for a page that loads mid-call, and the calls that finished in the last hour, marked `done`. A client should drop a call's progress only on `done`: a running call may not have saved its first update yet. Live updates arrive as `heartbeat.run.tool_progress` events on the company live-events socket.
 
 - Board callers only. The caller needs company access and read access to the task; otherwise the response is `404`.
-- Lists unfinished calls made by a run in the last 24 hours that reported progress, newest first, at most 50.
+- Lists unfinished calls made by a run in the last 24 hours that reported progress (at most 50), then calls finished in the last hour (at most 50).
 
 Each item:
 
@@ -397,7 +397,7 @@ Each item:
 | `progress` | number | Progress so far. |
 | `total` | number or null | Known end value; `null` when the app does not know it. |
 | `message` | string or null | The app's latest status line: plain text, at most 200 characters. |
-| `done` | boolean | Always `false` here. |
+| `done` | boolean | `true` once the call has finished. |
 
 See `doc/connections/MCP-PROGRESS.md`.
 

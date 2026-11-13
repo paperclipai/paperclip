@@ -38,8 +38,10 @@ Spec: [MCP 2026-07-28, Progress](https://modelcontextprotocol.io/specification/2
    run and tool name. Each update carries both the gateway name and the name
    native runners give the tool (`assignedToolName`: shortened, with a hash),
    since native transcripts show the latter. When a running row first mounts, the chat reads
-   `GET /api/issues/:issueId/tool-call-progress` once, so a reload mid-call
-   shows the latest saved state. Finished rows never fetch or re-render for
+   `GET /api/issues/:issueId/tool-call-progress` (again on mount and on tab
+   focus), so a reload mid-call shows the latest saved state. The read also
+   marks recently finished calls `done`; a call is never dropped just because
+   the read does not list it, since its first save may still be in flight. Finished rows never fetch or re-render for
    progress.
 
 ## Speed

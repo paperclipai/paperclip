@@ -15,7 +15,7 @@ import { assertBoard, getAccessibleResource } from "./authz.js";
 import { connectionRequestUserId } from "./connection-management-authz.js";
 import { authorizationService } from "../services/authorization.js";
 import { mcpAppViewsService, toMcpAppViewSummary } from "../services/mcp-app-views.js";
-import { listRunningToolCallProgress } from "../services/tool-call-progress.js";
+import { listToolCallProgress } from "../services/tool-call-progress.js";
 import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-gateway.js";
 
 const uuidSchema = z.string().uuid();
@@ -165,10 +165,10 @@ export function mcpAppsRoutes(db: Db, toolGateway: McpAppsGateway) {
     res.status(201).json({ commentId: comment.id });
   });
 
-  // The latest progress of the task's running app tool calls, for a reload mid-call.
+  // The latest progress of the task's running app tool calls (and recently finished ones, as done), for a reload mid-call.
   router.get("/issues/:issueId/tool-call-progress", async (_req, res) => {
     const issue = res.locals.mcpAppIssue as { id: string; companyId: string };
-    res.json(await listRunningToolCallProgress(db, issue.companyId, issue.id));
+    res.json(await listToolCallProgress(db, issue.companyId, issue.id));
   });
 
   router.get("/issues/:issueId/mcp-app-views", async (req, res) => {
