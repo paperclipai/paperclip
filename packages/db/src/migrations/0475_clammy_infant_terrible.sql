@@ -9,6 +9,8 @@ CREATE TABLE "tool_mcp_tasks" (
 	"run_id" uuid,
 	"actor_type" text NOT NULL,
 	"actor_id" text,
+	"responsible_user_id" text,
+	"identity_context_id" uuid,
 	"catalog_tool_name" text NOT NULL,
 	"request_hash" text NOT NULL,
 	"endpoint_hash" text NOT NULL,

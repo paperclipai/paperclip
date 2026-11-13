@@ -6895,7 +6895,7 @@ export function createToolGatewayService(
    * result and recording it loses nothing.
    */
   async function markMcpTaskDelivered(companyId: string, invocationId: string) {
-    await db.update(toolMcpTasks).set({ deliveredAt: new Date(), leaseExpiresAt: null, leaseOwner: null, updatedAt: new Date() })
+    await db.update(toolMcpTasks).set({ deliveredAt: new Date(), nextPollAt: null, leaseExpiresAt: null, leaseOwner: null, updatedAt: new Date() })
       .where(and(eq(toolMcpTasks.companyId, companyId), eq(toolMcpTasks.lastInvocationId, invocationId), isNull(toolMcpTasks.deliveredAt)));
   }
 
@@ -6916,6 +6916,12 @@ export function createToolGatewayService(
     const secret = mcpTaskSecret();
     const scope = mcpTaskScope({ companyId: input.connection.companyId, connectionId: input.connection.id });
     const providerTaskIdHash = mcpTaskIdIndex(secret, scope, input.state.taskId);
+    // The person whose grant applied: carried by the session, or by its run.
+    const [run] = !input.session.responsibleUserId && input.session.runId
+      ? await db.select({ responsibleUserId: heartbeatRuns.responsibleUserId }).from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.id, input.session.runId), eq(heartbeatRuns.companyId, input.session.companyId))).limit(1)
+      : [];
+    const responsibleUserId = input.session.responsibleUserId ?? run?.responsibleUserId ?? null;
     const now = Date.now();
     const inserted = await db.transaction(async (tx) => {
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpTasks);
@@ -6930,6 +6936,8 @@ export function createToolGatewayService(
         runId: input.session.runId,
         actorType: input.session.actorType ?? "agent",
         actorId: input.session.actorId ?? null,
+        responsibleUserId,
+        identityContextId: input.session.identityContextId ?? null,
         catalogToolName: input.catalogToolName,
         requestHash: input.requestHash,
         argumentsIdentity: input.argumentsIdentity,
@@ -7201,7 +7209,10 @@ export function createToolGatewayService(
         audit.status = state.status;
         if (state.status === "completed") {
           // Held for this call until its result is recorded; not yet delivered.
-          await own({ nextPollAt: null, errorCode: null, lastInvocationId: wait.invocationId, leaseExpiresAt: new Date(Date.now() + MCP_TASK_DELIVERY_LEASE_MS) });
+          // If this process dies first, background work finds it when the hold
+          // ends and wakes the agent to collect it.
+          const holdUntil = new Date(Date.now() + MCP_TASK_DELIVERY_LEASE_MS);
+          await own({ nextPollAt: holdUntil, errorCode: null, lastInvocationId: wait.invocationId, leaseExpiresAt: holdUntil });
           return state.result!;
         }
         if (state.status === "failed") { await settle("failed"); throw mcpTaskFailedError(state.error); }
@@ -7251,15 +7262,18 @@ export function createToolGatewayService(
     const session: ToolGatewaySession = {
       id: `mcp-task:${row.id}`, token: "", companyId: row.companyId, agentId: row.agentId, runId: row.runId,
       issueId: row.issueId, projectId: null, actorType: row.actorType as ToolGatewaySession["actorType"], actorId: row.actorId,
+      responsibleUserId: row.responsibleUserId, identityContextId: row.identityContextId,
       createdAt: new Date(), expiresAt: new Date(Date.now() + 5 * 60_000),
     };
-    // The same access check a live call makes: audience, delegation, and the
-    // grant itself. Removing any of them stops the background work.
+    // The same access check a live call makes, as the same caller: audience,
+    // delegation, and the grant itself. Removing any of them stops the work;
+    // any other failure (a database blip) is retried with backoff.
     let grant: typeof connectionGrants.$inferSelect;
     try {
       grant = await resolveConnectionGrant(session, connection, false);
-    } catch {
-      return { closed: "access_removed" };
+    } catch (error) {
+      if (error instanceof ToolGatewayHttpError) return { closed: "access_removed" };
+      throw error;
     }
     if (grant.id !== row.grantId || grant.status !== "active") return { closed: "access_removed" };
     const workspaceTarget = connection.config.sourceTemplateKey === "google-workspace" ? googleWorkspaceToolTarget(row.catalogToolName) : null;

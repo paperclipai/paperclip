@@ -1,5 +1,5 @@
 {
-  "id": "6f192b40-fdb9-4510-8d73-037c6209eaac",
+  "id": "214d0cff-e42f-4819-8b32-99d85d51b37e",
   "prevId": "a7108924-4d75-41e2-9139-f43f9396c02d",
   "version": "7",
   "dialect": "postgresql",
@@ -61017,6 +61017,18 @@
         "actor_id": {
           "name": "actor_id",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "responsible_user_id": {
+          "name": "responsible_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "identity_context_id": {
+          "name": "identity_context_id",
+          "type": "uuid",
           "primaryKey": false,
           "notNull": false
         },

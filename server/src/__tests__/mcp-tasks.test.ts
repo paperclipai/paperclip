@@ -149,7 +149,7 @@ function taskServer() {
       case "server/discover":
         return ok(body.id, { supportedVersions: [MCP_MODERN_PROTOCOL_VERSION], capabilities: { tools: {}, extensions: { [MCP_TASKS_EXTENSION_ID]: {} } } });
       case "tools/list":
-        return ok(body.id, { tools: ["build", "quick", "authorize", "ask_name", "explode", "short_lived"].map(tool) });
+        return ok(body.id, { tools: ["build", "quick", "authorize", "ask_name", "explode", "short_lived", "garbled"].map(tool) });
       case "tools/call": {
         const name = body.params.name;
         if (name === "quick" || !declared) return ok(body.id, { content: [{ type: "text", text: `${name} done synchronously` }] });
@@ -159,6 +159,8 @@ function taskServer() {
         if (name === "authorize") Object.assign(task, { status: "input_required", awaiting: [], inputRequests: { consent: { method: "elicitation/create", params: { mode: "url", message: "Approve access", url: "https://auth.example.com/consent?flow=7" } } } });
         if (name === "ask_name") Object.assign(task, { status: "input_required", awaiting: ["who"], inputRequests: { who: { method: "elicitation/create", params: { mode: "form", message: "Who is deploying?", requestedSchema: { type: "object", required: ["name"], properties: { name: { type: "string", title: "Your name" } } } } } } });
         if (name === "explode") Object.assign(task, { completeAfter: 1, failInstead: true });
+        // A result Paperclip cannot record, standing in for a crash before the result is saved.
+        if (name === "garbled") Object.assign(task, { completeAfter: 1, result: { content: "not a content list" } });
         tasks.set(taskId, task);
         return ok(body.id, { resultType: "task", ...view(taskId, task), status: task.status === "input_required" ? "working" : task.status });
       }
@@ -555,6 +557,33 @@ const support = await getEmbeddedPostgresTestSupport();
     await ctx.gateway().pollDueMcpTasks();
     expect(server.count("tasks/get")).toBe(gets);
     expect((await ctx.rows())[0]).toMatchObject({ status: "expired", errorCode: "access_removed", nextPollAt: null });
+  });
+
+  it("keeps a completed task recoverable until its result is recorded, then wakes the agent", async () => {
+    const server = taskServer();
+    const ctx = await setup(server);
+    await expect(ctx.call("garbled")).rejects.toMatchObject({ reasonCode: "remote_mcp_malformed_response" });
+    const [held] = await ctx.rows();
+    expect(held).toMatchObject({ status: "completed", deliveredAt: null });
+    // Background work still has a deadline for it: when the hold ends.
+    expect(held!.nextPollAt).toBeInstanceOf(Date);
+    expect(held!.nextPollAt!.getTime()).toBe(held!.leaseExpiresAt!.getTime());
+    await db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, ctx.run.id));
+    await db.update(toolMcpTasks).set({ nextPollAt: new Date(Date.now() - 1_000), leaseExpiresAt: new Date(Date.now() - 1_000) }).where(eq(toolMcpTasks.id, held!.id));
+    const wake = vi.fn(async () => undefined);
+    await ctx.gateway().pollDueMcpTasks({ wake });
+    expect(wake).toHaveBeenCalledWith(expect.objectContaining({ taskRecordId: held!.id, status: "completed" }));
+  });
+
+  it("keeps the caller's identity with the task for background checks", async () => {
+    const server = taskServer();
+    const ctx = await setup(server);
+    await db.update(heartbeatRuns).set({ responsibleUserId: actor.actorId }).where(eq(heartbeatRuns.id, ctx.run.id));
+    const session = await ctx.gateway().createSession({ companyId: ctx.org.id, agentId: ctx.agent.id, runId: ctx.run.id });
+    const tool = (await ctx.gateway().listToolsForSession(session.token)).find((candidate) => candidate.name.endsWith(":build"))!;
+    await expect(ctx.gateway().executeTool({ sessionToken: session.token, tool: tool.name, parameters: { ref: "main" }, timeoutMs: 400 }))
+      .rejects.toMatchObject({ reasonCode: "provider_task_pending" });
+    expect((await ctx.rows())[0]).toMatchObject({ responsibleUserId: actor.actorId });
   });
 
   it("never lets another agent attach to a task", async () => {
