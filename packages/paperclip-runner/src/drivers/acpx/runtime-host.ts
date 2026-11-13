@@ -556,9 +556,17 @@ export class AcpxRuntimeHost {
       options.signal?.throwIfAborted();
       admissionStage = "configuration";
       const configurationLifetime = credential;
+      // This copy is registered by the authenticated controller for its company,
+      // agent and run. Environment/config values cannot widen the grant. Each
+      // resumed process receives the newly registered copy; collection already
+      // requires verified provider shutdown in the native executor.
+      const agentFiles = ["claude", "cursor", "copilot", "pi", "kimi"].includes(options.agent)
+        ? bindAcpxAgentFiles(options.runtimeContext, [sandbox.root,
+          ...(installation.agentServerPackageJsonPath === null ? [] : [dirname(installation.agentServerPackageJsonPath)]),
+        ]) : null;
       await runAbortableAdmissionStage(
         options.signal,
-        async () => { await sandbox.initializeOwnedConfiguration?.(); },
+        async () => { await sandbox.initializeOwnedConfiguration?.(agentFiles?.root); },
         cleanup => {
           pendingRuntimeOwnsCredential = true;
           const retained = cleanup.then(() => cleanupAbortedRuntimeAdmission(
@@ -575,14 +583,6 @@ export class AcpxRuntimeHost {
       if (options.agent !== "antigravity") assertAcpxProfileEnvironment(options.agent, sandbox.launchEnvironment);
       admissionStage = "configuration";
       let launchEnvironment = sandbox.launchEnvironment;
-      // This copy is registered by the authenticated controller for its company,
-      // agent and run. Environment/config values cannot widen the grant. Each
-      // resumed process receives the newly registered copy; collection already
-      // requires verified provider shutdown in the native executor.
-      const agentFiles = ["cursor", "copilot", "pi", "kimi"].includes(options.agent)
-        ? bindAcpxAgentFiles(options.runtimeContext, [sandbox.root,
-          ...(installation.agentServerPackageJsonPath === null ? [] : [dirname(installation.agentServerPackageJsonPath)]),
-        ]) : null;
       if (agentFiles) {
         launchEnvironment = Object.freeze({ ...launchEnvironment, AGENT_HOME: agentFiles.root,
           ...(options.agent === "pi" ? { PAPERCLIP_PI_AGENT_HOME: agentFiles.root } : {}),

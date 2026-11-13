@@ -228,6 +228,21 @@ describe("ACPX runtime sandbox", () => {
     expect(JSON.parse(await readFile(join(sandbox.agentHomeDirectory, "settings.json"), "utf8"))).not.toHaveProperty("effortLevel");
   });
 
+  it("Claude settings grant the registered agent directory", async () => {
+    const fixture = await sandboxFixture("claude");
+    const agentFiles = join(fixture.root, "agent-files");
+    const settingsFor = async (permissionMode: "approve-all" | "approve-reads" | "deny-all", root?: string) => {
+      const sandbox = await prepareAcpxRuntimeSandbox({ binding: { ...fixture.binding, permissionMode }, agent: "claude" });
+      await sandbox.initializeOwnedConfiguration?.(root);
+      return JSON.parse(await readFile(join(sandbox.agentHomeDirectory, "settings.json"), "utf8"));
+    };
+    expect((await settingsFor("deny-all", agentFiles)).permissions).toEqual({ additionalDirectories: [agentFiles] });
+    expect((await settingsFor("approve-reads", agentFiles)).permissions)
+      .toMatchObject({ allow: expect.any(Array), additionalDirectories: [agentFiles] });
+    expect(await settingsFor("approve-all", agentFiles)).not.toHaveProperty("permissions");
+    expect(await settingsFor("deny-all")).not.toHaveProperty("permissions");
+  });
+
   it.each([
     ["pi", "OPENROUTER_API_KEY", "pi-home"],
     ["claude", "ANTHROPIC_API_KEY", "claude-home"],

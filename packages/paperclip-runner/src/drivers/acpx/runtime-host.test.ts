@@ -448,7 +448,7 @@ describe("ACPX runtime host", () => {
 
   it.each(["deny-all", "approve-all"] as const)("admits the compact assigned MCP catalog through PRP with %s policy", async permissionMode => {
     const fixture = await hostFixture();
-    const runtimeContext = { skills: [], mcp: { bindingId: "assigned-run" } } as unknown as NativeRuntimeContextSnapshot;
+    const runtimeContext = { instructions: { entryPath: "AGENTS.md" }, skills: [], mcp: { bindingId: "assigned-run" } } as unknown as NativeRuntimeContextSnapshot;
     const catalog = ["paperclip_search_assigned_tools", "paperclip_call_assigned_tool"].map(name => ({ name, inputSchema: { type: "object" } }));
     const readOnly = permissionMode === "deny-all";
     const handler = vi.fn(async () => ({ value: "assigned result" }));
@@ -1197,14 +1197,14 @@ describe("ACPX runtime host", () => {
     expect(fixture.commandClose).toHaveBeenCalledOnce();
   });
 
-  it.each(["cursor", "copilot", "pi"] as const)("binds %s agent files from each registered run copy, never ambient roots", async (agent) => {
+  it.each(["claude", "cursor", "copilot", "pi"] as const)("binds %s agent files from each registered run copy, never ambient roots", async (agent) => {
     const fixture = await hostFixture();
     const copies = await mkdtemp(join(tmpdir(), "paperclip-agent-copies-"));
     temporaryDirectories.push(copies);
-    const model = agent === "pi" ? "openrouter/deepseek/deepseek-v4-flash-0731" : "explicit-test-model";
+    const model = agent === "pi" ? "openrouter/deepseek/deepseek-v4-flash-0731" : agent === "claude" ? "claude-sonnet-5" : "explicit-test-model";
     const options = { ...fixture.options, agent, model, ...(agent === "pi" ? { piThinkingLevel: "low" as const } : {}), permissionMode: "approve-all" as const,
       providerPolicy: { readOnly: false }, environment: { AGENT_HOME: "/ambient/other-agent", PAPERCLIP_PI_AGENT_HOME: "/ambient/other-agent",
-        ...(agent === "pi" ? { OPENROUTER_API_KEY: "test" } : agent === "cursor" ? { CURSOR_API_KEY: "test" } : { COPILOT_GITHUB_TOKEN: "test" }),
+        ...(agent === "pi" ? { OPENROUTER_API_KEY: "test" } : agent === "cursor" ? { CURSOR_API_KEY: "test" } : agent === "copilot" ? { COPILOT_GITHUB_TOKEN: "test" } : {}),
       },
     };
     const opened: AcpxRuntimePortOpenOptions[] = [];
