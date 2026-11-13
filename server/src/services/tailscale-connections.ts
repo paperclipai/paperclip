@@ -71,25 +71,19 @@ export function tailscaleConnectionService(db: Db, dependencies: {
       return value;
     };
     const credential = await read();
-    try {
-      const socket = await networks.connect({
-        identity: `${companyId}:${secretId}`, credential, reload: read,
-        persist: async value => {
-          const [latest] = await db.select().from(tailscaleConnections).where(and(eq(tailscaleConnections.id, id), eq(tailscaleConnections.companyId, companyId)));
-          if (!latest || latest.secretId !== secretId || (latest.status !== "connected" && latest.status !== "connecting")) return;
-          const pinned = trusted(latest);
-          const saved = await secrets.rotate(secretId, { value });
-          await db.update(tailscaleConnections).set({ credentialVersion: saved.latestVersion, credentialHash: hash(value), updatedAt: now() })
-            .where(and(eq(tailscaleConnections.id, id), eq(tailscaleConnections.companyId, companyId), eq(tailscaleConnections.secretId, secretId),
-              eq(tailscaleConnections.credentialVersion, pinned.version), eq(tailscaleConnections.credentialHash, pinned.hash)));
-        },
-      });
-      return { row: await current(), socket, assertCurrent: current };
-    } catch (error) {
-      try { await networks.disconnect(`${companyId}:${secretId}`); }
-      catch (failure) { throw new AggregateError([error, failure], "Tailscale connection cleanup failed"); }
-      throw error;
-    }
+    const socket = await networks.connect({
+      identity: `${companyId}:${secretId}`, credential, reload: read,
+      persist: async value => {
+        const [latest] = await db.select().from(tailscaleConnections).where(and(eq(tailscaleConnections.id, id), eq(tailscaleConnections.companyId, companyId)));
+        if (!latest || latest.secretId !== secretId || (latest.status !== "connected" && latest.status !== "connecting")) return;
+        const pinned = trusted(latest);
+        const saved = await secrets.rotate(secretId, { value });
+        await db.update(tailscaleConnections).set({ credentialVersion: saved.latestVersion, credentialHash: hash(value), updatedAt: now() })
+          .where(and(eq(tailscaleConnections.id, id), eq(tailscaleConnections.companyId, companyId), eq(tailscaleConnections.secretId, secretId),
+            eq(tailscaleConnections.credentialVersion, pinned.version), eq(tailscaleConnections.credentialHash, pinned.hash)));
+      },
+    });
+    return { row: await current(), socket, assertCurrent: current };
   }
 
   return {

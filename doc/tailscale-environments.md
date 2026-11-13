@@ -27,8 +27,10 @@ Paperclip’s vault and displays a command containing only the public key. Each
 preparation generates a fresh key pair. The command uses the public key produced
 during that request, never mutable metadata from a saved secret. Run it
 as the target SSH user. The command preserves existing authorized keys, including
-files without a final newline. It prints that user’s name, home workspace path,
-and SSH host public key for the
+files without a final newline. Before installing the key, it checks for readable
+Ed25519, ECDSA, or RSA host public keys in `/etc/ssh` and stops without changing
+`authorized_keys` if none are available. It prints that user's name, home
+workspace path, and known-hosts entries for every available host key for the
 form. You can also select an existing SSH private key secret.
 
 Pairing output is tied to the selected company, tailnet, machine, and SSH port.
@@ -88,8 +90,10 @@ generic secret's latest value.
 Each connection has a separate userspace daemon and private socket. A stale
 credential read reloads the trusted value before replacing a ready daemon and
 rechecks which daemon is active after the reload. It preserves a healthy newer
-socket and cannot cross a manager shutdown. The daemon accepts
-no subnet routes or DNS changes and blocks incoming connections. Normal shutdown saves
+socket and cannot cross a manager shutdown. Failed connection requests leave
+cleanup to the network manager's exact client; they cannot disconnect a newer
+retry using the same connector identity. The daemon accepts no subnet routes or
+DNS changes and blocks incoming connections. Normal shutdown saves
 node state and removes temporary files. A restart restores the enrolled device;
 it does not reuse the OAuth token or require consent for every task. Disconnect
 invalidates pending consent and stops the connection’s local daemon. A callback

@@ -165,6 +165,47 @@ describe.skipIf(!support.supported)("durable Tailscale consent state", () => {
     return service.get(companyId, result.connection.id);
   }
 
+  it.each(["starting", "ready"] as const)("does not stop a %s retry when an older network request fails", async phase => {
+    const row = await enroll();
+    const identity = `${companyId}:${row.secretId}`;
+    const failedClosed = deferred(), rejectFailed = deferred(), retryStarted = deferred(), finishRetry = deferred();
+    const devices = vi.spyOn(tailscaleDevices, "readTailscaleDevices").mockResolvedValue([
+      { id: "fixture-device", name: "Workstation", hostname: "workstation.example.test", os: "linux", address: "100.64.0.2", online: true },
+    ]);
+    disconnectNetwork.mockClear();
+    connectNetwork.mockImplementationOnce(async input => {
+      running.delete(input.identity);
+      failedClosed.resolve();
+      await rejectFailed.promise;
+      throw new Error("fixture failed network client");
+    }).mockImplementationOnce(async input => {
+      await input.reload!();
+      running.add(input.identity);
+      retryStarted.resolve();
+      if (phase === "starting") await finishRetry.promise;
+      return "/private/tailscale-retry/socket";
+    });
+    const failed = service.environmentBinding(companyId, row.id, "fixture-device", row.secretId!);
+    const failure = failed.catch(error => error);
+    let retry: ReturnType<typeof service.environmentBinding> | undefined;
+    try {
+      await Promise.race([failedClosed.promise, failed]);
+      retry = service.environmentBinding(companyId, row.id, "fixture-device", row.secretId!);
+      await Promise.race([retryStarted.promise, retry]);
+      if (phase === "ready") await retry;
+      rejectFailed.resolve();
+      expect(await failure).toMatchObject({ message: "fixture failed network client" });
+      expect([...running]).toEqual([identity]);
+      expect(disconnectNetwork).not.toHaveBeenCalled();
+      finishRetry.resolve();
+      expect(await retry).toMatchObject({ socket: "/private/tailscale-retry/socket", secretId: row.secretId });
+    } finally {
+      rejectFailed.resolve(); finishRetry.resolve();
+      await Promise.allSettled([failure, retry]);
+      devices.mockRestore();
+    }
+  });
+
   async function otherConnection() {
     const otherId = randomUUID();
     await db.insert(companies).values({ id: otherId, name: "Other tenant", issuePrefix: randomUUID().slice(0, 8).toUpperCase() });

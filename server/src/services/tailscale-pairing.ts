@@ -34,7 +34,12 @@ export async function createTailscalePairing(input: {
     providerMetadata: { sshPublicKey: publicKey } }, { userId: input.userId });
   const host = input.port === 22 ? input.address : `[${input.address}]:${input.port}`;
   const command = [
-    "(", "set -eu", "umask 077", "mkdir -p \"$HOME/.ssh\"", "chmod 700 \"$HOME/.ssh\"",
+    "(", "set -eu", "umask 077", "set --",
+    "for host_key in /etc/ssh/ssh_host_ed25519_key.pub /etc/ssh/ssh_host_ecdsa_key.pub /etc/ssh/ssh_host_rsa_key.pub; do",
+    '  if [ -f "$host_key" ] && [ -r "$host_key" ] && [ -s "$host_key" ]; then set -- "$@" "$host_key"; fi', "done",
+    'if [ "$#" -eq 0 ]; then',
+    "  printf '%s\\n' 'No readable SSH host public key found in /etc/ssh. Configure SSH host keys before pairing.' >&2",
+    "  exit 1", "fi", "mkdir -p \"$HOME/.ssh\"", "chmod 700 \"$HOME/.ssh\"",
     `if ! grep -Fqx -- ${quote(publicKey)} "$HOME/.ssh/authorized_keys" 2>/dev/null; then`,
     '  if [ -s "$HOME/.ssh/authorized_keys" ] && [ -n "$(tail -c 1 "$HOME/.ssh/authorized_keys")" ]; then',
     "    printf '\\n' >> \"$HOME/.ssh/authorized_keys\"", "  fi",
@@ -43,7 +48,7 @@ export async function createTailscalePairing(input: {
     "printf '\\nPaperclip username: '; id -un",
     "printf '\\nPaperclip workspace: %s/Paperclip\\n' \"$HOME\"",
     "printf '\\nKnown hosts:\\n'",
-    `printf '%s ' ${quote(host)}`, "cat /etc/ssh/ssh_host_ed25519_key.pub", ")",
+    'for host_key in "$@"; do', `  printf '%s %s\\n' ${quote(host)} "$(cat "$host_key")"`, "done", ")",
   ].join("\n");
   return { privateKeySecretId: secret.id, publicKey, command };
 }
