@@ -81,7 +81,7 @@ import {
   type AcpxSidecarRequest,
   type AcpxSidecarResponse,
 } from "../drivers/acpx/sidecar-protocol.js";
-import { GENERATED_ACPX_SIDECAR_OPEN_PARAMS, GENERATED_ACPX_SIDECAR_PROVIDER_POLICY_FIELDS } from "../drivers/acpx/generated-sidecar-contract.js";
+import { GENERATED_ACPX_SIDECAR_OPEN_PARAMS, GENERATED_ACPX_SIDECAR_PROVIDER_POLICY_FIELDS, readGeneratedAcpxBackgroundTasks, type GeneratedAcpxBackgroundTasks } from "../drivers/acpx/generated-sidecar-contract.js";
 import { safeAcpxLocations } from "./acpx-sidecar-locations.js";
 import { createCopilotToolEvidence, type CopilotToolEvidence } from "../drivers/acpx/copilot-tool-evidence.js";
 import { createCursorToolEvidence, type CursorToolEvidence } from "../drivers/acpx/cursor-tool-evidence.js";
@@ -629,6 +629,7 @@ async function dispatch(
       sequence,
       pendingToolCount: tools.size,
       pendingInputCount: inputs.size,
+      ...(turnId === null ? optionalBackgroundTasks(activeHost) : {}),
       pendingRuntimeRequests: [
         ...Array.from(inputs, ([requestId, pending]) => ({ requestId, type: "input", turnId: pending.turnId })),
         ...Array.from(permissions, ([requestId, pending]) => ({ requestId, type: "permission", turnId: pending.turnId })),
@@ -829,7 +830,8 @@ async function pumpTurn(
   }
   // Declining Claude's native plan approval interrupts its turn. The captured
   // proposal is this turn's deliverable, so the turn completes normally.
-  if (planProposalTurns.delete(currentTurnId) && terminal.status === "cancelled") {
+  const declinedPlan = planProposalTurns.delete(currentTurnId) && terminal.status === "cancelled";
+  if (declinedPlan) {
     terminal = { status: "completed", stopReason: "end_turn" };
   }
   // A terminal frame is also runnerd's permission to recycle this provider.
@@ -842,13 +844,28 @@ async function pumpTurn(
   } catch {
     // The terminal stays authoritative even if the optional observation fails.
   }
-  if (goalAtTerminal) {
-    const payload = { ...terminal, goalAtTerminal };
+  const backgroundTasks = terminal.status === "completed" && !declinedPlan ? claudeBackgroundTasks(activeHost) : null;
+  if (goalAtTerminal || backgroundTasks) {
+    const payload = { ...terminal, ...(goalAtTerminal ? { goalAtTerminal } : {}), ...(backgroundTasks ? { backgroundTasks } : {}) };
     // Rust admits the payload separately from the larger sidecar frame.
     if (Buffer.byteLength(JSON.stringify(payload)) <= MAX_EVENT_PAYLOAD_BYTES
       && emit("runtime.turn_terminal", payload, currentTurnId)) return;
   }
   emit("runtime.turn_terminal", terminal, currentTurnId);
+}
+
+function optionalBackgroundTasks(activeHost: AcpxRuntimeHost): { backgroundTasks?: GeneratedAcpxBackgroundTasks } {
+  const backgroundTasks = claudeBackgroundTasks(activeHost);
+  return backgroundTasks ? { backgroundTasks } : {};
+}
+
+function claudeBackgroundTasks(activeHost: AcpxRuntimeHost): GeneratedAcpxBackgroundTasks | null {
+  if (initializedAgent !== "claude" || !toolUseAdmission?.hasRoomForAnotherTurn()) return null;
+  try {
+    return readGeneratedAcpxBackgroundTasks(activeHost.backgroundTaskState());
+  } catch {
+    return null;
+  }
 }
 
 async function waitForTool(call: RunnerToolCall, internal = false): Promise<unknown> {

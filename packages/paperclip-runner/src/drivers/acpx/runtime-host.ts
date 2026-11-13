@@ -9,6 +9,7 @@ import { resolveGrokEffort } from "./grok-effort.js";
 import { piProviderConfiguration } from "./pi-provider-config.js";
 import { withAcpxTurnCancellation } from "./turn-cancellation.js";
 import type { AcpxTerminalSessionFailure } from "./provider-failure.js";
+import type { ClaudeBackgroundTaskState } from "./claude-background-tasks.js";
 import { resolveAcpxProviderMode } from "./provider-mode.js";
 import { resolvePiThinkingLevel, type PiThinkingLevel } from "./pi-thinking.js";
 import { preparedHarnessHome, preconfiguredHomeEnvironment, usesPreconfiguredHome } from "../preconfigured-home.js";
@@ -167,6 +168,7 @@ export interface AcpxRuntimePort {
   queueFollowUp?(text: string, requestId: string): Promise<void>;
   goalCapability?(): AcpxRuntimeGoalCapability | null;
   goalSnapshot?(): AcpxRuntimeGoalSnapshot | null;
+  backgroundTaskState?(): ClaudeBackgroundTaskState | null;
   controlGoal?(
     action: "set" | "pause" | "resume" | "clear",
     objective?: string,
@@ -898,6 +900,10 @@ export class AcpxRuntimeHost {
 
   goalSnapshot(): AcpxRuntimeGoalSnapshot | null {
     return this.#runtime.goalSnapshot?.() ?? null;
+  }
+
+  backgroundTaskState(): ClaudeBackgroundTaskState | null {
+    return this.#runtime.backgroundTaskState?.() ?? null;
   }
 
   async controlGoal(
