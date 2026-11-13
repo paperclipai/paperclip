@@ -1676,6 +1676,63 @@ describe("claude execute", () => {
     }
   });
 
+  it("marks a rate-limit window only when the retry has a session to resume", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-rate-limit-unparsed-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "claude");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeTextFailingClaudeCommand(commandPath, {
+      stderr: "API Error: Request rejected (429) · User defined rate limit(s) exceeded for 'serving.opus'. Tokens-per-hour (TPH) rate limit exceeded for default user\n",
+    });
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+    const sessionId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+    const run = (runtime: Record<string, unknown>) => execute({
+      runId: "run-claude-rate-limit-unparsed",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Claude Coder",
+        adapterType: "claude_local",
+        adapterConfig: { engine: "cli" },
+      },
+      runtime: { sessionDisplayId: null, taskKey: null, ...runtime } as never,
+      config: {
+        engine: "cli",
+        command: commandPath,
+        cwd: workspace,
+        promptTemplate: "Follow the paperclip heartbeat.",
+      },
+      context: {},
+      authToken: "run-jwt-token",
+      onLog: async () => {},
+    });
+
+    try {
+      const first = await run({ sessionId: null, sessionParams: null });
+      expect(first).toMatchObject({ exitCode: 1, errorCode: "provider_quota", errorFamily: "provider_quota" });
+      expect(first.retryNotBefore).toEqual(expect.any(String));
+      expect(first.resultJson).not.toHaveProperty("rateLimitWindow");
+
+      const resumed = await run({ sessionId, sessionParams: { sessionId, cwd: workspace } });
+      expect(resumed).toMatchObject({ errorCode: "provider_quota", resultJson: { rateLimitWindow: true } });
+      expect(resumed.sessionId).toBeUndefined();
+      expect(resumed.clearSession).toBe(false);
+
+      await writeFailingClaudeCommand(commandPath, {
+        resultEvent: { type: "result", subtype: "error", is_error: true, result: "REQUEST_LIMIT_EXCEEDED" },
+      });
+      const sessionless = await run({ sessionId: null, sessionParams: null });
+      expect(sessionless).toMatchObject({ errorCode: "provider_quota", sessionId: null });
+      expect(sessionless.resultJson).not.toHaveProperty("rateLimitWindow");
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("marks a Databricks rate-limit window for a retry a quarter of an hour out", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-rate-limit-window-"));
     const workspace = path.join(root, "workspace");

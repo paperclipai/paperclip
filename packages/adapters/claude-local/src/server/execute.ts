@@ -1071,6 +1071,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         : null;
       const rateLimitWindow =
         providerQuota &&
+        Boolean(opts.fallbackSessionId) &&
+        !opts.clearSessionOnMissingSession &&
         claudeRateLimitWindowRetryDelayMs({
           parsed: null,
           stdout: proc.stdout,
@@ -1228,6 +1230,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : null;
     const rateLimitWindow =
       providerQuota &&
+      Boolean(resolvedSessionId) &&
       claudeRateLimitWindowRetryDelayMs({
         parsed,
         stdout: proc.stdout,
