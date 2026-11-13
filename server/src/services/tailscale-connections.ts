@@ -56,17 +56,33 @@ export function tailscaleConnectionService(db: Db, dependencies: {
         || (attempt && (attempt.secretId !== secretId || latest.oauthStateHash !== attempt.stateHash || latest.oauthExpiresAt !== null))) throw cancelled();
       return latest;
     };
+    const untrusted = () => unprocessable("Reconnect Tailscale to verify this network credential.", { code: "tailscale_credential_untrusted" });
+    const trusted = (saved: typeof tailscaleConnections.$inferSelect) => {
+      if (typeof saved.credentialVersion !== "number" || !Number.isInteger(saved.credentialVersion) || saved.credentialVersion < 1
+        || typeof saved.credentialHash !== "string" || !/^[a-f0-9]{64}$/.test(saved.credentialHash)) throw untrusted();
+      return { version: saved.credentialVersion, hash: saved.credentialHash };
+    };
     const read = async () => {
-      await current();
-      return secrets.resolveSecretValue(companyId, secretId, "latest", { accessContext: {
+      const pinned = trusted(await current());
+      const value = await secrets.resolveSecretValue(companyId, secretId, pinned.version, { accessContext: {
         consumerType: "system", consumerId: `tailscale-connection:${id}`, actorType: "system", actorId: null,
       } });
+      if (hash(value) !== pinned.hash) throw untrusted();
+      return value;
     };
     const credential = await read();
     try {
       const socket = await networks.connect({
         identity: `${companyId}:${secretId}`, credential, reload: read,
-        persist: async value => { await secrets.rotate(secretId, { value }); },
+        persist: async value => {
+          const latest = await get(companyId, id);
+          if (latest.secretId !== secretId) return;
+          const pinned = trusted(latest);
+          const saved = await secrets.rotate(secretId, { value });
+          await db.update(tailscaleConnections).set({ credentialVersion: saved.latestVersion, credentialHash: hash(value), updatedAt: now() })
+            .where(and(eq(tailscaleConnections.id, id), eq(tailscaleConnections.companyId, companyId), eq(tailscaleConnections.secretId, secretId),
+              eq(tailscaleConnections.credentialVersion, pinned.version), eq(tailscaleConnections.credentialHash, pinned.hash)));
+        },
       });
       return { row: await current(), socket, assertCurrent: current };
     } catch (error) {
@@ -123,7 +139,7 @@ export function tailscaleConnectionService(db: Db, dependencies: {
         const secret = await secrets.create(row.companyId, { name: `Tailscale connection ${row.id} ${randomBytes(4).toString("hex")}`,
           provider: getConfiguredSecretProvider(), value: grant.accessToken }, { userId: input.userId });
         secretId = secret.id;
-        const [installed] = await db.update(tailscaleConnections).set({ secretId, status: "connecting", updatedAt: now() }).where(owned).returning();
+        const [installed] = await db.update(tailscaleConnections).set({ secretId, credentialVersion: secret.latestVersion, credentialHash: hash(grant.accessToken), status: "connecting", updatedAt: now() }).where(owned).returning();
         if (!installed) throw cancelled();
         if (row.secretId && row.secretId !== secretId) await networks.disconnect(`${row.companyId}:${row.secretId}`);
         await open(row.companyId, row.id, { secretId, stateHash });
@@ -136,7 +152,7 @@ export function tailscaleConnectionService(db: Db, dependencies: {
         if (secretId) {
           for (const clean of [
             () => networks.disconnect(`${row.companyId}:${secretId}`),
-            () => db.update(tailscaleConnections).set({ secretId: null, updatedAt: now() }).where(and(
+            () => db.update(tailscaleConnections).set({ secretId: null, credentialVersion: null, credentialHash: null, updatedAt: now() }).where(and(
               eq(tailscaleConnections.id, row.id), eq(tailscaleConnections.companyId, row.companyId), eq(tailscaleConnections.secretId, secretId!),
             )),
             () => secrets.remove(secretId!),

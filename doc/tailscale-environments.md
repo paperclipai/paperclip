@@ -64,10 +64,24 @@ Tailscale returns a single-use device enrollment token without a refresh token.
 The broker seals it to the originating instance. The instance validates the
 user, company, state expiry and single-use callback, stores the token through the
 configured company secret provider, and immediately replaces its current value
-with the enrolled node state before permitting execution. Tokens, private node
-state and client secrets never appear in connection or environment responses.
+with the enrolled node state before permitting execution. The connection records
+the exact trusted vault version and a SHA-256 digest of the server-written value.
+Runtime reads that version and verifies its digest. A generic company secret
+rotation cannot change the authorized network. Trusted node-state saves advance
+both fields together, with a compare-and-set guard so an older save cannot
+replace a newer state. Reads keep using the previous trusted version until the
+new version is committed. Tokens, private node state, digests and client secrets
+never appear in connection or environment responses.
 
-Each connection has a separate userspace daemon and private socket. It accepts
+Connections created before migration `0476_steady_raider` have no trusted version
+and digest. They fail closed and require a fresh **Connect Tailscale Network**
+consent. The migration leaves these fields empty; it does not trust or backfill a
+generic secret's latest value.
+
+Each connection has a separate userspace daemon and private socket. A stale
+credential read reloads the trusted value before replacing a ready daemon and
+rechecks which daemon is active after the reload. It preserves a healthy newer
+socket and cannot cross a manager shutdown. The daemon accepts
 no subnet routes or DNS changes and blocks incoming connections. Shutdown saves
 node state and removes temporary files. A restart restores the enrolled device;
 it does not reuse the OAuth token or require consent for every task. Disconnect

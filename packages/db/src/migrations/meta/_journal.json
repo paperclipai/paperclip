@@ -3319,6 +3319,13 @@
       "when": 1794539121361,
       "tag": "0475_previous_black_bird",
       "breakpoints": true
+    },
+    {
+      "idx": 476,
+      "version": "7",
+      "when": 1794542244559,
+      "tag": "0476_steady_raider",
+      "breakpoints": true
     }
   ]
 }

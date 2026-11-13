@@ -157,6 +157,83 @@ describe.skipIf(!support.supported)("durable Tailscale consent state", () => {
     expect(connectNetwork).toHaveBeenCalledOnce();
   });
 
+  async function enroll() {
+    const { result, state } = await start();
+    claim.mockResolvedValue({ accessToken: "fixture-enrollment-token", accessTokenExpiresAt: new Date(clock.getTime() + 60_000).toISOString() });
+    await service.complete({ state, userId: "fixture-owner", claimId: "fixture-claim", authorizeCompany });
+    return service.get(companyId, result.connection.id);
+  }
+
+  it("does not adopt an ordinary member's rotation of a connector secret", async () => {
+    const row = await enroll();
+    await vault.rotate(row.secretId!, { value: "tskey-auth-member-chosen-tailnet" }, { userId: "fixture-member" });
+    const devices = vi.spyOn(tailscaleDevices, "readTailscaleDevices").mockResolvedValue([{ id: "fixture-device", name: "Workstation", hostname: "workstation.example.test", os: "linux", address: "100.64.0.2", online: true }]);
+    connectNetwork.mockImplementationOnce(async input => {
+      expect(input.credential).toBe("fixture-enrolled-node-state");
+      expect(await input.reload!()).toBe("fixture-enrolled-node-state");
+      return "/private/tailscale-fixture/socket";
+    });
+    try { await expect(service.environmentBinding(companyId, row.id, "fixture-device")).resolves.toMatchObject({ host: "100.64.0.2" }); }
+    finally { devices.mockRestore(); }
+  });
+
+  it("pins the enrollment credential even if a member rotates it before installation", async () => {
+    const create = vault.create;
+    const created = vi.spyOn(vault, "create").mockImplementationOnce(async (...args) => {
+      const secret = await create(...args);
+      await vault.rotate(secret.id, { value: "tskey-auth-member-chosen-tailnet" }, { userId: "fixture-member" });
+      return secret;
+    });
+    connectNetwork.mockImplementationOnce(async input => {
+      expect(input.credential).toBe("fixture-enrollment-token");
+      expect(await input.reload!()).toBe("fixture-enrollment-token");
+      await input.persist("fixture-enrolled-node-state");
+      return "/private/tailscale-fixture/socket";
+    });
+    try {
+      const row = await enroll();
+      expect(row.credentialVersion).toBe(3);
+      expect(row.credentialHash).toMatch(/^[a-f0-9]{64}$/);
+    } finally { created.mockRestore(); }
+  });
+
+  it("rejects unpinned or tampered connector credentials before starting a daemon", async () => {
+    const row = await enroll();
+    const devices = vi.spyOn(tailscaleDevices, "readTailscaleDevices").mockResolvedValue([]);
+    const calls = connectNetwork.mock.calls.length;
+    const read = vi.spyOn(vault, "resolveSecretValue").mockResolvedValueOnce("tskey-auth-member-chosen-tailnet");
+    try {
+      await expect(service.environmentBinding(companyId, row.id, "fixture-device")).rejects.toMatchObject({ status: 422, details: { code: "tailscale_credential_untrusted" } });
+      expect(connectNetwork).toHaveBeenCalledTimes(calls);
+      read.mockRestore();
+      await db.update(tailscaleConnections).set({ credentialVersion: null, credentialHash: null }).where(eq(tailscaleConnections.id, row.id));
+      await expect(service.environmentBinding(companyId, row.id, "fixture-device")).rejects.toMatchObject({ status: 422, details: { code: "tailscale_credential_untrusted" } });
+      expect(connectNetwork).toHaveBeenCalledTimes(calls);
+      expect(devices).not.toHaveBeenCalled();
+    } finally { read.mockRestore(); devices.mockRestore(); }
+  });
+
+  it("keeps the last trusted state readable while a new trusted version is being saved", async () => {
+    const row = await enroll();
+    const input = connectNetwork.mock.calls[0]![0];
+    const entered = deferred(), release = deferred();
+    const rotate = vault.rotate;
+    const rotating = vi.spyOn(vault, "rotate").mockImplementationOnce(async (...args) => {
+      const value = await rotate(...args); entered.resolve(); await release.promise; return value;
+    });
+    const saving = input.persist("fixture-next-node-state");
+    const settled = saving.catch(() => undefined);
+    try {
+      await entered.promise;
+      expect(await input.reload!()).toBe("fixture-enrolled-node-state");
+      await input.persist("fixture-newer-node-state");
+      expect(await input.reload!()).toBe("fixture-newer-node-state");
+      release.resolve();
+      await saving;
+      expect(await input.reload!()).toBe("fixture-newer-node-state");
+    } finally { release.resolve(); await settled; rotating.mockRestore(); }
+  });
+
   it("closes the old network client when replacing a connected authorization", async () => {
     const { result, state } = await start();
     claim.mockResolvedValue({ accessToken: "fixture-enrollment-token", accessTokenExpiresAt: new Date(clock.getTime() + 60_000).toISOString() });
