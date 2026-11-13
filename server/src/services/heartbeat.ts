@@ -649,6 +649,10 @@ const activeRunExecutionPromises = new Set<Promise<void>>();
 // can await a wake that is still before run registration. A caller that tears
 // down a shared database (a test afterEach) then cannot race a late wake.
 const activeWakeupPromises = new Set<Promise<unknown>>();
+// A native resume dispatch whose timer has fired reads and claims run state
+// before it registers an execution. Track that work too, so a drain cannot
+// return while it is still writing.
+const activeNativeResumeDispatches = new Set<Promise<void>>();
 const nativeSessionResumeDispatchTimers = new Map<
   string,
   ReturnType<typeof setTimeout>
@@ -1810,16 +1814,23 @@ export function heartbeatService(
   // activeRunExecutionPromises, and the second await drains that run. A wakeup or
   // a run can add more entries as it settles, so loop until both sets are empty.
   async function drainActiveRunExecutions() {
-    for (const timer of nativeSessionResumeDispatchTimers.values()) {
-      clearTimeout(timer);
-    }
-    nativeSessionResumeDispatchTimers.clear();
+    const clearResumeTimers = () => {
+      for (const timer of nativeSessionResumeDispatchTimers.values()) {
+        clearTimeout(timer);
+      }
+      nativeSessionResumeDispatchTimers.clear();
+    };
+    clearResumeTimers();
     while (
       activeWakeupPromises.size > 0 ||
+      activeNativeResumeDispatches.size > 0 ||
       activeRunExecutionPromises.size > 0
     ) {
       await Promise.allSettled([...activeWakeupPromises]);
+      await Promise.allSettled([...activeNativeResumeDispatches]);
       await Promise.all([...activeRunExecutionPromises]);
+      // A failed dispatch re-arms its timer; the drain owns that deadline too.
+      clearResumeTimers();
     }
   }
 
@@ -1838,7 +1849,7 @@ export function heartbeatService(
     const timer = setTimeout(() => {
       if (nativeSessionResumeDispatchTimers.get(runId) !== timer) return;
       nativeSessionResumeDispatchTimers.delete(runId);
-      void (async () => {
+      const dispatchWork: Promise<void> = (async () => {
         if ((await getSchedulingSuppression()).suppressed) return;
         if (nativeRecoveryDeadlines.get(runId) !== pending) return;
         nativeRecoveryDeadlines.delete(runId);
@@ -1875,6 +1886,8 @@ export function heartbeatService(
           "failed to dispatch scheduled native session resume",
         );
       });
+      activeNativeResumeDispatches.add(dispatchWork);
+      void dispatchWork.finally(() => activeNativeResumeDispatches.delete(dispatchWork));
     }, delayMs);
     timer.unref?.();
     nativeSessionResumeDispatchTimers.set(runId, timer);
@@ -4645,6 +4658,7 @@ export function heartbeatService(
     resolveSchedulingSuppression: getSchedulingSuppression,
     drainRunningRunsForShutdown,
     drainActiveRunExecutions,
+    scheduleNativeSessionResumeDispatch,
     startTaskDrain,
     stopTaskDrain,
     getTaskDrainStatus,
