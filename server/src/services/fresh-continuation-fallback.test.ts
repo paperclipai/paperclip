@@ -270,7 +270,17 @@ suite("fresh-continuation fallback", () => {
     const f = await unfinishedRun({ runtime: "native", errorCode: "native_session_interrupted", hold: "settled_blocked" });
     await db.update(agents).set({ runtimeConfig: { heartbeat: { maxConcurrentRuns: 1, maxDailyRuns: 1 } } }).where(eq(agents.id, agentId));
     try {
-      // The source run already used today's single run.
+      // The daily limit counts runs started in the current UTC day. Pin the
+      // runs to that window so the result does not depend on the hour: the
+      // source run started yesterday (as it does just after 00:00 UTC), and
+      // another run started today used the single run.
+      const now = new Date();
+      const todayStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+      await db.update(heartbeatRuns).set({ startedAt: new Date(todayStart - 60_000), createdAt: new Date(todayStart - 120_000) })
+        .where(eq(heartbeatRuns.id, f.runId));
+      const [other] = await db.insert(issues).values({ companyId, title: "Used today's run", status: "done", assigneeAgentId: agentId }).returning();
+      await db.insert(heartbeatRuns).values({ companyId, agentId, issueId: other!.id, status: "succeeded",
+        startedAt: now, finishedAt: now, contextSnapshot: { issueId: other!.id } });
       expect(await sweepWake(f.issueId)).toBeNull();
       await deliver();
       expect(await successors(f.runId)).toHaveLength(0);
