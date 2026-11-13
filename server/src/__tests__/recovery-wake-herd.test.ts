@@ -755,6 +755,27 @@ suite("recovery wake herd", () => {
     expect((await runsOfTask(waiting.issue.id, waiting.source.id)).map(run => run.id)).toEqual([waiting.continuation.id]);
   }, 120_000);
 
+  it("starts nothing when the continuation ended between showing Move it forward now and the click", async () => {
+    const agentId = await seedCompany(1);
+    const waiting = await continuationWaitingInQueue(agentId, 16);
+    const shown = await taskInterruptionPresentation(db, waiting.issueRow);
+    expect(shown).toMatchObject({ canRetry: true, retryAction: "move_forward", observedRunId: waiting.continuation.id });
+    await db.update(heartbeatRuns).set({ status: "failed", errorCode: "adapter_failed", startedAt: new Date(), finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, waiting.continuation.id));
+    const heartbeat = heartbeatService(db);
+    try {
+      const receipt = await requestTaskRetry({ db, companyId, issueId: waiting.issue.id, actorId: userId,
+        observedRunId: shown!.observedRunId, retryAction: shown!.retryAction, idempotencyKey: randomUUID() });
+      expect(receipt).toMatchObject({ accepted: false, alreadyMovedOn: true, requestId: null });
+      await heartbeat.resumeQueuedRuns();
+      expect((await runsOfTask(waiting.issue.id, waiting.source.id)).map(run => run.id)).toEqual([waiting.continuation.id]);
+      expect(await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.reason, "task_retry"),
+        sql`${agentWakeupRequests.payload}->>'issueId' = ${waiting.issue.id}`))).toEqual([]);
+    } finally {
+      await heartbeat.drainActiveRunExecutions();
+    }
+  }, 120_000);
+
   it("leaves a continuation that waited under 15 minutes in its place, with no Retry", async () => {
     const agentId = await seedCompany(1);
     const waiting = await continuationWaitingInQueue(agentId, 14);
