@@ -287,5 +287,8 @@ export const heartbeatRuns = pgTable(
         nullif(${table.contextSnapshot}->>'taskKey', '')
       )`)
       .concurrently(),
+    wakeupRequestIdx: index("heartbeat_runs_wakeup_request_id_idx")
+      .on(table.wakeupRequestId)
+      .concurrently(),
   }),
 );

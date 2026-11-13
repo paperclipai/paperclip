@@ -3368,6 +3368,13 @@
       "when": 1794604948355,
       "tag": "0482_aberrant_rumiko_fujikawa",
       "breakpoints": true
+    },
+    {
+      "idx": 483,
+      "version": "7",
+      "when": 1794605008355,
+      "tag": "0483_heartbeat_runs_wakeup_request_index",
+      "breakpoints": true
     }
   ]
 }
