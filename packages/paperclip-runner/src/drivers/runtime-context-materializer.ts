@@ -89,12 +89,6 @@ function yamlNameValue(name: string): string {
   return /^[A-Za-z0-9._-]+$/u.test(name) ? name : JSON.stringify(name);
 }
 
-/**
- * Providers index an assigned skill by the top-level `name` in its SKILL.md,
- * while Paperclip grants each assigned skill a unique runtime name. Align only
- * that field in the disposable provider snapshot so the advertised name can be
- * loaded; every other skill byte stays identical.
- */
 async function alignSkillRuntimeName(
   skillRoot: string,
   runtimeName: string,
@@ -112,21 +106,23 @@ async function alignSkillRuntimeName(
   const rest = markdown.slice(opening[0].length);
   const closing = /^---(?:\r?\n|$)/mu.exec(rest);
   if (!closing) return;
-  // Keep each original line ending. Only the name value is disposable; the
-  // rest of the admitted document must retain its original bytes.
   const lines = rest.slice(0, closing.index).match(/[^\n]*\n|[^\n]+$/gu) ?? [];
-  const nameIndex = lines.findIndex((line) => /^name[ \t]*:/u.test(line));
+  const firstField = lines.find((line) => line.trim() && !line.trimStart().startsWith("#"));
+  if (!firstField) return;
+  const indent = firstField.match(/^ */u)![0];
+  const nameIndex = lines.findIndex((line) =>
+    line.startsWith(indent) && /^name[ \t]*:/u.test(line.slice(indent.length)),
+  );
   if (nameIndex < 0) return;
   let nameEnd = nameIndex + 1;
   for (let index = nameEnd; index < lines.length; index += 1) {
     const line = lines[index]!;
-    if (/^[^\s#]/u.test(line)) break;
-    // Indented lines continue the value, including literal/folded scalars.
-    // Leave trailing blank lines and field comments outside the value intact.
-    if (/^[ \t]+\S/u.test(line)) nameEnd = index + 1;
+    if (!line.trim() || line.trimStart().startsWith("#")) continue;
+    if (line.match(/^ */u)![0].length <= indent.length) break;
+    nameEnd = index + 1;
   }
   const eol = lines[nameIndex]!.endsWith("\r\n") ? "\r\n" : "\n";
-  lines.splice(nameIndex, nameEnd - nameIndex, `name: ${yamlNameValue(runtimeName)}${eol}`);
+  lines.splice(nameIndex, nameEnd - nameIndex, `${indent}name: ${yamlNameValue(runtimeName)}${eol}`);
   const aligned = opening[0] + lines.join("") + rest.slice(closing.index);
   if (aligned === markdown) return;
   await chmod(skillFile, 0o644);

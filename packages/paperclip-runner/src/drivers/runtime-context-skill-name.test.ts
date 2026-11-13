@@ -23,6 +23,8 @@ const asset = (rootPath: string) => ({
 });
 
 it.each([
+  ["indented root", "---\n  name: |-\n    review\n  description: Review work\n  metadata:\n    name: nested\n---\n# Review\n", "---\n  name: review--abc123\n  description: Review work\n  metadata:\n    name: nested\n---\n# Review\n"],
+  ["nested name first", "---\nmetadata:\n  name: nested\nname: review\ndescription: Review work\n---\n# Review\n", "---\nmetadata:\n  name: nested\nname: review--abc123\ndescription: Review work\n---\n# Review\n"],
   ["LF", "---\nname: review\ndescription: Review work\n---\n# Review\n", "---\nname: review--abc123\ndescription: Review work\n---\n# Review\n"],
   ["CRLF", "---\r\nname: review\r\ndescription: Review work\r\n---\r\n# Review\r\n", "---\r\nname: review--abc123\r\ndescription: Review work\r\n---\r\n# Review\r\n"],
   ["literal name", "---\nname: |-\n  review\ndescription: Review work\n---\n# Review\n", "---\nname: review--abc123\ndescription: Review work\n---\n# Review\n"],
@@ -53,8 +55,6 @@ it.each([
 
     await materializeNativeRuntimeSkills(context, skillsHome);
 
-    // The provider indexes the top-level name, so the granted runtime name must
-    // be present; the source document and the no-frontmatter control stay intact.
     await expect(readFile(join(skillsHome, "review--abc123", "SKILL.md"), "utf8"))
       .resolves.toBe(stagedMarkdown);
     await expect(readFile(join(skillsHome, "plain", "SKILL.md"), "utf8"))
