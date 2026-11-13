@@ -24,7 +24,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { configuredEnvironmentProjection } from "../configured-environment.js";
 import { NativeSessionProtocolIntegrityError } from "../contracts/native-session-backend.js";
-import { createCapabilityRunnerdCodexTransport, createCapabilityRunnerdProviderEnvironment } from "../live/runnerd-codex-transport.js";
+import { createCapabilityRunnerdCodexTransport, createCapabilityRunnerdProviderEnvironment, waitForRunnerCommand } from "../live/runnerd-codex-transport.js";
 import { ACPX_CREDENTIAL_BINDING_ENV, createAcpxSidecarHostEnvironment } from "../drivers/acpx/environment.js";
 import { validatePrpEvent } from "../protocol/replay-contract.js";
 import { digestPaperclipSemanticContent } from "../semantic-tools/receipts.js";
@@ -1863,6 +1863,245 @@ it("answers lease renewal while an earlier event commit is still in flight", asy
   }
 });
 
+function replayBacklogCore(root: string, commitMs: number) {
+  let stopped = false;
+  const commits = vi.fn(async () => {
+    if (stopped) throw new Error("replay_test_stopped");
+    await new Promise<void>(resolveCommit => setTimeout(resolveCommit, commitMs));
+  });
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity,
+    expectedRunnerVersion, expectedRunnerDigest, onCommittedEvent: commits });
+  return { core, commits, stop: () => { stopped = true; } };
+}
+
+function commandResultFrame(client: AuthenticatedClient, command: { commandId: string; type: string; controllerSeq: number },
+  result: Record<string, unknown> = { status: "completed" }, status = "completed"): Record<string, unknown> {
+  return { protocol: "paperclip.runner", version: client.welcome.version, kind: "command_result",
+    payload: { commandId: command.commandId, commandType: command.type, controllerSeq: command.controllerSeq, status, result } };
+}
+
+async function receiveCommand(client: AuthenticatedClient): Promise<Record<string, unknown>> {
+  for (;;) {
+    const frame = await receiveSecure(client);
+    if (frame === null) throw new Error("connection closed before the command arrived");
+    if (frame.kind === "command") return frame;
+  }
+}
+
+it("answers a command issued during a 1,000-event replay within its deadline", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-command-under-replay-"));
+  const { core, commits, stop } = replayBacklogCore(root, 50);
+  try {
+    await core.start();
+    const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+    for (let seq = 1; seq <= 1_000; seq++) sendSecure(client, ordinaryOutput(seq));
+    await vi.waitFor(() => expect(commits).toHaveBeenCalled());
+    const snapshot = core.queueCommand("session.snapshot", {}, "snapshot-during-replay", true);
+    expect((await receiveCommand(client)).payload).toMatchObject({ commandId: snapshot.commandId });
+    sendSecure(client, commandResultFrame(client, snapshot));
+    await vi.waitFor(() => expect(core.commandOutcome(snapshot.commandId)?.status).toBe("completed"),
+      { timeout: 30_000, interval: 10 });
+    expect(core.store.state.ackedSourceSeq).toBeLessThan(1_000);
+    client.socket.destroy();
+  } finally {
+    stop();
+    await core.stop();
+    await core.drainPendingConnectionProcessing();
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 60_000);
+
+it("keeps a failed command result behind the events the Runner sent before it", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-failed-result-order-"));
+  const { core, stop } = replayBacklogCore(root, 20);
+  try {
+    await core.start();
+    const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+    const snapshot = core.queueCommand("session.snapshot", {}, "failed-after-evidence", true);
+    await receiveCommand(client);
+    for (let seq = 1; seq <= 20; seq++) sendSecure(client, ordinaryOutput(seq));
+    sendSecure(client, commandResultFrame(client, snapshot, { code: "command_execution_failed" }, "failed"));
+    await vi.waitFor(() => expect(core.commandOutcome(snapshot.commandId)?.status).toBe("failed"), { timeout: 10_000 });
+    expect(core.store.state.ackedSourceSeq).toBe(20);
+    client.socket.destroy();
+  } finally {
+    stop();
+    await core.stop();
+    await core.drainPendingConnectionProcessing();
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 30_000);
+
+function staleToolResult(core: DurablePrpControlPlane) {
+  return core.queueCommand("semantic_tool.result", { callId: "call-earlier-generation", operationId: "get_task_context",
+    sourceEventId: "tool-input-earlier-generation", sourceEventType: "semantic_tool.input", inputDigest: "digest",
+    correlation: { ...identity }, result: { ok: true }, isError: false }, "command_tool_earlier_generation");
+}
+
+it("delivers every command pending at attach so an earlier generation's result cannot hold the recovery probe", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-stale-pending-at-attach-"));
+  const { core, stop } = replayBacklogCore(root, 50);
+  try {
+    const stale = staleToolResult(core);
+    const probe = core.queueCommand("runner.drain", {}, "command_resume_probe_attach");
+    await core.start();
+    const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+    const pending = (client.welcome.payload as { pendingCommands: Array<{ commandId: string }> }).pendingCommands;
+    expect(pending.map(command => command.commandId)).toEqual([stale.commandId, probe.commandId]);
+    sendSecure(client, commandResultFrame(client, stale));
+    sendSecure(client, commandResultFrame(client, probe, { status: "completed", retainedEventsDrained: false }));
+    for (let seq = 1; seq <= 1_000; seq++) sendSecure(client, ordinaryOutput(seq));
+    await vi.waitFor(() => expect(core.commandOutcome(probe.commandId)?.status).toBe("completed"), { timeout: 5_000 });
+    expect(core.commandOutcome(stale.commandId)?.status).toBe("completed");
+    expect(core.store.state.commandDeliveryCounts).toEqual({ [stale.commandId]: 1, [probe.commandId]: 1 });
+    client.socket.destroy();
+  } finally {
+    stop();
+    await core.stop();
+    await core.drainPendingConnectionProcessing();
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 30_000);
+
+it("never delivers a lifecycle command ahead of its turn at attach", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-attach-lifecycle-fence-"));
+  const { core, stop } = replayBacklogCore(root, 1);
+  try {
+    const stale = staleToolResult(core);
+    const drain = core.queueCommand("runner.drain", {}, "command_drain_before_suspend");
+    core.queueCommand("runner.suspend", {}, "command_suspend_after_drain");
+    core.queueCommand("session.snapshot", {}, "command_snapshot_after_suspend");
+    await core.start();
+    const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+    const pending = (client.welcome.payload as { pendingCommands: Array<{ commandId: string }> }).pendingCommands;
+    expect(pending.map(command => command.commandId)).toEqual([stale.commandId, drain.commandId]);
+    sendSecure(client, commandResultFrame(client, stale));
+    sendSecure(client, commandResultFrame(client, drain, { status: "completed", retainedEventsDrained: true }));
+    expect((await receiveCommand(client)).payload).toMatchObject({ commandId: "command_suspend_after_drain" });
+    client.socket.destroy();
+  } finally {
+    stop();
+    await core.stop();
+    await core.drainPendingConnectionProcessing();
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 30_000);
+
+function completedItem(sourceSeq: number): Record<string, unknown> {
+  const envelope = ordinaryOutput(sourceSeq);
+  Object.assign(envelope.payload as Record<string, unknown>, {
+    sourceEventId: `completed-${sourceSeq}`, eventType: "item.completed", priority: 1,
+    payload: { item: { id: `item-${sourceSeq}` } },
+  });
+  return envelope;
+}
+
+it("acknowledges a replayed burst once per batch, never ahead of its durable checkpoint", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-batched-ack-"));
+  const { core, stop } = replayBacklogCore(root, 5);
+  let persistedCursor = 0;
+  const persisted: number[] = [];
+  core.setCheckpointPersistence(async saved => {
+    await new Promise<void>(resolveWrite => setTimeout(resolveWrite, 5));
+    persistedCursor = JSON.parse(saved.records.get("cursor")!).ackedSourceSeq;
+    persisted.push(persistedCursor);
+  });
+  try {
+    await core.start();
+    const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+    const before = persisted.length;
+    for (let seq = 1; seq <= 300; seq++) sendSecure(client, completedItem(seq));
+    const acks: number[] = [];
+    while (acks.at(-1) !== 300) {
+      const frame = await receiveSecure(client);
+      if (frame === null) throw new Error("connection closed before the burst was acknowledged");
+      if (frame.kind !== "ack") continue;
+      const acked = (frame.payload as { ackedSourceSeq: number }).ackedSourceSeq;
+      expect(acked).toBeLessThanOrEqual(persistedCursor);
+      acks.push(acked);
+    }
+    expect(acks).toEqual([...acks].sort((left, right) => left - right));
+    expect(acks.length).toBeLessThan(300 / 16);
+    expect(persisted.length - before).toBeLessThan(300 / 16);
+    expect(core.store.state.committedEvents.map(event => event.sourceSeq)).toEqual(Array.from({ length: 300 }, (_, index) => index + 1));
+    client.socket.destroy();
+  } finally {
+    stop();
+    await core.stop();
+    await core.drainPendingConnectionProcessing();
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 60_000);
+
+it("still acknowledges a lifecycle event inside a burst before the next frame", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-batched-ack-lifecycle-"));
+  const { core, stop } = replayBacklogCore(root, 5);
+  try {
+    await core.start();
+    const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+    const turn = completedItem(11);
+    Object.assign(turn.payload as Record<string, unknown>, { sourceEventId: "turn-11", eventType: "turn.completed", priority: 0,
+      payload: { turnId: identity.turnId } });
+    for (let seq = 1; seq <= 20; seq++) sendSecure(client, seq === 11 ? turn : completedItem(seq));
+    const acks: number[] = [];
+    while (acks.at(-1) !== 20) {
+      const frame = await receiveSecure(client);
+      if (frame === null) throw new Error("connection closed before the burst was acknowledged");
+      if (frame.kind === "ack") acks.push((frame.payload as { ackedSourceSeq: number }).ackedSourceSeq);
+    }
+    expect(acks).toContain(11);
+    client.socket.destroy();
+  } finally {
+    stop();
+    await core.stop();
+    await core.drainPendingConnectionProcessing();
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 60_000);
+
+it("answers a snapshot from a Runner whose provider stays wedged until its whole replay is acknowledged", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-wedged-provider-replay-"));
+  const { core, stop } = replayBacklogCore(root, 20);
+  try {
+    await core.start();
+    const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+    const backlog = 250;
+    for (let seq = 1; seq <= backlog; seq++) sendSecure(client, completedItem(seq));
+    const snapshot = core.queueCommand("session.snapshot", {}, "snapshot-behind-wedged-provider", true);
+    const runner = (async () => {
+      let delivered = false;
+      let acked = 0;
+      while (!delivered || acked < backlog) {
+        const frame = await receiveSecure(client, null);
+        if (frame === null) return;
+        if (frame.kind === "command") delivered = true;
+        if (frame.kind === "ack") acked = (frame.payload as { ackedSourceSeq: number }).ackedSourceSeq;
+      }
+      sendSecure(client, commandResultFrame(client, snapshot));
+    })();
+    await waitForRunnerCommand({
+      type: "session.snapshot",
+      deadline: Date.now() + 2_000,
+      abortOnClose: false,
+      isClosed: () => false,
+      throwIfFailed: () => undefined,
+      command: () => core.getCommand(snapshot.commandId),
+      runnerHasExited: async () => false,
+      failureCode: () => "provider_transport_failed",
+      answeredProgressAt: () => core.queuedCommandResultProgressAt(snapshot.commandId),
+      replayProgressAt: () => core.committedEventProgressAt?.() ?? null,
+    });
+    expect(core.store.state.ackedSourceSeq).toBe(backlog);
+    await runner;
+    client.socket.destroy();
+  } finally {
+    stop();
+    await core.stop();
+    await core.drainPendingConnectionProcessing();
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 60_000);
+
 it("keeps a staged tool-progress write when a lease renewal lands mid-write", async () => {
   const root = mkdtempSync(resolve(tmpdir(), "runner-lease-renewal-staged-write-"));
   let release!: () => void;
@@ -2690,13 +2929,13 @@ class ServerFrameReader {
     socket.once("close", () => this.#publish(null));
   }
 
-  next(): Promise<Record<string, unknown> | null> {
+  next(timeoutMs: number | null = 2_000): Promise<Record<string, unknown> | null> {
     const queued = this.#frames.shift();
     if (queued !== undefined) return Promise.resolve(queued);
     return new Promise((resolveFrame, rejectFrame) => {
-      const timer = setTimeout(
+      const timer = timeoutMs === null ? undefined : setTimeout(
         () => rejectFrame(new Error("Server WebSocket frame timed out.")),
-        2_000,
+        timeoutMs,
       );
       this.#waiters.push((value) => {
         clearTimeout(timer);
@@ -3131,8 +3370,9 @@ function sendSecure(
 
 async function receiveSecure(
   client: AuthenticatedClient,
+  frameTimeoutMs: number | null = 2_000,
 ): Promise<Record<string, unknown> | null> {
-  const frame = await client.reader.next();
+  const frame = await client.reader.next(frameTimeoutMs);
   if (frame === null) return null;
   const counter = BigInt(frame.counter as number);
   expect(counter).toBe(client.receiveCounter);
@@ -4619,11 +4859,6 @@ describe("DurablePrpControlPlane", () => {
         { callId: "call-1" },
         "command-tool-1",
       );
-      controlPlane.queueCommand(
-        "turn.interrupt",
-        { turnId: "turn-1" },
-        "command-interrupt-1",
-      );
       const client = await authenticate(
         controlPlane,
         controlPlane.issueBootstrapTicket(),
@@ -4633,6 +4868,11 @@ describe("DurablePrpControlPlane", () => {
           expect.objectContaining({ commandId: "command-tool-1" }),
         ],
       });
+      controlPlane.queueCommand(
+        "turn.interrupt",
+        { turnId: "turn-1" },
+        "command-interrupt-1",
+      );
 
       // Exactly what runnerd replays after it is killed between journaling a
       // command and confirming its effect. Its durable contract promotes such a

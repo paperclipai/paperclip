@@ -159,15 +159,11 @@ export function checkCoverage({
   return findUncheckedTests({ trackedFiles: trackedFiles(root), checkedFiles });
 }
 
-export function typecheckTestPrograms({
+export function prepareTestPrograms({
   root,
   env = process.env,
-  programs = PROGRAMS,
-  coverage = true,
   pnpm = runPnpm,
   linkPlugins = linkExcludedPlugins,
-  run = runTsc,
-  checkFiles = checkCoverage,
   log = console.log,
   logError = console.error,
 }) {
@@ -197,6 +193,26 @@ export function typecheckTestPrograms({
   }
   // The installs remove the SDK link from each provider's node_modules.
   linkPlugins();
+  return 0;
+}
+
+export function typecheckTestPrograms({
+  root,
+  env = process.env,
+  programs = PROGRAMS,
+  coverage = true,
+  prepare = true,
+  pnpm = runPnpm,
+  linkPlugins = linkExcludedPlugins,
+  run = runTsc,
+  checkFiles = checkCoverage,
+  log = console.log,
+  logError = console.error,
+}) {
+  if (prepare) {
+    const prepared = prepareTestPrograms({ root, env, pnpm, linkPlugins, log, logError });
+    if (prepared !== 0) return prepared;
+  }
 
   let exitCode = 0;
   for (const config of programs) {
@@ -224,20 +240,28 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const args = process.argv.slice(2);
   const flags = args.filter((arg) => arg.startsWith("--"));
   const programs = args.filter((arg) => !arg.startsWith("--"));
-  const unknownFlags = flags.filter((flag) => flag !== "--low-memory");
+  const unknownFlags = flags.filter((flag) => !["--low-memory", "--prepare-only", "--skip-prepare"].includes(flag));
   const unknown = programs.filter((program) => !PROGRAMS.includes(program));
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  const env = flags.includes("--low-memory") ? { ...process.env, [LOW_MEMORY_VARIABLE]: "1" } : process.env;
   if (unknownFlags.length > 0) {
     console.error(`Unknown option: ${unknownFlags.join(", ")}`);
+    process.exitCode = 2;
+  } else if (flags.includes("--prepare-only") && (flags.includes("--skip-prepare") || programs.length > 0)) {
+    console.error("--prepare-only takes no programs and cannot be combined with --skip-prepare");
     process.exitCode = 2;
   } else if (unknown.length > 0) {
     console.error(`Unknown program: ${unknown.join(", ")}. Known programs:\n  ${PROGRAMS.join("\n  ")}`);
     process.exitCode = 2;
+  } else if (flags.includes("--prepare-only")) {
+    process.exitCode = prepareTestPrograms({ root, env });
   } else {
     process.exitCode = typecheckTestPrograms({
-      root: path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."),
-      env: flags.includes("--low-memory") ? { ...process.env, [LOW_MEMORY_VARIABLE]: "1" } : process.env,
+      root,
+      env,
       programs: programs.length > 0 ? programs : PROGRAMS,
       coverage: programs.length === 0,
+      prepare: !flags.includes("--skip-prepare"),
     });
   }
 }
