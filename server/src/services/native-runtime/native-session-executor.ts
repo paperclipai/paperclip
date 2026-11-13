@@ -8797,6 +8797,11 @@ export function nativeSessionFailureDisposition(
   };
 }
 
+export function nativeAdmittedProviderAttemptLimit(claim: NativeRestartRecoveryClaim | null | undefined): number {
+  return claim?.kind === "reattach_remote_runner" && claim.replaceUnansweredRunner === true
+    ? NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT + 1 : NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT;
+}
+
 export function nativeUnansweredRunnerReplacementDisposition(
   disposition: ReturnType<typeof nativeSessionFailureDisposition>,
   input: { attempt: number; now: Date; adoptedRunnerUnanswered: boolean; replacing: boolean },
@@ -11144,7 +11149,7 @@ async function executePaperclipNativeSessionAttempt(
             recovering?.kind,
             !recovering || !("chargesProviderAttempt" in recovering) || recovering.chargesProviderAttempt !== false,
           );
-          if (nextAttempt > 3)
+          if (nextAttempt > nativeAdmittedProviderAttemptLimit(recovering))
             throw new Error("native_session_retry_exhausted");
           const scheduledResumeDecision = await scheduledResumeContinuationAllowed(tx as unknown as Db, {
             companyId: input.execution.binding.companyId,
