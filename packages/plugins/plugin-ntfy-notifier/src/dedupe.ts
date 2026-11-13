@@ -9,9 +9,19 @@ import type { PluginStateClient } from "@paperclipai/plugin-sdk";
  * one worker are collapsed by an in-memory in-flight set, which closes the
  * race between the state read and the state write.
  *
- * The remaining duplicate window is a worker crash after ntfy accepted the
- * message but before the mark was written. A rare extra push is preferred over
- * a silently lost decision.
+ * Board-feed episodes (`runEpisode`) use the same policy: the episode is
+ * marked open only after ntfy accepts the publish.
+ *
+ * Remaining duplicate windows, all rare:
+ * - the worker stops, or the state write fails, after ntfy accepted the
+ *   message but before the mark was written;
+ * - a send that timed out (reported as failed, so not marked) was in fact
+ *   accepted by ntfy late, and the same event is delivered again later;
+ * - a retry after a network error or a 408/429/5xx, when the server had in
+ *   fact accepted the earlier attempt but the response was lost.
+ * A timeout is not retried (see `sendNtfy`), so one send publishes at most
+ * once after a timeout. A rare extra push is preferred over a silently lost
+ * decision.
  */
 
 export const DEDUPE_NAMESPACE = "ntfy-notifier";

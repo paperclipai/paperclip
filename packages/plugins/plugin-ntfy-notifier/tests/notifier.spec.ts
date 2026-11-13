@@ -318,20 +318,49 @@ describe("outbound failure handling", () => {
     expect(s.requests).toHaveLength(2);
   });
 
-  it("times out a hung request and stays bounded", async () => {
+  it("times out a hung request without retrying it and stays bounded", async () => {
     const s = setup({ fetch: () => new Promise<Response>(() => {}) });
     const started = Date.now();
     await expect(s.notifier.handle(approvalCreated())).resolves.toBe("send_failed");
     expect(Date.now() - started).toBeLessThan(2_000);
-    expect(s.requests).toHaveLength(3);
+    expect(s.requests).toHaveLength(1);
     const warn = s.harness.logs.find((l) => l.message.includes("publish failed"));
-    expect(warn?.meta).toMatchObject({ reason: "timeout" });
+    expect(warn?.meta).toMatchObject({ reason: "timeout", attempts: 1 });
+  });
+
+  it("does not retry a slow endpoint that accepts after the timeout (one POST only)", async () => {
+    const accepted: number[] = [];
+    // The proxied fetch ignores the abort signal and the server accepts late,
+    // as a slow ntfy behind the host's longer timeout would.
+    const s = setup({
+      fetch: (attempt) =>
+        new Promise<Response>((resolve) =>
+          setTimeout(() => {
+            accepted.push(attempt);
+            resolve(okResponse());
+          }, 120),
+        ),
+    });
+    await expect(s.notifier.handle(approvalCreated())).resolves.toBe("send_failed");
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(s.requests).toHaveLength(1);
+    expect(accepted).toEqual([1]);
   });
 
   it("treats a network error as a failure without throwing", async () => {
     const s = setup({ fetch: async () => { throw new TypeError(`connect ECONNREFUSED ${TOKEN}`); } });
     await expect(s.notifier.handle(approvalCreated())).resolves.toBe("send_failed");
+    // A network error before any response is a definite failure, so it is retried.
+    expect(s.requests).toHaveLength(3);
+    const warn = s.harness.logs.find((l) => l.message.includes("publish failed"));
+    expect(warn?.meta).toMatchObject({ reason: "network", attempts: 3 });
     expect(JSON.stringify(s.harness.logs)).not.toContain(TOKEN);
+  });
+
+  it("retries a 408 like a 429", async () => {
+    const s = setup({ fetch: async (attempt) => (attempt < 3 ? new Response("", { status: 408 }) : okResponse()) });
+    await expect(s.notifier.handle(approvalCreated())).resolves.toBe("sent");
+    expect(s.requests).toHaveLength(3);
   });
 
   it("skips without sending when the token secret cannot be resolved", async () => {

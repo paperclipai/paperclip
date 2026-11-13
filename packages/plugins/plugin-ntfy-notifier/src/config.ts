@@ -125,6 +125,10 @@ export function parseConfig(raw: unknown): ConfigParseResult {
   }
 
   const tokenSecretRef = parseSecretRef(raw.tokenSecretRef, errors);
+  if (allowInsecureHttp && tokenSecretRef) {
+    // Plain http would send the bearer token in cleartext.
+    errors.push("allowInsecureHttp cannot be combined with tokenSecretRef: the token would be sent over plain http");
+  }
 
   let priority: number | null = null;
   if (raw.priority !== undefined && raw.priority !== null) {
@@ -196,6 +200,7 @@ export const INSTANCE_CONFIG_SCHEMA = {
       type: "boolean",
       default: false,
       title: "Allow plain http (local testing only)",
+      description: "Allows http:// URLs for local testing. Cannot be combined with an access token.",
     },
     triggers: {
       type: "object",

@@ -60,8 +60,36 @@ describe("config validation", () => {
   });
 
   it("allows http only with the explicit local-testing flag", () => {
-    const result = parseConfig({ ...BASE_CONFIG, ntfyBaseUrl: "http://127.0.0.1:8080", allowInsecureHttp: true });
+    const result = parseConfig({ ...BASE_CONFIG, ntfyBaseUrl: "http://127.0.0.1:8080", allowInsecureHttp: true, tokenSecretRef: null });
     expect(result.ok && result.config.ntfyBaseUrl).toBe("http://127.0.0.1:8080");
+  });
+
+  it("rejects allowInsecureHttp combined with a token secret", () => {
+    const result = parseConfig({ ...BASE_CONFIG, ntfyBaseUrl: "http://127.0.0.1:8080", allowInsecureHttp: true });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.errors).toContain(
+        "allowInsecureHttp cannot be combined with tokenSecretRef: the token would be sent over plain http",
+      );
+    }
+  });
+
+  it("accepts allowInsecureHttp without a token (omitted or null)", () => {
+    const { tokenSecretRef: _omit, ...withoutToken } = BASE_CONFIG;
+    for (const config of [
+      { ...withoutToken, ntfyBaseUrl: "http://127.0.0.1:8080", allowInsecureHttp: true },
+      { ...BASE_CONFIG, ntfyBaseUrl: "http://127.0.0.1:8080", allowInsecureHttp: true, tokenSecretRef: null },
+    ]) {
+      const result = parseConfig(config);
+      expect(result.ok).toBe(true);
+      expect(result.ok && result.config.tokenSecretRef).toBeNull();
+    }
+  });
+
+  it("accepts https with a token secret", () => {
+    const result = parseConfig({ ...BASE_CONFIG, allowInsecureHttp: false });
+    expect(result.ok).toBe(true);
+    expect(result.ok && result.config.tokenSecretRef).toEqual(BASE_CONFIG.tokenSecretRef);
   });
 
   it("treats an empty token ref as an open topic", () => {

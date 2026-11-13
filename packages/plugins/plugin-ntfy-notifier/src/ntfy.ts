@@ -64,6 +64,9 @@ function isRetryableStatus(status: number): boolean {
  * Send one ntfy message with a bounded timeout per attempt and a bounded
  * number of attempts. Never throws: every failure is reported as a result
  * with a coarse reason that is safe to log.
+ *
+ * Retries happen only after a definite failure: a network error before a
+ * response, or a retryable status (408, 429, 5xx). A timeout is not retried.
  */
 export async function sendNtfy(message: NtfyMessage, options: NtfySendOptions): Promise<NtfySendResult> {
   const sleep = options.sleep ?? defaultSleep;
@@ -97,7 +100,14 @@ export async function sendNtfy(message: NtfyMessage, options: NtfySendOptions): 
       last = { ok: false, attempts: attempt, status: response.status, reason: "http_status" };
       if (!isRetryableStatus(response.status)) return last;
     } catch {
-      last = { ok: false, attempts: attempt, reason: timedOut ? "timeout" : "network" };
+      if (timedOut) {
+        // A timeout is ambiguous: the request may still be in flight and ntfy
+        // may accept it later (a host-proxied fetch keeps running after our
+        // local timer fires). Retrying could publish the same message again,
+        // so a timeout ends the send (at most one publish per timeout).
+        return { ok: false, attempts: attempt, reason: "timeout" };
+      }
+      last = { ok: false, attempts: attempt, reason: "network" };
     } finally {
       if (timer) clearTimeout(timer);
     }
