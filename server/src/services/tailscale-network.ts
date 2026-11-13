@@ -114,7 +114,9 @@ export function createTailscaleNetworkManager(commands: { cli?: string; daemon?:
     const keyPath = path.join(dir, "key");
     if (state) await fs.writeFile(statePath, state, { mode: 0o600 });
     if (connection.closed) throw new Error("Tailscale stopped");
-    const child = spawn(commands.daemon ?? "tailscaled", ["--tun=userspace-networking", "--port=0", `--socket=${socket}`, `--state=${statePath}`, `--statedir=${dir}`], {
+    const daemonCommand = commands.daemon ?? (process.env.PAPERCLIP_TAILSCALED?.trim() || "tailscaled");
+    const cliCommand = commands.cli ?? (process.env.PAPERCLIP_TAILSCALE_CLI?.trim() || "tailscale");
+    const child = spawn(daemonCommand, ["--tun=userspace-networking", "--port=0", `--socket=${socket}`, `--state=${statePath}`, `--statedir=${dir}`], {
       stdio: "ignore",
     });
     connection.child = child;
@@ -123,7 +125,7 @@ export function createTailscaleNetworkManager(commands: { cli?: string; daemon?:
     child.once("exit", () => { failed = true; void connection.close().catch(() => undefined); });
     const cli = async (args: string[], timeout = 5_000) => {
       if (failed || connection.closed) throw new Error("Tailscale stopped");
-      return exec(commands.cli ?? "tailscale", [`--socket=${socket}`, ...args], { timeout, maxBuffer: MAX_STATE_BYTES });
+      return exec(cliCommand, [`--socket=${socket}`, ...args], { timeout, maxBuffer: MAX_STATE_BYTES });
     };
     const deadline = Date.now() + 5_000;
     for (;;) {
@@ -166,4 +168,4 @@ export function createTailscaleNetworkManager(commands: { cli?: string; daemon?:
   };
 }
 
-export const tailscaleNetworks = createTailscaleNetworkManager({ cli: process.env.PAPERCLIP_TAILSCALE_CLI, daemon: process.env.PAPERCLIP_TAILSCALED });
+export const tailscaleNetworks = createTailscaleNetworkManager();

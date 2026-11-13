@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createTailscaleNetworkManager } from "./tailscale-network.js";
+import { createTailscaleNetworkManager, tailscaleNetworks } from "./tailscale-network.js";
 
 function deferred() {
   let resolve!: () => void;
@@ -47,7 +47,16 @@ if (args[1] === 'up') {
 `, { mode: 0o700 });
     manager = createTailscaleNetworkManager({ daemon, cli });
   });
-  afterEach(async () => { await manager.close(); await fs.rm(dir, { recursive: true, force: true }); });
+  afterEach(async () => { await manager.close(); vi.unstubAllEnvs(); await fs.rm(dir, { recursive: true, force: true }); });
+
+  it("uses executable settings loaded after the shared manager was imported", async () => {
+    vi.stubEnv("PAPERCLIP_TAILSCALE_CLI", path.join(dir, "tailscale"));
+    vi.stubEnv("PAPERCLIP_TAILSCALED", path.join(dir, "tailscaled"));
+    manager = tailscaleNetworks;
+    const socket = await manager.connect({ identity: "late-config", credential: "tskey-auth-fixture", persist: async () => {} });
+    expect((await fs.stat(path.dirname(socket))).isDirectory()).toBe(true);
+    expect(await fs.readFile(path.join(dir, "calls"), "utf8")).toContain('"up"');
+  });
 
   it("uses a private key file, coalesces connections, and saves node state before use", async () => {
     const persist = vi.fn().mockResolvedValue(undefined);

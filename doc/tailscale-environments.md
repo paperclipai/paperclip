@@ -36,6 +36,8 @@ form. You can also select an existing SSH private key secret.
 Pairing output is tied to the selected company, tailnet, machine, and SSH port.
 After editing the port, prepare pairing again for matching known-hosts output.
 A late response for an earlier port cannot replace the selected private key.
+Switching to Direct connection or closing the form also prevents pending pairing
+results from changing the selected key.
 
 Save the environment and test it. Select it as an agent’s environment and choose
 any harness supported by SSH environments. Select the agent's AI account in
@@ -185,6 +187,8 @@ GOBIN="$HOME/.local/share/paperclip-tailscale/bin" go install tailscale.com/cmd/
 ```
 
 Set `PAPERCLIP_TAILSCALE_CLI` and `PAPERCLIP_TAILSCALED` to their absolute paths.
+These settings can be set in the supported `.env` files. Each new client reads
+them at startup, after environment loading.
 Set `PAPERCLIP_CLOUD_CONNECTOR_BASE_URL=http://localhost:3000` and
 `PAPERCLIP_CLOUD_CONNECTOR_ENVIRONMENT=development` for local enrollment.
 

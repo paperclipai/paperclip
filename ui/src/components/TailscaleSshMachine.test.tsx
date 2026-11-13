@@ -19,10 +19,10 @@ let root: Root;
 let container: HTMLDivElement;
 let client: QueryClient;
 const onPrivateKey = vi.fn<(secretId: string) => void>();
-function render(port: number) {
+function render(port: number, visible = true) {
   flushSync(() => root.render(<QueryClientProvider client={client}>
-    <TailscaleSshMachine companyId="company" connectionId="connection" deviceId="device" port={port}
-      onPrivateKey={onPrivateKey} onChange={() => {}} />
+    {visible ? <TailscaleSshMachine companyId="company" connectionId="connection" deviceId="device" port={port}
+      onPrivateKey={onPrivateKey} onChange={() => {}} /> : <p>Direct SSH configuration</p>}
   </QueryClientProvider>));
 }
 function prepare() {
@@ -44,6 +44,16 @@ describe("Tailscale SSH pairing selection", () => {
     client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   });
   afterEach(() => { flushSync(() => root.unmount()); client.clear(); container.remove(); });
+
+  it("ignores a pending pairing response after switching to Direct", async () => {
+    let finish!: (value: ReturnType<typeof result>) => void;
+    pairing.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    render(22); await settle(); prepare(); await settle();
+    render(22, false);
+    finish(result(22)); await settle();
+    expect(onPrivateKey).not.toHaveBeenCalled();
+    expect(command()).toBeNull();
+  });
 
   it.each([false, true])("requires current-port pairing after a port edit (old request pending=%s)", async pending => {
     let finish!: (value: ReturnType<typeof result>) => void;

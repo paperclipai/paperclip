@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { tailscaleApi } from "@/api/tailscale";
 import { describeError } from "@/api/errors";
@@ -12,6 +12,8 @@ export function TailscaleSshMachine(props: {
   port: number; onPrivateKey: (secretId: string) => void;
   onChange: (selection: { connectionId: string; deviceId: string; host: string }) => void;
 }) {
+  const mounted = useRef(false);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const connections = useTailscaleConnections(props.companyId);
   const connected = (connections.data ?? []).filter(connection => connection.status === "connected");
   const onlyConnectionId = connected.length === 1 ? connected[0]!.id : null;
@@ -22,7 +24,7 @@ export function TailscaleSshMachine(props: {
   const devices = useQuery({ queryKey: ["tailscale-devices", props.companyId, props.connectionId], queryFn: () => tailscaleApi.devices(props.companyId, props.connectionId), enabled: Boolean(props.connectionId) && connections.canManage });
   const pairing = useMutation({ mutationFn: (selection: { companyId: string; connectionId: string; deviceId: string; port: number }) => tailscaleApi.pairing(selection.companyId, selection.connectionId, selection.deviceId, selection.port),
     onSuccess: (result, selection) => {
-      if (selection.companyId === props.companyId && selection.connectionId === props.connectionId && selection.deviceId === props.deviceId && selection.port === props.port) props.onPrivateKey(result.privateKeySecretId);
+      if (mounted.current && selection.companyId === props.companyId && selection.connectionId === props.connectionId && selection.deviceId === props.deviceId && selection.port === props.port) props.onPrivateKey(result.privateKeySecretId);
     } });
   const error = pairing.error ?? connections.error ?? devices.error;
   if (!connections.canManage) return <p className="text-sm text-muted-foreground">An instance administrator must configure this Tailscale machine.</p>;
