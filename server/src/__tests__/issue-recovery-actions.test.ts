@@ -43,6 +43,7 @@ import { deliverReconciledExecutions, markExecutionReconciliation } from "../ser
 import { workspaceOperationService, isNativeWorkspaceFinalizationOperationActive } from "../services/workspace-operations.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
 import { recoveryService } from "../services/recovery/service.js";
+import { PROVIDER_RATE_LIMIT_WINDOW_RETRY_MAX_ATTEMPTS } from "../services/execution-recovery-attempt.js";
 import { issueService } from "../services/issues.js";
 import { caseHandoffService } from "../services/case-handoffs.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
@@ -1217,6 +1218,77 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     const secondResult = await recovery.reconcileStrandedAssignedIssues();
     expect(secondResult).toMatchObject({ providerQuotaMonitored: 0, skipped: 1 });
     expect(await db.select().from(issueRecoveryActions)).toHaveLength(0);
+  });
+
+  it("hands the board a rate-limit window that has rejected every retry, without a quota monitor", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: coderId,
+      invocationSource: "manual",
+      status: "failed",
+      scheduledRetryAttempt: PROVIDER_RATE_LIMIT_WINDOW_RETRY_MAX_ATTEMPTS,
+      scheduledRetryReason: "transient_failure",
+      resultJson: {
+        errorFamily: "provider_quota",
+        rateLimitWindow: true,
+        retryNotBefore: new Date(Date.now() + 15 * 60_000).toISOString(),
+      },
+      error: "User defined rate limit(s) exceeded for 'endpoint'. Tokens-per-hour (TPH) rate limit exceeded for default user",
+      errorCode: "provider_quota",
+      startedAt: new Date("2026-07-15T20:00:00.000Z"),
+      finishedAt: new Date("2026-07-15T20:01:00.000Z"),
+      contextSnapshot: {
+        issueId: sourceIssueId,
+        executionRetryAccounting: { version: 1, failureRetries: PROVIDER_RATE_LIMIT_WINDOW_RETRY_MAX_ATTEMPTS, maxTurnContinuations: 0 },
+      },
+    });
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(result).toMatchObject({ providerQuotaMonitored: 0, escalated: 1 });
+    const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(updatedIssue).toMatchObject({ monitorNextCheckAt: null });
+    expect(await db.select().from(issueRecoveryActions)).toEqual([expect.objectContaining({
+      cause: "legacy_execution_requires_reconciliation", ownerType: "board", status: "active",
+      nextAction: expect.stringContaining("rate limit rejected this run again on every scheduled retry"),
+    })]);
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it("keeps waiting for a rate-limit window while it has retries left", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: coderId,
+      invocationSource: "manual",
+      status: "failed",
+      scheduledRetryAttempt: PROVIDER_RATE_LIMIT_WINDOW_RETRY_MAX_ATTEMPTS - 1,
+      scheduledRetryReason: "transient_failure",
+      resultJson: { errorFamily: "provider_quota", rateLimitWindow: true },
+      error: "User defined rate limit(s) exceeded for 'endpoint'. Tokens-per-hour (TPH) rate limit exceeded for default user",
+      errorCode: "provider_quota",
+      startedAt: new Date("2026-07-15T20:00:00.000Z"),
+      finishedAt: new Date("2026-07-15T20:01:00.000Z"),
+      contextSnapshot: {
+        issueId: sourceIssueId,
+        executionRetryAccounting: { version: 1, failureRetries: PROVIDER_RATE_LIMIT_WINDOW_RETRY_MAX_ATTEMPTS - 1, maxTurnContinuations: 0 },
+      },
+    });
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(result.providerQuotaMonitored).toBe(1);
+    const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(updatedIssue).toMatchObject({ status: "in_progress" });
+    expect(updatedIssue?.executionPolicy).toMatchObject({ monitor: { serviceName: "AI provider quota", externalRef: runId } });
   });
 
   it("schedules another provider-quota monitor after a prior quota monitor fired", async () => {

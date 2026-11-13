@@ -19,13 +19,19 @@ import { claimedAdapterType, hasConversationContinuationPolicy } from "./convers
 import { canonicalExecutionUuid } from "./execution-identity.js";
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, getTableColumns, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
-import { environmentLeases, heartbeatRunEvents, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { environmentLeases, heartbeatRunEvents, heartbeatRuns, issueComments, issueRecoveryActions, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { buildStrandedRecoveryEscalationNotice, RATE_LIMIT_WINDOW_NOTICE_TITLE } from "./recovery/stranded-notice.js";
+import { redactSensitiveText } from "../redaction.js";
 import { executionStartedEventPredicate, isPreDispatchResourceWait } from "./pre-dispatch-execution-evidence.js";
 import { readRunCancellation } from "./run-cancellation.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { issueRecoveryActionService } from "./issue-recovery-actions.js";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
-import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
+import {
+  executionFailureRetryCount,
+  isProviderRateLimitWindowRun,
+  providerRateLimitWindowRetriesSpent,
+} from "./execution-recovery-attempt.js";
 import { isReplacedPreparation } from "./server-replacement-interruption.js";
 import { logActivity } from "./activity-log.js";
 import { isSupersededConversationRun } from "./agent-conversations.js";
@@ -94,6 +100,16 @@ export function legacyExecutionNeedsReconciliation(
   // provider action happened, so there is nothing to reconcile. Its
   // continuation is bounded by the server-restart lane, not the failure count.
   if (isReplacedPreparation({ ...run, controllerBootId: run.controllerBootId ?? null })) return false;
+  // The gateway refused a request of the turn, and the retry resumes the saved
+  // session, which holds every action the turn took before it: nothing is
+  // replayed. The last attempt's failure falls through to the hold below, and
+  // so does a turn that left a background task behind, which the session does
+  // not hold.
+  if (
+    isProviderRateLimitWindowRun(run) &&
+    !providerRateLimitWindowRetriesSpent(run) &&
+    !run.resultJson?.unmanagedBackgroundTask
+  ) return false;
   if (executionFailureRetryCount(run) >= 2) return true;
   return !(
     evidence?.kind === "bootstrap" && evidence.providerWorkStarted === false
@@ -306,7 +322,7 @@ export async function terminalizeLegacyExecution(input: {
           ),
         )).limit(1);
       if (reconciled) return updated;
-      await issueRecoveryActionService(tx as unknown as Db).upsertSourceScoped({
+      const action = await issueRecoveryActionService(tx as unknown as Db).upsertSourceScoped({
         companyId: run.companyId,
         sourceIssueId: task.id,
         kind: "active_run_watchdog",
@@ -327,14 +343,60 @@ export async function terminalizeLegacyExecution(input: {
           ? "The original sandbox is retained for workspace repair. Verify that it has stopped, recover the missing files, record workspaceRepairEvidence, and explicitly remove the retained allocation when recovery is complete. A new agent turn cannot prove file recovery."
           : hasWorkspaceRestoreFailure(updated.resultJson)
           ? "Verify safe workspace staging or repair, then reconcile the stopped run before continuing. Saved work and approval decisions remain in force."
+          : providerRateLimitWindowRetriesSpent(updated)
+          ? "The provider's rate limit rejected this run again on every scheduled retry. Wait for the limit to reopen, or have it raised, then resume the issue; its saved session is kept."
+          : updated.resultJson?.unmanagedBackgroundTask
+          ? "This run left a background task behind that its saved session does not hold. Inspect the stopped background task and the recorded actions, then reconcile their outcomes before continuing."
           : "Inspect the stopped provider and recorded actions, then reconcile their outcomes before continuing. This adapter has not established a safe resume checkpoint.",
         maxAttempts: 3,
         wakePolicy: null,
         supersedeOnIdentityChange: true,
       });
+      if (providerRateLimitWindowRetriesSpent(updated)) {
+        await postRateLimitWindowNotice(tx as unknown as Db, { issueId: task.id, run: updated, recoveryActionId: action.id });
+      }
     }
     return updated;
   });
+}
+
+/** One board notice per exhausted rate-limit window run; a later sweep finds it and posts none. */
+async function postRateLimitWindowNotice(
+  db: Db,
+  input: { issueId: string; run: Run; recoveryActionId: string },
+) {
+  const [posted] = await db.select({ id: issueComments.id }).from(issueComments).where(and(
+    eq(issueComments.companyId, input.run.companyId),
+    eq(issueComments.issueId, input.issueId),
+    eq(issueComments.authorType, "system"),
+    sql`${issueComments.metadata}->>'sourceRunId' = ${input.run.id}`,
+  )).limit(1);
+  if (posted) return;
+  const notice = buildStrandedRecoveryEscalationNotice({
+    seed: {
+      title: RATE_LIMIT_WINDOW_NOTICE_TITLE,
+      tone: "danger",
+      body: "The model's rate limit rejected this run on every scheduled retry, so Paperclip stopped retrying. "
+        + "The agent's saved session is kept.",
+      nextAction: "Wait for the rate limit to reopen, or have it raised, then resume the issue",
+    },
+    recoveryCause: LEGACY_RECOVERY_CAUSE,
+    recoveryActionId: input.recoveryActionId,
+    recoveryOwner: null,
+    sourceRun: {
+      id: input.run.id,
+      agentId: input.run.agentId,
+      status: input.run.status,
+      errorCode: input.run.errorCode,
+      errorSummary: input.run.error ? redactSensitiveText(input.run.error) : null,
+      rateLimitWindow: true,
+    },
+  });
+  await issueService(db).addComment(input.issueId, notice.body, {}, {
+    authorType: "system",
+    presentation: notice.presentation,
+    metadata: notice.metadata,
+  }, db);
 }
 
 export async function settleInterruptedNativeBootstrap(

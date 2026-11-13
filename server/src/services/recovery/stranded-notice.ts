@@ -55,6 +55,7 @@ const STRANDED_RECOVERY_NOTICE_TITLES_BY_RUN_ERROR_CODE: Record<string, string> 
   acpx_auth_required: "Error: agent login required",
 };
 
+export const RATE_LIMIT_WINDOW_NOTICE_TITLE = "Error: model rate limit reached";
 const TEMPORARY_SETUP_NEXT_ACTION = "Setting up the workspace took too long, so no agent work started. "
   + "Paperclip tries again automatically.";
 
@@ -269,6 +270,7 @@ export function buildStrandedRecoveryEscalationNotice(input: {
     status: string;
     errorCode?: string | null;
     errorSummary?: string | null;
+    rateLimitWindow?: boolean;
   } | null | undefined;
 }): StrandedRecoveryEscalationNotice {
   const scanNotice = WORKSPACE_SCAN_NOTICES[input.sourceRun?.errorCode ?? ""];
@@ -286,6 +288,7 @@ export function buildStrandedRecoveryEscalationNotice(input: {
   const fallbackBody = input.fallbackBody?.trim();
   const body = seed?.body ?? (fallbackBody || DEFAULT_STRANDED_RECOVERY_NOTICE_BODY);
   const title =
+    (input.sourceRun?.rateLimitWindow ? RATE_LIMIT_WINDOW_NOTICE_TITLE : undefined) ??
     STRANDED_RECOVERY_NOTICE_TITLES_BY_RUN_ERROR_CODE[input.sourceRun?.errorCode?.trim() ?? ""] ??
     seed?.title ??
     STRANDED_RECOVERY_NOTICE_TITLES_BY_CAUSE[input.recoveryCause ?? ""] ??

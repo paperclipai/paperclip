@@ -32,7 +32,12 @@ import { pendingExternalConversationSettlement, settleSlackConversation } from "
 import { externalConversationStateSql } from "../slack-conversation-state.js";
 import { isIssueReviewPathRecoveryRun } from "./review-path-recovery.js";
 import { escalateExhaustedIssueReviewPathRecovery } from "./review-path-recovery-escalation.js";
-import { executionRetryAccounting, INTERRUPTED_PREPARATION_RETRY_REASON } from "../execution-recovery-attempt.js";
+import {
+  executionRetryAccounting,
+  INTERRUPTED_PREPARATION_RETRY_REASON,
+  isProviderRateLimitWindowRun,
+  providerRateLimitWindowRetriesSpent,
+} from "../execution-recovery-attempt.js";
 import { assignedWorkSweep } from "./assigned-work-sweep.js";
 import { isExplicitContinuationRetryClaim } from "../explicit-continuation-retry-claim.js";
 import {
@@ -449,6 +454,7 @@ function readRecoveryRunErrorFamily(latestRun: LatestIssueRun) {
 }
 
 function isProviderQuotaRecovery(latestRun: LatestIssueRun) {
+  if (latestRun && providerRateLimitWindowRetriesSpent(latestRun)) return false;
   if (latestRun?.errorCode === "provider_quota") return true;
   if (readRecoveryRunErrorFamily(latestRun) === "provider_quota") return true;
   if (latestRun?.errorCode !== "adapter_failed") return false;
@@ -644,7 +650,8 @@ export function classifyAdapterFailureForRecovery(
   latestRun: Pick<
     NonNullable<LatestIssueRun>,
     "error" | "errorCode" | "resultJson"
-  >,
+  > &
+    Partial<Pick<NonNullable<LatestIssueRun>, "contextSnapshot">>,
   now = new Date(),
 ): AdapterFailureRecoveryClassification {
   // An engine prerequisite cannot be repaired by asking the same unavailable
@@ -679,6 +686,10 @@ export function classifyAdapterFailureForRecovery(
     !PROVIDER_QUOTA_ERROR_RE.test(error)
   )
     return null;
+
+  // A rate-limit window that rejected every retry it was given is not waited
+  // out again: the sweep treats the run like any failed one and blocks.
+  if (providerRateLimitWindowRetriesSpent(latestRun)) return null;
 
   const persistedRetryAt =
     readNonEmptyString(resultJson.retryNotBefore) ??
@@ -4315,6 +4326,7 @@ export function recoveryService(
             errorSummary: input.latestRun.error
               ? redactSensitiveText(input.latestRun.error)
               : null,
+            rateLimitWindow: isProviderRateLimitWindowRun(input.latestRun),
           }
         : null,
     });

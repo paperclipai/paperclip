@@ -21,6 +21,7 @@ import {
 } from "@paperclipai/adapter-utils/execution-target";
 import {
   detectClaudeLoginRequired,
+  claudeRateLimitWindowRetryDelayMs,
   isClaudeProviderQuotaError,
   isClaudeTransientUpstreamError,
   parseClaudeStreamJson,
@@ -482,6 +483,10 @@ export async function testEnvironment(
         // separately from generic transient upstream errors: auth works, the
         // subscription's usage window is just spent. Surface it as its own
         // warning instead of a hard probe failure.
+        const rateLimited = claudeRateLimitWindowRetryDelayMs({
+          parsed,
+          errorMessage: probe.stderr,
+        }) !== null;
         const usageLimited = isClaudeProviderQuotaError({
           parsed,
           stdout: probe.stdout,
@@ -493,7 +498,14 @@ export async function testEnvironment(
           stderr: probe.stderr,
         });
         checks.push(
-          usageLimited
+          rateLimited
+            ? {
+                code: "claude_hello_probe_rate_limited",
+                level: "warn",
+                message: "Claude hello probe hit the model endpoint's rate limit.",
+                hint: "Authentication works; the endpoint's token limit for this model is spent. Wait for its window to reopen and re-run Test.",
+              }
+            : usageLimited
             ? {
                 code: "claude_hello_probe_usage_limited",
                 level: "warn",
