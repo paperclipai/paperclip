@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
+  agentWakeupRequests,
   companies,
   createDb,
   heartbeatRuns,
@@ -41,6 +42,9 @@ import { resolveCurrentWakeCommentsBinding } from "../services/native-runtime/cu
 import { commitNativeStatusDecision } from "../services/native-runtime/status-decision-committer.js";
 import { NATIVE_STATUS_ARBITER_POLICY_VERSION } from "../services/native-runtime/status-arbiter.js";
 import { recoveryService } from "../services/recovery/service.js";
+
+import { createReleaseIssueExecution } from "../modules/wake-queue/application/use-cases.js";
+import { createPostgresWakeQueueAdapter } from "../modules/wake-queue/adapters/postgres.js";
 
 describe.each(["slack", "discord"] as const)("reviewed %s execution binding", (provider) => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -314,6 +318,51 @@ describe.each(["slack", "discord"] as const)("reviewed %s execution binding", (p
     expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interactionId)))[0]?.status)
       .toBe("pending");
   }, 30_000);
+
+  it("attests a resolved card after queue promotion even when its chat message was already delivered", async () => {
+    const [previousIssue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, runId));
+    const finishingRunId = randomUUID(), wakeId = randomUUID();
+    const continuation = { ...context, interactionId, interactionKind: "request_confirmation", interactionStatus: "accepted" };
+    await db.insert(heartbeatRuns).values({ id: finishingRunId, companyId, agentId,
+      status: "succeeded", invocationSource: "assignment", triggerDetail: "system",
+      startedAt: new Date(Date.now() + 1_000), finishedAt: new Date(Date.now() + 2_000),
+      contextSnapshot: context });
+    await db.update(issues).set({ executionRunId: finishingRunId }).where(eq(issues.id, issueId));
+    await db.update(issueThreadInteractions).set({ status: "accepted", resolvedByUserId: userId, resolvedAt: new Date() })
+      .where(eq(issueThreadInteractions.id, interactionId));
+    await db.insert(agentWakeupRequests).values({ id: wakeId, companyId, agentId,
+      source: "automation", triggerDetail: "system", reason: "issue_commented", status: "deferred_issue_execution",
+      requestedByActorType: "user", requestedByActorId: userId,
+      payload: { issueId, mutation: "interaction", interactionId, interactionKind: "request_confirmation",
+        interactionStatus: "accepted", wakeCommentId: commentId, _paperclipWakeContext: continuation } });
+    try {
+      const release = createReleaseIssueExecution({
+        issueLock: createPostgresWakeQueueAdapter(db, {
+          resolveResponsibleUserId: async () => userId,
+          getRoutineEnv: async () => ({ routineId: null, env: null, responsibleUserId: null }),
+          resolveSessionBeforeForWakeup: async () => null,
+        }), recovery: {} as never,
+      });
+      const released = await release({ companyId, runId: finishingRunId, now: new Date() });
+      const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeId));
+      expect(released.outcome.kind, JSON.stringify(wake)).toBe("promoted");
+      const [promoted] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, wake.runId!));
+      await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, promoted.id));
+      const authorize = () => attestReviewedExternalChatRun({ db, companyId, agentId, issueId,
+        runId: promoted.id, contextSnapshot: promoted.contextSnapshot! });
+      await expect(authorize()).resolves.toBe(true);
+      await db.update(chatEndpointResources).set({ enabled: false }).where(eq(chatEndpointResources.id, resourceId));
+      await expect(authorize()).resolves.toBe(false);
+      await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, promoted.id));
+    } finally {
+      await db.update(chatEndpointResources).set({ enabled: true }).where(eq(chatEndpointResources.id, resourceId));
+      await db.update(issueThreadInteractions).set({ status: "pending", resolvedByUserId: null, resolvedAt: null })
+        .where(eq(issueThreadInteractions.id, interactionId));
+      await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, runId));
+      await restoreSuccessorLock(previousIssue);
+    }
+  });
 
   it("attests existing execution ownership while preserving real pending governance and checkout state", async () => {
     const [before] = await db

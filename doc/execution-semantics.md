@@ -6178,6 +6178,18 @@ rollback requires a server that reads this envelope and the supported settled
 warm journal, including its PRP v2 idle goal suffix. Earlier local-only readers
 and readers lacking that suffix handling remain outside that rollback contract.
 
+### Resolved cards queued behind chat runs
+
+A resolved card is an independent continuation. Its saved chat message IDs
+remain authorization bindings even if a prior run received those messages.
+Queue promotion retains live, same-task message bindings for that continuation;
+deleted and self-authored messages still drop out. The new run must pass current
+chat authorization. Ordinary message-only wakes whose input was consumed remain
+cancelled and cannot start another turn.
+Retained bindings that a run already received are not fresh input: they never
+reopen a finished task. A card answer owed to a task the finishing run closed
+still continues it in progress through the owed-answer path.
+
 ### Stop a failed native retry
 
 A failed native run can still own a scheduled same-run bootstrap retry. The

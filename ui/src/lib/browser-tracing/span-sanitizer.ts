@@ -99,7 +99,8 @@ export function sanitizeSpan(span: ReadableSpan): ReadableSpan {
     status: { code: span.status.code },
     attributes,
     links: [],
-    // Network timing events keep their names and times, never attributes.
+    // Any span event keeps its name and time, never its attributes. The fetch
+    // instrumentation runs with `ignoreNetworkEvents`, so request spans have none.
     events: span.events.map((event) => ({ name: event.name, time: event.time, droppedAttributesCount: 0 })),
     duration: span.duration,
     ended: span.ended,
