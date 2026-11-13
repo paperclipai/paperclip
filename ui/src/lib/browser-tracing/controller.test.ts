@@ -20,14 +20,27 @@ const config: BrowserTracingConfig = {
   sampleRate: 1,
 };
 
+/**
+ * The page's clock starts at navigation start. A test process can be older
+ * than the 30 s page-load timeout, which would turn the hard load (start 0)
+ * into a timeout, so the clock is restarted for each test.
+ */
+function restartPageClock() {
+  const realNow = performance.now.bind(performance);
+  const origin = realNow();
+  vi.spyOn(performance, "now").mockImplementation(() => realNow() - origin);
+}
+
 describe("startBrowserTracingController", () => {
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "requestAnimationFrame", "cancelAnimationFrame"] });
     resetPageSessionSampleForTest();
+    restartPageClock();
   });
 
   afterEach(() => {
     vi.useRealTimers();
+    vi.restoreAllMocks();
     setVisibility("visible");
   });
 

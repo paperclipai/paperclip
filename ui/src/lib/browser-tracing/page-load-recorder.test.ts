@@ -138,6 +138,17 @@ describe("createPageLoadRecorder", () => {
     expect(harness.recorder.open()?.routeTemplate).toBe("/b");
   });
 
+  it("ends an interrupted measurement where the next one starts, so their windows never overlap", () => {
+    const harness = createHarness();
+    harness.recorder.attachSink(harness.sink);
+    harness.state.pendingData = true;
+    harness.recorder.begin({ routeTemplate: "/a", loadType: "client", startTime: 0 });
+    harness.advance(250);
+    // The router commits after the history change that started the navigation.
+    harness.recorder.begin({ routeTemplate: "/b", loadType: "client", startTime: 200 });
+    expect(harness.ended[0]).toMatchObject({ routeTemplate: "/a", outcome: "interrupted", endTime: 200 });
+  });
+
   it("continues a measurement through a redirect under the new route", () => {
     const harness = createHarness();
     harness.recorder.attachSink(harness.sink);

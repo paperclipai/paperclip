@@ -185,6 +185,37 @@ describe("hard-load API spans from Resource Timing", () => {
     expect(stopped).toBe(true);
   });
 
+  it("backfills every buffered navigation, not only the first one replayed", async () => {
+    const recorder = idleRecorder();
+    const flush = (recorder as PageLoadRecorder & { flushFrames(): void }).flushFrames;
+    recorder.begin({ routeTemplate: "/:companyPrefix/dashboard", loadType: "hard", startTime: 0 });
+    flush();
+    const clientStart = performance.now();
+    recorder.begin({ routeTemplate: "/:companyPrefix/issues", loadType: "client", startTime: clientStart });
+    flush();
+    const clientEnd = performance.now();
+    let entries: PerformanceResourceTiming[] = [
+      resource(`${origin()}/api/companies`, 0.5, 1, { responseStatus: 200 }),
+      resource(`${origin()}/api/issues`, clientStart, clientEnd, { responseStatus: 200 }),
+    ];
+    handle = startTracingSdk(config, recorder, {
+      exporter,
+      // A real collector drops its entries when stopped.
+      apiResources: { entries: () => entries, stop: () => { entries = []; } },
+    });
+    await handle.forceFlush();
+
+    const spans = exporter.getFinishedSpans();
+    const pages = spans.filter((span) => span.name === "page.load");
+    const childrenOf = (route: string) => {
+      const page = pages.find((span) => span.attributes["paperclip.page.route"] === route)!;
+      return spans.filter((span) => span.parentSpanContext?.spanId === page.spanContext().spanId).map((span) => span.attributes["paperclip.api.area"]);
+    };
+    expect(childrenOf("/:companyPrefix/dashboard")).toEqual(["companies"]);
+    expect(childrenOf("/:companyPrefix/issues")).toEqual(["issues"]);
+    expect(entries).toEqual([]);
+  });
+
   it("does not backfill requests that the live fetch instrumentation already traces", async () => {
     const recorder = idleRecorder();
     recorder.begin({ routeTemplate: "/", loadType: "hard", startTime: 0 });

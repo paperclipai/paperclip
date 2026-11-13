@@ -98,7 +98,8 @@ export const UNKNOWN_METHOD_SPAN_NAME = "HTTP";
  * Child spans for the `/api/` requests a page load made before the SDK
  * loaded, from their Resource Timing entries: requests that started inside
  * the load's window and before `before` (from then on the live fetch spans
- * cover them). The URL goes into `url.full` only for the sanitizer, which
+ * cover them). Windows do not overlap (an interrupted load ends where the
+ * next one starts), so each request becomes exactly one span. The URL goes into `url.full` only for the sanitizer, which
  * turns it into `paperclip.api.area` and drops it, as for live fetch spans.
  */
 function backfillApiSpans(
@@ -196,7 +197,11 @@ export function startTracingSdk(
   fetchInstrumentation.enable();
 
   const apiResources = options.apiResources ?? null;
+  // attachSink replays every buffered measurement; all of them need the
+  // early entries, so they are kept until the replay is over.
+  let replaying = true;
   const releaseApiResources = () => {
+    if (replaying) return;
     // Once no measurement that started before the SDK is open, nothing else
     // needs the early entries.
     const open = recorder.open();
@@ -230,6 +235,7 @@ export function startTracingSdk(
       span.end(measurement.endTime ?? performance.now());
     },
   });
+  replaying = false;
   releaseApiResources();
 
   const reportVital = (metric: Metric) => {

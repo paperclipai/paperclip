@@ -216,7 +216,9 @@ export function createPageLoadRecorder(
 
   return {
     begin({ routeTemplate, loadType, startTime, hiddenAt = null }) {
-      if (current) finish(current, "interrupted", deps.now(), null);
+      // The open measurement ends where this one starts, so no request or
+      // time is counted under both.
+      if (current) finish(current, "interrupted", Math.min(deps.now(), startTime), null);
       const hidden = hiddenAt !== null || deps.isDocumentHidden();
       const measurement: PageLoadMeasurement = {
         id: nextId++,
