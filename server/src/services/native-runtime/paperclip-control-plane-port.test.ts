@@ -975,6 +975,22 @@ describe("PaperclipControlPlanePort conformance", () => {
     await expect(f.port.appendEvent(f.event(12), f.streamed)).resolves.toMatchObject({ cursor: 12 });
   });
 
+  it("observes every committed delta of a batch when one observer fails", async () => {
+    const observed: number[] = [];
+    const f = await streamingFixture({ streamingBatchMs: 600_000, onCommittedEvent: async (event) => {
+      if (event.sourceSeq === 3) throw new Error("log write failed");
+      observed.push(event.sourceSeq);
+    } });
+    await f.port.appendEvent(f.event(1), f.streamed);
+    const receipts = [2, 3, 4].map(sourceSeq => f.port.appendEvent(f.event(sourceSeq), f.streamed));
+    f.port.flushStreamingEvents();
+    await expect(receipts[0]).resolves.toMatchObject({ cursor: 2 });
+    await expect(receipts[1]).rejects.toThrow("log write failed");
+    await expect(receipts[2]).resolves.toMatchObject({ cursor: 4 });
+    expect(observed).toEqual([1, 2, 4]);
+    expect(await f.stored()).toEqual([1, 2, 3, 4].map(seq => ({ seq, sourceSeq: seq })));
+  });
+
   it("flushes queued deltas on the timer and before a replay read, and rejects every delta of a failed batch", async () => {
     let active = true;
     const f = await streamingFixture({ streamingBatchMs: 20, assertControllerActive: () => { if (!active) throw new Error("controller_revoked"); } });

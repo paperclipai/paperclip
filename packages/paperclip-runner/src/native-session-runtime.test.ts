@@ -311,18 +311,13 @@ describe("executeNativeSession recovery", () => {
     } finally { abort.abort(); await completion.catch(() => undefined); }
   });
 
-  it("starts text delta appends without waiting and settles them before any other event", async () => {
+  /** A batching port whose queued deltas commit only when flushed: it has no timer. */
+  const batchingDeltaFixture = (events: () => AsyncGenerator<PrpEvent>, commitDelta: (sourceSeq: number) => Promise<void> = async () => {}) => {
     const capabilities = { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true };
-    const delta = (sourceSeq: number) => ({ ...runnerEvent(sourceSeq, "item.delta", { kind: "agentMessage", text: `chunk ${sourceSeq}` }),
-      itemId: "message-1", priority: 1 as const });
     const session: NativeSession = {
       identity: () => identity,
       async capabilities() { return capabilities; },
-      async *events() {
-        for (const sourceSeq of [1, 2, 3]) yield delta(sourceSeq);
-        yield runnerEvent(4, "run.result.proposed", result);
-        yield runnerEvent(5, "turn.completed");
-      },
+      events,
       async startTurn() { return { turnId: "turn-recovery" }; },
       async result() { return { result, terminal, turnId: "turn-recovery" }; },
       async snapshot() {
@@ -337,29 +332,67 @@ describe("executeNativeSession recovery", () => {
       async openSession() { return session; },
     };
     const log: string[] = [];
+    let queued: Array<() => void> = [];
     const port: ControlPlanePort = {
       pipelinesStreamingEvents: true,
-      async openRun() {}, async checkpointSession() { log.push("checkpoint"); },
-      async appendEvent(event: PrpEvent) {
+      flushStreamingEvents() {
+        log.push("flush");
+        const flushed = queued;
+        queued = [];
+        for (const commit of flushed) commit();
+      },
+      async openRun() {}, async checkpointSession() {},
+      async appendEvent(event: PrpEvent, options) {
         if (event.sourceKind !== "runner") return { cursor: 0, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" };
         log.push(`append:${event.sourceSeq}`);
         if (event.eventType === "item.delta") {
-          // A batch commits later; the caller must not wait for it before the next delta.
-          await new Promise<void>(resolve => setImmediate(resolve));
-          await new Promise<void>(resolve => setImmediate(resolve));
+          expect(options?.streaming).toBe(true);
+          await new Promise<void>(resolve => queued.push(resolve));
+          await commitDelta(event.sourceSeq);
           log.push(`committed:${event.sourceSeq}`);
         }
         return { cursor: event.sourceSeq, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" };
       },
       async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; },
-      async completeRun() { log.push("complete"); },
+      async completeRun() {},
     };
-    const execution = await executeNativeSession({ input: preparedInput(), backend, controlPlane: port,
+    return { backend, port, log };
+  };
+  const streamedDelta = (sourceSeq: number) => ({ ...runnerEvent(sourceSeq, "item.delta", { kind: "agentMessage", text: `chunk ${sourceSeq}` }),
+    itemId: "message-1", priority: 1 as const });
+
+  it("starts text delta appends without waiting and flushes them before any other event", async () => {
+    const f = batchingDeltaFixture(async function* () {
+      for (const sourceSeq of [1, 2, 3]) yield streamedDelta(sourceSeq);
+      yield runnerEvent(4, "run.result.proposed", result);
+      yield runnerEvent(5, "turn.completed");
+    });
+    // The port has no timer: the turn finishes only if the next event flushes the queued deltas.
+    const execution = await executeNativeSession({ input: preparedInput(), backend: f.backend, controlPlane: f.port,
       runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery" });
-    const runnerLog = log.filter(entry => /^(append|committed):/.test(entry));
-    expect(runnerLog.slice(0, 3)).toEqual(["append:1", "append:2", "append:3"]);
-    expect(runnerLog.indexOf("append:4")).toBeGreaterThan(Math.max(...[1, 2, 3].map(seq => runnerLog.indexOf(`committed:${seq}`))));
+    expect(f.log.slice(0, 5)).toEqual(["append:1", "append:2", "append:3", "flush", "committed:1"]);
+    expect(f.log.indexOf("append:4")).toBeGreaterThan(Math.max(...[1, 2, 3].map(seq => f.log.indexOf(`committed:${seq}`))));
     expect(execution).toMatchObject({ nativeEventCount: 7, highestContiguousSourceSeq: 5 });
+  });
+
+  it("joins pending delta appends before a failed turn settles", async () => {
+    let releaseCommit = () => {};
+    const commitReleased = new Promise<void>(resolve => { releaseCommit = resolve; });
+    const f = batchingDeltaFixture(async function* () {
+      yield streamedDelta(1);
+      throw new Error("provider stream broke");
+    }, () => commitReleased);
+    let settled = false;
+    const execution = executeNativeSession({ input: preparedInput(), backend: f.backend, controlPlane: f.port,
+      runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery" }).finally(() => { settled = true; });
+    void execution.catch(() => undefined);
+    await vi.waitFor(() => expect(f.log).toContain("flush"));
+    await new Promise(resolve => setTimeout(resolve, 20));
+    // The delta's commit still runs, so the turn has not settled.
+    expect(settled).toBe(false);
+    releaseCommit();
+    await expect(execution).rejects.toThrow("provider stream broke");
+    expect(f.log).toContain("committed:1");
   });
 
   it.each([false, true].flatMap(recovered => [

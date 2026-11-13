@@ -95,6 +95,8 @@ export interface ControlPlanePort {
    * commits.
    */
   readonly pipelinesStreamingEvents?: boolean;
+  /** Commits the queued streaming deltas now, without waiting for the batch timer. */
+  flushStreamingEvents?(): void;
   normalizeReplayPayload?(payload: PrpEvent["payload"]): PrpEvent["payload"];
   openRun(input: OpenControlPlaneRunInput): Promise<void>;
   loadSessionCheckpoint?(): Promise<PersistedNativeSession | null>;

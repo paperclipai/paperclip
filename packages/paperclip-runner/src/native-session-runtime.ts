@@ -1231,7 +1231,16 @@ async function consumeTurn(
     if (inputTimer !== undefined) clearTimeout(inputTimer);
     inputTimers.delete(requestId);
   };
-  const consumer = (async () => {
+  // Delta appends the consumer started and that have not settled. The consumer
+  // joins them before it settles, whatever way it ends, so their observers
+  // never outlive the turn's cleanup.
+  const outstandingDeltas = new Set<Promise<unknown>>();
+  const joinOutstandingDeltas = async () => {
+    if (outstandingDeltas.size === 0) return;
+    controlPlane.flushStreamingEvents?.();
+    await Promise.allSettled([...outstandingDeltas]);
+  };
+  const consumerBody = (async () => {
     let eventCount = 0;
     let highestContiguousSourceSeq = 0;
     let governedResult: PrpStructuredRunResult | null = null;
@@ -1249,6 +1258,8 @@ async function consumeTurn(
     let pendingDeltas: Promise<AppendedEventReceipt>[] = [];
     let deltaFailure = null as { error: unknown } | null;
     const settlePendingDeltas = async () => {
+      // Queued deltas commit now: the next event must not wait for the batch timer.
+      if (pendingDeltas.length > 0) controlPlane.flushStreamingEvents?.();
       while (pendingDeltas.length > 0) {
         const pending = pendingDeltas;
         pendingDeltas = [];
@@ -1409,7 +1420,9 @@ async function consumeTurn(
       let receipt: AppendedEventReceipt | null = null;
       if (pipelinesDeltas && event.eventType === "item.delta") {
         const pending = controlPlane.appendEvent(event, { signal: appendAbort.signal, streaming: true });
-        pending.catch((error: unknown) => { deltaFailure ??= { error }; });
+        const settled = pending.then(() => undefined, (error: unknown) => { deltaFailure ??= { error }; });
+        outstandingDeltas.add(settled);
+        void settled.finally(() => outstandingDeltas.delete(settled));
         pendingDeltas.push(pending);
         if (pendingDeltas.length >= MAX_PENDING_DELTA_RECEIPTS) await settlePendingDeltas();
       } else {
@@ -1658,6 +1671,7 @@ async function consumeTurn(
       }
     }
   })();
+  const consumer = consumerBody.finally(joinOutstandingDeltas);
   // A timeout can win the race while an iterator is still waiting for data.
   // Observe any later consumer rejection so it cannot become process-fatal.
   void consumer.catch(() => undefined);

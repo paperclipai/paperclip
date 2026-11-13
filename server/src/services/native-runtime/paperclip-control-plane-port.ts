@@ -548,6 +548,10 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     });
   }
 
+  flushStreamingEvents(): void {
+    void this.#flushStreamingEvents();
+  }
+
   /** Commits the queued deltas. Resolves after every earlier batch has settled, and never rejects. */
   #flushStreamingEvents(): Promise<void> {
     if (this.#streamingTimer !== null) clearTimeout(this.#streamingTimer);
@@ -563,23 +567,32 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     return this.#streamingTail;
   }
 
-  /** One transaction for the batch; each receipt settles after its observers, in order. */
+  /**
+   * One transaction for the batch. Each committed row is then observed in
+   * order; an observer failure rejects only that delta's receipt, and the
+   * later rows are still observed.
+   */
   async #commitStreamingEvents(batch: PendingStreamingEvent[]): Promise<void> {
-    let settled = 0;
+    let receipts: AppendHeartbeatRunEventResult[];
     try {
       const assertWritable = () => { for (const pending of batch) this.#assertActive(pending.options); };
-      const receipts = await appendHeartbeatRunEventBatch(this.#db, batch.map(pending => pending.input), assertWritable);
+      receipts = await appendHeartbeatRunEventBatch(this.#db, batch.map(pending => pending.input), assertWritable);
       assertWritable();
-      for (const [index, pending] of batch.entries()) {
-        const persisted = receipts[index]!;
-        const endedAt = pending.startedAtMs + performance.now() - pending.startedClock;
-        await this.#observePersistedEvent(pending.event, persisted, pending.startedAtMs, endedAt);
-        pending.resolve({ cursor: persisted.row.seq, highestContiguousSourceSeq: persisted.highestContiguousSourceSeq,
-          disposition: persisted.disposition });
-        settled = index + 1;
-      }
     } catch (error) {
-      for (const pending of batch.slice(settled)) pending.reject(error);
+      for (const pending of batch) pending.reject(error);
+      return;
+    }
+    for (const [index, pending] of batch.entries()) {
+      const persisted = receipts[index]!;
+      const endedAt = pending.startedAtMs + performance.now() - pending.startedClock;
+      try {
+        await this.#observePersistedEvent(pending.event, persisted, pending.startedAtMs, endedAt);
+      } catch (error) {
+        pending.reject(error);
+        continue;
+      }
+      pending.resolve({ cursor: persisted.row.seq, highestContiguousSourceSeq: persisted.highestContiguousSourceSeq,
+        disposition: persisted.disposition });
     }
   }
 
