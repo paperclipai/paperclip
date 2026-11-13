@@ -25,7 +25,11 @@ vi.mock("./ssh.js", () => ({
   syncDirectoryToSsh,
 }));
 
-import { prepareRemoteManagedRuntime } from "./remote-managed-runtime.js";
+import {
+  buildRemoteExecutionSessionIdentity,
+  prepareRemoteManagedRuntime,
+  remoteExecutionSessionMatches,
+} from "./remote-managed-runtime.js";
 import { resolveReferencedSourceIgnore } from "./sandbox-managed-runtime.js";
 import { setExpensiveWorkspaceGitExecutor } from "./git-workspace-sync.js";
 
@@ -348,5 +352,47 @@ describe("remote managed runtime", () => {
     } finally {
       warnSpy.mockRestore();
     }
+  });
+});
+
+describe("remote execution session identity", () => {
+  const spec = (remoteCwd: string) => ({
+    host: "10.0.0.5",
+    port: 2222,
+    username: "agent",
+    remoteWorkspacePath: "/home/agent/pcws/worker",
+    privateKey: null,
+    knownHosts: null,
+    strictHostKeyChecking: true,
+    remoteCwd,
+  });
+
+  it("keys the ssh identity on the workspace path, not on the per-run remoteCwd", () => {
+    const first = buildRemoteExecutionSessionIdentity(
+      spec("/home/agent/pcws/worker/.paperclip-runtime/runs/run-1/workspace"),
+    );
+    expect(first?.remoteCwd).toBe("/home/agent/pcws/worker");
+    expect(
+      remoteExecutionSessionMatches(
+        first,
+        spec("/home/agent/pcws/worker/.paperclip-runtime/runs/run-2/workspace"),
+      ),
+    ).toBe(true);
+  });
+
+  it("still distinguishes different hosts and workspaces", () => {
+    const saved = buildRemoteExecutionSessionIdentity(spec("/home/agent/pcws/worker"));
+    expect(remoteExecutionSessionMatches(saved, { ...spec("/home/agent/pcws/worker"), host: "10.0.0.6" })).toBe(false);
+    expect(
+      remoteExecutionSessionMatches(saved, {
+        ...spec("/home/agent/pcws/other"),
+        remoteWorkspacePath: "/home/agent/pcws/other",
+      }),
+    ).toBe(false);
+  });
+
+  it("falls back to remoteCwd when no workspace path is configured", () => {
+    const identity = buildRemoteExecutionSessionIdentity({ ...spec("/srv/run"), remoteWorkspacePath: "" });
+    expect(identity?.remoteCwd).toBe("/srv/run");
   });
 });
