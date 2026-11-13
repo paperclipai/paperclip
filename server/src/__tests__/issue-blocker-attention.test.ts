@@ -1173,6 +1173,24 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       expect(issue?.blockerAttention).toMatchObject({ state: "needs_attention", blockingTreeLive: false });
     });
 
+    it("keeps surfacing an agent-owned unblock path whose owner skips on-demand wakes", async () => {
+      const { companyId, agentId } = await createCompany("PBD");
+      await db.update(agents).set({ runtimeConfig: { heartbeat: { wakeOnDemand: false } } }).where(eq(agents.id, agentId));
+      const issueId = await insertIssue({
+        companyId,
+        identifier: "PBD-1",
+        title: "Unblock wake was skipped",
+        status: "blocked",
+        assigneeAgentId: agentId,
+        unblockDescriptor: { owner: { agentId }, action: "Resume when the outside reply arrives." },
+        ownerNotified: true,
+      });
+
+      const issue = (await svc.list(companyId, { status: "blocked" })).find((row) => row.id === issueId);
+
+      expect(issue?.blockerAttention).toMatchObject({ state: "needs_attention", blockingTreeLive: false });
+    });
+
     it("clears delivery evidence when the unblock owner changes while the issue stays blocked", async () => {
       const { companyId, agentId, pausedAgentId } = await createCompany("PBO");
       const issueId = await insertIssue({
