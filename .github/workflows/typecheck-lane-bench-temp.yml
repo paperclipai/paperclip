@@ -22,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mode: [sequential, parallel]
+        mode: [parallel]
         attempt: [1, 2, 3]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -70,6 +70,30 @@ jobs:
           cache-workspace-crates: false
           cache-bin: false
           save-if: false
+
+      - name: Compute the Runner release crate cache key
+        id: runner_release_crate_key
+        run: echo "scope=$(node scripts/runner-release-crate-cache.mjs scope)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the Runner release crate (read only)
+        id: runner_release_crate
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            packages/paperclip-runner/runner/target/release/.fingerprint/paperclip-runner-core-*
+            packages/paperclip-runner/runner/target/release/deps/libpaperclip_runner_core-*
+            packages/paperclip-runner/runner/target/release/deps/paperclip_runner_core-*.d
+            packages/paperclip-runner/runner/target/release/deps/paperclip_runnerd-*
+            packages/paperclip-runner/runner/target/release/paperclip-runnerd
+            packages/paperclip-runner/runner/target/release/paperclip-runnerd.d
+            packages/paperclip-runner/runner/target/release/.fingerprint/paperclip-process-table-*
+            packages/paperclip-runner/runner/target/release/deps/libpaperclip_process_table-*
+            packages/paperclip-runner/runner/target/release/deps/paperclip_process_table-*.d
+          key: runner-release-crate-v1-${{ steps.runner_release_crate_key.outputs.scope }}-${{ hashFiles('packages/paperclip-runner/rust-toolchain.toml', 'packages/paperclip-runner/acpx-profiles.json', 'packages/paperclip-runner/antigravity-distributions.json', 'packages/paperclip-runner/runner/Cargo.toml', 'packages/paperclip-runner/runner/Cargo.lock', 'packages/paperclip-runner/runner/crates/**', 'packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/test-fixtures/**', 'packages/paperclip-runner/test/fixtures/**', 'tests/runner-e2e/fixtures/**') }}
+
+      - name: Mark the restored Runner release crate current
+        if: ${{ steps.runner_release_crate.outputs.cache-hit == 'true' }}
+        run: node scripts/runner-release-crate-cache.mjs mark-current
 
       - name: Machine
         run: |

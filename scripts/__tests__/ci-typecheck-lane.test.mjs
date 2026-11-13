@@ -50,6 +50,10 @@ test("every check of the sequential job is planned, and only declaration readers
   assert.ok(byName.get("CLI guidance safety").args.includes("server/src/__tests__/cli-invocation-safety.test.ts"));
   const waiting = tasks.filter((task) => task.needs);
   assert.equal(waiting.length, 2 + PROJECTS.length);
+  assert.deepEqual(
+    tasks.filter((task) => task.critical).map((task) => task.name),
+    ["server declarations", ...waiting.map((task) => task.name)],
+  );
 });
 
 test("checks run at most the given number at a time, in priority order", async () => {

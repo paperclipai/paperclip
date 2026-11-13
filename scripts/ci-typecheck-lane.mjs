@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn, spawnSync } from "node:child_process";
-import { availableParallelism } from "node:os";
+import { availableParallelism, setPriority } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { listLayers } from "../server/scripts/typecheck-layers.mjs";
@@ -9,6 +9,7 @@ import { LOW_MEMORY_VARIABLE, EMIT_ONLY_VARIABLE } from "./run-tsc.mjs";
 import { PROJECTS } from "./typecheck-test-projects.mjs";
 
 export const SERIAL_BUILD_GAPS = ["@paperclipai/paperclip-runner"];
+export const BACKGROUND_PRIORITY = 10;
 const SERVER_DECLARATIONS = "server declarations";
 const lowMemory = { [LOW_MEMORY_VARIABLE]: "1" };
 
@@ -43,6 +44,7 @@ export function planLane({ buildGapPackages, testLayers, projects = PROJECTS }) 
       command: "node",
       args: ["server/scripts/typecheck-layers.mjs", "--declarations-only"],
       env: lowMemory,
+      critical: true,
     },
     { name: "release registry tests", command: "pnpm", args: ["run", "test:release-registry"] },
     {
@@ -56,12 +58,14 @@ export function planLane({ buildGapPackages, testLayers, projects = PROJECTS }) 
       args: ["server/scripts/typecheck-layers.mjs", "--layer", layer],
       env: lowMemory,
       needs: needsDeclarations,
+      critical: true,
     })),
     ...projects.map((project) => ({
       name: `test project ${project}`,
       command: "node",
       args: ["scripts/typecheck-test-projects.mjs", "--low-memory", "--reuse-declarations", project],
       needs: needsDeclarations,
+      critical: true,
     })),
     ...buildGapPackages.filter((name) => !SERIAL_BUILD_GAPS.includes(name)).map(typecheckPackage),
     {
@@ -94,6 +98,11 @@ function runCaptured(task, options) {
     } catch (error) {
       resolve({ status: 1, output: `${error.message}\n`, durationMs: Date.now() - started });
       return;
+    }
+    if (!task.critical && child.pid) {
+      try {
+        setPriority(child.pid, BACKGROUND_PRIORITY);
+      } catch {}
     }
     child.stdout.on("data", (chunk) => output.push(chunk));
     child.stderr.on("data", (chunk) => output.push(chunk));

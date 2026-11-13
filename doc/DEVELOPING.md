@@ -1479,6 +1479,11 @@ The server typecheck builds only the Runner's TypeScript output. Use
 `pnpm --filter @paperclipai/paperclip-runner build` when a local check needs the
 Runner binary.
 
+`node server/scripts/typecheck-layers.mjs --layer <name>` checks one layer
+against the configs and declarations that an earlier `--declarations-only` run
+left in that directory. It does not write them again. Stale declarations pass
+silently, so use it only straight after `--declarations-only` on the same commit.
+
 If a compiler child terminates on a signal, the wrapper reports the signal,
 layer, command, and working directory on stderr, then stops with a nonzero exit.
 Compiler stdout and stderr remain visible. A signal such as `SIGKILL` alone does
@@ -1521,8 +1526,9 @@ available to the task is limited, add `--low-memory`, or set
 
 The command fails if a project loads server source, because that is what makes
 these programs large. It does not limit memory. CI runs it with
-`--reuse-declarations` straight after the server typecheck, so it does not build
-the declarations again. Do not use that option when the declarations can be stale.
+`--reuse-declarations` after the server declarations of the same run, so it does
+not build the declarations again. Do not use that option when the declarations
+can be stale.
 
 Add each new test project that imports server source to `PROJECTS` in
 `scripts/typecheck-test-projects.mjs`.
@@ -1546,7 +1552,9 @@ node scripts/typecheck-test-programs.mjs --low-memory
 node scripts/typecheck-test-programs.mjs packages/paperclip-runner/tsconfig.test.json
 ```
 
-The first form runs in the required `Typecheck + Release Registry` job. It checks
+The first form runs in the required `Typecheck + Release Registry` job, split in
+two: `--prepare-only` installs the sandbox providers and builds what the programs
+read, and `--skip-prepare` then only checks. It checks
 one program at a time and the largest peaks below 2 GiB. It then fails if a tracked
 `*.test.ts(x)` or `*.spec.ts(x)` file is in no program. The compiler's file list
 decides that, because `include` silently drops `foo.test.tsx` when `foo.test.ts`
