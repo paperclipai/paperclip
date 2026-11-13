@@ -50,6 +50,7 @@ export interface StagingMixTask {
 export interface StagingMixRecord {
   followUpErrors?: string[];
   followUp?: { at: number; commentId: string | null; duringRun: boolean; inOverlap: boolean; error: string | null };
+  afterEndFollowUps?: Array<{ afterRunEndAt: number; at: number; delayMs: number; commentId: string | null; error: string | null }>;
   retrySeenAt?: number | null;
   retries?: Array<{ at: number; inOverlap: boolean }>;
   retryBanner?: RetryBanner;
@@ -559,13 +560,43 @@ export interface StagingMixStepInput {
   note: (kind: string, data: Record<string, unknown>) => void;
 }
 
+export function followUpAfterEndRange(environment: NodeJS.ProcessEnv = process.env): { minMs: number; maxMs: number; count: number } | null {
+  const raw = environment.RESTART_CHAOS_MIX_FOLLOW_UP_AFTER_END_MS;
+  if (!raw) return null;
+  const [low, high] = parseRange(raw, "RESTART_CHAOS_MIX_FOLLOW_UP_AFTER_END_MS", 0, 3_600_000);
+  const count = whole(environment.RESTART_CHAOS_MIX_FOLLOW_UP_COUNT, "RESTART_CHAOS_MIX_FOLLOW_UP_COUNT", 2, 1, 10);
+  return { minMs: low, maxMs: high, count };
+}
+
 export async function stagingMixStep(input: StagingMixStepInput): Promise<void> {
   const { record, task, sample, now } = input;
   const state = record.stagingMix ??= {};
   if (!sample.reachable || !record.issueId || record.createdAt === null) return;
   const overlap = insideOverlapWindow(now, { faultInProgress: input.faultInProgress, reachable: sample.reachable });
   const running = (sample.runs ?? []).some(run => run.status === "running");
-  if (task.followUpAfterMs !== null && !state.followUp && running) {
+  const afterEnd = followUpAfterEndRange();
+  if (afterEnd && task.followUpAfterMs !== null) {
+    const posted = state.afterEndFollowUps ??= [];
+    const runs = sample.runs ?? [];
+    const active = runs.some(run => ACTIVE.has(run.status));
+    const lastEnd = Math.max(0, ...runs.map(run => Date.parse(run.finishedAt ?? "") || 0));
+    if (!active && lastEnd > 0 && posted.length < afterEnd.count && !posted.some(entry => entry.afterRunEndAt === lastEnd)) {
+      const span = afterEnd.maxMs - afterEnd.minMs;
+      const delay = afterEnd.minMs + (span > 0 ? (Number.parseInt(input.nonce.slice(0, 6), 16) * (posted.length + 1)) % (span + 1) : 0);
+      if (now >= lastEnd + delay) {
+        const index = posted.length;
+        let commentId: string | null = null; let error: string | null = null;
+        try {
+          const comment = await input.api.post<{ id?: string }>(`/api/issues/${record.issueId}/comments`, { body: followUpComment(input.nonce),
+            clientRequestId: followUpRequestId(record.issueId, `${input.nonce}-after-end-${index}`) });
+          commentId = typeof comment?.id === "string" ? comment.id : null;
+        } catch (caught) { error = caught instanceof Error ? caught.message : String(caught); }
+        posted.push({ afterRunEndAt: lastEnd, at: now, delayMs: now - lastEnd, commentId, error });
+        input.note("staging_mix_follow_up_after_end", { index, delayMs: now - lastEnd, commentId, error });
+        if (commentId && !state.followUp) state.followUp = { at: now, commentId, duringRun: false, inOverlap: overlap, error: null };
+      }
+    }
+  } else if (task.followUpAfterMs !== null && !state.followUp && running) {
     const plannedAt = record.createdAt + task.followUpAfterMs;
     const latestAt = Math.min(plannedAt + task.holdMs, record.createdAt + Math.round(task.rounds * ROUND_SECONDS * 1_000 * 0.85));
     if (now >= plannedAt && (overlap || now >= latestAt)) {
