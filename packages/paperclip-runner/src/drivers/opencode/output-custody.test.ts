@@ -144,7 +144,25 @@ describe("model request redaction", () => {
     expect(JSON.parse(redacted.toString("utf8")).messages[0].content).toBe(`x [REDACTED] y ${PLAIN} [REDACTED]`);
     expect(redactOpenCodeModelRequest(Buffer.from(JSON.stringify({ model: "m", messages: [{ content: PLAIN }] })), values)).toBeNull();
   });
+  it("changes only string values, never request structure", () => {
+    const shaped = outputCustodyValues(["true", "model", "messages"]);
+    const body = Buffer.from(JSON.stringify({ model: "m", stream: true, messages: [{ role: "tool", content: "flag=true" }] }));
+    const redacted = JSON.parse(redactOpenCodeModelRequest(body, shaped)!.toString("utf8"));
+    expect(redacted).toEqual({ model: "m", stream: true, messages: [{ role: "tool", content: "flag=[REDACTED]" }] });
+    expect(redactOpenCodeModelRequest(Buffer.from(JSON.stringify({ model: "m", stream: true })), shaped)).toBeNull();
+  });
   it("does not treat short values as secrets", () => {
     expect(outputCustodyValues(["abc", "true"])).toEqual(["true"]);
+  });
+});
+
+describe("secrets custody cannot protect", () => {
+  it.each([["a multi-line value whose lines are all short", "ab\ncd"], ["a short value", "abc"]])("refuses a launch with %s instead of leaving it unprotected", async (_label, value) => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-output-custody-short-"));
+    roots.push(root);
+    await expect(prepareOpenCodeOutputCustody({
+      directory: join(root, "launch"), binDirectory: join(root, "bin"), configDirectory: join(root, "config"),
+      environment: { PATH: process.env.PATH, SHORT_SECRET: value }, secrets: [{ name: "SHORT_SECRET", value }],
+    })).rejects.toMatchObject({ code: "opencode_output_custody_unavailable" });
   });
 });

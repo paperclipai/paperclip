@@ -68,21 +68,49 @@ export function redactOutputCustodyText(text: string, values: readonly string[])
 }
 
 /**
- * Remove exact secret values from a JSON model request body, raw and in their
- * JSON-escaped spelling. Returns null when the body holds none, so the common
- * path forwards the original bytes untouched.
+ * Command output is filtered line by line, so a secret is protected there
+ * through its lines of at least the minimum length (a single-line value is its
+ * own line). A value with no such line cannot be told apart from ordinary
+ * output and is refused rather than left unprotected.
  */
-export function redactOpenCodeModelRequest(body: Buffer, values: readonly string[]) {
-  let text: string | null = null;
+export function assertOutputCustodyProtects(values: readonly string[]): void {
   for (const value of values) {
-    for (const spelling of new Set([value, JSON.stringify(value).slice(1, -1)])) {
-      if (body.includes(spelling)) {
-        text ??= body.toString("utf8");
-        text = text.split(spelling).join(OUTPUT_CUSTODY_REDACTION);
-      }
+    const lines = value.split("\n").map(line => line.replace(/\r$/, ""));
+    if (value.length > 0 && !lines.some(line => line.length >= OUTPUT_CUSTODY_MIN_VALUE_LENGTH)) {
+      throw new OutputCustodyUnavailableError(
+        `A configured secret is too short to keep out of agent output; use a value of at least ${OUTPUT_CUSTODY_MIN_VALUE_LENGTH} characters.`,
+      );
     }
   }
-  return text === null ? null : Buffer.from(text, "utf8");
+}
+
+/**
+ * Remove exact secret values from the string values of a parsed model request
+ * and serialize it again. Field names and non-string values are never touched,
+ * so the request keeps its structure. Returns null when no string holds a
+ * value: a cheap byte scan for each value's raw and JSON-escaped spelling
+ * keeps the common path to the original bytes.
+ */
+export function redactOpenCodeModelRequest(body: Buffer, values: readonly string[], payload?: unknown) {
+  if (!values.some(value => body.includes(value) || body.includes(JSON.stringify(value).slice(1, -1)))) return null;
+  const parsed = payload ?? JSON.parse(body.toString("utf8"));
+  let changed = false;
+  const visit = (node: unknown, depth: number): unknown => {
+    if (typeof node === "string") {
+      const redacted = redactOutputCustodyText(node, values);
+      if (redacted !== node) changed = true;
+      return redacted;
+    }
+    if (!node || typeof node !== "object" || depth > 256) return node;
+    if (Array.isArray(node)) {
+      for (let index = 0; index < node.length; index++) node[index] = visit(node[index], depth + 1);
+    } else {
+      for (const key of Object.keys(node)) (node as Record<string, unknown>)[key] = visit((node as Record<string, unknown>)[key], depth + 1);
+    }
+    return node;
+  };
+  const result = visit(parsed, 0);
+  return changed ? Buffer.from(JSON.stringify(result), "utf8") : null;
 }
 
 function executable(path: string): boolean {
@@ -252,6 +280,7 @@ export async function prepareOpenCodeOutputCustody(input: {
   platform?: NodeJS.Platform;
 }): Promise<OpenCodeOutputCustody | null> {
   const secrets = input.secrets.filter(secret => input.environment[secret.name] === secret.value);
+  assertOutputCustodyProtects(secrets.map(secret => secret.value));
   const values = outputCustodyValues(secrets.map(secret => secret.value));
   if (values.length === 0) return null;
   const awk = findExecutable("awk", input.environment, ["/usr/bin/awk", "/bin/awk"]);

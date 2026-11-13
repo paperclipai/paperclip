@@ -288,14 +288,24 @@ mod tests {
         apply_configured_environment(&mut command, |key| source.get(key).cloned()).unwrap();
         let envs: BTreeMap<_, _> = command
             .get_envs()
-            .map(|(key, value)| (key.to_string_lossy().into_owned(), value.map(|v| v.to_string_lossy().into_owned())))
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.map(|v| v.to_string_lossy().into_owned()),
+                )
+            })
             .collect();
-        assert_eq!(envs.get(SECRET_MARKER), Some(&Some("[\"CUSTOM\"]".to_string())));
+        assert_eq!(
+            envs.get(SECRET_MARKER),
+            Some(&Some("[\"CUSTOM\"]".to_string()))
+        );
         for raw in ["not-json", "[\"bad=name\"]", "[\"PAPERCLIP_API_KEY\"]"] {
             let mut source = source.clone();
             source.insert(SECRET_MARKER, raw.into());
             let mut command = Command::new("unused");
-            assert!(apply_configured_environment(&mut command, |key| source.get(key).cloned()).is_err());
+            assert!(
+                apply_configured_environment(&mut command, |key| source.get(key).cloned()).is_err()
+            );
             assert_eq!(command.get_envs().count(), 0);
         }
         let mut legacy = source.clone();

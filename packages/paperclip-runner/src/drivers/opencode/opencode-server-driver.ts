@@ -2514,7 +2514,7 @@ async function startOpenCodeProviderProxy(baseUrl: string, key: string, model: s
       if (attributeUnsupportedToolMedia(payload)) body = Buffer.from(JSON.stringify(payload), "utf8");
       // Defense in depth: no configured secret value leaves for the model.
       if (secretValues.length > 0) {
-        const redacted = redactOpenCodeModelRequest(body, secretValues);
+        const redacted = redactOpenCodeModelRequest(body, secretValues, payload);
         if (redacted) body = redacted;
       }
       try { onServed?.(null); } catch { /* Recording never affects the request. */ }
