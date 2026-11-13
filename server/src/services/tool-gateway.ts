@@ -6807,6 +6807,8 @@ export function createToolGatewayService(
   /** Provider-chosen keys kept per task; older ones drop off first. */
   const boundedMcpTaskKeys = (keys: Iterable<string>) => [...new Set(keys)].slice(-64);
   const mcpTaskSecret = () => options.toolActionSigningSecret?.trim() || resolveToolActionSigningSecret();
+  /** The experimental setting (default off). Off: the extension is never declared and nothing about tasks runs. */
+  const mcpTasksEnabled = async () => (await instanceSettingsService(db).getExperimental().catch(() => null))?.enableMcpTasks === true;
   const mcpTaskScope = (row: Pick<McpTaskRow, "companyId" | "connectionId">) => ({ companyId: row.companyId, connectionId: row.connectionId });
   const mcpTaskInputKey = (row: McpTaskRow, key: string) =>
     `mcp-task-input:${row.id}:${createHash("sha256").update(key).digest("hex").slice(0, 32)}`;
@@ -7001,6 +7003,15 @@ export function createToolGatewayService(
     return claimed;
   }
 
+  /** The forwarded caller headers a connection allows, normalized: they route a call, so they are part of a task's identity. */
+  function mcpTaskCallerHeaders(connection: typeof toolConnections.$inferSelect, callerHeaders: ExecuteGatewayToolInput["callerHeaders"]) {
+    const allowed = new Set(readHeaderPolicy(connection).passthroughAllowlist.map((name) => name.toLowerCase()));
+    return Object.fromEntries(Object.entries(normalizeCallerHeaders(callerHeaders))
+      .filter(([name]) => allowed.has(name.toLowerCase()))
+      .map(([name, value]) => [name.toLowerCase(), value] as const)
+      .sort(([a], [b]) => a.localeCompare(b)));
+  }
+
   /** Undelivered, and still worth collecting: active, or settled recently. */
   const mcpTaskCollectable = () => and(
     isNull(toolMcpTasks.deliveredAt),
@@ -7034,17 +7045,27 @@ export function createToolGatewayService(
    * executing with no error; that counts too. A different request under the
    * same key is a conflict and leaves the original retry intact.
    */
-  async function mcpTaskForKeyedRetry(companyId: string, invocation: typeof toolInvocations.$inferSelect, current: { connectionId: string | null; argumentsIdentity: string }) {
+  async function mcpTaskForKeyedRetry(companyId: string, invocation: typeof toolInvocations.$inferSelect, current: {
+    connectionId: string | null; argumentsIdentity: string; callerHeaders: ExecuteGatewayToolInput["callerHeaders"];
+  }) {
     const interrupted = invocation.status === "executing" && !invocation.errorCode;
     if (!interrupted && (!invocation.errorCode || !MCP_TASK_RETRY_CODES.has(invocation.errorCode))) return null;
-    const [row] = await db.select({ id: toolMcpTasks.id, connectionId: toolMcpTasks.connectionId, argumentsIdentity: toolMcpTasks.argumentsIdentity })
+    const [row] = await db.select({ id: toolMcpTasks.id, companyId: toolMcpTasks.companyId, connectionId: toolMcpTasks.connectionId,
+      argumentsIdentity: toolMcpTasks.argumentsIdentity, sealedCallerHeaders: toolMcpTasks.sealedCallerHeaders })
       .from(toolMcpTasks).where(and(
         eq(toolMcpTasks.companyId, companyId),
         or(eq(toolMcpTasks.invocationId, invocation.id), eq(toolMcpTasks.lastInvocationId, invocation.id)),
         mcpTaskCollectable(),
       )).orderBy(desc(toolMcpTasks.createdAt)).limit(1);
     if (!row) return null;
-    if (row.connectionId !== current.connectionId || row.argumentsIdentity !== current.argumentsIdentity) {
+    // The forwarded routing headers (such as a tenant) must match too, checked
+    // before anything changes so a mismatch leaves the original retry intact.
+    const [connection] = await db.select().from(toolConnections)
+      .where(and(eq(toolConnections.id, row.connectionId), eq(toolConnections.companyId, companyId))).limit(1);
+    const stored = row.sealedCallerHeaders ? openMcpTaskId(mcpTaskSecret(), mcpTaskScope(row), row.sealedCallerHeaders) : "{}";
+    const sameRouting = Boolean(connection) && stored !== null
+      && JSON.stringify(mcpTaskCallerHeaders(connection!, current.callerHeaders)) === JSON.stringify(JSON.parse(stored));
+    if (row.connectionId !== current.connectionId || row.argumentsIdentity !== current.argumentsIdentity || !sameRouting) {
       throw new ToolGatewayHttpError(409, "This idempotency key belongs to an earlier call with different arguments. Use a new key to start new work.", "idempotency_key_conflict");
     }
     return row.id;
@@ -7681,11 +7702,13 @@ export function createToolGatewayService(
       // address it approved, so an operator-supplied hostname cannot be rebound
       // onto a loopback or metadata address between validation and dispatch
       // (PAP-17098).
+      // MCP Tasks are off unless the experimental setting is on; off, the call is exactly as before.
+      const tasksOn = await mcpTasksEnabled();
       const toolCallInit = (): RequestInit => ({
         ...mcpHttpRequestInit(requestHeaders, { id: callRequestId, method: "tools/call", params: callParams }, {
           toolInputSchema: entry.inputSchema ?? undefined,
           // Paperclip can wait on a task here, durably (see waitForMcpTask).
-          declareTasks: true,
+          declareTasks: tasksOn,
         }),
         redirect: "manual",
         signal: controller.signal,
@@ -7697,17 +7720,13 @@ export function createToolGatewayService(
       // Forwarded caller headers the connection allows (such as a tenant)
       // route the call too, so they are part of a task's identity. Per-run
       // metadata headers and credentials are not: they change on recovery.
-      const allowedCallerHeaders = new Set(readHeaderPolicy(connection).passthroughAllowlist.map((name) => name.toLowerCase()));
-      const taskCallerHeaders = Object.fromEntries(Object.entries(normalizeCallerHeaders(callerHeaders))
-        .filter(([name]) => allowedCallerHeaders.has(name.toLowerCase()))
-        .map(([name, value]) => [name.toLowerCase(), value] as const)
-        .sort(([a], [b]) => a.localeCompare(b)));
+      const taskCallerHeaders = mcpTaskCallerHeaders(connection, callerHeaders);
       const taskRoutingIdentity = mcpTaskArgumentsIdentity(taskCallerHeaders);
       // Built from the version a request actually used: a version retry can
       // move a saved legacy connection to stateless MCP mid-call.
       const taskIdentityFor = (headersUsed: Record<string, string>) => {
         const version = mcpProtocolVersionOf(headersUsed);
-        return isModernMcpProtocolVersion(version) ? {
+        return tasksOn && isModernMcpProtocolVersion(version) ? {
           protocolVersion: version,
           requestHash: mcpTaskRequestHash({
             connectionId: connection.id, endpoint: String(endpoint), toolName: upstreamToolName,
@@ -12860,9 +12879,10 @@ export function createToolGatewayService(
         // A keyed retry of a call whose provider task is still undelivered
         // runs again so it attaches to the task; it never sends tools/call twice.
         retryingMcpTaskRecordId = recorded.replayed && accessDecision.allowed && !retryingSlackRateLimit && !retryingGitHubPublication
-          && recorded.invocation.agentId === session.agentId
+          && recorded.invocation.agentId === session.agentId && await mcpTasksEnabled()
           ? await mcpTaskForKeyedRetry(session.companyId, recorded.invocation, {
               connectionId: tool.connectionId ?? null, argumentsIdentity: mcpTaskArgumentsIdentity(effectiveParameters),
+              callerHeaders: input.callerHeaders,
             })
           : null;
         const retryingMcpTask = Boolean(retryingMcpTaskRecordId);
@@ -13679,6 +13699,7 @@ export function createToolGatewayService(
      * row is claimed with a short lease, so replicas never poll one twice.
      */
     async pollDueMcpTasks(input: { signal?: AbortSignal; limit?: number; wake?: McpTaskWake } = {}) {
+      if (!(await mcpTasksEnabled())) return { processed: 0 };
       const now = new Date();
       const due = await db.select().from(toolMcpTasks).where(and(
         lte(toolMcpTasks.nextPollAt, now),
@@ -13711,6 +13732,7 @@ export function createToolGatewayService(
 
     /** The next time a stored provider task needs attention, or null when none does. */
     async nextMcpTaskPollAt(): Promise<number | null> {
+      if (!(await mcpTasksEnabled())) return null;
       const [row] = await db.select({
         at: sql<string | Date | null>`min(greatest(${toolMcpTasks.nextPollAt}, coalesce(${toolMcpTasks.leaseExpiresAt}, ${toolMcpTasks.nextPollAt})))`,
       }).from(toolMcpTasks).where(sql`${toolMcpTasks.nextPollAt} is not null`);

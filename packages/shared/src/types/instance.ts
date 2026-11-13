@@ -147,6 +147,12 @@ export interface InstanceExperimentalSettings {
    */
   enableSandboxDuplexBridge: boolean;
   /**
+   * MCP Tasks: long provider tool calls become durable tasks that survive
+   * timeouts, restarts, and deploys. Default off: the extension is not
+   * declared, so behavior matches a client without it.
+   */
+  enableMcpTasks: boolean;
+  /**
    * @deprecated Compatibility-only. Provider WebSocket ingress now follows
    * enableNativeRunner and this value has no runtime effect.
    */

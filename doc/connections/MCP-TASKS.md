@@ -7,6 +7,18 @@ hands the agent the final result exactly as a quick call would return it. If
 the call outlives its timeout, or Paperclip restarts or deploys mid-call, the
 work is not lost and is never started a second time.
 
+## Turning it on
+
+MCP Tasks are behind the experimental setting **Durable app actions (MCP
+Tasks)** (`enableMcpTasks`), off by default. Find it under Instance settings →
+Experimental.
+
+- **Off:** Paperclip never declares `io.modelcontextprotocol/tasks`, so servers
+  never return a task and every call behaves as before. Nothing polls, attaches
+  to, or wakes for stored tasks, and they do not keep an idle host awake.
+- **On:** everything below applies. Turning it off later stops new tasks;
+  stored ones resume if it is turned on again before they expire.
+
 ## The standard
 
 - Specification: [MCP Tasks extension, 2026-07-28](https://github.com/modelcontextprotocol/ext-tasks)

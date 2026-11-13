@@ -35,6 +35,7 @@ import {
 } from "../services/mcp-tasks.js";
 import { createToolGatewayService } from "../services/tool-gateway.js";
 import { toolAccessService } from "../services/tool-access.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
 import { adapterExecutionControls, createAdapterExecutionControl } from "../services/adapter-execution-control.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
@@ -226,6 +227,8 @@ const support = await getEmbeddedPostgresTestSupport();
     vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY_FILE", join(keyDir, "key"));
     fixture = await startEmbeddedPostgresTestDatabase("mcp-tasks-");
     db = createDb(fixture.connectionString);
+    // MCP Tasks are an experimental setting, off by default.
+    await instanceSettingsService(db).updateExperimental({ enableMcpTasks: true });
   }, 30_000);
   afterAll(async () => {
     await fixture?.cleanup();
@@ -270,6 +273,28 @@ const support = await getEmbeddedPostgresTestSupport();
       restart: () => { forgetMcpHttpSessions(connected.connectionId); gateway = createToolGatewayService(db, gatewayOptions); return gateway; },
     };
   }
+
+  it("does nothing about tasks while the experimental setting is off", async () => {
+    const server = taskServer();
+    const { call, rows, gateway } = await setup(server);
+    await expect(call("build", { timeoutMs: 400 })).rejects.toMatchObject({ reasonCode: "provider_task_pending" });
+    await instanceSettingsService(db).updateExperimental({ enableMcpTasks: false });
+    try {
+      expect((await instanceSettingsService(db).getExperimental()).enableMcpTasks).toBe(false);
+      const before = server.requests.length;
+      // Without the declaration the server answers synchronously, as for any client.
+      expect(await call("build", { parameters: { ref: "flag-off" } })).toMatchObject({ status: "completed", result: { content: "build done synchronously" } });
+      const toolCall = server.requests.slice(before).find((request) => request.method === "tools/call")!;
+      expect(toolCall.body.params._meta[META_CAPABILITIES].extensions).not.toHaveProperty(MCP_TASKS_EXTENSION_ID);
+      // A stored task is neither attached to nor polled.
+      await db.update(toolMcpTasks).set({ nextPollAt: new Date(Date.now() - 1_000), leaseExpiresAt: null, leaseOwner: null }).where(eq(toolMcpTasks.companyId, (await rows())[0]!.companyId));
+      expect(await gateway().pollDueMcpTasks()).toEqual({ processed: 0 });
+      expect(await gateway().nextMcpTaskPollAt()).toBeNull();
+      expect(server.requests.slice(before).filter((request) => request.method.startsWith("tasks/"))).toEqual([]);
+    } finally {
+      await instanceSettingsService(db).updateExperimental({ enableMcpTasks: true });
+    }
+  });
 
   it("waits on a task and returns the result exactly as a synchronous call would", async () => {
     const server = taskServer();
@@ -745,6 +770,25 @@ const support = await getEmbeddedPostgresTestSupport();
     for (const task of server.tasks.values()) task.status = "completed";
     expect(await callAs("acme", 2_000)).toMatchObject({ result: { content: "build finished" } });
     expect(server.count("tools/call")).toBe(2);
+  });
+
+  it("refuses a keyed retry from another tenant without disturbing the original retry", async () => {
+    const server = taskServer();
+    const ctx = await setup(server);
+    const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, ctx.connected.connectionId));
+    await db.update(toolConnections).set({ config: { ...connection!.config, headerPolicy: { passthrough: { allow: ["x-tenant-id"] } } } })
+      .where(eq(toolConnections.id, connection!.id));
+    const tool = (await ctx.gateway().listToolsForSession(ctx.session.token)).find((candidate) => candidate.name.endsWith(":build"))!;
+    const callAs = (tenant: string, timeoutMs = 400) => ctx.gateway().executeTool({ sessionToken: ctx.session.token, tool: tool.name,
+      parameters: { ref: "main" }, timeoutMs, idempotencyKey: "deploy-tenant", callerHeaders: { "x-tenant-id": tenant } });
+    await expect(callAs("acme")).rejects.toMatchObject({ reasonCode: "provider_task_pending" });
+    await expect(callAs("globex")).rejects.toMatchObject({ reasonCode: "idempotency_key_conflict" });
+    const keyed = (await db.select().from(toolInvocations).where(eq(toolInvocations.companyId, ctx.org.id)))
+      .find((invocation) => invocation.idempotencyKey === "deploy-tenant");
+    expect(keyed).toMatchObject({ errorCode: "provider_task_pending" });
+    server.finish();
+    expect(await callAs("acme", 2_000)).toMatchObject({ result: { content: "build finished" } });
+    expect(server.count("tools/call")).toBe(1);
   });
 
   it("recreates a question card that was marked shown but never created", async () => {
