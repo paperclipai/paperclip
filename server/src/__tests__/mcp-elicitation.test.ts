@@ -181,6 +181,7 @@ type Recorded = { method: string; headers: Headers; body: Record<string, any> };
 /** A stateless (2026-07-28) server whose tools ask the person questions. */
 function askingServer() {
   const requests: Recorded[] = [];
+  let refuseAnswers = 0;
   const respond = (id: unknown, result: Record<string, unknown>) => Response.json({ jsonrpc: "2.0", id, result: { resultType: "complete", ...result } });
   const form = (message: string, requestedSchema: Record<string, unknown>) => ({ method: "elicitation/create", params: { mode: "form", message, requestedSchema } });
   const handle = async (_url: string, init: RequestInit): Promise<Response> => {
@@ -194,6 +195,7 @@ function askingServer() {
     }
     if (body.method !== "tools/call") return Response.json({ jsonrpc: "2.0", id: body.id, error: { code: -32601, message: "nope" } });
     const { name, inputResponses, requestState } = body.params;
+    if (inputResponses && refuseAnswers > 0) { refuseAnswers -= 1; return new Response(null, { status: 503 }); }
     if (inputResponses) return respond(body.id, { content: [{ type: "text", text: JSON.stringify({ inputResponses, requestState: requestState ?? null }) }] });
     if (name === "create_ticket") {
       return respond(body.id, { resultType: "input_required", requestState: `state-for-${body.params.arguments?.ref ?? "none"}`, inputRequests: { details: form("Tell us about the ticket", TICKET_SCHEMA) } });
@@ -206,7 +208,7 @@ function askingServer() {
     }
     return respond(body.id, { resultType: "input_required", inputRequests: { secret: form("Sign in", { type: "object", properties: { password: { type: "string" } } }) } });
   };
-  return { requests, handle, calls: () => requests.filter((request) => request.method === "tools/call") };
+  return { requests, handle, calls: () => requests.filter((request) => request.method === "tools/call"), refuseNextAnswer: () => { refuseAnswers = 1; } };
 }
 
 /**
@@ -316,6 +318,13 @@ const support = await getEmbeddedPostgresTestSupport();
     const rounds = () => db.select().from(toolMcpElicitations).where(eq(toolMcpElicitations.companyId, org!.id));
     return {
       org: org!, agent: agent!, issue: issue!, run: run!, connected, call, cards, answer, skip, rounds, interactions,
+      /** A call from another run of the agent on the same task, with its own session. */
+      callerInAnotherRun: async () => {
+        const [other] = await db.insert(heartbeatRuns).values({ companyId: org!.id, agentId: agent!.id, invocationSource: "assignment", status: "running", contextSnapshot: { issueId: issue!.id } }).returning();
+        const otherSession = await gateway.createSession({ companyId: org!.id, agentId: agent!.id, runId: other!.id });
+        return (name: string, parameters: Record<string, unknown>) =>
+          gateway.executeTool({ sessionToken: otherSession.token, tool: toolName(name), parameters, timeoutMs: 5_000 });
+      },
       /** The agent's next run on the task (a woken agent). */
       nextRun: async () => {
         const [next] = await db.insert(heartbeatRuns).values({ companyId: org!.id, agentId: agent!.id, invocationSource: "assignment", status: "running", contextSnapshot: { issueId: issue!.id } }).returning();
@@ -551,5 +560,34 @@ const support = await getEmbeddedPostgresTestSupport();
     // Nobody was asked the first question twice.
     expect(await ctx.cards()).toHaveLength(2);
     expect((await ctx.rounds()).map((round) => round.status)).toEqual(["sent", "sent"]);
+  });
+
+  it("sends the answer again in the same run after the app failed to take it", async () => {
+    const server = askingServer();
+    const ctx = await setup(server.handle);
+    await ctx.call("create_ticket", { ref: "flaky" }).catch(() => undefined);
+    const [card] = await ctx.cards();
+    await ctx.answer(card!.id, [{ questionId: "title", optionIds: ["paperclip_text_answer"], otherText: "Second try" }, { questionId: "priority", optionIds: ["choice_1"] }]);
+    server.refuseNextAnswer();
+    expect(await ctx.call("create_ticket", { ref: "flaky" }).catch((error) => error)).toMatchObject({ reasonCode: "mcp_remote_status" });
+    // Same run, same request: not a replay of the failure; the answer goes out again.
+    expect(await ctx.call("create_ticket", { ref: "flaky" })).toMatchObject({ status: "completed" });
+    expect(server.calls()).toHaveLength(3);
+    expect(server.calls()[2]!.body.params.inputResponses).toMatchObject({ details: { action: "accept", content: { title: "Second try" } } });
+    expect((await ctx.rounds())[0]).toMatchObject({ status: "sent" });
+  });
+
+  it("shows one card when two matching calls ask at the same time", async () => {
+    const server = askingServer();
+    const ctx = await setup(server.handle);
+    const first = await ctx.callerInAnotherRun();
+    const second = await ctx.callerInAnotherRun();
+    const results = await Promise.all([
+      first("create_ticket", { ref: "race" }).catch((error) => error),
+      second("create_ticket", { ref: "race" }).catch((error) => error),
+    ]);
+    for (const result of results) expect(result).toMatchObject({ reasonCode: "elicitation_required" });
+    expect(await ctx.cards()).toHaveLength(1);
+    expect((await ctx.rounds()).filter((round) => round.status === "waiting")).toHaveLength(1);
   });
 });

@@ -6753,20 +6753,40 @@ export function createToolGatewayService(
         `This task already has ${MCP_ELICITATION_MAX_OPEN_ROUNDS} app questions waiting for a person. Wait for those to be answered before trying again.`,
         "elicitation_limit_reached", { invocationId: input.invocationId });
     }
-    const id = randomUUID();
-    const questions: McpElicitationRow["questions"] = input.forms.map((form) => ({
-      key: form.key, questionHash: elicitationQuestionHash(form.request), cardKey: mcpElicitationCardKey(id, form.key),
-      message: form.request.message, requestedSchema: form.request.requestedSchema,
-    }));
-    const [row] = await db.insert(toolMcpElicitations).values({
-      id, companyId: session.companyId, issueId: session.issueId, agentId: session.agentId, runId: session.runId,
-      invocationId: input.invocationId, connectionId: call.connectionId, grantId: call.grantId,
-      catalogToolName: call.tool.name, callIdentity: call.callIdentity, argumentsIdentity: call.argumentsIdentity, era: input.era,
-      sealedRequestState: input.requestState === null ? null
-        : sealElicitationState(mcpTaskSecret(), { companyId: session.companyId, connectionId: call.connectionId }, input.requestState),
-      questions, status: "waiting", expiresAt: new Date(Date.now() + MCP_ELICITATION_TTL_MS),
-    }).returning();
-    const cards = await ensureElicitationCards(row!, call);
+    // One waiting round per call (per question for older servers, which ask
+    // one at a time): two matching calls at once share one set of cards.
+    const dedupeKey = createHash("sha256").update(JSON.stringify([
+      input.era, call.connectionId, call.grantId, call.callIdentity,
+      ...(input.era === "legacy" ? input.forms.map((form) => elicitationQuestionHash(form.request)) : []),
+    ])).digest("hex");
+    let row: McpElicitationRow | undefined;
+    for (let attempt = 0; attempt < 2 && !row; attempt += 1) {
+      const id = randomUUID();
+      const questions: McpElicitationRow["questions"] = input.forms.map((form) => ({
+        key: form.key, questionHash: elicitationQuestionHash(form.request), cardKey: mcpElicitationCardKey(id, form.key),
+        message: form.request.message, requestedSchema: form.request.requestedSchema,
+      }));
+      [row] = await db.insert(toolMcpElicitations).values({
+        id, companyId: session.companyId, issueId: session.issueId, agentId: session.agentId, runId: session.runId,
+        invocationId: input.invocationId, connectionId: call.connectionId, grantId: call.grantId,
+        catalogToolName: call.tool.name, callIdentity: call.callIdentity, argumentsIdentity: call.argumentsIdentity,
+        dedupeKey, era: input.era,
+        sealedRequestState: input.requestState === null ? null
+          : sealElicitationState(mcpTaskSecret(), { companyId: session.companyId, connectionId: call.connectionId }, input.requestState),
+        questions, status: "waiting", expiresAt: new Date(Date.now() + MCP_ELICITATION_TTL_MS),
+      }).onConflictDoNothing().returning();
+      if (row) break;
+      // Another matching call saved the round first: show its cards. An
+      // expired one is ended so this call can save a fresh round.
+      const [existing] = await db.select().from(toolMcpElicitations).where(and(
+        eq(toolMcpElicitations.companyId, session.companyId), eq(toolMcpElicitations.issueId, session.issueId),
+        eq(toolMcpElicitations.dedupeKey, dedupeKey), eq(toolMcpElicitations.status, "waiting"),
+      )).limit(1);
+      if (existing && existing.expiresAt > new Date()) row = existing;
+      else if (existing) await expireElicitationRound(existing, call);
+    }
+    if (!row) throw elicitationWaitError(call.appName, { invocationId: input.invocationId, tool: call.tool.name });
+    const cards = await ensureElicitationCards(row, call);
     return stopForElicitation({
       session, tool: call.tool, invocationId: input.invocationId, appName: call.appName,
       interactionIds: cards.map((card) => card.id), requests: input.forms.map((form) => form.request),
@@ -6919,6 +6939,7 @@ export function createToolGatewayService(
     const [row] = await db.select({ id: toolMcpElicitations.id }).from(toolMcpElicitations).where(and(
       eq(toolMcpElicitations.companyId, companyId), eq(toolMcpElicitations.invocationId, invocationId),
       eq(toolMcpElicitations.catalogToolName, toolName), eq(toolMcpElicitations.argumentsIdentity, mcpTaskArgumentsIdentity(parameters)),
+      eq(toolMcpElicitations.status, "waiting"),
     )).limit(1);
     return Boolean(row);
   }
@@ -13168,7 +13189,9 @@ export function createToolGatewayService(
         // and arguments as the saved question round run again.
         const retryingElicitation = recorded.replayed && accessDecision.allowed && !retryingSlackRateLimit && !retryingGitHubPublication
           && !retryingMcpTaskRecordId && recorded.invocation.agentId === session.agentId
-          && recorded.invocation.errorCode === "elicitation_required"
+          // Whatever the last attempt ended with (a failed send records its
+          // own error), a matching unsent round means the answer still has
+          // to reach the app.
           && await elicitationRetryMatches(session.companyId, recorded.invocation.id, tool.name, effectiveParameters);
         const retryingMcpTask = Boolean(retryingMcpTaskRecordId) || retryingElicitation;
         if (retryingGitHubPublication) {

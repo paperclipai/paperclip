@@ -1,5 +1,5 @@
 {
-  "id": "4d3e95c6-fcd5-4aef-b9fc-ddf2b571096d",
+  "id": "6b239628-8c4f-46dc-a955-382b6dfeba4f",
   "prevId": "349cdd89-db04-4340-a5d3-3b877bf7227d",
   "version": "7",
   "dialect": "postgresql",
@@ -60043,6 +60043,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "dedupe_key": {
+          "name": "dedupe_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
         "status": {
           "name": "status",
           "type": "text",
@@ -60139,6 +60145,34 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "tool_mcp_elicitations_waiting_uq": {
+          "name": "tool_mcp_elicitations_waiting_uq",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "issue_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "dedupe_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"tool_mcp_elicitations\".\"status\" = 'waiting'",
           "concurrently": false,
           "method": "btree",
           "with": {}

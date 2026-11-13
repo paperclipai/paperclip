@@ -1002,6 +1002,8 @@ export const toolMcpElicitations = pgTable(
     }>>().notNull(),
     /** Keyed identity of the tool name and full arguments; a keyed retry runs again only for the same request. */
     argumentsIdentity: text("arguments_identity").notNull(),
+    /** One waiting round per call (and per question, for older servers): matching calls at once share its cards. */
+    dedupeKey: text("dedupe_key").notNull(),
     /** waiting | sent | expired */
     status: text("status").notNull(),
     /** A repeated call sending the answers holds the round until then. */
@@ -1014,6 +1016,8 @@ export const toolMcpElicitations = pgTable(
   (table) => [
     index("tool_mcp_elicitations_call_idx").on(table.companyId, table.issueId, table.connectionId, table.callIdentity, table.status),
     index("tool_mcp_elicitations_invocation_idx").on(table.companyId, table.invocationId),
+    uniqueIndex("tool_mcp_elicitations_waiting_uq").on(table.companyId, table.issueId, table.dedupeKey)
+      .where(sql`${table.status} = 'waiting'`),
   ],
 );
 
