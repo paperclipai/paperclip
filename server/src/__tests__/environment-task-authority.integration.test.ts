@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { agents, companies, createDb, environmentLeases, environments, heartbeatRuns, plugins, sandboxCreationOperations } from "@paperclipai/db";
 import { resolvePluginTaskResume } from "../services/environment-task-runtime.js";
+import type { PluginTaskResumeRefusal } from "../services/plugin-task-resume.js";
 import { hasBoundRemoteStopReceipt, hasRemoteTerminationReceipt, remoteExecutionHasReleased, remoteExecutionHasStopped,
   remoteTerminationReceipt } from "../services/remote-execution-termination.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
@@ -13,6 +14,8 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 
 const support = await getEmbeddedPostgresTestSupport();
 const databaseSuite = support.supported ? describe : describe.skip;
+/** A resume refusal keeps its original message and names the check that failed. */
+const refused = (reason: PluginTaskResumeRefusal) => `Plugin Runner retained session is not authorized (reason: ${reason})`;
 
 databaseSuite("environment task lease authority", () => {
   let db: ReturnType<typeof createDb>;
@@ -228,17 +231,29 @@ databaseSuite("environment task lease authority", () => {
     await expect(authorize()).resolves.toBe("old-task");
     for (const field of ["runnerInstanceId", "environmentLeaseId", "normalizedSessionId", "runId"]) {
       await expect(resolvePluginTaskResume(db, { companyId, leaseId: nextLeaseId,
-        priorIdentity: { ...priorIdentity, [field]: randomUUID() } })).rejects.toThrow("not authorized");
+        priorIdentity: { ...priorIdentity, [field]: randomUUID() } })).rejects.toThrow(refused("predecessor_candidate_missing"));
     }
     await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, oldRunId));
-    await expect(authorize()).rejects.toThrow("not authorized");
+    await expect(authorize()).rejects.toThrow(refused("predecessor_run_active"));
     await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, oldRunId));
-    await expect(resolvePluginTaskResume(db, { companyId: randomUUID(), leaseId: nextLeaseId, priorIdentity })).rejects.toThrow("not authorized");
+    await expect(resolvePluginTaskResume(db, { companyId: randomUUID(), leaseId: nextLeaseId, priorIdentity })).rejects.toThrow(refused("next_lease_missing"));
     await db.update(environmentLeases).set({ metadata: { ...pin, pluginId: randomUUID() } }).where(eq(environmentLeases.id, nextLeaseId));
-    await expect(authorize()).rejects.toThrow("not authorized");
+    await expect(authorize()).rejects.toThrow(refused("provider_mismatch"));
     await db.update(environmentLeases).set({ metadata: pin }).where(eq(environmentLeases.id, nextLeaseId));
+    await db.update(environmentLeases).set({ providerLeaseId: "old-task" }).where(eq(environmentLeases.id, nextLeaseId));
+    await expect(authorize()).rejects.toThrow(refused("same_provider_task"));
+    await db.update(environmentLeases).set({ providerLeaseId: "new-task" }).where(eq(environmentLeases.id, nextLeaseId));
+    const otherEnvironmentId = randomUUID();
+    await db.insert(environments).values({ id: otherEnvironmentId, name: `Fixture ${otherEnvironmentId}`, driver: "plugin", config: {} });
+    await db.update(environmentLeases).set({ environmentId: otherEnvironmentId }).where(eq(environmentLeases.id, nextLeaseId));
+    await expect(authorize()).rejects.toThrow(refused("scope_mismatch"));
+    await db.update(environmentLeases).set({ environmentId }).where(eq(environmentLeases.id, nextLeaseId));
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, nextRunId));
+    await expect(authorize()).rejects.toThrow(refused("next_run_not_running"));
+    await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, nextRunId));
+    await expect(authorize()).resolves.toBe("old-task");
     await db.update(environmentLeases).set({ cleanupStatus: "failed" }).where(eq(environmentLeases.id, oldLeaseId));
-    await expect(authorize()).rejects.toThrow("not authorized");
+    await expect(authorize()).rejects.toThrow(refused("predecessor_not_stopped"));
     await db.update(environmentLeases).set({ cleanupStatus: "success" }).where(eq(environmentLeases.id, oldLeaseId));
     let sessionStateAvailable = false;
     const operations: string[] = [];
@@ -260,8 +275,8 @@ databaseSuite("environment task lease authority", () => {
       operation: { kind: "ensure_ownership", operationId: portableTargetLeaseId, sourceTaskId: "old-task",
         sourceGeneration: "source-generation", targetGeneration: "target-generation", policy: "ordinary", identity: checkpointIdentity },
     } } }).where(eq(environmentLeases.id, oldLeaseId));
-    await expect(authorize()).rejects.toThrow("not authorized");
-    await expect(resolvePluginTaskResume(db, { companyId, leaseId: nextLeaseId, priorIdentity, inspectCheckpoint: true })).rejects.toThrow("not authorized");
+    await expect(authorize()).rejects.toThrow(refused("predecessor_candidate_missing"));
+    await expect(resolvePluginTaskResume(db, { companyId, leaseId: nextLeaseId, priorIdentity, inspectCheckpoint: true })).rejects.toThrow(refused("predecessor_candidate_missing"));
     await expect(runtime.task({ companyId, leaseId: nextLeaseId, operation: {
       kind: "read_state", identity: checkpointIdentity, resumeFrom: "old-task",
     } })).rejects.toThrow("not authorized");
@@ -270,19 +285,19 @@ databaseSuite("environment task lease authority", () => {
     } })).rejects.toThrow("not authorized");
     expect(call).not.toHaveBeenCalled();
     await db.update(environmentLeases).set({ metadata: { ...source.metadata, runnerTaskSessionRetained: false } }).where(eq(environmentLeases.id, oldLeaseId));
-    await expect(authorize()).rejects.toThrow("not authorized");
+    await expect(authorize()).rejects.toThrow(refused("predecessor_candidate_missing"));
     await expect(resolvePluginTaskResume(db, { companyId, leaseId: nextLeaseId, priorIdentity, inspectCheckpoint: true })).resolves.toBe("old-task");
     const inspect = () => runtime.task({ companyId, leaseId: nextLeaseId, operation: {
       kind: "read_state", identity: checkpointIdentity, resumeFrom: "old-task",
     } });
-    await expect(inspect()).rejects.toThrow("not authorized");
-    await expect(authorize()).rejects.toThrow("not authorized");
+    await expect(inspect()).rejects.toThrow(refused("checkpoint_status_unconfirmed"));
+    await expect(authorize()).rejects.toThrow(refused("predecessor_candidate_missing"));
     // Discovery cannot launch, and cannot bypass the original termination receipt.
     await expect(runtime.task({ companyId, leaseId: nextLeaseId, operation: {
       kind: "submit", preparedLaunchId: "fixture", projectIds: [], bootstrapTicket: "fixture", runner, resumeFrom: "old-task",
     } })).rejects.toThrow("resume identity mismatch");
     await db.update(environmentLeases).set({ cleanupStatus: "failed" }).where(eq(environmentLeases.id, oldLeaseId));
-    await expect(inspect()).rejects.toThrow("not authorized");
+    await expect(inspect()).rejects.toThrow(refused("predecessor_not_stopped"));
     expect(operations).toEqual(["status"]);
     await db.update(environmentLeases).set({ cleanupStatus: "success" }).where(eq(environmentLeases.id, oldLeaseId));
     sessionStateAvailable = true;
@@ -431,18 +446,18 @@ databaseSuite("environment task lease authority", () => {
     await db.update(environmentLeases).set({ metadata: { ...settled.metadata, remoteExecutionTermination:
       remoteTerminationReceipt({ ...prior, providerLeaseId: "other-task" }, { providerLeaseId: "other-task", state: "stopped" }) } })
       .where(eq(environmentLeases.id, oldLeaseId));
-    await expect(authorize(true)).rejects.toThrow("not authorized");
-    await expect(authorize()).rejects.toThrow("not authorized");
+    await expect(authorize(true)).rejects.toThrow(refused("predecessor_not_stopped"));
+    await expect(authorize()).rejects.toThrow(refused("predecessor_not_stopped"));
     await db.update(environmentLeases).set({ metadata: settled.metadata }).where(eq(environmentLeases.id, oldLeaseId));
     const siblingId = randomUUID();
     await db.insert(environmentLeases).values({ id: siblingId, companyId, environmentId, heartbeatRunId: oldRunId,
       provider: prior.provider, providerLeaseId: "sibling-task", status: "active", leasePolicy: "ephemeral", metadata: pin });
-    await expect(authorize(true)).rejects.toThrow("not authorized");
-    await expect(authorize()).rejects.toThrow("not authorized");
+    await expect(authorize(true)).rejects.toThrow(refused("predecessor_not_stopped"));
+    await expect(authorize()).rejects.toThrow(refused("predecessor_not_stopped"));
     await db.delete(environmentLeases).where(eq(environmentLeases.id, siblingId));
     await db.update(environmentLeases).set({ status: "pending_cleanup", cleanupStatus: "failed", releasedAt: new Date() })
       .where(eq(environmentLeases.id, oldLeaseId));
-    await expect(authorize()).rejects.toThrow("not authorized");
+    await expect(authorize()).rejects.toThrow(refused("predecessor_not_stopped"));
     await db.update(environmentLeases).set({ status: "active", cleanupStatus: null, releasedAt: null }).where(eq(environmentLeases.id, oldLeaseId));
     await expect(authorize()).resolves.toBe("old-task");
 
@@ -504,7 +519,7 @@ databaseSuite("environment task lease authority", () => {
     for (const marker of [{ pluginLeaseCleanupMethod: "release" }, { pluginLeaseCleanupMethod: "destroy" }, { runnerTaskRetiring: true }]) {
       await db.update(environmentLeases).set({ metadata: { ...settledMetadata, ...marker } }).where(eq(environmentLeases.id, oldLeaseId));
       expect(await remoteExecutionHasStopped(db, companyId, oldRunId)).toBe(false);
-      await expect(authorize()).rejects.toThrow("not authorized");
+      await expect(authorize()).rejects.toThrow(refused("predecessor_not_stopped"));
     }
     await db.update(environmentLeases).set({ metadata: settledMetadata }).where(eq(environmentLeases.id, oldLeaseId));
 
@@ -517,8 +532,8 @@ databaseSuite("environment task lease authority", () => {
       metadata: { pluginLeaseCleanupMethod: "release", runnerTaskRetiring: true } });
     expect(hasBoundRemoteStopReceipt(inFlight)).toBe(true);
     expect(await remoteExecutionHasStopped(db, companyId, oldRunId)).toBe(false);
-    await expect(authorize(true)).rejects.toThrow("not authorized");
-    await expect(authorize()).rejects.toThrow("not authorized");
+    await expect(authorize(true)).rejects.toThrow(refused("predecessor_not_stopped"));
+    await expect(authorize()).rejects.toThrow(refused("predecessor_not_stopped"));
 
     // Release settles with its own receipt, which authorizes the follow-up.
     finishRelease();

@@ -3467,6 +3467,9 @@ its own receipt, because the provider can be releasing the task's resources
 while the lease is still active. Dispatching new work on a lease removes its
 stop receipt. Resource cleanup gates, and a same-run retry's replacement of earlier
 leases, still require the released termination receipt.
+When the server refuses the resume, the error keeps the message
+`Plugin Runner retained session is not authorized` and names the first failed
+check, for example `(reason: predecessor_not_stopped)`.
 
 These checks can refuse the exact checkpoint before the retry claims a new
 provider attempt. For example, the interrupted attempt can leave the provider

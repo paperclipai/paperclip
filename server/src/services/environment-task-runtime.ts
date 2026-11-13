@@ -1,4 +1,4 @@
-import { resolvePluginTaskResume } from "./plugin-task-resume.js";
+import { pluginTaskResumeRefused, resolvePluginTaskResume } from "./plugin-task-resume.js";
 export { resolvePluginTaskResume } from "./plugin-task-resume.js";
 import { attachSandboxCreation, environmentService } from "./environments.js";
 import { createOwnedSandbox, queueSandboxCreationCleanup, recordSandboxCreationResource } from "./sandbox-creation-operations.js";
@@ -198,11 +198,13 @@ export async function executeEnvironmentTask(db: Db, workers: Pick<PluginWorkerM
     if (inspectCheckpoint && sources[0]!.metadata?.runnerTaskSessionRetained !== true) {
       const status = await executeEnvironmentTask(db, workers, { companyId: input.companyId,
         leaseId: sources[0]!.id, operation: { kind: "status" } });
-      if (status.kind !== "status" || status.executionStopped !== true || status.sessionStateAvailable !== true ||
-          resumeFrom !== await resolvePluginTaskResume(db, { companyId: input.companyId, leaseId: lease.id,
-            priorIdentity: { runnerInstanceId: runner.runnerId, environmentLeaseId: runner.leaseId,
-              runId: priorRunId, normalizedSessionId: runner.sessionId } })) {
-        throw new Error("Plugin Runner retained session is not authorized");
+      if (status.kind !== "status" || status.executionStopped !== true || status.sessionStateAvailable !== true) {
+        throw pluginTaskResumeRefused("checkpoint_status_unconfirmed");
+      }
+      if (resumeFrom !== await resolvePluginTaskResume(db, { companyId: input.companyId, leaseId: lease.id,
+        priorIdentity: { runnerInstanceId: runner.runnerId, environmentLeaseId: runner.leaseId,
+          runId: priorRunId, normalizedSessionId: runner.sessionId } })) {
+        throw pluginTaskResumeRefused("resume_task_mismatch");
       }
     }
     stoppedSourceCheckpoint = true;
