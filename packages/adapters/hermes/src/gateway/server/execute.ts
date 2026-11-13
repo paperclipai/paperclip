@@ -1157,7 +1157,32 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     timeoutTimer = setTimeout(() => resolve("timeout"), timeoutMs);
   });
 
-  const outcome = await Promise.race([state.terminalPromise, timeoutPromise]);
+  // onCancellationReady joined the host's cancellation lifecycle before the
+  // create request, so an operator Stop aborts ctx.signal. Honor that signal
+  // through the active-run path too: when it aborts, stop local
+  // streaming/polling, request the remote stop, confirm the remote run
+  // reached a terminal status within the stop grace window, and return a
+  // cancelled result the host can verify. Without this, an operator Stop waits
+  // out the whole remote run (up to adapter_stop_pending) while the agent
+  // keeps working past the Stop, and the server's immediate-cancellation
+  // fallback can no longer fire because the adapter registered ownership.
+  const cancelPromise: Promise<"cancelled"> | null = ctx.signal
+    ? new Promise<"cancelled">((resolve) => {
+      const signal = ctx.signal!;
+      if (signal.aborted) {
+        resolve("cancelled");
+        return;
+      }
+      // { once: true } removes the listener when the signal aborts; if a
+      // different racer wins instead, the listener lives only as long as the
+      // run-scoped ctx.signal and is reclaimed with it.
+      signal.addEventListener("abort", () => resolve("cancelled"), { once: true });
+    })
+    : null;
+
+  const racers: Array<Promise<TerminalState | "timeout" | "cancelled">> = [state.terminalPromise, timeoutPromise];
+  if (cancelPromise) racers.push(cancelPromise);
+  const outcome = await Promise.race(racers);
   if (timeoutTimer) clearTimeout(timeoutTimer);
   controller.abort();
 
@@ -1176,6 +1201,40 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         status: extractStatus(finalStatus) ?? "timeout",
         last_event: state.lastEventName,
         final_status: redactForLog(finalStatus, [], 0, redactText),
+      },
+      sessionParams: {
+        hermesRunId: runId,
+        strategy,
+      },
+      sessionDisplayId: sessionKey ? redactText(sessionKey) : null,
+    };
+  }
+
+  if (outcome === "cancelled") {
+    // Stop the remote run and confirm it reached a terminal status before
+    // claiming an acknowledged cancellation. A confirmed stop proves the
+    // provider terminated; an unconfirmed one leaves the server's requested
+    // marker so the host honestly reports that provider termination could not
+    // be verified instead of claiming a Stop the adapter cannot prove.
+    await stopRun({ ctx, baseUrl, headers: eventHeaders, runId, redactText });
+    const finalStatus = await fetchFinalStatus({ baseUrl, headers: eventHeaders, runId, deadlineMs: STOP_GRACE_MS });
+    const finalState = extractStatus(finalStatus);
+    const acknowledged = finalState !== null && TERMINAL_STATUSES.has(finalState);
+    return {
+      exitCode: null,
+      signal: null,
+      timedOut: false,
+      errorCode: "cancelled",
+      errorMessage: "Stopped during active Hermes gateway run",
+      provider: "hermes_gateway",
+      resultJson: {
+        run_id: runId,
+        status: finalState ?? "cancelling",
+        last_event: state.lastEventName,
+        final_status: finalStatus ? redactForLog(finalStatus, [], 0, redactText) : null,
+        ...(acknowledged
+          ? { executionCancellation: { state: "acknowledged", acknowledgedAt: new Date().toISOString(), forced: false } }
+          : {}),
       },
       sessionParams: {
         hermesRunId: runId,

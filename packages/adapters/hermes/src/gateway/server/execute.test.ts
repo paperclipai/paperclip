@@ -849,6 +849,67 @@ describe("execute", () => {
     }
   });
 
+  it("stops the active run and acknowledges the provider stop when cancelled after create succeeds", async () => {
+    vi.useFakeTimers();
+    try {
+      let stopCalled = false;
+      const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/v1/runs") && init?.method === "POST") {
+          return new Response(JSON.stringify({ run_id: "run-hermes-1", status: "started" }), { status: 200 });
+        }
+        if (url.endsWith("/events")) {
+          // The event stream stays open without a terminal event so the
+          // active run keeps running until the operator Stop aborts it.
+          return new Promise<Response>(() => {});
+        }
+        if (url.endsWith("/stop")) {
+          stopCalled = true;
+          return new Response(JSON.stringify({ status: "stopping" }), { status: 200 });
+        }
+        // GET /v1/runs/{id}: the remote run reports cancelled once the stop
+        // request has been accepted, matching the gateway's stop lifecycle.
+        return new Response(JSON.stringify({ status: stopCalled ? "cancelled" : "running" }), { status: 200 });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const controller = new AbortController();
+      const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 60 });
+      ctx.onCancellationReady = vi.fn(async () => { ctx.signal = controller.signal; });
+      ctx.onDispatch = vi.fn();
+
+      const runPromise = execute(ctx);
+      // Let the create request fire, onCancellationReady register the signal,
+      // and the active-run race start awaiting (the event stream hangs).
+      await vi.advanceTimersByTimeAsync(0);
+      expect(ctx.onCancellationReady).toHaveBeenCalledOnce();
+      // Operator Stop aborts the run while it is still active.
+      controller.abort();
+      await vi.advanceTimersByTimeAsync(0);
+      const result = await runPromise;
+
+      expect(result.exitCode).toBe(null);
+      expect(result.errorCode).toBe("cancelled");
+      expect(result.timedOut).toBe(false);
+      // Active-run cancellation did provider work, so it is not a bootstrap
+      // recovery (providerWorkStarted stays true by omission).
+      expect(result.executionRecovery).toBeUndefined();
+      expect(result.resultJson?.run_id).toBe("run-hermes-1");
+      expect(result.resultJson?.status).toBe("cancelled");
+      expect(result.resultJson?.executionCancellation).toMatchObject({ state: "acknowledged" });
+      expect(result.sessionParams).toEqual({ hermesRunId: "run-hermes-1", strategy: "issue" });
+      // The stop request was sent and the final status was fetched.
+      expect(stopCalled).toBe(true);
+      expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/stop"))).toBe(true);
+      expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/run-hermes-1"))).toBe(true);
+      // No second create — the run was already created before the Stop.
+      const createCalls = fetchMock.mock.calls.filter(([input, init]) =>
+        String(input).endsWith("/v1/runs") && init?.method === "POST");
+      expect(createCalls).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("includes network causes in connection failure messages", async () => {
     const cause = Object.assign(new Error("getaddrinfo ENOTFOUND host.docker.internal"), { code: "ENOTFOUND" });
     vi.stubGlobal("fetch", vi.fn(async () => {
