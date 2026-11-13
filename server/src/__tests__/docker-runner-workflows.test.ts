@@ -3,8 +3,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-/** Security properties only: what the report-only job in docker.yml and the pull-request check may do. */
-
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const read = (name: string) => readFileSync(path.join(repoRoot, ".github", "workflows", name), "utf8");
 const jobsOf = (workflow: string) => Object.fromEntries(workflow.slice(workflow.indexOf("\njobs:\n")).split(/\n(?= {2}[a-z_-]+:\n)/).slice(1)
@@ -20,7 +18,6 @@ function expectPinnedAndExpressionFree(text: string) {
   const uses = [...text.matchAll(/^\s*(?:- )?uses: (\S+)/gm)].map((match) => match[1]);
   expect(uses.length).toBeGreaterThanOrEqual(4);
   for (const action of uses) expect(action).toMatch(/^[\w.-]+\/[\w./-]+@[0-9a-f]{40}$/);
-  // An expression in a script is substituted before the shell parses it.
   const shell = scripts(text);
   expect(shell.length).toBeGreaterThanOrEqual(2);
   for (const script of shell) expect(script).not.toContain("${{");
@@ -53,7 +50,6 @@ describe("the report-only Runner image job in docker.yml", () => {
     expect(report).toContain("\n    continue-on-error: true\n");
     expect(report).toMatch(/^ {4}timeout-minutes: \d+$/m);
     expect(report).not.toMatch(/^ {4}(?:needs|outputs):/m);
-    // Without `outputs:` and without a job that needs it, nothing can read its result.
     expect(workflow).not.toContain("needs.runner_image_report");
     for (const [name, job] of Object.entries(jobs)) {
       if (name !== "runner_image_report") expect(/^ {4}needs: .*$/m.exec(job)?.[0] ?? "").not.toContain("runner_image_report");

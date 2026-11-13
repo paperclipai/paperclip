@@ -33,13 +33,6 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Report only. Asks scripts/runner-image-resolve.mjs which Runner an image
-  # build of this commit would use, the published Runner image of its inputs
-  # or an inline build, and writes the answer to the job summary.
-  #
-  # No job needs this one or reads an output of it, and continue-on-error
-  # keeps a failure here from failing the run. It holds no credential: the
-  # Runner package is public, so the lookup is anonymous.
   runner_image_report:
     name: Report the Runner image of this commit
     if: github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.event_name == 'push' && github.ref == 'refs/heads/master'
@@ -73,7 +66,6 @@ jobs:
             [registry."docker.io"]
               mirrors = ["mirror.gcr.io"]
 
-      # On the committed files: this job never refreshes the lockfile.
       - name: Compute the Runner inputs of this commit
         timeout-minutes: 5
         run: node scripts/runner-image-resolve.mjs inputs --dir "$RUNNER_TEMP/runner-image-resolve"

@@ -1,14 +1,7 @@
 name: Docker app image check
 
-# docker.yml builds the application image on master and on tags only. This
-# builds, on a pull request, the two stages of that image that make and
-# package the Runner: `build`, which vendors the Runner into the server, and
-# `runner-provider-pack`. It pushes nothing and has no credential.
 on:
   pull_request:
-    # Only the files that decide how the application image gets, vendors and
-    # packages the Runner. runner-image.yml builds the Runner's own sources
-    # on pull requests.
     paths:
       - .github/workflows/docker-app-check.yml
       - Dockerfile
@@ -47,7 +40,6 @@ jobs:
           node-version: 24
           package-manager-cache: false
 
-      # As docker.yml does before its build.
       - name: Refresh lockfile for Docker build context
         run: |
           set -euo pipefail
@@ -76,8 +68,6 @@ jobs:
             [registry."docker.io"]
               mirrors = ["mirror.gcr.io"]
 
-      # Nothing is exported. The cache is the one docker.yml writes on
-      # master, read anonymously and never written here.
       - name: Build the stages that make and package the Runner
         timeout-minutes: 45
         run: |

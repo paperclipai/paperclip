@@ -94,7 +94,9 @@ tags only. `.github/workflows/docker-app-check.yml` builds the `build` and
 `runner-provider-pack` stages on a pull request that changes the `Dockerfile`,
 `.dockerignore` or the step that vendors the Runner into the server, so a
 change to how the application image gets its Runner fails before it merges.
-It publishes nothing.
+It refreshes the lockfile before the build, as `docker.yml` does. It holds no
+credential: it reads the build cache that `docker.yml` writes on `master`
+anonymously, never writes it, and exports and publishes nothing.
 
 ## One-liner (build + run)
 
