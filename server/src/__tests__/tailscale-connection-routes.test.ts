@@ -80,12 +80,21 @@ describe("Tailscale connector routes", () => {
   });
   it("starts existing instance enrollment when no broker identity exists", async () => {
     fixture.configured.mockReturnValue(null);
-    fixture.enrollment.mockResolvedValue({ verificationUrl: "http://localhost:3000/connections/enroll?id=fixture", expiresAt: "2099-01-01T00:00:00Z" });
+    fixture.enrollment.mockResolvedValue({ instanceId: "fixture-instance", environment: "development", status: "pending", verificationUrl: "http://localhost:3000/connections/enroll?id=fixture", expiresAt: "2099-01-01T00:00:00Z" });
     const response = await request(app()).post(path).set("Origin", "http://localhost:3100").send({ name: "Home" });
     expect(response.status).toBe(201);
     expect(response.body.authorizationUrl).toContain("/connections/enroll");
     expect(fixture.enrollment).toHaveBeenCalledWith(expect.objectContaining({ companyId, initiatedBy: "user:fixture-user", origin: "http://localhost:3100", returnTo: "/apps/tailscale" }));
     expect(fixture.service.start).not.toHaveBeenCalled();
+    expect(fixture.activity).toHaveBeenCalledExactlyOnceWith(expect.anything(), {
+      companyId,
+      actorType: "user",
+      actorId: "fixture-user",
+      action: "paperclip_cloud_connector.enrollment_started",
+      entityType: "connector_instance",
+      entityId: "fixture-instance",
+      details: { environment: "development", status: "pending" },
+    });
   });
   it("checks origin, admin status, and company access before self-hosted enrollment", async () => {
     fixture.configured.mockReturnValue(null);
@@ -98,6 +107,15 @@ describe("Tailscale connector routes", () => {
       expect((await request(app(actor as any)).post(path).set("Origin", origin).send({ name: "Home" })).status).toBe(403);
     }
     expect(fixture.enrollment).not.toHaveBeenCalled();
+    expect(fixture.service.start).not.toHaveBeenCalled();
+    expect(fixture.activity).not.toHaveBeenCalled();
+  });
+  it("does not record a successful enrollment start when enrollment fails", async () => {
+    fixture.configured.mockReturnValue(null);
+    fixture.enrollment.mockRejectedValue(new Error("Enrollment unavailable"));
+    const response = await request(app()).post(path).set("Origin", "http://localhost:3100").send({ name: "Home" });
+    expect(response.status).toBe(500);
+    expect(fixture.activity).not.toHaveBeenCalled();
     expect(fixture.service.start).not.toHaveBeenCalled();
   });
   it("prepares machine pairing for an authorized board user without returning a private key", async () => {

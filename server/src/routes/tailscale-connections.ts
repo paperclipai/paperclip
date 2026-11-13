@@ -36,6 +36,12 @@ export function tailscaleConnectionRoutes(db: Db) {
       const enrollment = await startPaperclipCloudConnectorEnrollment({ origin, companyId, initiatedBy: paperclipCloudEnrollmentPrincipal(req.actor),
         returnTo: "/apps/tailscale",
       });
+      await logActivity(db, {
+        companyId, actorType: "user", actorId: userId,
+        action: "paperclip_cloud_connector.enrollment_started",
+        entityType: "connector_instance", entityId: enrollment.instanceId ?? "pending",
+        details: { environment: enrollment.environment, status: enrollment.status },
+      });
       res.status(201).json({ authorizationUrl: enrollment.verificationUrl, expiresAt: enrollment.expiresAt });
       return;
     }
