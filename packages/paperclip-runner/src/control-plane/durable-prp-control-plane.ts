@@ -2131,6 +2131,7 @@ export class DurablePrpControlPlane {
   #visibleStateCache?: { working: StoredCoreState; published: StoredCoreState; revision: number; state: StoredCoreState };
   #checkpointPersistenceFailed = false;
   #persistenceTail = Promise.resolve();
+  #waitingCheckpoint: { snapshot: DurablePrpCheckpoint; published: StoredCoreState; revision: number } | null = null;
   #sendQueues = new Map<AuthorityConnection, Promise<void>>();
   #recoveredCursor: { runId: string; sourceSeq: number } | null = null;
   #readableStateListeners = new Set<() => void>();
@@ -2297,8 +2298,19 @@ export class DurablePrpControlPlane {
     const published = this.#capturePublishedState(snapshot);
     const revision = this.#store.revision;
     this.#queuedRevision = revision;
+    const waiting = this.#waitingCheckpoint;
+    if (waiting !== null && waiting.snapshot.runId === snapshot.runId) {
+      waiting.snapshot = snapshot;
+      waiting.published = published;
+      waiting.revision = revision;
+      return this.#persistenceTail;
+    }
+    const job = { snapshot, published, revision };
+    this.#waitingCheckpoint = job;
     const persist = this.#persistCheckpoint;
     const pending = this.#persistenceTail.catch(() => undefined).then(async () => {
+      if (this.#waitingCheckpoint === job) this.#waitingCheckpoint = null;
+      const { snapshot, published, revision } = job;
       // The previous write may have failed after committing. Rebuild the delta
       // at execution time, and reset after uncertainty instead of assuming it failed.
       const checkpoint = { ...snapshot, ...checkpointChanges(snapshot.records, snapshot.runId,
