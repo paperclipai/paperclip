@@ -2517,32 +2517,42 @@ async function startOpenCodeProviderProxy(baseUrl: string, key: string, model: s
         const redacted = redactOpenCodeModelRequest(body, secretValues, payload);
         if (redacted) body = redacted;
       }
-      try { onServed?.(null); } catch { /* Recording never affects the request. */ }
-      const upstream = await new Promise<IncomingMessage>((resolve, reject) => {
-        const outgoing = (upstreamUrl.protocol === "https:" ? requestHttps : requestHttp)(upstreamUrl, {
-          method: "POST",
-          agent,
-          headers: { ...(isOpenRouterUrl(baseUrl) ? OPENROUTER_ATTRIBUTION_HEADERS : {}), "Content-Type": "application/json", "Content-Length": body.length, ...(key ? { Authorization: `Bearer ${key}` } : {}) },
-          signal: AbortSignal.any([controller.signal, AbortSignal.timeout(600_000)]),
-        }, resolve);
-        outgoing.once("error", reject);
-        outgoing.end(body);
-      });
-      // Never forward authentication to a redirect destination.
-      const status = upstream.statusCode ?? 502;
-      if (status >= 300 && status < 400) {
-        upstream.destroy();
-        throw new Error("Provider redirects are not supported");
+      // Record a call's host when the call ends, not when it starts. OpenCode
+      // reports a step's usage only a few milliseconds before it sends the
+      // next request, so clearing at request start raced that report.
+      let served: UpstreamServed | null = null;
+      try {
+        const upstream = await new Promise<IncomingMessage>((resolve, reject) => {
+          const outgoing = (upstreamUrl.protocol === "https:" ? requestHttps : requestHttp)(upstreamUrl, {
+            method: "POST",
+            agent,
+            headers: { ...(isOpenRouterUrl(baseUrl) ? OPENROUTER_ATTRIBUTION_HEADERS : {}), "Content-Type": "application/json", "Content-Length": body.length, ...(key ? { Authorization: `Bearer ${key}` } : {}) },
+            signal: AbortSignal.any([controller.signal, AbortSignal.timeout(600_000)]),
+          }, resolve);
+          outgoing.once("error", reject);
+          outgoing.end(body);
+        });
+        // Never forward authentication to a redirect destination.
+        const status = upstream.statusCode ?? 502;
+        if (status >= 300 && status < 400) {
+          upstream.destroy();
+          throw new Error("Provider redirects are not supported");
+        }
+        const headers: Record<string, string> = {};
+        for (const name of ["content-type", "content-encoding", "cache-control", "retry-after"]) {
+          const value = upstream.headers[name];
+          if (typeof value === "string") headers[name] = value;
+        }
+        response.writeHead(status, headers);
+        if (onServed && status >= 200 && status < 300) {
+          await pipeline(upstream, createUpstreamServedTap({ contentType: headers["content-type"], contentEncoding: headers["content-encoding"],
+            onServed: value => { served = value; } }), response);
+        } else await pipeline(upstream, response);
+      } finally {
+        // A call whose host could not be read reports none, so the next usage
+        // never inherits an earlier call's host.
+        try { onServed?.(served); } catch { /* Recording never affects the response. */ }
       }
-      const headers: Record<string, string> = {};
-      for (const name of ["content-type", "content-encoding", "cache-control", "retry-after"]) {
-        const value = upstream.headers[name];
-        if (typeof value === "string") headers[name] = value;
-      }
-      response.writeHead(status, headers);
-      if (onServed && status >= 200 && status < 300) {
-        await pipeline(upstream, createUpstreamServedTap({ contentType: headers["content-type"], contentEncoding: headers["content-encoding"], onServed }), response);
-      } else await pipeline(upstream, response);
     })().catch(() => {
       if (!response.headersSent) response.writeHead(502).end("Provider request failed");
       else response.destroy();
