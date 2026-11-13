@@ -23,9 +23,7 @@ export async function readVerifiedLocalAiCredentialDetails(provider: AiProvider,
 /** Read and verify a connection-specific login home. */
 export async function readVerifiedLocalAiCredential(provider: AiProvider, loginHome?: string): Promise<string> {
   if (provider === "openrouter") throw unprocessable("OpenRouter requires an API key.");
-  if (!loginHome) throw unprocessable(provider === "xai"
-    ? "Start local sign-in for this connection before connecting."
-    : "Start browser sign-in for this connection before connecting.");
+  if (!loginHome) throw unprocessable("Start browser sign-in for this connection before connecting.");
   try {
     if (provider === "google") return (await verifyAntigravityCredential(loginHome)).credential;
     if (provider === "anthropic") {
@@ -69,8 +67,6 @@ export async function readVerifiedLocalAiCredential(provider: AiProvider, loginH
     return raw;
   } catch {
     // Provider/CLI errors may contain credential material; never return them.
-    throw unprocessable(provider === "xai"
-      ? "Could not verify the local subscription. Run the sign-in command shown for this connection, finish signing in, then try Connect again."
-      : "Could not verify the local subscription. Finish browser sign-in for this connection, then try Connect again.");
+    throw unprocessable("Could not verify the local subscription. Finish browser sign-in for this connection, then try Connect again.");
   }
 }

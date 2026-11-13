@@ -4,6 +4,7 @@ import { constants } from "node:fs";
 import path from "node:path";
 import { runSetupTokenLogin } from "@paperclipai/adapter-claude-local/server";
 import { runDeviceLogin } from "@paperclipai/adapter-codex-local/server";
+import { parseGrokDeviceLoginPrompt } from "@paperclipai/adapter-grok-local/server";
 import { ensureCommandResolvable, resolveCommandForLogs } from "@paperclipai/adapter-utils/server-utils";
 import { resolveCodexCommand, startAntigravityBrowserLogin } from "../vendor/paperclip-runner/index.js";
 
@@ -47,7 +48,7 @@ sys.exit(os.waitstatus_to_exitcode(status))
 `;
 
 /** Run the same browser-code login used by sandbox connections on the local host. */
-export function startLocalBrowserLogin(provider: "anthropic" | "openai" | "google", home: string): LocalBrowserLoginState {
+export function startLocalBrowserLogin(provider: "anthropic" | "openai" | "google" | "xai", home: string): LocalBrowserLoginState {
   if (provider === "google") return startAntigravityBrowserLogin(home);
   const controller = new AbortController();
   const state: LocalBrowserLoginState = { abort: () => controller.abort() };
@@ -55,7 +56,7 @@ export function startLocalBrowserLogin(provider: "anthropic" | "openai" | "googl
   let child: ChildProcessWithoutNullStreams | null = null;
   const driver = {
     async start(_command: string, onData: (chunk: string) => void): Promise<{ exitCode: number | null }> {
-      let executable = "claude";
+      let executable = provider === "xai" ? "grok" : "claude";
       if (provider === "openai") {
         const legacyPlatform = !((process.platform === "linux" || process.platform === "darwin")
           && (process.arch === "x64" || process.arch === "arm64"));
@@ -73,12 +74,23 @@ export function startLocalBrowserLogin(provider: "anthropic" | "openai" | "googl
           throw new Error("Browser login runtime unavailable");
         }
       }
+      if (provider === "xai") {
+        try {
+          await ensureCommandResolvable("grok", home, process.env);
+          executable = path.resolve(home, await resolveCommandForLogs("grok", home, process.env));
+        } catch {
+          state.error = "Grok subscription sign-in requires the Grok CLI on this execution host. Install Grok on this execution host and ensure grok is on Paperclip's PATH, then start sign-in again.";
+          throw new Error("Browser login runtime unavailable");
+        }
+      }
       if (controller.signal.aborted) throw new Error("Local sign-in cancelled before launch");
       const env = { ...process.env,
         ANTHROPIC_API_KEY: "", ANTHROPIC_AUTH_TOKEN: "", CLAUDE_CODE_OAUTH_TOKEN: "",
         OPENAI_API_KEY: "", CODEX_API_KEY: "",
+        XAI_API_KEY: "", GROK_API_KEY: "",
         CLAUDE_CONFIG_DIR: provider === "anthropic" ? home : process.env.CLAUDE_CONFIG_DIR,
         CODEX_HOME: provider === "openai" ? home : process.env.CODEX_HOME,
+        GROK_HOME: provider === "xai" ? home : process.env.GROK_HOME,
         BROWSER: "true",
       };
       return new Promise((resolve, reject) => {
@@ -125,6 +137,7 @@ export function startLocalBrowserLogin(provider: "anthropic" | "openai" | "googl
   } else {
     void runDeviceLogin(driver, {
       timeoutMs: 300_000, signal: controller.signal,
+      ...(provider === "xai" ? { command: "grok login --device-auth", parsePrompt: parseGrokDeviceLoginPrompt } : {}),
       onPrompt: (prompt) => { state.authorizationUrl = prompt.url; state.code = prompt.code; },
     }).then((result) => { state.outcome = result.outcome === "success" ? "success" : "failure"; })
       .catch(() => { state.outcome = "failure"; });
