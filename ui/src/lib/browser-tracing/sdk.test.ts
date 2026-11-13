@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { InMemorySpanExporter } from "@opentelemetry/sdk-trace-web";
 import type { BrowserTracingConfig } from "@paperclipai/shared";
 import { createPageLoadRecorder, type PageLoadRecorder } from "./page-load-recorder";
-import { honeycombSampleRate, nonApiUrlPattern, startTracingSdk } from "./sdk";
+import { honeycombSampleRate, nonApiUrlPattern, pageLoadAttributes, startTracingSdk } from "./sdk";
 import { apiAreaFromUrl } from "./span-sanitizer";
 import type { TracingSdkHandle } from "./controller";
 
@@ -126,7 +126,105 @@ describe("startTracingSdk", () => {
   });
 });
 
+describe("hard-load API spans from Resource Timing", () => {
+  let exporter: InMemorySpanExporter;
+  let handle: TracingSdkHandle | null = null;
+
+  beforeEach(() => {
+    exporter = new InMemorySpanExporter();
+  });
+
+  afterEach(async () => {
+    await handle?.shutdown();
+    handle = null;
+  });
+
+  const origin = () => window.location.origin;
+  const resource = (name: string, startTime: number, responseEnd: number, extra: Record<string, unknown> = {}) =>
+    ({ name, initiatorType: "fetch", entryType: "resource", startTime, responseEnd, ...extra }) as unknown as PerformanceResourceTiming;
+
+  it("backfills child spans under a hard load that finished before the SDK loaded", async () => {
+    const recorder = idleRecorder();
+    recorder.begin({ routeTemplate: "/:companyPrefix/issues", loadType: "hard", startTime: 0 });
+    (recorder as PageLoadRecorder & { flushFrames(): void }).flushFrames();
+    const loadEnd = performance.now();
+    let stopped = false;
+    const entries = [
+      resource(`${origin()}/api/auth/get-session`, 0.5, 1, { responseStatus: 200 }),
+      resource(`${origin()}/api/companies/0f6b6d1e-2c4f-4b5e/issues?view=mine&q=secret`, 1, 2, { responseStatus: 404 }),
+      // Before the browser exposes a status, none is invented.
+      resource(`${origin()}/api/issues/PAP-77`, 1.5, 3),
+      // Started after the load ended: not part of it.
+      resource(`${origin()}/api/issues`, loadEnd + 1, loadEnd + 2),
+    ];
+    handle = startTracingSdk(config, recorder, {
+      exporter,
+      apiResources: { entries: () => entries, stop: () => { stopped = true; } },
+    });
+    await handle.forceFlush();
+
+    const spans = exporter.getFinishedSpans();
+    const pageSpan = spans.find((span) => span.name === "page.load")!;
+    const children = spans.filter((span) => span.name !== "page.load");
+    expect(children.map((span) => span.name)).toEqual(["HTTP", "HTTP", "HTTP"]);
+    for (const child of children) {
+      expect(child.parentSpanContext?.spanId).toBe(pageSpan.spanContext().spanId);
+      expect(child.spanContext().traceId).toBe(pageSpan.spanContext().traceId);
+      const serialized = JSON.stringify(child.attributes);
+      expect(serialized).not.toContain("://");
+      expect(serialized).not.toContain("0f6b6d1e");
+      expect(serialized).not.toContain("PAP-77");
+      expect(serialized).not.toContain("secret");
+      expect(child.attributes["url.full"]).toBeUndefined();
+    }
+    expect(children.map((span) => span.attributes)).toEqual([
+      { "paperclip.api.area": "auth", "paperclip.api.timing_source": "resource_timing", "http.response.status_code": 200, "paperclip.page.route": "/:companyPrefix/issues", SampleRate: 4 },
+      { "paperclip.api.area": "companies", "paperclip.api.timing_source": "resource_timing", "http.response.status_code": 404, "paperclip.page.route": "/:companyPrefix/issues", SampleRate: 4 },
+      { "paperclip.api.area": "issues", "paperclip.api.timing_source": "resource_timing", "paperclip.page.route": "/:companyPrefix/issues", SampleRate: 4 },
+    ]);
+    expect(stopped).toBe(true);
+  });
+
+  it("does not backfill requests that the live fetch instrumentation already traces", async () => {
+    const recorder = idleRecorder();
+    recorder.begin({ routeTemplate: "/", loadType: "hard", startTime: 0 });
+    const afterSdk = () => performance.now() + 1;
+    const entries: PerformanceResourceTiming[] = [];
+    handle = startTracingSdk(config, recorder, {
+      exporter,
+      apiResources: { entries: () => entries, stop: () => {} },
+    });
+    entries.push(resource(`${origin()}/api/issues`, afterSdk(), afterSdk() + 1));
+    (recorder as PageLoadRecorder & { flushFrames(): void }).flushFrames();
+    await handle.forceFlush();
+    expect(exporter.getFinishedSpans().map((span) => span.name)).toEqual(["page.load"]);
+  });
+});
+
 describe("browser tracing helpers", () => {
+  it("reports hidden, suspended, and view attributes on page.load", () => {
+    expect(pageLoadAttributes({
+      id: 1,
+      routeTemplate: "/:companyPrefix/issues",
+      loadType: "hard",
+      startTime: 0,
+      endTime: 30_000,
+      outcome: "timeout",
+      readySignal: null,
+      wasHidden: false,
+      suspended: true,
+      view: "mine",
+    })).toEqual({
+      "paperclip.page.route": "/:companyPrefix/issues",
+      "paperclip.page.load_type": "hard",
+      "paperclip.page.outcome": "timeout",
+      "paperclip.page.ready_signal": "none",
+      "paperclip.page.was_hidden": false,
+      "paperclip.page.suspended": true,
+      "paperclip.page.view": "mine",
+    });
+  });
+
   it("ignores every URL outside this origin's API", () => {
     const pattern = nonApiUrlPattern("https://acme.paperclip.app");
     expect(pattern.test("https://acme.paperclip.app/api/issues")).toBe(false);

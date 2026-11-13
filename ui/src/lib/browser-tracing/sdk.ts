@@ -13,8 +13,11 @@
 //   web_vital.lcp|inp|cls Core Web Vitals
 //   GET|POST|…           same-origin `/api/` fetches, with W3C trace context
 //                        so the server's request span joins the trace
+//   HTTP                 same-origin `/api/` requests made before this chunk
+//                        loaded, rebuilt from Resource Timing under the
+//                        page.load they belong to (no method, no server join)
 
-import { context, propagation, trace, ROOT_CONTEXT, type Context, type Span } from "@opentelemetry/api";
+import { context, propagation, trace, ROOT_CONTEXT, SpanKind, type Attributes, type Context, type Span } from "@opentelemetry/api";
 import {
   AlwaysOnSampler,
   BatchSpanProcessor,
@@ -27,7 +30,7 @@ import { FetchInstrumentation } from "@opentelemetry/instrumentation-fetch";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import { onCLS, onINP, onLCP, type Metric } from "web-vitals";
 import type { BrowserTracingConfig } from "@paperclipai/shared";
-import type { TracingSdkHandle } from "./controller";
+import type { ApiResourceCollector, TracingSdkHandle } from "./controller";
 import type { PageLoadMeasurement, PageLoadRecorder } from "./page-load-recorder";
 import { OtlpFetchExporter } from "./otlp-fetch-exporter";
 import { SanitizingSpanExporter } from "./span-sanitizer";
@@ -83,7 +86,43 @@ export function pageLoadAttributes(measurement: PageLoadMeasurement): Record<str
     "paperclip.page.outcome": measurement.outcome ?? "interrupted",
     "paperclip.page.ready_signal": measurement.readySignal ?? "none",
     "paperclip.page.was_hidden": measurement.wasHidden,
+    ...(measurement.suspended ? { "paperclip.page.suspended": true } : {}),
+    ...(measurement.view !== null ? { "paperclip.page.view": measurement.view } : {}),
   };
+}
+
+/** Span name for a request whose method is unknown (OpenTelemetry HTTP semantics). */
+export const UNKNOWN_METHOD_SPAN_NAME = "HTTP";
+
+/**
+ * Child spans for the `/api/` requests a page load made before the SDK
+ * loaded, from their Resource Timing entries: requests that started inside
+ * the load's window and before `before` (from then on the live fetch spans
+ * cover them). The URL goes into `url.full` only for the sanitizer, which
+ * turns it into `paperclip.api.area` and drops it, as for live fetch spans.
+ */
+function backfillApiSpans(
+  tracer: ReturnType<WebTracerProvider["getTracer"]>,
+  pageSpan: Span,
+  measurement: PageLoadMeasurement,
+  entries: readonly PerformanceResourceTiming[],
+  before: number,
+) {
+  const windowEnd = Math.min(measurement.endTime ?? before, before);
+  const parent = trace.setSpan(ROOT_CONTEXT, pageSpan);
+  for (const entry of entries) {
+    if (entry.startTime < measurement.startTime || entry.startTime >= windowEnd) continue;
+    const attributes: Attributes = {
+      "url.full": entry.name,
+      "paperclip.api.timing_source": "resource_timing",
+      "paperclip.page.route": measurement.routeTemplate,
+    };
+    // Only where the browser exposes it (Chromium); never guessed.
+    const status = (entry as PerformanceResourceTiming & { responseStatus?: number }).responseStatus;
+    if (typeof status === "number" && status > 0) attributes["http.response.status_code"] = status;
+    const span = tracer.startSpan(UNKNOWN_METHOD_SPAN_NAME, { kind: SpanKind.CLIENT, startTime: entry.startTime, attributes }, parent);
+    span.end(Math.max(entry.startTime, entry.responseEnd));
+  }
 }
 
 /** Honeycomb weights each event by its `SampleRate` (1 in N). */
@@ -94,6 +133,8 @@ export function honeycombSampleRate(sampleRate: number): number | null {
 export interface TracingSdkOptions {
   /** Replaces the OTLP exporter (tests). Spans are still sanitized. */
   exporter?: SpanExporter;
+  /** `/api/` requests recorded before the SDK loaded (`observeApiResources`). */
+  apiResources?: ApiResourceCollector;
 }
 
 export function startTracingSdk(
@@ -150,7 +191,17 @@ export function startTracingSdk(
     enabled: false,
   });
   fetchInstrumentation.setTracerProvider(provider);
+  // Requests from here on get live fetch spans; earlier ones are backfilled.
+  const liveFetchSince = performance.now();
   fetchInstrumentation.enable();
+
+  const apiResources = options.apiResources ?? null;
+  const releaseApiResources = () => {
+    // Once no measurement that started before the SDK is open, nothing else
+    // needs the early entries.
+    const open = recorder.open();
+    if (open === null || open.startTime >= liveFetchSince) apiResources?.stop();
+  };
 
   recorder.attachSink({
     begin(measurement) {
@@ -172,9 +223,14 @@ export function startTracingSdk(
       if (openPageSpan === span) openPageSpan = null;
       span.setAttributes(pageLoadAttributes(measurement));
       if (measurement.loadType === "hard") span.setAttributes(navigationTimingAttributes());
+      if (apiResources && measurement.startTime < liveFetchSince) {
+        backfillApiSpans(tracer, span, measurement, apiResources.entries(), liveFetchSince);
+        releaseApiResources();
+      }
       span.end(measurement.endTime ?? performance.now());
     },
   });
+  releaseApiResources();
 
   const reportVital = (metric: Metric) => {
     if (stopped) return;
@@ -207,6 +263,7 @@ export function startTracingSdk(
       pageSpans.clear();
       openPageSpan = null;
       fetchInstrumentation.disable();
+      apiResources?.stop();
       await provider.shutdown().catch(() => undefined);
       trace.disable();
       context.disable();
