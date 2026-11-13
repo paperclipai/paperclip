@@ -8,7 +8,7 @@ const exec = promisify(execFile);
 const STATE_PREFIX = "paperclip-tailscale-state-v1:";
 const MAX_STATE_BYTES = 2 * 1024 * 1024;
 
-type Connection = { credential: string; savedCredential?: string; child?: ChildProcess; closed: boolean; closing?: Promise<void>; ready: Promise<string>; close: () => Promise<void> };
+type Connection = { credential: string; savedCredential?: string; child?: ChildProcess; closed: boolean; discardState: AbortController; closing?: Promise<void>; ready: Promise<string>; close: () => Promise<void> };
 
 export function createTailscaleNetworkManager(commands: { cli?: string; daemon?: string } = {}) {
   const connections = new Map<string, Connection>();
@@ -39,6 +39,7 @@ export function createTailscaleNetworkManager(commands: { cli?: string; daemon?:
     const connection: Connection = {
       credential: input.credential,
       closed: false,
+      discardState: new AbortController(),
       ready: Promise.resolve(""),
       close: async () => {
         connection.closed = true;
@@ -79,13 +80,20 @@ export function createTailscaleNetworkManager(commands: { cli?: string; daemon?:
         });
       }
       try {
-        if (connection.savedCredential && statePath) {
+        if (!connection.discardState.signal.aborted && connection.savedCredential && statePath) {
           const bytes = await fs.readFile(statePath);
           if (bytes.length && bytes.length <= MAX_STATE_BYTES) {
             const latest = STATE_PREFIX + bytes.toString("base64");
             if (latest !== connection.savedCredential) {
-              await input.persist(latest);
-              connection.savedCredential = latest;
+              const signal = connection.discardState.signal;
+              let discard!: () => void;
+              const discarded = new Promise<void>(resolve => { discard = resolve; });
+              signal.addEventListener("abort", discard, { once: true });
+              try {
+                // Deletion can hold the vault lock needed by a pending state flush.
+                if (!signal.aborted) await Promise.race([input.persist(latest), discarded]);
+                if (!signal.aborted) connection.savedCredential = latest;
+              } finally { signal.removeEventListener("abort", discard); }
             }
           }
         }
@@ -141,9 +149,10 @@ export function createTailscaleNetworkManager(commands: { cli?: string; daemon?:
 
   return {
     connect: (input: Parameters<typeof connect>[0]) => connect(input),
-    async disconnect(identity: string) {
+    async disconnect(identity: string, options: { discardState?: boolean } = {}) {
       const connection = connections.get(identity);
       if (!connection) return;
+      if (options.discardState) connection.discardState.abort();
       await connection.close();
     },
     async close() {

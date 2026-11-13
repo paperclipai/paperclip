@@ -84,17 +84,26 @@ Each connection has a separate userspace daemon and private socket. A stale
 credential read reloads the trusted value before replacing a ready daemon and
 rechecks which daemon is active after the reload. It preserves a healthy newer
 socket and cannot cross a manager shutdown. The daemon accepts
-no subnet routes or DNS changes and blocks incoming connections. Shutdown saves
+no subnet routes or DNS changes and blocks incoming connections. Normal shutdown saves
 node state and removes temporary files. A restart restores the enrolled device;
 it does not reuse the OAuth token or require consent for every task. Disconnect
 invalidates pending consent and stops the connection’s local daemon. A callback
 already exchanging or saving credentials cannot reconnect after disconnect or
 replace a newer authorization. Completion retains the consumed state's digest
 as a private attempt marker, with no expiry; disconnect replaces that marker.
+
 Database writes and credential reloads verify ownership without holding a database
 lock across broker or daemon startup. Cancelled attempts close their daemon and
 remove their newly created secret without touching a newer connection's state.
 Disconnect does not remove the target computer from Tailscale.
+
+Company deletion removes connector records before vault secrets in the company
+transaction. After commit, it stops every daemon owned by those records. A
+rolled-back deletion leaves the connector and its daemon intact. Deleting a
+connector's vault secret invalidates pending consent, disconnects its network,
+and clears the trusted credential reference before removing the secret. If
+shutdown fails, the disconnected reference remains available for a deletion
+retry. Late daemon state writes cannot restore a retired connector.
 
 Task runtime resolution obtains its socket from this same guarded connection
 service after loading the SSH key. It requires the connection to remain connected

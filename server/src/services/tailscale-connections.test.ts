@@ -7,7 +7,8 @@ import { tailscaleConnectionService } from "./tailscale-connections.js";
 import type { PaperclipCloudConnector } from "./paperclip-cloud-connector.js";
 import { secretService } from "./secrets.js";
 import { createIsolatedTestHome } from "../__tests__/helpers/isolated-test-home.js";
-import type { tailscaleNetworks } from "./tailscale-network.js";
+import { tailscaleNetworks } from "./tailscale-network.js";
+import { deleteCompany } from "./company-deletion.js";
 import * as tailscaleDevices from "./tailscale-devices.js";
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -163,6 +164,122 @@ describe.skipIf(!support.supported)("durable Tailscale consent state", () => {
     await service.complete({ state, userId: "fixture-owner", claimId: "fixture-claim", authorizeCompany });
     return service.get(companyId, result.connection.id);
   }
+
+  async function otherConnection() {
+    const otherId = randomUUID();
+    await db.insert(companies).values({ id: otherId, name: "Other tenant", issuePrefix: randomUUID().slice(0, 8).toUpperCase() });
+    const secret = await vault.create(otherId, { name: "Other network", provider: "local_encrypted", value: "fixture-other-node" });
+    const [connection] = await db.insert(tailscaleConnections).values({ companyId: otherId, name: "Other network", status: "connected", secretId: secret.id, createdByUserId: "fixture-owner" }).returning();
+    running.add(`${otherId}:${secret.id}`);
+    return { companyId: otherId, secret, connection: connection! };
+  }
+
+  it.each(["connected", "disconnected"] as const)("deletes a company with a %s Tailscale connector and stops only its daemon", async status => {
+    const row = await enroll();
+    const persist = connectNetwork.mock.calls.at(-1)![0].persist;
+    if (status === "disconnected") await service.disconnect(companyId, row.id);
+    const other = await otherConnection();
+    const stop = vi.spyOn(tailscaleNetworks, "disconnect").mockImplementation(async identity => {
+      expect(await db.select().from(companies).where(eq(companies.id, companyId))).toHaveLength(0);
+      await persist("fixture-late-node-state");
+      running.delete(identity);
+    });
+    try {
+      expect(await deleteCompany(db, companyId)).toMatchObject({ id: companyId });
+      expect(stop).toHaveBeenCalledWith(`${companyId}:${row.secretId}`, { discardState: true });
+      expect(await db.select().from(tailscaleConnections).where(eq(tailscaleConnections.companyId, companyId))).toHaveLength(0);
+      expect(await db.select().from(companySecrets).where(eq(companySecrets.companyId, companyId))).toHaveLength(0);
+      expect(await db.select().from(tailscaleConnections).where(eq(tailscaleConnections.id, other.connection.id))).toEqual([other.connection]);
+      expect([...running]).toEqual([`${other.companyId}:${other.secret.id}`]);
+    } finally { stop.mockRestore(); }
+  });
+
+  it.each(["connected", "disconnected"] as const)("deletes a %s connector secret after stopping and detaching its network", async status => {
+    const row = await enroll();
+    const persist = connectNetwork.mock.calls.at(-1)![0].persist;
+    if (status === "disconnected") await service.disconnect(companyId, row.id);
+    const other = await otherConnection();
+    const stop = vi.spyOn(tailscaleNetworks, "disconnect").mockImplementation(async identity => {
+      expect((await service.get(companyId, row.id)).status).toBe("disconnected");
+      await persist("fixture-late-node-state");
+      running.delete(identity);
+    });
+    try {
+      expect(await vault.remove(row.secretId!)).toMatchObject({ id: row.secretId });
+      expect(stop).toHaveBeenCalledWith(`${companyId}:${row.secretId}`, { discardState: true });
+      expect(await service.get(companyId, row.id)).toMatchObject({ status: "disconnected", secretId: null,
+        credentialVersion: null, credentialHash: null, oauthStateHash: null, oauthExpiresAt: null });
+      expect(await db.select().from(companySecrets).where(eq(companySecrets.id, row.secretId!))).toHaveLength(0);
+      expect(await db.select().from(tailscaleConnections).where(eq(tailscaleConnections.id, other.connection.id))).toEqual([other.connection]);
+      expect([...running]).toEqual([`${other.companyId}:${other.secret.id}`]);
+    } finally { stop.mockRestore(); }
+  });
+
+  it("keeps the connector reference retryable when daemon shutdown fails during secret deletion", async () => {
+    const row = await enroll();
+    const stop = vi.spyOn(tailscaleNetworks, "disconnect").mockRejectedValueOnce(new Error("fixture shutdown failed"))
+      .mockImplementation(async identity => { running.delete(identity); });
+    try {
+      await expect(vault.remove(row.secretId!)).rejects.toThrow("fixture shutdown failed");
+      expect(await service.get(companyId, row.id)).toMatchObject({ status: "disconnected", secretId: row.secretId });
+      expect(await vault.remove(row.secretId!)).toMatchObject({ id: row.secretId });
+      expect(stop).toHaveBeenCalledTimes(2);
+      expect((await service.get(companyId, row.id)).secretId).toBeNull();
+      expect(running.size).toBe(0);
+    } finally { stop.mockRestore(); }
+  });
+
+  it("does not stop a company's daemon when its deletion transaction rolls back", async () => {
+    const row = await enroll();
+    const transaction = db.transaction.bind(db);
+    const rollback = vi.spyOn(db, "transaction").mockImplementation(callback => transaction(async tx => {
+      await callback(tx);
+      throw new Error("fixture deletion rollback");
+    }));
+    const stop = vi.spyOn(tailscaleNetworks, "disconnect");
+    try {
+      await expect(deleteCompany(db, companyId)).rejects.toThrow("fixture deletion rollback");
+      expect(stop).not.toHaveBeenCalled();
+      expect(await service.get(companyId, row.id)).toEqual(row);
+      expect(await db.select().from(companySecrets).where(eq(companySecrets.id, row.secretId!))).toHaveLength(1);
+      expect([...running]).toEqual([`${companyId}:${row.secretId}`]);
+    } finally { rollback.mockRestore(); stop.mockRestore(); }
+  });
+
+  it("can remove a connector secret through a transactional secret client", async () => {
+    const row = await enroll();
+    const stop = vi.spyOn(tailscaleNetworks, "disconnect").mockImplementation(async (identity, options) => {
+      expect(options).toEqual({ discardState: true });
+      running.delete(identity);
+    });
+    try {
+      expect(await db.transaction(tx => secretService(tx).remove(row.secretId!))).toMatchObject({ id: row.secretId });
+      expect((await service.get(companyId, row.id)).secretId).toBeNull();
+      expect(running.size).toBe(0);
+    } finally { stop.mockRestore(); }
+  });
+
+  it.each(["company", "secret"] as const)("cancels an in-flight authorization when its %s is deleted", async target => {
+    const row = await enroll();
+    const pending = await start(row.id);
+    const entered = deferred(), release = deferred();
+    claim.mockImplementationOnce(async () => {
+      entered.resolve(); await release.promise;
+      return { accessToken: "fixture-delayed-token", accessTokenExpiresAt: new Date(clock.getTime() + 60_000).toISOString() };
+    });
+    const completing = service.complete({ state: pending.state, userId: "fixture-owner", claimId: "delayed-claim", authorizeCompany });
+    const outcome = completing.catch(error => error);
+    const stop = vi.spyOn(tailscaleNetworks, "disconnect").mockImplementation(async identity => { running.delete(identity); });
+    try {
+      await Promise.race([entered.promise, completing.then(() => { throw new Error("Claim completed before test pause"); })]);
+      if (target === "company") await deleteCompany(db, companyId);
+      else await vault.remove(row.secretId!);
+      release.resolve();
+      expect(await outcome).toMatchObject({ status: 422, details: { code: "tailscale_authorization_cancelled" } });
+      expect(running.size).toBe(0);
+      expect(await db.select().from(companySecrets).where(eq(companySecrets.companyId, companyId))).toHaveLength(0);
+    } finally { release.resolve(); await outcome; stop.mockRestore(); }
+  });
 
   it("does not adopt an ordinary member's rotation of a connector secret", async () => {
     const row = await enroll();

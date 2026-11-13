@@ -78,6 +78,26 @@ if (args[1] === 'up') {
     expect(await fs.readFile(path.join(dir, "calls"), "utf8")).not.toContain("--auth-key");
   });
 
+  it("retires a daemon without waiting for a shutdown state write blocked by secret deletion", async () => {
+    const entered = deferred(), release = deferred(), finished = deferred();
+    let persisting = false;
+    const persist = vi.fn(async () => {
+      if (persist.mock.calls.length === 2) { persisting = true; entered.resolve(); await release.promise; finished.resolve(); }
+    });
+    const identity = "retired-connection";
+    const socket = await manager.connect({ identity, credential: "tskey-auth-fixture", persist });
+    const remoteDir = path.dirname(socket);
+    const pid = Number(await fs.readFile(path.join(remoteDir, "pid"), "utf8"));
+    await fs.writeFile(path.join(remoteDir, "state"), JSON.stringify({ MachineKey: "fixture-updated-state" }));
+    const closing = manager.disconnect(identity);
+    try {
+      await Promise.race([entered.promise, closing.then(() => { throw new Error("Shutdown did not enter persistence"); })]);
+      await manager.disconnect(identity, { discardState: true });
+      expect(() => process.kill(pid, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }));
+      await expect(fs.stat(remoteDir)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally { release.resolve(); if (persisting) await finished.promise; await closing; }
+  });
+
   it("fails closed if state cannot be stored, cleans up, and allows retry", async () => {
     const persist = vi.fn().mockRejectedValueOnce(new Error("vault unavailable")).mockResolvedValue(undefined);
     const input = { identity: "retry", credential: "tskey-auth-fixture", persist };

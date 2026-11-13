@@ -75,8 +75,8 @@ export function tailscaleConnectionService(db: Db, dependencies: {
       const socket = await networks.connect({
         identity: `${companyId}:${secretId}`, credential, reload: read,
         persist: async value => {
-          const latest = await get(companyId, id);
-          if (latest.secretId !== secretId) return;
+          const [latest] = await db.select().from(tailscaleConnections).where(and(eq(tailscaleConnections.id, id), eq(tailscaleConnections.companyId, companyId)));
+          if (!latest || latest.secretId !== secretId || (latest.status !== "connected" && latest.status !== "connecting")) return;
           const pinned = trusted(latest);
           const saved = await secrets.rotate(secretId, { value });
           await db.update(tailscaleConnections).set({ credentialVersion: saved.latestVersion, credentialHash: hash(value), updatedAt: now() })
