@@ -366,11 +366,8 @@ pub struct AcpxProviderSession {
     quiet_turn_observed: bool,
     continues_in_process: bool,
     turn_start_replaced_provider: bool,
-    awaiting_provider_turn: bool,
-    background_tasks_live: bool,
-    accepts_provider_started_turns: bool,
+    provider_turn_offer: Option<String>,
     run_result_reported: Option<String>,
-    armed_turn_id: String,
     generation_has_run_turn: bool,
     restarted_after_turn_from: Option<u32>,
     prepared_generation: Option<String>,
@@ -436,11 +433,8 @@ impl AcpxProviderSession {
             quiet_turn_observed: false,
             continues_in_process: false,
             turn_start_replaced_provider: false,
-            awaiting_provider_turn: false,
-            background_tasks_live: false,
-            accepts_provider_started_turns: false,
+            provider_turn_offer: None,
             run_result_reported: None,
-            armed_turn_id: String::new(),
             generation_has_run_turn: false,
             restarted_after_turn_from: None,
             prepared_generation: None,
@@ -696,7 +690,7 @@ impl AcpxProviderSession {
             && self.background_work_is_quiet();
         self.continues_in_process = false;
         self.quiet_turn_observed = false;
-        self.disarm_provider_turn();
+        self.provider_turn_offer = None;
         let restart_now = self.generation_has_run_turn && !continue_in_process;
         if restart_now {
             if let Err(error) = self.restart_idle_provider(None) {
@@ -870,7 +864,16 @@ impl AcpxProviderSession {
         timeout: Duration,
     ) -> Result<Option<Vec<AcpxProviderStateEvent>>, LocalRunnerError> {
         Ok(self
-            .poll_output(timeout, false, None)?
+            .poll_output(timeout, false, None, false)?
+            .map(|(events, _)| events))
+    }
+
+    pub fn poll_awaited_event(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<Option<Vec<AcpxProviderStateEvent>>, LocalRunnerError> {
+        Ok(self
+            .poll_output(timeout, false, None, true)?
             .map(|(events, _)| events))
     }
 
@@ -879,6 +882,7 @@ impl AcpxProviderSession {
         timeout: Duration,
         disconnected: bool,
         last_goal_revision: Option<u64>,
+        awaited: bool,
     ) -> Result<Option<(Vec<AcpxProviderStateEvent>, Option<Value>)>, LocalRunnerError> {
         self.ensure_open()?;
         let event = match self.transport.poll_event(timeout) {
@@ -886,7 +890,7 @@ impl AcpxProviderSession {
             Err(error) => return Err(self.fail_closed(error)),
         };
         let Some(mut event) = event else {
-            if self.awaiting_provider_turn {
+            if awaited {
                 if let Some(error) = self.transport.exited_error("provider turn wait") {
                     return Err(self.fail_closed(error));
                 }
@@ -939,16 +943,8 @@ impl AcpxProviderSession {
                 payload.insert("origin".to_owned(), origin);
             }
         }
-        if event.event_type == GeneratedAcpxSidecarEventType::RuntimeDiagnostic
-            && event.payload.get("code").and_then(Value::as_str)
-                == Some(
-                    crate::generated_acpx_sidecar_contract::GENERATED_ACPX_PROVIDER_TURN_LOST_CODE,
-                )
-        {
-            self.clear_provider_turn_continuation();
-        }
         if event.event_type == GeneratedAcpxSidecarEventType::RuntimeTurnStarted {
-            return match self.admit_provider_turn(&event) {
+            return match self.admit_provider_turn(&event, awaited) {
                 Ok(started) => Ok(Some((vec![started], terminal_goal))),
                 Err(error) => Err(self.fail_closed(error)),
             };
@@ -1130,7 +1126,7 @@ impl AcpxProviderSession {
         self.tool_bridge = next_bridge;
         self.reserved_tool_bridge = next_reserved_bridge;
         if let Some(turn_id) = terminal_turn {
-            self.observe_terminal_background_tasks(&turn_id, terminal_completed, terminal_live);
+            self.offer_provider_turn(&turn_id, terminal_completed, terminal_live);
         }
         Ok(Some((reconciled_events, terminal_goal)))
     }
@@ -1458,7 +1454,7 @@ impl AcpxProviderSession {
         self.generation_has_run_turn = false;
         self.quiet_turn_observed = false;
         self.continues_in_process = false;
-        self.clear_provider_turn_continuation();
+        self.provider_turn_offer = None;
         Ok(())
     }
 
@@ -2367,11 +2363,8 @@ mod mode_tests {
             quiet_turn_observed: false,
             continues_in_process: false,
             turn_start_replaced_provider: false,
-            awaiting_provider_turn: false,
-            background_tasks_live: false,
-            accepts_provider_started_turns: false,
+            provider_turn_offer: None,
             run_result_reported: None,
-            armed_turn_id: String::new(),
             generation_has_run_turn: false,
             restarted_after_turn_from: None,
             prepared_generation: None,

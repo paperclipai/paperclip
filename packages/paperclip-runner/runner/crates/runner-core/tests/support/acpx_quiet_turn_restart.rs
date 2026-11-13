@@ -357,6 +357,15 @@ fn a_runner_restart_while_awaiting_resumes_like_today() {
         NativeProviderCommandExecutor::with_runner_config(&harness.fixture.0, &harness.config);
     harness.sequence = 90;
     harness.fixture.background("quiet");
+    let resumed = harness.drain();
+    assert_eq!(
+        resumed
+            .iter()
+            .filter(|event| event["type"] == "run.terminal")
+            .count(),
+        1,
+        "{resumed:?}"
+    );
     let (events, _) = run_turn(&mut harness, "second");
     assert!(events.iter().any(|event| event["type"] == "turn.completed"));
     assert_eq!(harness.fixture.process_starts().len(), 2);

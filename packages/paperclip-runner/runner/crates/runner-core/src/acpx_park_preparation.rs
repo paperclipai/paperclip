@@ -26,9 +26,12 @@ impl AcpxCommandExecutor {
 
     pub(super) fn restart_session_after_turn(&mut self) -> Result<(), DurableRunnerError> {
         self.ensure_persistence_healthy()?;
-        if self.session.as_ref().is_some_and(|session| {
-            session.continues_in_process() || session.awaiting_provider_turn()
-        }) || !self.generation_restartable(AcpxProviderSession::can_restart_after_turn)
+        if self.awaiting_provider_turn()
+            || self
+                .session
+                .as_ref()
+                .is_some_and(AcpxProviderSession::continues_in_process)
+            || !self.generation_restartable(AcpxProviderSession::can_restart_after_turn)
         {
             return Ok(());
         }

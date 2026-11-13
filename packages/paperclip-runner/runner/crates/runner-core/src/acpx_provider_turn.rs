@@ -16,18 +16,6 @@ pub(super) fn reported_live_background_tasks(payload: &Value) -> Option<u64> {
 }
 
 impl AcpxProviderSession {
-    pub fn awaiting_provider_turn(&self) -> bool {
-        self.awaiting_provider_turn
-    }
-
-    pub fn background_tasks_live(&self) -> bool {
-        self.background_tasks_live
-    }
-
-    pub fn accept_provider_started_turns(&mut self, accepted: bool) {
-        self.accepts_provider_started_turns = accepted;
-    }
-
     pub fn run_result_reported(&self) -> bool {
         self.run_result_reported.as_deref() == Some(self.state.run_id())
     }
@@ -36,36 +24,36 @@ impl AcpxProviderSession {
         self.run_result_reported = Some(self.state.run_id().to_owned());
     }
 
-    pub(super) fn clear_provider_turn_continuation(&mut self) {
-        self.awaiting_provider_turn = false;
-        self.background_tasks_live = false;
+    pub fn take_provider_turn_offer(&mut self) -> Option<String> {
+        self.provider_turn_offer.take()
     }
 
-    pub fn end_provider_turn_wait(&mut self) {
-        self.disarm_provider_turn();
+    pub fn arm_provider_turn(&mut self, turn_id: &str) -> bool {
+        self.transport
+            .request(
+                GeneratedAcpxSidecarCommand::SessionProviderTurn,
+                json!({"turnId": turn_id, "armed": true}),
+            )
+            .is_ok_and(|response| response.get("armed").and_then(Value::as_bool) == Some(true))
     }
 
-    pub(super) fn disarm_provider_turn(&mut self) {
-        if self.awaiting_provider_turn && !self.transport_terminated {
+    pub fn disarm_provider_turn(&mut self, turn_id: &str) {
+        if !self.transport_terminated {
             let _ = self.transport.request(
                 GeneratedAcpxSidecarCommand::SessionProviderTurn,
-                json!({"turnId": self.armed_turn_id.clone(), "armed": false}),
+                json!({"turnId": turn_id, "armed": false}),
             );
         }
-        self.clear_provider_turn_continuation();
     }
 
-    pub(super) fn observe_terminal_background_tasks(
+    pub(super) fn offer_provider_turn(
         &mut self,
         turn_id: &str,
         completed: bool,
         live: Option<u64>,
     ) {
-        self.background_tasks_live = live.is_some_and(|live| live > 0);
-        self.awaiting_provider_turn = false;
         let eligible = completed
-            && self.background_tasks_live
-            && self.accepts_provider_started_turns
+            && live.is_some_and(|live| live > 0)
             && !self.run_result_reported()
             && self.config.agent == "claude"
             && self.config.candidate_admission.is_none()
@@ -76,25 +64,15 @@ impl AcpxProviderSession {
             && !self.state.settled_turn_identity_capacity_reached()
             && !self.tool_bridge.replay_history_blocks_admission()
             && !self.reserved_tool_bridge.replay_history_blocks_admission();
-        if !eligible {
-            return;
-        }
-        let armed = self.transport.request(
-            GeneratedAcpxSidecarCommand::SessionProviderTurn,
-            json!({"turnId": turn_id, "armed": true}),
-        );
-        self.awaiting_provider_turn = armed
-            .is_ok_and(|response| response.get("armed").and_then(Value::as_bool) == Some(true));
-        if self.awaiting_provider_turn {
-            self.armed_turn_id = turn_id.to_owned();
-        }
+        self.provider_turn_offer = eligible.then(|| turn_id.to_owned());
     }
 
     pub(super) fn admit_provider_turn(
         &mut self,
         event: &AcpxSidecarEvent,
+        awaited: bool,
     ) -> Result<AcpxProviderStateEvent, LocalRunnerError> {
-        if !self.awaiting_provider_turn
+        if !awaited
             || self.config.agent != "claude"
             || self.state.active_turn_id().is_some()
             || self.state.has_pending_tools()
@@ -131,7 +109,7 @@ impl AcpxProviderSession {
         self.state = next_state;
         self.tool_bridge = next_tool_bridge;
         self.reserved_tool_bridge = next_reserved_tool_bridge;
-        self.awaiting_provider_turn = false;
+        self.provider_turn_offer = None;
         self.completed_turn_observed = false;
         self.quiet_turn_observed = false;
         self.continues_in_process = false;
