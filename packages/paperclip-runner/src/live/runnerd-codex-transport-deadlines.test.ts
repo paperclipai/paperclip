@@ -106,6 +106,96 @@ it("fails a pending turn start at once with the runner's own terminal failure", 
   }
 }, 60_000);
 
+async function withUnprovableLiveness<T>(run: (unprove: () => void) => Promise<T>): Promise<T> {
+  let unproven = false;
+  const OriginalCore = durableControlPlane.DurablePrpControlPlane;
+  const coreSpy = vi.spyOn(durableControlPlane, "DurablePrpControlPlane")
+    .mockImplementation(function(options: ConstructorParameters<typeof OriginalCore>[0]) {
+      const core = new OriginalCore(options);
+      const queueCommand = core.queueCommand.bind(core);
+      core.queueCommand = ((type: string, ...rest: unknown[]) => {
+        if (unproven && type === "session.snapshot") throw new Error("runner snapshot unavailable");
+        return (queueCommand as (...args: unknown[]) => unknown)(type, ...rest);
+      }) as typeof core.queueCommand;
+      return core;
+    } as unknown as typeof OriginalCore);
+  try {
+    return await run(() => { unproven = true; });
+  } finally {
+    coreSpy.mockRestore();
+  }
+}
+
+async function startSlowCodexTurn(input: {
+  label: string;
+  delayMs: number;
+  progressMs?: number;
+  turnStartTimeoutMs?: number;
+  turnStartProgressCeilingMs?: number;
+}) {
+  const stateDirectory = await mkdtemp(join(tmpdir(), `runnerd-${input.label}-`));
+  const callsPath = join(stateDirectory, "calls.log");
+  return withUnprovableLiveness(async (unprove) => {
+    const bundle = createCapabilityRunnerdCodexTransport({
+      runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex,
+      codexArgs: fakeCodexArgs(stateDirectory, "--turn-started-delay-ms", String(input.delayMs),
+        ...(input.progressMs === undefined ? [] : ["--turn-started-progress-ms", String(input.progressMs)]),
+        "--call-log", callsPath),
+      stateDirectory,
+      ...(input.turnStartTimeoutMs === undefined ? {} : { turnStartTimeoutMs: input.turnStartTimeoutMs }),
+      ...(input.turnStartProgressCeilingMs === undefined ? {} : { turnStartProgressCeilingMs: input.turnStartProgressCeilingMs }),
+    });
+    try {
+      await bundle.transport.request("thread/start", { cwd: tmpdir(), dynamicTools: [] });
+      unprove();
+      const started = Date.now();
+      const outcome = await bundle.transport.request("turn/start", { input: [{ type: "text", text: "Start slowly." }] })
+        .then(result => ({ result, error: null }), (error: unknown) => ({ result: null, error }));
+      const elapsedMs = Date.now() - started;
+      const calls = (await readFile(callsPath, "utf8")).trim().split(/\r?\n/);
+      return { ...outcome, elapsedMs, turnStarts: calls.filter(call => call === "turn/start").length, diagnostics: bundle.evidence().diagnostics };
+    } finally {
+      await bundle.transport.close().catch(() => undefined);
+      await rm(stateDirectory, { recursive: true, force: true });
+    }
+  });
+}
+
+it("keeps waiting for an accepted Codex turn while its startup keeps reporting progress", async () => {
+  const outcome = await startSlowCodexTurn({ label: "progressing-turn-start", delayMs: 12_000, progressMs: 1_500, turnStartTimeoutMs: 4_000 });
+  expect(outcome.error).toBeNull();
+  expect(outcome.result).toMatchObject({ turn: { id: "provider-turn-1" } });
+  expect(outcome.elapsedMs).toBeGreaterThan(10_000);
+  expect(outcome.turnStarts).toBe(1);
+  expect(outcome.diagnostics.join("\n")).not.toContain("adopting the durably accepted");
+}, 60_000);
+
+it("fails an accepted Codex start at the total ceiling while progress never reaches turn/started", async () => {
+  const outcome = await startSlowCodexTurn({
+    label: "endless-progress-turn-start", delayMs: 30_000, progressMs: 1_000,
+    turnStartTimeoutMs: 3_000, turnStartProgressCeilingMs: 8_000,
+  });
+  expect(String(outcome.error)).toContain("runnerd did not report the provider turn identity");
+  expect(outcome.elapsedMs).toBeGreaterThan(7_000);
+  expect(outcome.elapsedMs).toBeLessThan(8_000 + 2_000);
+  expect(outcome.turnStarts).toBe(1);
+}, 60_000);
+
+it("still fails a silent accepted Codex start at its bound when liveness cannot be proven", async () => {
+  const outcome = await startSlowCodexTurn({ label: "silent-turn-start", delayMs: 20_000, turnStartTimeoutMs: 3_000 });
+  expect(String(outcome.error)).toContain("runnerd did not report the provider turn identity");
+  expect(outcome.elapsedMs).toBeLessThan(3_000 + 1_500);
+  expect(outcome.turnStarts).toBe(1);
+}, 60_000);
+
+it("gives a silent Codex cold start the measured default start window", async () => {
+  const outcome = await startSlowCodexTurn({ label: "cold-turn-start", delayMs: 40_000 });
+  expect(outcome.error).toBeNull();
+  expect(outcome.result).toMatchObject({ turn: { id: "provider-turn-1" } });
+  expect(outcome.elapsedMs).toBeGreaterThan(38_000);
+  expect(outcome.turnStarts).toBe(1);
+}, 90_000);
+
 it("keeps a quiet active Codex turn in the same process across connection lease expiry", async () => {
   const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-renew-active-"));
   const callsPath = join(stateDirectory, "calls.log");

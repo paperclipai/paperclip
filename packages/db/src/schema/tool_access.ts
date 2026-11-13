@@ -19,7 +19,9 @@ import type {
   ConnectionAgentInstructions,
   ConnectionTokenIssuanceOutcome,
   ConnectionTokenIssuancePath,
+  McpAppModelContext,
   McpAppToolUi,
+  McpIcon,
   McpConnectionCredentialRef,
   ToolActionRequestStatus,
   ToolApplicationStatus,
@@ -385,6 +387,8 @@ export const toolCatalogEntries = pgTable(
     annotations: jsonb("annotations").$type<Record<string, unknown>>().notNull().default({}),
     /** Normalized MCP Apps `_meta.ui` declaration (`ui://` view), when the tool has one. */
     uiMeta: jsonb("ui_meta").$type<McpAppToolUi>(),
+    /** Sanitized MCP `icons` (SEP-973) the provider declared for the tool. Not part of the version hash. */
+    icons: jsonb("icons").$type<McpIcon[]>(),
     riskLevel: text("risk_level").$type<ToolRiskLevel>().notNull().default("read"),
     isReadOnly: boolean("is_read_only").notNull().default(true),
     isWrite: boolean("is_write").notNull().default(false),
@@ -835,6 +839,9 @@ export const toolMcpAppViews = pgTable(
     resourceUri: text("resource_uri").notNull(),
     toolInput: jsonb("tool_input").$type<Record<string, unknown>>().notNull().default({}),
     toolResult: jsonb("tool_result").$type<Record<string, unknown>>().notNull(),
+    /** The view's latest `ui/update-model-context`, bounded. Delivered to the task's next run as untrusted app data. */
+    modelContext: jsonb("model_context").$type<McpAppModelContext>(),
+    modelContextUpdatedAt: timestamp("model_context_updated_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [

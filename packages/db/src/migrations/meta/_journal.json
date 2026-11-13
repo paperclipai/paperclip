@@ -3330,15 +3330,22 @@
     {
       "idx": 477,
       "version": "7",
-      "when": 1794554872706,
-      "tag": "0477_skill_source_security_override",
+      "when": 1794554569782,
+      "tag": "0477_friendly_toro",
       "breakpoints": true
     },
     {
       "idx": 478,
       "version": "7",
-      "when": 1794554901216,
-      "tag": "0478_skill_version_security_approval",
+      "when": 1794577787102,
+      "tag": "0478_skill_source_security_override",
+      "breakpoints": true
+    },
+    {
+      "idx": 479,
+      "version": "7",
+      "when": 1794577821841,
+      "tag": "0479_skill_version_security_approval",
       "breakpoints": true
     }
   ]

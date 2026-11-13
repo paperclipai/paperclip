@@ -1019,7 +1019,7 @@ function riskFromCatalogEntry(
   return "read";
 }
 
-function slugSegment(
+export function slugSegment(
   value: string | null | undefined,
   fallback: string,
 ): string {
@@ -1032,7 +1032,7 @@ function slugSegment(
   return slug || fallback;
 }
 
-function shortStableId(id: string): string {
+export function shortStableId(id: string): string {
   return id.replace(/-/g, "").slice(0, 8);
 }
 
