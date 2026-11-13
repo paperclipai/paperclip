@@ -939,10 +939,9 @@ async function waitForTool(call: RunnerToolCall): Promise<unknown> {
     });
   }
   const toolCall = { callId, operationId, input: record(call.arguments) };
-  let encodedToolCall: string | null;
-  try { encodedToolCall = stringifyAcpxSidecarFrame(toolCall); } catch { encodedToolCall = null; }
-  if (encodedToolCall !== JSON.stringify(toolCall)) {
-    throw new Error("ACPX tool arguments cannot be forwarded without changing them");
+  let encodedToolCall: string;
+  try { encodedToolCall = stringifyAcpxSidecarFrame(toolCall); } catch {
+    throw new Error("ACPX tool arguments cannot be encoded for the Runner");
   }
   if (Buffer.byteLength(encodedToolCall) > MAX_EVENT_PAYLOAD_BYTES) {
     throw new Error(`ACPX tool arguments exceed the ${MAX_EVENT_PAYLOAD_BYTES / 1024} KiB tool-call limit`);

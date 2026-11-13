@@ -1132,6 +1132,8 @@ describe("qualified ACPX runtime sidecar", () => {
               .then(() => appendFileSync(join(process.env.PAPERCLIP_TEST_OUTPUT_ROOT,"outcomes"), callId+":resolved\\n"),
                 error => appendFileSync(join(process.env.PAPERCLIP_TEST_OUTPUT_ROOT,"outcomes"), callId+":"+error.message+"\\n"));
           }
+          this.options.semanticTools.handler({callId:"lone-surrogate", tool:"app_deploy_create_0123456789ab", arguments:{note:"half \\ud83d emoji"}, signal:new AbortController().signal})
+            .then(() => undefined, error => appendFileSync(join(process.env.PAPERCLIP_TEST_OUTPUT_ROOT,"outcomes"), "lone-surrogate:"+error.message+"\\n"));
           return {requestId, promptStarted:Promise.resolve(), result:this.result, events:(async function*(){})()};
         }
       }`);
@@ -1160,6 +1162,8 @@ describe("qualified ACPX runtime sidecar", () => {
         input:{files:[{path:"site/index.html",content:expected}]}});
       await vi.waitFor(() => expect(readFileSync(join(root,"outcomes"),"utf8"))
         .toContain("oversized-file:ACPX tool arguments exceed the 256 KiB tool-call limit"));
+      const replaced = await sidecar.next(frame=>frame.eventType === "runtime.tool_called");
+      expect(replaced.payload).toEqual({callId:"lone-surrogate",operationId:"app_deploy_create_0123456789ab",input:{note:"half \uFFFD emoji"}});
       expect(sidecar.pending(frame=>frame.eventType === "runtime.tool_called")).toBe(0);
       await send(5,"tool.resolve",{turnId:"large-arguments-turn",callId:"inline-file",result:{deployed:true}});
       await vi.waitFor(() => expect(readFileSync(join(root,"outcomes"),"utf8")).toContain("inline-file:resolved"));
