@@ -101,7 +101,7 @@ import {
   workspaceOperations,
 } from "@paperclipai/db";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
-import { STRANDED_KIND, strandedRunCauseIsTemporary, type StrandedHoldRun } from "./stranded-hold-continuation.js";
+import { STRANDED_CONTINUATION_MAX_AGE_MS, STRANDED_KIND, strandedRunCauseIsTemporary, type StrandedHoldRun } from "./stranded-hold-continuation.js";
 import { runningProcesses } from "../../adapters/index.js";
 import {
   isNativeRunnerOwnershipHeld,
@@ -559,6 +559,18 @@ function didAutomaticRecoveryFail(
       latestRun.status as (typeof UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
     )
   );
+}
+
+function assignedWorkSweepOwnsFailedRun(
+  issue: Pick<typeof issues.$inferSelect, "status" | "assigneeAgentId" | "assigneeUserId">,
+  latestRun: LatestIssueRun,
+  agentId: string,
+) {
+  return Boolean(latestRun && (issue.status === "todo" || issue.status === "in_progress") && !issue.assigneeUserId
+    && issue.assigneeAgentId === agentId && latestRun.agentId === agentId
+    && Date.now() - latestRun.createdAt.getTime() <= STRANDED_CONTINUATION_MAX_AGE_MS
+    && strandedRunCauseIsTemporary({ status: latestRun.status, errorCode: latestRun.errorCode, error: latestRun.error,
+      executionRecovery: (parseObject(latestRun.resultJson).executionRecovery ?? null) as StrandedHoldRun["executionRecovery"] }));
 }
 
 function isTerminalIssueRun(latestRun: LatestIssueRun) {
@@ -5630,6 +5642,10 @@ export function recoveryService(
         }
 
         if (didAutomaticRecoveryFail(latestRun, "assignment_recovery")) {
+          if (assignedWorkSweepOwnsFailedRun(issue, latestRun, agentId)) {
+            result.skipped += 1;
+            continue;
+          }
           const updated = await escalateStrandedAssignedIssue({
             issue,
             previousStatus: "todo",
@@ -5665,6 +5681,7 @@ export function recoveryService(
           result.issueIds.push(issue.id);
         } else if (
           dispatchOutcome.retryExhausted &&
+          !assignedWorkSweepOwnsFailedRun(issue, latestRun, agentId) &&
           !(await hasActiveExecutionPath(issue.companyId, issue.id, null))
         ) {
           // Same exhaustion as the in_progress lane: the lost dispatch's
@@ -5875,6 +5892,11 @@ export function recoveryService(
         // escalates it as before.
         preparationRetry = latestRun!.agentId === agentId
           && await failedRunOwnsPreparationRetry(issue.companyId, latestRun!.id);
+        const sweepOwnsFailure = !preparationRetry && assignedWorkSweepOwnsFailedRun(issue, latestRun, agentId);
+        if (classification.kind === "non_retryable" && sweepOwnsFailure) {
+          result.skipped += 1;
+          continue;
+        }
         if (classification.kind === "non_retryable" && !preparationRetry) {
           const updated = await escalateStrandedAssignedIssue({
             issue,
@@ -5899,6 +5921,10 @@ export function recoveryService(
               agentId,
               classification.errorCode,
             );
+          if (consecutive >= classification.maxAttempts && sweepOwnsFailure) {
+            result.skipped += 1;
+            continue;
+          }
           if (consecutive >= classification.maxAttempts) {
             const updated = await escalateStrandedAssignedIssue({
               issue,
@@ -5949,6 +5975,7 @@ export function recoveryService(
         result.issueIds.push(issue.id);
       } else if (
         (recoveryOutcome.retryExhausted || recoveryOutcome.continuationRefused || preparationRetry) &&
+        !assignedWorkSweepOwnsFailedRun(issue, latestRun, agentId) &&
         !(await hasActiveExecutionPath(issue.companyId, issue.id, null))
       ) {
         // The failed run's bounded transient retries are all spent, so no

@@ -820,6 +820,16 @@ export const BACKLOG_CONTINUATION_SOURCE_CODES = [
   "execution_finalization_deadline_exceeded", "local_runtime_api_listener_unavailable",
   "runner_remote_process_identity_unavailable", "continuation_user_authorization_missing",
 ] as const;
+export const AUTOMATIC_CONTINUATION_WAKE_REASONS = [
+  "issue_continuation_needed", "issue_assignment_recovery", "issue_recovery_action_restored", "transient_failure_retry",
+] as const;
+export function isAutomaticContinuationRun(run: Pick<typeof heartbeatRuns.$inferSelect, "retryOfRunId" | "scheduledRetryReason"
+  | "contextSnapshot">): boolean {
+  const context = object(run.contextSnapshot);
+  return Boolean(run.retryOfRunId || run.scheduledRetryReason || context.previousRunId || context.retryReason
+    || context.freshContinuationIsolation
+    || (AUTOMATIC_CONTINUATION_WAKE_REASONS as readonly unknown[]).includes(context.wakeReason));
+}
 /** At most this many backlog continuations per server per rolling minute, and per pass. */
 export const BACKLOG_CONTINUATIONS_PER_MINUTE = 10;
 const BACKLOG_CONTINUATIONS_PER_PASS = 5;
@@ -845,7 +855,12 @@ function interruptionEligibility(input: { now: Date; companyId: SQL; issueId: SQ
       and retry.run_id is null and retry.payload->>'issueId' = ${input.issueId}::text and retry.requested_at > source.finished_at)
     or exists (select 1 from ${heartbeatRuns} held where ${refusedLater}
       and held.context_snapshot->>'wakeReason' = 'task_retry' and held.finished_at > ${since}))`);
-  const recent = source(sql`source.error_code in (${sql.join(BACKLOG_CONTINUATION_SOURCE_CODES.map(code => sql`${code}`), sql`, `)})
+  const automaticRun = sql`(source.retry_of_run_id is not null or source.scheduled_retry_reason is not null
+    or source.context_snapshot ? 'previousRunId' or source.context_snapshot ? 'retryReason'
+    or source.context_snapshot ? 'freshContinuationIsolation'
+    or source.context_snapshot->>'wakeReason' in (${sql.join(AUTOMATIC_CONTINUATION_WAKE_REASONS.map(reason => sql`${reason}`), sql`, `)}))`;
+  const recent = source(sql`(source.error_code in (${sql.join(BACKLOG_CONTINUATION_SOURCE_CODES.map(code => sql`${code}`), sql`, `)})
+      or (source.error_code not in (${sql.join(PERSON_OWNED_FAILURE_CODES.map(code => sql`${code}`), sql`, `)}) and ${automaticRun}))
     and greatest(source.finished_at, (select max(held.finished_at) from ${heartbeatRuns} held where ${refusedLater})) > ${since}`);
   return { recent, personAsked };
 }
