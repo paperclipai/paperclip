@@ -146,20 +146,20 @@ export function AgentConversationSidebar({ agents, existingChatAgentIds, availab
           <div className="size-8 shrink-0 rounded-lg bg-muted" />
           <div className="flex flex-1 flex-col gap-2"><div className="h-3 w-2/3 rounded-sm bg-muted" /><div className="h-2 w-full rounded-sm bg-muted" /></div>
         </div>)}
-      </div> : visible.length ? <nav aria-label="Agent conversations" className={cn("flex flex-col", grouped ? "gap-3" : "gap-1")}>
+      </div> : visible.length ? <nav aria-label="Agent conversations" className="flex flex-col gap-1">
         {grouped ? stacks.map(stack => {
           const open = !collapsedStacks.has(stack.id);
           const unread = stack.agents.reduce((sum, agent) => sum + Math.max(unreadMessageCounts?.get(agent.id) ?? 0, unreadIds.has(agent.id) ? 1 : 0), 0);
           const label = stack.id === UNASSIGNED_DEPARTMENT_STACK ? tx(stack.name) : stack.name;
-          return <div key={stack.id} className="flex flex-col gap-0.5">
+          return <div key={stack.id} className="flex flex-col not-first:mt-1">
             <button type="button" aria-expanded={open} onClick={() => toggleStack(stack.id)}
-              className="flex min-w-0 items-center gap-1.5 rounded-md px-2 py-1.5 text-left hover:bg-accent/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
-              <ChevronRight aria-hidden="true" className={cn("size-3.5 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")} />
-              <span className="min-w-0 flex-1 truncate text-xs font-medium">{label}</span>
+              className="group/stack flex h-7 min-w-0 items-center gap-1 rounded-md px-1.5 text-left text-muted-foreground hover:bg-accent/40 hover:text-foreground focus-visible:bg-accent/40 focus-visible:text-foreground focus-visible:outline-none">
+              <ChevronRight aria-hidden="true" className={cn("size-3 shrink-0 opacity-60 transition-transform duration-150 group-hover/stack:opacity-100", open && "rotate-90")} />
+              <span className="min-w-0 truncate text-xs font-medium">{label}</span>
+              <span className="shrink-0 text-[11px] tabular-nums opacity-60">{stack.agents.length}</span>
               {unread > 0 && <span role="img" aria-label={`${unread} unread`} className="size-1.5 shrink-0 rounded-full bg-primary" />}
-              <span className="text-[11px] tabular-nums text-muted-foreground">{stack.agents.length}</span>
             </button>
-            {open && <div className="ml-3.5 flex flex-col gap-0.5 border-l border-border pl-1">
+            {open && <div className="flex flex-col gap-0.5">
               {stack.agents.map(agent => {
                 const { hasUnread, node } = contactContent(agent, false);
                 return <div key={`${stack.id}:${agent.id}`} className={contactRowClassName}
