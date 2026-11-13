@@ -7,6 +7,7 @@ import {
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { deliverReconciledExecutions, settleUnrecoverableExecutions } from "./execution-recovery-resolution.js";
+import { PENDING_CONTINUATION_BOUND_MS } from "./recovery-continuation-bounds.js";
 import { getExecutionBlocker } from "./execution-blocker.js";
 import {
   FRESH_CONTINUATIONS_PER_HOUR, FRESH_CONTINUATION_SCHEMA, PERSON_OWNED_FAILURE_CODES, continueHeldExecutions, ensureFreshContinuation,
@@ -312,6 +313,30 @@ suite("fresh-continuation fallback", () => {
     expect(await sweepWake(f.issueId)).toBeNull();
     await deliver();
     expect(await successors(f.runId)).toHaveLength(1);
+    expect((await pendingRecord(f.issueId))!.evidence.continuationDelivery).toBe("delivered");
+  }, 60_000);
+
+  it("lets a repair wake become the one successor once a pending continuation is past the bound, and coalesces it within the bound", async () => {
+    const f = await unfinishedRun({ runtime: "native", errorCode: "native_continuation_requires_reconciliation",
+      error: "runner_remote_process_identity_unavailable", hold: "settled_blocked" });
+    await occupySlot();
+    expect(await sweepWake(f.issueId)).toBeNull();
+    const record = (await pendingRecord(f.issueId))!;
+    expect(record.evidence.continuationDelivery).toBe("pending");
+    const taskRuns = async () => db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+      sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${f.issueId}`, sql`${heartbeatRuns.id} <> ${f.runId}`));
+    // Within the bound, the repair wake is coalesced into the pending record.
+    expect(await sweepWake(f.issueId)).toBeNull();
+    expect(await taskRuns()).toHaveLength(0);
+    // Delivery is stuck past the bound: the next repair wake becomes the continuation.
+    const recordedAt = new Date(Date.now() - PENDING_CONTINUATION_BOUND_MS - 60_000).toISOString();
+    await db.update(issueRecoveryActions).set({ resolvedAt: new Date(recordedAt), evidence: sql`jsonb_set(${issueRecoveryActions.evidence},
+      '{freshContinuation,recordedAt}', to_jsonb(${recordedAt}::text))` }).where(eq(issueRecoveryActions.id, record.id));
+    expect(await sweepWake(f.issueId)).not.toBeNull();
+    expect(await taskRuns()).toHaveLength(1);
+    // Delivery then settles the record as delivered by that run; still exactly one run.
+    await deliver();
+    expect(await taskRuns()).toHaveLength(1);
     expect((await pendingRecord(f.issueId))!.evidence.continuationDelivery).toBe("delivered");
   }, 60_000);
 
@@ -824,6 +849,24 @@ suite("fresh-continuation fallback", () => {
     expect(note).toContain("FOLLOWUP-0d981334");
     expect(note).toContain('posted comments "DONE-0d981334"');
     expect(note.indexOf("had already read")).toBeLessThan(note.indexOf("DONE-0d981334"));
+  }, 60_000);
+
+  it("does not list a follow-up edited after the cut-off run read it as already read; it is marked as changed", async () => {
+    const f = await unfinishedRun({ runtime: "native", errorCode: "native_restart_recovery_blocked" });
+    const [followUp] = await db.insert(issueComments).values({ companyId, issueId: f.issueId, authorType: "user",
+      authorUserId: "board-user", body: "Additional requirement: include the line FOLLOWUP-OLD" } as typeof issueComments.$inferInsert).returning();
+    await db.insert(heartbeatRunEvents).values({ companyId, runId: f.runId, agentId, seq: 1, eventType: "task_history.read",
+      stream: "system", level: "info", payload: { comments: { [followUp!.id]: followUp!.updatedAt.toISOString() } },
+    } as typeof heartbeatRunEvents.$inferInsert);
+    // The person edits the follow-up after the run read it.
+    await db.update(issueComments).set({ body: "Additional requirement: include the line FOLLOWUP-NEW",
+      updatedAt: new Date(followUp!.updatedAt.getTime() + 60_000) }).where(eq(issueComments.id, followUp!.id));
+    expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" })).toMatchObject({ kind: "continued" });
+    const [hold] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.actionId!));
+    const note = (hold!.evidence.executionReconciliation as Record<string, string>).outcomeEvidence;
+    expect(note).not.toContain("had already read");
+    expect(note).toContain("edited these messages after that run read them");
+    expect(note).toContain("FOLLOWUP-NEW");
   }, 60_000);
 
   it.each([

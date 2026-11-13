@@ -29,6 +29,7 @@ import { issueTreeControlService } from "../issue-tree-control.js";
 import { taskInterruptionPresentations } from "../task-interruption-presentation.js";
 import { CHAT_CONTROL_RECOVERY_STOP_CODE, CHAT_CONTROL_RECOVERY_UNRESOLVED_CODE } from "../chat-control-recovery-stop.js";
 import { onboardingFirstTaskAwaitingUserSql } from "./onboarding-first-task-wait.js";
+import { PENDING_CONTINUATION_BOUND_MS } from "../recovery-continuation-bounds.js";
 import {
   continuationActivityMessage,
   continuationAllowance,
@@ -59,10 +60,9 @@ const OPEN_STATUSES = ["todo", "in_progress", "blocked"] as const;
 const PENDING_WAKE_STATUSES = ["queued", "deferred_issue_execution", "claimed"];
 /** How long a deferred wake (no run holding its task) or a claimed wake with no run counts as pending. */
 const DEFERRED_WAKE_PENDING_BOUND_MS = 5 * 60_000;
-/** How long a held continuation (paced delivery) counts as pending: the pacing's
- * admission bound (RECOVERY_CONTINUATION_MAX_HOLD_MS, 5 min) plus 2 minutes of
- * 15-second delivery passes. */
-export const PENDING_CONTINUATION_BOUND_MS = 7 * 60_000;
+/** How long a held continuation (paced delivery) counts as pending; shared with
+ * wake admission and delivery. */
+export { PENDING_CONTINUATION_BOUND_MS };
 const NON_TERMINAL_RUN_STATUSES = ["queued", "running", "scheduled_retry"];
 const NATIVE_PENDING_RECOVERY_STATES = ["awaiting_evidence", "awaiting_runner_reattach", "resuming_session", "bootstrap_incomplete"];
 const PROVIDER_LIMIT_CAUSES = ["provider_quota", "native_provider_usage_limit"];

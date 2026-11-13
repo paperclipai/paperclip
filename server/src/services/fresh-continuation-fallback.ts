@@ -24,6 +24,7 @@ import { notifyRoutineExecutionStatus } from "./routine-execution-status-notific
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { readRunCancellation } from "./run-cancellation.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
+import { PENDING_CONTINUATION_BOUND_MS } from "./recovery-continuation-bounds.js";
 
 /**
  * Fresh-continuation fallback: exact resumption of an unfinished run is an
@@ -196,13 +197,15 @@ async function unverifiedActions(tx: Db, run: typeof heartbeatRuns.$inferSelect)
   return [...names].slice(0, 20);
 }
 
-export type FreshContinuationCreatedObjects = { subtasks: string[]; comments: string[]; documents: string[]; readFollowUps?: string[] };
+export type FreshContinuationCreatedObjects = { subtasks: string[]; comments: string[]; documents: string[]; readFollowUps?: string[];
+  /** Messages the run read that a person edited afterwards: the run never saw the current text. */
+  editedFollowUps?: string[] };
 
-/** Comment ids the run read through get_task_history, with the read time (the
- * queued-comment owner's `task_history.read` reader). */
+/** Comment ids the run read through get_task_history, with the read time and
+ * the comment revision it read (the queued-comment owner's `task_history.read` reader). */
 async function taskHistoryReadsOfRun(tx: Db, run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId">) {
   const reads = await taskHistoryReadsForRun(tx, { companyId: run.companyId, runId: run.id });
-  return new Map(reads.map(read => [read.commentId, read.readAt]));
+  return new Map(reads.map(read => [read.commentId, read]));
 }
 
 const quoted = (value: string, max = 80) => `"${value.replace(/\s+/g, " ").trim().slice(0, max)}${value.length > max ? "..." : ""}"`;
@@ -222,11 +225,18 @@ async function createdObjects(tx: Db, run: typeof heartbeatRuns.$inferSelect): P
       .where(and(eq(documentRevisions.companyId, run.companyId), eq(documentRevisions.createdByRunId, run.id))).limit(10),
   ]);
   const reads = await taskHistoryReadsOfRun(tx, run);
-  const readComments = reads.size ? await tx.select({ id: issueComments.id, body: issueComments.body }).from(issueComments).where(and(
-    eq(issueComments.companyId, run.companyId), inArray(issueComments.id, [...reads.keys()]),
-    eq(issueComments.authorType, "user"), isNull(issueComments.deletedAt))).limit(10) : [];
+  const readComments = reads.size ? await tx.select({ id: issueComments.id, body: issueComments.body, updatedAt: issueComments.updatedAt })
+    .from(issueComments).where(and(
+      eq(issueComments.companyId, run.companyId), inArray(issueComments.id, [...reads.keys()]),
+      eq(issueComments.authorType, "user"), isNull(issueComments.deletedAt))).limit(10) : [];
+  // Only the revision the run read counts as read: a message edited since then
+  // is quoted as changed, so the agent treats its current text as new.
+  const unchanged = (comment: (typeof readComments)[number]) => comment.updatedAt.getTime() <= reads.get(comment.id)!.revision.getTime();
+  const edited = readComments.filter(comment => !unchanged(comment));
   return {
-    readFollowUps: readComments.map(comment => `${quoted(comment.body)} (read at ${reads.get(comment.id)!.toISOString().slice(11, 16)} UTC)`),
+    readFollowUps: readComments.filter(unchanged)
+      .map(comment => `${quoted(comment.body)} (read at ${reads.get(comment.id)!.readAt.toISOString().slice(11, 16)} UTC)`),
+    ...(edited.length ? { editedFollowUps: edited.map(comment => quoted(comment.body)) } : {}),
     subtasks: children.map(child => `${child.identifier ?? "subtask"} ${quoted(child.title)}`),
     comments: comments.map(comment => quoted(comment.body)),
     documents: revisions.map(revision => quoted(revision.title ?? "untitled document")),
@@ -252,14 +262,17 @@ export function freshContinuationNote(input: { runId: string; unverified: string
   const read = created?.readFollowUps?.length
     ? ` That run had already read these messages from a person: ${created.readFollowUps.join(", ")}. Answer each once; what it did after reading is below.`
     : "";
-  const existing = created && (created.subtasks.length || created.comments.length || created.documents.length)
+  const edited = created?.editedFollowUps?.length
+    ? ` A person edited these messages after that run read them, so it never saw their current text; treat them as new: ${created.editedFollowUps.join(", ")}.`
+    : "";
+  const existing = created &&(created.subtasks.length || created.comments.length || created.documents.length)
     ? ` That run already did these, and they exist now: ${[
       created.subtasks.length ? `created subtasks ${created.subtasks.join(", ")}` : null,
       created.comments.length ? `posted comments ${created.comments.join(", ")}` : null,
       created.documents.length ? `saved documents ${created.documents.join(", ")}` : null,
     ].filter(Boolean).join("; ")}. Do not create or post them again; read them and continue from where they leave off.`
     : "";
-  return `The previous attempt (run ${input.runId}) was cut off before it finished. ${files}${read}${existing} ${actions} ${guidance}`;
+  return `The previous attempt (run ${input.runId}) was cut off before it finished. ${files}${read}${edited}${existing} ${actions} ${guidance}`;
 }
 
 const USER_TEXT = "The previous run was cut off. Paperclip continues the task in a fresh run from its last saved work.";
@@ -874,12 +887,19 @@ export async function settleCoalescedFreshContinuationHolds(db: Db, input: { com
       sql`${issueRecoveryActions.evidence}->>'continuationDelivery' = 'coalesced'`));
 }
 
-/** A fresh continuation of this task is recorded and its run does not exist yet. */
-export async function hasPendingFreshContinuation(db: Db, companyId: string, issueId: string) {
+/** A fresh continuation of this task is recorded, its run does not exist yet,
+ * and delivery still owns it. Past PENDING_CONTINUATION_BOUND_MS delivery has
+ * had its chance (it re-drives a record held past its hold bound first), so the
+ * record no longer absorbs a repair wake: that wake becomes the task's one
+ * successor, and delivery then settles the record as delivered by it. */
+export async function hasPendingFreshContinuation(db: Db, companyId: string, issueId: string, now = new Date()) {
   const [row] = await db.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(and(
     eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
     eq(issueRecoveryActions.status, "resolved"),
     sql`${issueRecoveryActions.evidence}->>'continuationDelivery' = 'pending'`,
+    sql`coalesce(${issueRecoveryActions.evidence}#>>'{freshContinuation,recordedAt}', ${issueRecoveryActions.resolvedAt}::text,
+      ${issueRecoveryActions.updatedAt}::text)::timestamptz
+      > ${new Date(now.getTime() - PENDING_CONTINUATION_BOUND_MS).toISOString()}::timestamptz`,
     sql`${issueRecoveryActions.evidence}#>>'{freshContinuation,schema}' = ${FRESH_CONTINUATION_SCHEMA}`)).limit(1);
   return Boolean(row);
 }

@@ -299,4 +299,19 @@ suite("recovery wake herd", () => {
     const stale = (await sweep.loadFacts(companyId, [issueRow!])).get(held.issue.id)!;
     expect(stale.pendingWakes).toBe(facts.pendingWakes - 1);
   }, 60_000);
+
+  it("re-drives a continuation held past the hold bound even while another recovery run of its agent stays queued", async () => {
+    const agentId = await seedCompany(1);
+    await queuedRecoveryRun(agentId, 1);
+    const held = await pendingContinuation(agentId, 30);
+    const wake = fakeWake();
+    await deliverReconciledExecutions(db, wake as never);
+    expect(wake).not.toHaveBeenCalled();
+    const heldSince = new Date(Date.now() - RECOVERY_CONTINUATION_MAX_HOLD_MS - 1_000).toISOString();
+    await db.update(issueRecoveryActions).set({ evidence: sql`jsonb_set(${issueRecoveryActions.evidence},
+      '{freshContinuation,recordedAt}', to_jsonb(${heldSince}::text))` }).where(eq(issueRecoveryActions.id, held.action.id));
+    await deliverReconciledExecutions(db, wake as never);
+    expect(wake).toHaveBeenCalledTimes(1);
+    expect(await deliveryOf(held.action.id)).toBe("delivered");
+  }, 60_000);
 });

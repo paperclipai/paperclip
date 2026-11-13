@@ -42,9 +42,10 @@ import { continueFreshInTransaction, continueHeldExecutions, freshContinuationCh
 import { alias } from "drizzle-orm/pg-core";
 import { RECOVERY_WAKE_REASONS } from "./heartbeat/queued-run-dispatch-order.js";
 import { parseHeartbeatPolicy } from "./heartbeat/timer-policy.js";
+import { RECOVERY_CONTINUATION_MAX_HOLD_MS } from "./recovery-continuation-bounds.js";
 
 export const RECOVERY_CONTINUATIONS_PER_COMPANY_PER_PASS = 5;
-export const RECOVERY_CONTINUATION_MAX_HOLD_MS = 5 * 60_000;
+export { RECOVERY_CONTINUATION_MAX_HOLD_MS };
 const RECOVERY_CONTINUATION_PAGES_PER_PASS = 8;
 
 /** An operator records observed outcomes; this is not permission to blindly retry. */
@@ -389,11 +390,15 @@ export async function deliverReconciledExecutions(
           seenActionIds.size ? not(inArray(issueRecoveryActions.id, [...seenActionIds])) : undefined,
           seenAgentIds.size ? sql`coalesce(${issueRecoveryActions.returnOwnerAgentId}::text, '') <> all(${sql.param([...seenAgentIds])}::text[])` : undefined,
           companies.length ? not(inArray(issueRecoveryActions.companyId, companies)) : undefined,
-          sql`not exists (select 1 from ${heartbeatRuns} queued_recovery
+          // One queued recovery run per agent paces the rest, but only within
+          // the hold bound: a continuation held past it is admitted like one
+          // held behind ordinary work (agentHasRoom), or it would wait as long
+          // as that other run stays queued.
+          sql`(${heldSince} <= ${heldBound}::timestamptz or not exists (select 1 from ${heartbeatRuns} queued_recovery
             where queued_recovery.company_id = ${issueRecoveryActions.companyId}
               and queued_recovery.agent_id = ${issueRecoveryActions.returnOwnerAgentId}
               and queued_recovery.status = 'queued'
-              and queued_recovery.context_snapshot->>'wakeReason' in (${sql.join(recoveryReasons.map(reason => sql`${reason}`), sql`, `)}))`,
+              and queued_recovery.context_snapshot->>'wakeReason' in (${sql.join(recoveryReasons.map(reason => sql`${reason}`), sql`, `)})))`,
         ),
       )
       .orderBy(
