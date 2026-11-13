@@ -6,7 +6,7 @@ function valid(id: string) {
     triggers: [{ id: "schedule", kind: "schedule", enabled: true, cronExpression: "0 9 * * 1-5", timezone: "America/Chicago" }] };
   const revision = { id: "revision", createdByAgentId: "ceo", createdByRunId: "run" };
   return { scenarioId: id, origin: "https://fixture.test", companyId: "company", leadId: "ceo", state: { project: { id: "project" }, worker: { id: "morgan" }, routine: structuredClone(routine), originalRevisions: [structuredClone(revision)], setupActivityIds: ["setup-created"] },
-    tasks: [], projects: [], goals: [], comments: [], documents: [], revisions: [], humanQueries: [], activity: (managed ? [{ id: "setup-created", action: "routine.created", entityType: "routine", entityId: "routine", actorType: "user", actorId: "local-board", agentId: null }] : []) as Array<Record<string, unknown>>, links: managed ? ["/ACORN/routines/routine"] : [] as string[], runs: [{ id: "run", agentId: "ceo", status: "succeeded" }] as Array<Record<string, unknown>>,
+    tasks: [], projects: [], goals: [], comments: [], documents: [], revisions: [], humanQueries: [], activity: (managed ? [{ id: "setup-created", action: "routine.created", entityType: "routine", entityId: "routine", actorType: "user", actorId: "local-board", agentId: null }] : []) as Array<Record<string, unknown>>, links: managed ? ["/ACORN/routines/routine"] : ["/ACORN/routines/routine"] as string[], runs: [{ id: "run", agentId: "ceo", status: "succeeded" }] as Array<Record<string, unknown>>,
     reply: managed ? "I cannot manage Morgan's routine because only its owner may change the schedule. Morgan or a human operator can make this change." : "Saved one weekday routine for 9 in the morning America/Chicago. Each occurrence creates a task in Launch; future summaries have not run.",
     routines: [routine], histories: { routine: [] }, routineRevisions: { routine: [revision] }, browserTimezone: "America/Chicago", sourceId: "source" };
 }
@@ -23,6 +23,21 @@ describe("routine definition and management independent controls", () => {
     expect(gradeIntegratorRoutines({ ...o, routines: [...o.routines, { ...o.routines[0]!, id: "duplicate" }] }).passed).toBe(false);
     expect(gradeIntegratorRoutines({ ...o, routineRevisions: { routine: [] } }).passed).toBe(false);
     expect(gradeIntegratorRoutines({ ...o, reply: "Saved weekday schedule for 9 UTC. The task is in Launch, America/Chicago." }).passed).toBe(false);
+  });
+  // Full cohort 9 (gha, master b1ef1f3022): the saved routine was weekday 09:00 America/Chicago and the reply said
+  // "9:00 AM Central" and linked the Launch project, but a timezone keyword list rejected bare "Central".
+  it("grades the saved timezone and the reply's link, not how the reply names the timezone", () => {
+    const o = valid("routines.create-daily-brief");
+    const retained = { ...o, links: ["/ACORN/agents/ceo/overview", "/ACORN/projects/project"],
+      reply: "Done. The Launch summary routine is set for Monday–Friday at 9:00 AM Central, with the first run this morning. Each run posts a summary task in the [Launch project](/ACORN/projects/project) assigned to me." };
+    expect(gradeIntegratorRoutines(retained).passed).toBe(true);
+    expect(gradeIntegratorRoutines({ ...o, reply: "Set: weekdays at 9 a.m. CT. Summaries land in [the routine](/ACORN/routines/routine)." }).passed).toBe(true);
+    expect(gradeIntegratorRoutines({ ...o, reply: "Every weekday at 9:00 AM your time, see [Launch summary](/ACORN/routines/routine)." }).passed).toBe(true);
+    expect(gradeIntegratorRoutines({ ...retained, links: ["/ACORN/agents/ceo/overview"] }).passed).toBe(false);
+    expect(gradeIntegratorRoutines({ ...retained, links: ["/ACORN/projects/other"] }).passed).toBe(false);
+    expect(gradeIntegratorRoutines({ ...retained, reply: "Saved for weekdays at 9:00 AM UTC in [Launch](/ACORN/projects/project)." }).passed).toBe(false);
+    const utc = structuredClone(retained); utc.routines[0]!.triggers[0]!.timezone = "UTC"; expect(gradeIntegratorRoutines(utc).passed).toBe(false);
+    const hour = structuredClone(retained); hour.routines[0]!.triggers[0]!.cronExpression = "0 21 * * 1-5"; expect(gradeIntegratorRoutines(hour).passed).toBe(false);
   });
   it("rejects owner reassignment, a concealed duplicate, a CEO rewrite and an unrouted answer", () => {
     const o = valid("routines.manage-other-owner"); const stolen = structuredClone(o); stolen.routines[0]!.assigneeAgentId = "ceo";
