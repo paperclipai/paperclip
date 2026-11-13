@@ -1249,6 +1249,64 @@ describe("OpenCodeServerDriver", () => {
     }
   });
 
+  it("keeps a finished call's host on its usage while OpenCode's next model call is already in flight", async () => {
+    await chmod(fixture, 0o755);
+    const model = "deepseek/deepseek-v4.1-flash-1017";
+    let releaseNext: (() => void) | undefined;
+    let call = 0;
+    const upstream = createHttpServer((request, response) => {
+      void (async () => {
+        for await (const _chunk of request) void _chunk;
+        call += 1;
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        if (call === 1) {
+          response.end('data: {"id":"gen-first","provider":"Novita","choices":[{"delta":{"content":"Hi"}}]}\n\ndata: [DONE]\n\n');
+          return;
+        }
+        response.write('data: {"id":"gen-next","provider":"Chutes","choices":[{"delta":{"content":"Hi"}}]}\n\n');
+        await new Promise<void>(resolve => { releaseNext = resolve; });
+        response.end("data: [DONE]\n\n");
+      })().catch(() => response.destroy());
+    });
+    await new Promise<void>(resolve => upstream.listen(0, "127.0.0.1", resolve));
+    const address = upstream.address();
+    if (!address || typeof address === "string") throw new Error("Missing fixture address");
+    upstreamTransport.endpoint = `http://127.0.0.1:${address.port}/chat/completions`;
+    upstreamTransport.urls = [];
+    const root = await mkdtemp(join(tmpdir(), "paperclip-openrouter-inflight-"));
+    roots.push(root);
+    let session: Awaited<ReturnType<OpenCodeServerDriver["openSession"]>> | undefined;
+    try {
+      const driver = new OpenCodeServerDriver({ model: `openrouter/${model}`, runtimeDirectory: root, command: fixture,
+        environment: { PATH: process.env.PATH, OPENROUTER_API_KEY: "synthetic-inflight-key" } });
+      session = await driver.openSession({ runId: "inflight", normalizedSessionId: "inflight", workingDirectory: root });
+      const config = JSON.parse(await readFile(join(root, "inflight", "config", "opencode", "opencode.json"), "utf8"));
+      const { baseURL, apiKey } = config.provider.openrouter.options;
+      const send = () => fetch(`${baseURL}/chat/completions`, { method: "POST",
+        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ model, stream: true, messages: [{ role: "user", content: "synthetic" }] }) });
+      await (await send()).arrayBuffer();
+      const next = await send();
+      expect(next.status).toBe(200);
+      const reader = next.body!.getReader();
+      expect(new TextDecoder().decode((await reader.read()).value)).toContain('"provider":"Chutes"');
+      await session.startTurn({ message: { role: "user", text: "finish" } });
+      const events = await collectTurnEvents(session.events());
+      const usage = events.find(event => event.eventType === "item.completed" && event.payload.kind === "usage")?.payload.usage;
+      expect(usage).toMatchObject({ upstreamProvider: "Novita", providerRequestId: "gen-first" });
+      releaseNext?.();
+      while (!(await reader.read()).done);
+      await session.startTurn({ message: { role: "user", text: "finish" } });
+      await collectTurnEvents(session.events());
+      expect(await session.usage?.()).toMatchObject({ upstreamProvider: "Chutes", providerRequestId: "gen-next" });
+    } finally {
+      releaseNext?.();
+      await session?.close({ reason: "test" });
+      upstreamTransport.endpoint = "";
+      await new Promise<void>(resolve => { upstream.close(() => resolve()); upstream.closeAllConnections(); });
+    }
+  });
+
   it("does not carry an earlier call's host onto a call the tap skips, or into another run", async () => {
     await chmod(fixture, 0o755);
     const model = "deepseek/deepseek-v4.1-flash-1017";
