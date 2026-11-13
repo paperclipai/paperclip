@@ -26,10 +26,10 @@ import { notifyRoutineExecutionStatus } from "./routine-execution-status-notific
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { readRunCancellation } from "./run-cancellation.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
-import { automaticContinuationRunSql, isPersonOwnedFailureCode, isSystemOwnedFailureCode, systemOwnedFailureCodeSql } from "./continuation-cause.js";
+import { RESTART_CLASS_FAILURE_CODES, continuationCauseIsSystemOwned, continuesAutomaticallySql, isPersonOwnedFailureCode } from "./continuation-cause.js";
 import { sharedContinuationAttempts } from "./recovery/continuation-ledger.js";
 
-export { AUTOMATIC_CONTINUATION_WAKE_REASONS, PERSON_OWNED_FAILURE_CODES, isAutomaticContinuationRun, isPersonOwnedFailureCode } from "./continuation-cause.js";
+export { AUTOMATIC_CONTINUATION_WAKE_REASONS, PERSON_OWNED_FAILURE_CODES, isPersonOwnedFailureCode, isRecoveryRun } from "./continuation-cause.js";
 
 /**
  * Fresh-continuation fallback: exact resumption of an unfinished run is an
@@ -515,7 +515,7 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
     || (isRestoreHold(hold) && blocksExecution(hold) && !isHumanGate(hold))) : ownedHolds;
 
   // (b) Causes that are the person's.
-  if (isPersonOwnedFailureCode(run.errorCode) || (run.errorCode && !isSystemOwnedFailureCode(run.errorCode)))
+  if (isPersonOwnedFailureCode(run.errorCode) || (run.errorCode && !continuationCauseIsSystemOwned(run)))
     return { kind: "person_owned", reason: run.errorCode! };
   // A Stop a person (or an agent acting on the task) asked for is never undone.
   const cancellation = readRunCancellation(run.resultJson);
@@ -787,12 +787,7 @@ export function heldExecutionsAwaitingFreshContinuation(db: Db, now: Date, limit
  * through restart recovery and the disposition pass, not through this list.
  */
 export const BACKLOG_CONTINUATION_MAX_AGE_MS = 24 * 60 * 60_000;
-export const BACKLOG_CONTINUATION_SOURCE_CODES = [
-  "native_restart_recovery_blocked", "native_continuation_requires_reconciliation", "native_session_interrupted",
-  "native_runner_process_exited", "server_shutdown_interrupted", "process_lost", "controller_lease_lost",
-  "execution_finalization_deadline_exceeded", "local_runtime_api_listener_unavailable",
-  "runner_remote_process_identity_unavailable", "continuation_user_authorization_missing",
-] as const;
+export const BACKLOG_CONTINUATION_SOURCE_CODES = RESTART_CLASS_FAILURE_CODES;
 /** At most this many backlog continuations per server per rolling minute, and per pass. */
 export const BACKLOG_CONTINUATIONS_PER_MINUTE = 10;
 const BACKLOG_CONTINUATIONS_PER_PASS = 5;
@@ -818,8 +813,7 @@ function interruptionEligibility(input: { now: Date; companyId: SQL; issueId: SQ
       and retry.run_id is null and retry.payload->>'issueId' = ${input.issueId}::text and retry.requested_at > source.finished_at)
     or exists (select 1 from ${heartbeatRuns} held where ${refusedLater}
       and held.context_snapshot->>'wakeReason' = 'task_retry' and held.finished_at > ${since}))`);
-  const recent = source(sql`(source.error_code in (${sql.join(BACKLOG_CONTINUATION_SOURCE_CODES.map(code => sql`${code}`), sql`, `)})
-      or (${systemOwnedFailureCodeSql("source")} and ${automaticContinuationRunSql("source")}))
+  const recent = source(sql`${continuesAutomaticallySql("source")}
     and greatest(source.finished_at, (select max(held.finished_at) from ${heartbeatRuns} held where ${refusedLater})) > ${since}`);
   return { recent, personAsked };
 }

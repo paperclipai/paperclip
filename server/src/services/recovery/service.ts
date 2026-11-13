@@ -101,7 +101,6 @@ import {
   workspaceOperations,
 } from "@paperclipai/db";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
-import { isAutomaticContinuationRun } from "../continuation-cause.js";
 import { STRANDED_CONTINUATION_MAX_AGE_MS, STRANDED_KIND, strandedRunCauseIsTemporary, type StrandedHoldRun } from "./stranded-hold-continuation.js";
 import { runningProcesses } from "../../adapters/index.js";
 import {
@@ -305,6 +304,9 @@ type LatestIssueRun =
       resultJson?: unknown;
       rowVersion?: string;
       finishedAt?: Date | null;
+      retryOfRunId?: string | null;
+      scheduledRetryReason?: string | null;
+      runnerProfileJson?: unknown;
     })
   | null;
 type SuccessfulLatestIssueRun = NonNullable<LatestIssueRun> & {
@@ -570,9 +572,10 @@ function assignedWorkSweepOwnsFailedRun(
 ) {
   return Boolean(latestRun && (issue.status === "todo" || issue.status === "in_progress") && !issue.assigneeUserId
     && issue.assigneeAgentId === agentId && latestRun.agentId === agentId
-    && isAutomaticContinuationRun({ retryOfRunId: null, scheduledRetryReason: null, contextSnapshot: latestRun.contextSnapshot })
     && Date.now() - (latestRun.finishedAt ?? latestRun.createdAt).getTime() <= STRANDED_CONTINUATION_MAX_AGE_MS
     && strandedRunCauseIsTemporary({ status: latestRun.status, errorCode: latestRun.errorCode, error: latestRun.error,
+      retryOfRunId: latestRun.retryOfRunId ?? null, scheduledRetryReason: latestRun.scheduledRetryReason ?? null,
+      contextSnapshot: latestRun.contextSnapshot as Record<string, unknown> | null, runnerProfileJson: latestRun.runnerProfileJson,
       executionRecovery: (parseObject(latestRun.resultJson).executionRecovery ?? null) as StrandedHoldRun["executionRecovery"] }));
 }
 
@@ -1054,6 +1057,9 @@ export function recoveryService(
         startedAt: heartbeatRuns.startedAt,
         createdAt: heartbeatRuns.createdAt,
         finishedAt: heartbeatRuns.finishedAt,
+        retryOfRunId: heartbeatRuns.retryOfRunId,
+        scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
+        runnerProfileJson: heartbeatRuns.runnerProfileJson,
       })
       .from(heartbeatRuns)
       .where(
@@ -4331,6 +4337,10 @@ export function recoveryService(
           status: input.latestRun?.status ?? "",
           errorCode: input.latestRun?.errorCode ?? null,
           error: input.latestRun?.error ?? null,
+          retryOfRunId: input.latestRun?.retryOfRunId ?? null,
+          scheduledRetryReason: input.latestRun?.scheduledRetryReason ?? null,
+          contextSnapshot: (input.latestRun?.contextSnapshot ?? null) as Record<string, unknown> | null,
+          runnerProfileJson: input.latestRun?.runnerProfileJson,
           executionRecovery: (parseObject(input.latestRun?.resultJson).executionRecovery ?? null) as StrandedHoldRun["executionRecovery"],
         }),
       recoveryOwner:

@@ -33,7 +33,7 @@ import { PENDING_CONTINUATION_BOUND_MS } from "../recovery-continuation-pacing.j
 import { attributeBlock, BLOCK_ATTRIBUTION_WINDOW_MS, blockedStatusDetailsSql } from "../interruption-block-release.js";
 import { ASSIGNED_WORK_CONTINUED_ACTION, taskAutomaticAttempts } from "./task-automatic-attempts.js";
 import { ensureFreshContinuation, type FreshContinuationResult } from "../fresh-continuation-fallback.js";
-import { isAutomaticContinuationRun } from "../continuation-cause.js";
+import { canContinueRecoveryRunAutomatically } from "../continuation-cause.js";
 import { STRANDED_CONTINUATION_MAX_AGE_MS, STRANDED_KIND, strandedHoldContinuesAutomatically, type StrandedHoldRun } from "./stranded-hold-continuation.js";
 import {
   continuationActivityMessage,
@@ -284,7 +284,8 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       .map(action => action.evidence?.latestRunId).filter((id): id is string => typeof id === "string" && /^[0-9a-f-]{36}$/i.test(id));
     const strandedRuns = new Map<string, StrandedHoldRun>((strandedRunIds.length ? await database.select({ id: heartbeatRuns.id,
       agentId: heartbeatRuns.agentId, status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode, error: heartbeatRuns.error,
-      finishedAt: heartbeatRuns.finishedAt,
+      finishedAt: heartbeatRuns.finishedAt, retryOfRunId: heartbeatRuns.retryOfRunId, scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
+      contextSnapshot: heartbeatRuns.contextSnapshot, runnerProfileJson: heartbeatRuns.runnerProfileJson,
       executionRecovery: sql<StrandedHoldRun["executionRecovery"]>`${heartbeatRuns.resultJson}->'executionRecovery'` })
       .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), inArray(heartbeatRuns.id, strandedRunIds))) : [])
       .map(({ id, ...run }) => [id, run]));
@@ -581,10 +582,11 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
     const source = facts.latestRun;
     if (!source?.finishedAt || !["failed", "timed_out", "interrupted", "cancelled"].includes(source.status)
       || (source.status === "cancelled" && source.errorCode === "execution_reconciliation_required")) return null;
-    const [run] = await db.select({ retryOfRunId: heartbeatRuns.retryOfRunId, scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
-      contextSnapshot: heartbeatRuns.contextSnapshot }).from(heartbeatRuns)
+    const [run] = await db.select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode, error: heartbeatRuns.error,
+      retryOfRunId: heartbeatRuns.retryOfRunId, scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
+      contextSnapshot: heartbeatRuns.contextSnapshot, runnerProfileJson: heartbeatRuns.runnerProfileJson }).from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.companyId, issue.companyId), eq(heartbeatRuns.id, source.id)));
-    if (!run || !isAutomaticContinuationRun(run)) return null;
+    if (!run || !canContinueRecoveryRunAutomatically(run)) return null;
     return ensureFreshContinuation(db, { companyId: issue.companyId, runId: source.id, trigger: "assigned_work", now: at })
       .catch(error => {
         logger.warn({ err: error, companyId: issue.companyId, issueId: issue.id }, "assigned-work continuation from saved work deferred");
@@ -620,7 +622,7 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
         || (current.status === "blocked" && fresh.activeRecoveryAction && !fresh.activeRecoveryAction.continuedBySweep)) return { kind: "changed" as const };
       const attempts = await taskAutomaticAttempts(tx as unknown as Db, issue.companyId, issue.id, at);
       const recent = attempts.continuations;
-      const allowance = continuationAllowance(attempts.all, at);
+      const allowance = continuationAllowance(attempts.started, at, attempts.all);
       if (!allowance.allowed) return { kind: allowance.capped ? "capped" as const : "spaced" as const, retryAt: allowance.retryAt };
       let restoredTo: Claimed["restoredTo"] = null;
       let restoredStatusVersion: number | null = null;
@@ -651,7 +653,7 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
           ...(restoredTo ? { status: restoredTo, previousStatus: "blocked" } : {}),
           attempt: recent.length + 1 },
       }, publications);
-      const next = continuationAllowance([at, ...attempts.all], at);
+      const next = continuationAllowance([at, ...attempts.started], at, [at, ...attempts.all]);
       return { kind: "claimed" as const, activityId: activity.id, publications, verdict, reason: verdict.reason,
         restoredTo, restoredStatusVersion, blockedTransitionAt: current.blockedTransitionAt,
         unblockDescriptor: current.unblockDescriptor, blockedOwnerNotifiedAt: current.blockedOwnerNotifiedAt,

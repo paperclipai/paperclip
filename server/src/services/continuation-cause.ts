@@ -35,15 +35,8 @@ export function isPersonOwnedFailureCode(code: string | null | undefined): boole
 
 export const AUTOMATIC_CONTINUATION_WAKE_REASONS = [
   "issue_continuation_needed", "issue_assignment_recovery", "issue_recovery_action_restored", "transient_failure_retry",
+  "task_retry",
 ] as const;
-export function isAutomaticContinuationRun(run: Pick<typeof heartbeatRuns.$inferSelect, "retryOfRunId" | "scheduledRetryReason"
-  | "contextSnapshot">): boolean {
-  const context = (run.contextSnapshot ?? {}) as Record<string, unknown>;
-  if (context.explicitUserContinuation || context.wakeReason === "task_retry") return false;
-  return Boolean(run.retryOfRunId || run.scheduledRetryReason || context.previousRunId || context.retryReason
-    || context.freshContinuationIsolation
-    || (AUTOMATIC_CONTINUATION_WAKE_REASONS as readonly unknown[]).includes(context.wakeReason));
-}
 
 export const PERMANENT_FAILURE_CODES = [
   "agent_interaction_delivery_denied", "adapter_engine_unavailable", "agent_not_invokable", "agent_not_found",
@@ -51,23 +44,96 @@ export const PERMANENT_FAILURE_CODES = [
   "low_trust_requires_sandbox_environment", "low_trust_runtime_services_denied",
 ] as const;
 
+export const RESTART_CLASS_FAILURE_CODES = [
+  "native_restart_recovery_blocked", "native_continuation_requires_reconciliation", "native_session_interrupted",
+  "native_runner_process_exited", "server_shutdown_interrupted", "process_lost", "controller_lease_lost",
+  "execution_finalization_deadline_exceeded", "local_runtime_api_listener_unavailable",
+  "runner_remote_process_identity_unavailable", "continuation_user_authorization_missing",
+] as const;
+
+const REUSABLE_SANDBOX_RESUME_FAILED = "reusable_sandbox_resume_failed";
+const TRANSIENT_SANDBOX_CAUSES = ["transport_timeout", "transport_closed", "sandbox_state_transition", "provider_rate_limited",
+  "provider_unavailable"] as const;
+const EXTERNAL_STOP_UNCONFIRMED_PROVIDERS = ["openai_dot", "muse"] as const;
+const UNFINISHED_RUN_STATUSES = ["failed", "timed_out", "interrupted", "cancelled"];
+
+type ClassifiedRun = Pick<typeof heartbeatRuns.$inferSelect, "status" | "errorCode" | "retryOfRunId" | "scheduledRetryReason"
+  | "contextSnapshot"> & { error?: string | null; runnerProfileJson?: unknown; resultJson?: unknown };
+
+const TRANSIENT_SETUP_FAILURE_CODES = [
+  REUSABLE_SANDBOX_RESUME_FAILED, "remote_workspace_prepare_timeout", "environment_provider_unavailable",
+  "workspace_git_scan_timeout", "workspace_git_scan_saturated", "repository_catalog_unavailable",
+] as const;
+
+const object = (value: unknown): Record<string, unknown> =>
+  value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+
 export function isSystemOwnedFailureCode(code: string | null | undefined): boolean {
   return typeof code === "string" && code.length > 0 && !isPersonOwnedFailureCode(code)
     && !(PERMANENT_FAILURE_CODES as readonly string[]).includes(code);
 }
 
-export function systemOwnedFailureCodeSql(alias: string): SQL {
-  const column = sql.raw(`${alias}.error_code`);
-  return sql`(${column} is not null and ${column} <> '' and ${column} not in (${sql.join(
-    [...PERSON_OWNED_FAILURE_CODES, ...PERMANENT_FAILURE_CODES].map(code => sql`${code}`), sql`, `)}))`;
+export function continuationCauseIsSystemOwned(run: Pick<ClassifiedRun, "status" | "errorCode" | "error" | "runnerProfileJson">): boolean {
+  if (!UNFINISHED_RUN_STATUSES.includes(run.status) || !isSystemOwnedFailureCode(run.errorCode)) return false;
+  const provider = object(object(object(run.runnerProfileJson).nativeExecutionInput).provider).kind;
+  if ((EXTERNAL_STOP_UNCONFIRMED_PROVIDERS as readonly unknown[]).includes(provider)) return false;
+  if (run.errorCode !== REUSABLE_SANDBOX_RESUME_FAILED) return true;
+  const cause = /\(cause=([a-z_]+)/.exec(run.error ?? "")?.[1];
+  return cause !== undefined && (TRANSIENT_SANDBOX_CAUSES as readonly string[]).includes(cause);
 }
 
-export function automaticContinuationRunSql(alias: string): SQL {
-  const run = (column: string) => sql.raw(`${alias}.${column}`);
-  const context = run("context_snapshot");
-  return sql`(not coalesce(${context} ? 'explicitUserContinuation', false)
-    and coalesce(${context}->>'wakeReason', '') <> 'task_retry'
-    and (${run("retry_of_run_id")} is not null or ${run("scheduled_retry_reason")} is not null
-      or ${context} ? 'previousRunId' or ${context} ? 'retryReason' or ${context} ? 'freshContinuationIsolation'
-      or ${context}->>'wakeReason' in (${sql.join(AUTOMATIC_CONTINUATION_WAKE_REASONS.map(reason => sql`${reason}`), sql`, `)})))`;
+export function isRecoveryRun(run: Pick<ClassifiedRun, "retryOfRunId" | "scheduledRetryReason" | "contextSnapshot">): boolean {
+  const context = object(run.contextSnapshot);
+  return Boolean(run.retryOfRunId || run.scheduledRetryReason || context.previousRunId || context.retryReason
+    || context.freshContinuationIsolation || context.explicitUserContinuation
+    || (AUTOMATIC_CONTINUATION_WAKE_REASONS as readonly unknown[]).includes(context.wakeReason));
+}
+
+export function canContinueRecoveryRunAutomatically(run: ClassifiedRun): boolean {
+  return continuationCauseIsSystemOwned(run) && isRecoveryRun(run);
+}
+
+function firstRunFailureContinues(run: Pick<ClassifiedRun, "errorCode" | "resultJson">): boolean {
+  if (isRestartClassFailureCode(run.errorCode)) return true;
+  const recovery = object(object(run.resultJson).executionRecovery);
+  return (TRANSIENT_SETUP_FAILURE_CODES as readonly unknown[]).includes(run.errorCode)
+    && recovery.kind === "bootstrap" && recovery.providerWorkStarted === false;
+}
+
+export function continuesAutomatically(run: ClassifiedRun): boolean {
+  return continuationCauseIsSystemOwned(run) && (isRecoveryRun(run) || firstRunFailureContinues(run));
+}
+
+export function isRestartClassFailureCode(code: string | null | undefined): boolean {
+  return typeof code === "string" && (RESTART_CLASS_FAILURE_CODES as readonly string[]).includes(code);
+}
+
+const list = (values: readonly string[]) => sql.join(values.map(value => sql`${value}`), sql`, `);
+
+export function continuationCauseIsSystemOwnedSql(alias: string): SQL {
+  const column = (name: string) => sql.raw(`${alias}.${name}`);
+  const code = column("error_code");
+  return sql`(${column("status")} in (${list(UNFINISHED_RUN_STATUSES)}) and ${code} is not null and ${code} <> ''
+    and ${code} not in (${list([...PERSON_OWNED_FAILURE_CODES, ...PERMANENT_FAILURE_CODES])})
+    and coalesce(${column("runner_profile_json")}#>>'{nativeExecutionInput,provider,kind}', '') not in (${list(EXTERNAL_STOP_UNCONFIRMED_PROVIDERS)})
+    and (${code} <> ${REUSABLE_SANDBOX_RESUME_FAILED}
+      or substring(coalesce(${column("error")}, '') from '\\(cause=([a-z_]+)') in (${list(TRANSIENT_SANDBOX_CAUSES)})))`;
+}
+
+export function recoveryRunSql(alias: string): SQL {
+  const column = (name: string) => sql.raw(`${alias}.${name}`);
+  const context = column("context_snapshot");
+  return sql`(${column("retry_of_run_id")} is not null or ${column("scheduled_retry_reason")} is not null
+    or ${context} ? 'previousRunId' or ${context} ? 'retryReason' or ${context} ? 'freshContinuationIsolation'
+    or ${context} ? 'explicitUserContinuation'
+    or ${context}->>'wakeReason' in (${list(AUTOMATIC_CONTINUATION_WAKE_REASONS)}))`;
+}
+
+export function continuesAutomaticallySql(alias: string): SQL {
+  const column = (name: string) => sql.raw(`${alias}.${name}`);
+  return sql`(${continuationCauseIsSystemOwnedSql(alias)} and (${recoveryRunSql(alias)}
+    or ${column("error_code")} in (${list(RESTART_CLASS_FAILURE_CODES)})
+    or (${column("error_code")} in (${list(TRANSIENT_SETUP_FAILURE_CODES)})
+      and ${column("result_json")}#>>'{executionRecovery,kind}' = 'bootstrap'
+      and ${column("result_json")}#>>'{executionRecovery,providerWorkStarted}' = 'false')))`;
 }

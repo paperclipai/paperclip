@@ -8,7 +8,7 @@ export { ASSIGNED_WORK_CONTINUED_ACTION, SCHEDULER_TRANSIENT_RETRY_REASON };
 export async function taskAutomaticAttempts(db: Db, companyId: string, issueId: string, at: Date) {
   const since = new Date(at.getTime() - CONTINUATION_CAP_WINDOW_MS);
   const [continuations, transientRetries] = await Promise.all([
-    db.select({ createdAt: activityLog.createdAt }).from(activityLog).where(and(
+    db.select({ createdAt: activityLog.createdAt, outcome: sql<string | null>`${activityLog.details}->>'outcome'` }).from(activityLog).where(and(
       eq(activityLog.companyId, companyId), eq(activityLog.entityType, "issue"), eq(activityLog.entityId, issueId),
       eq(activityLog.action, ASSIGNED_WORK_CONTINUED_ACTION), gte(activityLog.createdAt, since)))
       .orderBy(desc(activityLog.createdAt)).limit(64),
@@ -19,11 +19,13 @@ export async function taskAutomaticAttempts(db: Db, companyId: string, issueId: 
   ]);
   const fresh = (await freshContinuationTimes(db, companyId, issueId, since))
     .filter(record => record.trigger !== "assigned_work").map(record => record.at);
-  const all = [...continuations.map(row => row.createdAt), ...transientRetries.map(row => row.createdAt), ...fresh];
-  return { continuations: continuations.map(row => row.createdAt), all };
+  const others = [...transientRetries.map(row => row.createdAt), ...fresh];
+  const all = [...continuations.map(row => row.createdAt), ...others];
+  const started = [...continuations.filter(row => row.outcome !== "not_started").map(row => row.createdAt), ...others];
+  return { continuations: continuations.map(row => row.createdAt), all, started };
 }
 
 export async function transientRetryWithinTaskCap(db: Db, companyId: string, issueId: string, at: Date) {
   const attempts = await taskAutomaticAttempts(db, companyId, issueId, at);
-  return attempts.continuations.length === 0 || attempts.all.length < CONTINUATION_CAP;
+  return attempts.continuations.length === 0 || attempts.started.length < CONTINUATION_CAP;
 }

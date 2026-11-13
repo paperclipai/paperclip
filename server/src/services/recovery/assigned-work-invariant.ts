@@ -309,17 +309,19 @@ function waitingReason(facts: AssignedWorkFacts, now: Date): WaitingReason | nul
  * rolling hour (the server-restart lane's bound). Below the cap the spacing
  * doubles with each continuation in the hour, 2, 4, 8 and then 15 minutes at
  * most. At the cap the next one waits until the oldest leaves the hour. */
-export function continuationAllowance(recent: Date[], now: Date = new Date()):
+export function continuationAllowance(recent: Date[], now: Date = new Date(), spacedBy: Date[] = recent):
   { allowed: true } | { allowed: false; retryAt: Date; capped: boolean } {
-  const inWindow = recent.filter(at => at.getTime() > now.getTime() - CONTINUATION_CAP_WINDOW_MS)
+  const windowed = (dates: Date[]) => dates.filter(at => at.getTime() > now.getTime() - CONTINUATION_CAP_WINDOW_MS)
     .sort((a, b) => b.getTime() - a.getTime());
+  const inWindow = windowed(recent);
   if (inWindow.length >= CONTINUATION_CAP) {
     const oldest = inWindow[CONTINUATION_CAP - 1];
     return { allowed: false, capped: true, retryAt: new Date(oldest.getTime() + CONTINUATION_CAP_WINDOW_MS) };
   }
-  if (inWindow.length > 0) {
-    const spacing = Math.min(CONTINUATION_MAX_BACKOFF_MS, CONTINUATION_BASE_BACKOFF_MS * 2 ** (inWindow.length - 1));
-    const next = inWindow[0].getTime() + spacing;
+  const spacingWindow = windowed(spacedBy);
+  if (spacingWindow.length > 0) {
+    const spacing = Math.min(CONTINUATION_MAX_BACKOFF_MS, CONTINUATION_BASE_BACKOFF_MS * 2 ** (spacingWindow.length - 1));
+    const next = spacingWindow[0].getTime() + spacing;
     if (next > now.getTime()) return { allowed: false, capped: false, retryAt: new Date(next) };
   }
   return { allowed: true };

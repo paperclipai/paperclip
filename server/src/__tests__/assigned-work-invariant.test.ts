@@ -50,6 +50,9 @@ describePostgres("assigned-work invariant sweep", () => {
     return { calls, enqueueWakeup };
   }
 
+  const freshContinuationsOf = async (issueId: string) => db.select().from(issueRecoveryActions).where(and(
+    eq(issueRecoveryActions.sourceIssueId, issueId), sqlTag`${issueRecoveryActions.evidence}->'freshContinuation' is not null`));
+
   async function seedCompany() {
     const companyId = randomUUID(), agentId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Invariant fixture", issuePrefix: `I${companyId.slice(0, 7)}` });
@@ -93,7 +96,8 @@ describePostgres("assigned-work invariant sweep", () => {
     const check = await recovery.assignedWork.checkIssue({ companyId: f.companyId, issueId });
     // What staging shows for this shape: a Retry button that only the system can act on.
     expect(check).toMatchObject({ outcome: "repaired", verdict: { kind: "violation", reason: "retry_offered" } });
-    expect(queue.calls).toEqual([{ agentId: f.agentId, issueId, source: "issue.assigned_work_invariant" }]);
+    expect(queue.calls).toEqual([]);
+    expect(await freshContinuationsOf(issueId)).toHaveLength(1);
     const [activity] = await db.select().from(activityLog).where(and(eq(activityLog.entityId, issueId),
       eq(activityLog.action, ASSIGNED_WORK_CONTINUED_ACTION)));
     expect(activity.details).toMatchObject({ message: expect.stringContaining("Continued automatically") });
@@ -102,7 +106,7 @@ describePostgres("assigned-work invariant sweep", () => {
     // The next sweep sees the pending wake and leaves the task alone.
     expect(await recovery.assignedWork.checkIssue({ companyId: f.companyId, issueId }))
       .toMatchObject({ outcome: "ok", verdict: { clause: "pending_intent", intent: "queued_wake" } });
-    expect(queue.calls).toHaveLength(1);
+    expect(await freshContinuationsOf(issueId)).toHaveLength(1);
   }, 60_000);
 
   it("a wake deferred behind a run that ended long ago is not a pending path; a fresh one still is", async () => {
@@ -308,7 +312,8 @@ describePostgres("assigned-work invariant sweep", () => {
       expect(await recovery.assignedWork.checkIssue({ companyId: f.companyId, issueId }))
         .toMatchObject({ outcome: "repaired", verdict: { reason: "retry_offered" } });
     }
-    expect(queue.calls.map(call => call.issueId).sort()).toEqual([plain, withQuestion].sort());
+    expect(await freshContinuationsOf(plain)).toHaveLength(1);
+    expect(queue.calls.map(call => call.issueId)).toEqual([withQuestion]);
   }, 60_000);
 
   it("an unknown block reason is repaired, not treated as a reason to wait", async () => {

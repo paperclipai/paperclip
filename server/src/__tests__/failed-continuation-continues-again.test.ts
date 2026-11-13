@@ -286,15 +286,72 @@ describePostgres("a continuation that fails before doing any work is continued a
       expect(queue.calls).toHaveLength(1);
     }
   }, 60_000);
-  it("the held backlog leaves a person's Retry and each permanent cause blocked", async () => {
+  it("the held backlog leaves each permanent cause blocked", async () => {
     resetBacklogContinuationPacingForTests(db);
     const f = await seed();
-    const left = [await heldRun(f, "setup_failed", personRetryContext)];
+    const left = [];
     for (const code of PERMANENT_FAILURE_CODES) left.push(await heldRun(f, code, recoveryContext));
     for (let pass = 0; pass < 4; pass += 1) await continueHeldExecutions(db, new Date());
     for (const entry of left) {
       expect(await continuationsOf(entry.failed.id)).toHaveLength(0);
       expect((await taskRow(entry.task.id)).status).toBe("blocked");
+    }
+  }, 120_000);
+
+  const runKinds = {
+    personRetry: personRetryContext,
+    automatic: recoveryContext,
+    firstAssignment: { wakeReason: "issue_assigned" },
+  } as const;
+  const causes = { setup: "setup_failed", restart: "process_lost", permanent: "low_trust_boundary_mismatch", person: "codex_auth_required" } as const;
+  const decision = (kind: keyof typeof runKinds, cause: keyof typeof causes) =>
+    cause === "restart" || (kind !== "firstAssignment" && cause === "setup");
+  it.each(Object.keys(runKinds).flatMap(kind => Object.keys(causes).map(cause => [kind, cause] as [keyof typeof runKinds, keyof typeof causes])))(
+    "every entry point makes the same decision for a %s run that failed with the %s cause", async (kind, cause) => {
+    resetBacklogContinuationPacingForTests(db);
+    const f = await seed();
+    const errorCode = causes[cause];
+    const continues = decision(kind, cause);
+    const queue = wakeQueue();
+    const recovery = recoveryService(db, { enqueueWakeup: queue.enqueueWakeup, scheduleRecoveryRetry: async () => null });
+
+    const held = await heldRun(f, errorCode, runKinds[kind]);
+    await continueHeldExecutions(db, new Date());
+    expect(await continuationsOf(held.failed.id)).toHaveLength(continues ? 1 : 0);
+
+    const blockedAt = new Date(Date.now() - 20 * MINUTE);
+    const escalated = await f.task({ status: "blocked", blockedTransitionAt: blockedAt });
+    const escalatedRun = await f.run(escalated.id, { errorCode, error: errorCode, finishedAt: new Date(blockedAt.getTime() - 30_000),
+      contextSnapshot: runKinds[kind] });
+    await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: escalated.id, kind: "stranded_assigned_issue",
+      status: "active", ownerType: "board", cause: "stranded_assigned_issue",
+      fingerprint: `source_scoped_recovery:${f.companyId}:${escalated.id}:stranded_assigned_issue`,
+      evidence: { previousStatus: "in_progress", latestRunId: escalatedRun.id, latestRunErrorCode: errorCode }, nextAction: "Held.", attemptCount: 1 });
+    await db.insert(activityLog).values({ companyId: f.companyId, actorType: "system", actorId: "system", action: "issue.updated",
+      entityType: "issue", entityId: escalated.id, details: { status: "blocked", previousStatus: "in_progress",
+        source: "recovery.reconcile_stranded_assigned_issue" }, createdAt: blockedAt });
+    const sweep = await recovery.assignedWork.checkIssue({ companyId: f.companyId, issueId: escalated.id });
+    expect(sweep?.outcome === "left_to_hold_owner").toBe(!continues);
+    const fresh = await continuationsOf(escalatedRun.id);
+    if (continues && kind !== "firstAssignment") {
+      expect(fresh).toHaveLength(1);
+      expect(queue.calls).not.toContain(escalated.id);
+    }
+    if (!continues) {
+      expect(fresh).toHaveLength(0);
+      expect(queue.calls).not.toContain(escalated.id);
+      expect((await taskRow(escalated.id)).status).toBe("blocked");
+    }
+
+    if (kind !== "firstAssignment" && cause !== "restart") {
+      const open = await f.task();
+      const failed = await f.run(open.id, { errorCode, error: errorCode, contextSnapshot: runKinds[kind] });
+      await recovery.reconcileStrandedAssignedIssues({ companyId: f.companyId, issueId: open.id, skipRelatedRecovery: true });
+      if (continues) {
+        expect((await taskRow(open.id)).status).toBe("in_progress");
+        await recovery.assignedWork.checkIssue({ companyId: f.companyId, issueId: open.id });
+        expect(await continuationsOf(failed.id)).toHaveLength(1);
+      }
     }
   }, 120_000);
 
@@ -339,5 +396,22 @@ describePostgres("a continuation that fails before doing any work is continued a
     expect(nextCheckAt).toBeLessThanOrEqual(Date.now() + 10 * MINUTE + 5_000);
     expect(await continuationsOf(held.failed.id)).toHaveLength(0);
     expect(await continueHeldExecutions(db, new Date(Date.now() + 11 * MINUTE))).toMatchObject({ continued: 1 });
+  }, 60_000);
+  it("checks that only waited for exact recovery spend no attempt, so the fallback is reached at the bound", async () => {
+    const f = await seed();
+    const task = await f.task();
+    const stopped = await f.run(task.id, { status: "interrupted", errorCode: "server_shutdown_interrupted", executionStage: "preparing",
+      error: "Interrupted by graceful server shutdown (SIGTERM)", finishedAt: new Date(Date.now() - 2 * MINUTE),
+      contextSnapshot: { wakeReason: "issue_assignment_recovery", retryReason: "assignment_recovery" } });
+    for (const minutesAgo of [40, 36, 32, 28, 24]) await db.insert(activityLog).values({ companyId: f.companyId, actorType: "system",
+      actorId: "system", action: ASSIGNED_WORK_CONTINUED_ACTION, entityType: "issue", entityId: task.id,
+      details: { outcome: "queued" }, createdAt: new Date(Date.now() - minutesAgo * MINUTE) });
+    const queue = wakeQueue();
+    let clock = new Date();
+    const sweep = assignedWorkSweep(db, { enqueueWakeup: queue.enqueueWakeup, now: () => clock });
+    expect(await sweep.checkIssue({ companyId: f.companyId, issueId: task.id })).toMatchObject({ outcome: "waiting_on_recovery" });
+    clock = new Date(Date.now() + 16 * MINUTE);
+    expect(await sweep.checkIssue({ companyId: f.companyId, issueId: task.id })).toMatchObject({ outcome: "repaired" });
+    expect(await continuationsOf(stopped.id)).toHaveLength(1);
   }, 60_000);
 });
