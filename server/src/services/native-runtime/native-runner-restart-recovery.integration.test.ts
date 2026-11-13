@@ -2478,18 +2478,23 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
       const [run] = await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
       const stopped = await hasNativeLocalProcessStop(fixture.db, companyId, fixture.runId);
       expect(probes).toEqual([]);
-      // The namespace wait is bounded: it is checked again when the wait ends.
-      expect(dispositions).toEqual([{ kind: "awaiting_evidence", runId: fixture.runId,
-        reason: "controller_process_space_unverified", retryAt: expect.any(Date) }]);
+      // A stopped or fenced controller boot already outlived its lease and the
+      // fence grace, so the namespace wait ends on the first look: the run ends
+      // as unverified (never as a proven stop) and the task continues in a fresh
+      // run. Nothing local is probed, claimed or recorded as stopped.
+      expect(dispositions).toEqual([{ kind: "blocked", runId: fixture.runId,
+        reason: "controller_process_space_unverified" }]);
       expect(claimed).not.toHaveBeenCalled();
       expect(stamped).not.toHaveBeenCalled();
       expect(stopped).toBe(false);
-      expect(after).toMatchObject({ phase: before.phase, attempt: before.attempt,
+      expect(after).toMatchObject({ phase: "terminal_failure", attempt: before.attempt,
         controllerGeneration: before.controllerGeneration, controllerBootId: before.controllerBootId,
         controllerPid: before.controllerPid, controllerHostHash: before.controllerHostHash,
-        leaseOwner: before.leaseOwner, leaseExpiresAt: before.leaseExpiresAt, resultId: null });
-      expect(run).toMatchObject({ status: "running", processPid: runnerPid, processGroupId: runnerGroup,
-        processStartedAt: startedAt, processHostHash: foreignSpace });
+        failureCode: "native_restart_recovery_blocked",
+        failureDetail: expect.objectContaining({ reason: "controller_process_space_unverified", executorStopEvidence: "unverified" }),
+        resultId: null });
+      expect(run).toMatchObject({ status: "failed", errorCode: "native_restart_recovery_blocked",
+        processPid: runnerPid, processGroupId: runnerGroup, processStartedAt: startedAt, processHostHash: foreignSpace });
       expect(run.runnerProfileJson).toEqual({ ...fixture.preparedProfile, sessionCheckpoint: {
         identity: { companyId, issueId: fixture.issueId, runId: fixture.runId, agentId,
           sessionId: fixture.native.normalizedSessionId },

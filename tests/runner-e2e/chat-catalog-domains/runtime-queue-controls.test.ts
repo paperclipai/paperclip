@@ -6,8 +6,11 @@ function valid() {
     { position: 1, canEdit: true, comment: { id: "color", body: "Make the website red. Keep the existing note about accessible labels.", authorUserId: "human", authorAgentId: null } },
   ] };
   return { scenarioId: "steering.edit-queued-message", origin: "http://fixture.invalid", companyId: "company", leadId: "ceo", agents: [], tasks: [], activity: [], links: [], humanQueries: [], reply: "",
-    runs: [{ id: "prior", status: "succeeded" }, { id: "guide", status: "succeeded" }, { id: "consumer", status: "succeeded" }],
-    state: { task: { id: "website" }, queueBefore: before, targetId: "color", workerRunId: "prior", humanId: "human", concurrentMarker: "Preserve the human note.",
+    runs: [{ id: "prior", agentId: "morgan", status: "succeeded" }, { id: "guide", agentId: "ceo", status: "succeeded" }, { id: "consumer", agentId: "morgan", status: "succeeded" }],
+    state: { task: { id: "website" }, worker: { id: "morgan" }, queueBefore: before, targetId: "color", workerRunId: "prior", humanId: "human", concurrentMarker: "Preserve the human note.",
+      queuedComments: [{ id: "color", updatedAt: "2026-11-12T21:52:30.494Z" }, { id: "font", updatedAt: "2026-11-12T21:50:24.404Z" }],
+      workerCommentReceipts: { reads: {} as Record<string, string>, cited: [] as string[] }, taskDone: true, inTurnOutcomeApplied: false,
+      finalOutcomeApplied: true, continuationWarnedEarlierReads: true,
       queueAfter: { ...before, entries: [{ ...before.entries[1]!, position: 0, comment: { ...before.entries[1]!.comment,
         body: "Make the website blue. Keep the existing note about accessible labels. Preserve the human note." } }, { ...before.entries[0]!, position: 1 }] },
       queryReply: "Your pending red request is in the Website queue. Open its message menu, edit the full request to blue, then move it first.",
@@ -45,4 +48,62 @@ it("rejects losing the initial native work", () => { const o = valid(); o.state.
 
 it.each([200, 403, 500])("rejects late edit status %s rather than replacing the real 409 assertion", status => {
   const o = valid(); o.state.dispatchedStatus = status; expect(gradeQueueEdit(o).passed).toBe(false);
+});
+
+function inTurn() {
+  const o = valid(); o.runs.pop();
+  o.state.workerCommentReceipts = { reads: { color: "2026-11-12T21:52:30.494Z", font: "2026-11-12T21:50:24.404Z" }, cited: ["color", "font"] };
+  Object.assign(o.state, { consumingRunCount: 0, nativeDeliveryBound: false, inTurnOutcomeApplied: true });
+  return o;
+}
+it("accepts the running turn consuming the current edited revision with no continuation", () => expect(gradeQueueEdit(inTurn()).passed).toBe(true));
+it("accepts an in-turn read made after the last edit", () => { const o = inTurn(); o.state.workerCommentReceipts.reads.color = "2026-11-12T21:52:39.000Z"; expect(gradeQueueEdit(o).passed).toBe(true); });
+it("still accepts one continuation when the running turn read only the earlier revision", () => {
+  const o = valid(); o.state.workerCommentReceipts = { reads: { color: "2026-11-12T21:50:32.657Z" }, cited: ["color"] }; expect(gradeQueueEdit(o).passed).toBe(true);
+});
+it("rejects an in-turn read of the earlier revision only", () => { const o = inTurn(); o.state.workerCommentReceipts.reads.color = "2026-11-12T21:50:32.657Z"; expect(gradeQueueEdit(o).passed).toBe(false); });
+it("rejects an in-turn read of only one queued message", () => { const o = inTurn(); delete (o.state.workerCommentReceipts.reads as Record<string, string>).font; expect(gradeQueueEdit(o).passed).toBe(false); });
+it("rejects an in-turn read whose change was never saved", () => { const o = inTurn(); o.state.inTurnOutcomeApplied = false; expect(gradeQueueEdit(o).passed).toBe(false); });
+it("rejects in-turn reads of both messages that cite only one, with no continuation", () => {
+  const o = inTurn(); o.state.workerCommentReceipts.cited = ["color"]; expect(gradeQueueEdit(o).passed).toBe(false);
+});
+it("rejects a double application: an in-turn read cited as handled and a continuation", () => {
+  const o = valid(); o.state.workerCommentReceipts = { reads: { color: "2026-11-12T21:52:30.494Z", font: "2026-11-12T21:50:24.404Z" }, cited: ["color", "font"] }; o.state.inTurnOutcomeApplied = true;
+  expect(gradeQueueEdit(o).passed).toBe(false);
+});
+it("rejects two continuations", () => {
+  const o = valid(); o.runs.push({ id: "again", agentId: "morgan", status: "succeeded" }); o.state.consumingRunCount = 2; expect(gradeQueueEdit(o).passed).toBe(false);
+});
+it("rejects consumption that leaves the queue or task unfinished", () => {
+  const queued = inTurn(); queued.state.queueEmptyAfterDelivery = false; expect(gradeQueueEdit(queued).passed).toBe(false);
+  const open = inTurn(); open.state.taskDone = false; expect(gradeQueueEdit(open).passed).toBe(false);
+});
+function mixed() {
+  const o = valid() as ReturnType<typeof valid> & { state: Record<string, unknown> };
+  Object.assign(o.state, { workerCommentReceipts: { reads: { color: "2026-11-12T21:52:30.494Z" }, cited: ["color"] }, inTurnOutcomeApplied: false, inTurnOutcomeSaved: true, latestOutcomeKept: true,
+    finalOutcomeApplied: false });
+  return o;
+}
+it("grades the whole limit-1 partial read: the turn saved blue, the continuation got only the font note and saved the latest revision", () => {
+  const result = gradeQueueEdit(mixed()); expect(result.checks.filter(check => !check.passed)).toEqual([]); expect(result.passed).toBe(true);
+});
+it("rejects a partial read whose later continuation dropped the saved blue change", () => { const o = mixed(); o.state.latestOutcomeKept = false; expect(gradeQueueEdit(o).passed).toBe(false); });
+it("accepts the running turn reading only the edited message and one continuation delivering the unread one", () => expect(gradeQueueEdit(mixed()).passed).toBe(true));
+it("rejects the edited message read in the running turn whose change was never saved, even with a continuation", () => {
+  const o = mixed(); o.state.inTurnOutcomeSaved = false; expect(gradeQueueEdit(o).passed).toBe(false);
+});
+it("rejects a continuation that re-delivers the message the running turn already read", () => { const o = mixed(); o.state.nativeDeliveryBound = false; expect(gradeQueueEdit(o).passed).toBe(false); });
+function readNotCited() {
+  const o = valid(); o.state.workerCommentReceipts = { reads: { color: "2026-11-12T21:52:30.494Z", font: "2026-11-12T21:50:24.404Z" }, cited: [] };
+  return o;
+}
+it("accepts reads the running turn did not cite, delivered once to a continuation told about the earlier reads", () => expect(gradeQueueEdit(readNotCited()).passed).toBe(true));
+it("rejects that continuation when it was not told the running turn already read the messages", () => {
+  const o = readNotCited(); o.state.continuationWarnedEarlierReads = false; expect(gradeQueueEdit(o).passed).toBe(false);
+});
+it("rejects that continuation when it saves no latest revision", () => {
+  const o = readNotCited(); o.state.finalOutcomeApplied = false; expect(gradeQueueEdit(o).passed).toBe(false);
+});
+it("rejects messages the running turn read but did not cite, with no continuation", () => {
+  const o = inTurn(); o.state.workerCommentReceipts.cited = []; expect(gradeQueueEdit(o).passed).toBe(false);
 });

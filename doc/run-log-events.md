@@ -1010,19 +1010,51 @@ to that run's log. Its payload has one field, `comments`, which maps each
 returned comment ID to that comment's `updatedAt` timestamp. It contains no comment bodies or
 author identifiers. The event creates no Telemetry or OpenTelemetry export.
 
-Per-comment delivery (`deliveredQueuedCommentIds`) reads this event. A
-person's comment counts as received when a run of the task's assignee succeeded
-after reading the comment's current revision. The comment's queued
-wake then neither reopens the finished task nor starts another turn. An edit
-after the read, or a read by a run that did not succeed, leaves the comment
-owed, so it is delivered once. The check reads only the assignee's succeeded
-runs of that task that finished at or after the comment's current revision,
-through the existing run-binding and `(company_id, run_id)` event indexes.
-A saved follow-up resumed after a remote Stop uses the same rule. A read by a
-run that did not succeed never counts. `taskHistoryReadsForRun` lists the
-comments one run read, with each read's time and the comment revision it saw,
-whatever the run's outcome. A failure to write the event leaves the comment
-owed in the same way.
+Per-comment delivery (`deliveredQueuedCommentIds`) reads this event together
+with the run's `run.result.accepted` event. A read alone is not delivery: the
+run may have read the comment and set it aside. A comment counts as received
+only when a run of the task's assignee succeeded after reading the comment's
+current revision, and that run's accepted result cites the comment as a
+`comment:<id>` evidence reference (top-level `evidence[].ref` or a criterion's
+`evidenceRefs`). The comment's queued wake then neither reopens the finished
+task nor starts another turn. An edit after the read, a read by a run that did
+not succeed, or a read the result does not cite leaves the comment owed, so it
+is delivered once in a new turn. That turn's wake marks the comment
+`readByEarlierTurn` when an earlier finished run read its current revision, and
+the prompt asks the agent to check the current task state before acting so
+already-applied work is not repeated. `get_task_history` returns
+`arrivedDuringThisTurn` (the `comment:<id>` refs of comments that other authors
+posted or edited after the run started) with instructions to cite each applied
+comment. The check reads only the assignee's succeeded runs of that task that
+finished at or after the comment's current revision, through the existing
+run-binding and `(company_id, run_id)` event indexes. A saved follow-up
+resumed after a remote Stop uses the same rule. `taskHistoryReadsForRun` lists
+the comments one run read, with each read's time and the comment revision it
+saw, whatever the run's outcome. A failure to write the event leaves the
+comment owed in the same way.
+
+When a run reads a finished child task, the server writes one
+`child_task.read` event (`stream: "system"`, level `info`) to that run's log.
+The reads that count are `get_task_context` on the parent task, and a
+successful agent request with a run token for `GET /api/issues/:id`,
+`GET /api/issues/:id/documents` or `GET /api/issues/:id/documents/:key` of a
+child in `done`. The route writes the event only after the requested content
+has loaded, so a 400 or 404 records nothing. The payload has `parentIssueId`
+and `children`, which maps each finished child ID to the revision the run
+received: its `status`, `updatedAt` and `statusDecisionId`. It contains no
+titles, summaries or document bodies. The event creates no Telemetry or
+OpenTelemetry export.
+
+`hasPendingNativeChildCompletion` reads this event. A child-completion wake no
+longer keeps the parent's done claim open when the finishing run received that
+child in `done` at the completion the wake reports: the received
+`statusDecisionId` is the wake's completion decision, or the received
+`updatedAt` is at or after that decision was saved. The event's own write time
+does not count, so a delayed write of an older revision cannot deliver a newer
+completion. The wake is then cancelled at release instead of starting another
+parent turn. A read while the child was still open, a read of an older
+revision, a read by another run, or a failure to write the event leaves the
+child result owed.
 
 ## Managed Agent File Save Receipts
 

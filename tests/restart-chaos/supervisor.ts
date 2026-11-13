@@ -502,7 +502,7 @@ export class ChaosSupervisor {
     if (isRepeatedRestartFault(kind)) receipt.repeatedRestart = this.repeatedRestartRecord(kind, receipt, restartSteps, previous?.pid ?? null);
     this.faultInProgress = true;
     this.serverReady = false;
-    this.timeline.add("fault_started", { faultId: receipt.faultId, fault: kind, signal: receipt.signal, loadAvg1m: receipt.loadAvg1m, holdMs, requestedBy, previousPid: previous?.pid });
+    this.timeline.add("fault_started", { faultId: receipt.faultId, fault: kind, ...(kind === "K15" && this.deployShape.overlap ? { marks: "swap_requested" } : { signal: receipt.signal }), loadAvg1m: receipt.loadAvg1m, holdMs, requestedBy, previousPid: previous?.pid });
     this.log.write(`\n[restart-chaos] ${receipt.faultId} ${kind} ${receipt.signal} hold=${holdMs}ms requestedBy=${requestedBy} at ${new Date().toISOString()}\n`);
     // CR1 and CR2 with a hold replace the controller as a K15 deploy does (class-r.ts).
     const redeploys = kind === "K15" || classRRedeploys(kind, holdMs);

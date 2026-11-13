@@ -191,6 +191,8 @@ export {
   connectionTokenIssuances,
   toolInvocations,
   toolMcpAppViews,
+  toolMcpSkills,
+  toolMcpSkillFiles,
   toolActionRequests,
   toolCallEvents,
   toolRateLimitCounters,

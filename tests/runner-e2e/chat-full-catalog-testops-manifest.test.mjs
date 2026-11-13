@@ -450,6 +450,30 @@ test('repair source metadata binds the corrected candidate and explicit changed 
   [
     "tasks.assignment-conflict",
     "originalQuery"
+  ],
+  [
+    "recovery.explain-stall",
+    "originalContext"
+  ],
+  [
+    "recovery.explain-stall",
+    "expectedOutcome"
+  ],
+  [
+    "recovery.retry-exhausted",
+    "originalContext"
+  ],
+  [
+    "recovery.retry-exhausted",
+    "expectedOutcome"
+  ],
+  [
+    "recovery.source-action",
+    "originalContext"
+  ],
+  [
+    "recovery.source-action",
+    "expectedOutcome"
   ]
 ]);
   for (const change of repair.changedFields) {

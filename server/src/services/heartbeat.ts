@@ -903,6 +903,7 @@ export function heartbeatService(
     getRunIssueControl,
     getActiveRunIssueControlForAgent,
     getActiveRunForAgent,
+    getQueuedAssignmentRunForIssue,
     getActiveRunIssueSummaryForAgent,
   } = createHeartbeatRunState(db);
   const {
@@ -1323,7 +1324,7 @@ export function heartbeatService(
         readNonEmptyString(agent.adapterConfig.externalBindingId) ?? "");
     },
     applyWakeQueuePostCommitEffects,
-    setRunStatus,
+    setRunStatusFromLive,
     setWakeupStatus,
     appendRunEvent,
     releaseIssueExecutionAndPromote,
@@ -4713,6 +4714,8 @@ export function heartbeatService(
     getActiveRunIssueControlForAgent,
 
     getActiveRunForAgent,
+
+    getQueuedAssignmentRunForIssue,
 
     getActiveRunIssueSummaryForAgent,
   };

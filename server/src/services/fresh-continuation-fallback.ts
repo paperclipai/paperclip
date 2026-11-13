@@ -8,6 +8,8 @@ import {
 } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
+import { undeliveredLegacyUserCommentIds } from "./explicit-native-continuation.js";
+import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
 import { FRESH_CONTINUATION_SUPERSEDED_KEY } from "../agent-run-cancellation.js";
 import { isAcknowledgedNativeReassignmentStop, isAcknowledgedNativeStop } from "./acknowledged-native-stop.js";
 import { adapterExecutionControls } from "./adapter-execution-control.js";
@@ -305,6 +307,40 @@ export async function readFreshContinuationReadiness(db: Db, run: Pick<typeof he
   return { mode: "fresh_isolated_workspace" as const, retryIntentId: recordId, sourceRunId, retainedSourceIds: [] as string[] };
 }
 
+/**
+ * True when a wake continues a cut-off run in a new isolated workspace. The
+ * fallback cleared the task's workspace binding on purpose, and the run
+ * prepares a new workspace itself, so admission must not refuse the wake for
+ * lacking that binding (it would refuse it forever).
+ */
+export async function isFreshIsolatedContinuationWake(db: Db, input: { companyId: string; issueId: string;
+  contextSnapshot: Record<string, unknown> | null | undefined }) {
+  if (typeof object(input.contextSnapshot).freshContinuationIsolation !== "string") return false;
+  return (await readFreshContinuationReadiness(db, { id: "", companyId: input.companyId,
+    contextSnapshot: input.contextSnapshot ?? {} }, input.issueId)) !== null;
+}
+
+/**
+ * True when the fallback replaced this run and its continuation reuses none of
+ * the run's workspace: a new isolated workspace or an abandoned remote epoch.
+ * Holds that only protect the old executor's resources then no longer stand
+ * between the task and its next turn.
+ */
+export async function freshContinuationIsolatesRun(db: Db, input: { companyId: string; runId: string }): Promise<false | {
+  /** The isolated continuation is recorded but not yet delivered as a run. */
+  continuationPending: boolean;
+}> {
+  const [record] = await db.select({ isolation: sql<string>`${issueRecoveryActions.evidence}#>>'{freshContinuation,isolation}'`,
+    delivery: sql<string | null>`${issueRecoveryActions.evidence}->>'continuationDelivery'` }).from(issueRecoveryActions).where(and(
+    eq(issueRecoveryActions.companyId, input.companyId),
+    sql`${issueRecoveryActions.evidence}#>>'{freshContinuation,sourceRunId}' = ${input.runId}`,
+    sql`${issueRecoveryActions.evidence}#>>'{freshContinuation,isolation}' in ('fresh_isolated_workspace', 'remote_epoch')`)).limit(1);
+  if (!record) return false;
+  // Only the recorded continuation carries the isolation marker that prepares
+  // the new workspace, so while it is pending it must be the task's next run.
+  return { continuationPending: record.isolation === "fresh_isolated_workspace" && record.delivery === "pending" };
+}
+
 export async function ensureFreshContinuation(db: Db, input: Input): Promise<FreshContinuationResult> {
   return db.transaction(tx => continueFreshInTransaction(tx as unknown as Db, input));
 }
@@ -339,7 +375,10 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
     or(sql`${issueRecoveryActions.evidence}->>'runId' = ${run.id}`, sql`${issueRecoveryActions.evidence}->>'sourceRunId' = ${run.id}`)))
     .orderBy(asc(issueRecoveryActions.createdAt), asc(issueRecoveryActions.id)).for("update");
   const prior = holds.find(hold => object(hold.evidence.freshContinuation).sourceRunId === run.id);
-  if (prior) return { kind: "already_continued", recoveryActionId: prior.id };
+  if (prior) {
+    await settleLateHolds(tx, { companyId, issue, run, prior, holds: holds.filter(isOwnedReconciliationHold), now });
+    return { kind: "already_continued", recoveryActionId: prior.id };
+  }
   // The holds this decision owns: reconciliation holds that still block the
   // task. Workspace restore/repair holds stay with workspace recovery, and
   // resolved history is never rewritten.
@@ -471,9 +510,20 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
   // Saved user input (a message or a Retry the person pressed) continues the
   // task through normal admission once nothing blocks it; a second, automatic
   // continuation would run after it.
-  const [savedInput] = await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
+  const savedWakes = await tx.select({ id: agentWakeupRequests.id, payload: agentWakeupRequests.payload }).from(agentWakeupRequests).where(and(
     eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.status, "deferred_issue_execution"),
-    eq(agentWakeupRequests.requestedByActorType, "user"), sql`${agentWakeupRequests.payload}->>'issueId' = ${issue.id}`)).limit(1);
+    eq(agentWakeupRequests.requestedByActorType, "user"), sql`${agentWakeupRequests.payload}->>'issueId' = ${issue.id}`)).limit(5);
+  // Saved input continues the task only while it still holds something the
+  // agent has not received: a message the cut-off run already took into its
+  // turn is settled as delivered when promoted, and then nothing would run.
+  let savedInput: { id: string } | undefined;
+  for (const wake of savedWakes) {
+    const commentIds = queuedCommentIdsFromWakePayload(wake.payload);
+    if (!commentIds.length || (await undeliveredLegacyUserCommentIds(tx, companyId, issue.id, run.agentId, commentIds)).length) {
+      savedInput = wake;
+      break;
+    }
+  }
   let delivery: "recorded" | "caller_owns" | "saved_input" = input.delivery === "caller_owns" ? "caller_owns"
     : savedInput ? "saved_input" : "recorded";
 
@@ -489,10 +539,12 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
   // Never claim a stop that was not proven: record what isolates the successor.
   const isolation: FreshContinuationIsolation = fenced || remoteSource ? "remote_epoch"
     : writer === "ended" && !waitBounded ? "writer_ended" : "fresh_isolated_workspace";
-  // With no task workspace binding to move, only a run that carries the
-  // isolation in its context can avoid the shared directory: the recorded
-  // continuation runs first, and saved input follows it.
-  if (isolation === "fresh_isolated_workspace" && !issue.executionWorkspaceId && delivery === "saved_input") delivery = "recorded";
+  // Only a run that carries the isolation in its context prepares the new
+  // workspace (create_new). Saved input carries no such marker: on a task with
+  // no project it would be refused at admission once the binding is cleared,
+  // and otherwise could resolve the old directory. So the recorded
+  // continuation runs first, binds the new workspace, and saved input follows.
+  if (isolation === "fresh_isolated_workspace" && delivery === "saved_input") delivery = "recorded";
   const unverified = await unverifiedActions(tx, run);
   const note = freshContinuationNote({ runId: run.id, unverified,
     workspace: isolation === "writer_ended" ? "kept" : "restored_last_save" });
@@ -593,6 +645,36 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
   return { kind: "continued", recoveryActionId: primaryId, delivery, isolation };
 }
 
+async function settleLateHolds(tx: Db, input: { companyId: string; issue: typeof issues.$inferSelect; run: typeof heartbeatRuns.$inferSelect;
+  prior: typeof issueRecoveryActions.$inferSelect; holds: Array<typeof issueRecoveryActions.$inferSelect>; now: Date }) {
+  const { companyId, issue, run, prior, holds, now } = input;
+  if (!holds.length) return;
+  await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionContinuation);
+  await notifyStatusCardIssueChange(tx, companyId);
+  await notifyRoutineExecutionStatus(tx, issue.id, companyId);
+  const ownsBlock = issue.status === "blocked" && holds.some(hold => holdOwnsBlockedStatus(hold, issue, run));
+  const delivery = String(prior.evidence.continuationDelivery);
+  const followed = ["delivered", "invalidated"].includes(delivery) ? delivery : "coalesced";
+  for (const hold of holds) {
+    const { automaticRecovery, [FRESH_CONTINUATION_CHECK_KEY]: _check, ...evidence } = hold.evidence;
+    await tx.update(issueRecoveryActions).set({ status: "resolved", outcome: "restored", resolvedAt: now, updatedAt: now,
+      ownerType: "system", ownerAgentId: null, ownerUserId: null, wakePolicy: null, monitorPolicy: null, nextAction: USER_TEXT,
+      resolutionNote: "continued_fresh_from_last_saved",
+      evidence: { ...evidence, ...(automaticRecovery !== undefined ? { automaticRecoveryHistory: automaticRecovery } : {}),
+        continuationDelivery: followed, coalescedIntoRecoveryActionId: prior.id,
+        ...(typeof prior.evidence.continuationRunId === "string" ? { continuationRunId: prior.evidence.continuationRunId } : {}) },
+    }).where(and(eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.id, hold.id)));
+  }
+  if (ownsBlock) {
+    await tx.update(issues).set({ status: "todo", unblockDescriptor: null, blockedTransitionAt: null,
+      blockedOwnerNotifiedAt: null, updatedAt: now }).where(and(eq(issues.companyId, companyId), eq(issues.id, issue.id)));
+    await logActivity(tx, { companyId, actorType: "system", actorId: FRESH_CONTINUATION_ACTOR, action: "issue.updated",
+      entityType: "issue", entityId: issue.id, agentId: run.agentId, runId: run.id,
+      details: { status: "todo", previousStatus: "blocked", reason: "fresh_continuation", recoveryActionId: prior.id,
+        _previous: { status: "blocked" } } });
+  }
+}
+
 /** Records why a hold was not continued yet, and when to look again. */
 export async function recordFreshContinuationCheck(db: Db, input: { companyId: string; actionId: string },
   result: FreshContinuationResult, now = new Date()) {
@@ -632,10 +714,63 @@ export function heldExecutionsAwaitingFreshContinuation(db: Db, now: Date, limit
     runId: sql<string>`coalesce(${issueRecoveryActions.evidence}->>'runId', ${issueRecoveryActions.evidence}->>'sourceRunId')` })
     .from(issueRecoveryActions).innerJoin(issues, and(eq(issues.id, issueRecoveryActions.sourceIssueId),
       eq(issues.companyId, issueRecoveryActions.companyId)))
-    .where(and(heldExecutionWhere(), freshContinuationCheckDue(now)))
-    .orderBy(asc(issueRecoveryActions.updatedAt), asc(issueRecoveryActions.id))
+    .where(and(heldExecutionWhere(), freshContinuationCheckDue(now), recentInterruptionSourceSql(now)))
+    // Newest interruption first: the most recent work is the work someone is waiting for.
+    .orderBy(desc(sql`(select source.finished_at from ${heartbeatRuns} source where source.company_id = ${issueRecoveryActions.companyId}
+      and source.id::text = coalesce(${issueRecoveryActions.evidence}->>'runId', ${issueRecoveryActions.evidence}->>'sourceRunId'))`),
+      asc(issueRecoveryActions.id))
     .limit(limit);
 }
+
+/**
+ * The backlog pass continues a held record only when it is a recent
+ * interruption: its source run ended within BACKLOG_CONTINUATION_MAX_AGE_MS
+ * and ended with a restart, deploy, lease, process-loss or recovery-refusal
+ * code. A configuration or provider failure, or anything older, stays exactly
+ * as it is for a person's Retry: re-running last week's failures is not
+ * "an interruption is invisible". Fresh interruptions reach the fallback
+ * through restart recovery and the disposition pass, not through this list.
+ */
+export const BACKLOG_CONTINUATION_MAX_AGE_MS = 24 * 60 * 60_000;
+export const BACKLOG_CONTINUATION_SOURCE_CODES = [
+  "native_restart_recovery_blocked", "native_continuation_requires_reconciliation", "native_session_interrupted",
+  "native_runner_process_exited", "server_shutdown_interrupted", "process_lost", "controller_lease_lost",
+  "execution_finalization_deadline_exceeded", "local_runtime_api_listener_unavailable",
+  "runner_remote_process_identity_unavailable", "continuation_user_authorization_missing",
+] as const;
+/** At most this many backlog continuations per server per rolling minute, and per pass. */
+export const BACKLOG_CONTINUATIONS_PER_MINUTE = 10;
+const BACKLOG_CONTINUATIONS_PER_PASS = 5;
+
+/** Holds the disposition pass (unresolvedExecutionDispositions) handles itself, whatever their age. */
+function liveDispositionHoldSql() {
+  return and(inArray(issueRecoveryActions.status, ["active", "escalated"]), eq(issueRecoveryActions.kind, "active_run_watchdog"))!;
+}
+
+/** The backlog pass's eligibility: the one predicate its listing and its deadline query share. */
+function recentInterruptionSourceSql(now: Date) {
+  return sql`exists (select 1 from ${heartbeatRuns} source where source.company_id = ${issueRecoveryActions.companyId}
+    and source.id::text = coalesce(${issueRecoveryActions.evidence}->>'runId', ${issueRecoveryActions.evidence}->>'sourceRunId')
+    and source.finished_at > ${new Date(now.getTime() - BACKLOG_CONTINUATION_MAX_AGE_MS).toISOString()}::timestamptz
+    and source.error_code in (${sql.join(BACKLOG_CONTINUATION_SOURCE_CODES.map(code => sql`${code}`), sql`, `)}))`;
+}
+
+/** Held records the backlog pass leaves for a person (older, or not an interruption). */
+async function countHeldExecutionsLeftAlone(db: Db, now: Date): Promise<number> {
+  const [row] = await db.select({ count: sql<number>`count(*)::int` }).from(issueRecoveryActions)
+    .innerJoin(issues, and(eq(issues.id, issueRecoveryActions.sourceIssueId), eq(issues.companyId, issueRecoveryActions.companyId)))
+    .where(and(heldExecutionWhere(), sql`not ${recentInterruptionSourceSql(now)}`));
+  return Number(row?.count ?? 0);
+}
+
+/** Per database client: one per server process in production, one per test database in tests. */
+const backlogContinuationTimes = new WeakMap<object, number[]>();
+export function resetBacklogContinuationPacingForTests(db?: Db) {
+  if (db) backlogContinuationTimes.delete(db);
+  lastLeftAloneLogAt = 0;
+}
+let lastLeftAloneLogAt = 0;
+const LEFT_ALONE_LOG_INTERVAL_MS = 10 * 60_000;
 
 /** Held reconciliation records of a task's latest unfinished run (joined to its task). */
 function heldExecutionWhere(options: { includeActive?: boolean } = {}) {
@@ -670,7 +805,7 @@ function heldExecutionWhere(options: { includeActive?: boolean } = {}) {
 }
 
 /** The earliest time a deferred check becomes due again, if any. */
-export async function nextFreshContinuationCheckAt(db: Db): Promise<number | null> {
+export async function nextFreshContinuationCheckAt(db: Db, now = new Date()): Promise<number | null> {
   // The same records the held-run query and the disposition pass would select;
   // a deadline on a record nothing would act on never schedules a scan.
   // That includes active holds that backed off: the disposition pass rechecks
@@ -679,7 +814,10 @@ export async function nextFreshContinuationCheckAt(db: Db): Promise<number | nul
     .from(issueRecoveryActions).innerJoin(issues, and(eq(issues.id, issueRecoveryActions.sourceIssueId),
       eq(issues.companyId, issueRecoveryActions.companyId)))
     .where(and(heldExecutionWhere({ includeActive: true }),
-      sql`${issueRecoveryActions.evidence}#>>'{freshContinuationCheck,nextCheckAt}' is not null`));
+      sql`${issueRecoveryActions.evidence}#>>'{freshContinuationCheck,nextCheckAt}' is not null`,
+      // A record the backlog pass leaves alone schedules nothing; active holds
+      // stay with the disposition pass, which rechecks them when due.
+      or(liveDispositionHoldSql(), recentInterruptionSourceSql(now))));
   return held?.at ? Number(held.at) : null;
 }
 
@@ -688,13 +826,26 @@ export async function nextFreshContinuationCheckAt(db: Db): Promise<number | nul
  * releases, so tasks already waiting continue after deploy without a Retry.
  * Runs on the execution-disposition worker. Bounded per pass.
  */
-export async function continueHeldExecutions(db: Db, now = new Date(), limit = 25) {
-  const candidates = await heldExecutionsAwaitingFreshContinuation(db, now, limit);
+export async function continueHeldExecutions(db: Db, now = new Date(), limit = BACKLOG_CONTINUATIONS_PER_PASS) {
+  if (now.getTime() - lastLeftAloneLogAt >= LEFT_ALONE_LOG_INTERVAL_MS) {
+    lastLeftAloneLogAt = now.getTime();
+    const leftAlone = await countHeldExecutionsLeftAlone(db, now).catch(() => null);
+    if (leftAlone) logger.info({ leftAlone, maxAgeHours: BACKLOG_CONTINUATION_MAX_AGE_MS / 3_600_000 },
+      "Held tasks left for a person: older than the backlog window or not an interruption");
+  }
+  // Per-server pacing: a backlog saved by older releases must not start a herd of runs.
+  let times = backlogContinuationTimes.get(db);
+  if (!times) backlogContinuationTimes.set(db, times = []);
+  while (times.length && times[0]! <= now.getTime() - 60_000) times.shift();
+  const room = Math.min(limit, BACKLOG_CONTINUATIONS_PER_MINUTE - times.length);
+  if (room <= 0) return { checked: 0, continued: 0 };
+  const candidates = await heldExecutionsAwaitingFreshContinuation(db, now, room);
   let continued = 0;
   const seen = new Set<string>();
   for (const candidate of candidates) {
     if (!candidate.runId || seen.has(candidate.runId)) continue;
     seen.add(candidate.runId);
+    times.push(now.getTime());
     try {
       const result = await ensureFreshContinuation(db, { companyId: candidate.companyId, runId: candidate.runId,
         trigger: "held_recovery", now });
