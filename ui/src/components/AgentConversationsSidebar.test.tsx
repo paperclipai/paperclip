@@ -27,6 +27,7 @@ vi.mock("@/lib/router", () => ({
 vi.mock("@/api/agents", () => ({ agentsApi: { list: vi.fn(), get: state.getAgent } }));
 vi.mock("@/api/agentChats", () => ({ agentChatsApi: { list: vi.fn(), ensure: state.ensure } }));
 vi.mock("@/api/auth", () => ({ authApi: { getSession: () => ({ user: { id: "user-a" } }) } }));
+vi.mock("@/api/departments", () => ({ departmentsApi: { list: vi.fn(async () => []) } }));
 vi.mock("./AgentAvatar", () => ({ AgentAvatar: () => null }));
 const memberships = vi.hoisted(() => ({ agentMemberships: {} as Record<string, string> }));
 vi.mock("@/api/resourceMemberships", () => ({ resourceMembershipsApi: {
@@ -63,6 +64,7 @@ it("opens every contact without creating a conversation before the first message
   expect(container.querySelectorAll('nav[aria-label="Agent conversations"] a')).toHaveLength(2);
   expect(container.querySelector('[aria-label="Add chat"]')).toBeNull();
   expect(container.querySelector('[aria-label="Search chats"]')).not.toBeNull();
+  expect(container.querySelector('[aria-label="Chat list layout"]')).toBeNull();
   await openContact("bob");
   expect(state.navigate).toHaveBeenLastCalledWith("/chats/bob");
   expect(state.closeSidebar).toHaveBeenCalledWith(false);
@@ -107,6 +109,49 @@ it("puts pins first in saved order ahead of active and recent chats, and restore
   await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Unpin bob"]')!.click());
   expect(contactOrder()).toEqual(["/chats/carol", "/chats/alice", "/chats/bob"]);
   expect(JSON.parse(localStorage.getItem(pinStorageKey)!)).toContain("agent-chat:other-company:alice");
+});
+
+it("groups chat contacts into collapsible department stacks and keeps the linear list otherwise", async () => {
+  const carol = { ...roster[0], id: "carol", name: "carol", urlKey: "carol" };
+  client.setQueryData(queryKeys.agents.list("company-a"), [...roster, carol]);
+  client.setQueryData(queryKeys.departments.list("company-a"), [
+    { id: "dept-research", companyId: "company-a", name: "Research", agentIds: ["alice", "bob"] },
+    { id: "dept-design", companyId: "company-a", name: "Design", agentIds: ["alice"] },
+    { id: "dept-empty", companyId: "company-a", name: "Empty", agentIds: [] },
+  ]);
+  await render();
+  expect(container.querySelector('[aria-label="Chat list layout"]')).not.toBeNull();
+  expect(container.querySelector('select[aria-label="Department"]')).toBeNull();
+  expect(contactOrder()).toEqual(["/chats/alice", "/chats/bob", "/chats/carol"]);
+  expect(container.textContent).not.toContain("Design");
+  const press = (label: string) => [...container.querySelectorAll("button")].find(button => button.textContent === label)!;
+  await act(async () => press("By department").click());
+  expect(press("By department").getAttribute("aria-pressed")).toBe("true");
+  expect(contactOrder()).toEqual(["/chats/alice", "/chats/alice", "/chats/bob", "/chats/carol"]);
+  expect(container.textContent).not.toContain("Empty");
+  const stack = (name: string) => [...container.querySelectorAll<HTMLButtonElement>("button[aria-expanded]")].find(button => button.textContent?.includes(name))!;
+  expect(stack("Design").getAttribute("aria-expanded")).toBe("true");
+  expect(stack("No department").getAttribute("aria-expanded")).toBe("true");
+  await act(async () => stack("Design").click());
+  expect(stack("Design").getAttribute("aria-expanded")).toBe("false");
+  expect(contactOrder()).toEqual(["/chats/alice", "/chats/bob", "/chats/carol"]);
+  await act(async () => stack("Design").click());
+  expect(contactOrder()).toEqual(["/chats/alice", "/chats/alice", "/chats/bob", "/chats/carol"]);
+  await act(async () => {
+    const input = container.querySelector<HTMLInputElement>('[aria-label="Search chats"]')!;
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "carol");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  expect(contactOrder()).toEqual(["/chats/carol"]);
+  expect(container.textContent).not.toContain("Design");
+  await act(async () => {
+    const input = container.querySelector<HTMLInputElement>('[aria-label="Search chats"]')!;
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    press("List").click();
+  });
+  expect(contactOrder()).toEqual(["/chats/alice", "/chats/bob", "/chats/carol"]);
+  expect(container.querySelector("button[aria-expanded]")).toBeNull();
 });
 
 it("reorders filtered pins with the keyboard and saves their order without moving hidden pins", async () => {

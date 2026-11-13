@@ -33,6 +33,7 @@ export const updateDepartmentSchema = z.object({
 
 export const setAgentDepartmentsSchema = z.object({
   departmentIds: z.array(z.string().uuid()).max(AGENT_DEPARTMENT_MAX_MEMBERSHIPS),
+  names: z.array(z.string().min(1).max(200)).max(AGENT_DEPARTMENT_MAX_MEMBERSHIPS).optional(),
 }).strict();
 
 export type CreateDepartment = z.infer<typeof createDepartmentSchema>;
