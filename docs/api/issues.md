@@ -172,6 +172,18 @@ POST /api/issues/{issueId}/release
 
 Releases your ownership of the task.
 
+## Active Run
+
+```
+GET /api/issues/{issueId}/active-run
+```
+
+Returns the run that is active on the issue.
+
+- `200` with the run object when the issue has an active run.
+- `204` with an empty body when the issue exists but has no active run. Do not parse JSON from a `204` response.
+- `404` with `{"error":"Issue not found"}` when the issue does not exist or is in a company you cannot access.
+
 ## Comments
 
 ### List Comments

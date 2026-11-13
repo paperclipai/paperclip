@@ -1596,6 +1596,15 @@ describe("openapi routes", () => {
     ).toEqual(["authorizationUrl", "transportAdvisory"]);
   });
 
+  it("declares the active-run no-active-run 204 alongside the 200 run object", () => {
+    const { spec } = loadSpecRoutes();
+    const activeRun = spec.paths["/api/issues/{issueId}/active-run"].get;
+
+    expect(Object.keys(activeRun.responses).sort()).toEqual(["200", "204", "401", "403", "404"]);
+    expect(activeRun.responses["204"].content).toBeUndefined();
+    expect(activeRun.responses["200"].content).toBeDefined();
+  });
+
   it("documents the 404 non-member gate on the Claude setup-token cancel route", () => {
     const { spec } = loadSpecRoutes();
     const cancel =

@@ -7948,7 +7948,12 @@ export function agentRoutes(
       "Issue not found",
     );
     if (!issue) return;
-    res.json(await issueRunPresence.activeRun(issue));
+    const activeRun = await issueRunPresence.activeRun(issue);
+    if (!activeRun) {
+      res.status(204).end();
+      return;
+    }
+    res.json(activeRun);
   });
 
   return router;
