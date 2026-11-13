@@ -1573,6 +1573,39 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
     expect(run?.processPid).toBe(remotePid);
   });
 
+  it.each([true, false])("asks the same-run reattachment to replace a Runner that left its recovery read unanswered: %s", async (unanswered) => {
+    const fixture = await seedRun(`remote-unanswered-${unanswered}`);
+    await fixture.db.update(heartbeatRuns).set({
+      processPid: null,
+      processStartedAt: new Date("2020-01-01T00:00:00Z"),
+      runnerProfileJson: {
+        nativeWorkspaceSync: {
+          schema: "paperclip.native-workspace-sync/v1", state: "prepared",
+          descriptorSha256: "a".repeat(64), baselineSha256: "b".repeat(64),
+          workspaceId: "workspace", leaseId: "lease", providerLeaseId: "sandbox",
+          remoteCwd: "/workspace",
+        },
+        sessionCheckpoint: {
+          identity: { companyId, agentId, issueId: fixture.issueId, runId: fixture.runId,
+            sessionId: fixture.native.normalizedSessionId },
+          providerSessionId: "provider-session",
+          process: { providerPid: process.pid },
+        },
+      },
+    }).where(eq(heartbeatRuns.id, fixture.runId));
+    await fixture.db.update(nativeRunFinalizations).set({ attempt: 2, failureDetail: {
+      message: "native_session_recovery_failed: HarnessReconciliationError: codex_history_read_failed: thread/turns/list requires supported paginated history; Error: provider_transport_failed: PRP command session.snapshot timed out (runner connected; pending ahead 0; last runner event seq 337 111s ago)",
+      recoveryMode: "exact_checkpoint_resume", checkpointExists: true,
+      ...(unanswered ? { adoptedRunnerUnanswered: true } : {}),
+    } }).where(eq(nativeRunFinalizations.runId, fixture.runId));
+    const [claim] = await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
+      restartKind: "graceful", runIds: [fixture.runId] });
+    expect(claim).toMatchObject({ kind: "reattach_remote_runner", runId: fixture.runId, providerAttempt: 2,
+      remote: { providerLeaseId: "sandbox", remoteCwd: "/workspace" } });
+    expect(claim?.kind === "reattach_remote_runner" ? claim.replaceUnansweredRunner : "not remote")
+      .toBe(unanswered ? true : undefined);
+  });
+
   it("keeps a restart recovery's attempt credit while the agent directory is busy, then resumes at attempt 3", async () => {
     const fixture = await seedRun("remote-busy-directory");
     await fixture.db.update(heartbeatRuns).set({

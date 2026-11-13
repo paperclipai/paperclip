@@ -476,6 +476,7 @@ import {
   verifyRemoteRunnerReattachment,
   stopStaleRemoteRunnerBeforeBootstrap,
   verifyRemoteRunnerOrSettledExit,
+  nativeRecoveryCommandUnanswered,
   readRemoteProviderPackManifest,
   verifyRemoteProviderPackManifest,
   prepareRemoteProviderPackOnTarget,
@@ -1140,6 +1141,56 @@ describe("remote controller restart adoption", () => {
     const error = await verifyRemoteRunnerOrSettledExit({ claim: { ...claim, exitedBeforeSessionOpen: true },
       target: exitedRunner(state) as never, identity, runId: "run", normalizedSessionId: "session", providerAttempt }).catch(caught => caught);
     expect(readRemoteRunnerRecoveryError(error)).toMatchObject({ stage: "process_verification", reason: "process_not_running" });
+  });
+  describe("a same-run reattachment whose adopted Runner never answered its recovery read", () => {
+    const unanswered = { ...claim, replaceUnansweredRunner: true as const };
+    const midTurn = { lifecycle: "turn_active", outbox: [{ id: 338 }], pendingTerminalDelivery: null, pendingProviderCleanup: null };
+    it.each([2, 3])("launches a fresh Runner instead of adopting the live one again on attempt %i", async providerAttempt => {
+      const { target, execute } = fixture(midTurn);
+      await expect(verifyRemoteRunnerOrSettledExit({ claim: unanswered, target: target as never, identity,
+        runId: "run", normalizedSessionId: "session", providerAttempt })).resolves.toBeUndefined();
+      expect(execute.mock.calls.some(([request]) => /kill -/.test(request.args.join(" ")))).toBe(false);
+    });
+    it("adopts the live Runner when the earlier attempt did not report an unanswered read", async () => {
+      const { target } = fixture(midTurn);
+      const adopted = await verifyRemoteRunnerOrSettledExit({ claim, target: target as never, identity,
+        runId: "run", normalizedSessionId: "session", providerAttempt: 2 });
+      expect(adopted?.pid).toBe(123);
+    });
+    it("launches a fresh Runner over the saved journal of an unanswered Runner that exited mid-turn", async () => {
+      await expect(verifyRemoteRunnerOrSettledExit({ claim: unanswered, target: exitedRunner(midTurn) as never, identity,
+        runId: "run", normalizedSessionId: "session", providerAttempt: 3 })).resolves.toBeUndefined();
+    });
+    it.each([
+      ["a different Runner's saved state", { ...midTurn, runnerInstanceId: "different" }, 3],
+      ["an exhausted attempt budget", midTurn, 4],
+    ] as const)("keeps an exited unanswered Runner fail-closed for %s", async (_case, afterExit, providerAttempt) => {
+      const error = await verifyRemoteRunnerOrSettledExit({ claim: unanswered, target: exitedRunner(midTurn, afterExit) as never,
+        identity, runId: "run", normalizedSessionId: "session", providerAttempt }).catch(caught => caught);
+      expect(readRemoteRunnerRecoveryError(error)).toMatchObject({ stage: "process_verification", reason: "process_not_running" });
+    });
+    it("keeps the live Runner's identity checks before replacing it", async () => {
+      const { target } = fixture({ ...midTurn, runnerInstanceId: "different" });
+      await expect(verifyRemoteRunnerOrSettledExit({ claim: unanswered, target: target as never, identity,
+        runId: "run", normalizedSessionId: "session", providerAttempt: 2 })).rejects.toThrow("runner_remote_recovery_identity_mismatch");
+    });
+    it.each([
+      "native_session_recovery_failed: HarnessReconciliationError: codex_history_read_failed: thread/turns/list requires supported paginated history; Error: provider_transport_failed: PRP command session.snapshot timed out (runner connected; pending ahead 0; last runner event seq 338 76s ago)",
+      "native_session_recovery_failed: HarnessCapabilityUnavailableError: read is unavailable: Error: runnerd exited while waiting for session.snapshot",
+      "native_session_recovery_failed: Error: runner_ingress_unavailable: PRP command runner.drain timed out (runner connected; pending ahead 0; last runner event seq 93 391s ago)",
+    ])("recognizes the staging recovery read that got no answer: %s", message => {
+      expect(nativeRecoveryCommandUnanswered(new Error(message))).toBe(true);
+      expect(nativeRecoveryCommandUnanswered(new Error("wrapped", { cause: new Error(message) }))).toBe(true);
+    });
+    it.each([
+      "runnerd did not report the provider turn identity",
+      "provider_transport_failed: PRP command session.snapshot timed out",
+      "native_session_recovery_failed: provider resumed a different session",
+      "native_session_recovery_failed: provider_transport_failed: PRP command session.snapshot timed out; native_adopted_provider_identity_mismatch",
+      "native_session_recovery_failed: restart interruption history is incomplete",
+    ])("does not replace a Runner for another failure: %s", message => {
+      expect(nativeRecoveryCommandUnanswered(new Error(message))).toBe(false);
+    });
   });
   it.each([
     ["an unsettled suspension", { ...settledSuspension, outbox: [{ id: 1 }] }, 2],
