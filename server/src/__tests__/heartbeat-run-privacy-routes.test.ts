@@ -515,6 +515,14 @@ describeEmbeddedPostgres("heartbeat run privacy routes", { concurrent: false }, 
     expect(denied.status).toBe(404);
     expect((await db.select().from(issues).where(eq(issues.id, fixture.issueId)))[0]?.status).toBe("in_progress");
 
+    // Correlated Stop is for native runs only. It must leave a waiting legacy
+    // run and its task untouched; task Stop sends the plain request below.
+    const correlated = await request(createBoardApp(fixture.companyId, fixture.ownerUserId))
+      .post(`/api/heartbeat-runs/${fixture.privateRunId}/cancel`).send({ cancellationRequestId: randomUUID() });
+    expect(correlated.status).toBe(409);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.privateRunId)))[0]?.status).toBe("queued");
+    expect((await db.select().from(issues).where(eq(issues.id, fixture.issueId)))[0]?.status).toBe("in_progress");
+
     const stopped = await request(createBoardApp(fixture.companyId, fixture.ownerUserId))
       .post(`/api/heartbeat-runs/${fixture.privateRunId}/cancel`).send({});
     expect(stopped.status).toBe(200);
