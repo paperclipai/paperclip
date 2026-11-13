@@ -607,6 +607,7 @@ export function OrgChart({ orgTree: providedOrgTree, agents: providedAgents, mat
               <Card
                 key={`${node.kind ?? "agent"}:${node.id}`}
                 data-org-card
+                data-org-kind={node.kind ?? "agent"}
                 data-leader={node.leader}
                 data-tier={node.tier}
                 data-depth={node.depth}

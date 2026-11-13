@@ -608,6 +608,7 @@ export function OrgChart() {
               <Card
                 key={`${node.kind ?? "agent"}:${node.id}`}
                 data-org-card
+                data-org-kind={node.kind ?? "agent"}
                 className="block absolute py-0 hover:shadow-md hover:border-foreground/20 transition-(--tp-box-shadow-border-color) duration-150 cursor-pointer select-none"
                 style={{
                   left: node.x,
