@@ -618,6 +618,30 @@ describe("provider tool-use identity", () => {
     expect(signal?.aborted).toBe(true);
     expect(await (await pending).json()).toMatchObject({ result: { isError: true, content: [{ text: "Paperclip tool call cancelled" }] } });
   });
+
+  it("cancels only the call of the MCP session that sent the cancel when two sessions reuse a request id", async () => {
+    const signals = new Map<string, AbortSignal>();
+    const handler = vi.fn((value: { signal: AbortSignal; providerToolUseId?: string }) => {
+      signals.set(value.providerToolUseId!, value.signal);
+      return new Promise(() => {});
+    });
+    const bridge = await startRunnerToolBridge({ tools: [tool("documents.read")], providerToolUseIdMetaKey: META_KEY, handler });
+    bridges.push(bridge);
+    const send = (session: string, body: Record<string, unknown>) => fetch(bridge.url, { method: "POST",
+      headers: { Authorization: `Bearer ${bridge.secret}`, "Content-Type": "application/json", "Mcp-Session-Id": session },
+      body: JSON.stringify({ jsonrpc: "2.0", ...body }) });
+    const first = send("session-a", call(7, { n: 1 }, { [META_KEY]: "toolu_first" }));
+    await vi.waitFor(() => expect(handler).toHaveBeenCalledTimes(1));
+    const second = send("session-b", call(7, { n: 2 }, { [META_KEY]: "toolu_second" }));
+    await vi.waitFor(() => expect(handler).toHaveBeenCalledTimes(2));
+    expect((await send("session-a", { method: "notifications/cancelled", params: { requestId: 7 } })).status).toBe(202);
+    expect(signals.get("toolu_first")?.aborted).toBe(true);
+    expect(signals.get("toolu_second")?.aborted).toBe(false);
+    expect(await (await first).json()).toMatchObject({ result: { isError: true, content: [{ text: "Paperclip tool call cancelled" }] } });
+    expect((await send("session-b", { method: "notifications/cancelled", params: { requestId: 7 } })).status).toBe(202);
+    expect(signals.get("toolu_second")?.aborted).toBe(true);
+    await second;
+  });
 });
 
 describe("Copilot semantic receipt opt-in", () => {
