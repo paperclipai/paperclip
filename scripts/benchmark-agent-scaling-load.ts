@@ -11,7 +11,9 @@
  *   events  appendHeartbeatRunEvent for an `item.completed`, then the real
  *           controller checkpoint save, which overlaps the next append
  *   lease   every LEASE_S, one renewal of all leases through the shared
- *           schedule (LEASE_MODE=single: one transaction per run, as before)
+ *           schedule (LEASE_MODE=single: one transaction per run, as before).
+ *           In batch mode LEASE_S is at most 20: the schedule renews a remote
+ *           lease on its own 20 s after its last renewal.
  *   api     an HTTP request through actorMiddleware with the run's agent JWT
  *
  * Arrivals are open-loop: operation i of a stream is due at start + i/rate.
@@ -21,7 +23,8 @@
  *
  * It reports, for the window: event-loop utilization and delay, CPU, memory
  * allocated, statements and transactions, and per source the operations done
- * against those offered with their lateness.
+ * against those offered with their lateness. An operation that settles after
+ * the window (and the bounded wait for the last delta batches) is not done.
  *
  * Not modelled: frame decrypt and validation, redaction, the object run log,
  * live-event delivery to browsers, tool-gateway and route handler bodies,
@@ -64,6 +67,11 @@ for (const source of SOURCES) assert(source in RATES, `Unknown source ${source}`
 const DELTA_BYTES = number("DELTA_BYTES", 120), EVENT_KIB = number("EVENT_KIB", 2);
 const DELTA_BATCH_MS = number("DELTA_BATCH_MS", 250), DELTA_BATCH_MAX = 100;
 const LEASE_BATCHED = (process.env.LEASE_MODE ?? "batch") !== "single";
+// The shared schedule renews a remote lease on its own 20 s after the last
+// renewal. The model drives every renewal itself, so a tick must come sooner,
+// or the schedule's own renewals would add work that the model does not count.
+assert(!LEASE_BATCHED || !SOURCES.includes("lease") || 1 / RATES.lease <= 20,
+  "LEASE_MODE=batch needs LEASE_S of at most 20: the shared schedule renews on its own after 20 s");
 process.env.PAPERCLIP_SECRETS_MASTER_KEY ??= randomBytes(32).toString("base64");
 process.env.PAPERCLIP_AGENT_JWT_SECRET ??= randomBytes(32).toString("base64");
 
@@ -206,6 +214,8 @@ try {
   const sampler = setInterval(() => { const heap = process.memoryUsage().heapUsed; if (heap > lastHeap) allocated += heap - lastHeap; lastHeap = heap; }, 20);
   delay.enable();
   const started = performance.now(), deadline = started + SECONDS * 1000;
+  // Set when the window closes: an operation that settles later is not done.
+  let windowClosed = false;
 
   // With the shared schedule every lease of the process renews in one tick,
   // so the lease source is one stream for the fleet, not one per agent.
@@ -222,9 +232,9 @@ try {
       const due = started + offset + index * interval;
       if (due >= deadline) return;
       await sleep(due - performance.now());
-      try { await renewNativeExecutionLeasesNow(db); stat.done += fleet.length; }
-      catch (error) { stat.failed += fleet.length; stat.firstError ||= String((error as Error)?.message ?? error).slice(0, 200); }
-      stat.late.push(performance.now() - due);
+      try { await renewNativeExecutionLeasesNow(db); if (!windowClosed) stat.done += fleet.length; }
+      catch (error) { if (!windowClosed) stat.failed += fleet.length; stat.firstError ||= String((error as Error)?.message ?? error).slice(0, 200); }
+      if (!windowClosed) stat.late.push(performance.now() - due);
       if (performance.now() > deadline) return;
     }
   })() : Promise.resolve();
@@ -234,9 +244,9 @@ try {
       const due = started + offset + index * interval;
       if (due >= deadline) return;
       await sleep(due - performance.now());
-      const settled = operations[source](agent).then(() => { stat.done += 1; },
-        error => { stat.failed += 1; stat.firstError ||= String((error as Error)?.message ?? error).slice(0, 200); })
-        .then(() => { stat.late.push(performance.now() - due); });
+      const settled = operations[source](agent).then(() => { if (!windowClosed) stat.done += 1; },
+        error => { if (!windowClosed) stat.failed += 1; stat.firstError ||= String((error as Error)?.message ?? error).slice(0, 200); })
+        .then(() => { if (!windowClosed) stat.late.push(performance.now() - due); });
       // The runner does not wait for a batched delta's receipt before it
       // sends the next one; every other operation is awaited in turn.
       if (pipelined && source === "deltas") inFlight.push(settled);
@@ -250,6 +260,9 @@ try {
   // that settle within one batch time of the window's end.
   for (const agent of fleet) flushDeltas(agent);
   await Promise.race([Promise.all(inFlight), sleep(DELTA_BATCH_MS + 250)]);
+  // Freeze the per-source counts with the other measurements below. A delta
+  // that commits after this, while the queued work drains, is not done.
+  windowClosed = true;
   await Promise.all(renewals.map(renewal => renewal.stop()));
   for (const agent of fleet) if (agent.deltaTimer !== null) clearTimeout(agent.deltaTimer);
   const elapsedMs = performance.now() - started;

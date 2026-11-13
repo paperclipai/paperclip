@@ -29,6 +29,8 @@ describe("agent scaling load model", () => {
     for (const [source, result] of Object.entries(report.bySource)) {
       expect(result.failed, source).toBe(0);
       expect(result.done, source).toBeGreaterThan(0);
+      // Counts freeze with the window: work that settles later is not done.
+      expect(result.done, source).toBeLessThanOrEqual(result.offered);
     }
     // A failed save is reported, not dropped.
     expect(report.checkpointSaves.failed).toBe(0);

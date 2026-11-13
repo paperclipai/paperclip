@@ -104,8 +104,15 @@ load average 11–15.
 | 50 | 1,780 | 0.26 | 20,000 of 20,000 | 103 ms / 253 ms | 1,000 of 1,000 | 2 ms / 10 ms |
 | 100 | 3,570 | 0.46 | 40,000 of 40,000 | 105 ms / 258 ms | 2,000 of 2,000 | 2 ms / 69 ms |
 | 200 | 7,110 | 0.73 | 80,000 of 80,000 | 151 ms / 573 ms | 4,000 of 4,000 | 3 ms / 452 ms |
-| 400 | 11,380 | 0.99 | 160,000 of 160,000 | 1.7 s / 2.2 s | 5,473 of 8,000 | 394 ms / 620 ms |
+| 400 | 11,380 | 0.99 | not reliable for this run (1) | 1.7 s / 2.2 s | 5,473 of 8,000 | 394 ms / 620 ms |
 | 200, deltas and leases as before Phase 1 | 10,220 | 0.90 | 39,425 of 80,000 | 5.1 s / 10.2 s | 4,000 of 4,000 | 165 ms / 1.8 s |
+
+(1) The model that measured this table still counted a delta that committed
+after the window, while queued checkpoints drained. At 400 agents deltas ran
+1.7 s late, so its count includes deltas outside the window. The model now
+counts only deltas that commit inside the window; this row was not measured
+again. At 50 to 200 agents every delta committed within its batch time, so
+those counts are unaffected.
 
 What it shows:
 
