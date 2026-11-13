@@ -322,7 +322,7 @@ function projectTaskInterruptionState(issue: ProjectionIssue, input: ProjectionS
         : "Paperclip couldn’t confirm shutdown. Your work is saved; continuation is paused." } };
   }
   if (retryAt && retryAt > now) return { ...base, state: "retry_scheduled",
-    nextRetryAt: new Date(retryAt).toISOString(), canRetry: !preparationPending && !nativeResumeAt,
+    nextRetryAt: new Date(retryAt).toISOString(), canRetry: !preparationPending && !nativeResumeAt && run.status !== "scheduled_retry",
     ...(system?.nextAttemptAt && recoveryStep ? { recoveryStep } : {}) };
   if (nativeResumeAt && !system && now - nativeResumeAt < NATIVE_RESUME_DISPATCH_GRACE_MS)
     return { ...base, state: "working" };
