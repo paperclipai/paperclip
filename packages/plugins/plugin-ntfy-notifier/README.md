@@ -42,7 +42,7 @@ trigger starts to work when the host emits the event.
 
 | Category | Host event | Notifies when | Stock upstream host today |
 |---|---|---|---|
-| Approvals | `approval.created` | A new approval is created. A tool-gateway approval and its approval card count as one decision. | **Works** for approvals created through the approvals API, agent hires and invitations. Tool-gateway and budget approvals do not log `approval.created` today, so they do not notify. |
+| Approvals | `approval.created` | A new approval is created. Once the host emits them, a tool-gateway approval and its approval card count as one decision. | **Works** for approvals created through the approvals API, agent hires and invitations. Tool-gateway and budget approvals do not log `approval.created` today, so they do not notify. |
 | Interactions addressed to a person | `issue.thread_interaction_created` | A pending interaction card with no agent addressee, which is what the board inbox shows. | **Not delivered yet.** The host logs the activity with the fields the plugin needs, but the name is not in `PLUGIN_EVENT_TYPES`. Forward-compatible with #4990, which registers it. |
 | Board blocker attention: human-owned unblock step | `issue.updated` | The issue moves into `blocked`, or its unblock descriptor changes, and its current `unblockDescriptor.owner` is `"board"` or a user. | **Works.** The plugin reads the issue to confirm the owner. |
 | Board blocker attention: computed (stalled blocker tree) | `issue.blocker_attention_changed` | A blocked tree whose terminal blocker has no live path enters the board attention feed. | **Not delivered.** No stock host emits this event yet. Forward-compatible only. |
@@ -141,8 +141,11 @@ pnpm --filter @paperclipai/plugin-ntfy-notifier build
 ### Self-contained install artifact
 
 ```sh
-PLUGIN_SDK_VERSION=<host version> pnpm --filter @paperclipai/plugin-ntfy-notifier build:artifact
+PLUGIN_SDK_VERSION=<host version> node packages/plugins/plugin-ntfy-notifier/scripts/build-artifact.mjs
 ```
+
+Run it from the repository root after `pnpm install`. Without
+`PLUGIN_SDK_VERSION`, the workspace plugin SDK is bundled instead.
 
 This bundles the worker and the manifest with the published plugin SDK of the
 given version into `artifact/paperclip-plugin-ntfy-notifier-<version>.tgz`,
@@ -150,3 +153,8 @@ and writes its sha256. The artifact has no runtime dependencies, so it can be
 unpacked and installed by local path without npm. The tarball is
 deterministic: sorted entries, fixed mtime and owner, and gzip without a
 timestamp.
+
+The artifact build requires GNU tar (`--sort=name`, `--mtime`, `--owner`).
+It stops with an error, and writes no archive or checksum, when `tar` is not
+GNU tar or when `tar` or `gzip` fails. On macOS, install GNU tar (for example
+`brew install gnu-tar`) and put its `gnubin` directory first on `PATH`.
