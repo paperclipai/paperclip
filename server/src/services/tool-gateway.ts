@@ -9937,20 +9937,31 @@ export function createToolGatewayService(
     };
   }
 
-  /** Return a claimed approved action whose provider task is still running to approved, under the same claim. */
-  async function resumeApprovedActionForPendingTask(input: { actionRequestId: string; invocationId: string; claimUpdatedAt: Date; message: string }) {
+  /**
+   * Return a claimed approved action to approved, under the same claim, when
+   * its call stopped without finishing: the provider's task is still running,
+   * or the app asked the person a question. The next execution continues it
+   * (attaches to the task, or sends the answer) without asking for approval again.
+   */
+  async function resumeApprovedActionForPendingTask(input: {
+    actionRequestId: string; invocationId: string; claimUpdatedAt: Date; message: string;
+    errorCode?: "provider_task_pending" | "elicitation_required";
+  }) {
     const now = new Date();
+    const errorCode = input.errorCode ?? "provider_task_pending";
     return db.transaction(async (tx) => {
       const [invocation] = await tx.select({ status: toolInvocations.status }).from(toolInvocations)
         .where(eq(toolInvocations.id, input.invocationId)).for("update").limit(1);
-      if (invocation?.status !== "executing") return false;
+      // A question stop already marked the invocation as waiting.
+      const resumable = invocation?.status === "executing" || (errorCode === "elicitation_required" && invocation?.status === "awaiting_approval");
+      if (!resumable) return false;
       const [actionRequest] = await tx.select({ companyId: toolActionRequests.companyId, status: toolActionRequests.status, updatedAt: toolActionRequests.updatedAt })
         .from(toolActionRequests).where(eq(toolActionRequests.id, input.actionRequestId)).for("update").limit(1);
       if (actionRequest?.status !== "executing" || actionRequest.updatedAt.getTime() !== input.claimUpdatedAt.getTime()) return false;
       await notifyToolReviewChange(tx, actionRequest.companyId);
       await tx.update(toolInvocations).set({
-        status: "awaiting_approval", startedAt: null, errorCode: "provider_task_pending", errorMessage: input.message, updatedAt: now,
-      }).where(and(eq(toolInvocations.id, input.invocationId), eq(toolInvocations.status, "executing")));
+        status: "awaiting_approval", startedAt: null, errorCode, errorMessage: input.message, updatedAt: now,
+      }).where(and(eq(toolInvocations.id, input.invocationId), inArray(toolInvocations.status, ["executing", "awaiting_approval"])));
       await tx.update(toolActionRequests).set({ status: "approved", updatedAt: now })
         .where(and(eq(toolActionRequests.id, input.actionRequestId), eq(toolActionRequests.status, "executing"), eq(toolActionRequests.updatedAt, input.claimUpdatedAt)));
       return true;
@@ -10522,6 +10533,12 @@ export function createToolGatewayService(
       // asking the person again or starting the work twice.
       if (error instanceof ToolGatewayHttpError && error.reasonCode === "provider_task_pending"
         && await resumeApprovedActionForPendingTask({ actionRequestId: claimed.id, invocationId: invocation.id, claimUpdatedAt: claimed.updatedAt, message: error.message })) {
+        throw error;
+      }
+      // The app asked the person a question: keep the approval, so the
+      // repeated call carries the answer instead of failing the action.
+      if (error instanceof ToolGatewayHttpError && error.reasonCode === "elicitation_required"
+        && await resumeApprovedActionForPendingTask({ actionRequestId: claimed.id, invocationId: invocation.id, claimUpdatedAt: claimed.updatedAt, message: error.message, errorCode: "elicitation_required" })) {
         throw error;
       }
       const { reasonCode } = await markApprovedActionFailed({

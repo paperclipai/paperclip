@@ -6,6 +6,8 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agents,
+  approvals,
+  toolActionRequests,
   companies,
   companyMemberships,
   createDb,
@@ -66,7 +68,11 @@ describe("MCP form elicitation mapping", () => {
     expect(built.questionSet).toMatchObject({ title: "Linear needs your input", description: "Tell us about the ticket", submitLabel: "Send to Linear" });
     const byId = Object.fromEntries(built.questionSet.questions.map((question) => [question.id, question]));
     expect(byId.title).toMatchObject({ answerMode: "text", required: true, initialText: "Untitled", textValidation: { minLength: 3, maxLength: 80 } });
-    expect(byId.contact).toMatchObject({ answerMode: "text", required: false, textValidation: { pattern: expect.any(String) } });
+    // The question form checks only fixed-width patterns: an email is a hint, a date is checked.
+    expect(byId.contact).toMatchObject({ answerMode: "text", required: false, helpText: "An email address." });
+    expect(byId.contact).not.toHaveProperty("textValidation");
+    expect(buildElicitationQuestionSet({ appName: "A", request: { message: "m", requestedSchema: { properties: { d: { type: "string", format: "date" } } } } }))
+      .toMatchObject({ ok: true, questionSet: { questions: [{ textValidation: { pattern: "^\\d\\d\\d\\d-\\d\\d-\\d\\d$" } }] } });
     expect(byId.priority).toMatchObject({ answerMode: "single_select", options: [{ label: "Urgent" }, { label: "Normal", recommended: true }] });
     expect(byId.team).toMatchObject({ answerMode: "single_select", options: [{ label: "ops" }, { label: "eng" }] });
     expect(byId.labels).toMatchObject({ answerMode: "multi_select", helpText: "Choose at least 1. Choose at most 2.", options: [{ label: "Bug", recommended: true }, { label: "UX" }, { label: "Speed" }] });
@@ -301,7 +307,7 @@ const support = await getEmbeddedPostgresTestSupport();
     if (keyDir) await rm(keyDir, { recursive: true, force: true });
   });
 
-  async function setup(handle: (url: string, init: RequestInit) => Promise<Response>) {
+  async function setup(handle: (url: string, init: RequestInit) => Promise<Response>, input: { askFirst?: string[] } = {}) {
     const [org] = await db.insert(companies).values({ name: `Elicit ${randomUUID()}`, issuePrefix: `E${randomUUID().slice(0, 5)}` }).returning();
     await db.insert(companyMemberships).values({ companyId: org!.id, principalType: "user", principalId: actor.actorId, status: "active", membershipRole: "admin" });
     const [agent] = await db.insert(agents).values({ companyId: org!.id, name: "Ticket agent", role: "engineer", adapterType: "process", adapterConfig: {}, runtimeConfig: {} }).returning();
@@ -313,7 +319,8 @@ const support = await getEmbeddedPostgresTestSupport();
     const service = toolAccessService(db, options);
     const connected = await service.connectGalleryApp(org!.id, { link: `https://ask-${randomUUID().slice(0, 8)}.example.com/mcp`, name: "Tracker" }, actor);
     await service.finishGalleryAppConnection(org!.id, connected.connectionId, {
-      enabledCatalogEntryIds: connected.catalog.map((entry) => entry.id), askFirstCatalogEntryIds: [], access: "all_agents",
+      enabledCatalogEntryIds: connected.catalog.map((entry) => entry.id),
+      askFirstCatalogEntryIds: connected.catalog.filter((entry) => input.askFirst?.includes(entry.toolName)).map((entry) => entry.id), access: "all_agents",
     }, actor);
     const gatewayOptions = { ...options, toolActionSigningSecret: "elicitation-signing-key" };
     let gateway = createToolGatewayService(db, gatewayOptions);
@@ -333,6 +340,7 @@ const support = await getEmbeddedPostgresTestSupport();
     const rounds = () => db.select().from(toolMcpElicitations).where(eq(toolMcpElicitations.companyId, org!.id));
     return {
       org: org!, agent: agent!, issue: issue!, run: run!, connected, call, cards, answer, skip, rounds, interactions,
+      gateway: () => gateway,
       /** A call from another run of the agent on the same task, with its own session. */
       callerInAnotherRun: async () => {
         const [other] = await db.insert(heartbeatRuns).values({ companyId: org!.id, agentId: agent!.id, invocationSource: "assignment", status: "running", contextSnapshot: { issueId: issue!.id } }).returning();
@@ -654,5 +662,35 @@ const support = await getEmbeddedPostgresTestSupport();
     // The answered round made room for its own follow-up.
     expect(await ctx.cards()).toHaveLength(2);
     expect((await ctx.rounds()).filter((row) => row.status === "waiting")).toHaveLength(10);
+  });
+
+  it("keeps an approved action's approval while its question waits, and sends the answer without asking again", async () => {
+    const server = askingServer();
+    const ctx = await setup(server.handle, { askFirst: ["create_ticket"] });
+    await expect(ctx.call("create_ticket", { ref: "approved" })).rejects.toMatchObject({ reasonCode: "approval_required" });
+    const [pending] = await db.select().from(toolActionRequests).where(eq(toolActionRequests.companyId, ctx.org.id));
+    if (pending!.approvalId) await db.update(approvals).set({ status: "approved", decidedByUserId: actor.actorId, decidedAt: new Date() }).where(eq(approvals.id, pending!.approvalId));
+    // The approved execution reaches the app, which asks a question.
+    await ctx.gateway().approveActionRequest({ companyId: ctx.org.id, actionRequestId: pending!.id, actor: { userId: actor.actorId } }).catch((error) => error);
+    expect(server.calls()).toHaveLength(1);
+    const [request] = await db.select().from(toolActionRequests).where(eq(toolActionRequests.id, pending!.id));
+    expect(request).toMatchObject({ status: "approved" });
+    const card = (await ctx.cards()).find((candidate) => candidate.kind === "ask_user_questions")!;
+    await ctx.answer(card.id, [{ questionId: "title", optionIds: ["paperclip_text_answer"], otherText: "Approved and answered" }, { questionId: "priority", optionIds: ["choice_1"] }]);
+    // The repeated call continues the approved action: no second approval, the answer goes out.
+    // An approved action's continuation is reported with its result (status "replayed").
+    const done = await ctx.call("create_ticket", { ref: "approved" });
+    expect(JSON.stringify(done.result)).toContain("Approved and answered");
+    expect(server.calls()).toHaveLength(2);
+    expect(server.calls()[1]!.body.params.inputResponses).toMatchObject({ details: { action: "accept", content: { title: "Approved and answered" } } });
+  });
+
+  it("marks an app's question card so skipping it wakes the agent (route test: issue-thread-interaction-routes)", async () => {
+    const server = askingServer();
+    const ctx = await setup(server.handle);
+    await ctx.call("create_ticket", { ref: "skip-wake" }).catch(() => undefined);
+    const [card] = await ctx.cards();
+    const { isAppQuestionCardKey } = await import("../services/mcp-elicitation.js");
+    expect(isAppQuestionCardKey(card!.idempotencyKey)).toBe(true);
   });
 });

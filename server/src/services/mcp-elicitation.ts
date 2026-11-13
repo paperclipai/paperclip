@@ -42,6 +42,11 @@ function text(value: unknown): string | undefined {
  * Provider text is shown as plain words. Links in a form are not clickable
  * (spec: Safe URL Handling), and secrets that slipped in are redacted.
  */
+/** True for a card made from an app's question (direct or MCP Task), by its idempotency key. */
+export function isAppQuestionCardKey(key: string | null | undefined): boolean {
+  return typeof key === "string" && (key.startsWith("mcp-elicit:") || key.startsWith("mcp-task-input:") || key.startsWith("mcp-elicitation:"));
+}
+
 export function elicitationPlainText(value: string, max: number): string {
   return redactSensitiveText(value)
     .replace(/[<>]/g, "")
@@ -94,10 +99,12 @@ const optionId = (index: number) => `choice_${index + 1}`;
 
 type Field = { key: string; property: Record<string, unknown>; question: PaperclipQuestionSetQuestion; choices?: Choice[]; kind: "text" | "number" | "integer" | "boolean" | "single" | "multi" };
 
+// Patterns stay within the fixed-width subset the question form can check
+// safely (no repetition), so an email is a hint and the app validates it.
 const FORMAT_HINT: Record<string, { help: string; pattern?: string }> = {
-  email: { help: "An email address.", pattern: "^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$" },
+  email: { help: "An email address." },
   uri: { help: "A web address." },
-  date: { help: "A date, like 2026-11-13.", pattern: "^\\d{4}-\\d{2}-\\d{2}$" },
+  date: { help: "A date, like 2026-11-13.", pattern: "^\\d\\d\\d\\d-\\d\\d-\\d\\d$" },
   "date-time": { help: "A date and time, like 2026-11-13T09:30:00Z." },
 };
 

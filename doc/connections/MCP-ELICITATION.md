@@ -38,14 +38,15 @@ Stdio apps keep URL only.
 - **Shows which app is asking.** The card's title is "*App* needs your input", using the connection's name. The app's message is shown as plain text: links are not clickable, and secrets are redacted.
 - **Only people can answer** (`resolverPolicy: "human_only"`). An agent answering its own tool's question would be consent given on nobody's behalf.
 - **Lets the person review before sending.** The form is the standard question form: fields can be edited, and nothing is sent until **Send to *App***. **Skip** declines.
-- **Is checked on submit.** Required fields, lengths, number ranges and the email and date formats are validated before the card is resolved.
+- **Is checked on submit.** Required fields, lengths, number ranges and the date format are validated before the card is resolved. Email and web address show a hint and are checked by the app, because the form only checks fixed-width patterns.
+- **Wakes the agent either way.** Answering wakes the agent through the question-response outbox. **Skip** on an app's question also wakes it (ordinary questions do not), because the decline only reaches the app on the agent's next call.
 
 Each form field maps to one card field:
 
 | Schema | Card field |
 | --- | --- |
 | `string` (`minLength`, `maxLength`, `default`) | Text. The default is filled in |
-| `string` with `format` `email` / `date` / `date-time` / `uri` | Text with a hint. `email` and `date` are validated |
+| `string` with `format` `email` / `date` / `date-time` / `uri` | Text with a hint. `date` is validated |
 | `number`, `integer` (`minimum`, `maximum`, `default`) | Number field |
 | `boolean` (`default`) | Yes / No. The default is marked as recommended |
 | `enum`, or `oneOf` with `const` + `title` | Single choice. Titles are the labels |
@@ -95,6 +96,7 @@ The agent never receives the person's answers from Paperclip, only the app's res
 - **Older apps that ask several questions.** An answer is spent only when the app finishes the whole call. An app that asks Q1 and then Q2 gets Q1's answer again on the next call, without a second card. An app that refuses the reply (an HTTP error) keeps the answer for the next call.
 - **Keyed retries.** A call with an unsent round runs again (instead of replaying its last result, even a failed send) only if it has the same tool and arguments as the saved round.
 - **One round per call.** At most one waiting round exists per call (per question, for older servers), enforced by a unique index. Two matching calls at once share its cards.
+- **Ask-first actions.** An approved action that stops for a question keeps its approval. The repeated call continues the same approved action and sends the answer, with no second approval.
 - **Claims.** A repeated call claims the round before sending. If the process dies mid-send, the claim lapses after the tool timeout plus a minute, and the next call sends again. A failed send releases the claim at once.
 - **Expiry.** Rounds expire after 24 hours, checked when the call is next made; no background poller is involved. Expired cards are withdrawn, so nobody answers a dead question, and the call starts over.
 - **Activity log.** The log records `tool_gateway.elicitation_requested`, `tool_gateway.elicitation_sent` (the actions only, never values), `tool_gateway.elicitation_refused` (field names only) and `tool_gateway.elicitation_expired`. Answers are logged as `issue.thread_interaction_answered`.
