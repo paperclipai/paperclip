@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -19,6 +19,7 @@ const generalServerShardDurations = loadShardDurations(
 const serializedShardDurations = loadShardDurations(
   path.join(scriptsDir, "serialized-shard-durations.json"),
 );
+const chatShardDurations = loadShardDurations(path.join(scriptsDir, "chat-shard-durations.json"));
 const serverRoot = path.join(repoRoot, "server");
 const serverSrcDir = path.join(repoRoot, "server", "src");
 const serverTestsDir = path.join(repoRoot, "server", "src", "__tests__");
@@ -409,8 +410,7 @@ function selectSerializedSuites(routeTests, shardIndex, shardCount) {
   return shardFiles.map((file) => byRepoPath.get(file));
 }
 
-async function runVitest(args, label, testShard = null, exactFiles = false) {
-  console.log(`\n[test:run] ${label}`);
+function isolatedTestEnv() {
   invocationIndex += 1;
   const tempRootParent = process.platform === "win32" ? os.tmpdir() : "/tmp";
   // Production workspace/security checks reject symlink aliases. In particular
@@ -435,19 +435,33 @@ async function runVitest(args, label, testShard = null, exactFiles = false) {
   delete env.PAPERCLIP_CI_SELECTION_HASH;
   mkdirSync(env.PAPERCLIP_HOME, { recursive: true });
   mkdirSync(env.TMPDIR, { recursive: true });
+  return { testRoot, env };
+}
+
+async function collectVitestList(filters, { testRoot, env }, name) {
+  const output = path.join(testRoot, `${name}.json`);
+  await new Promise((resolve, reject) => {
+    const child = spawn("pnpm", ["exec", "vitest", "list", ...sourceOnlyVitestArgs,
+      ...filters, "--allowOnly=false", "--includeTaskLocation", `--json=${output}`], {
+      cwd: repoRoot, env, stdio: "inherit",
+    });
+    child.once("error", (error) => reject(new Error(`Vitest collection failed: ${error.message}`)));
+    child.once("close", (code, signal) => {
+      if (code === 0) resolve();
+      else reject(new Error(`Vitest collection failed: ${signal ?? code}`));
+    });
+  });
+  return JSON.parse(readFileSync(output, "utf8"));
+}
+
+async function runVitest(args, label, testShard = null, exactFiles = false) {
+  console.log(`\n[test:run] ${label}`);
+  const isolated = isolatedTestEnv();
+  const { env } = isolated;
   if (testShard) {
     const file = path.resolve(repoRoot, chatSuite);
     const sourceLines = readFileSync(file, "utf8").split("\n");
-    const collect = (filters, name) => {
-      const output = path.join(testRoot, `${name}.json`);
-      const result = spawnSync("pnpm", ["exec", "vitest", "list", ...sourceOnlyVitestArgs,
-        ...filters, "--allowOnly=false", "--includeTaskLocation", `--json=${output}`], {
-        cwd: repoRoot, env, stdio: "inherit",
-      });
-      if (result.error || result.status !== 0) throw new Error(`Vitest collection failed: ${result.error?.message ?? result.status}`);
-      return JSON.parse(readFileSync(output, "utf8"));
-    };
-    const allCollected = collect(args, "all");
+    const allCollected = testShard.collected ?? await collectVitestList(args, isolated, "all");
     const collected = [];
     const bogusCollected = [];
     for (const test of allCollected) {
@@ -458,15 +472,15 @@ async function runVitest(args, label, testShard = null, exactFiles = false) {
         `[test:run] dropping ${bogusCollected.length} bogus Vitest collection entr${bogusCollected.length === 1 ? "y" : "ies"} with no matching it()/test() call: ${bogusCollected.map((test) => `${test.location.line}:${JSON.stringify(test.name)}`).join(", ")}`,
       );
     }
-    const selected = partitionTestLines(collected, testShard.count, file)[testShard.index];
+    const selected = partitionTestLines(collected, testShard.count, file, chatShardDurations)[testShard.index];
     // Validate shard membership with the same `list`-reported lines that
     // produced `selected`, then switch to the `run`-compatible lines only for
     // the filters handed to the real `vitest run` below (see
     // chatSuiteRunLine).
     const validationFilters = selected.lines.map((line) => `${chatSuite}:${line}`);
     const validationArgs = [...args.filter((arg) => arg !== chatSuite), ...validationFilters];
-    assertSelectedTests(selected.tests, collect(validationArgs, "selected"), file);
-    console.log(`[test:run] chat shard ${testShard.index + 1}/${testShard.count}: ${selected.tests.length}/${collected.length} tests, ${selected.lines.length} source lines; exact filter coverage verified`);
+    assertSelectedTests(selected.tests, await collectVitestList(validationArgs, isolated, "selected"), file);
+    console.log(`[test:run] chat shard ${testShard.index + 1}/${testShard.count}: ${selected.tests.length}/${collected.length} tests, ${selected.lines.length} source lines, ${Math.round(selected.weight / 1000)}s recorded; exact filter coverage verified`);
     const runFilters = selected.lines.map((line) => `${chatSuite}:${chatSuiteRunLine(sourceLines, line)}`);
     args = [...args.filter((arg) => arg !== chatSuite), ...runFilters, "--allowOnly=false"];
   }
@@ -511,7 +525,7 @@ async function runProjectGroup(projects, groupName, shardIndex = null, shardCoun
 }
 
 function chatShardWorkers(index, count) {
-  const workers = count > 1 && !hasSharedTestDatabase && !options.serialChat ? 2 : 1;
+  const workers = count > 1 && !hasSharedTestDatabase && !options.serialChat ? 3 : 1;
   return Array.from({ length: workers }, (_, offset) => ({
     index: (index ?? 0) * workers + offset,
     count: (count ?? 1) * workers,
@@ -522,9 +536,11 @@ async function runGeneralGroup(routeTests, groupName, shardIndex = null, shardCo
   if (groupName === generalChatGroupName) {
     // Each invocation gets its own temporary home and embedded PostgreSQL.
     // Wait for both children even on failure so no sibling is abandoned.
-    const results = await Promise.allSettled(chatShardWorkers(shardIndex, shardCount).map((shard) =>
-      runVitest(["--project", "@paperclipai/server", ...serializedServerVitestArgs, chatSuite],
-        "chat integration test shard", shard),
+    const args = ["--project", "@paperclipai/server", ...serializedServerVitestArgs, chatSuite];
+    const workers = chatShardWorkers(shardIndex, shardCount);
+    const collected = await collectVitestList(args, isolatedTestEnv(), "all");
+    const results = await Promise.allSettled(workers.map((shard) =>
+      runVitest(args, "chat integration test shard", { ...shard, collected }),
     ));
     const failed = results.find((result) => result.status === "rejected");
     if (failed) throw failed.reason;
