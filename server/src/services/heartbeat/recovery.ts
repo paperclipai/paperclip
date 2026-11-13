@@ -72,6 +72,7 @@ import {
   ne,
   or,
   sql,
+  type SQL,
 } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -173,7 +174,7 @@ export interface HeartbeatRecoveryDependencies extends Pick<HeartbeatRetryDepend
   }) => Promise<void>;
   setRunStatus: (runId: string, status: string, patch?: Partial<typeof heartbeatRuns.$inferInsert>) => Promise<HeartbeatRun | null>;
   setRunStatusFromLive: (runId: string, status: string, fromStatuses: string[], patch?: Partial<typeof heartbeatRuns.$inferInsert>,
-    failureReport?: undefined, cancellationCondition?: undefined, options?: { onlyWhileNativeLeaseLapsed?: true }) => Promise<{
+    failureReport?: undefined, cancellationCondition?: SQL, options?: { onlyWhileNativeLeaseLapsed?: true }) => Promise<{
     updated: boolean;
     run: HeartbeatRun | null;
   }>;
