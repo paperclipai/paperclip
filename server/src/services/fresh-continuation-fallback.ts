@@ -444,8 +444,9 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
     ...holds.filter(hold => readSystemRecovery(hold.evidence)).map(hold => hold.updatedAt.getTime()));
   const savedWorkSignature = savedWork.map(recovery => `${recovery!.generationId}:${recovery!.revision}:${recovery!.attempts}:${recovery!.state}`)
     .sort().join("|");
+  const sourceAgeMs = now.getTime() - run.finishedAt.getTime();
   const waitedMs = pendingMarker ? now.getTime() - Number(pendingMarker.firstPendingAt)
-    : holds.length ? 0 : now.getTime() - run.finishedAt.getTime();
+    : sourceAgeMs <= BACKLOG_CONTINUATION_MAX_AGE_MS ? sourceAgeMs : 0;
   const progressing = Boolean(pendingMarker && ((typeof pendingMarker.progressAt === "number" && progressAt > pendingMarker.progressAt)
     || (typeof pendingMarker.savedWorkSignature === "string" && savedWorkSignature !== pendingMarker.savedWorkSignature)));
   // Saved-work recovery that is running and advancing keeps its own 30-minute
@@ -457,6 +458,7 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
   // Rechecks back off 1, 2, 3, 4 minutes, so the bound is reached on time.
   const step = Math.min(4, (typeof pendingMarker?.checks === "number" ? pendingMarker.checks : 0) + 1) * EXACT_RECOVERY_RECHECK_MS;
   const pending = (reason: string, retryAt: Date): FreshContinuationResult | null => waitBounded ? null
+    : !pendingMarker && sourceAgeMs > BACKLOG_CONTINUATION_MAX_AGE_MS ? { kind: "person_owned", reason: "retry_needed" }
     : { kind: "exact_recovery_pending", reason, progressAt, savedWorkSignature,
       retryAt: new Date(Math.min(retryAt.getTime(), now.getTime() + step)) };
 

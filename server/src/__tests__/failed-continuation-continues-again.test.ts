@@ -5,6 +5,7 @@ import { activityLog, agentWakeupRequests, agents, companies, createDb, heartbea
 import { recoveryService } from "../services/recovery/service.js";
 import { ASSIGNED_WORK_CONTINUED_ACTION, assignedWorkSweep } from "../services/recovery/assigned-work-sweep.js";
 import { FRESH_CONTINUATION_SCHEMA, continueHeldExecutions, resetBacklogContinuationPacingForTests } from "../services/fresh-continuation-fallback.js";
+import { createSystemRecovery } from "../services/system-recovery-state.js";
 import { recoveryPostgresSupport, startRecoveryPostgres } from "./helpers/recovery-postgres.js";
 
 const describePostgres = recoveryPostgresSupport.supported ? describe : describe.skip;
@@ -227,5 +228,34 @@ describePostgres("a continuation that fails before doing any work is continued a
     }
     expect(await continuationsOf(stopped.id)).toHaveLength(1);
     expect(queue.calls).toHaveLength(0);
+  }, 60_000);
+  it.each([["20 minutes", 20 * MINUTE, "continued"], ["30 hours", 30 * HOUR, "retry_needed"]] as const)(
+    "a saved-work wait on a hold nobody records a check on ends in a named state; run ended %s ago, checked by two servers", async (_label, endedAgo, ending) => {
+    const f = await seed();
+    const task = await f.task();
+    const failed = await f.run(task.id, { errorCode: "setup_failed", error: DAYTONA_TIMEOUT, finishedAt: new Date(Date.now() - endedAgo),
+      contextSnapshot: { wakeReason: "transient_failure_retry", retryReason: "transient_failure" } });
+    await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: task.id, kind: "active_run_watchdog",
+      status: "resolved", outcome: "restored", ownerType: "system", returnOwnerAgentId: f.agentId,
+      cause: "legacy_execution_requires_reconciliation", fingerprint: `legacy-execution:${failed.id}`, nextAction: "Recovering saved work.",
+      resolvedAt: new Date(Date.now() - endedAgo), evidence: { runId: failed.id, systemRecovery: createSystemRecovery(failed.id) } });
+    const queue = wakeQueue();
+    let clock = new Date();
+    const servers = [0, 1].map(() => assignedWorkSweep(db, { enqueueWakeup: queue.enqueueWakeup, now: () => clock }));
+    for (const [index, step] of [0, 4, 9, 17, 33].entries()) {
+      clock = new Date(Date.now() + step * MINUTE);
+      await servers[index % 2]!.checkIssue({ companyId: f.companyId, issueId: task.id });
+      if ((await continuationsOf(failed.id)).length || queue.calls.length) break;
+    }
+    if (ending === "continued") {
+      expect(await continuationsOf(failed.id)).toHaveLength(1);
+      expect(queue.calls).toHaveLength(0);
+    } else {
+      expect(await continuationsOf(failed.id)).toHaveLength(0);
+      const [entry] = await db.select().from(activityLog).where(and(eq(activityLog.entityId, task.id),
+        eq(activityLog.action, ASSIGNED_WORK_CONTINUED_ACTION)));
+      expect(entry?.details).toMatchObject({ outcome: "queued" });
+      expect(queue.calls).toHaveLength(1);
+    }
   }, 60_000);
 });
