@@ -3612,7 +3612,7 @@ function logIssueListRequest(input: {
   });
 }
 
-async function recordAgentChildTaskRead(db: Db, req: Request, issue: { id: string; companyId: string; parentId: string | null; status: string; updatedAt: Date }) {
+async function recordAgentChildTaskRead(db: Db, req: Request, issue: { id: string; companyId: string; parentId: string | null; status: string; updatedAt: Date; lastStatusDecisionId?: string | null }) {
   if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.runId || !issue.parentId || issue.status !== "done") return;
   await recordChildTaskRead(db, { companyId: issue.companyId, agentId: req.actor.agentId, runId: req.actor.runId,
     parentIssueId: issue.parentId, children: [issue] })
@@ -10082,12 +10082,12 @@ export function issueRoutes(
     );
     if (!issue) return;
     if (!(await timing.time("authorization", () => assertIssueReadAllowed(req, res, issue, { allowBreakGlass: true, finalForAgents: true })))) return;
-    await recordAgentChildTaskRead(db, req, issue);
     // Saved cards are structural conversation data. Include their local
     // projection before first paint, independently of slow recovery, workspace
     // and related-task enrichment. This never refreshes external providers.
     if (req.query.view === "core") {
       const core = await readIssueCore(issue, timing.time);
+      await recordAgentChildTaskRead(db, req, issue);
       res.setHeader("Server-Timing", timing.header());
       res.json(core);
       return;
@@ -10169,6 +10169,7 @@ export function issueRoutes(
     const visibleMentionedProjects = mentionedProjects.filter((_, index) => mentionedProjectVisibility[index]);
     // Recovery revalidation may change the blocker; read it afterwards.
     const executionBlocker = await timing.time("execution_blocker", () => getExecutionBlocker(db, issue.companyId, issue.id));
+    await recordAgentChildTaskRead(db, req, issue);
     res.setHeader("Server-Timing", timing.header());
     res.json({
       ...issue,
@@ -11372,10 +11373,10 @@ export function issueRoutes(
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
-    await recordAgentChildTaskRead(db, req, issue);
     const docs = await documentsSvc.listIssueDocuments(issue.id, {
       includeSystem: req.query.includeSystem === "true",
     });
+    await recordAgentChildTaskRead(db, req, issue);
     res.json(docs);
   });
 
@@ -11389,7 +11390,6 @@ export function issueRoutes(
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
-    await recordAgentChildTaskRead(db, req, issue);
     const keyParsed = issueDocumentKeySchema.safeParse(
       String(req.params.key ?? "")
         .trim()
@@ -11410,6 +11410,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Document not found" });
       return;
     }
+    await recordAgentChildTaskRead(db, req, issue);
     if (!shouldIncludeDocumentAnnotations(req)) {
       res.json(doc);
       return;

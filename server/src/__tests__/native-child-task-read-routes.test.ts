@@ -7,6 +7,7 @@ import { agentWakeupRequests, agents, companies, createDb, heartbeatRunEvents, h
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { issueRoutes } from "../routes/issues.js";
 import { errorHandler } from "../middleware/index.js";
+import { documentService } from "../services/documents.js";
 import { CHILD_TASK_READ_EVENT, hasPendingNativeChildCompletion } from "../services/native-runtime/native-child-completion-delivery.js";
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -48,7 +49,7 @@ describePostgres("a parent run reading a finished child through the issue routes
     onBehalfOfUserId: null, onBehalfOfMemberships: [] }) as Express.Request["actor"];
   const boardActor = { type: "board", userId: "board-user", source: "local_implicit", isInstanceAdmin: true } as Express.Request["actor"];
 
-  async function seed(childStatus: "done" | "in_progress", issueNumber: number) {
+  async function seed(childStatus: "done" | "in_progress", issueNumber: number, options: { childRevisionAgeMs?: number; wakeAgeMs?: number } = {}) {
     const runId = randomUUID();
     const childId = randomUUID();
     const parentId = randomUUID();
@@ -57,10 +58,14 @@ describePostgres("a parent run reading a finished child through the issue routes
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running", runtimeMode: "native",
       nativeIssueId: parentId, startedAt: new Date(Date.now() - 60_000), contextSnapshot: { issueId: parentId } });
     await db.insert(issues).values({ id: childId, companyId, parentId, title: "Child ledger", identifier: `CHR-${issueNumber}`,
-      issueNumber, status: childStatus, assigneeAgentId: agentId });
+      issueNumber, status: childStatus, assigneeAgentId: agentId,
+      ...(options.childRevisionAgeMs ? { updatedAt: new Date(Date.now() - options.childRevisionAgeMs) } : {}) });
+    await documentService(db).upsertIssueDocument({ issueId: childId, key: "ledger", format: "markdown", body: "ROUND 1" });
+    if (options.childRevisionAgeMs) await db.update(issues).set({ updatedAt: new Date(Date.now() - options.childRevisionAgeMs) })
+      .where(eq(issues.id, childId));
     const [wake] = await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "automation", triggerDetail: "system",
       reason: "issue_execution_deferred", requestedByActorType: "system", requestedByActorId: `native-status-wake-dispatch:${randomUUID()}`,
-      status: "deferred_issue_execution", createdAt: new Date(Date.now() - 30_000),
+      status: "deferred_issue_execution", createdAt: new Date(Date.now() - (options.wakeAgeMs ?? 30_000)),
       payload: { issueId: parentId, _paperclipWakeContext: { issueId: parentId, wakeReason: "issue_children_completed",
         nativeChildCompletionDecisionId: randomUUID(), completedChildIssueId: childId } } }).returning();
     return { runId, childId, parentId, wakeId: wake!.id };
@@ -73,9 +78,9 @@ describePostgres("a parent run reading a finished child through the issue routes
   it.each(["", "/documents", "/documents/ledger"])("records the parent run's read of a finished child (GET /issues/:id%s)", async (suffix) => {
     const f = await seed("done", 10 + suffix.length);
     expect(await pending(f)).toBe(true);
-    await request(app(agentActor(f.runId))).get(`/api/issues/${f.childId}${suffix}`);
+    expect((await request(app(agentActor(f.runId))).get(`/api/issues/${f.childId}${suffix}`)).status).toBe(200);
     expect(await reads(f.runId)).toEqual([expect.objectContaining({ payload: {
-      parentIssueId: f.parentId, children: { [f.childId]: { status: "done", updatedAt: expect.any(String) } } } })]);
+      parentIssueId: f.parentId, children: { [f.childId]: { status: "done", updatedAt: expect.any(String), statusDecisionId: null } } } })]);
     expect(await pending(f)).toBe(false);
   });
 
@@ -100,6 +105,23 @@ describePostgres("a parent run reading a finished child through the issue routes
     }
     expect(await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.eventType, CHILD_TASK_READ_EVENT))
       .then(rows => rows.filter(row => row.runId === otherRunId || row.companyId === otherCompanyId))).toEqual([]);
+    expect(await pending(f)).toBe(true);
+  });
+
+  it.each([
+    ["an invalid document key", "/documents/Not A Key!", 400],
+    ["a missing document", "/documents/missing", 404],
+  ])("does not count a failed request for %s as a read", async (_shape, suffix, status) => {
+    const f = await seed("done", 43 + suffix.length);
+    expect((await request(app(agentActor(f.runId))).get(`/api/issues/${f.childId}${encodeURI(suffix)}`)).status).toBe(status);
+    expect(await reads(f.runId)).toEqual([]);
+    expect(await pending(f)).toBe(true);
+  });
+
+  it("does not let a read of an older finished revision deliver a newer completion", async () => {
+    const f = await seed("done", 70, { childRevisionAgeMs: 60_000, wakeAgeMs: 10_000 });
+    expect((await request(app(agentActor(f.runId))).get(`/api/issues/${f.childId}`)).status).toBe(200);
+    expect(await reads(f.runId)).toHaveLength(1);
     expect(await pending(f)).toBe(true);
   });
 });

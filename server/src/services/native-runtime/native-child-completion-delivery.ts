@@ -14,14 +14,15 @@ export const CHILD_TASK_READ_EVENT = "child_task.read";
 
 export async function recordChildTaskRead(db: Db, input: {
   companyId: string; agentId: string; runId: string; parentIssueId: string;
-  children: ReadonlyArray<{ id: string; parentId: string | null; status: string; updatedAt: Date }>;
+  children: ReadonlyArray<{ id: string; parentId: string | null; status: string; updatedAt: Date; lastStatusDecisionId?: string | null }>;
 }): Promise<void> {
   const completed = input.children.filter(child => child.parentId === input.parentIssueId && child.status === "done");
   if (completed.length === 0) return;
   await appendHeartbeatRunEvent(db, { companyId: input.companyId, runId: input.runId, agentId: input.agentId,
     eventType: CHILD_TASK_READ_EVENT, stream: "system", level: "info",
     payload: { parentIssueId: input.parentIssueId,
-      children: Object.fromEntries(completed.map(child => [child.id, { status: child.status, updatedAt: child.updatedAt.toISOString() }])) } });
+      children: Object.fromEntries(completed.map(child => [child.id, { status: child.status, updatedAt: child.updatedAt.toISOString(),
+        statusDecisionId: child.lastStatusDecisionId ?? null }])) } });
 }
 
 /** New child results belong to a fresh parent turn, including across a Done claim. */
@@ -48,10 +49,13 @@ export async function hasPendingNativeChildCompletion(db: Db, input: NativeChild
         and child_read.event_type = ${CHILD_TASK_READ_EVENT}
         and child_read.payload->>'parentIssueId' = ${input.issueId}
         and child_read.payload->'children'->(${completedChildId})->>'status' = 'done'
-        and child_read.created_at >= coalesce((select ${statusDecisions.createdAt} from ${statusDecisions}
-          where ${statusDecisions.companyId} = ${input.companyId}
-            and ${statusDecisions.id}::text = ${agentWakeupRequests.payload}->'_paperclipWakeContext'->>'nativeChildCompletionDecisionId'),
-          ${agentWakeupRequests.createdAt}))`,
+        and (child_read.payload->'children'->(${completedChildId})->>'statusDecisionId'
+            = ${agentWakeupRequests.payload}->'_paperclipWakeContext'->>'nativeChildCompletionDecisionId'
+          or (child_read.payload->'children'->(${completedChildId})->>'updatedAt')::timestamptz
+            >= date_trunc('milliseconds', coalesce((select ${statusDecisions.createdAt} from ${statusDecisions}
+              where ${statusDecisions.companyId} = ${input.companyId}
+                and ${statusDecisions.id}::text = ${agentWakeupRequests.payload}->'_paperclipWakeContext'->>'nativeChildCompletionDecisionId'),
+              ${agentWakeupRequests.createdAt}))))`,
     input.sourceIntentId ? ne(agentWakeupRequests.id, input.sourceIntentId) : undefined,
   )).limit(1);
   return Boolean(pending);

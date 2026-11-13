@@ -1026,19 +1026,26 @@ owed in the same way.
 
 When a run reads a finished child task, the server writes one
 `child_task.read` event (`stream: "system"`, level `info`) to that run's log.
-The reads that count are `get_task_context` on the parent task, and an agent
-request with a run token for `GET /api/issues/:id`, `GET /api/issues/:id/documents`
-or `GET /api/issues/:id/documents/:key` of a child in `done`. The payload has
-`parentIssueId` and `children`, which maps each finished child ID to its
-`status` and `updatedAt`. It contains no titles, summaries or document bodies.
-The event creates no Telemetry or OpenTelemetry export.
+The reads that count are `get_task_context` on the parent task, and a
+successful agent request with a run token for `GET /api/issues/:id`,
+`GET /api/issues/:id/documents` or `GET /api/issues/:id/documents/:key` of a
+child in `done`. The route writes the event only after the requested content
+has loaded, so a 400 or 404 records nothing. The payload has `parentIssueId`
+and `children`, which maps each finished child ID to the revision the run
+received: its `status`, `updatedAt` and `statusDecisionId`. It contains no
+titles, summaries or document bodies. The event creates no Telemetry or
+OpenTelemetry export.
 
 `hasPendingNativeChildCompletion` reads this event. A child-completion wake no
-longer keeps the parent's done claim open when the finishing run read that
-child in `done` after the child's completion decision was saved. The wake is
-then cancelled at release instead of starting another parent turn. A read
-while the child was still open, a read by another run, or a failure to write
-the event leaves the child result owed.
+longer keeps the parent's done claim open when the finishing run received that
+child in `done` at the completion the wake reports: the received
+`statusDecisionId` is the wake's completion decision, or the received
+`updatedAt` is at or after that decision was saved. The event's own write time
+does not count, so a delayed write of an older revision cannot deliver a newer
+completion. The wake is then cancelled at release instead of starting another
+parent turn. A read while the child was still open, a read of an older
+revision, a read by another run, or a failure to write the event leaves the
+child result owed.
 
 ## Managed Agent File Save Receipts
 
