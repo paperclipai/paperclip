@@ -62,6 +62,19 @@ describe("heartbeat queue module boundary", () => {
     expect(deps.executeRun).not.toHaveBeenCalled();
   });
 
+  it("claims no queued run once run admission is closed, whatever path asks (draining or yielding server)", async () => {
+    // Release-swap wave: an old server started a delivered continuation 3 minutes after traffic
+    // had moved to its dispatching replacement, through executeRun of a queued run, which no gate covered.
+    const database = guardedDatabase();
+    const deps = callbacks(database.db);
+    deps.isRunAdmissionClosed = () => true;
+    const queue = createHeartbeatQueue(database.db, deps);
+    const queued = { id: "run-1", status: "queued" } as Parameters<typeof queue.claimQueuedRun>[0];
+    expect(await queue.claimQueuedRun(queued)).toBeNull();
+    expect(database.access).not.toHaveBeenCalled();
+    expect(deps.executeRun).not.toHaveBeenCalled();
+  });
+
   it("honors the process-wide run admission gate in every heartbeat instance", async () => {
     const database = guardedDatabase();
     const deps = callbacks(database.db);
@@ -496,6 +509,117 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     deps.getAgent.mockResolvedValue(f.agent);
     return { ...f, source, lease, successor, deps, queue: createHeartbeatQueue(db, deps) };
   }
+
+  it.each([
+    ["issue_continuation_needed", "cancelled"], ["issue_recovery_action_restored", "cancelled"], ["issue_commented", "running"],
+  ] as const)("does not start a %s run whose task another run already finished (expected %s)", async (wakeReason, expected) => {
+    // Release-swap wave t011: a delivered continuation queued while its task was open started after
+    // another run marked the task done, and took an extra turn on a finished task.
+    const f = await fixture("queued");
+    await db.update(issues).set({ status: "done", executionRunId: null }).where(eq(issues.id, f.issue.id));
+    // A person's message wake carries the comment it answers.
+    const wakeCommentId = wakeReason === "issue_commented"
+      ? (await db.insert(issueComments).values({ companyId: f.company.id, issueId: f.issue.id, authorAgentId: f.agent.id,
+        body: "One more thing" }).returning())[0].id
+      : undefined;
+    const [queued] = await db.update(heartbeatRuns).set({ responsibleUserId: "queue-test-user",
+      contextSnapshot: { issueId: f.issue.id, wakeReason, ...(wakeCommentId ? { wakeCommentId } : {}) } })
+      .where(eq(heartbeatRuns.id, f.run.id)).returning();
+    const deps = callbacks(db);
+    deps.getAgent.mockResolvedValue(f.agent);
+    const queue = createHeartbeatQueue(db, deps);
+    const claimed = await queue.claimQueuedRun(queued);
+    if (expected === "cancelled") {
+      expect(claimed).toBeNull();
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, queued.id)))[0])
+        .toMatchObject({ status: "cancelled", errorCode: "issue_closed_before_start" });
+    } else {
+      // A person's message on a done task still runs (and reopens it through the normal path).
+      expect(claimed).toMatchObject({ id: queued.id, status: "running" });
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, queued.id)))[0])
+        .toMatchObject({ status: "running", errorCode: null });
+    }
+  });
+
+  it.each([
+    { label: "still undelivered", delivered: false },
+    { label: "already read by the closing run", delivered: true },
+  ])("answers a person's message attached to a system continuation on a closed task once ($label)", async ({ delivered }) => {
+    // Admission can attach a deferred comment to a queued system continuation without changing its
+    // wake reason. The claim-time closed-task cancel must not consume that person's message.
+    const f = await fixture("queued");
+    const [comment] = await db.insert(issueComments).values({ companyId: f.company.id, issueId: f.issue.id,
+      authorType: "user", authorUserId: "queue-test-user", body: "Can you also update the changelog?" }).returning();
+    if (delivered) {
+      // The run that closed the task received the message as its own wake input.
+      const startedAt = new Date(comment.createdAt.getTime() + 1_000);
+      await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.agent.id, status: "succeeded",
+        invocationSource: "assignment", startedAt, finishedAt: new Date(startedAt.getTime() + 1_000),
+        contextSnapshot: { issueId: f.issue.id, wakeReason: "issue_commented", wakeCommentIds: [comment.id] } });
+    }
+    await db.update(issues).set({ status: "done", executionRunId: null }).where(eq(issues.id, f.issue.id));
+    const [queued] = await db.update(heartbeatRuns).set({ responsibleUserId: "queue-test-user",
+      contextSnapshot: { issueId: f.issue.id, wakeReason: "issue_continuation_needed", wakeCommentIds: [comment.id] } })
+      .where(eq(heartbeatRuns.id, f.run.id)).returning();
+    // The continuation's wake is still queued and bound to the run, as admission leaves it.
+    await db.update(agentWakeupRequests).set({ status: "queued", claimedAt: null, runId: queued.id })
+      .where(eq(agentWakeupRequests.id, f.wake.id));
+    const deps = callbacks(db);
+    deps.getAgent.mockResolvedValue(f.agent);
+    const claimed = await createHeartbeatQueue(db, deps).claimQueuedRun(queued);
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, f.agent.id));
+    if (delivered) {
+      expect(claimed).toBeNull();
+      expect(runs.find(row => row.id === queued.id)).toMatchObject({ status: "cancelled", errorCode: "issue_closed_before_start" });
+      expect(runs).toHaveLength(2);
+    } else {
+      // Exactly one run answers it: this one, claimed as the person's follow-up.
+      expect(claimed).toMatchObject({ id: queued.id, status: "running" });
+      expect(runs.filter(row => row.status !== "succeeded")).toEqual([expect.objectContaining({ id: queued.id, status: "running" })]);
+    }
+  });
+
+  it("keeps the result of a continuation another dispatcher already started and finished", async () => {
+    // Two servers overlap during a swap: both read the same queued continuation; one starts it and
+    // the run closes the task before the other reaches the closed-task check with its stale copy.
+    const f = await fixture("queued");
+    const [staleQueued] = await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issue.id, wakeReason: "issue_continuation_needed" } })
+      .where(eq(heartbeatRuns.id, f.run.id)).returning();
+    const finishedAt = new Date();
+    await db.update(heartbeatRuns).set({ status: "succeeded", startedAt: finishedAt, finishedAt,
+      resultJson: { summary: "Finished by the other server" } }).where(eq(heartbeatRuns.id, f.run.id));
+    await db.update(issues).set({ status: "done", executionRunId: null }).where(eq(issues.id, f.issue.id));
+    const deps = callbacks(db);
+    deps.getAgent.mockResolvedValue(f.agent);
+    expect(await createHeartbeatQueue(db, deps).claimQueuedRun(staleQueued)).toBeNull();
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id)))[0]).toMatchObject({
+      status: "succeeded", errorCode: null, resultJson: { summary: "Finished by the other server" } });
+    expect(deps.setWakeupStatus).not.toHaveBeenCalled();
+    expect(deps.releaseIssueExecutionAndPromote).not.toHaveBeenCalled();
+  });
+
+  it("returns the claim to the queue when run admission closes while the claim is being checked", async () => {
+    // SIGTERM (drain) or the hand-over yield can close admission during claimQueuedRun's awaited
+    // checks, after its first admission check passed. The run must stay exactly as it was.
+    const f = await fixture("queued");
+    const [queued] = await db.update(heartbeatRuns).set({ responsibleUserId: "queue-test-user",
+      contextSnapshot: { issueId: f.issue.id, wakeReason: "issue_commented" } })
+      .where(eq(heartbeatRuns.id, f.run.id)).returning();
+    const [issueBefore] = await db.select().from(issues).where(eq(issues.id, f.issue.id));
+    let admissionClosed = false;
+    const deps = callbacks(db);
+    deps.getAgent.mockResolvedValue(f.agent);
+    deps.isRunAdmissionClosed = () => admissionClosed;
+    deps.budgets.getInvocationBlock.mockImplementation(async () => { admissionClosed = true; return null; });
+    expect(await createHeartbeatQueue(db, deps).claimQueuedRun(queued)).toBeNull();
+    const [stored] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, queued.id));
+    expect(stored).toMatchObject({ status: "queued", startedAt: null, finishedAt: null, errorCode: null,
+      responsibleUserId: queued.responsibleUserId, runnerProfileJson: queued.runnerProfileJson });
+    expect((await db.select().from(issues).where(eq(issues.id, f.issue.id)))[0]).toMatchObject({
+      executionRunId: issueBefore.executionRunId, executionLockedAt: issueBefore.executionLockedAt });
+    expect(deps.setWakeupStatus).not.toHaveBeenCalled();
+    expect(deps.executeRun).not.toHaveBeenCalled();
+  });
 
   it("keeps an automatic continuation queued while its legacy predecessor still owns cleanup", async () => {
     const { successor, lease, queue, deps, ...f } = await pendingPredecessorFixture();
@@ -1011,7 +1135,7 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id)))[0].status).toBe(wake.status);
     expect((await db.select().from(issues).where(eq(issues.id, issue.id)))[0].status).toBe("todo");
     expect(deps.executeRun).not.toHaveBeenCalled();
-    expect(deps.setRunStatus).not.toHaveBeenCalled();
+    expect(deps.setRunStatusFromLive).not.toHaveBeenCalled();
   });
 
   it("admits the same queued input after the external connection is repaired", async () => {

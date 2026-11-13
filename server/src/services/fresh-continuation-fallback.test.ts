@@ -3,7 +3,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog, agentWakeupRequests, agents, approvals, authUsers, companies, createDb, environmentLeases, environments, executionWorkspaces, heartbeatRuns, issueApprovals, issueRecoveryActions, issueThreadInteractions,
-  issues, nativeRunFinalizations, toolInvocations,
+  issueComments, issues, nativeRunFinalizations, toolInvocations,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { deliverReconciledExecutions, settleUnrecoverableExecutions } from "./execution-recovery-resolution.js";
@@ -803,6 +803,22 @@ suite("fresh-continuation fallback", () => {
     expect(decision.outcomeEvidence).not.toMatch(adminText);
   }, 60_000);
 
+  it.each([true, false])("relies on saved input only while it still holds an undelivered message (already taken by the cut-off run: %s)", async taken => {
+    // R2 cell t003: the cut-off run had taken the follow-up into its turn; the fallback chose saved_input,
+    // promotion settled the message as delivered, and no run followed.
+    const f = await unfinishedRun({ runtime: "native", errorCode: "native_restart_recovery_blocked" });
+    const [comment] = await db.insert(issueComments).values({ companyId, issueId: f.issueId, authorType: "user",
+      authorUserId: userId, body: "Additional requirement: include FOLLOWUP-1" } as typeof issueComments.$inferInsert).returning();
+    if (taken) await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issueId, wakeCommentIds: [comment!.id] } })
+      .where(eq(heartbeatRuns.id, f.runId));
+    await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "automation", triggerDetail: "system",
+      reason: "issue_execution_deferred", status: "deferred_issue_execution", requestedByActorType: "user", requestedByActorId: userId,
+      payload: { issueId: f.issueId, _paperclipWakeContext: { issueId: f.issueId, wakeReason: "issue_commented", wakeCommentIds: [comment!.id] } },
+    } as typeof agentWakeupRequests.$inferInsert);
+    expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" }))
+      .toMatchObject({ kind: "continued", delivery: taken ? "recorded" : "saved_input" });
+  }, 60_000);
+
   it.each([
     { title: "a pending approval", setup: "approval" as const, errorCode: "native_continuation_requires_reconciliation" },
     { title: "a credential the person has not shared", setup: "none" as const, errorCode: "configuration_incomplete" },
@@ -881,18 +897,20 @@ suite("fresh-continuation fallback", () => {
   }, 60_000);
 
   // The isolation decision is a property of the task's next run, whatever path starts it.
-  it("moves the task off the old writer's workspace for every next run, saved input included", async () => {
+  it("moves the task off the old writer's workspace and runs the isolated continuation before saved input", async () => {
     const f = await unfinishedRun({ runtime: "legacy", errorCode: "controller_lease_lost", error: "Legacy controller lease lost" });
     const [workspace] = await db.insert(executionWorkspaces).values({ companyId, sourceIssueId: f.issueId, mode: "isolated",
       strategyType: "git_worktree", name: "Task workspace", cwd: "/tmp/old-writer" }).returning();
     await db.update(issues).set({ executionWorkspaceId: workspace!.id, workspaceBindingRevision: 2 }).where(eq(issues.id, f.issueId));
     await db.update(heartbeatRuns).set({ processPid: 4242, processHostHash: "replaced-server", processStartedAt: new Date(Date.now() - 600_000),
       contextSnapshot: { issueId: f.issueId, executionWorkspaceId: workspace!.id } }).where(eq(heartbeatRuns.id, f.runId));
-    // A person's saved message is waiting: it continues the task itself.
+    // A person's saved message is waiting. It carries no isolation marker, so it cannot prepare the
+    // new workspace (a projectless task would be refused at admission once the binding is cleared):
+    // the isolated continuation runs first and the saved message follows it.
     await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "on_demand", status: "deferred_issue_execution",
       requestedByActorType: "user", requestedByActorId: userId, payload: { issueId: f.issueId } });
     expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" }))
-      .toMatchObject({ kind: "continued", isolation: "fresh_isolated_workspace", delivery: "saved_input" });
+      .toMatchObject({ kind: "continued", isolation: "fresh_isolated_workspace", delivery: "recorded" });
     // No delivery path can reach the old directory: the task is no longer bound to it.
     expect(await issue(f.issueId)).toMatchObject({ executionWorkspaceId: null, workspaceBindingRevision: 3 });
     const [kept] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspace!.id));

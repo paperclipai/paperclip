@@ -138,7 +138,7 @@ import {
   READ_CHAT_ATTACHMENT_TOOL_NAME,
   type NativeChatAttachmentReadScope,
 } from "./chat-attachment-read.js";
-import { recordTaskHistoryRead } from "../queued-comment-delivery.js";
+import { commentsArrivedDuringRun, recordTaskHistoryRead, taskHistoryHandlingGuidance } from "../queued-comment-delivery.js";
 import { recordChildTaskRead } from "./native-child-completion-delivery.js";
 import { logger } from "../../middleware/logger.js";
 
@@ -1011,10 +1011,12 @@ export class PaperclipRunnerToolAuthority {
         await recordTaskHistoryRead(this.db, { companyId: this.binding.companyId, agentId: this.binding.agentId,
           runId: this.binding.runId, comments }).catch(error =>
           logger.warn({ err: error, runId: this.binding.runId }, "could not record the task history a run read"));
+        const arrived = await commentsArrivedDuringRun(this.db, { companyId: this.binding.companyId,
+          runId: this.binding.runId, agentId: this.binding.agentId, comments }).catch(() => [] as string[]);
         return { comments: comments.reverse().map(({ updatedAt: _updatedAt, ...comment }) => {
           const visible = isLowTrustQuarantined(readerSourceTrust) ? comment : sanitizeQuarantinedCommentForHigherTrust(comment);
           return { ...visible, body: fastResponseHistoryBody(visible) };
-        }) };
+        }), ...taskHistoryHandlingGuidance(arrived) };
       }
       case "search_tasks": {
         const tasks = await issueService(this.db).list(this.binding.companyId, { readCondition: await issueReadSqlCondition(this.db, this.#privacyActor(context.run)) });

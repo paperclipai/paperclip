@@ -47,13 +47,28 @@ describe("Runner image workflow", () => {
     for (const script of scripts) expect(script).not.toContain("${{");
   });
 
+  it("gives every image build one export and a time limit", () => {
+    // A command with two exports stalled on the hosted runners until the job
+    // was cancelled. One export for each command, and a limit on each step,
+    // so a stall fails in minutes.
+    const building = workflow.split(/\n(?= {6}- name: )/).filter((step) => step.includes("docker buildx build"));
+    expect(building.length).toBeGreaterThanOrEqual(3);
+    for (const step of building) {
+      expect(step).toMatch(/^ {8}timeout-minutes: \d+$/m);
+      for (const command of step.split("docker buildx build").slice(1)) expect(command.match(/--output /g) ?? []).toHaveLength(1);
+    }
+    // The trees the checks read come from the archives, not from a second export.
+    expect(workflow).toContain("node scripts/runner-image-oci.mjs unpack");
+    expect(workflow.match(/type=local/g)).toHaveLength(2);
+  });
+
   it("runs for a pull request that changes any input of the image identity", () => {
     const paths = [...workflow.matchAll(/^ {6}- (\S+)$/gm)].map((match) => match[1]);
     const covered = (file: string) => paths.some((pattern) => pattern === file
       || (pattern.endsWith("/**") && (file === pattern.slice(0, -3) || file.startsWith(pattern.slice(0, -2)))));
     // .dockerignore is not in the identity, but it decides which files the build receives.
     for (const input of ["Dockerfile", ".dockerignore", ".github/workflows/runner-image.yml", "docker/runner-image/Dockerfile.smoke",
-      ...RUNNER_IMAGE_CONTEXT_INPUTS]) {
+      "scripts/runner-image-oci.mjs", ...RUNNER_IMAGE_CONTEXT_INPUTS]) {
       expect(covered(input), input).toBe(true);
     }
   });
