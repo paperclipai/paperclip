@@ -382,8 +382,6 @@ describe("company decision service", () => {
       locked(row.pid); await lockGate;
     });
     const pid = await acquired;
-    // Resolves when both decisions have committed their reservations and reached
-    // the provider, however long a loaded machine takes to get there.
     let providersEntered = 0, bothEntered!: () => void;
     const bothProvidersEntered = new Promise<void>(resolve => { bothEntered = resolve; });
     f.provider.mockImplementation(async () => {
