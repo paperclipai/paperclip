@@ -1,5 +1,6 @@
 import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
 import { activityLog, heartbeatRuns, type Db } from "@paperclipai/db";
+import { SERVER_RESTART_RETRY_REASON } from "../execution-recovery-attempt.js";
 import { CONTINUATION_CAP, CONTINUATION_CAP_WINDOW_MS } from "./assigned-work-invariant.js";
 
 export const ASSIGNED_WORK_CONTINUED_ACTION = "issue.continued_automatically";
@@ -14,7 +15,7 @@ export async function taskAutomaticAttempts(db: Db, companyId: string, issueId: 
       .orderBy(desc(activityLog.createdAt)).limit(64),
     db.select({ createdAt: heartbeatRuns.createdAt }).from(heartbeatRuns).where(and(
       eq(heartbeatRuns.companyId, companyId), sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`,
-      inArray(heartbeatRuns.scheduledRetryReason, [SCHEDULER_TRANSIENT_RETRY_REASON]), gte(heartbeatRuns.createdAt, since)))
+      inArray(heartbeatRuns.scheduledRetryReason, [SCHEDULER_TRANSIENT_RETRY_REASON, SERVER_RESTART_RETRY_REASON, "interrupted_preparation"]), gte(heartbeatRuns.createdAt, since)))
       .orderBy(desc(heartbeatRuns.createdAt)).limit(64),
   ]);
   const all = [...continuations, ...transientRetries].map(row => row.createdAt);

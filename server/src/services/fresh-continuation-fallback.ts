@@ -26,6 +26,9 @@ import { notifyRoutineExecutionStatus } from "./routine-execution-status-notific
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { readRunCancellation } from "./run-cancellation.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
+import { AUTOMATIC_CONTINUATION_WAKE_REASONS, PERSON_OWNED_FAILURE_CODES, isPersonOwnedFailureCode } from "./continuation-cause.js";
+
+export { AUTOMATIC_CONTINUATION_WAKE_REASONS, PERSON_OWNED_FAILURE_CODES, isAutomaticContinuationRun, isPersonOwnedFailureCode } from "./continuation-cause.js";
 
 /**
  * Fresh-continuation fallback: exact resumption of an unfinished run is an
@@ -79,38 +82,6 @@ export const FRESH_CONTINUATION_PROGRESS_BOUND_MS = 15 * 60_000;
 export const FRESH_CONTINUATION_SAVED_WORK_BOUND_MS = 30 * 60_000;
 export const NATIVE_INTERRUPTION_NO_PROGRESS_DEADLINE_MS = FRESH_CONTINUATION_PROGRESS_BOUND_MS;
 const EXACT_RECOVERY_RECHECK_MS = 60_000;
-
-/**
- * Run failure codes that only a person can resolve (the test for each: did a
- * person fail to do something, or did the system fail to carry it forward? Only
- * the first belongs here; e.g. a lost carry-over of a Retry's authorization,
- * `continuation_user_authorization_missing`, is the system's): they stopped the work, a
- * credential or access they must share, a configuration choice they must make,
- * a budget stop, or a provider usage limit that is waiting as designed. Every
- * other code, including codes that do not exist yet, gets the fallback.
- */
-export const PERSON_OWNED_FAILURE_CODES = [
-  // A person stopped or paused the work.
-  "cancelled", "operator_cancelled", "operator_interrupted", "issue_cancelled", "issue_paused", "agent_paused",
-  // A credential, secret or access the person must share.
-  "configuration_incomplete", "slack_configuration_incomplete", "signing_secret_unconfigured",
-  "user_secret_missing", "user_secret_definition_missing", "user_secret_definition_inactive",
-  "github_access_denied", "github_repo_not_accessible", "github_auth_required", "project_access_denied",
-  "permission_denied", "responsible_user_unauthorized", "oauth_access_projection_disabled",
-  "acpx_auth_required", "codex_auth_required", "claude_auth_required", "provider_auth_failed", "hermes_gateway_auth_failed",
-  // A configuration choice the person must change.
-  "native_provider_model_rejected", "provider_tool_definition_invalid", "turn_limit_exhausted",
-  // Budget stops.
-  "budget_blocked", "budget_hard_stop", "budget_exceeded",
-  // Provider usage limits that wait (and resume) as designed.
-  "provider_quota", "provider_limit_wait", "native_provider_usage_limit",
-  // An approval the person must give.
-  "approval_required", "formal_approval_unavailable",
-] as const;
-
-export function isPersonOwnedFailureCode(code: string | null | undefined): boolean {
-  return typeof code === "string" && (PERSON_OWNED_FAILURE_CODES as readonly string[]).includes(code);
-}
 
 const UNFINISHED_STATUSES = ["failed", "timed_out", "interrupted", "cancelled"];
 const LIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"];
@@ -473,7 +444,8 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
     ...holds.filter(hold => readSystemRecovery(hold.evidence)).map(hold => hold.updatedAt.getTime()));
   const savedWorkSignature = savedWork.map(recovery => `${recovery!.generationId}:${recovery!.revision}:${recovery!.attempts}:${recovery!.state}`)
     .sort().join("|");
-  const waitedMs = pendingMarker ? now.getTime() - Number(pendingMarker.firstPendingAt) : 0;
+  const waitedMs = pendingMarker ? now.getTime() - Number(pendingMarker.firstPendingAt)
+    : holds.length ? 0 : now.getTime() - run.finishedAt.getTime();
   const progressing = Boolean(pendingMarker && ((typeof pendingMarker.progressAt === "number" && progressAt > pendingMarker.progressAt)
     || (typeof pendingMarker.savedWorkSignature === "string" && savedWorkSignature !== pendingMarker.savedWorkSignature)));
   // Saved-work recovery that is running and advancing keeps its own 30-minute
@@ -820,16 +792,6 @@ export const BACKLOG_CONTINUATION_SOURCE_CODES = [
   "execution_finalization_deadline_exceeded", "local_runtime_api_listener_unavailable",
   "runner_remote_process_identity_unavailable", "continuation_user_authorization_missing",
 ] as const;
-export const AUTOMATIC_CONTINUATION_WAKE_REASONS = [
-  "issue_continuation_needed", "issue_assignment_recovery", "issue_recovery_action_restored", "transient_failure_retry",
-] as const;
-export function isAutomaticContinuationRun(run: Pick<typeof heartbeatRuns.$inferSelect, "retryOfRunId" | "scheduledRetryReason"
-  | "contextSnapshot">): boolean {
-  const context = object(run.contextSnapshot);
-  return Boolean(run.retryOfRunId || run.scheduledRetryReason || context.previousRunId || context.retryReason
-    || context.freshContinuationIsolation
-    || (AUTOMATIC_CONTINUATION_WAKE_REASONS as readonly unknown[]).includes(context.wakeReason));
-}
 /** At most this many backlog continuations per server per rolling minute, and per pass. */
 export const BACKLOG_CONTINUATIONS_PER_MINUTE = 10;
 const BACKLOG_CONTINUATIONS_PER_PASS = 5;

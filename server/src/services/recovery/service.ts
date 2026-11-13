@@ -101,6 +101,7 @@ import {
   workspaceOperations,
 } from "@paperclipai/db";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
+import { isAutomaticContinuationRun } from "../continuation-cause.js";
 import { STRANDED_CONTINUATION_MAX_AGE_MS, STRANDED_KIND, strandedRunCauseIsTemporary, type StrandedHoldRun } from "./stranded-hold-continuation.js";
 import { runningProcesses } from "../../adapters/index.js";
 import {
@@ -303,6 +304,7 @@ type LatestIssueRun =
     > & {
       resultJson?: unknown;
       rowVersion?: string;
+      finishedAt?: Date | null;
     })
   | null;
 type SuccessfulLatestIssueRun = NonNullable<LatestIssueRun> & {
@@ -568,7 +570,8 @@ function assignedWorkSweepOwnsFailedRun(
 ) {
   return Boolean(latestRun && (issue.status === "todo" || issue.status === "in_progress") && !issue.assigneeUserId
     && issue.assigneeAgentId === agentId && latestRun.agentId === agentId
-    && Date.now() - latestRun.createdAt.getTime() <= STRANDED_CONTINUATION_MAX_AGE_MS
+    && isAutomaticContinuationRun({ retryOfRunId: null, scheduledRetryReason: null, contextSnapshot: latestRun.contextSnapshot })
+    && Date.now() - (latestRun.finishedAt ?? latestRun.createdAt).getTime() <= STRANDED_CONTINUATION_MAX_AGE_MS
     && strandedRunCauseIsTemporary({ status: latestRun.status, errorCode: latestRun.errorCode, error: latestRun.error,
       executionRecovery: (parseObject(latestRun.resultJson).executionRecovery ?? null) as StrandedHoldRun["executionRecovery"] }));
 }
@@ -1050,6 +1053,7 @@ export function recoveryService(
         resultJson: recoveryRunResultColumn,
         startedAt: heartbeatRuns.startedAt,
         createdAt: heartbeatRuns.createdAt,
+        finishedAt: heartbeatRuns.finishedAt,
       })
       .from(heartbeatRuns)
       .where(

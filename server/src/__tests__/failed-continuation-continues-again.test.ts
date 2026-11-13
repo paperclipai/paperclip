@@ -3,7 +3,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { activityLog, agentWakeupRequests, agents, companies, createDb, heartbeatRuns, issueRecoveryActions, issues } from "@paperclipai/db";
 import { recoveryService } from "../services/recovery/service.js";
-import { ASSIGNED_WORK_CONTINUED_ACTION } from "../services/recovery/assigned-work-sweep.js";
+import { ASSIGNED_WORK_CONTINUED_ACTION, assignedWorkSweep } from "../services/recovery/assigned-work-sweep.js";
 import { FRESH_CONTINUATION_SCHEMA, continueHeldExecutions, resetBacklogContinuationPacingForTests } from "../services/fresh-continuation-fallback.js";
 import { recoveryPostgresSupport, startRecoveryPostgres } from "./helpers/recovery-postgres.js";
 
@@ -207,6 +207,25 @@ describePostgres("a continuation that fails before doing any work is continued a
     expect(check!.retryAt!.getTime()).toBeGreaterThan(Date.now());
     expect((await taskRow(task.id)).status).toBe("in_progress");
     expect(await continuationsOf(failed.id)).toHaveLength(0);
+    expect(queue.calls).toHaveLength(0);
+  }, 60_000);
+  it("a recovery run stopped during preparation with no hold left is continued once the wait bound passes, not waited on forever", async () => {
+    const f = await seed();
+    const task = await f.task();
+    const endedAt = new Date(Date.now() - 5 * MINUTE);
+    const stopped = await f.run(task.id, { status: "interrupted", errorCode: "server_shutdown_interrupted", executionStage: "preparing",
+      error: "Interrupted by graceful server shutdown (SIGTERM)", finishedAt: endedAt,
+      contextSnapshot: { wakeReason: "issue_assignment_recovery", retryReason: "assignment_recovery" } });
+    const queue = wakeQueue();
+    let clock = new Date();
+    const sweep = assignedWorkSweep(db, { enqueueWakeup: queue.enqueueWakeup, now: () => clock });
+    expect(await sweep.checkIssue({ companyId: f.companyId, issueId: task.id })).toMatchObject({ outcome: "waiting_on_recovery" });
+    expect(await continuationsOf(stopped.id)).toHaveLength(0);
+    for (const step of [3, 6, 12]) {
+      clock = new Date(Date.now() + step * MINUTE);
+      await sweep.checkIssue({ companyId: f.companyId, issueId: task.id });
+    }
+    expect(await continuationsOf(stopped.id)).toHaveLength(1);
     expect(queue.calls).toHaveLength(0);
   }, 60_000);
 });

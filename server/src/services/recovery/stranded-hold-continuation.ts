@@ -1,5 +1,5 @@
 import { REUSABLE_SANDBOX_RESUME_FAILED_CODE } from "../reusable-sandbox-resume-error.js";
-import { isPersonOwnedFailureCode } from "../fresh-continuation-fallback.js";
+import { isSystemOwnedFailureCode } from "../continuation-cause.js";
 
 export const STRANDED_CONTINUATION_MAX_AGE_MS = 24 * 60 * 60_000;
 export const STRANDED_KIND = "stranded_assigned_issue";
@@ -34,7 +34,7 @@ export function strandedRunCauseIsTemporary(
 ): boolean {
   if (!["failed", "timed_out", "interrupted", "cancelled"].includes(run.status)) return false;
   const code = run.errorCode ?? "";
-  if (!code || isPersonOwnedFailureCode(code)) return false;
+  if (!isSystemOwnedFailureCode(code)) return false;
   if (code !== REUSABLE_SANDBOX_RESUME_FAILED_CODE) return true;
   const cause = /\(cause=([a-z_]+)/.exec(run.error ?? "")?.[1];
   return cause !== undefined && TRANSIENT_SANDBOX_CAUSES.has(cause);

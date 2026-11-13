@@ -32,7 +32,8 @@ import { onboardingFirstTaskAwaitingUserSql } from "./onboarding-first-task-wait
 import { PENDING_CONTINUATION_BOUND_MS } from "../recovery-continuation-pacing.js";
 import { attributeBlock, BLOCK_ATTRIBUTION_WINDOW_MS, blockedStatusDetailsSql } from "../interruption-block-release.js";
 import { ASSIGNED_WORK_CONTINUED_ACTION, taskAutomaticAttempts } from "./task-automatic-attempts.js";
-import { ensureFreshContinuation, isAutomaticContinuationRun, type FreshContinuationResult } from "../fresh-continuation-fallback.js";
+import { ensureFreshContinuation, type FreshContinuationResult } from "../fresh-continuation-fallback.js";
+import { isAutomaticContinuationRun } from "../continuation-cause.js";
 import { STRANDED_CONTINUATION_MAX_AGE_MS, STRANDED_KIND, strandedHoldContinuesAutomatically, type StrandedHoldRun } from "./stranded-hold-continuation.js";
 import {
   continuationActivityMessage,
