@@ -860,7 +860,7 @@ function optionalBackgroundTasks(activeHost: AcpxRuntimeHost): { backgroundTasks
 }
 
 function claudeBackgroundTasks(activeHost: AcpxRuntimeHost): { live: number } | null {
-  if (initializedAgent !== "claude") return null;
+  if (initializedAgent !== "claude" || !toolUseAdmission?.hasRoomForAnotherTurn()) return null;
   try {
     const state = activeHost.backgroundTaskState();
     return state && Number.isSafeInteger(state.live) && state.live >= 0 ? { live: state.live } : null;
