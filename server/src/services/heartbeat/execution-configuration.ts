@@ -102,7 +102,7 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
   const useSshHostAuth = selectedEnvironmentForConfig?.driver === "ssh" && selectedEnvironmentForConfig.config.useHostAuth !== false && !persistedNativeExecutionInput;
   const sourceWorkspaceConfig = agent.adapterType === "paperclip_runner"
     ? { ...input.config.sourceWorkspaceConfig,
-        homeMode: bindHeartbeatRunnerHomeMode({ ...parseObject(agent.adapterConfig), ...(useSshHostAuth ? { homeMode: "preconfigured" } : {}) }, persistedNativeExecutionInput).homeMode }
+        homeMode: bindHeartbeatRunnerHomeMode({ ...parseObject(agent.adapterConfig), ...(selectedEnvironmentForConfig?.driver === "ssh" && !persistedNativeExecutionInput ? { homeMode: useSshHostAuth ? "preconfigured" : "isolated" } : {}) }, persistedNativeExecutionInput).homeMode }
     : input.config.sourceWorkspaceConfig;
   const preconfiguredHome = agent.adapterType === "paperclip_runner" && sourceWorkspaceConfig.homeMode === "preconfigured";
   if (preconfiguredHome && pinnedSkillTest) {

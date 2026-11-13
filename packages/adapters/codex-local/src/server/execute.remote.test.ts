@@ -1,4 +1,6 @@
-import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -27,7 +29,7 @@ const {
   prepareWorkspaceForSshExecution: vi.fn(async () => ({ gitBacked: false })),
   restoreWorkspaceFromSshExecution: vi.fn(async () => undefined),
   runSshCommand: vi.fn(async (_spec?: unknown, _command?: string) => ({ stdout: Buffer.from("{}").toString("base64"), stderr: "" })),
-  syncDirectoryToSsh: vi.fn(async () => undefined),
+  syncDirectoryToSsh: vi.fn(async (_input?: { localDir: string; remoteDir: string }) => undefined),
   startAdapterExecutionTargetPaperclipBridge: vi.fn(async () => ({
     env: {
       PAPERCLIP_API_URL: "http://127.0.0.1:4310",
@@ -85,6 +87,109 @@ describe("codex remote execution", () => {
       const dir = cleanupDirs.pop();
       if (!dir) continue;
       await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+
+  it.each([false, true])("retains a managed SSH Codex conversation across turns and removes credentials (second turn throws=%s)", async fails => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-ssh-resume-"));
+    cleanupDirs.push(root);
+    const workspace = path.join(root, "workspace"), home = path.join(root, "account"), secondHome = path.join(root, "next-invocation");
+    await mkdir(workspace); await mkdir(home); await mkdir(secondHome);
+    const auth = (account: string, marker: string, last_refresh: string) => JSON.stringify({ tokens: {
+      account_id: account, access_token: `fixture-access-${marker}`, refresh_token: `fixture-refresh-${marker}`, id_token: `fixture-id-${marker}`,
+    }, last_refresh });
+    const credential = auth("selected", "before", "2000-01-01T00:00:00Z");
+    const refreshed = auth("selected", "after", new Date().toISOString());
+    const otherCredential = auth("other", "other", "2000-01-01T00:00:00Z");
+    await writeFile(path.join(home, "auth.json"), credential);
+    await writeFile(path.join(secondHome, "auth.json"), credential);
+    const executeShell = promisify(execFile);
+    const originalRun = runChildProcess.getMockImplementation()!;
+    let firstRemoteHome: string | undefined;
+    let otherRemoteHome: string | undefined;
+    const privateRoots: string[] = [];
+    let calls = 0;
+    runSshCommand.mockImplementation(async (_spec, command) => {
+      const result = await executeShell("sh", ["-c", command!]);
+      if (command!.includes("mktemp -d")) privateRoots.push(result.stdout.trim());
+      return result;
+    });
+    syncDirectoryToSsh.mockImplementation(async input => { await cp(input!.localDir, input!.remoteDir, { recursive: true }); });
+    runChildProcess.mockImplementation(async (...args: unknown[]) => {
+      const env = (args[3] as { env: Record<string, string> }).env;
+      const remoteHome = env.CODEX_HOME!;
+      calls++;
+      expect(await readFile(path.join(remoteHome, "auth.json"), "utf8")).toBe(calls === 1 ? credential : calls === 2 ? refreshed : otherCredential);
+      if (calls === 1) {
+        firstRemoteHome = remoteHome;
+        await mkdir(path.join(remoteHome, "sessions"));
+        await writeFile(path.join(remoteHome, "sessions", "rollout.jsonl"), "fixture conversation");
+        await writeFile(path.join(remoteHome, "state_5.sqlite"), "fixture native index");
+        await writeFile(path.join(remoteHome, "auth.json"), refreshed);
+      } else if (calls === 2) {
+        expect(remoteHome).toBe(firstRemoteHome);
+        expect(args[2]).toContain("resume");
+        expect(args[2]).toContain("ssh-thread");
+        expect(await readFile(path.join(remoteHome, "sessions", "rollout.jsonl"), "utf8")).toBe("fixture conversation");
+        expect(await readFile(path.join(remoteHome, "state_5.sqlite"), "utf8")).toBe("fixture native index");
+        if (fails) throw new Error("fixture provider failed");
+      } else {
+        if (calls === 3) otherRemoteHome = remoteHome;
+        expect(remoteHome).not.toBe(firstRemoteHome);
+        expect(args[2]).not.toContain("resume");
+        await expect(readFile(path.join(remoteHome, "sessions", "rollout.jsonl"))).rejects.toThrow("ENOENT");
+        if (calls === 3) {
+          await mkdir(path.join(remoteHome, "sessions"));
+          await writeFile(path.join(remoteHome, "sessions", "rollout.jsonl"), "other conversation");
+        }
+      }
+      return { exitCode: 0, signal: null, timedOut: false, stdout: JSON.stringify({ type: "thread.started", thread_id: calls < 3 ? "ssh-thread" : "other-thread" })+'\n{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}\n', stderr: "", pid: 123, startedAt: new Date().toISOString() };
+    });
+    const ctx = {
+      agent: { id: "agent-1", companyId: "company-1", name: "Selected agent", adapterType: "codex_local", adapterConfig: {} },
+      config: { engine: "cli", command: "codex", managedAiConnection: { identity: "generation-one", sessionIdentity: "selected-account", provider: "openai", method: "subscription" }, env: { CODEX_HOME: home, OPENAI_API_KEY: "" } },
+      context: { paperclipWorkspace: { cwd: workspace, source: "project_primary" } },
+      executionTarget: { kind: "remote" as const, transport: "ssh" as const, remoteCwd: workspace,
+        spec: { useHostAuth: false, host: "127.0.0.1", port: 2222, username: "fixture", remoteCwd: workspace, remoteWorkspacePath: workspace, privateKey: null, knownHosts: null, strictHostKeyChecking: true },
+        workspaceRealization: { mode: "in_place" as const, authoritativeRoot: workspace, pathAliases: [], outboundRestorePaths: [] } }, onLog: async () => {},
+    };
+    try {
+      const first = await execute({ ...ctx, runId: "first", runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: "task-one" } });
+      expect(first.sessionId).toBe("ssh-thread");
+      expect(await readFile(path.join(home, "auth.json"), "utf8")).toBe(refreshed);
+      await writeFile(path.join(secondHome, "auth.json"), refreshed);
+      expect(await readdir(firstRemoteHome!)).toEqual(expect.arrayContaining(["sessions", "state_5.sqlite"]));
+      expect(await readdir(firstRemoteHome!)).not.toContain("auth.json");
+      const second = execute({ ...ctx, runId: "second", config: { ...ctx.config,
+        managedAiConnection: { ...ctx.config.managedAiConnection, identity: "generation-two" }, env: { CODEX_HOME: secondHome, OPENAI_API_KEY: "" } },
+        runtime: { sessionId: first.sessionId!, sessionParams: first.sessionParams!, sessionDisplayId: first.sessionId!, taskKey: "task-one" } });
+      if (fails) await expect(second).rejects.toThrow("fixture provider failed");
+      else expect((await second).sessionId).toBe("ssh-thread");
+      expect(calls).toBe(2);
+      expect((await readdir(firstRemoteHome!)).sort()).toEqual(["sessions", "state_5.sqlite"]);
+      expect((await stat(firstRemoteHome!)).mode & 0o077).toBe(0);
+      if (!fails) {
+        await writeFile(path.join(secondHome, "auth.json"), otherCredential);
+        const switched = await execute({ ...ctx, runId: "other-account", config: { ...ctx.config,
+          managedAiConnection: { ...ctx.config.managedAiConnection, identity: "other-account", sessionIdentity: "other-account" }, env: { CODEX_HOME: secondHome, OPENAI_API_KEY: "" } },
+          runtime: { sessionId: first.sessionId!, sessionParams: first.sessionParams!, sessionDisplayId: first.sessionId!, taskKey: "task-one" } });
+        expect(switched.sessionId).toBe("other-thread");
+        expect(switched.sessionParams?.sshCodexAccountScope).not.toBe(first.sessionParams?.sshCodexAccountScope);
+        expect(switched.resultJson).toMatchObject({ sessionReset: { code: "codex_ssh_session_state_unavailable" } });
+        expect(await readdir(otherRemoteHome!)).not.toContain("auth.json");
+        expect(await readFile(path.join(firstRemoteHome!, "sessions", "rollout.jsonl"), "utf8")).toBe("fixture conversation");
+        const oldShape = { sessionId: switched.sessionId!, cwd: workspace, remoteExecution: switched.sessionParams!.remoteExecution };
+        const legacy = await execute({ ...ctx, runId: "old-saved-shape", config: { ...ctx.config,
+          managedAiConnection: { ...ctx.config.managedAiConnection, identity: "other-account", sessionIdentity: "other-account" }, env: { CODEX_HOME: secondHome, OPENAI_API_KEY: "" } },
+          runtime: { sessionId: switched.sessionId!, sessionParams: oldShape, sessionDisplayId: switched.sessionId!, taskKey: "task-one" } });
+        expect(legacy.resultJson).toMatchObject({ sessionReset: { code: "codex_ssh_session_state_unavailable" } });
+        expect(await readFile(path.join(otherRemoteHome!, "sessions", "rollout.jsonl"), "utf8")).toBe("other conversation");
+      }
+      for (const dir of privateRoots) await expect(stat(dir)).rejects.toThrow("ENOENT");
+    } finally {
+      runChildProcess.mockImplementation(originalRun);
+      runSshCommand.mockReset().mockResolvedValue({ stdout: Buffer.from("{}").toString("base64"), stderr: "" });
+      syncDirectoryToSsh.mockReset().mockResolvedValue(undefined);
     }
   });
 

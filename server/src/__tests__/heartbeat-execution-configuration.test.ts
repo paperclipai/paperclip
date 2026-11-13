@@ -25,7 +25,7 @@ import * as assignedMcp from "../services/native-runtime/assigned-mcp-tools.js";
 import * as sentry from "../sentry.js";
 import { waitForPendingRunFailureReports } from "../services/run-failure-report.js";
 import { recoveryPostgresSupport, startRecoveryPostgres } from "./helpers/recovery-postgres.js";
-import { selectHeartbeatEnvironment, type HeartbeatEnvironmentSelectionInput } from "../services/heartbeat/environment-selection.js";
+import { selectHeartbeatEnvironment, resolveSshAuthenticationBeforeRouting, type HeartbeatEnvironmentSelectionInput } from "../services/heartbeat/environment-selection.js";
 import { environmentService } from "../services/environments.js";
 import { executionWorkspaceService } from "../services/execution-workspaces.js";
 import { buildExecutionWorkspaceAdapterConfig } from "../services/execution-workspace-policy.js";
@@ -40,6 +40,21 @@ function deferred<T>() {
 
 const skillFailures = vi.hoisted(() => new Map<string, string>());
 const skillWaits = vi.hoisted(() => new Map<string, () => Promise<void>>());
+
+describe("SSH authentication before account routing", () => {
+  it.each([
+    { agentDefaultEnvironmentId: "agent", lowTrustIssueEnvironmentId: null, executionMode: "any", expectedId: "agent", expected: "host" },
+    { agentDefaultEnvironmentId: null, lowTrustIssueEnvironmentId: null, executionMode: "any", expectedId: "instance", expected: "host" },
+    { agentDefaultEnvironmentId: "agent", lowTrustIssueEnvironmentId: "sandbox", executionMode: "any", expectedId: "sandbox", expected: null },
+    { agentDefaultEnvironmentId: "agent", lowTrustIssueEnvironmentId: null, executionMode: "kubernetes", expectedId: null, expected: null },
+  ] as const)("honors environment precedence and forced execution policy: %j", async value => {
+    const get = vi.fn(async () => ({ defaultEnvironmentId: "instance", general: { executionMode: value.executionMode } }));
+    const getById = vi.fn(async (id: string) => ({ id, driver: id === "sandbox" ? "sandbox" : "ssh", config: {} } as Environment));
+    expect(await resolveSshAuthenticationBeforeRouting({ ...value, instanceSettings: { get }, environmentsSvc: { getById } })).toBe(value.expected);
+    if (value.expectedId) expect(getById).toHaveBeenCalledExactlyOnceWith(value.expectedId);
+    else expect(getById).not.toHaveBeenCalled();
+  });
+});
 
 describe("Runner home mode during recovery preparation", () => {
   const fingerprint = (effectiveAdapterConfig: Record<string, unknown>) => buildEffectiveRunSessionConfigMetadata({

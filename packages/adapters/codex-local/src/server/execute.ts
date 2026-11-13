@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { inferOpenAiCompatibleBiller, resolveManagedOpenAiBilling, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import { buildCodexAuthInboundProvision } from "./codex-auth-merge-scripts.js";
 import { copyBackCodexAuth } from "./codex-auth-copyback.js";
+import { prepareCodexSshSessionState } from "./ssh-session-state.js";
 import {
   ensureCodexAuthCacheEntryDir,
   isCodexAuthCacheEnabled,
@@ -783,6 +784,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // here so the outer `finally` can remove it on every exit path (teardown and
   // error), never only the happy path.
   let stagedCodexHomeDir: string | null = null;
+  let sshSessionState: Awaited<ReturnType<typeof prepareCodexSshSessionState>> | null = null;
   let observabilityProfile: Awaited<ReturnType<typeof prepareCodexObservabilityProfile>> | null = null;
   let observabilityPreparationFailed = false;
   try {
@@ -894,9 +896,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                 // generic `restore` seam per asset before destroying the sandbox.
                 // Target is the shared symlink SOURCE (what managed homes point
                 // `auth.json` at), not the in-sandbox symlink.
-                restore: async ({ assetDir, readFile }) =>
-                  void (await copyBackCodexAuth({
-                    readSandboxAuth: () => readFile(path.posix.join(assetDir, "auth.json")),
+                restore: async ({ assetDir, readFile }) => {
+                  try { await copyBackCodexAuth({
+                    readSandboxAuth: () => readFile(path.posix.join(sshSessionState?.home ?? assetDir, "auth.json")),
                     hostAuthPath: path.join(config.managedAiConnection ? effectiveCodexHome : resolveSharedCodexHomeDir(process.env), "auth.json"),
                     log: (line) => onLog("stdout", `${line}\n`),
                     // Additive cache write (sandbox to host): also cache the
@@ -907,7 +909,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                     resolveCacheEntryPath: config.managedAiConnection ? undefined : (accountId) =>
                       ensureCodexAuthCacheEntryDir(process.env, accountId, agent.companyId),
                     env: process.env,
-                  })),
+                  }); } finally { await sshSessionState?.cleanup(); }
+                },
                 // No `exclude` denylist: `stagedCodexHomeDir` already contains
                 // ONLY the allowlisted files (auth/config/skills), so there is
                 // nothing to filter out.
@@ -928,10 +931,26 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     let paperclipBridge: Awaited<ReturnType<typeof startAdapterExecutionTargetPaperclipBridge>> = null;
     let executionError: unknown = null;
     try {
-      const remoteCodexHome = executionTargetIsRemote && !useSshHostAuth
+      let remoteCodexHome = executionTargetIsRemote && !useSshHostAuth
         ? preparedExecutionTargetRuntime?.assetDirs.home ??
           path.posix.join(effectiveExecutionCwd, ".paperclip-runtime", "codex", "home")
         : null;
+      if (executionTarget?.kind === "remote" && executionTarget.transport === "ssh" && executionTarget.spec.useHostAuth === false
+        && config.managedAiConnection && targetWorkspaceRealization?.mode === "in_place" && remoteCodexHome) {
+        const account = parseObject(config.managedAiConnection);
+        const identity = asString(account.sessionIdentity, asString(account.identity, ""));
+        if (!identity) throw new Error("Managed SSH Codex execution requires an account identity");
+        sshSessionState = await prepareCodexSshSessionState({
+          remoteRoot: executionTarget.spec.remoteWorkspacePath, companyId: agent.companyId, agentId: agent.id,
+          accountIdentity: identity, executionIdentity: adapterExecutionTargetSessionIdentity(runtimeExecutionTarget),
+          runId, saved: parseObject(runtime.sessionParams), stagedHome: remoteCodexHome,
+          run: async command => {
+            const result = await runAdapterExecutionTargetShellCommand(runId, runtimeExecutionTarget, command, { cwd: effectiveExecutionCwd, env: {}, timeoutSec: 15 });
+            if (result.exitCode !== 0 || result.timedOut) throw new Error("Cannot prepare or clean up SSH Codex conversation state");
+          },
+        });
+        remoteCodexHome = sshSessionState.home;
+      }
       await emitSandboxAuthPrecedenceWarningIfNeeded({
         runId,
         target: runtimeExecutionTarget,
@@ -1138,6 +1157,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const runtimeRemoteExecution = parseObject(runtimeSessionParams.remoteExecution);
       const canResumeSession =
         runtimeSessionId.length > 0 &&
+        (!sshSessionState || sshSessionState.canResume) &&
         (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(effectiveExecutionCwd)) &&
         adapterExecutionTargetSessionMatches(runtimeRemoteExecution, runtimeExecutionTarget);
       const codexTransientFallbackMode = readCodexTransientFallbackMode(context);
@@ -1525,7 +1545,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           };
         }
 
-        const canFallbackToRuntimeSession = !isRetry && !forceFreshSession;
+        const canFallbackToRuntimeSession = !isRetry && !forceFreshSession && (!sshSessionState || sshSessionState.canResume);
         const resolvedSessionId =
           attempt.parsed.sessionId ??
           (canFallbackToRuntimeSession ? (runtimeSessionId ?? runtime.sessionId ?? null) : null);
@@ -1533,6 +1553,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           ? ({
             sessionId: resolvedSessionId,
             cwd: effectiveExecutionCwd,
+            ...(sshSessionState ? { sshCodexConversationId: sshSessionState.conversationId, sshCodexAccountScope: sshSessionState.scope } : {}),
             ...(executionTargetIsRemote
               ? {
                   remoteExecution: adapterExecutionTargetSessionIdentity(runtimeExecutionTarget),
@@ -1636,6 +1657,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           resultJson: {
             stdout: attempt.proc.stdout,
             stderr: attempt.proc.stderr,
+            ...(sshSessionState && runtimeSessionId && !sshSessionState.canResume
+              ? { sessionReset: { code: "codex_ssh_session_state_unavailable" } } : {}),
             ...(errorFamily ? { errorFamily } : {}),
             ...(transientRetryNotBefore ? { retryNotBefore: transientRetryNotBefore.toISOString() } : {}),
             ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),

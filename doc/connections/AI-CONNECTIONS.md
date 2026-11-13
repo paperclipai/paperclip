@@ -459,6 +459,20 @@ Environment tests use the selected account and remove their temporary homes
 after probing. A disconnected target can prevent remote cleanup; the run reports
 the resulting failure rather than silently selecting another account.
 
+Codex CLI runs in an in-place SSH workspace keep conversation files and native
+SQLite indexes in a private remote home scoped to the company, agent, AI account,
+and conversation. The home path stays stable across turns and token refreshes.
+Each turn installs the current managed files, copies refreshed authentication
+back, and removes everything except conversation state, including on provider
+failure. Credentials and managed MCP configuration do not remain there between
+turns. Switching accounts selects a different home and starts a new conversation.
+The cache lives below the environment's remote workspace root. Removing that
+root also removes the retained conversation state.
+Older SSH host-auth sessions keep their existing remote home. A managed SSH
+session saved before conversation retention has no retained state reference and
+starts a fresh conversation instead of reusing an unavailable thread. This reset
+is recorded as `codex_ssh_session_state_unavailable`; existing saved files remain.
+
 ACP SSH sessions use the existing remote process bridge and session reuse
 lifecycle. A compatible session can retain its private remote home; workspace
 sync and credential refresh run at turn teardown, and the session disposal hook
