@@ -14,6 +14,8 @@ export const companySecretBindings = pgTable(
     versionSelector: text("version_selector").notNull().default("latest"),
     required: boolean("required").notNull().default(true),
     label: text("label"),
+    projectionClass: text("projection_class").notNull().default("unclassified"),
+    projectionAllowlistKey: text("projection_allowlist_key"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

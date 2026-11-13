@@ -1,0 +1,75 @@
+/**
+ * Links out of a tenant instance and into the Paperclip Cloud app.
+ *
+ * The base always comes from the health `cloud` block (derived from
+ * `PAPERCLIP_CLOUD_API_ORIGIN`) — the cloud domain is never hardcoded, because
+ * aliases move and self-hosted instances have no cloud block at all. Only the
+ * origin of that value is used; a control-plane path suffix is dropped, exactly
+ * as the server-side portfolio proxy resolves it.
+ *
+ * These are always full top-level navigations, never in-app routes: the cloud
+ * harness shadows GET `/stacks` and `/stacks/*` on tenant hosts, so an in-app
+ * route under that prefix would be unreachable.
+ */
+export function cloudAppUrl(cloudBaseUrl: string | null | undefined, path: string): string | null {
+  const base = cloudBaseUrl?.trim();
+  if (!base) return null;
+  try {
+    const url = new URL(path, base);
+    // The base is server-supplied, but a stray non-web scheme must never reach
+    // `window.location.assign`.
+    if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+/** Cloud's own create-a-stack flow, which replaces the in-app company wizard. */
+export function cloudStackCreateUrl(cloudBaseUrl: string | null | undefined): string | null {
+  return cloudAppUrl(cloudBaseUrl, "/stacks/new");
+}
+
+/** Keep auth return targets inside the tenant, and never return to the login form. */
+export function tenantSignInReturnPath(path: string): string {
+  if (!path.startsWith("/") || path.startsWith("//") || /[\\\x00-\x20]/.test(path)) return "/";
+  const url = new URL(path, "https://tenant.invalid");
+  if (url.pathname.replace(/\/+$/, "") === "/auth") return "/";
+  return `${url.pathname}${url.search}${url.hash}`;
+}
+
+/** Cloud renews a tenant session here, or starts its own sign-in flow. */
+export function cloudStackEntryUrl(
+  cloudBaseUrl: string | null | undefined,
+  stackSlug: string | null | undefined,
+  returnTo: string,
+): string | null {
+  const slug = stackSlug?.trim();
+  if (!slug) return null;
+  const entry = cloudAppUrl(cloudBaseUrl, `/v1/stacks/${encodeURIComponent(slug)}/entry-redirect`);
+  if (!entry) return null;
+  const url = new URL(entry);
+  url.searchParams.set("returnTo", tenantSignInReturnPath(returnTo));
+  return url.toString();
+}
+
+/** Cloud manages human invitations in the current stack's People settings. */
+export function cloudStackInviteUrl(
+  cloudBaseUrl: string | null | undefined,
+  stackSlug: string | null | undefined,
+): string | null {
+  const slug = stackSlug?.trim();
+  if (!slug) return null;
+  return cloudAppUrl(cloudBaseUrl, `/workspaces/${encodeURIComponent(slug)}/settings?section=people`);
+}
+
+/**
+ * Cloud's organization portfolio in its explicit manage view. `?manage=1`
+ * matters: the plain launchpad auto-forwards a solo user straight back into
+ * their one openable stack, and the caller here has just archived that
+ * stack's only company — bouncing back into it is exactly what the
+ * navigation is escaping.
+ */
+export function cloudPortfolioManageUrl(cloudBaseUrl: string | null | undefined): string | null {
+  return cloudAppUrl(cloudBaseUrl, "/orgs?manage=1");
+}

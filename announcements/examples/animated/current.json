@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "announcement": {
+    "id": "preview-animated-team",
+    "eyebrow": "Staging preview",
+    "title": "From one idea to a working team",
+    "description": "Set a goal, bring in your agents, and follow the work as it moves forward.",
+    "image": {
+      "path": "assets/6ac073cb3447e26f856b15ec058bb9d4d036b0babff60af88ee0dd49cabfa124.png",
+      "alt": "Paperclip. Ideas become work."
+    },
+    "secondaryLink": {
+      "kind": "external",
+      "label": "Learn more",
+      "url": "https://paperclip.ing"
+    },
+    "primaryAction": {
+      "kind": "route",
+      "label": "Explore your projects",
+      "path": "/projects"
+    },
+    "animation": {
+      "path": "assets/78bafb6adbfd9da899cdbb5d934b4c0b9df5d419d6f0a5104a87a7b25dcc6bd8.html",
+      "alt": "Agents plan, build and review work together."
+    }
+  }
+}

@@ -36,7 +36,7 @@ Shows a color-coded summary: vote counts, per-trace details with reasons, and ex
 paperclipai feedback report
 
 # Point to a different server or company
-pnpm paperclipai feedback report --api-base http://127.0.0.1:3000 --company-id <company-id>
+npx paperclipai feedback report --api-base http://127.0.0.1:3000 --company-id <company-id>
 
 # Include raw payload dumps in the report
 pnpm paperclipai feedback report --payloads
@@ -110,9 +110,17 @@ feedback-export-20260331T120000Z.zip
 
 Exports are full by default. `traces/` keeps the Paperclip envelope, while `full-traces/` contains the richer per-trace bundle plus any recoverable adapter-native files.
 
+Feedback text redaction preserves hostnames, dotted filenames, public schema IDs,
+and authentication terms such as “bearer tokens.” Dotted text must have an encoded
+JWT header to be masked as a token. Complete three-part signed tokens and
+five-part encrypted tokens are masked, including tokens with short segments
+and direct-encryption tokens with an empty encrypted-key segment.
+Explicit credentials, secret fields, email addresses, and phone numbers remain
+masked. The redaction summary counts text that was actually replaced.
+
 ```bash
 # Custom server and output directory
-pnpm paperclipai feedback export --api-base http://127.0.0.1:3000 --company-id <company-id> --out ./my-export
+npx paperclipai feedback export --api-base http://127.0.0.1:3000 --company-id <company-id> --out ./my-export
 ```
 
 ### Reading an exported trace

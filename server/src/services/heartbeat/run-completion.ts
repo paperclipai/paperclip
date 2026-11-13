@@ -1,0 +1,1925 @@
+import { preserveAcceptedRunUsageProjectionSql } from "../usage-receipts.js";
+import { isContextCompactionRun } from "../context-compaction.js";
+import { providerFailureFromError } from "../../vendor/paperclip-runner/index.js";
+import { GENERIC_RUN_FAILURE_CODES, NATIVE_PRE_DISPATCH_FAILURE_CODE, NATIVE_PRE_DISPATCH_FAILURE_KEY, NATIVE_PRE_DISPATCH_FAILURE_RECORD, failureCauseFromAdapterResult, failureCauseFromError,
+  isNativePreDispatchTransientFailure } from "./run-failure-cause.js";
+import { INTERRUPTED_PREPARATION_RETRY_REASON } from "../execution-recovery-attempt.js";
+import { PREDECESSOR_RETIREMENT_FALLBACK_KEY, readPredecessorRetirementFallback, type PredecessorRetirementFallback } from "../native-runtime/predecessor-retirement.js";
+import { releaseUnchangedFallbackWorkspace } from "./predecessor-retirement-fallback.js";
+import { hasNativeExecutionStartEvidence } from "../native-runtime/native-restart-recovery.js";
+import { withoutSqlStatementText } from "@paperclipai/shared";
+import { nativeTaskSessionPublicationHandled } from "../native-runtime/native-task-session-publication.js";
+import { boundOriginalMessage, describeRefusedExactResume, interruptedExactResumeCause } from "../native-runtime/native-exact-resume-failure.js";
+import { settledResponsePublicationSql } from "../native-runtime/native-response-publication-receipt.js";
+import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
+import { measureRunPhase } from "../execution-preparation-timing.js";
+import { PROJECT_ACCESS_DENIED, ProjectAccessDeniedError } from "../project-access-denial.js";
+import { pendingCaseHandoffForRun } from "./case-handoff-lifecycle.js";
+import { NON_RETRYABLE_PREFLIGHT_FAILURE_CODES, isHeartbeatRunTerminalStatus } from "./run-lifecycle.js";
+import { ChatControlRecoveryUnresolvedError } from "./queue.js";
+import { readTransientRecoveryContractFromRun, readHeartbeatRunErrorFamily, isTransientWorkspacePreparationCode } from "./retries.js";
+import { RemoteWorkspacePreparationTimeoutError, REMOTE_WORKSPACE_RESTORE_FAILED_CODE, findRemoteWorkspaceRestoreError } from "../remote-workspace-transport.js";
+import { escalateRemoteWorkspaceRestoreFailure } from "../remote-workspace-restore-recovery.js";
+import { findReusableSandboxResumeError } from "../reusable-sandbox-resume-error.js";
+import { findPluginWorkerUnavailableError, PLUGIN_WORKER_UNAVAILABLE_CODE } from "../plugin-worker-unavailable-error.js";
+import { ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE, findEnvironmentProviderUnavailableError } from "../environment-provider-unavailable-error.js";
+import { REPOSITORY_CATALOG_UNAVAILABLE_CODE, findRepositoryCatalogUnavailableError } from "../repository-catalog-unavailable-error.js";
+import { findWorkspaceProviderFailure } from "../workspace-provider-failure.js";
+import { isRunnerRevisionMismatch, RUNNER_REVISION_MISMATCH_CODE, RUNNER_REVISION_MISMATCH_RETRY } from "../runner-revision-mismatch.js";
+import { isStorageUnavailableError, STORAGE_CREDENTIALS_REJECTED_MESSAGE, STORAGE_UNAVAILABLE_CODE, STORAGE_UNAVAILABLE_EXHAUSTED_MESSAGE, STORAGE_UNAVAILABLE_MESSAGE, STORAGE_UNAVAILABLE_RETRY, storageUnavailableHeldMessage, storageUnavailableMessage } from "../../storage/storage-unavailable.js";
+import { type RunSessionOutcome, resolveNextSessionState, normalizeUsageTotals, resolveCacheAdjustedCostUsd, resolveLedgerBiller, resolveLedgerCostStatus, normalizeLedgerBillingType } from "./run-state.js";
+import { readGitConnectionFailure } from "../git-connection-failure.js";
+import { CONFIGURATION_INCOMPLETE_FAILURE_CODE, ConfigurationIncompleteFailure } from "./run-preparation.js";
+import { isWorkspaceValidationFailedRun, isWorkspaceValidationFailure, attachPaperclipSessionMetadataToSessionParams } from "./workspaces.js";
+import { preserveWorkspaceRestoreRecoveryMetadataSql } from "../legacy-workspace-restore-recovery.js";
+import { cancellationResultJson, controllerLeaseLossCancellation, readRunCancellation } from "../run-cancellation.js";
+import { CONTROLLER_LEASE_LOST_FAILURE_CODE, LegacyControllerLeaseLostError } from "../legacy-controller-lease.js";
+import { REVIEWED_CHAT_BINDING_NOT_READY, ReviewedChatBindingNotReadyError, reviewedChatBindingDenialResultJson } from "../reviewed-chat-binding-diagnostics.js";
+import { reportRunFailure } from "../run-failure-report.js";
+import { accountRunCost } from "../run-cost-accounting.js";
+import { isConversation, settleConversationTurn } from "../agent-conversations.js";
+import { legacyExecutionNeedsReconciliationWithEvidence } from "../legacy-execution-recovery.js";
+import { isWorkspaceGitScanError } from "../workspace-git-operation-scheduler.js";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { heartbeatRunEvents, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults } from "@paperclipai/db";
+import { HttpError } from "../../errors.js";
+import { logger } from "../../middleware/logger.js";
+import { normalizeResponsibleUserDenialCode } from "../responsible-user-denial-run-outcomes.js";
+import { parseObject } from "../../adapters/utils.js";
+import { CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON, isChatOriginPublicationCandidate, isExternalChatPresentationContext, mergeHeartbeatRunResultJson, resolveHeartbeatRunResponse, type RunPresentationDecision } from "../heartbeat-run-summary.js";
+import { normalizeMaxTurnStopReason } from "../heartbeat-stop-metadata.js";
+import { CHAT_CONTROL_RECOVERY_UNRESOLVED_CODE } from "../chat-control-recovery-stop.js";
+import { logActivity } from "../activity-log.js";
+import { isUnresolvedWorkspaceBaseRefError, readUnresolvedWorkspaceBaseRefDiagnostic, type UnresolvedWorkspaceBaseRefError } from "../workspace-runtime.js";
+import { runnerGoalService } from "../runner-goals.js";
+import { resolveChatRunPresentationAuthorizationReason } from "../chat-run-publications.js";
+import { hasChatRunOwnedProviderInteraction } from "../chat-interaction-arbitration.js";
+import { conversationTurnPresentsAnswer } from "../native-runtime/native-governance.js";
+import { readAcceptedTaskContinuationSummary } from "../heartbeat-run-summary.js";
+import { SANDBOX_PROVIDER_PLUGIN_NOT_READY_REASON } from "../recovery/stranded-notice.js";
+import { MAX_TURN_CONTINUATION_RETRY_REASON, isResolvedInteractionContinuationWakeContext } from "../../modules/run-dispatch/index.js";
+import { redactCurrentUserText } from "../../log-redaction.js";
+import type { createHeartbeatLifecycle } from "./run-lifecycle.js";
+import type { createHeartbeatRunPreparation } from "./run-preparation.js";
+import type { createHeartbeatRetries, HeartbeatRetryDependencies } from "./retries.js";
+import type { createHeartbeatQueue } from "./queue.js";
+import type { createHeartbeatRunControl, HeartbeatRunControlDependencies } from "./run-control.js";
+import type { issueService } from "../issues.js";
+import type { recoveryService } from "../recovery/index.js";
+import type { BudgetServiceHooks } from "../budgets.js";
+import type { providerTraceStore } from "../provider-trace-store.js";
+import type { createAgentIdentityRedactor } from "../agent-identity-redaction.js";
+import type { CurrentUserRedactionOptions } from "../../log-redaction.js";
+import { ACCOUNTING_CONTENTION_MESSAGE, isAccountingContentionError } from "../accounting-transaction.js";
+import type { AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import type { getRunLogStore, RunLogHandle } from "../run-log-store.js";
+import type { createHeartbeatRunState, getAdapterSessionCodec } from "./run-state.js";
+import type { EffectiveRunSessionConfigMetadata } from "./workspaces.js";
+import type { Db, agents } from "@paperclipai/db";
+import { setupCommandFailureResultJson } from "../workspace-setup-command-failure.js";
+
+type Run = typeof heartbeatRuns.$inferSelect;
+type Agent = typeof agents.$inferSelect;
+type RunState = ReturnType<typeof createHeartbeatRunState>;
+type IssueContext = Awaited<ReturnType<ReturnType<typeof createHeartbeatRunPreparation>["getIssueExecutionContext"]>> | null;
+type TaskSession = Awaited<ReturnType<RunState["getTaskSession"]>> | null;
+
+/** Completion persists terminal outcomes; the executor retains dispatch and cleanup ownership. */
+export interface HeartbeatRunCompletionDependencies extends Pick<RunState,
+  "getRun" | "getAgent" | "resolveNormalizedUsageForSession" | "clearTaskSessions" | "upsertTaskSession">,
+  Pick<ReturnType<typeof createHeartbeatLifecycle>,
+    "mergeRunStopMetadataForAgent" | "setRunStatusIfRunning" | "setWakeupStatus" | "appendRunEvent" |
+    "classifyAndPersistRunLiveness" | "completeSkillTestRunForHeartbeatOutcome" | "refreshContinuationSummaryForRun" |
+    "findRunIssueComment" | "findLatestCompletedFinalAgentMessage" | "parseMaxTurnContinuationPolicy" |
+    "finalizeIssueCommentPolicy" | "handleIssueReviewPathDisposition" | "handleRunLivenessContinuation" |
+    "handleSuccessfulRunHandoff" | "updateRuntimeState">,
+  Pick<ReturnType<typeof createHeartbeatRetries>,
+    "scheduleBoundedRetryForRun" | "scheduleInteractionContinuationInfrastructureRetryIfEligible" | "timerClaimWasFirstHeartbeat">,
+  Pick<ReturnType<typeof createHeartbeatRunControl>, "releaseIssueExecutionAndPromote">,
+  Pick<HeartbeatRetryDependencies, "finalizeAgentStatus">,
+  Pick<ReturnType<typeof createHeartbeatQueue>, "enqueueWakeup"> {
+  issuesSvc: Pick<ReturnType<typeof issueService>, "addComment">;
+  recovery: Pick<ReturnType<typeof recoveryService>, "reconcileLegacyContinuation" | "reconcileResolvedDependencyWakeBackstop">;
+  getCurrentUserRedactionOptions: () => Promise<CurrentUserRedactionOptions>;
+  budgetHooks: BudgetServiceHooks;
+  runLogStore: Pick<ReturnType<typeof getRunLogStore>, "finalize">;
+  traceStore: Pick<ReturnType<typeof providerTraceStore>, "finalize">;
+  processRunCancellationSettlements: Pick<HeartbeatRunControlDependencies["processRunCancellationSettlements"], "get">;
+  failedProcessRunCancellations: HeartbeatRunCompletionDependencies["processRunCancellationSettlements"];
+}
+
+interface RunCompletionOutput {
+  handle: RunLogHandle | null;
+  outputProgressState: { pending: { bytes: number } | null };
+  flushOutputProgress: (options?: { force?: boolean }) => Promise<void>;
+  // Getters in the executor retain output that arrives while finalization awaits I/O.
+  readonly stdoutExcerpt: string;
+  readonly stderrExcerpt: string;
+}
+
+interface RunCompletionSession {
+  runtimeForAdapter: { sessionId: string | null; sessionDisplayId: string | null };
+  previousSessionParams: Record<string, unknown> | null;
+  taskKey: string | null;
+  configuredModel: string | null;
+  sessionConfigMetadata: EffectiveRunSessionConfigMetadata;
+}
+
+interface RunCompletionInput {
+  run: Run;
+  agent: Agent;
+  issueId: string | null;
+  issueRef: Pick<NonNullable<IssueContext>, "workMode" | "identifier" | "title"> | null;
+  signal: AbortSignal;
+  output: RunCompletionOutput;
+  session: RunCompletionSession;
+  readFailureReportSecrets: () => string[];
+}
+
+export interface CompleteHeartbeatRunInput extends RunCompletionInput {
+  adapterResult: AdapterExecutionResult;
+  sessionCodec: ReturnType<typeof getAdapterSessionCodec>;
+  taskSessionForRun: TaskSession;
+  sessionCompaction: Pick<Awaited<ReturnType<RunState["evaluateSessionCompaction"]>>, "rotate" | "reason">;
+  configFreshnessResultMetadata: Record<string, unknown>;
+  runLedgerScope: Record<string, unknown>;
+  currentUserRedactionOptions: CurrentUserRedactionOptions;
+  providerTraceCapture: boolean;
+  // Update the executor immediately: a later completion step can still throw.
+  onProviderTraceFinalized: () => void;
+  issueContext: IssueContext;
+  onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+}
+
+export interface FailHeartbeatRunInput extends RunCompletionInput {
+  runId: string;
+  err: unknown;
+  identityRedactor: Pick<ReturnType<typeof createAgentIdentityRedactor>, "redact">;
+  requiredWorkspaceRestoreEvidence: Record<string, unknown> | null;
+  legacyAdapterEntered: boolean;
+  /**
+   * False only when this controller never entered the native dispatch gate and
+   * is not resuming a restart claim. Omitted means provider work may have
+   * started, so the failure keeps the native hold.
+   */
+  nativeDispatchMayHaveStarted?: boolean;
+  goalCheckpointSession: { current: { params: Record<string, unknown>; displayId: string } | null };
+  previousSessionDisplayId: string | null;
+  taskSession: TaskSession;
+  /** Set when the run failed on an unretired predecessor and its next attempt was prepared for a fresh sandbox. */
+  predecessorRetirementFallback?: PredecessorRetirementFallback | null;
+}
+
+export interface FailHeartbeatRunSetupInput {
+  run: Run;
+  runId: string;
+  outerErr: unknown;
+  signal: AbortSignal;
+  /** True once a legacy adapter or native dispatch began provider work. */
+  providerDispatchStarted: boolean;
+  /** See FailHeartbeatRunInput.nativeDispatchMayHaveStarted. */
+  nativeDispatchMayHaveStarted?: boolean;
+  identityRedactor: Pick<ReturnType<typeof createAgentIdentityRedactor>, "redact">;
+  readFailureReportSecrets: () => string[];
+}
+
+function nonRetryablePreflightFailureCode(error: unknown): string | null {
+  if (error instanceof ProjectAccessDeniedError) return PROJECT_ACCESS_DENIED;
+  if (error instanceof ChatControlRecoveryUnresolvedError)
+    return CHAT_CONTROL_RECOVERY_UNRESOLVED_CODE;
+  if (
+    error instanceof HttpError &&
+    error.status === 409 &&
+    parseObject(error.details).code === "chat_failed_run_retry_not_authorized"
+  ) {
+    return "chat_failed_run_retry_not_authorized";
+  }
+  if (!(error instanceof HttpError) || error.status !== 422) return null;
+  const code = readNonEmptyString(parseObject(error.details).code);
+  return code && NON_RETRYABLE_PREFLIGHT_FAILURE_CODES.has(code) ? code : null;
+}
+
+export const MAX_TURN_CONTINUATION_WAKE_REASON = "max_turns_continuation_retry";
+
+// Build the configuration-incomplete result payload for a workspace base ref
+// that never resolved to a commit. The setup catch maps this to errorCode
+// `configuration_incomplete`, so the recovery path routes it to a human owner
+// instead of a dispatched-then-failed run. The `fingerprint` uses the canonical
+// remote ref, not the operator spelling. Two equivalent spellings of one remote
+// branch (`fix/foo` and `origin/fix/foo`) share one fingerprint, so a repeated
+// failure reuses one active recovery action and does not reset the attempt
+// count or post a duplicate notice. A different branch makes a new action.
+// Build the configuration-incomplete result payload for a sandbox provider
+// plugin that is installed but not `ready`. The `fingerprint` is the plugin
+// key plus its status, so every run that hits the same stuck plugin reuses
+// one active recovery action instead of posting a fresh notice per attempt,
+// while a status change (say `error` -> `disabled`) makes a new one.
+function buildSandboxProviderPluginNotReadyResultJson(
+  run: typeof heartbeatRuns.$inferSelect,
+  failure: { provider: string; pluginKey: string; pluginStatus: string },
+): Record<string, unknown> {
+  const context = parseObject(run.contextSnapshot);
+  return {
+    configurationIncomplete: {
+      reason: SANDBOX_PROVIDER_PLUGIN_NOT_READY_REASON,
+      companyId: run.companyId,
+      agentId: run.agentId,
+      issueId: readNonEmptyString(context.issueId) ?? null,
+      projectId: readNonEmptyString(context.projectId) ?? null,
+      sandboxProvider: failure.provider,
+      pluginKey: failure.pluginKey,
+      pluginStatus: failure.pluginStatus,
+      fingerprint: `sandbox_provider_plugin:${failure.pluginKey}:${failure.pluginStatus}`,
+      missingBindings: [],
+    },
+  };
+}
+
+function buildUnresolvedWorkspaceBaseRefResultJson(
+  run: typeof heartbeatRuns.$inferSelect,
+  error: UnresolvedWorkspaceBaseRefError,
+): Record<string, unknown> {
+  const context = parseObject(run.contextSnapshot);
+  const diagnostic = readUnresolvedWorkspaceBaseRefDiagnostic(error);
+  return {
+    configurationIncomplete: {
+      reason: "workspace_base_ref_unresolved",
+      ...(diagnostic ? { baseRefDiagnostic: diagnostic } : {}),
+      companyId: run.companyId,
+      agentId: run.agentId,
+      issueId: readNonEmptyString(context.issueId) ?? null,
+      projectId: readNonEmptyString(context.projectId) ?? null,
+      requestedRef: error.requestedRef,
+      defaultBranch: error.defaultBranch,
+      attemptedRefs: error.attemptedRefs,
+      fetchError: error.fetchError,
+      fingerprint: `workspace_base_ref:${error.recoveryIdentityRef}`,
+      missingBindings: [],
+    },
+  };
+}
+
+function isMaxTurnExhaustionRun(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode" | "resultJson">,
+) {
+  const resultJson = parseObject(run.resultJson);
+  return Boolean(
+    normalizeMaxTurnStopReason(resultJson.stopReason) ??
+    normalizeMaxTurnStopReason(run.errorCode),
+  );
+}
+
+// environment-runtime.ts's resolveSandboxProviderPlugin "not_ready" message,
+// e.g. 'Sandbox provider "kubernetes" is installed via plugin
+// "acme.kubernetes-sandbox-provider", but that plugin is currently error.'
+// The plugin row exists but its status is `error` (a failed activation),
+// `disabled` (an operator switched it off) or `upgrade_pending`. Unlike the
+// worker restart window above, nothing on the run path ever changes that
+// status: only an operator enabling the plugin, or a server boot that
+// re-activates a bundled plugin, does. Re-running the agent produces the
+// identical failure every time, so the setup catch classifies it as
+// `configuration_incomplete` (routed to a human owner) instead of a retryable
+// `setup_failed` that the scheduler would keep re-dispatching.
+const SANDBOX_PROVIDER_PLUGIN_NOT_READY_RE =
+  /sandbox provider "([^"]*)" is installed via plugin "([^"]*)", but that plugin is currently (error|disabled|upgrade_pending)\b/i;
+
+export function parseSandboxProviderPluginNotReadyFailureMessage(
+  value: unknown,
+): { provider: string; pluginKey: string; pluginStatus: string } | null {
+  if (typeof value !== "string") return null;
+  const match = SANDBOX_PROVIDER_PLUGIN_NOT_READY_RE.exec(value);
+  if (!match) return null;
+  return {
+    provider: match[1] ?? "",
+    pluginKey: match[2] ?? "",
+    pluginStatus: (match[3] ?? "").toLowerCase(),
+  };
+}
+
+function mergeAdapterRecoveryMetadata(input: {
+  resultJson: Record<string, unknown> | null | undefined;
+  errorFamily?: string | null;
+  retryNotBefore?: string | null;
+}) {
+  const errorFamily = readNonEmptyString(input.errorFamily);
+  const retryNotBefore = readNonEmptyString(input.retryNotBefore);
+  if (!input.resultJson && !errorFamily && !retryNotBefore)
+    return input.resultJson ?? null;
+
+  return {
+    ...(input.resultJson ?? {}),
+    ...(errorFamily ? { errorFamily } : {}),
+    ...(retryNotBefore
+      ? {
+          retryNotBefore,
+          transientRetryNotBefore: retryNotBefore,
+          ...(errorFamily === "provider_quota"
+            ? { providerQuotaRetryNotBefore: retryNotBefore }
+            : {}),
+        }
+      : {}),
+  };
+}
+
+function isConfigurationIncompleteFailure(
+  error: unknown,
+): error is ConfigurationIncompleteFailure {
+  return error instanceof ConfigurationIncompleteFailure;
+}
+
+export function isConfigurationIncompleteFailedRun(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode"> | null | undefined,
+) {
+  return (
+    run?.errorCode === CONFIGURATION_INCOMPLETE_FAILURE_CODE ||
+    run?.errorCode === "model_not_found"
+  );
+}
+
+/**
+ * Failure signatures from sandbox→host git workspace reconciliation. These
+ * describe the state of the SHARED workspace (divergent histories written by
+ * different runs), not a defect in the agent that happened to run last —
+ * putting the agent into a sticky `error` state over them removes a healthy
+ * agent from rotation while leaving the actual problem (the workspace)
+ * untouched. The run still fails and carries the full message.
+ */
+const WORKSPACE_SYNC_CONFLICT_SIGNATURES = [
+  "Failed to merge concurrent remote git histories",
+  "Failed to integrate concurrent remote git history",
+  "did not send all necessary objects",
+  "lacks these prerequisite commits",
+];
+
+export function isWorkspaceSyncConflictFailure(
+  message: string | null | undefined,
+): boolean {
+  if (!message) return false;
+  return WORKSPACE_SYNC_CONFLICT_SIGNATURES.some((signature) =>
+    message.includes(signature),
+  );
+}
+
+function readNonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+// Keep the watchdog's closed cause and timings so the run and its failure
+// report show whether renewal stalled in the database or the event loop.
+function controllerLeaseLossEvidence(reason: unknown) {
+  return reason instanceof LegacyControllerLeaseLostError
+    ? { controllerLeaseLoss: { cause: reason.leaseLossCause, ...reason.leaseLossTiming } }
+    : {};
+}
+
+// Attribute a stop the lease watchdog caused, whether the adapter returned
+// or threw. A requested stop recorded earlier still wins in cancellationResultJson.
+function controllerLeaseLossResultJson(signal: AbortSignal) {
+  return signal.reason instanceof LegacyControllerLeaseLostError
+    ? {
+        cancellation: controllerLeaseLossCancellation(signal.reason.leaseLossCause),
+        ...controllerLeaseLossEvidence(signal.reason),
+      }
+    : {};
+}
+
+/** Persist the resolved presentation and wake dependents in its committing transaction. */
+export async function recordRunPresentationDecision(db: Db, input: {
+  companyId: string; runId: string; issueId?: string; decision: RunPresentationDecision;
+}) {
+  await db.transaction(async tx => {
+    await notifyChatRunMilestones(tx, { companyId: input.companyId, runId: input.runId, issueId: input.issueId });
+    await tx.update(heartbeatRuns).set({
+      resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({ presentationDecision: input.decision })}::jsonb
+        || ${typeof input.decision.commentId === "string" ? settledResponsePublicationSql() : sql`'{}'::jsonb`}`,
+      updatedAt: new Date(),
+    }).where(eq(heartbeatRuns.id, input.runId));
+  });
+}
+
+export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunCompletionDependencies) {
+  const {
+    getRun,
+    getAgent,
+    resolveNormalizedUsageForSession,
+    clearTaskSessions,
+    upsertTaskSession,
+    mergeRunStopMetadataForAgent,
+    setRunStatusIfRunning,
+    setWakeupStatus,
+    appendRunEvent,
+    classifyAndPersistRunLiveness,
+    completeSkillTestRunForHeartbeatOutcome,
+    refreshContinuationSummaryForRun,
+    findRunIssueComment,
+    findLatestCompletedFinalAgentMessage,
+    parseMaxTurnContinuationPolicy,
+    finalizeIssueCommentPolicy,
+    handleIssueReviewPathDisposition,
+    handleRunLivenessContinuation,
+    handleSuccessfulRunHandoff,
+    updateRuntimeState,
+    scheduleBoundedRetryForRun,
+    scheduleInteractionContinuationInfrastructureRetryIfEligible,
+    timerClaimWasFirstHeartbeat,
+    releaseIssueExecutionAndPromote,
+    finalizeAgentStatus,
+    enqueueWakeup,
+    issuesSvc,
+    recovery,
+    getCurrentUserRedactionOptions,
+    budgetHooks,
+    runLogStore,
+    traceStore,
+    processRunCancellationSettlements,
+    failedProcessRunCancellations,
+  } = dependencies;
+
+  async function completeRun(input: CompleteHeartbeatRunInput) {
+    const { run, agent, issueId, issueRef, signal, output, session, readFailureReportSecrets, adapterResult, sessionCodec, taskSessionForRun, sessionCompaction,
+      configFreshnessResultMetadata, runLedgerScope, currentUserRedactionOptions,
+      providerTraceCapture, onProviderTraceFinalized, issueContext, onLog } = input;
+    const { runtimeForAdapter, previousSessionParams, taskKey, configuredModel, sessionConfigMetadata } = session;
+    const { handle, outputProgressState, flushOutputProgress } = output;
+    const processCancellation =
+      processRunCancellationSettlements.get(run.id) ??
+      failedProcessRunCancellations.get(run.id);
+    await processCancellation?.settled;
+    let outcome: RunSessionOutcome;
+    const latestRun = await getRun(run.id, { unsafeFullResultJson: true });
+    if (isHeartbeatRunTerminalStatus(latestRun?.status)) {
+      outcome = latestRun.status;
+    } else if (signal.aborted) {
+      outcome = "cancelled";
+    } else if (adapterResult.nativeFinalization) {
+      const nativeTerminal =
+        adapterResult.nativeFinalization.terminal.runTerminalState;
+      outcome =
+        nativeTerminal === "succeeded"
+          ? "succeeded"
+          : nativeTerminal === "cancelled"
+            ? "cancelled"
+            : "failed";
+    } else if (adapterResult.timedOut) {
+      outcome = "timed_out";
+    } else if (adapterResult.resultJson?.status === "cancelled") {
+      outcome = "cancelled";
+    } else if (
+      (adapterResult.exitCode ?? 0) === 0 &&
+      !adapterResult.errorMessage &&
+      !adapterResult.signal &&
+      !processCancellation?.failed
+    ) {
+      outcome = "succeeded";
+    } else {
+      outcome = "failed";
+    }
+
+    const nextSessionState = resolveNextSessionState({
+      adapterType: agent.adapterType,
+      codec: sessionCodec,
+      adapterResult,
+      outcome,
+      previousParams: previousSessionParams,
+      previousDisplayId: runtimeForAdapter.sessionDisplayId,
+      previousLegacySessionId: runtimeForAdapter.sessionId,
+    });
+    const rawUsage = normalizeUsageTotals(adapterResult.usage);
+    const sessionUsageResolution = await resolveNormalizedUsageForSession({
+      agentId: agent.id,
+      runId: run.id,
+      sessionId:
+        nextSessionState.displayId ?? nextSessionState.legacySessionId,
+      rawUsage,
+      usageBasis: adapterResult.usageBasis ?? null,
+    });
+    const normalizedUsage = sessionUsageResolution.normalizedUsage;
+    const runErrorMessage =
+      outcome === "cancelled"
+        ? redactCurrentUserText(withoutSqlStatementText(latestRun?.error ?? adapterResult.errorMessage ?? "Cancelled"), currentUserRedactionOptions)
+        : outcome === "succeeded"
+          ? null
+          : redactCurrentUserText(
+              withoutSqlStatementText(adapterResult.errorMessage ??
+                (outcome === "timed_out" ? "Timed out" : "Adapter failed")),
+              currentUserRedactionOptions,
+            );
+    const recordedResponsibleUserDenialCode =
+      normalizeResponsibleUserDenialCode(latestRun?.errorCode);
+    const runErrorCode =
+      outcome === "timed_out"
+        ? "timeout"
+        : outcome === "cancelled"
+          ? (latestRun?.errorCode ?? "cancelled")
+          : outcome === "failed"
+            ? (adapterResult.errorCode ??
+              recordedResponsibleUserDenialCode ??
+              "adapter_failed")
+            : null;
+    // A generic code alone does not say what failed; record a bounded cause.
+    const failureCause = outcome === "failed" && runErrorCode && GENERIC_RUN_FAILURE_CODES.has(runErrorCode)
+      ? failureCauseFromAdapterResult(adapterResult, { processCancellationFailed: Boolean(processCancellation?.failed) })
+      : null;
+    if (failureCause) {
+      logger.warn({ runId: run.id, errorCode: runErrorCode, failureCause }, "heartbeat run failed");
+    }
+
+    async function persistSessionState(finalizedRun: Run) {
+      await updateRuntimeState(
+        agent,
+        finalizedRun,
+        adapterResult,
+        { legacySessionId: nextSessionState.legacySessionId },
+        normalizedUsage,
+      );
+      if (!taskKey) return;
+      if (nativeTaskSessionPublicationHandled(finalizedRun.runnerProfileJson, {
+        runId: finalizedRun.id,
+        companyId: finalizedRun.companyId,
+        agentId: agent.id,
+        taskKey,
+        adapterType: agent.adapterType,
+      })) return;
+      if (
+        adapterResult.clearSession ||
+        (!nextSessionState.params && !nextSessionState.displayId)
+      ) {
+        await clearTaskSessions(agent.companyId, agent.id, {
+          taskKey,
+          adapterType: agent.adapterType,
+          expectedRunId: finalizedRun.id,
+        });
+      } else {
+        await upsertTaskSession({
+          companyId: agent.companyId,
+          agentId: agent.id,
+          adapterType: agent.adapterType,
+          taskKey,
+          sessionParamsJson: attachPaperclipSessionMetadataToSessionParams(
+            nextSessionState.params,
+            configuredModel,
+            sessionConfigMetadata,
+          ),
+          sessionDisplayId: nextSessionState.displayId,
+          lastRunId: finalizedRun.id,
+          lastError: runErrorMessage,
+        });
+      }
+    }
+
+    let logSummary: {
+      bytes: number | null;
+      sha256?: string | null;
+      compressed: boolean;
+    } | null = null;
+    if (handle) {
+      logSummary = await measureRunPhase("completion.output", () => runLogStore.finalize(handle));
+    }
+    const finalLogBytes = logSummary?.bytes;
+    if (outputProgressState.pending && typeof finalLogBytes === "number") {
+      outputProgressState.pending.bytes = finalLogBytes;
+    }
+    await flushOutputProgress({ force: true });
+
+    if (providerTraceCapture) {
+      try {
+        await traceStore.finalize(run.id, run.companyId);
+        onProviderTraceFinalized();
+      } catch (error) {
+        logger.warn(
+          { error, runId: run.id },
+          "provider trace finalization failed without affecting run outcome",
+        );
+      }
+    }
+
+    const status =
+      outcome === "succeeded"
+        ? "succeeded"
+        : outcome === "cancelled"
+          ? "cancelled"
+          : outcome === "timed_out"
+            ? "timed_out"
+            : "failed";
+
+    const cacheAdjustedCostUsd = adapterResult.costUsdExact != null && adapterResult.cacheAdjustedCostUsd == null
+      ? null : resolveCacheAdjustedCostUsd(adapterResult);
+    const usageJson: Record<string, unknown> = {
+      accountingReceiptReady: adapterResult.usageComplete !== false,
+      costUsdExact: adapterResult.costUsdExact ?? null,
+      providerRequestId: adapterResult.providerRequestId ?? null,
+      ...(normalizedUsage ?? {}),
+      ...(adapterResult.usageByModel ? { usageByModel: adapterResult.usageByModel } : {}),
+      ...(rawUsage
+        ? {
+            rawInputTokens: rawUsage.inputTokens,
+            rawInputIncludesCached: false,
+            rawCachedInputTokens: rawUsage.cachedInputTokens,
+            rawOutputTokens: rawUsage.outputTokens,
+          }
+        : {}),
+      ...(sessionUsageResolution.derivedFromSessionTotals
+        ? { usageSource: "session_delta" }
+        : adapterResult.usageBasis === "per_run"
+          ? { usageSource: "per_run" }
+          : {}),
+      ...((nextSessionState.displayId ??
+      nextSessionState.legacySessionId)
+        ? {
+            persistedSessionId:
+              nextSessionState.displayId ??
+              nextSessionState.legacySessionId,
+          }
+        : {}),
+      sessionReused:
+        runtimeForAdapter.sessionId != null ||
+        runtimeForAdapter.sessionDisplayId != null,
+      taskSessionReused: taskSessionForRun != null,
+      freshSession:
+        runtimeForAdapter.sessionId == null &&
+        runtimeForAdapter.sessionDisplayId == null,
+      sessionRotated: sessionCompaction.rotate,
+      sessionRotationReason: sessionCompaction.reason,
+      configFreshness: configFreshnessResultMetadata,
+      provider:
+        readNonEmptyString(adapterResult.provider) ?? "unknown",
+      biller: resolveLedgerBiller(adapterResult),
+      model: readNonEmptyString(adapterResult.model) ?? "unknown",
+      ...(adapterResult.costUsd != null
+        ? { costUsd: adapterResult.costUsd }
+        : {}),
+      ...(cacheAdjustedCostUsd != null
+        ? { cacheAdjustedCostUsd }
+        : {}),
+      pricingProvenance: adapterResult.pricingProvenance,
+      costStatus: adapterResult.costStatus ?? resolveLedgerCostStatus({
+        costUsd: cacheAdjustedCostUsd ?? (adapterResult.costUsdExact != null ? Number(adapterResult.costUsdExact) : null),
+        billingType: normalizeLedgerBillingType(adapterResult.billingType),
+        inputTokens: normalizedUsage?.inputTokens ?? 0,
+        cachedInputTokens: normalizedUsage?.cachedInputTokens ?? 0,
+        outputTokens: normalizedUsage?.outputTokens ?? 0,
+      }),
+      billingType: normalizeLedgerBillingType(
+        adapterResult.billingType,
+      ),
+    };
+
+    const persistedResultJson = cancellationResultJson(latestRun ?? run, outcome, mergeHeartbeatRunResultJson(
+      mergeRunStopMetadataForAgent(agent, outcome, {
+        resultJson: mergeAdapterRecoveryMetadata({
+          resultJson: {
+            ...(adapterResult.nativeFinalization || outcome === "cancelled"
+              ? parseObject(latestRun?.resultJson)
+              : {}),
+            ...parseObject(adapterResult.resultJson),
+            ...(adapterResult.executionRecovery
+              ? { executionRecovery: adapterResult.executionRecovery }
+              : {}),
+            ...(outcome === "cancelled" ? controllerLeaseLossResultJson(signal) : {}),
+            ...(failureCause ? { failureCause } : {}),
+            configFreshness: configFreshnessResultMetadata,
+          },
+          errorFamily: adapterResult.errorFamily ?? null,
+          retryNotBefore: adapterResult.retryNotBefore ?? null,
+        }),
+        errorCode: runErrorCode,
+        errorMessage: runErrorMessage,
+      }),
+      adapterResult.summary ?? null,
+    ), runErrorCode, runErrorMessage);
+
+    const ledgerScope = runLedgerScope;
+    const finalRunPatch: Partial<typeof heartbeatRuns.$inferInsert> = {
+      // Accounting must acknowledge even a proven pre-provider failure:
+      // that transaction releases the reservation without creating a charge.
+      costAccountingPending: true,
+      finishedAt: new Date(),
+      error: runErrorMessage,
+      errorCode: runErrorCode,
+      exitCode: adapterResult.exitCode,
+      signal: adapterResult.signal,
+      usageJson: { ...usageJson, ledgerScope },
+      resultJson: persistedResultJson,
+      sessionIdAfter:
+        nextSessionState.displayId ?? nextSessionState.legacySessionId,
+      stdoutExcerpt: output.stdoutExcerpt,
+      stderrExcerpt: output.stderrExcerpt,
+      logBytes: logSummary?.bytes,
+      logSha256: logSummary?.sha256,
+      logCompressed: logSummary?.compressed ?? false,
+    };
+    const persistedRunWrite = await measureRunPhase("completion.terminal_write", () => setRunStatusIfRunning(
+      run.id,
+      status,
+      finalRunPatch,
+      { adapterErrorMeta: adapterResult.errorMeta, secretValues: readFailureReportSecrets() },
+    ));
+    let persistedRun: typeof heartbeatRuns.$inferSelect | null =
+      persistedRunWrite.run;
+    if (!persistedRunWrite.updated) {
+      persistedRun = null;
+      // Native reconciliation can commit and project the terminal status in
+      // the narrow window between adapter completion and this live write.
+      // The status is authoritative, but it must not make us discard the
+      // adapter's semantic result, usage, logs, or presentation decision.
+      // Only complete the late metadata write when the reconciler chose the
+      // same terminal status; a conflicting terminal outcome remains owned
+      // by the path that won the compare-and-set. Owned legacy cancellation
+      // likewise keeps the provider session, logs, and usage after Stop wins.
+      if (
+        (adapterResult.nativeFinalization ||
+          (processCancellation && !processCancellation.failed && status === "cancelled")) &&
+        persistedRunWrite.run?.status === status
+      ) {
+        persistedRun = await db
+          .update(heartbeatRuns)
+          .set({
+            ...finalRunPatch,
+            resultJson: preserveWorkspaceRestoreRecoveryMetadataSql(
+              cancellationResultJson(persistedRunWrite.run, status, finalRunPatch.resultJson, runErrorCode, runErrorMessage) ?? null,
+            ),
+
+            usageJson: preserveAcceptedRunUsageProjectionSql({ ...parseObject(persistedRunWrite.run.usageJson), ...parseObject(finalRunPatch.usageJson) }),
+            finishedAt:
+              persistedRunWrite.run.finishedAt ?? finalRunPatch.finishedAt,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(heartbeatRuns.id, run.id),
+              eq(heartbeatRuns.status, status),
+            ),
+          )
+          .returning()
+          .then((rows) => rows[0] ?? null);
+      }
+      if (!persistedRun) {
+        await measureRunPhase("completion.cost", () => accountRunCost(db, run.id, budgetHooks)).catch((err) => {
+          logger.error({ err, runId: run.id }, "Late run accounting queued for recovery");
+        });
+        logger.info(
+          {
+            runId: run.id,
+            attemptedStatus: status,
+            currentStatus: persistedRunWrite.run?.status ?? null,
+          },
+          "skipping late run finalization because the run already left running state",
+        );
+        return;
+      }
+    }
+    if (persistedRun) {
+      // Accounting recovery is independent of workspace or issue finalization.
+      await measureRunPhase("completion.cost", () => accountRunCost(db, persistedRun!.id, budgetHooks)).catch((err) => {
+        logger.error({ err, runId: run.id }, "Run accounting queued for recovery");
+      });
+      persistedRun =
+        (await measureRunPhase("completion.liveness", () => classifyAndPersistRunLiveness(
+          persistedRun!,
+          persistedResultJson,
+        ))) ?? persistedRun;
+    }
+
+    await setWakeupStatus(
+      run.wakeupRequestId,
+      outcome === "succeeded" ? "completed" : status,
+      {
+        finishedAt: new Date(),
+        error: runErrorMessage,
+      },
+    );
+
+    const finalizedRun = persistedRun ?? (await getRun(run.id));
+    const settleAgent = () => finalizeAgentStatus(agent.id, outcome, runErrorMessage, {
+      keepIdleOnFailure:
+        outcome === "failed" &&
+        ((finalizedRun
+          ? readHeartbeatRunErrorFamily(finalizedRun) === "provider_quota"
+          : runErrorCode === "provider_quota") ||
+          isWorkspaceSyncConflictFailure(adapterResult.errorMessage)),
+      wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
+    });
+    if (finalizedRun) {
+      await appendRunEvent(finalizedRun, {
+        eventType: "lifecycle",
+        stream: "system",
+        level: outcome === "succeeded" ? "info" : "error",
+        message: `run ${outcome}`,
+        payload: {
+          status,
+          exitCode: adapterResult.exitCode,
+          ...(readRunCancellation(finalizedRun.resultJson) ? { cancellation: readRunCancellation(finalizedRun.resultJson) } : {}),
+        },
+      });
+      try {
+        await completeSkillTestRunForHeartbeatOutcome({
+          run: finalizedRun,
+          issueId,
+          issueWorkMode: issueRef?.workMode ?? null,
+          outcome,
+          error: runErrorMessage,
+        });
+      } catch (err) {
+        logger.warn(
+          { err, runId: finalizedRun.id, issueId },
+          "failed to complete skill test run after heartbeat finalization",
+        );
+        await onLog(
+          "stderr",
+          `[paperclip] Failed to complete skill test run: ${err instanceof Error ? err.message : String(err)}\n`,
+        );
+      }
+      const livenessRun = finalizedRun;
+      await measureRunPhase("completion.summary", () => refreshContinuationSummaryForRun(livenessRun, agent));
+      if (await pendingCaseHandoffForRun(db, livenessRun.id, livenessRun.companyId)) {
+        // The returning agent must resume its own settled session with the
+        // configuration metadata used for this run. Persist before release,
+        // which can make a same-agent successor eligible immediately.
+        await persistSessionState(livenessRun);
+        await releaseIssueExecutionAndPromote(livenessRun, { suppressImmediateRecovery: true });
+        await settleAgent();
+        return;
+      }
+      const skipRunIssueComment =
+        parseObject(livenessRun.contextSnapshot).skipIssueComment === true;
+      let resolvedPresentationDecision: RunPresentationDecision | null =
+        null;
+      try {
+        const existingRunComment = issueId
+          ? await measureRunPhase("response.resolve", () => findRunIssueComment(
+              livenessRun.id,
+              livenessRun.companyId,
+              issueId,
+              persistedResultJson,
+            ))
+          : null;
+        const finalAgentMessage =
+          await measureRunPhase("response.resolve", () => findLatestCompletedFinalAgentMessage(
+            livenessRun.id,
+            livenessRun.companyId,
+          ));
+        const externalChatPresentationCandidate = isChatOriginPublicationCandidate(livenessRun.contextSnapshot);
+        const externalChatPresentationAuthorization =
+          issueId && externalChatPresentationCandidate
+            ? await measureRunPhase("response.authorize", () => resolveChatRunPresentationAuthorizationReason(db, {
+                companyId: livenessRun.companyId,
+                issueId,
+                runId: livenessRun.id,
+              }))
+            : null;
+        const externalChatPresentationContext = isExternalChatPresentationContext(
+          livenessRun.contextSnapshot,
+          externalChatPresentationAuthorization === CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON,
+        );
+        const resolved = resolveHeartbeatRunResponse({
+          resultJson: persistedResultJson,
+          interactionOwnsResponse: Boolean(issueId && readAcceptedTaskContinuationSummary(persistedResultJson) &&
+            await hasChatRunOwnedProviderInteraction(db, { companyId: livenessRun.companyId, issueId, runId: livenessRun.id })),
+          conversationTurnFinished: Boolean(issueId) && isConversation(issueContext) && livenessRun.status === "succeeded"
+            && await measureRunPhase("response.resolve", () => conversationTurnPresentsAnswer({
+              db, companyId: livenessRun.companyId, issueId: issueId!, runId: livenessRun.id,
+              finalizationPhase: persistedResultJson?.finalizationPhase,
+              finalizationReasonCode: persistedResultJson?.finalizationReasonCode,
+            })),
+          nativeConversationFinalResponse: livenessRun.runtimeMode === "native" && isConversation(issueContext),
+          existingComment: existingRunComment,
+          finalAgentMessage,
+          preferFinalResponseOverExistingComment:
+            externalChatPresentationContext,
+          externalChatReviewResponseSummaryAuthorized:
+            persistedResultJson?.finalizationReasonCode ===
+              "governed_response_waiting" &&
+            externalChatPresentationAuthorization ===
+              CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON,
+          externalChatResponseWakeSummaryAuthorized:
+            Boolean(adapterResult.nativeFinalization) &&
+            externalChatPresentationAuthorization ===
+              CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON,
+        });
+        let presentationDecision: RunPresentationDecision =
+          resolved.decision;
+
+        if (
+          issueId &&
+          !skipRunIssueComment &&
+          presentationDecision.commentAction === "create" &&
+          resolved.text
+        ) {
+          // The presentation resolver exposes only the final assistant
+          // surface selected from completed final messages or accepted
+          // semantic results. For an exactly bound external-chat run,
+          // authorize that narrow presentation as the provider reply;
+          // ordinary internal runs retain the private default.
+          const presentationAuthorizationReason =
+            await measureRunPhase("response.authorize", () => resolveChatRunPresentationAuthorizationReason(db, {
+              companyId: livenessRun.companyId,
+              issueId,
+              runId: livenessRun.id,
+            }));
+          const comment = await measureRunPhase("response.add_comment", () => issuesSvc.addComment(
+            issueId!,
+            resolved.text!,
+            { agentId: agent.id, runId: livenessRun.id },
+            { authorizationReason: presentationAuthorizationReason, completionReply: true },
+          ));
+          presentationDecision = {
+            ...presentationDecision,
+            commentId: comment.id,
+            reasonCodes: [
+              ...presentationDecision.reasonCodes,
+              "resolved_response_materialized",
+            ],
+          };
+          await measureRunPhase("response.activity", () => logActivity(db, {
+            companyId: livenessRun.companyId,
+            actorType: "agent",
+            actorId: agent.id,
+            agentId: agent.id,
+            runId: livenessRun.id,
+            issueId,
+            action: "issue.comment_added",
+            entityType: "issue",
+            entityId: issueId,
+            details: {
+              commentId: comment.id,
+              bodySnippet: comment.body.slice(0, 120),
+              identifier: issueRef?.identifier ?? null,
+              issueTitle: issueRef?.title ?? null,
+              authorizationReason: presentationAuthorizationReason,
+              source: "run_presentation_resolver",
+              presentationSource: presentationDecision.chosenSource,
+            },
+          }));
+        } else if (presentationDecision.commentAction === "create") {
+          presentationDecision = {
+            ...presentationDecision,
+            commentAction: "none",
+            reasonCodes: [
+              ...presentationDecision.reasonCodes,
+              skipRunIssueComment
+                ? "issue_comment_suppressed"
+                : "run_has_no_issue",
+            ],
+          };
+        }
+
+        await recordRunPresentationDecision(db, { companyId: livenessRun.companyId,
+          runId: livenessRun.id, issueId: issueId ?? undefined, decision: presentationDecision });
+        await appendRunEvent(livenessRun, {
+          eventType: "run.presentation.resolved",
+          stream: "system",
+          level: "info",
+          message: "run presentation resolved",
+          payload: { presentationDecision },
+        });
+        resolvedPresentationDecision = presentationDecision;
+      } catch (err) {
+        await onLog(
+          "stderr",
+          `[paperclip] Failed to resolve run presentation: ${err instanceof Error ? err.message : String(err)}\n`,
+        );
+      }
+      if (outcome === "failed" && isMaxTurnExhaustionRun(livenessRun)) {
+        const policy = parseMaxTurnContinuationPolicy(agent);
+        if (policy.enabled && policy.maxAttempts > 0) {
+          await scheduleBoundedRetryForRun(livenessRun, agent, {
+            retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+            wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
+            maxAttempts: policy.maxAttempts,
+            delayMs: policy.delayMs,
+          });
+        } else {
+          await appendRunEvent(livenessRun, {
+            eventType: "lifecycle",
+            stream: "system",
+            level: "warn",
+            message:
+              "Max-turn continuation suppressed because the policy is disabled",
+            payload: {
+              retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+              policy,
+            },
+          });
+        }
+      } else if (
+        outcome === "failed" &&
+        readTransientRecoveryContractFromRun(livenessRun)
+      ) {
+        await scheduleBoundedRetryForRun(livenessRun, agent);
+      } else if (
+        outcome === "failed" &&
+        !(await legacyExecutionNeedsReconciliationWithEvidence(db, livenessRun))
+      ) {
+        await scheduleInteractionContinuationInfrastructureRetryIfEligible(
+          livenessRun,
+          agent,
+        );
+      }
+      const issueCommentPolicyResult = await finalizeIssueCommentPolicy(
+        livenessRun,
+        agent,
+        resolvedPresentationDecision,
+      );
+      const conversationSettled = await settleConversationTurn(db, livenessRun);
+      await releaseIssueExecutionAndPromote(livenessRun, {
+        suppressImmediateRecovery: conversationSettled ||
+          readNonEmptyString(
+            parseObject(livenessRun.contextSnapshot).goalControlRequestId,
+          ) !== null ||
+          isContextCompactionRun(livenessRun.contextSnapshot) ||
+          parseObject(livenessRun.contextSnapshot)
+            .resumeSessionGoalHeartbeat === true,
+      });
+      if (!conversationSettled) {
+        await handleIssueReviewPathDisposition(livenessRun);
+        if (livenessRun.runtimeMode !== "native") {
+          await recovery.reconcileLegacyContinuation(livenessRun.id);
+        } else {
+          await handleRunLivenessContinuation(livenessRun);
+          await handleSuccessfulRunHandoff(
+            issueCommentPolicyResult.outcome === "retry_queued" ||
+              issueCommentPolicyResult.outcome === "retry_exhausted"
+              ? { ...livenessRun, issueCommentStatus: issueCommentPolicyResult.outcome }
+              : livenessRun,
+            agent,
+          );
+        }
+      }
+      if (
+        outcome === "succeeded" &&
+        issueId &&
+        parseObject(adapterResult.resultJson).goalRolloverRequired === true
+      ) {
+        const rolloverProjection = await runnerGoalService(db).projection(
+          livenessRun.companyId,
+          issueId,
+          agent.id,
+        );
+        if (rolloverProjection?.goal?.status === "active") {
+          await enqueueWakeup(agent.id, {
+            source: "automation",
+            triggerDetail: "system",
+            reason: "goal_control",
+            payload: {
+              issueId,
+              intent: "goal_rollover",
+              predecessorRunId: livenessRun.id,
+            },
+            idempotencyKey: `goal_rollover:${livenessRun.id}`,
+            requestedByActorType: "system",
+            contextSnapshot: {
+              issueId,
+              taskKey: issueId,
+              resumeSessionGoalHeartbeat: true,
+              skipIssueComment: true,
+              goalRolloverFromRunId: livenessRun.id,
+            },
+          });
+        }
+      }
+
+      // Dependency wake re-check: if this run's issue was marked done mid-run,
+      // the route-time `issue_blockers_resolved` wake may have been gated by
+      // workspace finalization or merged into this run. Reuse the level-triggered
+      // dependency backstop so finalize and periodic recovery share idempotency,
+      // readiness, active-path, and observability rules.
+      if (issueId && finalizedRun) {
+        try {
+          const blockerIssueStatus = await db
+            .select({ status: issues.status })
+            .from(issues)
+            .where(eq(issues.id, issueId))
+            .then((rows) => rows[0]?.status ?? null);
+          if (blockerIssueStatus === "done") {
+            await recovery.reconcileResolvedDependencyWakeBackstop({
+              runId: finalizedRun.id,
+              companyId: finalizedRun.companyId,
+              blockerIssueId: issueId,
+              source: "workspace.finalize",
+            });
+          }
+        } catch (finalizeWakeErr) {
+          logger.warn(
+            { err: finalizeWakeErr, runId: run.id, issueId },
+            "failed to evaluate dependent wakes after workspace_finalize",
+          );
+        }
+      }
+    }
+
+    if (finalizedRun) {
+      await persistSessionState(finalizedRun);
+    }
+    await settleAgent();
+  }
+
+  /**
+   * The pre-dispatch record for a native run that failed before provider work
+   * could start, else nothing. Only a failure path calls it, so the normal
+   * path gains no I/O. Missing or unreadable evidence keeps the native hold.
+   */
+  async function nativePreDispatchFailureResult(runId: string, dispatchMayHaveStarted: boolean | undefined) {
+    if (dispatchMayHaveStarted !== false) return null;
+    try {
+      const [row] = await db.select({ companyId: heartbeatRuns.companyId, runtimeMode: heartbeatRuns.runtimeMode,
+        processPid: heartbeatRuns.processPid, processGroupId: heartbeatRuns.processGroupId,
+        processStartedAt: heartbeatRuns.processStartedAt, sessionIdAfter: heartbeatRuns.sessionIdAfter,
+        inheritedProcessIdentityRunId: sql<unknown>`${heartbeatRuns.runnerProfileJson}->>'inheritedProcessIdentityRunId'`,
+        coordinator: { runId: nativeRunFinalizations.runId, phase: nativeRunFinalizations.phase,
+          attempt: nativeRunFinalizations.attempt, leaseOwner: nativeRunFinalizations.leaseOwner,
+          controllerBootId: nativeRunFinalizations.controllerBootId, resultId: nativeRunFinalizations.resultId } })
+        .from(heartbeatRuns)
+        .leftJoin(nativeRunFinalizations, and(eq(nativeRunFinalizations.runId, heartbeatRuns.id),
+          eq(nativeRunFinalizations.companyId, heartbeatRuns.companyId)))
+        .where(eq(heartbeatRuns.id, runId)).limit(1);
+      if (!row || row.runtimeMode !== "native") return null;
+      // A recorded process or provider session also means work may have run.
+      // Runtime selection copies a warm predecessor's process identity onto a
+      // follow-up and names that run; such an inherited identity is not this
+      // run's process. Its own process would still record its start events.
+      const inheritedProcessIdentity = typeof row.inheritedProcessIdentityRunId === "string";
+      if ((!inheritedProcessIdentity && (row.processPid !== null || row.processGroupId !== null
+        || row.processStartedAt !== null)) || row.sessionIdAfter !== null) return null;
+      // Runtime selection creates the coordinator unclaimed ("observed",
+      // attempt 0). Only the executor, after entering dispatch, claims it with
+      // a lease owner and controller; any claim, in any generation, disqualifies.
+      const coordinator = row.coordinator;
+      if (coordinator?.runId && (coordinator.phase !== "observed" || coordinator.attempt !== 0
+        || coordinator.leaseOwner !== null || coordinator.controllerBootId !== null || coordinator.resultId !== null)) return null;
+      // The executor records native.process_start_requested before any backend
+      // may spawn a runner; runner events carry a source event ID. Any of them,
+      // in this or an earlier controller generation, means work may have run.
+      // Restart recovery uses the same canonical proof.
+      if (await hasNativeExecutionStartEvidence(db, { companyId: row.companyId, id: runId })) return null;
+      const [result] = await db.select({ id: nativeRunResults.id }).from(nativeRunResults)
+        .where(and(eq(nativeRunResults.companyId, row.companyId), eq(nativeRunResults.runId, runId))).limit(1);
+      if (result) return null;
+      return { [NATIVE_PRE_DISPATCH_FAILURE_KEY]: NATIVE_PRE_DISPATCH_FAILURE_RECORD };
+    } catch (error) {
+      logger.warn({ err: error, runId }, "could not prove a native failure started no provider work; keeping the native hold");
+      return null;
+    }
+  }
+
+  /**
+   * Runtime selection leaves an unclaimed coordinator ("observed", attempt 0).
+   * It counts as pending cleanup and would hold the re-queued successor, so a
+   * failure proven to start no provider work closes it as a terminal failure.
+   * The guard matches only an unclaimed row; a claimed one keeps its owner.
+   */
+  async function settleUnclaimedNativeCoordinator(run: Pick<Run, "id" | "companyId">) {
+    await db.update(nativeRunFinalizations).set({ phase: "terminal_failure", failureCode: NATIVE_PRE_DISPATCH_FAILURE_CODE,
+      updatedAt: new Date() }).where(and(eq(nativeRunFinalizations.companyId, run.companyId),
+      eq(nativeRunFinalizations.runId, run.id), eq(nativeRunFinalizations.phase, "observed"), eq(nativeRunFinalizations.attempt, 0),
+      isNull(nativeRunFinalizations.leaseOwner), isNull(nativeRunFinalizations.controllerBootId), isNull(nativeRunFinalizations.resultId)));
+  }
+
+  /**
+   * A native run that failed on a transient database fault before provider
+   * work re-queues itself in the uncharged, bounded interrupted-preparation
+   * lane. An answered interaction keeps its own continuation retry.
+   */
+  async function scheduleNativePreDispatchRetry(run: Run, agent: Agent) {
+    if (!isNativePreDispatchTransientFailure(run) || isResolvedInteractionContinuationWakeContext(run.contextSnapshot)) return null;
+    try {
+      await settleUnclaimedNativeCoordinator(run);
+    } catch (error) {
+      logger.warn({ err: error, runId: run.id }, "could not close the unclaimed native coordinator; keeping the native hold");
+      return null;
+    }
+    return scheduleBoundedRetryForRun(run, agent, { retryReason: INTERRUPTED_PREPARATION_RETRY_REASON }).catch((retryError) => {
+      logger.warn({ err: retryError, runId: run.id }, "failed to re-queue a native run that failed before provider work");
+      return null;
+    });
+  }
+
+  /**
+   * A run that failed only because its predecessor on the reused sandbox could
+   * not be retired did no provider work, and its next attempt starts on a fresh
+   * sandbox. It re-queues itself in the uncharged interrupted-preparation lane,
+   * like a transient pre-dispatch fault, whatever its runtime mode. An answered
+   * interaction keeps its response through its own continuation retry. Its own
+   * coordinator, claimed or not, ends without a result: nothing ran under it.
+   */
+  async function schedulePredecessorRetirementFallbackRetry(run: Run, agent: Agent, fallback: PredecessorRetirementFallback | null | undefined) {
+    if (!fallback || run.status !== "failed") return null;
+    // Files this run's setup may have written are never dropped: without the
+    // shared unchanged-files proof the workspace stays dirty and preserved.
+    const released = await releaseUnchangedFallbackWorkspace(db, run).catch((error) => {
+      logger.warn({ err: error, runId: run.id }, "could not prove the failed run left its workspace unchanged");
+      return false;
+    });
+    if (!released) return { outcome: "workspace_preservation_required" as const };
+    try {
+      // Recorded only once the workspace is settled: it makes the run eligible for retry.
+      if (!readPredecessorRetirementFallback(run.resultJson)) {
+        const record = { [PREDECESSOR_RETIREMENT_FALLBACK_KEY]: fallback, executionRecovery: { kind: "bootstrap", providerWorkStarted: false } };
+        await db.update(heartbeatRuns).set({ resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify(record)}::jsonb` })
+          .where(and(eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "failed")));
+        run = { ...run, resultJson: { ...parseObject(run.resultJson), ...record } };
+      }
+      await db.update(nativeRunFinalizations).set({ phase: "terminal_failure", failureCode: NATIVE_PRE_DISPATCH_FAILURE_CODE,
+        leaseOwner: null, leaseExpiresAt: null, nextAttemptAt: null, updatedAt: new Date() })
+        .where(and(eq(nativeRunFinalizations.companyId, run.companyId), eq(nativeRunFinalizations.runId, run.id),
+          isNull(nativeRunFinalizations.resultId), inArray(nativeRunFinalizations.phase, ["observed", "retryable_failure", "terminal_failure"])));
+    } catch (error) {
+      logger.warn({ err: error, runId: run.id }, "could not close the native coordinator of a run that did no provider work");
+      return null;
+    }
+    // An answered interaction keeps its own wake, so the retry still carries
+    // the answer as a resolved-interaction continuation, in the uncharged lane.
+    const wakeReason = isResolvedInteractionContinuationWakeContext(run.contextSnapshot)
+      ? readNonEmptyString(parseObject(run.contextSnapshot).wakeReason) : null;
+    return scheduleBoundedRetryForRun(run, agent, { retryReason: INTERRUPTED_PREPARATION_RETRY_REASON,
+      ...(wakeReason ? { wakeReason } : {}) }).catch((retryError) => {
+      logger.warn({ err: retryError, runId: run.id }, "failed to re-queue a run whose predecessor could not be retired");
+      return null;
+    });
+  }
+
+  async function failRun(input: FailHeartbeatRunInput): Promise<{ preserveFailedWorkspace: true } | undefined> {
+    const { run, agent, issueId, issueRef, signal, output, session, readFailureReportSecrets, runId, err, identityRedactor, requiredWorkspaceRestoreEvidence,
+      legacyAdapterEntered, nativeDispatchMayHaveStarted, goalCheckpointSession, previousSessionDisplayId, taskSession,
+      predecessorRetirementFallback } = input;
+    const { runtimeForAdapter, previousSessionParams, taskKey, configuredModel, sessionConfigMetadata } = session;
+    const { handle, outputProgressState, flushOutputProgress } = output;
+    // A process adapter may throw while its owned Stop is joining the
+    // child. Let the cancellation write settle before attempting failure.
+    await processRunCancellationSettlements.get(run.id)?.settled;
+    const providerFailure = providerFailureFromError(err);
+    let preserveFailedWorkspace = false;
+    const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
+    const redactFailureText = (text: string) =>
+      redactCurrentUserText(identityRedactor.redact(text), currentUserRedactionOptions);
+    // Bounded code from the error or its first three causes; never message text.
+    const thrownFailureCause = failureCauseFromError(err, providerFailure);
+    // Exhausted accounting retries carry their own bounded message. The code
+    // stays generic (adapter_failed) so existing retry paths still apply;
+    // failureCause records the SQLSTATE.
+    const accountingContention = isAccountingContentionError(err);
+    const thrownMessage = accountingContention ? ACCOUNTING_CONTENTION_MESSAGE : withoutSqlStatementText(
+      redactFailureText(err instanceof Error ? err.message : "Unknown adapter failure"), thrownFailureCause);
+    const workspaceValidationFailure = isWorkspaceValidationFailure(err)
+      ? err
+      : null;
+    const configurationIncompleteFailure = isConfigurationIncompleteFailure(
+      err,
+    )
+      ? err
+      : null;
+    const recordedResponsibleUserDenialCode =
+      normalizeResponsibleUserDenialCode(
+        (await getRun(run.id).catch(() => null))?.errorCode,
+      );
+    // The runtime resolution is scoped to the adapter try block. The
+    // durable coordinator is also the stronger authority here: legacy
+    // runs simply have no row, while native result-less exhaustion keeps
+    // its named failure instead of being flattened to `adapter_failed`.
+    const nativeCoordinator = await db
+      .select({
+        phase: nativeRunFinalizations.phase,
+        resultId: nativeRunFinalizations.resultId,
+        failureCode: nativeRunFinalizations.failureCode,
+        attempt: nativeRunFinalizations.attempt,
+        recoveryHistory: nativeRunFinalizations.recoveryHistory,
+      })
+      .from(nativeRunFinalizations)
+      .where(eq(nativeRunFinalizations.runId, run.id))
+      .limit(1)
+      .then((rows) => rows[0] ?? null)
+      .catch(() => null);
+    const nativeTerminalFailureCode =
+      nativeCoordinator?.phase === "terminal_failure" &&
+      nativeCoordinator.resultId === null
+        ? nativeCoordinator.failureCode
+        : null;
+    // A same-run exact-checkpoint retry can fail closed before the executor
+    // claims a provider attempt, for example when the interrupted attempt left
+    // its checkpoint unresumable. The refusal alone hides why the run retried,
+    // so the reported failure names the interrupted attempt first. Failure
+    // classification reads only the thrown error (here and, through
+    // `nativeExactResumeRefusal.refusal`, in the retry and recovery
+    // classifiers). Both texts are masked whole before any length budget cuts
+    // them, so a cut cannot leave an unmasked username prefix.
+    const exactResumeCause = interruptedExactResumeCause(nativeCoordinator);
+    const interruptedExactResume = exactResumeCause
+      ? { ...exactResumeCause, originalMessage: redactFailureText(exactResumeCause.originalMessage) }
+      : null;
+    const storageUnavailable = isStorageUnavailableError(err);
+    const failureErrorCode =
+      workspaceValidationFailure?.code ??
+      configurationIncompleteFailure?.code ??
+      nonRetryablePreflightFailureCode(err) ??
+      recordedResponsibleUserDenialCode ??
+      nativeTerminalFailureCode ??
+      (storageUnavailable ? STORAGE_UNAVAILABLE_CODE : null) ??
+      "adapter_failed";
+    // Only a `storage_unavailable` run gets a storage wait. Under any other code
+    // (for example a native recovery hold that keeps the files without
+    // replaying an unfinished turn) nothing retries it, so offer Retry instead.
+    const message = interruptedExactResume
+      ? describeRefusedExactResume(interruptedExactResume, thrownMessage)
+      : !storageUnavailable ? thrownMessage
+        : failureErrorCode === STORAGE_UNAVAILABLE_CODE ? storageUnavailableMessage(err) : storageUnavailableHeldMessage(err);
+    const failureCause = GENERIC_RUN_FAILURE_CODES.has(failureErrorCode) ? thrownFailureCause : null;
+    logger.error({ err: identityRedactor.redact({ message: err instanceof Error ? err.message : String(err), stack: err instanceof Error ? err.stack : undefined }), runId,
+      errorCode: failureErrorCode, failureCause: thrownFailureCause }, "heartbeat execution failed");
+
+    let logSummary: {
+      bytes: number | null;
+      sha256?: string | null;
+      compressed: boolean;
+    } | null = null;
+    if (handle) {
+      try {
+        logSummary = await measureRunPhase("completion.output", () => runLogStore.finalize(handle));
+      } catch (finalizeErr) {
+        logger.warn(
+          { err: finalizeErr, runId },
+          "failed to finalize run log after error",
+        );
+      }
+    }
+    const finalLogBytes = logSummary?.bytes;
+    if (outputProgressState.pending && typeof finalLogBytes === "number") {
+      outputProgressState.pending.bytes = finalLogBytes;
+    }
+    await flushOutputProgress({ force: true }).catch((flushErr) => {
+      logger.warn(
+        { err: flushErr, runId },
+        "failed to flush run output progress after error",
+      );
+    });
+
+    const stoppedDuringFailure = signal.aborted;
+    const stopSnapshot = stoppedDuringFailure ? await getRun(run.id) : null;
+    const failureOutcome = stoppedDuringFailure ? "cancelled" : "failed";
+    const nativePreDispatchFailure = !stoppedDuringFailure && nativeTerminalFailureCode === null
+      ? await nativePreDispatchFailureResult(run.id, nativeDispatchMayHaveStarted) : null;
+    const failedRunWrite = await measureRunPhase("completion.terminal_write", () => setRunStatusIfRunning(run.id, failureOutcome, {
+      error: message,
+      errorCode: stopSnapshot?.errorCode ?? failureErrorCode,
+      finishedAt: new Date(),
+      resultJson: mergeRunStopMetadataForAgent(agent, failureOutcome, {
+        errorCode: failureErrorCode,
+        errorMessage: thrownMessage,
+        resultJson: {
+          ...parseObject(stopSnapshot?.resultJson),
+          ...(failureCause && !stoppedDuringFailure ? { failureCause } : {}),
+          ...(providerFailure ? { providerFailure: { ...providerFailure,
+            message: redactCurrentUserText(identityRedactor.redact(providerFailure.message), currentUserRedactionOptions) } } : {}),
+          ...(interruptedExactResume ? { nativeExactResumeRefusal: {
+            originalFailureCode: interruptedExactResume.originalFailureCode,
+            originalMessage: boundOriginalMessage(interruptedExactResume.originalMessage),
+            interruptedAttempt: interruptedExactResume.interruptedAttempt,
+            refusal: thrownMessage,
+          } } : {}),
+          ...requiredWorkspaceRestoreEvidence,
+          ...(workspaceValidationFailure?.resultJson ??
+            configurationIncompleteFailure?.resultJson ??
+            {}),
+          ...(stoppedDuringFailure ? controllerLeaseLossResultJson(signal) : {}),
+          ...nativePreDispatchFailure,
+          ...(!legacyAdapterEntered && run.runtimeMode !== "native"
+            ? {
+                executionRecovery: {
+                  kind: "bootstrap",
+                  providerWorkStarted: false,
+                },
+              }
+            : {}),
+        },
+      }),
+      stdoutExcerpt: output.stdoutExcerpt,
+      stderrExcerpt: output.stderrExcerpt,
+      logBytes: logSummary?.bytes,
+      logSha256: logSummary?.sha256,
+      logCompressed: logSummary?.compressed ?? false,
+    }, { error: err, phase: "execute", secretValues: readFailureReportSecrets() }));
+    if (
+      !failedRunWrite.updated &&
+      !(
+        nativeTerminalFailureCode && failedRunWrite.run?.status === "failed"
+      )
+    ) {
+      logger.info(
+        {
+          runId: run.id,
+          attemptedStatus: "failed",
+          currentStatus: failedRunWrite.run?.status ?? null,
+        },
+        "skipping late adapter failure finalization because the run already left running state",
+      );
+      return;
+    }
+
+    const failedRun = failedRunWrite.run;
+    const settleAgent = () => finalizeAgentStatus(agent.id, "failed", message, {
+      wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
+      keepIdleOnFailure:
+        Boolean(nonRetryablePreflightFailureCode(err)) ||
+        isWorkspaceSyncConflictFailure(thrownMessage),
+    });
+    await setWakeupStatus(run.wakeupRequestId, "failed", {
+      finishedAt: new Date(),
+      error: message,
+    });
+
+    if (failedRun) {
+      await appendRunEvent(failedRun, {
+        eventType: "error",
+        stream: "system",
+        level: "error",
+        message,
+      });
+      const livenessRun =
+        (await measureRunPhase("completion.liveness", () => classifyAndPersistRunLiveness(failedRun))) ?? failedRun;
+      try {
+        await completeSkillTestRunForHeartbeatOutcome({
+          run: livenessRun,
+          issueId,
+          issueWorkMode: issueRef?.workMode ?? null,
+          outcome: "failed",
+          error: message,
+        });
+      } catch (err) {
+        logger.warn(
+          { err, runId: livenessRun.id, issueId },
+          "failed to complete skill test run after heartbeat adapter failure",
+        );
+      }
+      await measureRunPhase("completion.summary", () => refreshContinuationSummaryForRun(livenessRun, agent));
+      if (await pendingCaseHandoffForRun(db, livenessRun.id, livenessRun.companyId)) {
+        await settleStorageWaitMessage(livenessRun, null, err);
+        await releaseIssueExecutionAndPromote(livenessRun, { suppressImmediateRecovery: true });
+        await settleAgent();
+        return;
+      }
+      if (
+        !isWorkspaceValidationFailedRun(livenessRun) &&
+        !isConfigurationIncompleteFailedRun(livenessRun)
+      ) {
+        await finalizeIssueCommentPolicy(livenessRun, agent);
+      }
+      const storageWait = livenessRun.errorCode === STORAGE_UNAVAILABLE_CODE && nativeTerminalFailureCode === null
+        ? await scheduleBoundedRetryForRun(livenessRun, agent, STORAGE_UNAVAILABLE_RETRY).catch((retryError) => {
+          logger.warn({ err: retryError, runId: livenessRun.id }, "failed to schedule a storage wait after a storage outage");
+          return null;
+        })
+        : null;
+      const nativePreDispatchRetry = storageWait !== null ? null
+        : !stoppedDuringFailure && predecessorRetirementFallback
+          ? await schedulePredecessorRetirementFallbackRetry(livenessRun, agent, predecessorRetirementFallback)
+          : await scheduleNativePreDispatchRetry(livenessRun, agent);
+      // The workspace may hold this run's setup files: the caller preserves it as today.
+      preserveFailedWorkspace = nativePreDispatchRetry?.outcome === "workspace_preservation_required";
+      let fallbackRetry: { outcome: string } | null | undefined = nativePreDispatchRetry;
+      // The predecessor fallback already asked the interaction continuation retry once.
+      if (storageWait?.outcome !== "scheduled" && storageWait?.outcome !== "retry_exhausted" && nativePreDispatchRetry === null
+        && !(predecessorRetirementFallback && !stoppedDuringFailure)) {
+        fallbackRetry = await scheduleInteractionContinuationInfrastructureRetryIfEligible(
+          livenessRun,
+          agent,
+        );
+      }
+      // Another retry that took over after a failed storage wait keeps the promise.
+      await settleStorageWaitMessage(livenessRun, fallbackRetry?.outcome === "scheduled" ? fallbackRetry : storageWait, err);
+      await releaseIssueExecutionAndPromote(livenessRun, {
+        // Native recovery owns the original heartbeat run through
+        // exhaustion. Once its durable coordinator has classified a
+        // terminal failure, generic issue recovery must not create a
+        // replacement retryOfRunId chain for the same provider work.
+        suppressImmediateRecovery: nativeTerminalFailureCode !== null || storageWait?.outcome === "scheduled"
+          || storageWait?.outcome === "retry_exhausted" || nativePreDispatchRetry?.outcome === "scheduled",
+      });
+      await handleIssueReviewPathDisposition(livenessRun);
+
+      await updateRuntimeState(
+        agent,
+        livenessRun,
+        {
+          exitCode: null,
+          signal: null,
+          timedOut: false,
+          errorMessage: message,
+        },
+        {
+          legacySessionId: runtimeForAdapter.sessionId,
+        },
+      );
+
+      if (
+        taskKey &&
+        (goalCheckpointSession.current ||
+          previousSessionParams ||
+          previousSessionDisplayId ||
+          taskSession)
+      ) {
+        await upsertTaskSession({
+          companyId: agent.companyId,
+          agentId: agent.id,
+          adapterType: agent.adapterType,
+          taskKey,
+          sessionParamsJson:
+            goalCheckpointSession.current?.params ??
+            attachPaperclipSessionMetadataToSessionParams(
+              previousSessionParams,
+              configuredModel,
+              sessionConfigMetadata,
+            ),
+          sessionDisplayId:
+            goalCheckpointSession.current?.displayId ??
+            previousSessionDisplayId,
+          lastRunId: failedRun.id,
+          lastError: message,
+        });
+      }
+    }
+
+    await settleAgent();
+    if (failureOutcome === "failed" && failedRun?.runtimeMode === "native" && nativeTerminalFailureCode !== null) {
+      await import("./restart-interrupted-turn.js").then(({ requestInterruptedNativeTurnRetry }) =>
+        requestInterruptedNativeTurnRetry(db, run.id)).catch(error => {
+        logger.warn({ err: error, runId: run.id }, "interrupted native turn Retry request failed");
+      });
+    }
+    return preserveFailedWorkspace ? { preserveFailedWorkspace: true } : undefined;
+  }
+
+  /**
+   * A `storage_unavailable` failure first promises its storage wait. Keep that
+   * promise only when the wait was scheduled. An exhausted wait says so; a wait
+   * that was refused, could not be written, or was preempted by a case handoff
+   * offers Retry instead, because nothing else will retry the run.
+   */
+  async function settleStorageWaitMessage(run: typeof heartbeatRuns.$inferSelect,
+    wait: { outcome: string } | null | undefined, cause: unknown) {
+    if (run.errorCode !== STORAGE_UNAVAILABLE_CODE || wait?.outcome === "scheduled") return;
+    const error = wait?.outcome === "retry_exhausted" ? STORAGE_UNAVAILABLE_EXHAUSTED_MESSAGE : storageUnavailableHeldMessage(cause);
+    await db.update(heartbeatRuns).set({ error, updatedAt: new Date() })
+      .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.errorCode, STORAGE_UNAVAILABLE_CODE)))
+      .catch((writeError: unknown) => logger.warn({ err: writeError, runId: run.id }, "failed to record why no storage wait follows"));
+    // The failure's error event was written before the retry decision. Its
+    // transcript text must not keep a promise that this run no longer makes.
+    await db.update(heartbeatRunEvents).set({ message: error })
+      .where(and(eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
+        eq(heartbeatRunEvents.eventType, "error"),
+        inArray(heartbeatRunEvents.message, [STORAGE_UNAVAILABLE_MESSAGE, STORAGE_CREDENTIALS_REJECTED_MESSAGE])))
+      .catch((writeError: unknown) => logger.warn({ err: writeError, runId: run.id }, "failed to correct the storage failure event"));
+  }
+
+  async function failRunSetup(input: FailHeartbeatRunSetupInput) {
+    const { run, runId, outerErr, signal, providerDispatchStarted, nativeDispatchMayHaveStarted, identityRedactor, readFailureReportSecrets } = input;
+    // The lease watchdog stopped preparation because this host no longer owns
+    // the run. That is host infrastructure, not a defect in the agent or setup.
+    // A post-dispatch error can also land here (for example a failed usage
+    // capture write), so only a stop before dispatch is a retryable lease loss.
+    const controllerLeaseLost = !providerDispatchStarted &&
+      signal.reason instanceof LegacyControllerLeaseLostError;
+    // Setup code before adapter.execute threw (e.g. ensureRuntimeState, resolveWorkspaceForRun).
+    // The inner catch did not fire, so we must record the failure here.
+    const providerFailure = providerFailureFromError(outerErr);
+    const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
+    const storageUnavailable = isStorageUnavailableError(outerErr);
+    // Bounded code from the error or its first three causes; never message text.
+    const thrownFailureCause = failureCauseFromError(outerErr, providerFailure);
+    // A lost controller lease takes the code below and its own retry, so only a
+    // `storage_unavailable` failure carries the storage wait's text.
+    const message = storageUnavailable && !controllerLeaseLost ? storageUnavailableMessage(outerErr) : withoutSqlStatementText(redactCurrentUserText(
+      identityRedactor.redact(outerErr instanceof Error
+        ? outerErr.message
+        : "Unknown setup failure"),
+      currentUserRedactionOptions,
+    ), thrownFailureCause);
+    // A missing secret/env binding is a known pre-dispatch configuration gap,
+    // not an opaque setup crash. Surface it with its own errorCode so the
+    // recovery path routes it to a human owner instead of looping retries.
+    const workspaceValidationSetupFailure = isWorkspaceValidationFailure(
+      outerErr,
+    )
+      ? outerErr
+      : null;
+    const configurationIncompleteSetupFailure =
+      isConfigurationIncompleteFailure(outerErr) ? outerErr : null;
+    const unresolvedBaseRefSetupFailure = isUnresolvedWorkspaceBaseRefError(
+      outerErr,
+    )
+      ? outerErr
+      : null;
+    // A sandbox provider plugin stuck in error/disabled/upgrade_pending
+    // fails every lease the same way until an operator acts, so it is a
+    // configuration gap, not a transient setup failure.
+    const sandboxProviderPluginNotReadySetupFailure =
+      parseSandboxProviderPluginNotReadyFailureMessage(
+        outerErr instanceof Error ? outerErr.message : null,
+      );
+    const recordedResponsibleUserDenialCode =
+      normalizeResponsibleUserDenialCode(
+        (await getRun(runId).catch(() => null))?.errorCode,
+      );
+    const nonRetryablePreflightCode =
+      nonRetryablePreflightFailureCode(outerErr);
+    const workspaceGitScanFailure = isWorkspaceGitScanError(outerErr) ? outerErr : null;
+    const remoteWorkspacePreparationTimeout = !providerDispatchStarted && run.runtimeMode === "legacy"
+      && run.nativeSessionId === null && run.runnerInstanceId === null && outerErr instanceof RemoteWorkspacePreparationTimeoutError
+      ? outerErr : null;
+    // A preserved sandbox that could not be resumed before provider dispatch
+    // is retried with the same bounded bootstrap budget. The retry resumes the
+    // same recorded lease; it never creates a replacement or a second executor.
+    const reusableSandboxResumeFailure = !providerDispatchStarted && run.runtimeMode === "legacy"
+      && run.nativeSessionId === null && run.runnerInstanceId === null ? findReusableSandboxResumeError(outerErr) : null;
+    // A saved workspace that could not be restored before provider dispatch
+    // keeps its saved version. Retry it within the bootstrap budget only when
+    // the owner proved the same clean writer and saved version; otherwise, and
+    // on exhaustion, the board gets a named recovery action.
+    const remoteWorkspaceRestoreFailure = !providerDispatchStarted && run.runtimeMode === "legacy"
+      && run.nativeSessionId === null && run.runnerInstanceId === null ? findRemoteWorkspaceRestoreError(outerErr) : null;
+    // A plugin worker that was not running refused the call before sending it,
+    // so no provider work or plugin side effect started. Retry within the
+    // bootstrap budget; the worker is restarted or replaced meanwhile.
+    const pluginWorkerUnavailableFailure = !providerDispatchStarted && run.runtimeMode === "legacy"
+      && run.nativeSessionId === null && run.runnerInstanceId === null ? findPluginWorkerUnavailableError(outerErr) : null;
+    // The environment provider refused lease acquisition with a transient
+    // status (HTTP 5xx/429/timeout) before dispatch. Each retry is a new,
+    // separately owned creation attempt; an unconfirmed provisional allocation
+    // stays with its creation record and the cleanup reconciler.
+    const environmentProviderUnavailable = !providerDispatchStarted && run.runtimeMode === "legacy"
+      && run.nativeSessionId === null && run.runnerInstanceId === null ? findEnvironmentProviderUnavailableError(outerErr) : null;
+    const repositoryCatalogUnavailable = !providerDispatchStarted && run.runtimeMode === "legacy"
+      && run.nativeSessionId === null && run.runnerInstanceId === null ? findRepositoryCatalogUnavailableError(outerErr) : null;
+    const reviewedChatBindingNotReady = !providerDispatchStarted && run.runtimeMode === "legacy"
+      && run.nativeSessionId === null && run.runnerInstanceId === null && outerErr instanceof ReviewedChatBindingNotReadyError
+      ? outerErr : null;
+    const runnerRevisionMismatch = !providerDispatchStarted && run.runtimeMode === "legacy"
+      && run.nativeSessionId === null && run.runnerInstanceId === null && isRunnerRevisionMismatch(outerErr);
+    const setupFailureErrorCode =
+      (controllerLeaseLost ? CONTROLLER_LEASE_LOST_FAILURE_CODE : null) ??
+      (storageUnavailable ? STORAGE_UNAVAILABLE_CODE : null) ??
+      remoteWorkspacePreparationTimeout?.code ??
+      reusableSandboxResumeFailure?.code ??
+      remoteWorkspaceRestoreFailure?.code ??
+      pluginWorkerUnavailableFailure?.code ??
+      environmentProviderUnavailable?.code ??
+      repositoryCatalogUnavailable?.code ??
+      reviewedChatBindingNotReady?.code ??
+      (runnerRevisionMismatch ? RUNNER_REVISION_MISMATCH_CODE : null) ??
+      workspaceGitScanFailure?.code ??
+      workspaceValidationSetupFailure?.code ??
+      configurationIncompleteSetupFailure?.code ??
+      (unresolvedBaseRefSetupFailure ||
+      sandboxProviderPluginNotReadySetupFailure
+        ? CONFIGURATION_INCOMPLETE_FAILURE_CODE
+        : null) ??
+      recordedResponsibleUserDenialCode ??
+      nonRetryablePreflightCode ??
+      "setup_failed";
+    const failureCause = GENERIC_RUN_FAILURE_CODES.has(setupFailureErrorCode) ? thrownFailureCause : null;
+    // Bounded kind and reason only: a workspace provider's own text never crosses into Core.
+    const workspaceProviderFailure = findWorkspaceProviderFailure(outerErr)?.summary() ?? null;
+    // A wrapped query error hides its driver cause (for example
+    // CONNECTION_CLOSED or SQLSTATE 53300). Log the bounded code only.
+    const causeCode = outerErr instanceof Error ? (outerErr.cause as { code?: unknown } | undefined)?.code : undefined;
+    const setupFailureCauseCode = typeof causeCode === "string" && /^[A-Z0-9_]{1,64}$/.test(causeCode) ? causeCode : null;
+    logger.error(
+      { err: identityRedactor.redact({ message: outerErr instanceof Error ? outerErr.message : String(outerErr), stack: outerErr instanceof Error ? outerErr.stack : undefined }), runId,
+        errorCode: setupFailureErrorCode, failureCause: thrownFailureCause, ...(setupFailureCauseCode ? { causeCode: setupFailureCauseCode } : {}),
+        ...(workspaceProviderFailure ? { workspaceProviderFailure } : {}) },
+      "heartbeat execution setup failed",
+    );
+    const setupFailureAgent = await getAgent(run.agentId).catch(() => null);
+    // The structured failure payload drives the recovery notice and next
+    // action, so it is persisted even when the agent lookup failed and the
+    // agent-scoped stop metadata cannot be merged in.
+    const setupFailureDetails =
+      (outerErr instanceof ProjectAccessDeniedError
+        ? { projectAccessDenied: { projectId: outerErr.projectId } } : null) ??
+      (workspaceGitScanFailure ? {
+        workspaceGitScan: {
+          code: workspaceGitScanFailure.code,
+          phase: "workspace_setup",
+          retryable: isTransientWorkspacePreparationCode(workspaceGitScanFailure.code),
+        },
+      } : null) ??
+      workspaceValidationSetupFailure?.resultJson ??
+      configurationIncompleteSetupFailure?.resultJson ??
+      (unresolvedBaseRefSetupFailure
+        ? buildUnresolvedWorkspaceBaseRefResultJson(
+            run,
+            unresolvedBaseRefSetupFailure,
+          )
+        : null) ??
+      (sandboxProviderPluginNotReadySetupFailure
+        ? buildSandboxProviderPluginNotReadyResultJson(
+            run,
+            sandboxProviderPluginNotReadySetupFailure,
+          )
+        : null);
+    const connectionFailure = readGitConnectionFailure(outerErr);
+    const setupFailureResultJson = {
+      ...setupFailureDetails,
+      ...(failureCause ? { failureCause } : {}),
+      ...(repositoryCatalogUnavailable ? { errorFamily: "transient_upstream",
+        ...(repositoryCatalogUnavailable.retryAt ? { retryNotBefore: new Date(repositoryCatalogUnavailable.retryAt).toISOString() } : {}),
+      } : {}),
+      ...(providerFailure ? { providerFailure: { ...providerFailure,
+        message: redactCurrentUserText(identityRedactor.redact(providerFailure.message), currentUserRedactionOptions) } } : {}),
+      ...(connectionFailure ? { connectionFailure } : {}),
+      ...(workspaceProviderFailure ? { workspaceProviderFailure } : {}),
+      // Names the configured setup command that exited non-zero, for the task page.
+      ...setupCommandFailureResultJson(outerErr, readFailureReportSecrets()),
+      // A lease lost during setup surfaces as the thrown abort reason, or as
+      // the signal's reason when a setup step threw a different error after it.
+      ...controllerLeaseLossEvidence(outerErr),
+      ...controllerLeaseLossResultJson(signal),
+      ...reviewedChatBindingDenialResultJson(outerErr),
+      ...(remoteWorkspaceRestoreFailure ? { remoteWorkspaceRestore: {
+        step: remoteWorkspaceRestoreFailure.step, retryable: remoteWorkspaceRestoreFailure.retryable } } : {}),
+      ...(!providerDispatchStarted
+        ? { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } }
+        : {}),
+      ...(!providerDispatchStarted && !signal.aborted
+        ? await nativePreDispatchFailureResult(runId, nativeDispatchMayHaveStarted) : null),
+    };
+    const setupFailureWrite = await setRunStatusIfRunning(runId, "failed", {
+      error: message,
+      errorCode: setupFailureErrorCode,
+      finishedAt: new Date(),
+      ...(setupFailureAgent
+        ? {
+            resultJson: mergeRunStopMetadataForAgent(
+              setupFailureAgent,
+              "failed",
+              {
+                errorCode: setupFailureErrorCode,
+                errorMessage: message,
+                resultJson: setupFailureResultJson,
+              },
+            ),
+          }
+        : setupFailureResultJson
+          ? { resultJson: setupFailureResultJson }
+          : {}),
+    }, { error: outerErr, phase: "setup", secretValues: readFailureReportSecrets(),
+      // The Sentry report waits for the bounded retry decision below.
+      ...(reviewedChatBindingNotReady ? { reviewedChatRetry: "pending" as const } : {}),
+    }, { setupFailure: true }).catch(() => ({ run: null, updated: false as const }));
+    let reviewedChatRetryScheduled = false;
+    if (!setupFailureWrite.updated) {
+      logger.info(
+        {
+          runId,
+          attemptedStatus: "failed",
+          currentStatus: setupFailureWrite.run?.status ?? null,
+        },
+        "skipping late setup failure finalization because the run already left running state",
+      );
+    } else {
+      await setWakeupStatus(run.wakeupRequestId, "failed", {
+        finishedAt: new Date(),
+        error: message,
+      }).catch(() => undefined);
+    }
+    const failedRun = await getRun(runId).catch(() => null);
+    if (setupFailureWrite.updated && failedRun) {
+      // Emit a run-log event so the failure is visible in the run timeline,
+      // consistent with what the inner catch block does for adapter failures.
+      await appendRunEvent(failedRun, {
+        eventType: "error",
+        stream: "system",
+        level: "error",
+        message,
+      }).catch(() => undefined);
+      const livenessRun = await classifyAndPersistRunLiveness(
+        failedRun,
+      ).catch(() => failedRun);
+      let storageWaitScheduled = false;
+      let storageWait: { outcome: string } | null = null;
+      let nativePreDispatchRetryScheduled = false;
+      const setupFailureIssueId = readNonEmptyString(
+        parseObject(livenessRun.contextSnapshot).issueId,
+      );
+      if (setupFailureIssueId) {
+        await completeSkillTestRunForHeartbeatOutcome({
+          run: livenessRun,
+          issueId: setupFailureIssueId,
+          outcome: "failed",
+          error: message,
+        }).catch((completionErr) => {
+          logger.warn(
+            {
+              err: completionErr,
+              runId: livenessRun.id,
+              issueId: setupFailureIssueId,
+            },
+            "failed to complete skill test run after heartbeat setup failure",
+          );
+        });
+      }
+      const failedAgent =
+        setupFailureAgent ??
+        (await getAgent(run.agentId).catch(() => null));
+      if (failedAgent) {
+        await refreshContinuationSummaryForRun(
+          livenessRun,
+          failedAgent,
+        ).catch(() => undefined);
+        if (
+          !isWorkspaceValidationFailedRun(livenessRun) &&
+          !isConfigurationIncompleteFailedRun(livenessRun) &&
+          livenessRun.errorCode !== PROJECT_ACCESS_DENIED
+        ) {
+          await finalizeIssueCommentPolicy(livenessRun, failedAgent).catch(
+            () => undefined,
+          );
+        }
+        if (livenessRun.errorCode === REMOTE_WORKSPACE_RESTORE_FAILED_CODE) {
+          const retry = remoteWorkspaceRestoreFailure?.retryable
+            ? await scheduleBoundedRetryForRun(livenessRun, failedAgent).catch((retryError) => {
+              logger.warn({ err: retryError, runId: livenessRun.id }, "failed to schedule a retry after a remote workspace restore failure");
+              return null;
+            })
+            : null;
+          if (retry?.outcome !== "scheduled") {
+            await escalateRemoteWorkspaceRestoreFailure(db, livenessRun).catch((escalationError) => {
+              logger.error({ err: escalationError, runId: livenessRun.id }, "failed to record a recovery action for a remote workspace restore failure");
+            });
+          }
+        } else if (livenessRun.errorCode !== PROJECT_ACCESS_DENIED) {
+          // An accepted interaction keeps its own continuation retry, which
+          // carries the interaction and escalates on exhaustion.
+          const interactionOwnsRetry = (livenessRun.errorCode === PLUGIN_WORKER_UNAVAILABLE_CODE
+            || livenessRun.errorCode === ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE
+            || livenessRun.errorCode === REPOSITORY_CATALOG_UNAVAILABLE_CODE
+            || livenessRun.errorCode === REVIEWED_CHAT_BINDING_NOT_READY)
+            && isResolvedInteractionContinuationWakeContext(livenessRun.contextSnapshot);
+          const retry = await (isTransientWorkspacePreparationCode(livenessRun.errorCode) && !interactionOwnsRetry
+            ? livenessRun.errorCode === RUNNER_REVISION_MISMATCH_CODE
+              ? scheduleBoundedRetryForRun(livenessRun, failedAgent, RUNNER_REVISION_MISMATCH_RETRY)
+              : livenessRun.errorCode === STORAGE_UNAVAILABLE_CODE
+                ? scheduleBoundedRetryForRun(livenessRun, failedAgent, STORAGE_UNAVAILABLE_RETRY)
+                : scheduleBoundedRetryForRun(livenessRun, failedAgent)
+            : scheduleNativePreDispatchRetry(livenessRun, failedAgent).then(nativeRetry => nativeRetry
+              ?? scheduleInteractionContinuationInfrastructureRetryIfEligible(livenessRun, failedAgent))
+          ).catch((retryError) => {
+            logger.warn(
+              { err: retryError, runId: livenessRun.id },
+              "failed to schedule interaction continuation retry after setup failure",
+            );
+            return null;
+          });
+          reviewedChatRetryScheduled = retry?.outcome === "scheduled";
+          storageWait = retry;
+          storageWaitScheduled = livenessRun.errorCode === STORAGE_UNAVAILABLE_CODE
+            && (retry?.outcome === "scheduled" || retry?.outcome === "retry_exhausted");
+          nativePreDispatchRetryScheduled = retry?.outcome === "scheduled" && isNativePreDispatchTransientFailure(livenessRun);
+        }
+      }
+      await settleStorageWaitMessage(livenessRun, storageWait, outerErr);
+      await releaseIssueExecutionAndPromote(livenessRun, {
+        suppressImmediateRecovery: storageWaitScheduled || nativePreDispatchRetryScheduled ||
+          readNonEmptyString(
+            parseObject(livenessRun.contextSnapshot).goalControlRequestId,
+          ) !== null ||
+          isContextCompactionRun(livenessRun.contextSnapshot) ||
+          parseObject(livenessRun.contextSnapshot)
+            .resumeSessionGoalHeartbeat === true,
+      }).catch((releaseError) => {
+        logger.error(
+          { err: releaseError, runId },
+          "failed to release issue execution after heartbeat setup failure",
+        );
+      });
+      await handleIssueReviewPathDisposition(livenessRun).catch(
+        (reviewPathError) => {
+          logger.error(
+            { err: reviewPathError, runId },
+            "failed to evaluate review-path disposition after heartbeat setup failure",
+          );
+        },
+      );
+    }
+    // This path owned the failed-status write, which deferred the report.
+    const reviewedChatReportRun = reviewedChatBindingNotReady && setupFailureWrite.updated
+      ? failedRun ?? setupFailureWrite.run : null;
+    if (reviewedChatReportRun) {
+      void reportRunFailure(db, reviewedChatReportRun, { error: outerErr, phase: "setup", secretValues: readFailureReportSecrets(),
+        reviewedChatRetry: reviewedChatRetryScheduled ? "scheduled" : "not_scheduled" });
+    }
+    // Ensure the agent is not left stuck in "running" if the setup-failure
+    // path owned the terminal transition. If another path already finalized
+    // the run, keep that terminal outcome authoritative.
+    if (setupFailureWrite.updated) {
+      await finalizeAgentStatus(run.agentId, "failed", message, {
+        wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
+        // Low-trust admission failures are task/principal preconditions,
+        // not evidence that the immutable endpoint agent is unhealthy.
+        // Keep the failed run and its safe provider refusal authoritative,
+        // but return the agent to idle so clients do not also announce a
+        // misleading agent-wide error for the same rejected chat turn.
+        keepIdleOnFailure: Boolean(nonRetryablePreflightCode) || controllerLeaseLost,
+      }).catch(() => undefined);
+    }
+  }
+
+  return { completeRun, failRun, failRunSetup };
+}

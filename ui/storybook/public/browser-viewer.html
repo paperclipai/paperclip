@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Simulated live browser</title>
+<style>
+/* Offline third-party viewer fixture, deliberately independent of Paperclip's theme.
+   Explicit simulated viewport presets reflow the page; resizing only the viewer scales it. */
+*{box-sizing:border-box}body{margin:0;background:#202124;font-family:system-ui,sans-serif;color:#dadce0}.toolbar{display:flex;align-items:center;gap:8px;padding:8px;height:70px;font-size:12px;border-bottom:1px solid #383a3e}.toolbar button{background:transparent;border:0;color:inherit;font-size:16px;cursor:pointer}.toolbar input{min-width:0;flex:1;border:0;border-radius:16px;background:#303134;color:inherit;padding:6px 12px;font:inherit}.badge{font-size:10px;padding:3px 6px;color:#a9adb4;white-space:nowrap}.frame{overflow:hidden;width:100%}.page{overflow:auto;container-type:inline-size;transform-origin:top left;width:1280px;height:720px;background:#f5f3ed;color:#272a25;}.content{padding:36px 80px}nav{display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #d9dcd3;padding-bottom:25px;font-size:18px}nav strong{font-size:24px;letter-spacing:-1px}nav div{display:flex;gap:28px}nav button{background:none;border:0;color:inherit;font:inherit;cursor:pointer}.hero{display:grid;grid-template-columns:1fr 400px;gap:80px;padding:80px 0}.eyebrow{color:#62725b;font-size:15px;text-transform:uppercase;letter-spacing:2px}h1{font-family:Georgia,serif;font-size:66px;line-height:1.08;letter-spacing:-2px;font-weight:400;margin:20px 0}p{font-size:20px;line-height:1.6;max-width:550px;color:#62665d}.art{border-radius:180px 180px 12px 12px;background:#dce1d0;display:flex;align-items:center;justify-content:center;font:160px Georgia;color:#6d7e57}.form{display:flex;gap:10px}.form input{border:1px solid #bfc6b6;border-radius:6px;background:transparent;padding:12px;font:16px system-ui;min-width:0}.form button{background:#344c38;color:white;border:0;border-radius:6px;padding:12px 18px;font:16px system-ui;cursor:pointer}output{font-size:16px;display:block;margin-top:12px;color:#344c38}
+@container(max-width:800px){.content{padding:24px}nav div{gap:16px}nav div span{display:none}.hero{grid-template-columns:1fr;gap:28px;padding:36px 0}h1{font-size:52px}.art{height:220px;font-size:100px}p{font-size:18px}}
+@container(max-width:450px){nav div button:first-child{display:none}h1{font-size:44px}.form{flex-direction:column}.art{height:180px}.hero{padding:24px 0;gap:20px}}
+</style>
+</head>
+<body>
+<div class="toolbar"><button aria-label="Back">←</button><input aria-label="Address" value="https://northstar.example/" /><span class="badge">Simulated viewer</span></div>
+<div class="frame"><div class="page"><div class="content">
+<nav><strong>Northstar</strong><div><button id="home">Journal</button><button id="about">About</button><span>Field notes</span></div></nav>
+<div class="hero"><section><div class="eyebrow">Ideas for a considered life</div><h1>Make room<br>for good work.</h1><p>A collection of ideas, places, and people that bring a little more purpose to the everyday.</p><form class="form"><input aria-label="Browser fixture input" placeholder="Search the journal"/><button>Search</button></form><output aria-live="polite"></output></section><div class="art" aria-hidden="true">N</div></div>
+</div></div></div>
+<script>
+const frame=document.querySelector('.frame'),page=document.querySelector('.page');
+let width=1280,height=720;
+function layout(){const scale=Math.min(frame.clientWidth/width,(innerHeight-document.querySelector('.toolbar').offsetHeight)/height);page.style.width=width+'px';page.style.height=height+'px';page.style.transform=`scale(${scale})`;page.style.marginLeft=((frame.clientWidth-width*scale)/2)+'px';frame.style.height=`${height*scale}px`;page.dataset.viewport=width+'×'+height;}
+new ResizeObserver(layout).observe(frame);window.addEventListener('resize',layout);
+window.addEventListener('message',event=>{if(event.origin!==location.origin||event.data?.type!=='browser-fixture-viewport')return;const size=event.data.size;width=size?.width??1280;height=size?.height??720;layout();});
+parent.postMessage({type:'browser-fixture-ready'},location.origin);layout();
+document.querySelector('form').addEventListener('submit',e=>{e.preventDefault();document.querySelector('output').textContent=`Search: ${document.querySelector('[aria-label="Browser fixture input"]').value}`});
+document.querySelector('#about').onclick=()=>{document.querySelector('h1').textContent='A different perspective.';document.querySelector('[aria-label="Address"]').value='https://northstar.example/about'};
+function home(){document.querySelector('h1').innerHTML='Make room<br>for good work.';document.querySelector('[aria-label="Address"]').value='https://northstar.example/'}
+document.querySelector('#home').onclick=home;document.querySelector('[aria-label="Back"]').onclick=home;
+</script>
+</body></html>

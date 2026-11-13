@@ -1,0 +1,167 @@
+import { and, eq, sql } from "drizzle-orm";
+import { agents, budgetReservations, heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { centsToUnits, unitsToCents } from "@paperclipai/shared";
+import { conflict, notFound } from "../errors.js";
+import { withOperationAccountingTransaction } from "./accounting-transaction.js";
+import { queueBudgetEvaluation } from "./budget-evaluation-work.js";
+import { lockBudgetAdmissionControls } from "./budget-admission-controls.js";
+import { budgetServiceInTransaction } from "./budgets.js";
+import { withBudgetSpan } from "./budget-tracing.js";
+import type { ActivityPublication } from "./activity-log.js";
+import { readClaimedNativeStopRecovery } from "./native-runtime/native-cancellation-request.js";
+import { extendOwnNativeRecoveryClaimInTransaction, readOwnNativeRecoveryClaimLease } from "./native-runtime/native-execution-lease.js";
+
+/** Native finalization takes its coordinator before issue/run locks. Recovery
+ * admission uses the same order after the company accounting lock, so its
+ * later ownership checks never wait for a coordinator while holding a run. */
+export async function lockRunBudgetRecoveryOwnerInTransaction(
+  tx: Db, companyId: string, runId: string, recoveryLeaseOwner?: string,
+) {
+  if (!recoveryLeaseOwner) return;
+  const [coordinator] = await tx.select({ leaseOwner: nativeRunFinalizations.leaseOwner }).from(nativeRunFinalizations)
+    .where(and(eq(nativeRunFinalizations.companyId, companyId), eq(nativeRunFinalizations.runId, runId))).for("update");
+  if (!coordinator || coordinator.leaseOwner !== recoveryLeaseOwner
+    || await readOwnNativeRecoveryClaimLease(tx, { companyId, runId, leaseOwner: recoveryLeaseOwner }) === "lost")
+    throw conflict("Native recovery no longer owns provider dispatch");
+}
+
+/** Called by the final dispatch gate with the company and run already locked.
+ * Admission may have waited through preparation; that earlier reservation is
+ * evidence of ownership, not permission to bypass a newer charge or pause.
+ * Recovery callers prelock their coordinator before taking issue/run locks. */
+export async function recheckRunBudgetReservationInTransaction(
+  tx: Db,
+  publications: ActivityPublication[],
+  run: typeof heartbeatRuns.$inferSelect,
+  reservationId: string,
+  recoveryLeaseOwner?: string,
+): Promise<string | null> {
+  const stopRecovery = await readClaimedNativeStopRecovery(tx, run, recoveryLeaseOwner);
+  if ((run.resultJson?.cancellation || run.resultJson?.startupCancellation) && !stopRecovery)
+    return "Run cancellation already requested";
+  if (run.costAccountedAt || !["queued", "running"].includes(run.status))
+    return "Run can no longer start provider work";
+  const [reservation] = await tx.select().from(budgetReservations).where(and(
+    eq(budgetReservations.id, reservationId), eq(budgetReservations.companyId, run.companyId),
+    eq(budgetReservations.runId, run.id), eq(budgetReservations.agentId, run.agentId),
+    eq(budgetReservations.state, "held"),
+  )).for("update");
+  if (!reservation) return "Provider dispatch no longer owns a held budget reservation";
+  if (recoveryLeaseOwner && (run.runtimeMode !== "native" || await readOwnNativeRecoveryClaimLease(tx,
+    { companyId: run.companyId, runId: run.id, leaseOwner: recoveryLeaseOwner }) === "lost"))
+    return "Native recovery no longer owns provider dispatch";
+  const keepRecoveryClaim = async () => !recoveryLeaseOwner || await extendOwnNativeRecoveryClaimInTransaction(tx,
+    { companyId: run.companyId, runId: run.id, leaseOwner: recoveryLeaseOwner })
+    ? null : "Native recovery no longer owns provider dispatch";
+  if (stopRecovery) return keepRecoveryClaim();
+  const { block, policies, observations } = await budgetServiceInTransaction(tx, publications)
+    .evaluateAdmission(run.companyId, run.agentId, { projectId: reservation.projectId, runId: run.id,
+      admittedRecovery: Boolean(recoveryLeaseOwner) });
+  if (block) return block.reason;
+  const [agent] = await tx.select({ status: agents.status, lifecycleState: agents.lifecycleState }).from(agents)
+    .where(and(eq(agents.companyId, run.companyId), eq(agents.id, run.agentId)));
+  if (!agent || agent.lifecycleState !== "ready" || ["paused", "terminated", "pending_approval"].includes(agent.status))
+    return "Agent is paused or its lifecycle is not ready for new work";
+  // An owned recovery reuses the hold reserveRunBudget already admitted;
+  // other runs' holds filling the budget must not refuse it.
+  if (recoveryLeaseOwner) return keepRecoveryClaim();
+  for (const [index, policy] of policies.entries()) {
+    const observed = observations[index];
+    // This operation's hold is already included in exposure. Do not propose it
+    // twice, or reject a nonzero reservation that exactly fills the budget.
+    const committed = centsToUnits(observed.ledgerCents) + centsToUnits(observed.effectiveHeldCents);
+    const limit = centsToUnits(policy.amount);
+    if (committed > limit || (centsToUnits(reservation.amountCents) === 0n && committed >= limit))
+      return "Available budget is reserved by unfinished runs";
+  }
+  return null;
+}
+
+/** Reserve before dispatch, under the same company lock as charges and policy
+ * changes. Estimates constrain admission; they cannot cap a provider's bill.
+ * A reservation survives timeouts and restarts until accounting proves closure.
+ *
+ * READ COMMITTED: every mutable read follows the shared admission fences, the
+ * agent share lock and the run-row lock, so it sees each commit that preceded
+ * those locks. Run-log appends and output progress update the run row while a
+ * run prepares; a repeatable-read snapshot taken before the run lock went stale
+ * on each such commit and could exhaust every retry. Exposure is one statement
+ * (hold-to-ledger atomic), and the per-run unique index plus the run lock
+ * fence a duplicate reservation. */
+export async function reserveRunBudget(db: Db, companyId: string, runId: string, projectId: string | null, ledgerScope: Record<string, unknown> = {}, recoveryLeaseOwner?: string) {
+  const result = await withBudgetSpan("budget.admission.reserve", () => withOperationAccountingTransaction(db, companyId, async (tx, publications) => {
+    await lockBudgetAdmissionControls(tx, companyId, projectId);
+    const [hint] = await tx.select({ agentId: heartbeatRuns.agentId }).from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, companyId)));
+    if (!hint) throw notFound("Run not found");
+    await tx.select({ id: agents.id }).from(agents).where(and(eq(agents.companyId, companyId), eq(agents.id, hint.agentId))).for("share");
+    await lockRunBudgetRecoveryOwnerInTransaction(tx, companyId, runId, recoveryLeaseOwner);
+    const [run] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, companyId))).for("update");
+    if (!run) throw notFound("Run not found");
+    const stopRecovery = await readClaimedNativeStopRecovery(tx, run, recoveryLeaseOwner);
+    if ((run.resultJson?.cancellation || run.resultJson?.startupCancellation) && !stopRecovery) throw conflict("Run cancellation already requested");
+    if (run.costAccountedAt || !["queued", "running"].includes(run.status)) throw conflict("Run can no longer start provider work");
+    const [existing] = await tx.select().from(budgetReservations).where(and(eq(budgetReservations.companyId, companyId), eq(budgetReservations.runId, runId)));
+    if (existing) {
+      // The native coordinator fences recovery ownership. Reuse the original
+      // hold only for that live owner, never for an ordinary duplicate dispatch.
+      const owner = recoveryLeaseOwner && run.runtimeMode === "native" && existing.state === "held"
+        && existing.projectId === projectId
+        && await readOwnNativeRecoveryClaimLease(tx, { companyId, runId, leaseOwner: recoveryLeaseOwner }) !== "lost";
+      const keepRecoveryClaim = async () => {
+        if (!await extendOwnNativeRecoveryClaimInTransaction(tx, { companyId, runId, leaseOwner: recoveryLeaseOwner! }))
+          throw conflict("Native recovery no longer owns provider dispatch");
+      };
+      if (owner) {
+        if (stopRecovery) {
+          await keepRecoveryClaim();
+          return { ...existing, reused: true };
+        }
+        // Recovery has already made this run queued/running, so its own pending
+        // accounting is excluded. Current overruns, other unfinished runs and
+        // scope pauses still apply before any more paid work starts.
+        const block = await budgetServiceInTransaction(tx, publications).getInvocationBlock(companyId, run.agentId, { projectId, runId, admittedRecovery: true });
+        if (block) return { admissionBlockReason: block.reason };
+        const [agent] = await tx.select({ status: agents.status, lifecycleState: agents.lifecycleState }).from(agents)
+          .where(and(eq(agents.companyId, companyId), eq(agents.id, run.agentId)));
+        if (!agent || agent.lifecycleState !== "ready" || ["paused", "terminated", "pending_approval"].includes(agent.status))
+          return { admissionBlockReason: "Agent is paused and cannot start new work" };
+        await keepRecoveryClaim();
+        return { ...existing, reused: true };
+      }
+      throw conflict("Provider dispatch has already reserved this run");
+    }
+    if (stopRecovery) throw conflict("Native Stop recovery requires the original held reservation");
+    const { block, policies, observations } = await budgetServiceInTransaction(tx, publications).evaluateAdmission(companyId, run.agentId, { projectId, runId });
+    if (block) return { admissionBlockReason: block.reason };
+    // A budget release can start asynchronous resume hooks. Capacity alone
+    // does not authorize dispatch before that lifecycle operation is ready.
+    const [agent] = await tx.select({ status: agents.status, lifecycleState: agents.lifecycleState }).from(agents)
+      .where(and(eq(agents.companyId, companyId), eq(agents.id, run.agentId)));
+    if (!agent || agent.lifecycleState !== "ready" || ["paused", "terminated", "pending_approval"].includes(agent.status))
+      return { admissionBlockReason: "Agent is paused or its lifecycle is not ready for new work" };
+    const amount = policies.reduce((max, policy) => { const next = centsToUnits(policy.reservationCents); return next > max ? next : max; }, 0n);
+    for (const [index, policy] of policies.entries()) {
+      const observed = observations[index];
+      // Even zero-estimate runs cannot enter a scope whose available capacity
+      // is completely reserved. Outstanding reservations carry across months.
+      const committed = centsToUnits(observed.ledgerCents) + centsToUnits(observed.effectiveHeldCents);
+      const limit = centsToUnits(policy.amount);
+      if (committed >= limit || committed + amount > limit) return { admissionBlockReason: "Available budget is reserved by unfinished runs" };
+    }
+    // A zero-valued row also fences duplicate dispatch when estimates are off.
+    const [reservation] = await tx.insert(budgetReservations).values({ companyId, runId, agentId: run.agentId, projectId,
+      amountCents: unitsToCents(amount), providerStartedAt: new Date() }).returning();
+    await tx.update(heartbeatRuns).set({ costAccountingPending: true,
+      usageJson: sql`coalesce(${heartbeatRuns.usageJson}, '{}'::jsonb) || ${JSON.stringify({ accountingReceiptReady: false, ledgerScope: { ...(run.usageJson?.ledgerScope as object ?? {}), ...ledgerScope, projectId } })}::jsonb`,
+    }).where(eq(heartbeatRuns.id, runId));
+    await queueBudgetEvaluation(tx, { companyId, agentId: run.agentId, projectId });
+    if (recoveryLeaseOwner && !await extendOwnNativeRecoveryClaimInTransaction(tx, { companyId, runId, leaseOwner: recoveryLeaseOwner }))
+      throw conflict("Native recovery no longer owns provider dispatch");
+    return { ...reservation, reused: false };
+  }, { isolationLevel: "read committed" }));
+  // Commit required block/resume transitions even when dispatch is denied.
+  // Throwing inside the transaction would discard those durable obligations.
+  if ("admissionBlockReason" in result) throw conflict(result.admissionBlockReason ?? "Budget admission blocked");
+  return result;
+}

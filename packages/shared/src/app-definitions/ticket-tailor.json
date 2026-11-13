@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "slug": "ticket-tailor",
+  "name": "Ticket Tailor",
+  "description": "Connect Ticket Tailor's provider-hosted MCP server.",
+  "categories": [
+    "commerce"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/ticket-tailor.svg",
+    "darkLogoUrl": "/brands/apps/ticket-tailor-dark.svg"
+  },
+  "urlPatterns": [
+    "https://mcp.tickettailor.ai/*"
+  ],
+  "docsUrl": "https://developers.tickettailor.com/docs/mcp/authentication/",
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "dcr"
+      ],
+      "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
+      "defaults": {
+        "serverUrl": "https://mcp.tickettailor.ai/mcp"
+      },
+      "guidanceMd": "Connect Ticket Tailor in the browser. A Ticket Tailor account; the provider may request an API key during its hosted authorization prompt.",
+      "riskTier": "S3",
+      "label": "Sign in with Ticket Tailor",
+      "consoleLinks": {
+        "docs": "https://developers.tickettailor.com/docs/mcp/authentication/"
+      },
+      "warnings": [
+        "A Ticket Tailor account; the provider may request an API key during its hosted authorization prompt."
+      ]
+    }
+  ]
+}

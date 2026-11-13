@@ -248,7 +248,7 @@ describe("skills CLI commands", () => {
       "http://paperclip.test/api/skills/catalog?kind=bundled&category=software-development&q=github",
       expect.objectContaining({ method: "GET" }),
     );
-    const rendered = logSpy.mock.calls.map((call) => String(call[0])).join("\n");
+    const rendered = logSpy.mock.calls.map((call: unknown[]) => String(call[0])).join("\n");
     expect(rendered).toContain("id");
     expect(rendered).toContain("paperclipai:bundled:software-development:github-pr-workflow");
     expect(rendered).toContain("roles");
@@ -479,6 +479,8 @@ describe("skills CLI commands", () => {
       "review-prs",
       "--skill",
       "paperclip/qa",
+      "--mode",
+      "add",
       "--company-id",
       "company-1",
       "--api-base",
@@ -498,7 +500,7 @@ describe("skills CLI commands", () => {
       "http://paperclip.test/api/agents/agent-1/skills/sync",
       expect.objectContaining({
         method: "POST",
-        body: JSON.stringify({ desiredSkills: ["review-prs", "paperclip/qa"] }),
+        body: JSON.stringify({ desiredSkills: ["review-prs", "paperclip/qa"], mode: "add" }),
       }),
     );
     expect(JSON.parse(String(logSpy.mock.calls[0]?.[0]))).toEqual(snapshot);

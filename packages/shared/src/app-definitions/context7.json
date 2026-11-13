@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "slug": "context7",
+  "name": "Context7",
+  "description": "Search public library documentation and retrieve current code examples.",
+  "categories": [
+    "developer"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/context7.svg",
+    "darkLogoUrl": "/brands/apps/context7-dark.svg"
+  },
+  "urlPatterns": [
+    "https://mcp.context7.com/*"
+  ],
+  "methods": [
+    {
+      "key": "mcp",
+      "transport": "mcp_remote",
+      "auth": "none",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use the public hosted MCP server for read-only library documentation lookups.",
+      "defaults": {
+        "serverUrl": "https://mcp.context7.com/mcp"
+      },
+      "guidanceMd": "Connect Context7 to resolve public library IDs and retrieve current documentation. Anonymous access is supported with low rate limits; this method does not configure an API key. Keep queries limited to public documentation questions and do not include credentials, personal data, or proprietary code.",
+      "riskTier": "S1",
+      "consoleLinks": {
+        "docs": "https://context7.com/docs/api-guide"
+      },
+      "warnings": [
+        "Context7 processes the query text. Do not include secrets, personal information, or proprietary code.",
+        "Anonymous requests have low rate limits. Provider documentation says an API key raises limits and supports private repositories; this public method does not configure a key."
+      ]
+    }
+  ],
+  "docsUrl": "https://context7.com/docs/api-guide"
+}

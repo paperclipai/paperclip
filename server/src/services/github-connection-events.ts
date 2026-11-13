@@ -1,0 +1,677 @@
+import { parseSlackFormOperation } from "./chat-channels/slack/cloud-forms.js";
+import { acknowledgeSlackFormDeliveries } from "./chat-channels/slack/form-normal-ack.js";
+import { readSlackFormRetainedConsumer } from "./chat-channels/slack/cloud-consumer.js";
+import { reconcileRegisteredSlackFormWork } from "./chat-channels/slack/form-owner.js";
+import { SlackCloudReceiptError } from "./chat-channels/slack/cloud-event.js";
+import { reconcilePendingSlackCloudEnrollments } from "./chat-channels/slack/cloud-enrollment.js";
+import { notifyExternalObjectRefresh } from "./external-object-refresh-notifications.js";
+import { notifyGitHubCredentialChange } from "./github-connection-notifications.js";
+import { notifyToolConnectionHealth } from "./tool-connection-health-notifications.js";
+import { dispatchGitHubBotCloudEvent } from "./chat-github-cloud-ingress.js";
+import { dispatchSlackCloudEvent } from "./chat-channels/slack/cloud-ingress.js";
+import { chatEndpoints } from "@paperclipai/db";
+import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
+import {
+  connectionEventDeliveries,
+  connectionGrants,
+  externalObjects,
+  toolConnections,
+  type Db,
+} from "@paperclipai/db";
+import { and, eq, ne, sql } from "drizzle-orm";
+import {
+  logActivity,
+  publishActivity,
+  type ActivityPublication,
+} from "./activity-log.js";
+import {
+  createPaperclipCloudConnector,
+  paperclipCloudConnectorConfigFromEnv,
+  type PaperclipCloudConnector,
+  type SealedConnectorEvents,
+} from "./paperclip-cloud-connector.js";
+import { issueThreadInteractionService } from "./issue-thread-interactions.js";
+import { logger } from "../middleware/logger.js";
+
+type LeasedEvent = SealedConnectorEvents["events"][number];
+type GitHubBinding = {
+  id: string;
+  companyId: string;
+  connectionId: string;
+  grantId: string;
+  subject: string;
+  installationId: string;
+  providerTenant: NonNullable<typeof connectionGrants.$inferSelect.providerTenant>;
+};
+
+export type GitHubConnectionEventPollResult = {
+  leased: number;
+  processed: number;
+  duplicate: number;
+  ignored: number;
+  failed: number;
+};
+
+function record(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function positiveInteger(value: unknown): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : null;
+}
+
+function boundedString(value: unknown, maximum: number): string | null {
+  return typeof value === "string" && value.length > 0 && value.length <= maximum ? value : null;
+}
+
+function identifier(value: unknown): string | null {
+  return typeof value === "string" && /^[1-9][0-9]{0,30}$/.test(value) ? value : null;
+}
+
+function isoDate(value: unknown): string | null {
+  const candidate = boundedString(value, 100);
+  if (!candidate || Number.isNaN(Date.parse(candidate))) return null;
+  return new Date(candidate).toISOString();
+}
+
+function commitSha(value: unknown): string | null {
+  return typeof value === "string" && /^[0-9a-f]{40,64}$/i.test(value) ? value.toLowerCase() : null;
+}
+
+function githubUrl(value: unknown): string | null {
+  const candidate = boundedString(value, 2_000);
+  if (!candidate) return null;
+  try {
+    const url = new URL(candidate);
+    return url.protocol === "https:" && url.hostname.toLowerCase() === "github.com" ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+function compact(values: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(values).filter(([, value]) => value !== null && value !== undefined));
+}
+
+/**
+ * Treat the sealed Cloud batch as an untrusted boundary. Cloud already normalizes
+ * GitHub payloads, but the instance independently allowlists and bounds the small
+ * reconciliation record that it persists and processes.
+ */
+function normalizeLeasedPayload(event: LeasedEvent): Record<string, unknown> {
+  const payload = record(event.payload);
+  const base = {
+    event: boundedString(payload.event, 100),
+    action: boundedString(payload.action, 100),
+    installationId: identifier(payload.installationId),
+    repositoryId: identifier(payload.repositoryId),
+    repository: boundedString(payload.repository, 300),
+    senderId: identifier(payload.senderId),
+    senderLogin: boundedString(payload.senderLogin, 100),
+  };
+  if (event.event === "pull_request") {
+    return compact({
+      ...base,
+      number: positiveInteger(payload.number),
+      url: githubUrl(payload.url),
+      state: boundedString(payload.state, 40),
+      merged: payload.merged === true,
+      mergedAt: isoDate(payload.mergedAt),
+      updatedAt: isoDate(payload.updatedAt),
+      headRef: boundedString(payload.headRef, 300),
+      headSha: commitSha(payload.headSha),
+      baseRef: boundedString(payload.baseRef, 300),
+      baseSha: commitSha(payload.baseSha),
+    });
+  }
+  if (event.event === "installation_repositories") {
+    const repositoryIds = (value: unknown) => Array.isArray(value)
+      ? value.slice(0, 1_000).flatMap((item) => identifier(item) ?? [])
+      : [];
+    return compact({
+      ...base,
+      repositorySelection: boundedString(payload.repositorySelection, 40),
+      repositoriesAdded: repositoryIds(payload.repositoriesAdded),
+      repositoriesRemoved: repositoryIds(payload.repositoriesRemoved),
+    });
+  }
+  if (event.event === "installation") {
+    return compact({
+      ...base,
+      accountId: identifier(payload.accountId),
+      accountLogin: boundedString(payload.accountLogin, 100),
+      repositorySelection: boundedString(payload.repositorySelection, 40),
+    });
+  }
+  return compact(base);
+}
+
+export function githubConnectionEventBindings(rows: Array<{
+  grant: typeof connectionGrants.$inferSelect;
+  connection: typeof toolConnections.$inferSelect;
+}>): GitHubBinding[] {
+  return rows.flatMap(({ grant, connection }) => {
+    const config = record(connection.config);
+    const oauth = record(config.oauth);
+    if (config.sourceTemplateKey !== "github" || oauth.connectorProfile !== "github.code") return [];
+    const github = grant.providerTenant?.github;
+    if (!github || grant.status !== "active") return [];
+    const subject = grant.kind === "agent" && grant.subjectAgentId
+      ? `agent:${grant.subjectAgentId}`
+      : grant.kind === "user" && grant.subjectUserId
+        ? grant.subjectUserId
+        : null;
+    if (!subject) return [];
+    return github.installationIds.map((installationId) => ({
+      id: `${grant.id}_${installationId}`,
+      companyId: grant.companyId,
+      connectionId: connection.id,
+      grantId: grant.id,
+      subject,
+      installationId,
+      providerTenant: grant.providerTenant!,
+    }));
+  });
+}
+
+function githubSnapshotUpdate(payload: Record<string, unknown>) {
+  const repository = stringValue(payload.repository);
+  const number = positiveInteger(payload.number);
+  if (!repository || !number) return null;
+  const state = stringValue(payload.state) ?? "unknown";
+  const merged = payload.merged === true;
+  const [owner, repo, ...extra] = repository.split("/");
+  if (!owner || !repo || extra.length > 0) return null;
+  return {
+    repository,
+    owner,
+    repo,
+    number,
+    externalId: `${repository}#pull/${number}`,
+    state,
+    merged,
+    statusKey: merged ? "merged" : state === "closed" ? "closed" : "open",
+    statusLabel: merged ? "Merged" : state === "closed" ? "Closed" : "Open",
+    statusCategory: merged ? "succeeded" : state === "closed" ? "closed" : "open",
+    statusTone: merged ? "success" : state === "closed" ? "muted" : "info",
+    statusIconKey: merged ? "git-merge" : state === "closed" ? "x-circle" : "git-pull-request",
+    data: {
+      provider: "github",
+      owner,
+      repo,
+      number,
+      state,
+      merged,
+      ...(stringValue(payload.url) ? { url: stringValue(payload.url) } : {}),
+      ...(stringValue(payload.mergedAt) ? { mergedAt: stringValue(payload.mergedAt) } : {}),
+      ...(stringValue(payload.headRef) ? { headRef: stringValue(payload.headRef) } : {}),
+      ...(stringValue(payload.headSha) ? { headSha: stringValue(payload.headSha) } : {}),
+      ...(stringValue(payload.baseRef) ? { baseRef: stringValue(payload.baseRef) } : {}),
+      ...(stringValue(payload.baseSha) ? { baseSha: stringValue(payload.baseSha) } : {}),
+    },
+    remoteVersion: stringValue(payload.updatedAt),
+  } as const;
+}
+
+export function githubConnectionEventService(
+  db: Db,
+  options: {
+    connector?: PaperclipCloudConnector;
+    env?: NodeJS.ProcessEnv;
+    now?: () => Date;
+    wakeup?: NonNullable<Parameters<typeof issueThreadInteractionService>[1]>["wakeup"];
+  } = {},
+) {
+  const now = options.now ?? (() => new Date());
+  let nextPollAt = 0;
+  let nextEnrollmentAt: number | null = null;
+  let nextEnrollmentDiagnosticAt = 0;
+  const slackDiagnostics = new Map<string, number>();
+  let configuredConnector: {
+    config: NonNullable<ReturnType<typeof paperclipCloudConnectorConfigFromEnv>>;
+    connector: PaperclipCloudConnector;
+  } | undefined;
+  function currentConnector() {
+    if (options.connector) return options.connector;
+    // Enrollment and identity replacement can happen after this owner starts.
+    // Read only on an admitted pass; preserve negotiated delivery while unchanged.
+    const config = paperclipCloudConnectorConfigFromEnv(options.env);
+    if (!config) { configuredConnector = undefined; return null; }
+    if (!configuredConnector || !isDeepStrictEqual(configuredConnector.config, config)) {
+      configuredConnector = { config, connector: createPaperclipCloudConnector({ config }) };
+    }
+    return configuredConnector.connector;
+  }
+  const forcePolling = (options.env ?? process.env).PAPERCLIP_GITHUB_EVENT_POLLING === "1";
+  let emptyPolls = 0;
+  let nextSetupPollAt = 0;
+  let inFlight: Promise<GitHubConnectionEventPollResult> | null = null;
+
+  async function activeBindings() {
+    const rows = await db.select({ grant: connectionGrants, connection: toolConnections })
+      .from(connectionGrants)
+      .innerJoin(toolConnections, and(
+        eq(toolConnections.id, connectionGrants.connectionId),
+        eq(toolConnections.companyId, connectionGrants.companyId),
+      ))
+      .where(and(
+        sql`${toolConnections.config}->>'sourceTemplateKey' = 'github'`,
+        sql`${toolConnections.config}->'oauth'->>'connectorProfile' = 'github.code'`,
+        eq(connectionGrants.status, "active"),
+        eq(toolConnections.status, "active"),
+        eq(toolConnections.enabled, true),
+        sql`exists (select 1 from companies where id = ${connectionGrants.companyId} and status <> 'archived')`,
+      ));
+    return githubConnectionEventBindings(rows);
+  }
+
+  async function applyPullRequestEvent(database: Db, companyId: string, event: LeasedEvent, effects: Array<(committedDb: Db) => Promise<void>>) {
+    const snapshot = githubSnapshotUpdate(event.payload);
+    if (!snapshot) return;
+    const appliedAt = now();
+    await notifyExternalObjectRefresh(database, companyId, { providerKey: "github", objectType: "pull_request",
+      externalId: snapshot.externalId, ignoreExternalIdCase: true });
+    await database.update(externalObjects).set({
+      statusKey: snapshot.statusKey,
+      statusLabel: snapshot.statusLabel,
+      statusCategory: snapshot.statusCategory,
+      statusTone: snapshot.statusTone,
+      statusIconKey: snapshot.statusIconKey,
+      isTerminal: snapshot.merged || snapshot.state === "closed",
+      data: sql`${externalObjects.data} || ${JSON.stringify(snapshot.data)}::jsonb`,
+      remoteVersion: snapshot.remoteVersion,
+      lastResolvedAt: appliedAt,
+      lastChangedAt: appliedAt,
+      nextRefreshAt: appliedAt,
+      refreshStartedAt: null,
+      refreshToken: null,
+      updatedAt: appliedAt,
+    }).where(and(
+      eq(externalObjects.companyId, companyId),
+      eq(externalObjects.providerKey, "github"),
+      eq(externalObjects.objectType, "pull_request"),
+      sql`lower(${externalObjects.externalId}) = lower(${snapshot.externalId})`,
+    ));
+    if (snapshot.merged && event.action === "closed") {
+      await issueThreadInteractionService(database, { wakeup: options.wakeup })
+        .sweepMergedPullRequestConfirmations([{
+          companyId,
+          owner: snapshot.owner,
+          repo: snapshot.repo,
+          number: snapshot.number,
+        }], { companyId }, undefined, { deferConfirmationCommitEffects: effect => effects.push(effect) });
+    }
+  }
+
+  async function applyInstallationEvent(database: Db, binding: GitHubBinding, event: LeasedEvent) {
+    // Bindings are loaded before the Cloud request. Lock and read the grant
+    // again so a refresh completed during that request cannot be overwritten.
+    const [currentGrant] = await database.select().from(connectionGrants).where(and(
+      eq(connectionGrants.id, binding.grantId),
+      eq(connectionGrants.companyId, binding.companyId),
+      eq(connectionGrants.status, "active"),
+    )).for("update").limit(1);
+    const currentProviderTenant = currentGrant?.providerTenant;
+    const github = currentProviderTenant?.github;
+    if (!github) return;
+    // A newly bound instance can receive installation events from before OAuth
+    // verified its repository list. Those events must not erase newer access.
+    if (Date.parse(github.lastAccessRefreshAt ?? "") > Date.parse(event.createdAt)) {
+      await database.update(connectionGrants).set({
+        providerTenant: {
+          ...currentProviderTenant,
+          github: { ...github, lastWebhookAt: now().toISOString(), webhookHealth: "healthy" },
+        },
+        updatedAt: now(),
+      }).where(and(eq(connectionGrants.id, binding.grantId), eq(connectionGrants.companyId, binding.companyId)));
+      return;
+    }
+    const unavailable = event.event === "installation" && (event.action === "deleted" || event.action === "suspend");
+    const installationIds = unavailable
+      ? github.installationIds.filter((id) => id !== binding.installationId)
+      : [...new Set([...github.installationIds, binding.installationId])];
+    const added = Array.isArray(event.payload.repositoriesAdded) ? event.payload.repositoriesAdded.length : 0;
+    const removed = Array.isArray(event.payload.repositoriesRemoved) ? event.payload.repositoriesRemoved.length : 0;
+    const repositoryCount = Math.max(
+      0,
+      unavailable && installationIds.length === 0
+        ? 0
+        : unavailable
+          ? github.repositoryCount
+          : github.repositoryCount + added - removed,
+    );
+    const providerTenant = {
+      ...currentProviderTenant,
+      github: {
+        ...github,
+        // Lifecycle webhooks carry IDs, not the user token’s complete repository view.
+        // Discard the snapshot until Refresh access verifies it again.
+        accessRevision: randomUUID(),
+        ...(unavailable || github.bindingSync || !github.installationIds.includes(binding.installationId) ? { bindingSync: {
+          id: randomUUID(), removeInstallationIds: [...new Set([
+            ...(github.bindingSync?.removeInstallationIds ?? []), ...(unavailable ? [binding.installationId] : []),
+          ])].filter(id => !installationIds.includes(id)),
+        } } : {}),
+        repositories: undefined,
+        installationIds,
+        installationCount: installationIds.length,
+        repositoryCount,
+        repositorySelection: repositoryCount === 0 ? "none" as const : github.repositorySelection,
+        lastWebhookAt: now().toISOString(),
+        webhookHealth: unavailable ? "unhealthy" as const : "healthy" as const,
+      },
+    };
+    await notifyGitHubCredentialChange(database, { companyId: binding.companyId, config: { sourceTemplateKey: "github" } });
+    await database.update(connectionGrants).set({ providerTenant, updatedAt: now() })
+      .where(and(eq(connectionGrants.id, binding.grantId), eq(connectionGrants.companyId, binding.companyId)));
+    await notifyToolConnectionHealth(database, { companyId: binding.companyId, id: binding.connectionId });
+    await database.update(toolConnections).set({
+      healthStatus: unavailable ? "failed" : "ok",
+      healthMessage: unavailable
+        ? "GitHub installation access was removed or suspended. Manage repository access on GitHub."
+        : "GitHub installation and repository access are available.",
+      healthCheckedAt: now(),
+      lastHealthAt: now(),
+      lastError: unavailable ? "GitHub installation unavailable" : null,
+      updatedAt: now(),
+    }).where(and(eq(toolConnections.id, binding.connectionId), eq(toolConnections.companyId, binding.companyId)));
+  }
+
+  async function processForCompany(companyId: string, bindings: GitHubBinding[], event: LeasedEvent) {
+    const receiptAt = now();
+    const normalizedEvent = { ...event, payload: normalizeLeasedPayload(event) };
+    const [receipt] = await db.insert(connectionEventDeliveries).values({
+      companyId,
+      provider: event.provider,
+      providerDeliveryId: event.id,
+      event: event.event,
+      action: event.action,
+      installationId: event.installationId,
+      repositoryId: event.repositoryId,
+      normalizedPayload: normalizedEvent.payload,
+      providerCreatedAt: new Date(event.createdAt),
+      status: "received",
+      attempts: 1,
+      updatedAt: receiptAt,
+    }).onConflictDoNothing().returning();
+    if (!receipt) {
+      const [existing] = await db.select().from(connectionEventDeliveries).where(and(
+        eq(connectionEventDeliveries.companyId, companyId),
+        eq(connectionEventDeliveries.provider, event.provider),
+        eq(connectionEventDeliveries.providerDeliveryId, event.id),
+      )).limit(1);
+      if (existing?.status === "processed") return "duplicate" as const;
+
+    }
+    const postCommitPublications: ActivityPublication[] = [];
+    const postCommitEffects: Array<(committedDb: Db) => Promise<void>> = [];
+    let applied = true;
+    try {
+      const applyAndFinalize = async (database: Db) => {
+        const [locked] = await database.select().from(connectionEventDeliveries).where(and(
+          eq(connectionEventDeliveries.companyId, companyId), eq(connectionEventDeliveries.provider, event.provider),
+          eq(connectionEventDeliveries.providerDeliveryId, event.id),
+        )).for("update").limit(1);
+        if (locked!.status === "processed") { applied = false; return; }
+        if (!receipt) await database.update(connectionEventDeliveries).set({
+          status: "received", attempts: sql`${connectionEventDeliveries.attempts} + 1`, lastError: null, updatedAt: receiptAt,
+        }).where(eq(connectionEventDeliveries.id, locked!.id));
+        if (event.event === "pull_request") await applyPullRequestEvent(database, companyId, normalizedEvent, postCommitEffects);
+        if (event.event === "installation" || event.event === "installation_repositories") {
+          for (const binding of bindings) await applyInstallationEvent(database, binding, normalizedEvent);
+        } else {
+          const touchedAt = now();
+          for (const binding of bindings) {
+            const github = binding.providerTenant.github;
+            if (!github) continue;
+            await database.update(connectionGrants).set({
+              // Update only webhook fields; a concurrent access/token refresh
+              // owns the remaining metadata and must not be replaced here.
+              providerTenant: sql`jsonb_set(${connectionGrants.providerTenant}, '{github}',
+                (${connectionGrants.providerTenant}->'github') || ${JSON.stringify({
+                  lastWebhookAt: touchedAt.toISOString(), webhookHealth: "healthy",
+                })}::jsonb)`,
+              updatedAt: touchedAt,
+            }).where(and(
+              eq(connectionGrants.id, binding.grantId),
+              eq(connectionGrants.companyId, companyId),
+              eq(connectionGrants.status, "active"),
+              sql`${connectionGrants.providerTenant}->'github' is not null`,
+            ));
+          }
+        }
+        const finishedAt = now();
+        await database.update(connectionEventDeliveries).set({
+          status: "processed",
+          processedAt: finishedAt,
+          lastError: null,
+          updatedAt: finishedAt,
+        }).where(and(
+          eq(connectionEventDeliveries.companyId, companyId),
+          eq(connectionEventDeliveries.provider, event.provider),
+          eq(connectionEventDeliveries.providerDeliveryId, event.id),
+        ));
+        await logActivity(database, {
+          companyId,
+          actorType: "system",
+          actorId: "system:github-webhook",
+          action: "tool_connection.webhook_processed",
+          entityType: "tool_connection",
+          entityId: bindings[0]!.connectionId,
+          details: {
+            provider: "github",
+            event: event.event,
+            action: event.action,
+            deliveryId: event.id,
+            installationId: event.installationId,
+            repositoryId: event.repositoryId,
+          },
+        }, postCommitPublications);
+      };
+      await db.transaction(async (tx) => applyAndFinalize(tx as unknown as Db));
+    } catch (error) {
+      await db.update(connectionEventDeliveries).set({
+        status: "failed",
+        lastError: error instanceof Error ? error.message.slice(0, 500) : "GitHub event processing failed",
+        updatedAt: now(),
+      }).where(and(
+        eq(connectionEventDeliveries.companyId, companyId),
+        eq(connectionEventDeliveries.provider, event.provider),
+        eq(connectionEventDeliveries.providerDeliveryId, event.id),
+        ne(connectionEventDeliveries.status, "processed"),
+      ));
+      throw error;
+    }
+    // Persistence is complete at this point (and installation deltas have
+    // committed). A synchronous live-event subscriber must not turn that
+    // durable success back into a retryable receipt and replay the delta.
+    for (const publication of postCommitPublications) {
+      try {
+        publishActivity(publication);
+      } catch (error) {
+        logger.warn({
+          err: error,
+          companyId,
+          providerDeliveryId: event.id,
+        }, "GitHub webhook activity publication failed after commit");
+      }
+    }
+    for (const effect of postCommitEffects) await effect(db);
+    return applied ? "processed" as const : "duplicate" as const;
+  }
+
+  async function runPoll(): Promise<GitHubConnectionEventPollResult> {
+    const connector = currentConnector();
+    if (!connector) {
+      nextPollAt = Number.POSITIVE_INFINITY;
+      return { leased: 0, processed: 0, duplicate: 0, ignored: 0, failed: 0 };
+    }
+    try {
+      return await drainConnectorEvents(connector);
+    } finally {
+      try {
+        nextEnrollmentAt = await reconcilePendingSlackCloudEnrollments(db, now());
+      } catch {
+        const time = now().getTime();
+        nextEnrollmentAt = time + 5_000;
+        if (time >= nextEnrollmentDiagnosticAt) {
+          nextEnrollmentDiagnosticAt = time + 300_000;
+          logger.warn({ reason: "enrollment_reconcile_unavailable" }, "Slack enrollment responsibility retained");
+        }
+      }
+      let formsAt: number | null = null;
+      try { formsAt = await reconcileRegisteredSlackFormWork(db, now()); }
+      catch { formsAt = now().getTime() + 5_000; }
+      const next = Math.min(nextEnrollmentAt ?? Number.POSITIVE_INFINITY, formsAt ?? Number.POSITIVE_INFINITY);
+      nextEnrollmentAt = Number.isFinite(next) ? next : null;
+    }
+  }
+
+  async function drainConnectorEvents(connector: PaperclipCloudConnector): Promise<GitHubConnectionEventPollResult> {
+    const bindings = await activeBindings();
+    const githubBots = await db.select().from(chatEndpoints).where(and(eq(chatEndpoints.provider, "github"), sql`${chatEndpoints.setup}->'github'->>'cloudRegistrationId' is not null`, sql`${chatEndpoints.status} not in ('archived', 'disabled')`, sql`exists (select 1 from companies where id = ${chatEndpoints.companyId} and status <> 'archived')`));
+    const slackBots = await db.select().from(chatEndpoints).where(and(eq(chatEndpoints.provider, "slack"), sql`${chatEndpoints.setup}->'slackCloudEvents' is not null`, sql`${chatEndpoints.status} in ('active','verifying','attention')`, sql`exists (select 1 from companies where id = ${chatEndpoints.companyId} and status <> 'archived')`));
+    const bots = [...githubBots, ...slackBots];
+    let identity: { subject: string; companyId: string } | null = bindings[0] ?? (bots[0] ? { subject: "github-bot-events", companyId: bots[0].companyId } : null);
+    let hasConsumer = bindings.length > 0 || bots.length > 0;
+    if (!identity) {
+      try {
+        const retained = await readSlackFormRetainedConsumer(db, connector);
+        identity = retained.owner;
+        hasConsumer ||= retained.owner !== null;
+        const time = now().getTime();
+        if (retained.attention.length && time >= nextEnrollmentDiagnosticAt) {
+          nextEnrollmentDiagnosticAt = time + 300_000;
+          logger.warn({ reason: "form_retained_owner_invalid", count: retained.attention.length }, "Slack form custody requires attention");
+        }
+      } catch {
+        const time = now().getTime();
+        if (time >= nextEnrollmentDiagnosticAt) {
+          nextEnrollmentDiagnosticAt = time + 300_000;
+          logger.warn({ reason: "form_retained_owner_unavailable" }, "Slack form custody requires attention");
+        }
+      }
+    }
+    if (!identity) {
+      const [history] = await db.select({ grant: connectionGrants, connection: toolConnections }).from(connectionGrants)
+        .innerJoin(toolConnections, and(eq(toolConnections.id, connectionGrants.connectionId), eq(toolConnections.companyId, connectionGrants.companyId)))
+        .where(and(sql`${toolConnections.config}->>'sourceTemplateKey' = 'github'`, sql`${toolConnections.config}->'oauth'->>'connectorProfile' = 'github.code'`)).limit(1);
+      const grant = history?.grant;
+      const subject = grant?.kind === "agent" && grant.subjectAgentId ? `agent:${grant.subjectAgentId}`
+        : grant?.kind === "user" ? grant.subjectUserId : null;
+      if (grant && subject) identity = { subject, companyId: grant.companyId };
+    }
+    if (!identity) {
+      const [history] = await db.select().from(chatEndpoints).where(sql`(${chatEndpoints.provider} = 'github' AND ${chatEndpoints.setup}->'github'->>'cloudRegistrationId' is not null) OR (${chatEndpoints.provider} = 'slack' AND ${chatEndpoints.setup}->'slackCloudEvents' is not null)`).limit(1);
+      if (history) identity = { subject: "github-bot-events", companyId: history.companyId };
+    }
+    if (!identity) {
+      nextPollAt = Number.POSITIVE_INFINITY;
+      return { leased: 0, processed: 0, duplicate: 0, ignored: 0, failed: 0 };
+    }
+    const first = identity;
+    const lease = await connector.leaseEvents({ subject: first.subject, companyId: first.companyId, eventWakeVersion: forcePolling ? 0 : 1 });
+    if (!lease) {
+      emptyPolls += 1;
+      nextPollAt = !hasConsumer || (!forcePolling && connector.eventWakeVersion?.() === 1) ? Number.POSITIVE_INFINITY
+        : now().getTime() + Math.min(bots.length ? 15_000 : 5 * 60_000, 5_000 * (2 ** Math.min(emptyPolls, 6)));
+      return { leased: 0, processed: 0, duplicate: 0, ignored: 0, failed: 0 };
+    }
+    emptyPolls = 0;
+    nextPollAt = !hasConsumer || (!forcePolling && connector.eventWakeVersion?.() === 1) ? Number.POSITIVE_INFINITY : now().getTime() + 5_000;
+    const result: GitHubConnectionEventPollResult = {
+      leased: lease.events.length + (lease.failedEventIds?.length ?? 0),
+      processed: 0,
+      duplicate: 0,
+      ignored: 0,
+      failed: lease.failedEventIds?.length ?? 0,
+    };
+    const acknowledge: string[] = [];
+    const formCompanies = new Map<string, string>();
+    for (const event of lease.events) {
+      if (event.provider === "slack") {
+        try {
+          await dispatchSlackCloudEvent(db, event);
+          if (/^slack_form_[a-f0-9]{64}$/.test(event.id)) {
+            const packet = event.payload.slackFormOpen;
+            if (!packet || typeof packet !== "object" || Array.isArray(packet)) throw new SlackCloudReceiptError("form_ack_company_missing", "attention");
+            formCompanies.set(event.id, parseSlackFormOperation(Reflect.get(packet, "operation")).binding.companyId);
+          }
+          acknowledge.push(event.id); result.processed += 1;
+        }
+        catch (error) {
+          const code = error instanceof SlackCloudReceiptError ? error.code : "owner_or_admission_unavailable";
+          const disposition = error instanceof SlackCloudReceiptError ? error.disposition : "retry";
+          const time = now().getTime();
+          if (time - (slackDiagnostics.get(event.id) ?? Number.NEGATIVE_INFINITY) >= 300_000) {
+            if (slackDiagnostics.size >= 1000) slackDiagnostics.delete(slackDiagnostics.keys().next().value!);
+            slackDiagnostics.set(event.id, time);
+            logger.warn({ deliveryId: event.id.slice(0, 200), reason: code, disposition,
+              recoveryExpiresAt: Number.isFinite(Date.parse(event.createdAt)) ? new Date(Date.parse(event.createdAt) + 30 * 24 * 60 * 60_000).toISOString() : null }, "Slack connector receipt requires attention");
+          }
+          if (disposition === "invalid") { acknowledge.push(event.id); result.ignored += 1; }
+          else result.failed += 1;
+        }
+        continue;
+      }
+      if (event.payload.githubApp !== undefined) {
+        try { await dispatchGitHubBotCloudEvent(db, event); acknowledge.push(event.id); result.processed += 1; }
+        catch { result.failed += 1; }
+        continue;
+      }
+      const matched = bindings.filter((binding) => event.bindingIds.includes(binding.id));
+      if (matched.length === 0) {
+        result.ignored += 1;
+        acknowledge.push(event.id);
+        continue;
+      }
+      try {
+        const companies = new Map<string, GitHubBinding[]>();
+        for (const binding of matched) companies.set(binding.companyId, [...(companies.get(binding.companyId) ?? []), binding]);
+        for (const [companyId, companyBindings] of companies) {
+          const status = await processForCompany(companyId, companyBindings, event);
+          result[status] += 1;
+        }
+        acknowledge.push(event.id);
+
+      } catch {
+        result.failed += 1;
+      }
+    }
+    if (acknowledge.length > 0) {
+      await acknowledgeSlackFormDeliveries(db, { connector,
+        values: { subject: first.subject, companyId: first.companyId, leaseId: lease.leaseId, deliveryIds: acknowledge }, companies: formCompanies });
+    }
+    for (const deliveryId of lease.failedEventIds ?? []) {
+      logger.warn({ deliveryId, reason: "inner_event_authentication_failed" },
+        "GitHub connector event retained for retry");
+    }
+    return result;
+  }
+
+  return {
+    nextPollAt: () => { const next = Math.min(nextPollAt, nextEnrollmentAt ?? Number.POSITIVE_INFINITY); return Number.isFinite(next) ? next : null; },
+    pollOnce(input: { forSetup?: boolean; forDelivery?: boolean } = {}): Promise<GitHubConnectionEventPollResult> {
+      // A manager actively awaiting a dedicated App's signed ping must not
+      // inherit a personal connection's old empty-queue backoff. This is a
+      // bounded readiness probe, not an additional background polling loop.
+      if (inFlight) return inFlight;
+      const time = now().getTime();
+      if (!input.forDelivery && time < (input.forSetup ? nextSetupPollAt : Math.min(nextPollAt, nextEnrollmentAt ?? Number.POSITIVE_INFINITY))) {
+        return Promise.resolve({ leased: 0, processed: 0, duplicate: 0, ignored: 0, failed: 0 });
+      }
+      nextSetupPollAt = time + 5_000;
+      nextPollAt = Math.max(nextPollAt, nextSetupPollAt);
+      const work = runPoll().finally(() => { if (inFlight === work) inFlight = null; });
+      inFlight = work;
+      return work;
+    },
+  };
+}

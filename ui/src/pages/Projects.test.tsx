@@ -76,6 +76,7 @@ function makeProject(overrides: Partial<Project>): Project {
     leadAgentId: null,
     targetDate: null,
     color: "#ef4444",
+    icon: null,
     env: null,
     pauseReason: null,
     pausedAt: null,
@@ -216,6 +217,21 @@ describe("Projects", () => {
     expect(content.indexOf("Charlie")).toBeLessThan(content.indexOf("Other Projects"));
     expect(content.indexOf("Other Projects")).toBeLessThan(content.indexOf("Bravo"));
     expect(content).toContain("in progress");
+  });
+
+  it("searches projects and clears back to the grouped list", async () => {
+    await renderProjects();
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="Search projects"]')!;
+    await act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "charlie");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(container.textContent).toContain("Charlie");
+    expect(container.textContent).not.toContain("Alpha");
+    expect(container.textContent).not.toContain("Bravo");
+    await act(() => container.querySelector<HTMLButtonElement>('button[aria-label="Clear search"]')!.click());
+    expect(container.textContent).toContain("Alpha");
+    expect(container.textContent).toContain("Bravo");
   });
 
   it("sorts grouped projects by the selected field", async () => {

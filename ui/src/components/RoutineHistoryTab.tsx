@@ -17,6 +17,8 @@ import {
   type RestoreRoutineRevisionResponse,
 } from "../api/routines";
 import { ApiError } from "../api/client";
+import { describeError } from "../api/errors";
+import { QueryErrorState, useQueryView } from "./QueryView";
 import { queryKeys } from "../lib/queryKeys";
 import { buildLineDiff, type DiffRow } from "../lib/line-diff";
 import { relativeTime } from "../lib/utils";
@@ -35,6 +37,7 @@ import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "./EmptyState";
 import { MarkdownBody } from "./MarkdownBody";
+import { Badge } from "@/components/ui/badge";
 
 type AgentLookup = Map<string, { id: string; name: string }>;
 type ProjectLookup = Map<string, { id: string; name: string }>;
@@ -87,6 +90,7 @@ export function RoutineHistoryTab({
     queryKey: queryKeys.routines.revisions(routine.id),
     queryFn: () => routinesApi.listRevisions(routine.id),
   });
+  const revisionsView = useQueryView(revisionsQuery);
 
   const revisions = useMemo(() => revisionsQuery.data ?? [], [revisionsQuery.data]);
   const sortedRevisions = useMemo(
@@ -153,7 +157,7 @@ export function RoutineHistoryTab({
     onError: (error) => {
       pushToast({
         title: "Failed to restore revision",
-        body: error instanceof Error ? error.message : "Paperclip could not restore the revision.",
+        body: describeError(error, { action: "restore the revision" }).body,
         tone: "error",
       });
     },
@@ -182,9 +186,11 @@ export function RoutineHistoryTab({
     });
   };
 
-  if (revisionsQuery.isLoading) {
+  // A loaded revision list stays on screen through a failed refetch; an outage
+  // before the first load shows the skeleton, a real failure shows copy.
+  if (revisionsView.kind === "loading" || revisionsView.kind === "reconnecting") {
     return (
-      <div className="grid gap-5 md:grid-cols-[300px_minmax(0,1fr)]">
+      <div className="grid gap-5 md:grid-cols-(--gtc-9)">
         <div className="space-y-2">
           {Array.from({ length: 5 }).map((_, idx) => (
             <Skeleton key={idx} className="h-10 w-full" />
@@ -195,28 +201,21 @@ export function RoutineHistoryTab({
     );
   }
 
-  if (revisionsQuery.error) {
+  if (revisionsView.kind === "error") {
     return (
-      <div className="rounded-md border border-l-2 border-l-destructive border-border p-4 space-y-3">
-        <div>
-          <p className="text-sm font-medium">Could not load revisions</p>
-          <p className="text-xs text-muted-foreground">
-            {revisionsQuery.error instanceof Error
-              ? revisionsQuery.error.message
-              : "Unknown error loading revisions."}
-          </p>
-        </div>
-        <Button size="sm" variant="outline" onClick={() => revisionsQuery.refetch()}>
-          Retry
-        </Button>
-      </div>
+      <QueryErrorState
+        error={revisionsView.error}
+        action="load revisions"
+        onRetry={revisionsView.retry}
+        retrying={revisionsView.isFetching}
+      />
     );
   }
 
   const onlyBootstrapRevision = revisions.length <= 1;
 
   return (
-    <div className="grid gap-5 md:grid-cols-[300px_minmax(0,1fr)]">
+    <div className="grid gap-5 md:grid-cols-(--gtc-9)">
       <RevisionList
         revisions={visibleRevisions}
         latestRevisionId={routine.latestRevisionId}
@@ -335,7 +334,7 @@ function HistoricalPreviewBanner({
     <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-3">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="space-y-1">
-          <p className="text-sm font-medium text-amber-200">
+          <p className="text-sm font-medium text-amber-800 dark:text-amber-200">
             Viewing revision {revisionNumber} (read-only)
           </p>
           <p className="text-xs text-muted-foreground">
@@ -374,7 +373,7 @@ function ConflictBanner({
     <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-3">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="space-y-1">
-          <p className="text-sm font-medium text-amber-200">Unsaved routine edits</p>
+          <p className="text-sm font-medium text-amber-800 dark:text-amber-200">Unsaved routine edits</p>
           <p className="text-xs text-muted-foreground">
             You changed {fieldsText} but haven&apos;t saved yet. Save or discard before previewing or
             restoring an older revision.
@@ -427,10 +426,10 @@ function RevisionList({
   return (
     <aside className="space-y-1">
       <header className="flex items-center justify-between pb-2">
-        <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+        <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">
           Revisions
         </p>
-        <span className="text-[11px] text-muted-foreground">{totalRevisions} total</span>
+        <span className="text-(length:--text-micro) text-muted-foreground">{totalRevisions} total</span>
       </header>
       {revisions.map((revision) => {
         const isSelected = revision.id === selectedRevisionId;
@@ -460,14 +459,14 @@ function RevisionList({
             <div className="flex items-center gap-2 text-sm font-medium">
               <span>rev {revision.revisionNumber}</span>
               {isCurrent && (
-                <span className="rounded-full border border-border px-1.5 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
+                <Badge variant="outline" className="border-border px-1.5 text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
                   Current
-                </span>
+                </Badge>
               )}
               {revision.restoredFromRevisionId && (
-                <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 text-[10px] uppercase tracking-[0.12em] text-amber-200">
+                <Badge variant="outline" className="border-amber-500/40 bg-amber-500/10 px-1.5 text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow) text-amber-800 dark:text-amber-200">
                   Restored
-                </span>
+                </Badge>
               )}
             </div>
             <div className="text-xs text-muted-foreground truncate">
@@ -601,19 +600,19 @@ function RevisionPreview({
       </header>
 
       <div className={`${cardWrapper} p-3`}>
-        <p className="pb-2 text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+        <p className="pb-2 text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">
           Structured fields
         </p>
         <div className="grid gap-3 md:grid-cols-2 divide-y md:divide-y-0 divide-border">
           {fieldRows.map((row) => (
             <div key={row.key} className="space-y-1 p-2">
-              <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{row.label}</p>
+              <p className="text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">{row.label}</p>
               <p className="text-sm">
                 {row.value || <span className="text-muted-foreground">—</span>}
                 {row.differs && (
-                  <span className="ml-2 rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 text-[10px] uppercase tracking-[0.12em] text-amber-200">
+                  <Badge variant="outline" className="ml-2 border-amber-500/40 bg-amber-500/10 px-1.5 text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow) text-amber-800 dark:text-amber-200">
                     differs from current
-                  </span>
+                  </Badge>
                 )}
               </p>
             </div>
@@ -622,7 +621,7 @@ function RevisionPreview({
       </div>
 
       <div className={`${cardWrapper} p-3 space-y-2`}>
-        <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+        <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">
           Description
         </p>
         <div className="rounded-md bg-background/40 p-3 text-sm leading-7">
@@ -635,7 +634,7 @@ function RevisionPreview({
       </div>
 
       <div className={`${cardWrapper} p-3 space-y-2`}>
-        <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+        <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">
           Triggers ({triggers.length})
         </p>
         {triggers.length === 0 ? (
@@ -644,9 +643,9 @@ function RevisionPreview({
           <ul className="divide-y divide-border">
             {triggers.map((trigger) => (
               <li key={trigger.id} className="py-2 flex flex-wrap items-center gap-2 text-sm">
-                <span className="rounded-full border border-border px-2 py-0.5 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
+                <Badge variant="outline" className="border-border text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
                   {trigger.kind}
-                </span>
+                </Badge>
                 <span className="font-medium">{trigger.label ?? trigger.kind}</span>
                 <span className="text-xs text-muted-foreground">
                   {summarizeTriggerSnapshot(trigger)}
@@ -668,7 +667,7 @@ function RevisionPreview({
 
       {snapshot.variables.length > 0 && (
         <div className={`${cardWrapper} p-3 space-y-2`}>
-          <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+          <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">
             Variables ({snapshot.variables.length})
           </p>
           <ul className="divide-y divide-border">
@@ -738,7 +737,7 @@ function RestoreConfirmDialog({
             Previous run history is preserved.
           </li>
           {recreatedWebhookLabels.map((label) => (
-            <li key={label} className="flex items-start gap-2 text-amber-200">
+            <li key={label} className="flex items-start gap-2 text-amber-800 dark:text-amber-200">
               <span className="mt-1 inline-block h-1.5 w-1.5 rounded-full bg-amber-400" />
               The webhook trigger {label} will be recreated with a new URL and secret. Paperclip will
               show the secret once after restore — copy it before closing.
@@ -818,7 +817,7 @@ function RoutineRevisionDiffModal({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="!max-w-[90%] w-full max-h-[85vh] overflow-hidden flex flex-col">
+      <DialogContent className="!max-w-(--pct-90) w-full max-h-(--sz-85vh) overflow-hidden flex flex-col">
         <DialogHeader>
           <DialogTitle>Compare routine revisions</DialogTitle>
         </DialogHeader>
@@ -840,7 +839,7 @@ function RoutineRevisionDiffModal({
         </div>
         <div className="overflow-auto flex-1 space-y-4">
           <section className="space-y-2">
-            <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+            <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">
               Field changes
             </p>
             {fieldChanges.length === 0 ? (
@@ -858,10 +857,10 @@ function RoutineRevisionDiffModal({
                   {fieldChanges.map((change) => (
                     <tr key={change.field} className="border-t border-border/60">
                       <td className="px-3 py-2 align-top text-xs font-medium">{change.field}</td>
-                      <td className="px-3 py-2 align-top text-xs text-red-300">
+                      <td className="px-3 py-2 align-top text-xs text-red-700 dark:text-red-300">
                         {change.oldValue ?? "—"}
                       </td>
-                      <td className="px-3 py-2 align-top text-xs text-emerald-300">
+                      <td className="px-3 py-2 align-top text-xs text-emerald-700 dark:text-emerald-300">
                         {change.newValue ?? "—"}
                       </td>
                     </tr>
@@ -871,7 +870,7 @@ function RoutineRevisionDiffModal({
             )}
           </section>
           <section className="space-y-2">
-            <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+            <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">
               Description diff
             </p>
             <DiffTable rows={descriptionDiff} />
@@ -907,19 +906,19 @@ function RevisionPicker({
   tone: "red" | "green";
 }) {
   const toneClass = tone === "red"
-    ? "border-red-500/30 bg-red-500/10 text-red-300"
-    : "border-green-500/30 bg-green-500/10 text-green-300";
+    ? "border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-300"
+    : "border-green-500/30 bg-green-500/10 text-green-700 dark:text-green-300";
   return (
     <div className="flex items-center gap-2">
-      <span
-        className={`rounded-full border px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider ${toneClass}`}
+      <Badge variant="outline"
+        className={`text-(length:--text-nano) uppercase tracking-wider ${toneClass}`}
       >
         {label}
-      </span>
+      </Badge>
       <select
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        className="h-8 min-w-[12rem] rounded-md border border-border/60 bg-background px-2 text-xs"
+        className="h-8 min-w-(--sz-12rem) rounded-md border border-border/60 bg-background px-2 text-xs"
       >
         {revisions.map((revision) => (
           <option key={revision.id} value={revision.id}>
@@ -941,8 +940,8 @@ function DiffTable({ rows }: { rows: DiffRow[] }) {
   }
   const lineClassesByKind: Record<DiffRow["kind"], string> = {
     context: "bg-transparent",
-    removed: "bg-red-500/10 text-red-100",
-    added: "bg-green-500/10 text-green-100",
+    removed: "bg-red-500/10 text-red-900 dark:text-red-100",
+    added: "bg-green-500/10 text-green-900 dark:text-green-100",
   };
   const markerByKind: Record<DiffRow["kind"], string> = {
     context: " ",
@@ -951,7 +950,7 @@ function DiffTable({ rows }: { rows: DiffRow[] }) {
   };
   return (
     <div className="rounded-md border border-border text-xs font-mono leading-6 overflow-hidden">
-      <div className="grid grid-cols-[56px_56px_24px_minmax(0,1fr)] border-b border-border/60 bg-muted/30 px-3 py-2 text-[11px] uppercase tracking-wide text-muted-foreground">
+      <div className="grid grid-cols-(--gtc-1) border-b border-border/60 bg-muted/30 px-3 py-2 text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">
         <span>Old</span>
         <span>New</span>
         <span />
@@ -960,7 +959,7 @@ function DiffTable({ rows }: { rows: DiffRow[] }) {
       {rows.map((row, index) => (
         <div
           key={`${row.kind}-${index}-${row.oldLineNumber ?? "x"}-${row.newLineNumber ?? "x"}`}
-          className={`grid grid-cols-[56px_56px_24px_minmax(0,1fr)] gap-0 border-b border-border/30 px-3 ${lineClassesByKind[row.kind]}`}
+          className={`grid grid-cols-(--gtc-1) gap-0 border-b border-border/30 px-3 ${lineClassesByKind[row.kind]}`}
         >
           <span className="select-none border-r border-border/30 pr-3 text-right text-muted-foreground">
             {row.oldLineNumber ?? ""}

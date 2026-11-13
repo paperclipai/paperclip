@@ -1,0 +1,1418 @@
+{
+  "schema": "paperclip.opencode-skill-routing-link-comparison/v1",
+  "status": "complete",
+  "candidateSha": "fe9dc1e3c518825242ed889ab9c8352986f8c2ed",
+  "baselineSha": "0d7ecfa96d72fba79b7f0a25052b42c0686c0488",
+  "pairedSummary": {
+    "newFailures": 0,
+    "newPasses": 0,
+    "unchangedPasses": 2,
+    "unchangedFailures": 0,
+    "pendingPairs": 0,
+    "limitation": "Both original cases have deficient handoff links outside their machine oracle; candidate uses incorrect PAP prefix, baseline has bare unprefixed slug path."
+  },
+  "sourceProof": {
+    "identicalTrackedFiles": 8242,
+    "changedTrackedPaths": [
+      "skills/paperclip/SKILL.md",
+      "skills/paperclip/references/issue-documents.md",
+      "tests/runner-e2e/opencode-skill-routing-comparison.json"
+    ],
+    "onlyProductionDifferences": [
+      {
+        "path": "skills/paperclip/SKILL.md",
+        "candidateSha256": "6ca593effe18704f8014ac4e8155f7513c0701aa3c61d3cf0b96d3366c92f0e1",
+        "baselineSha256": "768522e081c1ec43dee4a5794539f7b597ee3708c634d05e388c874df283cc53"
+      },
+      {
+        "path": "skills/paperclip/references/issue-documents.md",
+        "candidateSha256": "a6141e8ba4510b683418197d58598d5a14db2641c49c869ae8aca4e2b05aca97",
+        "baselineSha256": "353845a406b1b4948487c348c86eb7b8c89a55ae67afe203100eee10aee46336"
+      }
+    ],
+    "baselineReceipt": {
+      "schema": "paperclip.opencode-skill-routing.baseline/v1",
+      "candidateSha": "fe9dc1e3c518825242ed889ab9c8352986f8c2ed",
+      "priorSkillSha": "b85668c4065d66e08026218a6bd48a3d22ddd4c9",
+      "expectedCellsPerVariant": 2,
+      "expectedProviderTurnsPerVariant": 2,
+      "heldConstant": [
+        "tiny manual/shared prompts",
+        "native Codex additive base fix",
+        "future explicit clickable UI-link fixture and calibrated grader",
+        "models/effort/auth/permissions/tools/budgets",
+        "all other tracked repository source bytes"
+      ],
+      "onlyChangedProductionSources": [
+        {
+          "path": "skills/paperclip/SKILL.md",
+          "candidateSha256": "6ca593effe18704f8014ac4e8155f7513c0701aa3c61d3cf0b96d3366c92f0e1",
+          "baselineSha256": "768522e081c1ec43dee4a5794539f7b597ee3708c634d05e388c874df283cc53"
+        },
+        {
+          "path": "skills/paperclip/references/issue-documents.md",
+          "candidateSha256": "a6141e8ba4510b683418197d58598d5a14db2641c49c869ae8aca4e2b05aca97",
+          "baselineSha256": "353845a406b1b4948487c348c86eb7b8c89a55ae67afe203100eee10aee46336"
+        }
+      ]
+    },
+    "fixtureConfigurations": {
+      "schema": "paperclip.opencode-skill-routing.fixture-match-proof/v1",
+      "cells": [
+        {
+          "executionId": "stock-harness.legacy-opencode.local.assigned-skill-explicit-invocation",
+          "fixtureConfigSha256": "dd673f469cab583d26bc2e4b484f18b27884ec14a59542177026389181e2da2c",
+          "model": "openrouter/deepseek/deepseek-v4-flash-0731"
+        },
+        {
+          "executionId": "stock-harness.legacy-opencode.local.assigned-skill-paperclip-document",
+          "fixtureConfigSha256": "4924cbbcb8768fdbff70d9f53c20835dba28626278da77fb5edcc09c1700fd5f",
+          "model": "openrouter/deepseek/deepseek-v4-flash-0731"
+        }
+      ]
+    }
+  },
+  "cells": [
+    {
+      "variant": "baseline",
+      "caseId": "assigned-skill-explicit-invocation",
+      "source": {
+        "sha": "0d7ecfa96d72fba79b7f0a25052b42c0686c0488",
+        "ref": "refs/heads/codex/opencode-pre-routing-skill",
+        "workflowRunUrl": "https://github.com/paperclipai/paperclip/actions/runs/37069552374"
+      },
+      "status": "passed",
+      "attempt": 1,
+      "suiteDefinitionHash": "18a8eb87f11ebaa4d5be89f878de669bc32eee6f58a47c3f19d15bb879519dd8",
+      "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+      "runtimeMode": "legacy",
+      "durationMs": 46285,
+      "providerDurationMs": 25870,
+      "runCount": 1,
+      "recoveryRuns": 0,
+      "cleanup": "passed",
+      "matcherResults": [
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "contextIntegrity.assigned-skill-present",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "The task run must receive one pinned skill version through the public assignment state."
+        },
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "contextIntegrity.skill-request-explicit",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "The task request must explicitly name the assigned skill with a supported slash or dollar reference."
+        },
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "contextIntegrity.skill-source-marker",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "The assigned pinned skill source must contain the output marker."
+        },
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "contextIntegrity.marker-not-in-request",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "The output marker must originate from the assigned skill, not the task request or comments."
+        },
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "contextIntegrity.single-durable-output",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "Exactly one durable task document must contain the skill's marker."
+        },
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "contextIntegrity.completed-task",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "Final task status: done."
+        },
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "contextIntegrity.successful-runs",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "All recorded context-integrity runs must succeed."
+        },
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "stockHarness.budget-hard-stops",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "Public company and agent records must both retain the 1,000-cent monthly hard stops."
+        },
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "stockHarness.default-hire-bundle",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "The public managed bundle must contain only the eight-word shipped identity, without an injected QA manual."
+        },
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "stockHarness.provider-runs-present",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "The lifecycle oracle must reach actual provider runs; missing runs cannot pass instruction delivery."
+        },
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "stockHarness.invocation-evidence-complete",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "Every legacy run must have a public adapter.invoke event with its actual nonempty prompt."
+        },
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "stockHarness.generic-procedures-absent",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "Neither startup nor continuation may reintroduce the removed generic manual."
+        },
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "stockHarness.fresh-default-delivered",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "At least one fresh invocation must carry default identity and connection guidance."
+        }
+      ],
+      "billing": {
+        "llm": {
+          "runCount": 1,
+          "runsWithTokenUsage": 1,
+          "runsWithReportedCost": 1,
+          "inputTokens": 34011,
+          "outputTokens": 2533,
+          "cachedInputTokens": 192512,
+          "totalTokens": 229056,
+          "reportedCostUsd": 0.0058472545,
+          "costStatus": "reported"
+        },
+        "runtime": {
+          "provider": "local",
+          "agentRunDurationMs": 25870,
+          "leaseDurationMs": null,
+          "leaseCount": 0,
+          "costStatus": "not_metered",
+          "costSource": "local_not_metered"
+        },
+        "reportedCostUsd": 0.0058472545,
+        "estimatedRuntimeCostUsd": 0,
+        "observedAndEstimatedCostUsd": 0.0058472545,
+        "complete": true
+      },
+      "preflight": {
+        "sourceSha": "0d7ecfa96d72fba79b7f0a25052b42c0686c0488",
+        "sourceFingerprint": "0315602ac6788cf0d65561a73cc85d790768ef90c6815257077a2381f961b96e",
+        "passed": true,
+        "providerCalls": 0,
+        "assertions": 587
+      },
+      "delivery": {
+        "documentCount": 1,
+        "documentKey": "task-document",
+        "savedRevisionNumber": 1,
+        "savedRevisionPresent": true,
+        "markerPresent": true,
+        "markdownLinkTargets": [],
+        "expectedDocumentUiTarget": "/RUN/issues/RUN-1#document-task-document",
+        "hasExactDocumentUiLink": false,
+        "originalCaseRequiresLink": false,
+        "originalBaselineBarePath": true,
+        "originalCandidateWrongPrefix": false
+      },
+      "operationalSkillReadOrder": [
+        {
+          "tool": "skill",
+          "operationalSkillLoad": false,
+          "earlyRecipeVisible": false,
+          "newReferencePointerVisible": false,
+          "newReferenceRead": false,
+          "outputTruncated": false,
+          "localDocumentWrite": false,
+          "documentApiCall": false,
+          "statusApiCall": false,
+          "ordinal": 1,
+          "skill": "assigned-output"
+        },
+        {
+          "tool": "bash",
+          "operationalSkillLoad": false,
+          "earlyRecipeVisible": false,
+          "newReferencePointerVisible": false,
+          "newReferenceRead": false,
+          "outputTruncated": false,
+          "localDocumentWrite": false,
+          "documentApiCall": false,
+          "statusApiCall": false,
+          "ordinal": 2,
+          "skill": null
+        },
+        {
+          "tool": "write",
+          "operationalSkillLoad": false,
+          "earlyRecipeVisible": false,
+          "newReferencePointerVisible": false,
+          "newReferenceRead": false,
+          "outputTruncated": false,
+          "localDocumentWrite": true,
+          "documentApiCall": false,
+          "statusApiCall": false,
+          "ordinal": 3,
+          "skill": null
+        },
+        {
+          "tool": "bash",
+          "operationalSkillLoad": false,
+          "earlyRecipeVisible": false,
+          "newReferencePointerVisible": false,
+          "newReferenceRead": false,
+          "outputTruncated": false,
+          "localDocumentWrite": false,
+          "documentApiCall": false,
+          "statusApiCall": false,
+          "ordinal": 4,
+          "skill": null
+        },
+        {
+          "tool": "skill",
+          "operationalSkillLoad": true,
+          "earlyRecipeVisible": true,
+          "newReferencePointerVisible": true,
+          "newReferenceRead": false,
+          "outputTruncated": true,
+          "localDocumentWrite": false,
+          "documentApiCall": false,
+          "statusApiCall": false,
+          "ordinal": 5,
+          "skill": "paperclip"
+        },
+        {
+          "tool": "bash",
+          "operationalSkillLoad": false,
+          "earlyRecipeVisible": false,
+          "newReferencePointerVisible": false,
+          "newReferenceRead": false,
+          "outputTruncated": false,
+          "localDocumentWrite": false,
+          "documentApiCall": false,
+          "statusApiCall": false,
+          "ordinal": 6,
+          "skill": null
+        },
+        {
+          "tool": "read",
+          "operationalSkillLoad": false,
+          "earlyRecipeVisible": false,
+          "newReferencePointerVisible": false,
+          "newReferenceRead": true,
+          "outputTruncated": false,
+          "localDocumentWrite": false,
+          "documentApiCall": false,
+          "statusApiCall": false,
+          "ordinal": 7,
+          "skill": null
+        },
+        {
+          "tool": "bash",
+          "operationalSkillLoad": false,
+          "earlyRecipeVisible": false,
+          "newReferencePointerVisible": false,
+          "newReferenceRead": false,
+          "outputTruncated": false,
+          "localDocumentWrite": false,
+          "documentApiCall": true,
+          "statusApiCall": false,
+          "ordinal": 8,
+          "skill": null
+        },
+        {
+          "tool": "read",
+          "operationalSkillLoad": false,
+          "earlyRecipeVisible": false,
+          "newReferencePointerVisible": false,
+          "newReferenceRead": false,
+          "outputTruncated": false,
+          "localDocumentWrite": false,
+          "documentApiCall": false,
+          "statusApiCall": false,
+          "ordinal": 9,
+          "skill": null
+        },
+        {
+          "tool": "bash",
+          "operationalSkillLoad": false,
+          "earlyRecipeVisible": false,
+          "newReferencePointerVisible": false,
+          "newReferenceRead": false,
+          "outputTruncated": false,
+          "localDocumentWrite": false,
+          "documentApiCall": false,
+          "statusApiCall": false,
+          "ordinal": 10,
+          "skill": null
+        },
+        {
+          "tool": "bash",
+          "operationalSkillLoad": false,
+          "earlyRecipeVisible": false,
+          "newReferencePointerVisible": false,
+          "newReferenceRead": false,
+          "outputTruncated": false,
+          "localDocumentWrite": false,
+          "documentApiCall": false,
+          "statusApiCall": true,
+          "ordinal": 11,
+          "skill": null
+        },
+        {
+          "tool": "bash",
+          "operationalSkillLoad": false,
+          "earlyRecipeVisible": false,
+          "newReferencePointerVisible": false,
+          "newReferenceRead": false,
+          "outputTruncated": false,
+          "localDocumentWrite": false,
+          "documentApiCall": false,
+          "statusApiCall": false,
+          "ordinal": 12,
+          "skill": null
+        }
+      ],
+      "evidenceHashes": {
+        "result": "a4953654cba1d6bd3911ad3cfb000d8bfb21041ef3e3ee409e2c19d14af30f1e",
+        "context": "c3fb84a16e6fe1dead74ffece90035bc99aa247ffa65b4665d5288acbe8a5515",
+        "preflight": "a0756b19a5c20c1bf600a9abeb1b62307c99f37ffc2ff02063709a870bbe2986",
+        "finalStateScreenshot": "49068a59e35b2fb0207bd81ca36d4db639d17c8639c0ce885ac5869fc83320e9"
+      },
+      "screenshotInspected": true
+    },
+    {
+      "variant": "baseline",
+      "caseId": "assigned-skill-paperclip-document",
+      "source": {
+        "sha": "0d7ecfa96d72fba79b7f0a25052b42c0686c0488",
+        "ref": "refs/heads/codex/opencode-pre-routing-skill",
+        "workflowRunUrl": "https://github.com/paperclipai/paperclip/actions/runs/37069552374"
+      },
+      "status": "passed",
+      "attempt": 1,
+      "suiteDefinitionHash": "18a8eb87f11ebaa4d5be89f878de669bc32eee6f58a47c3f19d15bb879519dd8",
+      "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+      "runtimeMode": "legacy",
+      "durationMs": 94804,
+      "providerDurationMs": 73984,
+      "runCount": 1,
+      "recoveryRuns": 0,
+      "cleanup": "passed",
+      "matcherResults": [
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "contextIntegrity.assigned-skill-present",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "The task run must receive one pinned skill version through the public assignment state."
+        },
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "contextIntegrity.skill-request-explicit",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "The task request must explicitly name the assigned skill with a supported slash or dollar reference."
+        },
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "contextIntegrity.skill-source-marker",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "The assigned pinned skill source must contain the output marker."
+        },
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "contextIntegrity.marker-not-in-request",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "The output marker must originate from the assigned skill, not the task request or comments."
+        },
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "contextIntegrity.single-durable-output",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "Exactly one durable task document must contain the skill's marker."
+        },
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "contextIntegrity.saved-document-revision",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "The public saved document must have a persisted revision and the requested content."
+        },
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "contextIntegrity.saved-document-link",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "An agent completion comment must link the exact saved document on this task; a local path or claimed URL does not suffice."
+        },
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "contextIntegrity.completed-task",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "Final task status: done."
+        },
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "contextIntegrity.successful-runs",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "All recorded context-integrity runs must succeed."
+        },
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "stockHarness.budget-hard-stops",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "Public company and agent records must both retain the 1,000-cent monthly hard stops."
+        },
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "stockHarness.default-hire-bundle",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "The public managed bundle must contain only the eight-word shipped identity, without an injected QA manual."
+        },
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "stockHarness.provider-runs-present",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "The lifecycle oracle must reach actual provider runs; missing runs cannot pass instruction delivery."
+        },
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "stockHarness.invocation-evidence-complete",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "Every legacy run must have a public adapter.invoke event with its actual nonempty prompt."
+        },
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "stockHarness.generic-procedures-absent",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "Neither startup nor continuation may reintroduce the removed generic manual."
+        },
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "stockHarness.fresh-default-delivered",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "At least one fresh invocation must carry default identity and connection guidance."
+        }
+      ],
+      "billing": {
+        "llm": {
+          "runCount": 1,
+          "runsWithTokenUsage": 1,
+          "runsWithReportedCost": 1,
+          "inputTokens": 62834,
+          "outputTokens": 2127,
+          "cachedInputTokens": 130304,
+          "totalTokens": 195265,
+          "reportedCostUsd": 0.004943647,
+          "costStatus": "reported"
+        },
+        "runtime": {
+          "provider": "local",
+          "agentRunDurationMs": 73984,
+          "leaseDurationMs": null,
+          "leaseCount": 0,
+          "costStatus": "not_metered",
+          "costSource": "local_not_metered"
+        },
+        "reportedCostUsd": 0.004943647,
+        "estimatedRuntimeCostUsd": 0,
+        "observedAndEstimatedCostUsd": 0.004943647,
+        "complete": true
+      },
+      "preflight": {
+        "sourceSha": "0d7ecfa96d72fba79b7f0a25052b42c0686c0488",
+        "sourceFingerprint": "0315602ac6788cf0d65561a73cc85d790768ef90c6815257077a2381f961b96e",
+        "passed": true,
+        "providerCalls": 0,
+        "assertions": 587
+      },
+      "delivery": {
+        "documentCount": 1,
+        "documentKey": "context-integrity-output",
+        "savedRevisionNumber": 1,
+        "savedRevisionPresent": true,
+        "markerPresent": true,
+        "markdownLinkTargets": [
+          "/RUN/issues/RUN-1#document-context-integrity-output"
+        ],
+        "expectedDocumentUiTarget": "/RUN/issues/RUN-1#document-context-integrity-output",
+        "hasExactDocumentUiLink": true,
+        "originalCaseRequiresLink": true,
+        "originalBaselineBarePath": false,
+        "originalCandidateWrongPrefix": false
+      },
+      "operationalSkillReadOrder": [
+        {
+          "tool": "skill",
+          "operationalSkillLoad": false,
+          "earlyRecipeVisible": false,
+          "newReferencePointerVisible": false,
+          "newReferenceRead": false,
+          "outputTruncated": false,
+          "localDocumentWrite": false,
+          "documentApiCall": false,
+          "statusApiCall": false,
+          "ordinal": 1,
+          "skill": "assigned-output"
+        },
+        {
+          "tool": "skill",
+          "operationalSkillLoad": true,
+          "earlyRecipeVisible": true,
+          "newReferencePointerVisible": true,
+          "newReferenceRead": false,
+          "outputTruncated": true,
+          "localDocumentWrite": false,
+          "documentApiCall": false,
+          "statusApiCall": false,
+          "ordinal": 2,
+          "skill": "paperclip"
+        },
+        {
+          "tool": "bash",
+          "operationalSkillLoad": false,
+          "earlyRecipeVisible": false,
+          "newReferencePointerVisible": false,
+          "newReferenceRead": false,
+          "outputTruncated": false,
+          "localDocumentWrite": false,
+          "documentApiCall": false,
+          "statusApiCall": false,
+          "ordinal": 3,
+          "skill": null
+        },
+        {
+          "tool": "read",
+          "operationalSkillLoad": false,
+          "earlyRecipeVisible": false,
+          "newReferencePointerVisible": false,
+          "newReferenceRead": true,
+          "outputTruncated": false,
+          "localDocumentWrite": false,
+          "documentApiCall": false,
+          "statusApiCall": false,
+          "ordinal": 4,
+          "skill": null
+        },
+        {
+          "tool": "bash",
+          "operationalSkillLoad": false,
+          "earlyRecipeVisible": false,
+          "newReferencePointerVisible": false,
+          "newReferenceRead": false,
+          "outputTruncated": false,
+          "localDocumentWrite": false,
+          "documentApiCall": false,
+          "statusApiCall": false,
+          "ordinal": 5,
+          "skill": null
+        },
+        {
+          "tool": "bash",
+          "operationalSkillLoad": false,
+          "earlyRecipeVisible": false,
+          "newReferencePointerVisible": false,
+          "newReferenceRead": false,
+          "outputTruncated": false,
+          "localDocumentWrite": false,
+          "documentApiCall": false,
+          "statusApiCall": false,
+          "ordinal": 6,
+          "skill": null
+        },
+        {
+          "tool": "bash",
+          "operationalSkillLoad": false,
+          "earlyRecipeVisible": false,
+          "newReferencePointerVisible": false,
+          "newReferenceRead": false,
+          "outputTruncated": false,
+          "localDocumentWrite": false,
+          "documentApiCall": true,
+          "statusApiCall": false,
+          "ordinal": 7,
+          "skill": null
+        },
+        {
+          "tool": "bash",
+          "operationalSkillLoad": false,
+          "earlyRecipeVisible": false,
+          "newReferencePointerVisible": false,
+          "newReferenceRead": false,
+          "outputTruncated": false,
+          "localDocumentWrite": false,
+          "documentApiCall": false,
+          "statusApiCall": true,
+          "ordinal": 8,
+          "skill": null
+        },
+        {
+          "tool": "bash",
+          "operationalSkillLoad": false,
+          "earlyRecipeVisible": false,
+          "newReferencePointerVisible": false,
+          "newReferenceRead": false,
+          "outputTruncated": false,
+          "localDocumentWrite": false,
+          "documentApiCall": false,
+          "statusApiCall": false,
+          "ordinal": 9,
+          "skill": null
+        }
+      ],
+      "evidenceHashes": {
+        "result": "b09f82a96976fdcd5ddfb1655d783db5076a19fde0a5d751ff3df995cd5fac59",
+        "context": "2c630300b0f5737c74a9921d25ed67d2ab2612957f843d9709ebfd57fb84306f",
+        "preflight": "9e6e55c1ca71312f7bb53708bd2f9727e5395c9da8586b285d29e1fee4fe50fe",
+        "finalStateScreenshot": "128e6e0c7be8b8ca0e3e90601bce8c3d33df8c503636d09ffe514df03881173b"
+      },
+      "screenshotInspected": true
+    },
+    {
+      "variant": "candidate",
+      "caseId": "assigned-skill-explicit-invocation",
+      "source": {
+        "sha": "fe9dc1e3c518825242ed889ab9c8352986f8c2ed",
+        "ref": "refs/heads/codex/opencode-stock-routing-qualified",
+        "workflowRunUrl": "https://github.com/paperclipai/paperclip/actions/runs/37069547401"
+      },
+      "status": "passed",
+      "attempt": 1,
+      "suiteDefinitionHash": "62cfca8303c66bf5e29b0665c72b7bb717acf9f96d7a3ef768407afa5bc9870f",
+      "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+      "runtimeMode": "legacy",
+      "durationMs": 89455,
+      "providerDurationMs": 67897,
+      "runCount": 1,
+      "recoveryRuns": 0,
+      "cleanup": "passed",
+      "matcherResults": [
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "contextIntegrity.assigned-skill-present",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "The task run must receive one pinned skill version through the public assignment state."
+        },
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "contextIntegrity.skill-request-explicit",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "The task request must explicitly name the assigned skill with a supported slash or dollar reference."
+        },
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "contextIntegrity.skill-source-marker",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "The assigned pinned skill source must contain the output marker."
+        },
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "contextIntegrity.marker-not-in-request",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "The output marker must originate from the assigned skill, not the task request or comments."
+        },
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "contextIntegrity.single-durable-output",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "Exactly one durable task document must contain the skill's marker."
+        },
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "contextIntegrity.completed-task",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "Final task status: done."
+        },
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "contextIntegrity.successful-runs",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "All recorded context-integrity runs must succeed."
+        },
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "stockHarness.budget-hard-stops",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "Public company and agent records must both retain the 1,000-cent monthly hard stops."
+        },
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "stockHarness.default-hire-bundle",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "The public managed bundle must contain only the eight-word shipped identity, without an injected QA manual."
+        },
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "stockHarness.provider-runs-present",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "The lifecycle oracle must reach actual provider runs; missing runs cannot pass instruction delivery."
+        },
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "stockHarness.invocation-evidence-complete",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "Every legacy run must have a public adapter.invoke event with its actual nonempty prompt."
+        },
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "stockHarness.generic-procedures-absent",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "Neither startup nor continuation may reintroduce the removed generic manual."
+        },
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "stockHarness.fresh-default-delivered",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "At least one fresh invocation must carry default identity and connection guidance."
+        }
+      ],
+      "billing": {
+        "llm": {
+          "runCount": 1,
+          "runsWithTokenUsage": 1,
+          "runsWithReportedCost": 1,
+          "inputTokens": 71068,
+          "outputTokens": 1716,
+          "cachedInputTokens": 97792,
+          "totalTokens": 170576,
+          "reportedCostUsd": 0.00413837,
+          "costStatus": "reported"
+        },
+        "runtime": {
+          "provider": "local",
+          "agentRunDurationMs": 67897,
+          "leaseDurationMs": null,
+          "leaseCount": 0,
+          "costStatus": "not_metered",
+          "costSource": "local_not_metered"
+        },
+        "reportedCostUsd": 0.00413837,
+        "estimatedRuntimeCostUsd": 0,
+        "observedAndEstimatedCostUsd": 0.00413837,
+        "complete": true
+      },
+      "preflight": {
+        "sourceSha": "fe9dc1e3c518825242ed889ab9c8352986f8c2ed",
+        "sourceFingerprint": "aeb792549146cc29eda779e83ae22d336276e31162f738a1dde85a82e7833902",
+        "passed": true,
+        "providerCalls": 0,
+        "assertions": 587
+      },
+      "delivery": {
+        "documentCount": 1,
+        "documentKey": "context-integrity-output",
+        "savedRevisionNumber": 1,
+        "savedRevisionPresent": true,
+        "markerPresent": true,
+        "markdownLinkTargets": [
+          "/PAP/issues/RUN-1#document-context-integrity-output"
+        ],
+        "expectedDocumentUiTarget": "/RUN/issues/RUN-1#document-context-integrity-output",
+        "hasExactDocumentUiLink": false,
+        "originalCaseRequiresLink": false,
+        "originalBaselineBarePath": false,
+        "originalCandidateWrongPrefix": true
+      },
+      "operationalSkillReadOrder": [
+        {
+          "tool": "skill",
+          "operationalSkillLoad": false,
+          "earlyRecipeVisible": false,
+          "newReferencePointerVisible": false,
+          "newReferenceRead": false,
+          "outputTruncated": false,
+          "localDocumentWrite": false,
+          "documentApiCall": false,
+          "statusApiCall": false,
+          "ordinal": 1,
+          "skill": "assigned-output"
+        },
+        {
+          "tool": "skill",
+          "operationalSkillLoad": true,
+          "earlyRecipeVisible": true,
+          "newReferencePointerVisible": true,
+          "newReferenceRead": false,
+          "outputTruncated": true,
+          "localDocumentWrite": false,
+          "documentApiCall": false,
+          "statusApiCall": false,
+          "ordinal": 2,
+          "skill": "paperclip"
+        },
+        {
+          "tool": "bash",
+          "operationalSkillLoad": false,
+          "earlyRecipeVisible": false,
+          "newReferencePointerVisible": false,
+          "newReferenceRead": false,
+          "outputTruncated": false,
+          "localDocumentWrite": false,
+          "documentApiCall": false,
+          "statusApiCall": false,
+          "ordinal": 3,
+          "skill": null
+        },
+        {
+          "tool": "read",
+          "operationalSkillLoad": false,
+          "earlyRecipeVisible": false,
+          "newReferencePointerVisible": false,
+          "newReferenceRead": true,
+          "outputTruncated": false,
+          "localDocumentWrite": false,
+          "documentApiCall": false,
+          "statusApiCall": false,
+          "ordinal": 4,
+          "skill": null
+        },
+        {
+          "tool": "bash",
+          "operationalSkillLoad": false,
+          "earlyRecipeVisible": false,
+          "newReferencePointerVisible": false,
+          "newReferenceRead": false,
+          "outputTruncated": false,
+          "localDocumentWrite": false,
+          "documentApiCall": true,
+          "statusApiCall": false,
+          "ordinal": 5,
+          "skill": null
+        },
+        {
+          "tool": "bash",
+          "operationalSkillLoad": false,
+          "earlyRecipeVisible": false,
+          "newReferencePointerVisible": false,
+          "newReferenceRead": false,
+          "outputTruncated": false,
+          "localDocumentWrite": false,
+          "documentApiCall": false,
+          "statusApiCall": false,
+          "ordinal": 6,
+          "skill": null
+        },
+        {
+          "tool": "bash",
+          "operationalSkillLoad": false,
+          "earlyRecipeVisible": false,
+          "newReferencePointerVisible": false,
+          "newReferenceRead": false,
+          "outputTruncated": false,
+          "localDocumentWrite": false,
+          "documentApiCall": false,
+          "statusApiCall": false,
+          "ordinal": 7,
+          "skill": null
+        },
+        {
+          "tool": "bash",
+          "operationalSkillLoad": false,
+          "earlyRecipeVisible": false,
+          "newReferencePointerVisible": false,
+          "newReferenceRead": false,
+          "outputTruncated": false,
+          "localDocumentWrite": false,
+          "documentApiCall": false,
+          "statusApiCall": true,
+          "ordinal": 8,
+          "skill": null
+        }
+      ],
+      "evidenceHashes": {
+        "result": "7f13c7f84dbbd662d5689b82ef02d5e9806dc43237604599c183ba807097f403",
+        "context": "16aa44354be2763149fe4c98d5907230025f909ec2d7eafa93767959c183f6a1",
+        "preflight": "cd5c451ec7c01ac145b8f20a11facfe4410b6c6ea621358b0d5bfcaa339260cf",
+        "finalStateScreenshot": "123a366f1d9372bf5249e9a46d16dc322538f7a0c2669504f02a29d97b77cf16"
+      },
+      "screenshotInspected": true
+    },
+    {
+      "variant": "candidate",
+      "caseId": "assigned-skill-paperclip-document",
+      "source": {
+        "sha": "fe9dc1e3c518825242ed889ab9c8352986f8c2ed",
+        "ref": "refs/heads/codex/opencode-stock-routing-qualified",
+        "workflowRunUrl": "https://github.com/paperclipai/paperclip/actions/runs/37069547401"
+      },
+      "status": "passed",
+      "attempt": 1,
+      "suiteDefinitionHash": "62cfca8303c66bf5e29b0665c72b7bb717acf9f96d7a3ef768407afa5bc9870f",
+      "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+      "runtimeMode": "legacy",
+      "durationMs": 102901,
+      "providerDurationMs": 82751,
+      "runCount": 1,
+      "recoveryRuns": 0,
+      "cleanup": "passed",
+      "matcherResults": [
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "contextIntegrity.assigned-skill-present",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "The task run must receive one pinned skill version through the public assignment state."
+        },
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "contextIntegrity.skill-request-explicit",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "The task request must explicitly name the assigned skill with a supported slash or dollar reference."
+        },
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "contextIntegrity.skill-source-marker",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "The assigned pinned skill source must contain the output marker."
+        },
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "contextIntegrity.marker-not-in-request",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "The output marker must originate from the assigned skill, not the task request or comments."
+        },
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "contextIntegrity.single-durable-output",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "Exactly one durable task document must contain the skill's marker."
+        },
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "contextIntegrity.saved-document-revision",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "The public saved document must have a persisted revision and the requested content."
+        },
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "contextIntegrity.saved-document-link",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "An agent completion comment must link the exact saved document on this task; a local path or claimed URL does not suffice."
+        },
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "contextIntegrity.completed-task",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "Final task status: done."
+        },
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "contextIntegrity.successful-runs",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "All recorded context-integrity runs must succeed."
+        },
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "stockHarness.budget-hard-stops",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "Public company and agent records must both retain the 1,000-cent monthly hard stops."
+        },
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "stockHarness.default-hire-bundle",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "The public managed bundle must contain only the eight-word shipped identity, without an injected QA manual."
+        },
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "stockHarness.provider-runs-present",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "The lifecycle oracle must reach actual provider runs; missing runs cannot pass instruction delivery."
+        },
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "stockHarness.invocation-evidence-complete",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "Every legacy run must have a public adapter.invoke event with its actual nonempty prompt."
+        },
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "stockHarness.generic-procedures-absent",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "Neither startup nor continuation may reintroduce the removed generic manual."
+        },
+        {
+          "matcher": {
+            "kind": "json_path",
+            "path": "stockHarness.fresh-default-delivered",
+            "expected": true
+          },
+          "passed": true,
+          "detail": "At least one fresh invocation must carry default identity and connection guidance."
+        }
+      ],
+      "billing": {
+        "llm": {
+          "runCount": 1,
+          "runsWithTokenUsage": 1,
+          "runsWithReportedCost": 1,
+          "inputTokens": 92370,
+          "outputTokens": 2691,
+          "cachedInputTokens": 185856,
+          "totalTokens": 280917,
+          "reportedCostUsd": 0.006644079,
+          "costStatus": "reported"
+        },
+        "runtime": {
+          "provider": "local",
+          "agentRunDurationMs": 82751,
+          "leaseDurationMs": null,
+          "leaseCount": 0,
+          "costStatus": "not_metered",
+          "costSource": "local_not_metered"
+        },
+        "reportedCostUsd": 0.006644079,
+        "estimatedRuntimeCostUsd": 0,
+        "observedAndEstimatedCostUsd": 0.006644079,
+        "complete": true
+      },
+      "preflight": {
+        "sourceSha": "fe9dc1e3c518825242ed889ab9c8352986f8c2ed",
+        "sourceFingerprint": "aeb792549146cc29eda779e83ae22d336276e31162f738a1dde85a82e7833902",
+        "passed": true,
+        "providerCalls": 0,
+        "assertions": 587
+      },
+      "delivery": {
+        "documentCount": 1,
+        "documentKey": "context-integrity-output",
+        "savedRevisionNumber": 1,
+        "savedRevisionPresent": true,
+        "markerPresent": true,
+        "markdownLinkTargets": [
+          "/RUN/issues/RUN-1#document-context-integrity-output"
+        ],
+        "expectedDocumentUiTarget": "/RUN/issues/RUN-1#document-context-integrity-output",
+        "hasExactDocumentUiLink": true,
+        "originalCaseRequiresLink": true,
+        "originalBaselineBarePath": false,
+        "originalCandidateWrongPrefix": false
+      },
+      "operationalSkillReadOrder": [
+        {
+          "tool": "skill",
+          "operationalSkillLoad": false,
+          "earlyRecipeVisible": false,
+          "newReferencePointerVisible": false,
+          "newReferenceRead": false,
+          "outputTruncated": false,
+          "localDocumentWrite": false,
+          "documentApiCall": false,
+          "statusApiCall": false,
+          "ordinal": 1,
+          "skill": "assigned-output"
+        },
+        {
+          "tool": "skill",
+          "operationalSkillLoad": true,
+          "earlyRecipeVisible": true,
+          "newReferencePointerVisible": true,
+          "newReferenceRead": false,
+          "outputTruncated": true,
+          "localDocumentWrite": false,
+          "documentApiCall": false,
+          "statusApiCall": false,
+          "ordinal": 2,
+          "skill": "paperclip"
+        },
+        {
+          "tool": "read",
+          "operationalSkillLoad": true,
+          "earlyRecipeVisible": true,
+          "newReferencePointerVisible": true,
+          "newReferenceRead": false,
+          "outputTruncated": true,
+          "localDocumentWrite": false,
+          "documentApiCall": false,
+          "statusApiCall": false,
+          "ordinal": 3,
+          "skill": null
+        },
+        {
+          "tool": "read",
+          "operationalSkillLoad": false,
+          "earlyRecipeVisible": false,
+          "newReferencePointerVisible": false,
+          "newReferenceRead": true,
+          "outputTruncated": false,
+          "localDocumentWrite": false,
+          "documentApiCall": false,
+          "statusApiCall": false,
+          "ordinal": 4,
+          "skill": null
+        },
+        {
+          "tool": "bash",
+          "operationalSkillLoad": false,
+          "earlyRecipeVisible": false,
+          "newReferencePointerVisible": false,
+          "newReferenceRead": false,
+          "outputTruncated": false,
+          "localDocumentWrite": false,
+          "documentApiCall": false,
+          "statusApiCall": false,
+          "ordinal": 5,
+          "skill": null
+        },
+        {
+          "tool": "bash",
+          "operationalSkillLoad": false,
+          "earlyRecipeVisible": false,
+          "newReferencePointerVisible": false,
+          "newReferenceRead": false,
+          "outputTruncated": false,
+          "localDocumentWrite": false,
+          "documentApiCall": false,
+          "statusApiCall": false,
+          "ordinal": 6,
+          "skill": null
+        },
+        {
+          "tool": "bash",
+          "operationalSkillLoad": false,
+          "earlyRecipeVisible": false,
+          "newReferencePointerVisible": false,
+          "newReferenceRead": false,
+          "outputTruncated": false,
+          "localDocumentWrite": false,
+          "documentApiCall": false,
+          "statusApiCall": false,
+          "ordinal": 7,
+          "skill": null
+        },
+        {
+          "tool": "bash",
+          "operationalSkillLoad": false,
+          "earlyRecipeVisible": false,
+          "newReferencePointerVisible": false,
+          "newReferenceRead": false,
+          "outputTruncated": false,
+          "localDocumentWrite": false,
+          "documentApiCall": false,
+          "statusApiCall": false,
+          "ordinal": 8,
+          "skill": null
+        },
+        {
+          "tool": "bash",
+          "operationalSkillLoad": false,
+          "earlyRecipeVisible": false,
+          "newReferencePointerVisible": false,
+          "newReferenceRead": false,
+          "outputTruncated": false,
+          "localDocumentWrite": false,
+          "documentApiCall": true,
+          "statusApiCall": false,
+          "ordinal": 9,
+          "skill": null
+        },
+        {
+          "tool": "bash",
+          "operationalSkillLoad": false,
+          "earlyRecipeVisible": false,
+          "newReferencePointerVisible": false,
+          "newReferenceRead": false,
+          "outputTruncated": false,
+          "localDocumentWrite": false,
+          "documentApiCall": false,
+          "statusApiCall": false,
+          "ordinal": 10,
+          "skill": null
+        },
+        {
+          "tool": "bash",
+          "operationalSkillLoad": false,
+          "earlyRecipeVisible": false,
+          "newReferencePointerVisible": false,
+          "newReferenceRead": false,
+          "outputTruncated": false,
+          "localDocumentWrite": false,
+          "documentApiCall": false,
+          "statusApiCall": true,
+          "ordinal": 11,
+          "skill": null
+        }
+      ],
+      "evidenceHashes": {
+        "result": "d363c4c394629706e30959682ad9b5ec301330636ec5f8c0dab319082ac3d8e8",
+        "context": "208a34086b904864fb9d115a9bae910ed49256b812b9e2ba9688459594921530",
+        "preflight": "08763f3fda4e6c60a23986ebdbba4973e6c10565575593e5797fd24ec8330d89",
+        "finalStateScreenshot": "982e5645377a39a6aa853795229d6b3e03afe00d567e03bd90a695c0f9115169"
+      },
+      "screenshotInspected": true
+    }
+  ],
+  "providerCalls": 4,
+  "additionalPaidRuns": 0,
+  "limitations": [
+    "One trial per cell cannot establish fix causality, robust non-regression or general coding quality.",
+    "Both original case link defects are outside the preserved durable-document oracle.",
+    "Explicit wording now requires clickable company-prefixed UI link and is not a direct repeat of prior usable-link cohorts.",
+    "Skill metadata improves stock selection but does not guarantee invocation on every harness.",
+    "API writes/revisions/comments and screenshot rendering were inspected; authenticated click navigation against cleaned-up instances was not replayed.",
+    "Runtime is unmetered; reported LLM receipts do not establish actual external bill.",
+    "Historical combined prompt-removal and early-recipe failures are preserved, alongside unrelated chat/credential findings."
+  ]
+}

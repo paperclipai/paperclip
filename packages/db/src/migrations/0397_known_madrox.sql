@@ -1,0 +1,1 @@
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "chat_voice_sessions_report_window_idx" ON "chat_voice_sessions" USING btree ("ended_at","id") WHERE "chat_voice_sessions"."state" in ('ended', 'failed', 'expired') and "chat_voice_sessions"."provider_session_id" is not null;

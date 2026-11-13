@@ -5,6 +5,8 @@ import {
   getBuiltinRoutineVariableValues,
   interpolateRoutineTemplate,
   isBuiltinRoutineVariable,
+  isRoutineDateVariableName,
+  isValidRoutineDateString,
   syncRoutineVariablesWithTemplate,
 } from "./routine-variables.js";
 
@@ -26,13 +28,41 @@ describe("routine variable helpers", () => {
 
   it("preserves existing metadata when syncing variables from a template", () => {
     expect(
-      syncRoutineVariablesWithTemplate(["Triage {{repo}}", "Review {{repo}} and {{priority}}"], [
+      syncRoutineVariablesWithTemplate(["Triage {{repo}}", "Review {{repo}} and {{startDate}}"], [
         { name: "repo", label: "Repository", type: "text", defaultValue: "paperclip", required: true, options: [] },
+        { name: "startDate", label: "Start", type: "text", defaultValue: "soon", required: false, options: [] },
       ]),
     ).toEqual([
       { name: "repo", label: "Repository", type: "text", defaultValue: "paperclip", required: true, options: [] },
-      { name: "priority", label: null, type: "text", defaultValue: null, required: true, options: [] },
+      { name: "startDate", label: "Start", type: "text", defaultValue: "soon", required: false, options: [] },
     ]);
+  });
+
+  it("identifies routine date variable names by strict capital-Date suffix", () => {
+    expect(isRoutineDateVariableName("startDate")).toBe(true);
+    expect(isRoutineDateVariableName("endDate")).toBe(true);
+    expect(isRoutineDateVariableName("fooDate")).toBe(true);
+    expect(isRoutineDateVariableName("date")).toBe(false);
+    expect(isRoutineDateVariableName("startdate")).toBe(false);
+    expect(isRoutineDateVariableName("candidate")).toBe(false);
+    expect(isRoutineDateVariableName("Date")).toBe(false);
+  });
+
+  it("defaults newly synced capital-Date variables to date type", () => {
+    expect(
+      syncRoutineVariablesWithTemplate("Compare {{startDate}} to {{endDate}} with {{date}}", []),
+    ).toEqual([
+      { name: "startDate", label: null, type: "date", defaultValue: null, required: true, options: [] },
+      { name: "endDate", label: null, type: "date", defaultValue: null, required: true, options: [] },
+    ]);
+  });
+
+  it("validates YYYY-MM-DD routine date strings as real calendar dates", () => {
+    expect(isValidRoutineDateString("2024-02-29")).toBe(true);
+    expect(isValidRoutineDateString("2024-02-30")).toBe(false);
+    expect(isValidRoutineDateString("2023-02-29")).toBe(false);
+    expect(isValidRoutineDateString("2024-13-01")).toBe(false);
+    expect(isValidRoutineDateString("2024-1-01")).toBe(false);
   });
 
   it("interpolates provided variable values into the routine template", () => {
@@ -74,6 +104,31 @@ describe("routine variable helpers", () => {
     expect(result).toEqual([
       { name: "repo", label: null, type: "text", defaultValue: null, required: true, options: [] },
     ]);
+  });
+
+  it("extracts snake_case variable names", () => {
+    expect(extractRoutineVariableNames("Open {{pr_url}} for review")).toEqual(["pr_url"]);
+  });
+
+  it("extracts variable names whose underscores were markdown-escaped by a WYSIWYG editor", () => {
+    // MDXEditor / mdast-util-to-markdown defensively escape intraword underscores
+    // when serializing rich-text back to markdown, so `{{pr_url}}` is stored as `{{pr\_url}}`.
+    expect(extractRoutineVariableNames("Open {{pr\\_url}} for review")).toEqual(["pr_url"]);
+    expect(extractRoutineVariableNames("{{pr\\_url\\_v2}}")).toEqual(["pr_url_v2"]);
+  });
+
+  it("syncRoutineVariablesWithTemplate handles markdown-escaped underscores", () => {
+    expect(
+      syncRoutineVariablesWithTemplate("Open {{pr\\_url}}", []),
+    ).toEqual([
+      { name: "pr_url", label: null, type: "text", defaultValue: null, required: true, options: [] },
+    ]);
+  });
+
+  it("interpolates variables that appear with markdown-escaped underscores", () => {
+    expect(
+      interpolateRoutineTemplate("Open {{pr\\_url}}", { pr_url: "https://example.com" }),
+    ).toBe("Open https://example.com");
   });
 
   it("interpolates built-in variables alongside user variables", () => {

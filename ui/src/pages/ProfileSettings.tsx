@@ -1,16 +1,21 @@
 import { useEffect, useId, useRef, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Camera, LoaderCircle, Save, Trash2, UserRoundPen } from "lucide-react";
 import type { AuthSession, CurrentUserProfile, UpdateCurrentUserProfile } from "@paperclipai/shared";
 import { authApi } from "@/api/auth";
+import { useAccountBoundMutation } from "@/hooks/useAccountBoundMutation";
 import { assetsApi } from "@/api/assets";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
+import { InboxAgentPolicyControl } from "@/components/InboxAgentPolicyControl";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { describeError } from "@/api/errors";
 
 function deriveInitials(name: string) {
   const parts = name.trim().split(/\s+/).filter(Boolean);
@@ -30,12 +35,12 @@ export function ProfileSettings() {
   const sessionQuery = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
-    retry: false,
   });
+  const sessionView = useQueryView(sessionQuery);
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Instance Settings" },
+      { label: "Settings", href: "/company/settings" },
       { label: "Profile" },
     ]);
   }, [setBreadcrumbs]);
@@ -60,8 +65,13 @@ export function ProfileSettings() {
     });
   }
 
-  async function persistProfile(input: UpdateCurrentUserProfile) {
+  // A restored session can show one account while the cookie belongs to
+  // another, and the server saves for the cookie's user. Account-bound
+  // mutations wait for a verified session and abort if the user changed.
+  async function persistProfile(input: UpdateCurrentUserProfile, assertCurrentAccount: () => void) {
+    assertCurrentAccount();
     const profile = await authApi.updateProfile(input);
+    assertCurrentAccount();
     syncSessionProfile(profile);
     return profile;
   }
@@ -70,22 +80,22 @@ export function ProfileSettings() {
     return name.trim() || sessionQuery.data?.user.name || "Board";
   }
 
-  const updateMutation = useMutation({
-    mutationFn: (input: UpdateCurrentUserProfile) => persistProfile(input),
+  const updateMutation = useAccountBoundMutation({
+    mutationFn: (input: UpdateCurrentUserProfile, { assertCurrentAccount }) => persistProfile(input, assertCurrentAccount),
     onSuccess: (profile) => {
       setActionError(null);
       setName(profile.name ?? "");
       setImage(profile.image ?? "");
     },
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Failed to update profile.");
+      setActionError(describeError(error).body);
     },
   });
 
-  const uploadAvatarMutation = useMutation({
-    mutationFn: async (file: File) => {
+  const uploadAvatarMutation = useAccountBoundMutation({
+    mutationFn: async (file: File, { assertCurrentAccount }) => {
       if (!selectedCompanyId) {
-        throw new Error("Select a company before uploading a profile avatar.");
+        throw new Error("Select an organization before uploading a profile avatar.");
       }
 
       const asset = await assetsApi.uploadImage(
@@ -93,7 +103,7 @@ export function ProfileSettings() {
         file,
         `profiles/${sessionQuery.data?.user.id ?? "board-user"}`,
       );
-      return persistProfile({ name: resolveProfileName(), image: asset.contentPath });
+      return persistProfile({ name: resolveProfileName(), image: asset.contentPath }, assertCurrentAccount);
     },
     onSuccess: (profile) => {
       setActionError(null);
@@ -101,32 +111,40 @@ export function ProfileSettings() {
       setImage(profile.image ?? "");
     },
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Failed to upload avatar.");
+      setActionError(describeError(error).body);
     },
   });
 
-  const removeAvatarMutation = useMutation({
-    mutationFn: () => persistProfile({ name: resolveProfileName(), image: null }),
+  const removeAvatarMutation = useAccountBoundMutation({
+    mutationFn: (_input, { assertCurrentAccount }) => persistProfile({ name: resolveProfileName(), image: null }, assertCurrentAccount),
     onSuccess: (profile) => {
       setActionError(null);
       setName(profile.name ?? "");
       setImage(profile.image ?? "");
     },
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Failed to remove avatar.");
+      setActionError(describeError(error).body);
     },
   });
 
-  if (sessionQuery.isLoading) {
+  if (sessionQuery.isLoading || sessionView.kind === "reconnecting") {
     return <div className="text-sm text-muted-foreground">Loading profile...</div>;
   }
 
-  if (sessionQuery.error || !sessionQuery.data) {
+  if (sessionView.kind === "error") {
     return (
-      <div className="text-sm text-destructive">
-        {sessionQuery.error instanceof Error ? sessionQuery.error.message : "Failed to load profile."}
-      </div>
+      <QueryErrorState
+        size="page"
+        error={sessionQuery.error}
+        action="load your profile"
+        onRetry={sessionView.retry}
+        retrying={sessionView.isFetching}
+      />
     );
+  }
+
+  if (!sessionQuery.data) {
+    return <div className="text-sm text-destructive">Failed to load profile.</div>;
   }
 
   const currentName = name.trim() || sessionQuery.data.user.name || "Board";
@@ -135,10 +153,10 @@ export function ProfileSettings() {
   const isSavingProfile = updateMutation.isPending || uploadAvatarMutation.isPending || removeAvatarMutation.isPending;
   const uploadHint = selectedCompany
     ? `Stored in Paperclip file storage for ${selectedCompany.name}.`
-    : "Select a company to upload an avatar into Paperclip storage.";
+    : "Select an organization to upload an avatar into Paperclip storage.";
 
   return (
-    <div className="max-w-4xl space-y-6">
+    <div className="max-w-6xl space-y-6">
       <div className="space-y-2">
         <div className="flex items-center gap-2">
           <UserRoundPen className="h-5 w-5 text-muted-foreground" />
@@ -156,11 +174,11 @@ export function ProfileSettings() {
       ) : null}
 
       <section className="space-y-8">
-        <div className="relative overflow-hidden rounded-[28px] border border-border/70 bg-card shadow-sm">
-          <div className="absolute inset-x-0 top-0 h-32 bg-[linear-gradient(135deg,hsl(var(--primary))_0%,hsl(var(--accent))_58%,color-mix(in_oklab,hsl(var(--background))_76%,white_24%)_100%)]" />
-          <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(255,255,255,0.22),transparent_34%),radial-gradient(circle_at_bottom_left,rgba(255,255,255,0.08),transparent_36%)]" />
+        <Card className="block relative overflow-hidden rounded-(--rad-28) border-border/70">
+          <div className="absolute inset-x-0 top-0 h-32 bg-(image:--gradient-extract-26)" />
+          <div className="absolute inset-0 bg-(image:--gradient-extract-7)" />
           <div className="relative p-6 pt-10">
-            <div className="flex flex-wrap items-end gap-5 rounded-[24px] border border-border/70 bg-background/92 p-5 shadow-[0_18px_44px_-28px_rgba(0,0,0,0.45)] backdrop-blur-sm">
+            <div className="flex flex-wrap items-end gap-5 rounded-(--rad-24) border border-border/70 bg-background/92 p-5 shadow-(--shadow-extract-18) backdrop-blur-sm">
               <div className="space-y-3">
                 <label
                   htmlFor={avatarInputId}
@@ -224,7 +242,7 @@ export function ProfileSettings() {
               </div>
             </div>
           </div>
-        </div>
+        </Card>
 
         <form
           className="grid gap-6 md:grid-cols-2"
@@ -267,6 +285,8 @@ export function ProfileSettings() {
             </Button>
           </div>
         </form>
+
+        <InboxAgentPolicyControl companyId={selectedCompanyId} />
       </section>
     </div>
   );

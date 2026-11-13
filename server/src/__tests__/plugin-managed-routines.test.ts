@@ -7,10 +7,14 @@ import {
   agents,
   companies,
   createDb,
+  documentRevisions,
+  documents,
   issues,
   pluginManagedResources,
   plugins,
+  principalPermissionGrants,
   projects,
+  routineDocuments,
   routineRuns,
   routineTriggers,
   routines,
@@ -75,11 +79,16 @@ function manifest(): PaperclipPluginManifestV1 {
       priority: "medium",
       concurrencyPolicy: "coalesce_if_active",
       catchUpPolicy: "skip_missed",
+      activityGatePolicy: "require_external_activity",
+      activityGateScope: "project",
       triggers: [{
         kind: "schedule",
         label: "Nightly",
+        enabled: true,
         cronExpression: "0 3 * * *",
         timezone: "UTC",
+        signingMode: null,
+        replayWindowSec: null,
       }],
       issueTemplate: {
         surfaceVisibility: "plugin_operation",
@@ -108,11 +117,15 @@ describeEmbeddedPostgres("plugin-managed routines", () => {
   afterEach(async () => {
     await db.delete(routineRuns);
     await db.delete(routineTriggers);
+    await db.delete(routineDocuments);
     await db.delete(routines);
+    await db.delete(documentRevisions);
+    await db.delete(documents);
     await db.delete(issues);
     await db.delete(agentConfigRevisions);
     await db.delete(activityLog);
     await db.delete(pluginManagedResources);
+    await db.delete(principalPermissionGrants);
     await db.delete(agents);
     await db.delete(projects);
     await db.delete(plugins);
@@ -130,6 +143,7 @@ describeEmbeddedPostgres("plugin-managed routines", () => {
       id: companyId,
       name: "Paperclip",
       issuePrefix: issuePrefix(companyId),
+      defaultResponsibleUserId: "responsible-user",
     });
     await db.insert(plugins).values({
       id: pluginId,
@@ -160,6 +174,8 @@ describeEmbeddedPostgres("plugin-managed routines", () => {
       title: "Nightly lint",
       assigneeAgentId: agent.agentId,
       projectId: project.projectId,
+      activityGatePolicy: "require_external_activity",
+      activityGateScope: "project",
       managedByPlugin: expect.objectContaining({
         pluginKey: "paperclip.managed-routines-test",
         resourceKind: "routine",

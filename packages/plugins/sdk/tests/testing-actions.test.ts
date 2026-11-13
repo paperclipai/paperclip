@@ -12,7 +12,7 @@ const manifest = {
   author: "Paperclip",
   categories: ["automation"],
   capabilities: [],
-  entrypoints: {},
+  entrypoints: { worker: "./worker.js" },
 } satisfies PaperclipPluginManifestV1;
 
 describe("createTestHarness action context", () => {
@@ -70,5 +70,98 @@ describe("createTestHarness action context", () => {
     harness.ctx.actions.register("legacy", async (params) => ({ ok: params.ok }));
 
     await expect(harness.performAction("legacy", { ok: true })).resolves.toEqual({ ok: true });
+  });
+});
+
+describe("createTestHarness managed routines", () => {
+  it("preserves declared activity gate settings", async () => {
+    const harness = createTestHarness({
+      manifest: {
+        ...manifest,
+        capabilities: ["routines.managed"],
+        routines: [{
+          routineKey: "quiet-watcher",
+          title: "Quiet watcher",
+          activityGatePolicy: "require_external_activity",
+          activityGateScope: "project",
+        }],
+      },
+    });
+
+    const resolved = await harness.ctx.routines.managed.reconcile("quiet-watcher", "company-1");
+
+    expect(resolved.routine).toMatchObject({
+      activityGatePolicy: "require_external_activity",
+      activityGateScope: "project",
+    });
+  });
+});
+
+describe("createTestHarness issue interactions", () => {
+  it("normalizes a canonical question form through the typed host helper", async () => {
+    const harness = createTestHarness({ manifest, capabilities: ["issues.create", "issue.interactions.create"] });
+    const issue = await harness.ctx.issues.create({ companyId: "company-1", title: "Ask for a repository" });
+    const input = {
+      idempotencyKey: "canonical:repo",
+      payload: { version: 1 as const, questionSet: { schema: "paperclip.question_set.v1" as const, questions: [{ id: "repo", prompt: "Repository URL?", required: true, answerMode: "text" as const }] } },
+    };
+    const created = await harness.ctx.issues.askUserQuestions(issue.id, input, "company-1");
+    expect(created.payload.questionSet).toEqual(input.payload.questionSet);
+    expect(created.payload.questions).toMatchObject([{ id: "repo", options: [{ id: "paperclip_text_answer", freeText: true }] }]);
+    expect(await harness.ctx.issues.askUserQuestions(issue.id, input, "company-1")).toEqual(created);
+  });
+  it("creates request_checkbox_confirmation interactions through the typed host helper", async () => {
+    const harness = createTestHarness({
+      manifest,
+      capabilities: ["issues.create", "issue.interactions.create"],
+    });
+    const issue = await harness.ctx.issues.create({
+      companyId: "company-1",
+      title: "Pick files",
+    });
+
+    const interaction = await harness.ctx.issues.requestCheckboxConfirmation(
+      issue.id,
+      {
+        idempotencyKey: "checkbox:files",
+        title: "Choose files",
+        payload: {
+          version: 1,
+          prompt: "Which files should be included?",
+          options: [
+            { id: "file-a", label: "File A" },
+            { id: "file-b", label: "File B", description: "Secondary draft" },
+          ],
+          defaultSelectedOptionIds: ["file-a"],
+          minSelected: 1,
+          maxSelected: 2,
+        },
+        // Omits the fields the schema defaults. The input type allows that.
+      },
+      "company-1",
+      { authorAgentId: "agent-1" },
+    );
+
+    expect(interaction).toMatchObject({
+      issueId: issue.id,
+      companyId: "company-1",
+      kind: "request_checkbox_confirmation",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      idempotencyKey: "checkbox:files",
+      title: "Choose files",
+      createdByAgentId: "agent-1",
+      payload: {
+        version: 1,
+        prompt: "Which files should be included?",
+        options: [
+          { id: "file-a", label: "File A" },
+          { id: "file-b", label: "File B", description: "Secondary draft" },
+        ],
+        defaultSelectedOptionIds: ["file-a"],
+        minSelected: 1,
+        maxSelected: 2,
+      },
+    });
   });
 });

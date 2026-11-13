@@ -1,3 +1,4 @@
+import { configFieldsForSection } from "../config-sections";
 import type { AdapterConfigFieldsProps } from "../types";
 import {
   Field,
@@ -13,6 +14,7 @@ const instructionsFileHint =
   "Absolute path to a markdown file (e.g. AGENTS.md) that defines this agent's behavior. Injected into the system prompt at runtime.";
 
 export function OpenCodeLocalConfigFields({
+  section,
   isCreate,
   values,
   set,
@@ -21,7 +23,7 @@ export function OpenCodeLocalConfigFields({
   mark,
   hideInstructionsFile,
 }: AdapterConfigFieldsProps) {
-  return (
+  return configFieldsForSection(section, (
     <>
       {!hideInstructionsFile && (
         <Field label="Agent instructions file" hint={instructionsFileHint}>
@@ -68,5 +70,5 @@ export function OpenCodeLocalConfigFields({
         }
       />
     </>
-  );
+  ));
 }

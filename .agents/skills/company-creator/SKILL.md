@@ -1,15 +1,9 @@
 ---
 name: company-creator
 description: >
-  Create agent company packages conforming to the Agent Companies specification
-  (agentcompanies/v1). Use when a user wants to create a new agent company from
-  scratch, build a company around an existing git repo or skills collection, or
-  scaffold a team/department of agents. Triggers on: "create a company", "make me
-  a company", "build a company from this repo", "set up an agent company",
-  "create a team of agents", "hire some agents", or when given a repo URL and
-  asked to turn it into a company. Do NOT use for importing an existing company
-  package (use the CLI import command instead) or for modifying a company that
-  is already running in Paperclip.
+  Create agent company packages that conform to agentcompanies/v1. Use when asked
+  to create a company, scaffold an agent team, hire agents, or turn a repo/skills
+  collection into a company package.
 ---
 
 # Company Creator
@@ -158,7 +152,7 @@ Add a concise execution contract to every generated working agent:
 
 - Start actionable work in the same heartbeat and do not stop at a plan unless planning was requested.
 - Leave durable progress in comments, documents, or work products with the next action.
-- Use child issues for long or parallel delegated work instead of polling agents, sessions, or processes.
+- Continue work on the current issue. Do not busy-poll agents, sessions, or processes.
 - Mark blocked work with the unblock owner and action.
 - Respect budget, pause/cancel, approval gates, and company boundaries.
 

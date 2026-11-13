@@ -1,122 +1,89 @@
 import { useState } from "react";
 import type { IssueBlockerAttention } from "@paperclipai/shared";
 import { cn } from "../lib/utils";
-import { issueStatusIcon, issueStatusIconDefault } from "../lib/status-colors";
+import { StatusGlyph, type StatusGlyphSize } from "./StatusGlyph";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
+import { resolveTaskStatusPresentation, taskStatusLabel, type TaskStatusPresentationInput } from "../lib/task-status-presentation";
 
 const allStatuses = ["backlog", "todo", "in_progress", "in_review", "done", "cancelled", "blocked"];
 
-function statusLabel(status: string): string {
-  return status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-}
-
-interface StatusIconProps {
-  status: string;
-  blockerAttention?: IssueBlockerAttention | null;
+interface StatusIconProps extends TaskStatusPresentationInput {
   onChange?: (status: string) => void;
   className?: string;
+  /** Optional layout wrapper around the glyph. Does not change glyph dimensions. */
+  glyphContainerClassName?: string;
   showLabel?: boolean;
+  /** Glyph size (PAP-243a). Default `md` (16px); lists/detail/mentions use `lg` (20px). */
+  size?: StatusGlyphSize;
 }
 
-function blockedAttentionLabel(blockerAttention: IssueBlockerAttention | null | undefined) {
-  if (!blockerAttention || blockerAttention.state === "none") return "Blocked";
-
-  if (blockerAttention.reason === "active_child") {
-    const count = blockerAttention.coveredBlockerCount;
-    if (count === 1 && blockerAttention.sampleBlockerIdentifier) {
-      return `Blocked · waiting on active sub-issue ${blockerAttention.sampleBlockerIdentifier}`;
-    }
-    if (count === 1) return "Blocked · waiting on 1 active sub-issue";
-    return `Blocked · waiting on ${count} active sub-issues`;
-  }
-
-  if (blockerAttention.reason === "active_dependency") {
-    const count = blockerAttention.coveredBlockerCount;
-    if (count === 1 && blockerAttention.sampleBlockerIdentifier) {
-      return `Blocked · covered by active dependency ${blockerAttention.sampleBlockerIdentifier}`;
-    }
-    if (count === 1) return "Blocked · covered by 1 active dependency";
-    return `Blocked · covered by ${count} active dependencies`;
-  }
-
-  if (blockerAttention.reason === "stalled_review") {
-    const count = blockerAttention.stalledBlockerCount;
-    const leaf = blockerAttention.sampleStalledBlockerIdentifier ?? blockerAttention.sampleBlockerIdentifier;
-    if (count === 1 && leaf) return `Blocked · review stalled on ${leaf}`;
-    if (count === 1) return "Blocked · review stalled with no clear next step";
-    return `Blocked · ${count} reviews stalled with no clear next step`;
-  }
-
-  if (blockerAttention.reason === "attention_required") {
-    const count = blockerAttention.attentionBlockerCount || blockerAttention.unresolvedBlockerCount;
-    const attentionCopy = `${count} ${count === 1 ? "blocker needs" : "blockers need"} attention`;
-    const coveredCount = blockerAttention.coveredBlockerCount;
-    if (coveredCount > 0) {
-      return `Blocked · ${attentionCopy}; ${coveredCount} covered by active work`;
-    }
-    return `Blocked · ${attentionCopy}`;
-  }
-
-  return "Blocked";
+/** Shared accessible/tooltip copy, including waiting and covered-blocker states. */
+export function getStatusIconLabel(status: string, externalConversationState?: "active" | "waiting" | null, blockerAttention?: IssueBlockerAttention | null, presentationStatus?: string | null): string {
+  return resolveTaskStatusPresentation({ status, displayStatus: presentationStatus, externalConversationState, blockerAttention }).ariaLabel;
 }
 
-export function StatusIcon({ status, blockerAttention, onChange, className, showLabel }: StatusIconProps) {
+/**
+ * Task/issue status indicator — renders the unified, color-blind-safe
+ * {@link StatusGlyph} (one distinct shape per status). With `onChange` it also
+ * acts as a status picker (popover). This one component drives every standalone
+ * status surface: list, kanban, detail header, properties row + picker flyout,
+ * sub-task / blocked-by pills, blocked inbox, quicklook, sibling nav, filters,
+ * search, columns, dashboard.
+ *
+ * A "covered" blocked task (waiting on active work) maps to the `in_queue`
+ * glyph — the blocked shape recoloured blue — while the full blocked reason
+ * still rides on the accessible label.
+ */
+export function StatusIcon({ status, displayStatus: presentationStatus, externalConversationState, blockerAttention, onChange, className, glyphContainerClassName, showLabel, size = "md" }: StatusIconProps) {
   const [open, setOpen] = useState(false);
-  const isCoveredBlocked = status === "blocked" && blockerAttention?.state === "covered";
-  const isStalledBlocked = status === "blocked" && blockerAttention?.state === "stalled";
-  const isAttentionBlocked = status === "blocked" && blockerAttention?.state === "needs_attention";
-  const hasCoveredBlockedWork = isAttentionBlocked && (blockerAttention?.coveredBlockerCount ?? 0) > 0;
-  const colorClass = isCoveredBlocked
-    ? "text-cyan-600 border-cyan-600 dark:text-cyan-400 dark:border-cyan-400"
-    : isStalledBlocked
-      ? "text-amber-600 border-amber-600 dark:text-amber-400 dark:border-amber-400"
-      : issueStatusIcon[status] ?? issueStatusIconDefault;
-  const isDone = status === "done";
-  const ariaLabel = status === "blocked" ? blockedAttentionLabel(blockerAttention) : statusLabel(status);
-  const blockerAttentionState = isCoveredBlocked
-    ? "covered"
-    : isStalledBlocked
-      ? "stalled"
-      : isAttentionBlocked
-        ? "needs_attention"
-        : undefined;
+  const presentation = { status, displayStatus: presentationStatus, externalConversationState, blockerAttention };
+  const { glyphStatus, label, ariaLabel } = resolveTaskStatusPresentation(presentation);
 
-  const circle = (
-    <span
-      className={cn(
-        "relative inline-flex h-4 w-4 rounded-full border-2 shrink-0",
-        colorClass,
-        onChange && !showLabel && "cursor-pointer",
-        className
-      )}
-      data-blocker-attention-state={blockerAttentionState}
-      aria-label={ariaLabel}
+  const glyphIcon = (
+    <StatusGlyph
+      status={glyphStatus}
+      size={size}
+      className={cn(onChange && !showLabel && "cursor-pointer", className)}
       title={ariaLabel}
-    >
-      {isDone && (
-        <span className="absolute inset-0 m-auto h-2 w-2 rounded-full bg-current" />
-      )}
-      {isCoveredBlocked && (
-        <span className="absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border border-background bg-current" />
-      )}
-      {hasCoveredBlockedWork && (
-        <span className="absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border border-background bg-cyan-600 dark:bg-cyan-400" />
-      )}
-      {isStalledBlocked && (
-        <span className="absolute inset-0 m-auto h-1.5 w-1.5 rounded-full bg-current" />
-      )}
-    </span>
+    />
   );
+  const glyph = glyphContainerClassName ? (
+    <span className={glyphContainerClassName} data-status-glyph-container="true">
+      {glyphIcon}
+    </span>
+  ) : glyphIcon;
 
-  if (!onChange) return showLabel ? <span className="inline-flex items-center gap-1.5">{circle}<span className="text-sm">{statusLabel(status)}</span></span> : circle;
+  if (!onChange) {
+    return showLabel ? (
+      <span className="inline-flex items-center gap-1.5">
+        {glyph}
+        <span className="text-sm">{label}</span>
+      </span>
+    ) : (
+      glyph
+    );
+  }
 
   const trigger = showLabel ? (
-    <button className="inline-flex items-center gap-1.5 cursor-pointer hover:bg-accent/50 rounded px-1 -mx-1 py-0.5 transition-colors">
-      {circle}
-      <span className="text-sm">{statusLabel(status)}</span>
+    <button
+      type="button"
+      aria-label={`Change status (current: ${ariaLabel})`}
+      className="inline-flex min-h-5 items-center gap-1.5 cursor-pointer hover:bg-accent/50 rounded px-1 -mx-1 py-0.5 transition-colors"
+    >
+      {glyph}
+      <span className="text-sm">{label}</span>
     </button>
-  ) : circle;
+  ) : (
+    <button
+      type="button"
+      data-slot="icon-button"
+      aria-label={`Change status (current: ${ariaLabel})`}
+      className="inline-flex cursor-pointer items-center justify-center rounded-sm focus-visible:outline-none focus-visible:ring-(length:--rad-3) focus-visible:ring-ring"
+    >
+      {glyph}
+    </button>
+  );
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -133,8 +100,9 @@ export function StatusIcon({ status, blockerAttention, onChange, className, show
               setOpen(false);
             }}
           >
-            <StatusIcon status={s} />
-            {statusLabel(s)}
+            {/* The current row is the task's state: draw it exactly like the trigger. */}
+            <StatusIcon {...(s === status ? presentation : { status: s })} size="lg" />
+            {taskStatusLabel(s)}
           </Button>
         ))}
       </PopoverContent>

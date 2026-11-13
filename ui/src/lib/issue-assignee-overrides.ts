@@ -4,7 +4,7 @@ export const ISSUE_OVERRIDE_ADAPTER_TYPES = new Set([
   "opencode_local",
 ]);
 
-export type IssueModelLane = "primary" | "cheap" | "custom";
+export type IssueModelLane = "primary" | "custom";
 
 export interface BuildAssigneeAdapterOverridesInput {
   adapterType: string | null | undefined;
@@ -19,8 +19,6 @@ export interface BuildAssigneeAdapterOverridesInput {
  *
  * Lane semantics:
  * - "primary" → no overrides, runs on the agent's primary model.
- * - "cheap"   → `modelProfile: "cheap"` only; the runtime resolves the actual
- *               adapter config from the agent's runtimeConfig + adapter default.
  * - "custom"  → preserves the legacy explicit override path
  *               (`adapterConfig.model`, thinking effort, chrome).
  */
@@ -34,10 +32,6 @@ export function buildAssigneeAdapterOverrides(
 
   if (input.lane === "primary") {
     return null;
-  }
-
-  if (input.lane === "cheap") {
-    return { modelProfile: "cheap" };
   }
 
   const adapterConfig: Record<string, unknown> = {};

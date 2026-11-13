@@ -1,0 +1,1536 @@
+import type { HeartbeatRunEvent } from "@paperclipai/shared";
+import type { TranscriptEntry } from "@/adapters";
+
+type TranscriptToolDetail = NonNullable<Extract<TranscriptEntry, { kind: "tool_call" }>["detail"]>;
+import { isRunLogOnlyProviderEvent } from "./run-log-only-events";
+import { workspaceChangeEntry } from "@/adapters/paperclip-runner";
+import { createUnifiedDiffClassifier } from "@/components/task-chat/diff-lines";
+
+function record(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function text(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function finiteNumber(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
+function normalizedItem(payload: Record<string, unknown>): Record<string, unknown> {
+  return record(payload.item) ?? payload;
+}
+
+function normalizedItemKind(payload: Record<string, unknown>): string {
+  const item = normalizedItem(payload);
+  return (text(payload.kind) ?? text(item.kind) ?? text(item.type) ?? "")
+    .replaceAll("_", "")
+    .toLowerCase();
+}
+
+function isAssistantItemKind(kind: string): boolean {
+  return kind === "agentmessage" || kind === "assistantmessage";
+}
+
+function normalizedItemId(
+  envelope: Record<string, unknown>,
+  payload: Record<string, unknown>,
+): string | null {
+  const item = normalizedItem(payload);
+  return text(envelope.itemId) ?? text(payload.itemId) ?? text(item.id);
+}
+
+function normalizedItemText(payload: Record<string, unknown>): string | null {
+  const item = normalizedItem(payload);
+  return text(payload.text) ?? text(item.text);
+}
+
+function assistantChannel(
+  payload: Record<string, unknown>,
+  fallback: "progress" | "final" | "unknown" = "unknown",
+): "progress" | "final" | "unknown" {
+  const item = normalizedItem(payload);
+  const value = text(payload.channel) ?? text(item.channel);
+  if (value === "progress" || value === "final") return value;
+  if ((!value || value === "unknown") && record(payload.update)?.channel === "progress") return "progress";
+  if (value === "unknown") return value;
+  return fallback;
+}
+
+function reasoningChannel(
+  payload: Record<string, unknown>,
+  fallback: "summary" | "detail" | "unknown" = "unknown",
+): "summary" | "detail" | "unknown" {
+  const item = normalizedItem(payload);
+  const value = text(payload.channel) ?? text(item.channel);
+  if (value === "summary" || value === "detail" || value === "unknown") return value;
+  return fallback;
+}
+
+interface ItemIdentity {
+  kind: string;
+  assistantChannel: "progress" | "final" | "unknown";
+  reasoningChannel: "summary" | "detail" | "unknown";
+}
+
+function resolveItemIdentity(
+  payload: Record<string, unknown>,
+  previous?: ItemIdentity,
+): ItemIdentity {
+  return {
+    kind: normalizedItemKind(payload) || previous?.kind || "",
+    assistantChannel: assistantChannel(payload, previous?.assistantChannel),
+    reasoningChannel: reasoningChannel(payload, previous?.reasoningChannel),
+  };
+}
+
+function isItemIdentityEvent(eventType: string): boolean {
+  return eventType === "item.started"
+    || eventType === "item.delta"
+    || eventType === "item.completed";
+}
+
+/**
+ * Codex plan mode wraps a streaming plan item in `<proposed_plan>` tags. Only
+ * that outer wrapper is removed; example tags inside the plan stay text.
+ */
+function proposedPlanMarkdown(value: string): string {
+  const trimmed = value.trim();
+  const open = /^<proposed_plan>[ \t]*(?:\n|$)/i.exec(trimmed);
+  if (!open) return trimmed;
+  return trimmed.slice(open[0].length).replace(/(?:^|\n)[ \t]*<\/proposed_plan>[ \t]*$/i, "").trim();
+}
+
+/**
+ * Splits a message around one `<proposed_plan>` block. The tags must sit on
+ * their own lines outside fenced code, so quoting or documenting the tag never
+ * creates a proposal.
+ */
+function splitProposedPlanBlock(value: string): { plan: string | null; rest: string; unclosedStart: number | null } {
+  const lines = value.split("\n");
+  let fence: string | null = null;
+  let start = -1;
+  for (let index = 0; index < lines.length; index += 1) {
+    const trimmed = lines[index]!.trim();
+    // Fences are tracked inside the block too, so a fenced example tag in
+    // the plan never opens or closes it.
+    const marker = /^(`{3,}|~{3,})/.exec(trimmed)?.[1];
+    if (marker) {
+      fence = fence === null ? marker[0]! : (trimmed.startsWith(fence) ? null : fence);
+      continue;
+    }
+    if (fence !== null) continue;
+    if (start < 0 && /^<proposed_plan>$/i.test(trimmed)) start = index;
+    else if (start >= 0 && /^<\/proposed_plan>$/i.test(trimmed)) {
+      return {
+        plan: lines.slice(start + 1, index).join("\n").trim(),
+        rest: [...lines.slice(0, start), ...lines.slice(index + 1)].join("\n").trim(),
+        unclosedStart: null,
+      };
+    }
+  }
+  // An opening tag outside fences that never closes: a cut-off preview.
+  return {
+    plan: null,
+    rest: value,
+    unclosedStart: start < 0 ? null : lines.slice(0, start).join("\n").length,
+  };
+}
+
+function withoutProposedPlanBlock(value: string): string {
+  const { plan, rest, unclosedStart } = splitProposedPlanBlock(value);
+  if (plan !== null) return rest;
+  // A stored preview can end inside the block; hide its cut-off remainder.
+  return unclosedStart === null ? value : value.slice(0, unclosedStart).trim();
+}
+
+function planProposalEntry(
+  ts: string,
+  eventType: string,
+  proposalId: string,
+  markdown: string,
+  completed: boolean,
+  payload: Record<string, unknown>,
+): TranscriptEntry {
+  return {
+    kind: "provider_activity",
+    ts,
+    family: "plan_proposal",
+    eventType,
+    status: completed ? "completed" : "running",
+    title: "Plan",
+    summary: completed ? "Proposed a plan" : "Writing a plan",
+    payload: { ...payload, proposalId, markdown, status: completed ? "completed" : "streaming" },
+  };
+}
+
+const TOOL_EXECUTION_SCHEMA = "paperclip.tool.execution.v1";
+const RUN_RESULT_SCHEMA = "paperclip.run_result.v1";
+const RUN_TERMINAL_SCHEMA = "paperclip.prp.terminal.v1";
+
+function canonicalQuestionSet(
+  value: unknown,
+): Extract<TranscriptEntry, { kind: "runtime_request" }>["questionSet"] {
+  const candidate = record(value);
+  if (
+    !candidate
+    || candidate.schema !== "paperclip.question_set.v1"
+    || !Array.isArray(candidate.questions)
+    || candidate.questions.length === 0
+  ) return null;
+  const valid = candidate.questions.every((rawQuestion) => {
+    const question = record(rawQuestion);
+    return Boolean(
+      question
+      && text(question.id)
+      && text(question.prompt)
+      && typeof question.required === "boolean"
+      && (
+        question.answerMode === "single_select"
+        || question.answerMode === "multi_select"
+        || question.answerMode === "text"
+      ),
+    );
+  });
+  return valid
+    ? structuredClone(candidate) as unknown as NonNullable<
+        Extract<TranscriptEntry, { kind: "runtime_request" }>["questionSet"]
+      >
+    : null;
+}
+
+function canonicalQuestionResponse(
+  value: unknown,
+): Extract<TranscriptEntry, { kind: "runtime_request" }>["response"] {
+  const candidate = record(value);
+  return candidate
+    && candidate.schema === "paperclip.question_response.v1"
+    && record(candidate.answers)
+    ? structuredClone(candidate) as unknown as NonNullable<
+        Extract<TranscriptEntry, { kind: "runtime_request" }>["response"]
+      >
+    : null;
+}
+
+function verificationStatus(value: unknown): "passed" | "failed" | "not_run" {
+  return value === "passed" || value === "failed" ? value : "not_run";
+}
+
+function runtimeRequestEntry(input: {
+  eventType: string;
+  envelope: Record<string, unknown>;
+  payload: Record<string, unknown>;
+  ts: string;
+  previous?: Extract<TranscriptEntry, { kind: "runtime_request" }>;
+}): Extract<TranscriptEntry, { kind: "runtime_request" }> | null {
+  const request = record(input.payload.request) ?? input.payload;
+  const requestId = text(request.requestId) ?? text(input.payload.requestId);
+  if (!requestId) return null;
+  const suffix = input.eventType.split(".").at(-1);
+  // The lifecycle event is authoritative. ACP delivery receipts carry
+  // status:"delivered" in their payload, which must not reopen a resolved
+  // request as pending just because it is not a UI lifecycle status.
+  const rawStatus = suffix === "resolved" || suffix === "expired" || suffix === "cancelled"
+    ? suffix
+    : text(request.status) ?? suffix;
+  const resolvedAction = text(request.action)
+    ?? text(input.payload.action)
+    ?? input.previous?.resolvedAction
+    ?? null;
+  const lifecycleStatus = rawStatus === "resolved"
+    || rawStatus === "expired"
+    || rawStatus === "cancelled"
+    ? rawStatus
+    : "pending";
+  const status = lifecycleStatus === "resolved"
+    && (resolvedAction === "cancel" || resolvedAction === "decline")
+    ? "cancelled"
+    : lifecycleStatus;
+  const rawKind = text(request.requestKind) ?? input.previous?.requestKind ?? null;
+  const requestKind = rawKind === "runtime"
+    || rawKind === "command_approval"
+    || rawKind === "file_approval"
+    || rawKind === "permission_approval"
+    || rawKind === "user_input"
+    || rawKind === "elicitation"
+    ? rawKind
+    : null;
+  const rawType = text(request.type) ?? input.previous?.requestType ?? "permission";
+  const requestType = requestKind === "user_input"
+    || requestKind === "elicitation"
+    || rawType === "input"
+    || rawType.includes("input")
+    || rawType.includes("elicitation")
+    ? "input"
+    : "permission";
+  const choices = (Array.isArray(request.choices) ? request.choices : [])
+    .map(record)
+    .flatMap((choice) => {
+      const key = text(choice?.key);
+      const label = text(choice?.label);
+      return key && label ? [{ key, label }] : [];
+    })
+    .slice(0, 32);
+  const details = record(request.details);
+  const fields = (Array.isArray(details?.fields) ? details.fields : [])
+    .map(record)
+    .flatMap((field, index) => {
+      const name = text(field?.name) ?? `answer_${index + 1}`;
+      const label = text(field?.label) ?? text(field?.name) ?? `Answer ${index + 1}`;
+      return name && label
+        ? [{ name: name.slice(0, 160), label: label.slice(0, 240), placeholder: text(field?.placeholder)?.slice(0, 500) ?? null }]
+        : [];
+    })
+    .slice(0, 16);
+  return {
+    kind: "runtime_request",
+    ts: input.ts,
+    requestId,
+    requestKind,
+    turnId: text(request.turnId)
+      ?? text(input.payload.turnId)
+      ?? text(input.envelope.turnId)
+      ?? input.previous?.turnId
+      ?? null,
+    requestType,
+    status,
+    prompt: text(request.prompt)
+      ?? input.previous?.prompt
+      ?? "Runtime approval requested",
+    choices: choices.length > 0 ? choices : input.previous?.choices ?? [],
+    fields: fields.length > 0 ? fields : input.previous?.fields ?? [],
+    questionSet: canonicalQuestionSet(request.input)
+      ?? input.previous?.questionSet
+      ?? null,
+    resolvedAction,
+    response: canonicalQuestionResponse(request.response ?? input.payload.response)
+      ?? input.previous?.response
+      ?? null,
+  };
+}
+
+function runResultEntry(
+  payload: Record<string, unknown>,
+  ts: string,
+): Extract<TranscriptEntry, { kind: "run_result" }> {
+  const completion = record(payload.completionClaim) ?? {};
+  const blocker = record(payload.blocker);
+  const rawDisposition = text(payload.reportedWorkDisposition);
+  const disposition = rawDisposition === "blocked"
+    || rawDisposition === "needs_review"
+    || rawDisposition === "yielded"
+    ? rawDisposition
+    : "done";
+  return {
+    kind: "run_result",
+    ts,
+    disposition,
+    summary: text(payload.summary) ?? "Run completed",
+    objectiveSatisfied: typeof completion.objectiveSatisfied === "boolean"
+      ? completion.objectiveSatisfied
+      : null,
+    verification: (Array.isArray(payload.verification) ? payload.verification : [])
+      .map(record)
+      .flatMap((item) => item ? [{
+        commandOrCheck: text(item.commandOrCheck) ?? "Verification",
+        status: verificationStatus(item.status),
+        ...(text(item.detail) ? { detail: text(item.detail)! } : {}),
+        ...(text(item.artifactRef) ? { artifactRef: text(item.artifactRef)! } : {}),
+      }] : [])
+      .slice(0, 64),
+    remainingWork: (Array.isArray(completion.remainingWork) ? completion.remainingWork : [])
+      .map(record)
+      .flatMap((item) => item && text(item.description) ? [{
+        description: text(item.description)!,
+        blocksCompletion: item.blocksCompletion === true,
+      }] : [])
+      .slice(0, 64),
+    blocker: blocker ? {
+      reasonCode: text(blocker.reasonCode) ?? "blocked",
+      unblockAction: text(blocker.unblockAction) ?? "Resolve the blocker to continue.",
+      scope: blocker.scope === "task_wide" ? "task_wide" : "current_track",
+    } : null,
+    artifacts: (Array.isArray(payload.artifacts) ? payload.artifacts : [])
+      .map(record)
+      .flatMap((item) => item && text(item.ref) ? [{
+        kind: text(item.kind) ?? "artifact",
+        ref: text(item.ref)!,
+        ...(text(item.title) ? { title: text(item.title)! } : {}),
+      }] : [])
+      .slice(0, 64),
+  };
+}
+
+function runTerminalEntry(
+  payload: Record<string, unknown>,
+  ts: string,
+): Extract<TranscriptEntry, { kind: "run_terminal" }> | null {
+  if (payload.schema !== RUN_TERMINAL_SCHEMA) return null;
+  const rawTurnState = text(payload.turnTerminalState);
+  const rawRunState = text(payload.runTerminalState);
+  const rawDisposition = text(payload.reportedWorkDisposition);
+  if (
+    !rawTurnState
+    || !["completed", "failed", "interrupted", "cancelled"].includes(rawTurnState)
+    || !rawRunState
+    || !["succeeded", "failed", "cancelled"].includes(rawRunState)
+    || !rawDisposition
+    || !["done", "blocked", "needs_review", "yielded"].includes(rawDisposition)
+  ) return null;
+  const stopReason = record(payload.stopReason);
+  return {
+    kind: "run_terminal",
+    ts,
+    turnState: rawTurnState as Extract<TranscriptEntry, { kind: "run_terminal" }>["turnState"],
+    runState: rawRunState as Extract<TranscriptEntry, { kind: "run_terminal" }>["runState"],
+    disposition: rawDisposition as Extract<TranscriptEntry, { kind: "run_terminal" }>["disposition"],
+    ...(text(stopReason?.message) || text(stopReason?.code)
+      ? { stopReason: text(stopReason?.message) ?? text(stopReason?.code)! }
+      : {}),
+  };
+}
+
+const PROVIDER_ACTIVITY_PRESENTATIONS = {
+  "plan.updated": {
+    schema: "paperclip.plan.updated.v1",
+    idKey: "planId",
+    name: "plan",
+    summaryKeys: ["explanation"],
+  },
+  "research.started": {
+    schema: "paperclip.research.v1",
+    idKey: "researchId",
+    name: "research",
+    summaryKeys: ["query", "pattern", "url"],
+  },
+  "research.progressed": {
+    schema: "paperclip.research.v1",
+    idKey: "researchId",
+    name: "research",
+    summaryKeys: ["query", "pattern", "url"],
+  },
+  "research.completed": {
+    schema: "paperclip.research.v1",
+    idKey: "researchId",
+    name: "research",
+    summaryKeys: ["query", "pattern", "url"],
+  },
+  "delegation.started": {
+    schema: "paperclip.delegation.v1",
+    idKey: "delegationId",
+    name: "delegation",
+    summaryKeys: ["action"],
+  },
+  "delegation.updated": {
+    schema: "paperclip.delegation.v1",
+    idKey: "delegationId",
+    name: "delegation",
+    summaryKeys: ["action"],
+  },
+  "delegation.completed": {
+    schema: "paperclip.delegation.v1",
+    idKey: "delegationId",
+    name: "delegation",
+    summaryKeys: ["action"],
+  },
+  "model.route.changed": {
+    schema: "paperclip.model.route_changed.v1",
+    idKey: "routeId",
+    name: "model",
+    summaryKeys: ["reason", "effectiveModel"],
+  },
+  "model.verification.updated": {
+    schema: "paperclip.model.verification.v1",
+    idKey: "verificationId",
+    name: "model",
+    summaryKeys: ["summary"],
+  },
+  "context.compacted": {
+    schema: "paperclip.context.compacted.v1",
+    idKey: "compactionId",
+    name: "context",
+    summaryKeys: ["reason"],
+  },
+  "artifact.viewed": {
+    schema: "paperclip.artifact.viewed.v1",
+    idKey: "artifactId",
+    name: "artifact",
+    summaryKeys: ["title", "reference"],
+  },
+  "artifact.generated": {
+    schema: "paperclip.artifact.generated.v1",
+    idKey: "artifactId",
+    name: "artifact",
+    summaryKeys: ["failure", "reference"],
+  },
+  "review.mode.changed": {
+    schema: "paperclip.review.mode_changed.v1",
+    idKey: "reviewId",
+    name: "review",
+    summaryKeys: ["scope", "state"],
+  },
+  "hook.started": {
+    schema: "paperclip.hook.v1",
+    idKey: "hookId",
+    name: "hook",
+    summaryKeys: ["summary", "event"],
+  },
+  "hook.completed": {
+    schema: "paperclip.hook.v1",
+    idKey: "hookId",
+    name: "hook",
+    summaryKeys: ["summary", "event"],
+  },
+  "memory.citation.referenced": {
+    schema: "paperclip.memory.citation.v1",
+    idKey: "citationId",
+    name: "memory",
+    summaryKeys: ["label"],
+  },
+  "safety.review.started": {
+    schema: "paperclip.safety.review.v1",
+    idKey: "reviewId",
+    name: "safety",
+    summaryKeys: ["summary", "decision"],
+  },
+  "safety.review.completed": {
+    schema: "paperclip.safety.review.v1",
+    idKey: "reviewId",
+    name: "safety",
+    summaryKeys: ["summary", "decision"],
+  },
+  "terminal.input.sent": {
+    schema: "paperclip.terminal.input_sent.v1",
+    idKey: "executionId",
+    name: "terminal",
+    summaryKeys: ["inputClass"],
+  },
+  "wait.started": {
+    schema: "paperclip.wait.v1",
+    idKey: "waitId",
+    name: "wait",
+    summaryKeys: ["reason"],
+  },
+  "wait.completed": {
+    schema: "paperclip.wait.v1",
+    idKey: "waitId",
+    name: "wait",
+    summaryKeys: ["reason"],
+  },
+  "provider.notice.recorded": {
+    schema: "paperclip.provider.notice.v1",
+    idKey: "noticeId",
+    name: "Provider notice",
+    summaryKeys: ["summary"],
+  },
+} as const;
+
+type ProviderActivityEventType = keyof typeof PROVIDER_ACTIVITY_PRESENTATIONS;
+
+const NONTERMINAL_PROVIDER_ACTIVITY_STATUSES = new Set([
+  "running",
+  "pending",
+  "in_progress",
+  "waiting",
+]);
+
+const TERMINAL_PROVIDER_ACTIVITY_STATUSES = new Set([
+  "completed",
+  "failed",
+  "cancelled",
+  "interrupted",
+  "closed",
+  "denied",
+]);
+
+function providerActivityPresentation(
+  event: HeartbeatRunEvent,
+  payload: Record<string, unknown>,
+): { id: string; name: string; summary: string; terminal: boolean; failed: boolean } | null {
+  if (!Object.prototype.hasOwnProperty.call(PROVIDER_ACTIVITY_PRESENTATIONS, event.eventType)) {
+    return null;
+  }
+  const presentation = PROVIDER_ACTIVITY_PRESENTATIONS[
+    event.eventType as ProviderActivityEventType
+  ];
+  if (!presentation || payload.schema !== presentation.schema) return null;
+  const identity = text(payload[presentation.idKey]);
+  if (!identity) return null;
+  const summary = presentation.summaryKeys
+    .map((key) => text(payload[key]))
+    .find((value): value is string => value !== null)
+    ?? event.eventType;
+  const status = text(payload.status);
+  const failed = status === "failed" || status === "denied" || payload.severity === "error";
+  const terminal = failed
+    ? true
+    : NONTERMINAL_PROVIDER_ACTIVITY_STATUSES.has(status ?? "")
+      ? false
+      : TERMINAL_PROVIDER_ACTIVITY_STATUSES.has(status ?? "")
+      || event.eventType.endsWith(".completed")
+      || event.eventType.endsWith(".failed")
+      || (!event.eventType.endsWith(".started") && !event.eventType.endsWith(".progressed"));
+  return {
+    id: `${event.eventType.split(".")[0]}:${identity}`,
+    name: presentation.name,
+    summary,
+    terminal,
+    failed,
+  };
+}
+
+function finiteCount(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+/** Context-window occupancy carried on a usage item, when the provider reported it. */
+export function contextUsageFromUsagePayload(
+  value: unknown,
+): { usedTokens: number; windowTokens: number } | null {
+  const context = record(record(value)?.context);
+  const usedTokens = finiteCount(context?.usedTokens);
+  const windowTokens = finiteCount(context?.windowTokens);
+  if (usedTokens === null || windowTokens === null || windowTokens < 1) return null;
+  return { usedTokens, windowTokens };
+}
+
+/**
+ * Activity families that render as dedicated task-chat cards. They keep the
+ * full canonical payload (sources, models, durations) instead of collapsing
+ * into a one-line tool row. Families owned by other surfaces stay on the
+ * generic path until they get their own presentation.
+ */
+const CARD_PROVIDER_ACTIVITY_FAMILIES: Partial<Record<ProviderActivityEventType, {
+  family: Extract<TranscriptEntry, { kind: "provider_activity" }>["family"];
+  title: string;
+}>> = {
+  "research.started": { family: "research", title: "Research" },
+  "research.progressed": { family: "research", title: "Research" },
+  "research.completed": { family: "research", title: "Research" },
+  "model.route.changed": { family: "model_identity", title: "Model" },
+  "model.verification.updated": { family: "model_identity", title: "Model" },
+  "artifact.viewed": { family: "artifact", title: "Artifact" },
+  "artifact.generated": { family: "artifact", title: "Artifact" },
+  "review.mode.changed": { family: "review", title: "Review mode" },
+  "wait.started": { family: "wait", title: "Intentional wait" },
+  "wait.completed": { family: "wait", title: "Intentional wait" },
+};
+
+function cardProviderActivityEntry(
+  event: HeartbeatRunEvent,
+  payload: Record<string, unknown>,
+  ts: string,
+): Extract<TranscriptEntry, { kind: "provider_activity" }> | null {
+  const card = CARD_PROVIDER_ACTIVITY_FAMILIES[event.eventType as ProviderActivityEventType];
+  if (!card) return null;
+  const presentation = providerActivityPresentation(event, payload);
+  if (!presentation) return null;
+  const rawStatus = text(payload.status);
+  const status: Extract<TranscriptEntry, { kind: "provider_activity" }>["status"] = presentation.failed
+    ? "failed"
+    : rawStatus === "interrupted" || rawStatus === "cancelled"
+      ? "interrupted"
+      : !presentation.terminal
+        ? "running"
+        : "completed";
+  return {
+    kind: "provider_activity",
+    ts,
+    family: card.family,
+    eventType: event.eventType,
+    status,
+    title: card.title,
+    // No query, URL or reason: leave the row's label to speak for itself
+    // rather than echoing a generic family title as if it were a subject.
+    summary: presentation.summary === event.eventType ? "" : presentation.summary,
+    payload,
+  };
+}
+
+/**
+ * The runner's own verification checks (one item per check in the proposed
+ * run result) become check rows, so a failed check is visible where it ran.
+ */
+function verificationActivityEntry(
+  payload: Record<string, unknown>,
+  itemId: string | null,
+  ts: string,
+): Extract<TranscriptEntry, { kind: "provider_activity" }> | null {
+  const check = record(payload.verification);
+  const commandOrCheck = text(check?.commandOrCheck)?.trim();
+  if (!check || !commandOrCheck) return null;
+  const status = verificationStatus(check.status);
+  const detail = text(check.detail)?.trim() || null;
+  const reasonCode = status === "not_run" ? text(check.reasonCode)?.trim() || null : null;
+  return {
+    kind: "provider_activity",
+    ts,
+    family: "verification",
+    eventType: "verification.recorded",
+    status: status === "passed" ? "completed" : status === "failed" ? "failed" : "informational",
+    title: "Verification",
+    summary: commandOrCheck,
+    payload: {
+      verificationId: itemId ?? `${commandOrCheck}:${ts}`,
+      commandOrCheck,
+      status,
+      detail,
+      reasonCode,
+    },
+  };
+}
+
+function timestamp(event: HeartbeatRunEvent, envelope: Record<string, unknown>): string {
+  const emittedAt = text(envelope.emittedAt);
+  if (emittedAt) return emittedAt;
+  const createdAt = event.createdAt instanceof Date ? event.createdAt.toISOString() : String(event.createdAt);
+  return Number.isNaN(Date.parse(createdAt)) ? new Date(0).toISOString() : createdAt;
+}
+
+interface NativeToolItemDetails {
+  name: string | null;
+  input?: unknown;
+  result?: unknown;
+  isError: boolean;
+}
+
+function nativeToolItemDetails(
+  payload: Record<string, unknown>,
+): {
+  id: string | null;
+  kind: "tooluse" | "toolresult";
+  details: NativeToolItemDetails;
+} | null {
+  const item = normalizedItem(payload);
+  const kind = (text(item.type) ?? "").replaceAll("_", "").toLowerCase();
+  if (kind !== "tooluse" && kind !== "toolresult") return null;
+  const id = kind === "toolresult"
+    ? text(item.tool_use_id) ?? text(item.id)
+    : text(item.id);
+  return {
+    id,
+    kind,
+    details: {
+      name: text(item.name),
+      ...(Object.prototype.hasOwnProperty.call(item, "input")
+        ? { input: item.input }
+        : {}),
+      ...(Object.prototype.hasOwnProperty.call(item, "result")
+        ? { result: item.result }
+        : {}),
+      isError: item.isError === true || item.is_error === true,
+    },
+  };
+}
+
+function serializedNativeToolResult(item: NativeToolItemDetails): string {
+  if (item.result === undefined) return "";
+  try {
+    return JSON.stringify(item.result) ?? "";
+  } catch {
+    return "Tool result could not be serialized";
+  }
+}
+
+/** Names the task-chat tool taxonomy already knows, for a process that only read, searched or listed. */
+const PROCESS_OPERATION_NAMES: Record<string, string> = { read: "Read", search: "Grep", list: "Glob" };
+
+function toolExecutionDetail(payload: Record<string, unknown>): TranscriptToolDetail {
+  const status = text(payload.status);
+  const number = (value: unknown) => (typeof value === "number" && Number.isSafeInteger(value) ? value : null);
+  return {
+    ...(text(payload.operation) ? { operation: text(payload.operation)! } : {}),
+    ...(text(payload.subject) ? { subject: text(payload.subject)! } : {}),
+    ...(text(payload.target) ? { target: text(payload.target)! } : {}),
+    ...(text(payload.description) ? { description: text(payload.description)! } : {}),
+    ...(text(payload.blockedReason) ? { blockedReason: text(payload.blockedReason)! } : {}),
+    ...(status && status !== "running" && number(payload.exitCode) !== null
+      ? { exitCode: number(payload.exitCode) }
+      : {}),
+    ...(status && status !== "running" && number(payload.durationMs) !== null
+      ? { durationMs: number(payload.durationMs) }
+      : {}),
+  };
+}
+
+function toolPresentation(
+  payload: Record<string, unknown>,
+  item?: NativeToolItemDetails,
+): { name: string; input: unknown } {
+  const transport = text(payload.transport);
+  const operation = text(payload.operation);
+  const reportedName = text(payload.name) ?? item?.name ?? null;
+  if (transport === "process") {
+    return {
+      // A read or listing without one concrete file stays a visible command.
+      name: (operation && (operation === "search" || text(payload.target)) && PROCESS_OPERATION_NAMES[operation]) || "Bash",
+      input: reportedName ? { command: reportedName } : { operation: operation ?? "execute" },
+    };
+  }
+  return {
+    name: reportedName ?? operation ?? "Tool",
+    // Operation and namespace are classification data, not something a
+    // person reads; only a concrete target belongs in the row's input summary.
+    input: item?.input ?? (text(payload.target) ? { path: text(payload.target) } : {}),
+  };
+}
+
+/**
+ * Project persisted, provider-neutral PRP events into the legacy transcript
+ * model already consumed by the task thread. Provider-native envelopes never
+ * reach this boundary and unknown event kinds remain safely invisible.
+ */
+/** Diff lines for one edit call's bounded `fileChanges`, attached to its row. */
+function fileChangeDiffEntries(
+  value: readonly unknown[] | undefined,
+  toolUseId: string,
+  ts: string,
+): TranscriptEntry[] {
+  if (!value) return [];
+  const entries: TranscriptEntry[] = [];
+  for (const raw of value.slice(0, 32)) {
+    const change = record(raw);
+    const path = text(change?.path);
+    if (!change || !path) continue;
+    // The producer counted the whole patch; the patch itself may be shortened.
+    const count = (value: unknown) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+    entries.push({
+      kind: "diff", ts, changeType: "file_header", text: path, toolUseId,
+      additions: count(change.additions), deletions: count(change.deletions),
+    });
+    const diff = text(change.diff) ?? "";
+    const classify = createUnifiedDiffClassifier();
+    for (const line of diff.endsWith("\n") ? diff.slice(0, -1).split("\n") : diff ? diff.split("\n") : []) {
+      const { kind, text: value } = classify(line);
+      if (kind === "skip" || kind === "file") continue;
+      entries.push({ kind: "diff", ts, changeType: kind, text: value, toolUseId });
+    }
+    if (change.diffTruncated === true) {
+      entries.push({ kind: "diff", ts, changeType: "truncation", text: "Diff shortened for display.", toolUseId });
+    }
+  }
+  return entries;
+}
+
+export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]): TranscriptEntry[] {
+  const entries: TranscriptEntry[] = [];
+  // A subagent's spawning call also arrives as a tool lifecycle on some
+  // transports. Its delegation card owns it, so the tool row is hidden.
+  const delegationIds = new Set<string>();
+  for (const event of events) {
+    if (!event.eventType.startsWith("delegation.")) continue;
+    const id = text(record(record(record(event.payload)?.prpEvent)?.payload)?.delegationId);
+    if (id) delegationIds.add(id);
+  }
+  const startedToolIds = new Set<string>();
+  const toolSignatures = new Map<string, string>();
+  const completedToolIds = new Set<string>();
+  let usageSummary: {
+    ts: string;
+    inputTokens: number;
+    outputTokens: number;
+    cachedTokens: number;
+    costUsd: number;
+  } | null = null;
+  let cumulativeUsageSummary: {
+    ts: string;
+    inputTokens: number;
+    outputTokens: number;
+    cachedTokens: number;
+    costUsd: number;
+  } | null = null;
+  const seenSourceEventIds = new Set<string>();
+  const orderedEvents = [...events]
+    .sort((a, b) => a.seq - b.seq)
+    .filter((event) => {
+      const envelope = record(event.payload?.prpEvent);
+      const sourceEventId = text(envelope?.sourceEventId);
+      if (!sourceEventId) return true;
+      if (seenSourceEventIds.has(sourceEventId)) return false;
+      seenSourceEventIds.add(sourceEventId);
+      return true;
+    }).flatMap((event) => {
+      const envelope = record(event.payload?.prpEvent);
+      const payload = record(envelope?.payload);
+      if (!envelope || envelope.eventType !== event.eventType
+        || !/^(item|turn|session)\.(completed|failed|cancelled|interrupted|closed)$/.test(event.eventType)
+        || !Array.isArray(payload?.outputTails)) return [event];
+      // Redaction can hold a possible key prefix until the item/turn ends.
+      // Project its settled tail as display-only deltas before the terminal.
+      const tails = payload.outputTails.flatMap((value, index): HeartbeatRunEvent[] => {
+        const tail = record(value);
+        const tailPayload = record(tail?.payload);
+        if (!tailPayload || typeof tailPayload.text !== "string") return [];
+        return [{ ...event, eventType: "item.delta", payload: { prpEvent: {
+          ...envelope, eventType: "item.delta", itemId: tail?.itemId,
+          sourceEventId: `${envelope.sourceEventId}:output-tail:${index}`, payload: tailPayload,
+        } } }];
+      });
+      return [...tails, event];
+    });
+  const hasAcceptedResult = orderedEvents.some(
+    (event) => event.eventType === "run.result.accepted",
+  );
+  const runtimeRequests = new Map<
+    string,
+    Extract<TranscriptEntry, { kind: "runtime_request" }>
+  >();
+  let hasRunResult = false;
+  let responseWakeCandidate: {
+    entry: Extract<TranscriptEntry, { kind: "run_result" }>;
+    runId: string;
+    sourceEventId: string;
+    sourceInstanceId: string;
+    normalizedSessionId: string;
+    turnId: string | null;
+    seq: number;
+  } | null = null;
+  const acceptedResultCounts = new Map<string, number>();
+  const terminalsByRun = new Map<
+    string,
+    {
+      entry: Extract<TranscriptEntry, { kind: "run_terminal" }>;
+      seq: number;
+      envelope: Record<string, unknown>;
+    }
+  >();
+  const completedAgentMessageIds = new Set<string>();
+  const completedReasoningIds = new Set<string>();
+  const completionItemIdentityById = new Map<string, ItemIdentity>();
+  const nativeToolItemsById = new Map<string, NativeToolItemDetails>();
+  // An edit call reports an optimistic patch when it starts and the exact one
+  // when it lands. The row shows the latest one, wherever it first appears.
+  const fileChangesByExecutionId = new Map<string, unknown[]>();
+  // Messages whose `<proposed_plan>` block became a completed proposal show
+  // it through the proposal card; any other message keeps its text.
+  const proposedMessageIds = new Set<string>();
+  for (const event of orderedEvents) {
+    if (event.eventType !== "plan.proposed") continue;
+    const payload = record(record(event.payload?.prpEvent)?.payload);
+    const proposalId = text(payload?.proposalId);
+    if (proposalId && payload?.status === "completed") proposedMessageIds.add(proposalId);
+  }
+  for (const event of orderedEvents) {
+    if (!event.eventType.startsWith("tool.execution.")) continue;
+    const payload = record(record(event.payload?.prpEvent)?.payload);
+    const executionId = text(payload?.executionId);
+    if (executionId && Array.isArray(payload?.fileChanges)) {
+      fileChangesByExecutionId.set(executionId, payload.fileChanges);
+    }
+  }
+  for (const event of orderedEvents) {
+    if (!isItemIdentityEvent(event.eventType)) continue;
+    const envelope = record(event.payload?.prpEvent);
+    if (
+      !envelope
+      || envelope.schema !== "paperclip.prp.event.v1"
+      || envelope.schemaVersion !== 1
+      || envelope.runId !== event.runId
+      || envelope.eventType !== event.eventType
+    ) continue;
+    const payload = record(envelope?.payload);
+    if (!payload) continue;
+    const itemId = normalizedItemId(envelope, payload);
+    if (!itemId) continue;
+    const toolItem = nativeToolItemDetails(payload);
+    if (toolItem) {
+      const toolId = toolItem.id ?? itemId;
+      const previous = nativeToolItemsById.get(toolId);
+      nativeToolItemsById.set(toolId, {
+        name: toolItem.details.name ?? previous?.name ?? null,
+        ...(toolItem.details.input !== undefined
+          ? { input: toolItem.details.input }
+          : previous?.input !== undefined
+            ? { input: previous.input }
+            : {}),
+        ...(toolItem.details.result !== undefined
+          ? { result: toolItem.details.result }
+          : previous?.result !== undefined
+            ? { result: previous.result }
+            : {}),
+        isError: toolItem.details.isError || previous?.isError === true,
+      });
+    }
+    const identity = resolveItemIdentity(
+      payload,
+      completionItemIdentityById.get(itemId),
+    );
+    if (identity.kind) completionItemIdentityById.set(itemId, identity);
+    if (event.eventType !== "item.completed") continue;
+    const kind = identity.kind;
+    if (isAssistantItemKind(kind) && itemId && normalizedItemText(payload)) {
+      completedAgentMessageIds.add(itemId);
+    }
+    if (kind === "reasoning" && itemId && normalizedItemText(payload)) {
+      completedReasoningIds.add(itemId);
+    }
+  }
+
+  const itemIdentityById = new Map<string, ItemIdentity>();
+  // Context occupancy rides on usage items. A compaction divider takes its
+  // "before" size from the last report and its "after" size from the next.
+  let latestContextUsedTokens: number | null = null;
+  let awaitingPostCompaction: Record<string, unknown> | null = null;
+  let lastCompaction: Record<string, unknown> | null = null;
+  let usageSinceLastCompaction = false;
+  const proposalMarkdownById = new Map<string, string>();
+  const completedProposalIds = new Set<string>();
+  for (const event of orderedEvents) {
+    const envelope = record(event.payload?.prpEvent);
+    if (
+      !envelope
+      || envelope.schema !== "paperclip.prp.event.v1"
+      || envelope.schemaVersion !== 1
+    ) continue;
+    if (envelope.runId !== event.runId || envelope.eventType !== event.eventType) continue;
+    const payload = record(envelope.payload);
+    if (!payload) continue;
+    const ts = timestamp(event, envelope);
+
+    const itemId = normalizedItemId(envelope, payload);
+    const itemIdentity = resolveItemIdentity(
+      payload,
+      itemId ? itemIdentityById.get(itemId) : undefined,
+    );
+    if (itemId && itemIdentity.kind && isItemIdentityEvent(event.eventType)) {
+      itemIdentityById.set(itemId, itemIdentity);
+    }
+    const itemKind = itemIdentity.kind;
+
+    if (event.eventType === "item.completed" && payload.kind === "usage") {
+      const context = contextUsageFromUsagePayload(payload.usage);
+      if (context) {
+        usageSinceLastCompaction = true;
+        if (awaitingPostCompaction && context.usedTokens < (latestContextUsedTokens ?? Infinity)) {
+          awaitingPostCompaction.postTokens = context.usedTokens;
+          awaitingPostCompaction = null;
+        }
+        latestContextUsedTokens = context.usedTokens;
+      }
+    }
+
+    if (event.eventType === "context.compacted" && payload.schema === "paperclip.context.compacted.v1") {
+      // A provider can report the same compaction twice (item start and end)
+      // with no usage between them. Later compactions always follow usage.
+      if (
+        lastCompaction
+        && lastCompaction.compactionId === payload.compactionId
+        && !usageSinceLastCompaction
+      ) continue;
+      usageSinceLastCompaction = false;
+      const compaction: Record<string, unknown> = {
+        ...payload,
+        preTokens: finiteCount(payload.preTokens) ?? latestContextUsedTokens,
+        postTokens: finiteCount(payload.postTokens),
+      };
+      if (compaction.postTokens === null) awaitingPostCompaction = compaction;
+      lastCompaction = compaction;
+      entries.push({
+        kind: "provider_activity",
+        ts,
+        family: "context",
+        eventType: event.eventType,
+        status: "completed",
+        title: "Context compacted",
+        summary: "Context compacted",
+        payload: compaction,
+      });
+      continue;
+    }
+
+    if (event.eventType === "item.delta" && isAssistantItemKind(itemKind)) {
+      const value = normalizedItemText(payload);
+      if (!value || !itemId) continue;
+      // Once the loss-resistant completion is present, prefer its full text.
+      // Before that point the deltas still provide the live streaming view.
+      if (completedAgentMessageIds.has(itemId)) continue;
+      const channel = itemIdentity.assistantChannel;
+      entries.push({ kind: "assistant", ts, text: value, delta: true, channel, itemId });
+      continue;
+    }
+
+    if (event.eventType === "item.completed" && isAssistantItemKind(itemKind)) {
+      // A `<proposed_plan>` block is shown by its plan proposal card instead.
+      const raw = normalizedItemText(payload) ?? "";
+      const value = itemId && proposedMessageIds.has(itemId) ? withoutProposedPlanBlock(raw) : raw;
+      if (!value) continue;
+      const channel = itemIdentity.assistantChannel;
+      entries.push({ kind: "assistant", ts, text: value, channel, ...(itemId ? { itemId } : {}) });
+      continue;
+    }
+
+    if (event.eventType === "item.delta" && itemKind === "reasoning") {
+      const value = normalizedItemText(payload);
+      if (!value || !itemId || completedReasoningIds.has(itemId)) continue;
+      entries.push({
+        kind: "thinking",
+        ts,
+        text: value,
+        delta: true,
+        lifecycle: "started",
+        channel: itemIdentity.reasoningChannel,
+        itemId,
+      });
+      continue;
+    }
+
+    if (event.eventType === "item.completed" && itemKind === "reasoning") {
+      const value = normalizedItemText(payload);
+      if (!value) continue;
+      entries.push({
+        kind: "thinking",
+        ts,
+        text: value,
+        lifecycle: "completed",
+        channel: itemIdentity.reasoningChannel,
+        ...(itemId ? { itemId } : {}),
+      });
+      continue;
+    }
+
+    if (event.eventType === "item.completed" && payload.kind === "verification") {
+      const entry = verificationActivityEntry(payload, itemId, ts);
+      if (entry) entries.push(entry);
+      continue;
+    }
+
+    // Some provider transports expose their complete dynamic-tool lifecycle
+    // directly as item.started/item.completed events and do not emit the
+    // parallel tool.execution.* activity stream. Project those canonical
+    // tool items at their own stable item boundary so saved documents can be
+    // embedded beside the write that created them instead of falling back to
+    // the end of the run timeline.
+    const nativeToolEvent = isItemIdentityEvent(event.eventType)
+      ? nativeToolItemDetails(payload)
+      : null;
+    if (nativeToolEvent) {
+      const toolId = nativeToolEvent.id ?? itemId;
+      if (!toolId) continue;
+      const nativeToolItem = nativeToolItemsById.get(toolId)
+        ?? nativeToolEvent.details;
+      const presentation = toolPresentation({}, nativeToolItem);
+      if (!startedToolIds.has(toolId)) {
+        startedToolIds.add(toolId);
+        entries.push({
+          kind: "tool_call",
+          ts,
+          name: presentation.name,
+          input: presentation.input,
+          toolUseId: toolId,
+        });
+      }
+      if (
+        event.eventType === "item.completed"
+        && (nativeToolEvent.kind === "toolresult"
+          || nativeToolEvent.details.result !== undefined)
+        && !completedToolIds.has(toolId)
+      ) {
+        completedToolIds.add(toolId);
+        entries.push({
+          kind: "tool_result",
+          ts,
+          toolUseId: toolId,
+          toolName: presentation.name,
+          content: serializedNativeToolResult(nativeToolItem),
+          isError: nativeToolItem.isError,
+        });
+      }
+      continue;
+    }
+
+    // Notices are provider diagnostics, not tool calls. Preserve their message
+    // and category for the shared notice row instead of serializing an input blob.
+    if (event.eventType === "provider.notice.recorded" && payload.schema === "paperclip.provider.notice.v1") {
+      if (isRunLogOnlyProviderEvent(event.eventType, payload)) continue;
+      entries.push({
+        kind: "provider_activity",
+        ts,
+        family: "provider_notice",
+        eventType: event.eventType,
+        status: payload.severity === "error" ? "failed" : "informational",
+        title: "Provider notice",
+        summary: text(payload.summary)?.trim() || text(payload.message)?.trim() || "Provider notice",
+        payload,
+      });
+      continue;
+    }
+
+    // The plan carries its steps to the turn plan card, so keep the full
+    // snapshot instead of flattening it into a generic tool row.
+    if (event.eventType === "plan.updated" && payload.schema === "paperclip.plan.updated.v1" && text(payload.planId)) {
+      entries.push({
+        kind: "provider_activity",
+        ts,
+        family: "plan",
+        eventType: event.eventType,
+        status: payload.complete === true
+          ? "completed"
+          : Array.isArray(payload.steps) && payload.steps.some((step) => {
+            const status = record(step)?.status;
+            return status === "blocked" || status === "failed";
+          })
+            ? "failed"
+            : "running",
+        title: "Plan",
+        summary: text(payload.explanation)?.trim() || "Plan",
+        payload,
+      });
+      continue;
+    }
+
+    // A proposed plan document (Codex plan item, Claude ExitPlanMode) is the
+    // candidate for the task's Plan document, not the turn checklist.
+    if (event.eventType === "plan.proposed" && payload.schema === "paperclip.plan.proposed.v1" && text(payload.proposalId)) {
+      const proposalId = text(payload.proposalId)!;
+      const completed = payload.status === "completed";
+      // A completed proposal is already the unwrapped document; show it as is.
+      const markdown = text(payload.markdown) ?? proposedPlanMarkdown(proposalMarkdownById.get(proposalId) ?? "");
+      if (completed) completedProposalIds.add(proposalId);
+      proposalMarkdownById.set(proposalId, markdown);
+      entries.push(planProposalEntry(ts, event.eventType, proposalId, markdown, completed, payload));
+      continue;
+    }
+
+    // Codex streams the proposed plan as plan-item deltas before the
+    // completed plan.proposed event carries the whole document.
+    if (event.eventType === "item.delta" && itemKind === "plan" && itemId) {
+      if (completedProposalIds.has(itemId)) continue;
+      const accumulated = (proposalMarkdownById.get(itemId) ?? "") + (normalizedItemText(payload) ?? "");
+      proposalMarkdownById.set(itemId, accumulated);
+      entries.push(planProposalEntry(ts, "plan.proposed", itemId, proposedPlanMarkdown(accumulated), false, {}));
+      continue;
+    }
+
+    // Governance records (hooks, automatic approval reviews) keep their full
+    // payload so the task chat can show the decision, reason and target.
+    if ((event.eventType === "hook.started" || event.eventType === "hook.completed")
+      && payload.schema === "paperclip.hook.v1" && text(payload.hookId)) {
+      const outcome = text(payload.outcome) ?? text(payload.status);
+      entries.push({
+        kind: "provider_activity",
+        ts,
+        family: "hook",
+        eventType: event.eventType,
+        status: outcome === "running" ? "running" : outcome === "failed" ? "failed" : "completed",
+        title: "Hook",
+        summary: text(payload.message)?.trim() || text(payload.summary)?.trim() || "",
+        payload,
+      });
+      continue;
+    }
+    if ((event.eventType === "safety.review.started" || event.eventType === "safety.review.completed")
+      && payload.schema === "paperclip.safety.review.v1" && text(payload.reviewId)) {
+      const decision = text(payload.decision);
+      entries.push({
+        kind: "provider_activity",
+        ts,
+        family: "safety",
+        eventType: event.eventType,
+        status: decision === "pending" || payload.status === "running"
+          ? "running"
+          : decision === "denied" || decision === "timed_out" ? "failed" : "completed",
+        title: "Auto-review",
+        summary: text(payload.rationale)?.trim() || text(payload.summary)?.trim() || "",
+        payload,
+      });
+      continue;
+    }
+    // A delegation carries its children (subagent type, prompt, progress,
+    // result) to the task-chat subagent card, so keep the full snapshot.
+    if (
+      event.eventType.startsWith("delegation.")
+      && payload.schema === "paperclip.delegation.v1"
+      && text(payload.delegationId)
+    ) {
+      const status = text(payload.status);
+      entries.push({
+        kind: "provider_activity",
+        ts,
+        family: "delegation",
+        eventType: event.eventType,
+        status: status === "failed"
+          ? "failed"
+          : status === "interrupted"
+            ? "interrupted"
+            : status === "completed" || status === "closed"
+              ? "completed"
+              : "running",
+        title: "Subagent",
+        summary: "Subagent",
+        payload,
+      });
+      continue;
+    }
+
+    const cardActivity = cardProviderActivityEntry(event, payload, ts);
+    if (cardActivity) {
+      entries.push(cardActivity);
+      continue;
+    }
+
+    const providerActivity = providerActivityPresentation(event, payload);
+    if (providerActivity) {
+      if (!startedToolIds.has(providerActivity.id)) {
+        startedToolIds.add(providerActivity.id);
+        entries.push({
+          kind: "tool_call",
+          ts,
+          name: providerActivity.name,
+          toolUseId: providerActivity.id,
+          input: { eventType: event.eventType, summary: providerActivity.summary },
+        });
+      }
+      if (providerActivity.terminal) {
+        entries.push({
+          kind: "tool_result",
+          ts,
+          toolUseId: providerActivity.id,
+          toolName: providerActivity.name,
+          content: providerActivity.summary,
+          isError: providerActivity.failed,
+        });
+      }
+      continue;
+    }
+
+    if (
+      (event.eventType === "workspace.change.updated" || event.eventType === "workspace.diff.recorded")
+      && payload.schema === "paperclip.workspace.diff.v1"
+    ) {
+      entries.push(workspaceChangeEntry(payload, ts));
+      continue;
+    }
+
+    if (
+      event.eventType === "tool.execution.started" ||
+      event.eventType === "tool.execution.progressed" ||
+      event.eventType === "tool.execution.completed"
+    ) {
+      if (payload.schema !== TOOL_EXECUTION_SCHEMA) continue;
+      const executionId = text(payload.executionId);
+      if (!executionId || delegationIds.has(executionId)) continue;
+      const nativeToolItem = nativeToolItemsById.get(executionId);
+      const presentation = toolPresentation(payload, nativeToolItem);
+      const parentToolUseId = text(payload.parentItemId);
+      const detail = toolExecutionDetail(payload);
+      // Providers refine a call as its input streams in ("Terminal" becomes
+      // "node --test") and report the outcome at the end. Re-emit the call
+      // whenever its canonical facts change; the adapter merges by id.
+      const signature = JSON.stringify([presentation.name, detail]);
+      const refines = Object.keys(detail).some((key) => key !== "operation");
+      if (!startedToolIds.has(executionId) || (refines && toolSignatures.get(executionId) !== signature)) {
+        // The latest patch is attached once, with the call's first row; a
+        // refinement only updates the call's facts.
+        const firstEmission = !toolSignatures.has(executionId);
+        toolSignatures.set(executionId, signature);
+        startedToolIds.add(executionId);
+        const fileChanges = fileChangesByExecutionId.get(executionId);
+        const editedPath = text(record(fileChanges?.[0])?.path);
+        entries.push({
+          kind: "tool_call",
+          ts,
+          name: presentation.name,
+          // An edit's opening event can precede its path; the patch names the file.
+          input: editedPath && typeof presentation.input === "object"
+            ? { ...presentation.input as Record<string, unknown>, path: editedPath }
+            : presentation.input,
+          toolUseId: executionId,
+          detail,
+          ...(parentToolUseId ? { parentToolUseId } : {}),
+        });
+        if (firstEmission) entries.push(...fileChangeDiffEntries(fileChanges, executionId, ts));
+      }
+      if (event.eventType === "tool.execution.completed" && !completedToolIds.has(executionId)) {
+        completedToolIds.add(executionId);
+        const output = text(payload.output);
+        const content = output ?? (nativeToolItem
+          ? serializedNativeToolResult(nativeToolItem)
+          : "");
+        entries.push({
+          kind: "tool_result",
+          ts,
+          toolUseId: executionId,
+          toolName: presentation.name,
+          content,
+          isError: payload.status === "failed" || nativeToolItem?.isError === true,
+        });
+      }
+      continue;
+    }
+
+    if (event.eventType === "usage.reported") {
+      // A provider may report only session-cumulative usage. Preserve the
+      // latest snapshot as explicitly session-scoped usage instead of either
+      // summing cumulative values or relabelling them as a per-run delta.
+      if (payload.runDeltaAvailable !== true) {
+        const cumulative = record(payload.cumulative);
+        if (cumulative) {
+          cumulativeUsageSummary = {
+            ts,
+            inputTokens: finiteNumber(cumulative.inputTokens),
+            outputTokens: finiteNumber(cumulative.outputTokens),
+            cachedTokens: finiteNumber(cumulative.cacheReadTokens),
+            costUsd: finiteNumber(cumulative.providerCostUsd),
+          };
+        }
+        continue;
+      }
+      const measurement = record(payload.runDelta);
+      if (!measurement) continue;
+      const next = {
+        ts,
+        inputTokens: finiteNumber(measurement.inputTokens),
+        outputTokens: finiteNumber(measurement.outputTokens),
+        cachedTokens: finiteNumber(measurement.cacheReadTokens),
+        costUsd: finiteNumber(measurement.providerCostUsd),
+      };
+      // Provider cumulative values are session-scoped and can include earlier
+      // runs. Fold only the event's run delta into this run's transcript.
+      usageSummary = usageSummary
+        ? {
+            ts,
+            inputTokens: usageSummary.inputTokens + next.inputTokens,
+            outputTokens: usageSummary.outputTokens + next.outputTokens,
+            cachedTokens: usageSummary.cachedTokens + next.cachedTokens,
+            costUsd: usageSummary.costUsd + next.costUsd,
+          }
+        : next;
+      continue;
+    }
+
+    if (event.eventType.startsWith("runtime_request.")) {
+      const requestId = text((record(payload.request) ?? payload).requestId)
+        ?? text(payload.requestId);
+      const entry = runtimeRequestEntry({
+        eventType: event.eventType,
+        envelope,
+        payload,
+        ts,
+        ...(requestId ? { previous: runtimeRequests.get(requestId) } : {}),
+      });
+      if (entry) {
+        runtimeRequests.set(entry.requestId, entry);
+        entries.push(entry);
+      }
+      continue;
+    }
+
+    if (event.eventType === "run.terminal") {
+      const terminal = runTerminalEntry(payload, ts);
+      if (terminal) {
+        entries.push(terminal);
+        terminalsByRun.set(event.runId, {
+          entry: terminal,
+          seq: event.seq,
+          envelope,
+        });
+      }
+      continue;
+    }
+
+    if (
+      event.eventType === "run.result.proposed" ||
+      event.eventType === "run.result.accepted"
+    ) {
+      if (event.eventType === "run.result.proposed" && hasAcceptedResult)
+        continue;
+      const result =
+        event.eventType === "run.result.accepted"
+          ? record(payload.result)
+          : payload;
+      if (!result || result.schema !== RUN_RESULT_SCHEMA) continue;
+      if (event.eventType === "run.result.accepted") {
+        acceptedResultCounts.set(
+          event.runId,
+          (acceptedResultCounts.get(event.runId) ?? 0) + 1,
+        );
+      }
+      if (!hasRunResult) {
+        const entry = runResultEntry(result, ts);
+        entries.push(entry);
+        const continuation = record(result.continuation);
+        const sourceEventId = text(envelope.sourceEventId);
+        const sourceInstanceId = text(envelope.sourceInstanceId);
+        const normalizedSessionId = text(envelope.normalizedSessionId);
+        // Never infer this authority from provider prose, a proposed result,
+        // or a similarly named field supplied inside the semantic result.
+        if (
+          event.eventType === "run.result.accepted" &&
+          envelope.sourceKind === "control_plane" &&
+          entry.disposition === "yielded" &&
+          text(result.summary)?.trim() &&
+          continuation?.kind === "response_wake" &&
+          text(continuation.idempotencyKey)?.trim() &&
+          Array.isArray(result.attentionRequests) &&
+          result.attentionRequests.length === 0 &&
+          sourceEventId?.trim() &&
+          sourceInstanceId?.trim() &&
+          normalizedSessionId?.trim()
+        ) {
+          responseWakeCandidate = {
+            entry,
+            runId: event.runId,
+            sourceEventId,
+            sourceInstanceId,
+            normalizedSessionId,
+            turnId: text(envelope.turnId),
+            seq: event.seq,
+          };
+        }
+        hasRunResult = true;
+      }
+      continue;
+    }
+  }
+
+  if (responseWakeCandidate) {
+    const candidate = responseWakeCandidate;
+    const terminal = terminalsByRun.get(candidate.runId);
+    if (
+      acceptedResultCounts.get(candidate.runId) === 1 &&
+      terminal &&
+      terminal.seq > candidate.seq &&
+      terminal.envelope.sourceKind === "control_plane" &&
+      text(terminal.envelope.sourceEventId)?.trim() &&
+      terminal.envelope.sourceInstanceId === candidate.sourceInstanceId &&
+      terminal.envelope.normalizedSessionId === candidate.normalizedSessionId &&
+      text(terminal.envelope.turnId) === candidate.turnId &&
+      terminal.entry.runState === "succeeded" &&
+      terminal.entry.turnState === "completed" &&
+      terminal.entry.disposition === "yielded" &&
+      ![...runtimeRequests.values()].some(
+        (request) => request.status === "pending",
+      )
+    ) {
+      candidate.entry.acceptedResponseWake = {
+        runId: candidate.runId,
+        sourceEventId: candidate.sourceEventId,
+      };
+    }
+  }
+
+  if (usageSummary) {
+    entries.push({
+      kind: "result",
+      ...usageSummary,
+      text: "",
+      subtype: "paperclip_runner_usage",
+      isError: false,
+      errors: [],
+    });
+  } else if (cumulativeUsageSummary) {
+    entries.push({
+      kind: "result",
+      ...cumulativeUsageSummary,
+      text: "Provider-reported session-cumulative usage; a per-run delta was unavailable.",
+      subtype: "paperclip_runner_session_usage",
+      isError: false,
+      errors: [],
+    });
+  }
+
+  return entries;
+}

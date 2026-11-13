@@ -1,0 +1,1 @@
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "heartbeat_runs_tree_hold_suppression_idx" ON "heartbeat_runs" USING btree ("company_id",("result_json"->'treeHoldSuppression'->>'holdId')) WHERE "heartbeat_runs"."status" = 'cancelled' and "heartbeat_runs"."result_json" ? 'treeHoldSuppression';

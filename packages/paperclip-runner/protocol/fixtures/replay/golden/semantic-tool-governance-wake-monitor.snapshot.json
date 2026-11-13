@@ -1,0 +1,139 @@
+{
+  "schema": "paperclip.prp.session-snapshot.v1",
+  "fixtureName": "Semantic governance target and continuation chain",
+  "identity": {
+    "schema": "paperclip.prp.identity.v1",
+    "companyId": "company_semantic_governance",
+    "issueId": "issue_semantic_governance",
+    "runId": "run_semantic_governance",
+    "environmentLeaseId": "lease_semantic_governance",
+    "runnerInstanceId": "runner_semantic_governance",
+    "normalizedSessionId": "session_semantic_governance",
+    "driverSessionId": "driver_semantic_governance"
+  },
+  "capabilities": {
+    "schema": "paperclip.prp.capabilities.v1",
+    "sessionReusePolicy": "reuse_per_issue",
+    "driver": {
+      "kind": "provider-neutral",
+      "version": "1.0.0"
+    },
+    "steer": true,
+    "interrupt": true,
+    "resume": true,
+    "runtimeRequests": true,
+    "structuredResult": true,
+    "typedEvents": true,
+    "semanticTools": {
+      "schema": "paperclip.prp.semantic_tools.v1",
+      "schemaVersion": 1,
+      "operations": [
+        {
+          "operationId": "request_human_input",
+          "version": 1,
+          "availability": "available",
+          "redactionDisposition": "digest_only",
+          "requiredClaims": []
+        }
+      ]
+    },
+    "unsupported": []
+  },
+  "runPhase": "terminal",
+  "sessionState": "not_started",
+  "turnState": "not_started",
+  "activeTurnId": null,
+  "items": [],
+  "requests": [],
+  "proposedResult": {
+    "schema": "paperclip.run_result.v1",
+    "reportedWorkDisposition": "yielded",
+    "summary": "The immutable decision target is waiting on a bounded monitor continuation.",
+    "completionClaim": {
+      "contractRevision": "semantic-receipts-v1",
+      "objectiveSatisfied": false,
+      "criteria": [],
+      "remainingWork": [
+        {
+          "description": "Wait for the interaction response.",
+          "blocksCompletion": true
+        }
+      ]
+    },
+    "evidence": [
+      {
+        "receiptId": "receipt_semantic_governance"
+      }
+    ],
+    "verification": [
+      {
+        "commandOrCheck": "immutable target and causal chain",
+        "status": "passed"
+      }
+    ],
+    "attentionRequests": [],
+    "artifacts": [],
+    "continuation": {
+      "kind": "monitor",
+      "summary": "Recheck after the typed response wake.",
+      "idempotencyKey": "monitor_semantic_governance"
+    }
+  },
+  "terminal": {
+    "schema": "paperclip.prp.terminal.v1",
+    "turnTerminalState": "completed",
+    "runTerminalState": "succeeded",
+    "reportedWorkDisposition": "yielded",
+    "workAssessmentId": "assessment_semantic_governance",
+    "statusDecisionId": "decision_semantic_governance"
+  },
+  "timeline": [
+    {
+      "position": 1,
+      "sourceEventId": "semantic_governance_01",
+      "sourceSeq": 1,
+      "eventType": "mcp_app.tool_input",
+      "emittedAt": "2026-08-11T10:30:00.000Z",
+      "itemId": "item_semantic_governance",
+      "summary": "mcp_app tool_input"
+    },
+    {
+      "position": 2,
+      "sourceEventId": "semantic_governance_02",
+      "sourceSeq": 2,
+      "eventType": "mcp_app.tool_result",
+      "emittedAt": "2026-08-11T10:30:00.010Z",
+      "itemId": "item_semantic_governance",
+      "summary": "mcp_app tool_result"
+    },
+    {
+      "position": 3,
+      "sourceEventId": "semantic_governance_03",
+      "sourceSeq": 3,
+      "eventType": "run.result.proposed",
+      "emittedAt": "2026-08-11T10:30:00.020Z",
+      "summary": "The immutable decision target is waiting on a bounded monitor continuation."
+    },
+    {
+      "position": 4,
+      "sourceEventId": "semantic_governance_04",
+      "sourceSeq": 4,
+      "eventType": "run.terminal",
+      "emittedAt": "2026-08-11T10:30:00.030Z",
+      "summary": "Run succeeded"
+    }
+  ],
+  "sourceCursors": {
+    "runner:runner_semantic_governance": 4
+  },
+  "processedEventIds": [
+    "semantic_governance_01",
+    "semantic_governance_02",
+    "semantic_governance_03",
+    "semantic_governance_04"
+  ],
+  "duplicateEventIds": [],
+  "outOfOrderEventIds": [],
+  "gaps": [],
+  "integrity": "complete"
+}

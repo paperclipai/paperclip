@@ -28,6 +28,96 @@ Write the channel-appropriate announcement for a release without churn. Differen
 - An internal-only change with no user impact. Update internal docs; do not announce.
 - The release is incomplete (still in active development). Wait until it ships, even if marketing wants the post.
 
+## Paperclip Cases output
+
+When this skill runs inside Paperclip and `experimental.enableCases` is enabled,
+emit durable release-content cases before handing off the copy. Cases preserve
+the inspectable output; the issue coordinates the work.
+
+Use `skills/paperclip/references/cases.md` for the API contract. Include
+`X-Paperclip-Run-Id` on writes when `PAPERCLIP_RUN_ID` is set. If the API returns
+`403 Cases are disabled`, report that limitation and continue with the requested
+copy artifact.
+
+Upsert the parent release case first when it does not already exist:
+
+```json
+{
+  "caseType": "release",
+  "key": "paperclip-release:vYYYY.MDD.P",
+  "title": "Paperclip vYYYY.MDD.P release",
+  "status": "in_progress",
+  "fields": {
+    "schema_version": 1,
+    "version": "vYYYY.MDD.P",
+    "release_date": "YYYY-MM-DD",
+    "release_patch": 0,
+    "stable": true,
+    "channels": ["blog_post", "tweet_storm"],
+    "artifacts": {
+      "changelog_path": "releases/vYYYY.MDD.P.md",
+      "publish_url": null
+    }
+  }
+}
+```
+
+For a dev blog, upsert a child case with `parentCaseId` set to the release case:
+
+```json
+{
+  "caseType": "blog_post",
+  "key": "paperclip-release:vYYYY.MDD.P:blog-post",
+  "title": "Paperclip vYYYY.MDD.P launch post",
+  "status": "in_review",
+  "parentCaseId": "<release-case-id>",
+  "fields": {
+    "schema_version": 1,
+    "version": "vYYYY.MDD.P",
+    "slug": "paperclip-vYYYY-MDD-P",
+    "word_count_target": 650,
+    "target_audience": ["operators", "developers"],
+    "requires_screenshot": false,
+    "links": {
+      "release_notes": "releases/vYYYY.MDD.P.md",
+      "publish_url": null
+    },
+    "sections": ["hook", "whats_new", "upgrade", "whats_next"]
+  }
+}
+```
+
+For social output, upsert a sibling child case:
+
+```json
+{
+  "caseType": "tweet_storm",
+  "key": "paperclip-release:vYYYY.MDD.P:tweet-storm",
+  "title": "Paperclip vYYYY.MDD.P tweet storm",
+  "status": "in_review",
+  "parentCaseId": "<release-case-id>",
+  "fields": {
+    "schema_version": 1,
+    "version": "vYYYY.MDD.P",
+    "post_count": 1,
+    "channel": "x",
+    "target_audience": ["operators", "contributors"],
+    "links": {
+      "release_notes": "releases/vYYYY.MDD.P.md",
+      "publish_url": null
+    },
+    "review": {
+      "needs_human_copy_paste": true,
+      "approved_by": null
+    }
+  }
+}
+```
+
+Write the produced copy to `PUT /api/cases/:caseId/documents/body` with
+`format: "markdown"` and a `changeSummary`. Fetch the latest document revision
+and pass `baseRevisionId` when updating an existing body document.
+
 ## Determine the audience and channel first
 
 | Audience | Best channel | Tone |

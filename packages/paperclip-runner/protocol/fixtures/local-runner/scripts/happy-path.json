@@ -1,0 +1,90 @@
+{
+  "schema": "paperclip.fake_harness.script.v1",
+  "name": "happy-path",
+  "steps": [
+    {
+      "kind": "event",
+      "event_type": "item.started",
+      "item_id": "item_local_runner_command",
+      "payload": { "kind": "command", "text": "pnpm test --filter fake" }
+    },
+    { "kind": "delay", "milliseconds": 15 },
+    { "kind": "log", "stream": "stdout", "text": "prepare workspace" },
+    { "kind": "log", "stream": "stdout", "text": "load scripted driver" },
+    { "kind": "log", "stream": "stdout", "text": "run deterministic check" },
+    { "kind": "log", "stream": "stdout", "text": "write fixture output" },
+    { "kind": "log", "stream": "stdout", "text": "verification passed" },
+    {
+      "kind": "event",
+      "event_type": "item.delta",
+      "item_id": "item_local_runner_command",
+      "payload": { "text": "Fake driver output is live. " }
+    },
+    {
+      "kind": "event",
+      "event_type": "item.completed",
+      "item_id": "item_local_runner_command",
+      "payload": { "kind": "command", "text": "Fake driver check passed." }
+    },
+    {
+      "kind": "event",
+      "event_type": "item.started",
+      "item_id": "item_local_runner_file",
+      "payload": { "kind": "file_change", "text": "local-runner-output.json" }
+    },
+    {
+      "kind": "event",
+      "event_type": "item.completed",
+      "item_id": "item_local_runner_file",
+      "payload": { "kind": "file_change", "text": "Wrote local-runner-output.json" }
+    },
+    {
+      "kind": "result",
+      "payload": {
+        "schema": "paperclip.run_result.v1",
+        "reportedWorkDisposition": "done",
+        "summary": "The live fake-harness run completed successfully.",
+        "completionClaim": {
+          "contractRevision": "local_runner-contract-v1",
+          "objectiveSatisfied": true,
+          "criteria": [
+            {
+              "criterionId": "local-runner",
+              "status": "satisfied",
+              "evidenceRefs": ["event:item_local_runner_command"]
+            }
+          ],
+          "remainingWork": []
+        },
+        "evidence": [{ "kind": "event", "ref": "item_local_runner_command" }],
+        "verification": [
+          { "commandOrCheck": "fake driver conformance", "status": "passed" }
+        ],
+        "attentionRequests": [],
+        "artifacts": [
+          { "kind": "fixture", "ref": "local-runner-output.json", "title": "Live trace" }
+        ]
+      }
+    },
+    {
+      "kind": "event",
+      "event_type": "turn.completed",
+      "payload": {}
+    },
+    {
+      "kind": "event",
+      "event_type": "session.closed",
+      "payload": { "reason": "script_complete" }
+    },
+    {
+      "kind": "terminal",
+      "payload": {
+        "schema": "paperclip.prp.terminal.v1",
+        "turnTerminalState": "completed",
+        "runTerminalState": "succeeded",
+        "reportedWorkDisposition": "done"
+      }
+    },
+    { "kind": "exit", "code": 0 }
+  ]
+}

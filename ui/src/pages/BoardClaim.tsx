@@ -3,8 +3,11 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useParams, useSearchParams } from "@/lib/router";
 import { accessApi } from "../api/access";
 import { authApi } from "../api/auth";
+import { describeError } from "../api/errors";
+import { QueryErrorState, useQueryView } from "../components/QueryView";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 
 export function BoardClaimPage() {
   const queryClient = useQueryClient();
@@ -20,14 +23,13 @@ export function BoardClaimPage() {
   const sessionQuery = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
-    retry: false,
   });
   const statusQuery = useQuery({
     queryKey: ["board-claim", token, code],
     queryFn: () => accessApi.getBoardClaimStatus(token, code),
     enabled: token.length > 0 && code.length > 0,
-    retry: false,
   });
+  const statusView = useQueryView(statusQuery);
 
   const claimMutation = useMutation({
     mutationFn: () => accessApi.claimBoard(token, code),
@@ -48,15 +50,18 @@ export function BoardClaimPage() {
     return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading claim challenge...</div>;
   }
 
-  if (statusQuery.error) {
+  if (statusView.kind === "error") {
     return (
       <div className="mx-auto max-w-xl py-10">
-        <div className="rounded-lg border border-border bg-card p-6">
-          <h1 className="text-lg font-semibold">Claim challenge unavailable</h1>
-          <p className="mt-2 text-sm text-muted-foreground">
-            {statusQuery.error instanceof Error ? statusQuery.error.message : "Challenge is invalid or expired."}
-          </p>
-        </div>
+        <Card className="block p-6">
+          <QueryErrorState
+            size="panel"
+            error={statusView.error}
+            action="load the board claim challenge"
+            onRetry={statusView.retry}
+            retrying={statusView.isFetching}
+          />
+        </Card>
       </div>
     );
   }
@@ -69,7 +74,7 @@ export function BoardClaimPage() {
   if (status.status === "claimed") {
     return (
       <div className="mx-auto max-w-xl py-10">
-        <div className="rounded-lg border border-border bg-card p-6">
+        <Card className="block p-6">
           <h1 className="text-lg font-semibold">Board ownership claimed</h1>
           <p className="mt-2 text-sm text-muted-foreground">
             This instance is now linked to your authenticated user.
@@ -77,7 +82,7 @@ export function BoardClaimPage() {
           <Button asChild className="mt-4">
             <Link to="/">Open board</Link>
           </Button>
-        </div>
+        </Card>
       </div>
     );
   }
@@ -85,7 +90,7 @@ export function BoardClaimPage() {
   if (!sessionQuery.data) {
     return (
       <div className="mx-auto max-w-xl py-10">
-        <div className="rounded-lg border border-border bg-card p-6">
+        <Card className="block p-6">
           <h1 className="text-lg font-semibold">Sign in required</h1>
           <p className="mt-2 text-sm text-muted-foreground">
             Sign in or create an account, then return to this page to claim Board ownership.
@@ -93,23 +98,21 @@ export function BoardClaimPage() {
           <Button asChild className="mt-4">
             <Link to={`/auth?next=${encodeURIComponent(currentPath)}`}>Sign in / Create account</Link>
           </Button>
-        </div>
+        </Card>
       </div>
     );
   }
 
   return (
     <div className="mx-auto max-w-xl py-10">
-      <div className="rounded-lg border border-border bg-card p-6">
+      <Card className="block p-6">
         <h1 className="text-xl font-semibold">Claim Board ownership</h1>
         <p className="mt-2 text-sm text-muted-foreground">
-          This will promote your user to instance admin and migrate company ownership access from local trusted mode.
+          This will promote your user to instance admin and migrate organization ownership access from local trusted mode.
         </p>
 
-        {claimMutation.error && (
-          <p className="mt-3 text-sm text-destructive">
-            {claimMutation.error instanceof Error ? claimMutation.error.message : "Failed to claim board ownership"}
-          </p>
+        {claimMutation.isError && ( // query-error-ok: mutation result
+          <p className="mt-3 text-sm text-destructive">{describeError(claimMutation.error).body}</p>
         )}
 
         <Button
@@ -119,7 +122,7 @@ export function BoardClaimPage() {
         >
           {claimMutation.isPending ? "Claiming…" : "Claim ownership"}
         </Button>
-      </div>
+      </Card>
     </div>
   );
 }

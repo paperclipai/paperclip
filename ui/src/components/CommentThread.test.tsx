@@ -9,8 +9,22 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CommentThread } from "./CommentThread";
 
 vi.mock("./MarkdownBody", () => ({
-  MarkdownBody: ({ children, className }: { children: ReactNode; className?: string }) => (
-    <div className={className}>{children}</div>
+  MarkdownBody: ({
+    children,
+    className,
+    externalReferences,
+  }: {
+    children: ReactNode;
+    className?: string;
+    externalReferences?: Record<string, unknown>;
+  }) => (
+    <div
+      className={className}
+      data-testid="markdown-body"
+      data-external-reference-keys={externalReferences ? Object.keys(externalReferences).join(",") : ""}
+    >
+      {children}
+    </div>
   ),
 }));
 
@@ -30,7 +44,14 @@ vi.mock("./MarkdownEditor", () => ({
 }));
 
 vi.mock("./InlineEntitySelector", () => ({
-  InlineEntitySelector: () => null,
+  InlineEntitySelector: ({ value, onChange }: { value: string; onChange: (value: string) => void }) => (
+    <select aria-label="Test recipient" value={value} onChange={(event) => onChange(event.target.value)}>
+      <option value="agent:first">First agent</option>
+      <option value="agent:latest">Latest agent</option>
+      <option value="user:me">Me</option>
+      <option value="">No responsible</option>
+    </select>
+  ),
 }));
 
 vi.mock("./ApprovalCard", () => ({
@@ -61,16 +82,44 @@ vi.mock("@/plugins/slots", () => ({
 
 describe("CommentThread", () => {
   let container: HTMLDivElement;
-  let writeTextMock: ReturnType<typeof vi.fn>;
-  let execCommandMock: ReturnType<typeof vi.fn>;
+  let writeTextMock: ReturnType<typeof vi.fn<(text: string) => Promise<void>>>;
+  let execCommandMock: ReturnType<typeof vi.fn<typeof document.execCommand>>;
+
+  it("updates automatic suggestions but preserves manual choices until the task changes", () => {
+    const root = createRoot(container);
+    const render = (suggestion: string, draftKey = "task-one") => act(() => root.render(
+      <MemoryRouter>
+        <CommentThread comments={[]} onAdd={async () => {}} enableReassign
+          reassignOptions={[{ id: "agent:first", label: "First agent" }]}
+          currentAssigneeValue="user:me" suggestedAssigneeValue={suggestion} draftKey={draftKey} />
+      </MemoryRouter>,
+    ));
+    const selector = () => container.querySelector('select[aria-label="Test recipient"]') as HTMLSelectElement;
+    render("agent:first");
+    expect(selector().value).toBe("agent:first");
+    render("agent:latest");
+    expect(selector().value).toBe("agent:latest");
+    for (const manual of ["user:me", ""]) {
+      act(() => {
+        selector().value = manual;
+        selector().dispatchEvent(new Event("change", { bubbles: true }));
+      });
+      render("agent:first");
+      render("agent:latest");
+      expect(selector().value).toBe(manual);
+    }
+    render("agent:first", "task-two");
+    expect(selector().value).toBe("agent:first");
+    act(() => root.unmount());
+  });
 
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-11T12:00:00.000Z"));
-    writeTextMock = vi.fn(async () => {});
-    execCommandMock = vi.fn(() => true);
+    writeTextMock = vi.fn<(text: string) => Promise<void>>(async () => {});
+    execCommandMock = vi.fn<typeof document.execCommand>(() => true);
     Object.assign(navigator, {
       clipboard: {
         writeText: writeTextMock,
@@ -390,6 +439,53 @@ describe("CommentThread", () => {
     });
 
     expect(copyButton?.textContent).toContain("Copy");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("passes externalReferences to MarkdownBody for comment bodies", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <CommentThread
+            comments={[{
+              id: "comment-ref",
+              companyId: "company-1",
+              issueId: "issue-1",
+              authorAgentId: null,
+              authorUserId: "user-1",
+              authorType: "user",
+              presentation: null,
+              metadata: null,
+              body: "See https://github.com/example/repo/pull/42 for context.",
+              createdAt: new Date("2026-03-11T11:00:00.000Z"),
+              updatedAt: new Date("2026-03-11T11:00:00.000Z"),
+            }]}
+            externalReferences={{
+              "https://github.com/example/repo/pull/42": {
+                providerKey: "github",
+                objectType: "pull_request",
+                statusCategory: "open",
+                liveness: "fresh",
+                statusLabel: "Open",
+                displayTitle: "PR #42",
+              },
+            }}
+            onAdd={async () => {}}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const commentRow = container.querySelector("#comment-comment-ref") as HTMLDivElement | null;
+    expect(commentRow).not.toBeNull();
+    const markdownBody = commentRow?.querySelector('[data-testid="markdown-body"]') as HTMLElement | null;
+    expect(markdownBody?.getAttribute("data-external-reference-keys"))
+      .toContain("https://github.com/example/repo/pull/42");
 
     act(() => {
       root.unmount();

@@ -4,9 +4,9 @@ import { multilineTextSchema } from "./text.js";
 
 export const createApprovalSchema = z.object({
   type: z.enum(APPROVAL_TYPES),
-  requestedByAgentId: z.string().uuid().optional().nullable(),
+  requestedByAgentId: z.string().guid().optional().nullable(),
   payload: z.record(z.string(), z.unknown()),
-  issueIds: z.array(z.string().uuid()).optional(),
+  issueIds: z.array(z.string().guid()).optional(),
 });
 
 export type CreateApproval = z.infer<typeof createApprovalSchema>;
@@ -22,6 +22,13 @@ export const requestApprovalRevisionSchema = z.object({
 });
 
 export type RequestApprovalRevision = z.infer<typeof requestApprovalRevisionSchema>;
+
+/** Withdraw an open approval because it is out of date. Never an approval. */
+export const cancelApprovalSchema = z.object({
+  reason: z.string().trim().max(4000).optional().nullable(),
+}).strict();
+
+export type CancelApproval = z.infer<typeof cancelApprovalSchema>;
 
 export const resubmitApprovalSchema = z.object({
   payload: z.record(z.string(), z.unknown()).optional(),

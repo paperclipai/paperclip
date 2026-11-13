@@ -52,12 +52,27 @@ function makeOverlay(patch?: Partial<AgentConfigOverlay>): AgentConfigOverlay {
     identity: {},
     adapterConfig: {},
     heartbeat: {},
+    debug: {},
     runtime: {},
     ...patch,
   };
 }
 
 describe("buildAgentUpdatePatch", () => {
+  it("merges the agent-scoped provider trace debug setting into runtime config", () => {
+    const patch = buildAgentUpdatePatch(
+      makeAgent(),
+      makeOverlay({ debug: { providerTrace: "raw" } }),
+    );
+
+    expect(patch).toMatchObject({
+      runtimeConfig: {
+        heartbeat: { enabled: true, intervalSec: 300 },
+        debug: { providerTrace: "raw" },
+      },
+    });
+  });
+
   it("replaces adapter config and drops env when the last env binding is cleared", () => {
     const patch = buildAgentUpdatePatch(
       makeAgent(),
@@ -75,37 +90,6 @@ describe("buildAgentUpdatePatch", () => {
       },
       replaceAdapterConfig: true,
     });
-  });
-
-  it("writes the cheap profile under runtimeConfig.modelProfiles, never on primary adapterConfig", () => {
-    const patch = buildAgentUpdatePatch(
-      makeAgent(),
-      makeOverlay({
-        modelProfiles: {
-          cheap: {
-            enabled: true,
-            adapterConfig: { model: "claude-haiku-4-5" },
-          },
-        },
-      }),
-    );
-
-    expect(patch).toEqual({
-      runtimeConfig: {
-        heartbeat: {
-          enabled: true,
-          intervalSec: 300,
-        },
-        modelProfiles: {
-          cheap: {
-            enabled: true,
-            adapterConfig: { model: "claude-haiku-4-5" },
-          },
-        },
-      },
-    });
-    // The primary adapterConfig is untouched.
-    expect(patch.adapterConfig).toBeUndefined();
   });
 
   it("writes max-turn continuation policy under runtimeConfig.heartbeat", () => {
@@ -137,61 +121,6 @@ describe("buildAgentUpdatePatch", () => {
     });
   });
 
-  it("merges cheap profile changes onto existing runtimeConfig.modelProfiles state", () => {
-    const agent = makeAgent();
-    agent.runtimeConfig = {
-      heartbeat: { enabled: true, intervalSec: 300 },
-      modelProfiles: {
-        cheap: {
-          enabled: false,
-          adapterConfig: { model: "old-cheap" },
-        },
-      },
-    };
-
-    const patch = buildAgentUpdatePatch(
-      agent,
-      makeOverlay({
-        modelProfiles: {
-          cheap: {
-            enabled: true,
-          },
-        },
-      }),
-    );
-
-    expect((patch.runtimeConfig as Record<string, unknown>).modelProfiles).toEqual({
-      cheap: {
-        enabled: true,
-        adapterConfig: { model: "old-cheap" },
-      },
-    });
-  });
-
-  it("clears the cheap profile when the overlay marks it cleared", () => {
-    const agent = makeAgent();
-    agent.runtimeConfig = {
-      heartbeat: { enabled: true, intervalSec: 300 },
-      modelProfiles: {
-        cheap: {
-          enabled: true,
-          adapterConfig: { model: "claude-haiku-4-5" },
-        },
-      },
-    };
-
-    const patch = buildAgentUpdatePatch(
-      agent,
-      makeOverlay({
-        modelProfiles: { cheap: { cleared: true } },
-      }),
-    );
-
-    expect(patch.runtimeConfig).toEqual({
-      heartbeat: { enabled: true, intervalSec: 300 },
-    });
-  });
-
   it("preserves adapter-agnostic keys when changing adapter types", () => {
     const patch = buildAgentUpdatePatch(
       makeAgent(),
@@ -218,6 +147,30 @@ describe("buildAgentUpdatePatch", () => {
         dangerouslyBypassApprovalsAndSandbox: true,
       },
       replaceAdapterConfig: true,
+    });
+  });
+
+  it("preserves paperclip skill-sync selections when changing adapter types", () => {
+    // Desired skills are adapter-agnostic (company-level selections) but are
+    // persisted inside the per-adapter config under `paperclipSkillSync`. A
+    // patch that switches adapters must carry them over instead of wiping the
+    // agent's skills.
+    const agent = makeAgent();
+    agent.adapterConfig = {
+      ...agent.adapterConfig,
+      paperclipSkillSync: { desiredSkills: ["research", "code-review"] },
+    };
+
+    const patch = buildAgentUpdatePatch(
+      agent,
+      makeOverlay({
+        adapterType: "codex_local",
+        adapterConfig: { model: "gpt-5.4" },
+      }),
+    );
+
+    expect((patch.adapterConfig as Record<string, unknown>).paperclipSkillSync).toEqual({
+      desiredSkills: ["research", "code-review"],
     });
   });
 });

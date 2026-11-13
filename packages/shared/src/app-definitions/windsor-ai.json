@@ -1,0 +1,80 @@
+{
+  "schemaVersion": 1,
+  "slug": "windsor-ai",
+  "name": "Windsor.ai",
+  "description": "Query connected marketing, analytics, CRM, and warehouse data through Windsor.ai.",
+  "categories": [
+    "analytics"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/windsor-ai.png"
+  },
+  "urlPatterns": [
+    "https://mcp.windsor.ai/*"
+  ],
+  "docsUrl": "https://mcp.windsor.ai/",
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "label": "Sign in with Windsor.ai",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "dcr"
+      ],
+      "whenToUse": "Use browser OAuth for Windsor.ai’s hosted data MCP.",
+      "defaults": {
+        "serverUrl": "https://mcp.windsor.ai/",
+        "scopesHint": [
+          "create",
+          "delete",
+          "offline_access"
+        ]
+      },
+      "guidanceMd": "Browser sign-in requires a public HTTPS Paperclip callback; local HTTP callbacks are rejected by Windsor.ai. Connect Windsor.ai, then verify which advertising, analytics, CRM, or warehouse sources are linked. Keep source account and metric definitions with results. Review any action that changes campaigns, budgets, posts, or listings.",
+      "riskTier": "S4",
+      "warnings": [
+        "Windsor.ai requires the provider-level delete scope to establish the MCP session, including for read-only use. This scope may expose destructive actions; do not approve it unless those provider permissions are acceptable.",
+        "The server includes actions across connected marketing platforms. A source connection does not imply authorization to modify budgets or publish content.",
+        "The server exposes write actions across some connected ad and commerce platforms."
+      ]
+    },
+    {
+      "key": "mcp-api-key",
+      "label": "Use a Windsor.ai API key",
+      "transport": "mcp_remote",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use a customer-created Windsor.ai API key as a Bearer credential.",
+      "defaults": {
+        "serverUrl": "https://mcp.windsor.ai/"
+      },
+      "guidanceMd": "Create a Windsor.ai key for the intended account. Verify connected source accounts and action availability before use; broad tool exposure may include advertising changes.",
+      "riskTier": "S4",
+      "credentialFields": [
+        {
+          "key": "authorization",
+          "label": "Use a Windsor.ai API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "Enter provider credential",
+          "secret": true,
+          "helperMd": "Use an account key for the intended Windsor.ai organization and connect only source accounts needed for the task. Review write tools and source-specific effects; Paperclip cannot increase key permissions."
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "Authorization",
+        "prefix": "Bearer "
+      },
+      "consoleLinks": {
+        "keys": "https://mcp.windsor.ai/",
+        "docs": "https://mcp.windsor.ai/"
+      }
+    }
+  ]
+}

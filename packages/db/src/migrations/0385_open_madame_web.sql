@@ -1,0 +1,1 @@
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "tool_action_requests_executing_deadline_idx" ON "tool_action_requests" USING btree ("updated_at","id") WHERE "tool_action_requests"."status" = 'executing';

@@ -13,13 +13,16 @@ function shellSingleQuote(value: string): string {
 // $HOME/.local/bin.
 const ENSURE_NPM_PREAMBLE =
   "PAPERCLIP_NPM_BOOTSTRAPPED=; " +
-  'if ! command -v npm >/dev/null 2>&1; then ' +
+  "if ! command -v npm >/dev/null 2>&1 || " +
+  "! command -v node >/dev/null 2>&1 || " +
+  "! node -e 'const v=process.versions.node.split(\".\").map(Number);" +
+  "process.exit(v[0]>24||(v[0]===24&&v[1]>=11)?0:1)' >/dev/null 2>&1; then " +
   'NODE_ARCH="$(uname -m)"; ' +
   'case "$NODE_ARCH" in ' +
   "x86_64) NODE_ARCH=x64 ;; " +
   "aarch64|arm64) NODE_ARCH=arm64 ;; " +
   "esac; " +
-  'NODE_VERSION="v22.11.0"; ' +
+  'NODE_VERSION="v24.11.0"; ' +
   'NODE_TARBALL="node-${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz"; ' +
   'mkdir -p "$HOME/.local"; ' +
   'curl -fsSL "https://nodejs.org/dist/${NODE_VERSION}/${NODE_TARBALL}" -o "/tmp/${NODE_TARBALL}" && ' +

@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { index, integer, pgTable, text, timestamp, uuid, uniqueIndex } from "drizzle-orm/pg-core";
+import { numeric, index, integer, pgTable, text, timestamp, uuid, uniqueIndex } from "drizzle-orm/pg-core";
 import { approvals } from "./approvals.js";
 import { budgetPolicies } from "./budget_policies.js";
 import { companies } from "./companies.js";
@@ -18,7 +18,7 @@ export const budgetIncidents = pgTable(
     windowEnd: timestamp("window_end", { withTimezone: true }).notNull(),
     thresholdType: text("threshold_type").notNull(),
     amountLimit: integer("amount_limit").notNull(),
-    amountObserved: integer("amount_observed").notNull(),
+    amountObserved: numeric("amount_observed", { precision: 24, scale: 7, mode: "number" }).notNull(),
     status: text("status").notNull().default("open"),
     approvalId: uuid("approval_id").references(() => approvals.id),
     resolvedAt: timestamp("resolved_at", { withTimezone: true }),
@@ -37,6 +37,6 @@ export const budgetIncidents = pgTable(
       table.policyId,
       table.windowStart,
       table.thresholdType,
-    ).where(sql`${table.status} <> 'dismissed'`),
+    ).where(sql`${table.status} = 'open'`),
   }),
 );

@@ -1,0 +1,15 @@
+{
+  "schema": "paperclip.fake_harness.script.v1",
+  "name": "linger",
+  "steps": [
+    { "kind": "spawn_worker" },
+    {
+      "kind": "event",
+      "event_type": "item.started",
+      "item_id": "item_local_runner_linger",
+      "payload": { "kind": "command", "text": "wait for supervisor cleanup" }
+    },
+    { "kind": "await_interrupt" },
+    { "kind": "exit", "code": 130 }
+  ]
+}

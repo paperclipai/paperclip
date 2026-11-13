@@ -41,7 +41,6 @@
     "e2b"
   ],
   "scripts": {
-    "postinstall": "node ../../../../scripts/link-plugin-dev-sdk.mjs",
     "prebuild": "pnpm -C ../../../.. --filter @paperclipai/plugin-sdk ensure-build-deps",
     "build": "rm -rf dist && tsc",
     "clean": "rm -rf dist",
@@ -54,8 +53,11 @@
     "e2b": "^2.19.0"
   },
   "devDependencies": {
-    "@types/node": "^24.6.0",
+    "@types/node": "^24.0.0",
     "typescript": "^5.7.3",
-    "vitest": "^3.2.4"
+    "vitest": "^4.1.8"
+  },
+  "engines": {
+    "node": ">=24.11.0"
   }
 }

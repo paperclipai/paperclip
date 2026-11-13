@@ -29,6 +29,19 @@ describe("FileTree", () => {
     return container.querySelector(`[data-file-tree-path="${path}"]`) as HTMLDivElement | null;
   }
 
+  it("preserves readable plugin error details and retry without exposing raw codes", () => {
+    const retry = vi.fn();
+    const renderError = (message: string) => act(() => root.render(
+      <FileTree nodes={[]} selectedFile={null} expandedDirs={new Set()} onSelectFile={() => {}} onToggleDir={() => {}} error={{ message, retry }} />,
+    ));
+    renderError("The wiki source was removed. Choose another source.");
+    expect(container.textContent).toContain("The wiki source was removed. Choose another source.");
+    act(() => Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Retry")!.click());
+    expect(retry).toHaveBeenCalledOnce();
+    renderError("source_unavailable");
+    expect(container.textContent).not.toContain("source_unavailable");
+  });
+
   it("selects file rows and expands directory rows", () => {
     const onSelectFile = vi.fn();
     const onToggleDir = vi.fn();
@@ -186,5 +199,33 @@ describe("FileTree", () => {
       docsRow?.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true }));
     });
     expect(onToggleCheck).toHaveBeenCalledWith("docs", "dir");
+  });
+
+  it("keeps hidden descendants in folder selection and restores a tab stop when filtering", () => {
+    const nodes = buildFileTree({ "docs/a.md": "", "docs/b.md": "" });
+    const props = { nodes, selectedFile: null, expandedDirs: new Set(["docs"]), checkedFiles: new Set(["docs/a.md"]), onSelectFile: () => {}, onToggleDir: () => {} };
+    act(() => root.render(<FileTree {...props} />));
+    act(() => row("docs/b.md")?.focus());
+    act(() => root.render(<FileTree {...props} visiblePaths={new Set(["docs", "docs/a.md"])} renderLabel={node => <span>{node.name} description</span>} />));
+    expect(row("docs/b.md")).toBeNull();
+    expect(row("docs")?.getAttribute("aria-checked")).toBe("mixed");
+    expect(row("docs")?.tabIndex).toBe(0);
+    expect(row("docs/a.md")?.textContent).toContain("a.md description");
+  });
+
+  it("blocks mouse and keyboard changes while disabled", () => {
+    const onToggleDir = vi.fn();
+    const onToggleCheck = vi.fn();
+    const onSelectFile = vi.fn();
+    act(() => root.render(<FileTree nodes={buildFileTree({ "docs/a.md": "" })} selectedFile={null} expandedDirs={new Set(["docs"])} onToggleDir={onToggleDir} onToggleCheck={onToggleCheck} onSelectFile={onSelectFile} disabled />));
+    act(() => {
+      row("docs/a.md")?.click();
+      row("docs")?.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true }));
+      container.querySelector<HTMLButtonElement>('[aria-label="Collapse docs"]')?.click();
+    });
+    expect(onToggleCheck).not.toHaveBeenCalled();
+    expect(onSelectFile).not.toHaveBeenCalled();
+    expect(onToggleDir).not.toHaveBeenCalled();
+    expect(container.querySelector<HTMLInputElement>('input[type="checkbox"]')?.disabled).toBe(true);
   });
 });

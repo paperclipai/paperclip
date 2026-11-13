@@ -1,7 +1,7 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 
 const PLUGIN_ID = "paperclip.exe-dev-sandbox-provider";
-const PLUGIN_VERSION = "0.1.1";
+const PLUGIN_VERSION = "0.1.2";
 
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
@@ -31,7 +31,7 @@ const manifest: PaperclipPluginManifestV1 = {
             type: "string",
             format: "secret-ref",
             description:
-              "Paste your exe.dev API token, or pick a saved Paperclip secret. Create one at exe.dev → Settings → API tokens with `/exec` scope (`new`, `ls`, `rm`).",
+              "Paste your exe.dev API token, or pick a saved Paperclip secret. Create one at exe.dev → Settings → API tokens with `/exec` scope (`new`, `ls`, `rm`, plus `cp` if you use Source VM).",
           },
           sshPrivateKey: {
             type: "string",
@@ -80,22 +80,33 @@ const manifest: PaperclipPluginManifestV1 = {
           cpu: {
             type: "number",
             description: "Optional CPU count passed to `exe.dev new --cpu`.",
+            default: 4,
             "x-paperclip-advanced": true,
             "x-paperclip-group": "VM resources",
           },
           memory: {
             type: "string",
             description: "Optional memory size such as `4GB`.",
+            default: "4GB",
             "x-paperclip-advanced": true,
             "x-paperclip-group": "VM resources",
           },
           disk: {
             type: "string",
             description: "Optional disk size such as `20GB`.",
+            default: "20GB",
             "x-paperclip-advanced": true,
             "x-paperclip-group": "VM resources",
           },
           // ---- Advanced: VM creation ----
+          sourceVm: {
+            type: "string",
+            title: "Source VM",
+            description:
+              "Name of an existing exe.dev VM to copy for each run with `exe.dev cp`, disk and config included. Leave blank to create a fresh VM with `exe.dev new`. Your API token must allow `cp`: tokens list their permitted commands, and one without `cp` fails with a 403. When set, leave image, command, env, integrations, tags, setup script, prompt, and comment empty: `cp` cannot apply them, and saving fails until they are cleared.",
+            "x-paperclip-advanced": true,
+            "x-paperclip-group": "VM creation",
+          },
           command: {
             type: "string",
             description: "Optional container command passed to `exe.dev new --command`.",

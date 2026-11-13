@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "slug": "imessage-photon",
+  "name": "iMessage Photon",
+  "description": "Message a Paperclip agent from Apple Messages using Photon Cloud. Pro supports DMs; dedicated lines also support groups.",
+  "categories": [
+    "communication"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/imessage-photon.png"
+  },
+  "urlPatterns": [
+    "https://photon.codes/*"
+  ],
+  "methods": [
+    {
+      "key": "chat-agent",
+      "label": "Chat with an agent",
+      "purpose": "channel",
+      "provider": "imessage-photon",
+      "transport": "chat_sdk",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Let people in iMessage Photon start and continue work with one Paperclip agent.",
+      "credentialFields": [
+        {
+          "key": "projectSecret",
+          "label": "Project secret",
+          "type": "password",
+          "required": true,
+          "placeholder": "Photon project secret",
+          "secret": true
+        }
+      ],
+      "guidanceMd": "Connect a Photon Cloud project. Pro shared lines support DMs after sender enrollment in Photon and identity linking in Paperclip. Dedicated lines also support individually enabled groups.",
+      "consoleLinks": {
+        "register": "https://photon.codes/",
+        "docs": "https://photon.codes/docs/spectrum-ts/providers/imessage/connection-and-routing"
+      },
+      "riskTier": "S3",
+      "requiredResourceFilters": [
+        "direct_message",
+        "group_chat"
+      ]
+    }
+  ]
+}

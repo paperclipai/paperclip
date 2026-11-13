@@ -1,4 +1,9 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { randomBytes } from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { Command } from "commander";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Agent, CompanySecret } from "@paperclipai/shared";
 import type { PaperclipConfig } from "../config/schema.js";
 import { secretsCheck } from "../checks/secrets-check.js";
@@ -7,6 +12,7 @@ import {
   buildMigratedAgentEnv,
   collectInlineSecretMigrationCandidates,
   parseSecretsInclude,
+  registerSecretCommands,
   toPlainEnvValue,
 } from "../commands/client/secrets.js";
 
@@ -44,6 +50,9 @@ function secret(partial: Partial<CompanySecret>): CompanySecret {
   return {
     id: "secret-1",
     companyId: "company-1",
+    scope: "company",
+    ownerUserId: null,
+    userSecretDefinitionId: null,
     key: "agent_agent-12_anthropic_api_key",
     name: "agent_agent-12_anthropic_api_key",
     provider: "local_encrypted",
@@ -134,6 +143,9 @@ describe("secrets CLI helpers", () => {
     delete process.env.AWS_DEFAULT_REGION;
     delete process.env.PAPERCLIP_SECRETS_AWS_DEPLOYMENT_ID;
     delete process.env.PAPERCLIP_SECRETS_AWS_KMS_KEY_ID;
+    delete process.env.AWS_ACCESS_KEY_ID;
+    delete process.env.AWS_SECRET_ACCESS_KEY;
+    delete process.env.AWS_SESSION_TOKEN;
   });
 
   afterEach(() => {
@@ -254,4 +266,118 @@ describe("secrets CLI helpers", () => {
     expect(result.message).toContain("prod-us-1");
     expect(result.message).toContain("AWS_PROFILE/shared config");
   });
+
+  describe("local encrypted key file permissions", () => {
+    let tempDir: string;
+    let keyFilePath: string;
+
+    beforeEach(() => {
+      delete process.env.PAPERCLIP_SECRETS_MASTER_KEY;
+      tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-secrets-check-"));
+      keyFilePath = path.join(tempDir, "master.key");
+      fs.writeFileSync(keyFilePath, randomBytes(32).toString("base64"), "utf8");
+      process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = keyFilePath;
+    });
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    it.skipIf(process.platform === "win32")(
+      "warns when the key file is readable by group or others",
+      () => {
+        fs.chmodSync(keyFilePath, 0o644);
+
+        const result = secretsCheck(configWithSecretsProvider("local_encrypted"));
+
+        expect(result.status).toBe("warn");
+        expect(result.message).toContain("key file permissions are 644");
+      },
+    );
+
+    it("does not warn about POSIX permission bits on Windows", () => {
+      fs.chmodSync(keyFilePath, 0o666);
+      vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+
+      const result = secretsCheck(configWithSecretsProvider("local_encrypted"));
+
+      expect(result.status).toBe("pass");
+      expect(result.message).not.toContain("chmod 600");
+      expect(result.repairHint).toBeUndefined();
+    });
+  });
 });
+
+describe("secrets API parity commands", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    delete process.env.PAPERCLIP_API_KEY;
+    delete process.env.PAPERCLIP_API_URL;
+    vi.spyOn(console, "log").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("wraps provider config and remote import endpoints", async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse()));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await runSecretCommand(["secrets", "provider-configs", "--company-id", "company-1"]);
+    await runSecretCommand(["secrets", "provider-config:create", "--company-id", "company-1", "--payload-json", "{}"]);
+    await runSecretCommand(["secrets", "provider-config:discovery-preview", "--company-id", "company-1", "--payload-json", "{}"]);
+    await runSecretCommand(["secrets", "provider-config:get", "config-1"]);
+    await runSecretCommand(["secrets", "provider-config:update", "config-1", "--payload-json", "{}"]);
+    await runSecretCommand(["secrets", "provider-config:default", "config-1"]);
+    await runSecretCommand(["secrets", "provider-config:health", "config-1"]);
+    await runSecretCommand(["secrets", "provider-config:delete", "config-1"]);
+    await runSecretCommand(["secrets", "remote-import:preview", "--company-id", "company-1", "--payload-json", "{}"]);
+    await runSecretCommand(["secrets", "remote-import", "--company-id", "company-1", "--payload-json", "{}"]);
+
+    expect(fetchMock.mock.calls.map((call) => [call[1]?.method ?? "GET", call[0]])).toEqual([
+      ["GET", "http://localhost:3100/api/companies/company-1/secret-provider-configs"],
+      ["POST", "http://localhost:3100/api/companies/company-1/secret-provider-configs"],
+      ["POST", "http://localhost:3100/api/companies/company-1/secret-provider-configs/discovery/preview"],
+      ["GET", "http://localhost:3100/api/secret-provider-configs/config-1"],
+      ["PATCH", "http://localhost:3100/api/secret-provider-configs/config-1"],
+      ["POST", "http://localhost:3100/api/secret-provider-configs/config-1/default"],
+      ["POST", "http://localhost:3100/api/secret-provider-configs/config-1/health"],
+      ["DELETE", "http://localhost:3100/api/secret-provider-configs/config-1"],
+      ["POST", "http://localhost:3100/api/companies/company-1/secrets/remote-import/preview"],
+      ["POST", "http://localhost:3100/api/companies/company-1/secrets/remote-import"],
+    ]);
+  });
+
+  it("wraps secret metadata, rotation, usage, access event, and delete endpoints", async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse()));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await runSecretCommand(["secrets", "update", "secret-1", "--payload-json", "{\"description\":\"updated\"}"]);
+    await runSecretCommand(["secrets", "rotate", "secret-1", "--value", "new-value"]);
+    await runSecretCommand(["secrets", "usage", "secret-1"]);
+    await runSecretCommand(["secrets", "access-events", "secret-1"]);
+    await runSecretCommand(["secrets", "delete", "secret-1", "--yes", "--confirm", "secret-1"]);
+
+    expect(fetchMock.mock.calls.map((call) => [call[1]?.method ?? "GET", call[0]])).toEqual([
+      ["PATCH", "http://localhost:3100/api/secrets/secret-1"],
+      ["POST", "http://localhost:3100/api/secrets/secret-1/rotate"],
+      ["GET", "http://localhost:3100/api/secrets/secret-1/usage"],
+      ["GET", "http://localhost:3100/api/secrets/secret-1/access-events"],
+      ["DELETE", "http://localhost:3100/api/secrets/secret-1"],
+    ]);
+  });
+});
+
+async function runSecretCommand(args: string[]): Promise<void> {
+  const program = new Command();
+  program.exitOverride();
+  program.configureOutput({ writeOut: () => {}, writeErr: () => {} });
+  registerSecretCommands(program);
+  await program.parseAsync([...args, "--api-base", "http://localhost:3100", "--api-key", "board-token"], { from: "user" });
+}
+
+function jsonResponse(body: unknown = { ok: true }, init: ResponseInit = { status: 200 }): Response {
+  return new Response(JSON.stringify(body), init);
+}

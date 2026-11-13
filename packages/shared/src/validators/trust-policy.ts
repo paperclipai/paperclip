@@ -1,0 +1,77 @@
+import { z } from "zod";
+import {
+  LOW_TRUST_REVIEW_PRESET,
+  LOW_TRUST_REVIEW_PRESET_VERSION,
+  LOW_TRUST_REVIEW_RAW_OUTPUT_DISPOSITION,
+  TRUST_PRESETS,
+} from "../trust-policy.js";
+
+export const trustPresetSchema = z.enum(TRUST_PRESETS);
+
+export const lowTrustOutputPromotionTargetSchema = z.object({
+  type: z.literal("issue"),
+  issueId: z.string().guid(),
+}).strict();
+
+export const lowTrustBoundarySchema = z.object({
+  mode: z.literal(LOW_TRUST_REVIEW_PRESET),
+  companyId: z.string().guid().optional(),
+  projectIds: z.array(z.string().guid()).optional(),
+  rootIssueId: z.string().guid().optional(),
+  issueIds: z.array(z.string().guid()).optional(),
+  allowedAgentIds: z.array(z.string().guid()).optional(),
+  allowedSecretBindingIds: z.array(z.string().guid()).optional(),
+  allowedToolClasses: z.array(z.string().trim().min(1)).optional(),
+  outputPromotionTarget: lowTrustOutputPromotionTargetSchema.optional(),
+}).strict();
+
+export const lowTrustReviewPresetPolicySchema = z.object({
+  id: z.literal(LOW_TRUST_REVIEW_PRESET),
+  version: z.literal(LOW_TRUST_REVIEW_PRESET_VERSION),
+  rawOutputDisposition: z.literal(LOW_TRUST_REVIEW_RAW_OUTPUT_DISPOSITION),
+}).strict();
+
+export const assignmentAuthorizationPolicySchema = z.object({
+  mode: z.enum(["company_default", "protected"]).optional(),
+  // Legacy compatibility only. This remains a hard block and never creates an approval.
+  protectedAgentRequiresApproval: z.boolean().optional(),
+}).catchall(z.unknown());
+
+export const protectedAgentAuthorizationPolicySchema = z.object({
+  blockAssignment: z.boolean().optional(),
+  blockReason: z.string().trim().min(1).optional(),
+  // Legacy compatibility only. These fields do not create an approval.
+  requiresApproval: z.boolean().optional(),
+  approvalReason: z.string().optional(),
+}).catchall(z.unknown());
+
+export const trustAuthorizationPolicySchema = z.object({
+  trustPreset: trustPresetSchema.optional(),
+  reviewPreset: lowTrustReviewPresetPolicySchema.optional(),
+  trustBoundary: lowTrustBoundarySchema.optional(),
+  assignmentPolicy: assignmentAuthorizationPolicySchema.optional(),
+  protectedAgent: protectedAgentAuthorizationPolicySchema.optional(),
+}).catchall(z.unknown());
+
+export const sourceTrustArtifactKindSchema = z.enum(["issue", "comment", "document", "work_product"]);
+
+export const sourceTrustMetadataSchema = z.object({
+  preset: trustPresetSchema,
+  disposition: z.enum(["quarantined", "promoted"]),
+  sourceIssueId: z.string().guid().nullable().optional(),
+  sourceRunId: z.string().guid().nullable().optional(),
+  sourceAgentId: z.string().guid().nullable().optional(),
+  promotedFrom: z.object({
+    artifactKind: sourceTrustArtifactKindSchema,
+    artifactId: z.string().guid(),
+    issueId: z.string().guid().nullable().optional(),
+  }).strict().nullable().optional(),
+  promotedByActorType: z.enum(["agent", "user", "system"]).nullable().optional(),
+  promotedByActorId: z.string().trim().min(1).nullable().optional(),
+  promotedAt: z.string().datetime({ offset: true }).nullable().optional(),
+}).strict();
+
+export type TrustPresetInput = z.infer<typeof trustPresetSchema>;
+export type LowTrustBoundaryInput = z.infer<typeof lowTrustBoundarySchema>;
+export type TrustAuthorizationPolicyInput = z.infer<typeof trustAuthorizationPolicySchema>;
+export type SourceTrustMetadataInput = z.infer<typeof sourceTrustMetadataSchema>;

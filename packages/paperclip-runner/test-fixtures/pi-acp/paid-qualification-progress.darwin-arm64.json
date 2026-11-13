@@ -1,0 +1,842 @@
+{
+  "schema": "paperclip.pi-paid-qualification-progress.v1",
+  "recordedAt": "2026-09-28T22:41:36.062345+00:00",
+  "qualificationStatus": "pending",
+  "environment": {
+    "platform": "darwin",
+    "architecture": "arm64",
+    "execution": "local"
+  },
+  "declaredModel": "openrouter/deepseek/deepseek-v4-flash-0731",
+  "observedModel": {
+    "attemptId": "pi-context-paid-04",
+    "id": "openrouter/deepseek/deepseek-v4-flash-0731",
+    "provider": "openrouter",
+    "source": "actual runtime snapshot providerModel"
+  },
+  "budget": {
+    "authorizedMaximumUsd": 25,
+    "reservedPerBatchUsd": 2,
+    "measuredSpendUsd": 0.028858372,
+    "measurement": "exclusive OpenRouter key billing delta; model catalog estimates are not provider billing",
+    "billingGroups": [
+      {
+        "id": "pi-denial-file-01",
+        "attemptIds": [
+          "pi-native-denial-01",
+          "pi-product-file-01"
+        ],
+        "measuredDeltaUsd": 0.010995043,
+        "attribution": "Exclusive key aggregate; delayed charge crossed attempt baselines, so per-generation attribution is unavailable.",
+        "delayedDeltaBetweenAttemptWindowsUsd": 0.000105107,
+        "billingObservedThrough": "2026-09-28T20:55:09Z"
+      }
+    ],
+    "pendingBillingAttemptIds": []
+  },
+  "attempts": [
+    {
+      "attemptId": "pi-context-paid-01",
+      "family": "runner-protocol",
+      "caseId": "get-task-context",
+      "startedAt": "2026-09-28T19:06:12.910826+00:00",
+      "finishedAt": "2026-09-28T19:06:20.148262+00:00",
+      "durationSeconds": 7.237,
+      "sourceRevision": "58511d79d9c4a1525d98e219d027654902b704e1",
+      "providerPackDigest": "sha256:a9728fe4298a5eee00555382af01e85550820a294957caf2eba0c79bf33c4388",
+      "runnerdDigest": "sha256:2138cc9dd7898d284f5761719112079666dd013e035d705aba73e965faf2fd86",
+      "profileDigest": "sha256:0f687e38cb3c607a01fab80f03e19bbbf5cb53a8afb1fc40d71f9ab54551cff1",
+      "exitCode": 0,
+      "retainedMachineDisposition": "infrastructure_failure",
+      "diagnosis": "CLI main guard did not recognize the /tmp symlink path; no artifact or provider prompt. Fixed by shared commit ac17430b0.",
+      "submittedProviderTurns": 0,
+      "providerRequestCount": 0,
+      "billingDeltaUsd": 0,
+      "billingCoverage": "exclusive OpenRouter key usage delta, two spaced post-attempt observations",
+      "terminalUsage": null,
+      "automaticRetries": 0,
+      "supervision": {
+        "reservationUsd": 2,
+        "billingWatchdogUsd": 0.5,
+        "outerDeadlineSeconds": 120
+      }
+    },
+    {
+      "attemptId": "pi-context-paid-02",
+      "family": "runner-protocol",
+      "caseId": "get-task-context",
+      "startedAt": "2026-09-28T19:06:45.550028+00:00",
+      "finishedAt": "2026-09-28T19:07:03.655460+00:00",
+      "durationSeconds": 18.103,
+      "sourceRevision": "58511d79d9c4a1525d98e219d027654902b704e1",
+      "providerPackDigest": "sha256:a9728fe4298a5eee00555382af01e85550820a294957caf2eba0c79bf33c4388",
+      "runnerdDigest": "sha256:2138cc9dd7898d284f5761719112079666dd013e035d705aba73e965faf2fd86",
+      "profileDigest": "sha256:0f687e38cb3c607a01fab80f03e19bbbf5cb53a8afb1fc40d71f9ab54551cff1",
+      "exitCode": 2,
+      "retainedMachineDisposition": "infrastructure_failure",
+      "diagnosis": "Sidecar initialization accepted only Claude/Codex and rejected Pi before prompting. Fixed by shared commit ac17430b0.",
+      "submittedProviderTurns": 0,
+      "providerRequestCount": 0,
+      "billingDeltaUsd": 0,
+      "billingCoverage": "exclusive OpenRouter key usage delta, two spaced post-attempt observations",
+      "terminalUsage": null,
+      "automaticRetries": 0,
+      "supervision": {
+        "reservationUsd": 2,
+        "billingWatchdogUsd": 0.5,
+        "outerDeadlineSeconds": 120
+      }
+    },
+    {
+      "attemptId": "pi-context-paid-03",
+      "family": "runner-protocol",
+      "caseId": "get-task-context",
+      "startedAt": "2026-09-28T19:19:10.856746+00:00",
+      "finishedAt": "2026-09-28T19:19:18.160151+00:00",
+      "durationSeconds": 7.279,
+      "sourceRevision": "788105248a3ba594b30b5bcec3fa266d8a51d8d4",
+      "providerPackDigest": "sha256:4de47c31a8131424495366741bd491ff5fa10723ab9a3918c07a3e42982dbe3c",
+      "runnerdDigest": "sha256:2138cc9dd7898d284f5761719112079666dd013e035d705aba73e965faf2fd86",
+      "profileDigest": "sha256:0f687e38cb3c607a01fab80f03e19bbbf5cb53a8afb1fc40d71f9ab54551cff1",
+      "exitCode": 1,
+      "retainedMachineDisposition": "infrastructure_failure",
+      "diagnosis": "Supervisor invoked Python3.9; canonical eval uses a newer TemporaryDirectory API. Switched supervisor to its Python3.14 executable before retry.",
+      "submittedProviderTurns": 0,
+      "providerRequestCount": 0,
+      "billingDeltaUsd": 0,
+      "billingCoverage": "exclusive OpenRouter key usage delta, two spaced post-attempt observations",
+      "terminalUsage": null,
+      "automaticRetries": 0,
+      "supervision": {
+        "reservationUsd": 2,
+        "billingWatchdogUsd": 0.5,
+        "outerDeadlineSeconds": 420
+      }
+    },
+    {
+      "attemptId": "pi-context-paid-04",
+      "family": "runner-protocol",
+      "caseId": "get-task-context",
+      "startedAt": "2026-09-28T19:19:52.195195+00:00",
+      "finishedAt": "2026-09-28T19:22:45.531217+00:00",
+      "durationSeconds": 173.331,
+      "sourceRevision": "788105248a3ba594b30b5bcec3fa266d8a51d8d4",
+      "providerPackDigest": "sha256:4de47c31a8131424495366741bd491ff5fa10723ab9a3918c07a3e42982dbe3c",
+      "runnerdDigest": "sha256:2138cc9dd7898d284f5761719112079666dd013e035d705aba73e965faf2fd86",
+      "profileDigest": "sha256:0f687e38cb3c607a01fab80f03e19bbbf5cb53a8afb1fc40d71f9ab54551cff1",
+      "exitCode": 1,
+      "retainedMachineDisposition": "infrastructure_failure",
+      "diagnosis": "Canonical scorer retained timeout after120000ms without terminal turn or usage. Four semantic operations succeeded. The canonical reasoning delta was incorrectly projected as assistant text; shared commit a978d1bc5 repairs that distinct projection defect. Provider completion remains unproven.",
+      "submittedProviderTurns": 1,
+      "providerRequestCount": null,
+      "billingDeltaUsd": 0.005748807,
+      "billingCoverage": "exclusive OpenRouter key usage delta, two spaced post-attempt observations",
+      "terminalUsage": null,
+      "automaticRetries": 0,
+      "supervision": {
+        "reservationUsd": 2,
+        "billingWatchdogUsd": 0.5,
+        "outerDeadlineSeconds": 420
+      }
+    },
+    {
+      "attemptId": "pi-product-hello-01",
+      "family": "product-e2e",
+      "caseId": "extended-harnesses.runner-acpx-pi.local.hello-complete",
+      "startedAt": "2026-09-28T19:33:28.605392+00:00",
+      "finishedAt": "2026-09-28T19:33:46.814523+00:00",
+      "durationSeconds": 18.208,
+      "sourceRevision": "68fde1eb5779838518e322ced202a3e454548d34",
+      "providerPackDigest": "sha256:6e257bfd54dcb6e9d6263cfd408b3087ccd2f6eb91941ec38bd9ddd4b26b5c0b",
+      "runnerdDigest": "sha256:79d49c3cef01f328742651f62a449661695d0955741a1c37bd89abf54cbc8c2b",
+      "profileDigest": "sha256:0f687e38cb3c607a01fab80f03e19bbbf5cb53a8afb1fc40d71f9ab54551cff1",
+      "exitCode": 1,
+      "retainedMachineDisposition": "transient_infrastructure",
+      "diagnosis": "Embedded PostgreSQL lifecycle symlink hydration was missing; initdb failed before browser/provider startup. Package hydration and a fresh disposable initdb check passed before deliberate repeat.",
+      "submittedProviderTurns": 0,
+      "providerRequestCount": 0,
+      "billingDeltaUsd": 0,
+      "billingCoverage": "exclusive OpenRouter key usage delta, two spaced post-attempt observations",
+      "terminalUsage": null,
+      "automaticRetries": 0,
+      "supervision": {
+        "reservationUsd": 2,
+        "billingWatchdogUsd": 0.5,
+        "outerDeadlineSeconds": 300
+      },
+      "retainedStatus": "failed",
+      "cleanup": "not_started",
+      "fixtureReportedSource": {
+        "sha": null,
+        "ref": null,
+        "workflowRunUrl": null
+      }
+    },
+    {
+      "attemptId": "pi-product-hello-02",
+      "family": "product-e2e",
+      "caseId": "extended-harnesses.runner-acpx-pi.local.hello-complete",
+      "startedAt": "2026-09-28T19:35:51.721674+00:00",
+      "finishedAt": "2026-09-28T19:36:32.051800+00:00",
+      "durationSeconds": 40.33,
+      "sourceRevision": "a6167ce3a7804c31f4f9990a9ba6761c1d91f27c",
+      "providerPackDigest": "sha256:0ed45bf84d172aa7087baec3d662275206e8121b0ba142aaa9039dcfbf4402a2",
+      "runnerdDigest": "sha256:79d49c3cef01f328742651f62a449661695d0955741a1c37bd89abf54cbc8c2b",
+      "profileDigest": "sha256:0f687e38cb3c607a01fab80f03e19bbbf5cb53a8afb1fc40d71f9ab54551cff1",
+      "exitCode": 1,
+      "retainedMachineDisposition": "permanent_infrastructure",
+      "diagnosis": "The real server rejected candidate agent creation422 before any provider prompt. Host-only qualification was wired at launch but not the earlier provider-profile resolver. Shared correction 26dde3cfe is included in the merged foundation.",
+      "submittedProviderTurns": 0,
+      "providerRequestCount": 0,
+      "billingDeltaUsd": 0,
+      "billingCoverage": "exclusive OpenRouter key usage delta, two spaced post-attempt observations",
+      "terminalUsage": null,
+      "automaticRetries": 0,
+      "supervision": {
+        "reservationUsd": 2,
+        "billingWatchdogUsd": 0.5,
+        "outerDeadlineSeconds": 300
+      },
+      "retainedStatus": "failed",
+      "cleanup": "passed",
+      "fixtureReportedSource": {
+        "sha": null,
+        "ref": null,
+        "workflowRunUrl": null
+      }
+    },
+    {
+      "attemptId": "pi-product-hello-03",
+      "family": "product-e2e",
+      "caseId": "extended-harnesses.runner-acpx-pi.local.hello-complete",
+      "startedAt": "2026-09-28T19:44:53.789569+00:00",
+      "finishedAt": "2026-09-28T19:45:32.427487+00:00",
+      "durationSeconds": 38.638,
+      "sourceRevision": "d6b0b97786a61e607291c656229bbb54a81dc061",
+      "providerPackDigest": "sha256:4ab928ff5fbc68b0b0e21733c4cdaebb3f9fb7197b1985d1094a21fd3d51b2fe",
+      "runnerdDigest": "sha256:79d49c3cef01f328742651f62a449661695d0955741a1c37bd89abf54cbc8c2b",
+      "profileDigest": "sha256:0f687e38cb3c607a01fab80f03e19bbbf5cb53a8afb1fc40d71f9ab54551cff1",
+      "exitCode": 1,
+      "retainedMachineDisposition": "candidate_failure",
+      "retainedStatus": "failed",
+      "cleanup": "passed",
+      "fixtureReportedSource": {
+        "sha": "d6b0b97786a61e607291c656229bbb54a81dc061",
+        "ref": "refs/heads/codex/runner-pi-acp",
+        "workflowRunUrl": null
+      },
+      "diagnosis": "Agent creation succeeded after shared admission repair; the actual verified runnerd backend factory then hit a dormant Pi-only transportDriverIdentity rejection before provider launch. The shared identity correction is included in foundation c3b7e9ecd.",
+      "submittedProviderTurns": 0,
+      "providerRequestCount": 0,
+      "billingDeltaUsd": 0,
+      "billingCoverage": "exclusive OpenRouter key usage delta, two spaced post-attempt observations",
+      "terminalUsage": null,
+      "automaticRetries": 0,
+      "supervision": {
+        "reservationUsd": 2,
+        "billingWatchdogUsd": 0.5,
+        "outerDeadlineSeconds": 300,
+        "configuredActiveTimeoutSeconds": 120
+      }
+    },
+    {
+      "attemptId": "pi-product-hello-04",
+      "family": "product-e2e",
+      "caseId": "extended-harnesses.runner-acpx-pi.local.hello-complete",
+      "startedAt": "2026-09-28T20:03:06.338199+00:00",
+      "finishedAt": "2026-09-28T20:04:32.924765+00:00",
+      "durationSeconds": 86.582,
+      "sourceRevision": "9f2d0420ed9a398e3bacd1d7e996614f3296ac56",
+      "providerPackDigest": "sha256:2a6f457205743487cdd35ed3634532028e6e0200001f70e087d0e084fc85d452",
+      "runnerdDigest": "sha256:3fdff11d17faf096fce29b57a8e762e6dd241ef5009771913eb4798d10a0deca",
+      "profileDigest": "sha256:0f687e38cb3c607a01fab80f03e19bbbf5cb53a8afb1fc40d71f9ab54551cff1",
+      "exitCode": 1,
+      "retainedMachineDisposition": "candidate_failure",
+      "retainedStatus": "failed",
+      "cleanup": "passed",
+      "fixtureReportedSource": {
+        "sha": "9f2d0420ed9a398e3bacd1d7e996614f3296ac56",
+        "ref": "refs/heads/codex/runner-pi-acp",
+        "workflowRunUrl": null
+      },
+      "diagnosis": "The earlier candidate and transport identity gates are corrected. PRP run.prepare succeeds, but session.open times out before prompt submission at its unchanged 30-second deadline. A credential-free deployed-pack reproduction and separate stage timing isolate immutable snapshot copying as exceeding that deadline. Shared fix 2a30219f1 reduces measured copy latency; end-to-end admission after that fix is not yet proven.",
+      "submittedProviderTurns": 0,
+      "providerRequestCount": 0,
+      "billingDeltaUsd": 0,
+      "billingCoverage": "exclusive OpenRouter key usage delta, two spaced post-attempt observations",
+      "terminalUsage": null,
+      "retainedCostCoverage": "unavailable",
+      "automaticRetries": 0,
+      "supervision": {
+        "reservationUsd": 2,
+        "billingWatchdogUsd": 0.5,
+        "outerDeadlineSeconds": 300,
+        "configuredActiveTimeoutSeconds": 120
+      }
+    },
+    {
+      "attemptId": "pi-product-hello-05",
+      "family": "product-e2e",
+      "caseId": "extended-harnesses.runner-acpx-pi.local.hello-complete",
+      "startedAt": "2026-09-28T20:19:17.958518+00:00",
+      "finishedAt": "2026-09-28T20:35:14.566352+00:00",
+      "durationSeconds": 72.168,
+      "durationClock": "monotonic; host sleep does not advance this clock on this machine",
+      "canonicalWallDurationMs": 921632,
+      "sourceRevision": "dd78df1ef8b279c30c710c9b7a7f9fda22e321d6",
+      "providerPackDigest": "sha256:f75d3de7814276508f3706edb6e4510ce1dcecbc3e8fa674991fd554e5a75273",
+      "runnerdDigest": "sha256:f9aad049d57a2073ce4ec96b6577266afdba5b99db75bb8fc21825a5b7281e39",
+      "profileDigest": "sha256:0f687e38cb3c607a01fab80f03e19bbbf5cb53a8afb1fc40d71f9ab54551cff1",
+      "exitCode": 1,
+      "retainedMachineDisposition": "secret_leak",
+      "retainedInnerDisposition": "candidate_failure",
+      "retainedStatus": "failed",
+      "cleanup": "failed",
+      "diagnosis": "Authenticated session and provider turn admission succeeded. The host then entered Maintenance Sleep for888s. After wake, the canonical issue/run wait timed out, browser/API cleanup failed, and the scanner rejected an uninspectable incomplete ZIP. The scanner reported no credential-value match; its fail-closed secret_leak classification is retained. No terminal or semantic-tool event was observed before capture ended.",
+      "submittedProviderTurns": 1,
+      "providerRequestCount": null,
+      "billingDeltaUsd": 0.000351509,
+      "billingCoverage": "exclusive OpenRouter key usage delta; two spaced post-attempt observations plus later unchanged reconciliation",
+      "terminalUsage": null,
+      "retainedCostCoverage": "unavailable",
+      "automaticRetries": 0,
+      "supervision": {
+        "reservationUsd": 2,
+        "billingWatchdogUsd": 0.5,
+        "outerDeadlineSeconds": 300,
+        "configuredActiveTimeoutSeconds": 120,
+        "limitation": "Host sleep suspended the monotonic supervisor and billing polling; no assertion prevented idle sleep for this attempt."
+      },
+      "evidence": {
+        "authenticatedSessionStarted": true,
+        "sessionStartedAfterRunMs": 11631,
+        "turnSubmitted": true,
+        "turnAccepted": true,
+        "uniqueRetainedEvents": 32,
+        "semanticToolEvents": 0,
+        "terminalEvents": 0,
+        "reportedExactModelVerified": false,
+        "partialModelMetadata": "unknown/openrouter",
+        "pmsetSleepSeconds": 888,
+        "billingWallObservationGapSeconds": 887.495,
+        "zipScanReason": "zip could not be inspected: unzip exited with code9",
+        "credentialValueMatchDetected": false,
+        "exactAttemptProcessesRemaining": 0
+      }
+    },
+    {
+      "attemptId": "pi-product-hello-06",
+      "family": "product-e2e",
+      "caseId": "extended-harnesses.runner-acpx-pi.local.hello-complete",
+      "startedAt": "2026-09-28T20:38:49.368264+00:00",
+      "finishedAt": "2026-09-28T20:39:38.907308+00:00",
+      "durationSeconds": 49.539,
+      "wallDurationSeconds": 49.539,
+      "sourceRevision": "dd78df1ef8b279c30c710c9b7a7f9fda22e321d6",
+      "providerPackDigest": "sha256:f75d3de7814276508f3706edb6e4510ce1dcecbc3e8fa674991fd554e5a75273",
+      "runnerdDigest": "sha256:f9aad049d57a2073ce4ec96b6577266afdba5b99db75bb8fc21825a5b7281e39",
+      "profileDigest": "sha256:0f687e38cb3c607a01fab80f03e19bbbf5cb53a8afb1fc40d71f9ab54551cff1",
+      "exitCode": 0,
+      "retainedMachineDisposition": null,
+      "retainedStatus": "passed",
+      "cleanup": "passed",
+      "diagnosis": "All six canonical hello matchers pass. Authenticated Pi executes paperclip_finish over semantic MCP; the provider turn completes, task becomes done, and native run succeeds. Sleep assertion and dual-clock supervision avoid the prior environmental interruption. USD remains unpriced; independent measured billing delta is separate.",
+      "submittedProviderTurns": 1,
+      "providerRequestCount": null,
+      "billingDeltaUsd": 0.000654767,
+      "billingCoverage": "exclusive OpenRouter key delta, two spaced post-attempt observations",
+      "terminalUsage": {
+        "inputTokens": 26867,
+        "outputTokens": 283,
+        "cachedInputTokens": 0,
+        "usageSource": "per_run",
+        "costStatus": "unpriced",
+        "billingType": "unknown"
+      },
+      "retainedCostCoverage": "unpriced",
+      "automaticRetries": 0,
+      "supervision": {
+        "reservationUsd": 2,
+        "billingWatchdogUsd": 0.5,
+        "activeTimeoutSeconds": 120,
+        "outerTimeoutSeconds": 300,
+        "outerClocks": [
+          "wall",
+          "monotonic"
+        ],
+        "sleepAssertion": "caffeinate -i",
+        "automaticRetries": 0
+      },
+      "evidence": "product-hello-proof.darwin-arm64.json"
+    },
+    {
+      "attemptId": "pi-native-denial-01",
+      "family": "native-acp",
+      "caseId": "restrictive-native-write-denial",
+      "startedAt": "2026-09-28T20:47:09.907468+00:00",
+      "finishedAt": "2026-09-28T20:47:30.345865+00:00",
+      "durationSeconds": 20.438,
+      "exitCode": 0,
+      "sourceRevision": "dd78df1ef8b279c30c710c9b7a7f9fda22e321d6",
+      "providerPackDigest": "sha256:f75d3de7814276508f3706edb6e4510ce1dcecbc3e8fa674991fd554e5a75273",
+      "profileDigest": "sha256:0f687e38cb3c607a01fab80f03e19bbbf5cb53a8afb1fc40d71f9ab54551cff1",
+      "submittedProviderTurns": 1,
+      "providerRequestCount": null,
+      "billingDeltaUsd": null,
+      "billingCoverage": "accounted in aggregate pi-denial-file-01; no per-generation attribution",
+      "billingGroupId": "pi-denial-file-01",
+      "automaticRetries": 0,
+      "retainedStatus": "passed",
+      "retainedMachineDisposition": null,
+      "cleanup": "passed",
+      "terminalUsage": {
+        "inputTokens": 1735,
+        "outputTokens": 125,
+        "cachedReadTokens": 1792,
+        "cachedWriteTokens": 0,
+        "totalTokens": 3652,
+        "_meta": {
+          "paperclipPi": {
+            "provenance": "assistant_message_receipts",
+            "costUsd": 0.00032807600000000006,
+            "costSource": "pi_pricing_estimate"
+          }
+        }
+      },
+      "evidence": "native-denial-proof.darwin-arm64.json",
+      "diagnosis": "Original offered deny choice persisted before response; matching native write failed, prompt settled, and independent marker stat proved no write occurred."
+    },
+    {
+      "attemptId": "pi-product-file-01",
+      "family": "product-e2e",
+      "caseId": "extended-harnesses.runner-acpx-pi.local.file-edit-validate",
+      "startedAt": "2026-09-28T20:49:00.303832+00:00",
+      "finishedAt": "2026-09-28T20:51:41.406899+00:00",
+      "durationSeconds": 161.103,
+      "exitCode": 1,
+      "sourceRevision": "dd78df1ef8b279c30c710c9b7a7f9fda22e321d6",
+      "providerPackDigest": "sha256:f75d3de7814276508f3706edb6e4510ce1dcecbc3e8fa674991fd554e5a75273",
+      "profileDigest": "sha256:0f687e38cb3c607a01fab80f03e19bbbf5cb53a8afb1fc40d71f9ab54551cff1",
+      "submittedProviderTurns": 1,
+      "providerRequestCount": null,
+      "billingDeltaUsd": null,
+      "billingCoverage": "accounted in aggregate pi-denial-file-01; no per-generation attribution",
+      "billingGroupId": "pi-denial-file-01",
+      "automaticRetries": 0,
+      "retainedStatus": "failed",
+      "retainedMachineDisposition": "candidate_failure",
+      "cleanup": "passed",
+      "terminalUsage": null,
+      "evidence": "product-file-failure.darwin-arm64.json",
+      "diagnosis": "Five semantic finish requests failed with generic bridge error; active deadline expired without file oracle or terminal receipt. Version 3 retains bounded validation details and native Bash output."
+    },
+    {
+      "attemptId": "pi-product-file-02",
+      "family": "product-e2e",
+      "caseId": "extended-harnesses.runner-acpx-pi.local.file-edit-validate",
+      "startedAt": "2026-09-28T21:17:12.291736+00:00",
+      "finishedAt": "2026-09-28T21:18:19.632350+00:00",
+      "durationSeconds": 67.34,
+      "exitCode": 0,
+      "sourceRevision": "7710736ca3924c655c5b0efd172cfd3c0173766a",
+      "providerPackDigest": "sha256:eb31cadae93805b901d2565912121fca6e79024c0120b1bd7982e05215b5aa5a",
+      "profileDigest": "sha256:72cb225288376f733b9ed3afa5e13565eb4152f0de509bc1181382fa44bee472",
+      "submittedProviderTurns": null,
+      "providerRequestCount": null,
+      "billingDeltaUsd": 0.003324737,
+      "billingCoverage": "exclusive OpenRouter key delta, two spaced post-attempt observations",
+      "retainedStatus": "passed",
+      "retainedMachineDisposition": null,
+      "cleanup": "passed",
+      "terminalUsage": {
+        "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+        "biller": "openrouter",
+        "provider": "openrouter",
+        "costStatus": "unpriced",
+        "billingType": "unknown",
+        "inputTokens": 14461,
+        "outputTokens": 3604,
+        "cachedInputTokens": 116736,
+        "usageSource": "per_run"
+      },
+      "evidence": "product-file-proof.darwin-arm64.json",
+      "diagnosis": "File oracle passed; retained MCP validation enabled deliverable registration and successful finish.",
+      "supervision": {
+        "reservationUsd": 2,
+        "billingWatchdogUsd": 0.5,
+        "activeTimeoutSeconds": 120,
+        "outerTimeoutSeconds": 300,
+        "sleepAssertion": "caffeinate -i",
+        "deadlineClocks": [
+          "wall",
+          "monotonic"
+        ],
+        "automaticRetries": 0
+      }
+    },
+    {
+      "attemptId": "pi-product-question-01",
+      "family": "product-e2e",
+      "caseId": "extended-harnesses.runner-acpx-pi.local.question-resume-complete",
+      "startedAt": "2026-09-28T21:20:00.032734+00:00",
+      "finishedAt": "2026-09-28T21:22:55.721708+00:00",
+      "durationSeconds": 175.689,
+      "exitCode": 0,
+      "sourceRevision": "7710736ca3924c655c5b0efd172cfd3c0173766a",
+      "providerPackDigest": "sha256:eb31cadae93805b901d2565912121fca6e79024c0120b1bd7982e05215b5aa5a",
+      "profileDigest": "sha256:72cb225288376f733b9ed3afa5e13565eb4152f0de509bc1181382fa44bee472",
+      "submittedProviderTurns": null,
+      "providerRequestCount": null,
+      "billingDeltaUsd": 0.001413697,
+      "billingCoverage": "exclusive OpenRouter key delta, two spaced post-attempt observations",
+      "retainedStatus": "passed",
+      "retainedMachineDisposition": null,
+      "cleanup": "passed",
+      "terminalUsage": {
+        "runCount": 2,
+        "byRun": [
+          null,
+          {
+            "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+            "biller": "openrouter",
+            "provider": "openrouter",
+            "costStatus": "unpriced",
+            "billingType": "unknown",
+            "inputTokens": 17894,
+            "outputTokens": 1891,
+            "cachedInputTokens": 19200,
+            "usageSource": "per_run",
+            "sessionReused": true
+          }
+        ],
+        "coverage": "partial: waiting run receipt unavailable; resumed run receipt retained"
+      },
+      "evidence": "product-question-proof.darwin-arm64.json",
+      "diagnosis": "Typed semantic question answered with original question and option identity; warm continuation finished. Waiting-run usage remains missing.",
+      "supervision": {
+        "reservationUsd": 2,
+        "billingWatchdogUsd": 0.5,
+        "activeTimeoutSeconds": 120,
+        "outerTimeoutSeconds": 300,
+        "sleepAssertion": "caffeinate -i",
+        "deadlineClocks": [
+          "wall",
+          "monotonic"
+        ],
+        "automaticRetries": 0
+      }
+    },
+    {
+      "attemptId": "pi-product-plan-01",
+      "family": "product-e2e",
+      "caseId": "extended-harnesses.runner-acpx-pi.local.plan-approve-complete",
+      "startedAt": "2026-09-28T21:23:40.821883+00:00",
+      "finishedAt": "2026-09-28T21:25:59.888902+00:00",
+      "durationSeconds": 139.067,
+      "exitCode": 1,
+      "sourceRevision": "7710736ca3924c655c5b0efd172cfd3c0173766a",
+      "providerPackDigest": "sha256:eb31cadae93805b901d2565912121fca6e79024c0120b1bd7982e05215b5aa5a",
+      "profileDigest": "sha256:72cb225288376f733b9ed3afa5e13565eb4152f0de509bc1181382fa44bee472",
+      "submittedProviderTurns": null,
+      "providerRequestCount": null,
+      "billingDeltaUsd": 0.003090504,
+      "billingCoverage": "exclusive OpenRouter key delta, two spaced post-attempt observations",
+      "retainedStatus": "failed",
+      "retainedMachineDisposition": "candidate_failure",
+      "cleanup": "passed",
+      "terminalUsage": null,
+      "evidence": "product-plan-failure.darwin-arm64.json",
+      "diagnosis": "Plan and exact revision confirmation persisted, but Rust MCP identity loss placed its UI card in fallback; unchanged meaningful oracle failed.",
+      "supervision": {
+        "reservationUsd": 2,
+        "billingWatchdogUsd": 0.5,
+        "activeTimeoutSeconds": 120,
+        "outerTimeoutSeconds": 300,
+        "sleepAssertion": "caffeinate -i",
+        "deadlineClocks": [
+          "wall",
+          "monotonic"
+        ],
+        "automaticRetries": 0
+      }
+    },
+    {
+      "attemptId": "pi-native-controls-01",
+      "family": "native-acp",
+      "caseId": "active-steer-queued-follow-up-and-denied-write",
+      "startedAt": "2026-09-28T21:32:45.580333+00:00",
+      "finishedAt": "2026-09-28T21:33:06.922601+00:00",
+      "durationSeconds": 21.342,
+      "exitCode": 0,
+      "automaticRetries": 0,
+      "sourceRevision": "7710736ca3924c655c5b0efd172cfd3c0173766a",
+      "providerPackDigest": "sha256:eb31cadae93805b901d2565912121fca6e79024c0120b1bd7982e05215b5aa5a",
+      "profileDigest": "sha256:72cb225288376f733b9ed3afa5e13565eb4152f0de509bc1181382fa44bee472",
+      "submittedProviderTurns": 1,
+      "providerRequestCount": null,
+      "billingDeltaUsd": 0.000140985,
+      "billingCoverage": "exclusive OpenRouter key delta; delayed charge observed after unchanged initial readings",
+      "retainedStatus": "passed",
+      "retainedMachineDisposition": null,
+      "cleanup": "passed",
+      "terminalUsage": {
+        "inputTokens": 1941,
+        "outputTokens": 134,
+        "cachedReadTokens": 3584,
+        "cachedWriteTokens": 0,
+        "totalTokens": 5659,
+        "_meta": {
+          "paperclipPi": {
+            "provenance": "assistant_message_receipts",
+            "costUsd": 0.00040961200000000006,
+            "costSource": "pi_pricing_estimate"
+          }
+        }
+      },
+      "evidence": "native-controls-proof.darwin-arm64.json",
+      "diagnosis": "Active steer and native queued follow-up were acknowledged and consumed in order; original native write denied, no marker, terminal settlement, stale steer rejected.",
+      "supervision": {
+        "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+        "source": "7710736ca3924c655c5b0efd172cfd3c0173766a",
+        "packDigest": "sha256:eb31cadae93805b901d2565912121fca6e79024c0120b1bd7982e05215b5aa5a",
+        "reservationUsd": 2,
+        "billingWatchdogUsd": 0.5,
+        "activeDeadlineSeconds": 120,
+        "outerDeadlineSeconds": 180,
+        "deadlineClocks": [
+          "wall",
+          "monotonic"
+        ],
+        "sleepAssertion": "caffeinate -i",
+        "automaticRetries": 0,
+        "providerPromptMaximum": 1
+      },
+      "earlyObservedKeyDeltaUsd": 0
+    },
+    {
+      "attemptId": "pi-product-plan-02",
+      "family": "product-e2e",
+      "caseId": "extended-harnesses.runner-acpx-pi.local.plan-approve-complete",
+      "startedAt": "2026-09-28T21:39:55.842556+00:00",
+      "finishedAt": "2026-09-28T21:44:44.425729+00:00",
+      "durationSeconds": 288.581,
+      "sourceRevision": "e35b11db21b8da8527fa0b6c6f5fe186bdced111",
+      "packSourceRevision": "7ab463697037c9456a4ad2b83ea0e9c28b353f8a",
+      "providerPackDigest": "sha256:0800f10114e3d8e2e981ea27f0ab47f1da9349dbcc22bf55a76ebbc4af00601d",
+      "runnerdDigest": "sha256:955d0714472a0a8727aaac55c357425b4157cba54f37483ded58217e8859a26d",
+      "profileDigest": "sha256:72cb225288376f733b9ed3afa5e13565eb4152f0de509bc1181382fa44bee472",
+      "exitCode": 1,
+      "retainedStatus": "failed",
+      "retainedMachineDisposition": "candidate_failure",
+      "cleanup": "passed",
+      "submittedProviderTurns": 2,
+      "providerRequestCount": null,
+      "billingDeltaUsd": 0.002440082,
+      "billingCoverage": "exclusive OpenRouter key delta; two spaced post-attempt observations",
+      "terminalUsage": null,
+      "automaticRetries": 0,
+      "supervision": {
+        "reservationUsd": 2,
+        "billingWatchdogUsd": 0.5,
+        "activeTimeoutSeconds": 120,
+        "outerTimeoutSeconds": 300,
+        "deadlineClocks": [
+          "wall",
+          "monotonic"
+        ],
+        "sleepAssertion": "caffeinate -i",
+        "automaticRetries": 0
+      },
+      "diagnosis": "All three distinct resumed semantic executions reuse native call_0. Owned extension forwards it as MCP JSON-RPC id, causing shared exact-call dedupe to reject later corrected/different requests.",
+      "evidence": "product-plan-resume-failure.darwin-arm64.json"
+    },
+    {
+      "attemptId": "pi-product-plan-03",
+      "family": "Product E2E",
+      "caseId": "extended-harnesses.runner-acpx-pi.local.plan-approve-complete",
+      "sourceRevision": "92bcd6f07ae9a3905333dbaa2542b1401945f5fa",
+      "runtimeSourceRevision": "f556110d588a9de9fefe676a9a62bf09e98afb85",
+      "profileVersion": 4,
+      "profileDigest": "sha256:2324d9b47650c12b16f8e2c44dc33637d52f1b22ba8e914623eac4049e7e1991",
+      "providerPackDigest": "sha256:4df7e9fa164929c7ae7d8e8711f0bf7d587d9fa6a246d0a8340f318f57168855",
+      "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+      "status": "failed",
+      "failureClass": "transient_infrastructure",
+      "failurePhase": "embedded PostgreSQL fixture bootstrap",
+      "providerPromptCalls": 0,
+      "billingDeltaUsd": 0,
+      "terminalUsage": null,
+      "automaticRetries": 0,
+      "evidence": "product-plan-infrastructure-failure.v4.darwin-arm64.json"
+    },
+    {
+      "attemptId": "pi-native-controls-02",
+      "family": "native-acp",
+      "caseId": "active-steer-queued-follow-up-and-denied-write",
+      "profileVersion": 4,
+      "source": "f556110d588a9de9fefe676a9a62bf09e98afb85",
+      "packDigest": "sha256:4df7e9fa164929c7ae7d8e8711f0bf7d587d9fa6a246d0a8340f318f57168855",
+      "profileDigest": "sha256:2324d9b47650c12b16f8e2c44dc33637d52f1b22ba8e914623eac4049e7e1991",
+      "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+      "status": "passed",
+      "modelPromptRequests": 1,
+      "durationSeconds": 20.255,
+      "billingDeltaUsd": 0.000546502,
+      "earlyObservedKeyDeltaUsd": 0,
+      "billingCoverage": "exclusive key delta settled on later observation",
+      "terminalUsage": {
+        "inputTokens": 2030,
+        "outputTokens": 1293,
+        "cachedReadTokens": 5632,
+        "cachedWriteTokens": 0,
+        "totalTokens": 8955,
+        "_meta": {
+          "paperclipPi": {
+            "provenance": "assistant_message_receipts",
+            "costUsd": 0.000803936,
+            "costSource": "pi_pricing_estimate"
+          }
+        }
+      },
+      "automaticRetries": 0,
+      "evidence": "native-controls-proof.v4.darwin-arm64.json"
+    },
+    {
+      "attemptId": "pi-native-controls-03",
+      "family": "native-acp",
+      "caseId": "active-steer-queued-follow-up-and-denied-write",
+      "profileVersion": 5,
+      "source": "aec26ad83f1d082f0d0a5eaffbd615a9e2e26155",
+      "packDigest": "sha256:cf7d0998bbc2bed7b893c726c2b6455ba8a683d9cff7d92afedbff2d5900d500",
+      "profileDigest": "sha256:020d96ccbd3c45c3f62680814776394ed5a56d9572a1a4dccda56a74d16c7803",
+      "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+      "status": "passed",
+      "modelPromptRequests": 1,
+      "durationSeconds": 19.199,
+      "billingDeltaUsd": 0.000151739,
+      "earlyObservedKeyDeltaUsd": 0,
+      "billingCoverage": "exclusive key delta settled on later observation",
+      "terminalUsage": {
+        "inputTokens": 3727,
+        "outputTokens": 140,
+        "cachedReadTokens": 1792,
+        "cachedWriteTokens": 0,
+        "totalTokens": 5659,
+        "_meta": {
+          "paperclipPi": {
+            "provenance": "assistant_message_receipts",
+            "costUsd": 0.0006111560000000002,
+            "costSource": "pi_pricing_estimate"
+          }
+        }
+      },
+      "automaticRetries": 0,
+      "evidence": "native-controls-proof.v5.darwin-arm64.json"
+    }
+  ],
+  "observedSemanticOperations": {
+    "attemptId": "pi-context-paid-04",
+    "succeeded": [
+      "get_task_context",
+      "get_task_history",
+      "list_documents",
+      "read_document"
+    ],
+    "terminalTurnObserved": false,
+    "terminalUsageAvailable": false,
+    "realPaperclipRequests": 0
+  },
+  "verification": {
+    "sharedReasoningProjection": {
+      "commit": "a978d1bc5",
+      "regressionsFailedBefore": 3,
+      "focusedTestsPassedAfter": 20,
+      "additionalCodexEventTestsPassed": 8,
+      "sourceTypecheck": "passed"
+    },
+    "productPrerequisites": {
+      "source": "68fde1eb5779838518e322ced202a3e454548d34",
+      "typecheck": "passed after building missing workspace plugin-sdk artifact",
+      "unitTestsPassed": 585
+    },
+    "offlineProof": "offline-provider-pack-proof.darwin-arm64.json",
+    "liveCompletionContract": {
+      "schemaAndHandlerCommit": "dc58afb28",
+      "modelInstructionsCommit": "aa4b88b16",
+      "beforeFixFailures": 3,
+      "fullLiveSessionTestsPassed": 45,
+      "instructionFollowupFocusedTestsPassed": 3,
+      "sourceTypecheck": "passed",
+      "boundary": "Advisory native report does not mutate mock state or settle provider turn; stale revision, wrong turn, conflicting report and unauthorized create_task rejected"
+    },
+    "currentPiSource": {
+      "source": "dd78df1ef8b279c30c710c9b7a7f9fda22e321d6",
+      "typescriptBuild": "passed",
+      "releaseRunnerBuild": "passed",
+      "vitestPassed": 107,
+      "vitestSkipped": 1,
+      "installedPackageChecksPassed": 22,
+      "deployedPackCredentialFreeProbe": "passed",
+      "fullCredentialFreeRunnerStartup": "terminal rejection within30s deadline; not authenticated success",
+      "cleanDependencyResolution": "two independent runs from tracked manifest/config/patch inputs with pnpm9.15.4 --resolution-only --ignore-scripts --no-frozen-lockfile",
+      "cleanDependencyLockSha256": "2c46a68811ba1d504a41b6f4d3f642bc93f4a1c615097754c9c6486881dba8e6",
+      "scope": "historical version 2 verification, before version 3 bridge/output changes"
+    },
+    "startupDiagnosis": "startup-diagnostic.darwin-arm64.json",
+    "authenticatedModelNoPrompt": {
+      "evidence": "model-admission-proof.darwin-arm64.json",
+      "actualSelectedCurrentModelId": "openrouter/deepseek/deepseek-v4-flash-0731",
+      "promptRequests": 0,
+      "billingDeltaUsd": 0
+    },
+    "version3": {
+      "source": "06cf356a8bc94f709fcd15606fe05e17933fe3b2",
+      "packSource": "7710736ca3924c655c5b0efd172cfd3c0173766a",
+      "typescriptBuild": "passed",
+      "releaseRunnerBuild": "passed",
+      "vitestPassed": 95,
+      "installedPackageChecksPassed": 25,
+      "nativeRustTestsPassed": 16,
+      "offlineProof": "offline-provider-pack-proof.darwin-arm64.json",
+      "linuxInitializeProof": "offline-native-proof.linux-x64.v3.json"
+    },
+    "version4": {
+      "source": "f556110d588a9de9fefe676a9a62bf09e98afb85",
+      "offlineProof": "offline-provider-pack-proof.v4.darwin-arm64.json",
+      "recursiveTypecheck": "passed",
+      "fullBuild": "passed",
+      "focusedTypeScriptTestsPassed": 49,
+      "optionalInstallationSuitePassed": 5,
+      "installedPackageAndMaterializerTestsPassed": 24,
+      "nativeRustTestsPassed": 13,
+      "authenticatedQualification": "Product blocked before provider startup by local database fixture infrastructure; separate native controls probe passed",
+      "nativeControlsProof": "native-controls-proof.v4.darwin-arm64.json"
+    },
+    "version5": {
+      "source": "aec26ad83f1d082f0d0a5eaffbd615a9e2e26155",
+      "offlineProof": "offline-provider-pack-proof.v5.darwin-arm64.json",
+      "securityClosureProof": "security-closure-proof.v5.json",
+      "nativeControlsProof": "native-controls-proof.v5.darwin-arm64.json",
+      "recursiveTypecheck": "passed",
+      "fullBuild": "passed",
+      "focusedTypeScriptTestsPassed": 43,
+      "installedWrapperAndNativeSdkTestsPassed": 19,
+      "materializerTestsPassed": 8,
+      "nativeRustTestsPassed": 13,
+      "qualification": "pending; one direct ACP controls probe passed, complete Product/Daytona matrix remains pending"
+    }
+  },
+  "publicationBoundary": {
+    "hiddenReasoningIncluded": false,
+    "rawTranscriptsIncluded": false,
+    "providerSessionIdsIncluded": false,
+    "credentialsIncluded": false
+  },
+  "remaining": [
+    "Successful canonical Runner protocol completion",
+    "Current version5 local Product hello, file, question, semantic plan and pending-input restart journeys",
+    "Durable native pending-request reconnect/recovery beyond direct ACP controls",
+    "Complete token and price/billing coverage, separate from catalog estimates",
+    "Linux x64 Daytona authenticated qualification"
+  ]
+}

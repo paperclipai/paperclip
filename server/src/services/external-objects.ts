@@ -1,0 +1,1228 @@
+import { projectIdleExternalObjectSchedule } from "./external-object-idle-schedule.js";
+import type { DeadlineReconciliationSnapshot } from "./deadline-reconciliation.js";
+import { idleDeadlineRowLimit, type IdleDeadlineSnapshot } from "./idle-deadline-types.js";
+import { randomUUID } from "node:crypto";
+import { and, asc, eq, exists, gt, inArray, isNotNull, isNull, lte, not, or, sql } from "drizzle-orm";
+import type { Db } from "@paperclipai/db";
+import { companies, documents, externalObjectMentions, externalObjects, issueComments, issueDocuments, issues, plugins, pluginCompanySettings } from "@paperclipai/db";
+import {
+  formatExternalObjectMentionSourceLabel,
+  type ExternalObjectCanonicalUrl,
+  type ExternalObjectLivenessState,
+  type ExternalObjectMentionConfidence,
+  type ExternalObjectMentionSourceKind,
+  type ExternalObjectStatusCategory,
+  type ExternalObjectStatusTone,
+  type PaperclipPluginManifestV1,
+} from "@paperclipai/shared";
+import { extractExternalObjectCanonicalUrls } from "@paperclipai/shared/external-objects-server";
+import type { PluginExternalObjectRecordSnapshot, PluginExternalObjectResolveResult } from "@paperclipai/plugin-sdk";
+import { notFound } from "../errors.js";
+import { logger } from "../middleware/logger.js";
+import { logActivity, type LogActivityInput } from "./activity-log.js";
+import { createGitHubExternalObjectProvider, type GitHubExternalObjectProviderOptions } from "./github-external-object-provider.js";
+import { notifyExternalObjectRefresh, type ExternalObjectRefreshIdentity } from "./external-object-refresh-notifications.js";
+import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
+import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
+import { registerScopedDeadlineWork } from "./scoped-deadline-work.js";
+import { publishLiveEvent } from "./live-events.js";
+import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+
+export interface ExternalObjectSourceContext {
+  companyId: string;
+  sourceIssueId: string;
+  sourceKind: ExternalObjectMentionSourceKind;
+  sourceRecordId: string | null;
+  documentKey: string | null;
+  propertyKey: string | null;
+}
+
+export interface ExternalObjectDetection {
+  canonical: ExternalObjectCanonicalUrl;
+  detectorKey: string;
+  providerKey: string;
+  objectType: string;
+  externalId: string;
+  displayKey?: string | null;
+  iconKey?: string | null;
+  displayTitle?: string | null;
+  confidence?: ExternalObjectMentionConfidence;
+  pluginId?: string | null;
+}
+
+export interface ExternalObjectDetector {
+  key: string;
+  detect(input: {
+    companyId: string;
+    urls: ExternalObjectCanonicalUrl[];
+    sourceContext: ExternalObjectSourceContext;
+  }): Promise<ExternalObjectDetection[]> | ExternalObjectDetection[];
+}
+
+export interface ExternalObjectResolverSnapshot {
+  displayKey?: string | null;
+  iconKey?: string | null;
+  displayTitle?: string | null;
+  statusKey?: string | null;
+  statusLabel?: string | null;
+  statusIconKey?: string | null;
+  statusCategory: ExternalObjectStatusCategory;
+  statusTone: ExternalObjectStatusTone;
+  isTerminal?: boolean;
+  data?: Record<string, unknown>;
+  remoteVersion?: string | null;
+  etag?: string | null;
+  ttlSeconds?: number;
+}
+
+export type ExternalObjectResolveResult =
+  | { ok: true; snapshot: ExternalObjectResolverSnapshot }
+  | {
+      ok: false;
+      liveness: Extract<ExternalObjectLivenessState, "auth_required" | "rate_limited" | "unreachable">;
+      errorCode: string;
+      errorMessage?: string | null;
+      retryAfterSeconds?: number;
+    };
+
+export interface ExternalObjectResolver {
+  providerKey: string;
+  objectType?: string;
+  resolve(input: {
+    companyId: string;
+    object: ExternalObjectRecord;
+    signal?: AbortSignal;
+  }): Promise<ExternalObjectResolveResult>;
+}
+
+type ExternalObjectRecord = typeof externalObjects.$inferSelect;
+type ExternalObjectMentionRecord = typeof externalObjectMentions.$inferSelect;
+
+const DEFAULT_REFRESH_TTL_SECONDS = 300;
+const DEFAULT_RETRY_AFTER_SECONDS = 300;
+const DEFAULT_REFRESH_LEASE_SECONDS = 300;
+const REFRESH_LEASE_RENEW_INTERVAL_MS = 60_000;
+
+type RefreshScope = { companyId: string; objectId?: string; identity?: ExternalObjectRefreshIdentity };
+type RefreshDeadline = { id: string; companyId: string; dueAt: number; providerKey: string; objectType: string; externalId: string };
+
+
+function refreshableObjectWhere() {
+  return or(eq(externalObjects.isTerminal, false), and(
+    eq(externalObjects.providerKey, "github"),
+    eq(externalObjects.statusKey, "not_found"),
+    not(sql`coalesce(${externalObjects.data}->>'probeVerified', 'false') = 'true'`),
+  ))!;
+}
+
+function sourceWhere(input: ExternalObjectSourceContext) {
+  const conditions = [
+    eq(externalObjectMentions.companyId, input.companyId),
+    eq(externalObjectMentions.sourceIssueId, input.sourceIssueId),
+    eq(externalObjectMentions.sourceKind, input.sourceKind),
+  ];
+  if (input.sourceRecordId) {
+    conditions.push(eq(externalObjectMentions.sourceRecordId, input.sourceRecordId));
+  } else {
+    conditions.push(isNull(externalObjectMentions.sourceRecordId));
+  }
+  if (input.documentKey) {
+    conditions.push(eq(externalObjectMentions.documentKey, input.documentKey));
+  } else {
+    conditions.push(isNull(externalObjectMentions.documentKey));
+  }
+  if (input.propertyKey) {
+    conditions.push(eq(externalObjectMentions.propertyKey, input.propertyKey));
+  } else {
+    conditions.push(isNull(externalObjectMentions.propertyKey));
+  }
+  return and(...conditions);
+}
+
+function addSeconds(date: Date, seconds: number) {
+  return new Date(date.getTime() + Math.max(1, seconds) * 1000);
+}
+
+function visibleLiveness(object: ExternalObjectRecord, now = new Date()): ExternalObjectLivenessState {
+  // Terminal objects are never refreshed again, so "stale" (refresh overdue) is
+  // misleading — their resolved status is final. Keep the last liveness as-is.
+  if (object.isTerminal) return object.liveness;
+  if (object.liveness === "fresh" && object.nextRefreshAt && object.nextRefreshAt <= now) {
+    return "stale";
+  }
+  return object.liveness;
+}
+
+function objectChanged(before: ExternalObjectRecord, after: ExternalObjectRecord) {
+  return (
+    before.statusKey !== after.statusKey ||
+    before.statusLabel !== after.statusLabel ||
+    before.statusIconKey !== after.statusIconKey ||
+    before.statusCategory !== after.statusCategory ||
+    before.statusTone !== after.statusTone ||
+    before.isTerminal !== after.isTerminal
+  );
+}
+
+function sanitizeErrorMessage(message: string | null | undefined) {
+  if (!message) return null;
+  return message
+    .replace(/https?:\/\/[^\s<>()]+/gi, "[redacted-url]")
+    .replace(/\b(token|key|secret|authorization|bearer)=\S+/gi, "$1=[redacted]");
+}
+
+function genericUrlDetector(): ExternalObjectDetector {
+  return {
+    key: "generic-url",
+    detect({ urls }) {
+      return urls.map((canonical) => ({
+        canonical,
+        detectorKey: "generic-url",
+        providerKey: "url",
+        objectType: "link",
+        externalId: canonical.canonicalIdentityHash,
+        displayTitle: canonical.sanitizedDisplayUrl,
+        confidence: "possible",
+      }));
+    },
+  };
+}
+
+export function createExternalObjectDetectorRegistry(detectors: ExternalObjectDetector[] = []) {
+  const entries = [...detectors, genericUrlDetector()];
+
+  async function detect(input: {
+    companyId: string;
+    urls: ExternalObjectCanonicalUrl[];
+    sourceContext: ExternalObjectSourceContext;
+  }) {
+    const claimed = new Set<string>();
+    const detections: ExternalObjectDetection[] = [];
+    for (const detector of entries) {
+      const remaining = input.urls.filter((url) => !claimed.has(url.canonicalIdentityHash));
+      if (remaining.length === 0) break;
+      try {
+        const detected = await detector.detect({ ...input, urls: remaining });
+        for (const detection of detected) {
+          if (claimed.has(detection.canonical.canonicalIdentityHash)) continue;
+          claimed.add(detection.canonical.canonicalIdentityHash);
+          detections.push({ ...detection, detectorKey: detection.detectorKey || detector.key });
+        }
+      } catch (err) {
+        logger.warn({ err, detectorKey: detector.key }, "external object detector failed");
+      }
+    }
+    return detections;
+  }
+
+  return { detect };
+}
+
+export function createExternalObjectResolverRegistry(resolvers: ExternalObjectResolver[] = []) {
+  function find(object: Pick<ExternalObjectRecord, "providerKey" | "objectType">) {
+    return resolvers.find(
+      (resolver) =>
+        resolver.providerKey === object.providerKey &&
+        (!resolver.objectType || resolver.objectType === object.objectType),
+    ) ?? null;
+  }
+  return { find };
+}
+
+function manifestProvidesObject(
+  manifest: PaperclipPluginManifestV1,
+  object: Pick<ExternalObjectRecord, "providerKey" | "objectType">,
+) {
+  return (manifest.objectReferences ?? []).some(
+    (provider) =>
+      provider.providerKey === object.providerKey &&
+      provider.objectTypes.includes(object.objectType),
+  );
+}
+
+function objectSnapshot(object: ExternalObjectRecord): PluginExternalObjectRecordSnapshot {
+  return {
+    id: object.id,
+    companyId: object.companyId,
+    providerKey: object.providerKey,
+    objectType: object.objectType,
+    externalId: object.externalId,
+    sanitizedCanonicalUrl: object.sanitizedCanonicalUrl,
+    canonicalIdentityHash: object.canonicalIdentityHash,
+    displayKey: object.displayKey,
+    iconKey: object.iconKey,
+    displayTitle: object.displayTitle,
+    statusKey: object.statusKey,
+    statusLabel: object.statusLabel,
+    statusIconKey: object.statusIconKey,
+    statusCategory: object.statusCategory,
+    statusTone: object.statusTone,
+    liveness: object.liveness,
+    isTerminal: object.isTerminal,
+    data: object.data as Record<string, unknown>,
+    remoteVersion: object.remoteVersion,
+    etag: object.etag,
+  };
+}
+
+async function readyObjectReferencePlugins(db: Db, companyId?: string) {
+  return db
+    .select({
+      id: plugins.id,
+      pluginKey: plugins.pluginKey,
+      manifestJson: plugins.manifestJson,
+    })
+    .from(plugins)
+    .where(and(eq(plugins.status, "ready"), companyId ? not(exists(db.select({ id: pluginCompanySettings.id })
+      .from(pluginCompanySettings).where(and(
+        eq(pluginCompanySettings.pluginId, plugins.id),
+        eq(pluginCompanySettings.companyId, companyId),
+        eq(pluginCompanySettings.enabled, false),
+      )))) : undefined))
+    .orderBy(asc(plugins.installOrder))
+    .then((rows) =>
+      rows.filter((row) => (row.manifestJson.objectReferences?.length ?? 0) > 0),
+    );
+}
+
+function createPluginProviderDetector(
+  db: Db,
+  pluginWorkerManager: PluginWorkerManager,
+): ExternalObjectDetector {
+  return {
+    key: "plugin-object-reference-providers",
+    async detect(input) {
+      const providers = await readyObjectReferencePlugins(db, input.companyId);
+      const detections: ExternalObjectDetection[] = [];
+
+      for (const provider of providers) {
+        const manifest = provider.manifestJson;
+        if (!manifest.capabilities.includes("external.objects.detect")) continue;
+        try {
+          const result = await pluginWorkerManager.call(provider.id, "detectExternalObjects", {
+            companyId: input.companyId,
+            urls: input.urls.map((url) => ({
+              sanitizedCanonicalUrl: url.sanitizedCanonicalUrl,
+              sanitizedDisplayUrl: url.sanitizedDisplayUrl,
+              canonicalIdentityHash: url.canonicalIdentityHash,
+              canonicalIdentity: url.canonicalIdentity as unknown as Record<string, unknown>,
+              redactedMatchedText: url.redactedMatchedText,
+            })),
+            sourceContext: input.sourceContext,
+          });
+          const urlsByHash = new Map(input.urls.map((url) => [url.canonicalIdentityHash, url]));
+          const declaredProviderKeys = new Set((manifest.objectReferences ?? []).map((entry) => entry.providerKey));
+
+          for (const detection of result.detections ?? []) {
+            const canonical = urlsByHash.get(detection.urlIdentityHash);
+            if (!canonical) continue;
+            if (!declaredProviderKeys.has(detection.providerKey)) continue;
+            const declaration = (manifest.objectReferences ?? []).find((entry) => entry.providerKey === detection.providerKey);
+            if (!declaration?.objectTypes.includes(detection.objectType)) continue;
+            detections.push({
+              canonical,
+              detectorKey: `${provider.pluginKey}:${detection.providerKey}`,
+              providerKey: detection.providerKey,
+              objectType: detection.objectType,
+              externalId: detection.externalId,
+              displayKey: detection.displayKey,
+              iconKey: detection.iconKey,
+              displayTitle: detection.displayTitle,
+              confidence: detection.confidence ?? "exact",
+              pluginId: provider.id,
+            });
+          }
+        } catch (err) {
+          logger.warn(
+            { err, pluginId: provider.id, pluginKey: provider.pluginKey },
+            "plugin external object detector failed",
+          );
+        }
+      }
+
+      return detections;
+    },
+  };
+}
+
+async function resolveViaPluginProvider(
+  db: Db,
+  pluginWorkerManager: PluginWorkerManager | undefined,
+  object: ExternalObjectRecord,
+): Promise<{ pluginId: string; result: PluginExternalObjectResolveResult } | null> {
+  if (!pluginWorkerManager) return null;
+  const providers = await readyObjectReferencePlugins(db, object.companyId);
+  for (const provider of providers) {
+    const manifest = provider.manifestJson;
+    if (!manifest.capabilities.includes("external.objects.read")) continue;
+    if (!manifestProvidesObject(manifest, object)) continue;
+    try {
+      const result = await pluginWorkerManager.call(provider.id, "resolveExternalObject", {
+        companyId: object.companyId,
+        providerKey: object.providerKey,
+        objectType: object.objectType,
+        externalId: object.externalId,
+        object: objectSnapshot(object),
+      });
+      return { pluginId: provider.id, result };
+    } catch (err) {
+      logger.warn(
+        { err, pluginId: provider.id, pluginKey: provider.pluginKey, objectId: object.id },
+        "plugin external object resolver failed",
+      );
+      return {
+        pluginId: provider.id,
+        result: {
+          ok: false,
+          liveness: "unreachable",
+          errorCode: "plugin_resolver_failed",
+          errorMessage: err instanceof Error ? err.message : String(err),
+        },
+      };
+    }
+  }
+  return null;
+}
+
+export function externalObjectService(
+  db: Db,
+  opts: {
+    detectors?: ExternalObjectDetector[];
+    resolvers?: ExternalObjectResolver[];
+    pluginWorkerManager?: PluginWorkerManager;
+    github?: GitHubExternalObjectProviderOptions | false;
+    enabled?: boolean | (() => boolean | Promise<boolean>);
+  } = {},
+) {
+  const githubProvider = opts.github === false ? null : createGitHubExternalObjectProvider(db, opts.github);
+  const pluginProviderDetector = opts.pluginWorkerManager
+    ? createPluginProviderDetector(db, opts.pluginWorkerManager)
+    : null;
+  const detectorRegistry = createExternalObjectDetectorRegistry([
+    ...(pluginProviderDetector ? [pluginProviderDetector] : []),
+    ...(opts.detectors ?? []),
+    ...(githubProvider ? [githubProvider.detector] : []),
+  ]);
+  const resolvers = [
+    ...(opts.resolvers ?? []),
+    ...(githubProvider?.resolvers ?? []),
+  ];
+  const resolverRegistry = createExternalObjectResolverRegistry(resolvers);
+
+  let refreshWorkEnabled: boolean | null = null;
+
+  function pluginRefreshWhere(database: Db, selectedPluginId?: string) {
+    return exists(database.select({ id: plugins.id }).from(plugins).where(and(
+      selectedPluginId ? eq(plugins.id, selectedPluginId) : undefined,
+      eq(plugins.status, "ready"),
+      sql`${plugins.manifestJson}->'capabilities' ? 'external.objects.read'`,
+      sql`exists (select 1 from jsonb_array_elements(coalesce(${plugins.manifestJson}->'objectReferences', '[]'::jsonb)) as reference
+        where reference->>'providerKey' = ${externalObjects.providerKey}
+          and reference->'objectTypes' ? ${externalObjects.objectType})`,
+      not(exists(database.select({ id: pluginCompanySettings.id }).from(pluginCompanySettings).where(and(
+        eq(pluginCompanySettings.pluginId, plugins.id),
+        eq(pluginCompanySettings.companyId, externalObjects.companyId),
+        eq(pluginCompanySettings.enabled, false),
+      )))),
+    )));
+  }
+
+  function automaticRefreshWhere(database: Db = db) {
+    const supported = resolvers.map(resolver => and(
+      eq(externalObjects.providerKey, resolver.providerKey),
+      resolver.objectType ? eq(externalObjects.objectType, resolver.objectType) : undefined,
+    )!);
+    if (opts.pluginWorkerManager) supported.push(pluginRefreshWhere(database));
+    return and(
+      refreshableObjectWhere(), isNotNull(externalObjects.nextRefreshAt),
+      supported.length ? or(...supported) : sql`false`,
+      exists(database.select({ id: externalObjectMentions.id }).from(externalObjectMentions).where(and(
+        eq(externalObjectMentions.companyId, externalObjects.companyId),
+        eq(externalObjectMentions.objectId, externalObjects.id),
+      ))),
+    )!;
+  }
+
+  async function isEnabled() {
+    if (typeof opts.enabled === "function") return await opts.enabled();
+    return opts.enabled ?? true;
+  }
+
+  function emptySummary() {
+    return summarizeObjectPayloads([]);
+  }
+
+  async function issueById(issueId: string, dbOrTx: any = db) {
+    return dbOrTx
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        title: issues.title,
+        description: issues.description,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows: Array<{ id: string; companyId: string; title: string; description: string | null }>) => rows[0] ?? null);
+  }
+
+  async function upsertObjectFromDetection(
+    companyId: string,
+    detection: ExternalObjectDetection,
+    dbOrTx: any,
+  ): Promise<ExternalObjectRecord> {
+    const now = new Date();
+    const canonical = detection.canonical;
+    const values = {
+      companyId,
+      providerKey: detection.providerKey,
+      pluginId: detection.pluginId ?? null,
+      objectType: detection.objectType,
+      externalId: detection.externalId,
+      sanitizedCanonicalUrl: canonical.sanitizedCanonicalUrl,
+      canonicalIdentityHash: canonical.canonicalIdentityHash,
+      displayKey: detection.displayKey ?? null,
+      iconKey: detection.iconKey ?? null,
+      displayTitle: detection.displayTitle ?? canonical.sanitizedDisplayUrl,
+      nextRefreshAt: now,
+      updatedAt: now,
+    };
+    await notifyExternalObjectRefresh(dbOrTx, companyId, { providerKey: detection.providerKey, objectType: detection.objectType, externalId: detection.externalId });
+    const inserted = await dbOrTx
+      .insert(externalObjects)
+      .values(values)
+      .onConflictDoUpdate({
+        target: [
+          externalObjects.companyId,
+          externalObjects.providerKey,
+          externalObjects.objectType,
+          externalObjects.externalId,
+        ],
+        set: {
+          sanitizedCanonicalUrl: values.sanitizedCanonicalUrl,
+          canonicalIdentityHash: values.canonicalIdentityHash,
+          displayKey: values.displayKey,
+          iconKey: values.iconKey,
+          displayTitle: values.displayTitle,
+          nextRefreshAt: sql`coalesce(${externalObjects.nextRefreshAt}, now())`,
+          updatedAt: now,
+        },
+      })
+      .returning();
+    return inserted[0]!;
+  }
+
+  async function replaceSourceMentions(
+    input: ExternalObjectSourceContext & { text: string | null | undefined },
+    dbOrTx: any = db,
+  ) {
+    const urls = extractExternalObjectCanonicalUrls(input.text ?? "");
+    const previous: Array<{ objectId: string | null }> = await dbOrTx.selectDistinct({ objectId: externalObjectMentions.objectId })
+      .from(externalObjectMentions).where(sourceWhere(input));
+    for (const row of previous) if (row.objectId) await notifyExternalObjectRefresh(dbOrTx, input.companyId, row.objectId);
+    await dbOrTx.delete(externalObjectMentions).where(sourceWhere(input));
+    if (urls.length === 0) return;
+
+    const detections = await detectorRegistry.detect({
+      companyId: input.companyId,
+      urls,
+      sourceContext: input,
+    });
+    if (detections.length === 0) return;
+
+    const seen = new Set<string>();
+    const values: Array<typeof externalObjectMentions.$inferInsert> = [];
+    for (const detection of detections) {
+      const canonicalHash = detection.canonical.canonicalIdentityHash;
+      const sourceKey = `${detection.providerKey}:${detection.objectType}:${canonicalHash}`;
+      if (seen.has(sourceKey)) continue;
+      seen.add(sourceKey);
+      const object = await upsertObjectFromDetection(input.companyId, detection, dbOrTx);
+      await notifyExternalObjectRefresh(dbOrTx, input.companyId, object.id);
+      values.push({
+        companyId: input.companyId,
+        sourceIssueId: input.sourceIssueId,
+        sourceKind: input.sourceKind,
+        sourceRecordId: input.sourceRecordId,
+        documentKey: input.documentKey,
+        propertyKey: input.propertyKey,
+        matchedTextRedacted: detection.canonical.redactedMatchedText,
+        sanitizedDisplayUrl: detection.canonical.sanitizedDisplayUrl,
+        canonicalIdentityHash: canonicalHash,
+        canonicalIdentity: detection.canonical.canonicalIdentity as unknown as Record<string, unknown>,
+        objectId: object.id,
+        providerKey: detection.providerKey,
+        detectorKey: detection.detectorKey,
+        objectType: detection.objectType,
+        confidence: detection.confidence ?? "exact",
+        createdByPluginId: detection.pluginId ?? null,
+      });
+    }
+    if (values.length > 0) {
+      await dbOrTx.insert(externalObjectMentions).values(values);
+    }
+  }
+
+  async function syncIssue(issueId: string, dbOrTx: any = db) {
+    if (!(await isEnabled())) return;
+    const runSync = async (tx: any) => {
+      const issue = await issueById(issueId, tx);
+      if (!issue) throw notFound("Issue not found");
+      await replaceSourceMentions({
+        companyId: issue.companyId,
+        sourceIssueId: issue.id,
+        sourceKind: "title",
+        sourceRecordId: null,
+        documentKey: null,
+        propertyKey: null,
+        text: issue.title,
+      }, tx);
+      await replaceSourceMentions({
+        companyId: issue.companyId,
+        sourceIssueId: issue.id,
+        sourceKind: "description",
+        sourceRecordId: null,
+        documentKey: null,
+        propertyKey: null,
+        text: issue.description,
+      }, tx);
+    };
+    return dbOrTx === db ? db.transaction(runSync) : runSync(dbOrTx);
+  }
+
+  async function deleteMissingSourceMentions(kind: "comment" | "document", recordId: string, tx: any) {
+    const source = and(eq(externalObjectMentions.sourceKind, kind), eq(externalObjectMentions.sourceRecordId, recordId));
+    const owners: Array<{ companyId: string; objectId: string | null }> = await tx.selectDistinct({ companyId: externalObjectMentions.companyId, objectId: externalObjectMentions.objectId })
+      .from(externalObjectMentions).where(source);
+    for (const owner of owners) if (owner.objectId) await notifyExternalObjectRefresh(tx, owner.companyId, owner.objectId);
+    await tx.delete(externalObjectMentions).where(source);
+  }
+
+  async function syncComment(commentId: string, dbOrTx: any = db) {
+    const runSync = async (tx: any) => {
+      if (!(await isEnabled())) return;
+      const comment = await tx
+        .select({
+          id: issueComments.id,
+          companyId: issueComments.companyId,
+          issueId: issueComments.issueId,
+          body: issueComments.body,
+        })
+        .from(issueComments)
+        .where(eq(issueComments.id, commentId))
+        .then((rows: Array<{ id: string; companyId: string; issueId: string; body: string }>) => rows[0] ?? null);
+      if (!comment) {
+        await deleteMissingSourceMentions("comment", commentId, tx);
+        return;
+      }
+      await replaceSourceMentions({
+        companyId: comment.companyId,
+        sourceIssueId: comment.issueId,
+        sourceKind: "comment",
+        sourceRecordId: comment.id,
+        documentKey: null,
+        propertyKey: null,
+        text: comment.body,
+      }, tx);
+    };
+    return dbOrTx === db ? db.transaction(runSync) : runSync(dbOrTx);
+  }
+
+  async function syncDocument(documentId: string, dbOrTx: any = db) {
+    const runSync = async (tx: any) => {
+      if (!(await isEnabled())) return;
+      const document = await tx
+        .select({
+          documentId: documents.id,
+          companyId: documents.companyId,
+          issueId: issueDocuments.issueId,
+          key: issueDocuments.key,
+          body: documents.latestBody,
+        })
+        .from(issueDocuments)
+        .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
+        .where(eq(documents.id, documentId))
+        .then((rows: Array<{ documentId: string; companyId: string; issueId: string; key: string; body: string }>) => rows[0] ?? null);
+      if (!document) {
+        await deleteMissingSourceMentions("document", documentId, tx);
+        return;
+      }
+      await replaceSourceMentions({
+        companyId: document.companyId,
+        sourceIssueId: document.issueId,
+        sourceKind: "document",
+        sourceRecordId: document.documentId,
+        documentKey: document.key,
+        propertyKey: null,
+        text: document.body,
+      }, tx);
+    };
+    return dbOrTx === db ? db.transaction(runSync) : runSync(dbOrTx);
+  }
+
+  async function safeSync(label: string, fn: () => Promise<void>) {
+    try {
+      await fn();
+    } catch (err) {
+      logger.warn({ err }, `external object ${label} sync failed`);
+    }
+  }
+
+  async function syncIssueSafely(issueId: string) {
+    await safeSync("issue", () => syncIssue(issueId));
+  }
+
+  async function syncCommentSafely(commentId: string, dbOrTx: any = db) {
+    await safeSync("comment", () => syncComment(commentId, dbOrTx));
+  }
+
+  async function syncDocumentSafely(documentId: string) {
+    await safeSync("document", () => syncDocument(documentId));
+  }
+
+  function toObjectPayload(object: ExternalObjectRecord, now = new Date()) {
+    const { refreshToken, ...payload } = object;
+    void refreshToken;
+    return {
+      ...payload,
+      liveness: visibleLiveness(object, now),
+    };
+  }
+
+  async function listForIssue(issueId: string) {
+    if (!(await isEnabled())) return [];
+    const issue = await issueById(issueId);
+    if (!issue) throw notFound("Issue not found");
+    const rows = await db
+      .select({
+        mention: externalObjectMentions,
+        object: externalObjects,
+      })
+      .from(externalObjectMentions)
+      .leftJoin(externalObjects, eq(externalObjectMentions.objectId, externalObjects.id))
+      .where(and(
+        eq(externalObjectMentions.companyId, issue.companyId),
+        eq(externalObjectMentions.sourceIssueId, issue.id),
+      ))
+      .orderBy(asc(externalObjectMentions.sourceKind), asc(externalObjectMentions.createdAt));
+    const now = new Date();
+    const grouped = new Map<string, {
+      object: ReturnType<typeof toObjectPayload> | null;
+      mentions: ExternalObjectMentionRecord[];
+      mentionCount: number;
+      sourceLabels: string[];
+    }>();
+    for (const row of rows) {
+      const key = row.object?.id ?? `mention:${row.mention.id}`;
+      const existing = grouped.get(key) ?? {
+        object: row.object ? toObjectPayload(row.object, now) : null,
+        mentions: [],
+        mentionCount: 0,
+        sourceLabels: [],
+      };
+      existing.mentions.push(row.mention);
+      existing.mentionCount += 1;
+      const label = formatExternalObjectMentionSourceLabel({
+        sourceKind: row.mention.sourceKind,
+        documentKey: row.mention.documentKey,
+        propertyKey: row.mention.propertyKey,
+      });
+      if (!existing.sourceLabels.includes(label)) existing.sourceLabels.push(label);
+      grouped.set(key, existing);
+    }
+    return [...grouped.values()];
+  }
+
+  function summarizeObjects(objects: Array<ReturnType<typeof toObjectPayload>>) {
+    const byStatusCategory: Record<string, number> = {};
+    const byLiveness: Record<string, number> = {};
+    let highestSeverity: ExternalObjectStatusTone = "neutral";
+    const severityRank: Record<ExternalObjectStatusTone, number> = {
+      neutral: 0,
+      muted: 0,
+      success: 1,
+      info: 2,
+      warning: 3,
+      danger: 4,
+    };
+    for (const object of objects) {
+      byStatusCategory[object.statusCategory] = (byStatusCategory[object.statusCategory] ?? 0) + 1;
+      byLiveness[object.liveness] = (byLiveness[object.liveness] ?? 0) + 1;
+      const livenessTone = object.liveness === "auth_required" || object.liveness === "unreachable"
+        ? "danger"
+        : object.liveness === "rate_limited" || object.liveness === "stale"
+        ? "warning"
+        : object.statusTone;
+      if (severityRank[livenessTone] > severityRank[highestSeverity]) highestSeverity = livenessTone;
+    }
+    return {
+      total: objects.length,
+      byStatusCategory,
+      byLiveness,
+      highestSeverity,
+      staleCount: byLiveness.stale ?? 0,
+      authRequiredCount: byLiveness.auth_required ?? 0,
+      unreachableCount: byLiveness.unreachable ?? 0,
+    };
+  }
+
+  function summarizeObjectPayloads(objects: Array<ReturnType<typeof toObjectPayload>>, objectLimit = objects.length) {
+    return {
+      ...summarizeObjects(objects),
+      objects: objects.slice(0, objectLimit).map((object) => ({
+        id: object.id,
+        providerKey: object.providerKey,
+        objectType: object.objectType,
+        displayKey: object.displayKey,
+        iconKey: object.iconKey,
+        displayTitle: object.displayTitle,
+        statusIconKey: object.statusIconKey,
+        statusCategory: object.statusCategory,
+        statusTone: object.statusTone,
+        liveness: object.liveness,
+        isTerminal: object.isTerminal,
+      })),
+    };
+  }
+
+  async function getIssueSummary(issueId: string) {
+    if (!(await isEnabled())) return emptySummary();
+    const groups = await listForIssue(issueId);
+    const objects = groups.flatMap((group) => (group.object ? [group.object] : []));
+    return summarizeObjectPayloads(objects);
+  }
+
+  async function getIssueSummaries(companyId: string, issueIds: string[]) {
+    if (!(await isEnabled())) return new Map<string, ReturnType<typeof summarizeObjectPayloads>>();
+    const uniqueIssueIds = [...new Set(issueIds)].filter((id) => id.length > 0);
+    const summaries = new Map<string, ReturnType<typeof summarizeObjectPayloads>>();
+    if (uniqueIssueIds.length === 0) return summaries;
+
+    const rows = await db
+      .select({
+        issueId: externalObjectMentions.sourceIssueId,
+        object: externalObjects,
+      })
+      .from(externalObjectMentions)
+      .innerJoin(externalObjects, eq(externalObjectMentions.objectId, externalObjects.id))
+      .where(and(
+        eq(externalObjectMentions.companyId, companyId),
+        inArray(externalObjectMentions.sourceIssueId, uniqueIssueIds),
+      ));
+
+    const now = new Date();
+    const objectsByIssueId = new Map<string, Map<string, ReturnType<typeof toObjectPayload>>>();
+    for (const row of rows) {
+      const issueObjects = objectsByIssueId.get(row.issueId) ?? new Map<string, ReturnType<typeof toObjectPayload>>();
+      issueObjects.set(row.object.id, toObjectPayload(row.object, now));
+      objectsByIssueId.set(row.issueId, issueObjects);
+    }
+
+    for (const [issueId, issueObjects] of objectsByIssueId) {
+      const objects = [...issueObjects.values()];
+      if (objects.length > 0) summaries.set(issueId, summarizeObjectPayloads(objects));
+    }
+    return summaries;
+  }
+
+  async function getProjectSummary(projectId: string) {
+    if (!(await isEnabled())) return emptySummary();
+    const projectIssues = await db
+      .select({ id: issues.id, companyId: issues.companyId })
+      .from(issues)
+      .where(and(eq(issues.projectId, projectId), inArray(issues.status, ["todo", "in_progress", "in_review", "blocked"])));
+    if (projectIssues.length === 0) return { ...summarizeObjects([]), objects: [] };
+    const companyIds = new Set(projectIssues.map((issue) => issue.companyId));
+    if (companyIds.size !== 1) return { ...summarizeObjects([]), objects: [] };
+    const issueIds = projectIssues.map((issue) => issue.id);
+    const rows = await db
+      .select({ object: externalObjects })
+      .from(externalObjectMentions)
+      .innerJoin(externalObjects, eq(externalObjectMentions.objectId, externalObjects.id))
+      .where(and(
+        eq(externalObjectMentions.companyId, projectIssues[0]!.companyId),
+        inArray(externalObjectMentions.sourceIssueId, issueIds),
+      ));
+    const now = new Date();
+    const objectsById = new Map<string, ReturnType<typeof toObjectPayload>>();
+    for (const row of rows) objectsById.set(row.object.id, toObjectPayload(row.object, now));
+    const objects = [...objectsById.values()];
+    return summarizeObjectPayloads(objects, 25);
+  }
+
+  type RefreshObjectInput = {
+    companyId: string;
+    actor?: Pick<LogActivityInput, "actorType" | "actorId" | "agentId" | "runId">;
+    force?: boolean;
+    scheduled?: boolean;
+    signal?: AbortSignal;
+    now?: Date;
+  };
+
+  function refreshOwnerWhere(object: ExternalObjectRecord, refreshToken: string) {
+    return and(
+      eq(externalObjects.id, object.id),
+      eq(externalObjects.companyId, object.companyId),
+      eq(externalObjects.refreshToken, refreshToken),
+    );
+  }
+
+  async function refreshSupersededResult(object: ExternalObjectRecord, now: Date) {
+    const latest = await db
+      .select()
+      .from(externalObjects)
+      .where(and(eq(externalObjects.id, object.id), eq(externalObjects.companyId, object.companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (!latest) throw notFound("External object not found");
+    return { object: toObjectPayload(latest, now), refreshed: false, reason: "refresh_superseded" as const };
+  }
+
+  async function persistRefresh(object: ExternalObjectRecord, token: string,
+    patch: Partial<typeof externalObjects.$inferInsert>, scheduled = false, selectedPluginId?: string) {
+    return db.transaction(async tx => {
+      await notifyExternalObjectRefresh(tx, object.companyId, object.id);
+      const rows = await tx.update(externalObjects).set(patch)
+        .where(and(refreshOwnerWhere(object, token),
+          scheduled ? automaticRefreshWhere(tx as unknown as Db) : undefined,
+          selectedPluginId ? pluginRefreshWhere(tx as unknown as Db, selectedPluginId) : undefined)).returning();
+      if ((scheduled || selectedPluginId) && rows.length === 0) await tx.update(externalObjects)
+        .set({ refreshStartedAt: null, refreshToken: null }).where(refreshOwnerWhere(object, token));
+      return rows;
+    });
+  }
+
+  async function resolveObjectRefresh(
+    object: ExternalObjectRecord,
+    input: RefreshObjectInput,
+    now: Date,
+    refreshToken: string,
+  ) {
+    input.signal?.throwIfAborted();
+    const pluginResolution = await observeRefreshCancellation(resolveViaPluginProvider(db, opts.pluginWorkerManager, object), input.signal);
+    const resolver = pluginResolution ? null : resolverRegistry.find(object);
+    if (!pluginResolution && !resolver) {
+      const [updated] = await persistRefresh(object, refreshToken, {
+          liveness: object.isTerminal ? object.liveness : visibleLiveness(object, now) === "fresh" ? "stale" : object.liveness,
+          nextRefreshAt: addSeconds(now, DEFAULT_RETRY_AFTER_SECONDS),
+          refreshStartedAt: null,
+          refreshToken: null,
+          updatedAt: now,
+        }, input.scheduled);
+      if (!updated) return refreshSupersededResult(object, now);
+      return { object: toObjectPayload(updated ?? object, now), refreshed: false, reason: "no_resolver" as const };
+    }
+
+    const result = pluginResolution?.result ?? await observeRefreshCancellation(
+      resolver!.resolve({ companyId: object.companyId, object, signal: input.signal }), input.signal);
+    input.signal?.throwIfAborted();
+    if (!result.ok) {
+      // A failed refresh means the object's status is currently unknown, not
+      // terminal. Clear a previous terminal verdict so the object keeps being
+      // scheduled for automatic refresh and self-heals (e.g. a GitHub "not
+      // found" that later resolves once repo access improves).
+      const [updated] = await persistRefresh(object, refreshToken, {
+          liveness: result.liveness,
+          isTerminal: false,
+          lastErrorAt: now,
+          lastErrorCode: result.errorCode,
+          lastErrorMessage: sanitizeErrorMessage(result.errorMessage),
+          nextRefreshAt: addSeconds(now, result.retryAfterSeconds ?? DEFAULT_RETRY_AFTER_SECONDS),
+          refreshStartedAt: null,
+          refreshToken: null,
+          updatedAt: now,
+        }, input.scheduled, pluginResolution?.pluginId);
+      if (!updated) return refreshSupersededResult(object, now);
+      publishLiveEvent({
+        companyId: object.companyId,
+        type: "external_object.updated",
+        payload: { objectId: object.id, liveness: result.liveness },
+      });
+      return { object: toObjectPayload(updated ?? object, now), refreshed: true, reason: result.liveness };
+    }
+
+    const snapshot = result.snapshot;
+    const patch = {
+      displayKey: snapshot.displayKey ?? object.displayKey,
+      iconKey: snapshot.iconKey ?? object.iconKey,
+      displayTitle: snapshot.displayTitle ?? object.displayTitle,
+      statusKey: snapshot.statusKey ?? object.statusKey,
+      statusLabel: snapshot.statusLabel ?? object.statusLabel,
+      statusIconKey: snapshot.statusIconKey ?? object.statusIconKey,
+      statusCategory: snapshot.statusCategory,
+      statusTone: snapshot.statusTone,
+      isTerminal: snapshot.isTerminal ?? object.isTerminal,
+      data: snapshot.data ?? object.data,
+      remoteVersion: snapshot.remoteVersion ?? object.remoteVersion,
+      etag: snapshot.etag ?? object.etag,
+      liveness: "fresh" as ExternalObjectLivenessState,
+      lastResolvedAt: now,
+      lastErrorAt: null,
+      lastErrorCode: null,
+      lastErrorMessage: null,
+      nextRefreshAt: addSeconds(now, snapshot.ttlSeconds ?? DEFAULT_REFRESH_TTL_SECONDS),
+      refreshStartedAt: null,
+      refreshToken: null,
+      updatedAt: now,
+    };
+    const [updated] = await persistRefresh(object, refreshToken, {
+          ...patch,
+          lastChangedAt: objectChanged(object, { ...object, ...patch }) ? now : object.lastChangedAt,
+        }, input.scheduled, pluginResolution?.pluginId);
+    if (!updated) return refreshSupersededResult(object, now);
+    const next = updated ?? object;
+    if (objectChanged(object, next) && input.actor) {
+      await logActivity(db, {
+        companyId: object.companyId,
+        actorType: input.actor.actorType,
+        actorId: input.actor.actorId,
+        agentId: input.actor.agentId,
+        runId: input.actor.runId,
+        action: "external_object.status_changed",
+        entityType: "external_object",
+        entityId: object.id,
+        details: {
+          providerKey: object.providerKey,
+          objectType: object.objectType,
+          statusCategory: next.statusCategory,
+          statusLabel: next.statusLabel,
+          _previous: {
+            statusCategory: object.statusCategory,
+            statusLabel: object.statusLabel,
+          },
+        },
+      });
+    }
+    publishLiveEvent({
+      companyId: object.companyId,
+      type: "external_object.updated",
+      payload: { objectId: object.id, statusCategory: next.statusCategory, liveness: next.liveness },
+    });
+    return { object: toObjectPayload(next, now), refreshed: true, reason: "resolved" as const };
+  }
+
+  async function claimObjectRefresh(
+    object: ExternalObjectRecord,
+    input: RefreshObjectInput,
+    now: Date,
+  ) {
+    const staleRefreshStartedBefore = new Date(now.getTime() - DEFAULT_REFRESH_LEASE_SECONDS * 1000);
+    const leaseAvailable = or(
+      isNull(externalObjects.refreshStartedAt),
+      lte(externalObjects.refreshStartedAt, staleRefreshStartedBefore),
+    )!;
+    const refreshToken = randomUUID();
+    const dueOrForced = input.force
+      ? leaseAvailable
+      : and(
+          leaseAvailable,
+          or(isNull(externalObjects.nextRefreshAt), lte(externalObjects.nextRefreshAt, now))!,
+        )!;
+    const [claimed] = await db
+      .update(externalObjects)
+      .set({
+        refreshStartedAt: now,
+        refreshToken,
+        updatedAt: now,
+      })
+      .where(and(
+        eq(externalObjects.id, object.id),
+        eq(externalObjects.companyId, object.companyId),
+        dueOrForced,
+        input.scheduled ? automaticRefreshWhere() : undefined,
+        input.scheduled ? sql`exists (select 1 from ${companies} where ${companies.id} = ${externalObjects.companyId} and ${companies.status} = 'active')` : undefined,
+      ))
+      .returning();
+    return claimed ?? null;
+  }
+
+  function startRefreshLeaseRenewal(object: ExternalObjectRecord, refreshToken: string) {
+    const interval = setInterval(() => {
+      const renewedAt = new Date();
+      void db
+        .update(externalObjects)
+        .set({ refreshStartedAt: renewedAt, updatedAt: renewedAt })
+        .where(refreshOwnerWhere(object, refreshToken))
+        .catch((err: unknown) => {
+          logger.warn({ err, objectId: object.id }, "external object refresh lease renewal failed");
+        });
+    }, REFRESH_LEASE_RENEW_INTERVAL_MS);
+    interval.unref?.();
+    return () => {
+      clearInterval(interval);
+    };
+  }
+
+  function observeRefreshCancellation<T>(work: Promise<T>, signal?: AbortSignal): Promise<T> {
+    if (!signal) return work;
+    return new Promise((resolve, reject) => {
+      const abort = () => reject(signal.reason);
+      work.then(value => { signal.removeEventListener("abort", abort); resolve(value); },
+        error => { signal.removeEventListener("abort", abort); reject(error); });
+      if (signal.aborted) abort(); else signal.addEventListener("abort", abort, { once: true });
+    });
+  }
+
+  const objectRefreshesInFlight = new Map<string, Promise<Awaited<ReturnType<typeof resolveObjectRefresh>>>>();
+
+  async function refreshObject(
+    objectId: string,
+    input: RefreshObjectInput,
+  ) {
+    const now = input.now ?? new Date();
+    const object = await db
+      .select()
+      .from(externalObjects)
+      .where(and(eq(externalObjects.id, objectId), eq(externalObjects.companyId, input.companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (!object) throw notFound("External object not found");
+    if (!input.force && object.nextRefreshAt && object.nextRefreshAt > now) {
+      return { object: toObjectPayload(object, now), refreshed: false, reason: "backoff" as const };
+    }
+
+    const refreshKey = `${object.companyId}:${object.id}`;
+    const existingRefresh = objectRefreshesInFlight.get(refreshKey);
+    if (existingRefresh) return observeRefreshCancellation(existingRefresh, input.signal);
+
+    const claimed = await claimObjectRefresh(object, input, now);
+    if (!claimed) {
+      const latest = await db
+        .select()
+        .from(externalObjects)
+        .where(and(eq(externalObjects.id, object.id), eq(externalObjects.companyId, object.companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (!latest) throw notFound("External object not found");
+      return { object: toObjectPayload(latest, now), refreshed: false, reason: "refresh_in_progress" as const };
+    }
+    if (!claimed.refreshToken) {
+      throw new Error("External object refresh claim did not return a refresh token");
+    }
+
+    const stopRenewingRefreshLease = startRefreshLeaseRenewal(object, claimed.refreshToken);
+    const refresh = resolveObjectRefresh(object, input, now, claimed.refreshToken).catch(async error => {
+      if (input.signal?.aborted) await persistRefresh(object, claimed.refreshToken!, { refreshStartedAt: null, refreshToken: null });
+      throw error;
+    }).finally(() => {
+      stopRenewingRefreshLease();
+      objectRefreshesInFlight.delete(refreshKey);
+    });
+    objectRefreshesInFlight.set(refreshKey, refresh);
+    return refresh;
+  }
+
+  async function refreshIssueObjects(issueId: string, input: {
+    companyId: string;
+    objectIds?: string[];
+    actor?: Pick<LogActivityInput, "actorType" | "actorId" | "agentId" | "runId">;
+  }) {
+    if (!(await isEnabled())) return [];
+    const groups = await listForIssue(issueId);
+    const objectIds = groups
+      .flatMap((group) => (group.object ? [group.object.id] : []))
+      .filter((id) => !input.objectIds || input.objectIds.includes(id));
+    const results = [];
+    for (const objectId of objectIds) {
+      results.push(await refreshObject(objectId, { companyId: input.companyId, actor: input.actor }));
+    }
+    return results;
+  }
+
+  function registerRefreshWork(
+    coordinator: ReturnType<typeof createDeliveryWorkCoordinator>,
+    canRun: () => boolean,
+  ) {
+    const cursors = new Map<string, string>();
+    const scopeKey = (scope?: RefreshScope) => JSON.stringify(scope ?? null);
+    async function load(scope?: RefreshScope) {
+      refreshWorkEnabled = await isEnabled();
+      if (!refreshWorkEnabled) { cursors.clear(); return []; }
+      const key = scopeKey(scope);
+      const cursor = cursors.get(key);
+      const rows = await db.select({ id: externalObjects.id, companyId: externalObjects.companyId,
+        nextRefreshAt: externalObjects.nextRefreshAt, refreshStartedAt: externalObjects.refreshStartedAt,
+        providerKey: externalObjects.providerKey, objectType: externalObjects.objectType, externalId: externalObjects.externalId }).from(externalObjects)
+        .innerJoin(companies, eq(companies.id, externalObjects.companyId))
+        .where(and(
+          eq(companies.status, "active"), automaticRefreshWhere(),
+          scope ? eq(externalObjects.companyId, scope.companyId) : undefined,
+          scope?.objectId ? eq(externalObjects.id, scope.objectId) : undefined,
+          scope?.identity ? and(eq(externalObjects.providerKey, scope.identity.providerKey),
+            eq(externalObjects.objectType, scope.identity.objectType), scope.identity.ignoreExternalIdCase
+              ? sql`lower(${externalObjects.externalId}) = lower(${scope.identity.externalId})`
+              : eq(externalObjects.externalId, scope.identity.externalId)) : undefined,
+          cursor ? gt(externalObjects.id, cursor) : undefined,
+        )).orderBy(asc(externalObjects.id)).limit(250);
+      const entries = rows.map(deadline);
+      if (rows.length === 250) cursors.set(key, rows[rows.length - 1]!.id);
+      else cursors.delete(key);
+      return { rows: entries, complete: rows.length < 250 };
+    }
+    function deadline(object: Pick<ExternalObjectRecord, "id" | "companyId" | "nextRefreshAt" | "refreshStartedAt" | "providerKey" | "objectType" | "externalId">): RefreshDeadline {
+      return { id: object.id, companyId: object.companyId, providerKey: object.providerKey, objectType: object.objectType, externalId: object.externalId,
+        dueAt: Math.max(object.nextRefreshAt!.getTime(), object.refreshStartedAt
+          ? object.refreshStartedAt.getTime() + DEFAULT_REFRESH_LEASE_SECONDS * 1000 : 0) };
+    }
+    return registerScopedDeadlineWork<RefreshDeadline, RefreshScope>(coordinator, {
+      queue: DELIVERY_QUEUES.externalObjectRefresh,
+      batchSize: 50,
+      minimumPassIntervalMs: 0,
+      // Eligibility changes affect every object in the company. Coalesce repeated
+      // rebuilds while object/identity hints and saved deadlines remain immediate.
+      reconstructionIntervalMs: scope => scope && !scope.objectId && !scope.identity ? 30_000 : 0,
+      decodeScope: hint => hint === "*" ? undefined : JSON.parse(hint) as RefreshScope,
+      matches: (entry, scope) => !scope || (entry.companyId === scope.companyId
+        && (!scope.objectId || entry.id === scope.objectId)
+        && (!scope.identity || (entry.providerKey === scope.identity.providerKey && entry.objectType === scope.identity.objectType
+          && (scope.identity.ignoreExternalIdCase ? entry.externalId.toLowerCase() === scope.identity.externalId.toLowerCase()
+            : entry.externalId === scope.identity.externalId)))),
+      load,
+      check: async (entry, signal) => {
+        if (signal?.aborted || !canRun()) return entry;
+        const current = await load({ companyId: entry.companyId, objectId: entry.id });
+        const scheduled = Array.isArray(current) ? current[0] : current.rows[0];
+        if (!scheduled || scheduled.dueAt > Date.now()) return scheduled ?? null;
+        await refreshObject(entry.id, {
+          companyId: entry.companyId,
+          scheduled: true,
+          signal,
+          actor: { actorType: "system", actorId: "external-object-resolver", agentId: null, runId: null },
+        });
+        const updated = await load({ companyId: entry.companyId, objectId: entry.id });
+        return (Array.isArray(updated) ? updated[0] : updated.rows[0]) ?? null;
+      },
+    }, canRun);
+  }
+
+  async function readIdleSchedule(tx: Pick<Db, "select">, now: number,
+    owner: () => DeadlineReconciliationSnapshot): Promise<IdleDeadlineSnapshot> {
+    const before = owner();
+    if (!before.reconciled) return { blocked: true, state: before, deadlines: [] };
+    const rows = await tx.select({
+      id: externalObjects.id, companyId: externalObjects.companyId, companyStatus: companies.status,
+      revision: sql<string>`${externalObjects}.xmin::text`,
+      eligible: sql<boolean>`${companies.status} = 'active' AND ${automaticRefreshWhere(tx as Db)}`,
+      nextRefreshAt: externalObjects.nextRefreshAt, refreshStartedAt: externalObjects.refreshStartedAt,
+      refreshToken: externalObjects.refreshToken,
+    }).from(externalObjects).innerJoin(companies, eq(companies.id, externalObjects.companyId))
+      .orderBy(asc(externalObjects.id)).limit(idleDeadlineRowLimit + 1);
+    const snapshot = projectIdleExternalObjectSchedule(rows, now, refreshWorkEnabled);
+    const after = owner();
+    return { ...snapshot, blocked: snapshot.blocked || !after.reconciled || after.revision !== before.revision,
+      state: { owner: before, objects: snapshot.state } };
+  }
+
+  return {
+    readIdleSchedule,
+    syncIssue,
+    syncComment,
+    syncDocument,
+    syncIssueSafely,
+    syncCommentSafely,
+    syncDocumentSafely,
+    listForIssue,
+    getIssueSummary,
+    getIssueSummaries,
+    getProjectSummary,
+    refreshObject,
+    refreshIssueObjects,
+    registerRefreshWork,
+  };
+}

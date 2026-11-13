@@ -1,0 +1,1288 @@
+#!/usr/bin/env node
+import { createServer } from "node:http";
+import { execFile } from "node:child_process";
+import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+
+const args = process.argv.slice(2);
+// Exercise diagnostic redaction without copying a real environment credential
+// into stderr or the provider trace.
+process.stderr.write("authorization=synthetic-redaction-sentinel\n");
+const port = Number(args[args.indexOf("--port") + 1]);
+const username = process.env.OPENCODE_SERVER_USERNAME ?? "opencode";
+const password = process.env.OPENCODE_SERVER_PASSWORD ?? "";
+const expectedAuth = `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`;
+const session = { id: "ses_fake_1", title: "Paperclip fake" };
+const clients = new Set();
+let eventConnections = 0;
+const runtimeConfig = JSON.parse(
+  await readFile(
+    join(process.env.XDG_CONFIG_HOME, "opencode", "opencode.json"),
+    "utf8",
+  ),
+);
+const mcp = runtimeConfig.mcp?.paperclip;
+let mcpRequestId = 1;
+const mcpEvidence = { tools: [], calls: [] };
+
+function nativeQuestion() {
+  return {
+    id: "question-native-1",
+    sessionID: session.id,
+    questions: [
+      {
+        id: "environment",
+        header: "Environment",
+        question: "Where should we deploy?",
+        options: [
+          { label: "Staging", description: "Deploy to staging first." },
+          {
+            label: "Production",
+            description: "Deploy directly to production.",
+          },
+        ],
+      },
+      {
+        id: "regions",
+        header: "Regions",
+        question: "Which regions?",
+        options: [{ label: "US" }, { label: "EU" }],
+        multiple: true,
+      },
+    ],
+  };
+}
+
+function nativePermission(style) {
+  return style === "legacy"
+    ? {
+        id: "permission-native-1",
+        type: "tool",
+        pattern: "echo OK",
+        sessionID: session.id,
+        messageID: "message-permission",
+        callID: "call-permission",
+        title: "Run validation command",
+        metadata: {},
+        time: { created: Date.now() },
+      }
+    : {
+        id: "permission-native-1",
+        sessionID: session.id,
+        permission: "bash",
+        patterns: ["echo OK"],
+        always: ["echo *"],
+        metadata: {},
+        tool: { messageID: "message-permission", callID: "call-permission" },
+      };
+}
+
+let pendingQuestion = await readFile(
+  join(process.env.XDG_DATA_HOME, "fake-pending-question.json"),
+  "utf8",
+)
+  .then((value) => JSON.parse(value))
+  .catch(() => null);
+let pendingPermission = await readFile(
+  join(process.env.XDG_DATA_HOME, "fake-pending-permission.json"),
+  "utf8",
+)
+  .then((value) => JSON.parse(value))
+  .catch(() => null);
+let permissionStyle = "v2";
+
+await mkdir(process.env.XDG_DATA_HOME, { recursive: true });
+await writeFile(join(process.env.XDG_DATA_HOME, "fake-provider-custody.json"), JSON.stringify({
+  openrouterKey: process.env.OPENROUTER_API_KEY,
+  providerOptions: runtimeConfig.provider?.openrouter?.options,
+}));
+await writeFile(
+  join(process.env.XDG_DATA_HOME, "fake-environment.json"),
+  JSON.stringify({
+    keys: Object.keys(process.env).sort(),
+    notificationContext: process.env.PAPERCLIP_RUNTIME_NOTIFICATION_CONTEXT,
+    notificationHelper: process.env.PAPERCLIP_RUNTIME_NOTIFICATION_HELPER,
+    noProxy: process.env.NO_PROXY,
+    home: process.env.HOME,
+    configHome: process.env.XDG_CONFIG_HOME,
+    projectConfigDisabled: process.env.OPENCODE_DISABLE_PROJECT_CONFIG,
+    modelsFetchDisabled: process.env.OPENCODE_DISABLE_MODELS_FETCH,
+    defaultPluginsDisabled: process.env.OPENCODE_DISABLE_DEFAULT_PLUGINS,
+    githubTokenPresent: Boolean(process.env.GH_TOKEN || process.env.GITHUB_TOKEN),
+  }),
+);
+
+function json(response, status, value) {
+  response.statusCode = status;
+  response.setHeader("Content-Type", "application/json");
+  response.end(JSON.stringify(value));
+}
+
+// Each simulated turn reuses the same short event ids ("event-1",
+// "event-3", and so on). OpenCode's real event ids are unique, and the
+// driver relies on that to drop a duplicate delivery of the same event.
+// Scope every event id to the turn that produced it so a second turn's
+// events do not look like duplicates of the first turn's events.
+let promptTurnSeq = 0;
+// Set by a "late-straggler-source" turn to simulate a distinct provider
+// frame for that turn's message arriving only after a later turn's prompt
+// has already been accepted. Counts down by one on each subsequent prompt
+// request and flushes at the start of the request that brings it to zero.
+// A plain "late-straggler-source" message flushes on the very next prompt
+// (delay 1); "late-straggler-source-delay-N" flushes N prompts later, so a
+// test can place the stale frame's arrival after several more turns have
+// sealed.
+let lateStragglerRemaining = 0;
+function emit(value) {
+  if (value.type === "session.idle" && runtimeConfig.experimental?.openTelemetry) {
+    const now=Date.now();
+    const headers=Object.fromEntries((process.env.OTEL_EXPORTER_OTLP_HEADERS??"").split(",").map(entry=>{
+      const i=entry.indexOf("=");return [entry.slice(0,i),entry.slice(i+1)];
+    }));
+    void fetch(`${process.env.OTEL_EXPORTER_OTLP_ENDPOINT}/v1/traces`,{method:"POST",headers,
+      body:JSON.stringify({resourceSpans:[{scopeSpans:[{spans:[{name:"ai.streamText",
+        startTimeUnixNano:String(BigInt(now-22)*1000000n),endTimeUnixNano:String(BigInt(now)*1000000n),
+        attributes:[{key:"prompt",value:{stringValue:"private-performance-sentinel"}}],
+      }]}]}]})}).then(response=>{
+      if(!response.ok)throw new Error(`Performance fixture rejected: ${response.status}`);
+      emitFrame(value);
+    }).catch(error=>{process.stderr.write(String(error));process.exit(1)});
+    return;
+  }
+  emitFrame(value);
+}
+function emitFrame(value) {
+  const scoped =
+    promptTurnSeq > 0 && typeof value.id === "string"
+      ? { ...value, id: `${value.id}#${promptTurnSeq}` }
+      : value;
+  const frame = `data: ${JSON.stringify(scoped)}\n\n`;
+  for (const response of clients) response.write(frame);
+}
+
+let retainedCompletionContract;
+function parsedPromptText(promptBody) {
+  const text = promptBody.parts?.[0]?.text ?? "";
+  try {
+    const prompt = JSON.parse(text);
+    retainedCompletionContract = prompt.completionContract ?? prompt.task?.completionContract ?? retainedCompletionContract;
+    return prompt;
+  } catch {
+    // Ordinary follow-ups contain only the new message. The real provider
+    // retains its task contract in conversation history across these turns.
+    return { message: text, completionContract: retainedCompletionContract };
+  }
+}
+
+async function mcpRequest(method, params, signal) {
+  const response = await fetch(mcp.url, {
+    signal: signal ?? AbortSignal.timeout(mcp.timeout),
+    method: "POST",
+    headers: {
+      ...mcp.headers,
+      "Content-Type": "application/json",
+      Accept: "application/json, text/event-stream",
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: mcpRequestId++,
+      method,
+      ...(params ? { params } : {}),
+    }),
+  });
+  return response.json();
+}
+
+let mcpStatus = null;
+async function connectPaperclipMcp() {
+  const failuresPath = join(process.env.XDG_DATA_HOME, "fake-mcp-connect-failures");
+  const failures = (await readFile(failuresPath, "utf8").catch(() => "")).trim();
+  await appendFile(join(process.env.XDG_DATA_HOME, "fake-mcp-connects.log"), "connect\n");
+  if (failures === "always" || Number(failures) > 0) {
+    if (failures !== "always") await writeFile(failuresPath, String(Number(failures) - 1));
+    mcpStatus = { status: "failed", error: "Failed to get tools" };
+    return;
+  }
+  try {
+    await mcpRequest("initialize", {
+      protocolVersion: "2025-03-26",
+      capabilities: {},
+      clientInfo: { name: "fake-opencode", version: "1" },
+    });
+    const listed = await mcpRequest("tools/list");
+    mcpStatus = Array.isArray(listed.result?.tools)
+      ? { status: "connected" }
+      : { status: "failed", error: "Failed to get tools" };
+  } catch (error) {
+    mcpStatus = { status: "failed", error: String(error) };
+  }
+}
+
+async function callFirstPaperclipTool() {
+  if (!mcp?.url) return;
+  await mcpRequest("initialize", {
+    protocolVersion: "2025-03-26",
+    capabilities: {},
+    clientInfo: { name: "fake-opencode", version: "1" },
+  });
+  const listed = await mcpRequest("tools/list");
+  mcpEvidence.tools = (listed.result?.tools ?? []).map((entry) => entry.name);
+  const tool = listed.result?.tools?.find(
+    (entry) =>
+      !["paperclip_finish", "paperclip_block"].includes(entry.name) &&
+      (entry.inputSchema?.required?.length ?? 0) === 0,
+  );
+  if (tool)
+    mcpEvidence.calls.push(
+      await mcpRequest("tools/call", {
+        name: `paperclip_${tool.name}`,
+        arguments: {},
+      }),
+    );
+  await writeFile(
+    join(process.env.XDG_DATA_HOME, "fake-mcp-evidence.json"),
+    JSON.stringify(mcpEvidence),
+  );
+}
+
+async function callTerminalTool(promptBody, signal) {
+  const prompt = parsedPromptText(promptBody);
+  const blocked = String(prompt.message ?? "").includes("block-result");
+  const monitored = String(prompt.message ?? "").includes("monitor-default");
+  const result = {
+    schema: "paperclip.run_result.v1",
+    reportedWorkDisposition: blocked ? "blocked" : monitored ? "yielded" : "done",
+    summary: blocked
+      ? "Fake provider is blocked."
+      : "Fake provider completed the task.",
+    completionClaim: {
+      contractRevision:
+        prompt.completionContract?.revision ?? prompt.task?.completionContract?.revision ?? "codex-demo-v1",
+      objectiveSatisfied: !blocked,
+      criteria: (prompt.completionContract?.criteria ?? prompt.task?.completionContract?.criteria ?? []).map(
+        (criterion) => ({
+          criterionId: criterion.id,
+          status: blocked ? "unknown" : "satisfied",
+          evidenceRefs: [],
+        }),
+      ),
+      remainingWork: blocked
+        ? [
+            {
+              description: "Waiting on a test dependency.",
+              blocksCompletion: true,
+            },
+          ]
+        : [],
+    },
+    evidence: [],
+    verification: [],
+    attentionRequests: blocked
+      ? [{ kind: "blocker", summary: "Waiting on a test dependency." }]
+      : [],
+    artifacts: [],
+    ...(blocked
+      ? {
+          blocker: {
+            reasonCode: "test_dependency",
+            owner: { kind: "external", name: "fixture" },
+            unblockAction: "Release the fixture dependency.",
+            scope: "current_track",
+          },
+        }
+      : {}),
+  };
+  if (String(prompt.message ?? "").includes("repair-criteria")) {
+    const bad = structuredClone(result);
+    bad.completionClaim.criteria = String(prompt.message).includes("repair-criteria-missing") ? []
+      : String(prompt.message).includes("repair-criteria-duplicate") ? [...result.completionClaim.criteria, ...result.completionClaim.criteria]
+      : [{ criterionId: "invented", status: "satisfied", evidenceRefs: [] }];
+    const rejected = await mcpRequest("tools/call", { name: "paperclip_finish", arguments: bad });
+    await writeFile(join(process.env.XDG_DATA_HOME, "fake-criteria-repair.json"), JSON.stringify(rejected));
+  }
+  if (String(prompt.message ?? "").includes("repair-revision")) {
+    const stale = structuredClone(result);
+    stale.completionClaim.contractRevision = "stale-revision";
+    const rejected = await mcpRequest("tools/call", { name: "paperclip_finish", arguments: stale });
+    await writeFile(join(process.env.XDG_DATA_HOME, "fake-revision-repair.json"), JSON.stringify(rejected));
+  }
+  const call = () => mcpRequest("tools/call", {
+    name: blocked ? "paperclip_block" : "paperclip_finish",
+    arguments: result,
+  }, signal);
+  const first = await call();
+  if (String(prompt.message ?? prompt.task?.prompt ?? "").includes("completion-feedback")) {
+    const outcomes = [first];
+    if (first.result?.isError && String(prompt.message ?? prompt.task?.prompt ?? "").includes("current-wake-completion-feedback")) {
+      let cursor;
+      for (let pageIndex = 0; pageIndex < 8; pageIndex++) {
+        const response = await mcpRequest("tools/call", {
+          name: "paperclip_read_current_wake_comments", arguments: { cursor },
+        });
+        if (response.result?.isError) throw new Error("Current-wake fixture reader was rejected");
+        const page = JSON.parse(response.result.content[0].text);
+        if (page.complete) break;
+        cursor = page.nextCursor;
+      }
+    }
+    if (first.result?.isError) outcomes.push(await call());
+    await writeFile(join(process.env.XDG_DATA_HOME, "fake-completion-feedback.json"), JSON.stringify(outcomes));
+    return outcomes.at(-1);
+  }
+  return first;
+}
+
+const server = createServer(async (request, response) => {
+  if (request.headers.authorization !== expectedAuth)
+    return json(response, 401, { error: "unauthorized" });
+  if (request.url === "/global/health")
+    return json(response, 200, { healthy: true, version: "1.18.34" });
+  if (request.url === "/event") {
+    eventConnections += 1;
+    response.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+    });
+    response.write(
+      `data: ${JSON.stringify({ type: "server.connected", properties: {} })}\n\n`,
+    );
+    if (eventConnections === 1) {
+      response.end();
+      return;
+    }
+    clients.add(response);
+    request.on("close", () => clients.delete(response));
+    return;
+  }
+  if (request.method === "GET" && request.url === "/mcp") {
+    if (mcp?.url && mcpStatus === null) await connectPaperclipMcp();
+    return json(response, 200, mcp?.url ? { paperclip: mcpStatus } : {});
+  }
+  if (request.method === "POST" && request.url === "/mcp/paperclip/connect") {
+    if (!mcp?.url) return json(response, 404, { error: "not found" });
+    await connectPaperclipMcp();
+    return json(response, 200, true);
+  }
+  if (request.method === "POST" && request.url === "/session")
+    return json(response, 200, session);
+  if (request.method === "GET" && request.url === `/session/${session.id}`)
+    return json(response, 200, session);
+  if (
+    request.method === "GET" &&
+    request.url === `/session/${session.id}/message`
+  ) {
+    // A long-lived session can hold many megabytes of retained message parts.
+    const historyBytes = Number(
+      await readFile(join(process.env.XDG_DATA_HOME, "fake-message-history-bytes"), "utf8").catch(() => "0"),
+    );
+    return json(response, 200, historyBytes > 0
+      ? [{ info: { id: "msg-history-1", sessionID: session.id, role: "assistant" },
+          parts: [{ id: "part-history-1", type: "text", text: "x".repeat(historyBytes) }] }]
+      : []);
+  }
+  if (request.method === "GET" && request.url === "/session/status")
+    return json(response, 200, { [session.id]: { type: "idle" } });
+  if (request.method === "GET" && request.url?.startsWith("/question?"))
+    return json(response, 200, pendingQuestion ? [pendingQuestion] : []);
+  if (request.method === "GET" && request.url?.startsWith("/permission?"))
+    return json(response, 200, pendingPermission ? [pendingPermission] : []);
+  if (
+    request.method === "POST" &&
+    request.url?.startsWith("/question/question-native-1/reply?")
+  ) {
+    const chunks = [];
+    request.on("data", (chunk) => chunks.push(chunk));
+    request.on("end", async () => {
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      await writeFile(
+        join(process.env.XDG_DATA_HOME, "fake-question-reply.json"),
+        JSON.stringify({ url: request.url, body }),
+      );
+      const repliedQuestion = pendingQuestion;
+      pendingQuestion = null;
+      emit({
+        type: "question.replied",
+        id: "event-question-replied",
+        properties: repliedQuestion,
+      });
+      setTimeout(() => {
+        json(response, 200, true);
+        emit({
+          type: "session.idle",
+          id: "event-question-idle",
+          properties: { sessionID: session.id },
+        });
+      }, 10);
+    });
+    return;
+  }
+  if (
+    request.method === "POST" &&
+    request.url?.startsWith("/question/question-native-1/reject?")
+  ) {
+    const rejectedQuestion = pendingQuestion;
+    pendingQuestion = null;
+    emit({
+      type: "question.rejected",
+      id: "event-question-rejected",
+      properties: rejectedQuestion,
+    });
+    setTimeout(() => {
+      json(response, 200, true);
+      emit({
+        type: "session.idle",
+        id: "event-question-rejected-idle",
+        properties: { sessionID: session.id },
+      });
+    }, 10);
+    return;
+  }
+  if (
+    request.method === "POST" &&
+    request.url?.startsWith("/permission/permission-native-1/reply?")
+  ) {
+    const chunks = [];
+    request.on("data", (chunk) => chunks.push(chunk));
+    request.on("end", async () => {
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      await writeFile(
+        join(process.env.XDG_DATA_HOME, "fake-permission-reply.json"),
+        JSON.stringify({ url: request.url, body }),
+      );
+      pendingPermission = null;
+      emit({
+        type:
+          permissionStyle === "legacy"
+            ? "permission.replied"
+            : "permission.v2.replied",
+        id: "event-permission-replied",
+        properties:
+          permissionStyle === "legacy"
+            ? {
+                sessionID: session.id,
+                permissionID: "permission-native-1",
+                response: body.reply,
+              }
+            : {
+                sessionID: session.id,
+                requestID: "permission-native-1",
+                reply: body.reply,
+              },
+      });
+      setTimeout(() => {
+        json(response, 200, true);
+        emit({
+          type: "session.idle",
+          id: "event-permission-idle",
+          properties: { sessionID: session.id },
+        });
+      }, 10);
+    });
+    return;
+  }
+  if (
+    request.method === "POST" &&
+    request.url === `/session/${session.id}/abort`
+  )
+    return json(response, 200, true);
+  if (
+    request.method === "POST" &&
+    request.url === `/session/${session.id}/prompt_async`
+  ) {
+    const chunks = [];
+    request.on("data", (chunk) => chunks.push(chunk));
+    request.on("end", async () => {
+      const promptPayload = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      await appendFile(join(process.env.XDG_DATA_HOME, "fake-prompt-requests.ndjson"), JSON.stringify(promptPayload) + "\n");
+      if (
+        `${promptPayload.providerID}/${promptPayload.modelID}` !== runtimeConfig.model ||
+        "model" in promptPayload
+      ) {
+        return json(response, 400, {
+          error: "OpenCode 1.18 prompt model fields must be top-level",
+        });
+      }
+      promptTurnSeq += 1;
+      json(response, 204, null);
+      if (lateStragglerRemaining > 0) {
+        lateStragglerRemaining -= 1;
+        if (lateStragglerRemaining === 0) {
+          emit({
+            type: "message.part.updated",
+            id: "event-late-straggler-delivery",
+            properties: {
+              sessionID: session.id,
+              part: {
+                id: "part-late-straggler",
+                messageID: "message-late-source",
+                type: "text",
+                text: "late straggler text must not reach the next turn",
+                time: { start: 9, end: 10 },
+              },
+            },
+          });
+          emit({
+            type: "message.part.delta",
+            properties: {
+              sessionID: session.id,
+              messageID: "message-late-source",
+              partID: "part-late-straggler",
+              field: "text",
+              delta: "late straggler text must not reach the next turn",
+            },
+          });
+        }
+      }
+      setTimeout(async () => {
+        const parsedPrompt = parsedPromptText(promptPayload);
+        if (String(parsedPrompt.message ?? parsedPrompt.task?.prompt ?? "").includes("configured-environment-output")) {
+          const output = await new Promise((resolve, reject) => {
+            execFile("/bin/sh", ["-c", 'printf "%s" "$PROBE_SECRET"'], { timeout: 5000 }, (error, stdout) => {
+              if (error) reject(error); else resolve(stdout);
+            });
+          });
+          const messageID = "message-configured-binding-output";
+          emit({ type: "message.updated", properties: { sessionID: session.id, info: { id: messageID, role: "assistant" } } });
+          emit({ type: "message.part.updated", properties: { sessionID: session.id, part: {
+            id: "part-configured-binding-output", messageID, type: "tool", tool: "bash",
+            state: { status: "completed", output },
+          } } });
+          await callTerminalTool(promptPayload);
+          emit({ type: "session.idle", properties: { sessionID: session.id } });
+          return;
+        }
+        const backlogTool = String(parsedPrompt.message ?? parsedPrompt.task?.prompt ?? "").match(/stream-backlog-(discovery|completion|durable)/)?.[1];
+        if (backlogTool) {
+          const messageID = "message-stream-backlog";
+          const partID = "part-stream-backlog";
+          emit({ type: "message.updated", properties: { sessionID: session.id, info: { id: messageID, sessionID: session.id, role: "assistant" } } });
+          emit({ type: "message.part.updated", properties: { sessionID: session.id, part: { id: partID, messageID, sessionID: session.id, type: "text", text: "" } } });
+          for (let i = 0; i < 800; i++) emit({ type: "message.part.delta", properties: {
+            sessionID: session.id, messageID, partID, field: "text", delta: "Streaming progress. ",
+          } });
+          let receipt;
+          try {
+            const result = backlogTool === "completion"
+              ? await callTerminalTool(promptPayload, AbortSignal.timeout(5000))
+              : await mcpRequest("tools/call", { name: "paperclip_search_assigned_tools", arguments: {} },
+                backlogTool === "durable" ? undefined : AbortSignal.timeout(5000));
+            receipt = { acknowledged: result.result?.isError !== true && !!result.result, result };
+          } catch (error) {
+            receipt = { acknowledged: false, timedOut: error.name === "TimeoutError" };
+          }
+          await writeFile(join(process.cwd(), "fake-stream-backlog-receipt.json"), JSON.stringify(receipt));
+          if (backlogTool !== "completion" && receipt.acknowledged) await callTerminalTool(promptPayload);
+          emit({ type: "session.idle", properties: { sessionID: session.id } });
+          return;
+        }
+        if (String(parsedPrompt.message ?? "").includes("oversized-schema-rejection")) {
+          const receipt = await mcpRequest("tools/call", {
+            name: "paperclip_large_call", arguments: Array(12_000).fill(0),
+          });
+          await writeFile(join(process.cwd(), "fake-large-rejection-receipt.json"), JSON.stringify(receipt));
+          await callTerminalTool(promptPayload);
+          emit({ type: "session.idle", properties: { sessionID: session.id } });
+          return;
+        }
+        if (String(parsedPrompt.message ?? parsedPrompt.task?.prompt ?? "").includes("argument-diagnostics")) {
+          const receipts = [await mcpRequest("tools/call", {
+            name: "paperclip_paperclip_call_assigned_tool", arguments: [],
+          })];
+          for (const name of [42, "benign-operation"]) {
+            receipts.push(await mcpRequest("tools/call", {
+              name: "paperclip_paperclip_call_assigned_tool",
+              arguments: { name, arguments: { token: "private-argument-canary" }, "private-key-canary": "private-value-canary" },
+            }));
+          }
+          emit({ type: "message.updated", id: "diagnostic-message-event", properties: { sessionID: session.id,
+            info: { id: "diagnostic-message", sessionID: session.id, role: "assistant" } } });
+          emit({ type: "message.part.updated", id: "diagnostic-part-event", properties: { sessionID: session.id,
+            part: { id: "diagnostic-provider-row", messageID: "diagnostic-message", sessionID: session.id,
+              type: "tool", tool: "paperclip_paperclip_call_assigned_tool",
+              callID: "unrelated-provider-call", state: { status: "completed", output: "provider-receipt" } } } });
+          await writeFile(join(process.cwd(), "fake-diagnostic-receipts.json"), JSON.stringify(receipts));
+          await callTerminalTool(promptPayload);
+          emit({ type: "session.idle", properties: { sessionID: session.id } });
+          return;
+        }
+        if (!String(parsedPrompt.message ?? parsedPrompt.task?.prompt ?? "").includes("current-wake-completion-feedback")) await callFirstPaperclipTool();
+        if (String(parsedPrompt.message ?? "").includes("managed-github-operation")) {
+          const result = await new Promise(resolve => {
+            execFile("gh", ["api", "user"], { timeout: 5000 }, (error, stdout, stderr) => {
+              resolve({ stdout, stderr, error: error?.message ?? null });
+            });
+          });
+          await writeFile(join(process.env.XDG_DATA_HOME, "fake-github-operation.json"), JSON.stringify(result));
+        }
+        if (String(parsedPrompt.message ?? "").includes("incremental-stream")) {
+          const messageID = `stream-message-${promptTurnSeq}`;
+          const part = { id: `stream-part-${promptTurnSeq}`, messageID, sessionID: session.id, type: "text", text: "" };
+          const reasoning = { ...part, id: `${part.id}-reasoning`, type: "reasoning" };
+          const update = (value) => emit({ type: "message.part.updated", properties: { sessionID: session.id, part: value } });
+          const delta = (value, text, extra = {}) => emit({ type: "message.part.delta", properties: { sessionID: session.id, messageID, partID: value.id, field: "text", delta: text, ...extra } });
+          const announceRole = () => emit({ type: "message.updated", properties: { sessionID: session.id, info: { id: messageID, role: "assistant" } } });
+          const roleFirst = String(parsedPrompt.message).includes("role-first");
+          const longResponse = String(parsedPrompt.message).includes("role-last-long");
+          if (roleFirst) announceRole();
+          // Parts and deltas can precede the message's role announcement.
+          update(part);
+          update(reasoning);
+          delta(reasoning, "Thinking");
+          delta(part, "Hi ");
+          const emojiCount = longResponse ? 120 : 2;
+          for (let i = 0; i < emojiCount; i++) delta(part, "👋");
+          delta(part, "wrong message", { messageID: "unrelated-message" });
+          delta(part, "wrong session", { sessionID: "unrelated-session" });
+          delta(part, "wrong field", { field: "output" });
+          delta(part, "unknown part", { partID: "unknown-part" });
+          const finalPart = { ...part, text: `Hi ${"👋".repeat(emojiCount)}`, time: { start: 1, end: 2 } };
+          if (longResponse) update(finalPart);
+          if (!roleFirst) announceRole();
+          // The consumer must observe a delta before the completed snapshot
+          // exists. This handshake makes the streaming regression deterministic.
+          for (let i = 0; i < 500; i++) {
+            if (await readFile(join(process.env.XDG_DATA_HOME, "release-stream"), "utf8").catch(() => "") === "ready") break;
+            await new Promise(resolve => setTimeout(resolve, 10));
+          }
+          await writeFile(join(process.env.XDG_DATA_HOME, "stream-released"), "ready");
+          update(finalPart);
+          emit({ type: "session.idle", properties: { sessionID: session.id } });
+          return;
+        }
+        if (String(parsedPrompt.message ?? "").includes("native-question")) {
+          pendingQuestion = nativeQuestion();
+          emit({
+            type: "question.asked",
+            id: "event-question-native-1",
+            properties: pendingQuestion,
+          });
+          emit({
+            type: "question.asked",
+            id: "event-question-native-1",
+            properties: pendingQuestion,
+          });
+          return;
+        }
+        if (String(parsedPrompt.message ?? "").includes("native-permission")) {
+          permissionStyle = String(parsedPrompt.message ?? "").includes(
+            "legacy",
+          )
+            ? "legacy"
+            : "v2";
+          pendingPermission = nativePermission(permissionStyle);
+          emit({
+            type:
+              permissionStyle === "legacy"
+                ? "permission.updated"
+                : "permission.v2.asked",
+            id: `event-permission-${permissionStyle}`,
+            properties: pendingPermission,
+          });
+          return;
+        }
+        if (String(parsedPrompt.message ?? "").includes("session-aborted")) {
+          emit({
+            type: "session.error",
+            id: "event-session-aborted",
+            properties: {
+              sessionID: session.id,
+              error: {
+                name: "MessageAbortedError",
+                data: { message: "Aborted" },
+              },
+            },
+          });
+          return;
+        }
+        if (String(parsedPrompt.message ?? "").includes("session-failed")) {
+          emit({
+            type: "session.error",
+            id: "event-session-failed",
+            properties: {
+              sessionID: session.id,
+              error: {
+                name: "ProviderError",
+                message: "The fake provider failed on purpose.",
+              },
+            },
+          });
+          return;
+        }
+        if (
+          String(parsedPrompt.message ?? "").includes(
+            "pending-request-then-turn-fails",
+          )
+        ) {
+          pendingQuestion = nativeQuestion();
+          emit({
+            type: "question.asked",
+            id: "event-question-pending-then-fail",
+            properties: pendingQuestion,
+          });
+          setTimeout(() => {
+            emit({
+              type: "session.error",
+              id: "event-session-failed-with-pending-request",
+              properties: {
+                sessionID: session.id,
+                error: {
+                  name: "ProviderError",
+                  message: "The fake provider failed with a request still pending.",
+                },
+              },
+            });
+          }, 10);
+          return;
+        }
+        if (
+          String(parsedPrompt.message ?? "").includes("late-straggler-source")
+        ) {
+          emit({
+            type: "message.updated",
+            id: "event-late-source-message",
+            properties: {
+              sessionID: session.id,
+              info: {
+                id: "message-late-source",
+                sessionID: session.id,
+                role: "assistant",
+              },
+            },
+          });
+          await callTerminalTool(promptPayload);
+          emit({
+            type: "message.part.updated",
+            id: "event-late-source-part",
+            properties: {
+              sessionID: session.id,
+              part: {
+                id: "part-late-source",
+                messageID: "message-late-source",
+                type: "text",
+                text: "done",
+                time: { start: 1, end: 2 },
+              },
+            },
+          });
+          emit({
+            type: "message.updated",
+            id: "event-late-source-usage",
+            properties: {
+              info: {
+                id: "message-late-source",
+                sessionID: session.id,
+                role: "assistant",
+                tokens: { input: 3, output: 2 },
+                cost: 0.001,
+              },
+            },
+          });
+          emit({
+            type: "session.idle",
+            id: "event-late-source-idle",
+            properties: { sessionID: session.id },
+          });
+          // Deliver the straggling frame for this message only once a later
+          // turn's own prompt has already been accepted. Defaults to the
+          // very next prompt; "-delay-N" postpones it by N prompts.
+          const delayMatch = String(parsedPrompt.message ?? "").match(
+            /late-straggler-source-delay-(\d+)/,
+          );
+          lateStragglerRemaining = delayMatch ? Number(delayMatch[1]) : 1;
+          return;
+        }
+        const textBeforeFinish = String(parsedPrompt.message ?? "").includes(
+          "text-before-finish",
+        );
+        const correlatedFinal = String(parsedPrompt.message ?? "").includes(
+          "correlated-final-message",
+        );
+        const answerBeforeFinishThenReference = String(
+          parsedPrompt.message ?? "",
+        ).includes("answer-before-finish-then-reference");
+        const answerBeforeFinishThenRestatement = String(
+          parsedPrompt.message ?? "",
+        ).includes("answer-before-finish-then-restatement");
+        // Recorded in chat-eval cohort 5: a rewritten answer after the call
+        // (recovery.explain-stall) and a status note before it
+        // (status-cards.refresh-card).
+        const answerBeforeFinishThenRewrite = String(parsedPrompt.message ?? "").includes("answer-before-finish-then-rewrite");
+        const statusBeforeFinishThenAnswer = String(parsedPrompt.message ?? "").includes("status-before-finish-then-answer");
+        const shortAnswerBeforeFinishThenReference = String(parsedPrompt.message ?? "").includes("short-answer-before-finish-then-reference");
+        const shortStatusBeforeFinishThenShortAnswer = String(parsedPrompt.message ?? "").includes("short-status-before-finish-then-short-answer");
+        const shortAnswerRepeatedAfterFinish = String(parsedPrompt.message ?? "").includes("short-answer-repeated-after-finish");
+        const longAnswerBeforeFinishThenDone = String(parsedPrompt.message ?? "").includes("long-answer-before-finish-then-done");
+        const answerBeforeFinishText = longAnswerBeforeFinishThenDone
+          ? "Morgan's run on [COM-1](/COM/issues/COM-1) finished: the landing page is saved as `index.html` on the task, with the hero, features and signup sections from the brief."
+          : shortAnswerBeforeFinishThenReference || shortAnswerRepeatedAfterFinish
+          ? "The result is 42."
+          : shortStatusBeforeFinishThenShortAnswer
+          ? "STATUS: Status card summary written successfully (revision 2)."
+          : answerBeforeFinishThenRewrite
+          ? "Work on [COM-1 Website task](/COM/issues/COM-1) stopped at 06:57 UTC, about 90 seconds after starting: its run's local runner process exited unexpectedly (`runnerd exited unexpectedly`), all 3 automatic recovery attempts were exhausted, and Paperclip marked the task **blocked** with cause `native_session_retry_exhausted`. The human-supplied website brief had also not arrived, so no brief document was saved.\n\nThe assignee, [Morgan the frontend engineer](/COM/agents/agent-morgan), is showing an error status. To resume, open COM-1 and use **Retry** on that task; it will recheck gates and preserve the failed attempt's evidence. Agents cannot retry it for you."
+          : statusBeforeFinishThenAnswer
+          ? "STATUS: Status card summary written successfully (revision 2)."
+          : answerBeforeFinishThenRestatement
+          ? "I can't set this from chat — changing an agent's monthly budget is a board-only action (agent credentials get 403). There are also two matching agents, so pick the intended one in the web app and set its monthly limit to $50 on the budget tab: [Morgan budgets](/COM/agents/agent-morgan/budgets) or [Morgan Research budgets](/COM/agents/agent-morgan-research/budgets). Tell me which Morgan you meant and I'll track the right one."
+          : "Two inbox items need you: [COM-2](/COM/issues/COM-2) is blocked and [COM-1](/COM/issues/COM-1) is waiting for review.";
+        const answerAfterFinishText = longAnswerBeforeFinishThenDone
+          ? "Done."
+          : shortAnswerBeforeFinishThenReference
+          ? "Answered above."
+          : shortAnswerRepeatedAfterFinish
+          ? "The result is 42."
+          : shortStatusBeforeFinishThenShortAnswer
+          ? "Updated the Launch blockers status card."
+          : answerBeforeFinishThenRewrite
+          ? "Work on [COM-1 Website task](/COM/issues/COM-1) stopped at 06:57 UTC, about 90 seconds after starting: its run's local runner process exited unexpectedly (`runnerd exited unexpectedly`), all 3 automatic recovery attempts were exhausted, and Paperclip marked the task **blocked** with cause `native_session_retry_exhausted`. The human-supplied website brief had also not arrived, so no brief was saved.\n\n[The assigned agent, Morgan,](https://example.invalid) is in an error state. To resume, open COM-1 and use **Retry** on that task; it rechecks gates and preserves the failed attempt's evidence. Agents cannot retry it for you."
+          : statusBeforeFinishThenAnswer
+          ? "Updated the [Launch blockers status card](/COM/status/status-card-launch) with current Synthetic Launch Notes verification.\n\n- **COM-1 \u2014 Mobile Safari checkout regression blocks launch** \u2014 `blocked`\n- Payment approval is now recorded as received; the mobile Safari checkout regression remains the blocker.\n- Only COM-1 appears in the bounded changed-issue set; no other Launch blockers were added."
+          : answerBeforeFinishThenRestatement
+          ? "I can't change agent budgets from chat — that's board-only, and agent credentials get 403. Two agents also match \"Morgan,\" so choose the intended one and set $50/month on its budget tab: [Morgan budgets](/COM/agents/agent-morgan/budgets) or [Morgan Research budgets](/COM/agents/agent-morgan-research/budgets)."
+          : "Answered above: two inbox items need your attention.";
+        const finalAfterToolCommentary = String(
+          parsedPrompt.message ?? "",
+        ).includes("final-after-tool-commentary");
+        const outputLimitAfterTool = String(
+          parsedPrompt.message ?? "",
+        ).includes("output-limit-after-tool");
+        const commentaryOnlyBeforeWork = String(
+          parsedPrompt.message ?? "",
+        ).includes("commentary-only-before-work");
+        emit({
+          type: "message.updated",
+          id: "event-user",
+          properties: {
+            sessionID: session.id,
+            info: { id: "message-user", sessionID: session.id, role: "user" },
+          },
+        });
+        emit({
+          type: "message.part.updated",
+          id: "event-user-part",
+          properties: {
+            sessionID: session.id,
+            part: {
+              id: "part-user",
+              messageID: "message-user",
+              type: "text",
+              text: "submitted prompt must not become assistant text",
+            },
+          },
+        });
+        emit({
+          type: "message.updated",
+          id: "event-assistant",
+          properties: {
+            sessionID: session.id,
+            info: {
+              id: "message-assistant",
+              sessionID: session.id,
+              role: "assistant",
+            },
+          },
+        });
+        if (String(parsedPrompt.message ?? parsedPrompt.task?.prompt ?? "").includes("invalid-tool-feedback")) {
+          for (const [status, state] of [
+            ["pending", {}], ["running", { title: "Checking tool name" }],
+            ["error", { error: "Tool not found: fixture_missing" }],
+          ]) emit({ type: "message.part.updated", id: `event-invalid-${status}`, properties: {
+            sessionID: session.id, part: { id: "part-invalid", messageID: "message-assistant",
+              type: "tool", tool: "invalid", callID: "call-invalid", state: { status, ...state } },
+          } });
+        }
+        emit({
+          type: "message.part.updated",
+          id: "event-patch",
+          properties: {
+            sessionID: session.id,
+            part: {
+              id: "part-patch",
+              messageID: "message-assistant",
+              type: "patch",
+              files: ["src/index.ts"],
+            },
+          },
+        });
+        if (commentaryOnlyBeforeWork) {
+          emit({
+            type: "message.part.updated",
+            id: "event-opening-commentary",
+            properties: {
+              sessionID: session.id,
+              part: {
+                id: "part-opening-commentary",
+                messageID: "message-assistant",
+                type: "text",
+                text: "I will inspect the workspace first.",
+                time: { start: 1, end: 2 },
+              },
+            },
+          });
+          emit({
+            type: "message.part.updated",
+            id: "event-work-tool",
+            properties: {
+              sessionID: session.id,
+              part: {
+                id: "part-work-tool",
+                messageID: "message-assistant",
+                type: "tool",
+                tool: "bash",
+                state: {
+                  status: "completed",
+                  input: { command: "pwd" },
+                  output: "/workspace",
+                },
+              },
+            },
+          });
+          await callTerminalTool(promptPayload);
+        } else if (outputLimitAfterTool) {
+          await callTerminalTool(promptPayload);
+          emit({
+            type: "message.part.updated",
+            id: "event-limit-tool-part",
+            properties: {
+              sessionID: session.id,
+              part: {
+                id: "part-limit-tool",
+                messageID: "message-assistant",
+                type: "tool",
+                tool: "paperclip_paperclip_finish",
+                state: { status: "completed", output: "accepted" },
+              },
+            },
+          });
+          emit({
+            type: "message.updated",
+            id: "event-limit-message",
+            properties: {
+              sessionID: session.id,
+              info: { id: "message-limit", sessionID: session.id, role: "assistant" },
+            },
+          });
+          emit({
+            type: "message.part.updated",
+            id: "event-limit-text",
+            properties: {
+              sessionID: session.id,
+              part: {
+                id: "part-limit-text",
+                messageID: "message-limit",
+                type: "text",
+                text: `E2E_${"QUIP_".repeat(400)}`,
+                time: { start: 3, end: 4 },
+              },
+            },
+          });
+          emit({
+            type: "message.updated",
+            id: "event-limit-message-finished",
+            properties: {
+              sessionID: session.id,
+              info: { id: "message-limit", sessionID: session.id, role: "assistant",
+                finish: "length", time: { completed: 5 } },
+            },
+          });
+        } else if (finalAfterToolCommentary) {
+          emit({
+            type: "message.part.updated",
+            id: "event-tool-commentary",
+            properties: {
+              sessionID: session.id,
+              part: {
+                id: "part-tool-commentary",
+                messageID: "message-assistant",
+                type: "text",
+                text: "This deliberately long pre-tool commentary discusses possible schema corrections, retries, compatibility details, and several implementation alternatives, but it is not the provider's final response.",
+                time: { start: 1, end: 2 },
+              },
+            },
+          });
+          await callTerminalTool(promptPayload);
+          emit({
+            type: "message.part.updated",
+            id: "event-tool-part",
+            properties: {
+              sessionID: session.id,
+              part: {
+                id: "part-tool",
+                messageID: "message-assistant",
+                type: "tool",
+                tool: "paperclip_paperclip_finish",
+                state: { status: "completed", output: "accepted" },
+              },
+            },
+          });
+          emit({
+            type: "message.updated",
+            id: "event-post-tool-final-message",
+            properties: {
+              sessionID: session.id,
+              info: {
+                id: "message-post-tool-final",
+                sessionID: session.id,
+                role: "assistant",
+              },
+            },
+          });
+          emit({
+            type: "message.part.updated",
+            id: "event-post-tool-final",
+            properties: {
+              sessionID: session.id,
+              part: {
+                id: "part-post-tool-final",
+                messageID: "message-post-tool-final",
+                type: "text",
+                text: "This is the complete substantive answer emitted after the accepted completion tool call.",
+                time: { start: 3, end: 4 },
+              },
+            },
+          });
+        } else if (answerBeforeFinishThenReference || answerBeforeFinishThenRestatement || answerBeforeFinishThenRewrite || statusBeforeFinishThenAnswer || shortStatusBeforeFinishThenShortAnswer || shortAnswerRepeatedAfterFinish || longAnswerBeforeFinishThenDone) {
+          emit({
+            type: "message.part.updated",
+            id: "event-answer-before-finish",
+            properties: {
+              sessionID: session.id,
+              part: {
+                id: "part-answer-before-finish",
+                messageID: "message-assistant",
+                type: "text",
+                text: answerBeforeFinishText,
+                time: { start: 1, end: 2 },
+              },
+            },
+          });
+          await callTerminalTool(promptPayload);
+          emit({
+            type: "message.part.updated",
+            id: "event-answer-finish-part",
+            properties: {
+              sessionID: session.id,
+              part: {
+                id: "part-answer-finish",
+                messageID: "message-assistant",
+                type: "tool",
+                tool: "paperclip_paperclip_finish",
+                state: { status: "completed", output: "accepted" },
+              },
+            },
+          });
+          emit({
+            type: "message.updated",
+            id: "event-reference-message",
+            properties: {
+              sessionID: session.id,
+              info: {
+                id: "message-reference",
+                sessionID: session.id,
+                role: "assistant",
+              },
+            },
+          });
+          emit({
+            type: "message.part.updated",
+            id: "event-reference",
+            properties: {
+              sessionID: session.id,
+              part: {
+                id: "part-reference",
+                messageID: "message-reference",
+                type: "text",
+                text: answerAfterFinishText,
+                time: { start: 3, end: 4 },
+              },
+            },
+          });
+        } else if (correlatedFinal) {
+          emit({
+            type: "message.part.updated",
+            id: "event-commentary",
+            properties: {
+              sessionID: session.id,
+              part: {
+                id: "part-commentary",
+                messageID: "message-assistant",
+                type: "text",
+                text: "I will write the result now.",
+                time: { start: 1, end: 2 },
+              },
+            },
+          });
+          await callTerminalTool(promptPayload);
+          emit({
+            type: "message.updated",
+            id: "event-final-message",
+            properties: {
+              sessionID: session.id,
+              info: {
+                id: "message-final",
+                sessionID: session.id,
+                role: "assistant",
+              },
+            },
+          });
+          emit({
+            type: "message.part.updated",
+            id: "event-finish-part",
+            properties: {
+              sessionID: session.id,
+              part: {
+                id: "part-finish",
+                messageID: "message-final",
+                type: "tool",
+                tool: "paperclip_paperclip_finish",
+                state: { status: "completed", output: "accepted" },
+              },
+            },
+          });
+          emit({
+            type: "message.part.updated",
+            id: "event-correlated-answer",
+            properties: {
+              sessionID: session.id,
+              part: {
+                id: "part-correlated-answer",
+                messageID: "message-final",
+                type: "text",
+                text: "Correlated substantive final answer.",
+                time: { start: 3, end: 4 },
+              },
+            },
+          });
+          emit({
+            type: "message.part.updated",
+            id: "event-duplicate-finish",
+            properties: {
+              sessionID: session.id,
+              part: {
+                id: "part-duplicate-finish",
+                messageID: "message-final",
+                type: "tool",
+                tool: "unknown",
+                callID: "functions.paperclip_paperclip_finish:24",
+                state: {
+                  status: "error",
+                  error: "Tool execution aborted",
+                  metadata: { interrupted: true },
+                },
+              },
+            },
+          });
+          emit({
+            type: "message.updated",
+            id: "event-trailing-message",
+            properties: {
+              sessionID: session.id,
+              info: {
+                id: "message-trailing",
+                sessionID: session.id,
+                role: "assistant",
+              },
+            },
+          });
+          emit({
+            type: "message.part.updated",
+            id: "event-trailing-ack",
+            properties: {
+              sessionID: session.id,
+              part: {
+                id: "part-trailing-ack",
+                messageID: "message-trailing",
+                type: "text",
+                text: "Done.",
+                time: { start: 5, end: 6 },
+              },
+            },
+          });
+        } else if (textBeforeFinish) {
+          emit({
+            type: "message.part.updated",
+            id: "event-answer",
+            properties: {
+              sessionID: session.id,
+              part: {
+                id: "part-answer",
+                messageID: "message-assistant",
+                type: "text",
+                text: "Substantive answer before finish.",
+                time: { start: 1, end: 2 },
+              },
+            },
+          });
+          await callTerminalTool(promptPayload);
+          emit({
+            type: "message.part.updated",
+            id: "event-ack",
+            properties: {
+              sessionID: session.id,
+              part: {
+                id: "part-ack",
+                messageID: "message-assistant",
+                type: "text",
+                text: "Done.",
+                time: { start: 3, end: 4 },
+              },
+            },
+          });
+        } else {
+          await callTerminalTool(promptPayload);
+          emit({
+            type: "message.part.updated",
+            id: "event-1",
+            properties: {
+              sessionID: session.id,
+              part: {
+                id: "part-1",
+                messageID: "message-assistant",
+                type: "text",
+                text: "done [guide](guide.md)",
+                time: { start: 1, end: 2 },
+              },
+            },
+          });
+          emit({
+            type: "message.part.updated",
+            id: "event-1",
+            properties: {
+              sessionID: session.id,
+              part: {
+                id: "part-1",
+                messageID: "message-assistant",
+                type: "text",
+                text: "done",
+              },
+            },
+          });
+        }
+        emit({
+          type: "message.updated",
+          id: "event-2",
+          properties: {
+            info: {
+              id: "message-assistant",
+              sessionID: session.id,
+              role: "assistant",
+              tokens: { input: 3, output: 2 },
+              cost: 0.001,
+            },
+          },
+        });
+        emit({
+          type: "session.idle",
+          id: "event-3",
+          properties: { sessionID: session.id },
+        });
+      }, 100);
+    });
+    return;
+  }
+  json(response, 404, { error: "not found" });
+});
+
+server.listen(port, "127.0.0.1");
+for (const signal of ["SIGTERM", "SIGINT"])
+  process.on(signal, () => { server.close(() => process.exit(0)); server.closeAllConnections(); });

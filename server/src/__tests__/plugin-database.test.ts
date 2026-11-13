@@ -148,6 +148,21 @@ describe("buildPluginWorkerEnv", () => {
     deploymentExposure: "public",
   };
 
+  it("forwards only granted variables to a plugin that registers no environment driver", () => {
+    const env = buildPluginWorkerEnv({
+      manifest: { capabilities: [] },
+      instanceInfo,
+      verifiedDistribution: { workerCredentialEnv: ["TEST_PROVIDER_API_KEY"] },
+      grantedEnvVars: ["PROVIDER_ORIGIN", "PROVIDER_BLANK", "PROVIDER_MISSING"],
+      processEnv: { PROVIDER_ORIGIN: "https://provider.test", PROVIDER_BLANK: " ", DATABASE_URL: "postgres://host", OPENAI_API_KEY: "openai-token", TEST_PROVIDER_API_KEY: "fixture-provider-key" },
+    });
+    expect(env).toEqual({
+      PAPERCLIP_DEPLOYMENT_MODE: "authenticated",
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: "public",
+      PROVIDER_ORIGIN: "https://provider.test",
+    });
+  });
+
   it("passes only model provider keys through to environment driver plugins", () => {
     const env = buildPluginWorkerEnv({
       manifest: { capabilities: ["environment.drivers.register"] },
@@ -168,12 +183,200 @@ describe("buildPluginWorkerEnv", () => {
     });
   });
 
+  it("passes in-cluster Kubernetes service-discovery vars to environment driver plugins", () => {
+    const env = buildPluginWorkerEnv({
+      manifest: { capabilities: ["environment.drivers.register"] },
+      instanceInfo,
+      processEnv: {
+        KUBERNETES_SERVICE_HOST: "10.0.0.1",
+        KUBERNETES_SERVICE_PORT: "443",
+        KUBERNETES_SERVICE_PORT_HTTPS: " ",
+        AWS_SECRET_ACCESS_KEY: "aws-secret",
+      },
+    });
+
+    expect(env).toEqual({
+      PAPERCLIP_DEPLOYMENT_MODE: "authenticated",
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: "public",
+      KUBERNETES_SERVICE_HOST: "10.0.0.1",
+      KUBERNETES_SERVICE_PORT: "443",
+    });
+  });
+
   it("does not pass provider keys to non-environment plugins", () => {
     const env = buildPluginWorkerEnv({
-      manifest: { capabilities: ["ui.slots.register"] },
+      manifest: { capabilities: ["ui.sidebar.register"] },
       instanceInfo,
       processEnv: {
         OPENAI_API_KEY: "openai-token",
+      },
+    });
+
+    expect(env).toEqual({
+      PAPERCLIP_DEPLOYMENT_MODE: "authenticated",
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: "public",
+    });
+  });
+
+  it.each([
+    { packagePath: null, packageName: "@paperclipai/plugin-createos", driverKey: "createos", allowed: true },
+    { packagePath: "/app/packages/plugins/sandbox-providers/createos", packageName: "@paperclipai/plugin-createos", driverKey: "createos", allowed: true },
+    { packagePath: "/home/operator/plugins/fake-createos", packageName: "@paperclipai/plugin-createos", driverKey: "createos", allowed: false },
+    { packagePath: null, packageName: "@acme/plugin-createos", driverKey: "createos", allowed: false },
+    { packagePath: null, packageName: "@paperclipai/plugin-createos", driverKey: "daytona", allowed: false },
+  ])("confines the CreateOS fallback credential to its trusted worker: $packageName / $packagePath / $driverKey", ({ allowed, driverKey, ...installation }) => {
+    const env = buildPluginWorkerEnv({
+      ...installation,
+      manifest: {
+        capabilities: ["environment.drivers.register"],
+        environmentDrivers: [{ driverKey }],
+      },
+      trustedLocalPluginRoots: ["/app/packages/plugins"],
+      instanceInfo,
+      processEnv: { CREATEOS_API_KEY: "createos-token", DAYTONA_API_KEY: "daytona-token" },
+    });
+    expect(env).toEqual({
+      PAPERCLIP_DEPLOYMENT_MODE: "authenticated",
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: "public",
+      ...(allowed ? { CREATEOS_API_KEY: "createos-token" } : {}),
+    });
+  });
+
+  it.each([
+    { packagePath: null, packageName: "@paperclipai/plugin-boxd", driverKey: "boxd", allowed: true },
+    { packagePath: "/app/packages/plugins/sandbox-providers/boxd", packageName: "@paperclipai/plugin-boxd", driverKey: "boxd", allowed: true },
+    { packagePath: "/home/operator/plugins/fake-boxd", packageName: "@paperclipai/plugin-boxd", driverKey: "boxd", allowed: false },
+    { packagePath: null, packageName: "@acme/plugin-boxd", driverKey: "boxd", allowed: false },
+    { packagePath: null, packageName: "@paperclipai/plugin-boxd", driverKey: "daytona", allowed: false },
+  ])("confines the boxd fallback credential to its trusted worker: $packageName / $packagePath / $driverKey", ({ allowed, driverKey, ...installation }) => {
+    const env = buildPluginWorkerEnv({
+      ...installation,
+      manifest: {
+        capabilities: ["environment.drivers.register"],
+        environmentDrivers: [{ driverKey }],
+      },
+      trustedLocalPluginRoots: ["/app/packages/plugins"],
+      instanceInfo,
+      processEnv: { BOXD_API_KEY: "boxd-token", DAYTONA_API_KEY: "daytona-token" },
+    });
+    expect(env).toEqual({
+      PAPERCLIP_DEPLOYMENT_MODE: "authenticated",
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: "public",
+      ...(allowed ? { BOXD_API_KEY: "boxd-token" } : {}),
+    });
+  });
+
+  it("passes a first-party sandbox provider's documented credential env var to its own worker", () => {
+    const env = buildPluginWorkerEnv({
+      manifest: {
+        capabilities: ["environment.drivers.register"],
+        environmentDrivers: [{ driverKey: "daytona" }],
+      },
+      packageName: "@paperclipai/plugin-daytona",
+      packagePath: null,
+      instanceInfo,
+      processEnv: {
+        DAYTONA_API_KEY: "daytona-token",
+        NOVITA_API_KEY: "novita-token",
+        E2B_API_KEY: " ",
+      },
+    });
+
+    expect(env).toEqual({
+      PAPERCLIP_DEPLOYMENT_MODE: "authenticated",
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: "public",
+      DAYTONA_API_KEY: "daytona-token",
+    });
+  });
+
+  it.each([null, "/app/packages/plugins/distribution/fixture", "/operator/plugins/fixture"])(
+    "denies catalog credentials without verified image provenance for %s",
+    (packagePath) => {
+      expect(buildPluginWorkerEnv({
+        manifest: {
+          capabilities: ["environment.drivers.register"],
+          environmentDrivers: [{ driverKey: "fixture-tasks" }],
+        },
+        packageName: "@paperclipai/plugin-image-fixture",
+        packagePath,
+        instanceInfo,
+        processEnv: { TEST_PROVIDER_API_KEY: "fixture-provider-key" },
+      })).not.toHaveProperty("TEST_PROVIDER_API_KEY");
+    },
+  );
+
+  it("passes the credential to a first-party plugin installed from the bundled catalog", () => {
+    const env = buildPluginWorkerEnv({
+      manifest: {
+        capabilities: ["environment.drivers.register"],
+        environmentDrivers: [{ driverKey: "daytona" }],
+      },
+      packageName: "@paperclipai/plugin-daytona",
+      packagePath: "/app/packages/plugins/sandbox-providers/daytona",
+      trustedLocalPluginRoots: ["/app/packages/plugins"],
+      instanceInfo,
+      processEnv: {
+        DAYTONA_API_KEY: "daytona-token",
+      },
+    });
+
+    expect(env).toEqual({
+      PAPERCLIP_DEPLOYMENT_MODE: "authenticated",
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: "public",
+      DAYTONA_API_KEY: "daytona-token",
+    });
+  });
+
+  it("does not pass the credential to a local plugin that self-declares the first-party name", () => {
+    const env = buildPluginWorkerEnv({
+      manifest: {
+        capabilities: ["environment.drivers.register"],
+        environmentDrivers: [{ driverKey: "daytona" }],
+      },
+      packageName: "@paperclipai/plugin-daytona",
+      packagePath: "/home/operator/.paperclip/plugins/fake-daytona",
+      trustedLocalPluginRoots: ["/app/packages/plugins"],
+      instanceInfo,
+      processEnv: {
+        DAYTONA_API_KEY: "daytona-token",
+      },
+    });
+
+    expect(env).toEqual({
+      PAPERCLIP_DEPLOYMENT_MODE: "authenticated",
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: "public",
+    });
+  });
+
+  it("does not pass a credential to a third-party plugin that claims a first-party driver key", () => {
+    const env = buildPluginWorkerEnv({
+      manifest: {
+        capabilities: ["environment.drivers.register"],
+        environmentDrivers: [{ driverKey: "daytona" }],
+      },
+      packageName: "@acme/plugin-fake-daytona",
+      instanceInfo,
+      processEnv: {
+        DAYTONA_API_KEY: "daytona-token",
+      },
+    });
+
+    expect(env).toEqual({
+      PAPERCLIP_DEPLOYMENT_MODE: "authenticated",
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: "public",
+    });
+  });
+
+  it("does not pass a credential when the first-party package omits its expected driver key", () => {
+    const env = buildPluginWorkerEnv({
+      manifest: {
+        capabilities: ["environment.drivers.register"],
+        environmentDrivers: [{ driverKey: "kubernetes" }],
+      },
+      packageName: "@paperclipai/plugin-daytona",
+      instanceInfo,
+      processEnv: {
+        DAYTONA_API_KEY: "daytona-token",
       },
     });
 
@@ -520,10 +723,19 @@ describeEmbeddedPostgres("plugin database namespaces", () => {
     const staleManifest = manifest("paperclip.refresh");
     const refreshedManifest: PaperclipPluginManifestV1 = {
       ...staleManifest,
+      capabilities: [...staleManifest.capabilities, "agent.tools.register"],
       database: {
         ...staleManifest.database!,
         coreReadTables: ["companies"],
       },
+      tools: [
+        {
+          name: "db-smoke",
+          displayName: "DB Smoke",
+          description: "Exercises plugin tool registration worker lookup.",
+          parametersSchema: { type: "object", properties: {} },
+        },
+      ],
     };
     const namespace = derivePluginDatabaseNamespace(refreshedManifest.id);
     const packageRoot = await createInstallablePluginPackage(
@@ -548,6 +760,9 @@ describeEmbeddedPostgres("plugin database namespaces", () => {
       startWorker: vi.fn().mockResolvedValue(undefined),
       stopAll: vi.fn().mockResolvedValue(undefined),
     };
+    const toolDispatcher = {
+      registerPluginTools: vi.fn(),
+    };
     const loader = pluginLoader(db, {
       enableLocalFilesystem: false,
       enableNpmDiscovery: false,
@@ -564,9 +779,7 @@ describeEmbeddedPostgres("plugin database namespaces", () => {
       jobStore: {
         syncJobDeclarations: vi.fn().mockResolvedValue(undefined),
       },
-      toolDispatcher: {
-        registerPluginTools: vi.fn(),
-      },
+      toolDispatcher,
       lifecycleManager: {
         markError: vi.fn().mockResolvedValue(undefined),
       },
@@ -594,6 +807,13 @@ describeEmbeddedPostgres("plugin database namespaces", () => {
           database: expect.objectContaining({ coreReadTables: ["companies"] }),
         }),
       }),
+    );
+    expect(toolDispatcher.registerPluginTools).toHaveBeenCalledWith(
+      refreshedManifest.id,
+      expect.objectContaining({
+        tools: refreshedManifest.tools,
+      }),
+      pluginId,
     );
     const [plugin] = await db
       .select()

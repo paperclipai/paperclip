@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
-import { createRoot } from "react-dom/client";
+import { createRoot, type Root } from "react-dom/client";
+import { flushSync } from "react-dom";
 import type { Issue, IssueStatus } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { KanbanBoard, resolveKanbanTargetStatus } from "./KanbanBoard";
+import { getKanbanColumnTone, KanbanBoard, resolveKanbanTargetStatus } from "./KanbanBoard";
+import { applyOptimisticIssueFieldUpdate } from "../lib/optimistic-issue-comments";
 
 vi.mock("@/lib/router", () => ({
   Link: ({
@@ -23,6 +24,12 @@ vi.mock("@/lib/router", () => ({
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
+const mountedRoots: Root[] = [];
+
+function act(callback: () => void): void {
+  flushSync(callback);
+}
+
 function createIssue(index: number, status: IssueStatus): Issue {
   return {
     id: `issue-${status}-${index}`,
@@ -37,8 +44,10 @@ function createIssue(index: number, status: IssueStatus): Issue {
     status,
     workMode: "standard",
     priority: "medium",
+    reviewPolicy: null,
     assigneeAgentId: index === 1 ? "agent-1" : null,
     assigneeUserId: null,
+    responsibleUserId: null,
     createdByAgentId: null,
     createdByUserId: null,
     issueNumber: index,
@@ -77,6 +86,7 @@ function renderBoard(
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
+  mountedRoots.push(root);
 
   const render = (nextProps: Partial<React.ComponentProps<typeof KanbanBoard>> & { issues: Issue[] }) => {
     act(() => {
@@ -102,6 +112,12 @@ describe("KanbanBoard", () => {
   });
 
   afterEach(() => {
+    while (mountedRoots.length > 0) {
+      const root = mountedRoots.pop();
+      if (root) {
+        act(() => root.unmount());
+      }
+    }
     document.body.innerHTML = "";
   });
 
@@ -173,6 +189,28 @@ describe("KanbanBoard", () => {
     expect(container.textContent).not.toContain("Issue 1");
   });
 
+  it("gives every column a status-hued tone", () => {
+    expect(getKanbanColumnTone("backlog").body).toContain("bg-muted/30");
+    expect(getKanbanColumnTone("todo").body).toContain("amber");
+    expect(getKanbanColumnTone("in_progress").body).toContain("blue");
+    expect(getKanbanColumnTone("in_review").body).toContain("violet");
+    expect(getKanbanColumnTone("blocked").body).toContain("red");
+    expect(getKanbanColumnTone("done").body).toContain("green");
+    expect(getKanbanColumnTone("cancelled").body).toContain("bg-muted/25");
+    expect(getKanbanColumnTone("cancelled").card).toContain("opacity-80");
+  });
+
+  it("ghosts cancelled lane cards", () => {
+    const { container } = renderBoard({
+      issues: createIssues(1, "cancelled"),
+    });
+
+    const card = container.querySelector('a[href="/issues/PAP-1"]')?.parentElement;
+
+    expect(card?.className).toContain("bg-muted/35");
+    expect(card?.className).toContain("opacity-80");
+  });
+
   it("keeps core issue signals in compact cards", () => {
     const { container } = renderBoard({
       issues: createIssues(1, "todo"),
@@ -195,4 +233,18 @@ describe("KanbanBoard", () => {
     expect(resolveKanbanTargetStatus("issue-blocked-2", issues)).toBe("blocked");
     expect(resolveKanbanTargetStatus("missing", issues)).toBeNull();
   });
+
+  it("moves a cached card into its new column before the server responds", () => {
+    const issue = { ...createIssue(1, "todo"), displayStatus: "todo" as const };
+    const { container, render } = renderBoard({ issues: [issue] });
+    const column = () => container.querySelector('a[href="/issues/PAP-1"]')?.closest('[data-issue-row-details]')?.parentElement?.parentElement;
+    expect(column()?.textContent).toContain("Todo");
+    render({ issues: [applyOptimisticIssueFieldUpdate(issue, { status: "done" })!] });
+    expect(column()?.textContent).toContain("Done");
+  });
+});
+
+
+it("keeps Monitoring derived rather than allowing a drag to manufacture it", () => {
+  expect(resolveKanbanTargetStatus("monitoring", [])).toBeNull();
 });

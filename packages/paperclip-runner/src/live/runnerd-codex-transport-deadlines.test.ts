@@ -1,0 +1,324 @@
+import { chmod, cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { expect, it, vi } from "vitest";
+import { QUALIFIED_ACPX_PROFILES } from "../drivers/acpx/qualified-profiles.js";
+import { codexSemanticToolSpecs } from "../drivers/codex/codex-app-server-driver.js";
+import { DurablePrpControlPlane } from "../control-plane/durable-prp-control-plane.js";
+import * as durableControlPlane from "../control-plane/durable-prp-control-plane.js";
+import {
+  createCapabilityRunnerdCodexTransport,
+  defaultCapabilityRunnerdBinary as qualifiedCapabilityRunnerdBinary,
+} from "./runnerd-codex-transport.js";
+
+// These regressions must cross real production timing boundaries. Keep their
+// waits intact, but let the existing file worker pool overlap them with the
+// rest of the transport suite instead of extending its serial critical path.
+const defaultCapabilityRunnerdBinary = () =>
+  process.env.PAPERCLIP_ATTACH_TRANSITION_RUNNER ?? qualifiedCapabilityRunnerdBinary();
+const fakeCodex = resolve(import.meta.dirname, "../../runner/target/debug/fake-codex-app-server");
+function fakeCodexArgs(stateDirectory: string, ...args: string[]): string[] {
+  return ["--state-file", join(stateDirectory, "fake-codex-state.json"), ...args];
+}
+
+it("adopts a durably accepted turn whose start notification outlives the turn-start bound", async () => {
+  // A loaded host can accept a turn (durable command result with its provider
+  // turn id) and start it only after the turn-start bound. The provider still
+  // runs that turn, so failing the start would abandon a live turn.
+  const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-late-turn-started-"));
+  const callsPath = join(stateDirectory, "calls.log");
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(stateDirectory, "--turn-started-delay-ms", "12000", "--fail-turn-immediately", "--call-log", callsPath),
+    stateDirectory, turnStartTimeoutMs: 8_000,
+  });
+  try {
+    await bundle.transport.request("thread/start", { cwd: tmpdir(), dynamicTools: [] });
+    const started = await bundle.transport.request("turn/start", { input: [{ type: "text", text: "Start late." }] });
+    expect(started).toMatchObject({ turn: { id: "provider-turn-1" } });
+    const methods: string[] = [];
+    for await (const notification of bundle.transport.notifications()) {
+      methods.push(notification.method);
+      if (notification.method === "turn/completed") {
+        expect(notification.params).toMatchObject({ turnId: "provider-turn-1" });
+        break;
+      }
+    }
+    expect(methods).toContain("turn/started");
+    const calls = (await readFile(callsPath, "utf8")).trim().split(/\r?\n/);
+    expect(calls.filter(call => call === "turn/start")).toHaveLength(1);
+  } finally {
+    await bundle.transport.close().catch(() => undefined);
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+}, 60_000);
+
+it("does not adopt an accepted turn the runner no longer reports active", async () => {
+  // The provider accepts the turn, then its process ends before the turn
+  // starts. The accepted turn is not live, so the start fails within its bound.
+  const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-lost-turn-start-"));
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(stateDirectory, "--exit-before-turn-started"),
+    stateDirectory, turnStartTimeoutMs: 2_000,
+  });
+  try {
+    await bundle.transport.request("thread/start", { cwd: tmpdir(), dynamicTools: [] });
+    const started = Date.now();
+    // The runner may still list the turn after relaunching its provider; the
+    // process that accepted it is gone, so the turn is not adopted.
+    await expect(bundle.transport.request("turn/start", { input: [{ type: "text", text: "Lose this turn." }] }))
+      .rejects.toThrow("runnerd did not report the provider turn identity");
+    // The adoption check stays inside the configured bound (plus scheduling slack).
+    expect(Date.now() - started).toBeLessThan(2_000 + 1_500);
+  } finally {
+    await bundle.transport.close().catch(() => undefined);
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+}, 60_000);
+
+it("fails a pending turn start at once with the runner's own terminal failure", async () => {
+  // The runner can fail an accepted turn before its turn/started arrives
+  // (RC-20d: turn_binding_mismatch). That terminal is final, so the start must
+  // report it at once rather than wait out the bound under a generic message.
+  const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-failed-turn-start-"));
+  const callsPath = join(stateDirectory, "calls.log");
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(stateDirectory, "--foreign-usage-before-turn-started",
+      "--turn-started-delay-ms", "20000", "--call-log", callsPath),
+    stateDirectory, turnStartTimeoutMs: 15_000,
+  });
+  try {
+    await bundle.transport.request("thread/start", { cwd: tmpdir(), dynamicTools: [] });
+    const started = Date.now();
+    await expect(bundle.transport.request("turn/start", { input: [{ type: "text", text: "Fail before start." }] }))
+      .rejects.toThrow("turn_binding_mismatch");
+    expect(Date.now() - started).toBeLessThan(5_000);
+    const calls = (await readFile(callsPath, "utf8")).trim().split(/\r?\n/);
+    expect(calls.filter(call => call === "turn/start")).toHaveLength(1);
+  } finally {
+    await bundle.transport.close().catch(() => undefined);
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+}, 60_000);
+
+async function withUnprovableLiveness<T>(run: (unprove: () => void) => Promise<T>): Promise<T> {
+  let unproven = false;
+  const OriginalCore = durableControlPlane.DurablePrpControlPlane;
+  const coreSpy = vi.spyOn(durableControlPlane, "DurablePrpControlPlane")
+    .mockImplementation(function(options: ConstructorParameters<typeof OriginalCore>[0]) {
+      const core = new OriginalCore(options);
+      const queueCommand = core.queueCommand.bind(core);
+      core.queueCommand = ((type: string, ...rest: unknown[]) => {
+        if (unproven && type === "session.snapshot") throw new Error("runner snapshot unavailable");
+        return (queueCommand as (...args: unknown[]) => unknown)(type, ...rest);
+      }) as typeof core.queueCommand;
+      return core;
+    } as unknown as typeof OriginalCore);
+  try {
+    return await run(() => { unproven = true; });
+  } finally {
+    coreSpy.mockRestore();
+  }
+}
+
+async function startSlowCodexTurn(input: {
+  label: string;
+  delayMs: number;
+  progressMs?: number;
+  turnStartTimeoutMs?: number;
+  turnStartProgressCeilingMs?: number;
+}) {
+  const stateDirectory = await mkdtemp(join(tmpdir(), `runnerd-${input.label}-`));
+  const callsPath = join(stateDirectory, "calls.log");
+  return withUnprovableLiveness(async (unprove) => {
+    const bundle = createCapabilityRunnerdCodexTransport({
+      runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex,
+      codexArgs: fakeCodexArgs(stateDirectory, "--turn-started-delay-ms", String(input.delayMs),
+        ...(input.progressMs === undefined ? [] : ["--turn-started-progress-ms", String(input.progressMs)]),
+        "--call-log", callsPath),
+      stateDirectory,
+      ...(input.turnStartTimeoutMs === undefined ? {} : { turnStartTimeoutMs: input.turnStartTimeoutMs }),
+      ...(input.turnStartProgressCeilingMs === undefined ? {} : { turnStartProgressCeilingMs: input.turnStartProgressCeilingMs }),
+    });
+    try {
+      await bundle.transport.request("thread/start", { cwd: tmpdir(), dynamicTools: [] });
+      unprove();
+      const started = Date.now();
+      const outcome = await bundle.transport.request("turn/start", { input: [{ type: "text", text: "Start slowly." }] })
+        .then(result => ({ result, error: null }), (error: unknown) => ({ result: null, error }));
+      const elapsedMs = Date.now() - started;
+      const calls = (await readFile(callsPath, "utf8")).trim().split(/\r?\n/);
+      return { ...outcome, elapsedMs, turnStarts: calls.filter(call => call === "turn/start").length, diagnostics: bundle.evidence().diagnostics };
+    } finally {
+      await bundle.transport.close().catch(() => undefined);
+      await rm(stateDirectory, { recursive: true, force: true });
+    }
+  });
+}
+
+it("keeps waiting for an accepted Codex turn while its startup keeps reporting progress", async () => {
+  const outcome = await startSlowCodexTurn({ label: "progressing-turn-start", delayMs: 12_000, progressMs: 1_500, turnStartTimeoutMs: 4_000 });
+  expect(outcome.error).toBeNull();
+  expect(outcome.result).toMatchObject({ turn: { id: "provider-turn-1" } });
+  expect(outcome.elapsedMs).toBeGreaterThan(10_000);
+  expect(outcome.turnStarts).toBe(1);
+  expect(outcome.diagnostics.join("\n")).not.toContain("adopting the durably accepted");
+}, 60_000);
+
+it("fails an accepted Codex start at the total ceiling while progress never reaches turn/started", async () => {
+  const outcome = await startSlowCodexTurn({
+    label: "endless-progress-turn-start", delayMs: 30_000, progressMs: 1_000,
+    turnStartTimeoutMs: 3_000, turnStartProgressCeilingMs: 8_000,
+  });
+  expect(String(outcome.error)).toContain("runnerd did not report the provider turn identity");
+  expect(outcome.elapsedMs).toBeGreaterThan(7_000);
+  expect(outcome.elapsedMs).toBeLessThan(8_000 + 2_000);
+  expect(outcome.turnStarts).toBe(1);
+}, 60_000);
+
+it("still fails a silent accepted Codex start at its bound when liveness cannot be proven", async () => {
+  const outcome = await startSlowCodexTurn({ label: "silent-turn-start", delayMs: 20_000, turnStartTimeoutMs: 3_000 });
+  expect(String(outcome.error)).toContain("runnerd did not report the provider turn identity");
+  expect(outcome.elapsedMs).toBeLessThan(3_000 + 1_500);
+  expect(outcome.turnStarts).toBe(1);
+}, 60_000);
+
+it("gives a silent Codex cold start the measured default start window", async () => {
+  const outcome = await startSlowCodexTurn({ label: "cold-turn-start", delayMs: 40_000 });
+  expect(outcome.error).toBeNull();
+  expect(outcome.result).toMatchObject({ turn: { id: "provider-turn-1" } });
+  expect(outcome.elapsedMs).toBeGreaterThan(38_000);
+  expect(outcome.turnStarts).toBe(1);
+}, 90_000);
+
+it("keeps a quiet active Codex turn in the same process across connection lease expiry", async () => {
+  const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-renew-active-"));
+  const callsPath = join(stateDirectory, "calls.log");
+  const cores: DurablePrpControlPlane[] = [];
+  const OriginalCore = durableControlPlane.DurablePrpControlPlane;
+  const coreSpy = vi.spyOn(durableControlPlane, "DurablePrpControlPlane")
+    .mockImplementation(function(options: ConstructorParameters<typeof OriginalCore>[0]) {
+      const core = new OriginalCore({ ...options, connectionLeaseTtlMs: 60_000 });
+      cores.push(core);
+      return core;
+    } as unknown as typeof OriginalCore);
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(stateDirectory, "--hold-turn", "--record-process-start", "--call-log", callsPath),
+    stateDirectory, runnerReconnectGraceMs: 5_000,
+  });
+  try {
+    const opened = await bundle.transport.request("thread/start", { cwd: tmpdir(), dynamicTools: [] });
+    await bundle.transport.request("turn/start", { input: [{ type: "text", text: "Keep working quietly." }] });
+    const runnerPid = bundle.evidence().runnerPid;
+    const codexPid = bundle.evidence().codexPid;
+    expect(runnerPid).toBeGreaterThan(0);
+    expect(codexPid).toBeGreaterThan(0);
+    const core = cores[0]!;
+    const original = structuredClone(Object.values(core.store.state.leases)[0]!);
+    await vi.waitFor(() => {
+      expect(Date.now()).toBeGreaterThan(original.expiresAtUnixMs + 1_000);
+    }, { timeout: 75_000, interval: 1_000 });
+    const current = Object.values(core.store.state.leases)[0]!;
+    expect(current.expiresAtUnixMs).toBeGreaterThan(original.expiresAtUnixMs);
+    expect(current.leaseId).toBe(original.leaseId);
+    expect(core.store.state.connectionCount).toBe(1);
+    expect(bundle.evidence().runnerPid).toBe(runnerPid);
+    expect(bundle.evidence().codexPid).toBe(codexPid);
+    process.kill(runnerPid!, 0);
+    process.kill(codexPid!, 0);
+    const calls = (await readFile(callsPath, "utf8")).trim().split(/\r?\n/);
+    expect(calls.filter(call => call === "process-start")).toHaveLength(1);
+    expect(calls.filter(call => call === "thread/start")).toHaveLength(1);
+    expect(calls.filter(call => call === "turn/start")).toHaveLength(1);
+    expect(calls).not.toContain("turn/interrupt");
+    expect(calls).not.toContain("thread/resume");
+    const state = JSON.parse(await readFile(join(stateDirectory, "fake-codex-state.json"), "utf8"));
+    expect(state.threadId).toBe((opened.thread as { id: string }).id);
+    expect(state.activeTurnId).toBe("provider-turn-1");
+  } finally {
+    await bundle.transport.close();
+    coreSpy.mockRestore();
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+}, 90_000);
+
+it("reopens Pi after a completed turn within its cold admission budget during warm attachment", async () => {
+  const root = await mkdtemp(join(tmpdir(), "runnerd-pi-warm-admission-"));
+  const providerNode = process.platform === "linux" ? join(root, "node") : process.execPath;
+  if (process.platform === "linux") {
+    await cp(process.execPath, providerNode, { dereference: true });
+    await chmod(providerNode, 0o500);
+    expect((await stat(providerNode)).mode & 0o777).toBe(0o500);
+  }
+  const cliRoot = join(root, "dist/cli");
+  await mkdir(cliRoot, { recursive: true, mode: 0o700 });
+  const sidecarPath = join(cliRoot, "acpx-runtime-sidecar.cjs");
+  const journal = join(root, "commands.ndjson");
+  const fixture = await readFile(fileURLToPath(new URL("./fixtures/fake-pi-warm-sidecar.cjs", import.meta.url)), "utf8");
+  await writeFile(sidecarPath, fixture.replace("/* fixture-config */ null", JSON.stringify({ journal, resumeDelayMs: 32_000, commandDigest: QUALIFIED_ACPX_PROFILES.pi.commandDigest })), { mode: 0o600 });
+  const digest = (path: string) => `sha256:${createHash("sha256").update(readFileSync(path)).digest("hex")}`;
+  const bundle = createCapabilityRunnerdCodexTransport({
+    provider: "acpx", acpxAgent: "pi", piThinkingLevel: "low", acpxPermissionMode: "deny-all",
+    runnerBinary: defaultCapabilityRunnerdBinary(), stateDirectory: root, runnerFilesystemRoot: root,
+    providerNodeCommand: providerNode, providerNodeCommandSha256: digest(providerNode),
+    acpxSidecarPath: sidecarPath, acpxSidecarSha256: digest(sidecarPath),
+    providerPackAuthorityDigest: `sha256:${"d".repeat(64)}`,
+    lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 },
+    environment: { PATH: "/usr/bin:/bin" },
+  });
+  bundle.transport.setServerRequestHandler(async () => ({
+    success: true,
+    contentItems: [{ type: "inputText", text: "Completion report accepted." }],
+  }));
+  let failure: unknown;
+  try {
+    await bundle.transport.request("initialize", {});
+    await bundle.transport.request("thread/start", {
+      cwd: root, model: "openrouter/deepseek/deepseek-v4-flash-0731",
+      dynamicTools: codexSemanticToolSpecs(),
+      completionContract: { revision: "warm-pi-contract", criterionIds: [] },
+    });
+    const runnerPid = bundle.evidence().runnerPid;
+    const notifications = bundle.transport.notifications()[Symbol.asyncIterator]();
+    const completeTurn = async () => {
+      await bundle.transport.request("turn/start", { input: [{ type: "text", text: "Complete the fixture turn." }] });
+      for (let index = 0; index < 64; index += 1) {
+        const next = await Promise.race([
+          notifications.next(),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Fixture completion timed out")), 5_000)),
+        ]);
+        if (next.value?.method === "turn/completed") return;
+      }
+      throw new Error("Fixture turn did not complete");
+    };
+    await completeTurn();
+    const started = Date.now();
+    await bundle.transport.attachRun!({ runId: "run-pi-warm-second", turnId: "turn-pi-warm-second", itemId: "item-pi-warm-second" });
+    expect(Date.now() - started).toBeGreaterThan(30_000);
+    await completeTurn();
+    expect(bundle.evidence()).toMatchObject({ runnerPid, runnerExited: false });
+    const commands = (await readFile(journal, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    expect(commands.filter((entry) => entry.event === "spawn")).toHaveLength(2);
+    expect(commands.filter((entry) => entry.command === "session.open")).toHaveLength(2);
+    expect(commands.filter((entry) => entry.resumed)).toHaveLength(1);
+    expect(commands.filter((entry) => entry.command === "turn.start")).toHaveLength(2);
+    expect(commands.filter((entry) => entry.command === "session.close")).toHaveLength(1);
+  } catch (error) {
+    failure = error;
+    throw error;
+  } finally {
+    try {
+      await bundle.transport.close();
+    } catch (cleanupError) {
+      if (failure) throw new AggregateError([failure, cleanupError], "Warm attachment and strict cleanup failed");
+      throw cleanupError;
+    }
+    await rm(root, { recursive: true, force: true });
+  }
+}, 75_000);

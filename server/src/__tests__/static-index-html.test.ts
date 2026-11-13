@@ -3,16 +3,32 @@ import os from "node:os";
 import path from "node:path";
 import express from "express";
 import request from "supertest";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { readBrandedStaticIndexHtml } from "../static-index-html.js";
 
 describe("static SPA fallback HTML", () => {
   const tempDirs: string[] = [];
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     for (const dir of tempDirs.splice(0)) {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("ignores retired snippet settings in managed and self-hosted static HTML", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-cloud-html-"));
+    tempDirs.push(dir);
+    fs.writeFileSync(path.join(dir, "index.html"), "<html><body>App</body></html>");
+    vi.stubEnv("PAPERCLIP_CLOUD_UI_SNIPPET", '<script src="https://example.com/chat.js"></script>');
+    vi.stubEnv("PAPERCLIP_CLOUD_UI_SNIPPET_B64", Buffer.from('<script src="https://example.com/legacy.js"></script>').toString("base64"));
+    vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", undefined);
+    vi.stubEnv("PAPERCLIP_MANAGED_CONFIG", undefined);
+    expect(readBrandedStaticIndexHtml(dir)).not.toContain("chat.js");
+    vi.stubEnv("PAPERCLIP_MANAGED_CONFIG", "{}");
+    expect(readBrandedStaticIndexHtml(dir)).not.toContain("chat.js");
+    vi.stubEnv("PAPERCLIP_CLOUD_UI_SNIPPET", undefined);
+    expect(readBrandedStaticIndexHtml(dir)).not.toContain("legacy.js");
   });
 
   it("serves the current index.html instead of reusing stale asset hashes", async () => {

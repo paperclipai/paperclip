@@ -1,0 +1,166 @@
+{
+  "schema": "paperclip.prp.session-snapshot.v1",
+  "fixtureName": "Happy path",
+  "identity": {
+    "schema": "paperclip.prp.identity.v1",
+    "companyId": "company_replay",
+    "issueId": "issue_replay_happy",
+    "runId": "run_replay_happy",
+    "environmentLeaseId": "lease_replay_happy",
+    "runnerInstanceId": "runner_replay",
+    "normalizedSessionId": "session_replay_happy",
+    "driverSessionId": "driver_replay_happy",
+    "providerSessionId": "provider_replay_happy"
+  },
+  "capabilities": {
+    "schema": "paperclip.prp.capabilities.v1",
+    "sessionReusePolicy": "new_per_run",
+    "driver": {
+      "kind": "fake",
+      "version": "1.0.0"
+    },
+    "steer": true,
+    "interrupt": true,
+    "resume": true,
+    "runtimeRequests": true,
+    "structuredResult": true,
+    "typedEvents": true,
+    "unsupported": []
+  },
+  "runPhase": "terminal",
+  "sessionState": "running",
+  "turnState": "completed",
+  "activeTurnId": null,
+  "items": [
+    {
+      "itemId": "item_replay_message",
+      "kind": "assistant_message",
+      "status": "completed",
+      "text": "Validated fixture. Replay complete."
+    }
+  ],
+  "requests": [],
+  "proposedResult": {
+    "schema": "paperclip.run_result.v1",
+    "reportedWorkDisposition": "done",
+    "summary": "The scripted run completed successfully.",
+    "completionClaim": {
+      "contractRevision": "replay-contract-v1",
+      "objectiveSatisfied": true,
+      "criteria": [],
+      "remainingWork": []
+    },
+    "evidence": [],
+    "verification": [
+      {
+        "commandOrCheck": "fixture replay",
+        "status": "passed"
+      }
+    ],
+    "attentionRequests": [],
+    "artifacts": []
+  },
+  "terminal": {
+    "schema": "paperclip.prp.terminal.v1",
+    "turnTerminalState": "completed",
+    "runTerminalState": "succeeded",
+    "reportedWorkDisposition": "done",
+    "workAssessmentId": "assessment_replay_happy",
+    "statusDecisionId": "decision_replay_happy"
+  },
+  "timeline": [
+    {
+      "position": 1,
+      "sourceEventId": "event_happy_01",
+      "sourceSeq": 1,
+      "eventType": "runtime.phase.changed",
+      "emittedAt": "2026-08-07T12:00:00.030Z",
+      "summary": "Phase changed to workspace preparing"
+    },
+    {
+      "position": 2,
+      "sourceEventId": "event_happy_02",
+      "sourceSeq": 2,
+      "eventType": "session.started",
+      "emittedAt": "2026-08-07T12:00:00.040Z",
+      "summary": "session started"
+    },
+    {
+      "position": 3,
+      "sourceEventId": "event_happy_03",
+      "sourceSeq": 3,
+      "eventType": "turn.started",
+      "emittedAt": "2026-08-07T12:00:00.050Z",
+      "summary": "turn started"
+    },
+    {
+      "position": 4,
+      "sourceEventId": "event_happy_04",
+      "sourceSeq": 4,
+      "eventType": "item.started",
+      "emittedAt": "2026-08-07T12:00:00.060Z",
+      "itemId": "item_replay_message",
+      "summary": "Started assistant_message"
+    },
+    {
+      "position": 5,
+      "sourceEventId": "event_happy_05",
+      "sourceSeq": 5,
+      "eventType": "item.delta",
+      "emittedAt": "2026-08-07T12:00:00.070Z",
+      "itemId": "item_replay_message",
+      "summary": "Validated fixture. "
+    },
+    {
+      "position": 6,
+      "sourceEventId": "event_happy_06",
+      "sourceSeq": 6,
+      "eventType": "item.completed",
+      "emittedAt": "2026-08-07T12:00:00.080Z",
+      "itemId": "item_replay_message",
+      "summary": "Completed assistant_message"
+    },
+    {
+      "position": 7,
+      "sourceEventId": "event_happy_07",
+      "sourceSeq": 7,
+      "eventType": "run.result.proposed",
+      "emittedAt": "2026-08-07T12:00:00.090Z",
+      "summary": "The scripted run completed successfully."
+    },
+    {
+      "position": 8,
+      "sourceEventId": "event_happy_08",
+      "sourceSeq": 8,
+      "eventType": "turn.completed",
+      "emittedAt": "2026-08-07T12:00:00.100Z",
+      "summary": "turn completed"
+    },
+    {
+      "position": 9,
+      "sourceEventId": "event_happy_09",
+      "sourceSeq": 9,
+      "eventType": "run.terminal",
+      "emittedAt": "2026-08-07T12:00:00.110Z",
+      "summary": "Run succeeded"
+    }
+  ],
+  "sourceCursors": {
+    "runner:runner_replay": 9
+  },
+  "processedEventIds": [
+    "event_happy_01",
+    "event_happy_02",
+    "event_happy_03",
+    "event_happy_04",
+    "event_happy_05",
+    "event_happy_06",
+    "event_happy_07",
+    "event_happy_08",
+    "event_happy_09"
+  ],
+  "duplicateEventIds": [],
+  "outOfOrderEventIds": [],
+  "gaps": [],
+  "integrity": "complete"
+}

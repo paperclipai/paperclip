@@ -1,0 +1,539 @@
+{
+  "date": "2026-10-12",
+  "policy": "Each mutation changes one actual production guard or outcome. Only the selected case runs. Every changed source is restored to its exact SHA-256 in finally. Complete unmutated owner and sibling controls run separately.",
+  "controls": [
+    {
+      "id": "api-rejection-eviction",
+      "codeHead": "dfdc39b3a71c74c40e267010c6d8428af523bb65",
+      "owner": "ui/src/api/client.ts",
+      "sourceSha256": "1e1b3f03e3269a5943f55d294f1c7aa9f5c3eca569858d9fdc7c5d976de88bba",
+      "case": "tenant-session recovery preserves ApiError handling for an unrelated 401",
+      "expected": "one intended assertion failure",
+      "actualFailedCases": 1,
+      "intendedAssertionFailed": true,
+      "sourceRestored": true,
+      "failure": "Error: promise rejected \"ApiError: unauthorized { \u2026(2) }\" instead of resolving\n    at Assertion.__VITEST_RESOLVES__ (file://<workspace>/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/index.C4tKZ0yW.js:2434:33)\n    at Assertion.propertyGetter (file://<workspace>/node_modules/.pnpm/chai@6.3.0/node_modules/chai/index.js:1607:27)\n    at Reflect.get (<anonymous>)\n    at Object.proxyGetter [as get] (file:///Users/dotta/.codex/worktrees/tes"
+    },
+    {
+      "id": "api-all-abort-eviction",
+      "codeHead": "dfdc39b3a71c74c40e267010c6d8428af523bb65",
+      "owner": "ui/src/api/client.ts",
+      "sourceSha256": "1e1b3f03e3269a5943f55d294f1c7aa9f5c3eca569858d9fdc7c5d976de88bba",
+      "case": "per-caller abort semantics aborts the shared fetch after all callers cancel and permits a fresh request",
+      "expected": "one intended assertion failure",
+      "actualFailedCases": 1,
+      "intendedAssertionFailed": true,
+      "sourceRestored": true,
+      "failure": "AssertionError: expected \"vi.fn()\" to be called 2 times, but got 1 times\n    at <workspace>/ui/src/api/client.test.ts:210:23\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at file://<workspace>/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:2783:20"
+    },
+    {
+      "id": "ticker-one-interval",
+      "codeHead": "dfdc39b3a71c74c40e267010c6d8428af523bb65",
+      "owner": "ui/src/hooks/useSecondTick.ts",
+      "sourceSha256": "fd51875adf5f30295d847df58af19f75dcbb59c810b4f02919427cbc6ea4d3b3",
+      "case": "useSecondTick shares a single timer across multiple active subscribers and stops when idle",
+      "expected": "one intended assertion failure",
+      "actualFailedCases": 1,
+      "intendedAssertionFailed": true,
+      "sourceRestored": true,
+      "failure": "AssertionError: expected 2 to be 1 // Object.is equality\n    at <workspace>/ui/src/hooks/useSecondTick.test.tsx:26:32\n    at file://<workspace>/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:1628:35\n    at file://<workspace>/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules"
+    },
+    {
+      "id": "ticker-delivery",
+      "codeHead": "dfdc39b3a71c74c40e267010c6d8428af523bb65",
+      "owner": "ui/src/hooks/useSecondTick.ts",
+      "sourceSha256": "fd51875adf5f30295d847df58af19f75dcbb59c810b4f02919427cbc6ea4d3b3",
+      "case": "useSecondTick shares a single timer across multiple active subscribers and stops when idle",
+      "expected": "one intended assertion failure",
+      "actualFailedCases": 1,
+      "intendedAssertionFailed": true,
+      "sourceRestored": true,
+      "failure": "AssertionError: expected '0' to be '1' // Object.is equality\n    at <workspace>/ui/src/hooks/useSecondTick.test.tsx:28:37\n    at file://<workspace>/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:1628:35\n    at file://<workspace>/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_mod"
+    },
+    {
+      "id": "ticker-idle-cleanup",
+      "codeHead": "dfdc39b3a71c74c40e267010c6d8428af523bb65",
+      "owner": "ui/src/hooks/useSecondTick.ts",
+      "sourceSha256": "fd51875adf5f30295d847df58af19f75dcbb59c810b4f02919427cbc6ea4d3b3",
+      "case": "useSecondTick shares a single timer across multiple active subscribers and stops when idle",
+      "expected": "one intended assertion failure",
+      "actualFailedCases": 1,
+      "intendedAssertionFailed": true,
+      "sourceRestored": true,
+      "failure": "AssertionError: expected 1 to be +0 // Object.is equality\n    at <workspace>/ui/src/hooks/useSecondTick.test.tsx:37:32\n    at file://<workspace>/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:1628:35\n    at file://<workspace>/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_module"
+    },
+    {
+      "id": "ticker-inactive-peer",
+      "codeHead": "dfdc39b3a71c74c40e267010c6d8428af523bb65",
+      "owner": "ui/src/hooks/useSecondTick.ts",
+      "sourceSha256": "fd51875adf5f30295d847df58af19f75dcbb59c810b4f02919427cbc6ea4d3b3",
+      "case": "useSecondTick does not subscribe or start a timer when inactive",
+      "expected": "one intended assertion failure",
+      "actualFailedCases": 1,
+      "intendedAssertionFailed": true,
+      "sourceRestored": true,
+      "failure": "AssertionError: expected '1' to be '0' // Object.is equality\n    at <workspace>/ui/src/hooks/useSecondTick.test.tsx:48:37\n    at file://<workspace>/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:1628:35\n    at file://<workspace>/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_mod"
+    },
+    {
+      "id": "ui-bound-caption",
+      "codeHead": "dfdc39b3a71c74c40e267010c6d8428af523bb65",
+      "owner": "ui/src/components/AgentConfigForm.tsx",
+      "sourceSha256": "bf999102f39bfc762747ce5d598e1e6ec2f926ac5fb28de55fa1baf5493f28b1",
+      "case": "AgentConfigForm environment selector reports the account-binding claim upward exactly once when the session authenticates",
+      "expected": "one intended assertion failure",
+      "actualFailedCases": 1,
+      "intendedAssertionFailed": true,
+      "sourceRestored": true,
+      "failure": "AssertionError: expected 'Sign in to OpenAISign inAuthenticated\u2026' to contain 'Agent bound to the signed-in account'\n    at <workspace>/ui/src/components/AgentConfigForm.render.test.tsx:1773:35\n    at file://<workspace>/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:2783:20"
+    },
+    {
+      "id": "ui-onboarding-saved-login",
+      "codeHead": "dfdc39b3a71c74c40e267010c6d8428af523bb65",
+      "owner": "ui/src/components/AgentConfigForm.tsx",
+      "sourceSha256": "bf999102f39bfc762747ce5d598e1e6ec2f926ac5fb28de55fa1baf5493f28b1",
+      "case": "OnboardingWizard restore-gate (stale localStorage across accounts) the adapter step login panel (cheap auth signal, no adapter test) renders no 'Use saved login' control",
+      "expected": "one intended assertion failure",
+      "actualFailedCases": 1,
+      "intendedAssertionFailed": true,
+      "sourceRestored": true,
+      "failure": "AssertionError: expected 'Step 2 of 3Ada Connect a modelPapercl\u2026' not to contain 'Use saved login'\n    at <workspace>/ui/src/components/OnboardingWizard.test.tsx:2931:45\n    at file://<workspace>/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:2783:20"
+    },
+    {
+      "id": "ui-agent-footer",
+      "codeHead": "dfdc39b3a71c74c40e267010c6d8428af523bb65",
+      "owner": "ui/src/components/IssueThreadInteractionCard.tsx",
+      "sourceSha256": "fb9beb27481258354942003e6a5c319a23257ef07f4ce811eb9ccbd605e0a585",
+      "case": "IssueThreadInteractionCard tool-action card marks agent resolution with an audit chip in the resolved footer",
+      "expected": "one intended assertion failure",
+      "actualFailedCases": 1,
+      "intendedAssertionFailed": true,
+      "sourceRestored": true,
+      "failure": "AssertionError: the given combination of arguments (undefined and string) is invalid for this assertion. You can use an array, a map, an object, a set, a string, or a weakset instead of a string\n    at Proxy.<anonymous> (file://<workspace>/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/index.C4tKZ0yW.js:2077:15)\n    at Proxy.<anonymous> (file://<workspace>/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_j"
+    },
+    {
+      "id": "ui-markdown-anchor",
+      "codeHead": "dfdc39b3a71c74c40e267010c6d8428af523bb65",
+      "owner": "ui/src/components/MarkdownBody.tsx",
+      "sourceSha256": "003b7da23b5ebd0e8cd4de91e0d1dafe697f6602d4d99551b04d0abad699d193",
+      "case": "MarkdownBody opens external links in a new tab with safe rel attributes",
+      "expected": "one intended assertion failure",
+      "actualFailedCases": 1,
+      "intendedAssertionFailed": true,
+      "sourceRestored": true,
+      "failure": "AssertionError: expected '<div class=\"paperclip-markdown prose \u2026' to contain '<a href=\"https://example.com/docs\"'\n    at <workspace>/ui/src/components/MarkdownBody.test.tsx:587:18\n    at file://<workspace>/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:1628:35\n    at file://<workspace>/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_"
+    },
+    {
+      "id": "server-cancelled-reopen",
+      "codeHead": "dfdc39b3a71c74c40e267010c6d8428af523bb65",
+      "owner": "server/src/routes/issues.ts",
+      "sourceSha256": "641b3d9cb5e744671527f16129dd78518376dca31616b845ec6b8da99d636d8c",
+      "case": "issue comment reopen routes rejects bare agent reopen requests on cancelled issues before writing a comment",
+      "expected": "one intended assertion failure",
+      "actualFailedCases": 1,
+      "intendedAssertionFailed": true,
+      "sourceRestored": true,
+      "failure": "AssertionError: expected 201 to be 409 // Object.is equality\n    at <workspace>/server/src/__tests__/issue-comment-reopen-routes.test.ts:1040:24\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at file://<workspace>/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:2783:20"
+    },
+    {
+      "id": "wiki-genuine-run-id",
+      "codeHead": "dfdc39b3a71c74c40e267010c6d8428af523bb65",
+      "owner": "packages/plugins/plugin-llm-wiki/src/wiki/core.ts",
+      "sourceSha256": "35d8543f67ab80479c624f527d0b94fbb0f3b309d40b1276a07518872212ea06",
+      "case": "LLM Wiki plugin scaffold starts query sessions, records run ids, and forwards session events to plugin streams",
+      "expected": "one intended assertion failure",
+      "actualFailedCases": 1,
+      "intendedAssertionFailed": true,
+      "sourceRestored": true,
+      "failure": "AssertionError: expected [ \u2026(4) ] to deeply equal [ \u2026(4) ]\n    at <workspace>/packages/plugins/plugin-llm-wiki/tests/plugin.spec.ts:3610:44\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at file://<workspace>/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:2783:20"
+    },
+    {
+      "id": "wiki-positive-source-writes",
+      "codeHead": "dfdc39b3a71c74c40e267010c6d8428af523bb65",
+      "owner": "packages/plugins/plugin-llm-wiki/src/wiki/core.ts",
+      "sourceSha256": "35d8543f67ab80479c624f527d0b94fbb0f3b309d40b1276a07518872212ea06",
+      "case": "LLM Wiki plugin scaffold keeps default-space files at the root and isolates managed spaces under slug prefixes",
+      "expected": "one intended assertion failure",
+      "actualFailedCases": 1,
+      "intendedAssertionFailed": true,
+      "sourceRestored": true,
+      "failure": "AssertionError: expected [] to have a length of 2 but got +0\n    at Proxy.<anonymous> (file://<workspace>/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/index.C4tKZ0yW.js:2147:20)\n    at Proxy.<anonymous> (file://<workspace>/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/index.C4tKZ0yW.js:1944:14)\n    at Proxy."
+    },
+    {
+      "id": "wiki-positive-page-writes",
+      "codeHead": "dfdc39b3a71c74c40e267010c6d8428af523bb65",
+      "owner": "packages/plugins/plugin-llm-wiki/src/wiki/core.ts",
+      "sourceSha256": "35d8543f67ab80479c624f527d0b94fbb0f3b309d40b1276a07518872212ea06",
+      "case": "LLM Wiki plugin scaffold keeps default-space files at the root and isolates managed spaces under slug prefixes",
+      "expected": "one intended assertion failure",
+      "actualFailedCases": 1,
+      "intendedAssertionFailed": true,
+      "sourceRestored": true,
+      "failure": "AssertionError: expected [ { \u2026(2) }, { \u2026(2) } ] to have a length of 4 but got 2\n    at Proxy.<anonymous> (file://<workspace>/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/index.C4tKZ0yW.js:2147:20)\n    at Proxy.<anonymous> (file://<workspace>/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/index.C4tKZ0yW.js:194"
+    },
+    {
+      "id": "aws-create-must-wait-before",
+      "codeHead": "dfdc39b3a71c74c40e267010c6d8428af523bb65",
+      "owner": "server/src/services/secrets.ts",
+      "sourceSha256": "2b7cac8d903802ea47c71033fa2d5dffb4d01a9ccde80837445235b0208b8e97",
+      "case": "secretService serializes an aws_secrets_manager secret create against a concurrent account-home mutation lock holder",
+      "expected": "old weak control passes",
+      "actual": "passed",
+      "intendedResult": true,
+      "sourceRestored": true
+    },
+    {
+      "id": "aws-rotate-must-wait-before",
+      "codeHead": "dfdc39b3a71c74c40e267010c6d8428af523bb65",
+      "owner": "server/src/services/secrets.ts",
+      "sourceSha256": "2b7cac8d903802ea47c71033fa2d5dffb4d01a9ccde80837445235b0208b8e97",
+      "case": "secretService serializes an aws_secrets_manager secret rotate against a concurrent account-home mutation lock holder",
+      "expected": "old weak control passes",
+      "actual": "passed",
+      "intendedResult": true,
+      "sourceRestored": true
+    },
+    {
+      "id": "aws-create-must-wait-after",
+      "codeHead": "445d568ca4e903fc998819cae31d421403514684",
+      "owner": "server/src/services/secrets.ts",
+      "sourceSha256": "2b7cac8d903802ea47c71033fa2d5dffb4d01a9ccde80837445235b0208b8e97",
+      "case": "secretService serializes an aws_secrets_manager secret create against a concurrent account-home mutation lock holder",
+      "expected": "repaired control fails on provider entry before lock release",
+      "actual": "failed",
+      "intendedResult": true,
+      "sourceRestored": true,
+      "failure": "AssertionError: expected [ 'cleanup-enter', \u2026(1) ] to deeply equal [ 'cleanup-enter' ]\n    at <workspace>/server/src/__tests__/secrets-service.test.ts:1013:22\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at file://<workspace>/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:2783:20"
+    },
+    {
+      "id": "aws-rotate-must-wait-after",
+      "codeHead": "445d568ca4e903fc998819cae31d421403514684",
+      "owner": "server/src/services/secrets.ts",
+      "sourceSha256": "2b7cac8d903802ea47c71033fa2d5dffb4d01a9ccde80837445235b0208b8e97",
+      "case": "secretService serializes an aws_secrets_manager secret rotate against a concurrent account-home mutation lock holder",
+      "expected": "repaired control fails on provider entry before lock release",
+      "actual": "failed",
+      "intendedResult": true,
+      "sourceRestored": true,
+      "failure": "AssertionError: expected [ 'cleanup-enter', \u2026(1) ] to deeply equal [ 'cleanup-enter' ]\n    at <workspace>/server/src/__tests__/secrets-service.test.ts:1081:22\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at file://<workspace>/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:2783:20"
+    }
+  ],
+  "unmutatedControls": [
+    {
+      "batch": "round4 owners and keepers",
+      "files": 58,
+      "passed": 1455,
+      "failed": 0,
+      "pending": 0
+    },
+    {
+      "batch": "tool-access owners and state keepers",
+      "passed": 623,
+      "failed": 0,
+      "pending": 0
+    },
+    {
+      "batch": "final state-service owners and keepers",
+      "files": 8,
+      "passed": 329,
+      "failed": 0,
+      "pending": 0
+    }
+  ],
+  "preservationReviews": [
+    {
+      "batch": "round4-ui",
+      "baseline": "2633dbbba95e853e3cb0de165bdf5116e544e411",
+      "method": "Independent whole-runtime AST comparison after actual new helper expansion and individually reviewed semantic edits. Type-only syntax and source metadata normalized; compiler is a separate gate.",
+      "files": [
+        {
+          "file": "ui/src/components/IssueProperties.test.tsx",
+          "sourceSha256": "6c0a2420fdffeb3ccf6c9f4b43b61b62c3bd0e107276a91402a25ae08ad54bd2",
+          "proposalSha256": "8d604724e4c9c423b560d13dae6e939113f248b050905542970ee0660dfeab98",
+          "fullProgramAstEqualAfterActualHelperExpansionAndEnumeratedBehaviorEdits": true,
+          "helperCalls": {
+            "createRelation": 17
+          }
+        },
+        {
+          "file": "ui/src/components/AgentConfigForm.render.test.tsx",
+          "sourceSha256": "dd3703a491b43ee5b7cd57c48798e8a4cec4dbabc075f222cea412383eca49d7",
+          "proposalSha256": "57282ae3afe8c55ac118f3a658152d8df500a87b15383c8f6b0530a7fdcfb8a0",
+          "fullProgramAstEqualAfterActualHelperExpansionAndEnumeratedBehaviorEdits": true,
+          "helperCalls": {
+            "createFormQueryClient": 17,
+            "renderFormView": 18,
+            "daytonaEnvironments": 12,
+            "e2bEnvironments": 6
+          }
+        },
+        {
+          "file": "ui/src/components/OnboardingWizard.test.tsx",
+          "sourceSha256": "c17e65d7e0604b58d398cdf8a2a8588e7bc388ffe6e2612cee8e567e01a30f20",
+          "proposalSha256": "6215ee2f034686deaf2d6091590030dcdeccff1697422574e45e0351eaf5a7fe",
+          "fullProgramAstEqualAfterActualHelperExpansionAndEnumeratedBehaviorEdits": true,
+          "helperCalls": {
+            "renderWizardView": 19
+          }
+        },
+        {
+          "file": "ui/src/components/IssueThreadInteractionCard.test.tsx",
+          "sourceSha256": "3e3ebbe3da7ad7edd9386760bcf90a83c987956fc4f65b74bb761bd0160ce746",
+          "proposalSha256": "2e8aefda409a2faa7e3a3bc4d3f292a17086c61eac1e34291002b62c7415a184",
+          "fullProgramAstEqualAfterActualHelperExpansionAndEnumeratedBehaviorEdits": true,
+          "helperCalls": {}
+        },
+        {
+          "file": "ui/src/components/MarkdownBody.test.tsx",
+          "sourceSha256": "1be4fe615ed6d9e1b8b49749f291475c12848beb5664758c512f368103121608",
+          "proposalSha256": "7432e047a21ca0a75dc58ca0fd645c7cb0b59edc1719557e4e0cb0aafc8a642a",
+          "fullProgramAstEqualAfterActualHelperExpansionAndEnumeratedBehaviorEdits": true,
+          "helperCalls": {}
+        }
+      ]
+    },
+    {
+      "batch": "round4-server",
+      "baseline": "2633dbbba95e853e3cb0de165bdf5116e544e411",
+      "method": "Independent whole-runtime AST comparison after actual new helper expansion and individually reviewed semantic edits. Type-only syntax and source metadata normalized; compiler is a separate gate.",
+      "files": [
+        {
+          "file": "server/src/__tests__/issue-comment-reopen-routes.test.ts",
+          "sourceSha256": "214aaa47ce1a862e4d06f41a440d0dba2a2f9f2efa63259c635209a3f660c33e",
+          "proposalSha256": "2dc9167f66f379cb5a1fe024faf78a79c7009d570c4ca4acc72448d0a00423c7",
+          "fullProgramAstEqualAfterActualHelperExpansionAndEnumeratedBehaviorEdits": true,
+          "helperCalls": {
+            "createScheduledRetry": 4,
+            "createAgentReviewPolicy": 12,
+            "createReviewIssue": 9
+          }
+        },
+        {
+          "file": "server/src/__tests__/environment-routes.test.ts",
+          "sourceSha256": "8993233f12a3b646f7a9755b817bac68916fda31753c2ffb30c4eba9fbcc9fe8",
+          "proposalSha256": "ef2dd81154c25791d2020362b6a3cd508ae215d60b075e1496ea9c7aa38ee6bd",
+          "fullProgramAstEqualAfterActualHelperExpansionAndEnumeratedBehaviorEdits": true,
+          "helperCalls": {
+            "localBoardActor": 39,
+            "createSecurePluginDriver": 6,
+            "createSshConfig": 4,
+            "createSecretBackedSshEnvironment": 3
+          }
+        },
+        {
+          "file": "server/src/__tests__/instance-settings-routes.test.ts",
+          "sourceSha256": "f007e394234f82d0014a1f2d83831942d0c3a2b123e026f4c22edd4d6491754f",
+          "proposalSha256": "85f0ddf9afb42cfc3e243e107b47290d9f8c8e5879eb3932805466019c937dc4",
+          "fullProgramAstEqualAfterActualHelperExpansionAndEnumeratedBehaviorEdits": true,
+          "helperCalls": {
+            "localAdminActor": 15
+          }
+        },
+        {
+          "file": "server/src/__tests__/agent-skills-routes.test.ts",
+          "sourceSha256": "e9c67d26d49c51862cefdde9388893d0e11b32f7d29ee95c664741cd48bc7468",
+          "proposalSha256": "175b4b5f274141a817c2135830c1b73ecdfb9597e1d0579af1d0207c6faf551e",
+          "fullProgramAstEqualAfterActualHelperExpansionAndEnumeratedBehaviorEdits": true,
+          "helperCalls": {
+            "skillSnapshot": 6
+          }
+        },
+        {
+          "file": "server/src/__tests__/company-skills-routes.test.ts",
+          "sourceSha256": "9fdfa5790bd33b9824e3aeed28daa01065eab248712d2f9482f633f7c33165a9",
+          "proposalSha256": "7037feadb73f235f81afeb9499b5bc9b988e2057b43add48c7546f6558085a03",
+          "fullProgramAstEqualAfterActualHelperExpansionAndEnumeratedBehaviorEdits": true,
+          "helperCalls": {
+            "createCatalogSkill": 3,
+            "createSkillTestRunDetails": 5,
+            "boardActor": 25,
+            "assignedAgentActor": 7
+          }
+        }
+      ]
+    },
+    {
+      "batch": "round4-cli-api-ticker",
+      "method": "Actual proposed helper bodies expanded. Source metadata/comments/types and object shorthand normalized; object fields, array rows, JSX props, all values/callbacks/promises/awaits, action/write/Git order and cleanup remain strict. Statement-helper parameters are checked to be stable Identifier bindings. Only enumerated reviewed retirement/migration deltas are permitted.",
+      "checks": [
+        {
+          "file": "cli/src/__tests__/company.test.ts",
+          "sourceSha256": "d957294d6113f3b546e15e36289f5085852fc5ab1350529bc025a192fc05d378",
+          "proposalSha256": "1cd0c0445ab57a8c74416a63da6acb4ddde36e8c09aa5b3c74db589792445be1",
+          "actualHelperExpansionWholeRuntimeAstEqual": true,
+          "expandedCalls": {
+            "allImportEntities": 6,
+            "sourceCompanyManifest": 2,
+            "ceoManifest": 2,
+            "alphaProjectManifest": 2,
+            "kickoffIssueManifest": 2,
+            "openAiEnvInput": 2
+          }
+        },
+        {
+          "file": "packages/shared/src/app-definitions.test.ts",
+          "sourceSha256": "cf1aec35f1f4c65dd7059f594e04030c339c2a2f329f6e8216a431280d3865c3",
+          "proposalSha256": "d6aa2d7ba801b049358e89f48d39f3602ac936d1c28e7cd5b3313a2227fd1a95",
+          "actualHelperExpansionWholeRuntimeAstEqual": true,
+          "expandedCalls": {}
+        },
+        {
+          "file": "packages/plugins/plugin-llm-wiki/tests/plugin.spec.ts",
+          "sourceSha256": "21ae3eef99bb450f2cc0cac8cb7d781f0dbb043ad4fdf8c1d09b528021114242",
+          "proposalSha256": "bcb816d66be0b0176d599bbb705f79724abeebe8f52f28ed1fc31787b06f9985",
+          "actualHelperExpansionWholeRuntimeAstEqual": true,
+          "expandedCalls": {
+            "renderWikiPage": 22,
+            "captureWikiWrites": 9,
+            "managedSpaceRow": 3
+          }
+        },
+        {
+          "file": "cli/src/__tests__/worktree.test.ts",
+          "sourceSha256": "90162a4d544e80d7314649f2d0da5ca34c6968fbd4a63e491c57f5fdf7077db7",
+          "proposalSha256": "4dd193538aaf9bdd0cab522a8647ea5fb6a573e26199561e65c725c8bcb51ce1",
+          "actualHelperExpansionWholeRuntimeAstEqual": true,
+          "expandedCalls": {
+            "writeSeedConfigFiles": 6,
+            "initializeTestRepo": 5
+          }
+        }
+      ],
+      "canonicalChecks": [
+        {
+          "file": "cli/src/__tests__/worktree.test.ts",
+          "baselineSha256": "47c51bafca401b39bd976c12ddabef00be8ff6d3c2bc79822c49d11a3f79bc85",
+          "repairedSha256": "90162a4d544e80d7314649f2d0da5ca34c6968fbd4a63e491c57f5fdf7077db7",
+          "wholeRuntimeAstEqualApartFromParentCanonicalization": true,
+          "canonicalTempRootWrappers": 35
+        },
+        {
+          "file": "packages/shared/src/worktree-seed-source.test.ts",
+          "baselineSha256": "bd8708bab463280939f0aa8aa18341b028343fe98626d9be2154c87ab191c1a5",
+          "repairedSha256": "b9d021050cced44bcee00fd3209c225c4e26117693b7491a50ef9d3bd0a67d17",
+          "wholeRuntimeAstEqualApartFromParentCanonicalization": true,
+          "canonicalTempRootWrappers": 3
+        }
+      ],
+      "coreChecks": [
+        {
+          "file": "ui/src/api/client.ts",
+          "sourceSha256": "cac548df1d20c87a0ea8eede850cfe5081874262eb8c26c78058923db6947f69",
+          "proposalSha256": "1e1b3f03e3269a5943f55d294f1c7aa9f5c3eca569858d9fdc7c5d976de88bba",
+          "onlyDeletedPrivateGetterExport": "__inflightGetCount"
+        },
+        {
+          "file": "ui/src/hooks/useSecondTick.ts",
+          "sourceSha256": "e108dee2647be4f8f5472a70220d1019b18cce9a842e7bc25b863e298654ab07",
+          "proposalSha256": "fd51875adf5f30295d847df58af19f75dcbb59c810b4f02919427cbc6ea4d3b3",
+          "onlyDeletedPrivateGetterExport": "__secondTickInternals"
+        }
+      ],
+      "seamTestChecks": [
+        {
+          "file": "ui/src/api/client.test.ts",
+          "sourceSha256": "b056adfc0a935cdabcc1c05b4473f76bc1f46fc6f280a671404c2735211ebe01",
+          "proposalSha256": "1b3666404821ae4550b1fdf48fe27568077f8074dbdff8afc5f2966e79341ffd",
+          "apiWholeRuntimeAstEqualApartFromReviewedPrivateRemovalAndErrorAbortRetry": true,
+          "oldDeclarations": 12,
+          "newDeclarations": 12
+        },
+        {
+          "file": "ui/src/hooks/useSecondTick.test.tsx",
+          "sourceSha256": "29d8f37a65070f28ddb43bec69e74477cdfb1e563b348aff03b6b5ca17902e95",
+          "proposalSha256": "b59f9bab5e41bc611165577d8e095184094dd5b84b6d436d32656fd33fb5e459",
+          "oldDeclarations": 2,
+          "newDeclarations": 2
+        }
+      ]
+    },
+    {
+      "batch": "round5-tools",
+      "baseline": "3e7ee04591fd82f3effb89370f47aa90dcadd6eb",
+      "method": "Only source metadata/comments and object shorthand differ. Actual candidate helper bodies expanded, removing only their new declarations and type-only IdRef aliases. Object-field, nested object, array, table, JSX-free input, promise, await, callback, actor/company/credential/expected value and statement order remain exact. Newly introduced literal spreads are allowed only when there are no overwritten keys or effectful helper arguments. All helper object bodies are fresh literals without external closure state.",
+      "files": [
+        {
+          "path": "server/src/__tests__/tool-access-service.test.ts",
+          "sourceSha256": "4cd7d6d02710eac514f14d87c316d15391028ae36c477d868f6b5a499a29f406",
+          "proposalSha256": "dc3664a18f9fc6c45b3b5555376ae03def2708129ff5c3dc4f4623ea2f994c15",
+          "completeRuntimeAndTypeAstEqualAfterActualHelperExpansionAndOneDeclarationRemoval": true,
+          "helperOccurrences": 78,
+          "allRemainingMatcherCallsEqual": true,
+          "allAwaitExpressionsEqual": true,
+          "allSupertestCallsEqual": true,
+          "remainingMatcherCalls": 1346,
+          "awaitExpressions": 1930,
+          "beforeDeclarations": 266,
+          "afterDeclarations": 265
+        },
+        {
+          "path": "server/src/__tests__/tool-access-policy-service.test.ts",
+          "sourceSha256": "484408a4eb3481e98d89863943b0fac64cf40e3794c06d0b4326a4b0d0f7625f",
+          "proposalSha256": "6982ad8f42fceeb6428117f22db28a589f9b6d5f1b2465ca87ddd29420e06413",
+          "completeRuntimeAndTypeAstEqualAfterActualHelperExpansionAndOneDeclarationRemoval": true,
+          "helperOccurrences": 31,
+          "allRemainingMatcherCallsEqual": true,
+          "allAwaitExpressionsEqual": true,
+          "allSupertestCallsEqual": true,
+          "remainingMatcherCalls": 80,
+          "awaitExpressions": 284,
+          "beforeDeclarations": 35,
+          "afterDeclarations": 35
+        },
+        {
+          "path": "server/src/__tests__/tool-gateway-service.test.ts",
+          "sourceSha256": "29c9b9739a5f928c49cd2982858a1323c242663450277f45fc9e3aea407cbe98",
+          "proposalSha256": "67d8dfb12ef2215296af87be5c573f40175d71a2917b01113aa82c550fe4b6d6",
+          "completeRuntimeAndTypeAstEqualAfterActualHelperExpansionAndOneDeclarationRemoval": true,
+          "helperOccurrences": 58,
+          "allRemainingMatcherCallsEqual": true,
+          "allAwaitExpressionsEqual": true,
+          "allSupertestCallsEqual": true,
+          "remainingMatcherCalls": 231,
+          "awaitExpressions": 431,
+          "beforeDeclarations": 36,
+          "afterDeclarations": 36
+        }
+      ]
+    },
+    {
+      "batch": "round5-state",
+      "baseline": "3e7ee04591fd82f3effb89370f47aa90dcadd6eb",
+      "method": "Independent full runtime AST expansion outside two individually reviewed AWS lock repairs",
+      "files": [
+        {
+          "file": "server/src/__tests__/issue-thread-interactions-service.test.ts",
+          "beforeSha256": "ddfad204b976a8218b6376007c36048154c4a10e25ef4d891531b87477931c10",
+          "afterSha256": "6c70d8af0815de3d3ed9f87de94d20e7a161aa2db5fe938e80204a100ee418e9",
+          "equivalent": true,
+          "expandedBeforeSha256": "0a7affd96c9e84850e2540edea63bbc6eabf24f124468e2526fa3095f2ddd7af",
+          "expandedAfterSha256": "0a7affd96c9e84850e2540edea63bbc6eabf24f124468e2526fa3095f2ddd7af",
+          "allHelperCalls": {
+            "interactionCompanyRow": 14,
+            "parentIssueRow": 7,
+            "activeCodexAgentRow": 19,
+            "acceptIssueScope": 31
+          },
+          "allHelperArgumentsEffectFree": true,
+          "beforeDeclarations": 89,
+          "afterDeclarations": 89
+        },
+        {
+          "file": "server/src/__tests__/secrets-service.test.ts",
+          "beforeSha256": "ab9c9536ee144d9211bb8a205dd2e57ff928360de6ea695af74afd749e9652be",
+          "afterSha256": "95708c40da78768c43c26a56c73cf9479a4a39bf2173561d9501a1ab6d13dfb1",
+          "equivalent": true,
+          "expandedBeforeSha256": "fb5da5592c1de24b62a44e476554924e0854cd2822767e46132ce63431c11475",
+          "expandedAfterSha256": "fb5da5592c1de24b62a44e476554924e0854cd2822767e46132ce63431c11475",
+          "allHelperCalls": {
+            "awsVaultInput": 29,
+            "preparedAwsVersion": 16,
+            "managedAwsVersionRow": 4
+          },
+          "allHelperArgumentsEffectFree": true,
+          "beforeDeclarations": 91,
+          "afterDeclarations": 91
+        }
+      ]
+    }
+  ]
+}

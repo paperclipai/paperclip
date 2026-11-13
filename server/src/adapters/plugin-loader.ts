@@ -11,8 +11,12 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import type { ServerAdapterModule } from "./types.js";
+import { validateAdapterLoginCapability } from "@paperclipai/adapter-utils";
 import { logger } from "../middleware/logger.js";
+import { isCloudManagedInstance } from "../services/cloud-instance.js";
+import { assertExternalAdapterCodeAllowed } from "../services/adapter-code-policy.js";
 
 import {
   listAdapterPlugins,
@@ -28,6 +32,7 @@ import type { AdapterPluginRecord } from "../services/adapter-plugin-store.js";
 const uiParserCache = new Map<string, string>();
 
 export function getUiParserSource(adapterType: string): string | undefined {
+  if (isCloudManagedInstance()) return undefined;
   return uiParserCache.get(adapterType);
 }
 
@@ -36,6 +41,7 @@ export function getUiParserSource(adapterType: string): string | undefined {
  * Makes the ui-parser.js endpoint self-healing.
  */
 export function getOrExtractUiParserSource(adapterType: string): string | undefined {
+  if (isCloudManagedInstance()) return undefined;
   const cached = uiParserCache.get(adapterType);
   if (cached) return cached;
 
@@ -144,7 +150,7 @@ function extractUiParserSource(
 // Load / reload
 // ---------------------------------------------------------------------------
 
-function validateAdapterModule(mod: unknown, packageName: string): ServerAdapterModule {
+export function validateAdapterModule(mod: unknown, packageName: string): ServerAdapterModule {
   const m = mod as Record<string, unknown>;
   const createServerAdapter = m.createServerAdapter;
   if (typeof createServerAdapter !== "function") {
@@ -160,6 +166,19 @@ function validateAdapterModule(mod: unknown, packageName: string): ServerAdapter
       `createServerAdapter() from "${packageName}" returned an invalid module (missing "type").`,
     );
   }
+
+  // Fail closed on a malformed login capability. The validator throws a clear
+  // error, so the loader rejects the adapter instead of loading it with a
+  // partial capability.
+  try {
+    validateAdapterLoginCapability(adapterModule);
+  } catch (err) {
+    throw new Error(
+      `createServerAdapter() from "${packageName}" returned an invalid login capability: ` +
+        `${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
   return adapterModule;
 }
 
@@ -167,6 +186,7 @@ export async function loadExternalAdapterPackage(
   packageName: string,
   localPath?: string,
 ): Promise<ServerAdapterModule> {
+  assertExternalAdapterCodeAllowed();
   const packageDir = localPath
     ? path.resolve(localPath)
     : path.resolve(getAdapterPluginsDir(), "node_modules", packageName);
@@ -177,7 +197,7 @@ export async function loadExternalAdapterPackage(
 
   logger.info({ packageName, packageDir, entryPoint, modulePath, hasUiParser: !!uiParserSource }, "Loading external adapter package");
 
-  const mod = await import(modulePath);
+  const mod = await import(pathToFileURL(modulePath).href);
   const adapterModule = validateAdapterModule(mod, packageName);
 
   if (uiParserSource) {
@@ -206,13 +226,14 @@ async function loadFromRecord(record: AdapterPluginRecord): Promise<ServerAdapte
 export async function reloadExternalAdapter(
   type: string,
 ): Promise<ServerAdapterModule | null> {
+  assertExternalAdapterCodeAllowed();
   const record = getAdapterPluginByType(type);
   if (!record) return null;
 
   const packageDir = resolvePackageDir(record);
   const entryPoint = resolvePackageEntryPoint(packageDir);
   const modulePath = path.resolve(packageDir, entryPoint);
-  const fileUrl = `file://${modulePath}`;
+  const fileUrl = pathToFileURL(modulePath).href;
 
   // Bust ESM module cache so re-import loads fresh code from disk.
   // Query-string trick (?t=...) works in Node; Bun may need the file:// URL
@@ -256,6 +277,7 @@ export async function reloadExternalAdapter(
  * Build all external adapter modules from the plugin store.
  */
 export async function buildExternalAdapters(): Promise<ServerAdapterModule[]> {
+  if (isCloudManagedInstance()) return [];
   const results: ServerAdapterModule[] = [];
 
   const storeRecords = listAdapterPlugins();

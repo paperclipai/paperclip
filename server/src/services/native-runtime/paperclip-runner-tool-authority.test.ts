@@ -1,0 +1,2009 @@
+import * as connectorRuntime from "../connector-runtime.js";
+import * as cloudIdentity from "../cloud-runtime-identity.js";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { randomUUID } from "node:crypto";
+import { createServer } from "node:http";
+import { createPaperclipHttpServer } from "../../http/server.js";
+import { LOW_TRUST_REVIEW_PRESET, upsertIssueDocumentSchema } from "@paperclipai/shared";
+import { and, eq, inArray } from "drizzle-orm";
+import {
+  activityLog,
+  agents,
+  authUsers,
+  approvals,
+  companies,
+  companyMemberships,
+  createDb,
+  documents,
+  heartbeatRuns,
+  issueApprovals,
+  issueComments,
+  issueThreadInteractions,
+  issueWatchdogs,
+  issues,
+  projectWorkspaces,
+  projects,
+} from "@paperclipai/db";
+import { createFullDatabaseResponseCapture, installDatabaseResponseCapture } from "../../__tests__/helpers/full-database-response-capture.js";
+import { startRecoveryPostgres } from "../../__tests__/helpers/recovery-postgres.js";
+import { initializeRunIdentity, reserveSteeredIdentity, reconcileSteeredIdentity } from "../run-identity.js";
+import { documentService } from "../documents.js";
+import { issueService } from "../issues.js";
+import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
+import { PaperclipRunnerSemanticAuthority } from "./runner-semantic-authority.js";
+import { createAssignedMcpTools } from "./assigned-mcp-tools.js";
+import type { ToolGatewayService } from "../tool-gateway.js";
+import { CURRENT_WAKE_COMMENTS_BINDING_SCHEMA, READ_CURRENT_WAKE_COMMENTS_TOOL_NAME } from "./current-wake-comments.js";
+import { NativeChatAttachmentReadScope, READ_CHAT_ATTACHMENT_TOOL_NAME } from "./chat-attachment-read.js";
+import { buildLowTrustSourceTrust, buildPromotedSourceTrust, LOW_TRUST_QUARANTINED_BODY } from "../source-trust.js";
+import { CAPABILITY_SEMANTIC_TOOL_CATALOG, runnerCodexDynamicToolsFit } from "../../vendor/paperclip-runner/index.js";
+import { resolveLocalRuntimeApiUrl } from "../../runtime-api.js";
+
+describe("PaperclipRunnerToolAuthority", () => {
+  const credentialDocumentBody = "Use a secret manager for credential handling.\nAuthorization: Bearer intentional-document-credential";
+  let temporary: Awaited<
+    ReturnType<typeof startRecoveryPostgres>
+  > | null = null;
+  let db: ReturnType<typeof createDb>;
+  const companyId = "00000000-0000-4000-8000-000000000101";
+  const agentId = "00000000-0000-4000-8000-000000000102";
+  const issueId = "00000000-0000-4000-8000-000000000103";
+  const runId = "00000000-0000-4000-8000-000000000104";
+
+  beforeEach(() => {
+    vi.stubEnv("PAPERCLIP_RUNNER_API_TOOLS_ENABLED", undefined);
+    vi.stubEnv("PAPERCLIP_RUNNER_API_TOOLS_COMPANY_IDS", undefined);
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
+  beforeAll(async () => {
+    temporary = await startRecoveryPostgres(
+      "paperclip-runner-tools-",
+    );
+    db = createDb(temporary.connectionString);
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Runner tools",
+      issuePrefix: "RNT",
+      issueCounter: 1,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Runner agent",
+      adapterType: "paperclip_runner",
+      adapterConfig: { provider: "codex", apiKey: "must-not-leak" },
+      runtimeConfig: { token: "must-not-leak" },
+      status: "active",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      issueNumber: 1,
+      identifier: "RNT-1",
+      title: "Exercise real runner tools",
+      status: "in_progress",
+      workMode: "standard",
+      assigneeAgentId: agentId,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      runtimeMode: "native",
+      nativeIssueId: issueId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      contextSnapshot: { issueId },
+    });
+    await db
+      .update(issues)
+      .set({ executionRunId: runId })
+      .where(eq(issues.id, issueId));
+  });
+
+  afterAll(async () => {
+    await temporary?.cleanup();
+  });
+
+  it("routes call_api through the private controller instead of the public callback origin", async () => {
+    const privateRequests: Array<{ path: string | undefined; authenticated: boolean }> = [];
+    const callbackRequests: string[] = [];
+    const controller = createPaperclipHttpServer((request, response) => {
+      privateRequests.push({ path: request.url, authenticated: /^Bearer /.test(request.headers.authorization ?? "") });
+      response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ workProducts: [] }));
+    }, { apiUrl: "https://advertised.example.test" });
+    const callback = createServer((request, response) => {
+      callbackRequests.push(request.url ?? "");
+      response.writeHead(404).end();
+    });
+    await Promise.all([controller, callback].map(server => new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve))));
+    try {
+      const controllerAddress = controller.address();
+      const callbackAddress = callback.address();
+      if (!controllerAddress || typeof controllerAddress === "string" || !callbackAddress || typeof callbackAddress === "string") throw new Error("Expected owned TCP listeners");
+      vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", "private-controller-test-secret");
+      vi.stubEnv("PAPERCLIP_RUNNER_API_TOOLS_ENABLED", "true");
+      vi.stubEnv("PAPERCLIP_API_URL", `http://127.0.0.1:${callbackAddress.port}`);
+      vi.stubEnv("PAPERCLIP_AUTH_PUBLIC_BASE_URL", "https://callback-only.example.test");
+      vi.stubEnv("PAPERCLIP_LISTEN_HOST", "127.0.0.1");
+      vi.stubEnv("PAPERCLIP_LISTEN_PORT", String(controllerAddress.port));
+      vi.stubEnv("PORT", "3100");
+      const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId,
+        apiUrl: resolveLocalRuntimeApiUrl() });
+      const result = await authority.execute({ tool: "call_api", callId: "private-controller-read", arguments: {
+        operationId: "GET /api/issues/{id}/work-products", pathParams: { id: issueId },
+      } });
+      expect(result).toMatchObject({ ok: true, status: 200 });
+      expect(privateRequests).toEqual([{ path: `/api/issues/${issueId}/work-products`, authenticated: true }]);
+      expect(callbackRequests).toEqual([]);
+      expect(process.env.PAPERCLIP_API_URL).toBe(`http://127.0.0.1:${callbackAddress.port}`);
+    } finally {
+      await Promise.all([controller, callback].map(server => new Promise<void>((resolve, reject) => {
+        server.closeAllConnections();
+        server.close(error => error ? reject(error) : resolve());
+      })));
+    }
+  });
+
+  it("registers pinned connector definitions without discovery and rejects revoked assignments at use", async () => {
+    const connectorAssignments = connectorRuntime.connectorToolDefinitionsForSkills(new Set([
+      "paperclipai/paperclip/slack", "paperclipai/paperclip/browser-use-cloud", "custom/agentmail",
+    ]));
+    expect(connectorAssignments).toHaveLength(1);
+    const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId, connectorAssignments });
+    expect(authority.definitions().some(tool => tool.name === "slack_history")).toBe(true);
+    expect(authority.definitions().some(tool => String(tool.name).startsWith("agentmail_"))).toBe(false);
+    await expect(authority.execute({ tool: "slack_history", callId: randomUUID(), arguments: { channel: "CEXAMPLE" } }))
+      .rejects.toThrow("This connector is no longer assigned or authorized");
+  });
+
+  it("names a missing agent id and its closest real agent instead of a bare code (restart chaos t06)", async () => {
+    const claudeId = "0cb62ac2-742d-442c-abb4-edfcc60defe4";
+    await db.insert(agents).values({ id: claudeId, companyId, name: "Chaos claude", adapterType: "paperclip_runner",
+      adapterConfig: { provider: "claude" }, runtimeConfig: {}, status: "active" });
+    const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
+    const spliced = "0cb62ac2-742d-442c-acc9-d21dd936e716";
+    for (const call of [
+      { tool: "create_task", callId: "t06-spliced-assignee", arguments: { idempotencyKey: "t06-spliced", title: "Part 2", assigneeActorId: spliced } },
+      { tool: "get_agent", callId: "t06-spliced-read", arguments: { actorId: spliced } },
+    ]) {
+      const error = await authority.execute(call).then(() => null, (failure: Error) => failure);
+      expect(error?.message).toMatch(/^paperclip_runner_agent_not_found: /);
+      expect(error?.message).toContain(spliced);
+      expect(error?.message).toContain(`Chaos claude (${claudeId})`);
+      expect(error?.message).toContain("list_agents");
+    }
+    const recovered = await authority.recover({ tool: "get_agent", callId: "t06-spliced-recovered", arguments: { actorId: spliced } });
+    expect(recovered).toMatchObject({ isError: true });
+    const text = JSON.stringify(recovered);
+    expect(text).toContain("paperclip_runner_agent_not_found: ");
+    expect(text).toContain(`Chaos claude (${claudeId})`);
+    expect(text).toContain("list_agents");
+    const created = await db.select({ id: issues.id }).from(issues).where(eq(issues.originId,
+      `paperclip-runner:create-task:${issueId}:t06-spliced`));
+    expect(created).toEqual([]);
+    await db.delete(agents).where(eq(agents.id, claudeId));
+  });
+
+  it("advertises only real bindings and reads the bound task", async () => {
+    const authority = new PaperclipRunnerToolAuthority(db, {
+      companyId,
+      agentId,
+      issueId,
+      runId,
+    });
+    expect(authority.definitions()).toHaveLength(54);
+    expect(authority.definitions().map(tool => tool.name)).toEqual(expect.arrayContaining([
+      "get_workspace", "list_workspaces", "select_workspace", "prepare_repository",
+      "search_skills", "load_skill",
+    ]));
+    // The read-only response export is its own tool, so call_api offers no save flag on writes.
+    const save = authority.definitions().find(tool => tool.name === "save_api_response")!;
+    expect(Object.keys((save.inputSchema as { properties: object }).properties).sort()).toEqual(["operationId", "pathParams", "query"]);
+    const callApi = authority.definitions().find(tool => tool.name === "call_api")!;
+    expect((callApi.inputSchema as { properties: object }).properties).not.toHaveProperty("saveResponse");
+    const questions = authority.definitions().find(tool => tool.name === "request_human_input")!;
+    expect(questions.description).toContain("ask only the next unanswered question");
+    expect(questions.description).toContain("Never fabricate answers");
+    expect(questions.description).toContain("resolve-from-comment");
+    expect(questions.description).toContain("Existing resolver permissions still apply");
+    expect(questions.description).toContain("Do not fabricate answer links");
+    expect(JSON.stringify(questions.inputSchema)).toContain("at least two meaningful options");
+    expect(questions.inputSchema).toMatchObject({ properties: { payload: { properties: { questionSet: {
+      properties: { questions: { items: { properties: { answerMode: { enum: ["single_select", "multi_select", "text"] } } } } },
+    } } } } });
+
+    expect(authority.definitions().map((tool) => tool.name)).toEqual(
+      expect.arrayContaining([
+        "connections_search",
+        "connection_request", "create_project", "list_project_repositories", "list_projects",
+        "search_api", "call_api", "hire_agent",
+        "get_task_context",
+        "get_task_history",
+        "search_tasks",
+        "report_progress",
+        "submit_complaint",
+        "submit_suggestion",
+        "request_human_input",
+        "create_task",
+        "set_dependencies",
+        "set_task_monitor",
+        "list_documents",
+        "read_document",
+        "list_document_revisions",
+        "write_document",
+        "create_skill",
+        "update_skill",
+        "list_agents",
+        "get_agent",
+        "list_approvals",
+        "get_approval",
+        "get_approval_context",
+        "list_chat_attachments",
+        "reuse_chat_attachment",
+      ]),
+    );
+    const context = await authority.execute({
+      tool: "get_task_context",
+      callId: "context",
+      arguments: {},
+    });
+    expect(context).toMatchObject({
+      activeTask: { id: issueId, identifier: "RNT-1" },
+      actor: { id: agentId },
+    });
+    expect(JSON.stringify(context)).not.toContain("must-not-leak");
+    await expect(
+      authority.execute({
+        tool: "finish_task",
+        callId: "hidden",
+        arguments: {},
+      }),
+    ).rejects.toThrow("paperclip_runner_tool_not_advertised");
+    await expect(
+      authority.execute({
+        tool: "list_chat_attachments",
+        callId: "historical-list-without-chat-binding",
+        arguments: {},
+      }),
+    ).rejects.toThrow("paperclip_runner_chat_attachment_binding_denied");
+    await expect(
+      authority.execute({
+        tool: READ_CURRENT_WAKE_COMMENTS_TOOL_NAME,
+        callId: "reader-without-bound-wake",
+        arguments: {},
+      }),
+    ).rejects.toThrow("paperclip_runner_tool_not_advertised");
+    await expect(
+      authority.execute({
+        tool: READ_CHAT_ATTACHMENT_TOOL_NAME,
+        callId: "attachment-read-without-run-scope",
+        arguments: { sourceCommentId: randomUUID(), attachmentId: randomUUID() },
+      }),
+    ).rejects.toThrow("paperclip_runner_chat_attachment_read_scope_unavailable");
+  });
+
+  it("keeps run-scoped reader declarations stable for resumed provider threads", () => {
+    // Codex thread/resume has no dynamicTools parameter: a resumed thread keeps
+    // the catalog from its original thread/start. A truncated chat wake that
+    // resumes a thread opened on an ordinary turn still needs both readers.
+    const ordinary = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
+    const chatBinding = { companyId, agentId, issueId, runId };
+    const truncatedChat = new PaperclipRunnerToolAuthority(db, {
+      ...chatBinding,
+      currentWakeComments: {
+        schema: CURRENT_WAKE_COMMENTS_BINDING_SCHEMA,
+        ...chatBinding,
+        provider: "github",
+        commentIds: [randomUUID()],
+        attachmentOmissions: [],
+        bindingDigest: "binding-digest",
+      },
+      chatAttachmentReadScope: new NativeChatAttachmentReadScope({
+        db, binding: chatBinding, workspaceRoot: "/workspace", executionTargetKind: "local",
+      }),
+    });
+    expect(ordinary.definitions().map(tool => tool.name)).toEqual(expect.arrayContaining([
+      READ_CURRENT_WAKE_COMMENTS_TOOL_NAME, READ_CHAT_ATTACHMENT_TOOL_NAME,
+    ]));
+    expect(ordinary.definitions()).toEqual(truncatedChat.definitions());
+  });
+
+  it("reads current tool authority without transferring saved profiles or output", async () => {
+    const binding = { companyId, agentId, issueId, runId };
+    const authority = new PaperclipRunnerToolAuthority(db, binding);
+    const contextCall = { tool: "get_task_context", callId: "context-read-width", arguments: {} };
+    const apiCall = { tool: "search_api", callId: "api-read-width", arguments: { query: "read task" } };
+    const expectedContext = await authority.execute(contextCall);
+    const expectedApi = await authority.execute(apiCall);
+    const [original] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    const [actor] = await db.select({ status: agents.status }).from(agents).where(eq(agents.id, agentId));
+    const payload = "saved-profile-and-output🙂".repeat(32_768);
+    await db.update(heartbeatRuns).set({
+      runnerProfileJson: { ...original.runnerProfileJson, retainedPayload: payload },
+      stdoutExcerpt: payload,
+      stderrExcerpt: payload,
+    }).where(eq(heartbeatRuns.id, runId));
+    const [expanded] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    const observed = createDb(temporary!.connectionString), events: Array<Record<string, unknown>> = [], now = Date.now();
+    const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    installDatabaseResponseCapture(observed, { heartbeatRuns, issues, agents, companies }, capture);
+    try {
+      const reader = new PaperclipRunnerToolAuthority(observed, binding);
+      const context = await reader.execute(contextCall), api = await reader.execute(apiCall);
+      expect(context).toEqual(expectedContext);
+      expect(api).toEqual(expectedApi);
+      expect(JSON.stringify([context, api])).not.toContain("saved-profile-and-output");
+      capture.flush();
+      const reads = events.filter(event => event.table === "heartbeat_runs" && event.operation === "select");
+      expect(reads.length).toBeGreaterThan(0);
+      expect(reads.reduce((bytes, event) => bytes + Number(event.responseValueBytes), 0)).toBeLessThan(16 * 1024);
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0]).toEqual(expanded);
+      await db.update(agents).set({ status: "paused" }).where(eq(agents.id, agentId));
+      await expect(reader.execute(contextCall)).rejects.toThrow("paperclip_runner_tool_binding_not_authorized");
+      await expect(reader.execute(apiCall)).rejects.toThrow("paperclip_runner_tool_binding_not_authorized");
+    } finally {
+      capture.flush();
+      await observed.$client.end();
+      await db.update(agents).set({ status: actor.status }).where(eq(agents.id, agentId));
+      await db.update(heartbeatRuns).set({
+        runnerProfileJson: original.runnerProfileJson,
+        stdoutExcerpt: original.stdoutExcerpt,
+        stderrExcerpt: original.stderrExcerpt,
+      }).where(eq(heartbeatRuns.id, runId));
+    }
+  });
+
+  it("reads tool authority without transferring unused launch renderings or wake payloads", async () => {
+    const binding = { companyId, agentId, issueId, runId };
+    const authority = new PaperclipRunnerToolAuthority(db, binding);
+    const contextCall = { tool: "get_task_context", callId: "launch-context-read", arguments: {} };
+    const apiCall = { tool: "search_api", callId: "launch-api-read", arguments: { query: "read task" } };
+    const expectedContext = await authority.execute(contextCall), expectedApi = await authority.execute(apiCall);
+    const [original] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    const payload = "retained-launch-rendering🙂".repeat(8192);
+    const context = { ...original.contextSnapshot, executionContinuation: { savedInput: payload }, paperclipTaskMarkdown: payload,
+      paperclipTaskMarkdownCompact: payload, paperclipTaskMarkdownAssignment: payload, paperclipTaskMarkdownAssignmentCompact: payload,
+      paperclipWorkspace: { savedInput: payload }, paperclipEnvironment: { savedInput: payload },
+      paperclipContinuationSummary: payload, paperclipWakeComment: payload, paperclipWake: { retainedPayload: payload } };
+    await db.update(heartbeatRuns).set({ contextSnapshot: context }).where(eq(heartbeatRuns.id, runId));
+    const [expanded] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    const observed = createDb(temporary!.connectionString), events: Array<Record<string, unknown>> = [], now = Date.now();
+    const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    installDatabaseResponseCapture(observed, { heartbeatRuns, issues, agents, companies }, capture);
+    try {
+      const reader = new PaperclipRunnerToolAuthority(observed, binding);
+      const actualContext = await reader.execute(contextCall), actualApi = await reader.execute(apiCall);
+      capture.flush();
+      const reads = events.filter(event => event.table === "heartbeat_runs" && event.operation === "select");
+      expect(reads.length).toBeGreaterThan(0);
+      expect(reads.reduce((bytes, event) => bytes + Number(event.responseValueBytes), 0)).toBeLessThan(16 * 1024);
+      expect(actualContext).toEqual(expectedContext);
+      expect(actualApi).toEqual(expectedApi);
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0]).toEqual(expanded);
+      await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, runId));
+      await expect(reader.execute(contextCall)).rejects.toThrow("paperclip_runner_tool_binding_not_authorized");
+      await expect(reader.execute(apiCall)).rejects.toThrow("paperclip_runner_tool_binding_not_authorized");
+    } finally {
+      capture.flush(); await observed.$client.end();
+      await db.update(heartbeatRuns).set({ contextSnapshot: original.contextSnapshot, status: original.status }).where(eq(heartbeatRuns.id, runId));
+    }
+  });
+
+  it("checks the current full wake before mail actions while ordinary tools omit its payload", async () => {
+    const connectorAssignments = connectorRuntime.connectorToolDefinitionsForSkills(new Set(["paperclipai/paperclip/agentmail"]));
+    const name = connectorAssignments.flatMap(assignment => assignment.tools).find(tool => tool.name.startsWith("agentmail_"))!.name;
+    const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId, connectorAssignments });
+    const [original] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    const dispatch = vi.spyOn(connectorRuntime, "executeConnectorTool").mockResolvedValue({ outcome: "mail-dispatched" });
+    const wake = {
+      reason: "External chat message received", externalChatProvider: "github", checkedOutByHarness: true,
+      issue: { id: issueId, identifier: "RNT-1", title: "Conversation", description: "Task", descriptionTruncated: false,
+        status: "in_progress", workMode: "standard" },
+      commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 }, commentIds: ["wake-comment"],
+      latestCommentId: "wake-comment", comments: [{ id: "wake-comment", issueId, body: "Reply here", bodyTruncated: false, authorType: "user" }],
+      fallbackFetchNeeded: false,
+    };
+    const call = { tool: name, callId: "current-mail-wake", arguments: {} };
+    try {
+      await db.update(heartbeatRuns).set({ contextSnapshot: { issueId, paperclipWake: wake } }).where(eq(heartbeatRuns.id, runId));
+      await expect(authority.execute(call)).rejects.toThrow("Restricted chat runs cannot use email actions");
+      expect(dispatch).not.toHaveBeenCalled();
+      await expect(authority.execute({ tool: "get_task_context", callId: "chat-task-context", arguments: {} }))
+        .resolves.toMatchObject({ activeTask: { id: issueId } });
+      await db.update(heartbeatRuns).set({ contextSnapshot: { issueId } }).where(eq(heartbeatRuns.id, runId));
+      await expect(authority.execute(call)).resolves.toEqual({ outcome: "mail-dispatched" });
+      expect(dispatch).toHaveBeenCalledTimes(1);
+      await db.update(heartbeatRuns).set({ contextSnapshot: { issueId, paperclipWake: { ...wake, checkedOutByHarness: false,
+        externalChatExecutionBound: true, issue: { ...wake.issue, status: "in_review" } } } }).where(eq(heartbeatRuns.id, runId));
+      await expect(authority.execute(call)).rejects.toThrow("Restricted chat runs cannot use email actions");
+      expect(dispatch).toHaveBeenCalledTimes(1);
+      for (const context of [{ issueId, source: "chat:github" }, { issueId, paperclipExternalChatQuestionResponse: true }]) {
+        await db.update(heartbeatRuns).set({ contextSnapshot: context }).where(eq(heartbeatRuns.id, runId));
+        await expect(authority.execute(call)).rejects.toThrow("Restricted chat runs cannot use email actions");
+        expect(dispatch).toHaveBeenCalledTimes(1);
+      }
+    } finally {
+      dispatch.mockRestore();
+      await db.update(heartbeatRuns).set({ contextSnapshot: original.contextSnapshot }).where(eq(heartbeatRuns.id, runId));
+    }
+  });
+
+  it("preserves platform receipt provenance in both mixed task history readers", async () => {
+    const at = new Date("2026-10-10T12:00:00Z");
+    const commentIds = Array.from({ length: 4 }, () => randomUUID());
+    const requestId = randomUUID();
+    await db.insert(issueComments).values([
+      { id: commentIds[0], companyId, issueId, authorUserId: "board-user", authorType: "user",
+        body: "Check the configuration.", createdAt: at },
+      { id: commentIds[1], companyId, issueId, authorAgentId: agentId, authorType: "agent",
+        origin: "fast_response", fastResponseRequestId: requestId, body: "I will check the configuration.",
+        createdAt: new Date(at.getTime() + 1000) },
+      { id: commentIds[2], companyId, issueId, authorAgentId: agentId, authorType: "agent",
+        body: "Verified the configuration: two settings need updates.", createdAt: new Date(at.getTime() + 2000) },
+      { id: commentIds[3], companyId, issueId, authorAgentId: agentId, authorType: "agent",
+        origin: "fast_response", body: "Deleted acknowledgement", createdAt: new Date(at.getTime() + 3000),
+        deletedAt: new Date(at.getTime() + 4000) },
+    ]);
+    try {
+      const tool = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
+      const semantic = new PaperclipRunnerSemanticAuthority(db, { companyId, agentId, issueId, runId });
+      const histories = [
+        async (limit: number) => tool.execute({ tool: "get_task_history", callId: `mixed-tool-history-${limit}`, arguments: { limit } }),
+        async (limit: number) => {
+          const result = await semantic.dispatch({ callId: `mixed-semantic-history-${limit}`, operationId: "get_task_history", input: { limit },
+            correlation: { runId, normalizedSessionId: randomUUID(), turnId: "history", itemId: "history" } });
+          expect(result).toMatchObject({ ok: true });
+          return result.ok ? result.value : null;
+        },
+      ];
+      const expected = [
+        { id: commentIds[0], authorAgentId: null, authorUserId: "board-user", origin: "comment", body: "Check the configuration." },
+        { id: commentIds[1], authorAgentId: agentId, authorUserId: null, origin: "fast_response",
+          body: "[Paperclip acknowledgement; not agent work] I will check the configuration." },
+        { id: commentIds[2], authorAgentId: agentId, authorUserId: null, origin: "comment",
+          body: "Verified the configuration: two settings need updates." },
+      ];
+      for (const history of histories) {
+        expect(await history(3)).toMatchObject({ comments: expected });
+        expect(await history(2)).toMatchObject({ comments: expected.slice(1) });
+      }
+      expect((await db.select().from(issueComments).where(eq(issueComments.id, commentIds[1])))[0])
+        .toMatchObject({ id: commentIds[1], origin: "fast_response", fastResponseRequestId: requestId,
+          authorAgentId: agentId, body: "I will check the configuration." });
+    } finally {
+      await db.delete(issueComments).where(inArray(issueComments.id, commentIds));
+    }
+  });
+
+  it.each([false, true])("legacy history preserves source trust for a current reader run (low trust: %s)", async (lowTrustReader) => {
+    const commentIds = Array.from({ length: 4 }, () => randomUUID());
+    const [originalRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    const [originalIssue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    const quarantine = buildLowTrustSourceTrust({ issueId, runId, agentId });
+    const promotion = buildPromotedSourceTrust({
+      sourceIssueId: issueId, sourceArtifactKind: "comment", sourceArtifactId: commentIds[2],
+      promotedByActorType: "user", promotedByActorId: "board-user",
+    });
+    const at = new Date("2026-10-13T12:00:00Z");
+    await db.insert(issueComments).values([
+      { id: commentIds[0], companyId, issueId, authorAgentId: agentId, authorType: "agent",
+        body: "QUARANTINED legacy history canary", sourceTrust: quarantine, createdAt: at },
+      { id: commentIds[1], companyId, issueId, authorAgentId: agentId, authorType: "agent",
+        origin: "fast_response", body: "QUARANTINED acknowledgement canary", sourceTrust: quarantine,
+        createdAt: new Date(at.getTime() + 1000) },
+      { id: commentIds[2], companyId, issueId, authorAgentId: agentId, authorType: "agent",
+        body: "Reviewed and promoted summary", sourceTrust: promotion, createdAt: new Date(at.getTime() + 2000) },
+      { id: commentIds[3], companyId, issueId, authorUserId: "board-user", authorType: "user",
+        body: "Trusted coordination message", createdAt: new Date(at.getTime() + 3000) },
+    ]);
+    try {
+      if (lowTrustReader) {
+        const executionPolicy = { authorizationPolicy: { trustBoundary: {
+          mode: LOW_TRUST_REVIEW_PRESET, companyId, rootIssueId: issueId,
+        } } };
+        await db.update(issues).set({ executionPolicy }).where(eq(issues.id, issueId));
+        await db.update(heartbeatRuns).set({ contextSnapshot: { issueId, executionPolicy } }).where(eq(heartbeatRuns.id, runId));
+        // Relaxing the live task must not relabel the already-admitted reader run.
+        await db.update(issues).set({ executionPolicy: null }).where(eq(issues.id, issueId));
+      }
+      const semantic = new PaperclipRunnerSemanticAuthority(db, { companyId, agentId, issueId, runId });
+      const result = await semantic.dispatch({
+        callId: `legacy-trust-history-${lowTrustReader}`, operationId: "get_task_history", input: { limit: 4 },
+        correlation: { runId, normalizedSessionId: randomUUID(), turnId: "history", itemId: "history" },
+      });
+      expect(result).toMatchObject({ ok: true });
+      expect(result.ok ? result.value : null).toMatchObject({ comments: [
+        { id: commentIds[0], sourceTrust: quarantine,
+          body: lowTrustReader ? "QUARANTINED legacy history canary" : LOW_TRUST_QUARANTINED_BODY },
+        { id: commentIds[1], origin: "fast_response", sourceTrust: quarantine,
+          body: `[Paperclip acknowledgement; not agent work] ${lowTrustReader ? "QUARANTINED acknowledgement canary" : LOW_TRUST_QUARANTINED_BODY}` },
+        { id: commentIds[2], sourceTrust: promotion, body: "Reviewed and promoted summary" },
+        { id: commentIds[3], sourceTrust: null, body: "Trusted coordination message" },
+      ] });
+      if (!lowTrustReader) expect(JSON.stringify(result)).not.toContain("QUARANTINED legacy history canary");
+      if (!lowTrustReader) expect(JSON.stringify(result)).not.toContain("QUARANTINED acknowledgement canary");
+      expect((await db.select().from(issueComments).where(eq(issueComments.id, commentIds[0])))[0])
+        .toMatchObject({ body: "QUARANTINED legacy history canary", sourceTrust: quarantine });
+    } finally {
+      await db.update(heartbeatRuns).set({ contextSnapshot: originalRun!.contextSnapshot }).where(eq(heartbeatRuns.id, runId));
+      await db.update(issues).set({ executionPolicy: originalIssue!.executionPolicy }).where(eq(issues.id, issueId));
+      await db.delete(issueComments).where(inArray(issueComments.id, commentIds));
+    }
+  });
+
+  it("paginates complete native task inventories beyond one hundred results", async () => {
+    const ids = Array.from({ length: 205 }, () => randomUUID()).sort();
+    const foreignCompanyId = randomUUID();
+    const foreignId = randomUUID();
+    await db.insert(companies).values({ id: foreignCompanyId, name: "Foreign inventory", issuePrefix: "FINV" });
+    await db.insert(issues).values({ id: foreignId, companyId: foreignCompanyId, title: "synthetic-inventory-key foreign canary", status: "done" });
+    await db.insert(issues).values(ids.map((id, index) => ({
+      id, companyId, title: `Inventory pagination ${index}`,
+      description: "synthetic-inventory-key", status: index < 200 ? "done" : "blocked",
+    })));
+    const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
+    const search = (arguments_: Record<string, unknown>) => authority.execute({
+      tool: "search_tasks", callId: randomUUID(), arguments: { query: "synthetic-inventory-key", ...arguments_ },
+    }) as Promise<{ tasks: Array<{ id: string }>; limit: number; returnedCount: number; hasMore: boolean; nextCursor: string | null }>;
+    try {
+      const first = await search({ limit: 200 });
+      expect(first.tasks).toHaveLength(200);
+      expect(JSON.stringify(first)).not.toContain(foreignId);
+      expect(first).toMatchObject({ limit: 200, returnedCount: 200, hasMore: true, nextCursor: ids[199] });
+      expect(first.tasks.map(task => task.id)).toEqual(ids.slice(0, 200));
+      const last = await search({ limit: 200, cursor: first.nextCursor });
+      expect(last.tasks.map(task => task.id)).toEqual(ids.slice(200));
+      expect(last).toMatchObject({ limit: 200, returnedCount: 5, hasMore: false, nextCursor: null });
+      expect(new Set([...first.tasks, ...last.tasks].map(task => task.id)).size).toBe(205);
+      expect(await search({ cursor: ids[204] })).toMatchObject({ tasks: [], limit: 50, returnedCount: 0, hasMore: false, nextCursor: null });
+      expect(await search({ statuses: ["blocked"], limit: 200 })).toMatchObject({ tasks: ids.slice(200).map(id => ({ id })), returnedCount: 5, hasMore: false });
+      expect(await search({})).toMatchObject({ limit: 50, returnedCount: 50, hasMore: true });
+      expect((await search({ limit: 200, cursor: ids[199]!.toUpperCase() })).tasks.map(task => task.id)).toEqual(ids.slice(200));
+      await expect(search({ cursor: "invalid" })).rejects.toThrow("paperclip_runner_tool_input_invalid");
+    } finally {
+      await db.delete(issues).where(inArray(issues.id, [...ids, foreignId]));
+      await db.delete(companies).where(eq(companies.id, foreignCompanyId));
+    }
+  });
+
+  it("returns public task URLs from the current claimed origin in context and search results", async () => {
+    const origin = vi.spyOn(cloudIdentity, "runtimeCanonicalOrigin").mockReturnValue("https://board.example");
+    const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
+    try {
+      expect(await authority.execute({ tool: "get_task_context", callId: "public-task-url", arguments: {} }))
+        .toMatchObject({ activeTask: { id: issueId, url: `https://board.example/issues/${issueId}` } });
+      expect(await authority.execute({ tool: "search_tasks", callId: "search-public-task-url", arguments: { query: "Exercise real runner tools" } }))
+        .toMatchObject({ tasks: expect.arrayContaining([expect.objectContaining({ id: issueId, url: `https://board.example/issues/${issueId}` })]) });
+      origin.mockReturnValue("https://renamed.example");
+      expect(await authority.execute({ tool: "get_task_context", callId: "renamed-task-url", arguments: {} }))
+        .toMatchObject({ activeTask: { url: `https://renamed.example/issues/${issueId}` } });
+      origin.mockReturnValue("https://localhost");
+      expect(await authority.execute({ tool: "get_task_context", callId: "unsafe-task-url", arguments: {} }))
+        .toMatchObject({ activeTask: { url: null } });
+    } finally {
+      origin.mockRestore();
+    }
+  });
+
+  it("exposes existing child tasks on continuation without crossing company boundaries", async () => {
+    const completedChildId = randomUUID();
+    const activeChildId = randomUUID();
+    const unrelatedId = randomUUID();
+    const otherCompanyId = randomUUID();
+    const foreignChildId = randomUUID();
+    const hiddenChildIds = Array.from({ length: 101 }, () => randomUUID());
+    await db.insert(companies).values({ id: otherCompanyId, name: "Other company", issuePrefix: "OTHER" });
+    await db.insert(issues).values([
+      { id: completedChildId, companyId, parentId: issueId, title: "Existing completed draft", status: "done", assigneeAgentId: agentId },
+      { id: activeChildId, companyId, parentId: issueId, title: "Existing active review", status: "in_progress", assigneeAgentId: agentId },
+      { id: unrelatedId, companyId, title: "Unrelated task", status: "todo" },
+      // Even inconsistent imported data cannot expose another company's task.
+      { id: foreignChildId, companyId: otherCompanyId, parentId: issueId, title: "Foreign child", status: "todo" },
+      // Hidden rows must neither enter context nor consume the visible child limit.
+      ...hiddenChildIds.map((id) => ({ id, companyId, parentId: issueId, title: "Hidden child",
+        hiddenAt: new Date(), createdAt: new Date(Date.now() + 1000) })),
+    ]);
+    try {
+      const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
+      const context = await authority.execute({ tool: "get_task_context", callId: "context-existing-children", arguments: {} });
+      expect(context).toMatchObject({
+        childTasks: expect.arrayContaining([
+          expect.objectContaining({ id: completedChildId, status: "done", parentId: issueId }),
+          expect.objectContaining({ id: activeChildId, status: "in_progress", assigneeAgentId: agentId }),
+        ]),
+        childTasksTruncated: false,
+        delegationGuidance: expect.stringContaining("Reuse existing child tasks"),
+      });
+      expect(JSON.stringify(context)).not.toContain(foreignChildId);
+      expect(JSON.stringify(context)).not.toContain(unrelatedId);
+      for (const id of hiddenChildIds) expect(JSON.stringify(context)).not.toContain(id);
+    } finally {
+      await db.delete(issues).where(inArray(issues.id, [completedChildId, activeChildId, unrelatedId, foreignChildId, ...hiddenChildIds]));
+      await db.delete(companies).where(eq(companies.id, otherCompanyId));
+    }
+  });
+
+  it("advertises API tools by default and preserves direct-chat file tools when disabled", () => {
+    const previousEnabled = process.env.PAPERCLIP_RUNNER_API_TOOLS_ENABLED;
+    const previousCompanies =
+      process.env.PAPERCLIP_RUNNER_API_TOOLS_COMPANY_IDS;
+    const createAuthority = () =>
+      new PaperclipRunnerToolAuthority(db, {
+        companyId,
+        agentId,
+        issueId,
+        runId,
+        workspaceRoot: "/tmp/paperclip-runner-tools",
+        executionTargetKind: "local",
+      });
+    const requiredChatFileTools = [
+      "list_chat_attachments",
+      "reuse_chat_attachment",
+      "register_deliverable",
+    ];
+
+    try {
+      delete process.env.PAPERCLIP_RUNNER_API_TOOLS_ENABLED;
+      delete process.env.PAPERCLIP_RUNNER_API_TOOLS_COMPANY_IDS;
+      const defaultNames = createAuthority()
+        .definitions()
+        .map((tool) => tool.name);
+      expect(defaultNames).toEqual(
+        expect.arrayContaining(requiredChatFileTools),
+      );
+      expect(defaultNames).toContain("search_api");
+      expect(defaultNames).toContain("call_api");
+      expect(defaultNames).toContain("hire_agent");
+
+      process.env.PAPERCLIP_RUNNER_API_TOOLS_ENABLED = "true";
+      process.env.PAPERCLIP_RUNNER_API_TOOLS_COMPANY_IDS = companyId;
+      const enabledNames = createAuthority()
+        .definitions()
+        .map((tool) => tool.name);
+      expect(enabledNames).toEqual(
+        expect.arrayContaining([
+          ...requiredChatFileTools,
+          "search_api",
+          "call_api",
+          "hire_agent",
+        ]),
+      );
+      const hire = createAuthority().definitions().find((tool) => tool.name === "hire_agent")!;
+      const hireSchema = hire.inputSchema as { properties: Record<string, unknown> };
+      expect(hireSchema.properties).toEqual(expect.objectContaining({ name: expect.any(Object), role: expect.any(Object) }));
+      expect(hireSchema.properties).not.toHaveProperty("adapterConfig");
+      expect(hireSchema.properties).not.toHaveProperty("env");
+
+      process.env.PAPERCLIP_RUNNER_API_TOOLS_ENABLED = "false";
+      const disabledNames = createAuthority().definitions().map((tool) => tool.name);
+      expect(disabledNames).toEqual(expect.arrayContaining(requiredChatFileTools));
+      for (const name of ["search_api", "call_api", "hire_agent"]) {
+        expect(disabledNames).not.toContain(name);
+      }
+    } finally {
+      if (previousEnabled === undefined) {
+        delete process.env.PAPERCLIP_RUNNER_API_TOOLS_ENABLED;
+      } else {
+        process.env.PAPERCLIP_RUNNER_API_TOOLS_ENABLED = previousEnabled;
+      }
+      if (previousCompanies === undefined) {
+        delete process.env.PAPERCLIP_RUNNER_API_TOOLS_COMPANY_IDS;
+      } else {
+        process.env.PAPERCLIP_RUNNER_API_TOOLS_COMPANY_IDS = previousCompanies;
+      }
+    }
+  });
+
+  it("dispatches hire_agent with fixed caller context and replays its API receipt", async () => {
+    const previousEnabled = process.env.PAPERCLIP_RUNNER_API_TOOLS_ENABLED;
+    const previousCompanies = process.env.PAPERCLIP_RUNNER_API_TOOLS_COMPANY_IDS;
+    const previousSecret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
+    process.env.PAPERCLIP_AGENT_JWT_SECRET = "hire-agent-test-secret";
+    process.env.PAPERCLIP_RUNNER_API_TOOLS_ENABLED = "true";
+    process.env.PAPERCLIP_RUNNER_API_TOOLS_COMPANY_IDS = companyId;
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ id: randomUUID(), status: "active" }), {
+        status: 201,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    try {
+      const authority = new PaperclipRunnerToolAuthority(db, {
+        companyId,
+        agentId,
+        issueId,
+        runId,
+        apiUrl: "http://runner-test.invalid",
+      });
+      const call = {
+        tool: "hire_agent",
+        callId: "hire-agent-receipt",
+        arguments: {
+          name: "QA teammate",
+          role: "qa",
+          title: "Quality lead",
+          capabilities: "Test native workflows",
+          instructions: "Use the assigned workspace and report findings.",
+        },
+      } as const;
+      const first = await authority.execute(call);
+      expect(first).toMatchObject({ ok: true, status: 201, apiOperationId: "POST /api/companies/{companyId}/agent-hires" });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, request] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(String(url)).toBe(`http://runner-test.invalid/api/companies/${companyId}/agent-hires`);
+      const body = JSON.parse(String(request.body));
+      expect(body).toMatchObject({
+        name: "QA teammate",
+        role: "qa",
+        title: "Quality lead",
+        capabilities: "Test native workflows",
+        adapterType: "paperclip_runner",
+        inheritRuntimeFrom: "caller",
+        reportsTo: agentId,
+        sourceIssueId: issueId,
+        instructionsBundle: { entryFile: "AGENTS.md", files: { "AGENTS.md": "Use the assigned workspace and report findings." } },
+      });
+      expect(body).not.toHaveProperty("adapterConfig");
+      expect(body).not.toHaveProperty("runtimeConfig");
+      expect(body).not.toHaveProperty("env");
+      await expect(authority.execute(call)).resolves.toEqual(first);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally {
+      fetchMock.mockRestore();
+      if (previousEnabled === undefined) delete process.env.PAPERCLIP_RUNNER_API_TOOLS_ENABLED;
+      else process.env.PAPERCLIP_RUNNER_API_TOOLS_ENABLED = previousEnabled;
+      if (previousCompanies === undefined) delete process.env.PAPERCLIP_RUNNER_API_TOOLS_COMPANY_IDS;
+      else process.env.PAPERCLIP_RUNNER_API_TOOLS_COMPANY_IDS = previousCompanies;
+      if (previousSecret === undefined) delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
+      else process.env.PAPERCLIP_AGENT_JWT_SECRET = previousSecret;
+    }
+  });
+
+  it("dispatches cross-task Markdown documents that pass route validation and persist revisions", async () => {
+    vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", "document-test-secret");
+    const taskId = randomUUID();
+    await db.insert(issues).values({ id: taskId, companyId, title: "Cross-task document target", status: "todo" });
+    const service = documentService(db);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, request) => {
+      expect(String(url)).toBe(`http://runner-test.invalid/api/issues/${taskId}/documents/notes`);
+      expect(new Headers(request?.headers).get("authorization")).toMatch(/^Bearer /);
+      // Use the real route validator and persistence service, so a missing
+      // required format or stale base revision cannot be hidden by a spy.
+      const body = upsertIssueDocumentSchema.parse(JSON.parse(String(request?.body)));
+      const saved = await service.upsertIssueDocument({ issueId: taskId, key: "notes", ...body,
+        createdByAgentId: agentId, createdByRunId: runId });
+      return new Response(JSON.stringify(saved.document), { status: 200, headers: { "content-type": "application/json" } });
+    });
+    try {
+      const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId,
+        apiToolsEnabled: true, apiUrl: "http://runner-test.invalid" });
+      const first = { tool: "write_task_document", callId: "cross-task-document-create", arguments: {
+        taskId, key: "notes", title: "Notes", body: "# First revision", baseRevisionId: null,
+      } };
+      expect(await authority.execute(first)).toMatchObject({ ok: true, status: 200 });
+      const saved = await service.getIssueDocumentByKey(taskId, "notes");
+      expect(saved).toMatchObject({ format: "markdown", body: "# First revision" });
+      expect(await authority.execute({ ...first, callId: "cross-task-document-update", arguments: {
+        ...first.arguments, body: "# Second revision", baseRevisionId: saved!.latestRevisionId,
+      } })).toMatchObject({ ok: true, status: 200 });
+      expect(await service.getIssueDocumentByKey(taskId, "notes")).toMatchObject({ body: "# Second revision" });
+      expect(await service.listIssueDocumentRevisions(taskId, "notes")).toHaveLength(2);
+      const tooLong = await authority.execute({ ...first, callId: "cross-task-document-long-title", arguments: {
+        ...first.arguments, title: "x".repeat(201),
+      } });
+      expect(tooLong).toMatchObject({ outcome: "failed", code: "runner_bridge_invalid_arguments" });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      fetchMock.mockRestore();
+      const saved = await service.getIssueDocumentByKey(taskId, "notes");
+      if (saved) await db.delete(documents).where(eq(documents.id, saved.id));
+      await db.delete(issues).where(eq(issues.id, taskId));
+    }
+  });
+
+  it("advertises structured human input in ask mode", () => {
+    const authority = new PaperclipRunnerToolAuthority(db, {
+      companyId,
+      agentId,
+      issueId,
+      runId,
+      workMode: "ask",
+    });
+    expect(authority.definitions().map((tool) => tool.name)).toContain(
+      "request_human_input",
+    );
+    expect(authority.definitions().map((tool) => tool.name)).not.toContain(
+      "create_task",
+    );
+    expect(authority.definitions().map((tool) => tool.name)).not.toContain(
+      "set_dependencies",
+    );
+  });
+
+  it.each(["standard", "ask"] as const)(
+    "advertises real task-bound questions and provider-dependent controls in %s mode",
+    (workMode) => {
+      const original = CAPABILITY_SEMANTIC_TOOL_CATALOG.find(
+        (tool) => tool.operationId === "request_human_input",
+      )!;
+      const originalSnapshot = structuredClone(original);
+      const authority = new PaperclipRunnerToolAuthority(db, {
+        companyId,
+        agentId,
+        issueId,
+        runId,
+        workMode,
+      });
+      const advertised = JSON.parse(
+        JSON.stringify(authority.definitions()),
+      ).find((tool: { name: string }) => tool.name === "request_human_input");
+      expect(advertised.description).toContain(
+        "current Paperclip task bound to this run",
+      );
+      expect(advertised.description).toContain(
+        "one complete payload.questionSet",
+      );
+      expect(advertised.description).toContain(
+        "Paperclip renders it and authenticates the response",
+      );
+      expect(advertised.description).toContain(
+        "Preserve existing review gates",
+      );
+      expect(advertised.description).not.toContain("mock");
+      expect(advertised.description).not.toContain("questionSpec");
+      expect(advertised.inputSchema).toEqual(original.inputSchema);
+      expect(advertised.inputSchema.properties).toHaveProperty("payload");
+      expect(advertised.inputSchema.properties).not.toHaveProperty(
+        "questionSpec",
+      );
+      expect(original).toEqual(originalSnapshot);
+    },
+  );
+
+  it.each(["choice", "text", "mixed"] as const)("executes the advertised %s question once on the bound reviewed task", async (answerMode) => {
+    const binding = {
+      companyId: randomUUID(),
+      agentId: randomUUID(),
+      issueId: randomUUID(),
+      runId: randomUUID(),
+    };
+    await db.insert(companies).values({
+      id: binding.companyId,
+      name: "Question invocation",
+      issuePrefix: answerMode === "choice" ? "RQA" : answerMode === "text" ? "RQT" : "RQM",
+    });
+    await db.insert(agents).values({
+      id: binding.agentId,
+      companyId: binding.companyId,
+      name: "Question agent",
+      adapterType: "paperclip_runner",
+      status: "active",
+    });
+    await db.insert(issues).values({
+      id: binding.issueId,
+      companyId: binding.companyId,
+      title: "Question on reviewed task",
+      status: "in_review",
+      workMode: "standard",
+      reviewPolicy: "human_only",
+      assigneeAgentId: binding.agentId,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: binding.runId,
+      companyId: binding.companyId,
+      agentId: binding.agentId,
+      status: "running",
+      runtimeMode: "native",
+      nativeIssueId: binding.issueId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      contextSnapshot: { issueId: binding.issueId },
+    });
+    await db
+      .update(issues)
+      .set({ executionRunId: binding.runId })
+      .where(eq(issues.id, binding.issueId));
+    const authority = new PaperclipRunnerToolAuthority(db, binding);
+    const advertised = authority
+      .definitions()
+      .find((tool) => tool.name === "request_human_input")!;
+    expect(advertised.description).toContain("payload.questionSet");
+    const questions = [
+      {
+        id: "color",
+        prompt: "Choose one color",
+        selectionMode: "single",
+        required: true,
+        options: [
+          { id: "amber", label: "Amber" },
+          { id: "cobalt", label: "Cobalt" },
+        ],
+      },
+    ];
+    const payloadDescription = (advertised.inputSchema as {
+      properties: { payload: { description: string } };
+    }).properties.payload.description;
+    expect(payloadDescription).toContain("at least two meaningful options");
+    expect(payloadDescription).toContain("questionSet");
+    expect(payloadDescription).not.toContain("use exactly");
+    const payload = answerMode === "choice"
+      ? { version: 1, questions }
+      : {
+          version: 1,
+          questionSet: {
+            schema: "paperclip.question_set.v1",
+            questions: [
+              { id: "goal", prompt: "What should we accomplish?", answerMode: "text", required: true },
+              ...(answerMode === "mixed" ? [{ id: "color", prompt: "Choose one color", answerMode: "single_select", required: true, options: questions[0].options }] : []),
+            ],
+          },
+        };
+    const call = {
+      tool: "request_human_input",
+      callId: "advertised-question",
+      arguments: {
+        idempotencyKey: "advertised-question",
+        interactionKind: "questions",
+        title: "Choose one color",
+        prompt: "Choose one color",
+        continuationPolicy: "wake_assignee",
+        payload,
+      },
+    };
+    const first = await authority.execute(call);
+    expect(first).toMatchObject({
+      disposition: "applied",
+      interaction: {
+        companyId: binding.companyId,
+        issueId: binding.issueId,
+        sourceRunId: binding.runId,
+        kind: "ask_user_questions",
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        payload,
+      },
+    });
+    await expect(
+      authority.execute({ ...call, callId: "advertised-question-replay" }),
+    ).resolves.toEqual(first);
+    const rows = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.issueId, binding.issueId));
+    expect(rows).toHaveLength(1);
+    expect((rows[0].payload as { questions: { id: string }[] }).questions.map((question) => question.id))
+      .toEqual(answerMode === "choice" ? ["color"] : answerMode === "text" ? ["goal"] : ["goal", "color"]);
+    const [task] = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, binding.issueId));
+    expect(task).toMatchObject({
+      status: "in_review",
+      reviewPolicy: "human_only",
+      assigneeAgentId: binding.agentId,
+      executionRunId: binding.runId,
+    });
+    const entries = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, binding.issueId));
+    expect(
+      entries.filter(
+        (entry) => entry.action === "issue.thread_interaction_created",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("does not project a foreign-company task through approval context", async () => {
+    const foreignCompanyId = "00000000-0000-4000-8000-000000000211";
+    const foreignIssueId = "00000000-0000-4000-8000-000000000212";
+    const approvalId = "00000000-0000-4000-8000-000000000213";
+    await db.insert(companies).values({
+      id: foreignCompanyId,
+      name: "Foreign approval company",
+      issuePrefix: "FAC",
+      issueCounter: 1,
+    });
+    await db.insert(issues).values({
+      id: foreignIssueId,
+      companyId: foreignCompanyId,
+      issueNumber: 1,
+      identifier: "FAC-1",
+      title: "Must not cross the approval boundary",
+      status: "todo",
+    });
+    await db.insert(approvals).values({
+      id: approvalId,
+      companyId,
+      type: "runner_review",
+      status: "pending",
+      payload: {},
+    });
+    // The schema deliberately stores companyId independently on the link. A
+    // corrupt or historical cross-tenant link must still fail closed at read.
+    await db.insert(issueApprovals).values({
+      companyId,
+      approvalId,
+      issueId: foreignIssueId,
+      linkedByAgentId: agentId,
+    });
+
+    const authority = new PaperclipRunnerToolAuthority(db, {
+      companyId,
+      agentId,
+      issueId,
+      runId,
+    });
+    await expect(
+      authority.execute({
+        tool: "get_approval_context",
+        callId: "foreign-approval-context",
+        arguments: { approvalId },
+      }),
+    ).resolves.toMatchObject({ approval: { id: approvalId }, tasks: [] });
+  });
+
+  it("rejects Dot artifact publication from instance state before reading a file", async () => {
+    const [actor] = await db.select().from(agents).where(eq(agents.id, agentId));
+    await db.update(agents).set({ adapterConfig: { ...actor.adapterConfig, dotWorkspaceAccess: true } }).where(eq(agents.id, agentId));
+    const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId,
+      dotRuntime: true, workspaceBridge: true, workspaceRoot: "/tmp/fixture-workspace" });
+    try {
+      for (const contentRef of [".paperclip/.env", "nested/.PaPeRcLiP/config.json"]) {
+        await expect(authority.execute({ tool: "register_deliverable", callId: contentRef, arguments: {
+          idempotencyKey: contentRef, filename: "config.txt", title: "Config", contentType: "text/plain",
+          byteSize: 10, sha256: "0".repeat(64), contentRef,
+        } })).rejects.toThrow("runner_workspace_instance_state_denied");
+      }
+    } finally {
+      await db.update(agents).set({ adapterConfig: actor.adapterConfig }).where(eq(agents.id, agentId));
+    }
+  });
+
+  it("fits large assigned catalogs alongside workspace and completion tools without dropping task tools", async () => {
+    const listToolsForNamedGateway = vi.fn().mockResolvedValue(Array.from({ length: 224 }, (_, i) => ({
+      name: `app.action_${i}`, displayName: `Action ${i}`, description: "Read a fixture",
+      parametersSchema: { type: "object", properties: {} }, risk: "read",
+    })));
+    const assignedMcpTools = await createAssignedMcpTools({
+      gateway: { listToolsForNamedGateway } as unknown as ToolGatewayService,
+      gatewayPublicId: "fixture", bearerToken: "fixture-token",
+    });
+    const binding = { companyId, agentId, issueId, runId, workspaceRoot: "/tmp/fixture-workspace" };
+    const baseline = new PaperclipRunnerToolAuthority(db, binding).definitions();
+    expect(runnerCodexDynamicToolsFit([...baseline, ...assignedMcpTools.definitions()])).toBe(false);
+    const authority = new PaperclipRunnerToolAuthority(db, { ...binding, assignedMcpTools });
+    const tools = authority.definitions();
+    expect(runnerCodexDynamicToolsFit(tools)).toBe(true);
+    expect(tools).toEqual(expect.arrayContaining(baseline));
+    expect(tools.filter(tool => String(tool.name).startsWith("app_"))).toEqual([]);
+    expect(tools.map(tool => tool.name)).toEqual(expect.arrayContaining([
+      "paperclip_search_assigned_tools", "paperclip_call_assigned_tool", "register_deliverable",
+    ]));
+    const call = { tool: "paperclip_search_assigned_tools", callId: "discover", arguments: { query: "Action 223" } };
+    await expect(authority.execute(call)).resolves.toMatchObject({ tools: [expect.objectContaining({ description: "Action 223: Read a fixture" })] });
+    listToolsForNamedGateway.mockClear();
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, runId));
+    try {
+      await expect(authority.execute(call)).rejects.toThrow("paperclip_runner_tool_binding_not_authorized");
+      expect(listToolsForNamedGateway).not.toHaveBeenCalled();
+    } finally {
+      await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, runId));
+    }
+  });
+
+  it("relays assigned MCP calls only while the native run still owns its task", async () => {
+    const tool = { name: "app_mem0_recall", description: "Recall memory", inputSchema: { type: "object" } };
+    const execute = vi.fn().mockResolvedValue({ content: "synthetic memory" });
+    const authority = new PaperclipRunnerToolAuthority(db, {
+      companyId, agentId, issueId, runId,
+      assignedMcpTools: { definitions: () => [tool], has: (name) => name === tool.name, execute },
+    });
+    expect(authority.definitions()).toContainEqual(tool);
+    const call = { tool: tool.name, callId: "assigned-mcp", arguments: { query: "compass" } };
+    await expect(authority.execute(call)).resolves.toEqual({ content: "synthetic memory" });
+    expect(execute).toHaveBeenCalledWith(call, "standard");
+    await db.update(issues).set({ workMode: "ask" }).where(eq(issues.id, issueId));
+    try {
+      await authority.execute(call);
+      expect(execute).toHaveBeenLastCalledWith(call, "ask");
+    } finally {
+      await db.update(issues).set({ workMode: "standard" }).where(eq(issues.id, issueId));
+    }
+    execute.mockClear();
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, runId));
+    try {
+      await expect(authority.execute(call)).rejects.toThrow("paperclip_runner_tool_binding_not_authorized");
+      expect(execute).not.toHaveBeenCalled();
+    } finally {
+      await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, runId));
+    }
+  });
+
+  it("does not advertise delegation tools during pre-acceptance planning", () => {
+    const authority = new PaperclipRunnerToolAuthority(db, {
+      companyId,
+      agentId,
+      issueId,
+      runId,
+      workMode: "planning",
+    });
+    expect(authority.definitions().map((tool) => tool.name)).not.toContain(
+      "create_task",
+    );
+    expect(authority.definitions().map((tool) => tool.name)).not.toContain(
+      "set_dependencies",
+    );
+  });
+
+  it("writes progress through the real issue service and replays idempotently", async () => {
+    const authority = new PaperclipRunnerToolAuthority(db, {
+      companyId,
+      agentId,
+      issueId,
+      runId,
+    });
+    const call = {
+      tool: "report_progress",
+      callId: "progress",
+      arguments: { body: "Runner progress", idempotencyKey: "progress-1" },
+    };
+    const first = await authority.execute(call);
+    const replay = await authority.execute({
+      ...call,
+      callId: "progress-replay",
+    });
+    expect(replay).toEqual(first);
+    expect(
+      await db
+        .select()
+        .from(issueComments)
+        .where(eq(issueComments.issueId, issueId)),
+    ).toHaveLength(1);
+    const progressActivity = await db
+      .select()
+      .from(activityLog)
+      .where(and(eq(activityLog.entityId, issueId), eq(activityLog.action, "issue.comment_added")));
+    expect(progressActivity).toHaveLength(1);
+    expect(progressActivity[0]).toMatchObject({
+      action: "issue.comment_added",
+      actorType: "agent",
+      actorId: agentId,
+      agentId,
+      runId,
+      entityType: "issue",
+      entityId: issueId,
+      details: expect.objectContaining({
+        bodySnippet: "Runner progress",
+        identifier: "RNT-1",
+        issueTitle: "Exercise real runner tools",
+        source: "paperclip_runner_protocol",
+      }),
+    });
+    await expect(
+      authority.execute({
+        ...call,
+        arguments: { body: "Changed", idempotencyKey: "progress-1" },
+      }),
+    ).rejects.toThrow("paperclip_runner_tool_idempotency_conflict");
+  });
+
+  it("creates checkbox interactions through the real interaction service", async () => {
+    const authority = new PaperclipRunnerToolAuthority(db, {
+      companyId,
+      agentId,
+      issueId,
+      runId,
+    });
+    const call = {
+      tool: "request_human_input",
+      callId: "ask-checkbox",
+      arguments: {
+        idempotencyKey: "favorite-animals",
+        interactionKind: "checkbox",
+        title: "Favorite zoo animals",
+        prompt: "Which zoo animals are your favorites?",
+        continuationPolicy: "wake_assignee",
+        payload: {
+          options: [
+            { id: "giraffes", label: "Giraffes" },
+            { id: "lions", label: "Lions" },
+          ],
+        },
+      },
+    };
+    const first = await authority.execute(call);
+    await expect(
+      authority.execute({ ...call, callId: "ask-checkbox-replay" }),
+    ).resolves.toEqual(first);
+    expect(first).toMatchObject({
+      interaction: { kind: "request_checkbox_confirmation", status: "pending" },
+    });
+    expect(
+      await db
+        .select()
+        .from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.issueId, issueId)),
+    ).toHaveLength(1);
+    expect(
+      (
+        await db
+          .select()
+          .from(activityLog)
+          .where(eq(activityLog.entityId, issueId))
+      ).filter((entry) => entry.action === "issue.thread_interaction_created"),
+    ).toHaveLength(1);
+    await expect(
+      authority.execute({
+        ...call,
+        callId: "ask-checkbox-conflict",
+        arguments: {
+          ...call.arguments,
+          prompt: "Use the same key for a different prompt.",
+        },
+      }),
+    ).rejects.toThrow("paperclip_runner_tool_idempotency_conflict");
+  });
+
+  it("writes a real revisioned document and replays the mutation receipt", async () => {
+    const body = credentialDocumentBody;
+    const authority = new PaperclipRunnerToolAuthority(db, {
+      companyId,
+      agentId,
+      issueId,
+      runId,
+    });
+    const call = {
+      tool: "write_document",
+      callId: "write-plan",
+      arguments: {
+        idempotencyKey: "write-plan-1",
+        key: "plan",
+        title: "Execution plan",
+        body,
+        // Provider bridges may serialize nullable string inputs as the literal
+        // "null". The protocol boundary treats that as document creation.
+        baseRevisionId: "null",
+        changeSummary: "Initial plan",
+      },
+    };
+    const first = await authority.execute(call);
+    const replay = await authority.execute({
+      ...call,
+      callId: "write-plan-replay",
+    });
+    expect(replay).toEqual(first);
+    expect(first).toMatchObject({
+      disposition: "applied",
+      created: true,
+      document: { key: "plan", body },
+      documentHref: "/RNT/issues/RNT-1#document-plan",
+    });
+    expect(
+      await db
+        .select()
+        .from(documents)
+        .where(eq(documents.companyId, companyId)),
+    ).toHaveLength(1);
+    expect(await documentService(db).getIssueDocumentByKey(issueId, "plan"))
+      .toMatchObject({ body: credentialDocumentBody });
+    const documentActivity = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, issueId));
+    expect(
+      documentActivity.filter(
+        (entry) => entry.action === "issue.document_created",
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        actorType: "agent",
+        actorId: agentId,
+        agentId,
+        runId,
+        entityType: "issue",
+        details: expect.objectContaining({
+          key: "plan",
+          source: "paperclip_runner_protocol",
+        }),
+      }),
+    ]);
+    await expect(
+      authority.execute({
+        ...call,
+        arguments: { ...call.arguments, body: "Conflicting retry." },
+      }),
+    ).rejects.toThrow("paperclip_runner_tool_idempotency_conflict");
+  });
+
+  it("settles a write_document a restart orphaned from its transactional receipt, applying it at most once", async () => {
+    // A restart can cut a write_document callback after the runner journaled
+    // its input but before any result was saved. The revision and its receipt
+    // commit in one transaction, so recovery can prove which side it is on.
+    const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
+    const notApplied = {
+      tool: "write_document",
+      callId: "orphaned-write-not-applied",
+      arguments: { idempotencyKey: "orphaned-write-not-applied", key: "orphan-brief", title: "Brief",
+        body: "Recovered once.", baseRevisionId: null, changeSummary: "Initial brief" },
+    };
+    // No receipt: the write provably never applied. Recovery applies it once.
+    const recovered = await authority.recover(notApplied);
+    expect(recovered).toMatchObject({ result: { disposition: "applied", created: true, document: { key: "orphan-brief" } } });
+    expect(recovered?.isError).not.toBe(true);
+    const applied = await documentService(db).getIssueDocumentByKey(issueId, "orphan-brief");
+    expect(applied).toMatchObject({ body: "Recovered once.", latestRevisionNumber: 1 });
+    // A second recovery, and the original callback arriving late, both replay
+    // the receipt instead of writing again.
+    expect(await authority.recover(notApplied)).toEqual(recovered);
+    expect(await authority.execute(notApplied)).toEqual(recovered!.result);
+    expect(await documentService(db).getIssueDocumentByKey(issueId, "orphan-brief"))
+      .toMatchObject({ latestRevisionNumber: 1 });
+
+    // Receipt present: the write applied before the restart. Recovery returns
+    // the saved result and writes nothing.
+    const update = {
+      tool: "write_document",
+      callId: "orphaned-write-applied",
+      arguments: { idempotencyKey: "orphaned-write-applied", key: "orphan-brief", title: "Brief",
+        body: "Second revision.", baseRevisionId: applied!.latestRevisionId, changeSummary: "Update" },
+    };
+    const original = await authority.execute(update);
+    expect(await authority.recover(update)).toEqual({ result: original });
+    expect(await documentService(db).getIssueDocumentByKey(issueId, "orphan-brief"))
+      .toMatchObject({ body: "Second revision.", latestRevisionNumber: 2 });
+
+    // A write whose base moved on cannot apply. Recovery reports the definite
+    // conflict as a tool error and changes nothing.
+    const stale = {
+      tool: "write_document",
+      callId: "orphaned-write-stale",
+      arguments: { idempotencyKey: "orphaned-write-stale", key: "orphan-brief", title: "Brief",
+        body: "Stale.", baseRevisionId: applied!.latestRevisionId, changeSummary: "Stale" },
+    };
+    // A task switched to ask mode refuses a write that never applied, while
+    // a write that did apply still replays its receipt.
+    await db.update(issues).set({ workMode: "ask" }).where(eq(issues.id, issueId));
+    try {
+      const askMode = await authority.recover({ ...notApplied, callId: "orphaned-write-ask",
+        arguments: { ...notApplied.arguments, idempotencyKey: "orphaned-write-ask", key: "orphan-ask" } });
+      expect(JSON.stringify(askMode)).toContain("paperclip_runner_tool_mode_denied");
+      expect(askMode).toMatchObject({ isError: true });
+      expect(await documentService(db).getIssueDocumentByKey(issueId, "orphan-ask")).toBeNull();
+      expect(await authority.recover(update)).toEqual({ result: original });
+    } finally {
+      await db.update(issues).set({ workMode: "standard" }).where(eq(issues.id, issueId));
+    }
+
+    const conflict = await authority.recover(stale);
+    expect(conflict).toMatchObject({ isError: true, result: { success: false } });
+    expect(JSON.stringify(conflict)).toContain("Document was updated by someone else");
+    expect(await documentService(db).getIssueDocumentByKey(issueId, "orphan-brief"))
+      .toMatchObject({ body: "Second revision.", latestRevisionNumber: 2 });
+  });
+
+  it("returns the exact accepted plan revision in task context", async () => {
+    const plan = await documentService(db).getIssueDocumentByKey(
+      issueId,
+      "plan",
+    );
+    expect(plan).not.toBeNull();
+    const authority = new PaperclipRunnerToolAuthority(db, {
+      companyId,
+      agentId,
+      issueId,
+      runId,
+    });
+    const requested = await authority.execute({
+      tool: "request_human_input",
+      callId: "approve-plan",
+      arguments: {
+        idempotencyKey: `confirmation:${issueId}:plan:${plan!.latestRevisionId}`,
+        interactionKind: "confirmation",
+        title: "Approve the plan",
+        prompt: "Approve this exact plan revision?",
+        payload: {
+          target: {
+            type: "issue_document",
+            issueId,
+            documentId: plan!.id,
+            key: "plan",
+            revisionId: plan!.latestRevisionId,
+            revisionNumber: plan!.latestRevisionNumber,
+          },
+        },
+        targetRevisionId: plan!.latestRevisionId,
+        continuationPolicy: "wake_assignee_on_accept",
+      },
+    });
+    expect(requested).toMatchObject({
+      interaction: {
+        kind: "request_confirmation",
+        status: "pending",
+        payload: {
+          target: {
+            type: "issue_document",
+            issueId,
+            key: "plan",
+            revisionId: plan!.latestRevisionId,
+          },
+        },
+      },
+    });
+    await db
+      .update(issueThreadInteractions)
+      .set({
+        status: "accepted",
+        resolvedByUserId: "test-user",
+        resolvedAt: new Date(),
+        result: { outcome: "accepted" } as never,
+      })
+      .where(
+        eq(
+          issueThreadInteractions.id,
+          (requested as { interaction: { id: string } }).interaction.id,
+        ),
+      );
+    await db
+      .update(heartbeatRuns)
+      .set({
+        contextSnapshot: {
+          issueId,
+          workspaceRefreshReason: "accepted_plan_confirmation",
+          planReviewInteraction: {
+            acceptedTargetRevision: {
+              issueId,
+              documentId: plan!.id,
+              key: "plan",
+              revisionId: plan!.latestRevisionId,
+              revisionNumber: plan!.latestRevisionNumber,
+            },
+          },
+        },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    await expect(
+      authority.execute({
+        tool: "get_task_context",
+        callId: "accepted-context",
+        arguments: {},
+      }),
+    ).resolves.toMatchObject({
+      acceptedPlan: {
+        documentId: plan!.id,
+        revisionId: plan!.latestRevisionId,
+        revisionNumber: plan!.latestRevisionNumber,
+        markdown: credentialDocumentBody,
+      },
+    });
+  });
+
+  it("places create_task beside a child task, except for watchdog-scoped runs", async () => {
+    const rootId = randomUUID();
+    await db.insert(issues).values({ id: rootId, companyId, title: "Depth root", status: "todo", workMode: "standard" });
+    async function childRun(watchdog: boolean, watchdogStatus = "active") {
+      const childId = randomUUID();
+      const childRunId = randomUUID();
+      await db.insert(issues).values({
+        id: childId, companyId, parentId: rootId, title: `Depth child ${watchdog ? "watchdog" : "ordinary"}`,
+        status: "in_progress", workMode: "standard", assigneeAgentId: agentId,
+      });
+      await db.insert(heartbeatRuns).values({
+        id: childRunId, companyId, agentId, status: "running", runtimeMode: "native", nativeIssueId: childId,
+        invocationSource: "assignment", triggerDetail: "system",
+        contextSnapshot: watchdog ? { issueId: childId, taskWatchdog: { watchedIssueId: childId } } : { issueId: childId },
+      });
+      await db.update(issues).set({ executionRunId: childRunId }).where(eq(issues.id, childId));
+      if (watchdog) await db.insert(issueWatchdogs).values({ companyId, issueId: childId, watchdogAgentId: agentId, status: watchdogStatus });
+      const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId: childId, runId: childRunId, workMode: "standard" });
+      const created = await authority.execute({
+        tool: "create_task",
+        callId: `depth-${childId}`,
+        arguments: { idempotencyKey: `depth-${childId}`, title: "Follow-up from the child", status: "backlog" },
+      }) as { task: { id: string; parentId: string | null } };
+      const [row] = await db.select({ originIssueId: issues.originIssueId }).from(issues).where(eq(issues.id, created.task.id));
+      return { childId, parentId: created.task.parentId, originIssueId: row?.originIssueId };
+    }
+
+    const ordinary = await childRun(false);
+    expect(ordinary).toMatchObject({ parentId: rootId, originIssueId: ordinary.childId });
+    const watchdog = await childRun(true);
+    expect(watchdog).toMatchObject({ parentId: watchdog.childId, originIssueId: watchdog.childId });
+    // A disabled watchdog no longer earns the exception.
+    const disabled = await childRun(true, "disabled");
+    expect(disabled).toMatchObject({ parentId: rootId, originIssueId: disabled.childId });
+    // An active watchdog may not name a parent outside its watched subtree.
+    const outsideId = randomUUID();
+    await db.insert(issues).values({ id: outsideId, companyId, title: "Outside the watched subtree", status: "todo", workMode: "standard" });
+    const [watchdogRun] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
+      .where(eq(heartbeatRuns.nativeIssueId, watchdog.childId));
+    const scoped = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId: watchdog.childId, runId: watchdogRun!.id, workMode: "standard" });
+    await expect(scoped.execute({
+      tool: "create_task", callId: "watchdog-outside",
+      arguments: { idempotencyKey: "watchdog-outside", title: "Elsewhere", status: "backlog", parentTaskId: outsideId },
+    })).rejects.toThrow(/watched issue subtree/);
+  });
+
+  it("authorizes the placed parent: a hidden root rejects a named child parent and makes the default standalone", async () => {
+    const hiddenRootId = randomUUID();
+    const openChildId = randomUUID();
+    const projectId = randomUUID();
+    const featureWorkspaceId = randomUUID();
+    await db.insert(projects).values({ id: projectId, companyId, name: "Depth workspace project" });
+    await db.insert(projectWorkspaces).values([
+      { companyId, projectId, name: "Default checkout", isPrimary: true },
+      { id: featureWorkspaceId, companyId, projectId, name: "Feature checkout" },
+    ]);
+    await db.insert(issues).values({
+      id: hiddenRootId, companyId, title: "Private root", status: "todo", workMode: "standard",
+      visibility: "private", privacyRootIssueId: hiddenRootId, responsibleUserId: "someone-else",
+    });
+    await db.insert(issues).values({
+      id: openChildId, companyId, parentId: hiddenRootId, title: "Open child", status: "in_progress",
+      workMode: "standard", assigneeAgentId: agentId, projectId, projectWorkspaceId: featureWorkspaceId,
+    });
+    const named = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId, workMode: "standard" });
+    await expect(named.execute({
+      tool: "create_task", callId: "hidden-root-named",
+      arguments: { idempotencyKey: "hidden-root-named", title: "Under the open child", status: "backlog", parentTaskId: openChildId },
+    })).rejects.toThrow();
+
+    const childRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: childRunId, companyId, agentId, status: "running", runtimeMode: "native", nativeIssueId: openChildId,
+      invocationSource: "assignment", triggerDetail: "system", contextSnapshot: { issueId: openChildId },
+    });
+    await db.update(issues).set({ executionRunId: childRunId }).where(eq(issues.id, openChildId));
+    const fromChild = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId: openChildId, runId: childRunId, workMode: "standard" });
+    const created = await fromChild.execute({
+      tool: "create_task", callId: "hidden-root-default",
+      arguments: { idempotencyKey: "hidden-root-default", title: "Default follow-up", status: "backlog" },
+    }) as { task: { id: string; parentId: string | null } };
+    expect(created.task.parentId).toBeNull();
+    const [row] = await db.select({ originIssueId: issues.originIssueId, projectWorkspaceId: issues.projectWorkspaceId })
+      .from(issues).where(eq(issues.id, created.task.id));
+    expect(row?.originIssueId).toBe(openChildId);
+    // Dropping the structural parent keeps the requester's workspace.
+    expect(row?.projectWorkspaceId).toBe(featureWorkspaceId);
+  });
+
+  it("lets a conversation create a top-level task and subtasks with parentTaskId", async () => {
+    const conversationId = randomUUID();
+    const conversationRunId = randomUUID();
+    await db.insert(issues).values({
+      id: conversationId, companyId, title: "Chat with runner agent", status: "in_progress", workMode: "standard",
+      assigneeAgentId: agentId, conversationAgentId: agentId, conversationUserId: "chat-user", conversationState: "active",
+    });
+    await db.insert(heartbeatRuns).values({
+      id: conversationRunId, companyId, agentId, status: "running", runtimeMode: "native", nativeIssueId: conversationId,
+      invocationSource: "assignment", triggerDetail: "system", contextSnapshot: { issueId: conversationId },
+    });
+    await db.update(issues).set({ executionRunId: conversationRunId }).where(eq(issues.id, conversationId));
+    const authority = new PaperclipRunnerToolAuthority(db, {
+      companyId, agentId, issueId: conversationId, runId: conversationRunId, workMode: "standard",
+    });
+    const create = async (key: string, args: Record<string, unknown>) => await authority.execute({
+      tool: "create_task", callId: key, arguments: { idempotencyKey: key, status: "backlog", ...args },
+    }) as { task: { id: string; parentId: string | null } };
+
+    const parent = await create("chat-parent", { title: "Referral launch" });
+    expect(parent.task.parentId).toBeNull();
+    const subtask = await create("chat-subtask", { title: "Landing page", parentTaskId: parent.task.id });
+    expect(subtask.task.parentId).toBe(parent.task.id);
+    const [row] = await db.select({ originIssueId: issues.originIssueId }).from(issues).where(eq(issues.id, subtask.task.id));
+    // Provenance names the chat whose run created it; the parent is structure.
+    expect(row?.originIssueId).toBe(conversationId);
+
+    // A child of a child is placed beside it.
+    const deeper = await create("chat-deeper", { title: "Landing copy", parentTaskId: subtask.task.id });
+    expect(deeper.task.parentId).toBe(parent.task.id);
+
+    await expect(create("chat-under-conversation", { title: "Under the chat", parentTaskId: conversationId }))
+      .rejects.toThrow(/conversation cannot be a parent/i);
+  });
+
+  it("creates ordinary children, preserves blockers, and deduplicates across runs", async () => {
+    const wakes: Array<{ agentId: string; options: Record<string, unknown> }> =
+      [];
+    const authority = new PaperclipRunnerToolAuthority(db, {
+      companyId,
+      agentId,
+      issueId,
+      runId,
+      workMode: "standard",
+      enqueueWakeup: async (wakeAgentId, options) => {
+        wakes.push({ agentId: wakeAgentId, options });
+        return null;
+      },
+    });
+    expect(authority.definitions().map((tool) => tool.name)).toContain(
+      "create_task",
+    );
+
+    const prerequisite = await authority.execute({
+      tool: "create_task",
+      callId: "create-prerequisite",
+      arguments: {
+        idempotencyKey: "ordinary-prerequisite",
+        title: "Prepare delegated input",
+        description:
+          "A self-contained prerequisite delegated from the active task.",
+      },
+    });
+
+    expect(prerequisite).toMatchObject({
+      disposition: "applied",
+      task: {
+        parentId: issueId,
+        status: "todo",
+        assigneeActorId: agentId,
+      },
+    });
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]).toMatchObject({
+      agentId,
+      options: {
+        reason: "issue_assigned",
+        payload: { parentIssueId: issueId },
+      },
+    });
+    const prerequisiteId = (prerequisite as { task: { id: string } }).task.id;
+    expect(await db.select().from(activityLog).where(eq(activityLog.entityId, prerequisiteId)))
+      .toEqual(expect.arrayContaining([expect.objectContaining({ action: "issue.created", agentId, runId, companyId })]));
+    const dependent = await authority.execute({
+      tool: "create_task",
+      callId: "create-dependent",
+      arguments: {
+        idempotencyKey: "ordinary-dependent",
+        title: "Use delegated input",
+        blockedByTaskIds: [prerequisiteId],
+      },
+    });
+    expect(dependent).toMatchObject({
+      disposition: "applied",
+      scheduledWakeIds: [],
+      task: { parentId: issueId, status: "blocked", assigneeActorId: agentId },
+    });
+    expect(wakes).toHaveLength(1);
+    await expect(
+      issueService(db).getRelationSummaries(issueId),
+    ).resolves.toMatchObject({
+      blockedBy: [],
+    });
+
+    await authority.execute({
+      tool: "set_dependencies",
+      callId: "wait-for-prerequisite",
+      arguments: {
+        idempotencyKey: "source-waits-for-prerequisite",
+        blockedByTaskIds: [prerequisiteId],
+      },
+    });
+    await expect(
+      issueService(db).getRelationSummaries(issueId),
+    ).resolves.toMatchObject({
+      blockedBy: [expect.objectContaining({ id: prerequisiteId })],
+    });
+
+    await issueService(db).update(prerequisiteId, {
+      status: "done",
+      actorAgentId: agentId,
+    });
+    await expect(
+      authority.execute({
+        tool: "create_task",
+        callId: "create-dependency-ready-child",
+        arguments: {
+          idempotencyKey: "ordinary-ready-dependent",
+          title: "Start after completed delegated input",
+          blockedByTaskIds: [prerequisiteId],
+        },
+      }),
+    ).resolves.toMatchObject({
+      disposition: "applied",
+      task: { parentId: issueId, status: "todo", assigneeActorId: agentId },
+      scheduledWakeIds: [expect.any(String)],
+    });
+    expect(wakes).toHaveLength(2);
+
+    const nextRunId = "00000000-0000-4000-8000-000000000106";
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "succeeded" })
+      .where(eq(heartbeatRuns.id, runId));
+    await db.insert(heartbeatRuns).values({
+      id: nextRunId,
+      companyId,
+      agentId,
+      status: "running",
+      runtimeMode: "native",
+      nativeIssueId: issueId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      contextSnapshot: { issueId },
+    });
+    await db
+      .update(issues)
+      .set({ executionRunId: nextRunId })
+      .where(eq(issues.id, issueId));
+    const retryWakes: Array<unknown> = [];
+    const retryAuthority = new PaperclipRunnerToolAuthority(db, {
+      companyId,
+      agentId,
+      issueId,
+      runId: nextRunId,
+      workMode: "standard",
+      enqueueWakeup: async (_wakeAgentId, options) => {
+        retryWakes.push(options);
+        return null;
+      },
+    });
+    await expect(
+      retryAuthority.execute({
+        tool: "create_task",
+        callId: "cross-run-retry",
+        arguments: {
+          idempotencyKey: "ordinary-prerequisite",
+          title: "Prepare delegated input",
+          description:
+            "A self-contained prerequisite delegated from the active task.",
+        },
+      }),
+    ).resolves.toMatchObject({
+      disposition: "duplicate",
+      task: { id: prerequisiteId },
+    });
+    await expect(
+      retryAuthority.execute({
+        tool: "create_task",
+        callId: "cross-run-conflicting-retry",
+        arguments: {
+          idempotencyKey: "ordinary-prerequisite",
+          title: "Conflicting title for the same caller key",
+        },
+      }),
+    ).rejects.toThrow("paperclip_runner_tool_idempotency_conflict");
+
+    const creationEvents = (await db.select().from(activityLog).where(eq(activityLog.entityId, prerequisiteId)))
+      .filter(event => event.action === "issue.created");
+    expect(creationEvents).toHaveLength(1);
+
+    const foreignCompanyId = "00000000-0000-4000-8000-000000000201";
+    const foreignAgentId = "00000000-0000-4000-8000-000000000202";
+    const foreignIssueId = "00000000-0000-4000-8000-000000000203";
+    await db.insert(companies).values({
+      id: foreignCompanyId,
+      name: "Foreign company",
+      issuePrefix: "FGN",
+      issueCounter: 1,
+    });
+    await db.insert(agents).values({
+      id: foreignAgentId,
+      companyId: foreignCompanyId,
+      name: "Foreign agent",
+      adapterType: "paperclip_runner",
+      adapterConfig: { provider: "codex" },
+      runtimeConfig: {},
+      status: "active",
+    });
+    await db.insert(issues).values({
+      id: foreignIssueId,
+      companyId: foreignCompanyId,
+      issueNumber: 1,
+      identifier: "FGN-1",
+      title: "Foreign blocker",
+      status: "todo",
+    });
+    await expect(
+      retryAuthority.execute({
+        tool: "create_task",
+        callId: "foreign-assignee",
+        arguments: {
+          idempotencyKey: "foreign-assignee",
+          title: "Invalid foreign assignment",
+          assigneeActorId: foreignAgentId,
+        },
+      }),
+    ).rejects.toThrow("paperclip_runner_agent_not_found");
+    await expect(
+      retryAuthority.execute({
+        tool: "create_task",
+        callId: "foreign-blocker",
+        arguments: {
+          idempotencyKey: "foreign-blocker",
+          title: "Invalid foreign blocker",
+          blockedByTaskIds: [foreignIssueId],
+        },
+      }),
+    ).rejects.toThrow();
+    expect(retryWakes).toHaveLength(0);
+    expect(
+      await db.select().from(issues).where(eq(issues.parentId, issueId)),
+    ).toHaveLength(3);
+  });
+
+  it("rejects mutations after reassignment, run replacement, or terminalization", async () => {
+    const guardedIssueId = "00000000-0000-4000-8000-000000000107";
+    const guardedRunId = "00000000-0000-4000-8000-000000000108";
+    const guardedReplacementRunId = "00000000-0000-4000-8000-000000000109";
+    await db.insert(issues).values({
+      id: guardedIssueId,
+      companyId,
+      issueNumber: 999,
+      identifier: "RNT-999",
+      title: "Guard mutation authorization",
+      status: "in_progress",
+      workMode: "standard",
+      assigneeAgentId: agentId,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: guardedRunId,
+      companyId,
+      agentId,
+      status: "running",
+      runtimeMode: "native",
+      nativeIssueId: guardedIssueId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      contextSnapshot: { issueId: guardedIssueId },
+    });
+    await db.insert(heartbeatRuns).values({
+      id: guardedReplacementRunId,
+      companyId,
+      agentId,
+      status: "running",
+      runtimeMode: "native",
+      nativeIssueId: guardedIssueId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      contextSnapshot: { issueId: guardedIssueId },
+    });
+    await db
+      .update(issues)
+      .set({ executionRunId: guardedRunId })
+      .where(eq(issues.id, guardedIssueId));
+    const authority = new PaperclipRunnerToolAuthority(db, {
+      companyId,
+      agentId,
+      issueId: guardedIssueId,
+      runId: guardedRunId,
+    });
+    const mutation = {
+      tool: "report_progress",
+      callId: "guarded-progress",
+      arguments: {
+        body: "Must remain authorized",
+        idempotencyKey: "guarded-progress",
+      },
+    };
+
+    await db
+      .update(issues)
+      .set({ assigneeAgentId: null })
+      .where(eq(issues.id, guardedIssueId));
+    await expect(authority.execute(mutation)).rejects.toThrow(
+      "paperclip_runner_tool_binding_not_authorized",
+    );
+
+    await db
+      .update(issues)
+      .set({
+        assigneeAgentId: agentId,
+        executionRunId: guardedReplacementRunId,
+      })
+      .where(eq(issues.id, guardedIssueId));
+    await expect(
+      authority.execute({ ...mutation, callId: "replaced-run" }),
+    ).rejects.toThrow("paperclip_runner_tool_binding_not_authorized");
+
+    await db
+      .update(issues)
+      .set({ executionRunId: guardedRunId })
+      .where(eq(issues.id, guardedIssueId));
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "succeeded" })
+      .where(eq(heartbeatRuns.id, guardedRunId));
+    await expect(
+      authority.execute({ ...mutation, callId: "terminal-run" }),
+    ).rejects.toThrow("paperclip_runner_tool_binding_not_authorized");
+
+    expect(
+      await db
+        .select()
+        .from(issueComments)
+        .where(eq(issueComments.issueId, guardedIssueId)),
+    ).toHaveLength(0);
+  });
+
+  it("captures delegation and approval origins before steering and preserves replay identity", async () => {
+    const issueId = "00000000-0000-4000-8000-000000000120";
+    const runId = "00000000-0000-4000-8000-000000000121";
+
+    await db.insert(issues).values({ id: issueId, companyId, title: "Identity delegation",
+      status: "in_progress", assigneeAgentId: agentId });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId,
+      status: "running", runtimeMode: "native", nativeIssueId: issueId,
+      invocationSource: "assignment", triggerDetail: "system", contextSnapshot: { issueId } });
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+    await db.insert(authUsers).values(["person-a", "person-b"].map(id => ({ id, name: id, email: `${id}@example.test`, createdAt: new Date(), updatedAt: new Date() })));
+    await db.insert(companyMemberships).values(["person-a", "person-b"].map(principalId => ({ companyId, principalType: "user", principalId, status: "active", membershipRole: "operator" })));
+    const origin = await initializeRunIdentity(db, {
+      companyId, runId, issueId, responsibleUserId: "person-a", cause: "instruction",
+    });
+    const [message] = await db.insert(issueComments).values({
+      companyId, issueId, body: "New instruction", authorUserId: "person-b",
+    }).returning();
+    const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
+    const call = { tool: "create_task", callId: "identity-child", arguments: {
+      idempotencyKey: "identity-child", title: "Keep the initiating identity",
+      responsibleUserId: "forged-user", originIdentityContextId: "forged-context",
+    } };
+    const first = await authority.execute(call) as { task: { id: string } };
+    const pending = await reserveSteeredIdentity(db, { companyId, runId, issueId, messageId: message.id });
+    await reconcileSteeredIdentity(db, pending!);
+    await expect(authority.execute({ ...call, callId: "identity-child-replay" })).resolves.toEqual(first);
+    const [child] = await db.select().from(issues).where(eq(issues.id, first.task.id));
+    expect(child).toMatchObject({ originRunId: runId, originIdentityContextId: origin.id,
+      continuationIdentityContextId: origin.id });
+    const second = await authority.execute({ ...call, callId: "identity-child-b", arguments: {
+      idempotencyKey: "identity-child-b", title: "Use the next instruction identity",
+    } }) as { task: { id: string } };
+    const [nextChild] = await db.select().from(issues).where(eq(issues.id, second.task.id));
+    expect(nextChild.originIdentityContextId).toBe(pending!.id);
+    await authority.execute({ tool: "request_human_input", callId: "identity-approval", arguments: {
+      idempotencyKey: "identity-approval", interactionKind: "confirmation", title: "Approve continuation",
+      prompt: "Continue?", continuationPolicy: "wake_assignee", payload: {},
+    } });
+    const interactions = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, issueId));
+    expect(interactions.find((row) => row.title === "Approve continuation")?.sourceIdentityContextId).toBe(pending!.id);
+  });
+
+  it("fails closed once the run is no longer active", async () => {
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "succeeded" })
+      .where(eq(heartbeatRuns.id, runId));
+    const authority = new PaperclipRunnerToolAuthority(db, {
+      companyId,
+      agentId,
+      issueId,
+      runId,
+    });
+    await expect(
+      authority.execute({
+        tool: "get_task_context",
+        callId: "late",
+        arguments: {},
+      }),
+    ).rejects.toThrow("paperclip_runner_tool_binding_not_authorized");
+  });
+});
+
+describe("deliverable tool location guidance", () => {
+  const binding = { companyId: "company", agentId: "agent", issueId: "issue", runId: "run", workspaceRoot: "/task-workspace", apiToolsEnabled: false };
+  const db = new Proxy({} as ConstructorParameters<typeof PaperclipRunnerToolAuthority>[0], {
+    get() { throw new Error("Tool definitions must not query the database"); },
+  });
+  it.each(["local", "remote"] as const)("directs %s workspace-only deliverables to the task cwd", (executionTargetKind) => {
+    const authority = new PaperclipRunnerToolAuthority(db, { ...binding, executionTargetKind,
+      ...(executionTargetKind === "remote" ? { readRemoteWorkspaceFile: async () => Buffer.alloc(0) } : {}),
+    });
+    const tool = authority.definitions().find(tool => tool.name === "register_deliverable")!;
+    const description = (tool.inputSchema as { properties: { contentRef: { description: string } } }).properties.contentRef.description;
+    expect(description).toContain("get_workspace.cwd");
+    expect(description).toContain("AGENT_HOME");
+    expect(description).toContain("Create or copy");
+  });
+  it("preserves the granted-location reader contract", () => {
+    const authority = new PaperclipRunnerToolAuthority(db, { ...binding, executionTargetKind: "remote", readRemoteTaskFile: async () => Buffer.alloc(0) });
+    const tool = authority.definitions().find(tool => tool.name === "register_deliverable")!;
+    const description = (tool.inputSchema as { properties: { contentRef: { description: string } } }).properties.contentRef.description;
+    expect(description).toContain("absolute within a location granted to this task");
+    expect(description).toContain("including its agent home");
+  });
+});

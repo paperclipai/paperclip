@@ -50,12 +50,16 @@ export async function promptServer(opts?: {
   if (p.isCancel(bindSelection)) cancelled();
   const bind = bindSelection as BindMode;
 
+  const portDefault = String(currentServer?.port ?? 3100);
   const portStr = await p.text({
     message: "Server port",
-    defaultValue: String(currentServer?.port ?? 3100),
+    defaultValue: portDefault,
     placeholder: "3100",
     validate: (val) => {
-      const n = Number(val);
+      // Clack validates the raw input before applying defaultValue, so an
+      // Enter press hands the validator an empty string. Validate the value
+      // that will actually be submitted — the typed input, or the default.
+      const n = Number(val || portDefault);
       if (isNaN(n) || n < 1 || n > 65535 || !Number.isInteger(n)) {
         return "Must be an integer between 1 and 65535";
       }
@@ -84,7 +88,7 @@ export async function promptServer(opts?: {
           : "dotta-macbook-pro, host.docker.internal",
       validate: (val) => {
         try {
-          parseHostnameCsv(val);
+          parseHostnameCsv(val ?? "");
           return;
         } catch (err) {
           return err instanceof Error ? err.message : "Invalid hostname list";
@@ -156,8 +160,9 @@ export async function promptServer(opts?: {
     defaultValue: defaultHost,
     placeholder: defaultHost,
     validate: (val) => {
-      if (!val.trim()) return "Host is required";
-      if (deploymentMode === "local_trusted" && !isLoopbackHost(val.trim())) {
+      const candidate = (val || defaultHost).trim();
+      if (!candidate) return "Host is required";
+      if (deploymentMode === "local_trusted" && !isLoopbackHost(candidate)) {
         return "Local trusted mode requires a loopback host such as 127.0.0.1";
       }
     },
@@ -173,7 +178,7 @@ export async function promptServer(opts?: {
       placeholder: "dotta-macbook-pro, your-host.tailnet.ts.net",
       validate: (val) => {
         try {
-          parseHostnameCsv(val);
+          parseHostnameCsv(val ?? "");
           return;
         } catch (err) {
           return err instanceof Error ? err.message : "Invalid hostname list";
@@ -187,12 +192,13 @@ export async function promptServer(opts?: {
 
   let publicBaseUrl: string | undefined;
   if (deploymentMode === "authenticated" && exposure === "public") {
+    const publicBaseUrlDefault = currentAuth?.publicBaseUrl ?? "";
     const urlInput = await p.text({
       message: "Public base URL",
-      defaultValue: currentAuth?.publicBaseUrl ?? "",
+      defaultValue: publicBaseUrlDefault,
       placeholder: "https://paperclip.example.com",
       validate: (val) => {
-        const candidate = val.trim();
+        const candidate = (val || publicBaseUrlDefault).trim();
         if (!candidate) return "Public base URL is required for public exposure";
         try {
           const url = new URL(candidate);

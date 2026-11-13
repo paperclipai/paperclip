@@ -1,25 +1,33 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { LogActivityInput } from "../services/activity-log.js";
+import { hoistModuleGraph } from "./helpers/hoist-module-graph.js";
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   assertCheckoutOwner: vi.fn(),
   getComment: vi.fn(),
   removeComment: vi.fn(),
+  tombstoneComment: vi.fn(),
 }));
 
 const mockAccessService = vi.hoisted(() => ({
+  decide: vi.fn(async ({ action }: { action: string }) => ({
+    action, allowed: action === "issue:read", reason: "allow_default", explanation: "Fixture task is readable",
+  })),
   canUser: vi.fn(),
   hasPermission: vi.fn(),
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
-  getRun: vi.fn(async () => null),
+  getRun: vi.fn(async (): Promise<unknown> => null),
   getActiveRunForAgent: vi.fn(async () => null),
+  getQueuedAssignmentRunForIssue: vi.fn(async () => null),
 }));
+const mockAuthoritativeQueueWakes = vi.hoisted(() => [] as Array<Record<string, unknown>>);
 
-const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
+const mockLogActivity = vi.hoisted(() => vi.fn(async (_db: unknown, _input: LogActivityInput) => undefined));
 const mockFeedbackService = vi.hoisted(() => ({
   listIssueVotesForUser: vi.fn(async () => []),
   saveIssueVote: vi.fn(async () => ({ vote: null, consentEnabledNow: false, sharingEnabled: false })),
@@ -32,11 +40,54 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
       feedbackDataSharingPreference: "prompt",
     },
   })),
+  getExperimental: vi.fn(async () => ({
+    enableExternalObjects: false,
+  })),
   listCompanyIds: vi.fn(async () => ["company-1"]),
 }));
 const mockIssueThreadInteractionService = vi.hoisted(() => ({
+  expirePendingInteractionsForTerminalIssue: vi.fn(async () => []),
   expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
   expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
+}));
+const mockDocumentAnnotationService = vi.hoisted(() => ({
+  cleanupForIssueCommentDeletion: vi.fn(async () => ({ deletedCommentIds: [] as string[], resolvedThreadIds: [] as string[] })),
+  remapOpenThreadsForDocument: vi.fn(async () => []),
+}));
+const mockDecisionTrainingService = vi.hoisted(() => ({
+  scrubDeletedComments: vi.fn(async () => ({ updatedCount: 0 })),
+}));
+const mockIssueReferenceService = vi.hoisted(() => ({
+  deleteCommentSource: vi.fn(async () => undefined),
+  deleteDocumentSource: vi.fn(async () => undefined),
+  diffIssueReferenceSummary: vi.fn(() => ({
+    addedReferencedIssues: [],
+    removedReferencedIssues: [],
+    currentReferencedIssues: [],
+  })),
+  emptySummary: vi.fn(() => ({ outbound: [], inbound: [] })),
+  listIssueReferenceSummary: vi.fn(async () => ({ outbound: [], inbound: [] })),
+  syncComment: vi.fn(async () => undefined),
+  syncDocument: vi.fn(async () => undefined),
+  syncIssue: vi.fn(async () => undefined),
+}));
+const mockExternalObjectService = vi.hoisted(() => ({
+  getIssueSummaries: vi.fn(async () => ({ summaries: {} })),
+  getIssueSummary: vi.fn(async () => ({
+    authRequiredCount: 0,
+    byLiveness: {},
+    byStatusCategory: {},
+    highestSeverity: "muted",
+    objects: [],
+    staleCount: 0,
+    total: 0,
+    unreachableCount: 0,
+  })),
+  listForIssue: vi.fn(async () => []),
+  refreshIssueObjects: vi.fn(async () => []),
+  syncCommentSafely: vi.fn(async () => undefined),
+  syncDocumentSafely: vi.fn(async () => undefined),
+  syncIssueSafely: vi.fn(async () => undefined),
 }));
 
 function registerModuleMocks() {
@@ -57,6 +108,10 @@ function registerModuleMocks() {
     logActivity: mockLogActivity,
   }));
 
+  vi.doMock("../services/decision-training.js", () => ({
+    decisionTrainingService: () => mockDecisionTrainingService,
+  }));
+
   vi.doMock("../services/feedback.js", () => ({
     feedbackService: () => mockFeedbackService,
   }));
@@ -73,13 +128,20 @@ function registerModuleMocks() {
     issueService: () => mockIssueService,
   }));
 
+  vi.doMock("../services/external-objects.js", () => ({
+    externalObjectService: () => mockExternalObjectService,
+  }));
+
   vi.doMock("../services/index.js", () => ({
     companyService: () => ({
-      getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
+      getById: vi.fn(async () => ({ id: "company-1" })),
     }),
     accessService: () => mockAccessService,
     agentService: () => ({ getById: vi.fn(async () => null) }),
-    documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
+    companySkillService: () => ({
+      completeTestRunForIssue: vi.fn(async () => null),
+    }),
+    documentAnnotationService: () => mockDocumentAnnotationService,
     documentService: () => ({}),
     executionWorkspaceService: () => ({}),
     feedbackService: () => mockFeedbackService,
@@ -91,19 +153,7 @@ function registerModuleMocks() {
       getActiveForIssue: vi.fn(async () => null),
       listActiveForIssues: vi.fn(async () => new Map()),
     }),
-    issueReferenceService: () => ({
-      deleteDocumentSource: async () => undefined,
-      diffIssueReferenceSummary: () => ({
-        addedReferencedIssues: [],
-        removedReferencedIssues: [],
-        currentReferencedIssues: [],
-      }),
-      emptySummary: () => ({ outbound: [], inbound: [] }),
-      listIssueReferenceSummary: async () => ({ outbound: [], inbound: [] }),
-      syncComment: async () => undefined,
-      syncDocument: async () => undefined,
-      syncIssue: async () => undefined,
-    }),
+    issueReferenceService: () => mockIssueReferenceService,
     issueService: () => mockIssueService,
     issueThreadInteractionService: () => mockIssueThreadInteractionService,
     logActivity: mockLogActivity,
@@ -113,31 +163,10 @@ function registerModuleMocks() {
   }));
 }
 
-function createApp() {
-  const app = express();
-  app.use(express.json());
-  return app;
-}
+let lastErrorContext: unknown;
 
-async function installActor(app: express.Express, actor?: Record<string, unknown>) {
-  const [{ issueRoutes }, { errorHandler }] = await Promise.all([
-    import("../routes/issues.js"),
-    import("../middleware/index.js"),
-  ]);
-
-  app.use((req, _res, next) => {
-    (req as any).actor = actor ?? {
-      type: "board",
-      userId: "local-board",
-      companyIds: ["company-1"],
-      source: "local_implicit",
-      isInstanceAdmin: false,
-    };
-    next();
-  });
-  app.use("/api", issueRoutes({} as any, {} as any));
-  app.use(errorHandler);
-  return app;
+function describeResponse(res: request.Response) {
+  return JSON.stringify({ body: res.body, errorContext: lastErrorContext });
 }
 
 function makeIssue() {
@@ -153,6 +182,9 @@ function makeIssue() {
   };
 }
 
+const finalDenial = "Only the author of a queued comment can discard it, from that queued message's menu on [PAP-1353](/PAP/issues/PAP-1353). "
+  + "This denial is final: no board, admin or agent override exists, so do not try other routes. Tell the author to discard it there.";
+
 function makeComment(overrides: Record<string, unknown> = {}) {
   return {
     id: "comment-1",
@@ -167,27 +199,77 @@ function makeComment(overrides: Record<string, unknown> = {}) {
   };
 }
 
-describe.sequential("issue comment cancel routes", () => {
+describe("issue comment cancel routes", () => {
+  const routeModules = hoistModuleGraph(registerModuleMocks, async () => {
+    const [{ issueRoutes }, { errorHandler }] = await Promise.all([
+      vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
+      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    ]);
+    return { issueRoutes, errorHandler };
+  });
+
+  function installActor(app: express.Express, actor?: Record<string, unknown>) {
+    const { issueRoutes, errorHandler } = routeModules.value;
+
+    app.use((req, res, next) => {
+      res.on("finish", () => {
+        lastErrorContext = (res as any).__errorContext ?? null;
+      });
+      (req as any).actor = actor ?? {
+        type: "board",
+        userId: "local-board",
+        companyIds: ["company-1"],
+        source: "local_implicit",
+        isInstanceAdmin: false,
+      };
+      next();
+    });
+    const db = {
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn(() => ({
+            orderBy: vi.fn(async () => mockAuthoritativeQueueWakes),
+            // Agent mutation guards read a single row (no task-watchdog run here).
+            then: (resolve: (rows: unknown[]) => unknown, reject?: (error: unknown) => unknown) =>
+              Promise.resolve([]).then(resolve, reject),
+          })),
+        })),
+      })),
+    };
+    app.use("/api", issueRoutes(db as any, {} as any));
+    app.use(errorHandler);
+    return app;
+  }
+
+  function createApp() {
+    const app = express();
+    app.use(express.json());
+    return app;
+  }
+
   beforeEach(() => {
-    vi.resetModules();
-    vi.doUnmock("@paperclipai/shared/telemetry");
-    vi.doUnmock("../telemetry.js");
-    vi.doUnmock("../services/access.js");
-    vi.doUnmock("../services/activity-log.js");
-    vi.doUnmock("../services/feedback.js");
-    vi.doUnmock("../services/heartbeat.js");
-    vi.doUnmock("../services/index.js");
-    vi.doUnmock("../services/instance-settings.js");
-    vi.doUnmock("../services/issues.js");
-    vi.doUnmock("../routes/issues.js");
-    vi.doUnmock("../routes/authz.js");
-    vi.doUnmock("../middleware/index.js");
-    registerModuleMocks();
+    lastErrorContext = undefined;
     vi.clearAllMocks();
     mockIssueService.getById.mockResolvedValue(makeIssue());
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
     mockIssueService.getComment.mockResolvedValue(makeComment());
     mockIssueService.removeComment.mockResolvedValue(makeComment());
+    mockIssueService.tombstoneComment.mockImplementation(async (_commentId, _actor, options) => {
+      const deleted = makeComment({
+        body: "",
+        metadata: null,
+        deletedAt: new Date("2026-04-11T15:05:00.000Z"),
+        deletedByType: "user",
+        deletedByAgentId: null,
+        deletedByUserId: "local-board",
+        deletedByRunId: null,
+      });
+      await options?.afterTombstone?.(deleted, "tx");
+      return deleted;
+    });
+    mockAccessService.decide.mockImplementation(async ({ action }: { action: string }) => ({
+      action, allowed: action === "issue:read", reason: "allow_default", explanation: "Fixture task is readable",
+    }));
     mockAccessService.canUser.mockResolvedValue(false);
     mockAccessService.hasPermission.mockResolvedValue(false);
     mockFeedbackService.listIssueVotesForUser.mockResolvedValue([]);
@@ -205,6 +287,7 @@ describe.sequential("issue comment cancel routes", () => {
       createdAt: new Date("2026-04-11T14:59:00.000Z"),
     });
     mockHeartbeatService.getActiveRunForAgent.mockResolvedValue(null);
+    mockAuthoritativeQueueWakes.length = 0;
     mockInstanceSettingsService.get.mockResolvedValue({
       id: "instance-settings-1",
       general: {
@@ -212,15 +295,29 @@ describe.sequential("issue comment cancel routes", () => {
         feedbackDataSharingPreference: "prompt",
       },
     });
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({
+      enableExternalObjects: false,
+    });
     mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1"]);
     mockLogActivity.mockResolvedValue(undefined);
+    mockDocumentAnnotationService.cleanupForIssueCommentDeletion.mockResolvedValue({
+      deletedCommentIds: [],
+      resolvedThreadIds: [],
+    });
+    mockIssueReferenceService.deleteCommentSource.mockResolvedValue(undefined);
+    mockIssueReferenceService.syncComment.mockResolvedValue(undefined);
+    mockExternalObjectService.syncCommentSafely.mockResolvedValue(undefined);
   });
 
   it("cancels a queued comment from its author and restores the deleted body", async () => {
     const res = await request(await installActor(createApp()))
-      .delete("/api/issues/11111111-1111-4111-8111-111111111111/comments/comment-1");
+      .delete("/api/issues/11111111-1111-4111-8111-111111111111/comments/comment-1?mode=cancel");
 
-    expect(res.status).toBe(200);
+    expect(res.status, JSON.stringify({
+      body: res.body,
+      tombstoneCalls: mockIssueService.tombstoneComment.mock.calls,
+      activityCalls: mockLogActivity.mock.calls,
+    })).toBe(200);
     expect(res.body).toMatchObject({
       id: "comment-1",
       body: "Queued follow-up",
@@ -239,6 +336,18 @@ describe.sequential("issue comment cancel routes", () => {
     );
   });
 
+  it("rejects stale queued cancellation after the active run is gone", async () => {
+    mockHeartbeatService.getRun.mockResolvedValue(null);
+
+    const res = await request(await installActor(createApp()))
+      .delete("/api/issues/11111111-1111-4111-8111-111111111111/comments/comment-1?mode=cancel");
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("Queued comment can no longer be canceled");
+    expect(mockIssueService.removeComment).not.toHaveBeenCalled();
+    expect(mockIssueService.tombstoneComment).not.toHaveBeenCalled();
+  });
+
   it("rejects canceling comments that are no longer queued", async () => {
     mockIssueService.getComment.mockResolvedValue(
       makeComment({
@@ -248,11 +357,12 @@ describe.sequential("issue comment cancel routes", () => {
     );
 
     const res = await request(await installActor(createApp()))
-      .delete("/api/issues/11111111-1111-4111-8111-111111111111/comments/comment-1");
+      .delete("/api/issues/11111111-1111-4111-8111-111111111111/comments/comment-1?mode=cancel");
 
     expect(res.status).toBe(409);
     expect(res.body.error).toBe("Only queued comments can be canceled");
     expect(mockIssueService.removeComment).not.toHaveBeenCalled();
+    expect(mockIssueService.tombstoneComment).not.toHaveBeenCalled();
   });
 
   it("rejects canceling another actor's queued comment", async () => {
@@ -263,10 +373,205 @@ describe.sequential("issue comment cancel routes", () => {
     );
 
     const res = await request(await installActor(createApp()))
+      .delete("/api/issues/11111111-1111-4111-8111-111111111111/comments/comment-1?mode=cancel");
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe(finalDenial);
+    expect(mockIssueService.removeComment).not.toHaveBeenCalled();
+  });
+
+  it("tells an agent that discarding a person's queued comment is author-only and final, with the task link", async () => {
+    const agent = { type: "agent", agentId: "22222222-2222-4222-8222-222222222222", companyId: "company-1", runId: "run-1", source: "agent_key" };
+    const res = await request(await installActor(createApp(), agent))
+      .delete("/api/issues/11111111-1111-4111-8111-111111111111/queued-comments/comment-1")
+      .send({ queueId: "queue-1", revision: "revision-1" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe(finalDenial);
+    expect(res.body.error).not.toBe("Board access required");
+    expect(mockIssueService.removeComment).not.toHaveBeenCalled();
+  });
+
+  it("returns 404 without task details when the agent cannot read the private task", async () => {
+    mockAccessService.decide.mockImplementation(async ({ action }: { action: string }) => ({
+      action, allowed: false, reason: "deny_issue_private", explanation: "Private task",
+    }));
+    const agent = { type: "agent", agentId: "33333333-3333-4333-8333-333333333333", companyId: "company-1", runId: "run-9", source: "agent_key" };
+    const res = await request(await installActor(createApp(), agent))
+      .delete("/api/issues/11111111-1111-4111-8111-111111111111/queued-comments/comment-1")
+      .send({ queueId: "queue-1", revision: "revision-1" });
+
+    expect(res.status).toBe(404);
+    expect(JSON.stringify(res.body)).not.toContain("PAP-1353");
+  });
+
+  it("points an author agent at the cancel route it can use instead of claiming no route exists", async () => {
+    mockIssueService.getComment.mockResolvedValue(makeComment({ authorUserId: null, authorAgentId: "33333333-3333-4333-8333-333333333333" }));
+    const agent = { type: "agent", agentId: "33333333-3333-4333-8333-333333333333", companyId: "company-1", runId: "run-9", source: "agent_key" };
+    const res = await request(await installActor(createApp(), agent))
+      .delete("/api/issues/11111111-1111-4111-8111-111111111111/queued-comments/comment-1")
+      .send({ queueId: "queue-1", revision: "revision-1" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("/api/issues/11111111-1111-4111-8111-111111111111/comments/comment-1?mode=cancel");
+    expect(res.body.error).not.toContain("final");
+  });
+
+  it("lets an author agent discard its own queued comment through the cancel route", async () => {
+    // Another agent queued this comment behind the assignee's active run; it can read and write the task.
+    mockAccessService.decide.mockImplementation(async ({ action }: { action: string }) => ({
+      action, allowed: true, reason: "allow_default", explanation: "Assignee task",
+    }));
+    mockIssueService.getComment.mockResolvedValue(makeComment({ authorUserId: null, authorAgentId: "33333333-3333-4333-8333-333333333333" }));
+    mockIssueService.removeComment.mockResolvedValue(makeComment({ authorUserId: null, authorAgentId: "33333333-3333-4333-8333-333333333333" }));
+    const agent = { type: "agent", agentId: "33333333-3333-4333-8333-333333333333", companyId: "company-1", runId: "run-9", source: "agent_key" };
+    const res = await request(await installActor(createApp(), agent))
+      .delete("/api/issues/11111111-1111-4111-8111-111111111111/comments/comment-1?mode=cancel");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.removeComment).toHaveBeenCalledWith("comment-1");
+  });
+
+  it("returns 404 instead of the author-only denial when a non-author cannot read the task", async () => {
+    mockIssueService.getComment.mockResolvedValue(makeComment({ authorUserId: "someone-else" }));
+    mockAccessService.decide.mockImplementation(async ({ action }: { action: string }) => ({
+      action, allowed: false, reason: "deny_issue_private", explanation: "Private task",
+    }));
+    const res = await request(await installActor(createApp()))
+      .delete("/api/issues/11111111-1111-4111-8111-111111111111/comments/comment-1?mode=cancel");
+
+    expect(res.status).not.toBe(403);
+    expect(JSON.stringify(res.body)).not.toContain("PAP-1353");
+    expect(mockIssueService.removeComment).not.toHaveBeenCalled();
+  });
+
+  it("does not reveal another company's task through the agent queued-comment denial", async () => {
+    mockIssueService.getById.mockResolvedValue({ ...makeIssue(), companyId: "company-2" });
+    const agent = { type: "agent", agentId: "22222222-2222-4222-8222-222222222222", companyId: "company-1", runId: "run-1", source: "agent_key" };
+    const res = await request(await installActor(createApp(), agent))
+      .delete("/api/issues/11111111-1111-4111-8111-111111111111/queued-comments/comment-1")
+      .send({ queueId: "queue-1", revision: "revision-1" });
+
+    expect(res.status).toBe(404);
+    expect(JSON.stringify(res.body)).not.toContain("PAP-1353");
+  });
+
+  it("deletes a normal authored comment as a tombstone without returning the original body", async () => {
+    mockIssueService.getComment.mockResolvedValue(
+      makeComment({
+        body: "Sensitive original comment body",
+        metadata: { version: 1, sections: [{ rows: [{ type: "text", text: "Sensitive metadata copy" }] }] },
+        createdAt: new Date("2026-04-11T14:58:00.000Z"),
+        updatedAt: new Date("2026-04-11T14:58:00.000Z"),
+      }),
+    );
+    mockDocumentAnnotationService.cleanupForIssueCommentDeletion.mockResolvedValue({
+      deletedCommentIds: ["annotation-comment-1"],
+      resolvedThreadIds: ["annotation-thread-1"],
+    });
+
+    const res = await request(await installActor(createApp()))
+      .delete("/api/issues/11111111-1111-4111-8111-111111111111/comments/comment-1");
+
+    expect(res.status, describeResponse(res)).toBe(200);
+    expect(res.body).toMatchObject({
+      id: "comment-1",
+      body: "",
+      metadata: null,
+      deletedByType: "user",
+      deletedByUserId: "local-board",
+    });
+    expect(JSON.stringify(res.body)).not.toContain("Sensitive original comment body");
+    expect(JSON.stringify(res.body)).not.toContain("Sensitive metadata copy");
+    expect(mockIssueService.removeComment).not.toHaveBeenCalled();
+    expect(mockIssueService.tombstoneComment).toHaveBeenCalledWith(
+      "comment-1",
+      {
+        actorType: "user",
+        agentId: null,
+        userId: "local-board",
+        runId: null,
+      },
+      expect.objectContaining({ afterTombstone: expect.any(Function) }),
+    );
+    expect(mockIssueReferenceService.syncComment).toHaveBeenCalledWith("comment-1", "tx");
+    expect(mockExternalObjectService.syncCommentSafely).toHaveBeenCalledWith("comment-1", "tx");
+    expect(mockDocumentAnnotationService.cleanupForIssueCommentDeletion).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      "comment-1",
+      expect.objectContaining({
+        actorType: "user",
+        userId: "local-board",
+      }),
+      "tx",
+    );
+    expect(mockIssueReferenceService.deleteCommentSource).toHaveBeenCalledWith("annotation-comment-1", "tx");
+    expect(mockExternalObjectService.syncCommentSafely).toHaveBeenCalledWith("annotation-comment-1", "tx");
+    expect(mockDecisionTrainingService.scrubDeletedComments).toHaveBeenCalledWith({
+      companyId: "company-1",
+      issueId: "11111111-1111-4111-8111-111111111111",
+      commentIds: ["comment-1", "annotation-comment-1"],
+      deletedAt: new Date("2026-04-11T15:05:00.000Z"),
+    }, "tx");
+    const deletedActivity = mockLogActivity.mock.calls.find((call) => call[1]?.action === "issue.comment_deleted")?.[1];
+    expect(deletedActivity).toEqual(expect.objectContaining({
+      action: "issue.comment_deleted",
+      details: expect.objectContaining({
+        deletedAnnotationCommentIds: ["annotation-comment-1"],
+        resolvedAnnotationThreadIds: ["annotation-thread-1"],
+      }),
+    }));
+    expect(deletedActivity?.details).toEqual(expect.not.objectContaining({
+      bodySnippet: expect.anything(),
+    }));
+    expect(JSON.stringify(deletedActivity?.details ?? {})).not.toContain("Sensitive original comment body");
+    expect(JSON.stringify(deletedActivity?.details ?? {})).not.toContain("Sensitive metadata copy");
+  });
+
+  it("tombstones normally after the comment's queued wake has completed", async () => {
+    mockHeartbeatService.getRun.mockResolvedValue(null);
+    mockAuthoritativeQueueWakes.push({
+      id: "wake-1",
+      companyId: "company-1",
+      agentId: "22222222-2222-4222-8222-222222222222",
+      runId: "run-1",
+      status: "succeeded",
+      payload: {
+        issueId: "11111111-1111-4111-8111-111111111111",
+        _paperclipWakeContext: {
+          wakeCommentIds: ["comment-1"],
+        },
+      },
+      requestedAt: new Date("2026-04-11T15:02:00.000Z"),
+    });
+
+    const res = await request(await installActor(createApp()))
+      .delete("/api/issues/11111111-1111-4111-8111-111111111111/comments/comment-1");
+
+    expect(res.status, describeResponse(res)).toBe(200);
+    expect(mockIssueService.tombstoneComment).toHaveBeenCalledWith(
+      "comment-1",
+      expect.anything(),
+      expect.objectContaining({ afterTombstone: expect.any(Function) }),
+    );
+    expect(mockIssueService.removeComment).not.toHaveBeenCalled();
+  });
+
+  it("rejects deleting another actor's normal comment", async () => {
+    mockIssueService.getComment.mockResolvedValue(
+      makeComment({
+        authorUserId: "someone-else",
+        createdAt: new Date("2026-04-11T14:58:00.000Z"),
+        updatedAt: new Date("2026-04-11T14:58:00.000Z"),
+      }),
+    );
+
+    const res = await request(await installActor(createApp()))
       .delete("/api/issues/11111111-1111-4111-8111-111111111111/comments/comment-1");
 
     expect(res.status).toBe(403);
-    expect(res.body.error).toBe("Only the comment author can cancel queued comments");
+    expect(res.body.error).toBe("Only the comment author can delete comments");
     expect(mockIssueService.removeComment).not.toHaveBeenCalled();
+    expect(mockIssueService.tombstoneComment).not.toHaveBeenCalled();
   });
 });

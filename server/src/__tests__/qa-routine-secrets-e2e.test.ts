@@ -25,7 +25,10 @@ import {
   companySecrets,
   companySecretVersions,
   createDb,
+  documentRevisions,
+  documents,
   projects,
+  routineDocuments,
   routineRuns,
   routines,
   secretAccessEvents,
@@ -61,7 +64,10 @@ describeEmbedded("PAP-9522 QA: routine secrets end-to-end", () => {
     await db.delete(secretAccessEvents);
     await db.delete(companySecretBindings);
     await db.delete(routineRuns);
+    await db.delete(routineDocuments);
     await db.delete(routines);
+    await db.delete(documents);
+    await db.delete(documentRevisions);
     await db.delete(companySecretVersions);
     await db.delete(companySecrets);
     await db.delete(projects);
@@ -85,6 +91,7 @@ describeEmbedded("PAP-9522 QA: routine secrets end-to-end", () => {
       name: "QA Co",
       issuePrefix,
       requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
     });
     // Note: executor agent has NO secret bindings of its own — this is the
     // whole point of routine env (the secret rides with the routine, not the agent).
@@ -134,6 +141,7 @@ describeEmbedded("PAP-9522 QA: routine secrets end-to-end", () => {
           SHARED: { type: "plain", value: "routine-overrides" },
           ROUTINE_API_KEY: { type: "secret_ref", secretId: secret.id, version: "latest" },
         },
+        variables: [],
       },
       {},
     );
@@ -221,6 +229,7 @@ describeEmbedded("PAP-9522 QA: routine secrets end-to-end", () => {
           env: {
             BAD: { type: "secret_ref", secretId: foreignSecret.id, version: "latest" },
           },
+          variables: [],
         },
         {},
       ),
@@ -254,6 +263,7 @@ describeEmbedded("PAP-9522 QA: routine secrets end-to-end", () => {
         env: {
           DOOMED: { type: "secret_ref", secretId: secret.id, version: "latest" },
         },
+        variables: [],
       },
       {},
     );
@@ -316,6 +326,7 @@ describeEmbedded("PAP-9522 QA: routine secrets end-to-end", () => {
         env: {
           ALPHA: { type: "secret_ref", secretId: secretA.id, version: "latest" },
         },
+        variables: [],
       },
       {},
     );
@@ -375,6 +386,7 @@ describeEmbedded("PAP-9522 QA: routine secrets end-to-end", () => {
         env: {
           LEGACY: { type: "secret_ref", secretId: secret.id, version: "latest" },
         },
+        variables: [],
       },
       {},
     );
@@ -428,6 +440,7 @@ describeEmbedded("PAP-9522 QA: routine secrets end-to-end", () => {
         status: "active",
         concurrencyPolicy: "coalesce_if_active",
         catchUpPolicy: "skip_missed",
+        variables: [],
       },
       {},
     );
