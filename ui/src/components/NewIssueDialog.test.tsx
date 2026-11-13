@@ -2669,6 +2669,130 @@ describe("NewIssueDialog", () => {
     act(() => reloaded.root.unmount());
   });
 
+  it.each([false, true])("keeps a newer saved draft when a rejected create reloads (open: %s)", async (open) => {
+    mockIssuesApi.create.mockRejectedValueOnce(new Error("Earlier save failed"));
+    dialogState.newIssueDefaults = { description: "Earlier request" };
+    const first = renderDialog(container);
+    await flush();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="Create task"]')!.click(); });
+    await waitForAssertion(() => expect(dialogState.openNewIssue).toHaveBeenCalledOnce());
+    act(() => first.root.unmount());
+    first.queryClient.clear();
+    const nextDraft = {
+      description: "Newer saved work", title: "", status: "backlog", priority: "high",
+      assigneeValue: "", reviewerValue: "", approverValue: "", projectId: "project-1",
+      assigneeModelOverride: "", assigneeThinkingEffort: "", assigneeChrome: false, workMode: "planning",
+    };
+    localStorage.setItem("paperclip:issue-draft:user-1", JSON.stringify(nextDraft));
+    dialogState.newIssueDefaults = {};
+    dialogState.newIssueOpen = open;
+    dialogState.openNewIssue.mockClear();
+    const reloaded = renderDialog(container);
+    await flush();
+    expect(JSON.parse(localStorage.getItem("paperclip:issue-draft:user-1")!).description).toBe("Newer saved work");
+    expect(dialogState.openNewIssue).not.toHaveBeenCalled();
+    if (!open) {
+      dialogState.newIssueOpen = true;
+      act(() => reloaded.root.render(<QueryClientProvider client={reloaded.queryClient}><NewIssueDialog /></QueryClientProvider>));
+      await flush();
+    }
+    expect(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe a task…"]')?.value).toBe("Newer saved work");
+    expect(container.textContent).toContain("Retry saved task:");
+    act(() => reloaded.root.unmount());
+  });
+
+  it("keeps a fresh launch when a recovered draft reloads", async () => {
+    mockIssuesApi.create.mockRejectedValueOnce(new Error("Save failed"));
+    dialogState.newIssueDefaults = { description: "Old recovered text" };
+    const first = renderDialog(container);
+    await flush();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="Create task"]')!.click(); });
+    await waitForAssertion(() => expect(dialogState.openNewIssue).toHaveBeenCalledOnce());
+    act(() => first.root.unmount());
+    first.queryClient.clear();
+    dialogState.openNewIssue.mockClear();
+    dialogState.newIssueDefaults = { description: "Fresh launch", parentId: "new-parent" };
+    const reloaded = renderDialog(container);
+    await flush();
+    expect(dialogState.openNewIssue).not.toHaveBeenCalled();
+    expect(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe a task…"]')?.value).toBe("Fresh launch");
+    expect(container.textContent).toContain("Retry saved task:");
+    act(() => reloaded.root.unmount());
+  });
+
+  it("keeps edits when a recovered task is closed, reopened, and reloaded", async () => {
+    mockIssuesApi.create.mockRejectedValueOnce(new Error("Save failed"));
+    dialogState.newIssueDefaults = { description: "Original recovered text" };
+    const { root, queryClient } = renderDialog(container);
+    const render = () => root.render(<QueryClientProvider client={queryClient}><NewIssueDialog /></QueryClientProvider>);
+    await flush();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="Create task"]')!.click(); });
+    await waitForAssertion(() => expect(dialogState.openNewIssue).toHaveBeenCalledOnce());
+    await typeTextareaValue(container.querySelector('textarea[aria-label="Describe a task…"]')!, "Edited recovery text");
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 850)); });
+    dialogState.newIssueOpen = false;
+    dialogState.newIssueDefaults = {};
+    act(render);
+    dialogState.newIssueOpen = true;
+    act(render);
+    await flush();
+    expect(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe a task…"]')?.value).toBe("Edited recovery text");
+    act(() => root.unmount());
+    queryClient.clear();
+    const reloaded = renderDialog(container);
+    await flush();
+    expect(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe a task…"]')?.value).toBe("Edited recovery text");
+    act(() => reloaded.root.unmount());
+  });
+
+  it("uses fresh launch defaults after a recovered task is closed", async () => {
+    mockIssuesApi.create.mockRejectedValueOnce(new Error("Save failed"));
+    dialogState.newIssueDefaults = { description: "Old recovered task", parentId: "old-parent", goalId: "old-goal" };
+    const { root, queryClient } = renderDialog(container);
+    const render = () => root.render(<QueryClientProvider client={queryClient}><NewIssueDialog /></QueryClientProvider>);
+    await flush();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="Create sub-task"]')!.click(); });
+    await waitForAssertion(() => expect(dialogState.openNewIssue).toHaveBeenCalledOnce());
+    const oldKey = mockIssuesApi.create.mock.calls[0][1].idempotencyKey;
+    dialogState.newIssueOpen = false;
+    dialogState.newIssueDefaults = {};
+    act(render);
+    dialogState.newIssueOpen = true;
+    dialogState.newIssueDefaults = { description: "New launch", parentId: "new-parent", goalId: "new-goal" };
+    act(render);
+    await flush();
+    expect(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe a task…"]')?.value).toBe("New launch");
+    await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="Create sub-task"]')!.click(); });
+    await waitForAssertion(() => expect(mockIssuesApi.create).toHaveBeenCalledTimes(2));
+    expect(mockIssuesApi.create.mock.calls[1][1]).toMatchObject({ description: "New launch", parentId: "new-parent", goalId: "new-goal" });
+    expect(mockIssuesApi.create.mock.calls[1][1].idempotencyKey).not.toBe(oldKey);
+    act(() => root.unmount());
+  });
+
+  it("keeps hidden workspace launch context when retrying a rejected create", async () => {
+    mockIssuesApi.create.mockRejectedValueOnce(new Error("Save failed"));
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    dialogState.newIssueDefaults = {
+      description: "Workspace task", projectId: "project-1", projectWorkspaceId: "source-context", executionWorkspaceId: "workspace-context",
+    };
+    const { root, queryClient } = renderDialog(container, ["workspaces.isolation"]);
+    await flush();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="Create task"]')!.click(); });
+    await waitForAssertion(() => expect(dialogState.openNewIssue).toHaveBeenCalledOnce());
+    const original = mockIssuesApi.create.mock.calls[0][1];
+    // The real dialog clears launch defaults when it closes and reopens.
+    dialogState.newIssueDefaults = {};
+    act(() => root.render(<QueryClientProvider client={queryClient}><NewIssueDialog /></QueryClientProvider>));
+    await flush();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="Create task"]')!.click(); });
+    await waitForAssertion(() => expect(mockIssuesApi.create).toHaveBeenCalledTimes(2));
+    expect(mockIssuesApi.create.mock.calls[1][1]).toMatchObject({
+      idempotencyKey: original.idempotencyKey, projectWorkspaceId: "source-context",
+      executionWorkspaceId: "workspace-context", executionWorkspacePreference: "reuse_existing",
+    });
+    act(() => root.unmount());
+  });
+
   it("keeps the newer parent context when an earlier restored task has missing files", async () => {
     mockIssuesApi.create.mockImplementationOnce(() => new Promise(() => {}));
     dialogState.newIssueDefaults = { description: "Original task", parentId: "old-parent", goalId: "old-goal" };

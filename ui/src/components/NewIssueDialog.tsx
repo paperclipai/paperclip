@@ -498,18 +498,22 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
   const createRequestRef = useRef<{ fingerprint: string; idempotencyKey: string; recovering?: boolean; payload?: PendingCreate } | null>(null);
   const draftOwner = useDraftOwner();
   const [recoveredCreate, setRecoveredCreate] = useState<PendingSend<PendingCreate> | null>(null);
+  const recoveryDefaultsRef = useRef<typeof newIssueDefaults | null>(null);
   const visibleRequestKey = useRef<string | null>(null);
   const navigationRequestKey = useRef<string | null>(null);
   useEffect(() => { if (newIssueOpen) navigationRequestKey.current = null; }, [newIssueOpen, newIssueDefaults]);
   const submittedFileWrites = useRef(new Map<string, Promise<void>>());
   const { files: stagedFiles, setFiles: setStagedFiles, restoring: filesRestoring, error: filesStorageError } = useStagedIssueFiles(draftOwner, effectiveCompanyId);
-  const [restoredLaunch, setRestoredLaunch] = useState<{ owner: string | undefined; parentId?: string; goalId?: string } | null>(null);
+  const [restoredLaunch, setRestoredLaunch] = useState<({ owner: string | undefined } & Pick<typeof newIssueDefaults, "parentId" | "goalId" | "projectId" | "projectWorkspaceId" | "executionWorkspaceId">) | null>(null);
   const savedLaunch = restoredLaunch?.owner === draftOwner ? restoredLaunch : null;
   const parentId = savedLaunch ? savedLaunch.parentId : newIssueDefaults.parentId;
   const goalId = savedLaunch ? savedLaunch.goalId : newIssueDefaults.goalId;
   const restoreLaunch = (payload: PendingCreate) => setRestoredLaunch({ owner: draftOwner,
     ...(typeof payload.data.parentId === "string" ? { parentId: payload.data.parentId } : {}),
     ...(typeof payload.data.goalId === "string" ? { goalId: payload.data.goalId } : {}),
+    ...(typeof payload.data.projectId === "string" ? { projectId: payload.data.projectId } : {}),
+    ...(typeof payload.data.projectWorkspaceId === "string" ? { projectWorkspaceId: payload.data.projectWorkspaceId } : {}),
+    ...(typeof payload.data.executionWorkspaceId === "string" ? { executionWorkspaceId: payload.data.executionWorkspaceId } : {}),
   });
   const awaitingFilesKey = draftOwner !== undefined ? pendingSendKeyFor(CREATE_AWAITING_FILES_KEY, draftOwner) : null;
 
@@ -700,9 +704,17 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
       setResendError(error);
       return;
     }
-    const sameDraft = loadDraft(draftOwner)?.pendingCreateKey === pending.idempotencyKey
-      && pending.payload.draft?.title === titleRef.current && pending.payload.draft?.description === descriptionRef.current;
-    if (pending.payload.data.companyId !== effectiveCompanyId || (!sameDraft && (titleRef.current.trim() || descriptionRef.current.trim()))) {
+    // Queue recovery can run before the form's initialization effect. Inspect
+    // persisted text and launch defaults as well as the mounted field refs.
+    const savedDraft = loadDraft(draftOwner);
+    const sameDraft = savedDraft?.pendingCreateKey === pending.idempotencyKey;
+    const differentLaunch = (["title", "description", "parentId", "goalId", "projectId"] as const).some(key =>
+      newIssueDefaults[key] !== undefined && (key === "title" || key === "description"
+        ? newIssueDefaults[key]?.trim() !== String(pending.payload.data[key] ?? "").trim()
+        : newIssueDefaults[key] !== pending.payload.data[key]));
+    const hasOtherDraft = differentLaunch || (!sameDraft && (titleRef.current.trim() || descriptionRef.current.trim()
+      || savedDraft?.title.trim() || savedDraft?.description.trim()));
+    if (pending.payload.data.companyId !== effectiveCompanyId || hasOtherDraft) {
       pushToast({ title: "A task could not be saved", body: "Open New task to recover the saved request.", tone: "warn" });
       return;
     }
@@ -710,6 +722,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
       if (draftTimer.current) clearTimeout(draftTimer.current);
       visibleRequestKey.current = pending.idempotencyKey;
       setRecoveredCreate(pending);
+      recoveryDefaultsRef.current = newIssueDefaults;
       createRequestRef.current = { fingerprint: pending.payload.fingerprint, idempotencyKey: pending.idempotencyKey, payload: pending.payload,
         recovering: pending.payload.requiresOriginalFiles || (createRequestRef.current?.idempotencyKey === pending.idempotencyKey && createRequestRef.current.recovering) };
       const files = stagedFilesByKey.current.get(pending.idempotencyKey);
@@ -719,7 +732,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
         }).catch(() => {});
       }
       restoreLaunch(pending.payload);
-      if (draftOwner !== undefined) saveDraft(draftOwner, { ...pending.payload.draft, pendingCreateKey: pending.idempotencyKey });
+      if (draftOwner !== undefined) saveDraft(draftOwner, { ...(sameDraft ? savedDraft : pending.payload.draft), pendingCreateKey: pending.idempotencyKey });
       setStagedFiles(stagedFilesByKey.current.get(pending.idempotencyKey) ?? []);
       openNewIssue();
     }
@@ -994,9 +1007,15 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
     }
 
     executionWorkspaceDefaultProjectId.current = null;
-    if (recoveredCreate?.payload.draft && recoveredCreate.payload.data.companyId === effectiveCompanyId) {
-      restoreSubmittedDraft(recoveredCreate.payload.draft);
-      return;
+    // A later explicit launch starts its own draft. A plain reopen restores
+    // the saved fields below, including edits made after the first recovery.
+    if (recoveredCreate && newIssueDefaults !== recoveryDefaultsRef.current
+      && Object.keys(newIssueDefaults).length > 0) {
+      setRecoveredCreate(null);
+      visibleRequestKey.current = null;
+      createRequestRef.current = null;
+      setRestoredLaunch(null);
+      setResendError(null);
     }
 
     if (draftOwner !== undefined && unboundFormDraft.current) {
@@ -1164,16 +1183,17 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
     const executionWorkspaceSettings = executionWorkspacePolicy?.enabled
       ? { mode: requestedExecutionWorkspaceMode }
       : null;
+    const workspaceLaunch = savedLaunch ?? newIssueDefaults;
     const requestedProjectWorkspaceId = !workspaceIsolationControlsVisible
-      ? (newIssueDefaults.projectId === projectId ? newIssueDefaults.projectWorkspaceId : undefined)
+      ? (workspaceLaunch.projectId === projectId ? workspaceLaunch.projectWorkspaceId : undefined)
       : canChooseWorktrees && executionWorkspaceMode === "reuse_existing" && selectedReusableExecutionWorkspace
         ? selectedReusableExecutionWorkspace.projectWorkspaceId
         : projectWorkspaceId;
     // A task launched from a workspace (or its parent task) keeps that explicit
     // context. Draft-only choices are ignored while the selector is hidden.
     const contextualWorkspaceId =
-      !workspaceIsolationControlsVisible && newIssueDefaults.projectId === projectId
-        ? newIssueDefaults.executionWorkspaceId
+      !workspaceIsolationControlsVisible && workspaceLaunch.projectId === projectId
+        ? workspaceLaunch.executionWorkspaceId
         : undefined;
     const executionPolicy = buildExecutionPolicy({
       reviewerValues: reviewerValue ? [reviewerValue] : [],
