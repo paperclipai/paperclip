@@ -2213,6 +2213,30 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
         payload: expect.objectContaining({ issueId: linked.issueId }) }));
     });
 
+    it("raises a separate card when a task's agent moves to another broken connection", async () => {
+      const f = await latchedFleet("switched-connection", 1);
+      const [task] = f.tasks;
+      const first = await connectionIntentService(db).requestForRunAuthFailure(task!.runId!);
+      const [cardA] = await f.cardsFor([task!.issueId]);
+      expect(first?.interactionId).toBe(cardA!.id);
+      // The agent moves to connection B, which also needs sign-in, and fails.
+      const other = await service.save(companyId, f.userId, { provider: "anthropic", method: "api_key", ownership: "personal", name: "Repair switched B",
+        apiKey: "fixture", agentIds: [task!.agentId], allAgents: false }, "fixture-repair-switched-b");
+      await db.update(agents).set({ runtimeConfig: { aiConnection: { ...binding, mode: "delegated", connectionId: other.connectionId, grantId: other.grantId } } })
+        .where(eq(agents.id, task!.agentId));
+      await db.update(connectionGrants).set({ status: "needs_reauthorization" }).where(eq(connectionGrants.id, other.grantId));
+      const [onB] = await db.insert(heartbeatRuns).values({ companyId, agentId: task!.agentId, status: "failed", errorCode: "configuration_incomplete",
+        responsibleUserId: f.userId, startedAt: new Date(), finishedAt: new Date(), createdAt: new Date(Date.now() + 1000),
+        resultJson: { configurationIncomplete: { reason: "ai_connection_unavailable", connectionId: other.connectionId } },
+        contextSnapshot: { issueId: task!.issueId } }).returning();
+      const second = await connectionIntentService(db).requestForRunAuthFailure(onB!.id);
+      expect(second).toMatchObject({ state: "needs_user_action" });
+      expect(second?.interactionId).not.toBe(cardA!.id);
+      const cards = await f.cardsFor([task!.issueId]);
+      expect(cards.find(card => card.id === second!.interactionId)?.payload).toMatchObject({ repairConnectionId: other.connectionId });
+      expect(cards.find(card => card.id === cardA!.id)).toMatchObject({ status: "pending", payload: expect.objectContaining({ repairConnectionId: f.account.connectionId }) });
+    });
+
     it("does not restore a linked task whose newer failure is on another connection", async () => {
       const f = await latchedFleet("other-connection", 2);
       for (const task of f.tasks) await connectionIntentService(db).requestForRunAuthFailure(task.runId!);
