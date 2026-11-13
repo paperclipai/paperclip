@@ -483,10 +483,12 @@ account-scoped conversation references across server persistence.
 
 ACP SSH sessions use the existing remote process bridge and session reuse
 lifecycle. Both provider adapters admit managed SSH through their public
-execution entry points when the remote ACP command is available. SSH ACP needs
+execution entry points. SSH ACP needs
 an agent-managed account and a copied workspace. Host authentication, in-place
 SSH workspaces, and local filesystem/network confinement require the CLI engine.
-Command availability checks do not send controller credentials to the SSH host.
+The SSH prerequisite check retains only the controller's `PATH` to resolve the
+local SSH client; it excludes controller credentials. The ACP server command
+must be installed on the remote machine and is started there by the process bridge.
 A compatible session can retain its private remote home; workspace
 sync and credential refresh run at turn teardown, and the session disposal hook
 removes the home on retirement. Workspace identity includes the company, agent,

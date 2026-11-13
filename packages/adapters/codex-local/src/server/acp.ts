@@ -463,7 +463,7 @@ async function commandIsResolvable(
         trimmed,
         target,
         resolveAdapterExecutionTargetCwd(target, asString(input?.config.cwd, ""), process.cwd()),
-        target.transport === "ssh" ? {} : process.env,
+        target.transport === "ssh" ? { PATH: process.env.PATH } : process.env,
       );
       return true;
     } catch {
