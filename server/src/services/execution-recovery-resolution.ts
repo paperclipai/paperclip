@@ -479,6 +479,7 @@ export async function deliverReconciledExecutions(
       continue;
     }
     for (const action of pending) {
+      if ((admittedByCompany.get(action.companyId) ?? 0) >= companyLimit) continue;
       seenActionIds.add(action.id);
       if (action.returnOwnerAgentId && seenAgents.has(action.returnOwnerAgentId)) continue;
       try {

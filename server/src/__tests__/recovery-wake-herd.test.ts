@@ -554,6 +554,17 @@ suite("recovery wake herd", () => {
     expect(wake.mock.calls.filter(call => call[0] !== backlogAgent)).toHaveLength(RECOVERY_CONTINUATIONS_PER_COMPANY_PER_PASS - 1);
   }, 60_000);
 
+  it("delivers a fresh continuation for every agent up to the company cap in one pass when no backlog waits", async () => {
+    const agentIds = [await seedCompany(1)];
+    for (let index = 1; index < RECOVERY_CONTINUATIONS_PER_COMPANY_PER_PASS; index += 1) agentIds.push(await addAgent(1));
+    const records = [];
+    for (const agentId of agentIds) records.push(await pendingContinuation(agentId, 2));
+    const wake = fakeWake();
+    await deliverReconciledExecutions(db, wake as never);
+    expect(wake).toHaveBeenCalledTimes(RECOVERY_CONTINUATIONS_PER_COMPANY_PER_PASS);
+    expect(await Promise.all(records.map(record => deliveryOf(record.action.id)))).toEqual(records.map(() => "delivered"));
+  }, 60_000);
+
   it("keeps a fresh continuation whose wake was refused pending and enqueues it on the next pass", async () => {
     const agentId = await seedCompany(1);
     await queueOrdinaryWork(agentId, 3);
