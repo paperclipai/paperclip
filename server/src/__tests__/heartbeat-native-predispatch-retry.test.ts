@@ -6,6 +6,7 @@ import { activityLog, agents, authUsers, companyMemberships, createDb, environme
   issueRecoveryActions, issues } from "@paperclipai/db";
 import { NativePredecessorRetirementUnprovenError } from "../services/native-runtime/predecessor-retirement.js";
 import { NativeProviderArtifactTransferTimeoutError } from "../services/native-runtime/native-provider-artifacts.js";
+import { requestedRunCancellation } from "../services/run-cancellation.js";
 import { taskInterruptionPresentation } from "../services/task-interruption-presentation.js";
 import type { NativeRunIdentity, NativeSession, NativeSessionBackend, PrpEvent } from "@paperclipai/paperclip-runner";
 import type { ExecutionContinuationEnvelope } from "@paperclipai/shared";
@@ -20,13 +21,15 @@ import { getRecoveryPostgresSupport } from "./helpers/recovery-postgres-fixture.
 // Budget admission is the last database write before the dispatch gate enters
 // the native executor. Exhausted serialization retries there fail the run with
 // no provider work started.
-const admissionFaults = vi.hoisted(() => ({ remaining: 0 }));
+const admissionFaults = vi.hoisted(() => ({ remaining: 0,
+  beforeReserve: undefined as ((runId: string) => Promise<void>) | undefined }));
 vi.mock("../services/budget-reservations.js", async importOriginal => {
   const actual = await importOriginal<typeof import("../services/budget-reservations.js")>();
   const { AccountingContentionError } = await import("../services/accounting-transaction.js");
   return {
     ...actual,
     reserveRunBudget: async (...args: Parameters<typeof actual.reserveRunBudget>) => {
+      await admissionFaults.beforeReserve?.(args[2]);
       if (admissionFaults.remaining > 0) {
         admissionFaults.remaining -= 1;
         throw new AccountingContentionError(Object.assign(new Error("could not serialize access due to concurrent update"),
@@ -189,6 +192,85 @@ describe.skipIf(!support.supported)("heartbeat native pre-dispatch failure retry
       expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toHaveLength(0);
     } finally {
       admissionFaults.remaining = 0;
+      await heartbeat.drainActiveRunExecutions();
+      await closeIdleWarmNativeSessionsForRestart();
+      await db.$client.end();
+    }
+  }, 90_000);
+
+  it("settles an operator Stop still pending when a native run reaches budget admission", async () => {
+    const { companyId } = fixture.current;
+    const db = createDb(fixture.current.temporary.connectionString, { maxConnections: 4 });
+    const turnMessages = new Map<string, string>();
+    const heartbeat = heartbeatService(db, { nativeSessionBackendFactory: nativeBackend(db, { turnMessages }) });
+    try {
+      // Staging: the board's Stop committed its durable fence, but its native
+      // cancellation stayed pending because no session existed to receive it.
+      // Nothing else settles the run while it prepares.
+      admissionFaults.beforeReserve = async runId => {
+        admissionFaults.beforeReserve = undefined;
+        const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+        const attribution = { cancelledByActorType: "user", cancelledByUserId: run!.responsibleUserId };
+        const requestedAt = new Date().toISOString();
+        await db.update(heartbeatRuns).set({ resultJson: { ...run!.resultJson, ...attribution,
+          cancellation: requestedRunCancellation(attribution, "Cancelled by a board operator"),
+          executionCancellation: { state: "requested", requestedAt },
+          startupCancellation: { requestedAt, errorCode: "cancelled", beforeNativeSelection: false } } })
+          .where(eq(heartbeatRuns.id, runId));
+      };
+      const { runId } = await startTask(db, heartbeat);
+      const [stopped] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      expect(stopped).toMatchObject({ status: "cancelled", runtimeMode: "native", errorCode: "cancelled",
+        resultJson: expect.objectContaining({ cancelledByActorType: "user",
+          cancellation: expect.objectContaining({ source: "operator", reason: "Cancelled by a board operator",
+            initiator: { type: "user", id: stopped!.responsibleUserId } }) }) });
+      expect(stopped!.error).not.toBe("Run cancellation already requested");
+      expect(turnMessages.has(runId)).toBe(false);
+      expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId),
+        eq(heartbeatRuns.retryOfRunId, runId)))).toHaveLength(0);
+    } finally {
+      admissionFaults.beforeReserve = undefined;
+      await heartbeat.drainActiveRunExecutions();
+      await closeIdleWarmNativeSessionsForRestart();
+      await db.$client.end();
+    }
+  }, 90_000);
+
+  it("cancels, not fails, a native run whose operator Stop lands before budget admission", async () => {
+    const { companyId } = fixture.current;
+    const db = createDb(fixture.current.temporary.connectionString, { maxConnections: 4 });
+    const turnMessages = new Map<string, string>();
+    const heartbeat = heartbeatService(db, { nativeSessionBackendFactory: nativeBackend(db, { turnMessages }) });
+    let stop: Promise<unknown> | undefined;
+    try {
+      // Staging: the board stopped a run while it was still preparing. Stop
+      // recorded its cancellation before the executor reached budget admission.
+      admissionFaults.beforeReserve = async runId => {
+        admissionFaults.beforeReserve = undefined;
+        const [run] = await db.select({ userId: heartbeatRuns.responsibleUserId }).from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, runId));
+        stop = heartbeat.cancelRun(runId, "Cancelled by a board operator", {
+          resultJson: { cancelledByActorType: "user", cancelledByUserId: run?.userId ?? null } }).catch(error => error);
+        await waitForCondition("Stop to record its cancellation", async () => {
+          const [current] = await db.select({ resultJson: heartbeatRuns.resultJson }).from(heartbeatRuns)
+            .where(eq(heartbeatRuns.id, runId));
+          return Boolean(current?.resultJson?.cancellation || current?.resultJson?.startupCancellation);
+        });
+      };
+      const { runId } = await startTask(db, heartbeat);
+      await stop;
+      await waitForCondition("the stopped run to settle", () => heartbeat.getTaskDrainStatus().quiescent);
+      const [stopped] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      expect(stopped).toMatchObject({ status: "cancelled", runtimeMode: "native" });
+      expect(stopped!.error).not.toBe("Run cancellation already requested");
+      expect(stopped!.resultJson?.stopReason).not.toBe("adapter_failed");
+      expect(turnMessages.has(runId)).toBe(false);
+      // An operator Stop is final: it is not a pre-dispatch failure to retry.
+      expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId),
+        eq(heartbeatRuns.retryOfRunId, runId)))).toHaveLength(0);
+    } finally {
+      admissionFaults.beforeReserve = undefined;
+      await stop;
       await heartbeat.drainActiveRunExecutions();
       await closeIdleWarmNativeSessionsForRestart();
       await db.$client.end();
