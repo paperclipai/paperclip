@@ -77,6 +77,7 @@ const continuationRunFields = {
   executionStage: heartbeatRuns.executionStage,
 };
 const terminal = ["failed", "interrupted", "timed_out", "cancelled"];
+const PREVIOUS_EXECUTION_UNVERIFIED = "Paperclip can't confirm that the previous attempt stopped before it started work, so Retry can't continue from it. Your message is saved.";
 
 export function isUserCommentContinuationReason(reason: string | null | undefined): boolean {
   return reason === "issue_commented" || reason === "issue_reopened_via_comment" || reason === "issue_assigned";
@@ -193,6 +194,8 @@ export async function admitExplicitNativeContinuation(input: {
 }): Promise<{ previousRunId: string; commentId: string | null; failedRunId?: string; taskRetryRequestId?: string; queuedCommentInterruptId?: string; readiness?: ContinuationReadiness } | null> {
   const { db, companyId, issueId, agentId, actorId, commentId } = input;
   const blocked = (reason: string, message: string) => { input.onBlocked?.(reason, message); return null; };
+  let blocker: Awaited<ReturnType<typeof getExecutionBlocker>> = null;
+  const refused = (reason: string, message: string) => blocker ? blocked(reason, message) : null;
   if (input.actorType !== "user" || !actorId) return null;
   const retry = input.reason === "retry_failed_run" &&
     z.string().guid().safeParse(input.failedRunId).success;
@@ -280,7 +283,7 @@ export async function admitExplicitNativeContinuation(input: {
   const authorizedAt = nativeQueuedSend ? interruptRequestedAt!
     : response?.comment.createdAt ?? comment?.createdAt ?? retryWake?.requestedAt ?? new Date();
   if (!input.dryRun) await preserveTaskRemoteWorkspaceWriter(db, companyId, issueId);
-  const blocker = await getExecutionBlocker(db, companyId, issueId);
+  blocker = await getExecutionBlocker(db, companyId, issueId);
   const [boundary] = await db.select({ createdAt: issueComments.createdAt }).from(issues).innerJoin(issueComments, and(
     eq(issueComments.companyId, issues.companyId), eq(issueComments.issueId, issues.id),
     eq(issueComments.id, issues.conversationBoundaryCommentId),
@@ -349,7 +352,7 @@ export async function admitExplicitNativeContinuation(input: {
     )).for("update");
     if (!source || (source.nativeIssueId ?? source.issueId ?? source.contextSnapshot?.issueId) !== issueId
       || adapterExecutionControls.has(source.id) ||
-      !(await isFailedNativePreparation(db, source, coordinator) || await isPreDispatchExecutionWaitVerified(db, source))) return null;
+      !(await isFailedNativePreparation(db, source, coordinator) || await isPreDispatchExecutionWaitVerified(db, source))) return refused("previous_execution_unverified", PREVIOUS_EXECUTION_UNVERIFIED);
     sourceChecks.push({ cause: "legacy_execution_requires_reconciliation", evidence: { runId: source.id } });
   }
   if (!sourceChecks.length && !nativeQueuedSend) return null;
@@ -385,7 +388,7 @@ export async function admitExplicitNativeContinuation(input: {
       eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, run.id),
     )).for("update");
     if (!lockedRun || lockedRun.status !== run.status || lockedRun.agentId !== run.agentId ||
-        lockedRun.finishedAt?.getTime() !== run.finishedAt.getTime()) return null;
+        lockedRun.finishedAt?.getTime() !== run.finishedAt.getTime()) return refused("execution_settling", "Waiting for the previous run to stop. Your message will start automatically.");
     run = lockedRun;
     // A user's message written after their Stop request is new direction even
     // when the stopped native run settled later.
@@ -421,12 +424,16 @@ export async function admitExplicitNativeContinuation(input: {
       // a conversation. Those adapters retain their reconciliation contract.
       if (historicalAdapter && !isConversationAdapter(historicalAdapter)) {
         if (!(taskRetry && run.id !== taskRetry.sourceRunId && freshIntent && agentIsNative &&
-              historicalAdapter === "paperclip_runner" && run.status === "failed") ||
-            run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > new Date() ||
-            await hasPendingRunCleanup(db, companyId, run.id) ||
-            !await isFailedNativePreparationRetryAncestor(db, run, coordinator)) return null;
+              historicalAdapter === "paperclip_runner" && run.status === "failed"))
+          return refused("previous_execution_unverified", PREVIOUS_EXECUTION_UNVERIFIED);
+        if (run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > new Date())
+          return refused("execution_settling", "Waiting for the previous run to stop. Your message will start automatically.");
+        if (await hasPendingRunCleanup(db, companyId, run.id))
+          return refused("cleanup_pending", "Waiting for the previous run to finish cleanup. Your message is saved.");
+        if (!await isFailedNativePreparationRetryAncestor(db, run, coordinator))
+          return refused("previous_execution_unverified", PREVIOUS_EXECUTION_UNVERIFIED);
       }
-      if (!historicalAdapter && agent.adapterType === "paperclip_runner") return null;
+      if (!historicalAdapter && agent.adapterType === "paperclip_runner") return refused("previous_execution_unverified", PREVIOUS_EXECUTION_UNVERIFIED);
     }
     const interruptedByThisClick = queuedInterrupt &&
       interruptIntent?.targetRunId === run.id && run.resultJson?.operatorInterrupted === true &&
@@ -511,7 +518,7 @@ export async function admitExplicitNativeContinuation(input: {
     if (retry && run.status === "cancelled" && !canContinueCancelledRun(run) && !cancelledStartup)
       return blocked("cancelled_by_operator", "Inspect the stopped run and send a new message to continue.");
     if (cancelledStartup) cancelledStartupIds.add(run.id);
-    if (run.runtimeMode !== "native" && !unusedAdmission && !legacyUserTurn && !cancelledStartup) return null;
+    if (run.runtimeMode !== "native" && !unusedAdmission && !legacyUserTurn && !cancelledStartup) return refused("previous_execution_unverified", PREVIOUS_EXECUTION_UNVERIFIED);
     // A provider failure can finish the normal result/assessment commit path.
     // Its accepted failed result is immutable history, not a live controller.
     // Only a new user turn may pass this gate; the process/lease stop proofs
@@ -559,7 +566,7 @@ export async function admitExplicitNativeContinuation(input: {
       if (!leases.every(lease => hasRemoteTerminationReceipt(lease) || hasRecoveredCleanupStopReceipt(lease))) return blocked("remote_cleanup", "Waiting for the previous environment to stop. Your message will start automatically.");
       if (run.runtimeMode === "native" && !input.dryRun && !leases.every(lease => completeTerminatedRemoteNativeSessionCleanup({
         companyId, runId: run.id, remoteCleanupScope: remoteLeaseCleanupScope(lease)!,
-      }))) return null;
+      }))) return refused("remote_cleanup", "Waiting for the previous environment to stop. Your message will start automatically.");
     } else {
       if (leases.some(lease => !lease.releasedAt || lease.cleanupStatus === "failed")) return blocked("local_cleanup", "Waiting for the previous environment to finish cleanup. Your message will start automatically.");
       if (!unusedAdmission && !cancelledStartup && !failedPreparation) {
@@ -652,7 +659,7 @@ export async function admitExplicitNativeContinuation(input: {
   const nativeSources = sources.filter(run => run.runtimeMode === "native");
   const executedSources = sources.filter(run => run.runtimeMode === "native" || run.errorCode !== "execution_reconciliation_required" || run.startedAt);
   if (!executedSources.length || (retry && !sources.some(run => run.id === input.failedRunId)) ||
-      (taskRetry && !sources.some(run => run.id === taskRetry.sourceRunId))) return null;
+      (taskRetry && !sources.some(run => run.id === taskRetry.sourceRunId))) return refused("previous_execution_unverified", PREVIOUS_EXECUTION_UNVERIFIED);
   const [active] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
     eq(heartbeatRuns.companyId, companyId),
     or(eq(heartbeatRuns.nativeIssueId, issueId), sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`),

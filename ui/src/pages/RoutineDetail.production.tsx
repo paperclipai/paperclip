@@ -1,4 +1,5 @@
 import { companyProjectsQuery } from "@/lib/company-projects-query";
+import { configurationWarningMessages } from "../lib/configuration-warnings";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Navigate, useNavigate, useParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -397,8 +398,10 @@ export function RoutineDetail() {
         ...(baseRevisionId ? { baseRevisionId } : {}),
       });
     },
-    onSuccess: async () => {
+    onSuccess: async (updated) => {
       setSaveConflict(false);
+      const notice = configurationWarningMessages(updated);
+      if (notice) pushToast({ title: "Routine saved", body: notice, tone: "warn" });
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(routineId!) }),
         queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId!) }),

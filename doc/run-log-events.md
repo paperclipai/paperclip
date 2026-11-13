@@ -969,6 +969,45 @@ or message content. The event establishes the accounting baseline; it is not a
 new billable usage receipt or a user-facing provider warning. Other provider
 identity checks remain in force.
 
+## OpenRouter serving host
+
+OpenRouter can route one model across many hosts, which may serve different
+quantizations. OpenCode runs routed through OpenRouter record which host served
+each model call. The runner's provider proxy reads the top-level `provider` and
+`id` fields from the first streamed chunk, or from the whole JSON body when the
+response is not streamed. It forwards every byte to OpenCode unchanged and
+before it inspects them, so the first token is not delayed. It scans at most
+the first 64 KiB of a stream and 1 MiB of a JSON body. It skips encoded bodies,
+non-2xx responses, and any malformed or missing field. A recording failure
+never affects the response or the turn.
+
+Each `item.completed` usage event (`payload.kind: "usage"`) carries two fields
+in `payload.usage`:
+
+- `upstreamProvider`: the host that served the most recent model call when the
+  usage was reported, such as `Novita` or `DeepInfra`.
+- `providerRequestId`: that call's OpenRouter generation ID, such as
+  `gen-1762981234-AbCdEfGh`.
+
+The proxy clears the recorded host when each new model request starts, and a
+session clears it when it attaches another run. A call whose host the proxy
+could not read therefore carries neither field. It never inherits an earlier
+call's or an earlier run's values.
+
+The runner's internal `usage.reported` event carries the same values, using its
+existing `providerRequestId` field and an optional `upstreamProvider` field.
+The run's `usageJson.providerRequestId` and its cost event name the first
+generation ID the run reported. That value stays the same as later turns
+report, so a late usage receipt still matches the charge. Remote Runner runs carry
+the same ID in each saved usage receipt's producer event and in the receipt
+itself. A receipt saved before this field existed still replays when the
+Runner now names an ID. Per-call IDs and
+hosts remain in the run log. Runs whose provider reports no host carry neither
+field, and `usageJson.providerRequestId` stays `null` as before.
+
+These are run-log fields. They stay in the instance database and are not sent
+to Paperclip Telemetry or OpenTelemetry.
+
 ## AI subscription contention
 
 A fresh task execution cannot enter this wait. A run that already entered this
