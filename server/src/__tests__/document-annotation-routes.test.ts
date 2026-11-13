@@ -267,6 +267,23 @@ describe("document annotation routes", () => {
       assigneeAgentId: "99999999-9999-4999-8999-999999999999",
     });
 
+    const addedReferencedIssue = {
+      id: "55555555-5555-4555-8555-555555555555",
+      identifier: "PAP-2",
+      title: "Added reference",
+    };
+    const removedReferencedIssue = {
+      id: "66666666-6666-4666-8666-666666666666",
+      identifier: "PAP-3",
+      title: "Removed reference",
+    };
+
+    mockIssueReferenceService.diffIssueReferenceSummary.mockReturnValueOnce({
+      addedReferencedIssues: [addedReferencedIssue],
+      removedReferencedIssues: [removedReferencedIssue],
+      currentReferencedIssues: [addedReferencedIssue, removedReferencedIssue],
+    } as never);
+
     const res = await request(await createApp())
       .put(`/api/issues/${issueId}/documents/plan`)
       .send({
@@ -282,7 +299,23 @@ describe("document annotation routes", () => {
     expect(mockIssueReferenceService.syncDocument).toHaveBeenCalledWith(documentPayload.id);
     expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: "issue.document_updated",
+      details: expect.objectContaining({
+        addedReferencedIssues: [addedReferencedIssue],
+        removedReferencedIssues: [removedReferencedIssue],
+      }),
     }));
+
+    const activityCalls = mockLogActivity.mock.calls as unknown as Array<
+      [unknown, { action?: string; details?: Record<string, unknown> }]
+    >;
+    const documentUpdateCall = activityCalls.find(
+      ([, event]) => event.action === "issue.document_updated",
+    );
+
+    expect(documentUpdateCall).toBeDefined();
+    expect(documentUpdateCall?.[1].details).not.toHaveProperty(
+      "currentReferencedIssues",
+    );
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
