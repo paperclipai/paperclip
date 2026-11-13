@@ -14,11 +14,12 @@ const SERVER_DECLARATIONS = "server declarations";
 const lowMemory = { [LOW_MEMORY_VARIABLE]: "1" };
 
 export function planLane({ buildGapPackages, testLayers, projects = PROJECTS }) {
-  const typecheckPackage = (name) => ({
+  const typecheckPackage = (name, background) => ({
     name: `typecheck ${name}`,
     command: "pnpm",
     args: ["--filter", name, "typecheck"],
     env: lowMemory,
+    background,
   });
   const prepare = [
     { name: "link workspace packages", command: "pnpm", args: ["run", "preflight:workspace-links"] },
@@ -35,7 +36,7 @@ export function planLane({ buildGapPackages, testLayers, projects = PROJECTS }) 
       args: ["scripts/run-typecheck-build-gaps.mjs", "--runtime-assets-only"],
     },
     { name: "install test program dependencies", command: "node", args: ["scripts/typecheck-test-programs.mjs", "--prepare-only"] },
-    ...buildGapPackages.filter((name) => SERIAL_BUILD_GAPS.includes(name)).map(typecheckPackage),
+    ...buildGapPackages.filter((name) => SERIAL_BUILD_GAPS.includes(name)).map((name) => typecheckPackage(name, false)),
   ];
   const needsDeclarations = [SERVER_DECLARATIONS];
   const tasks = [
@@ -44,13 +45,13 @@ export function planLane({ buildGapPackages, testLayers, projects = PROJECTS }) 
       command: "node",
       args: ["server/scripts/typecheck-layers.mjs", "--declarations-only"],
       env: lowMemory,
-      critical: true,
     },
     { name: "release registry tests", command: "pnpm", args: ["run", "test:release-registry"] },
     {
       name: "typecheck test programs",
       command: "node",
       args: ["scripts/typecheck-test-programs.mjs", "--low-memory", "--skip-prepare"],
+      background: true,
     },
     ...testLayers.map((layer) => ({
       name: `server layer ${layer}`,
@@ -58,20 +59,19 @@ export function planLane({ buildGapPackages, testLayers, projects = PROJECTS }) 
       args: ["server/scripts/typecheck-layers.mjs", "--layer", layer],
       env: lowMemory,
       needs: needsDeclarations,
-      critical: true,
     })),
     ...projects.map((project) => ({
       name: `test project ${project}`,
       command: "node",
       args: ["scripts/typecheck-test-projects.mjs", "--low-memory", "--reuse-declarations", project],
       needs: needsDeclarations,
-      critical: true,
     })),
-    ...buildGapPackages.filter((name) => !SERIAL_BUILD_GAPS.includes(name)).map(typecheckPackage),
+    ...buildGapPackages.filter((name) => !SERIAL_BUILD_GAPS.includes(name)).map((name) => typecheckPackage(name, true)),
     {
       name: "CLI guidance safety",
       command: "pnpm",
       args: ["exec", "vitest", "run", "--project", "@paperclipai/server", "server/src/__tests__/cli-invocation-safety.test.ts"],
+      background: true,
     },
   ];
   return { prepare, tasks };
@@ -99,7 +99,7 @@ function runCaptured(task, options) {
       resolve({ status: 1, output: `${error.message}\n`, durationMs: Date.now() - started });
       return;
     }
-    if (!task.critical && child.pid) {
+    if (task.background && child.pid) {
       try {
         setPriority(child.pid, BACKGROUND_PRIORITY);
       } catch {}

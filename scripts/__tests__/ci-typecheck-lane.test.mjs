@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { getPriority } from "node:os";
 import test from "node:test";
-import { createReporter, planLane, runLane, SERIAL_BUILD_GAPS } from "../ci-typecheck-lane.mjs";
+import { BACKGROUND_PRIORITY, createReporter, planLane, runLane, SERIAL_BUILD_GAPS } from "../ci-typecheck-lane.mjs";
 import { PROJECTS } from "../typecheck-test-projects.mjs";
 
 const plan = () =>
@@ -51,8 +52,8 @@ test("every check of the sequential job is planned, and only declaration readers
   const waiting = tasks.filter((task) => task.needs);
   assert.equal(waiting.length, 2 + PROJECTS.length);
   assert.deepEqual(
-    tasks.filter((task) => task.critical).map((task) => task.name),
-    ["server declarations", ...waiting.map((task) => task.name)],
+    tasks.filter((task) => !task.background).map((task) => task.name),
+    ["server declarations", "release registry tests", ...waiting.map((task) => task.name)],
   );
 });
 
@@ -123,6 +124,21 @@ test("passing checks are folded into GitHub log groups and failures are annotate
   const output = lines.join("");
   assert.match(output, /^::group::passed in 1\.2s: check: tsc -p a\.json\nok\n::endgroup::\n/);
   assert.match(output, /::error title=Typecheck lane::check failed with exit code 2\n\n=== FAILED in 1\.2s with exit code 2: check: tsc -p a\.json\na\.ts: error\n=== end of check\n/);
+});
+
+test("background checks run at a lower CPU priority than the critical path", { skip: process.platform === "win32" }, async () => {
+  const lines = [];
+  const report = "console.log('priority=' + require('node:os').getPriority())";
+  await runLane({
+    prepare: [],
+    tasks: [node("critical", report), { ...node("filler", report), background: true }],
+    concurrency: 2,
+    reporter: quietReporter(lines),
+  });
+  const output = lines.join("");
+  const own = getPriority();
+  assert.match(output, new RegExp(`: critical: [^\\n]*\\npriority=${own}\\n`));
+  assert.match(output, new RegExp(`: filler: [^\\n]*\\npriority=${Math.max(own, BACKGROUND_PRIORITY)}\\n`));
 });
 
 test("the PR typecheck job runs the lane after the Runner release crate restore", () => {
