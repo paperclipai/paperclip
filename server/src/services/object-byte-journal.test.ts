@@ -277,6 +277,84 @@ describe("object byte journal", () => {
     expect(hidden).toBe(0);
     expect(await journal.readRange(next.head, 0, 100)).toEqual(Buffer.from("kept"));
   });
+  // Runs `during` once, after the claim has read the head and before it publishes.
+  function duringClaim(during: () => Promise<void>) {
+    let ran = false;
+    return async () => {
+      if (ran) return;
+      ran = true;
+      await during();
+    };
+  }
+  it("claims after the superseded writer's late append instead of failing as another writer's", async () => {
+    const s = storage(),
+      journal = createObjectByteJournal({ provider: s.provider, prefix: "c/r/log" });
+    let old = await journal.claim({ assertAuthority: authority });
+    old = await journal.append(old, Buffer.from("before"));
+    const next = await journal.claim({
+      assertAuthority: duringClaim(async () => {
+        old = await journal.append(old, Buffer.from("+late"));
+      }),
+    });
+    expect(next.head).toMatchObject({ generation: old.head.generation + 1, end: 11, closed: false });
+    expect(next.head.owner).not.toBe(old.head.owner);
+    expect(await journal.readRange(next.head, 0, 100)).toEqual(Buffer.from("before+late"));
+    await expect(journal.append(old, Buffer.from("lost"))).rejects.toBeInstanceOf(ObjectJournalConflictError);
+  });
+  it("claims after the superseded writer closes its log during the claim", async () => {
+    const s = storage(),
+      journal = createObjectByteJournal({ provider: s.provider, prefix: "c/r/log" });
+    let old = await journal.claim({ assertAuthority: authority });
+    old = await journal.append(old, Buffer.from("kept"));
+    const next = await journal.claim({
+      assertAuthority: duringClaim(async () => {
+        old = await journal.append(old, Buffer.from("!"));
+        await journal.close(old);
+      }),
+    });
+    expect(next.head).toMatchObject({ generation: old.head.generation + 1, end: 5, closed: false });
+    expect(await journal.readRange(next.head, 0, 100)).toEqual(Buffer.from("kept!"));
+  });
+  it("stops claiming again at the deadline when the superseded writer never stops committing", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const s = storage(),
+      journal = createObjectByteJournal({ provider: s.provider, prefix: "c/r/log" });
+    let old = await journal.claim({ assertAuthority: authority });
+    let attempts = 0;
+    await expect(journal.claim({
+      assertAuthority: async () => {
+        attempts++;
+        old = await journal.append(old, Buffer.from("x"));
+        vi.setSystemTime(Date.now() + 15_000);
+      },
+    })).rejects.toBeInstanceOf(ObjectJournalConflictError);
+    expect(attempts).toBeGreaterThan(2);
+    expect(attempts).toBeLessThan(12);
+    expect((await journal.head())!.head.owner).toBe(old.head.owner);
+  });
+  it("still fails a claim when another claim takes the journal first", async () => {
+    const s = storage(),
+      journal = createObjectByteJournal({ provider: s.provider, prefix: "c/r/log" });
+    await journal.claim({ assertAuthority: authority });
+    let winner!: Awaited<ReturnType<typeof journal.claim>>;
+    await expect(journal.claim({
+      assertAuthority: duringClaim(async () => {
+        winner = await journal.claim({ assertAuthority: authority });
+      }),
+    })).rejects.toBeInstanceOf(ObjectJournalConflictError);
+    expect((await journal.head())!.head).toEqual(winner.head);
+    expect((await journal.append(winner, Buffer.from("ok"))).head.end).toBe(2);
+  });
+  it("still fails a claim when the journal is deleted during the claim", async () => {
+    const s = storage(),
+      journal = createObjectByteJournal({ provider: s.provider, prefix: "c/r/log" });
+    const old = await journal.claim({ assertAuthority: authority });
+    await journal.close(old);
+    await expect(journal.claim({
+      assertAuthority: duringClaim(() => journal.remove()),
+    })).rejects.toBeInstanceOf(ObjectJournalConflictError);
+    expect((await journal.head())!.head.deleted).toBe(true);
+  });
   function hideHead(s: ReturnType<typeof storage>, onRead: () => void = () => undefined) {
     const original = s.provider.getObject;
     let reads = 0;
