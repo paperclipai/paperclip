@@ -37,6 +37,8 @@ export interface ClaudeProviderTurnHooks {
   silenceMs?: number;
   mintTurnId?: () => string;
   unadopted?: () => void;
+  turnStarted?: () => number;
+  turnEnded?: (startedAt: number | null, completed: boolean) => void;
 }
 
 const ARMING_TURN_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/;
@@ -124,6 +126,7 @@ class ActiveProviderTurn implements ClaudeProviderTurn {
   #chain: Promise<void> = Promise.resolve();
   #settled = false;
   admission: ClaudeProviderTurnAdmission | null = null;
+  ended: ((result: ClaudeProviderTurnResult) => void) | null = null;
 
   constructor(requestId: string) {
     this.requestId = requestId;
@@ -157,8 +160,12 @@ class ActiveProviderTurn implements ClaudeProviderTurn {
     try {
       this.admission?.release();
     } finally {
-      done();
-      this.#settle(result);
+      try {
+        this.ended?.(result);
+      } finally {
+        done();
+        this.#settle(result);
+      }
     }
   }
 }
@@ -272,6 +279,8 @@ export class ClaudeProviderTurns {
       return null;
     }
     turn.admission = admission;
+    const startedAt = this.#hooks.turnStarted?.() ?? null;
+    turn.ended = (result) => this.#hooks.turnEnded?.(startedAt, result.status === "completed");
     return turn;
   }
 

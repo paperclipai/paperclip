@@ -31,7 +31,7 @@ export class ClaudeBackgroundTaskTracker {
   readonly #tasks = new Map<string, Task>();
   readonly #pending = new Map<RequestId, { method: string; advertised: boolean }>();
   #observed = 0;
-  #providerTurnStartedAt: number | null = null;
+  readonly #openProviderTurns: number[] = [];
 
   observe(direction: "inbound" | "outbound", message: unknown, providerTurn = false): void {
     if (this.#unknown) return;
@@ -50,7 +50,9 @@ export class ClaudeBackgroundTaskTracker {
     let live = 0;
     for (const task of this.#tasks.values()) {
       if (!task.live) {
-        if (!task.settled) return null;
+        if (task.settled) continue;
+        if (!this.#openProviderTurns.some((start) => task.finishedAt !== undefined && task.finishedAt <= start)) return null;
+        live += 1;
         continue;
       }
       if (!task.shell) return null;
@@ -59,13 +61,15 @@ export class ClaudeBackgroundTaskTracker {
     return { live };
   }
 
-  providerTurnStarted(): void {
-    this.#providerTurnStartedAt = this.#observed;
+  providerTurnStarted(): number {
+    const startedAt = this.#observed;
+    this.#openProviderTurns.push(startedAt);
+    return startedAt;
   }
 
-  providerTurnEnded(completed: boolean): void {
-    const startedAt = this.#providerTurnStartedAt;
-    this.#providerTurnStartedAt = null;
+  providerTurnEnded(startedAt: number | null, completed: boolean): void {
+    const open = startedAt === null ? -1 : this.#openProviderTurns.indexOf(startedAt);
+    if (open >= 0) this.#openProviderTurns.splice(open, 1);
     if (!completed) {
       this.#unknown = true;
       return;

@@ -391,7 +391,9 @@ export async function openQualifiedAcpxRuntime(
     sessionId: () => extensionBoundary.sessionIds.values().next().value ?? null,
     promptActive: () => extensionBoundary.active !== null,
     admit: (turn, fail) => providerTurnAdmission.admit?.(turn, fail) ?? null,
-    unadopted: () => backgroundTasks.providerTurnEnded(false),
+    unadopted: () => backgroundTasks.providerTurnEnded(null, false),
+    turnStarted: () => backgroundTasks.providerTurnStarted(),
+    turnEnded: (startedAt, completed) => backgroundTasks.providerTurnEnded(startedAt, completed),
   }) : null;
   const ownsExtensionTurn = (active: AcpxRuntimeExtensionTurn, params: Record<string, unknown>): boolean =>
     extensionBoundary.active === active && !active.signal.aborted
@@ -1869,8 +1871,6 @@ function runtimePort(
       permissionBoundary.hasAdmittedTurn = true;
       permissionBoundary.active = approval;
       permissionBoundary.handler = binding.onPermissionRequest;
-      backgroundTasks?.providerTurnStarted();
-      void turn.result.then((result) => backgroundTasks?.providerTurnEnded(result.status === "completed"));
       const stopWatchingProviderExit = children.watchProviderExit(() => {
         providerProcessLost = true;
         fail(CLAUDE_PROVIDER_TURN_PROCESS_LOST, "The owned ACPX provider exited during Claude's own turn");

@@ -29,10 +29,10 @@ const completedCycle = {
     cost: { amount: 0.5, currency: "USD" }, breakdown: { inputTokens: 6, outputTokens: 4, cachedReadTokens: 0, cachedWriteTokens: 0 } } },
 };
 
-async function open(scenario: { agent?: "claude" | "codex"; turns: unknown[] }) {
+async function open(scenario: { agent?: "claude" | "codex"; turns: unknown[]; host?: string }) {
   const root = mkdtempSync(join(tmpdir(), "acpx-provider-turn-"));
   const loader = join(root, "loader.mjs");
-  const fixture = new URL("../test-support/acpx-provider-turn-host.mjs", import.meta.url);
+  const fixture = new URL(`../test-support/${scenario.host ?? "acpx-provider-turn-host.mjs"}`, import.meta.url);
   writeFileSync(join(root, "script.json"), JSON.stringify(scenario));
   writeFileSync(loader, `import { registerHooks } from "node:module";
     registerHooks({resolve(specifier,context,next){
@@ -202,6 +202,24 @@ describe("ACPX sidecar provider-started Claude turns", () => {
       await unarmed.send("session.snapshot", {});
       expect(unarmed.sidecar.pending(frame => frame.eventType === "runtime.diagnostic" && payload(frame).code === "ACPX_PROVIDER_PROCESS_LOST")).toBe(0);
     } finally { await unarmed.cleanup(); }
+  }, 20_000);
+
+  it("reports the second shell live at the first cycle's terminal when the second cycle starts while the first drains", async () => {
+    const { sidecar, send, release, cleanup } = await open({ turns: [], host: "acpx-provider-turn-tracked-host.mjs" });
+    try {
+      await send("turn.start", { turnId: "turn-1", message: "Start two background commands." });
+      const first = await sidecar.next(frame => frame.eventType === "runtime.turn_terminal" && frame.turnId === "turn-1");
+      expect(payload(first)).toMatchObject({ status: "completed", backgroundTasks: { live: 2 } });
+      expect(await send("session.provider_turn", { turnId: "turn-1", armed: true })).toEqual({ armed: true });
+      release("cycles");
+      const cycleOne = await sidecar.next(frame => frame.eventType === "runtime.turn_terminal" && frame.turnId === "provider-1");
+      expect(payload(cycleOne)).toMatchObject({ status: "completed", backgroundTasks: { live: 1 } });
+      expect(await send("session.provider_turn", { turnId: "provider-1", armed: true })).toEqual({ armed: true });
+      await sidecar.next(frame => frame.eventType === "runtime.turn_started" && frame.turnId === "provider-2");
+      release("second-end");
+      const cycleTwo = await sidecar.next(frame => frame.eventType === "runtime.turn_terminal" && frame.turnId === "provider-2");
+      expect(payload(cycleTwo)).toMatchObject({ status: "completed", backgroundTasks: { live: 0 } });
+    } finally { await cleanup(); }
   }, 20_000);
 
   it("never surfaces a cycle runnerd did not arm, disarmed, or armed for another terminal or a dead provider", async () => {
