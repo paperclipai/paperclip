@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -190,6 +190,24 @@ describe("MCP Tasks demo server", () => {
     const second = await start(new DemoTaskStore({ file, now }));
     expect((await get(second.url, taskId)).body.result).toMatchObject({ status: "completed" });
     expect(second.server.store.snapshot().toolCalls).toEqual({ slow_report: 1 });
+  });
+
+  it("refuses a state directory other users can write to, and writes through no planted file", async () => {
+    const shared = mkdtempSync(join(tmpdir(), "tasks-demo-shared-"));
+    dirs.push(shared);
+    chmodSync(shared, 0o777);
+    expect(() => new DemoTaskStore({ file: join(shared, "state.json"), now })).toThrow(/others cannot write/);
+
+    const dir = mkdtempSync(join(tmpdir(), "tasks-demo-"));
+    dirs.push(dir);
+    const victim = join(dir, "victim.txt");
+    writeFileSync(victim, "keep me");
+    // A link at the old predictable temp name must not be followed.
+    symlinkSync(victim, join(dir, `state.json.${process.pid}.tmp`));
+    const store = new DemoTaskStore({ file: join(dir, "state.json"), now });
+    store.countToolCall("slow_report");
+    expect(readFileSync(victim, "utf8")).toBe("keep me");
+    expect(JSON.parse(readFileSync(join(dir, "state.json"), "utf8")).toolCalls).toEqual({ slow_report: 1 });
   });
 
   it("shows tasks on its status page", async () => {

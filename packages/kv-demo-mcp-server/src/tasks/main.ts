@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { createTasksDemoHttpServer } from "./http.js";
 import { DemoTaskStore } from "./store.js";
@@ -14,7 +14,7 @@ function port(raw: string | undefined): number {
 async function main(): Promise<void> {
   const env = process.env;
   // State lives in a file by default so the server can be stopped and started mid-task.
-  const stateFile = env.TASKS_DEMO_STATE_FILE === "memory" ? null : env.TASKS_DEMO_STATE_FILE || join(tmpdir(), "paperclip-tasks-demo", "state.json");
+  const stateFile = env.TASKS_DEMO_STATE_FILE === "memory" ? null : env.TASKS_DEMO_STATE_FILE || join(homedir(), ".paperclip-tasks-demo", "state.json");
   const host = env.TASKS_DEMO_HOST?.trim() || "127.0.0.1";
   const token = env.TASKS_DEMO_TOKEN?.trim() || null;
   const { listen } = createTasksDemoHttpServer({ store: new DemoTaskStore({ file: stateFile }), token });

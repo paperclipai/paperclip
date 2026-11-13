@@ -242,16 +242,15 @@ It listens on `http://127.0.0.1:8849`:
   started, and the latest protocol events. It reloads every 2 seconds.
 - **JSON state**: `GET /api/state`, the same data for scripts.
 
-Task state is saved to a file (by default `paperclip-tasks-demo/state.json` in
-the OS temp directory), so you can stop and start the server mid-task. A task's
-progress is worked out from the clock, so a restart neither resets nor repeats
-it.
+Task state is saved to a file (by default `~/.paperclip-tasks-demo/state.json`),
+so you can stop and start the server mid-task. A task's progress is worked out
+from the clock, so a restart neither resets nor repeats it.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `TASKS_DEMO_PORT` (or `PORT`) | `8849` | Port to listen on. |
 | `TASKS_DEMO_HOST` | `127.0.0.1` | Interface to bind. |
-| `TASKS_DEMO_STATE_FILE` | `<tmp>/paperclip-tasks-demo/state.json` | Where task state is saved. `memory` keeps it in memory only. |
+| `TASKS_DEMO_STATE_FILE` | `~/.paperclip-tasks-demo/state.json` | Where task state is saved. Its folder must be yours and not writable by others. `memory` keeps it in memory only. |
 | `TASKS_DEMO_TOKEN` | unset | When set, `/mcp` and `/api/state` require `Authorization: Bearer <token>`. |
 
 See "Try it yourself" in [MCP-TASKS.md](../../doc/connections/MCP-TASKS.md) for

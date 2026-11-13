@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { lstatSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 
 /** Task states from the MCP Tasks extension (2026-07-28). */
 export type DemoTaskStatus = "working" | "input_required" | "completed" | "failed" | "cancelled";
@@ -53,13 +53,29 @@ const MAX_TASKS = 500;
  * be stopped and started again mid-task. A task's progress is derived from the
  * clock (`settlesAt`), so a restart never resets or repeats work.
  */
+/**
+ * The state directory must be a real directory owned by this user and not
+ * writable by anyone else, so no other local user can plant files in it.
+ */
+function assertPrivateDirectory(dir: string): void {
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const info = lstatSync(dir);
+  const uid = process.getuid?.();
+  if (!info.isDirectory() || (uid !== undefined && info.uid !== uid) || (info.mode & 0o022) !== 0) {
+    throw new Error(`Task state directory ${dir} must be a directory you own that others cannot write to. Choose another TASKS_DEMO_STATE_FILE.`);
+  }
+}
+
 export class DemoTaskStore {
   private state: DemoState = { tasks: [], toolCalls: {}, events: [] };
 
   constructor(
     private readonly options: { file?: string | null; now?: () => number } = {},
   ) {
-    if (options.file) this.load(options.file);
+    if (options.file) {
+      assertPrivateDirectory(dirname(options.file));
+      this.load(options.file);
+    }
   }
 
   now(): number {
@@ -82,9 +98,10 @@ export class DemoTaskStore {
   private save(): void {
     const file = this.options.file;
     if (!file) return;
-    mkdirSync(dirname(file), { recursive: true });
-    const temp = `${file}.${process.pid}.tmp`;
-    writeFileSync(temp, JSON.stringify(this.state, null, 2));
+    // A fresh, unguessable temp name, created exclusively: nothing another
+    // user placed in the directory (such as a symlink) is ever written through.
+    const temp = join(dirname(file), `.${basename(file)}.${randomUUID()}.tmp`);
+    writeFileSync(temp, JSON.stringify(this.state, null, 2), { flag: "wx", mode: 0o600 });
     renameSync(temp, file);
   }
 
