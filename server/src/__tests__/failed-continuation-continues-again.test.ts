@@ -7,7 +7,7 @@ import { ASSIGNED_WORK_CONTINUED_ACTION, ASSIGNED_WORK_REPAIRS_PER_MINUTE, assig
 import { taskAutomaticAttempts, transientRetryWithinTaskCap } from "../services/recovery/task-automatic-attempts.js";
 import { FRESH_CONTINUATION_SCHEMA, continueHeldExecutions, ensureFreshContinuation, resetBacklogContinuationPacingForTests } from "../services/fresh-continuation-fallback.js";
 import { PERMANENT_FAILURE_CODES, PERSON_OWNED_FAILURE_CODES } from "../services/continuation-cause.js";
-import { AUTOMATIC_RETRY_REASONS, SHARED_CONTINUATION_WINDOW_MS } from "../services/recovery/continuation-ledger.js";
+import { AUTOMATIC_RETRY_REASONS, SHARED_CONTINUATION_WINDOW_MS, sharedContinuationAttempts } from "../services/recovery/continuation-ledger.js";
 import { SERVER_RESTART_RETRY_MAX_ATTEMPTS, SERVER_RESTART_RETRY_REASON, SERVER_RESTART_RETRY_WINDOW_MS } from "../services/execution-recovery-attempt.js";
 import { FRESH_CONTINUATIONS_PER_HOUR } from "../services/fresh-continuation-fallback.js";
 import { createSystemRecovery } from "../services/system-recovery-state.js";
@@ -486,4 +486,31 @@ describePostgres("a continuation that fails before doing any work is continued a
     for (const task of tasks) second.push(await sweep.checkIssue({ companyId: f.companyId, issueId: task.id }));
     expect(second.filter(check => check?.outcome === "repaired")).toHaveLength(20 - ASSIGNED_WORK_REPAIRS_PER_MINUTE);
   }, 120_000);
+
+  it("a sweep continuation interrupted right after it was recorded still counts once", async () => {
+    resetBacklogContinuationPacingForTests(db);
+    const f = await seed();
+    const task = await f.task();
+    const failed = await f.continued(task.id);
+    for (const minutesAgo of [50, 45, 40, 35]) await db.insert(activityLog).values({ companyId: f.companyId, actorType: "system",
+      actorId: "system", action: ASSIGNED_WORK_CONTINUED_ACTION, entityType: "issue", entityId: task.id,
+      details: { outcome: "queued" }, createdAt: new Date(Date.now() - minutesAgo * MINUTE) });
+    const before = (await taskAutomaticAttempts(db, f.companyId, task.id, new Date())).started.length;
+    const crashAfterCommit = new Proxy(db, { get(target, property) {
+      if (property === "update") return (table: unknown) => {
+        if (table === activityLog) throw new Error("server stopped");
+        return target.update(table as typeof activityLog);
+      };
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    } });
+    const sweep = assignedWorkSweep(crashAfterCommit, { enqueueWakeup: wakeQueue().enqueueWakeup });
+    await expect(sweep.checkIssue({ companyId: f.companyId, issueId: task.id })).rejects.toThrow("server stopped");
+    expect(await continuationsOf(failed.id)).toHaveLength(1);
+    const attempts = await taskAutomaticAttempts(db, f.companyId, task.id, new Date());
+    expect(attempts.started).toHaveLength(before + 1);
+    expect(attempts.started).toHaveLength(5);
+    expect(await sharedContinuationAttempts(db, f.companyId, task.id, new Date())).toHaveLength(before + 1);
+    expect(await transientRetryWithinTaskCap(db, f.companyId, task.id, new Date())).toBe(true);
+  }, 60_000);
 });

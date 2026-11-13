@@ -33,7 +33,7 @@ import { workspaceRecoverySourceEligible } from "../workspace-recovery-source.js
 import { PENDING_CONTINUATION_BOUND_MS } from "../recovery-continuation-pacing.js";
 import { attributeBlock, BLOCK_ATTRIBUTION_WINDOW_MS, blockedStatusDetailsSql } from "../interruption-block-release.js";
 import { ASSIGNED_WORK_CONTINUED_ACTION, taskAutomaticAttempts } from "./task-automatic-attempts.js";
-import { ensureFreshContinuation, type FreshContinuationResult } from "../fresh-continuation-fallback.js";
+import { continueFreshInTransaction, type FreshContinuationResult } from "../fresh-continuation-fallback.js";
 import { canContinueRecoveryRunAutomatically } from "../continuation-cause.js";
 import { STRANDED_CONTINUATION_MAX_AGE_MS, STRANDED_KIND, strandedHoldContinuesAutomatically, type StrandedHoldRun } from "./stranded-hold-continuation.js";
 import {
@@ -605,7 +605,7 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       await settleContinuationActivity(claimed, claimed.reason, "restored_to_review");
       return { verdict: claimed.verdict, outcome: "repaired", retryAt: null };
     }
-    const fresh = await continueFromSavedWork(issue, facts, at);
+    const fresh = await continueFromSavedWork(issue, facts, at, claimed);
     if (fresh?.kind === "continued") {
       await settleContinuationActivity(claimed, claimed.reason, "queued", { continuedFromSavedWork: "true" });
       return { verdict: claimed.verdict, outcome: "repaired", retryAt: claimed.nextCheckAt };
@@ -643,7 +643,20 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       ? new Date(repairTimes[0] + 60_000 + Math.floor(Math.random() * 5_000)) : null;
   }
 
-  async function continueFromSavedWork(issue: IssueRow, facts: AssignedWorkFacts, at: Date): Promise<FreshContinuationResult | null> {
+  function continueAndSettleClaim(issue: IssueRow, runId: string, at: Date, claim?: { activityId: string; reason: ViolationReason }) {
+    return db.transaction(async tx => {
+      const result = await continueFreshInTransaction(tx as unknown as Db, { companyId: issue.companyId, runId, trigger: "assigned_work", now: at });
+      if (result.kind === "continued" && claim) {
+        const update = { outcome: "queued", message: continuationActivityMessage(claim.reason), continuedFromSavedWork: "true" };
+        await tx.update(activityLog).set({ details: sql`coalesce(${activityLog.details}, '{}'::jsonb) || ${JSON.stringify(update)}::jsonb` })
+          .where(and(eq(activityLog.companyId, issue.companyId), eq(activityLog.id, claim.activityId)));
+      }
+      return result;
+    });
+  }
+
+  async function continueFromSavedWork(issue: IssueRow, facts: AssignedWorkFacts, at: Date,
+    claim?: { activityId: string; reason: ViolationReason }): Promise<FreshContinuationResult | null> {
     const source = facts.latestRun;
     if (!source?.finishedAt || !["failed", "timed_out", "interrupted", "cancelled"].includes(source.status)) return null;
     if (source.status === "cancelled" && source.errorCode === "execution_reconciliation_required") {
@@ -654,7 +667,7 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
           and coalesce(${heartbeatRuns.errorCode}, '') = 'execution_reconciliation_required')`))
         .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(1);
       if (!refusedFor) return null;
-      return ensureFreshContinuation(db, { companyId: issue.companyId, runId: refusedFor.id, trigger: "assigned_work", now: at })
+      return continueAndSettleClaim(issue, refusedFor.id, at, claim)
         .catch(error => {
           logger.warn({ err: error, companyId: issue.companyId, issueId: issue.id }, "assigned-work continuation behind a refused run deferred");
           return null;
@@ -665,7 +678,7 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       contextSnapshot: heartbeatRuns.contextSnapshot, runnerProfileJson: heartbeatRuns.runnerProfileJson }).from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.companyId, issue.companyId), eq(heartbeatRuns.id, source.id)));
     if (!run || !canContinueRecoveryRunAutomatically(run)) return null;
-    return ensureFreshContinuation(db, { companyId: issue.companyId, runId: source.id, trigger: "assigned_work", now: at })
+    return continueAndSettleClaim(issue, source.id, at, claim)
       .catch(error => {
         logger.warn({ err: error, companyId: issue.companyId, issueId: issue.id }, "assigned-work continuation from saved work deferred");
         return null;
