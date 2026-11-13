@@ -3,7 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-/** Security properties only: what the report-only job in docker.yml may do. */
+/** Security properties only: what the report-only job in docker.yml and the pull-request check may do. */
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const read = (name: string) => readFileSync(path.join(repoRoot, ".github", "workflows", name), "utf8");
@@ -61,5 +61,30 @@ describe("the report-only Runner image job in docker.yml", () => {
     expect(/^ {4}if: (.+)$/m.exec(report)![1]).toBe(
       "github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.event_name == 'push' && github.ref == 'refs/heads/master'",
     );
+  });
+});
+
+describe("the pull-request check of the application image's Runner path", () => {
+  const workflow = read("docker-app-check.yml");
+  const jobs = jobsOf(workflow);
+
+  it("runs a contributor's code with no credential and no way to publish", () => {
+    expect(workflow).toMatch(/^permissions: \{\}$/m);
+    expect(workflow).toMatch(/^on:\n {2}pull_request:\n/m);
+    expect(workflow).not.toMatch(/pull_request_target|workflow_run|workflow_dispatch|\n {2}push:/);
+    expect(Object.keys(jobs)).toEqual(["runner_path"]);
+    expect(permissions(jobs.runner_path)).toEqual(["contents: read"]);
+    expect(workflow).not.toMatch(credential);
+    expect(workflow).not.toMatch(registryWrite);
+    expect(workflow).toContain("persist-credentials: false");
+    expectPinnedAndExpressionFree(workflow);
+  });
+
+  it("bounds every image build and exports nothing from it", () => {
+    const building = steps(jobs.runner_path).filter((step) => step.includes("docker buildx build"));
+    expect(building).toHaveLength(1);
+    expect(building[0]).toMatch(/^ {8}timeout-minutes: \d+$/m);
+    expect(building[0].match(/--output /g)).toEqual(["--output "]);
+    expect(building[0]).toContain("--output type=cacheonly");
   });
 });
