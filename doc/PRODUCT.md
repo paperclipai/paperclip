@@ -95,7 +95,8 @@ The current issue model includes stable issue identifiers, parent/sub-issues, bl
 
 When an agent creates a subtask or follow-up task, its source task's feed shows
 a linked card at creation time with the current title, task number, and status.
-The Tasks tab keeps the full relationship list.
+The Tasks tab keeps the full relationship list and shows each task once. Project
+groups omit tasks already shown in the other sections and disappear when empty.
 
 Agent-owned tasks show **In Progress** only while a task-linked run is queued
 or running. When execution ends, their visible status reflects recovery
