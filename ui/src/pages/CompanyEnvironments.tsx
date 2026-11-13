@@ -70,6 +70,7 @@ type EnvironmentFormState = {
   name: string;
   description: string;
   driver: "local" | "ssh" | "sandbox";
+  sshUseHostAuth: boolean;
   sshHost: string;
   sshPort: string;
   sshUsername: string;
@@ -126,6 +127,7 @@ function buildEnvironmentPayload(form: EnvironmentFormState) {
     config:
       form.driver === "ssh"
         ? {
+            useHostAuth: form.sshUseHostAuth,
             host: form.sshHost.trim(),
             port: Number.parseInt(form.sshPort || "22", 10) || 22,
             username: form.sshUsername.trim(),
@@ -152,6 +154,7 @@ function createEmptyEnvironmentForm(): EnvironmentFormState {
     name: "",
     description: "",
     driver: "ssh",
+    sshUseHostAuth: false,
     sshHost: "",
     sshPort: "22",
     sshUsername: "",
@@ -182,6 +185,7 @@ function normalizeNonLocalEnvironmentId(
 function readSshConfig(environment: Environment) {
   const config = environment.config ?? {};
   return {
+    useHostAuth: config.useHostAuth !== false,
     host: typeof config.host === "string" ? config.host : "",
     port:
       typeof config.port === "number"
@@ -227,6 +231,7 @@ function createEnvironmentFormFromEnvironment(environment: Environment): Environ
       name: environment.name,
       description: environment.description ?? "",
       driver: "ssh",
+      sshUseHostAuth: ssh.useHostAuth,
       sshHost: ssh.host,
       sshPort: ssh.port,
       sshUsername: ssh.username,
@@ -2378,6 +2383,17 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
                       onChange={(e) => setEnvironmentForm((current) => ({ ...current, sshKnownHosts: e.target.value }))}
                     />
                   </Field>
+                  <details className="md:col-span-2">
+                    <summary className="cursor-pointer text-sm font-medium">Advanced</summary>
+                    <div className="pt-3">
+                      <ToggleField
+                        label="Use authentication configured on the remote machine"
+                        hint="Use the remote user's provider login instead of the agent's Paperclip AI account."
+                        checked={environmentForm.sshUseHostAuth}
+                        onChange={(checked) => setEnvironmentForm((current) => ({ ...current, sshUseHostAuth: checked }))}
+                      />
+                    </div>
+                  </details>
                   <div className="md:col-span-2">
                     <ToggleField
                       label="Strict host key checking"

@@ -11,7 +11,7 @@ import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { agentWakeupRequests, chatActions, chatConversations, chatEndpoints, heartbeatRuns, issues, issueComments, runIdentityContexts, issueRecoveryActions, type Db } from "@paperclipai/db";
 import { conflict, forbidden, notFound, HttpError } from "../errors.js";
 import { persistActivity } from "./activity-log.js";
-import { createSystemRecovery, readSystemRecovery } from "./system-recovery-state.js";
+import { createSystemRecovery, readSystemRecovery, savedFilesUnrecoverable } from "./system-recovery-state.js";
 import { adoptSystemRecovery, updateSystemRecovery } from "./system-recovery.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { notifyChatActionWork } from "./chat-work-notifications.js";
@@ -23,6 +23,7 @@ import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state
 import { deferredChatInputPredicate, resumeDeferredChatWake, unadmittedChatWakeupCondition } from "./durable-chat-wakeup.js";
 import { notifyDeferredExecutionWork } from "./deferred-execution-notifications.js";
 import { hasPendingRunCleanup } from "./execution-blocker.js";
+import { undeliveredContinuation } from "./fresh-continuation-retry-fold.js";
 import { PersistedExecutionWaitRefusal } from "./deferred-execution-wait.js";
 import { rearmExhaustedNativeFinalization } from "./native-runtime/exhausted-finalization-retry.js";
 import { NativeChatReviewPresentationContentionError } from "./native-runtime/native-chat-review-presentation.js";
@@ -225,9 +226,26 @@ export async function retireSupersededTaskRetry(db: Db, input: {
   return retired.length > 0;
 }
 
+export async function retireTaskRetriesContinuedBy(db: Db, input: {
+  companyId: string; issueId: string; agentId: string; sourceRunIds: string[];
+}) {
+  if (!input.sourceRunIds.length) return;
+  const held = and(eq(agentWakeupRequests.companyId, input.companyId), eq(agentWakeupRequests.agentId, input.agentId),
+    eq(agentWakeupRequests.reason, "task_retry"), eq(agentWakeupRequests.status, "deferred_issue_execution"),
+    isNull(agentWakeupRequests.runId), sql`${agentWakeupRequests.payload}->>'issueId' = ${input.issueId}`,
+    inArray(sql<string>`${agentWakeupRequests.payload}#>>'{taskRetry,sourceRunId}'`, input.sourceRunIds));
+  const [heldRetry] = await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(held).limit(1);
+  if (!heldRetry) return;
+  await notifyStrandedAgentStatus(db, { companyId: input.companyId, agentId: input.agentId });
+  await notifyExternalConversationSettlement(db, { companyId: input.companyId, issueId: input.issueId });
+  await db.update(agentWakeupRequests).set({ status: "skipped", error: "task_retry_superseded",
+    finishedAt: new Date(), updatedAt: new Date() }).where(held);
+}
+
 type TaskRetryRequest = {
   db: Db; companyId: string; issueId: string; actorId: string;
   idempotencyKey: string; observedRunId: string | null; actorSource?: string;
+  retryAction?: "move_forward";
   /** Paperclip requests the user's Retry itself: after a restart lost an
    * unstarted turn, or once a provider usage limit it waited on has reset. */
   initiatedBy?: "restart_recovery" | "provider_limit_reset";
@@ -302,6 +320,9 @@ function admitTaskRetry(input: TaskRetryRequest) {
         latest.agentId !== issue.assigneeAgentId || input.observedRunId !== latest.id) {
       return { requestId: null, accepted: false, stale: true, observedRunId: latest?.id ?? null, chatActionId: undefined };
     }
+    if (input.retryAction === "move_forward" && !["queued", "running"].includes(latest.status) &&
+        !(await undeliveredContinuation(tx, { companyId: issue.companyId, issueId: issue.id })))
+      return { requestId: null, accepted: false, stale: false, alreadyMovedOn: true, observedRunId: latest.id, chatActionId: undefined };
     let active = (await tx.select().from(agentWakeupRequests).where(and(
       eq(agentWakeupRequests.companyId, issue.companyId), eq(agentWakeupRequests.agentId, issue.assigneeAgentId),
       sql`${agentWakeupRequests.payload}->>'issueId' = ${issue.id}`,
@@ -468,7 +489,7 @@ function admitTaskRetry(input: TaskRetryRequest) {
         // A completed preservation still owns its snapshot evidence. Bind the
         // new intent so sibling holds can select that same continuation, without
         // repeating recovery or renewing its attempt budget.
-        if (previous.state === "complete" || previous.state === "running" || (previous.state === "exhausted"
+        if (previous.state === "complete" || previous.state === "running" || savedFilesUnrecoverable(previous) || (previous.state === "exhausted"
             && previous.failure?.retryClass === "use_alternative_strategy" && !previous.freshAttemptRunId)) {
           await updateSystemRecovery(db, { companyId: issue.companyId, issueId: issue.id, runId: previous.sourceRunId,
             actionId: action.id }, previous, { ...previous, intentId: active?.id ?? id });

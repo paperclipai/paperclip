@@ -9,6 +9,8 @@ import {
   type GitHubAllowedPerson,
 } from "@paperclipai/shared";
 import { accessApi } from "@/api/access";
+import { queryKeys } from "@/lib/queryKeys";
+import { GitHubSponsorSelect } from "./GitHubSponsorSelect";
 import { chatEndpointsApi } from "@/api/chatEndpoints";
 import { githubChatApi } from "@/api/githubChat";
 import { useOptionalCompany } from "@/context/CompanyContext";
@@ -592,15 +594,21 @@ export function GitHubAccessEditor({
     queryKey: ["github-members", companyId],
     queryFn: () => accessApi.listMembers(companyId),
   });
+  const boardAccess = useQuery({
+    queryKey: queryKeys.access.currentBoardAccess,
+    queryFn: () => accessApi.getCurrentBoardAccess(),
+  });
   const links = useQuery({
     queryKey: ["github-linked-members", endpointId],
     queryFn: () => chatEndpointsApi.listPrincipals(endpointId),
   });
   const membersView = useQueryView(members);
   const linksView = useQueryView(links);
+  const boardAccessView = useQueryView(boardAccess);
   const linksLoaded = linksView.kind === "ready" || linksView.kind === "stale";
   const [login, setLogin] = useState("");
-  const [sponsor, setSponsor] = useState(configuration.responsibleUserId);
+  const [sponsor, setSponsor] = useState("");
+  const guestSponsor = sponsor || boardAccess.data?.userId || "";
   const [candidate, setCandidate] = useState<{
     githubUserId: string;
     login: string;
@@ -855,6 +863,7 @@ export function GitHubAccessEditor({
             variant="outline"
             size="sm"
             onClick={() => {
+              setSponsor(boardAccess.data?.userId ?? "");
               setDialog("guest");
               setLookupError("");
             }}
@@ -899,37 +908,28 @@ export function GitHubAccessEditor({
             </p>
           ) : (
             <>
-              <Label htmlFor="github-responsible">Responsible member</Label>
-              <select
-                id="github-responsible"
-                className={githubSelectClass}
+              <Label>Responsible member</Label>
+              <GitHubSponsorSelect
+                label="Responsible member"
+                companyId={companyId}
+                members={activeMembers}
+                access={boardAccess.data}
                 value={configuration.responsibleUserId}
-                onChange={(e) =>
+                onChange={(userId) =>
                   onChange({
                     ...configuration,
-                    responsibleUserId: e.target.value,
+                    responsibleUserId: userId,
                   })
                 }
-              >
-                {!responsible && (
-                  <option value={configuration.responsibleUserId}>
-                    {configuration.responsibleUserId || "Select a member"}
-                  </option>
-                )}
-                {activeMembers.map((member) => (
-                  <option key={member.principalId} value={member.principalId}>
-                    {member.user?.name ??
-                      member.user?.email ??
-                      member.principalId}
-                  </option>
-                ))}
-              </select>
+              />
             </>
           )}
           <p className="text-xs text-muted-foreground">
             The member accountable for automatically created Paperclip tasks.
             GitHub authors remain recorded separately. This grants no access to
             the member’s personal credentials.
+            Only company owners, company admins, and instance admins can select
+            another person as a sponsor or responsible member.
           </p>
         </div>
       </GitHubSettingsDisclosure>
@@ -938,15 +938,16 @@ export function GitHubAccessEditor({
           {error}
         </p>
       )}
-      {(membersView.kind === "error" || linksView.kind === "error") && (
+      {(membersView.kind === "error" || linksView.kind === "error" || boardAccessView.kind === "error") && (
         <QueryErrorState
-          error={membersView.kind === "error" ? members.error : links.error}
-          action="load members and linked accounts"
+          error={membersView.kind === "error" ? members.error : linksView.kind === "error" ? links.error : boardAccess.error}
+          action="load members, linked accounts, and your access"
           onRetry={() => {
             membersView.retry();
             linksView.retry();
+            boardAccessView.retry();
           }}
-          retrying={members.isFetching || links.isFetching}
+          retrying={members.isFetching || links.isFetching || boardAccess.isFetching}
         />
       )}
       <Dialog
@@ -1041,22 +1042,15 @@ export function GitHubAccessEditor({
                 </div>
               </div>
               <div className="space-y-2">
-                <Label htmlFor="github-guest-sponsor">Sponsor</Label>
-                <select
-                  id="github-guest-sponsor"
-                  className={githubSelectClass}
-                  value={sponsor}
-                  onChange={(e) => setSponsor(e.target.value)}
-                >
-                  {!activeMembers.some(
-                    (member) => member.principalId === sponsor,
-                  ) && <option value={sponsor}>Select a member</option>}
-                  {activeMembers.map((member) => (
-                    <option key={member.principalId} value={member.principalId}>
-                      {member.user?.name ?? member.principalId}
-                    </option>
-                  ))}
-                </select>
+                <Label>Sponsor</Label>
+                <GitHubSponsorSelect
+                  label="Sponsor"
+                  companyId={companyId}
+                  members={activeMembers}
+                  access={boardAccess.data}
+                  value={guestSponsor}
+                  onChange={setSponsor}
+                />
               </div>
               {candidate && (
                 <p role="status" className="text-sm">
@@ -1083,7 +1077,7 @@ export function GitHubAccessEditor({
                   disabled={
                     !candidate ||
                     !activeMembers.some(
-                      (member) => member.principalId === sponsor,
+                      (member) => member.principalId === guestSponsor,
                     ) ||
                     configuration.people.some(
                       (p) => p.githubUserId === candidate.githubUserId,
@@ -1097,7 +1091,7 @@ export function GitHubAccessEditor({
                       updatePerson({
                         ...candidate,
                         kind: "guest",
-                        sponsorUserId: sponsor,
+                        sponsorUserId: guestSponsor,
                         permissionProfile: "restricted",
                       });
                       setDialog(null);

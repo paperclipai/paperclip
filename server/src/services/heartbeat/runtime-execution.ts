@@ -148,6 +148,8 @@ export interface HeartbeatRuntimeExecutionInput {
   config: Pick<Selection["config"], "runtimeConfig" | "resolvedConfig" | "managedAiRuntime"> & {
     resolvedInstanceSettings: { experimental: Pick<Awaited<ReturnType<ReturnType<typeof instanceSettingsService>["getExperimental"]>>, "enableWorkspaceBranchReconcileForward" | "enableWorkspaceDirtyQuarantineRepair"> };
     configuredTaskEnvironment: Parameters<typeof configuredEnvironmentProjection>[0];
+    /** Names of configured entries resolved from secrets; values never leave the projection. */
+    secretKeys?: ReadonlySet<string>;
     adapterEnv: Parameters<typeof buildNativeProviderEnvironment>[0];
     agentIdentity: AdapterExecutionContext["agentIdentity"];
     observability?: AdapterExecutionContext["observability"];
@@ -247,7 +249,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
   const { nativeRuntimeResolution, nativeExecution, nativeRunnerInstanceId, adapter, runtimeForAdapter, getNativeFreshSessionHandoff, getFreshSessionHandoff, runOptions } = input.runtime;
   const { persistedExecutionWorkspace, executionWorkspace, executionTarget, workspaceOperationRecorder, nativeWorkspaceSync, workspaceRestoreSource, remoteExecution } = input.workspace;
   const remoteWorkspaceAuthority = readRemoteWorkspaceAuthority(persistedExecutionWorkspace?.metadata);
-  const { runtimeConfig, resolvedConfig, resolvedInstanceSettings, configuredTaskEnvironment, adapterEnv, agentIdentity, observability, managedAiRuntime, runtimeEnv, useHostGitHub, githubSelection } = input.config;
+  const { runtimeConfig, resolvedConfig, resolvedInstanceSettings, configuredTaskEnvironment, secretKeys, adapterEnv, agentIdentity, observability, managedAiRuntime, runtimeEnv, useHostGitHub, githubSelection } = input.config;
   const { runtimeSessionParamsForAdapter, configuredModel, sessionConfigMetadata, goalCheckpointSession } = input.session;
   const { nativeInstructionWorkingCopy, collectStoppedInstructions, nativeInstructionReservation, releaseInstructionCopy } = input.instructions;
   const { providerTraceCapture, nativeRunnerPreparationSpans, attestedQuestionResponseAtMs, attemptStartedAtMs, environmentAcquireStartedAtMs, environmentRealizeEndedAtMs } = input.trace;
@@ -715,7 +717,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
               managedAiCredentialHome: managedAiRuntime ? String((managedAiRuntime.config.env as Record<string, unknown>).CODEX_HOME) : undefined,
               dotWorkspaceRoot: nativeExecution.provider.kind === "openai_dot" && resolvedConfig.dotWorkspaceAccess === true ? executionWorkspace.cwd : undefined,
               runnerEnvironment: {
-                ...configuredEnvironmentProjection(configuredTaskEnvironment),
+                ...configuredEnvironmentProjection(configuredTaskEnvironment, secretKeys ?? []),
                 ...buildNativeProviderEnvironment(
                   adapterEnv,
                   process.env,

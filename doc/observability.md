@@ -1126,6 +1126,12 @@ evidence, unknown binding reasons, secret-provider failures, ambiguous missing
 secret-definition lookups remain reportable. This filter does not change task
 recovery, credentials, or execution policy.
 
+Native `native_provider_usage_limit` failures also stay on the task when their
+typed provider failure is `quota_exhausted` or `rate_limit`. The task keeps its
+blocked state and quota cooldown. Setup failures, interrupted processes, missing
+or malformed provider evidence, and other failure categories still report.
+`all` mode also reports typed native usage limits.
+
 AI account selection also stays local when the selection service proves a
 missing responsible user, personal default, or selected connection; an
 incompatible selection; an account that needs reconnection; or an active

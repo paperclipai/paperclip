@@ -32,6 +32,14 @@ export interface UniversalBounds {
   /** U4: longest a failure or Retry notice may remain after a later run succeeded. */
   staleNoticeMs: number;
   maxRuns: number;
+  declaredQueuedMs?: number;
+}
+
+export type SlotFree = (runId: string, at: number) => boolean | null;
+
+export function declaredQueueBoundMs(mix: { runs: number; queue: number; turnMinutes: readonly [number, number] } | undefined): number | undefined {
+  if (!mix || mix.queue <= 0) return undefined;
+  return Math.ceil(mix.queue / Math.max(1, mix.runs)) * (mix.turnMinutes[1] + 5) * 60_000;
 }
 
 /**
@@ -140,6 +148,7 @@ export function liveOwner(sample: TaskSample, queuedFor: ReadonlyMap<string, num
   // that waits on the system (`retryWait`) is an owner only within the queue bound.
   if (retryTimer(sample) && (!sample.interruption?.retryWait || timerFor <= bounds.queuedMs)) return "retry timer";
   if (sample.activeRecoveryAction && sample.recoveryOwner !== "board") return "system recovery action";
+  if (sample.waitingOnChildren) return "open subtasks";
   return null;
 }
 
@@ -160,9 +169,11 @@ export function actionableItem(sample: TaskSample): string | null {
   return null;
 }
 
-export function gradeU1(record: TaskRecord, bounds: UniversalBounds): Omit<UniversalResult, "enforced"> {
+export function gradeU1(record: TaskRecord, bounds: UniversalBounds, slotFree: SlotFree = () => null): Omit<UniversalResult, "enforced"> {
   if (!record.samples.some(ready)) return { verdict: "n/a", detail: "no ready sample" };
   // Ready-server time each run has spent queued (outages do not count).
+  const totalQueued = new Map<string, number>();
+  const freeQueued = new Map<string, number>();
   const queuedFor = new Map<string, number>();
   let orphanMs = 0, worstOrphan = 0, orphanFrom: number | null = null, lastAt: number | null = null;
   let worstQueued = 0, worstQueuedRun = "";
@@ -172,9 +183,14 @@ export function gradeU1(record: TaskRecord, bounds: UniversalBounds): Omit<Unive
     if (!ready(sample)) { lastAt = null; continue; }
     for (const run of sample.runs ?? []) {
       if (run.status === "queued" || run.status === "scheduled_retry") {
-        const waited = (queuedFor.get(run.id) ?? 0) + (lastAt !== null && queuedFor.has(run.id) ? sample.at - lastAt : 0);
-        queuedFor.set(run.id, waited);
+        const step = lastAt !== null && totalQueued.has(run.id) ? sample.at - lastAt : 0;
+        const waited = (totalQueued.get(run.id) ?? 0) + step;
+        totalQueued.set(run.id, waited);
         if (waited > worstQueued) { worstQueued = waited; worstQueuedRun = run.id; }
+        if (bounds.declaredQueuedMs === undefined || run.status !== "queued") { queuedFor.set(run.id, waited); continue; }
+        const free = (freeQueued.get(run.id) ?? 0) + (slotFree(run.id, sample.at) === true ? step : 0);
+        freeQueued.set(run.id, free);
+        queuedFor.set(run.id, waited > bounds.declaredQueuedMs ? Number.POSITIVE_INFINITY : free);
       }
     }
     timerFor = retryTimer(sample) && sample.interruption?.retryWait ? timerFor + (lastAt !== null ? sample.at - lastAt : 0) : 0;
@@ -189,7 +205,8 @@ export function gradeU1(record: TaskRecord, bounds: UniversalBounds): Omit<Unive
       if (orphanMs > bounds.orphanMs) {
         const queued = (sample.runs ?? []).filter(run => run.status === "queued" || run.status === "scheduled_retry");
         return { verdict: "fail", metrics: { ownerlessMs: orphanMs, queuedMs: worstQueued, retryTimerMs: worstTimer }, detail: `no_owner_no_action ${seconds(orphanMs)} in ${sample.issueStatus ?? "unknown"}`
-          + (queued.length ? ` with ${queued.map(run => `${run.id} queued ${seconds(queuedFor.get(run.id) ?? 0)}`).join(",")}` : "")
+          + (queued.length ? ` with ${queued.map(run => `${run.id} queued ${seconds(totalQueued.get(run.id) ?? 0)}`
+            + `${freeQueued.has(run.id) ? ` (${seconds(freeQueued.get(run.id)!)} with a free slot, declared queue bound ${seconds(bounds.declaredQueuedMs!)})` : ""}`).join(",")}` : "")
           + (timerFor ? ` after a retry wait of ${seconds(timerFor)}${sample.interruption?.retryWait ? " (accepted Retry waiting on the system)" : ""}` : "")
           + ` (interruption ${sample.interruption?.state ?? "none"})` };
       }
@@ -304,11 +321,11 @@ export function gradeU5(record: TaskRecord, bounds: UniversalBounds): Omit<Unive
 }
 
 export function gradeUniversal(record: TaskRecord, options: { bounds?: UniversalBounds; db?: UniversalDbEvidence;
-  enforced?: ReadonlySet<UniversalId> } = {}): UniversalGrade {
+  enforced?: ReadonlySet<UniversalId>; slotFree?: SlotFree } = {}): UniversalGrade {
   const bounds = options.bounds ?? universalBounds();
   const enforced = options.enforced ?? ENFORCED_UNIVERSAL;
   const results = {
-    U1: gradeU1(record, bounds),
+    U1: gradeU1(record, bounds, options.slotFree),
     U2: gradeU2(record, bounds),
     U3: gradeU3(record, options.db),
     U4: gradeU4(record, bounds),

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, companies, companyMemberships, createDb, toolConnections } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
-import { MCP_APPS_CLIENT_CAPABILITY, MCP_APPS_EXTENSION_ID } from "@paperclipai/shared";
+import { MCP_APPS_CLIENT_CAPABILITY, MCP_APPS_EXTENSION_ID, MCP_SKILLS_CLIENT_CAPABILITY, MCP_SKILLS_EXTENSION_ID } from "@paperclipai/shared";
 import {
   encodeMcpHeaderValue,
   forgetMcpHttpSessions,
@@ -149,12 +149,12 @@ describe("MCP protocol negotiation (Streamable HTTP)", () => {
     expect(initialize.params._meta).toBeUndefined();
   });
 
-  it("advertises the shared MCP Apps capability in every modern request and in the legacy handshake", async () => {
+  it("advertises MCP Apps in every request and handshake, and Skills on every stateless request", async () => {
     const modern = modernServer();
     const modernHeaders = await initializeMcpHttpSession({ requestId: "apps-modern", send: (init) => modern.handle("", init) });
     const call = mcpHttpRequestInit(modernHeaders, { id: 1, method: "tools/call", params: { name: "lookup", arguments: {} } });
-    expect(modern.requests[0]!.body.params._meta[META_CAPABILITIES].extensions).toEqual(MCP_APPS_CLIENT_CAPABILITY);
-    expect(JSON.parse(call.body).params._meta[META_CAPABILITIES].extensions).toEqual(MCP_APPS_CLIENT_CAPABILITY);
+    expect(modern.requests[0]!.body.params._meta[META_CAPABILITIES].extensions).toEqual({ ...MCP_APPS_CLIENT_CAPABILITY, ...MCP_SKILLS_CLIENT_CAPABILITY });
+    expect(JSON.parse(call.body).params._meta[META_CAPABILITIES].extensions).toEqual({ ...MCP_APPS_CLIENT_CAPABILITY, ...MCP_SKILLS_CLIENT_CAPABILITY });
     const legacy = legacyServer();
     await initializeMcpHttpSession({ requestId: "apps-legacy", send: (init) => legacy.handle("", init) });
     const initialize = legacy.requests.find((request) => request.method === "initialize")!;
@@ -212,7 +212,7 @@ describe("MCP request envelope", () => {
     expect(headers.get("mcp-param-tenant")).toBe(`=?base64?${Buffer.from("Grüße").toString("base64")}?=`);
     expect(headers.get("accept")).toBe("application/json, text/event-stream");
     expect(body.params._meta).toMatchObject({ [META_VERSION]: MCP_MODERN_PROTOCOL_VERSION, [META_CLIENT]: { name: "paperclip", version: "1" } });
-    expect(body.params._meta[META_CAPABILITIES]).toEqual({ elicitation: { url: {} }, extensions: { [MCP_APPS_EXTENSION_ID]: { mimeTypes: ["text/html;profile=mcp-app"] } } });
+    expect(body.params._meta[META_CAPABILITIES]).toEqual({ elicitation: { url: {} }, extensions: { [MCP_APPS_EXTENSION_ID]: { mimeTypes: ["text/html;profile=mcp-app"] }, [MCP_SKILLS_EXTENSION_ID]: {} } });
   });
 
   it("mirrors the method and resource URI for every request, without metadata for a legacy session", () => {

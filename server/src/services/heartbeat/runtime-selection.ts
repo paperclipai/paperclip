@@ -67,6 +67,7 @@ import {
   assertManagedProfileRecoveryBinding,
   projectPaperclipRunnerTaskConfig,
   resolvePaperclipRunnerNativeProviderInput,
+  supportsPaperclipRunnerPreconfiguredHome,
 } from "../native-runtime/provider-profile.js";
 import { readRemoteCodexModelCliVersion } from "../native-runtime/codex-model-fallback.js";
 import {
@@ -88,6 +89,7 @@ import { buildPlanReviewContext } from "../plan-review-context.js";
 import { normalizePaperclipWakePayload, selectPaperclipTaskMarkdown } from "@paperclipai/adapter-utils/server-utils";
 import type { ProviderResourceDisposition } from "../environment-runtime.js";
 import { stageNativeRuntimeSkillAssets, bindStagedNativeRuntimeSkillAssets } from "../native-runtime/runtime-skill-preservation.js";
+import { configuredSecretGuidance } from "../native-runtime/configured-secret-guidance.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
 type Agent = typeof agents.$inferSelect;
@@ -139,6 +141,8 @@ export interface HeartbeatRuntimeSelectionInput {
     runtimeConfig: Record<string, unknown>;
     runtimeSkillEntries: Parameters<typeof buildNativeRuntimeContext>[0]["runtimeSkillEntries"];
     runScopedMentionedSkillKeys: string[];
+    /** Configured entries resolved from secrets, by name only. */
+    configuredSecretNames?: readonly string[];
     instructionCopy: Awaited<ReturnType<ReturnType<typeof agentInstructionWorkingCopyService>["prepare"]>>;
     agentIdentity: { keyId: string } | undefined;
     issueAssigneeOverrides: { adapterConfig: Record<string, unknown> | null } | null;
@@ -768,7 +772,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
         instructionWorkingCopy: instructionCopy ? { rootPath: instructionCopy.executionRoot, entryPath: instructionCopy.entryFile, ...(isAgentDirectoryCopy(instructionCopy) ? { kind: "agent_files" as const } : {}) } : undefined,
       }));
       getNativeFreshSessionHandoff = nativeReviewRequest ? undefined : getFreshSessionHandoff;
-      const nativeProviderConfig = nativeRuntimeResolution.profile.backend === "cursor_cloud_api"
+      const projectedNativeProviderConfig = nativeRuntimeResolution.profile.backend === "cursor_cloud_api"
         || nativeRuntimeResolution.profile.backend === "codex_app_server"
         || (nativeRuntimeResolution.profile.backend === "acpx_runtime" && ["claude_local", "grok_local"].includes(agentHarnessType(agent.adapterType, parseObject(agent.adapterConfig))))
         || nativeRuntimeResolution.profile.backend === "opencode_server"
@@ -781,6 +785,12 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
             managedAiRuntime ? readNonEmptyString(resolvedConfig.model) ?? undefined : undefined,
           )
         : agent.adapterConfig;
+      const runnerHomeMode = runtimeConfig.homeMode === "preconfigured" && executionTarget?.kind === "remote" && executionTarget.transport === "ssh"
+        && !supportsPaperclipRunnerPreconfiguredHome(projectedNativeProviderConfig, { companyId: agent.companyId })
+        ? "isolated" : runtimeConfig.homeMode;
+      const nativeProviderConfig = agent.adapterType === "paperclip_runner" && runnerHomeMode !== undefined
+        ? { ...parseObject(projectedNativeProviderConfig), homeMode: runnerHomeMode }
+        : projectedNativeProviderConfig;
       const requestedNativeProvider = resolvePaperclipRunnerNativeProviderInput({
         companyId: agent.companyId,
         backend: nativeRuntimeResolution.profile.backend,
@@ -825,6 +835,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
                 !["openai_dot_mcp", "grok_bot_mcp", "muse_external", "cursor_cloud_api"].includes(nativeRuntimeResolution.profile.backend) && projectRepositoryPaths.length > 0
                   ? `## Project repositories\nThe task workspace also contains these editable Git repositories:\n${projectRepositoryPaths.map((repo) => `- ${repo}`).join("\n")}`
                   : null,
+                configuredSecretGuidance(input.config.configuredSecretNames ?? []),
               ].filter(Boolean).join("\n\n"),
               initialCommunicationGuidance: nativeReviewRequest ? null : readNonEmptyString(context.paperclipTaskCommunicationGuidance),
               wakePayload: context.paperclipWake,

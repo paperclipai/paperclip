@@ -30,6 +30,20 @@ describe("native turn accounting", () => {
     expect(nativeUsageCostUsd(snapshot.usage, provider)).toBe(0.5);
   });
 
+  it("names the run's first served generation on its receipt and keeps it stable across later turns", () => {
+    const accounting = createNativeTurnAccounting(provider);
+    const usage = (providerRequestId?: unknown) => ({ kind: "usage", usage: { runDeltaComplete: true,
+      runDelta: { inputTokens: 5, outputTokens: 1 }, upstreamProvider: "Novita", ...(providerRequestId === undefined ? {} : { providerRequestId }) } });
+    accounting.observe(event(1, "turn.started"));
+    accounting.observe(event(2, "item.completed", "turn-1", usage()));
+    expect(accounting.snapshot().usage).not.toHaveProperty("providerRequestId");
+    [event(3, "item.completed", "turn-1", usage(42)), event(4, "item.completed", "turn-1", usage("gen-first")),
+      event(5, "turn.completed"), event(6, "turn.started", "turn-2"),
+      event(7, "item.completed", "turn-2", usage("gen-later")), event(8, "turn.completed", "turn-2")].forEach(value => accounting.observe(value));
+    expect(accounting.snapshot().usage).toMatchObject({ providerRequestId: "gen-first" });
+    expect(normalizeNativeUsage(accounting.snapshot().usage)).toEqual({ inputTokens: 10, outputTokens: 2, cachedInputTokens: 0, cacheWriteTokens: 0 });
+  });
+
   // s7501 run 0a18c2d0 (ACPX Claude): K1 killed the Runner mid-turn. ACPX
   // reports provisional zero usage until a turn ends, so the lost turn never
   // got a complete report. The restored Runner failed it as lost on restore and

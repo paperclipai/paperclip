@@ -32,7 +32,7 @@ import { settleExternalConversation } from "../slack-conversation-lifecycle.js";
 import { executionFailureRetryCount } from "../execution-recovery-attempt.js";
 import { isFailedTurnContinuationRun } from "./native-failed-turn-continuation.js";
 import { readPersistedNativeFailureEvidence } from "./native-provider-failure-evidence.js";
-import { explainFailedRun, NATIVE_RUN_FAILED_UNEXPLAINED } from "./native-run-failure-explanation.js";
+import { explainFailedRun, explainNativeTurnFailure, NATIVE_RUN_FAILED_UNEXPLAINED } from "./native-run-failure-explanation.js";
 import { dismissAutomaticCompletionReviews } from "./automatic-completion-reviews.js";
 import { findSupersededExternalReviewRequests } from "./superseded-external-review-requests.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-review-participant.js";
@@ -2015,10 +2015,11 @@ export async function finalizeNativeRun(input: {
       const nextErrorCode = providerFailure ? sql`coalesce(${heartbeatRuns.errorCode}, ${providerFailure.errorCode})`
         : clearExecutionFailure ? sql`null` : sql`${heartbeatRuns.errorCode}`;
       // A run projected to failed always records why, even when the provider
-      // reported a failed terminal without a classified failure.
+      // reported a failed terminal without a classified failure. A recorded
+      // runner turn failure names that cause.
       const projectsFailedStatus = input.projectRunStatus && projectedStatus === "failed";
       const explained = projectsFailedStatus
-        ? explainFailedRun(NATIVE_RUN_FAILED_UNEXPLAINED, { error: nextError, errorCode: nextErrorCode })
+        ? explainFailedRun(explainNativeTurnFailure(turnFailure) ?? NATIVE_RUN_FAILED_UNEXPLAINED, { error: nextError, errorCode: nextErrorCode })
         : null;
       const projectedError = explained?.error ?? sql`case when ${heartbeatRuns.status} = 'cancelled' then ${heartbeatRuns.error}
         else ${nextError} end`;

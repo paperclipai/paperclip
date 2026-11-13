@@ -10,6 +10,7 @@ import { checks, observation, project, type Entity, type InternalObservation } f
 import { fixtureWorker } from "./internal-definition.js";
 import { startRunBriefGate } from "./internal-run-brief.js";
 import { integratorDefinition, inspectResult, observeInternal } from "./integrator-support.js";
+import { commentWokenRun, runIssueId } from "./run-roles.js";
 type CaseRecord = typeof cases.$inferSelect;
 type OwnedTask = Entity & { executionRunId?: string | null; checkoutRunId?: string | null };
 const resources = new WeakMap<ChatCatalogContext, { experimental: boolean; gate?: Awaited<ReturnType<typeof startRunBriefGate>> }>();
@@ -41,6 +42,23 @@ function referencesSavedFindings(instructions: string, findings: IssueDocument |
   const saved = findings?.body?.trim();
   return /(?<![\w-])findings(?![\w-])/i.test(instructions) || /#document-findings\b|\/documents\/findings\b/.test(instructions) || (!!saved && instructions.includes(saved));
 }
+/** The run that recorded the review handoff, when the product's ordinary owner authority covers it. Morgan owns the
+ * released primary task, so the answering chat run may hand it off directly while no other run owns the task, or that
+ * chat may wake Morgan's primary continuation with a comment, whose run then hands off. Either way the recording run
+ * is identified by the handoff comment's provenance, never by a phase name or reply wording. */
+function handoffAuthorRun(o: HandoffObservation, handoff: CaseHandoff | undefined, primaryId: string | undefined) {
+  if (!handoff || !primaryId || !o.sourceIssueId) return undefined;
+  const comment = o.comments.find(row => row.id === handoff.commentId && row.issueId === primaryId && row.authorAgentId === o.leadId);
+  const run = o.runs.find(row => row.id === comment?.createdByRunId);
+  if (!run || run.agentId !== o.leadId || run.status !== "succeeded" || run.id === o.state.interruptedRunId || !run.startedAt) return undefined;
+  // A recorded source execution must be the recording run itself; another execution then still owned the task.
+  if (handoff.sourceRunId && handoff.sourceRunId !== run.id) return undefined;
+  const sourceRuns = o.runs.filter(row => row.agentId === o.leadId && runIssueId(row) === o.sourceIssueId && !!row.startedAt);
+  const request = o.sourceReplies.find(row => !row.authorAgentId && !!row.createdAt);
+  if (!request || Date.parse(String(run.startedAt)) < Date.parse(request.createdAt!)) return undefined;
+  if (runIssueId(run) === o.sourceIssueId) return sourceRuns.some(row => row.id === run.id) ? run : undefined;
+  return runIssueId(run) === primaryId && commentWokenRun(run, { agentId: o.leadId, issueId: primaryId, comments: o.comments, causeRunIds: sourceRuns.map(row => row.id) }) ? run : undefined;
+}
 export function gradeIntegratorCaseHandoff(value: unknown) {
   const c = checks(); const o = handoffObservation(value); c.add("real-owner-primary-and-handoff-evidence", !!o, "Requires actual Morgan respondent, original primary, saved finding revisions and real handoff source execution."); if (!o) return c.result();
   const original = o.state.case as CaseRecord; const primary = o.tasks.find(task => task.id === original?.workIssueId); const riley = o.state.reviewer as Entity;
@@ -50,15 +68,19 @@ export function gradeIntegratorCaseHandoff(value: unknown) {
     && stopped.contextSnapshot?.issueId === primary?.id && stoppedTask?.executionRunId === stopped.id && stoppedTask.assigneeAgentId === o.leadId
     && o.findingVersions.some(revision => revision.id === initial?.latestRevisionId && revision.body === initial.body && revision.issueId === primary?.id && revision.createdByAgentId === o.leadId && revision.createdByRunId === stopped.id),
   "The real responding Morgan saved the genuine primary-task finding revision before an actual operator stop released its checkout; no fixture status or roleplay substitutes.");
-  const handoff = o.handoffs.find(row => row.version === 2); const primaryRun = o.runs.find(run => run.id === handoff?.sourceRunId);
+  const handoff = o.handoffs.find(row => row.version === 2);
+  const authority = handoffAuthorRun(o, handoff, primary?.id);
   c.add("one-same-primary-real-morgan-to-riley", o.handoffs.length === 2 && !!handoff && o.caseRecord.id === original.id && o.caseRecord.workIssueId === original.workIssueId
     && handoff.issueId === primary?.id && handoff.actorType === "agent" && handoff.actorId === o.leadId && handoff.fromAgentId === o.leadId && handoff.toAgentId === riley?.id
     && /review/i.test(handoff.phase) && primary?.assigneeAgentId === riley.id && o.reviewer.id === riley.id && o.reviewer.name === "Riley" && o.tasks.length === 1,
   "One new review handoff changes the eligible owner of the original ordinary primary task, preserving case identity and creating no replacement task.");
-  c.add("normal-primary-execution-authority", !!primaryRun && primaryRun.agentId === o.leadId && primaryRun.contextSnapshot?.issueId === primary?.id && primaryRun.status === "succeeded"
-    && primaryRun.contextSnapshot?.issueId !== o.sourceIssueId
-    && o.runs.some(run => run.agentId === o.leadId && run.contextSnapshot?.issueId === o.sourceIssueId && !!run.startedAt && !!primaryRun.startedAt && Date.parse(String(primaryRun.startedAt)) >= Date.parse(String(run.startedAt))),
-  "The source Morgan chat routes the explicit request to a genuinely admitted primary Morgan execution, whose normal JWT/checkout authority performs the handoff.");
+  c.add("owner-execution-authority", !!authority,
+  "A Morgan run started for this request records the handoff under the product's ordinary owner authority: the answering chat run while no other run owns the released primary task, or a primary-task continuation that chat run woke. A stale, foreign or concurrent execution does not qualify.");
+  const answers = o.runs.filter(run => run.agentId === o.leadId && runIssueId(run) === o.sourceIssueId);
+  const reviews = o.runs.filter(run => run.agentId === riley?.id && runIssueId(run) === primary?.id);
+  const roles = new Set([stopped?.id, authority?.id, ...answers.map(run => run.id), ...reviews.map(run => run.id)]);
+  c.add("every-run-has-a-handoff-role", answers.length === 1 && reviews.length === 1 && o.runs.every(run => roles.has(run.id)),
+  "Each run is the stopped investigation, the single answering chat, the run that recorded the handoff, or Riley's single review; anything else is extra work.");
   c.add("saved-findings-carried-forward", !!handoff && (referencesSavedFindings(handoff.instructions, initial) || checkoutObservations(handoff.instructions)) && !!initial?.body?.trim()
     && o.findings.issueId === primary?.id && o.findingVersions.some(revision => revision.id === initial?.latestRevisionId),
   "The review instructions point the reviewer at the saved findings document on the same task, and the original task-owned revision remains inspectable.");
@@ -85,7 +107,7 @@ export const integratorCaseHandoffCases = [integratorDefinition("cases", "cases.
     const kickoff = await ctx.input.api.post<HandoffCaseResult>(`/api/companies/${ctx.input.fixtures.company.id}/case-handoffs`, {
       idempotencyKey: `morgan-primary-${ctx.input.nonce}`, case: { create: { caseType: "customer", title: "Mobile checkout investigation", projectId: p.id, fields: { browser: "mobile Safari", observed: "Tapping Pay does nothing; keyboard activation succeeds" } } }, toAgentId: ctx.input.fixtures.agent.id, phase: "investigation",
       instructions: "Read the saved customer observations and save a document with key findings on this ordinary task, keeping observation distinct from an unproven root cause. Then call the connected Website Brief read_website_brief tool to wait for the remaining source evidence. Do not complete or hand off this investigation until the person's next direction.",
-      workflow_document_text: `# Owners and review\nMorgan investigates this same ordinary primary task and saves findings. Riley (${reviewer.id}) is the eligible next reviewer. A later explicit human review request must preserve this task and its findings. Case handoff authority belongs to the actual primary task execution. Riley reviews the saved findings, saves a review comment, and marks this review task done without a terminal case handoff. Case closure requires a later explicit accepted-fix decision.`,
+      workflow_document_text: `# Owners and review\nMorgan investigates this same ordinary primary task and saves findings. Riley (${reviewer.id}) is the eligible next reviewer. A later explicit human review request must preserve this task and its findings. Ordinary task authority applies to the handoff: the assignee may hand off its own primary task unless another run owns that task. Riley reviews the saved findings, saves a review comment, and marks this review task done without a terminal case handoff. Case closure requires a later explicit accepted-fix decision.`,
       initialDocuments: [{ key: "brief", title: "Customer observations", body: "Synthetic test observations: on mobile Safari, tapping the checkout Pay button has no effect. Activating the same button using a keyboard succeeds. These are observations, not proof of a specific JavaScript root cause." }],
     });
     const phase = await pollUntil({ label: "genuine Morgan saved findings and source wait", deadlineAt: Date.now() + 180_000, intervalMs: 1000,
@@ -107,11 +129,12 @@ export const integratorCaseHandoffCases = [integratorDefinition("cases", "cases.
   const task = state.task as Entity; const row = state.case as CaseRecord;
   await inspectResult(ctx, `/${ctx.input.fixtures.company.issuePrefix}/issues/${task.identifier ?? task.id}`, task.title!);
   await inspectResult(ctx, `/${ctx.input.fixtures.company.issuePrefix}/cases/${row.identifier}`, row.title);
-}, { oracleVersion: "paperclip.chat-catalog.case-handoff.structural.v2", sourceFiles: ["chat-catalog-domains/integrator-case-handoff.ts", "chat-catalog-domains/internal-run-brief.ts", "chat-catalog-domains/internal-definition.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/integrator-support.ts", "chat-scenarios/cases.yaml"],
+}, { oracleVersion: "paperclip.chat-catalog.case-handoff.structural.v3", sourceFiles: ["chat-catalog-domains/integrator-case-handoff.ts", "chat-catalog-domains/run-roles.ts", "chat-catalog-domains/internal-run-brief.ts", "chat-catalog-domains/internal-definition.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/integrator-support.ts", "chat-scenarios/cases.yaml"],
   respondingAgent: { kind: "case-primary-owner", name: "Morgan", role: "engineer", canAssignTasks: true },
-  expectedRunCount: 4, attemptTimeoutMs: 900_000, runPolicy: { kind: "terminal-counts", terminalStatusCounts: { cancelled: 1, succeeded: 3 } },
+  expectedRunCount: 4, minimumRunCount: 3, attemptTimeoutMs: 900_000,
+  runPolicy: { kind: "terminal-counts", terminalStatusCounts: { cancelled: 1, succeeded: 2 }, maximumTerminalStatusCounts: { succeeded: 3 } },
   async act(ctx, state) {
-    const first = await pollUntil({ label: "actual Morgan source reply and normal primary continuation", deadlineAt: Date.now() + 180_000, intervalMs: 1000,
+    const first = await pollUntil({ label: "actual Morgan source reply", deadlineAt: Date.now() + 180_000, intervalMs: 1000,
       load: () => observeHandoff(ctx, state), accept: o => o.runs.some(run => run.agentId === o.leadId && run.contextSnapshot?.issueId === o.sourceIssueId && run.status === "succeeded") && ctx.issue()?.conversationState === "waiting" });
     state.handoffCheckpoint = { ...first, state: structuredClone(state) }; await ctx.input.evidence("chat-morgan-review-direction.json", state.handoffCheckpoint);
   }, cleanup,
