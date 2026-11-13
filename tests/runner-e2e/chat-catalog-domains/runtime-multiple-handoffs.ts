@@ -7,7 +7,7 @@ import { readRegisteredArtifacts } from "../registered-artifact.js";
 import { checks, sameTask, type Entity } from "./internal-support.js";
 import { openStandingChat } from "./identity-support.js";
 import { busyRuntimeWorker, releaseRuntimeWorker } from "./runtime-busy-worker.js";
-import { promptCarriesComment, readCurrentRevision, replyNamesTask, runHistoryReads, runtimeQueueCases, settledQueue } from "./runtime-queue.js";
+import { handledInTurn, promptCarriesComment, readCurrentRevision, replyNamesTask, runCommentReceipts, runtimeQueueCases, settledQueue, wakeMarksEarlierRead } from "./runtime-queue.js";
 import { runtimeDefinition, runtimeObservation, observeRuntime, runtimeWorker } from "./runtime-support.js";
 export { promptCarriesComment } from "./runtime-queue.js";
 type Artifact = Awaited<ReturnType<typeof readRegisteredArtifacts>>[number];
@@ -18,14 +18,17 @@ export function gradeMultipleHandoffs(value: unknown) {
   const before = s.logoArtifactBefore as Artifact, after = s.logoArtifactAfter as Artifact;
   const worker = s.worker as Entity | undefined, websiteRuns = o.runs.filter(row => row.agentId === worker?.id);
   const continuations = websiteRuns.filter(row => row.id !== s.workerRunId), saved = s.savedComment as { id: string; updatedAt?: unknown } | undefined;
-  const readInTurn = !!saved && saved.id === target?.comment.id && readCurrentRevision(s.workerHistoryReads as Record<string, string> | undefined, saved);
-  const consumedInTurn = readInTurn && continuations.length === 0 && s.inTurnHeadlineRevision === true;
-  const consumedByContinuation = !readInTurn && continuations.length === 1 && s.nativeDeliveryBound === true && s.finalHeadlineRevision === true && s.originalWebsiteRevisionRetained === true;
+  const receipts = s.workerCommentReceipts as { reads?: Record<string, string>; cited?: string[] } | undefined;
+  const isTarget = !!saved && saved.id === target?.comment.id;
+  const readInTurn = isTarget && readCurrentRevision(receipts?.reads, saved), handled = isTarget && handledInTurn(receipts, saved);
+  const consumedInTurn = handled && continuations.length === 0 && s.inTurnHeadlineRevision === true;
+  const consumedByContinuation = !handled && continuations.length === 1 && s.nativeDeliveryBound === true && s.finalHeadlineRevision === true
+    && s.originalWebsiteRevisionRetained === true && (!readInTurn || s.continuationWarnedEarlierRead === true);
   c.add("existing-website-worker-receives-one-saved-requirement", s.sourceHistoryBound === true && queue?.issueId === (s.task as Entity).id
     && queue.targetRunId === s.workerRunId && queue.entries.length === 1 && ["queued", "deferred"].includes(queue.state ?? "")
     && target?.comment.authorAgentId === o.leadId && target.comment.createdByRunId === s.canonicalRunId && target.comment.body.includes("Launch sooner")
     && s.workerRunningAtReply === true && (consumedInTurn || consumedByContinuation) && s.queueEmptyAfterDelivery === true,
-  "One CEO-attributed headline instruction is saved against the actual active Website owner and is consumed once: read at its current revision and applied by the running turn with no continuation, or delivered to exactly one ordinary continuation.");
+  "One CEO-attributed headline instruction is saved against the actual active Website owner and is consumed once: read at its current revision, applied and cited as handled by the running turn with no continuation, or delivered to exactly one ordinary continuation, which is told when the running turn already read it.");
   c.add("logo-task-and-delivered-logo-unchanged", !!logoBefore && !!logo && sameTask(logoBefore, logo) && logo.status === "done" && logo.assigneeAgentId === (s.logoWorker as Entity).id
     && before?.contentVerified === true && after?.contentVerified === true && before.attachmentId === after.attachmentId && before.sha256 === after.sha256
     && before.content === after.content && after.content.includes(String(s.logoMarker)) && /<svg\b/i.test(after.content) && s.logoRevisionsUnchanged === true,
@@ -66,7 +69,7 @@ export const runtimeMultipleHandoffCases = [runtimeDefinition("agent-chat.multip
     sourceHistoryBound: comments.filter(row => !row.authorAgentId).length === 1 && comments.some(row => !row.authorAgentId
       && row.body?.includes(busy.task.identifier ?? busy.task.id) && row.body.includes(logo.identifier ?? logo.id) && row.body.includes(artifact.attachmentId)), setupRunIds: saved.runs.map(row => row.id) };
 }, gradeMultipleHandoffs, {
-  setupHumanMessageCount: 1, expectedHumanMessageCount: 2, expectedRunCount: 5, minimumRunCount: 4, attemptTimeoutMs: 1_020_000, oracleVersion: "paperclip.chat-catalog.runtime-multiple-handoffs.v5",
+  setupHumanMessageCount: 1, expectedHumanMessageCount: 2, expectedRunCount: 5, minimumRunCount: 4, attemptTimeoutMs: 1_020_000, oracleVersion: "paperclip.chat-catalog.runtime-multiple-handoffs.v6",
   sourceFiles: ["chat-catalog-domains/runtime-multiple-handoffs.ts", "chat-catalog-domains/runtime-queue.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-support.ts", "chat-catalog-domains/identity-support.ts", "registered-artifact.ts", "chat-scenarios/agent-chat.yaml"],
   setupPolicy: runtimeQueueCases[0]!.setupPolicy, verifySetup: runtimeQueueCases[0]!.verifySetup,
   async act(ctx, state) {
@@ -88,9 +91,10 @@ export const runtimeMultipleHandoffCases = [runtimeDefinition("agent-chat.multip
       reject: v => v.runs.length > 5 || v.runs.some(row => ["failed", "cancelled", "timed_out"].includes(row.status)) ? "Headline continuation failed or duplicated/wrong-task work" : undefined });
     const saved = first.queue.entries[0]!.comment, current = (await ctx.input.api.get<Entity[]>(`/api/issues/${task.id}/comments?order=asc`)).find(row => row.id === saved.id);
     state.savedComment = current ? { id: current.id, updatedAt: current.updatedAt } : null;
-    state.workerHistoryReads = await runHistoryReads(ctx, String(state.workerRunId));
+    state.workerCommentReceipts = await runCommentReceipts(ctx, String(state.workerRunId));
     const consumer = final.runs.find(row => row.agentId === (state.worker as Entity).id && row.id !== state.workerRunId);
-    const detail = consumer && await ctx.input.api.get<{ contextSnapshot?: { wakeCommentIds?: string[] }; runnerProfileJson?: { nativeExecutionInput?: { task?: { prompt?: string } } } }>(`/api/heartbeat-runs/${consumer.id}`);
+    const detail = consumer && await ctx.input.api.get<{ contextSnapshot?: { wakeCommentIds?: string[]; paperclipWake?: { comments?: Array<{ id?: string; readByEarlierTurn?: boolean }> } }; runnerProfileJson?: { nativeExecutionInput?: { task?: { prompt?: string } } } }>(`/api/heartbeat-runs/${consumer.id}`);
+    state.continuationWarnedEarlierRead = wakeMarksEarlierRead(detail?.contextSnapshot, saved.id);
     state.nativeDeliveryBound = detail?.contextSnapshot?.wakeCommentIds?.length === 1 && detail.contextSnapshot.wakeCommentIds[0] === saved.id
       && promptCarriesComment(detail.runnerProfileJson?.nativeExecutionInput?.task?.prompt, saved);
     state.queueEmptyAfterDelivery = final.queue.entries.length === 0; state.finalWebsiteRunId = consumer?.id ?? null;

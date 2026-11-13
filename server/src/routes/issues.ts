@@ -1468,6 +1468,7 @@ const ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS = new Set([
   "missing_issue_comment",
   "process_lost_retry",
   "run_liveness_continuation",
+  "execution_reconciliation_required",
   "heartbeat.disabled",
   "heartbeat.timer.no_actionable_work",
   "heartbeat.wakeOnDemand.disabled",
@@ -1496,7 +1497,7 @@ function projectWakeDiagnosticSource(value: string | null) {
   return ISSUE_WAKE_DIAGNOSTIC_KNOWN_SOURCES.has(value) ? value : "other";
 }
 
-function projectWakeDiagnosticReason(value: string | null) {
+export function projectWakeDiagnosticReason(value: string | null) {
   if (!value) return null;
   return ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS.has(value) ? value : "other";
 }
@@ -7674,14 +7675,19 @@ export function issueRoutes(
   }
 
   async function resolveQueuedOutgoingAssigneeRun(issue: {
+    id: string;
     companyId: string;
     assigneeAgentId: string | null;
     executionRunId?: string | null;
   }) {
-    if (!issue.executionRunId || !issue.assigneeAgentId) return null;
-    const run = await heartbeat.getRun(issue.executionRunId);
-    return run && run.status === "queued" && run.companyId === issue.companyId &&
-      run.agentId === issue.assigneeAgentId ? run : null;
+    if (!issue.assigneeAgentId) return null;
+    const run = issue.executionRunId ? await heartbeat.getRun(issue.executionRunId) : null;
+    if (run && run.status === "queued" && run.companyId === issue.companyId && run.agentId === issue.assigneeAgentId) return run;
+    if (run && ["queued", "running", "scheduled_retry"].includes(run.status)) return null;
+    const assignmentRun = await heartbeat.getQueuedAssignmentRunForIssue({
+      companyId: issue.companyId, agentId: issue.assigneeAgentId, issueId: issue.id,
+    });
+    return assignmentRun ? await heartbeat.getRun(assignmentRun.id) : null;
   }
 
   type IssueQueueDb = Db | Parameters<Parameters<Db["transaction"]>[0]>[0];

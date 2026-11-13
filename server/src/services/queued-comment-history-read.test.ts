@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
+import { agents, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRunEvents, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { undeliveredLegacyUserCommentIds } from "./explicit-native-continuation.js";
 import { PaperclipRunnerToolAuthority } from "./native-runtime/paperclip-runner-tool-authority.js";
@@ -59,13 +59,20 @@ describe.skipIf(!support.supported)("task history reads", () => {
     expect(await taskHistoryReadsForRun(db, { companyId: randomUUID(), runId: f.runId })).toEqual([]);
   });
 
+  const citeAsHandled = (f: Awaited<ReturnType<typeof seed>>, commentId: string) => db.insert(heartbeatRunEvents).values({
+    companyId: f.companyId, runId: f.runId, agentId: f.agentId, seq: 100_000, eventType: "run.result.accepted", stream: "system", level: "info",
+    payload: { prpEvent: { payload: { result: { schema: "paperclip.run_result.v1", evidence: [],
+      completionClaim: { criteria: [{ criterionId: "objective", status: "satisfied", evidenceRefs: [`comment:${commentId}`] }] } } } } } });
+
   it.each([
-    { status: "succeeded" as const, owed: false },
-    { status: "failed" as const, owed: true },
-  ])("treats a remote-stop follow-up that a $status run read mid-turn as owed: $owed", async ({ status, owed }) => {
+    { status: "succeeded" as const, cited: true, owed: false },
+    { status: "succeeded" as const, cited: false, owed: true },
+    { status: "failed" as const, cited: true, owed: true },
+  ])("treats a remote-stop follow-up that a $status run read mid-turn (cited: $cited) as owed: $owed", async ({ status, cited, owed }) => {
     const f = await seed();
     const followUp = await comment(f, "Additional requirement: include the FOLLOWUP line.");
     await readHistory(f);
+    if (cited) await citeAsHandled(f, followUp.id);
     await finish(f, status);
     expect(await undeliveredLegacyUserCommentIds(db, f.companyId, f.issueId, f.agentId, [followUp.id]))
       .toEqual(owed ? [followUp.id] : []);
