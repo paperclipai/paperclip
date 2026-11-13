@@ -554,13 +554,10 @@ export function extractClaudeRetryNotBefore(
   },
   now = new Date(),
 ): Date | null {
-  const haystack = buildClaudeTransientHaystack(input);
-  const match = haystack.match(CLAUDE_EXTRA_USAGE_RESET_RE);
-  if (!match) {
-    const windowDelayMs = claudeRateLimitWindowRetryDelayMs(input);
-    return windowDelayMs === null ? null : new Date(now.getTime() + windowDelayMs);
-  }
-  return parseClaudeResetClockTime(match[1] ?? "", now, match[2]);
+  const windowDelayMs = claudeRateLimitWindowRetryDelayMs(input);
+  if (windowDelayMs !== null) return new Date(now.getTime() + windowDelayMs);
+  const match = buildClaudeTransientHaystack(input).match(CLAUDE_EXTRA_USAGE_RESET_RE);
+  return match ? parseClaudeResetClockTime(match[1] ?? "", now, match[2]) : null;
 }
 
 export function isClaudeTransientUpstreamError(input: {

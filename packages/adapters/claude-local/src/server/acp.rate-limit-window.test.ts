@@ -74,6 +74,17 @@ describe("Databricks rate-limit window classification", () => {
     expect(claudeRateLimitWindowRetryDelayMs({ parsed, stdout: "", stderr: "" })).toBe(CLAUDE_RATE_LIMIT_WINDOW_RETRY_DELAY_MS);
   });
 
+  it("waits for the window, not for a quota reset the run's output quotes", () => {
+    const quoted = "You've hit your session limit · resets 4:30pm (America/Chicago)";
+    for (const errorMessage of [HOURLY[0], PER_MINUTE[0]]) {
+      const input = { parsed: null, stdout: quoted, stderr: quoted, errorMessage };
+      const delayMs = claudeRateLimitWindowRetryDelayMs(input);
+      expect(delayMs).not.toBeNull();
+      expect(extractClaudeRetryNotBefore(input, now)?.toISOString()).toBe(minutes(delayMs!));
+    }
+    expect(extractClaudeRetryNotBefore({ errorMessage: quoted }, now)?.toISOString()).toBe("2026-11-09T22:30:00.000Z");
+  });
+
   it("keeps an hourly wait when the output says per minute", () => {
     expect(claudeRateLimitWindowRetryDelayMs({
       errorMessage: HOURLY[0],
