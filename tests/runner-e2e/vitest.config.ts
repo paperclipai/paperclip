@@ -10,6 +10,7 @@ export default defineConfig({
       ? { reporters: [...configDefaults.reporters, fileURLToPath(new URL("../../scripts/ci-profile/vitest-reporter.mjs", import.meta.url))] }
       : {}),
     globalSetup: ["./verified-provider-bundles.setup.mjs"],
+    setupFiles: ["./compile-cache.setup.mjs"],
     include: ["**/*.test.ts", "**/*.test.mjs"],
     // These use node:test and run separately in test:e2e:runner:unit.
     exclude: [...configDefaults.exclude, "product-regression-testops.test.mjs", "reliability-testops.test.mjs", "native-completion-{checks,git-source,source-contract}.test.mjs", "artifact-budget.test.mjs", "chat-feature-testops-api.test.mjs", "chat-feature-testops-cli.test.mjs", "chat-feature-testops-results.test.mjs", "testops-chat-reporter.test.mjs", "chat-completion-testops-{api,contract}.test.mjs", "chat-full-catalog-testops-*.test.mjs", "chat-catalog-testops-streaming.test.mjs"],
