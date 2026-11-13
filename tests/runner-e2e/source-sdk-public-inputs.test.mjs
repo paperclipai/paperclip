@@ -131,6 +131,13 @@ test("the working-tree drift guard sees uncommitted and untracked pinned inputs"
   assert.deepEqual(stale, [{ file: "packages/shared/src/schema.ts", change: "changed" }, { file: "packages/shared/src/untracked.ts", change: "unpinned" }]);
   assert.match(staleSdkPublicInputsMessage(stale), /packages\/shared\/src\/schema\.ts \(changed\).*source-sdk-public-inputs\.mjs \$\(git rev-parse HEAD\) --write/);
   assert.deepEqual(await staleSdkPublicInputs(root), [], "the committed-tree guard is unaffected by uncommitted edits");
+  git(root, "checkout", "--", "packages/shared/src/schema.ts");
+  await rm(path.join(root, "packages/shared/src/untracked.ts"));
+  // The reviewed restored lock overlay in the working tree is not drift; any other lock edit is.
+  await writeFile(path.join(root, "pnpm-lock.yaml"), "synthetic authenticated restored lock");
+  assert.deepEqual(await staleSdkPublicInputsInWorkingTree(root), []);
+  await writeFile(path.join(root, "pnpm-lock.yaml"), "synthetic unreviewed lock edit\n");
+  assert.deepEqual(await staleSdkPublicInputsInWorkingTree(root), [{ file: "pnpm-lock.yaml", change: "changed" }]);
   assert.equal(isSdkPublicInput("packages/shared/src/types/heartbeat.ts"), true);
   assert.equal(isSdkPublicInput("pnpm-lock.yaml"), true);
   assert.equal(isSdkPublicInput("server/src/index.ts"), false);

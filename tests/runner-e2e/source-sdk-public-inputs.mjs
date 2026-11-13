@@ -126,8 +126,13 @@ export async function staleSdkPublicInputsInWorkingTree(root) {
   const actual = {};
   const listed = git(root, ["ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", ...sourceRoots, ...buildInputs]);
   for (const file of [...new Set(listed.split("\0").filter(Boolean))]) {
-    try { actual[file] = blob(await readFile(path.join(root, file))); }
-    catch (error) { if (error.code !== "ENOENT") throw error; }
+    try {
+      const bytes = await readFile(path.join(root, file));
+      // Preserve the authenticated restored-lock exception: prepare-report-lock.mjs may leave the
+      // reviewed output lock in the working tree while the registry keeps the committed input pin.
+      actual[file] = file === "pnpm-lock.yaml" && hex64(registry.lockSha256) && sha256(bytes) === registry.lockSha256
+        ? registry.inputs?.[file] : blob(bytes);
+    } catch (error) { if (error.code !== "ENOENT") throw error; }
   }
   const policy = JSON.parse(await readFile(path.join(root, reportLockPath), "utf8"));
   return compareSdkPublicInputs(registry, actual, policy);
