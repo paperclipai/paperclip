@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { and, eq, inArray, ne } from "drizzle-orm";
+import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -428,10 +428,9 @@ suite("held interrupted preparations on the shared ownership path", () => {
     for (let round = 0; round < 40; round += 1) {
       await heartbeat.reconcileStrandedAssignedIssues({ companyId, issueId });
       const [task] = await db.select().from(issues).where(eq(issues.id, issueId));
-      if (task!.status === "blocked") break;
       expect(task!.status).toBe(status);
       const [next] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, latest));
-      expect(next).toBeDefined();
+      if (!next) break;
       expect(next!.contextSnapshot).toMatchObject({ retryReason: "interrupted_preparation",
         executionRetryAccounting: { interruptedPreparations: successors + 1 } });
       successors += 1;
@@ -445,17 +444,21 @@ suite("held interrupted preparations on the shared ownership path", () => {
       latest = next!.id;
     }
     expect(successors).toBe(cap);
-    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]).toMatchObject({ status: "blocked" });
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]).toMatchObject({ status });
+    await db.update(agentWakeupRequests).set({ status: "failed", finishedAt: new Date() })
+      .where(and(eq(agentWakeupRequests.companyId, companyId), sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`));
+    await db.update(heartbeatRuns).set({ scheduledRetryAt: new Date(Date.now() - 31 * 60_000) })
+      .where(and(eq(heartbeatRuns.issueId, issueId), ne(heartbeatRuns.id, firstRunId)));
+    const check = await heartbeat.checkAssignedWorkInvariant({ companyId, issueId });
+    expect(check).toMatchObject({ outcome: cap >= 6 ? "deferred_cap" : "deferred_rate_limit" });
+    expect(check!.retryAt!.getTime()).toBeGreaterThan(Date.now());
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, latest))).toEqual([]);
     const receipt = await requestTaskRetry({ db, companyId, issueId, actorId: "local-board",
       actorSource: "local_implicit", idempotencyKey: randomUUID(), observedRunId: latest });
     expect(receipt).toMatchObject({ accepted: true });
   }, 120_000);
 
-  // The scheduler gives a settled lost preparation the interrupted_preparation
-  // lane; the synchronous budget check reads the server-restart bound of the
-  // replaced owner. When only the preparation bound is spent, the sweep must
-  // still report the exhaustion instead of leaving the task in_progress.
-  it("blocks the task when a replaced preparation's lane is spent even though the restart bound is not", async () => {
+  it("leaves the task to the assigned-work sweep, not blocked, when a replaced preparation's lane is spent", async () => {
     const heartbeat = heartbeatService(db);
     const controller = await deadController();
     const issueId = randomUUID(), runId = randomUUID();
@@ -478,7 +481,9 @@ suite("held interrupted preparations on the shared ownership path", () => {
     await heartbeat.reconcileStrandedAssignedIssues({ companyId, issueId });
 
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toEqual([]);
-    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]).toMatchObject({ status: "blocked" });
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]).toMatchObject({ status: "todo" });
+    expect(await db.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.sourceIssueId, issueId),
+      inArray(issueRecoveryActions.status, ["active", "escalated"])))).toEqual([]);
   });
 
   it.each([
