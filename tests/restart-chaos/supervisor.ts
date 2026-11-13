@@ -42,6 +42,7 @@ import { isMultiServerFault, runMultiServerFault, type MultiServerKind, type Mul
 import { generationHome, nextRedeployIdentity, redeployEnvironment, redeployIdentity, redeployNodeArgs, redeployReceipt, type RedeployIdentity } from "./redeploy.js";
 import { startEdgeProxy, type EdgeProxy } from "./edge-proxy.js";
 import { ephemeralServerEnvironment } from "./ephemeral-server.js";
+import { whileFrozen } from "./server-freeze.js";
 import type { SwapPhase, SwapPhaseInfo } from "./release-swap-driver.js";
 import { CLASS_R_PRE_FAULT_DEADLINE_MS, classRRedeploys, isClassRFault, runPluginStall, withReplacementPluginStall, type ClassRHooks } from "./class-r.js";
 
@@ -838,22 +839,19 @@ export class ChaosSupervisor {
     const freezeSwaps = process.env.RESTART_CHAOS_K15_FREEZE_SWAPS?.split(",").map(Number) ?? null;
     const freezeMs = freezeSwaps && !freezeSwaps.includes(this.rollingRedeploys) ? null
       : overlapKillAfterMs(process.env.RESTART_CHAOS_K15_FREEZE_NEW_SECONDS, 600_000, "RESTART_CHAOS_K15_FREEZE_NEW_SECONDS");
-    const frozenAt = freezeMs !== null && next.pid ? Date.now() : null;
-    if (frozenAt !== null) {
-      process.kill(next.pid!, "SIGSTOP");
-      this.timeline.add("k15_new_server_frozen", { faultId: receipt.faultId, pid: next.pid, forMs: freezeMs });
-    }
-    if (killAfterMs === null) await this.stopper(previous, "SIGTERM");
-    else {
-      this.timeline.add("k15_old_server_killed", { faultId: receipt.faultId, previousPid: previous.pid, afterMs: killAfterMs });
-      await this.stopper.crashForRestart(previous);
-    }
-    receipt.stoppedAt = Date.now();
-    this.timeline.add("fault_server_down", { faultId: receipt.faultId, previousPid: previous.pid, overlapMs });
-    if (frozenAt !== null) {
-      await delay(Math.max(0, frozenAt + freezeMs! - Date.now()));
-      process.kill(next.pid!, "SIGCONT");
-      this.timeline.add("k15_new_server_thawed", { faultId: receipt.faultId, pid: next.pid, frozenMs: Date.now() - frozenAt, afterOldExitMs: Date.now() - receipt.stoppedAt });
+    if (freezeMs !== null && next.pid) this.timeline.add("k15_new_server_frozen", { faultId: receipt.faultId, pid: next.pid, forMs: freezeMs });
+    const frozen = await whileFrozen({ pid: next.pid, freezeMs }, async () => {
+      if (killAfterMs === null) await this.stopper(previous, "SIGTERM");
+      else {
+        this.timeline.add("k15_old_server_killed", { faultId: receipt.faultId, previousPid: previous.pid, afterMs: killAfterMs });
+        await this.stopper.crashForRestart(previous);
+      }
+      receipt.stoppedAt = Date.now();
+      this.timeline.add("fault_server_down", { faultId: receipt.faultId, previousPid: previous.pid, overlapMs });
+    });
+    if (frozen.frozenAt !== null) {
+      this.timeline.add("k15_new_server_thawed", { faultId: receipt.faultId, pid: next.pid, frozenMs: frozen.thawedAt! - frozen.frozenAt,
+        afterOldExitMs: frozen.thawedAt! - receipt.stoppedAt! });
     }
     await swap("stopped", next);
     await this.redeployEvidence?.(receipt.faultId, "stopped");

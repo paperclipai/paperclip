@@ -302,6 +302,26 @@ describe("a follow-up the running turn did not receive (w-20261113T052703-s7301 
       "follow-up answered in a later run: 1, queued wait p50 1017 s / max 1017 s, posted to answered p50 1263 s / max 1263 s"]);
   });
 
+  it("carries the exemption to the retry of a follow-up run that failed before it received the comment", () => {
+    const retried = (attemptStatus: string): WakeEvidenceFile => {
+      const base = t010();
+      const [run1, run2] = base.runs!;
+      const attempt = { ...run2, status: attemptStatus, acceptedDisposition: attemptStatus === "succeeded" ? "blocked" : null, acceptedAt: null,
+        finishedAt: run2.startedAt! + 5_000 };
+      const retry = { ...run2, runId: "9e9e9e9e-retry", createdAt: run2.startedAt! + 5_100, startedAt: run2.startedAt! + 6_000, wakeupRequestId: "retry-wake" };
+      return { ...base, runs: [{ ...run1, status: "succeeded" }, attempt, { ...retry, status: "succeeded" }],
+        wakes: [...base.wakes!, { id: "retry-wake", reason: "process_lost_retry", source: "automation", triggerDetail: "system", requestedByActorType: "system",
+          requestedByActorId: null, createdAt: run2.startedAt! + 5_100, payload: { _paperclipWakeContext: { wakeCommentIds: [comment] } } }] };
+    };
+    const failedFirst = retried("failed");
+    expect(afterDone(failedFirst).started).toEqual([]);
+    expect(afterDone(failedFirst).answeredFollowUp.map(turn => turn.runId)).toEqual([second, "9e9e9e9e-retry"]);
+    expect(completionOnce(failedFirst)).toMatchObject({ ok: true, detail: "runs=1" });
+    const answeredFirst = retried("succeeded");
+    expect(afterDone(answeredFirst).started.map(turn => turn.runId)).toEqual(["9e9e9e9e-retry"]);
+    expect(completionOnce(answeredFirst).ok).toBe(false);
+  });
+
   it("still counts an extra turn and a duplicate completion when the first run had already received the comment", () => {
     for (const firstRun of [{ historyReadCommentIds: [comment] }, { contextSnapshot: { wakeReason: "issue_commented", wakeCommentIds: [comment] } }]) {
       const evidence = t010(firstRun);

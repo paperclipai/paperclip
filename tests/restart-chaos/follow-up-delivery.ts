@@ -7,6 +7,8 @@ export interface DeliveryRun {
   wakeupRequestId: string | null;
   contextSnapshot?: unknown;
   historyReadCommentIds?: readonly string[] | null;
+  status?: string | null;
+  acceptedDisposition?: string | null;
 }
 
 export interface DeliveryWake { id: string | null; createdAt?: number | null; payload?: unknown }
@@ -38,16 +40,24 @@ export function laterAnswers(evidence: { runs?: readonly DeliveryRun[]; wakes?: 
   const started = (evidence.runs ?? []).filter((run): run is DeliveryRun & { runId: string; startedAt: number } => Boolean(run.runId) && typeof run.startedAt === "number")
     .sort((a, b) => a.startedAt - b.startedAt);
   const delivered = new Set<string>();
+  const firstStart = started[0]?.startedAt ?? null;
   started.forEach((run, index) => {
     const wake = run.wakeupRequestId ? wakes.get(run.wakeupRequestId) : undefined;
     const input = wakeInputCommentIds(run, wake);
     const undelivered = input.filter(id => !delivered.has(id));
-    if (index > 0 && undelivered.length) {
-      answers.set(run.runId, { runId: run.runId, commentIds: undelivered, postedAt: wake?.createdAt ?? null, queuedAt: run.createdAt, startedAt: run.startedAt });
+    const postedAt = typeof wake?.createdAt === "number" ? wake.createdAt : null;
+    const postedDuringWork = postedAt !== null && firstStart !== null ? postedAt >= firstStart : index > 0;
+    if (index > 0 && postedDuringWork && undelivered.length) {
+      answers.set(run.runId, { runId: run.runId, commentIds: undelivered, postedAt, queuedAt: run.createdAt, startedAt: run.startedAt });
     }
-    for (const id of [...input, ...run.historyReadCommentIds ?? []]) delivered.add(id);
+    if (receivedInput(run)) for (const id of [...input, ...run.historyReadCommentIds ?? []]) delivered.add(id);
   });
   return answers;
+}
+
+function receivedInput(run: DeliveryRun): boolean {
+  if (run.status === undefined) return true;
+  return run.status === "succeeded" || (run.acceptedDisposition !== undefined && run.acceptedDisposition !== null);
 }
 
 function percentile(values: readonly number[], fraction: number): number | null {
