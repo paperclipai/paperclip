@@ -1731,14 +1731,15 @@ async function stopSandboxCallbackBridgeServerProcess(input: {
         '    stat_line="$(cat "/proc/$pid/stat" 2>/dev/null || true)"',
         '    current_state="$(printf \'%s\\n\' "${stat_line##*) }" | awk \'{print $1}\')"',
         '    current_start_time="$(printf \'%s\\n\' "${stat_line##*) }" | awk \'{print $20}\')"',
-        '    if [ -z "$current_start_time" ]; then portable_started_at="$(LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null | awk \'{$1=$1; print}\')"; if [ -n "$portable_started_at" ]; then current_start_time="$(printf \'%s\' "$portable_started_at" | cksum 2>/dev/null | awk \'{print $1}\')"; fi; current_state="$(LC_ALL=C ps -o state= -p "$pid" 2>/dev/null | awk \'{print substr($1,1,1)}\')"; fi',
+        '    portable_identity=0',
+        '    if [ -z "$current_start_time" ]; then portable_identity=1; portable_started_at="$(LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null | awk \'{$1=$1; print}\')"; if [ -n "$portable_started_at" ]; then current_start_time="$(printf \'%s\' "$portable_started_at" | cksum 2>/dev/null | awk \'{print $1}\')"; fi; current_state="$(LC_ALL=C ps -o state= -p "$pid" 2>/dev/null | awk \'{print substr($1,1,1)}\')"; fi',
         '    if [ -z "$current_start_time" ]; then echo "Unable to verify callback bridge process identity." >&2; exit 1; fi',
         '    if [ "$current_start_time" = "$expected_start_time" ] && [ "$current_state" != "Z" ]; then',
         '      command_line="$(tr \'\\000\' \' \' < "/proc/$pid/cmdline" 2>/dev/null || true)"',
         '      if [ -z "$command_line" ]; then command_line="$(LC_ALL=C ps -ww -o command= -p "$pid" 2>/dev/null || true)"; fi',
         '      if [ -z "$command_line" ]; then echo "Unable to verify callback bridge process identity." >&2; exit 1; fi',
         '      case "$command_line" in',
-        '        *"$PAPERCLIP_EXPECTED_BRIDGE_ENTRYPOINT"*)',
+        '        *"$PAPERCLIP_EXPECTED_BRIDGE_ENTRYPOINT"*"$PAPERCLIP_EXPECTED_BRIDGE_LAUNCH_TOKEN"*)',
         '          kill "$pid" 2>/dev/null || true',
         '          i=0',
         '          while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 40 ]; do',
@@ -1755,6 +1756,7 @@ async function stopSandboxCallbackBridgeServerProcess(input: {
         '            current_start_time="$(printf \'%s\\n\' "${stat_line##*) }" | awk \'{print $20}\')"',
         '            if [ -z "$current_start_time" ]; then portable_started_at="$(LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null | awk \'{$1=$1; print}\')"; if [ -n "$portable_started_at" ]; then current_start_time="$(printf \'%s\' "$portable_started_at" | cksum 2>/dev/null | awk \'{print $1}\')"; fi; current_state="$(LC_ALL=C ps -o state= -p "$pid" 2>/dev/null | awk \'{print substr($1,1,1)}\')"; fi',
         '            if [ "$current_start_time" = "$expected_start_time" ] && [ "$current_state" != "Z" ]; then',
+        '              if [ "$portable_identity" -eq 1 ]; then command_line="$(LC_ALL=C ps -ww -o command= -p "$pid" 2>/dev/null || true)"; case "$command_line" in *"$PAPERCLIP_EXPECTED_BRIDGE_ENTRYPOINT"*"$PAPERCLIP_EXPECTED_BRIDGE_LAUNCH_TOKEN"*) ;; *) echo "Callback bridge command identity changed; refusing SIGKILL." >&2; exit 1 ;; esac; fi',
         '              kill -KILL "$pid" 2>/dev/null || true',
         '            fi',
         '            i=0',
@@ -1795,6 +1797,7 @@ async function stopSandboxCallbackBridgeServerProcess(input: {
     env: {
       [SANDBOX_EXEC_CHANNEL_ENV]: SANDBOX_EXEC_CHANNEL_BRIDGE,
       PAPERCLIP_EXPECTED_BRIDGE_ENTRYPOINT: input.remoteEntrypoint,
+      PAPERCLIP_EXPECTED_BRIDGE_LAUNCH_TOKEN: `--paperclip-bridge-launch-token=${input.launchToken}`,
     },
     timeoutMs: cleanupTimeoutMs,
   });
@@ -1851,6 +1854,7 @@ export async function startSandboxCallbackBridgeServer(input: {
     "pid=$$",
     'node_command="$1"',
     'bridge_entrypoint="$2"',
+    'launch_token="$3"',
     'start_time=""',
     'if [ -r "/proc/$pid/stat" ]; then',
     '  stat_line=""',
@@ -1868,7 +1872,7 @@ export async function startSandboxCallbackBridgeServer(input: {
     "  exit 1",
     "fi",
     `rm -f ${shellQuote(launchStateFile)}`,
-    'exec "$node_command" "$bridge_entrypoint"',
+    'exec "$node_command" "$bridge_entrypoint" "--paperclip-bridge-launch-token=$launch_token"',
   ].join("\n");
   let launchCompleted = false;
   let launchTransportAmbiguous = true;
@@ -1888,7 +1892,7 @@ export async function startSandboxCallbackBridgeServer(input: {
           '  echo "Callback bridge launch was cancelled before process creation." >&2',
           "  exit 1",
           "fi",
-          `nohup ${shellQuote(shellCommand)} -c ${shellQuote(launchWrapperScript)} ${shellQuote(shellCommand)} ${shellQuote(nodeCommand)} ${shellQuote(remoteEntrypoint)} ` +
+          `nohup ${shellQuote(shellCommand)} -c ${shellQuote(launchWrapperScript)} ${shellQuote(shellCommand)} ${shellQuote(nodeCommand)} ${shellQuote(remoteEntrypoint)} ${shellQuote(launchToken)} ` +
             `>> ${shellQuote(directories.logFile)} 2>&1 < /dev/null &`,
           "pid=$!",
           "i=0",
