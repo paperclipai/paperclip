@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { agents, companies, createDb, heartbeatRuns, issues } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { executionProjectionsForRuns } from "./execution-projection.js";
-import { agentQueuedRunLine } from "./heartbeat/queued-run-line.js";
+import { agentQueuedRunLine, clearAgentQueueLineCache, worktreeExecutionCutoff } from "./heartbeat/queued-run-line.js";
 import { issueService } from "./issues.js";
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -19,6 +19,7 @@ const minutesAgo = (minutes: number) => new Date(now.getTime() - minutes * 60_00
     db = createDb(database.connectionString);
   }, 60_000);
   afterAll(async () => { await database?.cleanup(); });
+  beforeEach(() => clearAgentQueueLineCache());
 
   async function fixture(options: { maxConcurrentRuns: number; running: number }) {
     const companyId = randomUUID(), agentId = randomUUID();
@@ -77,6 +78,34 @@ const minutesAgo = (minutes: number) => new Date(now.getTime() - minutes * 60_00
       label: "Waiting for Codie",
       agentQueue: { maxConcurrentRuns: 2, runningCount: 2, position: 1, queuedCount: 1 },
     });
+  });
+
+  it("leaves out queued runs that a preview worktree's cutoff keeps from starting", async () => {
+    const f = await fixture({ maxConcurrentRuns: 1, running: 1 });
+    const copiedOld = await f.queue({ priority: "critical", createdMinutesAgo: 120 });
+    const fresh = await f.queue({ priority: "low", createdMinutesAgo: 5 });
+    const [agent] = await db.select().from(agents).where(eq(agents.id, f.agentId));
+    expect(await agentQueuedRunLine(db, issueService(db), agent!, now, { cutoff: null })).toEqual([copiedOld, fresh]);
+    expect(await agentQueuedRunLine(db, issueService(db), agent!, now, { cutoff: minutesAgo(60) })).toEqual([fresh]);
+    // Outside a worktree there is no cutoff and no settings read.
+    expect(await worktreeExecutionCutoff(db, {})).toBeNull();
+  });
+
+  it("keeps a deep queue's place in line to a few reads, not one per run", async () => {
+    const f = await fixture({ maxConcurrentRuns: 20, running: 20 });
+    const runIds: string[] = [];
+    for (let index = 0; index < 300; index += 1) {
+      runIds.push(await f.queue({ priority: (["critical", "high", "medium", "low"] as const)[index % 4], createdMinutesAgo: 300 - index,
+        ...(index % 9 === 0 ? { wakeReason: "issue_continuation_needed" } : {}) }));
+    }
+    const started = performance.now();
+    const projections = await executionProjectionsForRuns(db, f.companyId, runIds, now);
+    const elapsedMs = performance.now() - started;
+    const positions = runIds.map(runId => projections.get(runId)?.agentQueue?.position).sort((a, b) => a! - b!);
+    expect(positions).toEqual(runIds.map((_, index) => index + 1));
+    expect(projections.get(runIds[0]!)?.agentQueue?.queuedCount).toBe(300);
+    // Generous bound for slow CI; the ordering itself is O(n log n).
+    expect(elapsedMs).toBeLessThan(5_000);
   });
 
   it("leaves running runs and other companies' runs out of the line", async () => {

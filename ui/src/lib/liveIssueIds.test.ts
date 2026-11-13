@@ -224,8 +224,10 @@ describe("issueWaitingOf", () => {
     expect(issueWaitingOf(new Set(["a"]), "a")).toBeNull();
   });
 
-  it("does not count a waiting sub-task as running below", () => {
+  it("counts a waiting sub-task as live work, but not as running below", () => {
     const ids = collectLiveIssueIds([waiting({ id: "queued", issueId: "child" })]);
-    expect(collectSubtreeLiveCounts([{ id: "parent", parentId: null }, { id: "child", parentId: "parent" }], ids).size).toBe(0);
+    const tree = [{ id: "parent", parentId: null }, { id: "child", parentId: "parent" }];
+    expect(collectSubtreeLiveCounts(tree, ids).get("parent")).toBe(1);
+    expect(collectSubtreeLiveCounts(tree, ids, { startedOnly: true }).size).toBe(0);
   });
 });

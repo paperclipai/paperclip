@@ -55,7 +55,7 @@ import {
 } from "../lib/keyboardShortcuts";
 import {
   resolveInboxIssueBlockerAttention,
-  resolveIssueLiveDescendantCount,
+  resolveIssueRunningDescendantCount,
 } from "../lib/inbox-live-descendants";
 import {
   beginLocalInboxArchive,
@@ -1538,7 +1538,7 @@ export function Inbox() {
   flatNavItemsRef.current = flatNavItems;
   // Roll live descendant runs up to their ancestors across the loaded inbox tree
   // so a parent that is not itself live can still surface "n live below".
-  const subtreeLiveCounts = useMemo(() => {
+  const subtreeCounts = useMemo(() => {
     const nodes: { id: string; parentId: string | null }[] = [];
     const seen = new Set<string>();
     const pushIssue = (issue: Issue) => {
@@ -1554,8 +1554,12 @@ export function Inbox() {
         for (const child of children) pushIssue(child);
       }
     }
-    return collectSubtreeLiveCounts(nodes, liveIssueIds);
+    return {
+      live: collectSubtreeLiveCounts(nodes, liveIssueIds),
+      running: collectSubtreeLiveCounts(nodes, liveIssueIds, { startedOnly: true }),
+    };
   }, [groupedSections, liveIssueIds]);
+  const subtreeLiveCounts = subtreeCounts.live;
   const topFlatIndex = useMemo(() => {
     const map = new Map<string, number>();
     flatNavItems.forEach((entry, index) => {
@@ -2686,7 +2690,7 @@ export function Inbox() {
                     originatingActor?.kind === "user" ? originatingActor.viaAgentId ?? null : null;
                   const isLive = liveIssueIds.has(issue.id);
                   const loadedSubtreeLiveCount = subtreeLiveCounts.get(issue.id) ?? 0;
-                  const liveDescendantCount = resolveIssueLiveDescendantCount(issue, loadedSubtreeLiveCount);
+                  const runningDescendantCount = resolveIssueRunningDescendantCount(issue, subtreeCounts.running.get(issue.id) ?? 0);
                   const blockerAttention = resolveInboxIssueBlockerAttention(issue, {
                     isLive,
                     loadedSubtreeLiveCount,
@@ -2741,7 +2745,7 @@ export function Inbox() {
                             issue={issue}
                             isLive={isLive}
                             waiting={issueWaitingOf(liveIssueIds, issue.id)}
-                            subtreeLiveCount={liveDescendantCount}
+                            subtreeLiveCount={runningDescendantCount}
                             showSubtreeLiveChip={showSubtreeLiveChip}
                             showStatus={showStatus}
                             showIdentifier={visibleIssueColumnSet.has("id") && availableIssueColumnSet.has("id")}

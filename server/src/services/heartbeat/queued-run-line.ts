@@ -10,11 +10,12 @@ import {
   isRecoveryWakeReason,
   isSystemRecoveryRun,
   oldestReadyQueuedRun,
-  orderQueuedRunsForDispatch,
+  queuedRunDispatchLine,
   type QueuedRunDispatchFacts,
   type QueuedRunDispatchInput,
 } from "./queued-run-dispatch-order.js";
 import { parseHeartbeatPolicy } from "./timer-policy.js";
+import { instanceSettingsService, isTruthyRuntimeEnvValue, resolveWorktreeRunExecutionActivation } from "../instance-settings.js";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
 type Agent = typeof agents.$inferSelect;
@@ -207,7 +208,7 @@ export async function agentQueueLinesForRuns(
   const issuesSvc = issueService(db);
   const wanted = new Set(queuedRuns.map(run => run.id));
   await Promise.all(fullAgents.map(async ({ agent, maxConcurrentRuns, runningCount }) => {
-    const line = await agentQueuedRunLine(db, issuesSvc, agent, now);
+    const line = await cachedAgentQueuedRunLine(db, issuesSvc, agent, now);
     line.forEach((runId, index) => {
       if (!wanted.has(runId)) return;
       result.set(runId, {
@@ -229,7 +230,9 @@ export async function agentQueuedRunLine(
   issuesSvc: { listDependencyReadiness: (companyId: string, issueIds: string[]) => Promise<Map<string, { isDependencyReady: boolean }>> },
   agent: Agent,
   now = new Date(),
+  options: { cutoff?: Date | null } = {},
 ): Promise<string[]> {
+  const cutoff = options.cutoff !== undefined ? options.cutoff : await worktreeExecutionCutoff(db);
   const queuedRuns = await db.select({
     id: heartbeatRuns.id,
     createdAt: heartbeatRuns.createdAt,
@@ -242,7 +245,7 @@ export async function agentQueuedRunLine(
       'previousRunId', ${heartbeatRuns.contextSnapshot}->'previousRunId')`,
   }).from(heartbeatRuns)
     .where(and(eq(heartbeatRuns.companyId, agent.companyId), eq(heartbeatRuns.agentId, agent.id),
-      eq(heartbeatRuns.status, "queued")))
+      eq(heartbeatRuns.status, "queued"), cutoff ? gte(heartbeatRuns.createdAt, cutoff) : undefined))
     .orderBy(asc(heartbeatRuns.createdAt));
   if (!queuedRuns.length) return [];
   const issueIds = [...new Set(queuedRuns.flatMap(run => {
@@ -263,5 +266,51 @@ export async function agentQueuedRunLine(
     issueById: new Map(issueRows.map(row => [row.id, row])),
     now,
   });
-  return orderQueuedRunsForDispatch(facts, dispatchInput).map(entry => entry.id);
+  return queuedRunDispatchLine(facts, dispatchInput).map(entry => entry.id);
+}
+
+/**
+ * Dispatch skips queued runs created before an enabled preview worktree's
+ * cutoff, so the line skips them too. Outside a worktree this reads nothing.
+ */
+export async function worktreeExecutionCutoff(db: Db, env: NodeJS.ProcessEnv = process.env): Promise<Date | null> {
+  if (!isTruthyRuntimeEnvValue(env.PAPERCLIP_IN_WORKTREE)) return null;
+  const activation = resolveWorktreeRunExecutionActivation(
+    await instanceSettingsService(db).getExperimental(),
+    env.PAPERCLIP_INSTANCE_ID?.trim() || null,
+  );
+  const cutoff = activation.armed ? new Date(activation.cutoff) : null;
+  return cutoff && !Number.isNaN(cutoff.getTime()) ? cutoff : null;
+}
+
+/**
+ * Board reads repeat while the line changes only when a run starts, finishes or
+ * joins. A short per-agent memo, shared by concurrent reads, keeps a deep queue
+ * from being re-read on every task and run read.
+ */
+export const AGENT_QUEUE_LINE_TTL_MS = 5_000;
+const lineCache = new Map<string, { at: number; line: Promise<string[]> }>();
+
+function cachedAgentQueuedRunLine(
+  db: Db,
+  issuesSvc: Parameters<typeof agentQueuedRunLine>[1],
+  agent: Agent,
+  now: Date,
+): Promise<string[]> {
+  const key = `${agent.companyId}:${agent.id}`;
+  const at = Date.now();
+  const cached = lineCache.get(key);
+  if (cached && at - cached.at < AGENT_QUEUE_LINE_TTL_MS) return cached.line;
+  for (const [entryKey, entry] of lineCache) {
+    if (at - entry.at >= AGENT_QUEUE_LINE_TTL_MS) lineCache.delete(entryKey);
+  }
+  const line = agentQueuedRunLine(db, issuesSvc, agent, now);
+  lineCache.set(key, { at, line });
+  line.catch(() => { if (lineCache.get(key)?.line === line) lineCache.delete(key); });
+  return line;
+}
+
+/** Test hook: forget memoized lines. */
+export function clearAgentQueueLineCache() {
+  lineCache.clear();
 }

@@ -117,6 +117,7 @@ export interface SubtreeLiveNode {
 export function collectSubtreeLiveCounts(
   issues: readonly SubtreeLiveNode[] | null | undefined,
   liveIssueIds: ReadonlySet<string>,
+  options: { startedOnly?: boolean } = {},
 ): Map<string, number> {
   const counts = new Map<string, number>();
   if (!issues || issues.length === 0 || liveIssueIds.size === 0) return counts;
@@ -125,9 +126,10 @@ export function collectSubtreeLiveCounts(
   for (const issue of issues) parentById.set(issue.id, issue.parentId);
 
   for (const liveId of liveIssueIds) {
-    // Only roll up live issues that belong to the loaded tree. A sub-task that
-    // is only waiting to start is not running below.
-    if (!parentById.has(liveId) || issueWaitingOf(liveIssueIds, liveId)) continue;
+    // Only roll up live issues that belong to the loaded tree. With
+    // `startedOnly`, a sub-task that only waits to start is not running below;
+    // it still counts as live work that covers a blocked parent.
+    if (!parentById.has(liveId) || (options.startedOnly && issueWaitingOf(liveIssueIds, liveId))) continue;
     const seen = new Set<string>([liveId]);
     let parentId = parentById.get(liveId) ?? null;
     while (parentId && !seen.has(parentId)) {

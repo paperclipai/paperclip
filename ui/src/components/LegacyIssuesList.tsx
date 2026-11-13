@@ -1050,7 +1050,8 @@ export function IssuesList({
   );
   const availableIssueColumnSet = useMemo(() => new Set(availableIssueColumns), [availableIssueColumns]);
   const subtreeLiveCounts = useMemo(
-    () => collectSubtreeLiveCounts(issues, liveIssueIds ?? new Set<string>()),
+    // The row chip counts only started sub-tasks; waiting ones are not running below.
+    () => collectSubtreeLiveCounts(issues, liveIssueIds ?? new Set<string>(), { startedOnly: true }),
     [issues, liveIssueIds],
   );
   const visibleTrailingIssueColumns = useMemo(
