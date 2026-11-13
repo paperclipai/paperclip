@@ -398,15 +398,15 @@ describe("qualified ACPX runtime sidecar", () => {
     const start = source.indexOf("        semanticTools: {");
     const end = source.indexOf("        onGoalUpdate:", start);
     const diagnostics: Array<[string, string]> = [];
-    const create = new Function("params", "activeCopilotEvidence", "waitForTool", "diagnostic", "RUNNER_TOOL_BRIDGE_DIAGNOSTIC_CODE",
+    const create = new Function("params", "activeCopilotEvidence", "waitForTool", "diagnostic", "RUNNER_TOOL_BRIDGE_DIAGNOSTIC_CODE", "CLAUDE_TOOL_USE_META_KEY",
       `return ({ ${source.slice(start, end)} }).semanticTools;`);
     const handler = vi.fn(async () => ({ ok: true }));
     const bridge = await startRunnerToolBridge(create({ agent: "claude", tools: [{ name: "update_case", inputSchema: {
       type: "object", required: ["patch"], properties: { patch: { type: "object" } } } }] }, undefined, handler,
-      (code: string, message: string) => diagnostics.push([code, message]), "runner_tool_bridge_diagnostic"));
+      (code: string, message: string) => diagnostics.push([code, message]), "runner_tool_bridge_diagnostic", CLAUDE_TOOL_USE_META_KEY));
     try {
       const body = await fetch(bridge.url, { method: "POST", headers: { Authorization: `Bearer ${bridge.secret}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "update_case", arguments: { patch: '{"status":"done"}' } } }) }).then(response => response.json());
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "update_case", arguments: { patch: '{"status":"done"}' } } }) }).then(response => response.json() as Promise<{ result: { isError?: boolean } }>);
       expect(body.result.isError).not.toBe(true);
       expect(handler).toHaveBeenCalledOnce();
       expect(diagnostics).toHaveLength(1);
