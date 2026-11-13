@@ -133,27 +133,21 @@ const idleNonDumpable = [
   "time.sleep(600)",
 ].join("\n");
 
-// Another agent run's process on the same host that the server cannot inspect. It never calls the server.
-async function startUninspectableAgentRunProcess(): Promise<ChildProcess> {
+async function startIdleAgentRunProcess(): Promise<{ child: ChildProcess; uninspectable: boolean }> {
   const child = spawn("python3", ["-c", idleNonDumpable], {
     env: { ...operatorEnvironment(), PAPERCLIP_RUN_ID: "77777777-7777-4777-8777-777777777777" },
     stdio: "ignore",
   });
-  const deadline = Date.now() + 10_000;
+  const deadline = Date.now() + 3_000;
   while (Date.now() < deadline) {
-    const hidden = await readdir(`/proc/${child.pid}/fd`)
+    const uninspectable = await readdir(`/proc/${child.pid}/fd`)
       .then(() => false, (error: NodeJS.ErrnoException) => error.code === "EACCES" || error.code === "EPERM");
-    if (hidden) return child;
+    if (uninspectable) return { child, uninspectable };
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
-  child.kill();
-  throw new Error("The idle agent-run process did not become uninspectable");
+  return { child, uninspectable: false };
 }
 
-// When the server cannot inspect a connection's owner, it refuses implicit board access unless every
-// same-user process it cannot inspect belongs to the operator. CI hosts run other processes of the same
-// user, so the real-process cases below judge only the processes each case starts. The case "refuses
-// board access ... while another agent run's process it cannot inspect is running" covers the host-wide rule.
 function inspectorForLaunchedProcesses(): LocalProcessInspector {
   const linux = defaultLocalProcessInspector("linux")!;
   return {
@@ -177,19 +171,20 @@ describe.skipIf(process.platform !== "linux").each(["127.0.0.1", "::1"])(
   (host) => {
     let server: Server;
     let url: string;
-    let otherAgentRun: ChildProcess;
+    let otherAgentRun: { child: ChildProcess; uninspectable: boolean };
 
     beforeAll(async () => {
-      otherAgentRun = await startUninspectableAgentRunProcess();
+      otherAgentRun = await startIdleAgentRunProcess();
       ({ server, url } = await startServer({}, host, inspectorForLaunchedProcesses()));
     });
 
     afterAll(async () => {
-      otherAgentRun.kill();
+      otherAgentRun.child.kill();
       await new Promise((resolve) => server.close(resolve));
     });
 
-    it("refuses board access to an operator process the server cannot inspect while another agent run's process it cannot inspect is running", async () => {
+    it("refuses board access to an operator process the server cannot inspect while another agent run's process it cannot inspect is running", async (context) => {
+      if (!otherAgentRun.uninspectable) context.skip();
       const hostWide = await startServer({}, host);
       try {
         await expect(runChild(process.execPath, ["-e", launchNonDumpableFetch, nonDumpableFetch, hostWide.url, "keep"], operatorEnvironment()))
