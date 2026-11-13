@@ -189,3 +189,111 @@ it("keeps a retained remote Runner for the reattaching controller, which continu
     await rm(root, { recursive: true, force: true });
   }
 }, 30_000);
+
+it("continues the same provider thread from a fresh Runner over the journal of a retained Runner that stopped answering, without replaying its turn", async () => {
+  const root = await mkdtemp(join(tmpdir(), "runnerd-remote-retention-replace-"));
+  const callLog = join(root, "provider-calls.log");
+  const server = createServer();
+  let authority: DurablePrpControlPlane | null = null;
+  server.on("upgrade", (request, socket, head) => {
+    if (!authority) { socket.destroy(); return; }
+    authority.handleUpgrade(request, socket, "/runner", head);
+  });
+  await new Promise<void>(resolveListen => server.listen(0, "127.0.0.1", resolveListen));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Missing replacement test listener");
+  const registration = async (next: DurablePrpControlPlane) => {
+    authority = next;
+    return { connectUrl: `ws://127.0.0.1:${address.port}/runner`, release: () => { if (authority === next) authority = null; } };
+  };
+  const children: ReturnType<typeof spawn>[] = [];
+  const launch = vi.fn((spec: durableControlPlane.RunnerProcessLaunchSpec) => {
+    const child = spawn(spec.command, [...spec.args], { cwd: spec.cwd, env: spec.environment, stdio: "ignore", detached: true });
+    children.push(child);
+    return {
+      child,
+      completion: new Promise<durableControlPlane.RunnerProcessResult>((resolveExit, rejectExit) => {
+        child.once("error", rejectExit);
+        child.once("exit", (code, exitSignal) => resolveExit({ code, signal: exitSignal, stdout: "", stderr: "" }));
+      }),
+      isExitConfirmed: () => child.exitCode !== null || child.signalCode !== null,
+    };
+  });
+  const shared = {
+    runnerBinary: defaultCapabilityRunnerdBinary(),
+    codexCommand: resolve(import.meta.dirname, "../../runner/target/debug/fake-codex-app-server"),
+    codexArgs: ["--state-file", join(root, "provider-state.json"), "--hold-first-durable-turn", "--call-log", callLog],
+    stateDirectory: root,
+    prpIdentity: {
+      runnerInstanceId: "runner-replaced", environmentLeaseId: "lease-replaced", runId: "run-replaced",
+      normalizedSessionId: "session-replaced", turnId: "turn-replaced", itemId: "item-replaced",
+    },
+    runnerReconnectGraceMs: 5_000,
+    runnerProcessReconnectGraceMs: null,
+    controlPlaneRegistration: registration,
+    runnerProcessLauncher: launch,
+  };
+  const first = createCapabilityRunnerdCodexTransport({ ...shared, closeGraceMs: 600 });
+  let adopted: ReturnType<typeof createCapabilityRunnerdCodexTransport> | undefined;
+  let replacement: ReturnType<typeof createCapabilityRunnerdCodexTransport> | undefined;
+  const providerPids: number[] = [];
+  try {
+    const opened = await first.transport.request("thread/start", { cwd: root, dynamicTools: codexSemanticToolSpecs() });
+    await first.transport.request("turn/start", { input: [{ type: "text", text: "Keep this task active." }] });
+    for await (const notification of first.transport.notifications()) {
+      if (notification.method === "turn/started") break;
+    }
+    const wedged = children[0]!.pid!;
+    providerPids.push(first.evidence().codexPid!);
+    signal(wedged, "SIGSTOP");
+    await expect(first.transport.close("native session execution complete", { retainUnsettledRemoteRunner: true }))
+      .rejects.toBeInstanceOf(NativeSessionCloseUnrecoverableError);
+    expect(processState(wedged)).toBe("alive");
+    signal(wedged, "SIGCONT");
+    const thread = opened.thread as Record<string, unknown>;
+    const resume = {
+      resumeDynamicTools: codexSemanticToolSpecs(),
+      resumeProviderSession: { driverSessionId: String(thread.id), providerSessionId: String(thread.sessionId) },
+    };
+    adopted = createCapabilityRunnerdCodexTransport({
+      ...shared, ...resume,
+      runnerProcessLauncher: vi.fn(() => { throw new Error("Must adopt the existing runner"); }),
+      adoptExistingRunner: {
+        pid: wedged, processGroupId: wedged, startedAt: new Date().toISOString(),
+        isAlive: () => processState(wedged) === "alive",
+        signal: name => { try { process.kill(-wedged, name); return true; } catch { return false; } },
+      },
+    });
+    adopted.transport.setServerRequestHandler(async () => ({ success: true, contentItems: [] }));
+    await expect(adopted.transport.request("thread/read", {})).resolves.toEqual(
+      expect.objectContaining({ thread: expect.objectContaining({ id: thread.id }) }));
+    signal(wedged, "SIGSTOP");
+    await adopted.transport.detachControllerForRestart!();
+    expect(processState(wedged)).toBe("alive");
+    const journal = JSON.parse(await readFile(join(root, "runner", "runner-state.json"), "utf8")) as Record<string, unknown>;
+    expect(journal.lifecycle).not.toBe("suspended");
+    signal(-wedged, "SIGKILL");
+    for (const pid of providerPids) signal(pid, "SIGKILL");
+    await vi.waitFor(() => expect(processState(wedged)).toBe("gone"), { timeout: 5_000 });
+    replacement = createCapabilityRunnerdCodexTransport({
+      ...shared, ...resume,
+    });
+    replacement.transport.setServerRequestHandler(async () => ({ success: true, contentItems: [] }));
+    await expect(replacement.transport.request("thread/read", {})).resolves.toEqual(
+      expect.objectContaining({ thread: expect.objectContaining({ id: thread.id }) }));
+    if (replacement.evidence().codexPid) providerPids.push(replacement.evidence().codexPid!);
+    expect(launch).toHaveBeenCalledTimes(2);
+    expect(replacement.evidence().runnerPid).toBe(children[1]!.pid);
+    const calls = (await readFile(callLog, "utf8")).trim().split("\n");
+    expect(calls.filter(call => call === "thread/start")).toHaveLength(1);
+    expect(calls.filter(call => call === "turn/start")).toHaveLength(1);
+  } finally {
+    await replacement?.transport.close().catch(() => undefined);
+    await adopted?.transport.close().catch(() => undefined);
+    for (const child of children) { signal(child.pid, "SIGCONT"); signal(child.pid ? -child.pid : null, "SIGKILL"); }
+    for (const pid of providerPids) signal(pid, "SIGKILL");
+    server.closeAllConnections();
+    if (server.listening) await new Promise<void>(resolveClose => server.close(() => resolveClose()));
+    await rm(root, { recursive: true, force: true });
+  }
+}, 60_000);
