@@ -4070,6 +4070,93 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
     { eventType: "turn.accepted", turnId: `past-limit-${round}` },
     { eventType: "tool.execution.completed", turnId: `past-limit-${round}` }];
 
+  describe("one deadline per interruption across server generations", () => {
+    const MINUTE = 60_000;
+    async function claimAt(fixture: Awaited<ReturnType<typeof seedRun>>, at: Date) {
+      const [disposition] = await claimNativeRestartRecoveries({
+        db: fixture.db, controller: successor, restartKind: "hard", runIds: [fixture.runId], now: at,
+      });
+      if (disposition?.kind === "resume_dead_runner") {
+        await fixture.db.update(nativeRunFinalizations).set({ controllerBootId: randomUUID(), controllerPid: 2_000_000_001 })
+          .where(eq(nativeRunFinalizations.runId, fixture.runId));
+      }
+      return disposition?.kind === "resume_dead_runner" ? disposition.kind
+        : (disposition as { reason?: string } | undefined)?.reason ?? disposition?.kind;
+    }
+
+    it("ends a run whose generations show no progress at the deadline from the first interruption, not per generation", async () => {
+      const fixture = await seedInterruptedCheckpoint("DEADLINE-NO-PROGRESS");
+      const start = Date.now();
+      const kinds = [];
+      for (const minutes of [0, 7, 14]) {
+        await appendRunEvents(fixture, providerNeverStarted);
+        kinds.push(await claimAt(fixture, new Date(start + minutes * MINUTE)));
+      }
+      await appendRunEvents(fixture, providerNeverStarted);
+      kinds.push(await claimAt(fixture, new Date(start + 16 * MINUTE)));
+      expect(kinds).toEqual(["resume_dead_runner", "resume_dead_runner", "resume_dead_runner", "native_interruption_deadline_exceeded"]);
+      const [coordinator] = await fixture.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, fixture.runId));
+      expect(coordinator).toMatchObject({ phase: "terminal_failure", failureCode: "native_restart_recovery_blocked", leaseOwner: null });
+      const [run] = await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+      expect(run).toMatchObject({ status: "failed", errorCode: "native_restart_recovery_blocked" });
+    });
+
+    it("restarts the clock when a generation's resume made provider progress", async () => {
+      const fixture = await seedInterruptedCheckpoint("DEADLINE-PROGRESS-RESETS");
+      const start = Date.now();
+      expect(await claimAt(fixture, new Date(start))).toBe("resume_dead_runner");
+      await appendRunEvents(fixture, providerNeverStarted);
+      expect(await claimAt(fixture, new Date(start + 10 * MINUTE))).toBe("resume_dead_runner");
+      await appendRunEvents(fixture, providerProgressed(1));
+      expect(await claimAt(fixture, new Date(start + 20 * MINUTE))).toBe("resume_dead_runner");
+      await appendRunEvents(fixture, providerNeverStarted);
+      expect(await claimAt(fixture, new Date(start + 30 * MINUTE))).toBe("resume_dead_runner");
+      await appendRunEvents(fixture, providerNeverStarted);
+      expect(await claimAt(fixture, new Date(start + 36 * MINUTE))).toBe("native_interruption_deadline_exceeded");
+    });
+
+    it("starts the clock at the first claim for a coordinator saved before the deadline existed", async () => {
+      const fixture = await seedInterruptedCheckpoint("DEADLINE-OLD-ROW");
+      const start = Date.now();
+      expect(await claimAt(fixture, new Date(start))).toBe("resume_dead_runner");
+      await fixture.db.update(nativeRunFinalizations).set({
+        recoveryHistory: sql`jsonb_set(${nativeRunFinalizations.recoveryHistory},
+          array[(jsonb_array_length(${nativeRunFinalizations.recoveryHistory}) - 1)::text],
+          (${nativeRunFinalizations.recoveryHistory} -> -1) - 'interruptionStartedAt')`,
+      }).where(eq(nativeRunFinalizations.runId, fixture.runId));
+      await appendRunEvents(fixture, providerNeverStarted);
+      expect(await claimAt(fixture, new Date(start + 60 * MINUTE))).toBe("resume_dead_runner");
+      expect(await lastClaimEntry(fixture)).toMatchObject({ interruptionStartedAt: start + 60 * MINUTE });
+    });
+
+    async function suspendByGracefulDrain(fixture: Awaited<ReturnType<typeof seedRun>>, at: Date) {
+      await fixture.db.update(nativeRunFinalizations).set({
+        recoveryHistory: sql`${nativeRunFinalizations.recoveryHistory} || ${JSON.stringify([{ disposition: "restart_suspended", at: at.toISOString() }])}::jsonb`,
+      }).where(eq(nativeRunFinalizations.runId, fixture.runId));
+    }
+
+    it("resumes a run that progressed for 20 minutes before a graceful drain suspended it", async () => {
+      const fixture = await seedInterruptedCheckpoint("DEADLINE-DRAIN-PROGRESS");
+      const start = Date.now();
+      expect(await claimAt(fixture, new Date(start))).toBe("resume_dead_runner");
+      await appendRunEvents(fixture, providerProgressed(1));
+      await suspendByGracefulDrain(fixture, new Date(start + 20 * MINUTE));
+      expect(await claimAt(fixture, new Date(start + 21 * MINUTE))).toBe("resume_dead_runner");
+      expect(await lastClaimEntry(fixture)).toMatchObject({ interruptionStartedAt: start + 21 * MINUTE });
+      const [run] = await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+      expect(run!.errorCode).not.toBe("native_restart_recovery_blocked");
+    });
+
+    it("still ends a run with no provider progress at the deadline when a graceful drain suspended it", async () => {
+      const fixture = await seedInterruptedCheckpoint("DEADLINE-DRAIN-NO-PROGRESS");
+      const start = Date.now();
+      expect(await claimAt(fixture, new Date(start))).toBe("resume_dead_runner");
+      await appendRunEvents(fixture, providerNeverStarted);
+      await suspendByGracefulDrain(fixture, new Date(start + 15 * MINUTE));
+      expect(await claimAt(fixture, new Date(start + 16 * MINUTE))).toBe("native_interruption_deadline_exceeded");
+    });
+  });
+
   it("does not charge a restart past the generation limit whose resume never started the provider", async () => {
     const fixture = await seedPastGenerationLimit("PAST-LIMIT-UNSTARTED");
     expect(await resumeThenCrash(fixture)).toMatchObject({
