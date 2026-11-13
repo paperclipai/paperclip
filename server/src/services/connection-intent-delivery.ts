@@ -24,7 +24,6 @@ export async function wakeConnectionIntentAfterResolution(
     status: string;
     actorId: string;
     actorType?: "user" | "system";
-    /** A task linked to the card wakes under its own key, and only from in_progress. */
     linkedIssue?: true;
   },
 ) {
@@ -83,12 +82,6 @@ function connectionIntentWakeKey(interactionId: string, status: string, linkedIs
 }
 
 
-/**
- * The task's latest run when the task still waits on an AI repair: that run
- * failed for a reason the predicate accepts and is the card's source run or a
- * later retry of the same task. A later success, or any other later outcome,
- * means the task moved on and must not be resumed again.
- */
 async function latestRunWaitingOnAiRepair(
   db: Db,
   issue: Pick<typeof issues.$inferSelect, "id" | "companyId">,
@@ -135,8 +128,6 @@ export function connectionIntentDeliveryService(db: Db, heartbeat: Pick<Heartbea
       const recoveries = issueRecoveryActionService(db);
       const recovery = await recoveries.getActiveForIssue(issue.companyId, issue.id, tx);
       if (!recovery || recovery.cause !== "configuration_incomplete" || recovery.evidence.latestRunId !== latest.id) return null;
-      // A task with an unresolved dependency stays blocked; its dependency
-      // path resumes it. Restoring it here would be rejected by the update.
       if (!(await issueService(db).getDependencyReadiness(issue.id, tx)).isDependencyReady) return null;
       const actorId = loaded.interaction.resolvedByUserId ?? loaded.interaction.addresseeUserId!;
       const updated = await issueService(db).update(issue.id, {
@@ -154,40 +145,25 @@ export function connectionIntentDeliveryService(db: Db, heartbeat: Pick<Heartbea
     return restored;
   }
 
-  /**
-   * A system reconciliation resumes a task only while it still waits on this
-   * repair: its latest run is the failed source run or a later failed retry
-   * of the same task, it is open and not held
-   * for review, and its dependencies are resolved. A human answer keeps its
-   * existing delivery rules.
-   */
   async function waitingOnAiRepair(issue: typeof issues.$inferSelect, sourceRunId: string | null | undefined) {
     if (issue.status !== "in_progress" || issue.assigneeUserId) return false;
     if (!await latestRunWaitingOnAiRepair(db, issue, sourceRunId, isAiAuthenticationRepairable)) return false;
     return (await issueService(db).getDependencyReadiness(issue.id)).isDependencyReady;
   }
 
-  /** Wake each task linked to a resolved AI repair card at most once. */
   async function wakeLinkedAiRepairTasks(interaction: typeof issueThreadInteractions.$inferSelect, connectionRestored: boolean) {
     const payload = connectionIntentPayloadSchema.safeParse(interaction.payload).data;
     if (payload?.purpose !== "ai" || !payload.linkedIssues?.length || !interaction.addresseeUserId) return;
-    // The connection this card was resolved against: the one a person chose,
-    // or the repaired connection a system reconciliation recorded.
     const resolvedConnectionId = interaction.result && "connectionId" in interaction.result
       && typeof interaction.result.connectionId === "string" ? interaction.result.connectionId : payload.repairConnectionId;
     for (const linked of payload.linkedIssues) {
       const [issue] = await db.select().from(issues).where(and(
         eq(issues.id, linked.issueId), eq(issues.companyId, interaction.companyId)));
       if (!issue || issue.assigneeAgentId !== linked.agentId) continue;
-      // Check the agent's usable connection before changing the task: a task
-      // whose agent now fails on another connection waits on that connection's
-      // own card, and this card must not restore or wake it.
       if (connectionRestored) {
         const usable = await connectionIntentService(db).usableConnectionForAgent({ companyId: interaction.companyId,
           agentId: linked.agentId, responsibleUserId: interaction.addresseeUserId, serviceSlug: payload.serviceSlug,
           purpose: "ai", sourceRunId: linked.sourceRunId });
-        // The usable connection must be one this card repaired: the
-        // connection it was resolved against or its original repair target.
         const repaired = [resolvedConnectionId, payload.repairConnectionId].filter(Boolean);
         if (!usable || (repaired.length && !repaired.includes(usable.id))) continue;
       }
@@ -239,8 +215,6 @@ export function connectionIntentDeliveryService(db: Db, heartbeat: Pick<Heartbea
       return;
     }
     const ownerStale = ["done", "cancelled"].includes(loaded.issue.status) || loaded.issue.assigneeAgentId !== payload?.requestingAgentId;
-    // Tasks linked to one shared AI repair card resume even when the task that
-    // owns the card was closed or reassigned meanwhile.
     const fanOut = payload?.purpose === "ai" && payload.agentSetup !== true && Boolean(payload.linkedIssues?.length);
     if (ownerStale && !fanOut) {
       await settle();
@@ -336,9 +310,6 @@ export function connectionIntentDeliveryService(db: Db, heartbeat: Pick<Heartbea
       loaded.issue = restored;
     }
     if (!["in_progress", "in_review"].includes(loaded.issue.status)) return;
-    // A system reconciliation of an AI repair resumes only a task that still
-    // waits on it. Review-held, dependency-blocked and already-continued
-    // tasks keep their state; their own paths resume them.
     if (retiredForAvailableConnection && payload?.purpose === "ai" && !await waitingOnAiRepair(loaded.issue, interaction.sourceRunId)) {
       await settle();
       return;

@@ -743,9 +743,6 @@ export function aiConnectionService(db: Db) {
         )
           throw unprocessable("The connection changed. Start reconnect again.");
       }
-      // A healthy connection can satisfy pending provider-authentication
-      // cards. Register the connection delivery work before this transaction's
-      // first write so the worker reconciles them once it commits.
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.connection);
       let secretId = reconnect?.grant.credentialSecretRefs.find(
         (r) => r.configPath === "ai.credential",

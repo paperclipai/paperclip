@@ -1285,12 +1285,7 @@ export const connectionIntentPayloadSchema = z
     }).strict().optional(),
     upstreamService: z.object({ slug: z.string().min(1).max(120), name: z.string().min(1).max(160), selectionInteractionId: z.string().guid().optional() }).strict().optional(),
     purpose: z.enum(["ai", "channel"]).optional(),
-    /** The AI connection this provider-authentication repair restores. */
     repairConnectionId: z.string().guid().optional(),
-    /**
-     * Other tasks whose runs failed on the same AI connection. They wait on
-     * this one card instead of each raising their own.
-     */
     linkedIssues: z.array(z.object({
       issueId: z.string().guid(),
       agentId: z.string().guid(),

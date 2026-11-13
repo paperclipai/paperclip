@@ -1741,7 +1741,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const account = await aiConnectionService(db).save(companyId, "responsible-user", { provider: "openai", method: "api_key", ownership: "personal",
       name: "Shared repair", apiKey: "fixture", agentIds: [agentId], allAgents: false }, "fixture-shared-repair-key");
     await db.update(connectionGrants).set({ status: "needs_reauthorization" }).where(eq(connectionGrants.id, account.grantId));
-    // Another task already waits on this connection's repair card.
     const ownerIssueId = randomUUID();
     await db.insert(issues).values({ id: ownerIssueId, companyId, title: "Owner task", status: "in_progress", assigneeAgentId: agentId });
     const [card] = await db.insert(issueThreadInteractions).values({ companyId, issueId: ownerIssueId, kind: "connection_intent", status: "pending",
@@ -1761,7 +1760,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       expect(shared).toMatchObject({ status: "pending", payload: { linkedIssues: [{ issueId, agentId, sourceRunId: runId }] } });
     } finally {
       prepare.mockRestore();
-      // The saved account's defaults reference its grant; remove them first.
       await db.execute(sql`delete from ai_connection_defaults where company_id = ${companyId}`);
       await db.execute(sql`delete from ai_provider_defaults where company_id = ${companyId}`);
       await db.delete(companyMemberships).where(eq(companyMemberships.companyId, companyId));

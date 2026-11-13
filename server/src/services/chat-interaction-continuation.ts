@@ -75,12 +75,6 @@ export async function resolveConnectionIntentContinuationSource(db: Db, input: {
   return resolveLinkedConnectionIntentContinuationSource(db, input);
 }
 
-/**
- * A task linked to another task's shared AI repair card is woken under its
- * own key ("connection-intent:<card>:<status>:<task>"). Its continuation
- * source is the failed run recorded for that task in the card's linked list,
- * not the owner task's run.
- */
 async function resolveLinkedConnectionIntentContinuationSource(db: Db, input: {
   companyId: string; issueId: string; interactionId: string; runId: string; agentId: string;
 }): Promise<string | null> {

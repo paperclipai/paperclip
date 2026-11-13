@@ -66,8 +66,6 @@ async function findAvailableToolConnection(db: Db, task: Task, intent: Intent, p
     return capability.allowed ? connection : null;
   }
   if (payload.purpose === "ai") return findRestoredAiConnection(db, task, intent, payload);
-  // Additional permissions and inbox setup still need their governed
-  // completion paths. Aggregator cards also name an upstream app.
   if (payload.purpose || payload.accessRequest || payload.upstreamService
     || payload.requestingAgentId !== task.assigneeAgentId || !intent.addresseeUserId) return null;
   if (intent.addresseeUserId !== "local-board") {
@@ -90,15 +88,6 @@ async function findAvailableToolConnection(db: Db, task: Task, intent: Intent, p
   return access.allowedCount + access.askFirstCount > 0 ? connection : null;
 }
 
-/**
- * A provider-authentication repair card is satisfied once its requesting agent
- * can use a healthy AI connection again for the same recipient and provider:
- * the connection is active and healthy, its grant is active for the current
- * credential, and it is the agent's own selection. A card that names the
- * connection it repairs is satisfied only by that connection. Agent setup
- * cards keep their lifecycle completion path. This never answers for a
- * person: the caller records a system reconciliation.
- */
 async function findRestoredAiConnection(db: Db, task: Task, intent: Intent,
   payload: ReturnType<typeof connectionIntentPayloadSchema.parse>) {
   if (payload.requestingAgentId !== task.assigneeAgentId) return null;
@@ -125,11 +114,6 @@ async function restoredAiConnectionFor(db: Db, companyId: string, intent: Intent
 
 const AI_REPAIR_OPEN_STATUSES = ["in_progress", "in_review", "blocked"];
 
-/**
- * The AI repair predicate also covers a task that recovery parked as blocked.
- * A shared repair card is also satisfied for one of its linked tasks, so a
- * closed or reassigned owner task cannot strand the others.
- */
 export async function findSatisfiedConnection(db: Db, task: Task, intent: Intent, policyRunId?: string | null) {
   const payload = connectionIntentPayloadSchema.safeParse(intent.payload).data;
   if (payload?.purpose !== "ai") return findSatisfiedToolConnection(db, task, intent, policyRunId);
@@ -154,11 +138,6 @@ export async function findSatisfiedToolConnection(db: Db, task: Task, intent: In
   return findAvailableToolConnection(db, task, intent, policyRunId);
 }
 
-/**
- * A pending AI repair card pinned to one connection no longer holds back its
- * owner task once the task's agent runs on another usable connection. The card
- * itself stays pending for the tasks linked to it.
- */
 async function obsoleteAiRepairCard(db: Db, task: Task, interaction: Intent, policyRunId?: string | null) {
   if (interaction.status !== "pending" || !interaction.addresseeUserId) return false;
   const payload = connectionIntentPayloadSchema.safeParse(interaction.payload).data;
@@ -206,8 +185,6 @@ export function satisfiedConnectionIntentService(db: Db) {
         )).where(and(eq(issueThreadInteractions.kind, "connection_intent"), eq(issueThreadInteractions.status, "pending"),
           or(
             and(inArray(issues.status, AI_REPAIR_OPEN_STATUSES), isNull(issues.assigneeUserId)),
-            // A shared AI repair card stays reconcilable for its linked tasks
-            // after the task that owns it was closed or reassigned.
             sql`jsonb_array_length(coalesce(${issueThreadInteractions.payload}->'linkedIssues', '[]'::jsonb)) > 0`,
           ),
           ...(afterId ? [gt(issueThreadInteractions.id, afterId)] : [])))

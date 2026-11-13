@@ -1599,9 +1599,7 @@ export interface ConnectionIntentPayload {
   upstreamService?: { slug: string; name: string; selectionInteractionId?: string };
   /** AI authentication and inbox setup cannot be satisfied by tool credentials. */
   purpose?: "ai" | "channel";
-  /** The AI connection this provider-authentication repair restores. */
   repairConnectionId?: string;
-  /** Other tasks whose runs failed on the same AI connection and wait on this card. */
   linkedIssues?: Array<{ issueId: string; agentId: string; sourceRunId: string }>;
   serviceSlug: string;
   serviceName: string;

@@ -3050,7 +3050,6 @@ export function issueThreadInteractionService(
         const reusable = pending.find((candidate) =>
           (!payload.agentSetup || candidate.sourceRunId === input.sourceRunId)
           && connectionIntentPayloadSchema.parse(candidate.payload).serviceSlug === payload.serviceSlug && connectionIntentPayloadSchema.parse(candidate.payload).purpose === payload.purpose
-          // A repair card for one AI connection cannot repair another one.
           && (connectionIntentPayloadSchema.parse(candidate.payload).repairConnectionId ?? null) === (payload.repairConnectionId ?? null)
           && sameSavedSetup(connectionIntentPayloadSchema.parse(candidate.payload)) && isDeepStrictEqual(connectionIntentPayloadSchema.parse(candidate.payload).accessRequest, payload.accessRequest));
         if (reusable) {
@@ -3120,8 +3119,6 @@ export function issueThreadInteractionService(
             return (
               candidatePayload.success &&
               candidatePayload.data.serviceSlug === payload.serviceSlug && candidatePayload.data.purpose === payload.purpose
-              // Another connection's repair card stays pending for the tasks
-              // linked to it; this card cannot repair that connection.
               && (candidatePayload.data.repairConnectionId ?? null) === (payload.repairConnectionId ?? null)
             );
           })
