@@ -534,7 +534,7 @@ export async function deliverReconciledExecutions(
               .where(pendingDecision);
             await settleCoalescedFreshContinuationHolds(db, { companyId: action.companyId, primaryId: action.id,
               delivery: "delivered", continuationRunId: newer.id });
-            if (newer.contextSnapshot?.freshContinuationIsolation === action.id)
+            if (newer.contextSnapshot?.recoveryActionId === action.id)
               await db.transaction(async tx => {
                 await tx.execute(sql`select id from issues where company_id = ${action.companyId} and id = ${task.id} for update`);
                 await foldWaitingRetriesIntoContinuation(tx as unknown as Db, { companyId: action.companyId, issueId: task.id, runId: newer.id,
@@ -600,7 +600,7 @@ export async function deliverReconciledExecutions(
             .where(pendingDecision);
           await settleCoalescedFreshContinuationHolds(tx as unknown as Db, { companyId: action.companyId, primaryId: action.id,
             delivery: "delivered", continuationRunId: run.id });
-          if ((action.evidence.freshContinuation as { isolation?: unknown } | undefined)?.isolation === "fresh_isolated_workspace")
+          if (fresh)
             await foldWaitingRetriesIntoContinuation(tx as unknown as Db, { companyId: action.companyId, issueId: task.id, runId: run.id,
               sourceRunId: decision.runId });
         });
