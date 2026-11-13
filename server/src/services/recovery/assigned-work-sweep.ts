@@ -430,11 +430,12 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       sql`(${issues.monitorNextCheckAt} is null or ${issues.monitorNextCheckAt} <= ${at.toISOString()}::timestamptz)`,
       // A legacy run whose controller lease lapsed may have lost its owner;
       // the predicate judges it with the owner proof. Other active runs are live.
-      sql`not exists (select 1 from heartbeat_runs r where r.company_id = ${issues.companyId}
+      // A blocked task with a live run is let through: the block may be stale.
+      sql`(${issues.status} = 'blocked' or not exists (select 1 from heartbeat_runs r where r.company_id = ${issues.companyId}
         and (r.context_snapshot->>'issueId') = ${issues.id}::text
         and r.status in ('queued', 'running', 'scheduled_retry')
         and not (r.status = 'running' and r.runtime_mode = 'legacy' and r.controller_lease_expires_at is not null
-          and r.controller_lease_expires_at < ${at.toISOString()}::timestamptz))`,
+          and r.controller_lease_expires_at < ${at.toISOString()}::timestamptz)))`,
       sql`not exists (select 1 from agent_wakeup_requests w where w.company_id = ${issues.companyId}
         and (w.payload->>'issueId') = ${issues.id}::text
         and (w.status = 'queued'
@@ -485,6 +486,11 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
     if (verdict.kind === "not_applicable" || verdict.kind === "ok") return { verdict, outcome: "ok", retryAt: null };
     if (verdict.kind === "settling") return { verdict, outcome: "settling", retryAt: verdict.recheckAt };
     if (verdict.stale) return { verdict, outcome: "stale_reported", retryAt: null };
+    // The task's run is already queued or working: only the status is wrong.
+    // Lift the block; no run is started, so the continuation cap is not spent.
+    if (verdict.reason === "blocked_with_live_run") {
+      return { verdict, outcome: await liftBlockBehindLiveRun(issue, at) ? "repaired" : "changed", retryAt: null };
+    }
     // A task blocked under an active recovery hold is re-continued by the
     // hold's owner (the fresh-continuation fallback, same per-task cap). The
     // sweep reports it and repairs only blocks that have no hold at all, so
@@ -595,6 +601,32 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
         unblockDescriptor: current.unblockDescriptor, blockedOwnerNotifiedAt: current.blockedOwnerNotifiedAt,
         nextCheckAt: next.allowed ? new Date(at.getTime() + 90_000) : next.retryAt };
     });
+  }
+
+  /** Under the task's row lock, re-judge it and lift a recovery block whose
+   * run is already queued or working. */
+  async function liftBlockBehindLiveRun(issue: IssueRow, at: Date): Promise<boolean> {
+    const publications: ActivityPublication[] = [];
+    const lifted = await db.transaction(async tx => {
+      const [current] = await tx.select(issueColumns).from(issues)
+        .where(and(eq(issues.companyId, issue.companyId), eq(issues.id, issue.id))).for("update");
+      if (!current || current.status !== "blocked" || current.statusVersion !== issue.statusVersion) return false;
+      const fresh = (await loadFacts(issue.companyId, [current], { database: tx as unknown as Db, proveOwners: false })).get(current.id)!;
+      const verdict = evaluateAssignedWork(fresh, at);
+      if (verdict.kind !== "violation" || verdict.reason !== "blocked_with_live_run") return false;
+      const running = fresh.activeRuns.some(run => run.id === verdict.runId && run.status === "running");
+      const status = running ? "in_progress" : "todo";
+      await issueService(tx as unknown as Db).update(issue.id, { status }, tx);
+      await logActivity(tx as unknown as Db, {
+        companyId: issue.companyId, actorType: "system", actorId: "system", agentId: issue.assigneeAgentId, runId: null,
+        action: "issue.updated", entityType: "issue", entityId: issue.id,
+        details: { identifier: issue.identifier, status, previousStatus: "blocked", source: ASSIGNED_WORK_CONTINUATION_SOURCE,
+          violation: verdict.reason, message: continuationActivityMessage(verdict.reason) },
+      }, publications);
+      return true;
+    });
+    if (lifted) for (const publication of publications) publishActivity(publication);
+    return lifted;
   }
 
   /** Put back a block lifted for a continuation that admission refused, when

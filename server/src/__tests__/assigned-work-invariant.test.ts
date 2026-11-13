@@ -182,6 +182,30 @@ describePostgres("assigned-work invariant sweep", () => {
     expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0].status).toBe("in_progress");
   }, 60_000);
 
+  it("a recovery block whose task already has a queued run is lifted without a second run", async () => {
+    // Staging PAP-4020: blocked at 23:51:28 by the failed run, its Retry run queued at 23:51:50, still Blocked at 00:15.
+    const f = await seedCompany();
+    const blockedAt = new Date(Date.now() - 20 * 60_000);
+    const issueId = await f.issue({ status: "blocked", blockedTransitionAt: blockedAt });
+    await f.run(issueId, { runtimeMode: "native", status: "failed", errorCode: "native_continuation_requires_reconciliation",
+      livenessState: "failed", finishedAt: new Date(blockedAt.getTime() - 5_000) });
+    await db.insert(activityLog).values({ companyId: f.companyId, actorType: "system", actorId: "execution-recovery", action: "issue.updated",
+      entityType: "issue", entityId: issueId, details: { status: "blocked", previousStatus: "in_progress",
+        reason: "native_continuation_requires_reconciliation" }, createdAt: blockedAt });
+    const successor = await f.run(issueId, { status: "queued", errorCode: null, livenessState: null, startedAt: null, finishedAt: null,
+      createdAt: new Date(blockedAt.getTime() + 19_000) });
+    const queue = wakeQueue();
+    const recovery = recoveryService(db, { enqueueWakeup: queue.enqueueWakeup });
+    expect((await recovery.assignedWork.listSuspects({ companyId: f.companyId }, null, 100)).map(row => row.id)).toContain(issueId);
+    expect(await recovery.assignedWork.report(f.companyId)).toMatchObject({ violations: { blocked_with_live_run: 1 } });
+    expect(await recovery.assignedWork.checkIssue({ companyId: f.companyId, issueId }))
+      .toMatchObject({ outcome: "repaired", verdict: { reason: "blocked_with_live_run", runId: successor.id } });
+    expect(queue.calls).toHaveLength(0);
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0].status).toBe("todo");
+    expect(await recovery.assignedWork.checkIssue({ companyId: f.companyId, issueId }))
+      .toMatchObject({ outcome: "ok", verdict: { clause: "live_run" } });
+  }, 60_000);
+
   it("leaves a task blocked under an active recovery hold to the hold's owner and reports it", async () => {
     const f = await seedCompany();
     const issueId = await f.issue({ status: "blocked", blockedTransitionAt: new Date(Date.now() - 2 * HOUR) });
