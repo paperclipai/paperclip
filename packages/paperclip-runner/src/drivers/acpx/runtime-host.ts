@@ -161,6 +161,7 @@ export interface AcpxRuntimeTurn {
 /** Minimal third-party ACP runtime surface admitted by the host boundary. */
 export type AcpxProviderTurnBinding = {
   onPermissionRequest: AcpxHostPermissionHandler;
+  onPlanProposal?: (proposal: AcpxPlanProposal) => void;
   busy(): boolean;
 };
 

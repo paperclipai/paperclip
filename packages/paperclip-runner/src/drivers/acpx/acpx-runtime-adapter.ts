@@ -1872,6 +1872,7 @@ function runtimePort(
         const extensionTurn: AcpxRuntimeExtensionTurn = {
           requestId: started, sessionId: identity.backendSessionId, controller,
           signal: AbortSignal.any([controller.signal, approval.signal]), promptStarted: Promise.resolve(),
+          onPlanProposal: binding.onPlanProposal,
         };
         cycleTurn.active = extensionTurn;
         extensionBoundary.active = extensionTurn;
