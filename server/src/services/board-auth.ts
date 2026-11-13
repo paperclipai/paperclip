@@ -148,6 +148,31 @@ export function boardAuthService(db: Db) {
       .then((rows) => rows.find((row) => !row.expiresAt || row.expiresAt.getTime() > now.getTime()) ?? null);
   }
 
+  async function findLapsedBoardApiKeyByToken(token: string): Promise<
+    { status: "expired" | "revoked"; at: Date } | null
+  > {
+    const tokenHash = hashBearerToken(token);
+    const nowMs = Date.now();
+    const rows = (await db
+      .select({
+        keyHash: boardApiKeys.keyHash,
+        expiresAt: boardApiKeys.expiresAt,
+        revokedAt: boardApiKeys.revokedAt,
+      })
+      .from(boardApiKeys)
+      .where(eq(boardApiKeys.keyHash, tokenHash))).filter((row) => row.keyHash === tokenHash);
+    const isActive = (row: { expiresAt: Date | null; revokedAt: Date | null }) =>
+      !row.revokedAt && (!row.expiresAt || row.expiresAt.getTime() > nowMs);
+    if (rows.length === 0 || rows.some(isActive)) return null;
+    const revoked = rows.find((row) => row.revokedAt);
+    if (revoked?.revokedAt) return { status: "revoked", at: revoked.revokedAt };
+    const expired = rows
+      .map((row) => row.expiresAt)
+      .filter((at): at is Date => at !== null)
+      .sort((a, b) => b.getTime() - a.getTime())[0];
+    return expired ? { status: "expired", at: expired } : null;
+  }
+
   async function touchBoardApiKey(id: string) {
     const nowMs = Date.now();
     pruneTouchedBoardApiKeys(nowMs);
@@ -488,6 +513,7 @@ export function boardAuthService(db: Db) {
   return {
     resolveBoardAccess,
     findBoardApiKeyByToken,
+    findLapsedBoardApiKeyByToken,
     touchBoardApiKey,
     revokeBoardApiKey,
     createNamedBoardApiKey,

@@ -35,6 +35,7 @@ function createDbState(input: {
   agentKey?: { id: string; agentId: string; companyId: string; keyHash: string; responsibleUserId?: string | null };
   run?: { id: string; companyId: string; agentId: string; responsibleUserId?: string | null;
     status?: string; contextSnapshot?: Record<string, unknown>; resultJson?: Record<string, unknown> };
+  boardKeys?: Array<{ id: string; userId: string; keyHash: string; expiresAt: Date | null; revokedAt: Date | null }>;
 }) {
   const activity: Array<Record<string, unknown>> = [];
   const agentRow = {
@@ -69,7 +70,7 @@ function createDbState(input: {
   const db = {
     select: () =>
       createSelectChain((table) => {
-        if (table === boardApiKeys) return [];
+        if (table === boardApiKeys) return input.boardKeys ?? [];
         if (table === agentApiKeys) return keyRow ? [keyRow] : [];
         if (table === agents) return [agentRow];
         if (table === heartbeatRuns) return runRow ? [runRow] : [];
@@ -236,6 +237,27 @@ describe("agent auth middleware", () => {
     expect(res.status).toBe(401);
     expect(res.body.error).toContain(error);
     expect(commentWrites).toBe(0);
+  });
+
+  it("names an expired board API key instead of blaming agent credentials (#16600)", async () => {
+    const token = "pcp_board_expired_example";
+    const { db } = createDbState({
+      agent: { id: randomUUID(), companyId: randomUUID() },
+      boardKeys: [{
+        id: randomUUID(),
+        userId: "user-1",
+        keyHash: hashToken(token),
+        expiresAt: new Date("2026-10-15T09:30:00.000Z"),
+        revokedAt: null,
+      }],
+    });
+
+    const res = await request(createApp(db)).get("/actor").set("Authorization", `Bearer ${token}`);
+
+    expect(res.status).toBe(401);
+    expect(res.body.error).toBe(
+      "Board API key expired on 2026-10-15; run `paperclipai auth login` to get a new one",
+    );
   });
 
   it.each(["authenticated", "local_trusted"] as const)(
