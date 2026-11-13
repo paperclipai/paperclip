@@ -266,6 +266,12 @@ async function main(): Promise<number> {
     supervisor.useCrashPointControl({ controlPath: path.join(supervisor.paths.temporaryRoot, "crash-point.control"),
       receiptPath: path.join(waveDir, "crash-point-receipts.jsonl") });
   }
+  // Cell F glue (local only): an outside driver arms fail-mode points through this control file without a restart fault.
+  const externalCrashControl = process.env.RESTART_CHAOS_EXTERNAL_CRASH_CONTROL;
+  if (!crashPoint && !plan.options.failRecoveryStep && externalCrashControl) {
+    supervisor.useCrashPointControl({ controlPath: externalCrashControl,
+      receiptPath: process.env.RESTART_CHAOS_EXTERNAL_CRASH_RECEIPT ?? path.join(waveDir, "crash-point-receipts.jsonl") });
+  }
   let sweeper: DaytonaWaveSweeper | null = null;
   let sandboxSweep: DaytonaSweepResult | null = null;
   let runnerLogTarget: { companyId: string; environmentId: string } | null = null;
