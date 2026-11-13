@@ -10,7 +10,7 @@ import { randomUUID } from "node:crypto";
 import { canonicalExecutionUuid } from "./execution-identity.js";
 import { conversationRecoveryActionPredicate, getConversationOwnershipBlocker } from "./conversation-continuation.js";
 import { isInterruptedNativePreparationCandidate } from "./cancelled-native-startup.js";
-import { persistActivity } from "./activity-log.js";
+import { persistActivity, type ActivityPublication } from "./activity-log.js";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { foldWaitingRetriesIntoContinuation } from "./fresh-continuation-retry-fold.js";
 import { logger } from "../middleware/logger.js";
@@ -1018,7 +1018,7 @@ export async function retireExecutionReplayHoldOnStatusRestore(
     actorId: string;
     now?: Date;
   },
-): Promise<{ retiredRecoveryActionIds: string[] }> {
+): Promise<{ retiredRecoveryActionIds: string[]; publication: ActivityPublication | null }> {
   const now = input.now ?? new Date();
   const foldableHold = and(
     eq(issueRecoveryActions.companyId, input.companyId),
@@ -1029,41 +1029,43 @@ export async function retireExecutionReplayHoldOnStatusRestore(
     sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`,
     sql`coalesce(${issueRecoveryActions.evidence}->>'workspaceRestoreFailure', '') <> 'restore_unsafe_archive'`,
   );
-  const folded = await db
-    .update(issueRecoveryActions)
-    .set({
-      evidence: sql`jsonb_set(
-        ${issueRecoveryActions.evidence},
-        '{automaticRecovery}',
-        (${issueRecoveryActions.evidence}->'automaticRecovery') || ${JSON.stringify(
-          {
-            replay: "user_status_restore",
-            clearedAt: now.toISOString(),
-            clearedBy: input.actorId,
-            fromStatus: input.fromStatus,
-            toStatus: input.toStatus,
-          },
-        )}::jsonb
-      )`,
-      updatedAt: now,
-    })
-    .where(foldableHold)
-    .returning({ id: issueRecoveryActions.id });
-  if (folded.length === 0) return { retiredRecoveryActionIds: [] };
-  await persistActivity(db, {
-    companyId: input.companyId,
-    actorType: "user",
-    actorId: input.actorId,
-    action: "issue.execution_recovery_settled",
-    entityType: "issue",
-    entityId: input.issueId,
-    details: {
-      continuation: "user_status_restore",
-      fromStatus: input.fromStatus,
-      toStatus: input.toStatus,
-      recoveryActionIds: folded.map((row) => row.id),
-      replayHoldRetired: true,
-    },
+  return db.transaction(async (tx) => {
+    const folded = await tx
+      .update(issueRecoveryActions)
+      .set({
+        evidence: sql`jsonb_set(
+          ${issueRecoveryActions.evidence},
+          '{automaticRecovery}',
+          (${issueRecoveryActions.evidence}->'automaticRecovery') || ${JSON.stringify(
+            {
+              replay: "user_status_restore",
+              clearedAt: now.toISOString(),
+              clearedBy: input.actorId,
+              fromStatus: input.fromStatus,
+              toStatus: input.toStatus,
+            },
+          )}::jsonb
+        )`,
+        updatedAt: now,
+      })
+      .where(foldableHold)
+      .returning({ id: issueRecoveryActions.id });
+    if (folded.length === 0) return { retiredRecoveryActionIds: [], publication: null };
+    const { publication } = await persistActivity(tx as unknown as Db, {
+      companyId: input.companyId,
+      actorType: "user",
+      actorId: input.actorId,
+      action: "issue.execution_recovery_settled",
+      entityType: "issue",
+      entityId: input.issueId,
+      details: {
+        continuation: "user_status_restore",
+        fromStatus: input.fromStatus,
+        toStatus: input.toStatus,
+        recoveryActionIds: folded.map((row) => row.id),
+        replayHoldRetired: true,
+      },
+    });
+    return { retiredRecoveryActionIds: folded.map((row) => row.id), publication };
   });
-  return { retiredRecoveryActionIds: folded.map((row) => row.id) };
 }

@@ -248,4 +248,32 @@ describeEmbeddedPostgres("execution replay hold status restore", () => {
     expect(stillHeld.evidence.automaticRecovery).toMatchObject({ replay: "blocked" });
     expect(await getExecutionBlocker(db, held.companyId, held.issueId)).not.toBeNull();
   });
+
+  it("returns a non-null publication when the hold is retired, null when nothing is folded", async () => {
+    const seed = await seedIssue({ status: "blocked" });
+    const { action } = await seedHeldAction(seed);
+
+    const result = await retireExecutionReplayHoldOnStatusRestore(db, {
+      companyId: seed.companyId,
+      issueId: seed.issueId,
+      fromStatus: "blocked",
+      toStatus: "in_progress",
+      actorId: "board-operator",
+      now: new Date("2026-04-11T13:00:00.000Z"),
+    });
+
+    expect(result.retiredRecoveryActionIds).toEqual([action.id]);
+    expect(result.publication).not.toBeNull();
+
+    // Idempotent: a second call finds nothing left to fold and returns null publication.
+    const second = await retireExecutionReplayHoldOnStatusRestore(db, {
+      companyId: seed.companyId,
+      issueId: seed.issueId,
+      fromStatus: "in_progress",
+      toStatus: "todo",
+      actorId: "board-operator",
+    });
+    expect(second.retiredRecoveryActionIds).toEqual([]);
+    expect(second.publication).toBeNull();
+  });
 });

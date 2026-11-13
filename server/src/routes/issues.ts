@@ -16174,16 +16174,17 @@ export function issueRoutes(
         actor.actorType === "user" &&
         typeof updateFields.status === "string" &&
         updateFields.status !== existing.status &&
-        !isClosedIssueStatus(issue.status)
+        ["todo", "in_progress"].includes(issue.status)
       ) {
         try {
-          await retireExecutionReplayHoldOnStatusRestore(db, {
+          const { publication } = await retireExecutionReplayHoldOnStatusRestore(db, {
             companyId: issue.companyId,
             issueId: issue.id,
             fromStatus: existing.status,
             toStatus: issue.status,
             actorId: actor.actorId,
           });
+          if (publication) publishActivity(publication);
         } catch (err) {
           logger.warn(
             {
