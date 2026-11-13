@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, companies, controllerInstances, createDb, environmentLeases, heartbeatRuns, issues, nativeRunFinalizations, workspaceOperations } from "@paperclipai/db";
+import { agents, companies, controllerInstanceLeaseDb, controllerInstances, createDb, environmentLeases, heartbeatRuns, issues, nativeRunFinalizations, workspaceOperations } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import {
-  controllerInstanceLeaseEnabled, proveControllerInstance, registerControllerInstanceDb, registerControllerInstanceLeaseWork,
+  RENEW_STATEMENT_TIMEOUT_MS, controllerInstanceLeaseEnabled, proveControllerInstance, registerControllerInstanceDb, registerControllerInstanceLeaseWork,
   resetControllerInstanceLeaseForTests, stopControllerInstanceLease, tickControllerInstanceLease,
 } from "../services/controller-instance-lease.js";
 import { currentControllerBootId, currentControllerProcessStamp, currentProcessSpaceHash } from "../services/controller-process-identity.js";
@@ -253,6 +253,56 @@ suite("controller instance lease: a replaced container's records are provable", 
       await busy.$client.end({ timeout: 5 });
     }
   }, 30_000);
+
+  it("has the server cancel a renewal blocked on a row lock, and renews on the same connection next time", async () => {
+    // Five renewals failed 15 s apart: a client-timed-out statement kept running on the
+    // single lease connection and every next renewal queued behind it.
+    const lockDb = createDb(temporary!.connectionString, { maxConnections: 1 });
+    try {
+      registerControllerInstanceDb(db);
+      registerControllerInstanceLeaseWork(db, coordinator, { onLost: vi.fn() });
+      currentControllerProcessStamp();
+      await tickControllerInstanceLease();
+      const lease = controllerInstanceLeaseDb(db);
+      const backend = async () => (await lease.execute(sql`select pg_backend_pid() as pid`) as unknown as Array<{ pid: number }>)[0]!.pid;
+      const pidBefore = await backend();
+      const [before] = await db.select({ renewedAt: controllerInstances.renewedAt }).from(controllerInstances)
+        .where(eq(controllerInstances.bootId, currentControllerBootId()));
+      let release!: () => void;
+      const released = new Promise<void>(resolve => { release = resolve; });
+      let locked!: () => void;
+      const lockTaken = new Promise<void>(resolve => { locked = resolve; });
+      const holder = lockDb.transaction(async tx => {
+        await tx.execute(sql`select 1 from controller_instances where boot_id = ${currentControllerBootId()} for update`);
+        locked();
+        await released;
+      });
+      await lockTaken;
+      currentControllerProcessStamp();
+      const started = Date.now();
+      await tickControllerInstanceLease();
+      const elapsed = Date.now() - started;
+      expect(elapsed).toBeGreaterThanOrEqual(RENEW_STATEMENT_TIMEOUT_MS - 500);
+      expect(elapsed).toBeLessThan(RENEW_STATEMENT_TIMEOUT_MS + 1_500);
+      // Cancelled by the server, not left running behind the client timeout.
+      const running = await db.execute(sql`select count(*)::int as count from pg_stat_activity
+        where application_name = 'paperclip-controller-instance-lease' and state = 'active'`) as unknown as Array<{ count: number }>;
+      expect(running[0]!.count).toBe(0);
+      release();
+      await holder;
+      currentControllerProcessStamp();
+      const next = Date.now();
+      await tickControllerInstanceLease();
+      expect(Date.now() - next).toBeLessThan(2_000);
+      const [after] = await db.select({ renewedAt: controllerInstances.renewedAt }).from(controllerInstances)
+        .where(eq(controllerInstances.bootId, currentControllerBootId()));
+      expect(after.renewedAt!.getTime()).toBeGreaterThan(before.renewedAt!.getTime());
+      expect(await backend()).toBe(pidBefore);
+    } finally {
+      await stopControllerInstanceLease(db);
+      await lockDb.$client.end({ timeout: 5 });
+    }
+  }, 40_000);
 
   it("proves a cleanly stopped boot gone at once", async () => {
     const stopped = await otherBoot({ liveForMs: 60_000 });

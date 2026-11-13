@@ -6,6 +6,7 @@ export {
   livenessDb,
   controllerLeaseDb,
   controllerInstanceLeaseDb,
+  controllerInstanceLeaseDbWithoutStatementTimeout,
   closeLivenessDb,
   checkpointDb,
   closeCheckpointDb,

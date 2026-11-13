@@ -163,6 +163,11 @@ export interface DatabaseClientOptions {
    * `postgres.js`).
    */
   applicationName?: string;
+  /**
+   * Connection-level `statement_timeout` in milliseconds, sent as a startup
+   * parameter (no extra round trip). For dedicated single-purpose pools only.
+   */
+  statementTimeoutMs?: number;
 }
 
 /**
@@ -256,9 +261,10 @@ export function postgresJsOptions(options: DatabaseClientOptions): Record<string
   if (options.idleTimeoutSeconds !== undefined) driverOptions.idle_timeout = options.idleTimeoutSeconds;
   if (options.connectTimeoutSeconds !== undefined) driverOptions.connect_timeout = options.connectTimeoutSeconds;
   if (options.maxLifetimeSeconds !== undefined) driverOptions.max_lifetime = options.maxLifetimeSeconds;
-  if (options.applicationName !== undefined) {
-    driverOptions.connection = { application_name: options.applicationName };
-  }
+  const connection: Record<string, string> = {};
+  if (options.applicationName !== undefined) connection.application_name = options.applicationName;
+  if (options.statementTimeoutMs !== undefined) connection.statement_timeout = String(options.statementTimeoutMs);
+  if (Object.keys(connection).length) driverOptions.connection = connection;
   return driverOptions;
 }
 
@@ -324,18 +330,33 @@ export function controllerLeaseDb(db: Db): Db {
   return created;
 }
 
-const controllerInstanceLeaseDbFactories = new WeakMap<object, () => Db>();
+const controllerInstanceLeaseDbFactories = new WeakMap<object, (statementTimeoutMs: number | null) => Db>();
 const controllerInstanceLeaseDbs = new WeakMap<object, Db>();
 
 /** One private connection for the server's controller-instance lease, so its
- * renewal never waits behind request or worker traffic on the main pool. */
-export function controllerInstanceLeaseDb(db: Db): Db {
+ * renewal never waits behind request or worker traffic on the main pool.
+ * `statementTimeoutMs` (first call wins) is a connection-level
+ * `statement_timeout`: the server cancels a slow renewal, so it never holds the
+ * single connection that the next renewal needs, at no extra round trip. */
+export function controllerInstanceLeaseDb(db: Db, options: { statementTimeoutMs?: number | null } = {}): Db {
   const existing = controllerInstanceLeaseDbs.get(db);
   if (existing) return existing;
   const factory = controllerInstanceLeaseDbFactories.get(db);
   if (!factory) return db;
-  const created = factory();
+  const created = factory(options.statementTimeoutMs ?? null);
   controllerInstanceLeaseDbs.set(db, created);
+  return created;
+}
+
+/** Replaces the lease connection with one that sends no `statement_timeout`
+ * startup parameter, for a connection pooler that refuses it. */
+export function controllerInstanceLeaseDbWithoutStatementTimeout(db: Db): Db {
+  const factory = controllerInstanceLeaseDbFactories.get(db);
+  if (!factory) return db;
+  const previous = controllerInstanceLeaseDbs.get(db);
+  const created = factory(null);
+  controllerInstanceLeaseDbs.set(db, created);
+  void previous?.$client.end({ timeout: 0 }).catch(() => undefined);
   return created;
 }
 
@@ -422,8 +443,9 @@ function createDbClient(url: string, resolved: DatabaseClientOptions, owner?: ob
   controllerLeaseDbFactories.set(db, () => createDbClient(url, {
     ...resolved, maxConnections: 1, applicationName: "paperclip-legacy-controller-lease",
   }, db));
-  controllerInstanceLeaseDbFactories.set(db, () => createDbClient(url, {
+  controllerInstanceLeaseDbFactories.set(db, statementTimeoutMs => createDbClient(url, {
     ...resolved, maxConnections: 1, applicationName: "paperclip-controller-instance-lease",
+    ...(statementTimeoutMs !== null ? { statementTimeoutMs } : {}),
   }, db));
   checkpointDbFactories.set(db, () => createDbClient(url, {
     ...resolved, maxConnections: CHECKPOINT_POOL_MAX_CONNECTIONS, applicationName: "paperclip-runner-checkpoint",
