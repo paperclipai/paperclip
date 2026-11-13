@@ -49,6 +49,7 @@ export const PROGRAMS = [
   "packages/paperclip-runner/tsconfig.surfaces.test.json",
   "packages/paperclip-runner/tsconfig.test.json",
   "packages/plugins/examples/plugin-orchestration-smoke-example/tsconfig.test.json",
+  "packages/plugins/plugin-ntfy-notifier/tsconfig.test.json",
   "packages/plugins/plugin-workspace-diff/tsconfig.test.json",
   "packages/plugins/sdk/tsconfig.test.json",
   ...SANDBOX_PROVIDERS.map((directory) => `${directory}/tsconfig.test.json`),

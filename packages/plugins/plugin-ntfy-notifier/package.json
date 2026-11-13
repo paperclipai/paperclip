@@ -1,0 +1,65 @@
+{
+  "name": "@paperclipai/plugin-ntfy-notifier",
+  "version": "0.2.2",
+  "description": "Sends a minimal ntfy push when a Paperclip decision is waiting for a human",
+  "license": "MIT",
+  "homepage": "https://github.com/paperclipai/paperclip",
+  "bugs": {
+    "url": "https://github.com/paperclipai/paperclip/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/paperclipai/paperclip",
+    "directory": "packages/plugins/plugin-ntfy-notifier"
+  },
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "publishConfig": {
+    "access": "public",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js"
+      }
+    },
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts"
+  },
+  "files": [
+    "dist"
+  ],
+  "paperclipPlugin": {
+    "manifest": "./dist/manifest.js",
+    "worker": "./dist/worker.js"
+  },
+  "keywords": [
+    "paperclip",
+    "plugin",
+    "ntfy",
+    "notifications"
+  ],
+  "scripts": {
+    "prebuild": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps",
+    "build": "rm -rf dist && tsc",
+    "clean": "rm -rf dist",
+    "typecheck": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
+    "test": "vitest run",
+    "prepack": "rm -f package.dev.json && cp package.json package.dev.json && node ../../../scripts/generate-plugin-package-json.mjs",
+    "postpack": "if [ -f package.dev.json ]; then mv package.dev.json package.json; fi",
+    "build:artifact": "node ./scripts/build-artifact.mjs"
+  },
+  "dependencies": {
+    "@paperclipai/plugin-sdk": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.3"
+  },
+  "engines": {
+    "node": ">=24.11.0"
+  }
+}
