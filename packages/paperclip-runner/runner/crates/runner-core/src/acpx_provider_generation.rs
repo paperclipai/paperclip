@@ -9,7 +9,8 @@ use super::{
 };
 use crate::acpx_provider_state::AcpxProviderState;
 use crate::generated_acpx_sidecar_contract::{
-    GeneratedAcpxSidecarCommand, GeneratedAcpxSidecarEventType,
+    read_generated_acpx_background_tasks, GeneratedAcpxSidecarCommand,
+    GeneratedAcpxSidecarEventType,
 };
 use crate::local_runner::LocalRunnerError;
 use crate::provider_bridge::ProviderToolBridge;
@@ -52,10 +53,8 @@ fn generation_digest(config: &AcpxProviderSessionConfig) -> String {
 pub(super) fn reports_no_live_background_tasks(payload: &Value) -> bool {
     payload
         .get("backgroundTasks")
-        .and_then(Value::as_object)
-        .is_some_and(|tasks| {
-            tasks.len() == 1 && tasks.get("live").and_then(Value::as_u64) == Some(0)
-        })
+        .and_then(read_generated_acpx_background_tasks)
+        == Some(0)
 }
 
 impl AcpxProviderSession {

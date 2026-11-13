@@ -1,6 +1,8 @@
+import type { GeneratedAcpxBackgroundTasks } from "./generated-sidecar-contract.js";
+
 export const CLAUDE_ASYNC_TASKS_CAPABILITY = "asyncTasks";
 
-export type ClaudeBackgroundTaskState = { live: number };
+export type ClaudeBackgroundTaskState = GeneratedAcpxBackgroundTasks;
 
 const MAX_TRACKED_TASKS = 256;
 const MAX_PENDING_REQUESTS = 256;

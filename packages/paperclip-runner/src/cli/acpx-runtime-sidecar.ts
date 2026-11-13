@@ -81,7 +81,7 @@ import {
   type AcpxSidecarRequest,
   type AcpxSidecarResponse,
 } from "../drivers/acpx/sidecar-protocol.js";
-import { GENERATED_ACPX_SIDECAR_OPEN_PARAMS, GENERATED_ACPX_SIDECAR_PROVIDER_POLICY_FIELDS } from "../drivers/acpx/generated-sidecar-contract.js";
+import { GENERATED_ACPX_SIDECAR_OPEN_PARAMS, GENERATED_ACPX_SIDECAR_PROVIDER_POLICY_FIELDS, readGeneratedAcpxBackgroundTasks, type GeneratedAcpxBackgroundTasks } from "../drivers/acpx/generated-sidecar-contract.js";
 import { safeAcpxLocations } from "./acpx-sidecar-locations.js";
 import { createCopilotToolEvidence, type CopilotToolEvidence } from "../drivers/acpx/copilot-tool-evidence.js";
 import { createCursorToolEvidence, type CursorToolEvidence } from "../drivers/acpx/cursor-tool-evidence.js";
@@ -854,16 +854,15 @@ async function pumpTurn(
   emit("runtime.turn_terminal", terminal, currentTurnId);
 }
 
-function optionalBackgroundTasks(activeHost: AcpxRuntimeHost): { backgroundTasks?: { live: number } } {
+function optionalBackgroundTasks(activeHost: AcpxRuntimeHost): { backgroundTasks?: GeneratedAcpxBackgroundTasks } {
   const backgroundTasks = claudeBackgroundTasks(activeHost);
   return backgroundTasks ? { backgroundTasks } : {};
 }
 
-function claudeBackgroundTasks(activeHost: AcpxRuntimeHost): { live: number } | null {
+function claudeBackgroundTasks(activeHost: AcpxRuntimeHost): GeneratedAcpxBackgroundTasks | null {
   if (initializedAgent !== "claude" || !toolUseAdmission?.hasRoomForAnotherTurn()) return null;
   try {
-    const state = activeHost.backgroundTaskState();
-    return state && Number.isSafeInteger(state.live) && state.live >= 0 ? { live: state.live } : null;
+    return readGeneratedAcpxBackgroundTasks(activeHost.backgroundTaskState());
   } catch {
     return null;
   }
