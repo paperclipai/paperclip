@@ -3483,6 +3483,23 @@ agent, workspace, retained session, and termination of prior execution. The
 checkpoint must match the exact Runner, lease, run, session, turn, and item.
 A missing restart claim does not remove these checks or authorize a fresh session.
 
+A plugin task records its stop receipt when it settles. When the provider
+reports that the task stopped, completing the task writes a receipt bound to
+the exact company, run, lease, provider and task, even before the lease is
+released. Lease release can be held long after that, for example by a pending
+workspace export. A per-turn follow-up in a later run can then resume the
+retained checkpoint: for continuation, every lease of the predecessor run must
+be released with its termination receipt or still be active with this stop
+receipt and its release not started. Once release or destroy of a lease starts,
+release owns the receipt: the lease does not count until release settles with
+its own receipt, because the provider can be releasing the task's resources
+while the lease is still active. Dispatching new work on a lease removes its
+stop receipt. Resource cleanup gates, and a same-run retry's replacement of earlier
+leases, still require the released termination receipt.
+When the server refuses the resume, the error keeps the message
+`Plugin Runner retained session is not authorized` and names the first failed
+check, for example `(reason: predecessor_not_stopped)`.
+
 These checks can refuse the exact checkpoint before the retry claims a new
 provider attempt. For example, the interrupted attempt can leave the provider
 state not suspended. The run error then names the interrupted attempt first, as
