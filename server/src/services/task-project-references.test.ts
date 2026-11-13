@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import {
   agents,
   agentTaskSessions,
+  caseDocuments,
+  caseIssueLinks,
   cases,
   companies,
   createDb,
@@ -13,10 +15,12 @@ import {
   issueComments,
   issueProjectReferences,
   issueThreadInteractions,
+  issueWorkProducts,
   issues,
   projectAccessMembers,
   projects,
   subscribeDatabaseWork,
+  workflows,
 } from "@paperclipai/db";
 import { scanProjectMentions } from "@paperclipai/shared";
 import { and, asc, eq, sql } from "drizzle-orm";
@@ -453,6 +457,52 @@ describe.skipIf(!support.supported)("task project references", () => {
     const large = await svc.create(f.companyId, { title: "Large" });
     await db.insert(issueComments).values({ companyId: f.companyId, issueId: large.id, body: `${link(f.a)} ${"x".repeat(MAX_TASK_REFERENCE_SOURCE_BYTES)}` });
     expect(await resolve(f, large.id)).toEqual({ kind: "context_too_large", limit: MAX_TASK_REFERENCE_SOURCE_BYTES });
+  });
+
+  it("refuses a case context whose copied titles carry a project link, never resolving a shorter set", async () => {
+    const f = await fixture();
+    const svc = issueService(db);
+    const task = await svc.create(f.companyId, { title: "Case work", projectId: f.a });
+    const related = await svc.create(f.companyId, { title: "Related" });
+    const [workflow] = await db.insert(workflows).values({ companyId: f.companyId, name: "Flow", prompt: "Run" }).returning();
+    const [record] = await db.insert(cases).values({ companyId: f.companyId, caseNumber: 1, identifier: `${f.prefix}-C1`,
+      caseType: "workflow", title: "Case", workIssueId: task.id, workflowId: workflow.id }).returning();
+    await db.insert(caseIssueLinks).values({ companyId: f.companyId, caseId: record.id, issueId: related.id, role: "reference" });
+    const [caseDocument] = await db.insert(documents).values({ companyId: f.companyId, title: "Brief", latestBody: "plain" }).returning();
+    await db.insert(caseDocuments).values({ companyId: f.companyId, caseId: record.id, documentId: caseDocument.id, key: "brief" });
+    let notes = (await documentService(db).upsertIssueDocument({ issueId: task.id, key: "notes", title: "Notes", format: "markdown",
+      body: "plain", createdByUserId: "board" })).document.latestRevisionId!;
+    const titleNotes = async (title: string) => notes = (await documentService(db).upsertIssueDocument({ issueId: task.id, key: "notes",
+      title, format: "markdown", body: "plain", baseRevisionId: notes, createdByUserId: "board" })).document.latestRevisionId!;
+    const retitle = (issueId: string, title: string) => inTransaction(tx =>
+      setIssueTitle(tx, f.companyId, issueId, { title }, { actorType: "user", actorId: "board" }));
+    const [product] = await db.insert(issueWorkProducts).values({ companyId: f.companyId, issueId: related.id, type: "pull_request",
+      provider: "github", title: "PR", status: "open" }).returning();
+    expect(await resolve(f, task.id)).toMatchObject({ kind: "resolved", projectIds: [f.a] });
+
+    // getCaseExecutionContext copies these into execution; none is projected yet (C1b-2).
+    const copied: Array<[string, () => Promise<unknown>, () => Promise<unknown>]> = [
+      ["case phase", () => db.update(cases).set({ phase: link(f.b) }).where(eq(cases.id, record.id)),
+        () => db.update(cases).set({ phase: null }).where(eq(cases.id, record.id))],
+      ["workflow name", () => db.update(workflows).set({ name: link(f.b) }).where(eq(workflows.id, workflow.id)),
+        () => db.update(workflows).set({ name: "Flow" }).where(eq(workflows.id, workflow.id))],
+      ["case document title", () => db.update(documents).set({ title: link(f.b) }).where(eq(documents.id, caseDocument.id)),
+        () => db.update(documents).set({ title: "Brief" }).where(eq(documents.id, caseDocument.id))],
+      ["task document title", () => titleNotes(link(f.b)), () => titleNotes("Notes")],
+      ["related task title", () => retitle(related.id, link(f.b)), () => retitle(related.id, "Related")],
+      ["work product", () => db.update(issueWorkProducts).set({ url: `project://${f.b}` }).where(eq(issueWorkProducts.id, product.id)),
+        () => db.update(issueWorkProducts).set({ url: null }).where(eq(issueWorkProducts.id, product.id))],
+    ];
+    for (const [source, add, remove] of copied) {
+      await add();
+      expect(await resolve(f, task.id), source).toEqual({ kind: "unprojected_context_source", sources: ["case_copied_context"] });
+      await remove();
+      expect(await resolve(f, task.id), source).toMatchObject({ kind: "resolved", projectIds: [f.a] });
+    }
+    // Without a case nothing is copied: a related task's link is not imported.
+    await retitle(related.id, link(f.b));
+    await db.delete(cases).where(eq(cases.id, record.id));
+    expect(await resolve(f, task.id)).toMatchObject({ kind: "resolved", projectIds: [f.a] });
   });
 
   it("extracts a superset of the structured parser's project references in SQL", async () => {

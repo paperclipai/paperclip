@@ -1329,7 +1329,10 @@ these rows, so the full-source parse covers them.
 The caller describes the rest of the supplied context in a required
 `TaskContextSelection`. Agent instruction bundles and replayed run output are
 not covered yet: selecting either returns `unprojected_context_source`, never a
-smaller set.
+smaller set. The same outcome (`case_copied_context`) refuses a task whose case
+context would copy a `project://` link from beyond the task: the case phase,
+workflow name, handoff phases and transitions, case and linked-task document
+titles, linked task titles, or work-product titles and URLs.
 
 Migration `0480` adds triggers that run in the statement of every source write,
 whatever service, route, tool, import or direct SQL performs it. They rewrite

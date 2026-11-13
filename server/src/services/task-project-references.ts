@@ -30,7 +30,8 @@ export type TaskProjectReferences =
   | { kind: "invalid_references"; malformed: number; unavailable: number }
   | { kind: "unauthorized"; count: number };
 
-export type UnprojectedContextSource = "agent_instructions" | "run_output";
+/** `case_copied_context`: a project link in a title or field the case context copies from beyond the task (C1b-2). */
+export type UnprojectedContextSource = "agent_instructions" | "run_output" | "case_copied_context";
 
 /** What the queued intent will supply besides the task's current content. Every field is required. */
 export type TaskContextSelection = {
@@ -133,18 +134,35 @@ export async function resolveTaskProjectReferences(tx: Db, input: ResolveTaskPro
       union all select null, jsonb_build_array(title, summary, payload, result) from issue_thread_interactions
         where company_id = ${companyId} and issue_id = ${issueId}
       union all select null, jsonb_build_array(title, summary, fields) from cases where company_id = ${companyId} and work_issue_id = ${issueId}
+    ), case_rows as (select id, workflow_id, phase from cases where company_id = ${companyId} and work_issue_id = ${issueId}),
+    case_tasks as (select ${issueId}::uuid as id where exists (select 1 from case_rows)
+      union select l.issue_id from case_issue_links l join case_rows c on c.id = l.case_id where l.company_id = ${companyId}),
+    -- What getCaseExecutionContext copies besides the case's own facts, checked over every row it could select.
+    case_copied(text) as (select phase from case_rows
+      union all select w.name from workflows w join case_rows c on c.workflow_id = w.id where w.company_id = ${companyId}
+      union all select concat_ws(' ', h.phase, h.workflow_transition::text) from case_handoffs h join case_rows c on c.id = h.case_id
+        where h.company_id = ${companyId}
+      union all select d.title from case_documents cd join case_rows c on c.id = cd.case_id join documents d on d.id = cd.document_id
+        where cd.company_id = ${companyId}
+      union all select d.title from issue_documents l join documents d on d.id = l.document_id
+        where l.company_id = ${companyId} and l.issue_id in (select id from case_tasks)
+      union all select i.title from issues i where i.company_id = ${companyId} and i.id in (select id from case_tasks) and i.id <> ${issueId}
+      union all select concat_ws(' ', p.title, p.url) from issue_work_products p
+        where p.company_id = ${companyId} and p.issue_id in (select id from case_tasks)
     ), linked as (select body, data from sources where coalesce(body, data::text) ilike '%project://%'),
     size as (select coalesce(sum(octet_length(coalesce(body, data::text))), 0) as bytes from linked)
     select (select bytes from size) as bytes,
       (select project_id from issues where id = ${issueId} and company_id = ${companyId}) as primary_project_id,
       exists (select 1 from issues where id = ${issueId} and company_id = ${companyId}) as issue_found,
+      exists (select 1 from case_copied where text ilike '%project://%') as case_copied_link,
       (select coalesce(jsonb_agg(coalesce(to_jsonb(body), data)), '[]') from linked where (select bytes from size) <= ${MAX_TASK_REFERENCE_SOURCE_BYTES}) as texts,
       ${plan ? sql`(select r.body from document_revisions r join issue_documents l on l.document_id = r.document_id
         where r.company_id = ${companyId} and r.id = ${plan} and l.issue_id = ${issueId} and l.key = 'plan')` : sql`null`} as plan_body,
       ${plan ? sql`(select count(*) from document_revisions r join issue_documents l on l.document_id = r.document_id
         where r.company_id = ${companyId} and r.id = ${plan} and l.issue_id = ${issueId} and l.key = 'plan')` : sql`1`}::int as plan_found`) as unknown as
-    Array<{ bytes: string | number; primary_project_id: string | null; issue_found: boolean; texts: unknown; plan_body: string | null; plan_found: number }>;
+    Array<{ bytes: string | number; primary_project_id: string | null; issue_found: boolean; case_copied_link: boolean; texts: unknown; plan_body: string | null; plan_found: number }>;
   if (!read?.issue_found) return { kind: "not_found" };
+  if (read.case_copied_link) return { kind: "unprojected_context_source", sources: ["case_copied_context"] };
   if (read.plan_found === 0) return { kind: "context_source_unavailable" };
   if (Number(read.bytes) + Buffer.byteLength(read.plan_body ?? "") > MAX_TASK_REFERENCE_SOURCE_BYTES) {
     return { kind: "context_too_large", limit: MAX_TASK_REFERENCE_SOURCE_BYTES };
