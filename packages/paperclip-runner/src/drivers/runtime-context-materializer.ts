@@ -8,6 +8,7 @@ import {
   mkdir,
   open,
   readdir,
+  readFile,
   rename,
   rm,
   writeFile,
@@ -81,6 +82,44 @@ function isWin32ReservedPathSegment(segment: string): boolean {
     .toUpperCase();
   return /^(?:CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|COM[1-9¹²³]|LPT[1-9¹²³])$/u.test(
     basename,
+  );
+}
+
+function yamlNameValue(name: string): string {
+  return /^[A-Za-z0-9._-]+$/u.test(name) ? name : JSON.stringify(name);
+}
+
+/**
+ * Providers index an assigned skill by the top-level `name` in its SKILL.md,
+ * while Paperclip grants each assigned skill a unique runtime name. Align only
+ * that field in the disposable provider snapshot so the advertised name can be
+ * loaded; every other skill byte stays identical.
+ */
+async function alignSkillRuntimeName(
+  skillRoot: string,
+  runtimeName: string,
+): Promise<void> {
+  const skillFile = join(skillRoot, "SKILL.md");
+  const markdown = await readFile(skillFile, "utf8").catch(
+    (error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT" || error.code === "EISDIR") return null;
+      throw error;
+    },
+  );
+  if (markdown === null || !markdown.startsWith("---\n")) return;
+  const closing = markdown.indexOf("\n---\n", 3);
+  if (closing < 0) return;
+  const lines = markdown.slice(4, closing).split("\n");
+  const nameIndex = lines.findIndex((line) => /^name\s*:/u.test(line));
+  if (nameIndex < 0) return;
+  const alignedLine = `name: ${yamlNameValue(runtimeName)}`;
+  if (lines[nameIndex] === alignedLine) return;
+  lines[nameIndex] = alignedLine;
+  await chmod(skillFile, 0o644);
+  await writeFile(
+    skillFile,
+    `---\n${lines.join("\n")}\n---\n${markdown.slice(closing + 5)}`,
+    { mode: 0o644 },
   );
 }
 
@@ -272,6 +311,7 @@ export async function materializeNativeRuntimeSkills(
         verbatimSymlinks: true,
       });
       await assertSafeTree(target);
+      await alignSkillRuntimeName(target, skill.runtimeName);
       await protectStagedTree(target);
     }
 
