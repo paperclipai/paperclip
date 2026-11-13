@@ -25,6 +25,9 @@ test("the shared outputs are written before the parallel checks start", () => {
     assert.ok(prepare.some((task) => task.name === `typecheck ${name}`), name);
     assert.ok(!tasks.some((task) => task.name === `typecheck ${name}`), name);
   }
+  const guidance = prepare.find((task) => task.name === "CLI guidance safety");
+  assert.ok(guidance.args.includes("server/src/__tests__/cli-invocation-safety.test.ts"));
+  assert.equal(guidance.background, undefined);
   const programs = tasks.find((task) => task.name === "typecheck test programs");
   assert.ok(programs.args.includes("--skip-prepare"));
   for (const task of tasks) {
@@ -48,7 +51,7 @@ test("every check of the sequential job is planned, and only declaration readers
   }
   for (const name of ["paperclipai", "@paperclipai/ui"]) assert.ok(byName.has(`typecheck ${name}`), name);
   assert.deepEqual(byName.get("release registry tests").args, ["run", "test:release-registry"]);
-  assert.ok(byName.get("CLI guidance safety").args.includes("server/src/__tests__/cli-invocation-safety.test.ts"));
+  assert.ok(!byName.has("CLI guidance safety"));
   const waiting = tasks.filter((task) => task.needs);
   assert.equal(waiting.length, 2 + PROJECTS.length);
   assert.deepEqual(
@@ -146,7 +149,11 @@ test("the PR typecheck job runs the lane after the Runner release crate restore"
   const job = workflow.split("\n  typecheck_release_registry:\n")[1].split("\n  general_tests:\n")[0];
   const lane = job.indexOf("run: node scripts/ci-typecheck-lane.mjs");
   assert.ok(lane > job.indexOf("- name: Mark the restored Runner release crate current"));
+  const missingScript = "if: ${{ hashFiles('scripts/ci-typecheck-lane.mjs') == '' }}";
+  const [beforeFallback, fallback] = job.split(missingScript);
+  assert.ok(beforeFallback.includes("if: ${{ hashFiles('scripts/ci-typecheck-lane.mjs') != '' }}\n        run: node scripts/ci-typecheck-lane.mjs"));
   for (const command of ["typecheck:build-gaps", "typecheck-test-programs.mjs", "typecheck-test-projects.mjs", "test:release-registry"]) {
-    assert.ok(!job.includes(command), command);
+    assert.ok(!beforeFallback.includes(command), command);
+    assert.ok(fallback.includes(command), command);
   }
 });

@@ -6178,6 +6178,18 @@ rollback requires a server that reads this envelope and the supported settled
 warm journal, including its PRP v2 idle goal suffix. Earlier local-only readers
 and readers lacking that suffix handling remain outside that rollback contract.
 
+### Resolved cards queued behind chat runs
+
+A resolved card is an independent continuation. Its saved chat message IDs
+remain authorization bindings even if a prior run received those messages.
+Queue promotion retains live, same-task message bindings for that continuation;
+deleted and self-authored messages still drop out. The new run must pass current
+chat authorization. Ordinary message-only wakes whose input was consumed remain
+cancelled and cannot start another turn.
+Retained bindings that a run already received are not fresh input: they never
+reopen a finished task. A card answer owed to a task the finishing run closed
+still continues it in progress through the owed-answer path.
+
 ### Stop a failed native retry
 
 A failed native run can still own a scheduled same-run bootstrap retry. The
@@ -6204,6 +6216,20 @@ can be accepted without a terminal acknowledgement. The selected run and its
 history refresh after either outcome. Stop does not resume the provider or change
 a manual task hold.
 
+### Provider-pack admission during restart recovery
+
+Provider-pack admission keeps a digest-bound historical proof when a controller
+claim changes its current admission to pending. If a restart or a failed recovery
+barrier interrupts that claim before its admission callback, the next same-run
+claim can reuse that proof only for the unchanged receipt. Normal session,
+company, agent, Runner and environment-lease checks still apply. Current artifact
+retention remains blocked until the new claim publishes verified admission.
+Unknown admission state discards the historical proof; a callback clears it when
+it records its decision. This adds no background work or provider replay.
+Previous-release verified receipts seed this proof on their first new claim.
+Older pending or unknown records without it remain unverified, as before. Older
+readers ignore the added profile field and retain their existing refusal behavior.
+
 ### Native session diagnostic ownership
 
 Native session diagnostics follow the current execution's recorder epoch, including
@@ -6216,3 +6242,11 @@ with company/run identifiers to the process logger; it cannot append provider te
 to a completed run or borrow a successor run's recorder. Canonical native output
 export, source coverage, secret redaction and persistence-failure warnings retain
 their existing contracts.
+
+Exact sandbox reattachment reports the current acquisition as `resumed` only
+when the recorded lease passes scope and identity checks and the provider confirms
+that same allocation. The lease's original acquisition can have been `replacement`;
+that historical label cannot describe the later reattachment. This changes the
+operation receipt passed separately through preparation to the execution target,
+not persisted lease metadata or the Runner verification guard. Missing,
+expired, foreign or changed allocations retain their named recovery refusals.
