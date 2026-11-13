@@ -611,6 +611,34 @@ describe("ssh env-lab fixture", () => {
     await expect(stopSshRunProcesses(config, { runId, remoteCwd })).resolves.toBe("stopped");
   }, SSH_FIXTURE_TEST_TIMEOUT_MS);
 
+  it("finishes an SSH process stop while another SSH session of the same user is open", async () => {
+    const rootDir = await createFixtureRootDir();
+    const statePath = path.join(rootDir, "state.json");
+
+    const started = await startSshEnvLabFixtureOrSkip(statePath, "SSH concurrent session stop test");
+    if (!started) return;
+    if (process.platform !== "linux") return;
+    const config = await buildSshEnvLabFixtureConfig(started);
+    const runId = "7e6d5c4b-3a29-4f18-8e07-d6c5b4a39281";
+    const remoteCwd = started.workspaceDir;
+
+    // The sshd process of an open session runs as the SSH user and is not dumpable,
+    // so its environment and working directory are unreadable. It is not a run process.
+    const marker = path.posix.join(remoteCwd, `session-${runId}`);
+    const otherSession = runSshCommand(config, `echo $$ > ${JSON.stringify(marker)}; exec sleep 20`, { timeoutMs: 30_000 })
+      .catch(() => undefined);
+    try {
+      const opened = async () =>
+        (await runSshCommand(config,
+          `for i in $(seq 1 50); do [ -s ${JSON.stringify(marker)} ] && { echo open; exit 0; }; sleep 0.1; done; echo missing`)).stdout.trim();
+      expect(await opened()).toBe("open");
+      await expect(stopSshRunProcesses(config, { runId, remoteCwd })).resolves.toBe("stopped");
+    } finally {
+      await runSshCommand(config, `kill $(cat ${JSON.stringify(marker)}) 2>/dev/null; rm -f ${JSON.stringify(marker)}; true`);
+      await otherSession;
+    }
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
   it("rejects a run id or working directory that an SSH process stop cannot use safely", async () => {
     const config = { ...UNREACHABLE_SSH_SPEC };
     await expect(stopSshRunProcesses(config, { runId: "x; rm -rf /", remoteCwd: "/work" }))

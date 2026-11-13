@@ -1397,14 +1397,22 @@ const SSH_RUN_PROCESS_STOP_SCRIPT = [
   // A same-user process that hides both its environment and its working directory
   // (for example with PR_SET_DUMPABLE=0) can be a run process. The scan cannot
   // classify it, so it is not a stop proof. Such a process is not signalled.
+  // Two kinds of unreadable processes are no evidence of a run: a process whose
+  // user or group ids differ (a setuid or setgid program such as sudo; the
+  // script could not signal it anyway), and the SSH daemon and agents, which
+  // make themselves non-dumpable. A run process that renames itself to one of
+  // these names is not detected.
   'uid=$(id -u)',
   'find_hidden_pids() {',
   '  for proc_dir in /proc/[0-9]*; do',
   '    pid=${proc_dir#/proc/}',
   '    case "$own" in *" $pid "*) continue ;; esac',
   '    [ "$(parent_of "$pid")" = "$self" ] && continue',
-  '    owner=$(sed -n "s/^Uid:[[:space:]]*\\([0-9]*\\).*/\\1/p" "$proc_dir/status" 2>/dev/null)',
-  '    [ "$owner" = "$uid" ] || continue',
+  '    ids=$(sed -n "s/^[UG]id:[[:space:]]*//p" "$proc_dir/status" 2>/dev/null | tr -s "[:space:]" " ")',
+  '    gid=${ids#* * * * }; gid=${gid%% *}',
+  '    [ "$ids" = "$uid $uid $uid $uid $gid $gid $gid $gid " ] || continue',
+  '    name=$(sed -n "s/^Name:[[:space:]]*//p" "$proc_dir/status" 2>/dev/null)',
+  '    case "$name" in sshd|sshd-session|sshd-auth|ssh-agent|gpg-agent) continue ;; esac',
   '    cat "$proc_dir/environ" >/dev/null 2>&1 && continue',
   '    readlink "$proc_dir/cwd" >/dev/null 2>&1 && continue',
   '    [ -d "$proc_dir" ] && echo "$pid"',
