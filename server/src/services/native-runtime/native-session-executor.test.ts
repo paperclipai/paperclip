@@ -17795,6 +17795,63 @@ describe("runnerd provider runtime wiring", () => {
       || request.args.includes("paperclip-runner-claim-unstarted-session"))).toBe(false);
   });
 
+  it.each([
+    ["keeps", "lease_expired_requires_bootstrap"],
+    ["refuses", "provider_failed"],
+  ] as const)("%s the saved mid-turn state of a remote Runner that exited for %s when the reattachment prepares its sandbox", async (outcome, recoverableFailure) => {
+    const current = scopedNativeExecution(`fresh-bootstrap-relaunch-${recoverableFailure}`);
+    const identity = { runId: current.binding.runId, normalizedSessionId: current.session.normalizedSessionId!,
+      runnerInstanceId: "lease-expired-runner", environmentLeaseId: "lease-expired-lease",
+      turnId: `turn_attachment_${randomUUID()}`, itemId: `item_attachment_${randomUUID()}` };
+    const root = await initializeScopedRunnerRoot(current, identity.runnerInstanceId);
+    await mkdir(join(root, "control-plane"), { recursive: true });
+    await writeFile(join(root, "control-plane", "control-plane-state.json"), JSON.stringify(durableControlPlaneState(identity)));
+    const runnerState = { ...identity, lifecycle: "recoverable_failure", recoverableFailure, outbox: [{ id: 412 }],
+      pendingTerminalDelivery: null, pendingProviderCleanup: null, warmTransition: null };
+    const providerState = { schema: "paperclip.runner.codex-provider-state.v1", lifecycle: "session_open",
+      threadId: "lease-expired-thread", providerSessionId: null, activeProviderTurnId: "provider-turn-1",
+      config: { provider: "codex", driver: "codex_app_server" } };
+    const execute = vi.fn(async (request: { args: string[] }) => {
+      const script = request.args[1] ?? "";
+      if (request.args[2] === "paperclip-runner-recovery-check") return { exitCode: 45, timedOut: false, stderr: "", stdout: "" };
+      const stdout = request.args[0] === "--build-metadata" ? JSON.stringify({
+        schema: "paperclip-runner/runnerd-build-metadata/v1", binaryName: "paperclip-runnerd",
+        packageName: "@paperclipai/paperclip-runner", binaryContractVersion: 2,
+        durableSessionCapabilities: ["unlimited_runtime", "connection_lease_renewal"], prpTransportModes: ["listen_ws"],
+      }) : request.args[0] === "--version" ? "codex-cli 0.160.0"
+        : script.includes("base64") && script.includes("runner-state.json") ? Buffer.from(JSON.stringify(runnerState)).toString("base64")
+        : script.includes("base64") ? Buffer.from(JSON.stringify(providerState)).toString("base64")
+        : script.includes("cat --") ? `nonce\n123\n2026-09-19T10:00:00.000Z\n${identity.runnerInstanceId}\nlinux:abcd-1234:100\n` : "";
+      return { exitCode: 0, timedOut: false, stderr: "", stdout };
+    });
+    const syncIn = vi.fn(async () => undefined);
+    state.createBackend.mockClear(); state.createTransport.mockClear();
+    const created = createRunnerdBackend({ db: leaseDb(current), execution: current, runnerInstanceId: identity.runnerInstanceId,
+      runnerIngressAuthorized: true,
+      controllerPersistence: { bootId: "successor", runnerArtifact: { version: "admitted-version", digest: `sha256:${"a".repeat(64)}` } },
+      runnerExecutionTarget: { kind: "remote", transport: "sandbox", remoteCwd: "/workspace",
+        environmentId: "environment", leaseId: identity.environmentLeaseId, providerKey: "daytona", runner: { execute, syncIn },
+        effectiveCapabilities: { runnerWebSocketIngress: true },
+        sandboxLeaseAcquisition: { outcome: "resumed", providerLeaseId: "sandbox" } } as never,
+      restartRecovery: { kind: "reattach_remote_runner", runId: current.binding.runId, leaseOwner: "controller",
+        controllerGeneration: 2, providerAttempt: 2, restartKind: "hard", recoveryRequestId: null,
+        remote: { providerLeaseId: "sandbox", remoteCwd: "/workspace" } },
+    });
+    if (outcome === "refuses") {
+      await expect(created).rejects.toThrow("runner_remote_process_identity_unavailable");
+      return;
+    }
+    await created;
+    state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+    const options = state.createTransport.mock.calls.at(-1)![0] as RunnerTransportOptions & { prepareExternalRunnerState: () => Promise<void> };
+    expect(options).toMatchObject({ prpIdentity: identity });
+    expect((options as { adoptExistingRunner?: unknown }).adoptExistingRunner).toBeUndefined();
+    await expect(options.prepareExternalRunnerState()).resolves.toBeUndefined();
+    expect(syncIn).not.toHaveBeenCalled();
+    expect(execute.mock.calls.some(([request]) => request.args.includes("paperclip-runner-claim-unstarted-session")
+      || request.args.some(argument => argument.includes(".continuity-break-") || argument.includes("rm -")))).toBe(false);
+  });
+
   it.each(["claude", "pi"] as const)("relays the assigned gateway when a deploy lands mid-run and the same ACPX %s run reattaches its surviving runner", async agent => {
     const base = scopedNativeExecution(`relay-mid-run-${agent}`);
     const current = { ...base, provider: { kind: "acpx", agent, model: null },

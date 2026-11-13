@@ -17182,6 +17182,13 @@ async function createRunnerdBackendWithinSessionClaim(
     };
   };
 
+  const retainsFreshBootstrapRunnerState = async (): Promise<boolean> => {
+    if (!remoteCommandRunner || !remoteStateDirectory || !durableIdentity) return false;
+    const runnerState = await readRemoteRunnerState({ runner: remoteCommandRunner, stateDirectory: remoteStateDirectory });
+    return runnerStateRequestsFreshBootstrap(runnerState)
+      && REMOTE_RUNNER_IDENTITY_FIELDS.every(field => runnerState[field] === durableIdentity[field]);
+  };
+
   const claimUntouchedRemoteSession = async (): Promise<boolean> => {
     if (!remoteCommandRunner || !remoteRuntimeRoot || !remoteSessionRoot) return false;
     const controllerState = runnerControlPlane?.store.state;
@@ -17475,6 +17482,10 @@ async function createRunnerdBackendWithinSessionClaim(
                         throw new RemoteRunnerRecoveryError({ stage: "process_verification", reason: "process_not_running" });
                       }
                     });
+                  } else if (sandboxLeaseAcquisition?.outcome === "resumed" && !adoptedProcess && !stagedRecovery &&
+                      input.restartRecovery?.kind === "reattach_remote_runner" &&
+                      await measureNativeRunnerSpan(input.trace, "sandbox.lease.resume", retainsFreshBootstrapRunnerState)) {
+                    await input.onLog?.("stdout", "[paperclip-runner] Starting a new runner from the saved state of the runner whose connection lease ended.\n");
                   } else if (sandboxLeaseAcquisition?.outcome === "resumed") {
                     const reuseStartedAtMs = Date.now();
                     const state = await measureNativeRunnerSpan(

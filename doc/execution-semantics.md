@@ -6025,7 +6025,10 @@ that process continues from the same cursor. A reattachment that finds this exit
 re-reads the state after the process is proven gone. When it has the same six
 identity fields, the same lifecycle and code, and no pending terminal delivery
 or warm transition, the reattachment launches a Runner from that state, even
-mid-turn and with events still in the outbox. The new Runner restores the
+mid-turn and with events still in the outbox. Sandbox preparation reads that
+state once more and keeps it in place, as it does for an adopted live Runner;
+it does not require a `suspended` state or an idle provider checkpoint for this
+exit. The new Runner restores the
 conversation: it continues the turn, or reports the lost turn as recoverable
 after it proves that the old provider process ended. This path admits the same
 attempts as a reattachment, including the extra attempt of an unanswered-Runner
