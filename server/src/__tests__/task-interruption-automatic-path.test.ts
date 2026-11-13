@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, agentWakeupRequests, applyPendingMigrations, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations } from "@paperclipai/db";
@@ -156,6 +156,70 @@ describe.skipIf(!support.supported)("Retry is offered only when no automatic pat
     const { issue, hold } = await seedSwapEndedRun(new Date(Date.now() - 45 * 60_000));
     await db.update(issueRecoveryActions).set({ ownerType: "board" }).where(eq(issueRecoveryActions.id, hold.id));
     expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ state: "failed", canRetry: true });
+  });
+
+  async function seedProviderTerminalFailure(finishedAt: Date) {
+    const task = await seedTask("blocked");
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId: task.companyId, agentId: task.agentId,
+      nativeIssueId: task.issue.id, scopeKind: "issue", status: "failed", runtimeMode: "native",
+      nativePhase: "terminal_failure", errorCode: "native_provider_terminal_failed",
+      error: "ACP agent reported a terminal service failure.", startedAt: new Date(finishedAt.getTime() - 60_000), finishedAt });
+    await db.insert(nativeRunFinalizations).values({ companyId: task.companyId, issueId: task.issue.id, runId,
+      phase: "terminal_failure", attempt: 1, failureCode: "native_provider_terminal_failed", updatedAt: finishedAt });
+    const [hold] = await db.insert(issueRecoveryActions).values({ companyId: task.companyId, sourceIssueId: task.issue.id,
+      kind: "active_run_watchdog", status: "active", ownerType: "board", returnOwnerAgentId: task.agentId,
+      cause: "native_provider_terminal_failed", fingerprint: `provider-terminal:${runId}`,
+      evidence: { runId, nativeFailureBlock: { runId, statusVersion: 1 }, coordinatorAttempt: 1,
+        sourceFailureCode: "native_provider_terminal_failed", recoveryDisposition: "native_provider_terminal_failed",
+        recoveryMode: "replacement", providerSessionEstablished: true },
+      nextAction: "Verify that the failed provider stopped and reconcile its action outcomes.",
+      maxAttempts: 3, createdAt: finishedAt, updatedAt: finishedAt }).returning();
+    return { ...task, issue: { ...task.issue, status: "blocked" }, runId, hold: hold! };
+  }
+
+  it("shows a provider failure the system is still recovering as working through every recovery step, never offering Retry in between", async () => {
+    const { issue, runId, hold, companyId } = await seedProviderTerminalFailure(new Date(Date.now() - 2_000));
+    const working = { responsibility: "system", state: "working", canRetry: false, observedRunId: runId };
+    expect(await taskInterruptionPresentation(db, issue)).toMatchObject(working);
+
+    const running = { ...createSystemRecovery(runId), state: "running" as const, phase: "preserve_files" as const };
+    await db.update(issueRecoveryActions).set({ ownerType: "system", updatedAt: new Date(),
+      evidence: { ...hold.evidence, systemRecovery: running, systemRecoveryActiveAt: Date.now() } })
+      .where(eq(issueRecoveryActions.id, hold.id));
+    expect(await taskInterruptionPresentation(db, issue)).toMatchObject(working);
+
+    await db.update(issueRecoveryActions).set({ updatedAt: new Date(),
+      evidence: { ...hold.evidence, systemRecovery: { ...running, state: "complete" }, systemRecoveryActiveAt: Date.now() - 60_000 } })
+      .where(eq(issueRecoveryActions.id, hold.id));
+    expect(await taskInterruptionPresentation(db, issue)).toMatchObject(working);
+
+    await db.update(nativeRunFinalizations).set({ failureDetail: { replacementDenied: "provider_failure_meaning_unverified" },
+      updatedAt: new Date() }).where(eq(nativeRunFinalizations.runId, runId));
+    await db.update(issueRecoveryActions).set({ ownerType: "board", cause: "provider_failure_meaning_unverified",
+      fingerprint: `native-replacement:${runId}`, evidence: { runId, attempts: 1 }, nextAction: "Review the provider failure.",
+      updatedAt: new Date() }).where(and(eq(issueRecoveryActions.id, hold.id), eq(issueRecoveryActions.companyId, companyId)));
+    expect(await taskInterruptionPresentation(db, issue)).toMatchObject(working);
+  });
+
+  it("offers Retry for a provider failure once the recovery bound passes with nothing recorded", async () => {
+    const { issue } = await seedProviderTerminalFailure(new Date(Date.now() - 3 * 60_000));
+    expect(await taskInterruptionPresentation(db, { ...issue, status: "todo" })).toMatchObject({ state: "failed", canRetry: true });
+  });
+
+  it("offers Retry for a provider failure at once when the continuation worker decided it cannot continue the task", async () => {
+    const { issue, hold } = await seedProviderTerminalFailure(new Date(Date.now() - 2_000));
+    await db.update(issueRecoveryActions).set({ evidence: { ...hold.evidence,
+      freshContinuationCheck: { kind: "not_applicable", reason: "task_changed", checks: 1, checkedAt: Date.now(), nextCheckAt: null } } })
+      .where(eq(issueRecoveryActions.id, hold.id));
+    expect(await taskInterruptionPresentation(db, { ...issue, status: "todo" })).toMatchObject({ state: "failed", canRetry: true });
+  });
+
+  it("offers Retry for a provider failure at once when a person took over its hold", async () => {
+    const { issue, hold, companyId } = await seedProviderTerminalFailure(new Date(Date.now() - 2_000));
+    await db.update(issueRecoveryActions).set({ evidence: { ...hold.evidence, ownerGoneAttestation: { companyId } } })
+      .where(eq(issueRecoveryActions.id, hold.id));
+    expect(await taskInterruptionPresentation(db, { ...issue, status: "todo" })).toMatchObject({ state: "failed", canRetry: true });
   });
 
   it("shows a healthy task as working while the message queued during its succeeded run is delivered", async () => {
