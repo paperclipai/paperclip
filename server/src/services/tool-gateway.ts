@@ -8087,8 +8087,9 @@ export function createToolGatewayService(
           if (isModernMcpProtocolVersion(retryVersion)) {
             requestHeaders = { ...headers, "MCP-Protocol-Version": retryVersion };
           } else {
-            const scope = `${connection.id}:grant:${grant.id}:actor:${session.agentId}:${endpoint}`;
-            requestHeaders = await getMcpHttpSession({ scope, send: sendForNegotiation, headers, requestId: `${requestId}-version`, eraKey });
+            // The same form-capable tool session as a first call (see above).
+            const scope = `${connection.id}:grant:${grant.id}:actor:${session.agentId}:elicit-form:${endpoint}`;
+            requestHeaders = await getMcpHttpSession({ scope, send: sendForNegotiation, headers, requestId: `${requestId}-version`, eraKey, elicitationForm: true });
             const sessionId = new Headers(requestHeaders).get("mcp-session-id");
             if (sessionId) mcpSession = { scope, headers, sessionId };
           }
