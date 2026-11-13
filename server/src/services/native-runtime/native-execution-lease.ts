@@ -1,4 +1,3 @@
-import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
 import type { Db } from "@paperclipai/db";
 import { environmentLeases, heartbeatRuns, livenessDb, nativeRunFinalizations } from "@paperclipai/db";
 import { and, eq, gt, isNotNull, isNull, notExists, or, sql, type SQL } from "drizzle-orm";
@@ -316,7 +315,9 @@ async function renewNativeSessionExecutionLeaseDeadline(
     // but conservatively include UPDATE/commit response time without assuming
     // that this server's wall clock agrees with the database's clock.
     confirmedDeadline = performance.now() + leaseTtlMs;
-    await notifyLiveRunRecovery(tx, { companyId: input.companyId, runId: input.runId });
+    // No recovery signal: a renewal only moves the deadline later. Recovery
+    // keeps its deadline at the earlier expiry and re-reads the row then, so a
+    // lapsed lease is still found at its expiry (as for the legacy lease).
     return tx.update(nativeRunFinalizations)
       .set({
         leaseExpiresAt: sql`clock_timestamp() + (${leaseTtlMs} * interval '1 millisecond')`,
@@ -393,6 +394,8 @@ const renewals = new WeakMap<Db, Map<string, RenewalState>>();
  * - The confirmed deadline is sampled after the locks and before the UPDATE.
  * - A run whose row was locked live and not extended fails with
  *   `native_session_lease_lost`, independently of the other runs.
+ * Like the single path, a batch sends no recovery signal: a renewal only moves
+ * a deadline later, and recovery re-reads the row at the deadline it holds.
  * A failed batch transaction extends nothing; its runs retry after
  * `RENEWAL_BATCH_RETRY_MS`, and each run's own deadline still detaches it.
  */
@@ -440,7 +443,6 @@ async function renewNativeExecutionLeaseBatch(db: Db, rows: BatchRow[]): Promise
       else outcomes.set(row.state, reacquires(row.binding) ? { alone: true } : { lost: true });
     }
     if (live.length === 0) return;
-    for (const { binding } of live) await notifyLiveRunRecovery(tx, { companyId: binding.companyId, runId: binding.runId });
     const renewed = await tx.execute<{ run_id: string }>(sql`
       with requested(run_id, company_id, issue_id, lease_owner, attempt, boot_id, pid, process_started_at, ttl_ms)
         as (values ${values(live, true)})
