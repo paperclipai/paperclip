@@ -200,7 +200,6 @@ let providerTurnId: string | null = null;
 let providerTurnArmed = false;
 let providerTurnOffer: string | null = null;
 let pendingProviderTurn: { decided: Promise<boolean>; settle(armed: boolean): void } | null = null;
-let promptTurnSettled: Promise<void> = Promise.resolve();
 const PROVIDER_TURN_ARMING_WAIT_MS = 5_000;
 let activeCopilotEvidence: CopilotToolEvidence | undefined;
 let sequence = 0;
@@ -513,7 +512,7 @@ async function dispatch(
       toolUseAdmission?.endTurn(currentTurnId);
       throw error;
     }
-    promptTurnSettled = pumpTurn(currentTurnId, runtimeTurn, activeHost, usageBefore, extensions.drain, activity, toolEvidence, sessionFailure);
+    void pumpTurn(currentTurnId, runtimeTurn, activeHost, usageBefore, extensions.drain, activity, toolEvidence, sessionFailure);
     // Warm sessions may defer initialize until their first prompt. Publish only
     // the capabilities of that live initialized connection, never old disk state.
     const promptStart = timed ? performance.now() : 0;
