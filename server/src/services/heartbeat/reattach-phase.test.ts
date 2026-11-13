@@ -14,6 +14,7 @@ import {
   onReattachPhaseEnd,
   pendingReattachRunIds,
   reattachPhaseRecheckAt,
+  refineReattachClaimable,
   resetReattachPhaseForTests,
   settleReattachRun,
   type ClaimableReattachRun,
@@ -109,6 +110,15 @@ describe("reattach phase signal", () => {
     settleReattachRun("slow", "reached", 200_000);
     expect(ended[0]).toMatchObject({ authenticated: 2, reached: 2, reachedAfterThreshold: 1, maxReachLatencyMs: 200_000 });
     expect(ended[0].runs.map(run => run.authenticatedMs)).toEqual([2_000, 3_000]);
+  });
+
+  it("moves the cap earlier when a claimed run turns out to have been handed over before its claim", () => {
+    enableReattachPhase(1_000, 0);
+    joinReattachPhase([{ runId: "claimed", reason: "owner_gone", claimableAt: 10_000 }], { announce: false }, 10_000);
+    expect(isReattachPhaseActive(10_900)).toBe(true);
+    refineReattachClaimable([handedOver("claimed", 9_200)], 10_100);
+    expect(isReattachPhaseActive(10_150)).toBe(true);
+    expect(isReattachPhaseActive(10_250)).toBe(false);
   });
 
   it("ends at the cap, counted from when the runs became claimable, so one wedged Runner cannot hold run starts", () => {
@@ -466,6 +476,36 @@ describe.skipIf(!support.supported)("reattach phase discovery", () => {
       const phase = ended.find(summary => summary.reason === "all_settled")!;
       expect(phase).toMatchObject({ startReason: "handed_over", liveRuns: 1, reached: 1 });
       expect(phase.maxReachLatencyMs).toBeGreaterThanOrEqual(125);
+    });
+
+    it("retries a failed first listing instead of going quiet, and still finds the previous owner's runs", async () => {
+      await retireEarlierRuns();
+      const { run } = await seed("RPM");
+      const lease = liveLease();
+      const live = await run("running", lease);
+      const select = vi.spyOn(db, "select");
+      select.mockImplementationOnce(() => { throw new Error("transient database error"); });
+      const coordinator = await startReattachPhase(db, { capMs: 60_000, bootId: "incoming-boot", recheckMs: 20 });
+      await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBe(lease.leaseExpiresAt.getTime()), { timeout: 2_000, interval: 10 });
+      await handOver([live]);
+      expect(isReattachPhaseActive()).toBe(true);
+      select.mockRestore();
+      settleReattachRun(live, "reached");
+    });
+
+    it("keeps a hand-over notification whose listing failed until a listing succeeds", async () => {
+      await retireEarlierRuns();
+      const { run } = await seed("RPN");
+      const ended: ReattachPhaseSummary[] = [];
+      await startReattachPhase(db, { capMs: 60_000, bootId: "incoming-boot", recheckMs: 20, onEnd: summary => ended.push(summary) });
+      expect(ended).toEqual([expect.objectContaining({ reason: "nothing_to_reattach" })]);
+      const live = await run("running", liveLease());
+      const select = vi.spyOn(db, "select");
+      select.mockImplementationOnce(() => { throw new Error("transient database error"); });
+      await handOver([live]);
+      expect(isReattachPhaseActive()).toBe(true);
+      select.mockRestore();
+      settleReattachRun(live, "reached");
     });
 
     it("does no database work and keeps no deadline on an instance with nothing to reattach", async () => {

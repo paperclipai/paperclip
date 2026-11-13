@@ -124,8 +124,14 @@ export function refineReattachClaimable(runs: readonly ClaimableReattachRun[], n
     phase.claimable.set(run.runId, { reason: run.reason, at });
     if (at < phase.startedAt) phase.startedAt = at;
   }
-  const earliest = [...phase.claimable.values()].reduce((first, entry) => entry.at < first.at ? entry : first);
+  const entries = [...phase.claimable.values()];
+  const earliest = entries.reduce((first, entry) => entry.at < first.at ? entry : first);
   phase.startReason = earliest.reason;
+  const deadline = Math.max(...entries.map(entry => entry.at)) + phase.capMs;
+  if (deadline < phase.deadline) {
+    phase.deadline = 0;
+    armReattachCap(phase, deadline, now);
+  }
 }
 
 export function announceReattachPhase(runIds: readonly string[], now = Date.now()): void {

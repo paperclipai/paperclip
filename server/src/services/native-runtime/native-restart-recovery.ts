@@ -1411,6 +1411,9 @@ export async function claimNativeRestartRecoveries(input: {
       // has not reached its executor yet holds it, and it lapses on its own.
       // A run this process handed to the next server (graceful drain or hot
       // restart) stays with that server: this process is about to exit.
+      if (input.handedOffForShutdown?.(row.run.id)) {
+        return { kind: "blocked", runId: row.run.id, reason: "handed_off_to_next_controller", transitionUnchanged: true } as const;
+      }
       const ownControllerProcess = !nonExecutionOwner && isCurrentNativeControllerProcess(row.coordinator);
       if (ownControllerProcess && activeNativeExecutionRunIds.has(row.run.id)) {
         return { kind: "awaiting_evidence", runId: row.run.id, reason: "current_controller_preparing" } as const;

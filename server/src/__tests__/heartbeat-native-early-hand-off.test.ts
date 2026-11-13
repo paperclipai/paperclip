@@ -3,7 +3,8 @@ import { heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations } from "@pape
 import { afterEach, expect, it, vi } from "vitest";
 import { heartbeatService } from "../services/heartbeat.js";
 import { currentControllerBootId } from "../services/controller-process-identity.js";
-import { evaluateNativeControllerTakeover } from "../services/native-runtime/native-restart-recovery.js";
+import { claimNativeRestartRecoveries, evaluateNativeControllerTakeover } from "../services/native-runtime/native-restart-recovery.js";
+import { isRunHandedOffForShutdown } from "../services/heartbeat/shutdown-handoff.js";
 import { REMOTE_CONTROLLER_LEASE_MS } from "../services/native-runtime/native-runner-recovery-contract.js";
 import { describeEmbeddedPostgres, nativeRestartFixture } from "./helpers/native-restart.js";
 import { registerReattachPhaseWork, stopReattachWatch } from "../services/heartbeat/reattach-phase.js";
@@ -54,6 +55,25 @@ describeEmbeddedPostgres("an outgoing server hands live remote runs over at shut
     expect(suspensions).toHaveLength(count);
     await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(inArray(heartbeatRuns.id, runIds));
   }, 300_000);
+
+  it("never lets the outgoing server claim back a run it handed off, while the incoming server may take it over", async () => {
+    const { db, runIds } = await seedLiveRemoteRuns("RECLAIM", 1);
+    try {
+      const outgoing = heartbeatService(db);
+      expect(await outgoing.handOffNativeRunsForShutdown("SIGTERM")).toEqual(runIds);
+      const outgoingPass = await claimNativeRestartRecoveries({ db, handedOffForShutdown: isRunHandedOffForShutdown,
+        runIds, restartKind: "graceful" });
+      expect(outgoingPass).toEqual([expect.objectContaining({ kind: "blocked", runId: runIds[0], reason: "handed_off_to_next_controller" })]);
+      const [owner] = await db.select({ leaseOwner: nativeRunFinalizations.leaseOwner }).from(nativeRunFinalizations)
+        .where(eq(nativeRunFinalizations.runId, runIds[0]!));
+      expect(owner?.leaseOwner).toBe("native-execution:outgoing");
+      const incomingPass = await claimNativeRestartRecoveries({ db, controller: fixture.current.successor, runIds, restartKind: "graceful" });
+      expect(incomingPass).toEqual([expect.not.objectContaining({ reason: "handed_off_to_next_controller" })]);
+      expect(await incomingTakeoverReasons(db, runIds)).toEqual(["remote_controller_lease_released_or_expired"]);
+    } finally {
+      await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(inArray(heartbeatRuns.id, runIds));
+    }
+  }, 120_000);
 
   it("leaves a run another server already took over alone", async () => {
     const { db, runIds } = await seedLiveRemoteRuns("TAKEN", 1);

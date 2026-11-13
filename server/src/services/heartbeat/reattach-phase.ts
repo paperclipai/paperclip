@@ -123,16 +123,16 @@ export function nextReattachLeaseDeadline(leases: Iterable<PreviousControllerRun
 async function reconcileReattachWatch(current: ReattachWatch): Promise<void> {
   if (watch !== current) return;
   if (!current.initialized) {
-    current.initialized = true;
     current.notified = false;
     let rows: PreviousControllerRunLease[];
     try {
       rows = await listPreviousControllerRunLeases(current.db, current.bootId);
     } catch (error) {
-      logger.warn({ err: error }, "reattach phase could not list live runs of a previous server; only runs this server claims or is told about are tracked");
-      return;
+      current.notified = true;
+      throw error;
     }
     if (watch !== current) return;
+    current.initialized = true;
     if (rows.length === 0) reportNothingToReattach();
     else {
       observeLeases(current, rows);
@@ -141,7 +141,13 @@ async function reconcileReattachWatch(current: ReattachWatch): Promise<void> {
     }
   } else if (current.watching || current.notified) {
     current.notified = false;
-    const rows = await listPreviousControllerRunLeases(current.db, current.bootId);
+    let rows: PreviousControllerRunLease[];
+    try {
+      rows = await listPreviousControllerRunLeases(current.db, current.bootId);
+    } catch (error) {
+      current.notified = true;
+      throw error;
+    }
     if (watch !== current) return;
     observeLeases(current, rows);
   }
