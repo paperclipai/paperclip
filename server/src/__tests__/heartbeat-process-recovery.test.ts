@@ -15455,10 +15455,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   it("does not queue a continuation from a latest run it read while that run was still finishing", async () => {
-    // The sweep reads the latest run, then checks for a live execution path.
-    // A run that finishes between those reads is neither live nor a failure;
-    // a generic continuation from the stale read wakes a turn that already
-    // answered. The next sweep reads the committed outcome instead.
     const { companyId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress",
       runStatus: "succeeded",

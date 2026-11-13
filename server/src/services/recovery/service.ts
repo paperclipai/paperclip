@@ -996,7 +996,6 @@ export function recoveryService(
     settleLostRunProcess?: (scope: { companyId: string; runId: string; onDeferredDeadline?: (at: number) => void }) => Promise<unknown>;
     beforeOrphanedRunTerminalWrite?: (runId: string) => Promise<void>;
     beforeStaleLockClear?: (issueId: string) => Promise<void>;
-    /** Test seam: runs after the stranded sweep reads an issue's latest run. */
     afterStrandedLatestRunRead?: (input: { issueId: string; runId: string | null }) => Promise<void>;
   },
 ) {
@@ -4984,11 +4983,6 @@ export function recoveryService(
         result.skipped += 1;
         continue;
       }
-      // The latest run was read before the live-path check. A run that was
-      // still active then and finished since is no live path now, but it is
-      // not a failure either: its own completion settles it, and the next
-      // sweep reads its committed outcome. Continuing from the stale read
-      // woke chat turns that had just answered the person.
       if (issue.status !== "in_review" && latestRun && !isTerminalIssueRun(latestRun)) {
         result.skipped += 1;
         continue;
