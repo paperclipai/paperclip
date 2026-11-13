@@ -1,7 +1,7 @@
 import { and, eq, sql } from "drizzle-orm";
 import { heartbeatRuns, type Db } from "@paperclipai/db";
 import { parseIssueAssigneeAdapterOverrides } from "../execution-workspace-policy.js";
-import { resolvePaperclipRunnerProviderProfile } from "./provider-profile.js";
+import { projectPaperclipRunnerTaskConfig, resolvePaperclipRunnerProviderProfile } from "./provider-profile.js";
 
 export const NATIVE_PROVIDER_MODEL_STILL_UNAVAILABLE = "native_provider_model_still_unavailable";
 
@@ -21,11 +21,15 @@ function modelOf(value: unknown): string | null {
   return typeof model === "string" && model.trim() ? model.trim() : null;
 }
 
-function effectiveModel(config: Record<string, unknown>, companyId: string): string | null {
+function effectiveModel(agentConfig: Record<string, unknown>, overrideConfig: Record<string, unknown>, companyId: string): string | null {
+  const merged = { ...agentConfig, ...overrideConfig };
   try {
+    const profile = resolvePaperclipRunnerProviderProfile(merged, { companyId });
+    const config = profile.backend === "codex_app_server" || profile.backend === "opencode_server" || profile.backend === "acpx_runtime" || profile.backend === "cursor_cloud_api"
+      ? projectPaperclipRunnerTaskConfig(profile.backend, agentConfig, overrideConfig) : merged;
     return modelOf({ model: resolvePaperclipRunnerProviderProfile(config, { companyId }).model });
   } catch {
-    return modelOf(config);
+    return modelOf(merged);
   }
 }
 
@@ -45,7 +49,7 @@ export async function rejectedModelRetryRefusal(db: Pick<Db, "select">, input: {
   if (!rejectedModel) return null;
   const overrideConfig = issue?.assigneeAgentId === agent.id ? parseIssueAssigneeAdapterOverrides(issue.assigneeAdapterOverrides)?.adapterConfig ?? null : null;
   const override = modelOf(overrideConfig);
-  const configured = effectiveModel({ ...record(agent.adapterConfig), ...record(overrideConfig) }, agent.companyId);
+  const configured = effectiveModel(record(agent.adapterConfig), record(overrideConfig), agent.companyId);
   if (configured !== rejectedModel) return null;
   const setting: RejectedModelSetting = override ? "task_model_override" : "agent_model";
   const change = setting === "task_model_override"
