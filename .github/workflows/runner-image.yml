@@ -282,6 +282,29 @@ jobs:
         if: github.event_name != 'push'
         run: cp "$RUNNER_TEMP/runner-image-lockfile/pnpm-lock.yaml" pnpm-lock.yaml
 
+      - name: Set up Docker Buildx
+        if: steps.published.outputs.exists != 'true'
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+        with:
+          buildkitd-config-inline: |
+            [registry."docker.io"]
+              mirrors = ["mirror.gcr.io"]
+
+      - name: Pull the smoke matrix's base images in the background
+        if: steps.published.outputs.exists != 'true'
+        timeout-minutes: 5
+        run: |
+          (
+            timeout --kill-after=30 600 docker buildx build \
+              --file docker/runner-image/Dockerfile.smoke \
+              --target smoke-bases \
+              --platform "$PLATFORM" \
+              --output type=cacheonly \
+              docker/runner-image \
+              || echo "::warning title=Smoke base images::The background pull ended with status $?. The smoke step pulls what is missing."
+          ) > "$RUNNER_TEMP/smoke-bases.log" 2>&1 < /dev/null &
+          echo "$!" > "$RUNNER_TEMP/smoke-bases.pid"
+
       - name: Free runner disk
         if: steps.published.outputs.exists != 'true'
         run: |
@@ -291,14 +314,6 @@ jobs:
             /usr/local/share/powershell /opt/ghc /opt/hostedtoolcache/CodeQL /opt/hostedtoolcache/PyPy /opt/hostedtoolcache/Ruby || true
           docker system prune -af || true
           df -h
-
-      - name: Set up Docker Buildx
-        if: steps.published.outputs.exists != 'true'
-        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
-        with:
-          buildkitd-config-inline: |
-            [registry."docker.io"]
-              mirrors = ["mirror.gcr.io"]
 
       # The build itself runs the frozen install, the Runner's own build, the
       # provider pack integrity check and the layout check.
@@ -395,6 +410,10 @@ jobs:
         if: steps.published.outputs.exists != 'true'
         timeout-minutes: 20
         run: |
+          while kill -0 "$(cat "$RUNNER_TEMP/smoke-bases.pid")" 2>/dev/null; do sleep 1; done
+          echo "::group::Background pull of the base images"
+          cat "$RUNNER_TEMP/smoke-bases.log" || true
+          echo "::endgroup::"
           docker buildx build \
             --file docker/runner-image/Dockerfile.smoke \
             --platform "$PLATFORM" \

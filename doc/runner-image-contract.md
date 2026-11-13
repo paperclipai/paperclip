@@ -127,7 +127,25 @@ checks "Layers" on the two archives, and that no file is in two layers.
 
 The build also runs `paperclip-runnerd --build-metadata` on every base image
 in `docker/runner-image/Dockerfile.smoke`. Add a base there before a consumer
-uses it.
+uses it: a `base-<name>` stage that pins the image, a `smoke-<name>` stage
+that runs the daemon on it, and a line in each of the `smoke-bases` and
+`smoke` stages.
+
+Most of the time of that check is the download of the base images, and one of
+them is several gigabytes. So each build leg builds the `smoke-bases` target
+in the background. It starts that build as soon as the builder exists, before
+the step that frees disk space and before the image build. That target reads
+no Runner image. It copies `/bin/sh` out of every base, so the builder
+downloads and unpacks each base while those steps run. The smoke step waits
+for the background command to end, prints its log, and then runs the whole
+matrix itself.
+
+- **Not a check.** The background command decides nothing. When it fails, or
+  reaches its time limit of ten minutes, its log holds a warning and the
+  smoke step downloads what is missing. Only the smoke step passes or fails
+  the matrix, and the leg writes its record after that step.
+- **No write.** The background command has no credential and exports nothing
+  (`--output type=cacheonly`). It writes only to the builder of its own job.
 
 ## Consuming the image
 

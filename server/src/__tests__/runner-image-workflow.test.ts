@@ -238,19 +238,32 @@ describe("Runner image workflow", () => {
 });
 
 describe("Runner image smoke matrix", () => {
+  const bases = [...smoke.matchAll(/^FROM (\S+) AS base-(\S+)$/gm)].map((match) => ({ image: match[1], name: match[2] }));
+  const stage = (name: string) => new RegExp(`^FROM \\S+ AS ${name.replace(/\./g, "\\.")}\\n(?:(?!FROM ).*\\n?)*`, "m").exec(smoke)![0].replace(/^#.*\n/gm, "");
+
   it("runs the daemon on every consumer base, each pinned by digest", () => {
-    const bases = [...smoke.matchAll(/^FROM (\S+) AS (\S+)$/gm)].map((match) => match[1]).filter((base) => base !== "scratch");
-    expect(bases.map((base) => base.slice(0, base.indexOf("@")))).toEqual([
+    expect(bases.map((base) => base.image.slice(0, base.image.indexOf("@")))).toEqual([
       "debian:bookworm-slim",
       "debian:trixie-slim",
       "node:24-trixie-slim",
       "python:3.13-slim-trixie",
       "daytonaio/sandbox:0.8.0",
     ]);
-    for (const base of bases) expect(base).toMatch(/@sha256:[0-9a-f]{64}$/);
-    expect(smoke.match(/^RUN paperclip-runnerd --build-metadata /gm)).toHaveLength(bases.length);
-    // The final stage reads a result from every base, so none can be skipped.
-    expect(smoke.slice(smoke.indexOf("FROM scratch AS smoke")).match(/^COPY --from=smoke-/gm)).toHaveLength(bases.length);
+    for (const base of bases) {
+      expect(base.image).toMatch(/@sha256:[0-9a-f]{64}$/);
+      expect(stage(`smoke-${base.name}`)).toMatch(new RegExp(`^FROM base-${base.name.replace(/\./g, "\\.")} AS \\S+\\nCOPY --from=runner-artifacts .+\\nRUN paperclip-runnerd --build-metadata `));
+    }
+    expect([...smoke.matchAll(/^FROM (\S+) /gm)].map((match) => match[1]).filter((source) => source !== "scratch" && !source.startsWith("base-")))
+      .toEqual(bases.map((base) => base.image));
+    const stages = [...smoke.matchAll(/^FROM \S+ AS (\S+)$/gm)].map((match) => match[1]);
+    expect(stages).toEqual([...bases.flatMap((base) => [`base-${base.name}`, `smoke-${base.name}`]), "smoke-bases", "smoke"]);
+    expect(stage("smoke")).toMatch(/^FROM scratch AS smoke\n/);
+    expect([...stage("smoke").matchAll(/^COPY --from=(\S+) /gm)].map((match) => match[1])).toEqual(bases.map((base) => `smoke-${base.name}`));
+  });
+
+  it("pulls every base, and nothing of the Runner image, in the target the background pull builds", () => {
+    const pulling = stage("smoke-bases");
+    expect(pulling.trimEnd().split("\n")).toEqual(["FROM scratch AS smoke-bases", ...bases.map((base) => `COPY --from=base-${base.name} /bin/sh /${base.name}`)]);
   });
 
   it("reads the Runner image only the way a consumer may", () => {
