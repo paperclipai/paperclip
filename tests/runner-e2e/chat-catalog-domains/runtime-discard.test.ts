@@ -12,7 +12,10 @@ function valid() {
     queryLinkedTask: true, targetPendingAfterReply: true, consumedLabelSaved: true,
     consumedBeforeCancellation: true, consumedStillReadable: true, lateDiscardStatus: 409, latePhaseAttributed: true,
     lateReply: "The later request was already consumed. I sent new direction to remove that section; its original history remains intact.",
-    cancelDirectionRunBound: true, finalQueueEmpty: true, finalPlanWithoutContact: true, initialRevisionRetained: true } };
+    cancelDirectionRunBound: true, finalQueueEmpty: true, finalPlanWithoutContact: true, initialRevisionRetained: true,
+    workerRunId: "initial", secondContactId: "second-contact", consumerRunId: "contact", firstDeliveryRunCount: 3, continuationConsumerCount: 1, continuationInputBound: true,
+    queuedFollowUps: [{ id: "font", updatedAt: "2026-11-13T04:01:28.647Z" }, { id: "second-contact", updatedAt: "2026-11-13T04:03:45.909Z" }],
+    workerCommentReceipts: { reads: {} as Record<string, string>, cited: [] as string[] } } };
 }
 it("accepts genuine pending discard and distinct consumed-input cancellation as new direction", () => expect(gradeDiscard(valid()).passed).toBe(true));
 it("accepts natural human-control and subsequent consumed-input guidance", () => { const o = valid(); o.state.queryReply = "That waiting message is yours. Open its queue menu and remove it with Discard."; o.state.lateReply = "Morgan processed the second request before you cancelled it. A follow-up now asks for the contact section to be removed; the delivered input stays in history."; expect(gradeDiscard(o).passed).toBe(true); });
@@ -94,3 +97,29 @@ it("fails when no labelled section was ever saved, so removal cannot be shown", 
   const unlabelled = consumedPlan.replace(`## Contact section (label: ${label})`, "## Contact section");
   expect(documentContactRemoved([...revs(initialPlan)].map(row => row.id === "r2" ? { ...row, body: unlabelled } : row), "final", "consumer", label)).toBe(false);
 });
+
+function citedInTurn() {
+  const o = valid(); o.runs = o.runs.filter(row => row.id !== "contact");
+  Object.assign(o.state, { consumerRunId: "initial", firstDeliveryRunCount: 2, continuationConsumerCount: 0, continuationInputBound: false, consumedBeforeCancellation: false });
+  o.state.workerCommentReceipts = { reads: { "second-contact": "2026-11-13T04:03:45.909Z", font: "2026-11-13T04:01:28.647Z" }, cited: ["font", "second-contact"] };
+  return o;
+}
+it("accepts the retained cohort-10 shape: the running turn read and cited both follow-ups, saved the contact label, and no continuation ran", () => expect(gradeDiscard(citedInTurn()).passed).toBe(true));
+it("accepts the later request handled in turn while the uncited font note reaches one continuation", () => {
+  const o = citedInTurn(); o.state.workerCommentReceipts.cited = ["second-contact"]; Object.assign(o.state, { firstDeliveryRunCount: 3, continuationConsumerCount: 1, continuationInputBound: true });
+  o.runs.splice(2, 0, { id: "font-consumer", status: "succeeded" }); expect(gradeDiscard(o).passed).toBe(true);
+});
+it.each([
+  ["reads the later request without citing it and starts no continuation", (o: ReturnType<typeof citedInTurn>) => { o.state.workerCommentReceipts.cited = ["font"]; }],
+  ["cites a request it never read", (o: ReturnType<typeof citedInTurn>) => { delete o.state.workerCommentReceipts.reads["second-contact"]; }],
+  ["cites the request but never saves the labelled contact section", (o: ReturnType<typeof citedInTurn>) => { o.state.consumedLabelSaved = false; }],
+  ["cites the request and still replays it in a continuation", (o: ReturnType<typeof citedInTurn>) => { Object.assign(o.state, { firstDeliveryRunCount: 3, continuationConsumerCount: 1 }); o.runs.splice(2, 0, { id: "replay", status: "succeeded" }); }],
+  ["handles both in turn and admits an extra later run", (o: ReturnType<typeof citedInTurn>) => { o.runs.push({ id: "extra", status: "succeeded" }); }],
+  ["cites the discarded request as handled", (o: ReturnType<typeof citedInTurn>) => { o.state.workerCommentReceipts.cited.push("pending-contact"); }],
+  ["credits the later request to a run other than the one that handled it", (o: ReturnType<typeof citedInTurn>) => { o.state.consumerRunId = "new-direction"; }],
+])("rejects a running turn that %s", (_label, mutate) => { const o = citedInTurn(); mutate(o); expect(gradeDiscard(o).passed).toBe(false); });
+it.each([
+  ["no continuation consumes the owed follow-ups", (o: ReturnType<typeof valid>) => { o.state.continuationConsumerCount = 0; }],
+  ["the continuation input lacks an owed follow-up", (o: ReturnType<typeof valid>) => { o.state.continuationInputBound = false; }],
+  ["the continuation never received the later request", (o: ReturnType<typeof valid>) => { o.state.consumedBeforeCancellation = false; }],
+])("rejects the continuation path when %s", (_label, mutate) => { const o = valid(); mutate(o); expect(gradeDiscard(o).passed).toBe(false); });
