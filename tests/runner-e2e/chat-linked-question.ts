@@ -78,7 +78,22 @@ export function readLinkedQuestionDom(input: NonNullable<ReturnType<typeof linke
   return { ...input, links: [...new Set(qualified.map(link => link.href))], text: prompts[0]!.textContent ?? "" };
 }
 export type LinkedQuestionEvidence = NonNullable<ReturnType<typeof readLinkedQuestionDom>>;
-export type ClarificationObservation = InternalObservation & { linkedQuestionEvidence?: LinkedQuestionEvidence };
+export type ClarificationObservation = InternalObservation & { linkedQuestionEvidence?: LinkedQuestionEvidence; questionCards?: AskUserQuestionsInteraction[] };
+/**
+ * Whether the run's saved question card offers each candidate task as its own choice. Option text is plain
+ * text inside a choice button, so it cannot carry links; a candidate counts when one option names its identifier
+ * (the setup literal) and no other candidate's. The option wording is left to human review.
+ */
+export function questionCardNamesCandidates(cards: readonly AskUserQuestionsInteraction[], tasks: ReadonlyArray<{ id: string; identifier?: string | null }>, runId: string | undefined, leadId: string) {
+  const names = (text: string, task: { identifier?: string | null }) => !!task.identifier
+    && new RegExp(`(?<![A-Za-z0-9-])${task.identifier.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![A-Za-z0-9])`, "i").test(text);
+  return !!runId && tasks.length > 1 && new Set(tasks.map(task => task.identifier)).size === tasks.length && cards.some(card => card.kind === "ask_user_questions"
+    && card.status === "pending" && !card.dismissedAt && !card.resolvedAt && card.createdByAgentId === leadId && card.sourceRunId === runId
+    && (card.payload.questionSet?.questions ?? card.payload.questions ?? []).some(question => tasks.every(task => (question.options ?? []).some(option => {
+      const text = `${option.label ?? ""}\n${option.description ?? ""}`;
+      return names(text, task) && tasks.every(other => other.id === task.id || !names(text, other));
+    }))));
+}
 export async function observeLinkedTaskQuestion(ctx: ChatCatalogContext, state: Record<string, unknown>, observation: InternalObservation): Promise<ClarificationObservation> {
   const source = ctx.issue(), prefix = ctx.input.fixtures.company.issuePrefix;
   if (!source || !prefix || ctx.scenario.id !== "tasks.ambiguous-task") return observation;
@@ -88,9 +103,10 @@ export async function observeLinkedTaskQuestion(ctx: ChatCatalogContext, state: 
   ]);
   const binding = linkedQuestionBinding({ origin: observation.origin, pageUrl: ctx.input.page.url(), companyPrefix: prefix, sourceId: source.id, leadId: observation.leadId,
     query: ctx.scenario.query, observation, comments, interactions, tasks: [state.task as Entity, state.otherTask as Entity] });
-  if (!binding) return observation;
+  const questionCards = interactions.filter(card => card.kind === "ask_user_questions" && card.issueId === source.id);
+  if (!binding) return { ...observation, questionCards };
   const evidence = await ctx.input.page.evaluate(readLinkedQuestionDom, binding);
-  return evidence ? { ...observation, reply: [observation.reply, evidence.text].filter(Boolean).join("\n"), links: [...new Set([...observation.links, ...evidence.links])], linkedQuestionEvidence: evidence } : observation;
+  return evidence ? { ...observation, reply: [observation.reply, evidence.text].filter(Boolean).join("\n"), links: [...new Set([...observation.links, ...evidence.links])], linkedQuestionEvidence: evidence, questionCards } : { ...observation, questionCards };
 }
 export function linkedQuestionTakeover(page: Page, evidence: LinkedQuestionEvidence): Locator {
   return page.getByTestId("task-chat-thread").filter({ has: page.locator(`[id=${JSON.stringify(`comment-${evidence.anchorCommentId}`)}]`) })

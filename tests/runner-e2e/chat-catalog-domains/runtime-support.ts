@@ -82,7 +82,7 @@ export async function verifyRuntimeResult(ctx: ChatCatalogContext, state: Record
 }
 /**
  * A pending interaction renders inline in the thread as `#interaction-<id>`,
- * or docked in the composer takeover, which carries its title but no id.
+ * or docked in the composer takeover, which carries its title and data-interaction-id but not the page anchor id.
  */
 export function interactionSurface(page: Page, interaction: { id: string; title?: string | null }) {
   const inline = page.locator(`[id=${JSON.stringify(`interaction-${interaction.id}`)}]`);
