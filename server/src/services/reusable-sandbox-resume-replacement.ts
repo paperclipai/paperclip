@@ -7,7 +7,7 @@ import type { EnvironmentLease } from "@paperclipai/shared";
 import { writeEnvironmentCleanup } from "./environment-cleanup-notifications.js";
 import { verifyRecoverableNativeHarnessBackup } from "./native-runtime/native-harness-backup-storage.js";
 import { findPluginWorkerUnavailableError } from "./plugin-worker-unavailable-error.js";
-import { abandonedWorkspaceFilesHeldOnLease, abandonedWorkspaceFilesHeldOnLeaseRowSql } from "./remote-workspace-abandoned-files-hold.js";
+import { abandonedWorkspaceFilesHeldOnLeaseRowSql, ABANDONED_WORKSPACE_FILES_PARKED_KEY, ABANDONED_WORKSPACE_FILES_PARKED_REASON } from "./remote-workspace-abandoned-files-hold.js";
 import { sandboxProviderFailureLabel } from "./remote-workspace-transport.js";
 
 /**
@@ -107,7 +107,6 @@ export async function reusableSandboxReplacementIsSafe(input: {
     eq(executionWorkspaceSnapshots.status, "committed"),
   ));
   if (!snapshot) return false;
-  if (await abandonedWorkspaceFilesHeldOnLease(db, lease)) return false;
 
   const scope = lease.metadata?.reusableSandboxLease as { adapterType?: unknown } | undefined;
   if ((input.adapterType === "paperclip_runner" || scope?.adapterType === "paperclip_runner")
@@ -137,10 +136,13 @@ export async function retireReplacedReusableSandboxLease(input: {
   const [claimed] = await writeEnvironmentCleanup(db, tx => tx.update(environmentLeases).set({
     status: sql`case when ${held} then 'retained' else 'pending_cleanup' end`,
     cleanupStatus: "failed",
-    failureReason: REUSABLE_SANDBOX_RESUME_REPLACED_REASON,
+    failureReason: sql`case when ${held} then ${ABANDONED_WORKSPACE_FILES_PARKED_REASON} else ${REUSABLE_SANDBOX_RESUME_REPLACED_REASON} end`,
     releasedAt: now,
     lastUsedAt: now,
     updatedAt: now,
+    metadata: sql`case when ${held} then coalesce(${environmentLeases.metadata}, '{}'::jsonb)
+      || ${JSON.stringify({ [ABANDONED_WORKSPACE_FILES_PARKED_KEY]: { parkedAt: now.toISOString() } })}::jsonb
+      else ${environmentLeases.metadata} end`,
   }).where(and(
     eq(environmentLeases.id, lease.id),
     eq(environmentLeases.companyId, input.companyId),

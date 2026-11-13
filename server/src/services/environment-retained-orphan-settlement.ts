@@ -2,6 +2,7 @@ import { and, eq, inArray, ne, notInArray, or, sql } from "drizzle-orm";
 import { environmentLeases, heartbeatRuns, issueRecoveryActions, type Db } from "@paperclipai/db";
 import { writeEnvironmentCleanup } from "./environment-cleanup-notifications.js";
 import { nativeWorkspaceExportPendingForLease } from "./native-runtime/native-workspace-finalization-state.js";
+import { abandonedWorkspaceFilesHeldOnLeaseRowSql } from "./remote-workspace-abandoned-files-hold.js";
 import type { OwnerProof } from "./owner-proof.js";
 import type { InProgressRecord, SettleOutcome } from "./recovery/ownership-registry.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
@@ -111,6 +112,7 @@ function softlyHeldSql(now?: Date) {
 function alwaysHeldSql() {
   return sql`(${environmentLeases.metadata} ?| array['nativeWorkspaceExportResume', 'sandboxStopAndRetain',
       'workspaceRestoreRecovery', 'workspaceRecoveryCleanup', 'runnerTaskSourceConsumer']
+    or ${abandonedWorkspaceFilesHeldOnLeaseRowSql()}
     or coalesce(${environmentLeases.metadata}->>'pendingCleanupInFlight', 'false') = 'true'
     or coalesce(${environmentLeases.metadata}#>>'{legacyShutdownWorkspaceSettlement,state}' = 'pending', false)
     or exists (select 1 from heartbeat_runs run where run.id = ${environmentLeases.heartbeatRunId}
