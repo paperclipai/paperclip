@@ -142,6 +142,23 @@ describe("tool row progress states", () => {
     expect(savedProgress.list).toHaveBeenCalledWith("issue-1");
   });
 
+  it("reads fresh saved progress when someone leaves the task and comes back mid-call", async () => {
+    savedProgress.list.mockResolvedValue([snapshot({ progress: 1, message: "Step 1" })]);
+    render(<TaskChatToolCard item={tool()} />);
+    await vi.waitFor(async () => {
+      await settle();
+      expect(container.querySelector('[data-testid="task-chat-tool-progress-message"]')?.textContent).toBe("Step 1");
+    });
+    act(() => root.render(<QueryClientProvider client={queryClient}><div /></QueryClientProvider>));
+    savedProgress.list.mockResolvedValue([snapshot({ progress: 4, message: "Step 4", updatedAt: "2026-11-13T10:00:09.000Z" })]);
+    render(<TaskChatToolCard item={tool()} />);
+    await vi.waitFor(async () => {
+      await settle();
+      expect(container.querySelector('[data-testid="task-chat-tool-progress-message"]')?.textContent).toBe("Step 4");
+    });
+    expect(savedProgress.list).toHaveBeenCalledTimes(2);
+  });
+
   it("never asks for progress for a finished row", async () => {
     render(<TaskChatToolCard item={tool({ status: "completed" })} />);
     await settle();

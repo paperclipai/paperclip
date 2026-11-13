@@ -97,9 +97,23 @@ export function createToolCallProgressReporter(input: {
     }
   };
   const live = latestThrottle<ToolCallProgress>(TOOL_CALL_PROGRESS_PUBLISH_INTERVAL_MS, (progress) => send(snapshot(progress, false)));
-  const saved = latestThrottle<ToolCallProgress>(TOOL_CALL_PROGRESS_SAVE_INTERVAL_MS, (progress) => {
-    input.save?.(progress).catch((err) => logger.debug({ err, invocationId: input.invocationId }, "tool call progress save failed"));
-  });
+  // At most one save in flight; while it runs only the newest update waits.
+  let saving = false;
+  let queuedSave: ToolCallProgress | null = null;
+  const save = (progress: ToolCallProgress) => {
+    if (!input.save || finished) return;
+    if (saving) { queuedSave = progress; return; }
+    saving = true;
+    input.save(progress)
+      .catch((err) => logger.debug({ err, invocationId: input.invocationId }, "tool call progress save failed"))
+      .finally(() => {
+        saving = false;
+        const next = queuedSave;
+        queuedSave = null;
+        if (next) save(next);
+      });
+  };
+  const saved = latestThrottle<ToolCallProgress>(TOOL_CALL_PROGRESS_SAVE_INTERVAL_MS, save);
   return {
     token,
     report(update) {
@@ -116,6 +130,7 @@ export function createToolCallProgressReporter(input: {
       finished = true;
       live.cancel();
       saved.cancel();
+      queuedSave = null;
       if (last) send(snapshot(last, true));
     },
   };

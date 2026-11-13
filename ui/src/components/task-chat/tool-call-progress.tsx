@@ -108,15 +108,18 @@ const ToolCallProgressStoreContext = createContext<ToolCallProgressStore | null>
  * live socket, and reads the saved progress once, only when a call is running.
  */
 export function ToolCallProgressProvider({ issueId, children }: { issueId: string | null | undefined; children: ReactNode }) {
-  const [wanted, setWanted] = useState(false);
-  const store = useMemo(() => new ToolCallProgressStore(() => setWanted(true)), [issueId]);
+  const [wantedFor, setWantedFor] = useState<string | null>(null);
+  // A new store (and a fresh read) per task and per mount: updates sent while the
+  // chat was closed are only in the saved snapshot.
+  const store = useMemo(() => new ToolCallProgressStore(() => setWantedFor(issueId ?? null)), [issueId]);
   const saved = useQuery({
     queryKey: queryKeys.toolCallProgress(issueId ?? ""),
     queryFn: () => mcpAppsApi.toolCallProgress(issueId!),
-    enabled: wanted && Boolean(issueId),
-    staleTime: Number.POSITIVE_INFINITY,
+    enabled: Boolean(issueId) && wantedFor === issueId,
+    // Read again whenever a chat with a running call mounts; live events cover the rest.
+    staleTime: 0,
+    refetchOnMount: "always",
     refetchOnWindowFocus: false,
-    retry: false,
   });
   useEffect(() => {
     for (const entry of saved.data ?? []) store.put(entry);

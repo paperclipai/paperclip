@@ -48,7 +48,7 @@ describe("tool call progress reporter", () => {
     const { instance, saved } = reporter();
     for (let tick = 0; tick < 200; tick++) {
       instance.report({ progress: tick, total: 200 });
-      vi.advanceTimersByTime(10);
+      await vi.advanceTimersByTimeAsync(10);
     }
     expect(saved.length).toBeLessThanOrEqual(2_000 / TOOL_CALL_PROGRESS_SAVE_INTERVAL_MS + 1);
     expect(saved.length).toBeGreaterThanOrEqual(2);
@@ -126,6 +126,33 @@ describe("tool call progress reporter", () => {
     expect(() => instance.report({ progress: 1 })).not.toThrow();
     expect(() => instance.finish()).not.toThrow();
     await vi.runAllTimersAsync();
+  });
+
+  it("keeps one save in flight, only the newest update waits, and finish drops it", async () => {
+    let release!: () => void;
+    const saves: number[] = [];
+    const instance = createToolCallProgressReporter({
+      companyId: "c", runId: "r", issueId: null, agentId: null, invocationId: "i", toolName: "t",
+      publish: () => undefined,
+      save: (progress) => { saves.push(progress.progress); return new Promise<void>((resolve) => { release = resolve; }); },
+    });
+    instance.report({ progress: 1 });
+    // The database is slow: three more save intervals pass while the first write runs.
+    for (let step = 2; step <= 4; step++) {
+      vi.advanceTimersByTime(TOOL_CALL_PROGRESS_SAVE_INTERVAL_MS);
+      instance.report({ progress: step });
+    }
+    vi.advanceTimersByTime(TOOL_CALL_PROGRESS_SAVE_INTERVAL_MS);
+    expect(saves).toEqual([1]);
+    release();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(saves).toEqual([1, 4]);
+    instance.report({ progress: 5 });
+    vi.advanceTimersByTime(TOOL_CALL_PROGRESS_SAVE_INTERVAL_MS);
+    instance.finish();
+    release();
+    await vi.advanceTimersByTimeAsync(TOOL_CALL_PROGRESS_SAVE_INTERVAL_MS * 3);
+    expect(saves).toEqual([1, 4]);
   });
 
   it("gives each call its own progress token", () => {

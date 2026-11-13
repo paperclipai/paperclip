@@ -731,17 +731,21 @@ export async function readMcpHttpResponse(
       progress.bytesReceived = bytes;
       if (value) progress.chunksReceived += 1;
       progress.ended = done;
-      if (bytes > maxBytes) throw new McpHttpResponseError("too_large", "MCP response exceeded the size limit");
+      // A JSON body is one message. An SSE stream is bounded per message: events
+      // already handled (such as progress) do not count against the result.
+      if (!isStream && bytes > maxBytes) throw new McpHttpResponseError("too_large", "MCP response exceeded the size limit");
       buffer += decoder.decode(value, { stream: !done });
       if (isStream) {
         // Normalize CRLF after concatenating chunks, including split CR/LF pairs.
         buffer = buffer.replace(/\r\n/g, "\n");
         let boundary: number;
         while ((boundary = buffer.indexOf("\n\n")) >= 0) {
+          if (Buffer.byteLength(buffer.slice(0, boundary), "utf8") > maxBytes) throw new McpHttpResponseError("too_large", "MCP response exceeded the size limit");
           const result = await event(buffer.slice(0, boundary));
           buffer = buffer.slice(boundary + 2);
           if (result !== undefined) return result;
         }
+        if (Buffer.byteLength(buffer, "utf8") > maxBytes) throw new McpHttpResponseError("too_large", "MCP response exceeded the size limit");
       }
       if (done) break;
     }
