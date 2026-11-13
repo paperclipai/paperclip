@@ -373,7 +373,7 @@ async function handleRequest(
     writeToolError(
       response,
       id,
-      toolInputError(validator),
+      toolInputError(validator, args),
     );
     return;
   }
