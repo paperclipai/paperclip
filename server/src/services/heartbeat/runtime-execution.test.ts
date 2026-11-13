@@ -766,6 +766,7 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     const servers = adapter.execute.mock.calls[0]![0].runtimeMcp!.getServers();
     expect(servers.map(server => server.connectionId)).toEqual(["paperclip-project-tools", "paperclip-runtime-tools"]);
     for (const server of servers) expect(server.name).toMatch(/^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$/);
+    for (const server of servers) expect(`mcp_${server.name}_list_tools`).toMatch(/^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$/);
   });
 
   it("runs instruction cleanup even when gateway revocation fails", async () => {
