@@ -301,7 +301,7 @@ Agents can talk with each other in a person's chats. Another agent posts with
 the ordinary comment route (`comment_on_task` on native runners) in the person's
 chat with the receiving agent. The comment-write boundary accepts it only from
 the sender's own running, unrevoked run, in the same company, while that run's
-responsible user is the chat's person. The run must be bound to a task, and that
+responsible user and the credential's responsible user are both the chat's person. The run must be bound to a task, and that
 source task must pass the same company-visible privacy check as proactive
 delivery: no private task, private project or private ancestor. Agent comment
 permissions and the per-run cross-task write limit apply. `resume` and `reopen`

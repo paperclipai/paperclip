@@ -1460,6 +1460,10 @@ describe("native conversation finalization", () => {
     await expect(svc.addComment(f.assistantChat.id, message, { agentId: f.chief.id, runId: f.chiefRun.id }, {
       proactiveChatMessage: { sourceTaskId: f.chiefChat.id, userId: f.person },
     })).rejects.toMatchObject({ status: 403 });
+    for (const onBehalfOfUserId of [f.otherPerson, null]) {
+      await expect(svc.addComment(f.assistantChat.id, message, { agentId: f.chief.id, runId: f.chiefRun.id, onBehalfOfUserId }))
+        .rejects.toThrow(/person who owns that chat/);
+    }
     expect(await db.select().from(issueComments).where(eq(issueComments.issueId, f.assistantChat.id))).toEqual([]);
 
     const saved = await post({ agentId: f.chief.id, runId: f.chiefRun.id });

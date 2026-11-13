@@ -53,7 +53,7 @@ is that person. Task lists without a search query leave chats out, and so does
 the native `search_tasks` tool.
 
 The server accepts the message only from your own running run, and only while
-that run acts for the person who owns the chat. The run must belong to a task
+that run and your credential act for the person who owns the chat. The run must belong to a task
 that is not private and is not in a private project or under a private task,
 because chats are visible to the whole company. Both agents' comment permissions
 (`canCommentOnOtherTasks` and `canReceiveCommentsFromAgents`) and the run's

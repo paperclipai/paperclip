@@ -13679,7 +13679,8 @@ export function issueService(db: Db) {
           if (run?.status !== "running" || run.agentId !== actor.agentId || run.companyId !== issue.companyId) {
             throw forbidden("An agent can post in another agent's chat only from its own running run");
           }
-          if (!run.responsibleUserId || run.responsibleUserId !== current.conversationUserId) {
+          if (!run.responsibleUserId || run.responsibleUserId !== current.conversationUserId
+            || (actor.onBehalfOfUserId !== undefined && actor.onBehalfOfUserId !== current.conversationUserId)) {
             throw forbidden("An agent can post in another agent's chat only while it acts for the person who owns that chat");
           }
           const [source] = typeof runTaskId === "string" && isUuidLike(runTaskId)

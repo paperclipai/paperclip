@@ -50,7 +50,7 @@ skill-test runs, Ask/planning/review/watchdog, stale/stopped runs, revoked recip
 restricted source tasks are denied. The shared comment boundary rejects execution-task
 writes by the chat's own agent that bypass this path. Another agent may post in the
 chat through the ordinary comment route only from its own running, task-bound run while
-that run acts for the chat's person and its source task has no private restriction;
+that run and its credential act for the chat's person and its source task has no private restriction;
 agent comment permissions apply and the chat's agent wakes to answer in its chat. Comment/audit persistence
 retains real agent/run attribution and server-owned source provenance.
 Credential scope, responsible human and external authorizer remain part of access
