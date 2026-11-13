@@ -193,7 +193,7 @@ export function exhaustedSystemRecoveryAction(state: SystemRecoveryState, eviden
   if (evidence !== undefined && isExhaustedStopProofWait(state) && !stopProofRearmsSpent(evidence))
     return "Recovery of saved work is waiting to confirm that the previous run stopped. "
       + "Paperclip tries again automatically, and the agent will not repeat its work.";
-  const cause = state.failure?.cause ? `, cause: ${state.failure.cause.label}` : "";
+  // The failure code and cause stay in the hold's evidence (systemRecovery.failure), never in this text.
   if (state.failure?.cause?.label === "sandbox_disk_full")
     return "Saving the agent's files stopped because the sandbox disk is full. Paperclip deletes only inactive tool "
       + "caches it can prove safe, and that did not free enough space. Automatic recovery does not repeat a save that fails the same way. "
@@ -202,14 +202,13 @@ export function exhaustedSystemRecoveryAction(state: SystemRecoveryState, eviden
     const code = state.failure!.code;
     // Never promise a release. A retained-file hold the fallback settles
     // (workspace-recovery-fallback) replaces this text with its own outcome.
-    return `Paperclip refused to recover the saved files: ${recoveryRefusalReasons[code] ?? "a safety check on the saved files did not pass"} `
-      + `(${code}${cause}). Automatic recovery does not repeat this check, because the same saved state gives the same result. `
+    return `Paperclip refused to recover the saved files: ${recoveryRefusalReasons[code] ?? "a safety check on the saved files did not pass"}. `
+      + "Automatic recovery does not repeat this check, because the same saved state gives the same result. "
       + "Retry runs the check again. The agent's result is saved, and the agent will not repeat its work.";
   }
-  const reason = state.failure?.code ? ` (last failure: ${state.failure.code}${cause})` : "";
-  const outcome = state.attempts > 1 ? `stopped after ${state.attempts} attempts` : "failed";
-  return `Automatic recovery of saved work ${outcome}${reason}. `
-    + "Retry to try again; the agent will not repeat its work.";
+  const tries = state.attempts > 1 ? ` after ${state.attempts} tries` : "";
+  return `Paperclip could not recover the agent's saved files${tries}. `
+    + "Press Retry to try again; the agent will not repeat its work.";
 }
 
 export function isDeterministicRecoveryRefusal(state: Pick<SystemRecoveryState, "state" | "failure"> | null | undefined) {
