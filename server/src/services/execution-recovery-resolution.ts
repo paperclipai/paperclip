@@ -508,8 +508,10 @@ export async function deliverReconciledExecutions(
           && !["workspaceRestoreFailure", "workspaceRestoreRecovery", "systemRecovery"].some(key => key in action.evidence) ? await db
             .select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(and(eq(issueRecoveryActions.companyId, action.companyId),
               eq(issueRecoveryActions.sourceIssueId, action.sourceIssueId), eq(issueRecoveryActions.kind, action.kind), eq(issueRecoveryActions.cause, action.cause),
-              eq(issueRecoveryActions.fingerprint, action.fingerprint), eq(issueRecoveryActions.returnOwnerAgentId, action.returnOwnerAgentId),
-              sql`${issueRecoveryActions.evidence}->>'continuationDelivery' = 'delivered' and ${issueRecoveryActions.evidence}#>>'{executionReconciliation,runId}' = ${decision.runId}`,
+              eq(issueRecoveryActions.fingerprint, action.fingerprint), eq(issueRecoveryActions.returnOwnerAgentId, action.returnOwnerAgentId), not(eq(issueRecoveryActions.id, action.id)),
+              sql`${issueRecoveryActions.evidence}#>>'{executionReconciliation,runId}' = ${decision.runId} and (${issueRecoveryActions.evidence}->>'continuationDelivery' = 'delivered' or (
+                ${issueRecoveryActions.evidence}->>'continuationDelivery' = 'pending' and exists (select 1 from ${agentWakeupRequests} where ${agentWakeupRequests.runId} is not null and
+                  ${agentWakeupRequests.companyId} = ${issueRecoveryActions.companyId} and ${agentWakeupRequests.idempotencyKey} = 'execution-reconciliation:' || ${issueRecoveryActions.id}::text)))`,
               sql`not (${issueRecoveryActions.evidence} ?| array['workspaceRestoreFailure', 'workspaceRestoreRecovery', 'systemRecovery'])`)).limit(1) : [];
         if (
           !task ||
