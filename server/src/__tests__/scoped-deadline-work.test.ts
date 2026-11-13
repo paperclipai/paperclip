@@ -664,3 +664,36 @@ it("tests each entry only against the dirty scopes of its own key, and decodes e
   expect(coordinator.nextWakeAt()).toBe(dueAt);
   expect(onError).not.toHaveBeenCalled();
 });
+
+it("drops an entry that vanished from a keyed scope and keeps other companies' saved work", async () => {
+  vi.useFakeTimers();
+  const onError = vi.fn();
+  const owner = installDatabaseWorkSignals({ execute: vi.fn(async () => []), transaction: vi.fn(async () => undefined) });
+  coordinator = createDeliveryWorkCoordinator({ owner, canRun: () => true, onError });
+  type Scope = { companyId: string; runId?: string };
+  type Row = { id: string; companyId: string; dueAt: number };
+  const dueAt = Date.now() + 60_000;
+  let rows: Row[] = ["a", "b"].flatMap(company => [1, 2].map(run => ({ id: `${company}-${run}`, companyId: company, dueAt })));
+  const inScope = (row: Row, scope?: Scope) => !scope
+    || row.companyId === scope.companyId && (!scope.runId || row.id === scope.runId);
+  const check = vi.fn(async (_row: Row) => null);
+  const worker = registerScopedDeadlineWork<Row, Scope>(coordinator, {
+    queue: DELIVERY_QUEUES.activeExecutionRecovery,
+    minimumPassIntervalMs: 0,
+    decodeScope: hint => hint === "*" ? undefined : JSON.parse(hint),
+    matches: inScope,
+    scopeKey: { entry: row => row.companyId, scope: scope => scope.companyId },
+    load: async scope => rows.filter(row => inScope(row, scope)),
+    check,
+  }, () => true);
+  await worker.ready;
+  await vi.advanceTimersByTimeAsync(1);
+  rows = rows.filter(row => row.id !== "a-1");
+  worker.invalidate(JSON.stringify({ companyId: "a" }));
+  await vi.advanceTimersByTimeAsync(1);
+  expect(check).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(check.mock.calls.map(([row]) => row.id).sort()).toEqual(["a-2", "b-1", "b-2"]);
+  expect(coordinator.nextWakeAt()).toBeNull();
+  expect(onError).not.toHaveBeenCalled();
+});
