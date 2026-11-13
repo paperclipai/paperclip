@@ -6016,6 +6016,22 @@ cannot. Process verification and the final state read share one recovery
 deadline. A timeout, command failure, transport failure or invalid saved JSON on
 that final read keeps its closed recovery stage and reason in the diagnostic.
 
+A Runner that no controller reaches before its connection lease expires, or
+before its reconnect grace or deadline ends, stops its provider, saves its state
+with lifecycle `recoverable_failure` and `lease_expired_requires_bootstrap`,
+`transport_reconnect_grace_exceeded` or `transport_reconnect_deadline_exceeded`,
+and exits. Only a new process with a fresh bootstrap ticket can reconnect, and
+that process continues from the same cursor. A reattachment that finds this exit
+re-reads the state after the process is proven gone. When it has the same six
+identity fields, the same lifecycle and code, and no pending terminal delivery
+or warm transition, the reattachment launches a Runner from that state, even
+mid-turn and with events still in the outbox. The new Runner restores the
+conversation: it continues the turn, or reports the lost turn as recoverable
+after it proves that the old provider process ended. This path admits the same
+attempts as a reattachment, including the extra attempt of an unanswered-Runner
+replacement. On staging, a deploy that kept a reattachment from reconnecting for
+more than the lease ended these runs with `runner_remote_process_identity_unavailable`.
+
 Reattachment keeps the complete durable PRP binding, including its turn and item
 attachment IDs. A healthy warm handoff can create new attachment IDs within the
 retained Runner. Replacing that run's controller must preserve those IDs; deriving
