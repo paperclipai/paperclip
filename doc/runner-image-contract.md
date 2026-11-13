@@ -216,6 +216,35 @@ repository and nowhere else. Other runs build and check, and publish nothing.
 - **First publication.** GitHub creates the package private. A maintainer
   must make it public once.
 
+## Reading the transport archives alone
+
+The server needs the transport form of an older pack when a retained session
+names a pack that is not the server's own. A pack with
+`payload.runnerInputsDigest` came out of this image, so the server reads it
+from `inputs-<digest>` (`retained-provider-pack-oci.ts`). It does not count
+layers. It uses the rule of "Layers": the full image is the slim image, then
+layers that hold transport content and nothing else.
+
+- The full index must carry the annotations
+  `io.paperclip.runner.inputs-digest`, equal to the pack's digest of inputs,
+  `org.opencontainers.image.revision`, equal to the pack's
+  `runnerSourceRevision`, and `io.paperclip.runner.slim-digest`.
+- The server reads the slim index by that digest, never by the slim tag, and
+  checks the bytes against the digest.
+- For the pack's platform, the layers of the slim image must be the first
+  layers of the full image, as the same blobs in the same order. The layers
+  after them are the transport layers: at least one and at most eight.
+- The server downloads only those layers. It refuses any entry in them that
+  is not a transport archive or the receipt, and any file that is in two of
+  them.
+- The importer then checks every archive against the pack's manifest, as for
+  any other source.
+
+When the image cannot be read (a tag or the slim index does not exist, or the
+registry refuses a request), the server reads the application image tagged
+`sha-<runnerSourceRevision>`, as it does for a pack without
+`runnerInputsDigest`. An image that can be read and does not match fails.
+
 ## Known limits
 
 - A build without `PAPERCLIP_RUNNER_SOURCE_REVISION` or
