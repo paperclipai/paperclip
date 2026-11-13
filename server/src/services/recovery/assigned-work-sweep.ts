@@ -59,6 +59,10 @@ const OPEN_STATUSES = ["todo", "in_progress", "blocked"] as const;
 const PENDING_WAKE_STATUSES = ["queued", "deferred_issue_execution", "claimed"];
 /** How long a deferred wake (no run holding its task) or a claimed wake with no run counts as pending. */
 const DEFERRED_WAKE_PENDING_BOUND_MS = 5 * 60_000;
+/** How long a held continuation (paced delivery) counts as pending: the pacing's
+ * admission bound (RECOVERY_CONTINUATION_MAX_HOLD_MS, 5 min) plus 2 minutes of
+ * 15-second delivery passes. */
+export const PENDING_CONTINUATION_BOUND_MS = 7 * 60_000;
 const NON_TERMINAL_RUN_STATUSES = ["queued", "running", "scheduled_retry"];
 const NATIVE_PENDING_RECOVERY_STATES = ["awaiting_evidence", "awaiting_runner_reattach", "resuming_session", "bootstrap_incomplete"];
 const PROVIDER_LIMIT_CAUSES = ["provider_quota", "native_provider_usage_limit"];
@@ -293,7 +297,13 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       agentId: issueRecoveryActions.returnOwnerAgentId }).from(issueRecoveryActions).where(and(
       eq(issueRecoveryActions.companyId, companyId), inArray(issueRecoveryActions.sourceIssueId, ids),
       eq(issueRecoveryActions.status, "resolved"),
-      sql`${issueRecoveryActions.evidence}->>'continuationDelivery' = 'pending'`));
+      sql`${issueRecoveryActions.evidence}->>'continuationDelivery' = 'pending'`,
+      // Pacing admits a held continuation within RECOVERY_CONTINUATION_MAX_HOLD_MS
+      // even when the agent's queue is full. One still pending past that, plus a
+      // few delivery passes, is not going to be delivered: it is not a pending path.
+      sql`coalesce(${issueRecoveryActions.evidence}#>>'{freshContinuation,recordedAt}', ${issueRecoveryActions.resolvedAt}::text,
+        ${issueRecoveryActions.updatedAt}::text)::timestamptz
+        > ${at.toISOString()}::timestamptz - ${`${PENDING_CONTINUATION_BOUND_MS} milliseconds`}::interval`));
     const wakeCounts = counts(wakes);
     for (const continuation of pendingContinuations) {
       const issue = issueRows.find(row => row.id === continuation.issueId);

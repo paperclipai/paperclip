@@ -9,7 +9,7 @@ import { heartbeatService } from "../services/heartbeat.js";
 import {
   RECOVERY_CONTINUATIONS_PER_COMPANY_PER_PASS, RECOVERY_CONTINUATION_MAX_HOLD_MS, deliverReconciledExecutions,
 } from "../services/execution-recovery-resolution.js";
-import { assignedWorkSweep } from "../services/recovery/assigned-work-sweep.js";
+import { PENDING_CONTINUATION_BOUND_MS, assignedWorkSweep } from "../services/recovery/assigned-work-sweep.js";
 import { evaluateAssignedWork } from "../services/recovery/assigned-work-invariant.js";
 import { taskInterruptionPresentation } from "../services/task-interruption-presentation.js";
 import { executionControlSchedule } from "../services/execution-control-work.js";
@@ -290,5 +290,13 @@ suite("recovery wake herd", () => {
 
     const presentation = await taskInterruptionPresentation(db, issueRow!);
     expect(presentation).toMatchObject({ canRetry: false, state: "working", responsibility: "system" });
+
+    // Pacing admits a held continuation within its hold bound. One still pending well past
+    // that is not going to be delivered, so it no longer counts as the task's pending path.
+    const recordedAt = new Date(Date.now() - PENDING_CONTINUATION_BOUND_MS - 60_000).toISOString();
+    await db.update(issueRecoveryActions).set({ resolvedAt: new Date(recordedAt), evidence: sql`jsonb_set(${issueRecoveryActions.evidence},
+      '{freshContinuation,recordedAt}', to_jsonb(${recordedAt}::text))` }).where(eq(issueRecoveryActions.id, held.action.id));
+    const stale = (await sweep.loadFacts(companyId, [issueRow!])).get(held.issue.id)!;
+    expect(stale.pendingWakes).toBe(facts.pendingWakes - 1);
   }, 60_000);
 });
