@@ -10,7 +10,8 @@ import { notifyChatRunMilestones } from "../../../services/chat-run-milestone-no
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../../services/delivery-work-notifications.js";
 import { isAcknowledgedNativeReassignmentStop, isAcknowledgedNativeStop } from "../../../services/acknowledged-native-stop.js";
 import { readRunCancellation } from "../../../services/run-cancellation.js";
-import { isCompletedOnboardingHandoffWake } from "../../../services/chat-completion-delivery.js";
+import { CHAT_COMPLETION_WAKE_REASON, isCompletedOnboardingHandoffWake, settleReportedChatCompletions } from "../../../services/chat-completion-delivery.js";
+import { earlierDeclinedOutcomeReply } from "../../../services/chat-interaction-outcome-report.js";
 import { instanceSettingsService } from "../../../services/instance-settings.js";
 import { currentConversationCommentCondition } from "../../../services/agent-conversations.js";
 import { getExecutionBlocker, hasPendingRunCleanup } from "../../../services/execution-blocker.js";
@@ -87,6 +88,8 @@ import type {
 import type { RunSummary } from "../application/types.js";
 
 const DEFERRED_WAKE_STATUS = "deferred_issue_execution";
+/** Wake outcome for a deferred chat wake whose news an earlier reply already gave. */
+export const ALREADY_REPORTED_WAKE_REASON = "Already reported by an earlier reply in this conversation";
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 
@@ -537,6 +540,22 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
         const referencedChildren = children.filter((child) => child.identifier !== null && references.includes(child.identifier));
         return referencedChildren.length === 1 && referencedChildren[0].status === "done";
       });
+    },
+
+    async skipAlreadyReportedChatWake({ companyId, issueId, wake, now }) {
+      if (wake.authorizedFailedChatRetry || wake.queuedCommentIds.length > 0) return false;
+      const reported = (wake.wakeReason ?? wake.reason) === CHAT_COMPLETION_WAKE_REASON
+        ? await settleReportedChatCompletions(tx, { companyId, conversationId: issueId, agentId: wake.agentId })
+        : Boolean(await earlierDeclinedOutcomeReply(tx, { companyId, issueId, agentId: wake.agentId, payload: wake.payload }));
+      if (!reported) return false;
+      await notifyStrandedAgentStatus(tx, { companyId, agentId: wake.agentId });
+      await notifyChatInboundWakeNotices(tx, { companyId });
+      const rows = await tx.update(agentWakeupRequests)
+        .set({ status: "skipped", finishedAt: now, error: ALREADY_REPORTED_WAKE_REASON, updatedAt: now })
+        .where(and(eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.agentId, wake.agentId),
+          eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.status, DEFERRED_WAKE_STATUS)))
+        .returning({ id: agentWakeupRequests.id });
+      return rows.length > 0;
     },
 
     async isCompletedOnboardingHandoffWake(input) {

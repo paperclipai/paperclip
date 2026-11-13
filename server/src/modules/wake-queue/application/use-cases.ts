@@ -177,6 +177,12 @@ async function runReleaseDrain(
       continue;
     }
 
+    // An earlier reply in this conversation already reported this wake's
+    // outcome. Settle it here so a duplicate report never becomes a run.
+    if (await ports.transaction.skipAlreadyReportedChatWake({ companyId: run.companyId, issueId: issue.id, wake: candidate, now: input.now })) {
+      continue;
+    }
+
     // A lead can post its closing comment before committing Done. Check
     // again when the source run releases its queue, using every original
     // comment ID so coalesced human or unrelated input is never hidden.

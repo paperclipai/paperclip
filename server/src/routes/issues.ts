@@ -26,6 +26,7 @@ import { assertHandedOffRunTaskOwnership } from "../run-task-ownership.js";
 import { recordNativeHumanSelfHandoff } from "../services/native-runtime/native-human-self-handoff.js";
 import { recordChildTaskRead } from "../services/native-runtime/native-child-completion-delivery.js";
 import { recordCompletedHandoffRead } from "../services/chat-completion-delivery.js";
+import { recordDeclinedInteractionRead } from "../services/chat-interaction-outcome-report.js";
 import { runRetainsIssueIdentity } from "../services/task-repository-acquisition.js";
 import { withConversationReadState } from "../services/agent-chat-read-state.js";
 import { markIssueReadSchema } from "@paperclipai/shared";
@@ -18367,6 +18368,11 @@ export function issueRoutes(
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const interactions =
       await issueThreadInteractionService(db).listForIssue(id);
+    if (req.actor.type === "agent" && req.actor.agentId && req.actor.runId) {
+      await recordDeclinedInteractionRead(db, { companyId: issue.companyId, agentId: req.actor.agentId, runId: req.actor.runId,
+        issue, interactions: interactions as Parameters<typeof recordDeclinedInteractionRead>[1]["interactions"] })
+        .catch(error => logger.warn({ err: error, runId: req.actor.runId }, "could not record the declined actions a run read"));
+    }
     res.json(interactions);
   });
 

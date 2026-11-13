@@ -199,6 +199,13 @@ export interface WakeQueueTransaction {
   }): Promise<boolean>;
   /** Reopens to todo, or straight to in_progress for an owed answer, which continues the assignee's own execution. */
   reopenIssue(input: { companyId: string; issueId: string; runId: string; status?: "todo" | "in_progress" }): Promise<IssueSnapshot | null>;
+  /**
+   * Settles a deferred chat wake whose only news an earlier reply in the same conversation
+   * already reported (a delegated task's completion, or a declined tool action), so it ends
+   * with no run. Marks reported completions delivered by that reply and the wake `skipped`.
+   * Returns `false`, with no write to the wake, when anything is still owed to the person.
+   */
+  skipAlreadyReportedChatWake(input: { companyId: string; issueId: string; wake: DeferredWakeCandidate; now: Date }): Promise<boolean>;
   /** Verifies a Done onboarding parent's completion wake against its own completed children. */
   isCompletedOnboardingHandoffWake(input: { companyId: string; issueId: string; agentId: string;
     reason: string | null; contextSnapshot: Record<string, unknown> }): Promise<boolean>;
