@@ -45,6 +45,7 @@ describe("Machine sign-in setup", () => {
     const client: MachineSignInClient = {
       create: vi.fn(async () => draft),
       test: vi.fn(async () => ({ connectionId: "connection-1" }) as ConnectToolAppResult),
+      status: vi.fn(),
     };
     const onConnected = vi.fn();
     await act(async () => {
@@ -58,7 +59,7 @@ describe("Machine sign-in setup", () => {
     expect(button("Test connection")?.disabled).toBe(true);
     await type("machine-sign-in-client-id-confirm", "paperclip-automation");
     await click("Test connection");
-    expect(client.test).toHaveBeenCalledWith("connection-1", { clientId: "paperclip-automation" });
+    expect(client.test).toHaveBeenCalledWith("connection-1", { clientId: "paperclip-automation", scopes: "" });
     expect(onConnected).toHaveBeenCalled();
   });
 
@@ -66,6 +67,7 @@ describe("Machine sign-in setup", () => {
     const client: MachineSignInClient = {
       create: vi.fn(async () => draft),
       test: vi.fn(async () => { throw new Error("The provider didn't accept Paperclip's key."); }),
+      status: vi.fn(),
     };
     await act(async () => {
       root.render(<MachineSignInSetup companyId="company-1" link="https://mcp.example/mcp" client={client} initialSetup={draft} onBack={() => undefined} onConnected={() => undefined} />);
@@ -79,8 +81,9 @@ describe("Machine sign-in setup", () => {
 
   it("asks for the client ID and secret together for a client secret", async () => {
     const client: MachineSignInClient = {
-      create: vi.fn(async () => ({ ...draft, machineSignIn: { ...draft.machineSignIn, method: "client_secret", publicKey: null } })),
+      create: vi.fn(async () => ({ ...draft, machineSignIn: { ...draft.machineSignIn, method: "client_secret" as const, publicKey: null } })),
       test: vi.fn(async () => ({}) as ConnectToolAppResult),
+      status: vi.fn(),
     };
     await act(async () => {
       root.render(<MachineSignInSetup companyId="company-1" link="https://mcp.example/mcp" client={client} initialMethod="client_secret" onBack={() => undefined} onConnected={() => undefined} />);
@@ -90,6 +93,41 @@ describe("Machine sign-in setup", () => {
     await type("machine-sign-in-client-secret", "secret-1");
     await click("Test connection");
     expect(client.create).toHaveBeenCalledWith("company-1", expect.objectContaining({ method: "client_secret", clientId: "id-1", clientSecret: "secret-1" }));
-    expect(client.test).toHaveBeenCalledWith("connection-1", { clientId: "id-1" });
+    expect(client.test).toHaveBeenCalledWith("connection-1", { clientId: "id-1", scopes: "" });
+  });
+
+  it("lets a wrong secret be replaced after a failed test", async () => {
+    const secretDraft = { ...draft, machineSignIn: { ...draft.machineSignIn, method: "client_secret" as const, publicKey: null, clientId: "id-1", hasClientSecret: true, scopes: ["a.read"] } };
+    const client: MachineSignInClient = {
+      create: vi.fn(),
+      test: vi.fn(async () => { throw new Error("The provider didn't accept the client ID and secret."); }),
+      status: vi.fn(),
+    };
+    await act(async () => {
+      root.render(<MachineSignInSetup companyId="company-1" link="https://mcp.example/mcp" client={client} initialSetup={secretDraft} onBack={() => undefined} onConnected={() => undefined} />);
+    });
+    await click("Test connection");
+    expect(container.querySelector("#machine-sign-in-client-secret-replace")).not.toBeNull();
+    await type("machine-sign-in-client-secret-replace", "fixed-secret");
+    await type("machine-sign-in-scopes-confirm", "");
+    await click("Test connection");
+    expect(client.test).toHaveBeenLastCalledWith("connection-1", { clientId: "id-1", scopes: "", clientSecret: "fixed-secret" });
+  });
+
+  it("resumes the key draft this tab started instead of creating another", async () => {
+    sessionStorage.setItem("paperclip.machine-sign-in-draft:company-1:https://mcp.example/mcp", "connection-1");
+    const client: MachineSignInClient = {
+      create: vi.fn(),
+      test: vi.fn(),
+      status: vi.fn(async () => draft.machineSignIn),
+    };
+    await act(async () => {
+      root.render(<MachineSignInSetup companyId="company-1" link="https://mcp.example/mcp" client={client} onBack={() => undefined} onConnected={() => undefined} />);
+    });
+    await flush();
+    expect(client.status).toHaveBeenCalledWith("connection-1");
+    expect(container.textContent).toContain("Register this public key");
+    expect(client.create).not.toHaveBeenCalled();
+    sessionStorage.clear();
   });
 });

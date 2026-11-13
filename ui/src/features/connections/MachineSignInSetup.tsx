@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Loader2 } from "lucide-react";
 import type {
   ConnectToolAppResult,
   CreateMachineSignIn,
   MachineSignInMethod,
   MachineSignInSetupResult,
+  MachineSignInStatus,
   TestMachineSignIn,
 } from "@paperclipai/shared";
 import { toolsApi } from "@/api/tools";
@@ -20,12 +21,33 @@ import { copyTextToClipboard } from "@/lib/clipboard";
 export interface MachineSignInClient {
   create(companyId: string, input: CreateMachineSignIn): Promise<MachineSignInSetupResult>;
   test(connectionId: string, input: TestMachineSignIn): Promise<ConnectToolAppResult>;
+  status(connectionId: string): Promise<MachineSignInStatus>;
 }
 
 export const machineSignInApiClient: MachineSignInClient = {
   create: (companyId, input) => toolsApi.createMachineSignIn(companyId, input),
   test: (connectionId, input) => toolsApi.testMachineSignIn(connectionId, input),
+  status: (connectionId) => toolsApi.getMachineSignIn(connectionId),
 };
+
+type MachineSignInDraft = Pick<MachineSignInSetupResult, "connectionId" | "machineSignIn">;
+
+/**
+ * The draft this browser tab started for a server, so switching options or
+ * reloading resumes it (and its key) instead of creating another.
+ */
+function draftStorageKey(companyId: string, link: string) {
+  return `paperclip.machine-sign-in-draft:${companyId}:${link}`;
+}
+function readDraftId(key: string): string | null {
+  try { return sessionStorage.getItem(key); } catch { return null; }
+}
+function writeDraftId(key: string, connectionId: string | null) {
+  try {
+    if (connectionId) sessionStorage.setItem(key, connectionId);
+    else sessionStorage.removeItem(key);
+  } catch { /* storage unavailable: the draft is still listed in Apps */ }
+}
 
 const METHOD_OPTIONS: Array<{ method: MachineSignInMethod; label: string; hint: string }> = [
   {
@@ -75,15 +97,31 @@ export function MachineSignInSetup({
   const [clientId, setClientId] = useState(initialSetup?.machineSignIn.clientId ?? "");
   const [clientSecret, setClientSecret] = useState("");
   const [scopes, setScopes] = useState(initialSetup?.machineSignIn.scopes.join(" ") ?? "");
-  const [setup, setSetup] = useState<MachineSignInSetupResult | null>(initialSetup);
+  const [setup, setSetup] = useState<MachineSignInDraft | null>(initialSetup);
   const [error, setError] = useState<string | null>(initialError);
   const [busy, setBusy] = useState<"creating" | "testing" | null>(null);
+  const storageKey = draftStorageKey(companyId, link);
+
+  useEffect(() => {
+    if (initialSetup) return;
+    const draftId = readDraftId(storageKey);
+    if (!draftId) return;
+    let cancelled = false;
+    client.status(draftId).then((status) => {
+      if (cancelled) return;
+      setSetup({ connectionId: draftId, machineSignIn: status });
+      setMethod(status.method);
+      setClientId((current) => current || (status.clientId ?? ""));
+      setScopes((current) => current || status.scopes.join(" "));
+    }, () => writeDraftId(storageKey, null));
+    return () => { cancelled = true; };
+  }, [client, initialSetup, storageKey]);
 
   const trimmedScopes = scopes.trim();
   const canCreate = method === "paperclip_key" || (clientId.trim().length > 0 && clientSecret.length > 0);
   const canTest = clientId.trim().length > 0;
 
-  async function createDraft(): Promise<MachineSignInSetupResult | null> {
+  async function createDraft(): Promise<MachineSignInDraft | null> {
     setBusy("creating");
     setError(null);
     try {
@@ -97,6 +135,9 @@ export function MachineSignInSetup({
         ...(trimmedScopes ? { scopes: trimmedScopes } : {}),
       });
       setSetup(created);
+      writeDraftId(storageKey, created.connectionId);
+      // The secret is saved with the draft; a later test only sends a replacement.
+      setClientSecret("");
       return created;
     } catch (caught) {
       setError(describeError(caught).body);
@@ -106,14 +147,18 @@ export function MachineSignInSetup({
     }
   }
 
-  async function testConnection(target: MachineSignInSetupResult) {
+  /** `replacementSecret` is sent only when the admin typed a new one after the draft was saved. */
+  async function testConnection(target: MachineSignInDraft, replacementSecret: string) {
     setBusy("testing");
     setError(null);
     try {
       const result = await client.test(target.connectionId, {
         clientId: clientId.trim(),
-        ...(trimmedScopes ? { scopes: trimmedScopes } : {}),
+        // Always sent, so clearing the field clears the saved scopes.
+        scopes: trimmedScopes,
+        ...(target.machineSignIn.method === "client_secret" && replacementSecret ? { clientSecret: replacementSecret } : {}),
       });
+      writeDraftId(storageKey, null);
       onConnected(result);
     } catch (caught) {
       setError(describeError(caught).body);
@@ -186,6 +231,11 @@ export function MachineSignInSetup({
           <Field id="machine-sign-in-client-id-confirm" label="Client ID" hint="The ID the provider shows for the Paperclip client.">
             <Input id="machine-sign-in-client-id-confirm" value={clientId} onChange={(event) => setClientId(event.target.value)} autoComplete="off" className="h-11 font-mono" />
           </Field>
+          {setup.machineSignIn.method === "client_secret" ? (
+            <Field id="machine-sign-in-client-secret-replace" label="Client secret" hint={setup.machineSignIn.hasClientSecret ? "Saved. Enter a new one only to replace it." : undefined}>
+              <Input id="machine-sign-in-client-secret-replace" type="password" value={clientSecret} onChange={(event) => setClientSecret(event.target.value)} placeholder={setup.machineSignIn.hasClientSecret ? "••••••••" : ""} autoComplete="off" className="h-11 font-mono" />
+            </Field>
+          ) : null}
           <Field id="machine-sign-in-scopes-confirm" label="Scopes" hint="Optional. Separate with spaces.">
             <Input id="machine-sign-in-scopes-confirm" value={scopes} onChange={(event) => setScopes(event.target.value)} autoComplete="off" className="h-11 font-mono" />
           </Field>
@@ -203,7 +253,7 @@ export function MachineSignInSetup({
           <Button
             onClick={async () => {
               const target = setup ?? await createDraft();
-              if (target) await testConnection(target);
+              if (target) await testConnection(target, setup ? clientSecret : "");
             }}
             disabled={busy !== null || (setup ? !canTest : !canCreate)}
           >

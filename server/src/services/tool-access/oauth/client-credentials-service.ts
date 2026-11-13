@@ -36,6 +36,7 @@ import {
   chooseSecretAuthMethod,
   clientCredentialsSettings,
   generateClientKeyPair,
+  publicKeyForPrivateKey,
   signClientAssertion,
   type ClientCredentialsAuthMethod,
   type ClientCredentialsSettings,
@@ -80,6 +81,8 @@ type TokenOverrides = {
   scopes?: string[];
   /** Sign with the staged replacement key instead of the current one. */
   usePendingKey?: boolean;
+  /** Sign with exactly this key (already read from the vault), so the key tested is the key promoted. */
+  signingKey?: { privateKeyPem: string; publicKey: ClientPublicKey };
   authMethod?: ClientCredentialsAuthMethod;
 };
 
@@ -94,6 +97,12 @@ function issuerChangedError(advertised: string[]) {
     `This server now sends sign-in to a different service${hosts.length ? ` (${hosts.join(", ")})` : ""}. Paperclip won't send this connection's credentials there. Set up machine sign-in again to trust the new service.`,
     { code: "client_credentials_issuer_changed" },
   );
+}
+
+function rotationChangedError() {
+  return conflict("The new key changed while the rotation was finishing. Register the key shown now, then try again.", {
+    code: "client_credentials_rotation_changed",
+  });
 }
 
 function toPublicKey(key: ClientPublicKey | null): MachineSignInPublicKey | null {
@@ -252,8 +261,9 @@ export function createClientCredentialsService(db: Db, deps: Dependencies) {
     let clientAssertion: string | null = null;
     let clientSecret: string | null = null;
     if (authMethod === "private_key_jwt") {
-      const key = overrides.usePendingKey ? settings.pendingKey : settings.key;
-      const privateKeyPem = await vaultValue(connection, overrides.usePendingKey ? CLIENT_PRIVATE_KEY_NEXT_PATH : CLIENT_PRIVATE_KEY_PATH, actor);
+      const key = overrides.signingKey?.publicKey ?? (overrides.usePendingKey ? settings.pendingKey : settings.key);
+      const privateKeyPem = overrides.signingKey?.privateKeyPem
+        ?? await vaultValue(connection, overrides.usePendingKey ? CLIENT_PRIVATE_KEY_NEXT_PATH : CLIENT_PRIVATE_KEY_PATH, actor);
       if (!key || !privateKeyPem) {
         throw unprocessable("This connection's Paperclip key is missing. Set up machine sign-in again.", { code: "client_credentials_key_missing" });
       }
@@ -603,24 +613,53 @@ export function createClientCredentialsService(db: Db, deps: Dependencies) {
     const settings = clientCredentialsSettings(connection)!;
     if (!settings.pendingKey) throw unprocessable("There's no new key waiting. Start a key rotation first.", { code: "client_credentials_no_pending_key" });
     await assertPinnedSignInService(connection, settings);
-    await requestClientCredentialsToken(connection, actor, { usePendingKey: true, authMethod: "private_key_jwt" });
+    // Read the staged key once and derive its public half from that exact value:
+    // the key that passes the test is the key that gets promoted, even if
+    // another rotation replaces the staged key meanwhile.
     const pendingValue = await vaultValue(connection, CLIENT_PRIVATE_KEY_NEXT_PATH, actor);
     if (!pendingValue) throw unprocessable("The new key is missing. Start the rotation again.", { code: "client_credentials_key_missing" });
-    const current = connection.credentialSecretRefs.find((ref) => ref.configPath === CLIENT_PRIVATE_KEY_PATH);
-    const pendingRef = connection.credentialSecretRefs.find((ref) => ref.configPath === CLIENT_PRIVATE_KEY_NEXT_PATH);
-    const keyRef = await writeVaultCredential(connection, CLIENT_PRIVATE_KEY_PATH, "Machine sign-in key", pendingValue, actor, current);
-    const oauth = oauthConfig(connection);
-    const updated = await saveConnection(connection, {
-      config: {
-        ...connection.config,
-        oauth: { ...oauth, clientAuth: { method: "private_key_jwt", key: settings.pendingKey, configuredAt: now().toISOString() } },
-      },
-      credentialSecretRefs: [
-        ...connection.credentialSecretRefs.filter((ref) =>
-          ref.configPath !== CLIENT_PRIVATE_KEY_PATH && ref.configPath !== CLIENT_PRIVATE_KEY_NEXT_PATH && ref.configPath !== CLIENT_SECRET_PATH),
-        keyRef,
-      ],
+    const promoted = publicKeyForPrivateKey(pendingValue, settings.pendingKey.algorithm, new Date(settings.pendingKey.createdAt));
+    if (promoted.keyId !== settings.pendingKey.keyId) throw rotationChangedError();
+    await requestClientCredentialsToken(connection, actor, {
+      authMethod: "private_key_jwt",
+      signingKey: { privateKeyPem: pendingValue, publicKey: promoted },
     });
+    const pendingRef = connection.credentialSecretRefs.find((ref) => ref.configPath === CLIENT_PRIVATE_KEY_NEXT_PATH);
+    // One locked step: the row still stages this key, then the vault and config change together.
+    const updated = await db.transaction(async (tx) => {
+      const [locked] = await tx.select().from(toolConnections)
+        .where(and(eq(toolConnections.id, connection.id), eq(toolConnections.companyId, companyId)))
+        .for("update");
+      const lockedSettings = locked ? clientCredentialsSettings(locked) : null;
+      if (!locked || lockedSettings?.pendingKey?.keyId !== promoted.keyId) throw rotationChangedError();
+      const current = locked.credentialSecretRefs.find((ref) => ref.configPath === CLIENT_PRIVATE_KEY_PATH);
+      const { secret } = await writeConnectionCredential(tx, {
+        companyId, connectionName: locked.name, configPath: CLIENT_PRIVATE_KEY_PATH, label: "Machine sign-in key",
+        value: pendingValue, existingRef: current, actor: actorForSecret(actor),
+      });
+      const keyRef: ToolCredentialSecretRef = {
+        secretId: secret.id, versionSelector: "latest", configPath: CLIENT_PRIVATE_KEY_PATH, required: false, label: "Machine sign-in key",
+      };
+      const lockedOauth = oauthConfig(locked);
+      const nextConfig = {
+        ...locked.config,
+        oauth: { ...lockedOauth, clientAuth: { method: "private_key_jwt", key: promoted, configuredAt: now().toISOString() } },
+      };
+      const [row] = await tx.update(toolConnections).set({
+        config: nextConfig,
+        transportConfig: nextConfig,
+        credentialSecretRefs: [
+          ...locked.credentialSecretRefs.filter((ref) =>
+            ref.configPath !== CLIENT_PRIVATE_KEY_PATH && ref.configPath !== CLIENT_PRIVATE_KEY_NEXT_PATH && ref.configPath !== CLIENT_SECRET_PATH),
+          keyRef,
+        ],
+        updatedAt: now(),
+      }).where(eq(toolConnections.id, locked.id)).returning();
+      return row!;
+    });
+    await store.syncCredentialBindings(updated);
+    if (updated.status === "active") await deps.ensureDefaultOrganizationGrant(updated);
+    emitConnectionUpdated(updated, connection, "gallery");
     const retired = connection.credentialSecretRefs.filter((ref) =>
       (ref === pendingRef) || (ref.configPath === CLIENT_SECRET_PATH));
     for (const old of retired) await secrets.remove(old.secretId).catch(() => undefined);

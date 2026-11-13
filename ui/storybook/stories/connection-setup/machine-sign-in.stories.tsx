@@ -41,6 +41,7 @@ const draft: MachineSignInSetupResult = {
 /** In memory: creating returns the draft above; testing fails until a client ID is entered. */
 const fakeClient: MachineSignInClient = {
   create: async () => draft,
+  status: async () => draft.machineSignIn,
   test: async (_connectionId, input) => {
     await new Promise((resolve) => setTimeout(resolve, 400));
     if (input.clientId !== "paperclip-automation") {

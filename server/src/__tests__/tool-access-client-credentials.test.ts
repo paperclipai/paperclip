@@ -19,6 +19,7 @@ import {
 } from "@paperclipai/db";
 import { and, eq } from "drizzle-orm";
 import { toolAccessService } from "../services/tool-access.js";
+import { secretService } from "../services/secrets.js";
 import { toolAccessRoutes } from "../routes/tool-access.js";
 import { errorHandler } from "../middleware/index.js";
 import { createOAuthClientProtocol } from "../services/tool-access/oauth/client.js";
@@ -456,6 +457,28 @@ describeEmbeddedPostgres("machine sign-in connections", () => {
     expect(decodeJwt(provider.state.tokenRequests.at(-1)!.body.get("client_assertion")!).header.kid).toBe(pending.keyId);
     const [row] = await db.select().from(toolConnections).where(eq(toolConnections.id, created.connectionId));
     expect(row!.credentialSecretRefs.map((ref) => ref.configPath)).not.toContain("oauth.client_private_key_next");
+  });
+
+  it("never promotes a staged key that changed after it was registered", async () => {
+    const company = await createCompany();
+    const provider = useProvider();
+    const { svc, created } = await setupKeyConnection(company.id, provider);
+    const started = await svc.rotateMachineSignIn(company.id, created.connectionId, { method: "paperclip_key" }, actor);
+    registerKey(provider, started.machineSignIn.pendingPublicKey!);
+    // Another rotation overwrites the staged private key in the vault.
+    const [row] = await db.select().from(toolConnections).where(eq(toolConnections.id, created.connectionId));
+    const staged = row!.credentialSecretRefs.find((ref) => ref.configPath === "oauth.client_private_key_next")!;
+    const other = generateClientKeyPair("RS256");
+    registerKey(provider, { keyId: other.publicKey.keyId, pem: other.publicKey.publicKeyPem });
+    await secretService(db).rotate(staged.secretId, { value: other.privateKeyPem });
+    await expect(svc.completeMachineSignInRotation(company.id, created.connectionId, actor))
+      .rejects.toMatchObject({ status: 409, details: expect.objectContaining({ code: "client_credentials_rotation_changed" }) });
+    const status = await svc.getMachineSignIn(company.id, created.connectionId);
+    expect(status.publicKey?.keyId).toBe(created.machineSignIn.publicKey!.keyId);
+    // The current key still signs in.
+    const grant = await organizationGrant(created.connectionId);
+    await svc.refreshOAuthGrantCredentials({ companyId: company.id, connectionId: created.connectionId, grantId: grant.id, forceRefresh: true, actor });
+    expect(decodeJwt(provider.state.tokenRequests.at(-1)!.body.get("client_assertion")!).header.kid).toBe(created.machineSignIn.publicKey!.keyId);
   });
 
   it("tries a new client secret before replacing the old one", async () => {
