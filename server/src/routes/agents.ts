@@ -1,4 +1,5 @@
 import { resolveLoginEnvironmentTarget } from "../services/login-environment.js";
+import { assertNoProtectedEnvironmentKeys, listProtectedEnvironmentKeyHolders, protectedEnvironmentKeyWarnings } from "../services/protected-environment-keys.js";
 import { assertProviderApiPlacementPolicy, managedCursorApiDefaultEnabled, resolveProviderApiPlacement } from "../services/native-runtime/provider-api-placement.js";
 import { isObjectJournalBusyError } from "../services/object-byte-journal.js";
 import { readTaskPanelActivations } from "../services/plugin-task-panels.js";
@@ -2008,6 +2009,15 @@ export function agentRoutes(
     const nextRaw =
       asRecord(asRecord(nextRuntimeConfig)?.debug)?.providerTrace === "raw";
     if (previousRaw !== nextRaw) assertInstanceAdmin(req);
+  }
+
+  /** Reject keys the selected environment's plugin sets itself; warn about the rest. */
+  async function checkProtectedEnvironmentKeys(adapterConfig: unknown, environmentId: string | null | undefined): Promise<AgentConfigurationWarning[]> {
+    const env = asRecord(adapterConfig)?.env;
+    if (!env || typeof env !== "object" || Object.keys(env).length === 0) return [];
+    const holders = await listProtectedEnvironmentKeyHolders(db);
+    assertNoProtectedEnvironmentKeys(holders, environmentId, env);
+    return protectedEnvironmentKeyWarnings(holders, env, "adapterConfig.env");
   }
 
   async function assertAgentDefaultEnvironmentSelection(
@@ -4642,6 +4652,7 @@ export function agentRoutes(
       allowedDrivers: allowedEnvironmentDriversForAgent(hireInput.adapterType),
       allowedSandboxProviders: allowedSandboxProvidersForAgent(hireInput.adapterType),
     });
+    configurationWarnings.push(...await checkProtectedEnvironmentKeys(normalizedAdapterConfig, hireInput.defaultEnvironmentId));
 
     // Idempotency within a run: if this run already created a hire from this
     // exact request, return that hire instead of creating a duplicate. The
@@ -4962,6 +4973,7 @@ export function agentRoutes(
       allowedDrivers: allowedEnvironmentDriversForAgent(createInput.adapterType),
       allowedSandboxProviders: allowedSandboxProvidersForAgent(createInput.adapterType),
     });
+    configurationWarnings.push(...await checkProtectedEnvironmentKeys(normalizedAdapterConfig, createInput.defaultEnvironmentId));
 
     const managedBinding = normalizedRuntimeConfig.aiConnection ? aiRuntimeConnectionBindingSchema.parse(normalizedRuntimeConfig.aiConnection) : undefined;
     const managedConnection = managedBinding && !setupId ? await validateManagedAgentBinding(req, companyId, agentId, createInput.adapterType, normalizedAdapterConfig, managedBinding, createInput.defaultEnvironmentId, "none", true) : undefined;
@@ -5827,16 +5839,19 @@ export function agentRoutes(
     }
     if (requestedRuntimeConfig) patchData.runtimeConfig = requestedRuntimeConfig;
     if (touchesAdapterConfiguration || Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId")) {
+      const nextDefaultEnvironmentId = Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId")
+        ? (typeof patchData.defaultEnvironmentId === "string" ? patchData.defaultEnvironmentId : null)
+        : existing.defaultEnvironmentId;
       await assertAgentDefaultEnvironmentSelection(
         existing.companyId,
-        Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId")
-          ? (typeof patchData.defaultEnvironmentId === "string" ? patchData.defaultEnvironmentId : null)
-          : existing.defaultEnvironmentId,
+        nextDefaultEnvironmentId,
         {
           allowedDrivers: allowedEnvironmentDriversForAgent(requestedAdapterType),
           allowedSandboxProviders: allowedSandboxProvidersForAgent(requestedAdapterType),
         },
       );
+      const protectedKeyWarnings = await checkProtectedEnvironmentKeys(patchData.adapterConfig ?? existing.adapterConfig, nextDefaultEnvironmentId);
+      configurationWarnings.push(...protectedKeyWarnings.filter(warning => !configurationWarnings.some(existing => existing.field === warning.field)));
     }
     const touchesProfileFields = touchesAgentProfileChangeConsentFields(patchData);
     const profileOnlyChange = touchesProfileFields && Object.keys(patchData).every((key) =>

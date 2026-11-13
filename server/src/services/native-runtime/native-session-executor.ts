@@ -77,7 +77,7 @@ import {
   isKnownNativeSessionRootEntry,
 } from "./native-session-root-entries.js";
 import { createRunPreparationTiming } from "../execution-preparation-timing.js";
-import { configuredEnvironment, PROVIDER_CREDENTIAL_ENVIRONMENT_KEYS } from "../../vendor/paperclip-runner/index.js";
+import { CONFIGURED_ENVIRONMENT_KEYS, configuredEnvironment, PROVIDER_CREDENTIAL_ENVIRONMENT_KEYS } from "../../vendor/paperclip-runner/index.js";
 import { parseProviderPerformanceSpans } from "../../vendor/paperclip-runner/index.js";
 import { apiKeyBillingType } from "@paperclipai/adapter-utils/api-billing-type";
 import { agents } from "@paperclipai/db";
@@ -8548,6 +8548,12 @@ function needsCoreGitHubAccess(input: Pick<Parameters<typeof executePaperclipNat
   return Boolean(input.managedGitHub && !(target?.kind === "remote" && target.transport === "sandbox" && target.runnerTask));
 }
 
+/** The run's configured variables only: never provider credentials or generated runtime keys. */
+function pluginTaskConfiguredEnvironment(environment: NodeJS.ProcessEnv | undefined): Record<string, string> {
+  return Object.fromEntries(Object.entries(configuredEnvironment(environment)).flatMap(([key, value]) =>
+    key !== CONFIGURED_ENVIRONMENT_KEYS && typeof value === "string" ? [[key, value]] : []));
+}
+
 function nativeProcessReuseKey(input: Parameters<typeof executePaperclipNativeSession>[0]): string | undefined {
   const environment = input.runnerEnvironment;
   if (!input.managedGitHub && environment?.PAPERCLIP_GITHUB_BROKER_TOKEN) return undefined;
@@ -16328,6 +16334,12 @@ async function createRunnerdBackendWithinSessionClaim(
       await registerPluginTaskCredentialHandoff(input.db, { companyId: input.execution.binding.companyId, leaseId: remoteTarget.leaseId },
         credentials.accountIdentity, input.managedAiCredentialWriteback);
     }
+    const taskConfiguredEnvironment = pluginTaskConfiguredEnvironment(input.runnerEnvironment);
+    if (description.configuredEnvironmentVersion !== 1 && Object.keys(taskConfiguredEnvironment).length > 0) {
+      // Older providers reject unknown fields. Run without the variables, as before, and say so.
+      await input.onLog?.("stderr", `[paperclip] The environment plugin does not support configured environment variables. These variables were not set: ${
+        Object.keys(taskConfiguredEnvironment).sort().join(", ")}. Update the plugin to deliver them.\n`);
+    }
     const ownerInput: Parameters<typeof createPluginRunnerTaskOwner>[0] = { ...credentials, taskId: description.taskId,
       executionContext: input.executionContext?.pluginSupported ? input.executionContext : undefined,
       // Warm retirement can outlive the run's temporary credential home; complete uses the durable handoff.
@@ -16347,6 +16359,8 @@ async function createRunnerdBackendWithinSessionClaim(
       }),
       warmTaskVersion: description.warmTaskVersion,
       githubCredentialBrokerVersion: description.githubCredentialBrokerVersion,
+      configuredEnvironmentVersion: description.configuredEnvironmentVersion,
+      configuredEnvironment: taskConfiguredEnvironment,
       releaseResumeVersion: description.releaseResumeVersion,
       authorityRunId: description.releaseResumeVersion === 1 ? input.execution.binding.runId : undefined,
       releasedSource: input.remoteWarmRecovery?.releasedSource,

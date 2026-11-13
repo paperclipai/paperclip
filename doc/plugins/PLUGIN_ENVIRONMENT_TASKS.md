@@ -69,6 +69,36 @@ authorized project IDs, and optional launch limits. It can also contain a saved
 task ID for session reuse and a typed Codex or Claude credential. Core does not
 supply an executable command or a guest path.
 
+## Configured environment
+
+An agent can have environment variables from its execution environment, its
+own configuration, its project, and its routine. Core resolves secret
+references for each run. It sends the result only to a provider whose
+`description` result has `configuredEnvironmentVersion: 1`. An older provider
+gets no new fields, and the run continues without the variables. Core writes a
+run log line that names the variables it did not set.
+
+- `submit` has `configuredEnvironment` and `configuredEnvironmentDigest`. Set
+  the variables in the Runner's process environment. Add their names to
+  `PAPERCLIP_CONFIGURED_ENV_KEYS`. The Runner then gives them to every
+  provider process.
+- If a variable has the same name as a variable that the provider sets for its
+  own launch, use the provider's value. Do not fail the task.
+- The values are transient secret input. Do not save them in task state, lease
+  metadata, journals, or logs.
+- The digest is an HMAC with a key that only Core has. Save it with the task.
+- `resume` always has the digest. A retained Runner keeps the environment that
+  it started with. If the digest is different from the saved digest, return
+  the `unavailable` outcome. Core then starts a new task with the new values.
+- A session handoff starts a new Runner, so its `resume` also has
+  `configuredEnvironment`.
+
+A driver can declare `protectedEnvironmentKeys` in the manifest. These are the
+variables that the driver always sets on its tasks. Core rejects a protected
+variable in the configuration of an agent or environment that uses the driver.
+In other places, such as a project or routine, Core saves the variable and
+returns a `protected_environment_variable` notice that names the environments.
+
 ## Release and resume
 
 `release` ends Core's active use of an exact, settled Runner session. Core calls

@@ -129,6 +129,8 @@ export interface Project {
   id: string;
   companyId: string;
   urlKey: string;
+  /** Non-fatal notices about this write, such as a protected env key; not persisted. */
+  configurationWarnings?: import("../runner-configuration-warnings.js").AgentConfigurationWarning[];
   /** @deprecated Use goalIds / goals instead */
   goalId: string | null;
   goalIds: string[];

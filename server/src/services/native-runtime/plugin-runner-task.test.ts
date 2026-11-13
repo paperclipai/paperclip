@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import type { RunnerProviderLaunchRequirements } from "@paperclipai/paperclip-runner";
 import type { RunnerProcessLaunchSpec } from "../../vendor/paperclip-runner/index.js";
-import { createPluginRunnerTaskOwner } from "./plugin-runner-task.js";
+import { createPluginRunnerTaskOwner, pluginTaskConfiguredEnvironmentDigest } from "./plugin-runner-task.js";
 import { NativeExecutionContext } from "./native-execution-context.js";
 
 const ingress = vi.hoisted(() => ({ connect: vi.fn() }));
@@ -894,4 +894,53 @@ it("routes credential notifications to the current warm lease after rebind", asy
   expect(first).toHaveBeenCalledExactlyOnceWith(event);
   expect(successor).toHaveBeenCalledExactlyOnceWith(event);
   expect(task).not.toHaveBeenCalled();
+});
+
+
+describe("plugin task configured environment", () => {
+  const configuredEnvironment = { STRIPE_SECRET_KEY: "fixture-secret", FEATURE_FLAG: "on" };
+  const withSecret = async <T>(run: () => Promise<T>) => {
+    vi.stubEnv("PAPERCLIP_DECISION_SIGNING_SECRET", "fixture-signing-secret-".padEnd(64, "x"));
+    try { return await run(); } finally { vi.unstubAllEnvs(); }
+  };
+
+  it("keys the digest and ignores variable order", () => withSecret(async () => {
+    const digest = pluginTaskConfiguredEnvironmentDigest(configuredEnvironment);
+    expect(digest).toMatch(/^hmac-sha256:[a-f0-9]{64}$/);
+    expect(pluginTaskConfiguredEnvironmentDigest({ FEATURE_FLAG: "on", STRIPE_SECRET_KEY: "fixture-secret" })).toBe(digest);
+    expect(pluginTaskConfiguredEnvironmentDigest({ ...configuredEnvironment, STRIPE_SECRET_KEY: "rotated" })).not.toBe(digest);
+    expect(digest).not.toBe(`hmac-sha256:${createHash("sha256").update(JSON.stringify(Object.entries(configuredEnvironment).sort())).digest("hex")}`);
+  }));
+
+  it.each([1, undefined] as const)("submits the variables only to a provider that supports them (%s)", version => withSecret(async () => {
+    const { task } = provider();
+    const owner = createPluginRunnerTaskOwner({ taskId: "task", projectAuthCheckVersion: 1, task, projectIds: [], harness: "codex", pollMs: 1,
+      configuredEnvironmentVersion: version, configuredEnvironment });
+    await prepare(owner);
+    ingress.connect.mockReturnValue({ ready: Promise.resolve(), close: async () => {} });
+    const registration = await owner.registration({} as never, "run");
+    const handle = owner.launcher(launchSpec());
+    registration.activate(); await registration.ready();
+    await registration.release(); await registration.checkpoint("unsettled"); await handle.completion;
+    const submit = task.mock.calls.find(([op]) => op.kind === "submit")?.[0];
+    if (version === 1) {
+      expect(submit).toMatchObject({ configuredEnvironment, configuredEnvironmentDigest: pluginTaskConfiguredEnvironmentDigest(configuredEnvironment) });
+    } else {
+      expect(submit).not.toHaveProperty("configuredEnvironment");
+      expect(submit).not.toHaveProperty("configuredEnvironmentDigest");
+    }
+  }));
+
+  it.each([true, false])("resumes with the digest, and sends the variables only for a session handoff (%s)", sessionHandoff => withSecret(async () => {
+    const task = vi.fn(async (_operation: any): Promise<unknown> => ({ kind: "resume", taskId: "task", outcome: "resumed" }));
+    const owner = createPluginRunnerTaskOwner({ taskId: "task", projectIds: ["project"], harness: "codex", task,
+      warmTaskVersion: 1, releaseResumeVersion: 1, accountIdentity: "selected-account", adoptIdentity: requirements.identity,
+      authorityRunId: "run", sessionHandoff, configuredEnvironmentVersion: 1, configuredEnvironment });
+    await expect(owner.resume(requirements.identity, "transient-ticket")).resolves.toBe("resumed");
+    expect(task).toHaveBeenCalledExactlyOnceWith({
+      kind: "resume", identity: requirements.identity, bootstrapTicket: "transient-ticket",
+      configuredEnvironmentDigest: pluginTaskConfiguredEnvironmentDigest(configuredEnvironment),
+      ...(sessionHandoff ? { configuredEnvironment } : {}),
+    }, { expectedTaskId: "task" });
+  }));
 });
