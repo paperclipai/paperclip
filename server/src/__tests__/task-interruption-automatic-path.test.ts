@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, agentWakeupRequests, applyPendingMigrations, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations } from "@paperclipai/db";
 import { taskInterruptionPresentation } from "../services/task-interruption-presentation.js";
+import { createSystemRecovery } from "../services/system-recovery-state.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 
@@ -91,10 +92,9 @@ describe.skipIf(!support.supported)("Retry is offered only when no automatic pat
       payload: { issueId: issue.id } });
     expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ state: "working", canRetry: false });
     expect(await taskInterruptionPresentation(db, { ...issue, status: "in_review" })).toMatchObject({ state: "working", canRetry: false });
-    expect(await taskInterruptionPresentation(db, { ...issue, status: "blocked" })).toMatchObject({ state: "working", canRetry: false });
+    expect(await taskInterruptionPresentation(db, { ...issue, status: "blocked" })).toMatchObject({ state: "failed", canRetry: true });
     await db.update(heartbeatRuns).set({ finishedAt: new Date(Date.now() - 10 * 60_000) }).where(eq(heartbeatRuns.id, runId));
     expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ canRetry: true });
-    expect(await taskInterruptionPresentation(db, { ...issue, status: "blocked" })).toMatchObject({ state: "failed", canRetry: true });
   });
 
   async function seedParentWaitingOnSubtasks(childStatus = "in_progress") {
@@ -141,6 +141,53 @@ describe.skipIf(!support.supported)("Retry is offered only when no automatic pat
       status: "queued", runtimeMode: "native", wakeupRequestId: wake.id });
     await db.update(agentWakeupRequests).set({ status: "queued", runId: nextRunId }).where(eq(agentWakeupRequests.id, wake.id));
     expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ state: "working", canRetry: false, observedRunId: nextRunId });
+  });
+
+  it("offers Retry on the parent once its queued message is not settled within the grace", async () => {
+    const { companyId, agentId, issue, runId } = await seedParentWaitingOnSubtasks();
+    await seedCommentQueuedDuringRun(companyId, agentId, issue.id);
+    await db.update(heartbeatRuns).set({ finishedAt: new Date(Date.now() - 3 * 60_000) }).where(eq(heartbeatRuns.id, runId));
+    expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ state: "failed", canRetry: true });
+  });
+
+  it("still offers Retry on a blocked task with a queued message and no open subtasks", async () => {
+    for (const childStatus of [null, "done", "cancelled"]) {
+      const { companyId, agentId, issue } = await seedTask("blocked");
+      if (childStatus) await db.insert(issues).values({ companyId, title: "Finished subtask", status: childStatus,
+        assigneeAgentId: agentId, parentId: issue.id });
+      await db.insert(heartbeatRuns).values({ companyId, agentId, nativeIssueId: issue.id, scopeKind: "issue",
+        status: "succeeded", runtimeMode: "native", finishedAt: new Date(Date.now() - 1_000) });
+      await seedCommentQueuedDuringRun(companyId, agentId, issue.id);
+      expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ state: "failed", canRetry: true });
+    }
+  });
+
+  it("still offers Retry on a parent with open subtasks when its queued wake carries no message", async () => {
+    const { companyId, agentId, issue } = await seedParentWaitingOnSubtasks();
+    await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "on_demand", reason: "issue_assigned",
+      status: "deferred_issue_execution", requestedByActorType: "user", requestedAt: new Date(Date.now() - 13 * 60_000),
+      payload: { issueId: issue.id } });
+    expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ state: "failed", canRetry: true });
+  });
+
+  it("still offers Retry on a parent with open subtasks and a queued message when its run failed and recovery gave up", async () => {
+    const { companyId, agentId, issue, runId, hold } = await seedSwapEndedRun(new Date(Date.now() - 5_000));
+    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, issue.id));
+    await db.insert(issues).values({ companyId, title: "Open subtask", status: "in_progress", assigneeAgentId: agentId, parentId: issue.id });
+    await seedCommentQueuedDuringRun(companyId, agentId, issue.id);
+    await db.update(issueRecoveryActions).set({ ownerType: "board" }).where(eq(issueRecoveryActions.id, hold.id));
+    const blocked = { ...issue, status: "blocked" };
+    expect(await taskInterruptionPresentation(db, blocked)).toMatchObject({ state: "failed", canRetry: true, observedRunId: runId });
+  });
+
+  it("still offers Retry on a parent with open subtasks and a queued message when saved-work recovery is exhausted", async () => {
+    const { companyId, agentId, issue, runId } = await seedParentWaitingOnSubtasks();
+    await seedCommentQueuedDuringRun(companyId, agentId, issue.id);
+    await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issue.id, kind: "active_run_watchdog",
+      status: "escalated", ownerType: "system", returnOwnerAgentId: agentId, cause: "native_restart_recovery_blocked",
+      fingerprint: `exhausted:${runId}`, nextAction: "Retry to continue.", maxAttempts: 3,
+      evidence: { runId, systemRecovery: { ...createSystemRecovery(runId), state: "exhausted", attempts: 3, retriesUsed: 3 } } });
+    expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ state: "failed", canRetry: true });
   });
 
   it("does not show a failed attempt on a parent whose run succeeded with no queued message", async () => {
