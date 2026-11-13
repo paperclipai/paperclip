@@ -3811,7 +3811,10 @@ export function toolAccessService(
       if (!ownGrant) throw forbidden("Connect your own GitHub account first. Shared and agent connections cannot prove your identity.");
       const actor = { actorType: "user" as const, actorId: userId };
       const grant = await refreshOAuthGrantCredentials({ companyId, connectionId, grantId: ownGrant.id, actor });
-      const accessRef = grant.credentialSecretRefs.find(ref => ref.configPath === "oauth.access_token");
+      const accessRef = grant.credentialSecretRefs.find(ref => ref.configPath === "oauth.access_token")
+        ?? (connection.authKind === "api_key"
+          ? grant.credentialSecretRefs.find(ref => ref.configPath === "credentials.authorization")
+          : undefined);
       if (!accessRef) throw unprocessable("Reconnect your personal GitHub connection");
       const { value } = await resolveOAuthGrantSecret(connection, grant, accessRef, actor, undefined);
       const identity = await githubBotRequest<{ id?: number; login?: string; avatar_url?: string }>(fetch, value, "/user");
