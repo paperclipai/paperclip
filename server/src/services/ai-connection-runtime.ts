@@ -371,7 +371,7 @@ export async function prepareManagedAiRuntime(
       // falling back to a fresh session.
       await restoreAgyConversationState(
         agyCliHome,
-        resolveAgyConversationDir(input.companyId, selection.grant.id),
+        resolveAgyConversationDir(input.companyId, selection.grant.id, input.agentId),
       );
     }
     const capability =
@@ -479,7 +479,7 @@ export async function prepareManagedAiRuntime(
         // only brain/ moves, never the credential in this same CLI home.
         await preserveAgyConversationState(
           agyCliHome,
-          resolveAgyConversationDir(input.companyId, selection.grant.id),
+          resolveAgyConversationDir(input.companyId, selection.grant.id, input.agentId),
         );
       }
       if (home) await rm(home, { recursive: true, force: true });

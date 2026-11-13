@@ -25,20 +25,21 @@ describe("antigravity conversation state", () => {
     await rm(root, { recursive: true, force: true });
   });
 
-  it("scopes the durable directory by company and grant", () => {
-    const dir = resolveAgyConversationDir("company-1", "grant-2");
-    expect(dir).toContain(path.join("ai-connections", "company-1", "grant-2", "antigravity-brain"));
+  it("scopes the durable directory by company, grant and agent", () => {
+    const dir = resolveAgyConversationDir("company-1", "grant-2", "agent-3");
+    expect(dir).toContain(path.join("ai-connections", "company-1", "grant-2", "agents", "agent-3", "antigravity-brain"));
     expect(dir).toContain("brain-fixture");
   });
 
   it("refuses ids that cannot be path segments", () => {
-    expect(resolveAgyConversationDir("../escape", "grant-2")).toBeNull();
-    expect(resolveAgyConversationDir("company-1", "grant/2")).toBeNull();
-    expect(resolveAgyConversationDir("company-1", "")).toBeNull();
+    expect(resolveAgyConversationDir("../escape", "grant-2", "agent-3")).toBeNull();
+    expect(resolveAgyConversationDir("company-1", "grant/2", "agent-3")).toBeNull();
+    expect(resolveAgyConversationDir("company-1", "grant-2", "agent/3")).toBeNull();
+    expect(resolveAgyConversationDir("company-1", "grant-2", "")).toBeNull();
   });
 
   it("restores a previous conversation and preserves a new one without the credential", async () => {
-    const durable = resolveAgyConversationDir("company-1", "grant-2")!;
+    const durable = resolveAgyConversationDir("company-1", "grant-2", "agent-3")!;
     const previous = path.join(durable, "conv-old", "session.json");
     await mkdir(path.dirname(previous), { recursive: true });
     await writeFile(previous, JSON.stringify({ turns: 3 }));
@@ -65,8 +66,45 @@ describe("antigravity conversation state", () => {
     expect(await readdir(durable)).not.toContain("antigravity-oauth-token");
   });
 
+  it("never exposes one agent's conversations to another agent on a shared grant", async () => {
+    const durableA = resolveAgyConversationDir("company-1", "grant-2", "agent-a")!;
+    const durableB = resolveAgyConversationDir("company-1", "grant-2", "agent-b")!;
+    expect(durableA).not.toBe(durableB);
+    for (const [durable, conv, content] of [
+      [durableA, "conv-a", "agent-a transcript"],
+      [durableB, "conv-b", "agent-b transcript"],
+    ] as const) {
+      await mkdir(path.join(durable, conv), { recursive: true });
+      await writeFile(path.join(durable, conv, "session.json"), content);
+    }
+
+    // Agent A's run restores only its own conversations.
+    await restoreAgyConversationState(cliHome, durableA);
+    expect(await readdir(path.join(cliHome, "brain"))).toEqual(["conv-a"]);
+    expect(await readFile(path.join(cliHome, "brain", "conv-a", "session.json"), "utf8")).toBe("agent-a transcript");
+
+    // During the run A starts a new conversation and — adversarially or by
+    // confusion — writes into B's conversation directory inside its own
+    // run home. Preserving back must not touch B's durable store.
+    await mkdir(path.join(cliHome, "brain", "conv-a2"), { recursive: true });
+    await writeFile(path.join(cliHome, "brain", "conv-a2", "session.json"), "agent-a second transcript");
+    await mkdir(path.join(cliHome, "brain", "conv-b"), { recursive: true });
+    await writeFile(path.join(cliHome, "brain", "conv-b", "poison.json"), "forged");
+
+    await preserveAgyConversationState(cliHome, durableA);
+    expect((await readdir(durableA)).sort()).toEqual(["conv-a", "conv-a2", "conv-b"]);
+    expect(await readdir(durableB)).toEqual(["conv-b"]);
+    expect(await readFile(path.join(durableB, "conv-b", "session.json"), "utf8")).toBe("agent-b transcript");
+
+    // B's next run still restores only its own, unpoisoned conversation.
+    const cliHomeB = path.join(root, "cli-home-b");
+    await mkdir(cliHomeB, { recursive: true });
+    await restoreAgyConversationState(cliHomeB, durableB);
+    expect(await readdir(path.join(cliHomeB, "brain"))).toEqual(["conv-b"]);
+  });
+
   it("is a no-op when there is nothing to restore or preserve", async () => {
-    const durable = resolveAgyConversationDir("company-1", "grant-2")!;
+    const durable = resolveAgyConversationDir("company-1", "grant-2", "agent-3")!;
     await expect(restoreAgyConversationState(cliHome, durable)).resolves.toBeUndefined();
     await expect(restoreAgyConversationState(cliHome, null)).resolves.toBeUndefined();
     await expect(preserveAgyConversationState(cliHome, durable)).resolves.toBeUndefined();
