@@ -258,6 +258,10 @@ suite("controller instance lease: a replaced container's records are provable", 
     // Five renewals failed 15 s apart: a client-timed-out statement kept running on the
     // single lease connection and every next renewal queued behind it.
     const lockDb = createDb(temporary!.connectionString, { maxConnections: 1 });
+    // Resolving twice is harmless, so the normal path and the cleanup both release.
+    let release: () => void = () => {};
+    const released = new Promise<void>(resolve => { release = resolve; });
+    let holder: Promise<unknown> = Promise.resolve();
     try {
       registerControllerInstanceDb(db);
       registerControllerInstanceLeaseWork(db, coordinator, { onLost: vi.fn() });
@@ -268,11 +272,9 @@ suite("controller instance lease: a replaced container's records are provable", 
       const pidBefore = await backend();
       const [before] = await db.select({ renewedAt: controllerInstances.renewedAt }).from(controllerInstances)
         .where(eq(controllerInstances.bootId, currentControllerBootId()));
-      let release!: () => void;
-      const released = new Promise<void>(resolve => { release = resolve; });
       let locked!: () => void;
       const lockTaken = new Promise<void>(resolve => { locked = resolve; });
-      const holder = lockDb.transaction(async tx => {
+      holder = lockDb.transaction(async tx => {
         await tx.execute(sql`select 1 from controller_instances where boot_id = ${currentControllerBootId()} for update`);
         locked();
         await released;
@@ -299,6 +301,9 @@ suite("controller instance lease: a replaced container's records are provable", 
       expect(after.renewedAt!.getTime()).toBeGreaterThan(before.renewedAt!.getTime());
       expect(await backend()).toBe(pidBefore);
     } finally {
+      // Free the controller row before the stop record writes it.
+      release();
+      await holder.catch(() => undefined);
       await stopControllerInstanceLease(db);
       await lockDb.$client.end({ timeout: 5 });
     }
