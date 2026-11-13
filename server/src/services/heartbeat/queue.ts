@@ -373,6 +373,8 @@ export function shouldQueueFollowupForRunningIssueWake(input: {
 
 /** Agent Chat outbox receipts. The outbox, not a skipped receipt, owns a capped message. */
 const CONVERSATION_COMMENT_KEY_PREFIX = "conversation-comment:";
+const RUN_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const PERSON_ORIGIN_CHAIN_DEPTH = 8;
 function dailyLimitConversationRefusal(cap: { reason: string; observed: number; limit: number }) {
   // No receipt is written, so the person's message stays owed in the outbox
   // until the limit resets (agent-conversations.ts conversationDeliveryHold).
@@ -2364,6 +2366,31 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     }
   }
 
+  async function listPersonOriginSourceRunIds(companyId: string, sourceRunIds: string[]) {
+    const uuidPattern = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$";
+    const result = await db.execute<{ root_id: string }>(sql`
+      with recursive chain(root_id, run_id, depth) as (
+        select source.id, source.id, 0 from ${heartbeatRuns} source
+        where source.company_id = ${companyId} and source.id in (${sql.join(sourceRunIds.map(id => sql`${id}::uuid`), sql`, `)})
+        union all
+        select chain.root_id, parent.id, chain.depth + 1
+        from chain
+        join ${heartbeatRuns} child on child.id = chain.run_id
+        join ${heartbeatRuns} parent on parent.company_id = ${companyId} and parent.id = coalesce(
+          case when child.context_snapshot->>'previousRunId' ~* ${uuidPattern}
+            then (child.context_snapshot->>'previousRunId')::uuid end,
+          child.retry_of_run_id)
+        where chain.depth < ${PERSON_ORIGIN_CHAIN_DEPTH}
+      )
+      select distinct chain.root_id from chain
+      join ${heartbeatRuns} run on run.id = chain.run_id
+      where run.context_snapshot->>'wakeReason' in (${sql.join([...PERSON_WAKE_REASONS].map(reason => sql`${reason}`), sql`, `)})
+        or run.context_snapshot->>'taskRetryRequestId' is not null
+        or exists (select 1 from ${agentWakeupRequests} wake where wake.company_id = ${companyId}
+          and wake.requested_by_actor_type = 'user' and (wake.run_id = run.id or wake.id = run.wakeup_request_id))`);
+    return [...result].map(row => String(row.root_id));
+  }
+
   async function queuedRunDispatcherForAgent(
     agent: typeof agents.$inferSelect,
     queuedRuns: Array<typeof heartbeatRuns.$inferSelect>,
@@ -2392,28 +2419,19 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     const sourceRunIdOf = (run: typeof heartbeatRuns.$inferSelect) =>
       readNonEmptyString(parseObject(run.contextSnapshot).previousRunId) ?? run.retryOfRunId ?? null;
     const sourceRunIds = queuedRuns.length > 1
-      ? [...new Set(queuedRuns.flatMap(run => joinedByUser(run) ? [] : sourceRunIdOf(run) ?? []))]
+      ? [...new Set(queuedRuns.flatMap(run => {
+        const sourceRunId = joinedByUser(run) ? null : sourceRunIdOf(run);
+        return sourceRunId && RUN_ID_PATTERN.test(sourceRunId) ? [sourceRunId] : [];
+      }))]
       : [];
     const sourceRows = sourceRunIds.length
-      ? await db.select({ id: heartbeatRuns.id, finishedAt: heartbeatRuns.finishedAt, wakeupRequestId: heartbeatRuns.wakeupRequestId,
-        wakeReason: sql<string | null>`${heartbeatRuns.contextSnapshot}->>'wakeReason'`,
-        taskRetryRequestId: sql<string | null>`${heartbeatRuns.contextSnapshot}->>'taskRetryRequestId'` }).from(heartbeatRuns)
+      ? await db.select({ id: heartbeatRuns.id, finishedAt: heartbeatRuns.finishedAt }).from(heartbeatRuns)
         .where(and(eq(heartbeatRuns.companyId, agent.companyId), inArray(heartbeatRuns.id, sourceRunIds)))
       : [];
     const sourceEndedAt = new Map(sourceRows.map(row => [row.id, row.finishedAt]));
-    const sourceWakeIds = sourceRows.flatMap(row => row.wakeupRequestId ? [row.wakeupRequestId] : []);
-    const sourceUserRequests = sourceRows.length
-      ? await db.select({ id: agentWakeupRequests.id, runId: agentWakeupRequests.runId }).from(agentWakeupRequests).where(and(
-        eq(agentWakeupRequests.companyId, agent.companyId), eq(agentWakeupRequests.requestedByActorType, "user"),
-        sourceWakeIds.length
-          ? or(inArray(agentWakeupRequests.runId, sourceRunIds), inArray(agentWakeupRequests.id, sourceWakeIds))
-          : inArray(agentWakeupRequests.runId, sourceRunIds)))
-      : [];
-    const sourceUserRequestIds = new Set(sourceUserRequests.map(row => row.id));
-    const sourceUserRunIds = new Set(sourceUserRequests.flatMap(row => row.runId ? [row.runId] : []));
-    const personSourceRunIds = new Set(sourceRows.filter(row => sourceUserRunIds.has(row.id) || Boolean(row.taskRetryRequestId)
-      || Boolean(row.wakeReason && PERSON_WAKE_REASONS.has(row.wakeReason))
-      || Boolean(row.wakeupRequestId && sourceUserRequestIds.has(row.wakeupRequestId))).map(row => row.id));
+    const personSourceRunIds = new Set(sourceRows.length
+      ? await listPersonOriginSourceRunIds(agent.companyId, sourceRows.map(row => row.id))
+      : []);
     const requestedByUser = (run: typeof heartbeatRuns.$inferSelect) => {
       if (joinedByUser(run)) return true;
       const sourceRunId = sourceRunIdOf(run);

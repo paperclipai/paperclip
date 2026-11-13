@@ -195,6 +195,29 @@ suite("recovery wake herd", () => {
     }
   }, 120_000);
 
+  it("keeps a person's Retry first after its system continuation is interrupted again", async () => {
+    const agentId = await seedCompany(1);
+    const first = await continuationOfInterruptedPersonRetry(agentId, 90);
+    const firstEndedAt = new Date(Date.now() - 45 * 60_000);
+    await db.update(heartbeatRuns).set({ status: "interrupted", errorCode: "server_shutdown_interrupted",
+      startedAt: new Date(firstEndedAt.getTime() - 60_000), finishedAt: firstEndedAt }).where(eq(heartbeatRuns.id, first.id));
+    const [second] = await db.insert(heartbeatRuns).values({ companyId, agentId, issueId: first.issueId,
+      invocationSource: "automation", triggerDetail: "system", status: "queued", responsibleUserId: userId,
+      createdAt: new Date(Date.now() - 40 * 60_000),
+      contextSnapshot: { issueId: first.issueId, taskId: first.issueId, wakeReason: "issue_continuation_needed",
+        previousRunId: first.id, source: "issue.assigned_work_invariant" } }).returning();
+    const fresher: Array<typeof heartbeatRuns.$inferSelect> = [];
+    for (let index = 0; index < 3; index += 1) fresher.push(await queuedSystemRun(agentId, 30 - index, "issue_assigned"));
+    const heartbeat = heartbeatService(db);
+    try {
+      await heartbeat.resumeQueuedRuns();
+      expect((await readRun(second!.id)).startedAt).not.toBeNull();
+      for (const run of fresher) expect(await readRun(run.id)).toMatchObject({ status: "queued", startedAt: null });
+    } finally {
+      await heartbeat.drainActiveRunExecutions();
+    }
+  }, 120_000);
+
   it("starts a system continuation that a person's Retry coalesced into ahead of fresher system work", async () => {
     const agentId = await seedCompany(1);
     const continuation = await queuedSystemRun(agentId, 40, "issue_continuation_needed");
