@@ -282,14 +282,18 @@ describe("plugin native Runner ownership", () => {
   it.each([1, undefined] as const)("sends a preconfigured-home launch's configured environment only to a plugin that applies it (version %s)", async configuredEnvironmentVersion => {
     const { task } = provider();
     const configuredEnvironment = { OPENAI_ADMIN_KEY_READONLY: "synthetic-admin", DAY_GITHUB_PUSH_TOKEN: "synthetic-push" };
-    const owner = createPluginRunnerTaskOwner({ taskId: "task", projectAuthCheckVersion: 1, task, projectIds: [], harness: "claude", pollMs: 1,
-      configuredEnvironment, configuredEnvironmentVersion });
+    const ownerInput = { taskId: "task", projectAuthCheckVersion: 1 as const, task, projectIds: [], harness: "claude", pollMs: 1,
+      configuredEnvironment, configuredEnvironmentVersion };
+    const owner = createPluginRunnerTaskOwner(ownerInput);
     const preconfigured = launchRequirements("claude");
     await prepare(owner, preconfigured);
     ingress.connect.mockReturnValue({ ready: Promise.resolve(), close: async () => {} });
     const registration = await owner.registration({} as never, "run");
     const handle = owner.launcher(launchSpec());
     registration.activate(); await registration.ready();
+    // A provider upgrade keeps the warm process; it reports the names that process really has.
+    owner.rebind({ ...ownerInput, configuredEnvironmentVersion: 1 });
+    expect(owner.deliveredConfiguredEnvironmentKeys()).toEqual(configuredEnvironmentVersion ? ["DAY_GITHUB_PUSH_TOKEN", "OPENAI_ADMIN_KEY_READONLY"] : []);
     await registration.release(); await registration.checkpoint("unsettled"); await handle.completion;
     const prepared = task.mock.calls.find(([op]) => op.kind === "prepare")![0];
     const submitted = task.mock.calls.find(([op]) => op.kind === "submit")![0];

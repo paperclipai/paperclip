@@ -16362,10 +16362,6 @@ async function createRunnerdBackendWithinSessionClaim(
     const pluginConfiguredEnvironment = Object.fromEntries(Object.entries(configuredEnvironment(input.runnerEnvironment))
       .filter((entry): entry is [string, string] => entry[0] !== CONFIGURED_ENVIRONMENT_KEYS
         && !REMOTE_HOST_PATH_ENVIRONMENT_KEYS.has(entry[0]) && typeof entry[1] === "string"));
-    if (Object.keys(pluginConfiguredEnvironment).length > 0 && description.configuredEnvironmentVersion !== 1) {
-      await input.onLog?.("stderr", `[paperclip] This environment's plugin cannot receive the agent's environment variables. `
-        + `Not set in this run: ${Object.keys(pluginConfiguredEnvironment).sort().join(", ")}. Update the environment plugin.\n`);
-    }
     const ownerInput: Parameters<typeof createPluginRunnerTaskOwner>[0] = { ...credentials, taskId: description.taskId,
       configuredEnvironment: pluginConfiguredEnvironment, configuredEnvironmentVersion: description.configuredEnvironmentVersion,
       executionContext: input.executionContext?.pluginSupported ? input.executionContext : undefined,
@@ -16424,6 +16420,13 @@ async function createRunnerdBackendWithinSessionClaim(
     if (input.execution.session.lifecyclePolicy.mode === "warm" && (!credentials.accountIdentity || description.warmTaskVersion !== 1)) throw new Error("Plugin warm task capability or account unavailable");
     const owner = retainedOwner ?? createPluginRunnerTaskOwner(ownerInput);
     if (retainedOwner) retainedOwner.rebind(ownerInput);
+    const delivered = new Set(owner.deliveredConfiguredEnvironmentKeys());
+    const notSet = Object.keys(pluginConfiguredEnvironment).filter(key => !delivered.has(key)).sort();
+    if (notSet.length > 0) {
+      await input.onLog?.("stderr", description.configuredEnvironmentVersion === 1
+        ? `[paperclip] The retained Runner process started before these environment variables were available. Not set in this run: ${notSet.join(", ")}. A new Runner process gets them.\n`
+        : `[paperclip] This environment's plugin cannot receive the agent's environment variables. Not set in this run: ${notSet.join(", ")}. Update the environment plugin.\n`);
+    }
     return { provider, description, prior, adoptionIdentity, adopting, owner };
   }
   if (pluginTask && remoteTarget?.transport === "sandbox" && input.execution.schema !== "paperclip.native-execution-input.v6" && input.execution.schema !== "paperclip.native-execution-input.v8") {

@@ -468,15 +468,15 @@ export function createPluginRunnerTaskOwner(input: {
     // stop request. Completion also proves credential/writeback obligations ran.
     isRetired: () => stoppedState?.executionStopped === true && completed && !detached,
     retiredBeforeClaim: () => retiredBeforeClaim,
+    /** Names this task's Runner process received; the warm process keeps its submitted set. */
+    deliveredConfiguredEnvironmentKeys: () => Object.keys(deliveredConfiguredEnvironment() ?? {}).sort(),
     rebind(next: typeof input) {
       if (!launched || stopRequested || stoppedState || detached || next.taskId !== taskId || next.harness !== input.harness ||
           input.accountIdentity !== next.accountIdentity || input.credentialIdentity !== next.credentialIdentity ||
-          JSON.stringify(input.projectIds) !== JSON.stringify(next.projectIds)
-          // The warm Runner process keeps the environment it was submitted with.
-          || input.configuredEnvironmentVersion !== next.configuredEnvironmentVersion
-          || JSON.stringify(Object.entries(input.configuredEnvironment ?? {}).sort())
-            !== JSON.stringify(Object.entries(next.configuredEnvironment ?? {}).sort())) throw new Error("Plugin warm task cannot be rebound");
-      input = next;
+          JSON.stringify(input.projectIds) !== JSON.stringify(next.projectIds)) throw new Error("Plugin warm task cannot be rebound");
+      // The process reuse key fences the values. The warm Runner process keeps the
+      // environment it was submitted with, also across a provider capability upgrade.
+      input = { ...next, configuredEnvironment: input.configuredEnvironment, configuredEnvironmentVersion: input.configuredEnvironmentVersion };
       released = false;
       bindStartupAbort();
     },

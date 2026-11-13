@@ -9439,7 +9439,7 @@ describe("native terminal-turn accounting", () => {
     let authorityRunId = current.binding.runId;
     const driver = { get authorityRunId() { return authorityRunId; }, prepareLaunch: vi.fn(), runnerProcessLauncher: launcher, controlPlaneRegistration: registration };
     const owner = vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner").mockReturnValue(
-      { launcher, registration, driver, readWorkspaceFile: vi.fn(), isRetired: () => false, rebind: vi.fn() } as never);
+      { launcher, registration, driver, readWorkspaceFile: vi.fn(), isRetired: () => false, rebind: vi.fn(), deliveredConfiguredEnvironmentKeys: () => [] } as never);
     const task = vi.fn(async (operation: unknown) => {
       environmentTaskOperationSchema.parse(operation);
       return { kind: "description", launchPreparationVersion: 1, projectAuthCheckVersion: 1, taskId: "task",
@@ -9477,7 +9477,7 @@ describe("native terminal-turn accounting", () => {
     const launcher = vi.fn(), registration = vi.fn();
     const driver = { authorityRunId: current.binding.runId, prepareLaunch: vi.fn(), runnerProcessLauncher: launcher, controlPlaneRegistration: registration };
     const owner = vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner").mockReturnValue(
-      { launcher, registration, driver, readWorkspaceFile: vi.fn(), isRetired: () => false, rebind: vi.fn() } as never);
+      { launcher, registration, driver, readWorkspaceFile: vi.fn(), isRetired: () => false, rebind: vi.fn(), deliveredConfiguredEnvironmentKeys: () => [] } as never);
     const task = vi.fn(async (operation: unknown) => {
       environmentTaskOperationSchema.parse(operation);
       return { kind: "description", launchPreparationVersion: 1, projectAuthCheckVersion: 1, taskId: "task",
@@ -18314,7 +18314,7 @@ describe("runnerd provider runtime wiring", () => {
     state.toolAuthorityDefinitions.mockImplementation(async binding => binding.readRemoteTaskFile ? [{ name: "register_deliverable" }] as never : []);
     const readWorkspaceFile = vi.fn(async () => Buffer.from("proof"));
     const release = vi.fn(async () => {}), resume = vi.fn(async () => "resumed" as const);
-    const owner = vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner").mockReturnValue({ launcher, registration, driver, readWorkspaceFile, release, resume, isRetired: () => false, retireSupersededTask: async () => false, retiredBeforeClaim: () => false, credentialsUpdated: vi.fn(), rebind:vi.fn() });
+    const owner = vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner").mockReturnValue({ launcher, registration, driver, readWorkspaceFile, release, resume, isRetired: () => false, retireSupersededTask: async () => false, retiredBeforeClaim: () => false, credentialsUpdated: vi.fn(), rebind:vi.fn(), deliveredConfiguredEnvironmentKeys: () => [] });
     const description = { kind: "description" as const, launchPreparationVersion: 1 as const, projectAuthCheckVersion: 1 as const,
       releaseResumeVersion: 1 as const, ...(kind === "codex" ? { workspaceFileReadVersion: 1 as const } : {}),
       taskId: "task", runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } };
@@ -18388,7 +18388,8 @@ describe("runnerd provider runtime wiring", () => {
     const driver = { prepareLaunch: vi.fn(), runnerProcessLauncher: launcher, controlPlaneRegistration: registration };
     const owner = vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner").mockReturnValue({ launcher, registration, driver,
       readWorkspaceFile: vi.fn(), release: vi.fn(), resume: vi.fn(), isRetired: () => false, retireSupersededTask: async () => false,
-      retiredBeforeClaim: () => false, credentialsUpdated: vi.fn(), rebind: vi.fn() } as never);
+      retiredBeforeClaim: () => false, credentialsUpdated: vi.fn(), rebind: vi.fn(),
+      deliveredConfiguredEnvironmentKeys: () => configuredEnvironmentVersion ? ["DAY_GITHUB_PUSH_TOKEN", "OPENAI_ADMIN_KEY_READONLY"] : [] } as never);
     const task = vi.fn(async (operation: unknown) => {
       environmentTaskOperationSchema.parse(operation);
       return { kind: "description" as const, launchPreparationVersion: 1 as const, projectAuthCheckVersion: 1 as const,
