@@ -1209,6 +1209,7 @@ describe("remote controller restart adoption", () => {
       "native_session_recovery_failed: HarnessReconciliationError: codex_history_read_failed: thread/turns/list requires supported paginated history; Error: provider_transport_failed: PRP command session.snapshot timed out (runner connected; pending ahead 0; last runner event seq 338 76s ago)",
       "native_session_recovery_failed: HarnessCapabilityUnavailableError: read is unavailable: Error: runnerd exited while waiting for session.snapshot",
       "native_session_recovery_failed: Error: runner_ingress_unavailable: PRP command runner.drain timed out (runner connected; pending ahead 0; last runner event seq 93 391s ago)",
+      "native session provider recovery timed out after 900000ms",
     ])("recognizes the staging recovery read that got no answer: %s", message => {
       expect(nativeRecoveryCommandUnanswered(new Error(message))).toBe(true);
       expect(nativeRecoveryCommandUnanswered(new Error("wrapped", { cause: new Error(message) }))).toBe(true);
@@ -1219,6 +1220,8 @@ describe("remote controller restart adoption", () => {
       "native_session_recovery_failed: provider resumed a different session",
       "native_session_recovery_failed: provider_transport_failed: PRP command session.snapshot timed out; native_adopted_provider_identity_mismatch",
       "native_session_recovery_failed: restart interruption history is incomplete",
+      "native session recovery replay timed out after 900000ms",
+      "native session provider recovery timed out after 900000ms; native_adopted_provider_identity_mismatch",
     ])("does not replace a Runner for another failure: %s", message => {
       expect(nativeRecoveryCommandUnanswered(new Error(message))).toBe(false);
     });
