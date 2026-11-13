@@ -12673,7 +12673,13 @@ async function executePaperclipNativeSessionAttempt(
                 } catch (admissionError) {
                   if (active.cancelRequested || active.admissionAbort!.signal.aborted
                     || admissionBackend?.providerTurnNeverIssued?.() !== true) throw admissionError;
-                  throw new NativeFailedBeforeProviderTurnError(sandboxProviderLeaseId(input.runnerExecutionTarget), admissionError);
+                  const beforeTurn = new NativeFailedBeforeProviderTurnError(sandboxProviderLeaseId(input.runnerExecutionTarget), admissionError);
+                  const detail = admissionError instanceof NativeProviderArtifactTransferTimeoutError ? `: ${admissionError.message}` : "";
+                  logger.warn({ runId: input.execution.binding.runId, technicalCause: beforeTurn.technicalCause,
+                    err: admissionError instanceof Error ? admissionError.message : String(admissionError) },
+                    "native session failed before its first provider turn; continuing on a fresh sandbox");
+                  try { await input.onLog?.("stderr", `[paperclip-runner] the session failed before its first provider turn (cause=${beforeTurn.technicalCause}${detail})\n`); } catch {}
+                  throw beforeTurn;
                 }
                 if (session.resolveRuntimeRequest) await liveQuestions.attach();
                 if (active.cancelRequested) {

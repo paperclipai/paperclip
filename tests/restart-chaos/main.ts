@@ -266,7 +266,6 @@ async function main(): Promise<number> {
     supervisor.useCrashPointControl({ controlPath: path.join(supervisor.paths.temporaryRoot, "crash-point.control"),
       receiptPath: path.join(waveDir, "crash-point-receipts.jsonl") });
   }
-  // Cell F glue (local only): an outside driver arms fail-mode points through this control file without a restart fault.
   const externalCrashControl = process.env.RESTART_CHAOS_EXTERNAL_CRASH_CONTROL;
   if (!crashPoint && !plan.options.failRecoveryStep && externalCrashControl) {
     supervisor.useCrashPointControl({ controlPath: externalCrashControl,

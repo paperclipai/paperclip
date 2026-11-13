@@ -303,6 +303,10 @@ describe.skipIf(!support.supported)("heartbeat native pre-dispatch failure retry
           executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
           predecessorRetirementFallback: expect.objectContaining({ version: 1, providerWorkStarted: false,
             predecessorRunId: null, replacedProviderLeaseIds: [`sandbox-${provider}-0`] }) }) });
+      expect(failed!.error).toBe("Setting up the computer took too long, so the task is continuing on a fresh one.");
+      expect(failed!.error).not.toMatch(/[a-z0-9]+_[a-z0-9_]+|\d|\(|\)/i);
+      expect(failed!.runnerProfileJson).toMatchObject({ failedBeforeProviderTurn: {
+        cause: "native_failed_before_provider_turn", technicalCause: "native_provider_artifacts_transfer_timeout" } });
       const [lease] = await db.select().from(environmentLeases).where(and(eq(environmentLeases.heartbeatRunId, runId),
         eq(environmentLeases.providerLeaseId, `sandbox-${provider}-0`)));
       expect(lease?.metadata).toMatchObject({ replaceBeforeReuse: { schema: "paperclip.replace-before-reuse.v1", runId } });

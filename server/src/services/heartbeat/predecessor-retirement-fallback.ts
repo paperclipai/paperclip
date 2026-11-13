@@ -48,7 +48,8 @@ export async function preparePredecessorRetirementFallback(db: Db, run: Run, err
     )).for("update")).filter(lease => !failure.providerLeaseId || lease.providerLeaseId === failure.providerLeaseId);
     if (leases.length === 0 && !beforeProviderTurn) return null;
     if (beforeProviderTurn) await tx.update(heartbeatRuns).set({ runnerProfileJson: sql`coalesce(${heartbeatRuns.runnerProfileJson}, '{}'::jsonb) || ${JSON.stringify({
-      [FAILED_BEFORE_PROVIDER_TURN_KEY]: { schema: FAILED_BEFORE_PROVIDER_TURN_SCHEMA, cause: beforeProviderTurn.code, proof: beforeProviderTurn.proof } })}::jsonb` })
+      [FAILED_BEFORE_PROVIDER_TURN_KEY]: { schema: FAILED_BEFORE_PROVIDER_TURN_SCHEMA, cause: beforeProviderTurn.code, proof: beforeProviderTurn.proof,
+        technicalCause: beforeProviderTurn.technicalCause } })}::jsonb` })
       .where(and(eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, run.id)));
     const marker: ReplaceBeforeReuseMarker = { schema: REPLACE_BEFORE_REUSE_SCHEMA, runId: run.id,
       predecessorRunId: failure.predecessorRunId, recordedAt: new Date().toISOString() };
