@@ -117,7 +117,7 @@ function bootstrapCancellation(
     // until its pending RPCs have been rejected and TERM/KILL cleanup has
     // completed. The cancellation reason remains authoritative if cleanup
     // itself reports a secondary failure.
-    void close(isNativeProviderRecoveryDeadlineError(signal?.reason)).then(
+    void close(isNativeProviderRecoveryDeadlineError(signal?.reason) && transport.recoversForStop?.() !== true).then(
       () =>
         rejectAborted(signal?.reason ?? new Error("Codex bootstrap aborted")),
       () =>

@@ -298,7 +298,7 @@ it("continues the same provider thread from a fresh Runner over the journal of a
   }
 }, 60_000);
 
-async function recoveryEndedWhileAdoptedRunnerHangs(abortReason: Error) {
+async function recoveryEndedWhileAdoptedRunnerHangs(abortReason: Error, recoveryPurpose?: "stop_cleanup") {
   const root = await mkdtemp(join(tmpdir(), "runnerd-remote-retention-deadline-"));
   const server = createServer();
   let authority: DurablePrpControlPlane | null = null;
@@ -353,6 +353,7 @@ async function recoveryEndedWhileAdoptedRunnerHangs(abortReason: Error) {
     const thread = opened.thread as Record<string, unknown>;
     adopted = createCapabilityRunnerdCodexTransport({
       ...shared,
+      ...(recoveryPurpose ? { recoveryPurpose } : {}),
       resumeDynamicTools: codexSemanticToolSpecs(),
       resumeProviderSession: { driverSessionId: String(thread.id), providerSessionId: String(thread.sessionId) },
       runnerProcessLauncher: vi.fn(() => { throw new Error("Must adopt the existing runner"); }),
@@ -388,7 +389,8 @@ async function recoveryEndedWhileAdoptedRunnerHangs(abortReason: Error) {
         .filter(command => command.status === "pending" && ["turn.stop", "runner.suspend", "runner.shutdown"].includes(command.type))
         .map(command => command.type)
       : [];
-    return { outcome, runnerState, settledMs, pendingTerminalCommands };
+    const providerState = providerPid === null ? "gone" : processState(providerPid);
+    return { outcome, runnerState, providerState, settledMs, pendingTerminalCommands };
   } finally {
     await adopted?.transport.detachControllerForRestart?.().catch(() => undefined);
     for (const child of children) { signal(child.pid, "SIGCONT"); signal(child.pid ? -child.pid : null, "SIGKILL"); }
@@ -411,4 +413,11 @@ it("still stops an adopted Runner when a Stop ends a recovery it never answered"
   const result = await recoveryEndedWhileAdoptedRunnerHangs(new Error("Stop requested"));
   expect(String(result.outcome)).toContain("Stop requested");
   expect(result.runnerState).toBe("gone");
+}, 60_000);
+
+it("still stops the adopted Runner and its provider when the provider recovery deadline ends a Stop's cleanup recovery", async () => {
+  const result = await recoveryEndedWhileAdoptedRunnerHangs(new NativeProviderRecoveryDeadlineError(900_000), "stop_cleanup");
+  expect(result.outcome).toBeInstanceOf(NativeProviderRecoveryDeadlineError);
+  expect(result.runnerState).toBe("gone");
+  expect(result.providerState).toBe("gone");
 }, 60_000);

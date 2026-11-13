@@ -290,13 +290,14 @@ describe("Codex app-server Codex driver", () => {
       expect(recoveryTransport.calls.some(call => ["turn/start", "thread/start", "turn/interrupt"].includes(call.method))).toBe(false);
     });
 
-    async function abortHungRead(reason: Error) {
+    async function abortHungRead(reason: Error, recoversForStop = false) {
       const controller = new AbortController();
-      const { recovery, close, detach } = await recoverWith(method => {
+      const { recovery, close, detach, recoveryTransport } = await recoverWith(method => {
         if (method !== "thread/read") return null;
         setTimeout(() => controller.abort(reason), 0);
         return new Promise<never>(() => {});
       }, controller.signal);
+      Object.assign(recoveryTransport, { recoversForStop: () => recoversForStop });
       return { outcome: await recovery.then(() => null, (error: unknown) => error), close, detach };
     }
 
@@ -314,6 +315,14 @@ describe("Codex app-server Codex driver", () => {
       expect(String(outcome)).toContain("native session provider recovery timed out after 900000ms");
       expect(detach).toHaveBeenCalledTimes(1);
       expect(close).not.toHaveBeenCalled();
+    });
+
+    it("still stops the Runner when the provider recovery deadline ends a Stop's cleanup recovery", async () => {
+      const { outcome, close, detach } = await abortHungRead(new NativeProviderRecoveryDeadlineError(900_000), true);
+      expect(outcome).toBeInstanceOf(NativeProviderRecoveryDeadlineError);
+      expect(detach).not.toHaveBeenCalled();
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(close.mock.calls[0]).toEqual([]);
     });
 
     it.each([

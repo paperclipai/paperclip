@@ -4371,6 +4371,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
    * neither is required. A remote same-run bootstrap retry may then launch a
    * new runner: the old one is gone, and its provider never opened a thread.
    */
+  recoversForStop(): boolean {
+    return this.options.recoveryPurpose === "stop_cleanup";
+  }
+
   runnerExitConfirmed(): boolean {
     return this.#closeFinished && !this.#startupComplete
       && (this.#providerIdentity === null || this.#openingCommandUnanswered())
