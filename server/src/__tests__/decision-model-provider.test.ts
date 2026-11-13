@@ -23,6 +23,8 @@ describe("decision provider contract", () => {
     const [url, options] = transport.mock.calls[0];
     expect(String(url)).toBe(provider === "openai" ? "https://api.openai.com/v1/decisions" : "https://openrouter.ai/api/alpha/decisions");
     expect(new Headers(options?.headers).get("authorization")).toBe("Bearer selected-credential");
+    expect(new Headers(options?.headers).get("http-referer")).toBe(provider === "openrouter" ? "https://paperclip.ing" : null);
+    expect(new Headers(options?.headers).get("x-openrouter-title")).toBe(provider === "openrouter" ? "Paperclip" : null);
     expect(result.answers).toMatchObject({ billing: { type: "boolean", probability: 0.99 }, team: { type: "choice", choice: "billing", confidence: provider === "openai" ? 0.9 : 0.85 }, severity: { type: "score", score: 0.1 } });
     expect(result.receipt.costCents).toBe(provider === "openai" ? "0.0012300" : "0.0005166");
     expect(JSON.stringify(result.receipt)).not.toContain("customer");

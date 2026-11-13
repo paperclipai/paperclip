@@ -10,6 +10,7 @@ import { TaskChatBubble } from "./TaskChatBubble";
 import { TaskChatExpansionState } from "./expansion-state";
 import type {
   TaskChatActivityPhaseItem,
+  TaskChatProviderActivityItem,
   TaskChatToolItem,
 } from "./task-chat-model";
 
@@ -29,6 +30,27 @@ const tool = (
   target: `command-${id}`,
   status,
   detail: `output-${id}`,
+});
+
+const providerItem = (
+  id: string,
+  family: TaskChatProviderActivityItem["family"],
+  status: TaskChatProviderActivityItem["status"],
+  details: TaskChatProviderActivityItem["details"],
+  extra: Partial<TaskChatProviderActivityItem> = {},
+): TaskChatProviderActivityItem => ({
+  id,
+  kind: "protocol",
+  surface: "provider_activity",
+  family,
+  eventType: `${family}.activity`,
+  status,
+  title: family,
+  details,
+  steps: [],
+  links: [],
+  children: [],
+  ...extra,
 });
 
 describe("TaskChatRunnerActivityGroup", () => {
@@ -333,5 +355,62 @@ describe("TaskChatRunnerActivityGroup", () => {
         ".runner-activity-roll-in, .runner-activity-roll-out",
       ),
     ).toBeNull();
+  });
+  it("shows research sources, check outcomes and a wait countdown in expanded history", () => {
+    const search = providerItem("search", "research", "completed", [
+      { label: "Action", value: "search" },
+      { label: "Query", value: "temporal week dates" },
+    ], {
+      links: [
+        { label: "MDN", href: "https://developer.mozilla.org/a" },
+        { label: "MDN again", href: "https://developer.mozilla.org/b" },
+        { label: "TC39", href: "https://tc39.es/c" },
+      ],
+    });
+    const passed = providerItem("check-1", "verification", "completed", [
+      { label: "Status", value: "passed" },
+      { label: "Detail", value: "6 tests passed" },
+    ], { summary: "node --test" });
+    const failed = providerItem("check-2", "verification", "failed", [
+      { label: "Status", value: "failed" },
+    ], { summary: "pnpm typecheck" });
+    const skipped = providerItem("check-3", "verification", "informational", [
+      { label: "Status", value: "not_run" },
+      { label: "Reason Code", value: "policy_restricted" },
+    ], { summary: "pnpm test:e2e" });
+    const longFailure = "x".repeat(300);
+    const failedLong = providerItem("check-4", "verification", "failed", [
+      { label: "Status", value: "failed" },
+      { label: "Detail", value: longFailure },
+    ], { summary: "pnpm typecheck" });
+    const wait = providerItem("wait", "wait", "running", [
+      { label: "Planned Duration Ms", value: "30000" },
+    ], { startedAt: new Date(Date.now() - 12_000).toISOString() });
+    render([search, passed, failed, skipped, failedLong, wait], "live", false);
+    act(() => toggle().click());
+
+    const strip = container.querySelector('[data-testid="task-chat-research-sources"]');
+    expect([...strip!.querySelectorAll("a")].map((link) => link.textContent)).toEqual(["developer.mozilla.org", "tc39.es"]);
+    expect(strip?.textContent).toContain("+1 more");
+    expect(container.textContent).toContain("Searched the web“temporal week dates”");
+
+    const passedRow = container.querySelector('[data-activity-row="check-1"]')!;
+    expect(passedRow.textContent).toContain("Check passed");
+    expect(passedRow.textContent).toContain("6 tests passed");
+    expect(passedRow.querySelector("[data-activity-icon] svg")?.getAttribute("class")).toContain("--status-task-icon-done");
+    const failedRow = container.querySelector('[data-activity-row="check-2"]')!;
+    expect(failedRow.textContent).toContain("Check failed");
+    expect(failedRow.querySelector("[data-activity-icon] svg")?.getAttribute("class")).toContain("text-destructive");
+    expect(failedRow.closest("button")).toBeNull();
+    expect(container.querySelector('[data-activity-row="check-3"]')?.textContent).toContain("Policy restricted");
+
+    const longRow = container.querySelector<HTMLButtonElement>('[data-activity-item-id="check-4"] button')!;
+    act(() => longRow.click());
+    const detail = container.querySelector('[data-activity-item-id="check-4"] [data-testid="task-chat-verification-details"]');
+    expect(detail?.textContent).toContain("pnpm typecheck");
+    expect(detail?.textContent).toContain(longFailure);
+
+    expect(container.querySelector('[data-activity-row="wait"]')?.textContent).toContain("Waiting 30s");
+    expect(container.querySelector('[data-testid="task-chat-wait-countdown"]')?.textContent).toMatch(/^1[78]s left$/);
   });
 });

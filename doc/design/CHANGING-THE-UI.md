@@ -50,6 +50,18 @@ Then **review the git diff and keep only the CSS-variable value changes** — th
 - **Give it a story.** New visual surface = new Storybook story = automatic screenshot coverage forever.
 - `pnpm check:token-gates` before you push. If a value genuinely can't be a token (third-party config, canvas fills, intentional one-off decoration on demo pages), it goes on the allowlist **with an inline comment saying why**.
 
+## Proposed task collections
+
+For work explicitly implementing the staged design refresh, review **Design
+proposals → Pages → Tasks** and the component stories. Compose shared UI with
+`useTaskListCollection` (`ui/src/hooks/useTaskListCollection.ts`) rather than
+reimplementing search, creator identity mapping, views, filter transitions or
+hierarchy expansion. Its `visibleItems` include parent context for the list;
+boards use `matchingItems`. Pass its namespaced `creators` into the filter menu.
+The caller supplies accessible data and handles API mutations. See `DESIGN.md`
+for the contract and trial acceptance cases; the proposed controller is not yet
+wired into production routes.
+
 ## Recipe 4 — you changed something and snapshots failed
 
 That's the system working. Two cases:

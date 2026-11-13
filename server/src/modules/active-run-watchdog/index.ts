@@ -1,3 +1,4 @@
+import { registerActiveRunSilenceWork } from "./adapters/deadline-work.js";
 import type { Db } from "@paperclipai/db";
 import { createPostgresWatchdogAdapter } from "./adapters/postgres.js";
 import { createProcessAdapter } from "./adapters/process.js";
@@ -29,17 +30,19 @@ export function createActiveRunWatchdog(db: Db, config: ActiveRunWatchdogConfig)
     processController,
   });
 
+  const scanSilentActiveRuns = createScanSilentActiveRuns({ reader: postgresAdapter, foldSourceResolvedRun,
+    suspicionThresholdMs: config.suspicionThresholdMs });
+
   return {
+    registerSilenceWork: (coordinator: Parameters<typeof registerActiveRunSilenceWork>[1], canRun: () => boolean,
+      scan = scanSilentActiveRuns, enabled = async () => true) => registerActiveRunSilenceWork(db, coordinator, { reader: postgresAdapter,
+        scan, enabled, suspicionThresholdMs: config.suspicionThresholdMs }, canRun),
     buildRunOutputSilence: createBuildRunOutputSilence({
       reader: postgresAdapter,
       suspicionThresholdMs: config.suspicionThresholdMs,
       criticalThresholdMs: config.criticalThresholdMs,
     }),
-    scanSilentActiveRuns: createScanSilentActiveRuns({
-      reader: postgresAdapter,
-      foldSourceResolvedRun,
-      suspicionThresholdMs: config.suspicionThresholdMs,
-    }),
+    scanSilentActiveRuns,
     recordWatchdogDecision: createRecordWatchdogDecision({
       reader: postgresAdapter,
       writer: postgresAdapter,

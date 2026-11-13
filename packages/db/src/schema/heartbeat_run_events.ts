@@ -46,5 +46,20 @@ export const heartbeatRunEvents = pgTable(
       .where(sql`${table.sourceInstanceId} is not null and ${table.sourceSeq} is not null`),
     companyRunIdx: index("heartbeat_run_events_company_run_idx").on(table.companyId, table.runId),
     companyCreatedIdx: index("heartbeat_run_events_company_created_idx").on(table.companyId, table.createdAt),
+    // Context-window readings: the few usage items per run, newest first.
+    usageItemRunIdx: index("heartbeat_run_events_usage_item_run_idx")
+      .on(table.runId, table.createdAt)
+      .where(sql`${table.eventType} = 'item.completed' and (${table.payload} -> 'prpEvent' -> 'payload' ->> 'kind') = 'usage'`),
+    // Compactions counted per agent session across runs.
+    compactionSessionIdx: index("heartbeat_run_events_compaction_session_idx")
+      .on(table.companyId, sql`(${table.payload} -> 'prpEvent' ->> 'normalizedSessionId')`)
+      .where(sql`${table.eventType} = 'context.compacted'`),
+    // Retry-exhaustion receipts for the attention feed: a few rows per company.
+    // The predicate must stay textually equal to the query in
+    // server/src/services/attention-exhausted-runs.ts so the planner can use it.
+    retryExhaustedIdx: index("heartbeat_run_events_retry_exhausted_idx")
+      .on(table.companyId, table.runId, table.id.desc())
+      .where(sql`${table.eventType} = 'lifecycle' and ${table.message} like 'Bounded retry exhausted%'`)
+      .concurrently(),
   }),
 );

@@ -28,6 +28,13 @@ export interface AppendControlPlaneEventOptions {
    * without committing before it rejects.
    */
   signal: AbortSignal;
+  /**
+   * For an authoritative governed-cancellation terminal only, a port may
+   * return its committed receipt before postcommit observers finish. Such a
+   * port owns that observer debt and must join it before checkpoint or result
+   * acceptance. Ports that do not support deferral keep their usual behavior.
+   */
+  deferPostCommitObservers?: true;
 }
 
 export interface CheckpointControlPlaneSessionOptions {
@@ -92,4 +99,11 @@ export interface ControlPlanePort {
     result: NativeRunResult | CompleteControlPlaneRunInput,
     options?: FinalizeControlPlaneOperationOptions,
   ): Promise<void>;
+  /**
+   * Durable proof, across every runner instance, that this run has recorded no
+   * provider event, tool invocation, or accepted result. True only when the
+   * control plane can prove it; a port without this proof keeps every
+   * recovery refusal unchanged.
+   */
+  provesNoRunProviderWork?(options: FinalizeControlPlaneOperationOptions): Promise<boolean>;
 }

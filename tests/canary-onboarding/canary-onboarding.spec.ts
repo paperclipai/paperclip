@@ -82,19 +82,33 @@ test("the exact published canary installs and reaches Connect a model", async ({
   await page.getByRole("button", { name: "Next", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Connect a model" })).toBeVisible();
 
-  // Stop before Connect: a public-repository gate must not require a Claude or
-  // Codex credential, and reaching this screen has not hired an agent or made
-  // a first task.
+  await expect.poll(
+    () => getJson<Array<{ id: string }>>(
+      page.request,
+      `/api/companies/${company!.id}/agents`,
+    ),
+    { message: "Connect a model must retain one paused setup record" },
+  ).toEqual([
+    expect.objectContaining({
+      name: agentName,
+      status: "paused",
+      pauseReason: "setup",
+      metadata: expect.objectContaining({ setupAdapterPending: true }),
+      runtimeConfig: expect.objectContaining({
+        heartbeat: expect.objectContaining({ enabled: false }),
+      }),
+    }),
+  ]);
   expect(
     await getJson<Array<{ id: string }>>(
       page.request,
-      `/api/companies/${company!.id}/agents`,
+      `/api/companies/${company!.id}/issues`,
     ),
   ).toEqual([]);
   expect(
     await getJson<Array<{ id: string }>>(
       page.request,
-      `/api/companies/${company!.id}/issues`,
+      `/api/companies/${company!.id}/heartbeat-runs`,
     ),
   ).toEqual([]);
   expect(pageErrors, pageErrors.join("\n")).toEqual([]);

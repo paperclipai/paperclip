@@ -10,8 +10,7 @@ import { withRunExecutionTiming } from "./execution-preparation-timing.js";
 import { issueService } from "./issues.js";
 import { logActivity } from "./activity-log.js";
 import { executionWorkspaceService } from "./execution-workspaces.js";
-import { lockExecutionWorkspaceRootProvenance } from "./execution-workspace-repositories.js";
-import { assertTaskWorkspaceAccess } from "./task-workspace-source-access.js";
+import { assertExecutionWorkspaceRecordAccess } from "./task-workspace-access.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("execution timing with real database waits", () => {
@@ -42,13 +41,13 @@ const support = await getEmbeddedPostgresTestSupport();
   });
   afterAll(async () => { await temporary?.cleanup(); });
 
-  it.each(["advisory", "row"] as const)("attributes a controlled %s lock wait to its leaf and commits the original update", async kind => {
+  it("attributes a controlled row lock wait to its leaf and commits the original update", async () => {
+    const kind = "row";
     let release!: () => void, acquired!: () => void;
     const released = new Promise<void>(resolve => { release = resolve; });
     const ready = new Promise<void>(resolve => { acquired = resolve; });
     const blocker = db.transaction(async tx => {
-      if (kind === "advisory") await lockExecutionWorkspaceRootProvenance(tx, companyId);
-      else await tx.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspaceId)).for("update");
+      await tx.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspaceId)).for("update");
       acquired();
       await released;
     });
@@ -56,10 +55,10 @@ const support = await getEmbeddedPostgresTestSupport();
     const update = withRunExecutionTiming(`wait-${kind}`, () => executionWorkspaceService(db).update(workspaceId, { metadata: { verified: kind } }));
     try {
       await vi.waitFor(async () => {
-        const pending = await db.execute(sql`select count(*)::int as count from pg_locks where not granted and locktype = ${kind === "advisory" ? "advisory" : "transactionid"}`);
+        const pending = await db.execute(sql`select count(*)::int as count from pg_locks where not granted and locktype = ${"transactionid"}`);
         expect(pending[0]?.count).toBeGreaterThan(0);
       });
-      expect(exporter.getFinishedSpans().some(span => span.name === (kind === "advisory" ? "workspace.provenance_lock" : "workspace.row_lock"))).toBe(false);
+      expect(exporter.getFinishedSpans().some(span => span.name === "workspace.row_lock")).toBe(false);
     } finally {
       release();
       await blocker;
@@ -69,7 +68,7 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(saved.metadata).toMatchObject({ verified: kind });
     const spans = exporter.getFinishedSpans();
     const transaction = spans.find(span => span.name === "workspace.transaction")!;
-    const wait = spans.find(span => span.name === (kind === "advisory" ? "workspace.provenance_lock" : "workspace.row_lock"))!;
+    const wait = spans.find(span => span.name === "workspace.row_lock")!;
     expect(wait.parentSpanContext?.spanId).toBe(transaction.spanContext().spanId);
     expect(wait.duration[0] * 1e9 + wait.duration[1]).toBeGreaterThan(0);
     expect(spans.map(span => span.name)).toEqual(expect.arrayContaining(["workspace.transaction.entry", "workspace.transaction.commit", "workspace.notification", "workspace.write"]));
@@ -117,7 +116,7 @@ const support = await getEmbeddedPostgresTestSupport();
   });
 
   it("preserves a real access denial and exports only failed status", async () => {
-    await expect(withRunExecutionTiming("denied", () => assertTaskWorkspaceAccess(db,
+    await expect(withRunExecutionTiming("denied", () => assertExecutionWorkspaceRecordAccess(db,
       { type: "board", userId: "not-a-company-member" }, companyId, workspaceId,
     ))).rejects.toMatchObject({ status: 403 });
     const spans = exporter.getFinishedSpans();

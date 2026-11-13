@@ -112,11 +112,11 @@ export function PhotonConnectStep({
       >
         {inspection.isPending ? "Inspecting Photon…" : "Inspect Photon project"}
       </Button>
-      {inspection.isError && (
+      {inspection.error ? (
         <p role="alert" className="text-sm text-destructive">
           {sanitizedSetupErrorMessage(inspection.error, { projectSecret })}
         </p>
-      )}
+      ) : null}
       {inspection.data && (
         <fieldset className="space-y-3">
           <legend className="text-sm font-medium">

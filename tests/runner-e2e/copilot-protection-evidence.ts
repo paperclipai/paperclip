@@ -1,8 +1,10 @@
+import { assertCopilotStopAcknowledgement, type CopilotStopAcknowledgement } from "./copilot-stop-acknowledgement.js";
 import { withoutProvenBootstrapReads, bootstrapReadExecutionId, type BootstrapReadProof } from "./native-bootstrap-read-proof.js";
 import { canonicalJson } from "../../packages/shared/src/portability-hash.js";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { readCopilotToolEvidence, type CopilotToolNotice } from "./copilot-evidence.js";
+import { readCopilotContextRead } from "./copilot-context-evidence.js";
 
 /** A tool origin exists regardless of the first status emitted by the provider. */
 export function countCopilotToolOrigins(notices: readonly CopilotToolNotice[]): number {
@@ -120,7 +122,9 @@ export interface CopilotRemoteSnapshot {
 export interface CopilotRemoteFixture {
   binding: CopilotRemoteBinding; remoteCwd: string; actionFile: string;
   snapshot(label: string): Promise<CopilotRemoteSnapshot>;
-  setupAttachedCommand(input: { marker: string; markerText: string; delayMs: number }): Promise<{ command: string; commandSha256: string }>;
+  killOwnedCopilot(): Promise<Record<string, unknown>>;
+  setupAttachedCommand(input: { marker: string; markerText: string; delayMs: number; waitForFinishAttempt?: boolean }): Promise<{ command: string; commandSha256: string }>;
+  releaseAttachedCommand(): Promise<{ releasedAtMs: number }>;
   finish(): Promise<CopilotRemoteSnapshot>; readFile(relative: string): Promise<Buffer>; close(): Promise<void>;
 }
 export interface CopilotRemoteBootstrap {
@@ -156,8 +160,11 @@ export function copilotRemoteDeniedSample(s: CopilotRemoteSnapshot, baseline: Co
   return { phase, observedAtMs: s.observedAtMs, exists: t.absent !== true || t.sha256 !== null };
 }
 /** Only typed reads before the tested operation can be bootstrap work. */
-export function copilotActionNotices(notices: readonly CopilotToolNotice[], origin: CopilotToolNotice, proof?: BootstrapReadProof): CopilotToolNotice[] {
-  return withoutProvenBootstrapReads(notices, origin, proof);
+export function copilotActionNotices(notices: readonly CopilotToolNotice[], origin: CopilotToolNotice, proof?: BootstrapReadProof, contextEvents?: readonly unknown[]): CopilotToolNotice[] {
+  const context = contextEvents ? readCopilotContextRead(contextEvents, origin, true) : undefined;
+  const remaining = context ? notices.filter(n => ![context.toolCallId, ...context.discoveries.map(d => d.toolCallId)].includes(n.toolCallId)) : notices;
+  const bootstrap = proof && context ? { ...proof, events: proof.events.filter(r => ![...context.canonicalSeqs, ...context.discoveries.flatMap(d => d.canonicalSeqs)].includes((r as { seq: number }).seq)) } : proof;
+  return withoutProvenBootstrapReads(remaining, origin, bootstrap);
 }
 export function assertCopilotRemoteAttached(s: CopilotRemoteSnapshot, baseline: CopilotRemoteSnapshot, terminalAt: number) {
   assertCopilotRemoteRetirement(s, baseline);
@@ -179,7 +186,7 @@ export async function prepareCopilotRemoteAction(input: {
 }) {
   const f = input.fixture;
   if (f.binding.companyId !== input.companyId || f.binding.environmentId !== input.environmentId || f.binding.runId !== input.runId || f.remoteCwd !== f.binding.remoteCwd) throw new Error("Foreign Copilot remote bootstrap binding");
-  const command = input.markerText === undefined ? undefined : await f.setupAttachedCommand({ marker: input.target, markerText: input.markerText, delayMs: 4000 });
+  const command = input.markerText === undefined ? undefined : await f.setupAttachedCommand({ marker: input.target, markerText: input.markerText, delayMs: 4000, waitForFinishAttempt: true });
   const baseline = await f.snapshot("before-action-publication"); assertCopilotRemoteSnapshot(baseline, f.binding);
   if (baseline.setup.published || baseline.setup.path !== f.actionFile || !baseline.processes.captured || baseline.processes.live.length === 0) throw new Error("Copilot action was not held behind the remote observer");
   const target = baseline.targets[input.target];
@@ -196,7 +203,8 @@ export async function readCopilotRemoteMarkerAfterRetirement(fixture: CopilotRem
 }
 
 export interface CopilotDenialSettlement {
-  schema: "paperclip.e2e.copilot-denial-settlement.v3";
+  stopAcknowledgement: CopilotStopAcknowledgement;
+  schema: "paperclip.e2e.copilot-denial-settlement.v4";
   branch: "provider_cancelled_or_interrupted" | "provider_completed_observed_before_stop";
   /** A cancelled terminal alone does not prove Stop reached active work. */
   providerCancellationTerminalObserved: boolean;
@@ -211,7 +219,8 @@ export interface CopilotDenialSettlement {
     emittedAtMs: number; rowCreatedAtMs: number; rowSha256: string; failedToolRowSha256: string;
   };
   runStop: {
-    companyId: string; issueId: string; scope: "run"; status: "cancelled"; issueStatus: "in_progress";
+    companyId: string; issueId: string; scope: "run"; status: "cancelled"; issueStatus: "in_progress" | "blocked";
+    incompleteRecovery?: { actionId: string; rowSeq: number; rowSha256: string; nextAttemptAtMs: number };
     intentId: string; intentAuditId: string; acknowledgementAuditId: string;
     requestedAtMs: number; recordedAtMs: number; acknowledgedAtMs: number; finishedAtMs: number;
   };
@@ -222,11 +231,11 @@ const settlementTime = (v: unknown): v is number => Number.isSafeInteger(v) && (
 const settlementDate = (v: unknown): number => typeof v === "string" && /^\d{4}-\d{2}-\d{2}T.*Z$/u.test(v) ? Date.parse(v) : NaN;
 
 export function validCopilotDenialSettlement(s: CopilotDenialSettlement): boolean {
-  if (!s || s.schema !== "paperclip.e2e.copilot-denial-settlement.v3") return false;
+  if (!s || s.schema !== "paperclip.e2e.copilot-denial-settlement.v4") return false;
   const t = s.providerTerminal, c = s.runStop;
   if (!t || !c || ![s.runId, s.sessionId, s.turnId, s.toolCallId, s.requestId, t.normalizedSessionId, t.sourceInstanceId,
     c.companyId, c.issueId, c.intentId, c.intentAuditId, c.acknowledgementAuditId].every(settlementId)
-    || c.scope !== "run" || c.status !== "cancelled" || c.issueStatus !== "in_progress" || c.intentAuditId === c.acknowledgementAuditId
+    || c.scope !== "run" || c.status !== "cancelled" || !["in_progress", "blocked"].includes(c.issueStatus) || c.intentAuditId === c.acknowledgementAuditId
     || ![t.failedToolRowCreatedAtMs, t.emittedAtMs, t.rowCreatedAtMs, c.requestedAtMs, c.recordedAtMs, c.acknowledgedAtMs, c.finishedAtMs].every(settlementTime)
     || ![t.requestSourceSeq, t.resolvedSourceSeq, t.deliveredSourceSeq, t.failedNoticeSourceSeq].every(n => Number.isSafeInteger(n) && n > 0)
     || !(t.requestSourceSeq < t.resolvedSourceSeq && t.resolvedSourceSeq < t.deliveredSourceSeq && t.deliveredSourceSeq < t.failedNoticeSourceSeq && t.failedNoticeSourceSeq < t.failedToolSourceSeq)
@@ -236,7 +245,13 @@ export function validCopilotDenialSettlement(s: CopilotDenialSettlement): boolea
   if (!before || before.schema !== "paperclip.e2e.copilot-pre-stop-observation.v2"
     || !["runId", "sessionId", "turnId", "toolCallId", "requestId"].every(k => before[k as keyof CopilotPreStopObservation] === s[k as keyof CopilotDenialSettlement])
     || typeof before.cancellationRequestId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u.test(before.cancellationRequestId)
-    || c.intentId !== `native-cancellation:${before.cancellationRequestId}`
+    || typeof s.stopDispatchMonotonicNs !== "string" || !/^[1-9][0-9]{0,29}$/.test(s.stopDispatchMonotonicNs)
+    || !s.stopAcknowledgement || s.stopAcknowledgement.schema !== "paperclip.e2e.copilot-stop-acknowledgement.v1"
+    || s.stopAcknowledgement.fixtureCorrelationId !== before.cancellationRequestId || s.stopAcknowledgement.dispatchMonotonicNs !== s.stopDispatchMonotonicNs
+    || s.stopAcknowledgement.intentId !== c.intentId || s.stopAcknowledgement.intentAuditId !== c.intentAuditId || s.stopAcknowledgement.acknowledgementAuditId !== c.acknowledgementAuditId
+    || s.stopAcknowledgement.companyId !== c.companyId || s.stopAcknowledgement.issueId !== c.issueId || s.stopAcknowledgement.runId !== s.runId || s.stopAcknowledgement.callerUserId !== "local-board"
+    || !/^sha256:[a-f0-9]{64}$/.test(s.stopAcknowledgement.responseMetadataSha256)
+    || !/^[1-9][0-9]{0,29}$/.test(s.stopAcknowledgement.apiResponseObservedMonotonicNs) || BigInt(s.stopAcknowledgement.apiResponseObservedMonotonicNs) <= BigInt(s.stopDispatchMonotonicNs)
     || before.companyId !== c.companyId || before.normalizedSessionId !== t.normalizedSessionId || before.sourceInstanceId !== t.sourceInstanceId
     || before.failedToolSourceSeq !== t.failedToolSourceSeq || before.failedToolRowSha256 !== t.failedToolRowSha256
     || ![t.rowSha256, t.failedToolRowSha256].every(v => /^sha256:[a-f0-9]{64}$/u.test(v))
@@ -244,6 +259,14 @@ export function validCopilotDenialSettlement(s: CopilotDenialSettlement): boolea
     || !/^[1-9][0-9]{0,29}$/u.test(before.apiReadCompletedMonotonicNs) || !/^[1-9][0-9]{0,29}$/u.test(s.stopDispatchMonotonicNs)
     || BigInt(before.apiReadCompletedMonotonicNs) >= BigInt(s.stopDispatchMonotonicNs)) return false;
   if (before.terminal !== null && (!before.terminal || before.terminal.eventType !== t.eventType || before.terminal.sourceSeq !== t.sourceSeq || before.terminal.rowSha256 !== t.rowSha256)) return false;
+  if (c.issueStatus === "blocked") {
+    const recovery = c.incompleteRecovery, observed = before.incompleteRecovery;
+    if (s.branch !== "provider_completed_observed_before_stop" || before.terminal?.eventType !== "turn.completed"
+      || !recovery || !observed || !settlementId(recovery.actionId)
+      || !Number.isSafeInteger(recovery.rowSeq) || recovery.rowSeq <= 0 || !settlementTime(recovery.nextAttemptAtMs)
+      || !/^sha256:[a-f0-9]{64}$/u.test(recovery.rowSha256)
+      || recovery.rowSeq !== observed.rowSeq || recovery.rowSha256 !== observed.rowSha256 || recovery.nextAttemptAtMs !== observed.nextAttemptAtMs) return false;
+  }
   if (s.branch === "provider_completed_observed_before_stop") return t.eventType === "turn.completed"
     && s.providerCancellationTerminalObserved === false && before.terminal?.eventType === "turn.completed";
   return s.branch === "provider_cancelled_or_interrupted" && s.providerCancellationTerminalObserved === true
@@ -299,9 +322,11 @@ export interface CopilotPreStopObservation {
   normalizedSessionId: string; sourceInstanceId: string;
   failedToolSourceSeq: number; failedToolRowSha256: string;
   terminal: { eventType: "turn.completed" | "turn.cancelled" | "turn.interrupted"; sourceSeq: number; rowSha256: string } | null;
+  /** Exact current-mainline missing-result row actually read before Stop. */
+  incompleteRecovery?: { rowSeq: number; rowSha256: string; nextAttemptAtMs: number };
   /** Fixture-process monotonic clock, never provider or database wall time. */
   apiReadCompletedMonotonicNs: string;
-  /** Fresh caller UUID reserved atomically by the board cancel API. */
+  /** Fixture correlation UUID; current mainline generates its own API intent. */
   cancellationRequestId: string;
 }
 const denialRowSha = (row: unknown) => `sha256:${createHash("sha256").update(canonicalJson(row)).digest("hex")}`;
@@ -319,15 +344,30 @@ function readDeniedTerminal(proof: ReturnType<typeof readCopilotDeniedEdit>) {
     || p.status !== row.eventType.slice(5) || p.error != null) throw invalid();
   return { row, terminal };
 }
+function readDeniedIncompleteRecovery(events: readonly unknown[], request: CopilotToolNotice, companyId: string, terminal: ReturnType<typeof readDeniedTerminal>) {
+  if (terminal?.terminal.eventType !== "turn.completed") return undefined;
+  const rows = events.map(settlementRecord).filter(row => row.eventType === "lifecycle" && settlementRecord(row.payload).retryReasonCode === "semantic_result_missing");
+  if (rows.length === 0) return undefined;
+  const row = rows[0]!, payload = settlementRecord(row.payload), detail = settlementRecord(payload.failureDetail);
+  if (rows.length !== 1 || row.runId !== request.runId || row.companyId !== companyId
+    || !Number.isSafeInteger(row.seq) || row.seq <= terminal.row.seq || payload.fallbackSuppressed !== true || payload.attempt !== 1
+    || detail.originalFailureCode !== "native_session_interrupted" || detail.recoveryMode !== "exact_checkpoint_resume"
+    || detail.checkpointExists !== true || detail.providerSessionEstablished !== true || !settlementTime(settlementDate(payload.nextAttemptAt))) {
+    throw new Error("Copilot denial lacks exact incomplete provider settlement");
+  }
+  return { rowSeq: row.seq, rowSha256: denialRowSha(row), nextAttemptAtMs: settlementDate(payload.nextAttemptAt) };
+}
 /** Call only on rows returned by the current operator API read. Retain this
  * receipt before dispatching Stop; historical rows cannot recreate that fact. */
 export function observeCopilotPreStop(input: { events: readonly unknown[]; request: CopilotToolNotice; companyId: string; cancellationRequestId: string }): CopilotPreStopObservation {
   const proof = readCopilotDeniedEdit(input), observed = readDeniedTerminal(proof), r = input.request;
+  const incompleteRecovery = readDeniedIncompleteRecovery(input.events, r, input.companyId, observed);
   return { schema: "paperclip.e2e.copilot-pre-stop-observation.v2", companyId: input.companyId,
     runId: r.runId, sessionId: r.sessionId, turnId: r.turnId, toolCallId: r.toolCallId, requestId: r.requestId!,
     normalizedSessionId: proof.origin.normalizedSessionId, sourceInstanceId: proof.origin.sourceInstanceId,
     failedToolSourceSeq: proof.tool.sourceSeq, failedToolRowSha256: denialRowSha(proof.toolRows[0]),
     terminal: observed ? { eventType: observed.terminal.eventType, sourceSeq: observed.terminal.sourceSeq, rowSha256: denialRowSha(observed.row) } : null,
+    ...(incompleteRecovery ? { incompleteRecovery } : {}),
     apiReadCompletedMonotonicNs: process.hrtime.bigint().toString(), cancellationRequestId: input.cancellationRequestId };
 }
 
@@ -336,32 +376,47 @@ export function observeCopilotPreStop(input: { events: readonly unknown[]; reque
  * the audited controller Stop. Database createdAt is transaction-start metadata, not a commit boundary. */
 export function readCopilotDenialSettlement(input: {
   events: readonly unknown[]; request: CopilotToolNotice; run: unknown; issue: unknown;
-  preStop: CopilotPreStopObservation; stopDispatchMonotonicNs: string;
+  preStop: CopilotPreStopObservation; stopDispatchMonotonicNs: string; stopAcknowledgement: CopilotStopAcknowledgement;
 }): CopilotDenialSettlement {
   const invalid = () => new Error("Copilot denial lacks exact provider settlement and audited run Stop");
   const { request, events } = input, run = settlementRecord(input.run), issue = settlementRecord(input.issue);
   const stop = settlementRecord(settlementRecord(run.resultJson).nativeCancellation);
   if (events.length > 20_000 || run.id !== request.runId || issue.id !== run.nativeIssueId
-    || !settlementId(issue.companyId) || run.companyId !== issue.companyId || issue.status !== "in_progress" || run.status !== "cancelled"
+    || !settlementId(issue.companyId) || run.companyId !== issue.companyId || !["in_progress", "blocked"].includes(issue.status) || run.status !== "cancelled"
     || stop.schema !== "paperclip.native-cancellation.v1" || stop.runId !== run.id || stop.companyId !== issue.companyId || stop.issueId !== issue.id
-    || stop.intentId !== `native-cancellation:${input.preStop?.cancellationRequestId}`
-    || settlementRecord(settlementRecord(run.resultJson).startupCancellation).cancellationRequestId !== input.preStop?.cancellationRequestId
-    || stop.scope !== "run" || stop.dispatched !== true || stop.dispatchState !== "acknowledged" || stop.reasonCode !== "cancellation_run_only"
+    || stop.scope !== "run" || typeof stop.dispatched !== "boolean"
+    || (!stop.dispatched && input.preStop?.terminal?.eventType !== "turn.completed") || stop.dispatchState !== "acknowledged" || stop.reasonCode !== "cancellation_run_only"
     || !Array.isArray(stop.effects) || stop.effects.length !== 1 || stop.effects[0] !== "release_run_resources") throw invalid();
+  try { assertCopilotStopAcknowledgement(input.stopAcknowledgement, run,
+    { companyId: issue.companyId, issueId: issue.id, runId: request.runId, callerUserId: "local-board" }, input.preStop.cancellationRequestId, input.stopDispatchMonotonicNs,
+    input.preStop.terminal?.eventType === "turn.completed" ? "provider-completed-before-stop" : "active-provider"); }
+  catch { throw invalid(); }
   const { rows, get, stream, origin, delivery, failure, resolution, tool, toolRows, failed } = readCopilotDeniedEdit({ events, request, companyId: issue.companyId });
   const observed = readDeniedTerminal({ rows, get, stream, origin, delivery, failure, resolution, tool, toolRows, failed });
   if (!observed) throw invalid();
   const { row, terminal } = observed;
+  let incompleteRecovery: CopilotDenialSettlement["runStop"]["incompleteRecovery"];
+  if (issue.status === "blocked") {
+    const recovery = readDeniedIncompleteRecovery(events, request, issue.companyId, observed), before = input.preStop.incompleteRecovery;
+    const action = settlementRecord(issue.activeRecoveryAction), wake = settlementRecord(action.wakePolicy);
+    if (!recovery || !before || row.eventType !== "turn.completed" || input.preStop.terminal?.eventType !== "turn.completed"
+      || canonicalJson(recovery) !== canonicalJson(before) || !settlementId(action.id)
+      || action.companyId !== issue.companyId || action.sourceIssueId !== issue.id || action.kind !== "active_run_watchdog"
+      || action.status !== "active" || action.cause !== "native_session_interrupted"
+      || wake.kind !== "resume_native_run" || wake.runId !== run.id || settlementDate(wake.notBefore) !== recovery.nextAttemptAtMs) throw invalid();
+    incompleteRecovery = { ...recovery, actionId: action.id };
+  }
   const result: CopilotDenialSettlement = {
-    schema: "paperclip.e2e.copilot-denial-settlement.v3",
+    schema: "paperclip.e2e.copilot-denial-settlement.v4",
     branch: row.eventType === "turn.completed" ? "provider_completed_observed_before_stop" : "provider_cancelled_or_interrupted",
     providerCancellationTerminalObserved: row.eventType !== "turn.completed",
     runId: run.id, sessionId: request.sessionId, turnId: request.turnId, toolCallId: request.toolCallId, requestId: request.requestId!,
-    preStop: input.preStop, stopDispatchMonotonicNs: input.stopDispatchMonotonicNs,
+    preStop: input.preStop, stopDispatchMonotonicNs: input.stopDispatchMonotonicNs, stopAcknowledgement: input.stopAcknowledgement,
     providerTerminal: { eventType: row.eventType, rowSha256: denialRowSha(row), failedToolRowSha256: denialRowSha(toolRows[0]), normalizedSessionId: terminal.normalizedSessionId, sourceInstanceId: terminal.sourceInstanceId,
       requestSourceSeq: origin.sourceSeq, resolvedSourceSeq: resolution.sourceSeq, deliveredSourceSeq: delivery.sourceSeq, failedNoticeSourceSeq: failure.sourceSeq,
       failedToolSourceSeq: tool.sourceSeq, failedToolRowCreatedAtMs: settlementDate(toolRows[0]!.createdAt), sourceSeq: terminal.sourceSeq, emittedAtMs: settlementDate(terminal.emittedAt), rowCreatedAtMs: settlementDate(row.createdAt) },
     runStop: { companyId: issue.companyId, issueId: issue.id, scope: stop.scope, status: run.status, issueStatus: issue.status,
+      ...(incompleteRecovery ? { incompleteRecovery } : {}),
       intentId: stop.intentId, intentAuditId: stop.intentAuditId, acknowledgementAuditId: stop.acknowledgementAuditId,
       requestedAtMs: settlementDate(settlementRecord(settlementRecord(run.resultJson).startupCancellation).requestedAt),
       recordedAtMs: settlementDate(stop.recordedAt), acknowledgedAtMs: settlementDate(stop.acknowledgedAt), finishedAtMs: settlementDate(run.finishedAt) },

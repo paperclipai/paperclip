@@ -13,6 +13,7 @@ import type {
 
 export type FindCandidateSilentRunsInput = {
   companyId?: string;
+  runId?: string;
   suspicionBefore: Date;
   issueCreatedAtGte?: Date | null;
 };

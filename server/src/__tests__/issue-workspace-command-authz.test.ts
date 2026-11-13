@@ -26,7 +26,8 @@ const mockAgentService = vi.hoisted(() => ({
 }));
 
 const mockExecutionWorkspaceService = vi.hoisted(() => ({
-  getById: vi.fn(),
+  getById: vi.fn(() => { throw new Error("Task routes must not inspect a workspace"); }),
+  getStoredById: vi.fn(),
 }));
 
 const mockFeedbackService = vi.hoisted(() => ({
@@ -39,6 +40,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
   reportRunActivity: vi.fn(),
   getRun: vi.fn(),
   getActiveRunForAgent: vi.fn(),
+  getQueuedAssignmentRunForIssue: vi.fn(),
   cancelRun: vi.fn(),
 }));
 
@@ -230,7 +232,7 @@ describe("issue workspace command authorization", () => {
       companyId: "company-1",
       permissions: null,
     });
-    mockExecutionWorkspaceService.getById.mockResolvedValue(null);
+    mockExecutionWorkspaceService.getStoredById.mockResolvedValue(null);
     mockFeedbackService.listIssueVotesForUser.mockResolvedValue([]);
     mockFeedbackService.saveIssueVote.mockResolvedValue({
       vote: null,

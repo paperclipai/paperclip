@@ -1,4 +1,4 @@
-import type { IssuePriority, IssueStatus } from "../constants.js";
+import type { IssuePriority, IssueStatus, IssueDisplayStatus } from "../constants.js";
 
 export interface UserProfileIdentity {
   id: string;
@@ -42,6 +42,7 @@ export interface UserProfileIssueSummary {
   identifier: string | null;
   title: string;
   status: IssueStatus;
+  displayStatus?: IssueDisplayStatus;
   priority: IssuePriority;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;

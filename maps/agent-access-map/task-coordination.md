@@ -3,6 +3,8 @@
 Product map: [Delegation, dependencies, and
 signoff](../feature-map/task-coordination.md).
 
+Feature ID: `task-coordination`.
+
 Review date: 2026-10-12. Source commit: `58e16dbddfc9c8d0cf60867f9d9847f0feda055b`.
 Native REST transport reconciled in this change; see the
 [shared transport contract](README.md#native-rest-transport).
@@ -14,6 +16,8 @@ for format, permission checks, evidence and maintenance.
 
 ## `delegation`
 
+Capability ID: `task-coordination/delegation`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -23,7 +27,11 @@ API: `present` — representative operation IDs:
 Agent access: `available` — Native create_task/reassign_task; REST / CLI / MCP.
 
 Policy: Task visibility/mutation, task-assignment and ownership policy; review audience
-independent; tree controls board-only.
+independent; tree controls board-only. Resume preview counts only current agent
+assignees on todo, in-progress, and in-review tasks as wake targets. Release keeps
+blocked and backlog statuses intact; existing execution gates still apply.
+Reopened tasks use current eligibility rather than the pause snapshot's skipped
+flag. Other active pause holds and execution reconciliation gates remain effective.
 
 Evidence: `source-only` —
 [implementation](../../server/src/routes/issue-tree-control.ts#L95) at the reviewed
@@ -38,6 +46,8 @@ Gaps: Parent/child and provenance paths exist; same-company assignment does not 
 protected task/resource policy.
 
 ## `dependencies`
+
+Capability ID: `task-coordination/dependencies`.
 
 Review: `baseline`.
 
@@ -65,6 +75,8 @@ forwards blockedByIssueIds to the REST route and retains its ownership checks.
 
 ## `signoff`
 
+Capability ID: `task-coordination/signoff`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -91,6 +103,8 @@ Gaps: Review policy determines final completion; formal board approval is a diff
 boundary.
 
 ## `tree-control`
+
+Capability ID: `task-coordination/tree-control`.
 
 Review: `baseline`.
 

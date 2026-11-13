@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { agents, heartbeatRuns, type Db } from "@paperclipai/db";
 import { trackAgentTaskRun } from "@paperclipai/shared/telemetry";
 import { parseObject } from "../adapters/utils.js";
@@ -6,6 +6,8 @@ import { logger } from "../middleware/logger.js";
 import { getTelemetryClient } from "../telemetry.js";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
+type TelemetryRun = Pick<HeartbeatRun,
+  "id" | "agentId" | "status" | "startedAt" | "finishedAt" | "usageJson" | "contextSnapshot">;
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0
@@ -27,7 +29,7 @@ function readUsageToken(
 }
 
 function resolveDurationSeconds(
-  run: HeartbeatRun,
+  run: Pick<TelemetryRun, "startedAt" | "finishedAt">,
   now: Date,
 ): number | undefined {
   if (!run.startedAt) return undefined;
@@ -52,7 +54,7 @@ function resolveDurationSeconds(
  * the caller's return on the slower of the two promises, so it does not
  * remove the delay.
  */
-export async function emitAgentTaskRun(db: Db, run: HeartbeatRun): Promise<void> {
+export async function emitAgentTaskRun(db: Db, run: TelemetryRun): Promise<void> {
   try {
     const client = getTelemetryClient();
     if (!client) return;
@@ -130,7 +132,15 @@ export async function emitAgentTaskRunById(
 ): Promise<void> {
   try {
     const run = await db
-      .select()
+      .select({
+        id: heartbeatRuns.id,
+        agentId: heartbeatRuns.agentId,
+        status: heartbeatRuns.status,
+        startedAt: heartbeatRuns.startedAt,
+        finishedAt: heartbeatRuns.finishedAt,
+        usageJson: heartbeatRuns.usageJson,
+        contextSnapshot: sql<Record<string, unknown>>`jsonb_build_object('issueId', ${heartbeatRuns.contextSnapshot}->'issueId')`,
+      })
       .from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId)))
       .then((rows) => rows[0] ?? null);

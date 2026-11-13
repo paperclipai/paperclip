@@ -13,6 +13,9 @@
 // This file only branches on that facts object; it never queries a
 // database, reads the clock, or reads the wake context payload directly.
 
+/** The error a saved wake records when a completed run already received all of its messages. */
+export const QUEUED_MESSAGES_DELIVERED_REASON = "Queued messages were already delivered to a completed run";
+
 export type WakeAdmissionFacts = {
   /** True when the active execution run's agent and this wake's own agent share an execution-agent-name key. */
   isSameExecutionAgent: boolean;
@@ -142,6 +145,7 @@ export type DeferredWakeAgentFacts = {
   agentFound: boolean;
   /** True when the agent is invokable (status, org chain). Meaningless when agentFound is false. */
   invokable: boolean;
+  paused?: boolean;
 };
 
 export type DeferredWakePauseHoldFacts = {
@@ -158,6 +162,7 @@ export type DeferredWakeOutcomeFacts = {
 
 export type DeferredWakeOutcomeDecision =
   | { kind: "fail_not_invokable" }
+  | { kind: "defer_agent_pause" }
   | { kind: "cancel_pause_hold" }
   | { kind: "promote" };
 
@@ -180,17 +185,18 @@ export function decideQueuedCommentAction(
   return { kind: "proceed" };
 }
 
-/** Decides the outcome for a deferred wake whose queued-comment action resolved to "proceed" (or finished its rewrite): fail, cancel, or promote. */
 export function decideWakeOutcome(facts: DeferredWakeOutcomeFacts): DeferredWakeOutcomeDecision {
   const { agent, pauseHold } = facts;
 
-  if (!agent.agentFound || !agent.invokable) {
+  if (!agent.agentFound || (!agent.invokable && !agent.paused)) {
     return { kind: "fail_not_invokable" };
   }
 
   if (pauseHold.activePauseHold && !pauseHold.treeHoldInteractionWake) {
     return { kind: "cancel_pause_hold" };
   }
+
+  if (agent.paused) return { kind: "defer_agent_pause" };
 
   return { kind: "promote" };
 }
@@ -222,6 +228,7 @@ export type ReleaseRecoveryImmediateFacts = {
   isConfigurationIncompleteFailedRun: boolean;
   /** didAutomaticRecoveryFail(run, expectedRetryReason) for the issue's own status branch. */
   automaticRecoveryAlreadyFailed: boolean;
+  automaticRecoveryRetryableBeforeProviderWork?: boolean;
   /** Exact admitted-chat lineage or a non-retryable failure forbids generic continuation. */
   sourceRequiresExplicitRecovery?: boolean;
 };
@@ -413,7 +420,7 @@ export function decideReleaseRecovery(facts: ReleaseRecoveryFacts): ReleaseRecov
     !shared.recoveryAgentPresent ||
     immediate.isWorkspaceValidationFailedRun ||
     immediate.isConfigurationIncompleteFailedRun ||
-    immediate.automaticRecoveryAlreadyFailed;
+    (immediate.automaticRecoveryAlreadyFailed && immediate.automaticRecoveryRetryableBeforeProviderWork !== true);
   if (shouldBlockImmediately) {
     const notice: ReleaseRecoveryBlockedNoticeKind = immediate.isWorkspaceValidationFailedRun
       ? "workspace_validation"
@@ -422,6 +429,7 @@ export function decideReleaseRecovery(facts: ReleaseRecoveryFacts): ReleaseRecov
         : "immediate_execution_path";
     return { kind: "blocked", notice };
   }
+  if (immediate.automaticRecoveryAlreadyFailed) return { kind: "released" };
 
   return { kind: "queue_recovery" };
 }

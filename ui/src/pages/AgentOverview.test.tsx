@@ -5,6 +5,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { AgentDetail, AgentRuntimeState, HeartbeatRun, Issue } from "@paperclipai/shared";
 import { describe, expect, it, vi } from "vitest";
 import { AgentOverview } from "./AgentDetail";
+import { DialogProvider } from "../context/DialogContext";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { queryKeys } from "../lib/queryKeys";
 
 vi.mock("@/lib/router", async () => {
@@ -22,7 +24,7 @@ vi.mock("../components/MarkdownBody", () => ({
 }));
 
 describe("AgentOverview", () => {
-  it("prioritizes identity, capability, runtime, skills, tasks, and scoped Audit entry points", () => {
+  it("leads with audit cards, then Profile, Skills and Recent tasks", () => {
     const agent = {
       id: "agent-1",
       companyId: "company-1",
@@ -53,7 +55,8 @@ describe("AgentOverview", () => {
     } as unknown as AgentRuntimeState;
 
     const markup = renderToStaticMarkup(
-      <QueryClientProvider client={new QueryClient()}>
+      <QueryClientProvider client={new QueryClient()}><DialogProvider>
+        <TooltipProvider>
         <AgentOverview
           agent={agent}
           runs={[] as HeartbeatRun[]}
@@ -63,18 +66,27 @@ describe("AgentOverview", () => {
           skillNames={["Design Guide", "Check PR"]}
           agentRouteId="codexcoder"
         />
-      </QueryClientProvider>,
+        </TooltipProvider>
+      </DialogProvider></QueryClientProvider>,
     );
 
-    expect(markup).toContain("Identity");
-    expect(markup).toContain("Capabilities");
-    expect(markup).toContain("Harness / Runtime");
+    for (const label of ["Activity", "Runs", "Costs", "Budget used", "Profile", "Skills", "Recent tasks"]) {
+      expect(markup).toContain(label);
+    }
+    for (const page of ["activity", "runs", "costs", "budgets"]) {
+      expect(markup).toContain(`href="/agents/codexcoder/${page}"`);
+    }
+    expect(markup).toContain("2 enabled");
+    expect(markup).toContain("Explore skills");
+    expect(markup).toContain('href="/agents/codexcoder/skills"');
     expect(markup).toContain("Design Guide");
     expect(markup).toContain("Simplify agent information architecture");
     expect(markup).toContain("PAP-42");
-    expect(markup).toContain('href="/activity/costs?agentId=agent-1"');
-    expect(markup).not.toContain("Run Activity");
-    expect(markup).not.toContain("Tasks by Status");
+    expect(markup).toContain("See all tasks");
+    expect(markup).not.toContain("Latest Run");
+    expect(markup).not.toContain("Harness / Runtime");
+    expect(markup).not.toContain("Capabilities");
+    expect(markup).not.toContain("agentId=agent-1");
     expect(markup).not.toContain("Created by");
   });
 
@@ -97,7 +109,7 @@ describe("AgentOverview", () => {
       access: { canAssignTasks: true, taskAssignSource: "explicit_grant", membership: null, grants: [] },
     } as unknown as AgentDetail;
     return renderToStaticMarkup(
-      <QueryClientProvider client={client}>
+      <QueryClientProvider client={client}><DialogProvider>
         <AgentOverview
           agent={agent}
           runs={[] as HeartbeatRun[]}
@@ -106,7 +118,7 @@ describe("AgentOverview", () => {
           skillNames={[]}
           agentRouteId="sharedagent"
         />
-      </QueryClientProvider>,
+      </DialogProvider></QueryClientProvider>,
     );
   }
 
@@ -145,7 +157,6 @@ describe("AgentOverview", () => {
 
   it("shows an error when the company user directory cannot be loaded", () => {
     const markup = renderOverview("user-alice", failedDirectoryClient());
-    expect(markup).toContain("Created by");
     expect(markup).toContain("Could not load creator");
   });
 

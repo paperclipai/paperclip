@@ -6,6 +6,7 @@ import { createUiDevWatchOptions } from "./src/lib/vite-watch";
 import { createApiProxy } from "./src/lib/vite-api-proxy";
 import { serviceWorkerBuildIdPlugin } from "./src/lib/vite-sw-build-id";
 import { readBrowserBuildCommit } from "./src/lib/vite-build-commit";
+import { preloadIssueDetail } from "./src/lib/vite-issue-detail-preload";
 
 const apiProxy = createApiProxy();
 
@@ -15,9 +16,20 @@ export default defineConfig(({ mode }) => ({
       readBrowserBuildCommit(__dirname),
     ),
   },
-  plugins: [react(), tailwindcss(), serviceWorkerBuildIdPlugin()],
+  plugins: [react(), tailwindcss(), serviceWorkerBuildIdPlugin(), preloadIssueDetail()],
   build: {
     minify: "esbuild",
+    rolldownOptions: {
+      output: {
+        codeSplitting: {
+          groups: [
+            { name: "board-startup", tags: ["$initial"], priority: 10 },
+            { name: "collections", test: /\/src\/pages\/(?:Issues|Inbox|LegacyInbox|CoordinatorTasks)\.tsx$/, priority: 6 },
+            { name: "issue-detail", test: /\/src\/pages\/IssueDetail\.tsx$/, priority: 5 },
+          ],
+        },
+      },
+    },
   },
   esbuild:
     mode === "production"

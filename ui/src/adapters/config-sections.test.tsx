@@ -100,7 +100,7 @@ describe("adapter configuration sections", () => {
     expect(Array.from(options, option => ({ label: option.textContent?.trim(), disabled: option.hasAttribute("data-disabled") })))
       .toEqual(expect.arrayContaining([
         { label: "Claude", disabled: false }, { label: "Pi", disabled: false },
-        { label: "Cursor", disabled: false }, { label: "GitHub Copilot — qualification pending", disabled: true },
+        { label: "Cursor", disabled: false }, { label: "GitHub Copilot", disabled: false },
       ]));
     expect(adapter).not.toContain("Runner lifecycle");
     expect(policy).toContain("Runner lifecycle");

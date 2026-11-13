@@ -1,7 +1,10 @@
 import type { Db } from "@paperclipai/db";
-import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "./git-credentials.js";
+import {
+  DEFAULT_GITHUB_TOKEN_SECRET_NAMES,
+  resolveGitHubApiCredential,
+  type GitHubApiCredential,
+} from "./git-credentials.js";
 import { ghFetch, gitHubApiBase } from "./github-fetch.js";
-import { secretService } from "./secrets.js";
 
 type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 
@@ -26,6 +29,7 @@ export type GitHubCommitDiffDetailsResolver = (
 export interface GitHubCommitDetailsResolverOptions {
   fetch?: FetchLike;
   tokenProvider?: (companyId: string) => Promise<string | null> | string | null;
+  credentialProvider?: (companyId: string) => Promise<GitHubApiCredential | null> | GitHubApiCredential | null;
   secretNames?: readonly string[];
 }
 
@@ -40,6 +44,12 @@ function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : null;
+}
+
+function normalizeCredential(credential: GitHubApiCredential | null | undefined): GitHubApiCredential | null {
+  const token = credential?.token?.trim();
+  if (!token) return null;
+  return { token, source: credential!.source, secretName: credential!.secretName ?? null };
 }
 
 export function extractGitHubCommitReference(values: readonly unknown[]): GitHubCommitReference | null {
@@ -57,16 +67,27 @@ export function extractGitHubCommitReference(values: readonly unknown[]): GitHub
   return null;
 }
 
-async function defaultTokenProvider(db: Db, companyId: string, secretNames: readonly string[]) {
-  const secrets = secretService(db);
-  for (const secretName of secretNames) {
-    const secret = await secrets.getByName(companyId, secretName);
-    if (!secret) continue;
-    const token = await secrets.resolveSecretValue(companyId, secret.id, "latest");
-    const trimmed = token.trim();
-    if (trimmed) return trimmed;
+async function defaultCredentialProvider(db: Db, companyId: string, secretNames: readonly string[]) {
+  return resolveGitHubApiCredential(db, companyId, { secretNames });
+}
+
+/** Return the repo's `private` flag, or null when the probe does not answer. */
+async function probeRepoIsPrivate(
+  reference: GitHubCommitReference,
+  headers: Record<string, string>,
+  fetchImpl: FetchLike,
+): Promise<boolean | null> {
+  try {
+    const response = await fetchImpl(
+      `${gitHubApiBase(reference.host)}/repos/${encodeURIComponent(reference.owner)}/${encodeURIComponent(reference.repo)}`,
+      { headers },
+    );
+    if (!response.ok) return null;
+    const body = record(await response.json());
+    return typeof body?.private === "boolean" ? body.private : null;
+  } catch {
+    return null;
   }
-  return null;
 }
 
 function hasNextPage(response: Response): boolean {
@@ -85,19 +106,34 @@ export function createGitHubCommitDiffDetailsResolver(
 ): GitHubCommitDiffDetailsResolver {
   const fetchImpl = opts.fetch ?? ghFetch;
   const secretNames = opts.secretNames ?? DEFAULT_GITHUB_TOKEN_SECRET_NAMES;
-  const tokenProvider = Object.prototype.hasOwnProperty.call(opts, "tokenProvider") && opts.tokenProvider !== undefined
-    ? opts.tokenProvider
-    : ((companyId: string) => defaultTokenProvider(db, companyId, secretNames));
+  const credentialProvider: (companyId: string) => Promise<GitHubApiCredential | null> =
+    opts.credentialProvider
+      ? async (companyId: string) => normalizeCredential(await opts.credentialProvider!(companyId))
+      : Object.prototype.hasOwnProperty.call(opts, "tokenProvider") && opts.tokenProvider !== undefined
+        ? async (companyId: string) => {
+            const raw = typeof opts.tokenProvider === "function" ? await opts.tokenProvider(companyId) : opts.tokenProvider;
+            const token = raw?.trim();
+            return token ? { token, source: "company_secret", secretName: null } : null;
+          }
+        : (companyId: string) => defaultCredentialProvider(db, companyId, secretNames);
 
   return async (companyId, reference) => {
     try {
-      const token = (typeof tokenProvider === "function" ? await tokenProvider(companyId) : tokenProvider)?.trim() || null;
+      const credential = await credentialProvider(companyId);
+      const token = credential?.token?.trim() || null;
       const headers: Record<string, string> = {
         accept: "application/vnd.github+json",
         "user-agent": "paperclip-work-product-resolver",
         "x-github-api-version": "2022-11-28",
       };
       if (token) headers.authorization = `Bearer ${token}`;
+
+      // A server-environment token is instance-wide. Do not use it to read a private
+      // repository on behalf of one company; only a company-scoped credential may.
+      if (credential?.source === "server_env") {
+        const isPrivate = await probeRepoIsPrivate(reference, headers, fetchImpl);
+        if (isPrivate !== false) return null;
+      }
 
       const commitUrl = `${gitHubApiBase(reference.host)}/repos/${encodeURIComponent(reference.owner)}/${encodeURIComponent(reference.repo)}/commits/${encodeURIComponent(reference.sha)}`;
       let additions: number | null = null;

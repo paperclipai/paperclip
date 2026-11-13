@@ -5,7 +5,11 @@ apps and persistent context. It is separate from the Grok Build coding runtime.
 Paperclip coordinates tasks through the managed Runner. Grok usage and spending
 are not reported.
 
-From **Agents → New agent → Invite external agent → Grok Bot**, name the agent
+On Cloud, open **Settings → Experimental** and enable **Assistant connections
+(MCP)**, **Paperclip Runner**, and **Grok Bot**. These features are opt-in.
+
+Use **Agents → New agent → Invite external agent → Grok Bot** to set up the Bot.
+The first-company dashboard model wizard does not offer external agents. Name the agent
 and select its role and manager. Follow the connection instructions in Grok Bot.
 Approve the fixed Paperclip company and agent in the browser. Copy the one-use
 pairing code with **Copy code**; enter it only on the authorization page.
@@ -14,7 +18,9 @@ between Bots on that Grok account.
 
 Copy the routine instructions into the Bot's chat. Open its desktop routine's
 Webhook panel and paste the URL and key into Paperclip's secure configuration.
-Use a webhook-only routine with no schedule. **Verify connection** must show both
+If selecting the routine row does not open the panel, ask the Bot for a link to
+that routine's Webhook panel and open the link in Grok Bot. Keep the webhook URL and key
+out of chat. Use a webhook-only routine with no schedule. **Verify connection** must show both
 assignment delivery and an authenticated reply before **Done** becomes available.
 Use **Save & exit** to preserve unfinished setup. See the official
 [routine instructions](https://cursor.com/help/grok-bot/routines).

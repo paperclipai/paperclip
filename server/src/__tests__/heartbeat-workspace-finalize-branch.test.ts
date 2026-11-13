@@ -45,7 +45,7 @@ import { instanceSettingsService } from "../services/instance-settings.ts";
 const execFileAsync = promisify(execFile);
 
 const adapterExecute = vi.hoisted(() =>
-  vi.fn(async () => ({
+  vi.fn(async (_input?: unknown) => ({
     exitCode: 0,
     signal: null,
     timedOut: false,

@@ -36,6 +36,7 @@ const meta = {
   beforeEach: ({ parameters }) => {
     let doc = {
       ...storybookIssueDocuments[0],
+      ...(parameters.generalDocument ? { key: "notes", title: "Release notes" } : {}),
       body: "# Release plan\n\nRun the release checks.",
       latestRevisionNumber: 2,
       latestRevisionId: "revision-latest",
@@ -132,6 +133,18 @@ export const PermissionDenied: Story = {
   parameters: { fixtureState: "permission" },
 };
 export const Edit: Story = { args: { forceEditDocumentKey: "plan" } };
+export const GeneralDocuments: Story = {
+  args: { generalDocumentsOnly: true },
+  parameters: { generalDocument: true },
+  play: async ({ canvasElement }) => {
+    await within(canvasElement).findByText("Run the release checks.");
+    await within(canvasElement).findByRole("button", { name: "New document" });
+  },
+};
+export const GeneralDocumentEdit: Story = {
+  args: { generalDocumentsOnly: true, forceEditDocumentKey: "notes" },
+  parameters: { generalDocument: true },
+};
 
 async function previousRevision(canvasElement: HTMLElement) {
   await userEvent.click(

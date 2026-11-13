@@ -1,3 +1,4 @@
+import { isNativeSessionId } from "../native-runtime/index.js";
 import { and, desc, eq } from "drizzle-orm";
 import { agentConfigRevisions, type Db, type agents, type agentTaskSessions, type heartbeatRuns, type issues, type projects } from "@paperclipai/db";
 import type { AiConnectionBinding, AiRuntimeConnectionBinding } from "@paperclipai/shared";
@@ -5,6 +6,7 @@ import { getServerAdapter } from "../../adapters/index.js";
 import type { prepareManagedAiRuntime } from "../ai-connection-runtime.js";
 import { aiConnectionSessionCompatibilityInputs, managedAiSessionIdentityCompatible } from "../ai-connection-session.js";
 import { createNativeSessionHandoffLoader } from "../native-runtime/native-session-handoff.js";
+import { agentInstructionsService } from "../agent-instructions.js";
 import {
   describeSessionResetReason, shouldResetTaskSessionForWake, isCanonicalSessionIdForAdapter,
   normalizeResumeParamsForAdapter, normalizeSessionParams, requiresCanonicalSessionIds,
@@ -28,7 +30,7 @@ type TaskSession = typeof agentTaskSessions.$inferSelect | null;
 type SessionCodec = ReturnType<typeof getAdapterSessionCodec>;
 
 export interface HeartbeatSessionPreparationInput {
-  run: Pick<typeof heartbeatRuns.$inferSelect, "createdAt">;
+  run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "createdAt">;
   agent: typeof agents.$inferSelect;
   task: {
     context: Record<string, unknown>;
@@ -87,6 +89,7 @@ export async function prepareHeartbeatSession(db: Db, input: HeartbeatSessionPre
       agentIdentityKeyId: agentIdentity?.keyId,
       adapterType: agent.adapterType,
       effectiveAdapterConfig: runtimeConfig,
+      managedInstructions: await agentInstructionsService(db).getManagedEntryFingerprint({ ...agent, adapterConfig: runtimeConfig }),
       managedAiHome: managedAiRuntime?.home,
       agentRuntimeConfig: agent.runtimeConfig,
       issueOverrides: issueAssigneeOverrides,
@@ -150,7 +153,14 @@ export async function prepareHeartbeatSession(db: Db, input: HeartbeatSessionPre
         : null,
     };
   const sessionConfigMetadata = await buildEffectiveRunSessionConfigMetadata(sessionConfigMetadataInput);
-  let compatibleConfigMetadata: EffectiveRunSessionConfigMetadata[] = [];
+  const compatibleConfigMetadata: EffectiveRunSessionConfigMetadata[] = [];
+  const importedManagedInstructions = Boolean(taskSession && sessionConfigMetadataInput.managedInstructions?.contentHash
+    && readConfigFingerprintFromSessionParams(taskSession.sessionParamsJson)?.fingerprint !== sessionConfigMetadata.fingerprint);
+  if (importedManagedInstructions) {
+    compatibleConfigMetadata.push(await buildEffectiveRunSessionConfigMetadata({
+      ...sessionConfigMetadataInput, retainManagedInstructionPaths: true,
+    }));
+  }
   if (managedAiRuntime && aiBinding && taskSession &&
     readConfigFingerprintFromSessionParams(taskSession.sessionParamsJson)?.fingerprint !== sessionConfigMetadata.fingerprint) {
     const revisions = requestedAiBinding?.mode === "router"
@@ -164,7 +174,12 @@ export async function prepareHeartbeatSession(db: Db, input: HeartbeatSessionPre
       storedIdentity: taskSession.sessionParamsJson?.paperclipAiCredentialIdentity,
       sessionIdentity: managedAiRuntime.sessionIdentity, credentialIdentity: managedAiRuntime.identity, revisions,
     });
-    compatibleConfigMetadata = await Promise.all(candidates.map(candidate => buildEffectiveRunSessionConfigMetadata({ ...sessionConfigMetadataInput, ...candidate })));
+    compatibleConfigMetadata.push(...await Promise.all(candidates.flatMap(candidate => [
+      buildEffectiveRunSessionConfigMetadata({ ...sessionConfigMetadataInput, ...candidate }),
+      ...(importedManagedInstructions ? [buildEffectiveRunSessionConfigMetadata({
+        ...sessionConfigMetadataInput, ...candidate, retainManagedInstructionPaths: true,
+      })] : []),
+    ])));
   }
   const configuredModel =
     readConfiguredModelFromAdapterConfig(runtimeConfig);
@@ -190,6 +205,14 @@ export async function prepareHeartbeatSession(db: Db, input: HeartbeatSessionPre
   const sessionResetReason =
     sessionConfigFreshness.reasons.join("; ") || null;
   const taskSessionForRun = resetTaskSession ? null : taskSession;
+  const taskSessionCredentialCompatible = !managedAiRuntime || managedAiSessionIdentityCompatible(
+    taskSession?.sessionParamsJson?.paperclipAiCredentialIdentity,
+    managedAiRuntime.sessionIdentity,
+    managedAiRuntime.identity,
+  );
+  const taskSessionId = readNonEmptyString(taskSessionDecodedParams?.sessionId);
+  const taskResumeSessionId = taskSessionCredentialCompatible && taskSessionForRun?.lastRunId &&
+    taskSessionForRun.lastRunId !== run.id && isNativeSessionId(taskSessionId) ? taskSessionId : null;
   const getFreshSessionHandoff = issueRef ? createNativeSessionHandoffLoader({
     db, companyId: agent.companyId, issueId: issueRef.id, agentId: agent.id, before: run.createdAt,
     throughCommentId: readNonEmptyString(context.conversationReplayThroughCommentId) ?? (context.interactionKind ? null : wakeCommentId),
@@ -216,7 +239,8 @@ export async function prepareHeartbeatSession(db: Db, input: HeartbeatSessionPre
     const handoff = await getFreshSessionHandoff();
     if (handoff) context.paperclipFreshSessionHandoffMarkdown = handoff;
   }
-  return { sessionConfigMetadata, configuredModel, sessionConfigFreshness, resetTaskSession, sessionResetReason, taskSessionForRun, getFreshSessionHandoff, previousSessionParams };
+  return { sessionConfigMetadata, configuredModel, sessionConfigFreshness, resetTaskSession, sessionResetReason, taskSessionForRun,
+    taskSessionCredentialCompatible, taskResumeSessionId, getFreshSessionHandoff, previousSessionParams };
 }
 
 export interface HeartbeatAdapterSessionInput {
@@ -250,7 +274,7 @@ export async function resolveHeartbeatAdapterSession(input: HeartbeatAdapterSess
   const { agent, evaluateSessionCompaction } = input;
   const { context, taskKey, issueId, continuationSummary, executionContinuation } = input.task;
   const { runtime, taskSession, sessionCodec, explicitResumeSessionDisplayId, runtimeSessionParams, managedAiRuntime, prepared } = input.session;
-  const { sessionConfigMetadata, sessionConfigFreshness, resetTaskSession, taskSessionForRun, previousSessionParams } = prepared;
+  const { sessionConfigMetadata, sessionConfigFreshness, resetTaskSession, taskSessionForRun, taskSessionCredentialCompatible, previousSessionParams } = prepared;
   const { latestWorkspaceConfigMetadata, workspaceConfigFreshness, reusedExecutionWorkspace, resolvedWorkspaceReusePolicy, persistedExecutionWorkspace, runtimeWorkspaceWarnings, requestedShouldReuseExisting, workspaceReuseRequest } = input.workspace;
   const runtimeSessionFallback =
     taskKey || resetTaskSession
@@ -314,11 +338,6 @@ export async function resolveHeartbeatAdapterSession(input: HeartbeatAdapterSess
     delete context.paperclipPreviousSessionId;
   }
 
-  const taskSessionCredentialCompatible = !managedAiRuntime || managedAiSessionIdentityCompatible(
-    taskSession?.sessionParamsJson?.paperclipAiCredentialIdentity,
-    managedAiRuntime.sessionIdentity,
-    managedAiRuntime.identity,
-  );
   if (managedAiRuntime) {
     sessionConfigMetadata.aiCredentialIdentity = managedAiRuntime.sessionIdentity;
     if (!taskSessionCredentialCompatible) {
@@ -382,5 +401,5 @@ export async function resolveHeartbeatAdapterSession(input: HeartbeatAdapterSess
     },
   };
 
-  return { previousSessionDisplayId, runtimeSessionParamsForAdapter, taskSessionCredentialCompatible, runtimeForAdapter, configFreshnessResultMetadata, sessionCompaction };
+  return { previousSessionDisplayId, runtimeSessionParamsForAdapter, runtimeForAdapter, configFreshnessResultMetadata, sessionCompaction };
 }

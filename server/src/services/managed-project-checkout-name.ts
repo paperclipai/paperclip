@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 
-/** Normalizes a repository URL so `.git` and trailing-slash variants match. */
 export function projectRepositoryIdentity(url: string) {
   return url.trim().replace(/\.git\/?$/, "").replace(/\/$/, "");
 }
@@ -23,12 +22,6 @@ export function deriveRepoNameFromRepoUrl(repoUrl: string | null): string | null
   }
 }
 
-/**
- * Directory name of a project repository's managed checkout under
- * `.paperclip-repositories/`. It is derived from the project workspace row,
- * so the same row always maps to the same checkout, and a checkout name maps
- * back to the row it was cloned from.
- */
 export function managedProjectCheckoutName(workspace: {
   id: string; repoUrl: string; repoRef: string | null; cwd?: string | null;
 }) {

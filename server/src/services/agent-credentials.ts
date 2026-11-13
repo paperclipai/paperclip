@@ -1,5 +1,6 @@
 import { eq } from "drizzle-orm";
 import { agents, type Db } from "@paperclipai/db";
+import { agentHarnessType } from "@paperclipai/shared";
 import { collectSecretRefs, collectUserSecretRefs, syncAgentAdapterEnvBindings } from "./agent-secret-bindings.js";
 import { logActivity } from "./activity-log.js";
 import { claudeOAuthBindingsMatchExactly, claudeOAuthClaimRejectedError,
@@ -166,7 +167,7 @@ export function agentCredentialService(db: Db) {
         if (
           !parent ||
           parent.companyId !== input.companyId ||
-          parent.adapterType !== CLAUDE_LOCAL_ADAPTER_TYPE ||
+          agentHarnessType(parent.adapterType, parent.adapterConfig as Record<string, unknown>) !== CLAUDE_LOCAL_ADAPTER_TYPE ||
           !claudeOAuthBindingsMatchExactly(parentBinding, childBinding)
         ) {
           throw claudeOAuthClaimRejectedError();

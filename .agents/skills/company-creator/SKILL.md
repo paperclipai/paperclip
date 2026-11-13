@@ -152,7 +152,7 @@ Add a concise execution contract to every generated working agent:
 
 - Start actionable work in the same heartbeat and do not stop at a plan unless planning was requested.
 - Leave durable progress in comments, documents, or work products with the next action.
-- Use child issues for long or parallel delegated work instead of polling agents, sessions, or processes.
+- Continue work on the current issue. Do not busy-poll agents, sessions, or processes.
 - Mark blocked work with the unblock owner and action.
 - Respect budget, pause/cancel, approval gates, and company boundaries.
 

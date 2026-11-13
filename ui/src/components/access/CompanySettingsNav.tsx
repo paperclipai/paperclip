@@ -2,7 +2,6 @@ import { PageTabBar } from "@/components/PageTabBar";
 import { Tabs } from "@/components/ui/tabs";
 import { useCloudInstance } from "@/hooks/useCloudInstance";
 import { useHiddenSettings } from "@/hooks/useHiddenSettings";
-import { useFastResponsesEnabled } from "@/hooks/useFastResponsesEnabled";
 import { INSTANCE_SETTINGS_PATH_PREFIX } from "@/lib/instance-settings";
 import { useLocation, useNavigate } from "@/lib/router";
 
@@ -102,13 +101,11 @@ export function CompanySettingsNav() {
   const location = useLocation();
   const navigate = useNavigate();
   const { hidden: hiddenSettings } = useHiddenSettings();
-  const { enabled: fastResponsesEnabled } = useFastResponsesEnabled();
   // Import is floored server-side on cloud-managed instances (403 cloud_managed), so the
   // tab is suppressed there rather than dead-ending.
   const isCloud = Boolean(useCloudInstance());
   const activeTab = getCompanySettingsTab(location.pathname);
   const visibleItems = items.filter((item) => {
-    if (item.value === "connections" && !fastResponsesEnabled) return false;
     if (item.value === "import" && isCloud) return false;
     const hiddenKey = hiddenSettingKeyByTab[item.value];
     return !hiddenKey || !hiddenSettings.has(hiddenKey);

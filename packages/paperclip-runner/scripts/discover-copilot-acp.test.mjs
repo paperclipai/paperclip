@@ -38,3 +38,12 @@ test("closed discovery protocol preserves numeric zero and rejects prompts", asy
   assert.deepEqual(await pending, { protocolVersion: 1 });
   assert.throws(() => rpc.request("session/prompt", {}), /cannot send/); rpc.close();
 });
+
+test("discovery preserves multibyte model names when every byte arrives separately", async () => {
+  const child = childFixture(), rpc = createDiscoveryRpc(child);
+  const result = { models: { availableModels: [{ modelId: "gpt-5.6-luna", name: "東京 🚀 café" }] } };
+  const pending = rpc.request("session/new", {});
+  const wire = Buffer.from(`${JSON.stringify({ jsonrpc: "2.0", id: 0, result })}\n`);
+  for (const byte of wire) child.stdout.emit("data", Buffer.from([byte]));
+  assert.deepEqual(await pending, result); rpc.close();
+});

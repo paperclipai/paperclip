@@ -4,7 +4,7 @@ This runbook covers Paperclip Tools & Access runtime slots for MCP connections. 
 
 Do not print raw bearer tokens, gateway session tokens, credential headers, environment variables, or secret values while following this runbook. The APIs below return redacted state and audit metadata; keep shell tracing disabled when exporting credentials.
 
-Tool action approvals require `PAPERCLIP_TOOL_ACTION_SIGNING_SECRET` to be set independently from auth/JWT secrets. `paperclipai onboard` generates it for local instances, and worktree setup propagates or generates an independent value in the worktree `.env`; operator-managed deployments must set it explicitly. Rotate it deliberately: changing it invalidates outstanding signed tool-action approvals, so drain or reject pending approvals before rotation.
+Tool action approvals and sensitive request identities use a durable key independent from auth/JWT secrets. `PAPERCLIP_TOOL_ACTION_SIGNING_SECRET` takes precedence when configured. `paperclipai onboard` generates it for local instances, and worktree setup propagates or generates an independent value in the worktree `.env`. When unset, the server derives a separate key from the persisted secrets master key, using its configured environment value or durable key file. Processes serving the same instance must share that signing key or master key, and operators must back it up with the database. Rotation can invalidate outstanding approvals and retry matching; drain or reject pending approvals and reconcile completed writes before rotating.
 
 ## Support Matrix
 
@@ -144,6 +144,18 @@ curl -fsS -X PATCH \
 ```
 
 ## Verify Recovery
+
+An individual remote MCP tool-call failure stays on its invocation. A network
+failure, timeout, non-authentication HTTP error, or JSON-RPC error does not change
+the connection's shared health or hide its other tools. HTTP 401/403 responses,
+missing credentials, and explicit insufficient-scope errors retain their access
+gates. Health checks and catalog refreshes still assess connection health.
+
+After a network failure or timeout, the next explicit call can start a fresh MCP
+session. The gateway never automatically replays the failed action: the provider
+may already have performed it. Check the outcome before retrying a write. If a
+connection was already marked unhealthy before upgrading, use the health check
+below to restore access after verifying the endpoint.
 
 1. Run the connection health check:
 

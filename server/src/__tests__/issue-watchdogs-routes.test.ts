@@ -513,6 +513,18 @@ describeEmbeddedPostgres("issue watchdog routes", () => {
       .where(and(eq(issueWatchdogs.companyId, companyId), eq(issueWatchdogs.issueId, watchedChildId)));
     expect(nestedWatchdogs).toHaveLength(0);
 
+    // Watchdog runs are authorized for the watched subtree, so the agent depth
+    // limit does not move their tasks above the requested parent. Remove the
+    // task afterwards so the watched subtree returns to its stopped state.
+    const allowedCreate = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({ title: "Allowed watched grandchild", parentId: watchedChildId });
+    expect(allowedCreate.status, JSON.stringify(allowedCreate.body)).toBe(201);
+    expect(allowedCreate.body.parentId).toBe(watchedChildId);
+    expect(allowedCreate.body).not.toHaveProperty("parentAdjusted");
+    await db.delete(activityLog).where(eq(activityLog.entityId, allowedCreate.body.id));
+    await db.delete(issues).where(eq(issues.id, allowedCreate.body.id));
+
     const allowedChild = await request(app)
       .post(`/api/issues/${watchedChildId}/children`)
       .send({ title: "Allowed watched child" });

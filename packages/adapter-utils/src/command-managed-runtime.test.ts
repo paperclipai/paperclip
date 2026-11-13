@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFile as execFileCallback, spawn } from "node:child_process";
 import { promisify } from "node:util";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   createCommandManagedRuntimeClient,
@@ -690,6 +690,18 @@ describe("command managed runtime", () => {
     expect(result.operations[0]).toMatchObject({ operationId: "op-1", filesTransferred: 1 });
   });
 
+  it.each(["syncIn", "syncOut"] as const)("forwards a native %s budget without changing subsequent defaults", async method => {
+    const transfer = vi.fn(async (..._args: unknown[]) => ({ operations: [] }));
+    const execute = vi.fn<CommandManagedRuntimeRunner["execute"]>();
+    const runner: CommandManagedRuntimeRunner = { execute, syncIn: transfer, syncOut: transfer };
+    const client = createCommandManagedRuntimeClient({ runner, commandCwd: "/", timeoutMs: 1 });
+    const operations: SandboxSyncOperation[] = [{ operationId: "bounded-sync", files: [] }];
+    await client[method]!(operations, { minimumTimeoutMs: 900_000 });
+    await client[method]!(operations);
+    expect(transfer.mock.calls).toEqual([[operations, { minimumTimeoutMs: 900_000 }], [operations]]);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it("fallback syncIn tarballs+uploads a directory then runs post-upload commands in order", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-syncin-fallback-"));
     cleanupDirs.push(rootDir);
@@ -1027,6 +1039,8 @@ describe("command managed runtime", () => {
     await expect(client.run("tar -cf workspace-download.tar .", { timeoutMs: 30_000 })).rejects.toThrow(
       /stdout: tar: workspace-download\.tar: Cannot open: Permission denied/,
     );
+    await expect(client.run("tar -cf workspace-download.tar .", { timeoutMs: 30_000 }))
+      .rejects.toMatchObject({ exitCode: 2, timedOut: false });
   });
 
   it("test_channel_round_trips_all_byte_values", () => {

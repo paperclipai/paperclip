@@ -13,10 +13,13 @@ export async function createTaskFromPromptThroughUi(input: {
   await dialog.getByRole("textbox", { name: "editable markdown", exact: true }).fill(input.prompt);
   const assignee = dialog.getByRole("button", { name: "Select assignee", exact: true });
   await assignee.click();
-  await page.getByRole("searchbox", { name: "Search assignees", exact: true }).fill(input.agentName);
+  const assigneeSearch = page.getByRole("searchbox", { name: "Search assignees", exact: true });
+  await assigneeSearch.fill(input.agentName);
   const option = page.getByRole("listbox", { name: "Assignees" }).getByRole("option").filter({ has: page.getByText(input.agentName, { exact: true }) });
   await expect(option).toHaveCount(1);
-  await option.click();
+  // Commit the single filtered choice before inspecting the parent modal.
+  await assigneeSearch.press("Enter");
+  await expect(assigneeSearch).not.toBeVisible();
   await expect(assignee).toContainText(input.agentName);
   if (input.projectName) {
     const project = dialog.getByRole("group", { name: "Task project and worktrees", exact: true }).getByRole("button").first();
