@@ -509,17 +509,11 @@ fn cancelling_or_stopping_the_run_while_awaiting_disarms_and_publishes_the_held_
             json!("already_settled"),
             "{command}"
         );
-        let terminals = cancelled
+        let mut later = cancelled
             .events
             .iter()
-            .filter(|(kind, _, _)| kind == "run.terminal")
+            .map(|(kind, _, payload)| json!({"type":kind,"payload":payload}))
             .collect::<Vec<_>>();
-        assert_eq!(terminals.len(), 1, "{command}");
-        assert_eq!(
-            terminals[0].2["turnTerminalState"],
-            json!("completed"),
-            "{command}"
-        );
         let journal = harness.fixture.journal();
         assert!(
             journal[before..].iter().any(|line| {
@@ -528,7 +522,6 @@ fn cancelling_or_stopping_the_run_while_awaiting_disarms_and_publishes_the_held_
             }),
             "{command}"
         );
-        let mut later = Vec::new();
         let deadline = Instant::now() + Duration::from_millis(500);
         while Instant::now() < deadline {
             match harness.executor.poll_events() {
@@ -549,9 +542,15 @@ fn cancelling_or_stopping_the_run_while_awaiting_disarms_and_publishes_the_held_
                 .any(|event| event["payload"]["origin"] == "provider"),
             "{command}: {later:?}"
         );
-        assert!(
-            !later.iter().any(|event| event["type"] == "run.terminal"),
-            "{command}: {later:?}"
+        let terminals = later
+            .iter()
+            .filter(|event| event["type"] == "run.terminal")
+            .collect::<Vec<_>>();
+        assert_eq!(terminals.len(), 1, "{command}: {later:?}");
+        assert_eq!(
+            terminals[0]["payload"]["turnTerminalState"],
+            json!("completed"),
+            "{command}"
         );
         let _ = harness.executor.shutdown();
     }
@@ -577,4 +576,37 @@ fn an_active_goal_at_a_live_shell_turn_end_neither_marks_nor_arms_a_wait() {
         .iter()
         .any(|command| command == "session.provider_turn"));
     harness.executor.shutdown().unwrap();
+}
+
+#[test]
+fn a_crash_after_cancelling_or_stopping_a_wait_still_delivers_the_held_run_terminal_once() {
+    for command in ["run.cancel", "turn.interrupt", "turn.stop"] {
+        let mut harness = Harness::new();
+        harness
+            .fixture
+            .background("live provider-turn provider-turn-hold");
+        complete_turn_accepting_provider_turns(&mut harness, "first");
+        let lost_with_the_crash = harness.execute(
+            command,
+            json!({"turnId": "first", "reason": "Operator stop"}),
+        );
+        assert_eq!(
+            lost_with_the_crash.result["status"],
+            json!("already_settled"),
+            "{command}"
+        );
+        harness.executor =
+            NativeProviderCommandExecutor::with_runner_config(&harness.fixture.0, &harness.config);
+        harness.fixture.background("quiet");
+        let recovered = harness.drain();
+        assert_eq!(
+            recovered
+                .iter()
+                .filter(|event| event["type"] == "run.terminal")
+                .count(),
+            1,
+            "{command}: {recovered:?}"
+        );
+        let _ = harness.executor.shutdown();
+    }
 }

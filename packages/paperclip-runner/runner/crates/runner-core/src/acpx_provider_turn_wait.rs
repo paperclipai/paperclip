@@ -110,26 +110,23 @@ impl AcpxCommandExecutor {
 
     pub(super) fn end_provider_turn_wait(
         &mut self,
-    ) -> Result<Option<NormalizedProviderEvent>, DurableRunnerError> {
+        publish: bool,
+    ) -> Result<(), DurableRunnerError> {
         let Some(wait) = self
             .state
             .as_mut()
             .and_then(|state| state.provider_turn_wait.take())
         else {
-            return Ok(None);
+            return Ok(());
         };
         if let Some(session) = self.session.as_mut() {
             session.disarm_provider_turn(&wait.turn_id);
         }
-        Ok(Some(wait.into_run_terminal()))
-    }
-
-    pub(super) fn publish_ended_provider_turn_wait(&mut self) -> Result<(), DurableRunnerError> {
-        if let Some(event) = self.end_provider_turn_wait()? {
+        if publish {
             self.state
                 .as_mut()
                 .expect("ACPX state exists with a provider turn wait")
-                .push(event)?;
+                .push(wait.into_run_terminal())?;
         }
         Ok(())
     }
@@ -138,16 +135,13 @@ impl AcpxCommandExecutor {
         &mut self,
         reason: &str,
     ) -> Result<CommandExecution, DurableRunnerError> {
-        let held = self.end_provider_turn_wait()?;
-        if held.is_some() {
+        if self.awaiting_provider_turn() {
+            self.end_provider_turn_wait(true)?;
             self.save_state()?;
         }
         Ok(CommandExecution {
             result: json!({"status": "already_settled", "reason": reason}),
-            events: held
-                .map(|event| (event.event_type, event.priority, event.payload))
-                .into_iter()
-                .collect(),
+            events: Vec::new(),
         })
     }
 }
