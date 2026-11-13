@@ -19,6 +19,11 @@ const { invocationEnv } = await import(new URL("../../scripts/ci-profile/record.
 const env = { ...process.env };
 delete env.NODE_PATH;
 delete env.NODE_OPTIONS;
+const { spawn } = await import("node:child_process");
+const sampler = process.platform === "linux" && process.env.GITHUB_ACTIONS === "true" && !process.env.PAPERCLIP_UNIT_BOUNDARY_PROBE
+  ? spawn(process.execPath, [path.join(root, "tests/runner-e2e/cpu-sampler.tmp.mjs")], { stdio: "inherit" })
+  : null;
+process.on("exit", () => sampler?.kill());
 
 for (const [name, command] of [
   // Server modules under test import the built plugin SDK (and shared) package.
