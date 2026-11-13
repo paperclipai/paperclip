@@ -139,9 +139,6 @@ describeEmbeddedPostgres("atomic ordinary run events", () => {
     expect(first.result.row.createdAt).toBeInstanceOf(Date);
     expect(await readEvents(runId)).toEqual([first.result.row]);
 
-    // The one statement writes nothing for a replay. The append then takes
-    // BEGIN, the run lock, the append, COMMIT. The lock is a statement of its
-    // own so that the append reads a snapshot taken after the lock was granted.
     const replay = await sentStatements(db.$client, () => appendHeartbeatRunEvent(db, nativeEvent(runId, 1)));
     expect(replay.statements).toHaveLength(5);
     expect(replay.statements[1]).toMatch(/^begin/i);
@@ -151,8 +148,6 @@ describeEmbeddedPostgres("atomic ordinary run events", () => {
     expect(replay.result).toEqual({ row: first.result.row, disposition: "duplicate", highestContiguousSourceSeq: 1 });
     expect((await readRun(runId)).nextEventSeq).toBe(2);
 
-    // In a caller's transaction a failed statement would abort the caller, so
-    // the append keeps its SAVEPOINT and run lock there. A writer check adds nothing.
     const nested = await sentStatements(db.$client, () => db.transaction(tx =>
       appendHeartbeatRunEvent(tx as unknown as typeof db, nativeEvent(runId, 2))));
     expect(nested.statements).toHaveLength(5);
@@ -256,12 +251,10 @@ describeEmbeddedPostgres("atomic ordinary run events", () => {
     await appendHeartbeatRunEvent(db, nativeEvent(runId, 1));
     const before = await readRun(runId);
     const batch = [2, 3, 4].map(sourceSeq => nativeEvent(runId, sourceSeq));
-    // A writer revoked before the batch is sent sends nothing.
     const revoked = await sentStatements(db.$client, () => appendHeartbeatRunEventBatch(db, batch, () => {
       throw new Error("writer revoked");
     }).catch((error: Error) => error.message));
     expect(revoked).toEqual({ result: "writer revoked", statements: [] });
-    // The statement fails on its third row: no row and no sequence remain.
     await db.execute(sql`alter table heartbeat_run_events add constraint atomic_batch_failure
       check (source_seq is distinct from 4) not valid`);
     try {
@@ -290,7 +283,6 @@ describeEmbeddedPostgres("atomic ordinary run events", () => {
     expect(await readRun(runId)).toMatchObject({ nextEventSeq: 5, nativeSourceCursors: { "native-writer": 4 } });
   });
 
-  /** Holds the run row as Stop, recovery and deletion do, runs `work` under it, and commits on release. */
   const holdRun = async (runId: string, work: (tx: typeof db) => Promise<void>) => {
     let release!: () => void, locked!: () => void;
     const released = new Promise<void>(resolve => { release = resolve; });
@@ -318,8 +310,9 @@ describeEmbeddedPostgres("atomic ordinary run events", () => {
       await tx.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, runId));
     });
     const batch = appendHeartbeatRunEventBatch(db, [2, 3].map(sourceSeq => nativeEvent(runId, sourceSeq)));
-    expect(await settlesWhileHeld(batch)).toBe(false);
+    const batchSettledWhileHeld = await settlesWhileHeld(batch);
     await stop.release();
+    expect(batchSettledWhileHeld).toBe(false);
     expect((await batch).map(receipt => [receipt.disposition, receipt.row.seq])).toEqual([["committed", 2], ["committed", 3]]);
     expect(await readRun(runId)).toMatchObject({ status: "cancelled", nextEventSeq: 4, nativeSourceCursors: { "native-writer": 3 } });
 
@@ -329,8 +322,9 @@ describeEmbeddedPostgres("atomic ordinary run events", () => {
     });
     const late = appendHeartbeatRunEventBatch(db, [4, 5].map(sourceSeq => nativeEvent(runId, sourceSeq)));
     const lateSingle = appendHeartbeatRunEvent(db, nativeEvent(runId, 4));
-    expect(await settlesWhileHeld(late)).toBe(false);
+    const lateSettledWhileHeld = await settlesWhileHeld(late);
     await deletion.release();
+    expect(lateSettledWhileHeld).toBe(false);
     await expect(late).rejects.toThrow("heartbeat_run_event_binding_mismatch");
     await expect(lateSingle).rejects.toThrow("heartbeat_run_event_binding_mismatch");
     expect(await readEvents(runId)).toEqual([]);
@@ -339,8 +333,6 @@ describeEmbeddedPostgres("atomic ordinary run events", () => {
   it("appends under the run lock when another writer commits events while the batch waits", async () => {
     const runId = await makeRun();
     await appendHeartbeatRunEvent(db, nativeEvent(runId, 1));
-    // A server from before the cursor stores events 2 and 3 while it holds
-    // the run row, and does not move the cursor.
     const older = await holdRun(runId, async tx => {
       await tx.insert(heartbeatRunEvents).values([2, 3].map(sourceSeq => ({
         companyId, agentId, runId, seq: sourceSeq, eventType: "item.delta", stream: "system", level: "info",
@@ -350,8 +342,9 @@ describeEmbeddedPostgres("atomic ordinary run events", () => {
       await tx.update(heartbeatRuns).set({ nextEventSeq: 4 }).where(eq(heartbeatRuns.id, runId));
     });
     const batch = sentStatements(db.$client, () => appendHeartbeatRunEventBatch(db, [2, 3, 4].map(sourceSeq => nativeEvent(runId, sourceSeq))));
-    expect(await settlesWhileHeld(batch)).toBe(false);
+    const batchSettledWhileHeld = await settlesWhileHeld(batch);
     await older.release();
+    expect(batchSettledWhileHeld).toBe(false);
     const { result, statements } = await batch;
     expect(statements[0]).toMatch(/^with snapshot_run as /);
     expect(statements[1]).toMatch(/^begin/i);
@@ -424,7 +417,6 @@ describeEmbeddedPostgres("atomic ordinary run events", () => {
       state = (Math.imul(state ^ (state >>> 15), 0x2c1b3c6d) + 0x6d2b79f5) >>> 0;
       return state % limit;
     };
-    // `turn.completed` registers a wake, so it always takes the one-by-one path under the run lock.
     const reference = (event: ReturnType<typeof nativeEvent>) => ({ ...event, eventType: "turn.completed" });
     const appendBoth = async (fast: string, slow: string, sourceSeqs: number[], payloadOffset = 0) => {
       const make = (runId: string, sourceSeq: number) => {
@@ -545,7 +537,6 @@ describeEmbeddedPostgres("atomic ordinary run events", () => {
     try {
       const before = await readRun(runId);
       await expect(appendHeartbeatRunEvent(db, failing)).rejects.toThrow();
-      // A writer revoked before its append sends nothing.
       await expect(appendHeartbeatRunEvent(db, { ...nativeEvent(runId, 3),
         assertWritable: () => { throw new Error("writer revoked"); } })).rejects.toThrow("writer revoked");
       expect(await readRun(runId)).toEqual(before);

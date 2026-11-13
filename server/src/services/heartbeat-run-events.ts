@@ -260,7 +260,6 @@ export async function appendHeartbeatRunEventBatch(
   }
 }
 
-/** $1 run, $2 company, $3 agent, $4 source instance, $5 first source sequence, $6 count, $7 update time, $8 event ids, $9 rows. */
 const APPEND_NEW_NATIVE_SOURCE_EVENTS_SQL = `
   with snapshot_run as (
     select next_event_seq from heartbeat_runs where id = $1::uuid
@@ -290,17 +289,6 @@ const APPEND_NEW_NATIVE_SOURCE_EVENTS_SQL = `
   order by event.ordinal
   returning *`;
 
-/**
- * Appends events that continue their source's stored cursor in one statement,
- * which commits on its own, and returns null without writing when they do not
- * or when the run changed meanwhile. The update takes the same run row lock as
- * the lock read of a transaction. A statement that waits for that lock keeps
- * the snapshot it took before waiting, so its replay probe would miss events
- * the lock holder committed. Every event append also advances
- * `next_event_seq`, so the update requires the value this snapshot read: any
- * append committed after the snapshot makes it write nothing. A source without
- * a cursor continues from 0, and the probe finds any event of it the run holds.
- */
 async function appendNewNativeSourceEvents(
   db: Db,
   inputs: readonly NativeSourceEventInput[],

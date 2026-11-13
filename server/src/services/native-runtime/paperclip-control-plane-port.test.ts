@@ -876,22 +876,17 @@ describe("PaperclipControlPlanePort conformance", () => {
         await expect(port.appendEvent(delta(sourceSeq))).resolves.toEqual({
           cursor: sourceSeq, highestContiguousSourceSeq: sourceSeq, disposition: "committed",
         });
-        // One statement: no BEGIN, COMMIT, SAVEPOINT or separate lock read.
         expect(statements).toHaveLength(1);
         expect(statements[0]).toMatch(/^with snapshot_run as /);
       }
       statements.length = 0;
       await expect(port.appendEvent(delta(2))).resolves.toEqual({ cursor: 2, highestContiguousSourceSeq: 3, disposition: "duplicate" });
-      // A replay finds nothing to write, then appends under the run lock.
       expect(statements).toHaveLength(5);
-      // A controller revoked before its append sends nothing.
       active = false;
       statements.length = 0;
       await expect(port.appendEvent(delta(4))).rejects.toThrow("controller_revoked");
       expect(statements).toEqual([]);
       active = true;
-      // The controller loses the run while its append is in flight: the row
-      // commits, but its receipt is rejected and no observer runs.
       options.debug = (_connection: number, text: string) => { if (/^with snapshot_run as /.test(text.trim())) active = false; };
       await expect(port.appendEvent(delta(4))).rejects.toThrow("controller_revoked");
     } finally { options.debug = undefined; }
@@ -900,7 +895,6 @@ describe("PaperclipControlPlanePort conformance", () => {
     const stored = () => db.select({ seq: heartbeatRunEvents.seq, sourceSeq: heartbeatRunEvents.sourceSeq })
       .from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, identity.runId)).orderBy(asc(heartbeatRunEvents.seq));
     expect(await stored()).toEqual([1, 2, 3, 4].map(seq => ({ seq, sourceSeq: seq })));
-    // The successor's resend of that event is a replay of the same row.
     const replacement = new PaperclipControlPlanePort(db, {
       ...identity, completionContractId: contractId, completionContractSha256: contractSha,
       sourceInstanceId: runnerId, controlPlaneSourceInstanceId: `stream-${identity.runId}`,
@@ -966,7 +960,6 @@ describe("PaperclipControlPlanePort conformance", () => {
         cursor: sourceSeq, highestContiguousSourceSeq: sourceSeq, disposition: "committed" })));
       await expect(boundary).resolves.toMatchObject({ cursor: 7, highestContiguousSourceSeq: 7, disposition: "committed" });
       expect(settled).toEqual([2, 3, 4, 5, 6]);
-      // The five deltas share one statement, sent before the boundary event's own append.
       const inserts = statements.filter(text => text.includes("insert into heartbeat_run_events"));
       expect(inserts).toHaveLength(2);
       expect(statements[0]).toMatch(/^with snapshot_run as /);
