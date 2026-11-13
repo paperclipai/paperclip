@@ -1,3 +1,4 @@
+import type { McpAppToolUi } from "../mcp-apps.js";
 import type {
   ConnectionTokenIssuanceOutcome,
   ConnectionTokenIssuancePath,
@@ -568,6 +569,8 @@ export interface ToolCatalogEntry {
   inputSchema: Record<string, unknown> | null;
   outputSchema: Record<string, unknown> | null;
   annotations: Record<string, unknown> | null;
+  /** MCP Apps view declaration (`_meta.ui`), when the tool renders one. */
+  uiMeta?: McpAppToolUi | null;
   riskLevel: ToolRiskLevel;
   isReadOnly: boolean;
   isWrite: boolean;

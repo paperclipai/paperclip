@@ -168,3 +168,20 @@ test("a held refresh round-trips every managed lockfile", () => {
     rmSync(temp, { recursive: true, force: true });
   }
 });
+
+// The SDK public source proof pins the lock too. The bot merges without CI, so
+// a refresh that left those pins stale turned master red (#20615).
+test("the refresh commit resyncs and checks the SDK public source pins before pushing", () => {
+  const upsert = step("Create or update pull request");
+  const order = [
+    'git commit -m "chore(lockfile): refresh pnpm lockfiles"',
+    'node tests/runner-e2e/source-sdk-public-inputs.mjs "$(git rev-parse HEAD)" --write',
+    "git add tests/runner-e2e/source-sdk-public-inputs.json",
+    "git commit --amend --no-edit",
+    'node tests/runner-e2e/source-sdk-public-inputs.mjs "$(git rev-parse HEAD)" --check',
+    'git push --force origin "$BRANCH"',
+    'echo "head_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"',
+  ].map((line) => upsert.indexOf(line));
+  assert.ok(order.every((index) => index !== -1), `missing resync command: ${order}`);
+  assert.deepEqual([...order].sort((a, b) => a - b), order, "resync must follow the lock commit and precede the push and head_sha");
+});

@@ -128,8 +128,13 @@ test("the Runner's ACPX patch binds the pack for every ACPX harness; other patch
   const runnerPatch = `patches/acpx@${version}.patch`;
   assert.notEqual(digestWith(runnerPatch, s => `${s}\n`), baseline);
   const others = sources.list("patches").filter(path => path.endsWith(".patch") && path !== runnerPatch);
-  assert.ok(others.some(path => path.startsWith("patches/acpx@")), "another package pins another ACPX version");
   for (const path of others) assert.equal(digestWith(path, s => `${s}\n`), baseline, path);
+  // A patch for another ACPX version (another package's pin) never binds the pack.
+  const otherAcpx = "patches/acpx@0.0.0-other.patch";
+  assert.equal(packContractDigest(root, {
+    read: p => p === otherAcpx ? "--- a\n+++ b\n" : sources.read(p),
+    list: dir => dir === "patches" ? [...sources.list(dir), otherAcpx] : sources.list(dir),
+  }), baseline);
   // A build context without the Runner's patch fails instead of dropping the contract.
   assert.throws(() => packContractDigest(root, { read: p => p === runnerPatch ? null : sources.read(p),
     list: dir => sources.list(dir).filter(p => p !== runnerPatch) }), /Registered contract source is missing: acpx-patch/);

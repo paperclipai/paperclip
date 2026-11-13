@@ -1,4 +1,6 @@
 export const queryKeys = {
+  linkPreview: (companyId: string, userId: string | null, url: string) =>
+    ["link-preview", companyId, userId, url] as const,
   workspacePreferences: {
     mine: (userId: string | null) => ["workspace-preferences", userId] as const,
   },
@@ -169,6 +171,10 @@ export const queryKeys = {
     run: (companyId: string, runId: string) =>
       ["smoke-lab", companyId, "runs", runId] as const,
   },
+  mcpSkills: {
+    list: (companyId: string) => ["mcp-skills", companyId] as const,
+    content: (companyId: string, skillId: string, manifestDigest: string) => ["mcp-skills", companyId, skillId, "content", manifestDigest] as const,
+  },
   companySkills: {
     list: (companyId: string) => ["company-skills", companyId] as const,
     listRecent: (companyId: string) =>
@@ -306,6 +312,10 @@ export const queryKeys = {
     summaryRevisions: (id: string) =>
       ["status-cards", "detail", id, "summary-revisions"] as const,
     dryRun: (id: string) => ["status-cards", "detail", id, "dry-run"] as const,
+  },
+  mcpApps: {
+    views: (issueId: string) => ["mcp-app-views", issueId] as const,
+    detail: (issueId: string, viewId: string) => ["mcp-app-views", issueId, "detail", viewId] as const,
   },
   issues: {
     recoveryActions: (id: string, actionId: string | null, runId: string | null) =>

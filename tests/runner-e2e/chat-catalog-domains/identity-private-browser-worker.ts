@@ -1,10 +1,13 @@
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { chromium, test, expect } from "@playwright/test";
+import { recordPrivateChildFailure } from "./private-child-failure.js";
+import type { IdentityPrivateStep } from "./identity-private-browser-steps.js";
 import type { PrivateIdentityOperation, PrivateIdentityReceipt } from "./identity-private-browser.js";
 import { runIdentityWizardInPrivateBrowser } from "./identity-wizard.js";
 import { runNativeNewCompanyInPrivateBrowser } from "./identity-new-company-native.js";
 let privateValues: string[] = [];
+let step: IdentityPrivateStep = "request";
 async function main(): Promise<PrivateIdentityReceipt> {
   try { test.info(); throw new Error("Attached Test worker refused"); } catch (error) { if (error instanceof Error && error.message === "Attached Test worker refused") throw error; }
   const request = process.argv[2]!; const directory = path.dirname(request);
@@ -13,10 +16,10 @@ async function main(): Promise<PrivateIdentityReceipt> {
   const origin = new URL(input.origin);
   if (origin.hostname !== "127.0.0.1" || origin.protocol !== "http:" || new URL(input.startPath, origin).origin !== origin.origin) throw new Error("Private identity target must be a disposable loopback instance");
   if (!["sign-in", "wizard", "new-company-native", "observability", "canary-failure"].includes(input.kind)) throw new Error("Unknown finite identity operation");
-  const browser = await chromium.launch({ headless: true, ...(input.executablePath ? { executablePath: input.executablePath } : {}), ...(input.channel ? { channel: input.channel } : {}) });
+  step = "launch"; const browser = await chromium.launch({ headless: true, ...(input.executablePath ? { executablePath: input.executablePath } : {}), ...(input.channel ? { channel: input.channel } : {}) });
   try {
     const context = await browser.newContext({ baseURL: origin.origin }); await context.addCookies(input.cookies); const page = await context.newPage(); page.setDefaultTimeout(30_000);
-    const receipt: PrivateIdentityReceipt = { operation: input.kind, completed: true, processIsolation: true, testRunnerAttached: false, apiStepRecorder: false, tracingEnabled: false, videoEnabled: false };
+    step = input.kind; const receipt: PrivateIdentityReceipt = { operation: input.kind, completed: true, processIsolation: true, testRunnerAttached: false, apiStepRecorder: false, tracingEnabled: false, videoEnabled: false };
     if (input.kind === "canary-failure") {
       await page.setContent('<input type="password" aria-label="Private credential">');
       await page.getByLabel("Private credential", { exact: true }).fill(input.credential);
@@ -37,7 +40,7 @@ async function main(): Promise<PrivateIdentityReceipt> {
       await writeFile(path.join(directory, "storage.json"), JSON.stringify(await context.storageState()), { mode: 0o600 });
     } else if (input.kind === "new-company-native") {
       const connections: Array<{ companyId: string; connectionId: string; grantId: string }> = [];
-      receipt.newCompany = await runNativeNewCompanyInPrivateBrowser({ ...input, page, onCompany() {}, onConnection() {},
+      receipt.newCompany = await runNativeNewCompanyInPrivateBrowser({ ...input, page, onCompany() {}, onConnection() {}, step(name) { step = name; },
         async registerCompany(company) { await writeFile(path.join(directory, "company.json"), JSON.stringify({ id: company.id }), { mode: 0o600 }); },
         async registerConnection(companyId, connectionId, grantId) { connections.push({ companyId, connectionId, grantId }); await writeFile(path.join(directory, "connections.json"), JSON.stringify(connections), { mode: 0o600 }); }, evidence: async () => {} });
     } else if (input.kind === "wizard") {
@@ -54,4 +57,7 @@ async function main(): Promise<PrivateIdentityReceipt> {
     return receipt;
   } finally { await browser.close(); }
 }
-main().then(receipt => { const output = JSON.stringify(receipt); if (privateValues.some(value => [value, encodeURIComponent(value), Buffer.from(value).toString("base64")].some(encoded => output.includes(encoded)))) throw new Error("Private identity receipt contains a credential"); process.stdout.write(output); }).catch(() => { process.stderr.write("Private identity browser operation failed; details withheld"); process.exitCode = 1; });
+main().then(receipt => { const output = JSON.stringify(receipt); if (privateValues.some(value => [value, encodeURIComponent(value), Buffer.from(value).toString("base64")].some(encoded => output.includes(encoded)))) throw new Error("Private identity receipt contains a credential"); process.stdout.write(output); }).catch(async (error: unknown) => {
+  await recordPrivateChildFailure(path.dirname(process.argv[2]!), step, error);
+  process.stderr.write("Private identity browser operation failed; details withheld"); process.exitCode = 1;
+});

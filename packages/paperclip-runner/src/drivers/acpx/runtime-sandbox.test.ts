@@ -212,6 +212,17 @@ describe("ACPX runtime sandbox", () => {
     }
   });
 
+  it.each(["approve-reads", "approve-paperclip", "deny-all", "approve-all"] as const)(
+    "denies Claude's self-scheduling tools in isolated settings under %s",
+    async (permissionMode) => {
+      const fixture = await sandboxFixture("claude");
+      const sandbox = await prepareAcpxRuntimeSandbox({ binding: { ...fixture.binding, permissionMode }, agent: "claude" });
+      await sandbox.initializeOwnedConfiguration?.();
+      const settings = JSON.parse(await readFile(join(sandbox.agentHomeDirectory, "settings.json"), "utf8"));
+      expect(settings.permissions.deny).toEqual(["CronCreate", "CronDelete", "CronList", "ScheduleWakeup"]);
+    },
+  );
+
   it("restores bound Claude effort in private settings across cold connections", async () => {
     const fixture = await sandboxFixture("claude");
     for (const claudeEffort of ["high", "xhigh", "max"] as const) {

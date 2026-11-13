@@ -140,9 +140,15 @@ export function chatCatalogNativePhaseIsTimely(ctx: ChatCatalogContext): boolean
 
 export type ChatCatalogTerminalRunStatus = "succeeded" | "cancelled" | "failed" | "timed_out";
 export type ChatCatalogRunPolicy =
-  | { kind: "terminal-counts"; terminalStatusCounts: Partial<Record<ChatCatalogTerminalRunStatus, number>> }
+  | { kind: "terminal-counts"; terminalStatusCounts: Partial<Record<ChatCatalogTerminalRunStatus, number>>;
+      /** Optional upper bounds: a status listed here may occur from its terminalStatusCounts value up to this count.
+       * The case oracle must bind every run above the minimum to a declared role. */
+      maximumTerminalStatusCounts?: Partial<Record<ChatCatalogTerminalRunStatus, number>> }
   | { kind: "source-settled-with-active-work"; maximumActiveWorkerRuns: number;
-      expectedWorkerCancellation?: "owned-task-reassignment" };
+      expectedWorkerCancellation?: "owned-task-reassignment";
+      /** Lead runs outside the source woken by a case handoff back to the lead (a worker returning its case).
+       * Defaults to 0; the case oracle must bind each one to the worker's actual handoff. */
+      maximumLeadCaseHandbackRuns?: number };
 export interface ChatCatalogExpectedWorkerCancellation {
   runId: string; taskId: string; workerId: string; sourceRunId: string;
 }

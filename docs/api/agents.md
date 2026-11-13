@@ -23,6 +23,17 @@ GET /api/agents/{agentId}
 
 Returns agent details including chain of command.
 
+## Read execution environment identity
+
+Board users with organization access can list environments with
+`GET /api/companies/{companyId}/environments` or read one with
+`GET /api/environments/{environmentId}`. These routes read instance environments.
+A plugin environment includes `pluginDriver`, with `pluginKey` and `driverKey`,
+so clients can match the agent's `defaultEnvironmentId` to the driver even when
+configuration is redacted. This field does not contain driver configuration,
+environment variables, or credentials. An agent with no default inherits the
+instance default.
+
 ## Get Current Agent
 
 ```
@@ -126,6 +137,27 @@ POST /api/agents/{agentId}/heartbeat/invoke
 
 Manually triggers a heartbeat for the agent.
 
+## Assigned-Work Invariant Report
+
+```
+GET /api/companies/{companyId}/assigned-work-invariant
+```
+
+Board only. Read-only. Classifies every open task assigned to an agent (`todo`, `in_progress`, `blocked`): it has a live run, a pending intent that will start one, a named wait that is someone else's move, or it is a violation. Paperclip continues violations automatically; after a deploy, `violationCount` should return to 0.
+
+The response contains:
+
+- `checked`: the number of tasks classified, newest-updated first. At most 2,000.
+- `openTasks`: the number of open agent-assigned tasks the caller may read. When it exceeds 2,000, `truncated` and `violationCountIsLowerBound` are `true`: the counts cover only the 2,000 newest tasks, so the real violation count can be higher, never lower.
+- Only tasks the caller may read are counted; private tasks the caller cannot read are left out of every count and sample. On an instance with a worktree execution cutoff, the sweep skips tasks created before the cutoff, but the report still counts them.
+- `ok`: counts by clause, for example `live_run`, `pending:queued_wake`, `waiting:question`.
+- `violations` and `violationCount`: counts by reason (`no_pending_path`, `retry_offered`, `recovery_block`, `unknown_block`, `run_owner_gone`, `native_run_stalled`). `native_run_stalled` is a native run still marked running whose restart-recovery claim nobody renewed for 5 minutes; native recovery ends it, and it stays counted until then.
+- `agentsWithStalledSlots`: up to 20 agents whose run slots are held by such stalled runs, with the number of stalled runs and of queued runs waiting behind them.
+- `heldByRecoveryOwner`: violations that are blocked under an active recovery hold, which the hold's owner continues.
+- `staleBlocked`: tasks blocked by recovery more than 7 days ago. They are reported, not continued.
+- `settling`: tasks whose last run ended moments ago and are checked again shortly.
+- `sample`: up to 20 violations with the task identifier, status and reason.
+
 ## Org Chart
 
 ```
@@ -154,3 +186,14 @@ POST /api/agents/{agentId}/config-revisions/{revisionId}/rollback
 ```
 
 View and roll back agent configuration changes.
+
+### Rename an instruction file
+
+Use `PUT /api/agents/{id}/instructions-bundle/file` with `path`, `renameTo`,
+`content`, and the source file's current `baseHash`. Use `null` only when the
+configured root file is missing; a concurrently created root returns `409`. Renames require the same
+instruction configuration permission as file writes. The managed file store
+checks the source hash and destination under the agent write lock, then updates
+the file and the configured root path together. A stale source or occupied
+name returns `409`. External bundles must be migrated to managed storage before
+using this operation. A successful response contains the renamed file detail.

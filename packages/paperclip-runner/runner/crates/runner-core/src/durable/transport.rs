@@ -1764,6 +1764,7 @@ mod tests {
     #[cfg(unix)]
     include!("tests/hosted_retention.rs");
     include!("tests/ack_release_poll.rs");
+    include!("tests/indeterminate_terminal_ack.rs");
 
     use std::net::{IpAddr, Ipv4Addr, TcpListener};
     use std::path::PathBuf;

@@ -84,6 +84,15 @@ export function isRunnerRecoveryMaintenanceCommand(type: string): boolean {
   return ["session.snapshot", "session.goal.get", "runner.drain", "runner.suspend", "runner.shutdown", "turn.stop"].includes(type);
 }
 
+/** The Runner journaled this command before its effect, then died. It sends
+ * that `indeterminate` entry as `failed` with `execution_indeterminate`, never
+ * executes it again, and still treats a lifecycle command as terminal. */
+function isIndeterminateCommandResult(command: DurableRecoveryCoreCommand): boolean {
+  if (command.status === "indeterminate") return true;
+  const detail = command.result?.result;
+  return command.status === "failed" && isRecord(detail) && detail.code === "execution_indeterminate";
+}
+
 const commandTypes = new Set([
   "run.prepare",
   "run.attach",
@@ -96,6 +105,7 @@ const commandTypes = new Set([
   "interaction.receipt",
   "semantic_tool.result",
   "external_provider.operation",
+  "runner.attachment.download",
   "session.snapshot",
   "session.goal.get",
   "session.goal.set",
@@ -587,6 +597,34 @@ export function inspectUnclaimedBootstrapCheckpoint(
   } catch { return null; }
 }
 
+function isUnauthenticatedBootstrapState(state: StoredCoreState, expected: Partial<DurableRecoveryIdentity>): boolean {
+  const history = state.bootstrapHistory;
+  const matches = (candidate: DurableRecoveryIdentity | undefined) => candidate !== undefined
+    && (Object.keys(expected) as Array<keyof DurableRecoveryIdentity>).every(key => candidate[key] === expected[key]);
+  return !(state.schema !== coreStateSchema || state.checkpointEventPolicy !== "control-v1"
+      || !expected.runId || !matches(state.identity)
+      || history?.schema !== "paperclip.runner.bootstrap-history.v1"
+      || canonicalJson(history.originIdentity) !== canonicalJson(state.identity)
+      || history.adopted !== false
+      || state.warmTransition || state.completedWarmTransition || state.stagedRunAttachment
+      || state.connectionCount !== 0 || state.ackedSourceSeq !== 0 || state.committedEvents.length !== 0
+      || Object.values(state.tickets).some(ticket => ticket.usedAt !== null || ticket.warmTransitionId !== undefined)
+      || Object.keys(state.leases).length !== 0 || state.lastLeaseId !== null || state.lastLeaseExpiresAt !== null
+      || state.replayDeliveries !== 0 || state.duplicateCommandResults !== 0
+      || state.commands.length < 2 || state.commands[0]?.type !== "run.prepare"
+      || state.commands[1]?.type !== "session.open"
+      || state.commands.some(command => command.status !== "pending" || command.result !== null));
+}
+
+export function inspectUnauthenticatedBootstrapCheckpoint(
+  records: ReadonlyMap<string, string>, expected: Partial<DurableRecoveryIdentity>,
+): boolean {
+  try {
+    if ([...records.values()].reduce((bytes, value) => bytes + Buffer.byteLength(value), 0) > 8 * 1024 * 1024) return false;
+    return isUnauthenticatedBootstrapState(checkpointState(records).state, expected);
+  } catch { return false; }
+}
+
 export function inspectUnclaimedBootstrapState(
   contents: string, expected: DurableRecoveryIdentity, verifiedArtifact: { version: string; digest: string },
 ): ReturnType<typeof inspectUnclaimedBootstrapCheckpoint> {
@@ -637,6 +675,9 @@ export interface RunnerProcessLaunchSpec {
   args: readonly string[];
   cwd: string;
   environment: NodeJS.ProcessEnv;
+  /** True while the launched Runner holds an authenticated connection to its control plane. */
+  isRunnerConnected?: () => boolean;
+  refreshBootstrapTicket?: () => Promise<string>;
 }
 
 function domainDigest(domain: string, parts: readonly Buffer[]): Buffer {
@@ -1644,6 +1685,8 @@ class DurableCoreStore {
   #writeRevision = 0;
   #externallyPersisted = false;
   revision = 0;
+  /** Called after the stored state is replaced or saved. */
+  onChange: (() => void) | null = null;
   #pendingEvent: {
     buildCandidate: (state: StoredCoreState) => StoredCoreState | null;
     isCurrentOwner: () => boolean;
@@ -1705,6 +1748,7 @@ class DurableCoreStore {
     this.#state.checkpointEventPolicy = "control-v1";
     this.#externallyPersisted = true;
     this.revision += 1;
+    this.onChange?.();
   }
 
   save(): void {
@@ -1723,6 +1767,7 @@ class DurableCoreStore {
       this.#state = candidate;
       if (pending && withEvent) pending.committed = true;
       this.revision += 1;
+      this.onChange?.();
     } catch (error) {
       this.#writeIndeterminate = true;
       throw error;
@@ -1748,6 +1793,7 @@ class DurableCoreStore {
         this.#state = candidate;
         ++this.#writeRevision;
         if (checkpointRequired) this.revision += 1;
+        this.onChange?.();
         return true;
       }
       await withStagedPrivateWrite(this.path, `${JSON.stringify(candidate)}\n`, (temporary) => {
@@ -1759,6 +1805,7 @@ class DurableCoreStore {
         ++this.#writeRevision;
         pending.committed = true;
         if (checkpointRequired) this.revision += 1;
+        this.onChange?.();
       });
       // Explicit authority commits do not absorb pending events. On conflict,
       // leave the event unacknowledged for replay instead of rewriting in a loop.
@@ -1792,6 +1839,7 @@ class DurableCoreStore {
       }
       this.#state = candidate;
       if (checkpointRequired) this.revision += 1;
+      this.onChange?.();
     } catch (error) {
       // Rename may already have succeeded before directory fsync failed.
       // Never overwrite that possibly durable receipt using stale memory.
@@ -2050,6 +2098,8 @@ export class DurablePrpControlPlane {
    * in-flight and failed dispatches remain. */
   #liveDispatchedSemanticCalls = new Set<string>();
   #semanticCallbacksRetired = false;
+  #queuedCommandResults = new Map<string, { count: number; queuedAt: number }>();
+  #inboundFrameSettledAt = 0;
   #semanticResultPersistenceFailed = false;
   #semanticResultFailures: Array<{
     callId: string;
@@ -2067,6 +2117,7 @@ export class DurablePrpControlPlane {
   #beforeAuthenticatedConnection?: DurablePrpControlPlaneOptions["beforeAuthenticatedConnection"];
   #onProtocolIntegrityError?: DurablePrpControlPlaneOptions["onProtocolIntegrityError"];
   #onAuthenticatedConnection?: DurablePrpControlPlaneOptions["onAuthenticatedConnection"];
+  readonly #runnerExitListeners = new Set<() => void>();
   #protocolIntegrityError: NativeSessionProtocolIntegrityError | null = null;
   #eventDeliveryStall: { runId: string; ackedSourceSeq: number; since: number; failures: number } | null = null;
   #connectionLeaseTtlMs: number;
@@ -2082,6 +2133,7 @@ export class DurablePrpControlPlane {
   #persistenceTail = Promise.resolve();
   #sendQueues = new Map<AuthorityConnection, Promise<void>>();
   #recoveredCursor: { runId: string; sourceSeq: number } | null = null;
+  #readableStateListeners = new Set<() => void>();
 
   constructor(options: DurablePrpControlPlaneOptions) {
     if (
@@ -2102,6 +2154,7 @@ export class DurablePrpControlPlane {
       options.stateDirectory,
       options.identity,
     );
+    this.#store.onChange = () => this.#readableStateChanged();
     if (this.#store.state.checkpointEventPolicy === "control-v1") {
       this.#recoveredCursor = { runId: options.identity.runId, sourceSeq: this.#store.state.ackedSourceSeq };
     }
@@ -2132,6 +2185,44 @@ export class DurablePrpControlPlane {
 
   get store(): DurablePrpControlPlaneStore {
     return this.#publishedStore ?? this.#store;
+  }
+
+  /**
+   * Tell a reader of `store` that what it can see may have changed: an event
+   * or command was committed, or a saved checkpoint released the events that
+   * were waiting for it. This is a hint, and it can arrive partway through the
+   * change, so the reader must look at the state in a later task. Returns the
+   * function that removes the listener.
+   */
+  onReadableStateChange(listener: () => void): () => void {
+    this.#readableStateListeners.add(listener);
+    return () => {
+      this.#readableStateListeners.delete(listener);
+    };
+  }
+
+  /**
+   * Notify when the Runner reports a completed suspend or shutdown. The
+   * listener runs after the result is saved and before its acknowledgement;
+   * the Runner exits once acknowledged, so a dropped connection after this
+   * point is that exit, not a transport loss.
+   */
+  onRunnerExitCommitted(listener: () => void): () => void {
+    this.#runnerExitListeners.add(listener);
+    return () => {
+      this.#runnerExitListeners.delete(listener);
+    };
+  }
+
+  #readableStateChanged(): void {
+    for (const listener of this.#readableStateListeners) {
+      // A reader can never fail the commit that woke it.
+      try {
+        listener();
+      } catch {
+        // The reader owns its own failure handling.
+      }
+    }
   }
 
   #capturePublishedState(snapshot: DurablePrpCheckpoint): StoredCoreState {
@@ -2218,6 +2309,7 @@ export class DurablePrpControlPlane {
         this.#publishedState = published;
         this.#persistedRevision = revision;
         this.#checkpointPersistenceFailed = false;
+        this.#readableStateChanged();
       } catch (error) {
         this.#checkpointPersistenceFailed = true;
         throw error;
@@ -2423,6 +2515,10 @@ export class DurablePrpControlPlane {
     for (const connection of connections) connection.close();
   }
 
+  activeRunnerProtocolVersion(): number | null {
+    return this.#eventOwner?.lease?.protocolVersion ?? null;
+  }
+
   activeRunnerConnectionCount(): number {
     return [...this.#connections].filter(
       (connection) => connection.secureChannel !== null,
@@ -2595,6 +2691,27 @@ export class DurablePrpControlPlane {
    * source for a later run.attach. Repeating the same write is idempotent;
    * changing an established seed fails closed.
    */
+  queuedCommandResultProgressAt(commandId: string): number | null {
+    const queued = this.#queuedCommandResults.get(commandId);
+    return queued === undefined ? null : Math.max(queued.queuedAt, this.#inboundFrameSettledAt);
+  }
+
+  withdrawUndeliveredTerminalCommands(): string[] {
+    if (this.#store.state.warmTransition) return [];
+    const commands = this.#store.state.commands;
+    const firstPending = commands.findIndex((command) => command.status === "pending");
+    if (firstPending < 0) return [];
+    const suffix = commands.slice(firstPending);
+    const kept = suffix.filter((command) => !this.#isTerminalLifecycleCommand(command));
+    if (kept.length === suffix.length) return [];
+    const withdrawn = suffix.filter((command) => this.#isTerminalLifecycleCommand(command));
+    for (const command of withdrawn) delete this.#store.state.commandDeliveryCounts[command.commandId];
+    kept.forEach((command, index) => { command.controllerSeq = firstPending + index + 1; });
+    commands.splice(firstPending, suffix.length, ...kept);
+    this.#store.save();
+    return withdrawn.map((command) => command.type);
+  }
+
   persistRunAttachTemplate(runAttachTemplate: Record<string, unknown>): void {
     if (!isRecord(runAttachTemplate.provider)) {
       throw new Error("Durable PRP run attachment template is invalid.");
@@ -2870,12 +2987,18 @@ export class DurablePrpControlPlane {
       }
     }
     const controllerSeq = this.#store.state.commands.length + 1;
+    const sequenceId = `command_prp_${controllerSeq.toString().padStart(8, "0")}`;
+    let generatedId = sequenceId;
+    for (let reuse = 1; this.#store.state.commands.some((candidate) => candidate.commandId === generatedId); reuse += 1) {
+      generatedId = `${sequenceId}_${reuse}`;
+    }
     const command: DurableRecoveryCoreCommand = {
-      schema: type === "external_provider.operation" ? "paperclip.prp.command.v3" : type.startsWith("session.goal.")
-        ? "paperclip.prp.command.v2"
-        : "paperclip.prp.command.v1",
-      commandId:
-        commandId ?? `command_prp_${controllerSeq.toString().padStart(8, "0")}`,
+      schema: type === "external_provider.operation" || type === "runner.attachment.download"
+        ? "paperclip.prp.command.v3"
+        : type.startsWith("session.goal.")
+          ? "paperclip.prp.command.v2"
+          : "paperclip.prp.command.v1",
+      commandId: commandId ?? generatedId,
       controllerSeq,
       type,
       issuedAt: new Date().toISOString(),
@@ -3009,11 +3132,25 @@ export class DurablePrpControlPlane {
           undecryptedFrames += 1;
           frame = { raw: value };
         }
+        const answeredCommandId = "decrypted" in frame && frame.decrypted.kind === "command_result"
+          ? (frame.decrypted.payload as Record<string, unknown> | undefined)?.commandId : undefined;
+        const queuedResult = typeof answeredCommandId === "string" ? answeredCommandId : null;
+        if (queuedResult !== null) {
+          const queued = this.#queuedCommandResults.get(queuedResult);
+          this.#queuedCommandResults.set(queuedResult, { count: (queued?.count ?? 0) + 1, queuedAt: queued?.queuedAt ?? Date.now() });
+        }
         processing = processing
           .then(() => "raw" in frame
             ? this.#handleJson(connection, frame.raw).finally(() => { undecryptedFrames -= 1; })
             : this.#handleDecryptedFrame(connection, frame.decrypted))
-          .catch(() => connection.close());
+          .catch(() => connection.close())
+          .finally(() => {
+            this.#inboundFrameSettledAt = Date.now();
+            if (queuedResult === null) return;
+            const queued = this.#queuedCommandResults.get(queuedResult);
+            if (queued !== undefined && queued.count > 1) queued.count -= 1;
+            else this.#queuedCommandResults.delete(queuedResult);
+          });
         const tail = processing;
         this.#connectionProcessing.set(connection, tail);
         const release = () => {
@@ -3786,6 +3923,7 @@ export class DurablePrpControlPlane {
       const cursor = Math.max(this.#store.state.ackedSourceSeq, pending.acknowledgedSourceSeq);
       this.#store.state.ackedSourceSeq = cursor;
       this.#recoveredCursor = { runId: this.#identity.runId, sourceSeq: cursor };
+      this.#readableStateChanged();
     }
     connection.pendingChallenge = null;
     connection.lease = lease;
@@ -4091,6 +4229,15 @@ export class DurablePrpControlPlane {
     command.result = structuredClone(result);
     this.#store.save();
     if (turnStart) crashPoint("runner.turn_start.after_controller_journal_before_db_checkpoint");
+    if (this.#isTerminalLifecycleCommand(command) && status === "completed") {
+      for (const listener of this.#runnerExitListeners) {
+        try {
+          listener();
+        } catch {
+          // An observer can never change the acknowledgement.
+        }
+      }
+    }
     this.#ackTerminalCommandResult(connection, command);
     this.#releaseServingLifecycle(connection, command);
     if (!this.#isTerminalLifecycleCommand(command) || connection.terminalLifecycleCommandId === null) {
@@ -4102,7 +4249,8 @@ export class DurablePrpControlPlane {
    * A rejected runner.suspend changes no provider state, and the runner keeps
    * serving this connection. Lift the terminal-lifecycle fence it installed
    * so the controller's next command (a fresh suspend) can be delivered.
-   * Completed suspensions and every shutdown keep the fence.
+   * Completed suspensions and every shutdown keep the fence. So does an
+   * indeterminate suspension: the Runner treats it as terminal and exits.
    */
   #releaseServingLifecycle(
     connection: AuthorityConnection,
@@ -4111,6 +4259,7 @@ export class DurablePrpControlPlane {
     if (
       command.type === "runner.suspend" &&
       (command.status === "failed" || command.status === "rejected") &&
+      !isIndeterminateCommandResult(command) &&
       connection.terminalLifecycleCommandId === command.commandId
     ) {
       connection.terminalLifecycleCommandId = null;
@@ -4159,7 +4308,11 @@ export class DurablePrpControlPlane {
           commandId: command.commandId,
           commandType: command.type,
           controllerSeq: command.controllerSeq,
-          status: command.status,
+          // A Runner journals a command it may have started before dying as
+          // `indeterminate` and sends it as `failed`. Runners compare this
+          // acknowledgement with their journal, so name that journal status;
+          // current Runners accept either spelling.
+          status: isIndeterminateCommandResult(command) ? "indeterminate" : command.status,
         },
       ),
     );
@@ -4681,6 +4834,8 @@ export function spawnRunner(options: {
   };
   environment?: NodeJS.ProcessEnv;
   processLauncher?: (spec: RunnerProcessLaunchSpec) => RunnerProcessHandle;
+  isRunnerConnected?: () => boolean;
+  refreshBootstrapTicket?: () => Promise<string>;
   diagnosticsDirectory?: string;
 }): RunnerProcessHandle {
   for (const value of [options.maxRuntimeMs, options.maxLifetimeMs]) {
@@ -4823,13 +4978,15 @@ export function spawnRunner(options: {
         throw new Error("runner_process_termination_unconfirmed");
       }
       if (lifetimeDeadline !== undefined && lifetimeDeadline <= Date.now()) throw new Error("runner_process_lifetime_expired");
-      return spawnRunner({ ...options, ticket,
+      return spawnRunner({ ...options, ticket, refreshBootstrapTicket: undefined,
         ...(lifetimeDeadline === undefined ? {} : { maxLifetimeMs: lifetimeDeadline - Date.now() }) });
     },
   });
   if (options.processLauncher !== undefined) {
     return withRestart(
       options.processLauncher({ command, args, cwd: packageRoot, environment,
+        ...(options.isRunnerConnected ? { isRunnerConnected: options.isRunnerConnected } : {}),
+        ...(options.refreshBootstrapTicket ? { refreshBootstrapTicket: options.refreshBootstrapTicket } : {}),
         nativeRunner: {
           identity: options.identity, ticket: options.ticket, connection, stateDirectory: options.stateDirectory,
           runnerVersion: options.runnerVersion, runnerDigest: options.runnerDigest,

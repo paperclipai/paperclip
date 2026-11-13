@@ -38,7 +38,11 @@ succeeds only when all of these hold:
 After a result is accepted, the owner may only relinquish a lapsed lease, and
 never renews it. The rule lives in `nativeExecutionLeaseHeldCondition` and
 `lockNativeExecutionLeaseForReacquire` (`native-execution-lease.ts`). Renewal,
-failure settlement and the final release use it.
+failure settlement and the final release use it. Budget admission of a restart
+claim (`lockRunBudgetRecoveryOwnerInTransaction`) uses it too, through
+`holdOwnNativeRecoveryClaimInTransaction` (2026-11-10). A restart claim whose lease
+lapsed in a time jump before dispatch therefore takes the lease back when the row
+still shows exactly that claim. The budget checks that follow are unchanged.
 
 This works because every consumer that acts on a lapsed executor lease of a
 running, pre-result run already writes one of those fields under the coordinator

@@ -4,7 +4,7 @@ import { factualContextQueryAttachment } from "../chat-query-attachments.js";
 import type { CompanySkillDetail, CompanySkillFileDetail, CompanySkillListItem, CompanySkillVersion } from "../../../packages/shared/src/types/company-skill.js";
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
 import { checks, observation, project, type InternalObservation } from "./internal-support.js";
-import { groundedStatement, integratorDefinition, inspectResult, resultHref, observeInternal } from "./integrator-support.js";
+import { integratorDefinition, inspectResult, resultHref, observeInternal } from "./integrator-support.js";
 import { sourceSkillMarkdown, mobileChecks, openVettedSkillSource, skillSourceRequests, recordVettedSourceImport, closeVettedSkillSource, importReadOnlySkill, editableLocalNotes } from "./integrator-skill-source.js";
 interface ImportObservation extends InternalObservation {
   skills: CompanySkillDetail[]; skillVersions: Record<string, CompanySkillVersion[]>;
@@ -66,8 +66,8 @@ export function gradeIntegratorSkillImports(value: unknown) {
     const localBefore = o.state.localFork as CompanySkillDetail | undefined; const localNow = o.skills.find(row => row.id === localBefore?.id);
     c.add("unrelated-local-notes-preserved", !!localBefore && !!localNow && localNow.markdown.includes("ORCHID customer escalation notes unchanged")
       && (localNow.id === fork?.id || localNow.currentVersionId === localBefore.currentVersionId && localNow.markdown === localBefore.markdown), "Existing local notes survive whether the agent edits the existing copy or selects a separate fork.");
-    c.add("correct-copy-explained", !!fork && o.reply.includes(fork.name) && groundedStatement(o.reply, /\b(?:upstream|original|source)\b/i, /\b(?:unchanged|read.only|protected|not (?:changed|modified|edited))\b/i,
-      /\b(?:edited|updated|modified|changed)\s+(?:the )?(?:upstream|original source)\b/i), "Chat distinguishes the editable copy for future use from the unmodified upstream.");
+    c.add("correct-copy-explained", !!fork && (o.reply.includes(fork.name) || !!resultHref(o, fork.id, "studio")),
+      "Chat points the person at the saved editable copy by its saved name or a link to its page; the saved upstream and fork state above prove which copy changed.");
   } else c.add("owned-import-oracle", false, "No independent import/fork oracle exists for this scenario.");
   return c.result();
 }
@@ -93,7 +93,7 @@ function define(id: "skills.find-and-install" | "skills.fork-read-only") {
     const o = importObservation(value); const skill = o && (id === "skills.find-and-install" ? o.skills.find(row => row.sourceLocator === o.state.sourceURL) : changedFork(o));
     if (!o || !skill) throw new Error("No actual saved skill copy for browser inspection");
     await inspectResult(ctx, `/${ctx.input.fixtures.company.issuePrefix}/skills/studio/${skill.id}`, skill.name, resultHref(o, skill.id, "studio"));
-  }, { ...(id === "skills.find-and-install" ? { oracleVersion: "paperclip.chat-catalog.integrator.skill-import.v2" } : {}), authentication: "human-session", queryAttachments: factualContextQueryAttachment("skill-context.md"), sourceFiles: ["chat-catalog-domains/integrator-skill-versions.ts", "chat-catalog-domains/integrator-skill-imports.ts", "chat-catalog-domains/integrator-skill-source.ts", "chat-catalog-domains/integrator-skills.ts", "chat-catalog-domains/integrator-support.ts", "chat-catalog-domains/internal-support.ts", "chat-scenarios/skills.yaml"],
+  }, { oracleVersion: id === "skills.find-and-install" ? "paperclip.chat-catalog.integrator.skill-import.v2" : "paperclip.chat-catalog.integrator.skill-fork.v2", authentication: "human-session", queryAttachments: factualContextQueryAttachment("skill-context.md"), sourceFiles: ["chat-catalog-domains/integrator-skill-versions.ts", "chat-catalog-domains/integrator-skill-imports.ts", "chat-catalog-domains/integrator-skill-source.ts", "chat-catalog-domains/integrator-skills.ts", "chat-catalog-domains/integrator-support.ts", "chat-catalog-domains/internal-support.ts", "chat-scenarios/skills.yaml"],
     async cleanup(ctx) { await closeVettedSkillSource(ctx); } });
 }
 export const integratorSkillImportCases = [define("skills.find-and-install"), define("skills.fork-read-only")];

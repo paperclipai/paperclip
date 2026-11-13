@@ -13,6 +13,7 @@ import { checks, type Entity } from "./internal-support.js";
 import { openStandingChat } from "./identity-support.js";
 import { prepareRuntimeWorkerGate, releaseRuntimeWorker } from "./runtime-busy-worker.js";
 import { observeRuntime, runtimeDefinition, runtimeObservation, runtimeWorker } from "./runtime-support.js";
+import { commentWokenContinuations, runIssueId, type RoleComment, type RoleRun } from "./run-roles.js";
 const credentials = new WeakMap<ChatCatalogContext, Array<{ id: string; token: string; agentId: string }>>();
 /** Whether a saved reply body has a Markdown link to this exact task page. */
 export function replyLinksTask(body: string, task: { id: string; identifier?: string | null }) {
@@ -20,6 +21,19 @@ export function replyLinksTask(body: string, task: { id: string; identifier?: st
     try { const parts = new URL(href!, "http://paperclip.invalid").pathname.split("/").map(decodeURIComponent); const index = parts.lastIndexOf("issues");
       return index >= 0 && index === parts.length - 2 && [task.id, task.identifier].filter(Boolean).includes(parts[index + 1]); } catch { return false; }
   });
+}
+/** Runs after setup, by role: the CEO's chat turns, at most one Morgan continuation woken by a CEO
+ * comment on the task (the owner routes the saved deliverable for review), and one Riley review run.
+ * Any other run is extra work and invalidates the request. */
+export function independentReviewRoles(input: { runs: RoleRun[]; comments: RoleComment[]; setupRunIds: readonly string[];
+  leadId: string; sourceId: string; workerId: string; reviewerId: string; taskId: string }) {
+  const extra = input.runs.filter(run => !input.setupRunIds.includes(run.id));
+  const canonical = extra.filter(run => run.agentId === input.leadId && runIssueId(run) === input.sourceId);
+  const continuation = commentWokenContinuations(extra, { agentId: input.workerId, issueId: input.taskId, comments: input.comments, causeRunIds: canonical.map(run => run.id) });
+  const review = extra.filter(run => run.agentId === input.reviewerId && runIssueId(run) === input.taskId);
+  const unexplained = extra.filter(run => !canonical.includes(run) && !continuation?.includes(run) && !review.includes(run));
+  return { canonical, continuation: continuation ?? [], review,
+    valid: !!continuation && continuation.length <= 1 && review.length <= 1 && unexplained.length === 0 };
 }
 export function gradeIndependentReview(value: unknown) {
   const c = checks(), o = runtimeObservation(value);
@@ -41,8 +55,9 @@ export function gradeIndependentReview(value: unknown) {
   c.add("authorized-review-then-final-completion", current?.id === before.id && current.status === "done" && current.executionState?.status === "completed"
     && current.executionState.lastDecisionOutcome === "approved" && !!current.executionState.lastDecisionId
     && JSON.stringify(current.executionPolicy) === JSON.stringify(before.executionPolicy) && s.rileyApprovalBound === true && s.implementationRetained === true
-    && o.runs.length === 5 && o.runs.every(row => row.status === "succeeded") && o.runs.filter(row => row.agentId === (s.reviewer as Entity).id).length === 1 && o.tasks.length === 1,
-  "Only Riley's actual native approval resolves the same configured review stage and completes the same work while retaining Morgan's artifact.");
+    && o.runs.length === 5 + (s.ownerContinuationRunId ? 1 : 0) && o.runs.every(row => row.status === "succeeded") && o.runs.filter(row => row.agentId === (s.reviewer as Entity).id).length === 1 && o.tasks.length === 1
+    && (!s.ownerContinuationRunId || o.runs.some(row => row.id === s.ownerContinuationRunId && row.agentId === (s.worker as Entity).id && runIssueId(row) === before.id)),
+  "Only Riley's actual native approval resolves the same configured review stage and completes the same work while retaining Morgan's artifact. Morgan may route the review once when the CEO's authorization comment wakes Morgan; no other run is admitted.");
   c.add("own-later-reply-reports-the-resolved-task", s.finalReplyAttributed === true && s.finalReplyLinksTask === true,
   "A later declared human question receives its own run-bound reply that links the governed task, already approved and done in saved state. Whether its wording claims the wrong phase is left to a human reader.");
   return c.result();
@@ -72,17 +87,21 @@ export const runtimeIndependentReviewCases = [runtimeDefinition("task-coordinati
   return { worker, reviewer, gate: prepared.gate, task: delivered.task, implementationBefore: delivered.task, marker, artifact, implementationRunId: delivered.runs[0]!.id,
     actualImplementation: true, setupReviewRunCount: 0, setupRunIds: acknowledged.runs.map(row => row.id), reviewerEligibleBeforeQuery: reviewer.lifecycleState === "ready" && ["active", "idle"].includes(reviewer.status ?? "") };
 }, gradeIndependentReview, {
-  authentication: "human-session", setupHumanMessageCount: 1, expectedHumanMessageCount: 3, expectedRunCount: 5, attemptTimeoutMs: 1_020_000,
-  oracleVersion: "paperclip.chat-catalog.runtime.independent-review.v4",
-  sourceFiles: ["chat-catalog-domains/runtime-independent-review.ts", "chat-catalog-domains/runtime-support.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/identity-support.ts", "registered-artifact.ts", "chat-scenarios/task-coordination.yaml"],
+  authentication: "human-session", setupHumanMessageCount: 1, expectedHumanMessageCount: 3, expectedRunCount: 6, minimumRunCount: 5, attemptTimeoutMs: 1_020_000,
+  oracleVersion: "paperclip.chat-catalog.runtime.independent-review.v5",
+  sourceFiles: ["chat-catalog-domains/runtime-independent-review.ts", "chat-catalog-domains/run-roles.ts", "chat-catalog-domains/runtime-support.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/identity-support.ts", "registered-artifact.ts", "chat-scenarios/task-coordination.yaml"],
   async act(ctx, state) {
     const task = state.task as Issue, reviewer = state.reviewer as Entity;
+    const roles = (v: { runs: RoleRun[]; comments: RoleComment[] }) => independentReviewRoles({ ...v, setupRunIds: state.setupRunIds as string[], leadId: ctx.input.fixtures.agent.id,
+      sourceId: ctx.issue()!.id, workerId: (state.worker as Entity).id, reviewerId: reviewer.id, taskId: task.id });
+    const taskComments = () => ctx.input.api.get<RoleComment[]>(`/api/issues/${task.id}/comments?order=asc`);
     const pending = await pollUntil({ label: "Canonical authorization starts Riley's genuine independent review stage", deadlineAt: chatCatalogNativePhaseDeadline(ctx, Date.now() + 180_000),
-      load: async () => { await ctx.refreshIssue(); return { source: ctx.issue(), runs: await ctx.allRuns(), task: await ctx.input.api.get<Issue>(`/api/issues/${task.id}`), ready: await readFile((state.gate as { ready: string }).ready, "utf8").catch(() => "") }; },
-      accept: v => chatCatalogNativePhaseIsTimely(ctx) && (v.source?.conversationState === "waiting" && v.runs.length === 4 && v.task.status === "in_review" && v.task.executionState?.currentParticipant?.agentId === reviewer.id
-        && v.ready === "waiting" && v.runs.some(row => row.agentId === reviewer.id && row.status === "running") && v.runs.filter(row => row.agentId !== reviewer.id).every(row => row.status === "succeeded")),
-      reject: v => v.runs.length > 4 || v.runs.some(row => ["failed", "cancelled", "timed_out"].includes(row.status)) ? "The authorized independent review failed, duplicated, or bypassed the saved gate" : undefined });
+      load: async () => { await ctx.refreshIssue(); return { source: ctx.issue(), runs: await ctx.allRuns(), comments: await taskComments(), task: await ctx.input.api.get<Issue>(`/api/issues/${task.id}`), ready: await readFile((state.gate as { ready: string }).ready, "utf8").catch(() => "") }; },
+      accept: v => { const r = roles(v); return chatCatalogNativePhaseIsTimely(ctx) && (v.source?.conversationState === "waiting" && r.valid && r.canonical.length === 1 && r.review.length === 1 && v.task.status === "in_review" && v.task.executionState?.currentParticipant?.agentId === reviewer.id
+        && v.ready === "waiting" && r.review[0]!.status === "running" && v.runs.filter(row => row.agentId !== reviewer.id).every(row => row.status === "succeeded")); },
+      reject: v => { const r = roles(v); return !r.valid || r.canonical.length > 1 || v.runs.some(row => ["failed", "cancelled", "timed_out"].includes(row.status)) ? "The authorized independent review failed, duplicated, or bypassed the saved gate" : undefined; } });
     state.pendingReview = pending.task; state.reviewerWasReallyWaiting = true; state.pendingReply = "";
+    const continuation = roles(pending).continuation[0]; if (continuation) state.ownerContinuationRunId = continuation.id;
     const reviewRun = pending.runs.find(row => row.agentId === reviewer.id)!; state.reviewRunId = reviewRun.id;
     const canonicalRuns = pending.runs.filter(row => row.agentId === ctx.input.fixtures.agent.id && !(state.setupRunIds as string[]).includes(row.id));
     if (canonicalRuns.length !== 1) throw new Error("Independent review lacks exactly one canonical source turn");
@@ -92,7 +111,10 @@ export const runtimeIndependentReviewCases = [runtimeDefinition("task-coordinati
     state.pendingReplyAttributed = canonicalHumans.length === 1 && canonicalReplies.length > 0 && canonicalFull.runnerProfileJson?.nativeExecutionInput?.task?.prompt?.includes(canonicalHumans[0]!.id) === true;
     state.pendingReply = canonicalReplies.map(row => row.body).join("\n"); state.pendingReplyLinksTask = replyLinksTask(String(state.pendingReply), task);
     const activity = await ctx.input.api.get<ActivityEvent[]>(`/api/issues/${task.id}/activity`);
-    state.reviewRequestSourceBound = activity.some(row => row.agentId === ctx.input.fixtures.agent.id && row.runId === canonical.id && row.details?.status === "in_review");
+    // The CEO requests review itself, or its authorization comment wakes Morgan, whose own
+    // run routes the saved deliverable to review (a native status decision is a system write).
+    state.reviewRequestSourceBound = activity.some(row => row.agentId === ctx.input.fixtures.agent.id && row.runId === canonical.id && row.details?.status === "in_review")
+      || !!continuation && activity.some(row => row.runId === continuation.id && (row.details?.status === "in_review" || row.details?.toStatus === "in_review"));
     const keySet = credentials.get(ctx); if (!keySet) throw new Error("Independent review probes lost their actual identities");
     const implementationKey = keySet.find(row => row.agentId === (state.worker as Entity).id)!, reviewKey = keySet.find(row => row.agentId === reviewer.id)!;
     const selfApproval = await fetch(new URL(`/api/issues/${task.id}`, ctx.input.api.baseURL), { method: "PATCH", redirect: "error", signal: AbortSignal.timeout(15_000),
@@ -116,15 +138,16 @@ export const runtimeIndependentReviewCases = [runtimeDefinition("task-coordinati
     await ctx.input.capture("actual-independent-review-pending", "Riley's actual review stage remains pending after rejected implementer self-approval", "runtime-independent-review.png");
     await writeFile((state.gate as { gate: string }).gate, "The human review observation is complete. Independently inspect Morgan's actual registered website.html against the saved heading/product/signup and accessibility criteria. Record your actual verification and acceptance reference in website-review. If the real result passes, approve your own configured review stage with a substantive decision comment through the supported path; do not manufacture a result, change policy, or create tasks.", "utf8");
     const completed = await pollUntil({ label: "Actual Riley native approval resolves the governed task", deadlineAt: Date.now() + 240_000,
-      load: async () => ({ task: await ctx.input.api.get<Issue>(`/api/issues/${task.id}`), runs: await ctx.allRuns() }),
-      accept: v => v.task.status === "done" && v.task.executionState?.status === "completed" && v.runs.length === 4 && v.runs.every(row => row.status === "succeeded"),
-      reject: v => v.runs.length > 4 || v.runs.some(row => ["failed", "cancelled", "timed_out"].includes(row.status)) ? "Actual independent review failed or admitted undeclared work" : undefined });
+      load: async () => ({ task: await ctx.input.api.get<Issue>(`/api/issues/${task.id}`), runs: await ctx.allRuns(), comments: await taskComments() }),
+      accept: v => { const r = roles(v); return v.task.status === "done" && v.task.executionState?.status === "completed" && r.valid && r.canonical.length === 1 && r.review.length === 1 && r.continuation.length === (continuation ? 1 : 0) && v.runs.every(row => row.status === "succeeded"); },
+      reject: v => { const r = roles(v); return !r.valid || r.canonical.length > 1 || r.continuation.length !== (continuation ? 1 : 0) || v.runs.some(row => ["failed", "cancelled", "timed_out"].includes(row.status)) ? "Actual independent review failed or admitted undeclared work" : undefined; } });
     state.reviewAfter = completed.task;
     await ctx.input.page.goto(source, { waitUntil: "domcontentloaded" });
     const followup = `What is the actual outcome of Riley's independent review of Launch Website ${task.identifier ?? task.id}, and is the governed task now finished?`;
     await sendChatMessage(ctx.input.page, followup, chatCatalogNativePhaseRemainingBudget(ctx));
     const final = await pollUntil({ label: "Own source phase reports actual review and completion", deadlineAt: chatCatalogNativePhaseDeadline(ctx, Date.now() + 150_000),
-      load: async () => { await ctx.refreshIssue(); return { source: ctx.issue(), runs: await ctx.allRuns() }; }, accept: v => chatCatalogNativePhaseIsTimely(ctx) && (v.source?.conversationState === "waiting" && v.runs.length === 5 && v.runs.every(row => row.status === "succeeded")) });
+      load: async () => { await ctx.refreshIssue(); return { source: ctx.issue(), runs: await ctx.allRuns(), comments: await taskComments() }; },
+      accept: v => { const r = roles(v); return chatCatalogNativePhaseIsTimely(ctx) && (v.source?.conversationState === "waiting" && r.valid && r.canonical.length === 2 && r.continuation.length === (continuation ? 1 : 0) && v.runs.length === completed.runs.length + 1 && v.runs.every(row => row.status === "succeeded")); } });
     const run = final.runs.find(row => !completed.runs.some(prior => prior.id === row.id))!;
     const comments = await ctx.input.api.get<Entity[]>(`/api/issues/${ctx.issue()!.id}/comments?order=asc`), human = comments.filter(row => !row.authorAgentId && row.body === followup), replies = comments.filter(row => row.authorAgentId === ctx.input.fixtures.agent.id && row.createdByRunId === run.id);
     const full = await ctx.input.api.get<{ runnerProfileJson?: { nativeExecutionInput?: { task?: { prompt?: string } } } }>(`/api/heartbeat-runs/${run.id}`);

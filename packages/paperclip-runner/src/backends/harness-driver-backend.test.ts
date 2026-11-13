@@ -124,6 +124,25 @@ describe("HarnessDriverBackend", () => {
     expect(startTurn).toHaveBeenCalledExactlyOnceWith({ message });
   });
 
+  it.each([
+    { cancelled: false, failureCleanup: false, retainUnsettledRemoteRunner: true },
+    { cancelled: true, failureCleanup: false, retainUnsettledRemoteRunner: false },
+    { cancelled: true, failureCleanup: true, retainUnsettledRemoteRunner: true },
+  ])("asks to retain an unsettled remote Runner on close only when the run was not stopped (cancelled=$cancelled, failureCleanup=$failureCleanup)",
+    async ({ cancelled, failureCleanup, retainUnsettledRemoteRunner }) => {
+      const close = vi.fn(async () => {});
+      const session = Object.assign(new FakeHarnessSession(), { close });
+      const backend = new HarnessDriverBackend({ ...driver, openSession: async () => session });
+      const opened = await backend.openSession({ identity: {
+        runId: "run-1", sessionId: "session-1", companyId: "company-1", issueId: "issue-1", agentId: "agent-1",
+      } });
+      if (cancelled) await cancelSession(opened, { reason: failureCleanup ? "Native session event consumption failed." : "Stop requested",
+        signal: new AbortController().signal, ...(failureCleanup ? { failureCleanup } : {}) }).cleanup;
+      if (failureCleanup) expect(await opened.result()).toBeNull();
+      await opened.close({ reason: "native session execution complete" });
+      expect(close).toHaveBeenCalledExactlyOnceWith({ reason: "native session execution complete", retainUnsettledRemoteRunner });
+    });
+
   it("forwards reasoning when the provider explicitly supports it", async () => {
     const startTurn = vi.fn(async () => ({ turnId: "turn-1" }));
     const session = Object.assign(new FakeHarnessSession(), { startTurn, supportsTurnReasoning: () => true });

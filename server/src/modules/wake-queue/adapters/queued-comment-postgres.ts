@@ -22,7 +22,7 @@ import {
 } from "../../../services/issue-queued-comment-queue.js";
 import { logActivity as persistActivityLogRow, type ActivityPublication } from "../../../services/activity-log.js";
 import { decideQueuedCommentWakeLookup } from "../domain/policy.js";
-import { firstTurnClaimedCommentIds } from "../../../services/native-runtime/first-turn-queued-input.js";
+import { firstTurnClaimedCommentIds, firstTurnQueuedCommentIds, firstTurnWakeColumns } from "../../../services/native-runtime/first-turn-queued-input.js";
 import { parseObject, readNonEmptyString } from "../domain/values.js";
 import { QueuedCommentMutationError } from "../application/queued-comment-use-cases.js";
 import type {
@@ -208,7 +208,7 @@ function buildTransaction(tx: Db, companyId: string, issueId: string, deps: Queu
       const steeringDisposition: IssueQueuedCommentQueue["steeringDisposition"] =
         steering.kind === "probe" ? "temporarily_unavailable" : steering.kind;
 
-      return buildQueuedCommentQueueSnapshot({
+      const queue = buildQueuedCommentQueueSnapshot({
         issueId: issue.id,
         queueId: wake?.id ?? null,
         state,
@@ -219,6 +219,18 @@ function buildTransaction(tx: Db, companyId: string, issueId: string, deps: Queu
         actorType: actor.actorType,
         actorId: actor.actorId,
       });
+      // Same view as the read path: what the starting run's first turn takes is sent.
+      const firstTurnWake = wake && state === "deferred" && activeRun?.status === "running" && wakeCommentIds.length > 0
+        ? await tx.select(firstTurnWakeColumns).from(agentWakeupRequests)
+            .where(and(eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.companyId, companyId)))
+            .limit(1).then((wakeRows) => wakeRows[0] ?? null)
+        : null;
+      const firstTurnCommentIds = wake && firstTurnWake && activeRun
+        ? await firstTurnQueuedCommentIds(tx, { companyId, issueId: issue.id, runId: activeRun.id,
+            wake: { ...firstTurnWake, status: wake.status, payload: wake.payload } })
+        : [];
+      if (firstTurnCommentIds.length > 0) queue.firstTurnCommentIds = firstTurnCommentIds;
+      return queue;
     },
 
     async syncCommentReferences(commentId) {

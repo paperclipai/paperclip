@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNotNull } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { environmentLeases, heartbeatRunEvents, heartbeatRuns, type Db } from "@paperclipai/db";
 import { parseObject } from "../adapters/utils.js";
 import { resolveProviderApiPlacement } from "./native-runtime/provider-api-placement.js";
@@ -7,6 +7,7 @@ import { hasRecoveredCleanupStopReceipt, hasRemoteTerminationReceipt } from "./r
 import { validatePrpEvent } from "../vendor/paperclip-runner/index.js";
 import { nativeSha256 } from "./native-runtime/canonical.js";
 import { isConfirmedCursorCloudTerminalObservation } from "./native-runtime/cursor-cloud-runtime.js";
+import { isAgentLifecycleStopRecord } from "./governance-pause-stop.js";
 
 export function hasAcknowledgedNativeRunStopRequest(run: {
   id: string; companyId: string; status: string; nativeIssueId: string | null;
@@ -31,6 +32,27 @@ export function hasAcknowledgedNativeStopIntent(run: Parameters<typeof hasAcknow
   return run.resultJson?.cancelledByActorType === "user" &&
     typeof run.resultJson.cancelledByUserId === "string" && Boolean(run.resultJson.cancelledByUserId) &&
     hasAcknowledgedNativeRunStopReceipt(run);
+}
+
+export function hasRecordedUserStopRequest(run: { resultJson: Record<string, unknown> | null }): boolean {
+  const result = run.resultJson;
+  if (result?.cancelledByActorType !== "user" || typeof result.cancelledByUserId !== "string" || !result.cancelledByUserId) return false;
+  const state = parseObject(result.executionCancellation).state;
+  const startup = result.startupCancellation;
+  return state === "requested" || state === "acknowledged" ||
+    (Boolean(startup) && typeof startup === "object" && !Array.isArray(startup));
+}
+
+export function recordedUserStopRequestSql() {
+  const result = heartbeatRuns.resultJson;
+  return sql`(coalesce(${result}->>'cancelledByActorType', '') = 'user'
+    and coalesce(${result}->>'cancelledByUserId', '') <> ''
+    and (coalesce(${result}->'executionCancellation'->>'state', '') in ('requested', 'acknowledged')
+      or jsonb_typeof(${result}->'startupCancellation') = 'object'))`;
+}
+
+export function hasAcknowledgedNativeLifecycleStopIntent(run: Parameters<typeof hasAcknowledgedNativeRunStopReceipt>[0]): boolean {
+  return isAgentLifecycleStopRecord(run.resultJson) && hasAcknowledgedNativeRunStopReceipt(run);
 }
 
 /** An intentional handoff retains task state and deferred work for its successor. */

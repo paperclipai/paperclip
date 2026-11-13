@@ -39,6 +39,7 @@ export type CodexServerRequestHandler = (
 export interface CodexAppServerTransport {
   settleCancelledTurn?: HarnessSession["settleCancelledTurn"];
   supportsTurnReasoning?(): boolean;
+  downloadAttachment?: HarnessSession["downloadAttachment"];
   /** Runner-owned live capability projection; absent on native Codex transports. */
   turnControlCapabilities?(): NativeTurnControlCapabilities | null;
   request(
@@ -75,7 +76,9 @@ export interface CodexAppServerTransport {
    * Close the provider transport. The optional reason is controller-owned
    * diagnostic context; transports must not forward it to the provider.
    */
-  close(reason?: string): Promise<void>;
+  close(reason?: string, options?: { retainUnsettledRemoteRunner?: boolean }): Promise<void>;
+  /** After close: the runner settled and its process exit was observed. */
+  runnerExitConfirmed?(): boolean;
   /** Return the confirmed released source, or false when active use was not released. */
   release?(): Promise<DurableRecoveryIdentity | false>;
   /** Relinquish controller authority while leaving durable runner work alive. */

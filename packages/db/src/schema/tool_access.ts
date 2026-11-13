@@ -19,6 +19,7 @@ import type {
   ConnectionAgentInstructions,
   ConnectionTokenIssuanceOutcome,
   ConnectionTokenIssuancePath,
+  McpAppToolUi,
   McpConnectionCredentialRef,
   ToolActionRequestStatus,
   ToolApplicationStatus,
@@ -382,6 +383,8 @@ export const toolCatalogEntries = pgTable(
     inputSchema: jsonb("input_schema").$type<Record<string, unknown>>().notNull().default({}),
     outputSchema: jsonb("output_schema").$type<Record<string, unknown>>(),
     annotations: jsonb("annotations").$type<Record<string, unknown>>().notNull().default({}),
+    /** Normalized MCP Apps `_meta.ui` declaration (`ui://` view), when the tool has one. */
+    uiMeta: jsonb("ui_meta").$type<McpAppToolUi>(),
     riskLevel: text("risk_level").$type<ToolRiskLevel>().notNull().default("read"),
     isReadOnly: boolean("is_read_only").notNull().default(true),
     isWrite: boolean("is_write").notNull().default(false),
@@ -806,6 +809,100 @@ export const toolInvocations = pgTable(
     index("tool_invocations_issue_idx").on(table.companyId, table.issueId),
     index("tool_invocations_gateway_idx").on(table.companyId, table.gatewayId),
     uniqueIndex("tool_invocations_company_idempotency_uq").on(table.companyId, table.idempotencyKey),
+  ],
+);
+
+/**
+ * One completed call to a tool that declares an MCP Apps view. Holds what the
+ * task chat needs to render the view: the call's arguments and its redacted
+ * result. The view document itself is read from the connection on demand.
+ */
+export const toolMcpAppViews = pgTable(
+  "tool_mcp_app_views",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    invocationId: uuid("invocation_id").references(() => toolInvocations.id, { onDelete: "set null" }),
+    issueId: uuid("issue_id").references(() => issues.id, { onDelete: "cascade" }),
+    runId: uuid("run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
+    agentId: uuid("agent_id").references(() => agents.id, { onDelete: "set null" }),
+    responsibleUserId: text("responsible_user_id"),
+    connectionId: uuid("connection_id").notNull().references(() => toolConnections.id, { onDelete: "cascade" }),
+    catalogEntryId: uuid("catalog_entry_id").references(() => toolCatalogEntries.id, { onDelete: "set null" }),
+    applicationName: text("application_name").notNull(),
+    toolName: text("tool_name").notNull(),
+    upstreamToolName: text("upstream_tool_name").notNull(),
+    resourceUri: text("resource_uri").notNull(),
+    toolInput: jsonb("tool_input").$type<Record<string, unknown>>().notNull().default({}),
+    toolResult: jsonb("tool_result").$type<Record<string, unknown>>().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("tool_mcp_app_views_issue_idx").on(table.companyId, table.issueId, table.createdAt),
+    index("tool_mcp_app_views_connection_idx").on(table.connectionId),
+  ],
+);
+
+/**
+ * MCP Skills extension (`io.modelcontextprotocol/skills`): one row per skill a
+ * connected MCP server publishes. Identity is (connection, skill URI); the
+ * name is only a label. Approval binds to `manifestDigest`, the order-free
+ * digest of every `{uri, digest, size}` in the server's manifest, and any
+ * other manifest revokes it.
+ */
+export const toolMcpSkills = pgTable(
+  "tool_mcp_skills",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    connectionId: uuid("connection_id").notNull().references(() => toolConnections.id, { onDelete: "cascade" }),
+    skillUri: text("skill_uri").notNull(),
+    name: text("name").notNull(),
+    description: text("description").notNull().default(""),
+    /** The entry's frontmatter, verbatim. */
+    frontmatter: jsonb("frontmatter").$type<Record<string, unknown>>().notNull(),
+    /** `[{uri, digest, size}]` sorted by URI, or null for a dynamic skill. */
+    manifest: jsonb("manifest").$type<Array<{ uri: string; digest: string; size: number }> | null>(),
+    manifestDigest: text("manifest_digest"),
+    /** pending_review | approved | declined | unavailable */
+    status: text("status").notNull().default("pending_review"),
+    /** new | changed | dynamic | too_large | invalid | verification_failed | removed */
+    statusReason: text("status_reason"),
+    approvedManifestDigest: text("approved_manifest_digest"),
+    /** The skill's `allowed-tools`, honored only when approved with the skill. */
+    allowedToolsApproved: boolean("allowed_tools_approved").notNull().default(false),
+    reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+    reviewedByUserId: text("reviewed_by_user_id"),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("tool_mcp_skills_connection_uri_idx").on(table.companyId, table.connectionId, table.skillUri),
+    index("tool_mcp_skills_company_status_idx").on(table.companyId, table.status),
+  ],
+);
+
+/**
+ * Verified skill files, written only by the server after a size and SHA-256
+ * check and never changed in place. Rows are keyed by connection and digest,
+ * so the same URI from two servers never shares bytes. Agents cannot write
+ * here and nothing scans it for skills.
+ */
+export const toolMcpSkillFiles = pgTable(
+  "tool_mcp_skill_files",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    connectionId: uuid("connection_id").notNull().references(() => toolConnections.id, { onDelete: "cascade" }),
+    fileUri: text("file_uri").notNull(),
+    digest: text("digest").notNull(),
+    size: integer("size").notNull(),
+    contentBase64: text("content_base64").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("tool_mcp_skill_files_digest_idx").on(table.companyId, table.connectionId, table.fileUri, table.digest),
   ],
 );
 

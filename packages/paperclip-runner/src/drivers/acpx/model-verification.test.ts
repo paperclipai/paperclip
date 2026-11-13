@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
-import { requireVerifiedAcpxModel } from "./model-verification.js";
+import { createAcpxEffectiveModelGate, requireVerifiedAcpxModel } from "./model-verification.js";
 
 describe("ACPX requested model verification", () => {
   it.each(["claude", "codex", "pi", "grok", "cursor", "copilot"] as const)("selects and verifies an unlisted model unchanged with %s", async agent => {
@@ -157,5 +157,51 @@ describe("ACPX requested model verification", () => {
         profile,
       ),
     ).rejects.toThrow(/effective model mismatch/);
+  });
+});
+
+describe("ACPX effective model gate", () => {
+  const config = (model: string) => [{ id: "model", category: "model", type: "select", currentValue: model, options: [] }];
+  const loaded = (gate: ReturnType<typeof createAcpxEffectiveModelGate>, result: unknown) => {
+    gate.observe("outbound", { jsonrpc: "2.0", id: 1, method: "session/load", params: { sessionId: "s" } });
+    gate.observe("inbound", { jsonrpc: "2.0", id: 1, result });
+  };
+
+  it("admits a prompt only after the provider reports the expected model", () => {
+    const gate = createAcpxEffectiveModelGate("model-a");
+    gate.assertActive();
+    loaded(gate, { configOptions: config("model-b") });
+    expect(() => gate.assertActive()).toThrow(expect.objectContaining({ code: "ACPX_EFFECTIVE_MODEL_MISMATCH" }));
+    gate.observe("outbound", { jsonrpc: "2.0", id: 2, method: "session/set_config_option", params: { sessionId: "s", configId: "model", value: "model-a" } });
+    gate.observe("inbound", { jsonrpc: "2.0", id: 2, result: { configOptions: config("model-a") } });
+    gate.assertActive();
+  });
+
+  it("fails closed when a load reports no model or an acknowledgement disagrees", () => {
+    const gate = createAcpxEffectiveModelGate("model-a");
+    loaded(gate, { sessionId: "s" });
+    expect(() => gate.assertActive()).toThrow(/received unverified/);
+    gate.observe("outbound", { jsonrpc: "2.0", id: 2, method: "session/set_config_option", params: { sessionId: "s", configId: "model", value: "model-a" } });
+    gate.observe("inbound", { jsonrpc: "2.0", id: 2, result: { configOptions: config("model-c") } });
+    expect(() => gate.assertActive()).toThrow(/received model-c/);
+  });
+
+  it("follows provider config updates and legacy model metadata, and resets per connection", () => {
+    const gate = createAcpxEffectiveModelGate("model-a");
+    loaded(gate, { models: { currentModelId: "model-a" } });
+    gate.assertActive();
+    gate.observe("inbound", { jsonrpc: "2.0", method: "session/update", params: { sessionId: "s", update: { sessionUpdate: "config_option_update", configOptions: config("model-b") } } });
+    expect(() => gate.assertActive()).toThrow(/received model-b/);
+    gate.connect();
+    gate.assertActive();
+  });
+
+  it("ignores failed requests and unrelated replies", () => {
+    const gate = createAcpxEffectiveModelGate("model-a");
+    loaded(gate, { configOptions: config("model-a") });
+    gate.observe("outbound", { jsonrpc: "2.0", id: 2, method: "session/set_config_option", params: { sessionId: "s", configId: "model", value: "model-b" } });
+    gate.observe("inbound", { jsonrpc: "2.0", id: 2, error: { code: -32602, message: "rejected" } });
+    gate.observe("inbound", { jsonrpc: "2.0", id: 99, result: { configOptions: config("model-z") } });
+    gate.assertActive();
   });
 });

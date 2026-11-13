@@ -1,4 +1,4 @@
-import { assertLoginEnvironmentTarget } from "../services/login-environment.js";
+import { resolveLoginEnvironmentTarget } from "../services/login-environment.js";
 import { assertProviderApiPlacementPolicy, managedCursorApiDefaultEnabled, resolveProviderApiPlacement } from "../services/native-runtime/provider-api-placement.js";
 import { isObjectJournalBusyError } from "../services/object-byte-journal.js";
 import { readTaskPanelActivations } from "../services/plugin-task-panels.js";
@@ -55,6 +55,7 @@ import { isAiConnectionCompatible } from "@paperclipai/shared";
 import { applyConnectorSkills, resolveConnectorAssignments, annotateConnectorSkills, isConnectorSkill } from "../services/connector-runtime.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
 import { canRetryStoppedRun } from "../services/cancelled-native-startup.js";
+import { rejectedModelRetryRefusal } from "../services/native-runtime/model-rejected-retry.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext, type NativeReviewAssignmentContext } from "../services/native-runtime/native-review-participant.js";
 import { paperclipRunnerTransitionConfig, normalizeLegacyRunnerProvider, isPaperclipRunnerProvider, PAPERCLIP_RUNNER_ACPX_PROFILES } from "@paperclipai/adapter-utils";
 import { applyMcpReasoningEffort } from "../services/public-mcp/agent-config.js";
@@ -165,8 +166,9 @@ import type { AdapterAuthSignal, AdapterAuthSignalResponse, CodexAccountBindingC
 import { adapterSettingsService } from "../services/adapter-settings.js";
 import { skillVersionSelectionMap } from "../services/runtime-skill-selections.js";
 import { isFixedClaudeOAuthBinding, secretService } from "../services/secrets.js";
-import { authorizationDeniedDetails } from "../services/authorization.js";
+import { authorizationDeniedDetails, issueReadSqlCondition } from "../services/authorization.js";
 import { providerTraceStore } from "../services/provider-trace-store.js";
+import { AGENT_TERMINATED_STOP_REASON } from "../services/governance-pause-stop.js";
 import {
   persistReprojectedWorkspaceDiffs,
   projectCodexWorkspaceDiffsFromTrace,
@@ -745,7 +747,7 @@ export function agentRoutes(
     options.setupTokenLogin?.completeCredential ?? deferredSetupTokenSecretWriter;
 
   // Re-check the environment company binding at lease acquisition. The start
-  // route runs `assertSandboxLoginEnvironment` before the session begins, but
+  // route runs `resolveSandboxLoginTarget` before the session begins, but
   // managed-environment reconciliation can bind the sandbox to another company
   // between that guard and the lease acquire. This wrapper re-runs the same
   // guard at acquire time and fails closed with the 403
@@ -754,7 +756,7 @@ export function agentRoutes(
   // insert, so a bind that lands during the provider call still holds no lease.
   const guardedSetupTokenLeaseManager: SetupTokenLeaseManager = {
     async acquire(input): Promise<SetupTokenLease> {
-      await assertSandboxLoginEnvironment(input.scope.companyId, input.scope.environmentId, {
+      await resolveSandboxLoginTarget(input.scope.companyId, input.scope.environmentId, {
         agentId: input.scope.agentId,
         requireSetupTokenLoginProvider: true,
       });
@@ -1527,12 +1529,12 @@ export function agentRoutes(
   // an environment that binds to other companies. The route caller is already
   // bound to the path company by `assertCompanyAccess`, and the acquired lease
   // records that same company, so the login stays attributed to the caller.
-  async function assertSandboxLoginEnvironment(
+  async function resolveSandboxLoginTarget(
     companyId: string,
     environmentId: string,
-    options?: { requireSetupTokenLoginProvider?: boolean; agentId?: string; adapterType?: string },
-  ): Promise<void> {
-    await assertLoginEnvironmentTarget(db, { companyId, environmentId, agentId: options?.agentId, adapterType: options?.adapterType });
+    options: { requireSetupTokenLoginProvider?: boolean; agentId?: string; adapterType?: string; selectComputer?: boolean },
+  ): Promise<string | undefined> {
+    const target = await resolveLoginEnvironmentTarget(db, { companyId, environmentId, ...options });
     // Gate the Claude setup-token login on the provider capability. Only a
     // sandbox provider that advertises the setup-token login capability
     // implements the setup-token pseudo-terminal methods. The setup-token start
@@ -1540,9 +1542,10 @@ export function agentRoutes(
     // before the session starts. The lease guard passes it too, so a
     // reconciliation that rebinds the environment to an unsupported provider
     // still fails closed before the lease and the pseudo-terminal.
-    if (options?.requireSetupTokenLoginProvider) {
+    if (options.requireSetupTokenLoginProvider) {
       await assertSetupTokenLoginProviderCapability(environmentId);
     }
+    return target.agentId;
   }
 
   /**
@@ -3718,18 +3721,21 @@ export function agentRoutes(
         requestSchema: startAdapterAuthSessionRequestSchema,
         invalidRequestError: "The device login start request is invalid.",
         requestOverrides: { adapterType: type },
-        assertSandbox: async (data) => {
+        resolveTargetAgentId: async (data) => {
           // The device login runs on a real pseudo-terminal, so it needs a
           // provider that advertises the login pseudo-terminal capability. Gate
           // the route on the current provider capability before any session or
           // lease state. The lease-acquisition path re-checks it from current
           // runtime state before the provider lease.
-          await assertSandboxLoginEnvironment(companyId, data.environmentId, { agentId: data.agentId, adapterType: data.adapterType });
+          const targetAgentId = await resolveSandboxLoginTarget(companyId, data.environmentId, {
+            agentId: data.agentId, adapterType: data.adapterType, selectComputer: Boolean(data.aiConnection),
+          });
           await assertCodexLoginProviderCapability(data.environmentId);
+          return targetAgentId;
         },
       });
       if (!resolved) return;
-      const { ownerUserId: startedByUserId, data } = resolved;
+      const { ownerUserId: startedByUserId, data, targetAgentId } = resolved;
 
       if (req.actor.type === "agent" && !data.aiConnection) throw forbidden("Agent logins must save a managed AI account");
       if (data.aiConnection) {
@@ -3742,7 +3748,7 @@ export function agentRoutes(
         result = await adapterLoginService.start({
           companyId,
           environmentId: data.environmentId,
-          agentId: data.agentId,
+          agentId: targetAgentId,
           adapterType: type,
           startedByUserId,
           ttlSeconds: data.ttlSeconds,
@@ -4168,6 +4174,7 @@ export function agentRoutes(
     const issuesSvc = issueService(db);
     const recoveryActionsSvc = issueRecoveryActionService(db);
     const rows = await issuesSvc.list(req.actor.companyId, {
+      readCondition: await issueReadSqlCondition(db, req.actor),
       assigneeAgentId: req.actor.agentId,
       status: "todo,in_progress,blocked",
       includeRoutineExecutions: true,
@@ -4217,13 +4224,24 @@ export function agentRoutes(
     const query = agentMineInboxQuerySchema.parse(req.query);
     const issuesSvc = issueService(db);
     const rows = await issuesSvc.list(req.actor.companyId, {
+      readCondition: await issueReadSqlCondition(db, req.actor),
       touchedByUserId: query.userId,
       inboxArchivedByUserId: query.userId,
       status: query.status,
       limit: ISSUE_LIST_DEFAULT_LIMIT,
     });
+    const decisions = await access.decideReads(req.actor, rows.map((issue) => ({
+      type: "issue" as const,
+      companyId: issue.companyId,
+      issueId: issue.id,
+      projectId: issue.projectId,
+      parentIssueId: issue.parentId,
+      assigneeAgentId: issue.assigneeAgentId,
+      assigneeUserId: issue.assigneeUserId,
+      status: issue.status,
+    })));
 
-    res.json(rows);
+    res.json(rows.filter((_, index) => decisions[index]?.allowed));
   });
 
   router.get("/agents/:id/identity", async (req, res) => {
@@ -5308,6 +5326,17 @@ export function agentRoutes(
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
     if (!existing) return;
+    if (req.body.renameTo !== undefined) {
+      await assertCanManageInstructionsPath(req, existing);
+      assertExternalInstructionsAdmin(req, existing);
+      if (req.body.baseHash === undefined) throw unprocessable("Read the file and supply baseHash before renaming it");
+      await agentFiles.rename({ companyId: existing.companyId, agentId: existing.id,
+        path: req.body.path, renameTo: req.body.renameTo, bytes: Buffer.from(req.body.content, "utf8"), baseHash: req.body.baseHash }, req.actor);
+      const updated = await svc.getById(existing.id);
+      if (!updated) throw notFound("Agent not found");
+      res.json(await instructions.readFile(updated, req.body.renameTo));
+      return;
+    }
     const entryFile = deriveBundleState(existing).entryFile;
     if (instructionPath(req.body.path) === entryFile) {
       assertExternalInstructionsAdmin(req, existing);
@@ -6038,7 +6067,7 @@ export function agentRoutes(
     const invalidOrgChainDescendantIds = listInvalidOrgChainDescendantIds(id, companyAgentRows);
     const cancellation = await heartbeat.cancelInvocationsForAgents(
       [id, ...invalidOrgChainDescendantIds],
-      "Cancelled because the agent was terminated or became invalid-org-chain under a terminated manager",
+      AGENT_TERMINATED_STOP_REASON,
     );
 
     await logActivity(db, {
@@ -6276,6 +6305,8 @@ export function agentRoutes(
         if (issue.assigneeAgentId !== agent.id && !retryNativeReviewContext) {
           throw conflict("The task is no longer assigned to this agent.");
         }
+        const modelRefusal = await rejectedModelRetryRefusal(db, { failedRun, agent, issue });
+        if (modelRefusal) throw conflict(modelRefusal.message, modelRefusal.details);
         if (issue.conversationAgentId) {
           // Agent Chat has no task description to replay. Recover the exact
           // request from the selected server-owned run, never caller markers.
@@ -6865,15 +6896,16 @@ export function agentRoutes(
         }
         return false;
       },
-      assertSandbox: (data) =>
-        assertSandboxLoginEnvironment(companyId, data.environmentId, {
+      resolveTargetAgentId: (data) =>
+        resolveSandboxLoginTarget(companyId, data.environmentId, {
           requireSetupTokenLoginProvider: true,
           agentId: data.agentId,
           adapterType: data.adapterType,
+          selectComputer: Boolean(data.aiConnection),
         }),
     });
     if (!resolved) return;
-    const { ownerUserId, data } = resolved;
+    const { ownerUserId, data, targetAgentId } = resolved;
     const { environmentId, adapterType } = data;
     if (req.actor.type === "agent" && !data.aiConnection) throw forbidden("Agent logins must save a managed AI account");
     if (data.aiConnection) {
@@ -6887,7 +6919,7 @@ export function agentRoutes(
       ownerUserId,
       adapterType,
       environmentId,
-      agentId: data.agentId,
+      agentId: targetAgentId,
       confirmedOverwrite,
       aiConnection: data.aiConnection,
       managementContext: continuingConnectionManagement(connectionRequestContext(req)),
@@ -7143,6 +7175,17 @@ export function agentRoutes(
     });
     res.set("Cache-Control", "no-cache, no-store");
     res.json(traces);
+  });
+
+  // Operator read of the assigned-work invariant: how many open assigned tasks
+  // have nothing running, nothing pending and no one else's move. Read-only;
+  // the sweep repairs violations by itself. Expect 0 violations after a deploy.
+  router.get("/companies/:companyId/assigned-work-invariant", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    // Only tasks this caller may read count, so private tasks stay private.
+    res.json(await heartbeat.reportAssignedWorkInvariant(companyId, { readCondition: await issueReadSqlCondition(db, req.actor) }));
   });
 
   router.get("/companies/:companyId/live-runs", async (req, res) => {

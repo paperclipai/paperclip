@@ -214,9 +214,9 @@ describe("qualified ACPX runtime sidecar", () => {
       const currentTurnId="turn", runtimeTurn={requestId:"request-1"}, openParams={agent}, activity=acpxProfileActivity(agent);
       ${stripTypeScriptTypes(source.slice(start, end))}
     `).bind(null, acpxProfileActivity, validateAcpxRichEvent, (...args: unknown[]) => emitted.push(args));
-    const before = { promptMessageIds: [], requestTokenUsage: {} };
-    const after = { lastRequestId: "request-1", promptMessageIds: ["prompt-1"], requestTokenUsage: {}, cursorPromptUsage: {
-      request_id: "request-1", prompt_message_id: "prompt-1", receipt: {
+    const before = { requestTokenUsage: {} };
+    const after = { lastRequestId: "request-1", requestTokenUsage: {}, cursorPromptReceipt: {
+      request_id: "request-1", receipt: {
         schema: "paperclip.cursor.native-usage.v1", source: "native_turn_ended", promptId: "12345678-1234-1234-1234-123456789abc", completeness: "partial",
         reasons: ["native_counter_semantics_unverified"], observations: [], limits: { maxObservations: 64, maxInvocations: 64, maxBytes: 16384 }, truncated: false,
       },
