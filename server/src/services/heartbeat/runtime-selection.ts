@@ -320,6 +320,8 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
   const runOptions = input.recovery;
   const { providerTraceRequested, providerTraceCapture } = input.trace;
   if (!isDotRun) assertEphemeralNativeRuntime(nativeRuntimeResolution.kind === "native");
+  if (nativeRuntimeResolution.kind !== "native" && readNativeReviewAssignmentContext(context))
+    throw new Error("native_review_requires_paperclip_runner: a completion review can only be resolved on the Paperclip Runner. Assign a Paperclip Runner pool member to the reviewer, then retry.");
   let nativeExecution: NativeExecutionInput | null = null;
   let getNativeFreshSessionHandoff: (() => Promise<string | null>) | undefined;
   let nativeRunnerInstanceId: string | null = null;

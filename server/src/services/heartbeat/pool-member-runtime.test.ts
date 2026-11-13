@@ -1,13 +1,26 @@
 import { describe, expect, it } from "vitest";
 import { buildCodexExecArgs } from "@paperclipai/adapter-codex-local/server";
 import type { AiConnectionPoolMember } from "@paperclipai/shared";
-import { applyAiConnectionRouterTaskSettings, assertPoolAdapterPolicyCompatible, poolMemberRuntimeConfig } from "../ai-connection-router.js";
+import { applyAiConnectionRouterTaskSettings, assertPoolAdapterPolicyCompatible, poolMemberRunsOnPaperclipRunner, poolMemberRuntimeConfig } from "../ai-connection-router.js";
+import { harnessPoolReviewTaskKey } from "./harness-pool-admission.js";
 
 const claude: AiConnectionPoolMember = {
   id: "33333333-3333-4333-8333-333333333333",
   binding: { mode: "delegated", provider: "anthropic", method: "api_key", connectionId: "11111111-1111-4111-8111-111111111111", grantId: "22222222-2222-4222-8222-222222222222" },
   profile: { provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-4-6" },
 };
+
+describe("completion review pool members", () => {
+  it("accepts only members that keep a review on the Paperclip Runner", () => {
+    expect(poolMemberRunsOnPaperclipRunner(claude, "paperclip_runner")).toBe(true);
+    expect(poolMemberRunsOnPaperclipRunner({ ...claude, runner: "paperclip" }, "paperclip_runner")).toBe(true);
+    expect(poolMemberRunsOnPaperclipRunner({ ...claude, runner: "legacy" }, "paperclip_runner")).toBe(false);
+  });
+
+  it("gives each review its own pool pin key", () => {
+    expect(harnessPoolReviewTaskKey("88140e8f-8e2d-4089-8f74-690deea83133")).toBe("native-review:88140e8f-8e2d-4089-8f74-690deea83133");
+  });
+});
 
 describe("pool member runtime settings", () => {
   it("selects the explicit Claude CLI before a native Codex successor", () => {

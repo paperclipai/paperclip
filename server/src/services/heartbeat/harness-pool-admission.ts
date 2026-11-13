@@ -9,6 +9,13 @@ import { instanceSettingsService } from "../instance-settings.js";
 import { aiConnectionRouterService, applyAiConnectionRouterTaskSettings } from "../ai-connection-router.js";
 import { resolvePaperclipRunnerProviderProfile, type PaperclipRunnerProviderProfile } from "../native-runtime/provider-profile.js";
 import { deriveTaskKeyWithHeartbeatFallback, shouldResetTaskSessionForWake } from "./run-state.js";
+import { readNativeReviewAssignmentContext } from "../native-runtime/native-review-participant.js";
+
+/** A completion review resolves through the Paperclip Runner review tool, so it
+ * gets its own pool pin instead of inheriting the reviewer's task pin. */
+export function harnessPoolReviewTaskKey(interactionId: string) {
+  return `native-review:${interactionId}`;
+}
 
 export type HarnessPoolAdmission = { kind: "selected"; selection: HarnessPoolExecutionSelection;
   routerSelection: AiConnectionRouterSelection; taskKey: string; profile?: PaperclipRunnerProviderProfile };
@@ -26,7 +33,9 @@ export async function resolveHarnessPoolExecution(input: { db: Db; run: typeof h
   if (!pool || pool.pluginKey !== BUILTIN_AI_FAILOVER_ROUTER_KEY || decodeHarnessPoolConfig(pool.config).kind !== "harness_pool")
     throw unprocessable("Choose an available harness pool");
   const context = parseObject(run.contextSnapshot);
-  const taskKey = typeof context.aiRouterTaskKey === "string" && context.aiRouterTaskKey.trim() ? context.aiRouterTaskKey : deriveTaskKeyWithHeartbeatFallback(context, null) ?? run.issueId;
+  const review = readNativeReviewAssignmentContext(context);
+  const taskKey = review ? harnessPoolReviewTaskKey(review.nativeReviewInteractionId)
+    : typeof context.aiRouterTaskKey === "string" && context.aiRouterTaskKey.trim() ? context.aiRouterTaskKey : deriveTaskKeyWithHeartbeatFallback(context, null) ?? run.issueId;
   const [task] = await db.select().from(issues).where(and(eq(issues.companyId, agent.companyId), eq(issues.id, run.issueId)));
   const [existingPin] = await db.select().from(aiConnectionTaskPins).where(and(eq(aiConnectionTaskPins.companyId, agent.companyId),
     eq(aiConnectionTaskPins.poolId, pool.id), eq(aiConnectionTaskPins.agentId, agent.id), eq(aiConnectionTaskPins.taskKey, taskKey)));
@@ -38,7 +47,8 @@ export async function resolveHarnessPoolExecution(input: { db: Db; run: typeof h
   const routerSelection = await aiConnectionRouterService(db).resolve({ companyId: agent.companyId, agentId: agent.id, poolId: pool.id,
     adapterType: "paperclip_runner", environmentId, userId, taskKey, sourceAdapterConfig: { ...agent.adapterConfig, ...overrides }, overrides,
     existingGrantId: typeof identity === "string" ? identity.split(":")[0] : undefined,
-    requireExisting: Boolean(session?.sessionDisplayId) && !shouldResetTaskSessionForWake(context), skipUsageProbe: true });
+    requireExisting: Boolean(session?.sessionDisplayId) && !shouldResetTaskSessionForWake(context), skipUsageProbe: true,
+    requirePaperclipRunner: review !== null });
   const decoded = decodeHarnessPoolConfig(pool.config);
   if (decoded.kind !== "harness_pool") throw unprocessable("Invalid harness pool");
   const [pin] = await db.select().from(aiConnectionTaskPins).where(and(eq(aiConnectionTaskPins.companyId, agent.companyId),

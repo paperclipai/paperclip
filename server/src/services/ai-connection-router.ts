@@ -148,6 +148,15 @@ export function poolExecutionAdapterType(binding: { provider: string }, configur
   return adapter;
 }
 
+export function poolMemberRunsOnPaperclipRunner(member: { binding: { provider: string }; runner?: "legacy" | "paperclip" },
+  configuredAdapterType: string, allowHarnessSwitch = true): boolean {
+  try {
+    return poolExecutionAdapterType(member.binding, configuredAdapterType, allowHarnessSwitch, member.runner) === "paperclip_runner";
+  } catch {
+    return false;
+  }
+}
+
 function samePoolSelection(left: AiConnectionRouterSelection, right: AiConnectionRouterSelection, configuredAdapterType: string) {
   const retainedAdapter = left.adapterType ?? right.adapterType ?? configuredAdapterType;
   const identity = (selection: AiConnectionRouterSelection) => ({
@@ -409,7 +418,7 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
     } finally { if (timer) clearTimeout(timer); }
   }
 
-  async function resolve(input: { companyId: string; poolId: string; agentId: string; userId: string | null; adapterType: string; taskKey: string; overrides?: Record<string, unknown>; existingGrantId?: string; requireExisting?: boolean; persisted?: AiConnectionRouterSelection; skipUsageProbe?: boolean; environmentId?: string | null; sourceAdapterConfig?: Record<string, unknown>; taskless?: boolean }) {
+  async function resolve(input: { companyId: string; poolId: string; agentId: string; userId: string | null; adapterType: string; taskKey: string; overrides?: Record<string, unknown>; existingGrantId?: string; requireExisting?: boolean; persisted?: AiConnectionRouterSelection; skipUsageProbe?: boolean; environmentId?: string | null; sourceAdapterConfig?: Record<string, unknown>; taskless?: boolean; requirePaperclipRunner?: boolean }) {
     const pinWhere = and(eq(aiConnectionTaskPins.companyId, input.companyId), eq(aiConnectionTaskPins.poolId, input.poolId), eq(aiConnectionTaskPins.agentId, input.agentId), eq(aiConnectionTaskPins.taskKey, input.taskKey));
     const platform = await resolvePoolExecutionPlatform(db, input.companyId, input.environmentId !== undefined ? input.environmentId : input.persisted?.runnerScope?.environmentId);
     const validateSelection = async (selection: AiConnectionRouterSelection, client = db) => {
@@ -465,8 +474,13 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
       let policyRefusal: HttpError | undefined;
       let platformRefusal: HttpError | undefined;
       let taskRefusal: HttpError | undefined;
+      let runnerRefusal: HttpError | undefined;
       for (const member of pin ? [pin.member] : pool.members) {
         try {
+          if (input.requirePaperclipRunner && !poolMemberRunsOnPaperclipRunner(member, input.adapterType, builtin)) {
+            runnerRefusal = unprocessable("Completion reviews need a pool member that runs on the Paperclip Runner", { code: "pool_review_requires_paperclip_runner" });
+            continue;
+          }
           const effective = poolMemberRuntimeConfig(member, input.adapterType, input.overrides, builtin);
           const selection: AiConnectionRouterSelection = { poolId: row.id, memberId: member.id, binding: member.binding, adapterType: effective.adapterType, runtimeConfig: effective.config, notes: effective.notes, ...(row.config.kind === "harness_pool" && input.environmentId !== undefined ? { runnerScope: { environmentId: input.environmentId ?? null } } : {}) };
           const authorized = await validateSelection(selection);
@@ -484,6 +498,7 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
       if (candidates.length === 0 && policyRefusal) throw policyRefusal;
       if (candidates.length === 0 && platformRefusal) throw platformRefusal;
       if (candidates.length === 0 && taskRefusal) throw taskRefusal;
+      if (candidates.length === 0 && runnerRefusal) throw runnerRefusal;
       if (!pin && input.requireExisting) {
         const existing = candidates.find((candidate) => candidate.member.binding.grantId === input.existingGrantId);
         if (!existing) throw unprocessable("Reset this task session before adopting the connection pool");
