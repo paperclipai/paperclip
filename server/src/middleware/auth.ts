@@ -56,6 +56,21 @@ function normalizeOptionalString(value: string | null | undefined) {
   return value?.trim() || null;
 }
 
+/**
+ * Normalize the X-Paperclip-Run-Id header into a single valid UUID or
+ * undefined. Node.js joins duplicate headers with ", ", which produces a
+ * string like "uuid-a, uuid-b" that is not a valid UUID and triggers a
+ * Postgres 500 when it reaches a parameterised query. Take the first value
+ * when the header is duplicated and drop values that are not UUID-like so
+ * downstream code never sees a malformed run id.
+ */
+function normalizeRunIdHeader(value: string | undefined): string | undefined {
+  const raw = value?.trim();
+  if (!raw) return undefined;
+  const first = raw.includes(",") ? raw.split(",")[0].trim() : raw;
+  return isUuidLike(first) ? first : undefined;
+}
+
 function invalidAgentTokenMessage(token: string) {
   try {
     const payload = JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8")) as {
@@ -224,7 +239,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       return;
     }
 
-    const runIdHeader = req.header("x-paperclip-run-id");
+    const runIdHeader = normalizeRunIdHeader(req.header("x-paperclip-run-id"));
 
     const authHeader = req.header("authorization");
     const hasBearerCredentials = /^bearer(?:\s|$)/i.test(authHeader ?? "");
