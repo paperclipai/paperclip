@@ -2681,6 +2681,14 @@ describeEmbeddedPostgres("secretService", () => {
     const listed = (await svc.list(companyId)).find((row) => row.id === secret.id);
     expect(listed?.lastResolvedAt).toBeInstanceOf(Date);
     expect(listed!.lastResolvedAt!.getTime()).toBeGreaterThanOrEqual(before!.createdAt.getTime());
+
+    // A read made without a consumer context also counts as use.
+    const unattributed = await svc.create(companyId, { name: `last-used-unattributed-${randomUUID()}`, provider: "local_encrypted", value: "runtime-secret" });
+    const [unattributedBefore] = await db.select().from(companySecrets).where(eq(companySecrets.id, unattributed.id));
+    await svc.resolveSecretValue(companyId, unattributed.id, "latest");
+    const [unattributedAfter] = await db.select().from(companySecrets).where(eq(companySecrets.id, unattributed.id));
+    expect(unattributedAfter).toEqual(unattributedBefore);
+    expect((await svc.list(companyId)).find((row) => row.id === unattributed.id)?.lastResolvedAt).toBeInstanceOf(Date);
   });
 
   it("preserves the original resolution error when failure access logging fails", async () => {

@@ -646,6 +646,8 @@ type SecretConsumerContext = {
   allowedBindingIds?: string[] | null;
 };
 
+const UNATTRIBUTED_SECRET_READ: SecretConsumerContext = { consumerType: "system", consumerId: "system", actorType: "system" };
+
 type SecretBindingContext = Omit<SecretConsumerContext, "consumerType"> & {
   consumerType: SecretBindingTargetType;
 };
@@ -1446,7 +1448,8 @@ export function secretService(db: Db | DbTransaction) {
           secretScope: secret.scope,
           version: resolvedVersion,
           provider: providerId,
-          context: accessContext,
+          // A read without a consumer still counts as "Last used".
+          context: accessContext ?? UNATTRIBUTED_SECRET_READ,
           credentialOwnerUserId: secret.ownerUserId ?? null,
           credentialSubjectType: secret.scope === "user" ? "user" : null,
           credentialSubjectId: secret.ownerUserId ?? null,
