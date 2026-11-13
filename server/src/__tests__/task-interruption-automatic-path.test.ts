@@ -91,9 +91,63 @@ describe.skipIf(!support.supported)("Retry is offered only when no automatic pat
       payload: { issueId: issue.id } });
     expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ state: "working", canRetry: false });
     expect(await taskInterruptionPresentation(db, { ...issue, status: "in_review" })).toMatchObject({ state: "working", canRetry: false });
-    expect(await taskInterruptionPresentation(db, { ...issue, status: "blocked" })).toMatchObject({ state: "failed", canRetry: true });
+    expect(await taskInterruptionPresentation(db, { ...issue, status: "blocked" })).toMatchObject({ state: "working", canRetry: false });
     await db.update(heartbeatRuns).set({ finishedAt: new Date(Date.now() - 10 * 60_000) }).where(eq(heartbeatRuns.id, runId));
     expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ canRetry: true });
+    expect(await taskInterruptionPresentation(db, { ...issue, status: "blocked" })).toMatchObject({ state: "failed", canRetry: true });
+  });
+
+  async function seedParentWaitingOnSubtasks(childStatus = "in_progress") {
+    const { companyId, agentId, issue } = await seedTask("blocked");
+    for (const title of ["Subtask 1", "Subtask 2"])
+      await db.insert(issues).values({ companyId, title, status: childStatus, assigneeAgentId: agentId, parentId: issue.id });
+    const runId = randomUUID(), finishedAt = new Date(Date.now() - 1_000);
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, nativeIssueId: issue.id, scopeKind: "issue",
+      status: "succeeded", runtimeMode: "native", startedAt: new Date(Date.now() - 25 * 60_000), finishedAt });
+    return { companyId, agentId, issue, runId };
+  }
+
+  async function seedCommentQueuedDuringRun(companyId: string, agentId: string, issueId: string) {
+    const commentId = randomUUID();
+    const [wake] = await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "automation",
+      reason: "issue_execution_deferred", triggerDetail: "system", status: "deferred_issue_execution",
+      requestedByActorType: "user", requestedByActorId: "local-board", requestedAt: new Date(Date.now() - 13 * 60_000),
+      payload: { issueId, mutation: "comment", commentId,
+        _paperclipWakeContext: { source: "issue.comment", issueId, wakeReason: "issue_commented", wakeCommentIds: [commentId] } },
+    }).returning();
+    return wake!;
+  }
+
+  it("shows a parent whose run just succeeded waiting on its subtasks as working while its queued message is settled", async () => {
+    const { companyId, agentId, issue, runId } = await seedParentWaitingOnSubtasks();
+    await seedCommentQueuedDuringRun(companyId, agentId, issue.id);
+    expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ responsibility: "system", state: "working",
+      canRetry: false, observedRunId: runId });
+  });
+
+  it("shows the parent as resolved once its queued message is cancelled as already delivered", async () => {
+    const { companyId, agentId, issue } = await seedParentWaitingOnSubtasks();
+    const wake = await seedCommentQueuedDuringRun(companyId, agentId, issue.id);
+    await db.update(agentWakeupRequests).set({ status: "cancelled", finishedAt: new Date(),
+      error: "Queued messages were already delivered to a completed run" }).where(eq(agentWakeupRequests.id, wake.id));
+    expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ state: "resolved", canRetry: false });
+  });
+
+  it("shows the parent as working once its queued message is promoted to a new run", async () => {
+    const { companyId, agentId, issue } = await seedParentWaitingOnSubtasks();
+    const wake = await seedCommentQueuedDuringRun(companyId, agentId, issue.id);
+    const nextRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: nextRunId, companyId, agentId, nativeIssueId: issue.id, scopeKind: "issue",
+      status: "queued", runtimeMode: "native", wakeupRequestId: wake.id });
+    await db.update(agentWakeupRequests).set({ status: "queued", runId: nextRunId }).where(eq(agentWakeupRequests.id, wake.id));
+    expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ state: "working", canRetry: false, observedRunId: nextRunId });
+  });
+
+  it("does not show a failed attempt on a parent whose run succeeded with no queued message", async () => {
+    for (const childStatus of ["in_progress", "blocked", "cancelled"]) {
+      const { issue } = await seedParentWaitingOnSubtasks(childStatus);
+      expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ state: "resolved", canRetry: false });
+    }
   });
 
   it("does not offer Retry on a parent whose run succeeded and that waits for its subtasks", async () => {
