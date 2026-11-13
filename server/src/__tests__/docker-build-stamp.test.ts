@@ -163,7 +163,7 @@ describe("Application image Runner", () => {
   it("compiles the Runner only in the runner-artifacts stages", () => {
     const names = [...dockerfile.matchAll(/^FROM \S+ AS (\S+)$/gm)].map((match) => match[1]);
     const application = names.filter((name) => !name.startsWith("runner-artifacts"));
-    expect(application).toEqual(["base", "deps", "build", "runner-provider-pack", "production", "cloud-plugins", "cloud-server-deps", "cloud"]);
+    expect(application).toEqual(["base", "runner-lockfile", "deps", "build", "runner-provider-pack", "production", "cloud-plugins", "cloud-server-deps", "cloud"]);
     for (const name of application) {
       expect(stageBody(dockerfile, name), name).not.toMatch(/\b(?:cargo|rustup|rustc|gcc)\b/);
     }
