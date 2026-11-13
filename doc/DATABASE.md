@@ -1095,6 +1095,17 @@ with slow background work. It does not make the SQL itself faster. The default
 pipeline limit remains unchanged. Test transaction behavior before using this
 setting with a driver build that does not include the patch.
 
+The patch also releases a connection's receive buffer when the connection has
+read every message in it. Without this fix, an idle connection keeps the buffer
+of its last read until its next read: the socket chunk, or the whole buffer of
+its largest recent message. At 340 open connections that each read a 1 MB row,
+this held about 320 MB of `external` memory. The memory is outside the
+JavaScript heap. `packages/db/src/postgres-receive-buffer.test.ts` checks that
+the buffer is released and that split, exact-boundary, and many-message results
+are reassembled correctly. Measure it with
+`node --expose-gc --import tsx packages/db/scripts/benchmark-postgres-receive-buffer.ts`
+(`CONNECTIONS` and `ROW_BYTES` are optional).
+
 Trusted-header actor synchronization retries transient connection failures,
 including `CONNECT_TIMEOUT`, at most twice. This retry applies only to the
 idempotent actor synchronization operations, not arbitrary transactions. A
