@@ -16,7 +16,8 @@ import { nativeSha256 } from "../services/native-runtime/canonical.js";
 import { buildQuestionResponseDeliveryEnvelope } from "../services/question-response-delivery.js";
 import * as aiConnectionRuntime from "../services/ai-connection-runtime.js";
 import { forbidden, unprocessable } from "../errors.js";
-import { aiConnectionCredentialNotSharedFailure } from "../services/ai-connection-configuration-failure.js";
+import { aiConnectionConfigurationFailure, aiConnectionCredentialNotSharedFailure } from "../services/ai-connection-configuration-failure.js";
+import { aiConnectionService } from "../services/ai-connections.js";
 import * as executionContinuation from "../services/execution-continuation.js";
 import * as environmentOrchestrator from "../services/environment-run-orchestrator.js";
 import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
@@ -75,6 +76,7 @@ import {
   chatMessageLinks,
   chatPublications,
   companyMemberships,
+  connectionGrants,
   companySecretBindings,
   companySecrets,
   companySkills,
@@ -1727,6 +1729,43 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       expect(comments.filter(c => c.authorType === "system" && c.metadata?.sourceRunId === runId)).toHaveLength(1);
       expect(mockAdapterExecute).not.toHaveBeenCalled();
     } finally { realize.mockRestore(); }
+  });
+
+  it("joins the connection's shared repair card when runtime setup rejects a connection that needs sign-in", async () => {
+    const { companyId, agentId, issueId, runId } = await seedQueuedIssueRunFixture();
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "member" }).onConflictDoNothing();
+    await db.update(agents).set({ runtimeConfig: {
+      heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 },
+      aiConnection: { provider: "openai", method: "api_key", mode: "responsible_user" },
+    } }).where(eq(agents.id, agentId));
+    const account = await aiConnectionService(db).save(companyId, "responsible-user", { provider: "openai", method: "api_key", ownership: "personal",
+      name: "Shared repair", apiKey: "fixture", agentIds: [agentId], allAgents: false }, "fixture-shared-repair-key");
+    await db.update(connectionGrants).set({ status: "needs_reauthorization" }).where(eq(connectionGrants.id, account.grantId));
+    // Another task already waits on this connection's repair card.
+    const ownerIssueId = randomUUID();
+    await db.insert(issues).values({ id: ownerIssueId, companyId, title: "Owner task", status: "in_progress", assigneeAgentId: agentId });
+    const [card] = await db.insert(issueThreadInteractions).values({ companyId, issueId: ownerIssueId, kind: "connection_intent", status: "pending",
+      addresseeUserId: "responsible-user", payload: { version: 1, serviceSlug: "openai", serviceName: "OpenAI", purpose: "ai",
+        repairConnectionId: account.connectionId, requestingAgentId: agentId, requestingAgentName: "CodexCoder", phase: "requested" } }).returning();
+    const prepare = vi.spyOn(aiConnectionRuntime, "prepareManagedAiRuntime").mockRejectedValueOnce(
+      aiConnectionConfigurationFailure("ai_connection_unavailable", "Reconnect or validate the selected AI account", { connectionId: account.connectionId }));
+    try {
+      const heartbeat = heartbeatService(db);
+      await heartbeat.resumeQueuedRuns();
+      await waitForRunToSettle(heartbeat, runId, 5_000);
+      await heartbeat.waitForRunExecutionDrain(runId);
+      expect(await heartbeat.getRun(runId)).toMatchObject({ status: "failed", errorCode: "configuration_incomplete" });
+      const own = await db.select().from(issueThreadInteractions).where(and(eq(issueThreadInteractions.issueId, issueId), eq(issueThreadInteractions.kind, "connection_intent")));
+      expect(own).toEqual([]);
+      const [shared] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, card!.id));
+      expect(shared).toMatchObject({ status: "pending", payload: { linkedIssues: [{ issueId, agentId, sourceRunId: runId }] } });
+    } finally {
+      prepare.mockRestore();
+      // The saved account's defaults reference its grant; remove them first.
+      await db.execute(sql`delete from ai_connection_defaults where company_id = ${companyId}`);
+      await db.execute(sql`delete from ai_provider_defaults where company_id = ${companyId}`);
+      await db.delete(companyMemberships).where(eq(companyMemberships.companyId, companyId));
+    }
   });
 
   it.each(["missing_default", "credential_not_shared", "database_error", "unmarked_http_error", "unmarked_forbidden", "provider_error"] as const)(

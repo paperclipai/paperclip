@@ -3,7 +3,7 @@ import { notifyChatConfirmationResolution } from "./chat-confirmation-notificati
 import { enqueueTerminalIssueInteractionChatPublications } from "./chat-interaction-publications.js";
 import { connectionManagementService } from "./connection-management.js";
 import { chatCredentialEntryGenerations } from "./chat-channels/credentials.js";
-import { and, asc, eq, gt, inArray, isNull, or } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import { approvals, chatEndpoints, chatExternalPrincipals, chatIdentityLinks, toolConnections, companyMemberships, connectionIntentDeliveries, issueApprovals, issueThreadInteractions, issues, type Db } from "@paperclipai/db";
 import { connectionIntentPayloadSchema } from "@paperclipai/shared";
 import { logActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
@@ -101,30 +101,52 @@ async function findAvailableToolConnection(db: Db, task: Task, intent: Intent, p
  */
 async function findRestoredAiConnection(db: Db, task: Task, intent: Intent,
   payload: ReturnType<typeof connectionIntentPayloadSchema.parse>) {
+  if (payload.requestingAgentId !== task.assigneeAgentId) return null;
+  return restoredAiConnectionFor(db, task.companyId, intent, payload, payload.requestingAgentId, intent.sourceRunId ?? null);
+}
+
+async function restoredAiConnectionFor(db: Db, companyId: string, intent: Intent,
+  payload: ReturnType<typeof connectionIntentPayloadSchema.parse>, agentId: string | undefined, sourceRunId: string | null) {
   if (payload.purpose !== "ai" || payload.agentSetup || payload.accessRequest || payload.upstreamService || payload.savedSetup
-    || payload.requestingAgentId !== task.assigneeAgentId || !intent.addresseeUserId) return null;
+    || !agentId || !intent.addresseeUserId) return null;
   if (intent.addresseeUserId !== "local-board") {
     const [membership] = await db.select().from(companyMemberships).where(and(
-      eq(companyMemberships.companyId, task.companyId), eq(companyMemberships.principalType, "user"),
+      eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalType, "user"),
       eq(companyMemberships.principalId, intent.addresseeUserId),
     ));
     if (membership?.status !== "active" || !membership.membershipRole || membership.membershipRole === "viewer") return null;
   }
-  const connection = await connectionIntentService(db).usableConnectionForAgent({ companyId: task.companyId,
-    agentId: payload.requestingAgentId, responsibleUserId: intent.addresseeUserId, serviceSlug: payload.serviceSlug,
-    purpose: "ai", sourceRunId: intent.sourceRunId ?? null });
+  const connection = await connectionIntentService(db).usableConnectionForAgent({ companyId,
+    agentId, responsibleUserId: intent.addresseeUserId, serviceSlug: payload.serviceSlug,
+    purpose: "ai", sourceRunId });
   if (!connection || (payload.repairConnectionId && connection.id !== payload.repairConnectionId)) return null;
   return connection;
 }
 
-/** The AI repair predicate also covers a task that recovery parked as blocked. */
+const AI_REPAIR_OPEN_STATUSES = ["in_progress", "in_review", "blocked"];
+
+/**
+ * The AI repair predicate also covers a task that recovery parked as blocked.
+ * A shared repair card is also satisfied for one of its linked tasks, so a
+ * closed or reassigned owner task cannot strand the others.
+ */
 export async function findSatisfiedConnection(db: Db, task: Task, intent: Intent, policyRunId?: string | null) {
   const payload = connectionIntentPayloadSchema.safeParse(intent.payload).data;
-  if (payload?.purpose === "ai") {
-    if (!["in_progress", "in_review", "blocked"].includes(task.status)) return null;
-    return findAvailableToolConnection(db, task, intent, policyRunId);
+  if (payload?.purpose !== "ai") return findSatisfiedToolConnection(db, task, intent, policyRunId);
+  if (AI_REPAIR_OPEN_STATUSES.includes(task.status) && !task.assigneeUserId) {
+    const connection = await findAvailableToolConnection(db, task, intent, policyRunId);
+    if (connection) return connection;
   }
-  return findSatisfiedToolConnection(db, task, intent, policyRunId);
+  if (!payload.repairConnectionId || !payload.linkedIssues?.length) return null;
+  for (const linked of payload.linkedIssues) {
+    const [linkedTask] = await db.select().from(issues).where(and(
+      eq(issues.id, linked.issueId), eq(issues.companyId, task.companyId)));
+    if (!linkedTask || !AI_REPAIR_OPEN_STATUSES.includes(linkedTask.status) || linkedTask.assigneeUserId
+      || linkedTask.assigneeAgentId !== linked.agentId) continue;
+    const connection = await restoredAiConnectionFor(db, task.companyId, intent, payload, linked.agentId, linked.sourceRunId);
+    if (connection) return connection;
+  }
+  return null;
 }
 
 export async function findSatisfiedToolConnection(db: Db, task: Task, intent: Intent, policyRunId?: string | null) {
@@ -166,7 +188,12 @@ export function satisfiedConnectionIntentService(db: Db) {
         .from(issueThreadInteractions).innerJoin(issues, and(
           eq(issues.id, issueThreadInteractions.issueId), eq(issues.companyId, issueThreadInteractions.companyId),
         )).where(and(eq(issueThreadInteractions.kind, "connection_intent"), eq(issueThreadInteractions.status, "pending"),
-          inArray(issues.status, ["in_progress", "in_review", "blocked"]), isNull(issues.assigneeUserId),
+          or(
+            and(inArray(issues.status, AI_REPAIR_OPEN_STATUSES), isNull(issues.assigneeUserId)),
+            // A shared AI repair card stays reconcilable for its linked tasks
+            // after the task that owns it was closed or reassigned.
+            sql`jsonb_array_length(coalesce(${issueThreadInteractions.payload}->'linkedIssues', '[]'::jsonb)) > 0`,
+          ),
           ...(afterId ? [gt(issueThreadInteractions.id, afterId)] : [])))
         .orderBy(asc(issueThreadInteractions.id)).limit(50);
       // Rotate past unavailable cards so they cannot starve a later ready one.

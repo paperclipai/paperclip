@@ -71,5 +71,50 @@ export async function resolveConnectionIntentContinuationSource(db: Db, input: {
         sql`jsonb_typeof(${issueThreadInteractions.result}->'connectionId') = 'string'`,
       )),
     )).limit(1);
-  return receipt?.sourceRunId ?? null;
+  if (receipt) return receipt.sourceRunId ?? null;
+  return resolveLinkedConnectionIntentContinuationSource(db, input);
+}
+
+/**
+ * A task linked to another task's shared AI repair card is woken under its
+ * own key ("connection-intent:<card>:<status>:<task>"). Its continuation
+ * source is the failed run recorded for that task in the card's linked list,
+ * not the owner task's run.
+ */
+async function resolveLinkedConnectionIntentContinuationSource(db: Db, input: {
+  companyId: string; issueId: string; interactionId: string; runId: string; agentId: string;
+}): Promise<string | null> {
+  const [receipt] = await db.select({ payload: issueThreadInteractions.payload })
+    .from(issueThreadInteractions)
+    .innerJoin(connectionIntentDeliveries, and(
+      eq(connectionIntentDeliveries.companyId, issueThreadInteractions.companyId),
+      eq(connectionIntentDeliveries.interactionId, issueThreadInteractions.id),
+    ))
+    .innerJoin(agentWakeupRequests, and(
+      eq(agentWakeupRequests.companyId, input.companyId),
+      eq(agentWakeupRequests.agentId, input.agentId),
+      eq(agentWakeupRequests.runId, input.runId),
+      eq(agentWakeupRequests.source, "automation"),
+      eq(agentWakeupRequests.reason, "issue_commented"),
+      ne(agentWakeupRequests.status, "skipped"),
+      sql`${agentWakeupRequests.idempotencyKey} = 'connection-intent:' || ${issueThreadInteractions.id}::text || ':' || ${issueThreadInteractions.status} || ':' || ${input.issueId}`,
+      sql`${agentWakeupRequests.payload}->>'issueId' = ${input.issueId}`,
+      sql`${agentWakeupRequests.payload}->>'interactionId' = ${input.interactionId}`,
+      sql`${agentWakeupRequests.payload}->>'interactionKind' = 'connection_intent'`,
+      sql`${agentWakeupRequests.payload}->>'interactionStatus' = ${issueThreadInteractions.status}`,
+    ))
+    .where(and(
+      eq(issueThreadInteractions.companyId, input.companyId),
+      eq(issueThreadInteractions.id, input.interactionId),
+      eq(issueThreadInteractions.kind, "connection_intent"),
+      sql`${issueThreadInteractions.payload}->>'purpose' = 'ai'`,
+      or(eq(issueThreadInteractions.status, "accepted"), and(
+        eq(issueThreadInteractions.status, "expired"),
+        sql`${issueThreadInteractions.result}->>'outcome' = 'expired'`,
+        sql`jsonb_typeof(${issueThreadInteractions.result}->'connectionId') = 'string'`,
+      )),
+    )).limit(1);
+  const linked = (receipt?.payload as { linkedIssues?: Array<{ issueId?: unknown; agentId?: unknown; sourceRunId?: unknown }> } | undefined)
+    ?.linkedIssues?.find(entry => entry.issueId === input.issueId && entry.agentId === input.agentId);
+  return typeof linked?.sourceRunId === "string" ? linked.sourceRunId : null;
 }

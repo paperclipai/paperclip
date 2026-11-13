@@ -22,6 +22,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { createDb, type Db, activityLog, issueRelations, companies, agents, agentTaskSessions, heartbeatRuns, companyMemberships, connectionGrants, toolApplications, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, plugins, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests, companySecrets, companySecretVersions, secretAccessEvents, userSecretDefinitions, principalPermissionGrants } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { fetchCompanyQuotaWindows } from "../services/quota-windows.js";
+import { resolveConnectionIntentContinuationSource } from "../services/chat-interaction-continuation.js";
 import { quotaCredentialRecoveryPath, quotaCredentialRecovery, quotaCredentialHash } from "../services/quota-credential-recovery.js";
 import { reconcileRetainedAiCleanup, retainAiCredentialCleanup } from "../services/retained-ai-credential-cleanup.js";
 import { readAiConnectionConfigurationFailure } from "../services/ai-connection-configuration-failure.js";
@@ -2115,6 +2116,62 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       expect(await connectionIntentService(db).requestForRunAuthFailure(late)).toBeNull();
       expect((await db.select().from(connectionGrants).where(eq(connectionGrants.id, f.account.grantId)))[0]!.status).toBe("active");
       expect((await f.cardsFor([f.tasks[0]!.issueId])).filter(card => card.status === "pending")).toEqual([]);
+    });
+
+    it("still reconciles a shared card for its linked tasks after the owner task closed", async () => {
+      const f = await latchedFleet("owner-closed", 3);
+      for (const task of f.tasks) await connectionIntentService(db).requestForRunAuthFailure(task.runId!);
+      const [card] = await f.cardsFor(f.tasks.map(task => task.issueId));
+      const linked = f.tasks.filter(task => task.issueId !== card!.issueId);
+      await db.update(issues).set({ status: "done" }).where(eq(issues.id, card!.issueId));
+      await f.reconnect();
+      await sweepAll();
+      expect((await f.cardsFor([card!.issueId]))[0]!.status).toBe("expired");
+      const wakeup = await f.deliverAll([card!.id]);
+      expect(wakeup.mock.calls.map(([agentId]) => agentId).sort()).toEqual(linked.map(task => task.agentId).sort());
+      // The closed owner task is neither reopened nor woken.
+      expect((await db.select().from(issues).where(eq(issues.id, card!.issueId)))[0]!.status).toBe("done");
+    });
+
+    it("still resumes the owner task after its retry failed again on the same connection", async () => {
+      const f = await latchedFleet("owner-retry", 2);
+      for (const task of f.tasks) await connectionIntentService(db).requestForRunAuthFailure(task.runId!);
+      const [card] = await f.cardsFor(f.tasks.map(task => task.issueId));
+      const owner = f.tasks.find(task => task.issueId === card!.issueId)!;
+      await new Promise(resolve => setTimeout(resolve, 5));
+      const retry = await f.failedRun(owner.agentId, owner.issueId, f.identity);
+      expect((await connectionIntentService(db).requestForRunAuthFailure(retry))?.interactionId).toBe(card!.id);
+      await f.reconnect();
+      await sweepAll();
+      const wakeup = await f.deliverAll([card!.id]);
+      expect(wakeup).toHaveBeenCalledWith(owner.agentId, expect.objectContaining({
+        payload: expect.objectContaining({ issueId: owner.issueId }) }));
+    });
+
+    it("gives a linked task's resumed run its own failed run as the continuation source", async () => {
+      const f = await latchedFleet("linked-source", 2);
+      for (const task of f.tasks) await connectionIntentService(db).requestForRunAuthFailure(task.runId!);
+      const [card] = await f.cardsFor(f.tasks.map(task => task.issueId));
+      const owner = f.tasks.find(task => task.issueId === card!.issueId)!;
+      const linked = f.tasks.find(task => task !== owner)!;
+      await f.reconnect();
+      await sweepAll();
+      const resumed = new Map<string, string>();
+      const wakeup = vi.fn(async (agentId: string, opts: { source: string; reason: string; payload: { issueId: string }; idempotencyKey: string; contextSnapshot: Record<string, unknown> }) => {
+        const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "queued", contextSnapshot: opts.contextSnapshot }).returning();
+        await db.insert(agentWakeupRequests).values({ companyId, agentId, source: opts.source, reason: opts.reason, payload: opts.payload,
+          status: "queued", idempotencyKey: opts.idempotencyKey, runId: run!.id });
+        resumed.set(opts.payload.issueId, run!.id);
+        return null;
+      });
+      await connectionIntentDeliveryService(db, { wakeup } as never).deliver(card!.id);
+      expect(await resolveConnectionIntentContinuationSource(db, { companyId, issueId: linked.issueId, interactionId: card!.id,
+        runId: resumed.get(linked.issueId)!, agentId: linked.agentId })).toBe(linked.runId);
+      expect(await resolveConnectionIntentContinuationSource(db, { companyId, issueId: owner.issueId, interactionId: card!.id,
+        runId: resumed.get(owner.issueId)!, agentId: owner.agentId })).toBe(owner.runId);
+      // Another task cannot borrow the linked receipt.
+      expect(await resolveConnectionIntentContinuationSource(db, { companyId, issueId: linked.issueId, interactionId: card!.id,
+        runId: resumed.get(owner.issueId)!, agentId: owner.agentId })).toBeNull();
     });
 
     it("does not rerun done, dependency-blocked or review-held tasks", async () => {

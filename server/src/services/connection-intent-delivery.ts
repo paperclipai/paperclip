@@ -83,6 +83,30 @@ function connectionIntentWakeKey(interactionId: string, status: string, linkedIs
 }
 
 
+/**
+ * The task's latest run when the task still waits on an AI repair: that run
+ * failed for a reason the predicate accepts and is the card's source run or a
+ * later retry of the same task. A later success, or any other later outcome,
+ * means the task moved on and must not be resumed again.
+ */
+async function latestRunWaitingOnAiRepair(
+  db: Db,
+  issue: Pick<typeof issues.$inferSelect, "id" | "companyId">,
+  sourceRunId: string | null | undefined,
+  accepts: (run: typeof heartbeatRuns.$inferSelect) => boolean,
+) {
+  if (!sourceRunId) return null;
+  const [latest] = await db.select().from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, issue.companyId),
+    sql`coalesce(${heartbeatRuns.contextSnapshot}->>'issueId', ${heartbeatRuns.contextSnapshot}->>'taskId', ${heartbeatRuns.nativeIssueId}::text) = ${issue.id}`,
+  )).orderBy(desc(heartbeatRuns.createdAt)).limit(1);
+  if (!latest || latest.status !== "failed" || !accepts(latest)) return null;
+  if (latest.id === sourceRunId) return latest;
+  const [source] = await db.select({ createdAt: heartbeatRuns.createdAt }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.id, sourceRunId), eq(heartbeatRuns.companyId, issue.companyId)));
+  return source && latest.createdAt >= source.createdAt ? latest : null;
+}
+
 export function connectionIntentDeliveryService(db: Db, heartbeat: Pick<Heartbeat, "wakeup">) {
   const satisfiedIntents = satisfiedConnectionIntentService(db);
   // Only a repaired AI-authentication failure may reopen a blocked task. An old
@@ -99,12 +123,8 @@ export function connectionIntentDeliveryService(db: Db, heartbeat: Pick<Heartbea
         eq(issues.id, loaded.issue.id), eq(issues.companyId, loaded.issue.companyId),
       )).for("update");
       if (!issue || issue.status !== "blocked" || issue.assigneeAgentId !== assigneeAgentId) return null;
-      const [latest] = await tx.select().from(heartbeatRuns).where(and(
-        eq(heartbeatRuns.companyId, issue.companyId),
-        sql`coalesce(${heartbeatRuns.contextSnapshot}->>'issueId', ${heartbeatRuns.contextSnapshot}->>'taskId') = ${issue.id}`,
-      )).orderBy(desc(heartbeatRuns.createdAt)).limit(1);
-      if (latest?.id !== sourceRunId || latest.status !== "failed"
-        || !isAiConnectionConfigurationFailure(latest)) return null;
+      const latest = await latestRunWaitingOnAiRepair(tx as unknown as Db, issue, sourceRunId, isAiConnectionConfigurationFailure);
+      if (!latest) return null;
       // Restricted external chat retries require their original chat provenance.
       // Their existing Try again path owns that authorization and delivery.
       const [restrictedChat] = await tx.select({ id: chatConversations.id }).from(chatConversations)
@@ -120,7 +140,7 @@ export function connectionIntentDeliveryService(db: Db, heartbeat: Pick<Heartbea
         status: "in_progress", actorUserId: options.system ? null : actorId, companyGuard: issue.companyId,
       }, tx, publications);
       await recoveries.resolveActiveForIssue({ companyId: issue.companyId, sourceIssueId: issue.id,
-        actionId: recovery.id, status: "resolved", outcome: "restored", resolutionNote: "AI connection restored by the responsible user." }, tx);
+        actionId: recovery.id, status: "resolved", outcome: "restored", resolutionNote: options.system ? "The AI connection is healthy again; restored automatically." : "AI connection restored by the responsible user." }, tx);
       return updated;
     });
     for (const publication of publications) publishActivity(publication);
@@ -133,17 +153,14 @@ export function connectionIntentDeliveryService(db: Db, heartbeat: Pick<Heartbea
 
   /**
    * A system reconciliation resumes a task only while it still waits on this
-   * repair: its latest run is the failed source run, it is open and not held
+   * repair: its latest run is the failed source run or a later failed retry
+   * of the same task, it is open and not held
    * for review, and its dependencies are resolved. A human answer keeps its
    * existing delivery rules.
    */
   async function waitingOnAiRepair(issue: typeof issues.$inferSelect, sourceRunId: string | null | undefined) {
-    if (!sourceRunId || issue.status !== "in_progress" || issue.assigneeUserId) return false;
-    const [latest] = await db.select().from(heartbeatRuns).where(and(
-      eq(heartbeatRuns.companyId, issue.companyId),
-      sql`coalesce(${heartbeatRuns.contextSnapshot}->>'issueId', ${heartbeatRuns.contextSnapshot}->>'taskId', ${heartbeatRuns.nativeIssueId}::text) = ${issue.id}`,
-    )).orderBy(desc(heartbeatRuns.createdAt)).limit(1);
-    if (latest?.id !== sourceRunId || latest.status !== "failed" || !isAiAuthenticationRepairable(latest)) return false;
+    if (issue.status !== "in_progress" || issue.assigneeUserId) return false;
+    if (!await latestRunWaitingOnAiRepair(db, issue, sourceRunId, isAiAuthenticationRepairable)) return false;
     return (await issueService(db).getDependencyReadiness(issue.id)).isDependencyReady;
   }
 

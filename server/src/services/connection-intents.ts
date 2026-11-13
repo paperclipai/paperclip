@@ -12,7 +12,7 @@ import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { logActivity } from "./activity-log.js";
 import { aiConnectionService } from "./ai-connections.js";
-import { aiConnectionBindingSchema, aiConnectionRouterBindingSchema } from "@paperclipai/shared";
+import { aiConnectionBindingSchema, aiConnectionMetadataSchema, aiConnectionRouterBindingSchema } from "@paperclipai/shared";
 import { aiBindingForAuthRecovery, isAiAuthenticationFailure, isAiAuthenticationRepairable } from "./ai-auth-failure.js";
 import { and, eq, desc, isNull, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -1084,6 +1084,27 @@ export function connectionIntentService(db: Db) {
     };
   }
 
+  /** The connection, when it is this company's AI connection for the provider. */
+  async function repairableAiConnectionId(companyId: string, provider: string, connectionId: string) {
+    const [connection] = await db.select({ id: toolConnections.id, config: toolConnections.config }).from(toolConnections).where(and(
+      eq(toolConnections.companyId, companyId), eq(toolConnections.id, connectionId),
+      eq(toolConnections.connectionPurpose, "ai"),
+    ));
+    const metadata = connection ? aiConnectionMetadataSchema.safeParse(record(connection.config)?.ai) : null;
+    return connection && metadata?.success && metadata.data.provider === provider ? connection.id : undefined;
+  }
+
+  /**
+   * Serialise repair cards for one connection and recipient, so concurrent
+   * failures across agents and tasks raise exactly one card.
+   */
+  function lockedSharedAiRepair(context: Awaited<ReturnType<typeof loadRunContext>>, provider: string, connectionId: string) {
+    return db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`ai-repair-card:${context.run.companyId}:${context.run.responsibleUserId}:${provider}:${connectionId}`}, 0))`);
+      return connectionIntentService(tx as unknown as Db).requestSharedAiRepair(context, provider, connectionId);
+    });
+  }
+
   async function loadIntent(interactionId: string) {
     const row = await db
       .select({ interaction: issueThreadInteractions, issue: issues })
@@ -1591,15 +1612,28 @@ export function connectionIntentService(db: Db) {
           attribution: attribution as unknown as AiConnectionAttribution & { identity: string } });
         if (outcome === "below_threshold" || outcome === "stale_generation" || outcome === "recovered") return null;
       }
-      const repairConnectionId = (saved || managed) && attribution && typeof attribution.connectionId === "string"
-        ? attribution.connectionId : undefined;
+      // A run that failed before its connection was attributed (runtime setup
+      // rejected the selected connection) records the rejected connection.
+      const unavailable = record(record(run.resultJson)?.configurationIncomplete);
+      const repairConnectionId = !(saved || managed) ? undefined
+        : attribution && typeof attribution.connectionId === "string" ? attribution.connectionId
+          : unavailable?.reason === "ai_connection_unavailable" && typeof unavailable.connectionId === "string"
+            ? await repairableAiConnectionId(run.companyId, binding.provider, unavailable.connectionId) : undefined;
       if (!repairConnectionId) return requestWithContext(context, binding.provider, { purpose: "ai" });
-      // Serialise repair cards for one connection and recipient, so concurrent
-      // failures across agents and tasks raise exactly one card.
-      return db.transaction(async (tx) => {
-        await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`ai-repair-card:${run.companyId}:${run.responsibleUserId}:${binding.provider}:${repairConnectionId}`}, 0))`);
-        return connectionIntentService(tx as unknown as Db).requestSharedAiRepair(context, binding.provider, repairConnectionId);
-      });
+      return lockedSharedAiRepair(context, binding.provider, repairConnectionId);
+    },
+    /**
+     * Internal: runtime setup rejected the agent's selected AI connection
+     * (for example, it needs sign-in again). Join that connection's shared
+     * repair card instead of raising one card per task. The connection must
+     * be this company's AI connection for the same provider; otherwise the
+     * ordinary per-task request applies.
+     */
+    requestForUnavailableAiConnection: async (claims: ConnectionRunClaims, provider: string, connectionId: string) => {
+      const context = await loadRunContext(claims);
+      const repairConnectionId = await repairableAiConnectionId(context.run.companyId, provider, connectionId);
+      if (!repairConnectionId) return requestWithContext(context, provider, { purpose: "ai" });
+      return lockedSharedAiRepair(context, provider, repairConnectionId);
     },
     loadIntent,
     setupOptions,
