@@ -130,6 +130,8 @@ export function providerDisplayName(provider: string): string {
     aws_bedrock: "AWS Bedrock",
     openai: "OpenAI",
     openrouter: "OpenRouter",
+    ollama: "Ollama",
+    "ollama-cloud": "Ollama Cloud",
     chatgpt: "ChatGPT",
     google: "Google",
     cursor: "Cursor",

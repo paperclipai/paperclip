@@ -507,6 +507,12 @@ indexes also serve the comment and delivery `on delete set null` actions. Issue
 lists share one external review-wait read per issue between the review and
 blocked-inbox attention maps.
 
+Migration 0476 builds `agent_wakeup_requests_company_run_idx` concurrently. It
+keys wake requests by company and `run_id`, partial on a non-null run. Queued-run
+dispatch finds the person wakes that joined or were adopted by each queued run
+through it, so the read is bounded by the queue size, not by the agent's wake
+history.
+
 Migration 0457 builds `heartbeat_runs_company_native_session_idx` concurrently.
 It keys runs by company and `native_session_id`, partial on a non-null session.
 Native retention, recovery, resume and archive reads find a session's runs
@@ -1088,6 +1094,18 @@ connection. This can help interactive requests that share a prepared-query pool
 with slow background work. It does not make the SQL itself faster. The default
 pipeline limit remains unchanged. Test transaction behavior before using this
 setting with a driver build that does not include the patch.
+
+The patch also releases a connection's receive buffer when the connection has
+read every message in it. Without this fix, an idle connection keeps the buffer
+of its last read until its next read: the socket chunk, or the whole buffer of
+its largest recent message. At 340 open connections that each read a 1 MB row,
+this held about 320 MB of `external` memory. The memory is outside the
+JavaScript heap. `packages/db/src/postgres-receive-buffer.test.ts` checks that
+the buffer is released. It also checks that results are reassembled correctly
+when socket chunks end exactly at message boundaries, when they split messages
+in the middle, and when the operating system chooses the chunks. Measure it with
+`pnpm --filter @paperclipai/db exec node --expose-gc --import tsx scripts/benchmark-postgres-receive-buffer.ts`
+(`CONNECTIONS` and `ROW_BYTES` are optional).
 
 Trusted-header actor synchronization retries transient connection failures,
 including `CONNECT_TIMEOUT`, at most twice. This retry applies only to the
@@ -2422,8 +2440,13 @@ the optional live environment FK uses SET NULL. Company/run deletion must not
 erase an outstanding remote-resource obligation.
 
 The unique company/environment/run/request index fences duplicate creation and
-ambiguous successful lease commits. Normal lease attachment and operation transfer
-share a transaction. Recovery transfers one claimed cleanup lease after provider
+ambiguous successful lease commits. Since migration 0475 it covers only operations
+that are not `resolved`. A later attempt for the same run and request that meets an
+`attached` operation whose lease is closed checks the same stop proof same-run
+recovery requires (a termination receipt for that sandbox, stored or derived from a
+destroyed reusable successor); with it, one transaction resolves the operation and
+records the replacement.
+Normal lease attachment and operation transfer share a transaction. Recovery transfers one claimed cleanup lease after provider
 ownership lookup. The pending deadline index drives the existing cleanup worker.
 `needs_reconciliation` is a durable manual outcome, not an automatic retry or an
 idle blocker. See [cleanup ownership](idle-environment-cleanup.md).
@@ -2492,6 +2515,14 @@ error carries a bounded message, keeps the SQLSTATE in `code` and the database
 error in `cause`, and is logged with both. A run that fails this way keeps the
 generic `adapter_failed` code, so existing retry paths apply, and records that
 bounded message with the SQLSTATE as its failure cause.
+
+Prompt-injection classifier admission also uses READ COMMITTED. Its company,
+project, configuration, agent, run and secret share locks retain the admission
+fences. Run status and execution identity are read under the run lock, so a
+concurrent run-event append cannot invalidate an earlier snapshot and discard
+a connector result before classification. The budget check, invocation and
+reservation still commit together. Classifier settlement keeps its separate
+repeatable-read transaction and receipt replay rules.
 
 Upgrade all controllers/workers to this accounting contract and drain incompatible
 pre-upgrade database transactions before enabling independent writers. Do not run

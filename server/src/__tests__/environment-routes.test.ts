@@ -2111,6 +2111,27 @@ describe("environment routes", () => {
     );
   });
 
+  it.each([undefined, true, false])("defaults new SSH API environments to managed auth while preserving explicit %s", async (useHostAuth) => {
+    const environment = { ...createEnvironment(), driver: "ssh" as const, config: createSshConfig() };
+    mockEnvironmentService.create.mockResolvedValue(environment);
+    const app = createApp(localBoardActor());
+    const res = await request(app).post("/api/companies/company-1/environments").send({
+      name: "SSH Fixture", driver: "ssh", config: { ...createSshConfig(), ...(useHostAuth === undefined ? {} : { useHostAuth }) },
+    });
+    expect(res.status).toBe(201);
+    expect(mockEnvironmentService.create.mock.calls[0]![0].config.useHostAuth).toBe(useHostAuth ?? false);
+  });
+
+  it("preserves absent authentication on an existing SSH API environment update", async () => {
+    const environment = { ...createEnvironment(), id: "env-ssh", driver: "ssh" as const, config: createSshConfig() };
+    mockEnvironmentService.getById.mockResolvedValue(environment);
+    mockEnvironmentService.update.mockResolvedValue(environment);
+    const app = createApp(localBoardActor());
+    const res = await request(app).patch("/api/environments/env-ssh").send({ config: { host: "changed.example.test" } });
+    expect(res.status).toBe(200);
+    expect(mockEnvironmentService.update.mock.calls[0]![1].config).not.toHaveProperty("useHostAuth");
+  });
+
   it("rejects invalid SSH config on create", async () => {
     const app = createApp(localBoardActor());
 

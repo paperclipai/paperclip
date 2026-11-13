@@ -95,7 +95,8 @@ The current issue model includes stable issue identifiers, parent/sub-issues, bl
 
 When an agent creates a subtask or follow-up task, its source task's feed shows
 a linked card at creation time with the current title, task number, and status.
-The Tasks tab keeps the full relationship list.
+The Tasks tab keeps the full relationship list and shows each task once. Project
+groups omit tasks already shown in the other sections and disappear when empty.
 
 Agent-owned tasks show **In Progress** only while a task-linked run is queued
 or running. When execution ends, their visible status reflects recovery
@@ -151,6 +152,12 @@ Task reply and new-task composers submit with Enter by default; Shift+Enter
 adds a new line. Settings → Experimental → **Command/Ctrl+Enter to Submit**
 restores the previous behavior, where Enter adds a new line and Command/Ctrl+Enter
 submits.
+
+New-task submission closes the composer immediately and saves in the background.
+The person can start another task while earlier requests are pending. A failed
+save restores its submitted draft and files. If another draft is open, it stays
+intact and offers a retry for the saved request. Each request retains its own
+creation key through retries and reloads.
 
 ### Routine responsibility
 
@@ -409,6 +416,25 @@ chat turn. Delivery obeys membership, run authority and task privacy. This versi
 in-app only.
 
 Coordinator is the standard workspace for everyone. Settings → Experimental offers a personal **Classic workspace** opt-in, off by default. Historical Coordinator experiment settings do not enable Classic. Agent Chat is available to everyone on new and existing instances. The retired `enableAgentChat` key remains accepted for compatibility; stored and managed off values are ignored. Each person has one persistent task-backed conversation per agent and company, with ordinary company task visibility. The shared task composer, transcript, tools, files, and document panel remain the interaction surface. Agents clarify goals and hand substantial execution to linked, assigned tasks; a reply ends a turn without completing the conversation. `/new` starts fresh provider context in the same conversation while preserving visible history and artifacts. Healthy idle conversations wait for a message and do not count as unfinished execution work. See `doc/plans/2026-09-10-agent-chat.md` for the implementation contract.
+
+### Slack task progress
+
+Slack threads reuse one editable progress message for each active run. Native
+runtimes with an explicit public progress channel can supply a short completed
+commentary note, up to 400 characters, plus a task link when a public board URL
+is configured. The server coalesces bursts, suppresses repeated text, allows a
+10-second initial grace period, and waits at least 30 seconds between updates.
+A pending note is recovered from run events and the publication outbox after a
+restart. Delivery receipts wake the progress owner; idle history does not poll.
+
+Reasoning, unknown assistant channels, raw tool output, and provider diagnostics
+cannot supply progress prose. Providers without a public channel retain factual
+lifecycle fallbacks. Questions, approvals, and final answers bypass the progress
+cooldown. Slack final answers use a fresh reply, so users can see completion
+without watching message edits. After the answer is sent, a generic working
+message changes to “Response sent.” A useful public note stays in place.
+Registered run secrets are redacted before progress text is saved or sent.
+Other connectors retain their delivery policy.
 
 ### Agent chat project handoff (2026-09-11)
 

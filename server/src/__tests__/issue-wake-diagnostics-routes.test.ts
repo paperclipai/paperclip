@@ -267,7 +267,11 @@ describeEmbeddedPostgres("issue wake diagnostics route", () => {
     expect(serialized).not.toContain("\"error\"");
   });
 
-  it.each(["chat_task_completed", "issue_execution_deferred"])("preserves the known %s reason without exposing completion payloads", async reason => {
+  it.each([
+    "chat_task_completed",
+    "issue_execution_deferred",
+    "execution_reconciliation_required",
+  ])("preserves the known %s reason without exposing completion payloads", async reason => {
     const company = await seedCompany(db);
     const agent = await seedAgent(db, company.id);
     const issue = await seedIssue(db, { companyId: company.id, title: "Completion target", assigneeAgentId: agent.id });

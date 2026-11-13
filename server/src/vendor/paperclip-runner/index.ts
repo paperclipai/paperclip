@@ -103,6 +103,9 @@ export const inspectUnclaimedBootstrapState = runner.inspectUnclaimedBootstrapSt
 export const RUNNER_PRP_PROTOCOL_MIN = runner.RUNNER_PRP_PROTOCOL_MIN;
 export const RUNNER_PRP_PROTOCOL_MAX = runner.RUNNER_PRP_PROTOCOL_MAX;
 export const runnerCodexDynamicToolsFit = runner.runnerCodexDynamicToolsFit;
+export const admitToolInputSchema = runner.admitToolInputSchema;
+export const TOOL_INPUT_SCHEMA_MAX_BYTES = runner.TOOL_INPUT_SCHEMA_MAX_BYTES;
+export const canonicalToolInputSchema = runner.canonicalToolInputSchema;
 export const inspectWarmRunTransition = runner.inspectWarmRunTransition;
 export const inspectStagedRunAttachment = runner.inspectStagedRunAttachment;
 export const inspectRetainedRunInstructions = runner.inspectRetainedRunInstructions;
@@ -124,6 +127,8 @@ export type SemanticInputAdmission = import("@paperclipai/paperclip-runner").Sem
 export const PaperclipSemanticDispatcher = runner.PaperclipSemanticDispatcher;
 export const CAPABILITY_SEMANTIC_TOOL_CATALOG =
   runner.CAPABILITY_SEMANTIC_TOOL_CATALOG;
+export const toolInputVariantError = runner.toolInputVariantError;
+export const providerToolSchemaShapeIssues = runner.providerToolSchemaShapeIssues;
 export const CAPABILITY_CANONICAL_OPERATIONS = runner.CAPABILITY_CANONICAL_OPERATIONS;
 export const HarnessRuntimeRequestResolutionError =
   runner.HarnessRuntimeRequestResolutionError;
@@ -228,6 +233,7 @@ export const digestPaperclipSemanticContent = runner.digestPaperclipSemanticCont
 export const CONFIGURED_ENVIRONMENT_KEYS = runner.CONFIGURED_ENVIRONMENT_KEYS;
 export const GENERATED_RUNTIME_ENVIRONMENT_KEYS = runner.GENERATED_RUNTIME_ENVIRONMENT_KEYS;
 export const configuredEnvironmentProjection = runner.configuredEnvironmentProjection;
+export const configuredSecretEnvironment = runner.configuredSecretEnvironment;
 export const configuredEnvironment = runner.configuredEnvironment;
 export const PROVIDER_CREDENTIAL_ENVIRONMENT_KEYS = runner.PROVIDER_CREDENTIAL_ENVIRONMENT_KEYS;
 

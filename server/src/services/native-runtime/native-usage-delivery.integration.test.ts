@@ -559,6 +559,43 @@ describe("producer-owned native usage", () => {
     expect((await read()).usageJson).toMatchObject({ accountingReceiptReady: true });
   });
 
+  it("names the run's first OpenRouter generation on the remote receipt and the final charge", async () => {
+    const input = { ...await seed(), provider: { kind: "opencode" as const, model: "test-model" } };
+    await db.update(heartbeatRuns).set({ runnerInstanceId: input.runnerInstanceId }).where(eq(heartbeatRuns.id, input.runId));
+    const named = (sequence: number, providerRequestId: string) => {
+      const value = event(input, sequence, "usage.reported");
+      Object.assign(value.payload as Record<string, unknown>, { providerRequestId, upstreamProvider: "Novita" });
+      return value;
+    };
+    const history = [event(input, 1, "turn.started"), named(2, "gen-first"), named(3, "gen-later"), event(input, 4, "turn.completed")];
+    let delivery = await createNativeUsageDelivery(db, input);
+    for (const value of history) await delivery.capture(value);
+    const receipts = await db.select().from(runUsageReceipts).where(eq(runUsageReceipts.runId, input.runId));
+    expect(receipts.map(row => (row.receiptJson as UsageReceiptEnvelope).producerEvent?.usage?.providerRequestId).filter(Boolean))
+      .toEqual(expect.arrayContaining(["gen-first", "gen-later"]));
+    delivery = await createNativeUsageDelivery(db, input);
+    for (const value of history) await delivery.capture(value);
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, input.runId));
+    expect(await accountRunCost(db, input.runId)).toBe(true);
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, input.runId));
+    expect(run.usageJson).toMatchObject({ providerRequestId: "gen-first" });
+    expect(await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, input.runId)))
+      .toEqual([expect.objectContaining({ providerRequestId: "gen-first", outputTokens: 10 })]);
+  });
+
+  it("replays a report saved before generation IDs existed when the Runner now names one", async () => {
+    const input = { ...await seed(), provider: { kind: "opencode" as const, model: "test-model" } };
+    await db.update(heartbeatRuns).set({ runnerInstanceId: input.runnerInstanceId }).where(eq(heartbeatRuns.id, input.runId));
+    const started = event(input, 1, "turn.started"), report = event(input, 2, "usage.reported"), done = event(input, 3, "turn.completed");
+    let delivery = await createNativeUsageDelivery(db, input);
+    for (const value of [started, report, done]) await delivery.capture(value);
+    (report.payload as Record<string, unknown>).providerRequestId = "gen-new";
+    delivery = await createNativeUsageDelivery(db, input);
+    for (const value of [started, report, done]) await delivery.capture(value);
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, input.runId));
+    expect(run.usageJson).toMatchObject({ accountingReceiptReady: true, outputTokens: 10 });
+  });
+
   describe("a turn restored mid-turn on a remote Runner", () => {
     const restoredSeed = async () => ({ ...await seed(), provider: { kind: "opencode" as const, model: "test-model" } });
     const partial = (input: Awaited<ReturnType<typeof restoredSeed>>, sequence: number) => {

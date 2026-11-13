@@ -2526,6 +2526,71 @@ it("does not accept process exit without durable suspension", async () => {
   ).resolves.toBe(false);
 });
 
+it("commits the Runner's exit only once its suspend command completes", async () => {
+  const commands: Array<{ commandId: string; type: string; status: string }> = [];
+  const order: string[] = [];
+  let lifecycle = "ready";
+  let pumps = 0;
+  const exitCommitted = vi.fn(() => { order.push(`exit committed after ${commands.length} attempts`); });
+  await expect(
+    runnerdRecoveryInternals.awaitRunnerSuspensionBarrier({
+      commands: () => commands,
+      queueSuspend: commandId => { commands.push({ commandId, type: "runner.suspend", status: "pending" }); },
+      readRunnerState: async () => {
+        order.push(`state ${lifecycle}`);
+        return { lifecycle };
+      },
+      runnerHasExited: async () => false,
+      pump: () => {
+        pumps += 1;
+        const pending = commands.find(command => command.status === "pending");
+        if (!pending) return;
+        // The first attempt is rejected; the retry stays pending for one
+        // round before the Runner reports it completed.
+        if (commands.length === 1) pending.status = "failed";
+        else if (pumps >= 4) { pending.status = "completed"; lifecycle = "suspended"; }
+      },
+      onExitCommitted: exitCommitted,
+      deadline: Date.now() + 2_000,
+      pollIntervalMs: 0,
+    }),
+  ).resolves.toBe(true);
+  expect(exitCommitted).toHaveBeenCalledOnce();
+  expect(order.indexOf("exit committed after 2 attempts")).toBeGreaterThan(order.indexOf("state ready"));
+  expect(order.at(-1)).toBe("state suspended");
+
+  // A reused completed receipt commits the exit only once the durable state
+  // proves the Runner is still suspended.
+  for (const [state, committed] of [["suspended", true], ["ready", false]] as const) {
+    const reusedCommitted = vi.fn();
+    await runnerdRecoveryInternals.awaitRunnerSuspensionBarrier({
+      commands: () => [{ commandId: "command_prior_suspend", type: "runner.suspend", status: "completed" }],
+      queueSuspend: () => undefined,
+      readRunnerState: async () => ({ lifecycle: state }),
+      runnerHasExited: async () => true,
+      pump: () => undefined,
+      onExitCommitted: reusedCommitted,
+      deadline: Date.now() + 20,
+      pollIntervalMs: 0,
+    });
+    expect(reusedCommitted).toHaveBeenCalledTimes(committed ? 1 : 0);
+  }
+
+  // A rejected or unanswered suspend never commits the exit.
+  const neverCommitted = vi.fn();
+  await expect(runnerdRecoveryInternals.awaitRunnerSuspensionBarrier({
+    commands: () => commands.slice(0, 0),
+    queueSuspend: () => undefined,
+    readRunnerState: async () => ({ lifecycle: "ready" }),
+    runnerHasExited: async () => false,
+    pump: () => undefined,
+    onExitCommitted: neverCommitted,
+    deadline: Date.now() + 20,
+    pollIntervalMs: 0,
+  })).resolves.toBe(false);
+  expect(neverCommitted).not.toHaveBeenCalled();
+});
+
 it("reserves a bounded suspension window after close preparation", () => {
   expect(runnerdRecoveryInternals.runnerCloseDeadlines(1_000, 10_000)).toEqual({
     preparationDeadline: 8_500,
@@ -3902,6 +3967,15 @@ it("keeps reported context-window occupancy on rehydrated usage", () => {
   }
 });
 
+it("keeps the serving host and generation id on rehydrated usage", () => {
+  const base = { cumulative: { inputTokens: 10 }, runDelta: { inputTokens: 3 }, runDeltaAvailable: true };
+  expect(rehydrateRunnerdUsageNotification({ ...base, upstreamProvider: "Novita", providerRequestId: "gen-1" }, "opened-thread-1", "active-turn-1").tokenUsage)
+    .toMatchObject({ upstreamProvider: "Novita", providerRequestId: "gen-1" });
+  const unnamed = rehydrateRunnerdUsageNotification({ ...base, providerRequestId: null }, "opened-thread-1", "active-turn-1").tokenUsage;
+  expect(unnamed).not.toHaveProperty("upstreamProvider");
+  expect(unnamed).not.toHaveProperty("providerRequestId");
+});
+
 it("rehydrates durable cumulative usage for a cold thread read", () => {
   expect(
     rehydrateRunnerdThreadTokenUsage({ inputTokens: 12, outputTokens: 3 }),
@@ -4603,7 +4677,7 @@ it("does not certify probe cleanup while owned credential preparation is unconfi
   }
 }, 15_000);
 
-it.each(["admission-only", "admission-only-mismatched-model", "complete", "api-key", "default-model", "mismatched-model", "model-refresh-error", "model-cleanup-error", "missing-model", "missing-runtime", "missing-completion", "late-bootstrap", "remote-complete", "remote-mismatched-model", "late-remote-preparation", "late-remote-release-error"] as const)("native Codex setup requires its daemon/app-server hello (%s)", async mode => {
+it.each(["admission-only", "admission-only-mismatched-model", "complete", "api-key", "default-model", "mismatched-model", "model-refresh-error", "model-cleanup-error", "missing-model", "missing-runtime", "missing-completion", "late-bootstrap", "remote-complete", "preconfigured", "remote-preconfigured", "remote-mismatched-model", "late-remote-preparation", "late-remote-release-error"] as const)("native Codex setup requires its daemon/app-server hello (%s)", async mode => {
   const root = await mkdtemp(join(tmpdir(), "runnerd-native-setup-"));
   const runtimeDirectory = join(root, "native-state");
   await mkdir(runtimeDirectory, { mode: 0o700 });
@@ -4612,6 +4686,8 @@ it.each(["admission-only", "admission-only-mismatched-model", "complete", "api-k
   await mkdir(sourceHome, { mode: 0o700 });
   await writeFile(join(sourceHome, "auth.json"), JSON.stringify({ OPENAI_API_KEY: mode === "api-key" ? "unrelated-login" : "selected-account" }), { mode: 0o600 });
   if (mode === "api-key") await writeFile(join(sourceHome, "config.toml"), 'model = "ambient-model"\n[mcp_servers.ambient]\ncommand = "untrusted-ambient-command"\n', { mode: 0o600 });
+  const preconfigured = mode.endsWith("preconfigured");
+  if (preconfigured) await writeFile(join(sourceHome, "config.toml"), 'model = "native-model"\n', { mode: 0o600 });
   const remote = mode.startsWith("remote-") || mode.startsWith("late-remote-");
   const remoteRoot = join(root, "assigned-remote-filesystem");
   const remoteFilesystem = join(remoteRoot, "filesystem");
@@ -4623,18 +4699,21 @@ it.each(["admission-only", "admission-only-mismatched-model", "complete", "api-k
     const probe = probeNativeRunnerEnvironment({
       runtimeDirectory, provider: "codex", model: mode === "default-model" ? null : "gpt-6.1-sol", reasoningEffort: "low",
       ...(mode.startsWith("admission-only") ? { admissionOnly: true } : {}),
-      environment: { PATH: process.env.PATH, OPENAI_API_KEY: mode === "api-key" ? "selected-account" : "", HOME: "/unrelated/home" },
+      environment: { PATH: process.env.PATH, OPENAI_API_KEY: mode === "api-key" ? "selected-account" : "", HOME: preconfigured ? root : "/unrelated/home", ...(preconfigured ? { CODEX_HOME: sourceHome } : {}) },
       timeoutMs: mode.startsWith("late-remote-") ? 800 : mode === "late-bootstrap" ? 100 : mode === "missing-completion" ? 1_000 : 10_000,
       ...(remote ? { workingDirectory: remoteWorkspace } : {}),
       transportOptions: {
+        ...(preconfigured ? { homeMode: "preconfigured" as const } : {}),
         ...(remote ? {
           runnerFilesystemRoot: remoteFilesystem, runnerStateDirectory: join(remoteRoot, "runner"),
           readRunnerState: async () => JSON.parse(await readFile(join(remoteRoot, "runner", "runner-state.json"), "utf8")),
           controlPlaneRegistration: async authority => {
             await mkdir(remoteWorkspace, { recursive: true, mode: 0o700 });
+            if (!preconfigured) {
             const remoteHome = join(remoteFilesystem, "codex-home");
             await mkdir(remoteHome, { mode: 0o700 });
             for (const name of ["auth.json", "config.toml"] as const) await cp(join(runtimeDirectory, "codex-home", name), join(remoteHome, name));
+            }
             if (mode.startsWith("late-remote-")) await new Promise(resolve => setTimeout(resolve, 1000));
             await authority.start();
             return { connectUrl: authority.connectUrl, release: async () => { registrationReleased = true; await authority.stop(); if (mode === "late-remote-release-error") throw new Error("PRP registration release failed"); } };
@@ -4648,7 +4727,7 @@ it.each(["admission-only", "admission-only-mismatched-model", "complete", "api-k
           ...(mode === "late-bootstrap" ? ["--thread-start-delay-ms", "1000"] : [])),
         sourceCodexHome: sourceHome,
       },
-      onCodexCredentialRefresh: async filename => {
+      onCodexCredentialRefresh: preconfigured ? undefined : async filename => {
         expect(filename).toBe(join(remote ? remoteFilesystem : runtimeDirectory, "codex-home", "auth.json"));
         expect(JSON.parse(await readFile(filename, "utf8"))).toEqual({ OPENAI_API_KEY: "selected-account" });
         if (mode === "api-key") {
@@ -4660,16 +4739,21 @@ it.each(["admission-only", "admission-only-mismatched-model", "complete", "api-k
         if (mode === "model-refresh-error") throw new Error("credential refresh failed after the native model error");
       },
       onCleanupConfirmed: async () => {
+        if (preconfigured) {
+          await expect(stat(join(runtimeDirectory, "codex-home"))).rejects.toMatchObject({ code: "ENOENT" });
+          if (remote) await expect(stat(join(remoteFilesystem, "codex-home"))).rejects.toMatchObject({ code: "ENOENT" });
+        }
         cleanupConfirmed = true;
-        expect(refreshed || mode === "missing-runtime" || mode === "late-bootstrap" || mode.startsWith("late-remote-")).toBe(true);
+        expect(preconfigured || refreshed || mode === "missing-runtime" || mode === "late-bootstrap" || mode.startsWith("late-remote-")).toBe(true);
         if (mode === "model-cleanup-error") throw new Error("owned temporary state cleanup failed");
         await rm(runtimeDirectory, { recursive: true, force: true });
       },
     });
-    if (mode === "admission-only" || mode === "complete" || mode === "api-key" || mode === "default-model" || mode === "remote-complete") {
+    if (preconfigured || mode === "admission-only" || mode === "complete" || mode === "api-key" || mode === "default-model" || mode === "remote-complete") {
       const observedModel = mode === "default-model" ? "gpt-test" : "gpt-6.1-sol";
       await expect(probe).resolves.toEqual({ provider: "codex", providerDriver: "codex_app_server", effectiveModel: observedModel, ...(mode === "admission-only" ? { helloProbePassed: false, admissionOnly: true, sessionAdmissionPassed: true } : { helloProbePassed: true }) });
-      expect(refreshed).toBe(true);
+      expect(refreshed).toBe(!preconfigured);
+      if (preconfigured) expect(await readFile(join(sourceHome, "config.toml"), "utf8")).toBe('model = "native-model"\n');
       if (remote) expect(registrationReleased).toBe(true);
       expect(cleanupConfirmed).toBe(true);
       await expect(stat(runtimeDirectory)).rejects.toThrow();
@@ -6372,15 +6456,17 @@ it.each([
   }
 }, 30_000);
 
-it.each(["claude", "codex"] as const)("keeps the explicitly assigned gateway in the %s runner environment", (agent) => {
+it.each([
+  ["acpx", "claude"], ["acpx", "codex"], ["acpx", "pi"], ["acpx", "cursor"], ["acpx", "copilot"], ["acpx", "kimi"], ["opencode", undefined],
+] as const)("drops a previous-release gateway binding from the %s %s runner environment", (provider, agent) => {
   const gateway = {
     PAPERCLIP_NATIVE_MCP_NAME: "paperclip-assigned",
-    PAPERCLIP_NATIVE_MCP_URL: "http://127.0.0.1:3100/mcp/gateway",
+    PAPERCLIP_NATIVE_MCP_URL: "http://127.0.0.1:3100/mcp/gateways/previous-release",
     PAPERCLIP_NATIVE_MCP_TOKEN: "fixture-scoped-gateway-token-1234567890",
   };
   const environment = createCapabilityRunnerdProviderEnvironment({
-    provider: "acpx",
-    options: { provider: "acpx", acpxAgent: agent, environment: {
+    provider,
+    options: { provider, ...(agent ? { acpxAgent: agent } : {}), environment: {
       PATH: "/bin", ...gateway, PAPERCLIP_API_KEY: "must-not-cross", DATABASE_URL: "must-not-cross",
     } },
     identity: { runnerInstanceId: "runner-1", environmentLeaseId: "lease-1", runId: "run-1",
@@ -6388,7 +6474,9 @@ it.each(["claude", "codex"] as const)("keeps the explicitly assigned gateway in 
     codexHome: "/isolated/home", runtimeContextPath: "/isolated/context.json", hasRuntimeContext: true,
     acpxSidecarPath: "/verified/provider-pack/dist/cli/acpx-runtime-sidecar.cjs",
   });
-  expect(environment).toMatchObject(gateway);
+  for (const name of Object.keys(gateway)) expect(environment).not.toHaveProperty(name);
+  expect(JSON.stringify(environment)).not.toContain("fixture-scoped-gateway-token");
+  expect(JSON.stringify(environment)).not.toContain("previous-release");
   expect(environment.PAPERCLIP_API_KEY).toBeUndefined();
   expect(environment.DATABASE_URL).toBeUndefined();
 });

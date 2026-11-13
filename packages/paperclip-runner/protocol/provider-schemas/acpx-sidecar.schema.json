@@ -249,6 +249,10 @@
           "then": { "properties": { "payload": { "type": "object", "properties": { "cost": { "$ref": "#/$defs/usageCost" } } } } }
         },
         {
+          "if": { "properties": { "eventType": { "const": "runtime.turn_terminal" } } },
+          "then": { "properties": { "payload": { "type": "object", "properties": { "backgroundTasks": { "$ref": "#/$defs/backgroundTasks" } } } } }
+        },
+        {
           "if": { "properties": { "eventType": { "const": "runtime.rich_event" } } },
           "then": {
             "properties": {
@@ -259,6 +263,15 @@
           }
         }
       ]
+    },
+    "backgroundTasks": {
+      "description": "Claude's live background tasks, carried on a completed runtime.turn_terminal payload and on a session.snapshot result taken with no active turn. The sidecar sends it only when it knows the count. An absent value means unknown, and runnerd then restarts the provider as before. runnerd keeps the provider between turns only for exactly {\"live\": 0}.",
+      "type": "object",
+      "properties": {
+        "live": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 }
+      },
+      "required": ["live"],
+      "additionalProperties": false
     },
     "usageCost": {
       "description": "Provider cost is session-cumulative unless basis explicitly identifies a complete turn total. A turn total is never a session counter.",

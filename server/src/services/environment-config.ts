@@ -38,6 +38,7 @@ const secretRefSchema = z.object({
 }).strict();
 
 const sshEnvironmentConfigSchema = z.object({
+  useHostAuth: z.boolean().optional(),
   host: z.string({ error: "SSH environments require a host." }).trim().min(1, "SSH environments require a host."),
   port: z.coerce.number().int().min(1).max(65535).default(22),
   username: z.string({ error: "SSH environments require a username." }).trim().min(1, "SSH environments require a username."),
@@ -545,6 +546,7 @@ export function normalizeEnvironmentConfigForProbe(input: {
 
 export async function normalizeEnvironmentConfigForPersistence(input: {
   db: Db;
+  operation?: "create" | "update";
   companyId: string;
   environmentName: string;
   driver: EnvironmentDriver;
@@ -583,6 +585,7 @@ export async function normalizeEnvironmentConfigForPersistence(input: {
     }
     return {
       ...stored,
+      ...(input.operation === "create" ? { useHostAuth: stored.useHostAuth ?? false } : {}),
       privateKey: null,
       privateKeySecretRef: nextPrivateKeySecretRef,
     } satisfies SshEnvironmentConfig;

@@ -2,7 +2,12 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { ServerProcessWindow } from "./multi-server.js";
 import { unshiftJson, unshiftMs, type AgingShift } from "./time-faults.js";
-import { createDb, type Db } from "../../packages/db/src/index.js";
+import { ISSUE_STATUSES } from "../../packages/shared/src/constants.js";
+import type { CompletionEvidence } from "./staging-mix.js";
+import { laterAnswers, type DeliveryRun, type DeliveryWake } from "./follow-up-delivery.js";
+import { AGENT_SLOTS_FILE, agentSlotsFromRows } from "./agent-slots.js";
+import { agents, createDb, type Db } from "../../packages/db/src/index.js";
+import { maxConcurrentRunsSql } from "../../server/src/services/heartbeat/timer-policy.js";
 
 type Row = Record<string, unknown>;
 
@@ -13,6 +18,12 @@ const ms = (value: unknown) => value === null || value === undefined ? null : Nu
 const text = (value: unknown) => value === null || value === undefined ? null : String(value);
 
 export const PROCESS_MATCH_SLACK_MS = 60_000;
+
+const STATUSES: ReadonlySet<string> = new Set(ISSUE_STATUSES);
+
+export function isIssueStatusTransition(row: Row): boolean {
+  return String(row.action ?? "").startsWith("issue.") && STATUSES.has(String(row.toStatus ?? "")) && (row.fromStatus == null || STATUSES.has(String(row.fromStatus)));
+}
 
 export function boundByProcessExit(controllers: readonly ControllerRow[], windows: readonly ServerProcessWindow[]): ControllerRow[] {
   return controllers.map(controller => {
@@ -51,6 +62,8 @@ export interface WakeEvidenceInput {
   statusChanges: readonly Row[];
   controllers: readonly ControllerRow[];
   windows: readonly ServerProcessWindow[];
+  issues?: readonly Row[];
+  agents?: readonly Row[];
 }
 
 export function wakeEvidenceForIssue(issueId: string, input: WakeEvidenceInput) {
@@ -61,12 +74,12 @@ export function wakeEvidenceForIssue(issueId: string, input: WakeEvidenceInput) 
   const controllerByBoot = new Map(controllers.map(controller => [controller.bootId, controller]));
   return {
     issueId,
+    completedAt: ms(input.issues?.find(issue => issue.id === issueId)?.completedAt),
     runs: runs.map(run => {
       const owner = controllerByBoot.get(String(run.controllerBootId ?? ""));
       return { runId: text(run.id), status: text(run.status), invocationSource: text(run.invocationSource), triggerDetail: text(run.triggerDetail),
         wakeupRequestId: text(run.wakeupRequestId), createdAt: ms(run.createdAt), startedAt: ms(run.startedAt), finishedAt: ms(run.finishedAt),
-        contextSnapshot: run.contextSnapshot ?? null,
-        owner: owner ? { pid: owner.pid, bootId: owner.bootId, epoch: owner.epoch, processSpace: owner.processSpace } : null,
+        acceptedDisposition: text(run.acceptedDisposition), acceptedAt: ms(run.acceptedAt), contextSnapshot: run.contextSnapshot ?? null,        owner: owner ? { pid: owner.pid, bootId: owner.bootId, epoch: owner.epoch, processSpace: owner.processSpace } : null,
         servingAtCreate: servingAt(ms(run.createdAt), controllers, input.windows) };
     }),
     wakes: wakes.map(wake => ({ id: text(wake.id), reason: text(wake.reason), source: text(wake.source), triggerDetail: text(wake.triggerDetail),
@@ -74,19 +87,26 @@ export function wakeEvidenceForIssue(issueId: string, input: WakeEvidenceInput) 
       status: text(wake.status), runId: text(wake.runId), payload: wake.payload ?? null, error: text(wake.error),
       createdAt: ms(wake.createdAt), requestedAt: ms(wake.requestedAt), claimedAt: ms(wake.claimedAt), finishedAt: ms(wake.finishedAt),
       servingAtCreate: servingAt(ms(wake.createdAt), controllers, input.windows) })),
-    statusChanges: input.statusChanges.filter(change => change.issueId === issueId).map(change => ({ at: ms(change.createdAt), action: text(change.action),
+    statusChanges: input.statusChanges.filter(change => change.issueId === issueId && isIssueStatusTransition(change)).map(change => ({ at: ms(change.createdAt), action: text(change.action),
       actorType: text(change.actorType), actorId: text(change.actorId), runId: text(change.runId), from: text(change.fromStatus), to: text(change.toStatus) })),
   };
 }
 
-async function readRows(db: Pick<Db, "$client">, companyId: string, shifts: readonly AgingShift[]): Promise<Omit<WakeEvidenceInput, "windows">> {
+async function readRows(db: Pick<Db, "$client" | "select">, companyId: string, shifts: readonly AgingShift[]): Promise<Omit<WakeEvidenceInput, "windows">> {
   const client = db.$client;
   const runs = await client.unsafe(
-    `select id::text as id, issue_id::text as "issueId", status, invocation_source as "invocationSource", trigger_detail as "triggerDetail",
-            wakeup_request_id::text as "wakeupRequestId", context_snapshot as "contextSnapshot", controller_boot_id::text as "controllerBootId",
-            floor(extract(epoch from created_at) * 1000) as "createdAt", floor(extract(epoch from started_at) * 1000) as "startedAt",
-            floor(extract(epoch from finished_at) * 1000) as "finishedAt"
-       from heartbeat_runs where company_id::text = $1 order by created_at`, [companyId]) as Row[];
+    `select r.id::text as id, r.agent_id::text as "agentId", r.issue_id::text as "issueId", r.status, r.invocation_source as "invocationSource", r.trigger_detail as "triggerDetail",
+            r.wakeup_request_id::text as "wakeupRequestId", r.context_snapshot as "contextSnapshot", r.controller_boot_id::text as "controllerBootId",
+            floor(extract(epoch from r.created_at) * 1000) as "createdAt", floor(extract(epoch from r.started_at) * 1000) as "startedAt",
+            floor(extract(epoch from r.finished_at) * 1000) as "finishedAt", accepted.disposition as "acceptedDisposition",
+            floor(extract(epoch from accepted.accepted_at) * 1000) as "acceptedAt"
+       from heartbeat_runs r
+       left join lateral (select coalesce(e.payload->'prpEvent'->'payload'->'result'->>'reportedWorkDisposition', e.payload->'result'->>'reportedWorkDisposition') as disposition, e.created_at as accepted_at
+                            from heartbeat_run_events e where e.run_id = r.id and e.event_type = 'run.result.accepted'
+                           order by e.seq desc limit 1) accepted on true
+      where r.company_id::text = $1 order by r.created_at`, [companyId]) as Row[];
+  const issues = await client.unsafe(
+    `select id::text as id, floor(extract(epoch from completed_at) * 1000) as "completedAt" from issues where company_id::text = $1`, [companyId]) as Row[];
   const wakes = await client.unsafe(
     `select id::text as id, payload->>'issueId' as "issueId", source, trigger_detail as "triggerDetail", reason, payload, status,
             requested_by_actor_type as "requestedByActorType", requested_by_actor_id as "requestedByActorId", idempotency_key as "idempotencyKey",
@@ -98,15 +118,19 @@ async function readRows(db: Pick<Db, "$client">, companyId: string, shifts: read
     `select entity_id as "issueId", action, actor_type as "actorType", actor_id as "actorId", run_id::text as "runId",
             coalesce(details->'_previous'->>'status', details->>'previousStatus') as "fromStatus", details->>'status' as "toStatus",
             floor(extract(epoch from created_at) * 1000) as "createdAt"
-       from activity_log where company_id::text = $1 and entity_type = 'issue'
-        and (details ? 'status' or details->'_previous' ? 'status' or details ? 'previousStatus') order by created_at`, [companyId]) as Row[];
+       from activity_log where company_id::text = $1 and entity_type = 'issue' and action like 'issue.%'
+        and details ? 'status' order by created_at`, [companyId]) as Row[];
+  const agentRows = (await db.select({ id: agents.id, companyId: agents.companyId, maxConcurrentRuns: maxConcurrentRunsSql() }).from(agents))
+    .filter(agent => agent.companyId === companyId) as Row[];
   const controllers = (await client.unsafe(
     `select boot_id as "bootId", epoch, process_space as "processSpace", pid, floor(extract(epoch from started_at) * 1000) as "startedAt",
             floor(extract(epoch from coalesce(stopped_at, fenced_at)) * 1000) as "endedAt" from controller_instances order by epoch`) as Row[])
     .map(row => ({ bootId: String(row.bootId), epoch: Number(row.epoch), processSpace: String(row.processSpace), pid: Number(row.pid),
       startedAt: Number(row.startedAt), endedAt: ms(row.endedAt) }));
   return {
-    runs: unshiftRows(runs, ["createdAt", "startedAt", "finishedAt"], ["contextSnapshot"], shifts),
+    runs: unshiftRows(runs, ["createdAt", "startedAt", "finishedAt", "acceptedAt"], ["contextSnapshot"], shifts),
+    issues: unshiftRows(issues, ["completedAt"], [], shifts),
+    agents: agentRows,
     wakes: unshiftRows(wakes, ["createdAt", "requestedAt", "claimedAt", "finishedAt"], ["payload"], shifts),
     statusChanges: unshiftRows(statusChanges, ["createdAt"], [], shifts),
     controllers: controllers.map(controller => ({ ...controller, startedAt: unshiftMs(controller.startedAt, shifts),
@@ -114,11 +138,11 @@ async function readRows(db: Pick<Db, "$client">, companyId: string, shifts: read
   };
 }
 
-export async function captureWakeEvidence(input: { db: Pick<Db, "$client">; companyId: string; waveDir: string;
-  observers: ReadonlyArray<{ plan: { taskId: string }; record: { issueId: string | null } }> | null; windows: readonly ServerProcessWindow[];
+export async function captureWakeEvidence(input: { db: Pick<Db, "$client" | "select">; companyId: string; waveDir: string;
+  observers: ReadonlyArray<EvidenceObserver> | null; windows: readonly ServerProcessWindow[];
   shifts?: readonly AgingShift[]; redact: (text: string) => string }): Promise<number> {
   const rows = await readRows(input.db, input.companyId, input.shifts ?? []);
-  const observers = input.observers ?? [...new Set(rows.runs.map(run => text(run.issueId)).filter((id): id is string => id !== null))]
+  const observers: readonly EvidenceObserver[] = input.observers ?? [...new Set(rows.runs.map(run => text(run.issueId)).filter((id): id is string => id !== null))]
     .map(issueId => ({ plan: { taskId: `issue-${issueId}` }, record: { issueId } }));
   const directory = path.join(input.waveDir, "wake-evidence");
   await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -127,17 +151,31 @@ export async function captureWakeEvidence(input: { db: Pick<Db, "$client">; comp
     if (!observer.record.issueId) continue;
     const evidence = { schema: "paperclip.restart-chaos.wake-evidence/v1", taskId: observer.plan.taskId,
       ...wakeEvidenceForIssue(observer.record.issueId, { ...rows, windows: input.windows }) };
+    if (observer.plan.stagingMix) (observer.record.stagingMix ??= {}).completion = completionEvidence(evidence);
     await writeFile(path.join(directory, `${observer.plan.taskId}.json`), input.redact(`${JSON.stringify(evidence, null, 2)}\n`), { mode: 0o600 });
     written += 1;
   }
   await writeFile(path.join(directory, "servers.json"), `${JSON.stringify({ controllers: rows.controllers, harnessWindows: input.windows }, null, 2)}\n`, { mode: 0o600 });
+  await writeFile(path.join(directory, AGENT_SLOTS_FILE), `${JSON.stringify(agentSlotsFromRows(rows.agents ?? [], rows.runs), null, 2)}\n`, { mode: 0o600 });
   return written;
 }
 
+export interface EvidenceObserver {
+  plan: { taskId: string; stagingMix?: unknown };
+  record: { issueId: string | null; stagingMix?: { completion?: CompletionEvidence } };
+}
+
+export function completionEvidence(evidence: { completedAt: number | null; wakes?: readonly DeliveryWake[];
+  runs: ReadonlyArray<DeliveryRun & { acceptedDisposition: string | null; acceptedAt: number | null }> }): CompletionEvidence {
+  const answers = laterAnswers(evidence);
+  return { completedAt: evidence.completedAt, runs: evidence.runs.map(run => ({ runId: run.runId, startedAt: run.startedAt ?? null,
+    acceptedDisposition: run.acceptedDisposition, acceptedAt: run.acceptedAt, answersFollowUp: Boolean(run.runId && answers.has(run.runId)) })) };
+}
+
 export function wakeEvidenceOnce(input: { databaseUrl: () => string; companyId: string; waveDir: string;
-  observers: () => ReadonlyArray<{ plan: { taskId: string }; record: { issueId: string | null } }>; windows: readonly ServerProcessWindow[];
+  observers: () => ReadonlyArray<EvidenceObserver>; windows: readonly ServerProcessWindow[];
   shifts: readonly AgingShift[]; redact: (text: string) => string; note: (kind: string, data: Record<string, unknown>) => void;
-  open?: (url: string) => Pick<Db, "$client"> }): () => Promise<void> {
+  open?: (url: string) => Pick<Db, "$client" | "select"> }): () => Promise<void> {
   let done: Promise<void> | null = null;
   return () => done ??= (async () => {
     let observers: ReturnType<typeof input.observers> | null = null;

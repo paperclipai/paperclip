@@ -64,7 +64,10 @@ vi.mock("@paperclipai/adapter-utils/execution-target", () => ({
   prepareAdapterExecutionTargetRuntime: (...args: unknown[]) =>
     (mocks.prepareRuntimeMock as (...args: unknown[]) => unknown)(...args),
   readAdapterExecutionTarget: (input: { executionTarget?: unknown }) => input.executionTarget ??
-    (mocks.state.isRemote ? { kind: "remote", transport: "ssh" } : { kind: "local" }),
+    (mocks.state.isRemote ? { kind: "remote", transport: "ssh", remoteCwd: "/remote/workspace", spec: {
+      host: "fixture.invalid", port: 22, username: "fixture", remoteCwd: "/remote/workspace", remoteWorkspacePath: "/remote/workspace",
+      privateKey: null, knownHosts: null, strictHostKeyChecking: true,
+    } } : { kind: "local" }),
   resolveAdapterExecutionTargetCommandForLogs: (...args: unknown[]) =>
     (mocks.resolveCommandForLogsMock as (...args: unknown[]) => unknown)(...args),
   resolveAdapterExecutionTargetTimeoutSec: (_target: unknown, timeoutSec: number) => timeoutSec,

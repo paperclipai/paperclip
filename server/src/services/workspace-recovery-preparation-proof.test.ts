@@ -144,8 +144,10 @@ describe("automatic retained workspace recovery", () => {
     await db.insert(environmentLeases).values({ companyId: f.companyId, heartbeatRunId: f.runId, issueId: f.issueId,
       provider: "local", providerLeaseId: state === "provider_handle" ? randomUUID() : null,
       status: state === "active" ? "active" : "released", releasedAt: new Date(), cleanupStatus: "success" });
+    // The answer names the refusal instead of reporting an accepted Retry.
     const receipt = (await request(boardRecoveryApp()).post(`/api/issues/${f.issueId}/retry`)
-      .send({ observedRunId: f.runId, idempotencyKey: randomUUID() }).expect(202)).body;
+      .send({ observedRunId: f.runId, idempotencyKey: randomUUID() }).expect(200)).body;
+    expect(receipt).toMatchObject({ accepted: false, refused: { reason: expect.any(String), message: expect.any(String) } });
     await heartbeatService(db).resumeTaskRetry(f.companyId, receipt.requestId);
     expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
       sql`${heartbeatRuns.contextSnapshot}->>'taskRetryRequestId' = ${receipt.requestId}`))).toHaveLength(0);

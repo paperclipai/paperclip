@@ -37,7 +37,7 @@ import { cp, mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pipeline } from "node:stream/promises";
-import { and, eq, inArray, not, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import {
   environmentLeases,
   heartbeatRuns,
@@ -62,6 +62,49 @@ import {
   type ProviderPackIdentity,
 } from "./remote-provider-pack-verification.js";
 import { hasRemoteTerminationReceipt } from "../remote-execution-termination.js";
+
+export const nativeProviderArtifactTransferBounds = {
+  minimumBytesPerSecond: 256 * 1024,
+  minimumStepMs: 120_000,
+};
+
+export class NativeProviderArtifactTransferTimeoutError extends Error {
+  readonly code = "native_provider_artifacts_transfer_timeout";
+  constructor(readonly step: "upload" | "download", readonly limitMs: number, readonly byteSize: number) {
+    super(`native_provider_artifacts_transfer_timeout: the ${step} of ${byteSize} bytes did not finish within ${Math.ceil(limitMs / 1000)} s`);
+    this.name = "NativeProviderArtifactTransferTimeoutError";
+  }
+}
+
+export function nativeProviderArtifactTransferLimitMs(byteSize: number) {
+  return Math.max(
+    nativeProviderArtifactTransferBounds.minimumStepMs,
+    Math.ceil((byteSize / nativeProviderArtifactTransferBounds.minimumBytesPerSecond) * 1000),
+  );
+}
+
+async function boundedTransfer<T>(
+  step: "upload" | "download",
+  byteSize: number,
+  signal: AbortSignal | undefined,
+  transfer: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const limitMs = nativeProviderArtifactTransferLimitMs(byteSize);
+  const expired = new AbortController();
+  const timer = setTimeout(
+    () => expired.abort(new NativeProviderArtifactTransferTimeoutError(step, limitMs, byteSize)),
+    limitMs,
+  );
+  timer.unref?.();
+  try {
+    return await transfer(signal ? AbortSignal.any([signal, expired.signal]) : expired.signal);
+  } catch (error) {
+    if (expired.signal.aborted && !signal?.aborted) throw expired.signal.reason;
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 async function recordRunReceipt(
   tx: Parameters<Parameters<Db["transaction"]>[0]>[0],
@@ -291,7 +334,7 @@ export async function retainNativeProviderArtifacts(input: {
           .returning({ id: nativeProviderArtifacts.id });
         if (!owned) fail("owner_changed");
       });
-      await input.storage.putFile({
+      await boundedTransfer("upload", reference.byteSize, input.signal, signal => input.storage.putFile({
         companyId: input.owner.companyId,
         namespace: "native-provider-artifacts",
         objectKey: reference.objectKey,
@@ -302,14 +345,14 @@ export async function retainNativeProviderArtifacts(input: {
         sha256: reference.sha256.slice(7),
         // A file source can be resent after a request-rate limit; a stream cannot.
         sourceFile: encrypted,
-        signal: input.signal,
-      });
-      await receive(
+        signal,
+      }));
+      await boundedTransfer("download", reference.byteSize, input.signal, signal => receive(
         input.storage,
         reference,
         join(scratch, "verified"),
-        input.signal,
-      );
+        signal,
+      ));
       const published = await input.db.transaction(async (tx) => {
         await artifactOwnerFence(tx, input.owner, input.source.manifest);
         await tx.execute(
@@ -411,6 +454,82 @@ export async function retainNativeProviderArtifacts(input: {
     key.fill(0);
     await rm(scratch, { recursive: true, force: true });
   }
+}
+
+export const READY_NATIVE_PROVIDER_ARTIFACT_CANDIDATE_LIMIT = 4;
+
+export async function readyNativeProviderArtifactCandidates(
+  tx: Pick<Db, "select">,
+  companyId: string,
+  manifest: ProviderPackIdentity,
+) {
+  const entries = names.map((name) => {
+    const artifact = manifest.payload.artifacts[name];
+    return artifact ? { name, path: artifact.path, sha256: artifact.sha256 } : null;
+  });
+  if (entries.some((entry) => entry === null)) return [];
+  const probe = JSON.stringify({ schema, target: manifest.payload.target, entries });
+  return tx
+    .select({
+      id: nativeProviderArtifacts.id,
+      closureDigest: nativeProviderArtifacts.closureDigest,
+      descriptor: nativeProviderArtifacts.descriptor,
+    })
+    .from(nativeProviderArtifacts)
+    .where(
+      and(
+        eq(nativeProviderArtifacts.companyId, companyId),
+        eq(nativeProviderArtifacts.status, "ready"),
+        sql`${nativeProviderArtifacts.reference} is not null`,
+        sql`${nativeProviderArtifacts.descriptor} @> ${probe}::jsonb`,
+      ),
+    )
+    .orderBy(desc(nativeProviderArtifacts.updatedAt))
+    .limit(READY_NATIVE_PROVIDER_ARTIFACT_CANDIDATE_LIMIT);
+}
+
+export async function retainReadyNativeProviderArtifacts(input: {
+  db: Db;
+  owner: NativeRunnerCheckpointFenceOwner;
+  manifest: ProviderPackIdentity;
+  launchRoot: string;
+  accountUid: number;
+}): Promise<NativeProviderArtifactReceipt | null> {
+  manifestIdentity(input.manifest);
+  launchRootIdentity(input.launchRoot, input.manifest, input.accountUid);
+  const source = { sourceRoot: "", manifest: input.manifest, launchRoot: input.launchRoot, accountUid: input.accountUid };
+  return input.db.transaction(async (tx) => {
+    await artifactOwnerFence(tx, input.owner, input.manifest);
+    const rows = await readyNativeProviderArtifactCandidates(tx, input.owner.companyId, input.manifest);
+    for (const row of rows) {
+      const receipt = receiptFor(row.id, row.closureDigest, source);
+      try {
+        if (digest(canonicalProviderPackJson(row.descriptor)) !== row.closureDigest) continue;
+        descriptorIdentity(row.descriptor as Descriptor, receipt);
+      } catch {
+        continue;
+      }
+      const [locked] = await tx
+        .select({ id: nativeProviderArtifacts.id })
+        .from(nativeProviderArtifacts)
+        .where(
+          and(
+            eq(nativeProviderArtifacts.companyId, input.owner.companyId),
+            eq(nativeProviderArtifacts.id, row.id),
+            eq(nativeProviderArtifacts.status, "ready"),
+          ),
+        )
+        .for("update");
+      if (!locked) continue;
+      await tx
+        .insert(nativeProviderArtifactReferences)
+        .values({ companyId: input.owner.companyId, artifactId: row.id, runId: input.owner.runId })
+        .onConflictDoNothing();
+      await recordRunReceipt(tx, input.owner, receipt);
+      return receipt;
+    }
+    return null;
+  });
 }
 
 export async function retainExistingNativeProviderArtifacts(input: {
@@ -528,7 +647,8 @@ export async function restoreNativeProviderArtifacts(input: {
     const encrypted = join(scratch, "encrypted"),
       archive = join(scratch, "archive"),
       restored = join(scratch, "restored");
-    await receive(input.storage, reference, encrypted, input.signal);
+    await boundedTransfer("download", reference.byteSize, input.signal, signal =>
+      receive(input.storage, reference, encrypted, signal));
     const decipher = createDecipheriv(
       "aes-256-gcm",
       key,

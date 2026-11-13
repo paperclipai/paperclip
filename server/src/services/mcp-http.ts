@@ -1,4 +1,4 @@
-import { MCP_APPS_CLIENT_CAPABILITY } from "@paperclipai/shared";
+import { MCP_APPS_CLIENT_CAPABILITY, MCP_SKILLS_CLIENT_CAPABILITY } from "@paperclipai/shared";
 import { createHash } from "node:crypto";
 import { markMcpHttpResponseFailure, retainMcpConnectionFailure, withMcpConnectionFailure } from "./mcp-connection-failure.js";
 // Helpers for talking to remote MCP servers over the Streamable HTTP transport.
@@ -32,6 +32,10 @@ export const MCP_ERROR_MISSING_CLIENT_CAPABILITY = -32021;
 export const MCP_ERROR_UNSUPPORTED_PROTOCOL_VERSION = -32022;
 const MODERN_ERROR_CODES = new Set([MCP_ERROR_HEADER_MISMATCH, MCP_ERROR_MISSING_CLIENT_CAPABILITY, MCP_ERROR_UNSUPPORTED_PROTOCOL_VERSION]);
 
+/** MCP Tasks extension; see mcp-tasks.ts. Kept here so request building has no import cycle. */
+export const MCP_TASKS_EXTENSION_ID = "io.modelcontextprotocol/tasks";
+const MCP_TASK_METHODS = new Set(["tasks/get", "tasks/update", "tasks/cancel"]);
+
 const META_PROTOCOL_VERSION = "io.modelcontextprotocol/protocolVersion";
 const META_CLIENT_CAPABILITIES = "io.modelcontextprotocol/clientCapabilities";
 const META_CLIENT_INFO = "io.modelcontextprotocol/clientInfo";
@@ -50,9 +54,15 @@ export function isModernMcpProtocolVersion(version: unknown): version is string 
  * they may then return URL input requests, which Paperclip shows as a link.
  * Legacy sessions keep the handshake capabilities they have always received.
  */
-export function mcpClientCapabilities(protocolVersion: string): Record<string, unknown> {
+export function mcpClientCapabilities(protocolVersion: string, options: { declareTasks?: boolean } = {}): Record<string, unknown> {
+  // The skills and tasks extensions are defined against stateless MCP only.
+  // Tasks are declared only where Paperclip can wait on one: a provider tool
+  // call over HTTP and the task requests themselves (spec: per request).
   return isModernMcpProtocolVersion(protocolVersion)
-    ? { elicitation: { url: {} }, extensions: MCP_APPS_CLIENT_CAPABILITY }
+    ? { elicitation: { url: {} }, extensions: {
+        ...MCP_APPS_CLIENT_CAPABILITY, ...MCP_SKILLS_CLIENT_CAPABILITY,
+        ...(options.declareTasks ? { [MCP_TASKS_EXTENSION_ID]: {} } : {}),
+      } }
     : { extensions: MCP_APPS_CLIENT_CAPABILITY };
 }
 
@@ -190,7 +200,7 @@ export type McpJsonRpcRequest = { id?: string | number; method: string; params?:
 export function mcpHttpRequestInit(
   headers: Record<string, string> | undefined,
   message: McpJsonRpcRequest,
-  options: { toolInputSchema?: unknown } = {},
+  options: { toolInputSchema?: unknown; declareTasks?: boolean } = {},
 ): { method: "POST"; headers: Record<string, string>; body: string } {
   const requestHeaders = mcpHttpRequestHeaders(headers);
   const protocolVersion = mcpProtocolVersionOf(headers);
@@ -201,7 +211,7 @@ export function mcpHttpRequestInit(
       _meta: {
         ...record(params._meta),
         [META_PROTOCOL_VERSION]: protocolVersion,
-        [META_CLIENT_CAPABILITIES]: mcpClientCapabilities(protocolVersion),
+        [META_CLIENT_CAPABILITIES]: mcpClientCapabilities(protocolVersion, { declareTasks: options.declareTasks }),
         [META_CLIENT_INFO]: MCP_CLIENT_INFO,
       },
     };
@@ -209,7 +219,8 @@ export function mcpHttpRequestInit(
   for (const key of Object.keys(requestHeaders)) if (key.toLowerCase().startsWith("mcp-param-")) delete requestHeaders[key];
   setHeader(requestHeaders, "Mcp-Method", message.method);
   const name = message.method === "resources/read" ? params.uri
-    : message.method === "tools/call" || message.method === "prompts/get" ? params.name : undefined;
+    : message.method === "tools/call" || message.method === "prompts/get" ? params.name
+      : MCP_TASK_METHODS.has(message.method) ? params.taskId : undefined;
   if (typeof name === "string") setHeader(requestHeaders, "Mcp-Name", encodeMcpHeaderValue(name));
   else for (const key of Object.keys(requestHeaders)) if (key.toLowerCase() === "mcp-name") delete requestHeaders[key];
   if (message.method === "tools/call" && options.toolInputSchema !== undefined) {
@@ -383,6 +394,40 @@ export function knownMcpProtocolVersion(eraKey: string): string | null {
 
 export function forgetMcpProtocolVersion(eraKey: string) {
   eras.delete(eraKey);
+  serverCapabilities.delete(eraKey);
+}
+
+// Which extensions a stateless server declared in `server/discover`, kept
+// beside its era so a catalog refresh can tell whether the server serves skills
+// without asking again. Only the extension names are kept, never the payload,
+// so each entry is small and bounded however large the server's answer is.
+const MAX_REMEMBERED_EXTENSIONS = 32;
+const MAX_EXTENSION_ID_LENGTH = 128;
+const serverCapabilities = new Map<string, { capabilities: Record<string, unknown>; expiresAt: number }>();
+
+export function rememberMcpServerCapabilities(eraKey: string, capabilities: Record<string, unknown>) {
+  const declared = Object.keys(record(capabilities.extensions) ?? {})
+    .filter((id) => id.length <= MAX_EXTENSION_ID_LENGTH)
+    .slice(0, MAX_REMEMBERED_EXTENSIONS);
+  for (const [key, value] of serverCapabilities) if (value.expiresAt <= Date.now()) serverCapabilities.delete(key);
+  if (serverCapabilities.size >= 2000) serverCapabilities.delete(serverCapabilities.keys().next().value!);
+  serverCapabilities.set(eraKey, {
+    capabilities: { extensions: Object.fromEntries(declared.map((id) => [id, {}])) },
+    expiresAt: Date.now() + ERA_TTL_MS,
+  });
+}
+
+/** The extensions a stateless server last declared (`{extensions: {id: {}}}`), or null when not known in this process. */
+export function knownMcpServerCapabilities(eraKey: string): Record<string, unknown> | null {
+  const cached = serverCapabilities.get(eraKey);
+  if (!cached || cached.expiresAt <= Date.now()) return null;
+  return cached.capabilities;
+}
+
+/** Whether advertised capabilities declare an MCP extension. */
+export function mcpServerDeclaresExtension(capabilities: Record<string, unknown> | null, extensionId: string): Record<string, unknown> | null {
+  const extensions = record(capabilities?.extensions);
+  return record(extensions?.[extensionId]);
 }
 
 type McpInitializeInput = {
@@ -393,7 +438,7 @@ type McpInitializeInput = {
   eraKey?: string;
 };
 
-type DiscoverOutcome = { protocolVersion: string } | { legacy: true };
+type DiscoverOutcome = { protocolVersion: string; capabilities?: Record<string, unknown> } | { legacy: true };
 
 /**
  * Ask the server which versions it supports (`server/discover`). A modern
@@ -433,7 +478,8 @@ async function discoverMcpProtocol(input: McpInitializeInput): Promise<DiscoverO
   if (result && Array.isArray(result.supportedVersions)) {
     const selected = selectMcpProtocolVersion(result.supportedVersions);
     if (!selected) throw new McpHttpInitializationError("This app uses an MCP version Paperclip does not support yet.", "initialize", response.status);
-    return { protocolVersion: selected };
+    const capabilities = record(result.capabilities);
+    return { protocolVersion: selected, ...(capabilities ? { capabilities } : {}) };
   }
   const modernError = mcpModernErrorOf(payload);
   if (modernError) {
@@ -483,6 +529,7 @@ export async function negotiateMcpProtocolVersion(input: McpInitializeInput): Pr
   const outcome = await discoverMcpProtocol(input);
   const protocolVersion = "protocolVersion" in outcome ? outcome.protocolVersion : MCP_PROTOCOL_VERSION;
   if (input.eraKey) rememberMcpProtocolVersion(input.eraKey, protocolVersion);
+  if (input.eraKey && "capabilities" in outcome && outcome.capabilities) rememberMcpServerCapabilities(input.eraKey, outcome.capabilities);
   return protocolVersion;
 }
 

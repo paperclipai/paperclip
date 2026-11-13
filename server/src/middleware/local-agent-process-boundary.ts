@@ -37,8 +37,10 @@ export interface LocalProcessInfo {
   environment: Map<string, string>;
 }
 
+export type LocalPeerOwner = number | null | "unsupported" | { candidates: number[] };
+
 export interface LocalProcessInspector {
-  findPeerPids(sockets: readonly LocalPeerEndpoints[]): Promise<(number | null | "unsupported")[] | "unsupported">;
+  findPeerPids(sockets: readonly LocalPeerEndpoints[]): Promise<LocalPeerOwner[] | "unsupported">;
   ancestries(pids: readonly number[], stopAt: ReadonlySet<number>): Promise<Map<number, LocalProcessInfo[] | null>>;
   ancestorPids(pid: number): Promise<number[] | null>;
 }
@@ -73,11 +75,11 @@ function decodeProcNetAddress(hex: string): string | null {
   return groups.join(":");
 }
 
-export function findSocketInodeInProcNet(
+export function findSocketInProcNet(
   table: string,
   peer: { address: string; port: number },
   server: { address: string; port: number },
-): string | null {
+): { inode: string; uid: number } | null {
   for (const line of table.split("\n").slice(1)) {
     const fields = line.trim().split(/\s+/);
     if (fields.length < 10) continue;
@@ -87,7 +89,7 @@ export function findSocketInodeInProcNet(
     if (Number.parseInt(localPortHex, 16) !== peer.port || Number.parseInt(remotePortHex, 16) !== server.port) continue;
     if (decodeProcNetAddress(localHex) !== peer.address || decodeProcNetAddress(remoteHex) !== server.address) continue;
     const inode = fields[9];
-    if (inode && inode !== "0") return inode;
+    if (inode && inode !== "0") return { inode, uid: Number(fields[7]) };
   }
   return null;
 }
@@ -141,6 +143,22 @@ async function ownedByServerUser(pid: string): Promise<boolean> {
   return realUid !== undefined && Number(realUid) === process.getuid?.();
 }
 
+async function readProcNetTables(): Promise<string[] | null> {
+  const tables = await Promise.all(["/proc/net/tcp", "/proc/net/tcp6"].map((file) =>
+    readFile(file, "utf8").catch(() => null)));
+  const readable = tables.filter((table): table is string => table !== null);
+  return readable.length ? readable : null;
+}
+
+function findSocketInTables(tables: readonly string[], socket: LocalPeerEndpoints) {
+  const { peer, server } = endpoints(socket);
+  for (const table of tables) {
+    const found = findSocketInProcNet(table, peer, server);
+    if (found) return found;
+  }
+  return null;
+}
+
 function endpoints(socket: LocalPeerEndpoints) {
   return {
     peer: { address: normalizeLoopbackAddress(socket.remoteAddress), port: socket.remotePort },
@@ -165,25 +183,19 @@ async function linuxProcessInfo(pid: number): Promise<LocalProcessInfo | null> {
 
 const linuxInspector: LocalProcessInspector = {
   async findPeerPids(sockets) {
-    const tables = await Promise.all(["/proc/net/tcp", "/proc/net/tcp6"].map((file) =>
-      readFile(file, "utf8").catch(() => null)));
-    if (tables.every((table) => table === null)) return "unsupported";
-    const inodes = sockets.map((socket) => {
-      const { peer, server } = endpoints(socket);
-      return tables.map((table) => table ? findSocketInodeInProcNet(table, peer, server) : null)
-        .find((value) => value !== null) ?? null;
-    });
-    const wanted = new Map<string, number>();
-    for (const inode of inodes) if (inode) wanted.set(`socket:[${inode}]`, 0);
+    const tables = await readProcNetTables();
+    if (!tables) return "unsupported";
+    const found = sockets.map((socket) => findSocketInTables(tables, socket));
+    const wanted = new Set(found.flatMap((entry) => entry ? [`socket:[${entry.inode}]`] : []));
     const owners = new Map<string, number>();
-    let unreadable = false;
+    const hidden: number[] = [];
     if (wanted.size) {
       const others = (await readdir("/proc").catch(() => [] as string[]))
         .filter((entry) => /^\d+$/.test(entry) && Number(entry) !== process.pid);
       for (const pid of [String(process.pid), ...others]) {
         if (owners.size === wanted.size) break;
         const fds = await readdir(`/proc/${pid}/fd`).catch(async (error: NodeJS.ErrnoException) => {
-          if ((error.code === "EACCES" || error.code === "EPERM") && await ownedByServerUser(pid)) unreadable = true;
+          if ((error.code === "EACCES" || error.code === "EPERM") && await ownedByServerUser(pid)) hidden.push(Number(pid));
           return [] as string[];
         });
         for (const fd of fds) {
@@ -192,9 +204,15 @@ const linuxInspector: LocalProcessInspector = {
         }
       }
     }
-    return inodes.map((inode) => {
-      if (!inode) return null;
-      return owners.get(`socket:[${inode}]`) ?? (unreadable ? "unsupported" : null);
+    const unowned = found.some((entry) => entry && !owners.has(`socket:[${entry.inode}]`));
+    const after = unowned && hidden.length ? await readProcNetTables() : null;
+    return found.map((entry, index): LocalPeerOwner => {
+      if (!entry) return null;
+      const owner = owners.get(`socket:[${entry.inode}]`);
+      if (owner !== undefined) return owner;
+      const current = after ? findSocketInTables(after, sockets[index]!) : null;
+      if (!current || current.inode !== entry.inode || entry.uid !== process.getuid?.()) return null;
+      return { candidates: hidden };
     });
   },
   async ancestorPids(pid) {
@@ -353,18 +371,23 @@ export function createLocalAgentProcessBoundary(options: LocalAgentProcessBounda
 
   async function classifyBatch(sockets: readonly LocalPeerEndpoints[]): Promise<LocalPeerClassification[]> {
     if (!inspector) return sockets.map(() => "unsupported");
-    const peerPids = await inspector.findPeerPids(sockets);
-    if (peerPids === "unsupported") return sockets.map(() => "unsupported");
+    const owners = await inspector.findPeerPids(sockets);
+    if (owners === "unsupported") return sockets.map(() => "unsupported");
     const stopAt = await stopSet();
-    const outside = [...new Set(peerPids.filter((pid): pid is number => typeof pid === "number" && !stopAt.has(pid)))];
+    const pids = owners.flatMap((owner) =>
+      typeof owner === "number" ? [owner] : owner !== null && typeof owner === "object" ? owner.candidates : []);
+    const outside = [...new Set(pids.filter((pid) => !stopAt.has(pid)))];
     const chains = outside.length ? await inspector.ancestries(outside, stopAt) : new Map<number, LocalProcessInfo[] | null>();
-    return peerPids.map((pid): LocalPeerClassification => {
-      if (pid === "unsupported") return "unsupported";
-      if (pid === null) return "agent_run";
-      if (stopAt.has(pid)) return "operator";
+    const operatorPid = (pid: number, minimumChain: number) => {
+      if (stopAt.has(pid)) return true;
       const chain = chains.get(pid);
-      if (!chain) return "agent_run";
-      return chainBelongsToAgentRun(chain, serverEnvironment) ? "agent_run" : "operator";
+      return Boolean(chain) && chain!.length >= minimumChain && !chainBelongsToAgentRun(chain!, serverEnvironment);
+    };
+    return owners.map((owner): LocalPeerClassification => {
+      if (owner === "unsupported") return "unsupported";
+      if (owner === null) return "agent_run";
+      if (typeof owner === "number") return operatorPid(owner, 0) ? "operator" : "agent_run";
+      return owner.candidates.length && owner.candidates.every((pid) => operatorPid(pid, 2)) ? "operator" : "agent_run";
     });
   }
 

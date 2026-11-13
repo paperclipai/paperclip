@@ -148,6 +148,10 @@ GitHub Actions owns every managed pnpm lockfile:
   each lockfile with `pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile`
   and opens one `chore/refresh-lockfile` pull request for all of them. See
   `doc/RELEASE-AUTOMATION-SETUP.md` for when the bot merges it.
+- A local `docker build` installs the Runner with a frozen lockfile. When the
+  root `pnpm-lock.yaml` is behind the Runner's manifests, run that same command
+  in the checkout before the build, and do not commit the result. See "Runner
+  image" in `doc/DOCKER.md`.
 
 The Pi and Kimi distribution lockfiles under `packages/paperclip-runner/scripts/`
 are not on this list. They hold attested provider pins, so change them by hand
@@ -187,14 +191,21 @@ AWS fleet. A stale admission roster can allocate only the short metadata gate;
 the fresh CODEOWNERS check still denies PR execution for a removed owner.
 
 AWS runners are sometimes lost mid-job. `ci-runner-loss-rerun.yml` re-runs the
-failed jobs of a PR's first CI attempt once when every failed job lost its
-runner. A lost runner is recognized by the check-run annotation "lost
-communication with the server" or "received a shutdown signal". When the only
-annotation is "The operation was canceled.", the job log is checked for the
-same messages. The `verify` and `e2e` aggregates are not counted. Any other
-failure, a failed routing gate, or a PR whose head has moved prevents the
-automatic re-run. The workflow job summary lists each failed job and its
-evidence. Like a maintainer's "Re-run failed jobs", the re-run reuses the
+failed jobs of a PR's first CI attempt once when every failed or cancelled job
+lost its runner. A spot reclaim often ends the job, and the run, as
+`cancelled`. A lost runner is recognized by the check-run annotation "lost
+communication with the server" or "received a shutdown signal". When a job has
+the annotation "The operation was canceled.", the job log is checked for the
+same messages. This evidence counts even if the job also has other error
+annotations, so a test that really failed just before a reclaim gets one
+wasted re-run. A cancelled job without this evidence, such as a job a person
+cancelled, counts as a real failure. The `verify` and `e2e` aggregates are not
+counted. Any other failure, a failed or cancelled routing gate, or a PR whose
+head has moved prevents the automatic re-run. The head check runs before any
+job is classified, so a run cancelled by a newer push costs no log reads. It
+runs again just before the re-run, because a re-run of an old run joins the
+PR's `cancel-in-progress` concurrency group and would cancel the newer CI. The
+workflow job summary lists each failed or cancelled job and its evidence. Like a maintainer's "Re-run failed jobs", the re-run reuses the
 gate's successful outputs, including its AWS admission. Attempt 2's
 triggering actor is `github-actions[bot]`, so `profile-ci` does not export
 that attempt. Later attempts are never re-run automatically.
@@ -321,8 +332,16 @@ repository's complete history.
 
 Server test costs are recorded in CI with tests, hooks, collection, setup and
 environment preparation included. The weekly **Refresh CI test durations**
-workflow reads two successful protected-master Cloud readiness runs and opens a
-timing-only PR. It never executes code from logs, changes test selection rules,
+workflow opens a timing-only PR. It reads the general server weights from the
+`General tests (server)` jobs of the two newest successful `PR` runs of merged
+PRs, pinned to each PR's final head. Each run must have the full shard count in
+`.github/ci-task-matrix.json` and cover at least 90% of the lane, so a run that
+selected a few files does not count. These jobs run files three at a time, and
+their contention changes relative file costs. Measured against two other PR
+runs, Cloud readiness weights placed the slowest of 12 shards at 1,748-1,770 s of
+summed file time, against a 1,595 s mean; PR-run weights placed it at 1,684-1,702 s. The
+serialized weights still come from two successful protected-master Cloud
+readiness runs. It never executes code from logs, changes test selection rules,
 or grants AWS access. GitHub may require a maintainer to approve the bot PR's
 workflow runs; the refresh never merges itself. An outstanding refresh PR pauses
 new refreshes. Both timing manifests include source runs and measurement coverage.
@@ -428,8 +447,19 @@ recovery behavior for the same reason. Unsharded local tests and route/authz
 lanes retain their existing file concurrency. Maintenance server cases overlap
 two owned server/database fixtures within their file; an explicit shared
 maintenance database keeps them serial. Sharded chat jobs run
-two independent partitions, each with its own embedded PostgreSQL, home and
-config; an explicit shared test database retains one partition per job.
+three independent partitions, each with its own embedded PostgreSQL, home and
+config; an explicit shared test database retains one partition per job. The
+partitions keep each source line whole and balance by the recorded time in
+`scripts/chat-shard-durations.json`; entries without a record take the median.
+Collected-case counts were a poor proxy because one `it.each` line can run many
+cases: one of six count-balanced partitions recorded 532 s of test time against
+a 377 s mean. To refresh the weights, add the `profile-ci` label to a PR, download
+the `ci-profile-*` artifacts of its three chat jobs into one directory, and run
+`node scripts/ci/refresh-chat-shard-durations.mjs --source=<run URL> <directory>`.
+Stale weights change only the balance, never which tests run. A chat job
+collects the suite once, then validates its three partitions' filters at the
+same time; each partition still checks that its filters select exactly its
+assigned tests.
 The Runner transport lease-expiry and cold-admission regressions live in their
 own file so those real-clock waits overlap other files in the existing pool.
 
@@ -462,7 +492,8 @@ Changing that file selects its consumers. Generated/untracked files and unknown
 query loaders retain their consumers conservatively. Other filesystem, process
 and network effects keep their existing fallback.
 
-For a full wall-clock profile of all main PR CI jobs, add `profile-ci` to the PR.
+One in ten CI CODEOWNER PR runs sends its job, step and outside-check timings to
+Honeycomb. For a full wall-clock profile of all main PR CI jobs, add `profile-ci` to the PR.
 See [CI profiling](ci-profiling.md) for the Honeycomb waterfall, coverage,
 operator setup, and activation requirements.
 
@@ -1247,6 +1278,14 @@ graph, exact Vitest specifications, and stable test runner are shared with CI.
 Serialized server tests retain their owner. Native server tests remain in local
 coverage. Selected chat tests retain six sequential isolated line shards.
 
+When the change touches `packages/shared/src`, `packages/plugins/sdk/src`, or an
+SDK build input such as `pnpm-lock.yaml`, the command first checks the committed
+SDK public input pins (`tests/runner-e2e/source-sdk-public-inputs.json`) against
+the working tree. If they are stale it exits 1 and prints the refresh command:
+commit the change, run
+`node tests/runner-e2e/source-sdk-public-inputs.mjs $(git rev-parse HEAD) --write`,
+and commit the updated registry. Otherwise the Runner support suite fails in CI.
+
 Successful selected checks with complete input graphs are reusable in this
 worktree. Opaque filesystem, subprocess, network, generated/untracked-module, and
 unreviewed dependency consumers continue to run fresh. A selected pass never
@@ -1463,6 +1502,11 @@ The server typecheck builds only the Runner's TypeScript output. Use
 `pnpm --filter @paperclipai/paperclip-runner build` when a local check needs the
 Runner binary.
 
+`node server/scripts/typecheck-layers.mjs --layer <name>` checks one layer
+against the configs and declarations that an earlier `--declarations-only` run
+left in that directory. It does not write them again. Stale declarations pass
+silently, so use it only straight after `--declarations-only` on the same commit.
+
 If a compiler child terminates on a signal, the wrapper reports the signal,
 layer, command, and working directory on stderr, then stops with a nonzero exit.
 Compiler stdout and stderr remain visible. A signal such as `SIGKILL` alone does
@@ -1505,8 +1549,9 @@ available to the task is limited, add `--low-memory`, or set
 
 The command fails if a project loads server source, because that is what makes
 these programs large. It does not limit memory. CI runs it with
-`--reuse-declarations` straight after the server typecheck, so it does not build
-the declarations again. Do not use that option when the declarations can be stale.
+`--reuse-declarations` after the server declarations of the same run, so it does
+not build the declarations again. Do not use that option when the declarations
+can be stale.
 
 Add each new test project that imports server source to `PROJECTS` in
 `scripts/typecheck-test-projects.mjs`.
@@ -1517,6 +1562,49 @@ that file, and it fails when a referenced config does not exist yet. The
 `tests/runner-e2e/native-completion-checks.mjs` still checks that project as one
 program. That program peaks at about 15 GiB at default settings and about 8 GiB on
 one thread.
+
+#### Typecheck lane in CI
+
+The required `Typecheck + Release Registry` job runs one command:
+
+```sh
+node scripts/ci-typecheck-lane.mjs [--concurrency <n>]
+```
+
+It first runs the steps that write shared outputs, one at a time:
+
+1. Link the workspace packages and build the plugin SDK.
+2. Build the server with `PAPERCLIP_TSC_EMIT_ONLY=1`, then check that the
+   server runtime assets are in `dist`. The server build no longer checks types
+   here: the server layers check the same files, and the `Build` job runs the
+   full `pnpm build`. The full program peaked at about 13.5 GiB, which left this
+   16 GiB runner swapping.
+3. Install the sandbox providers for the test programs
+   (`typecheck-test-programs.mjs --prepare-only`).
+4. Typecheck the Runner. Its typecheck rebuilds the eval kernel, which other
+   checks read, so it cannot run beside them.
+5. Run the CLI guidance test. It runs here, before the parallel checks, because
+   one of its cases took 17 seconds beside them against a 15 second timeout.
+
+Then it runs the remaining checks in parallel, as many as the machine has CPUs
+(default) or `--concurrency`. Each `tsc` uses one thread. The server
+declaration layers start first, because the test layers and the test projects
+read them. The test programs and the other build-gap workspaces run at a lower
+CPU priority, so they use only the CPU that the server layers and the release
+registry tests leave free.
+
+A passing check prints its output in a collapsed log group. A failing check
+prints its output in full, between `=== FAILED ...` and `=== end of ...`
+lines, with an error annotation. When the server declarations fail, the test
+layers and test projects are reported as skipped. The lane ends with a table
+of each check's start time, duration and result. If a preparation step fails,
+nothing else runs.
+
+To add a check to the job, add it to `planLane` in the script.
+
+PR runs take the workflow from `master` but check out the PR's merge commit. A
+stacked PR, whose base is another branch, can have a merge commit without this
+script. The job then runs the six earlier commands one after another instead.
 
 #### Typecheck test files outside the build
 
@@ -1530,7 +1618,9 @@ node scripts/typecheck-test-programs.mjs --low-memory
 node scripts/typecheck-test-programs.mjs packages/paperclip-runner/tsconfig.test.json
 ```
 
-The first form runs in the required `Typecheck + Release Registry` job. It checks
+The first form runs in the required `Typecheck + Release Registry` job, split in
+two: `--prepare-only` installs the sandbox providers and builds what the programs
+read, and `--skip-prepare` then only checks. It checks
 one program at a time and the largest peaks below 2 GiB. It then fails if a tracked
 `*.test.ts(x)` or `*.spec.ts(x)` file is in no program. The compiler's file list
 decides that, because `include` silently drops `foo.test.tsx` when `foo.test.ts`
@@ -1620,6 +1710,15 @@ stamp is only written after a Runner build that passed every step, and both
 the Runner's first build step and the prepare step remove any existing stamp
 before a rebuild starts, so a build that stops partway never leaves a stamp
 that vouches for it.
+
+Set `PAPERCLIP_RUNNER_VENDOR_REQUIRE_CURRENT=1` when the Runner under
+`packages/paperclip-runner/dist` was built elsewhere and this build must not
+build it again, for example because it has no Rust toolchain. The step then
+reuses a current build as usual. When the build is not current it prints the
+reason and fails, without starting a rebuild and without removing the stamp.
+Setting both variables fails. The `build` stage of the `Dockerfile` sets it:
+that stage copies `dist` and the stamp out of the `runner-artifacts` stage
+(see "Runner image" in `doc/DOCKER.md`).
 
 ### Task search evaluation
 
@@ -2498,6 +2597,11 @@ For `codex_local`, Paperclip assigns new and updated agents an isolated Codex ho
 - `~/.paperclip/instances/default/companies/<company-id>/agents/<agent-id>/codex-home`
 
 Paperclip also persists an empty `OPENAI_API_KEY` override for those agents so a host-level `OPENAI_API_KEY` cannot leak into Codex runs through process inheritance. If an operator explicitly configures `adapterConfig.env.CODEX_HOME`, it must not point at the shared company `codex-home`, `$CODEX_HOME`, or `~/.codex`.
+
+Codex shell commands keep sandbox-injected certificate-trust variables (for
+example `SSL_CERT_FILE` and `GIT_SSL_CAINFO`) even though the shell environment
+allowlist is constructed before the sandbox injects them. See
+[Codex shell certificate trust](sandbox-shell-environment.md).
 
 If the `codex` CLI is not installed or not on `PATH`, `codex_local` agent runs fail at execution time with a clear adapter error. Quota polling uses a short-lived `codex app-server` subprocess: when `codex` cannot be spawned, that provider reports `ok: false` in aggregated quota results and the API server keeps running (it must not exit on a missing binary).
 
@@ -4270,7 +4374,7 @@ CLI configuration support:
 - Provider health is available at `GET /api/companies/:companyId/secret-providers/health` and reports local key permission warnings plus backup guidance.
 
 Per-company provider vaults are configured in the board UI under
-`Company Settings → Secrets → Provider vaults`, backed by
+`Company Settings → Secrets → Vaults`, backed by
 `/api/companies/{companyId}/secret-provider-configs`. The CLI does not own
 vault lifecycle today. See `docs/deploy/secrets.md` (`Provider Vaults` section)
 for the operator model.
@@ -4833,6 +4937,17 @@ before any subsequent upload. An interrupted account-bound request stays pending
 under its original key; it is never relabelled as a provider refusal. Legacy
 unowned form drafts remain in browser storage but are not restored into another
 account. Storybook fixtures seed the same account-specific keys.
+
+New-task submissions use `useBackgroundSubmitQueue` around `useDurableSubmit`.
+The account-scoped queue retains each request's original key and draft snapshot
+before the composer closes. The worker sends requests in order. A request with an
+uncertain receipt retains its key; a rejection restores the submitted draft or
+offers a retry beside a newer draft. Submitted files use separate IndexedDB keys
+for the account, company, and request, so finishing an older save cannot remove
+newer files. Each submitted request has its own local-storage entry. A write or
+receipt in one tab cannot replace another tab's queued requests. Legacy queue
+arrays migrate to separate entries before the shared array is removed. Legacy
+single-request recovery records remain readable.
 
 New-task staged file bytes are stored in IndexedDB for the account and company.
 Writes merge the selected files with the current saved list in one read/write

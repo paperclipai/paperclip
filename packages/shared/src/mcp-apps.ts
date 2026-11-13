@@ -221,3 +221,179 @@ export function buildMcpAppCsp(csp: McpAppResourceCsp): string {
     "form-action 'none'",
   ].join("; ");
 }
+
+/* ------------------------------------------------------------------------- */
+/* View-to-chat messages (`ui/message`)                                       */
+/* ------------------------------------------------------------------------- */
+
+/** Longest message a view may propose to the task chat. */
+export const MCP_APP_MESSAGE_MAX_CHARS = 8_000;
+
+/**
+ * The text of a `ui/message` request (`{ role: "user", content: ContentBlock[] }`).
+ * Only text blocks are kept. Returns null when there is no text, the role is
+ * not "user", or the text is too long.
+ */
+export function readMcpAppMessageText(params: unknown): string | null {
+  const value = record(params);
+  if (!value || (value.role !== undefined && value.role !== "user")) return null;
+  const blocks = Array.isArray(value.content) ? value.content : record(value.content) ? [value.content] : [];
+  const text = blocks
+    .map((block) => record(block))
+    .filter((block): block is Record<string, unknown> => block?.type === "text" && typeof block.text === "string")
+    .map((block) => block.text as string)
+    .join("\n\n")
+    .trim();
+  if (!text || text.length > MCP_APP_MESSAGE_MAX_CHARS) return null;
+  return text;
+}
+
+/**
+ * Body of `POST /api/issues/:issueId/mcp-app-views/:viewId/messages`. The
+ * viewer has already sent the comment through the task's normal comment path;
+ * this records that it came from the view.
+ */
+export const mcpAppMessageSentSchema = z.object({
+  /** The `clientRequestId` the viewer's comment was sent with. */
+  clientRequestId: z.string().uuid(),
+}).strict();
+
+export type McpAppMessageSentRequest = z.infer<typeof mcpAppMessageSentSchema>;
+
+/* ------------------------------------------------------------------------- */
+/* View context for the agent (`ui/update-model-context`)                     */
+/* ------------------------------------------------------------------------- */
+
+/** Largest stored context per view, in UTF-8 bytes of its JSON. */
+export const MCP_APP_MODEL_CONTEXT_MAX_BYTES = 16 * 1024;
+
+/** The latest context a view gave the agent. Untrusted app data, never instructions. */
+export interface McpAppModelContext {
+  text: string | null;
+  structuredContent: Record<string, unknown> | null;
+}
+
+/** Body of `PUT /api/issues/:issueId/mcp-app-views/:viewId/model-context`. */
+export const mcpAppModelContextUpdateSchema = z.object({
+  content: z.array(z.unknown()).max(64).optional(),
+  structuredContent: z.record(z.string(), z.unknown()).optional(),
+}).strict();
+
+export type McpAppModelContextUpdate = z.infer<typeof mcpAppModelContextUpdateSchema>;
+
+/**
+ * Normalizes `ui/update-model-context` params: text blocks only, plus the
+ * structured content. Returns null for an empty update (which clears the
+ * context) and throws a RangeError when the result exceeds the size limit.
+ */
+export function normalizeMcpAppModelContext(params: unknown): McpAppModelContext | null {
+  const value = record(params) ?? {};
+  const blocks = Array.isArray(value.content) ? value.content : [];
+  const text = blocks
+    .map((block) => record(block))
+    .filter((block): block is Record<string, unknown> => block?.type === "text" && typeof block.text === "string")
+    .map((block) => block.text as string)
+    .join("\n\n")
+    .trim();
+  const structuredContent = record(value.structuredContent);
+  const context: McpAppModelContext = {
+    text: text || null,
+    structuredContent: structuredContent && Object.keys(structuredContent).length > 0 ? structuredContent : null,
+  };
+  if (!context.text && !context.structuredContent) return null;
+  if (utf8Length(JSON.stringify(context)) > MCP_APP_MODEL_CONTEXT_MAX_BYTES) {
+    throw new RangeError(`App context is larger than ${MCP_APP_MODEL_CONTEXT_MAX_BYTES} bytes`);
+  }
+  return context;
+}
+
+function utf8Length(value: string): number {
+  return new TextEncoder().encode(value).length;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Tool icons (SEP-973)                                                        */
+/* ------------------------------------------------------------------------- */
+
+/** A provider icon for a tool, resource or prompt, after sanitizing. */
+export interface McpIcon {
+  src: string;
+  mimeType?: string;
+  sizes?: string[];
+  theme?: "light" | "dark";
+}
+
+export const MCP_ICON_MAX_COUNT = 4;
+export const MCP_ICON_MAX_URL_LENGTH = 2048;
+/** A `data:` icon larger than this is dropped. */
+export const MCP_ICON_MAX_DATA_URI_LENGTH = 32 * 1024;
+
+const RASTER_ICON_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp", "image/x-icon", "image/vnd.microsoft.icon"]);
+const SVG_MIME_TYPE = "image/svg+xml";
+
+/**
+ * Accepts only `https:` raster images and `data:image/*` URIs. SVG is allowed
+ * only inline as `data:`: a remote SVG could change after review. Icons are
+ * always rendered as `<img referrerPolicy="no-referrer">`, never inlined, so
+ * an SVG's scripts never run.
+ */
+export function sanitizeMcpIconSrc(src: unknown, mimeType?: string | null): string | null {
+  if (typeof src !== "string") return null;
+  const trimmed = src.trim();
+  if (/^data:/i.test(trimmed)) {
+    if (trimmed.length > MCP_ICON_MAX_DATA_URI_LENGTH) return null;
+    const match = /^data:(image\/[a-z0-9.+-]+)(;[a-z0-9=.+-]+)*,/i.exec(trimmed);
+    if (!match) return null;
+    const type = match[1]!.toLowerCase();
+    return type === SVG_MIME_TYPE || RASTER_ICON_MIME_TYPES.has(type) ? trimmed : null;
+  }
+  if (trimmed.length > MCP_ICON_MAX_URL_LENGTH) return null;
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "https:" || url.username || url.password) return null;
+  if (mimeType && mimeType.toLowerCase() === SVG_MIME_TYPE) return null;
+  if (/\.svgz?$/i.test(url.pathname)) return null;
+  return url.toString();
+}
+
+/** Reads and sanitizes an MCP `icons` array. Returns null when none survive. */
+export function readMcpIcons(value: unknown): McpIcon[] | null {
+  if (!Array.isArray(value)) return null;
+  const icons: McpIcon[] = [];
+  for (const item of value) {
+    if (icons.length >= MCP_ICON_MAX_COUNT) break;
+    const icon = record(item);
+    if (!icon) continue;
+    const rawMime = typeof icon.mimeType === "string" ? icon.mimeType.trim().toLowerCase() : null;
+    const mimeType = rawMime && (rawMime === SVG_MIME_TYPE || RASTER_ICON_MIME_TYPES.has(rawMime)) ? rawMime : null;
+    if (rawMime && !mimeType) continue;
+    const src = sanitizeMcpIconSrc(icon.src, mimeType);
+    if (!src) continue;
+    const sizes = Array.isArray(icon.sizes)
+      ? icon.sizes.filter((size): size is string => typeof size === "string" && /^(any|\d{1,4}x\d{1,4})$/i.test(size)).slice(0, 8)
+      : [];
+    icons.push({
+      src,
+      ...(mimeType ? { mimeType } : {}),
+      ...(sizes.length > 0 ? { sizes } : {}),
+      ...(icon.theme === "light" || icon.theme === "dark" ? { theme: icon.theme } : {}),
+    });
+  }
+  return icons.length > 0 ? icons : null;
+}
+
+/** The icon to show for a theme: a matching or theme-less icon, preferring small sizes. */
+export function pickMcpIcon(icons: readonly McpIcon[] | null | undefined, theme: "light" | "dark"): McpIcon | null {
+  if (!icons?.length) return null;
+  const candidates = icons.filter((icon) => !icon.theme || icon.theme === theme);
+  const pool = candidates.length > 0 ? candidates : icons;
+  const smallest = (icon: McpIcon) => Math.min(...(icon.sizes ?? ["any"]).map((size) => {
+    const match = /^(\d+)x/i.exec(size);
+    return match ? Math.abs(Number(match[1]) - 32) : 1_000;
+  }));
+  return [...pool].sort((a, b) => smallest(a) - smallest(b))[0] ?? null;
+}
