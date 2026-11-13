@@ -33,7 +33,9 @@ import { workspaceRecoverySourceEligible } from "../workspace-recovery-source.js
 import { PENDING_CONTINUATION_BOUND_MS } from "../recovery-continuation-pacing.js";
 import { attributeBlock, BLOCK_ATTRIBUTION_WINDOW_MS, blockedStatusDetailsSql } from "../interruption-block-release.js";
 import { ASSIGNED_WORK_CONTINUED_ACTION, taskAutomaticAttempts } from "./task-automatic-attempts.js";
-import { readAutomaticWorkStatus, reserveAutomaticRunCreation } from "./automatic-run-brake.js";
+import { automaticRunCreationHeldUntil, readAutomaticWorkStatus, reserveAutomaticRunCreation } from "./automatic-run-brake.js";
+import { ensureFreshContinuation, type FreshContinuationResult } from "../fresh-continuation-fallback.js";
+import { canContinueRecoveryRunAutomatically } from "../continuation-cause.js";
 import { STRANDED_CONTINUATION_MAX_AGE_MS, STRANDED_KIND, strandedHoldContinuesAutomatically, type StrandedHoldRun } from "./stranded-hold-continuation.js";
 import {
   continuationActivityMessage,
@@ -100,7 +102,7 @@ export type AssignedWorkDeps = {
 export type AssignedWorkCheck = {
   verdict: AssignedWorkVerdict;
   outcome: "ok" | "settling" | "repaired" | "settled_lost_run" | "deferred_rate_limit" | "deferred_cap" | "stale_reported" | "left_to_hold_owner" | "left_to_native_recovery" | "changed" | "enqueue_refused"
-    | "started_saved_work_recovery" | "saved_work_recovery_busy";
+    | "waiting_on_recovery" | "started_saved_work_recovery" | "saved_work_recovery_busy";
   retryAt: Date | null;
 };
 
@@ -305,7 +307,8 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       .map(action => action.evidence?.latestRunId).filter((id): id is string => typeof id === "string" && /^[0-9a-f-]{36}$/i.test(id));
     const strandedRuns = new Map<string, StrandedHoldRun>((strandedRunIds.length ? await database.select({ id: heartbeatRuns.id,
       agentId: heartbeatRuns.agentId, status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode, error: heartbeatRuns.error,
-      finishedAt: heartbeatRuns.finishedAt,
+      finishedAt: heartbeatRuns.finishedAt, retryOfRunId: heartbeatRuns.retryOfRunId, scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
+      contextSnapshot: heartbeatRuns.contextSnapshot, runnerProfileJson: heartbeatRuns.runnerProfileJson,
       executionRecovery: sql<StrandedHoldRun["executionRecovery"]>`${heartbeatRuns.resultJson}->'executionRecovery'` })
       .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), inArray(heartbeatRuns.id, strandedRunIds))) : [])
       .map(({ id, ...run }) => [id, run]));
@@ -579,22 +582,37 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
     if (repairTimes.length >= ASSIGNED_WORK_REPAIRS_PER_MINUTE) {
       return { verdict, outcome: "deferred_rate_limit", retryAt: new Date(repairTimes[0] + 60_000 + Math.floor(Math.random() * 5_000)) };
     }
-    const slot = facts.latestRun
-      ? await reserveAutomaticRunCreation(db, issue.companyId, { issueId: issue.id, sourceRunId: facts.latestRun.id }) : null;
-    if (slot?.heldUntil) return { verdict, outcome: "deferred_rate_limit", retryAt: slot.heldUntil };
-    const release = async () => { if (slot && !slot.heldUntil) await slot.release(); };
-    const claimed = await claimContinuation(issue, at).catch(async error => { await release(); throw error; });
-    if (claimed.kind !== "claimed") await release();
+    const heldUntil = facts.latestRun
+      ? await automaticRunCreationHeldUntil(db, issue.companyId, { issueId: issue.id, sourceRunId: facts.latestRun.id }) : null;
+    if (heldUntil) return { verdict, outcome: "deferred_rate_limit", retryAt: heldUntil };
+    const claimed = await claimContinuation(issue, at);
     if (claimed.kind !== "claimed") return { verdict, outcome: claimed.kind === "capped" ? "deferred_cap" : claimed.kind === "changed" ? "changed" : "deferred_rate_limit",
       retryAt: claimed.kind === "changed" ? null : claimed.retryAt };
     repairTimes.push(at.getTime());
     // A block that interrupted a review goes back to review; the review's own
     // recovery wakes its participant. No agent work starts from here.
     if (claimed.restoredTo === "in_review") {
-      await release();
       await settleContinuationActivity(claimed, claimed.reason, "restored_to_review");
       return { verdict: claimed.verdict, outcome: "repaired", retryAt: null };
     }
+    const fresh = await continueFromSavedWork(issue, facts, at);
+    if (fresh?.kind === "continued") {
+      await settleContinuationActivity(claimed, claimed.reason, "queued", { continuedFromSavedWork: "true" });
+      return { verdict: claimed.verdict, outcome: "repaired", retryAt: claimed.nextCheckAt };
+    }
+    if (fresh?.kind === "backoff" || fresh?.kind === "exact_recovery_pending") {
+      if (claimed.restoredTo && fresh.kind === "exact_recovery_pending") await revertRestoredBlock(issue, claimed);
+      await settleContinuationActivity(claimed, claimed.reason, "not_started", { waitingUntil: fresh.retryAt.toISOString() });
+      return { verdict: claimed.verdict, outcome: fresh.kind === "backoff" ? "deferred_cap" : "waiting_on_recovery", retryAt: fresh.retryAt };
+    }
+    const slot = facts.latestRun
+      ? await reserveAutomaticRunCreation(db, issue.companyId, { issueId: issue.id, sourceRunId: facts.latestRun.id }) : null;
+    if (slot?.heldUntil) {
+      if (claimed.restoredTo) await revertRestoredBlock(issue, claimed);
+      await settleContinuationActivity(claimed, claimed.reason, "not_started", { waitingUntil: slot.heldUntil.toISOString() });
+      return { verdict: claimed.verdict, outcome: "deferred_rate_limit", retryAt: slot.heldUntil };
+    }
+    const release = async () => { if (slot && !slot.heldUntil) await slot.release(); };
     const run = await deps.enqueueWakeup(issue.assigneeAgentId!, {
       source: facts.latestRun ? "automation" : "assignment", triggerDetail: "system",
       reason: facts.latestRun ? "issue_continuation_needed" : "issue_assigned",
@@ -612,8 +630,25 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
     // with nothing pending.
     if (!run) await release();
     if (!run && claimed.restoredTo) await revertRestoredBlock(issue, claimed);
-    await settleContinuationActivity(claimed, claimed.reason, run ? "queued" : "not_started");
+    await settleContinuationActivity(claimed, claimed.reason, run ? "queued" : "not_started",
+      fresh?.kind === "person_owned" ? { waitingFor: fresh.reason } : {});
     return { verdict: claimed.verdict, outcome: run ? "repaired" : "enqueue_refused", retryAt: claimed.nextCheckAt };
+  }
+
+  async function continueFromSavedWork(issue: IssueRow, facts: AssignedWorkFacts, at: Date): Promise<FreshContinuationResult | null> {
+    const source = facts.latestRun;
+    if (!source?.finishedAt || !["failed", "timed_out", "interrupted", "cancelled"].includes(source.status)
+      || (source.status === "cancelled" && source.errorCode === "execution_reconciliation_required")) return null;
+    const [run] = await db.select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode, error: heartbeatRuns.error,
+      retryOfRunId: heartbeatRuns.retryOfRunId, scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
+      contextSnapshot: heartbeatRuns.contextSnapshot, runnerProfileJson: heartbeatRuns.runnerProfileJson }).from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, issue.companyId), eq(heartbeatRuns.id, source.id)));
+    if (!run || !canContinueRecoveryRunAutomatically(run)) return null;
+    return ensureFreshContinuation(db, { companyId: issue.companyId, runId: source.id, trigger: "assigned_work", now: at })
+      .catch(error => {
+        logger.warn({ err: error, companyId: issue.companyId, issueId: issue.id }, "assigned-work continuation from saved work deferred");
+        return null;
+      });
   }
 
   async function startSavedWorkRecovery(issue: IssueRow, facts: AssignedWorkFacts,
@@ -664,7 +699,7 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
         || (current.status === "blocked" && fresh.activeRecoveryAction && !fresh.activeRecoveryAction.continuedBySweep)) return { kind: "changed" as const };
       const attempts = await taskAutomaticAttempts(tx as unknown as Db, issue.companyId, issue.id, at);
       const recent = attempts.continuations;
-      const allowance = continuationAllowance(attempts.all, at);
+      const allowance = continuationAllowance(attempts.started, at, attempts.all);
       if (!allowance.allowed) return { kind: allowance.capped ? "capped" as const : "spaced" as const, retryAt: allowance.retryAt };
       let restoredTo: Claimed["restoredTo"] = null;
       let restoredStatusVersion: number | null = null;
@@ -695,7 +730,7 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
           ...(restoredTo ? { status: restoredTo, previousStatus: "blocked" } : {}),
           attempt: recent.length + 1 },
       }, publications);
-      const next = continuationAllowance([at, ...attempts.all], at);
+      const next = continuationAllowance([at, ...attempts.started], at, [at, ...attempts.all]);
       return { kind: "claimed" as const, activityId: activity.id, publications, verdict, reason: verdict.reason,
         restoredTo, restoredStatusVersion, blockedTransitionAt: current.blockedTransitionAt,
         unblockDescriptor: current.unblockDescriptor, blockedOwnerNotifiedAt: current.blockedOwnerNotifiedAt,
@@ -753,10 +788,10 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
    * admitted or refused; it is published then, never before. A refused
    * continuation stays a violation and is tried again under the same cap. */
   async function settleContinuationActivity(claimed: { activityId: string; publications: ActivityPublication[] },
-    reason: ViolationReason, outcome: "queued" | "not_started" | "restored_to_review") {
-    const update = outcome === "queued" ? { outcome, message: continuationActivityMessage(reason) }
+    reason: ViolationReason, outcome: "queued" | "not_started" | "restored_to_review", extra: Record<string, string> = {}) {
+    const update = outcome === "queued" ? { outcome, message: continuationActivityMessage(reason), ...extra }
       : outcome === "restored_to_review" ? { outcome, message: CONTINUATION_REVIEW_MESSAGE }
-        : { outcome, message: CONTINUATION_REFUSED_MESSAGE };
+        : { outcome, message: CONTINUATION_REFUSED_MESSAGE, ...extra };
     await db.update(activityLog).set({ details: sql`coalesce(${activityLog.details}, '{}'::jsonb) || ${JSON.stringify(update)}::jsonb` })
       .where(eq(activityLog.id, claimed.activityId));
     for (const publication of claimed.publications) {

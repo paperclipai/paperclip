@@ -404,6 +404,19 @@ export function createAutomaticRunBrake(options: { loadRules?: () => Promise<Aut
     return !rules || (await rules.listPersonOriginSourceRunIds(db, companyId, [work.sourceRunId])).includes(work.sourceRunId);
   }
 
+  async function creationHeldUntil(db: Db, companyId: string, work: AutomaticWork): Promise<Date | null> {
+    const entry = await current(db, companyId);
+    if (entry.snapshot.state !== "open") return null;
+    const now = Date.now();
+    const lastStartAt = entry.snapshot.evidence.lastStartAt;
+    const startHold = lastStartAt !== null && lastStartAt - entry.skewMs > now - AUTOMATIC_RUN_BRAKE.startProgressMs
+      ? now + AUTOMATIC_RUN_BRAKE.creationIntervalMs : 0;
+    const slotHold = entry.snapshot.nextCreationAt ? entry.snapshot.nextCreationAt.getTime() - entry.skewMs : 0;
+    const until = Math.max(startHold, slotHold);
+    if (until <= now) return null;
+    return await isPersonWork(db, companyId, work) ? null : new Date(until);
+  }
+
   async function reserveCreation(db: Db, companyId: string, work: AutomaticWork): Promise<AutomaticRunCreationSlot> {
     const entry = await current(db, companyId);
     if (entry.snapshot.state !== "open") return { heldUntil: null, release: NO_RESERVATION };
@@ -509,6 +522,7 @@ export function createAutomaticRunBrake(options: { loadRules?: () => Promise<Aut
   return {
     read,
     refresh: async (db: Db, companyId: string) => (await refresh(db, companyId)).snapshot,
+    creationHeldUntil,
     reserveCreation,
     holdAutomaticRunStart,
     cacheSizes: () => ({ companies: companies.size, runs: personOrigin.size }),
@@ -517,6 +531,10 @@ export function createAutomaticRunBrake(options: { loadRules?: () => Promise<Aut
 }
 
 export const automaticRunBrake = createAutomaticRunBrake();
+
+export function automaticRunCreationHeldUntil(db: Db, companyId: string, work: AutomaticWork) {
+  return automaticRunBrake.creationHeldUntil(db, companyId, work);
+}
 
 export function reserveAutomaticRunCreation(db: Db, companyId: string, work: AutomaticWork) {
   return automaticRunBrake.reserveCreation(db, companyId, work);
