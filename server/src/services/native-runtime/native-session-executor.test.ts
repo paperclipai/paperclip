@@ -20,6 +20,7 @@ import { trace } from "@opentelemetry/api";
 import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from "@opentelemetry/sdk-trace";
 import { configuredEnvironment, configuredEnvironmentProjection } from "../../vendor/paperclip-runner/index.js";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { enableReattachPhase, isReattachPhaseActive, joinReattachPhase, onReattachPhaseEnd, resetReattachPhaseForTests, type ReattachPhaseSummary } from "../heartbeat/run-admission.js";
 import { createSystemRecovery, failSystemRecovery, reserveSystemRecoveryAttempt, SystemRecoveryFailure } from "../system-recovery-state.js";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { once } from "node:events";
@@ -8387,6 +8388,31 @@ describe("native startup cancellation fence", () => {
       expect(syncIn.mock.calls.flatMap(call => (call[0] as { files?: Array<{ targetPath?: string }> } | undefined)?.files ?? []).some(file => file.targetPath?.endsWith("/provider-pack"))).toBe(false);
     } finally {
       release?.(); await failure; source.mockRestore(); renewal.mockRestore(); await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["codex_app_server", "opencode_server", "acpx_runtime", "muse_external", "grok_bot_mcp", "openai_dot_mcp"])(
+    "ends the reattach phase once a reattached %s session is driven by this server again, without the cap or manual settling", async driverKind => {
+    const current: NativeExecutionInputV1 = { ...execution,
+      binding: { ...execution.binding, runId: `reattach-reached-${driverKind}` },
+      session: { ...execution.session, normalizedSessionId: `reattach-reached-session-${driverKind}`, driverKind } as never };
+    const ended: ReattachPhaseSummary[] = [];
+    try {
+      onReattachPhaseEnd(summary => ended.push(summary));
+      enableReattachPhase(180_000);
+      joinReattachPhase([{ runId: current.binding.runId, reason: "handed_over", claimableAt: Date.now() }]);
+      expect(isReattachPhaseActive()).toBe(true);
+      state.execute.mockReset().mockImplementationOnce(async options => {
+        await options.onSession({ close: vi.fn(async () => undefined) });
+        return { result: { summary: "done" }, terminal: { runTerminalState: "succeeded" }, turnId: "turn",
+          normalizedSessionId: current.session.normalizedSessionId, providerSessionId: "provider", driverKind, driverVersion: "1",
+          nativeEventCount: 1, highestContiguousSourceSeq: 1, usage: null };
+      });
+      await executePaperclipNativeSession({ db: leaseDb(current), execution: current, runnerInstanceId: `reattach-reached-${driverKind}` });
+      expect(isReattachPhaseActive()).toBe(false);
+      expect(ended).toEqual([expect.objectContaining({ reason: "all_settled", reached: 1, givenUp: 0, outstanding: 0 })]);
+    } finally {
+      resetReattachPhaseForTests();
     }
   });
 
