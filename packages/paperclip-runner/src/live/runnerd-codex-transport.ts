@@ -1671,6 +1671,7 @@ export interface CapabilityRunnerdCodexTransportOptions extends RunnerExecutionD
   closeGraceMs?: number;
   /** Bounded provider turn-admission wait; defaults to 30 seconds. */
   turnStartTimeoutMs?: number;
+  turnStartProgressCeilingMs?: number;
   /** Controller-owned opt-in operation timing. No exporter lives in Runner. */
   measureOperation?<T>(phase: string, work: () => Promise<T>, attributes?: Record<string, number | boolean>): Promise<T>;
   recordTimingReceipt?(receipt: unknown): void;
@@ -7789,7 +7790,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           ? TURN_START_EVENT_DEFAULT_TIMEOUT_MS
           : Math.max(0, commandDeadline - this.#waitNow());
       let deadline = this.#waitNow() + quietWindowMs;
-      const progressCeiling = this.#waitNow() + Math.max(quietWindowMs, TURN_START_PROGRESS_CEILING_MS);
+      const progressCeiling = this.#waitNow() + Math.max(quietWindowMs, this.options.turnStartProgressCeilingMs ?? TURN_START_PROGRESS_CEILING_MS);
       let progressSeq = this.#latestCommittedSourceSeq();
       const extendOnProgress = () => {
         const progress = this.#pendingTurnStartProgressSince(progressSeq, expectedProviderTurnId);

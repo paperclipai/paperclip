@@ -131,6 +131,7 @@ async function startSlowCodexTurn(input: {
   delayMs: number;
   progressMs?: number;
   turnStartTimeoutMs?: number;
+  turnStartProgressCeilingMs?: number;
 }) {
   const stateDirectory = await mkdtemp(join(tmpdir(), `runnerd-${input.label}-`));
   const callsPath = join(stateDirectory, "calls.log");
@@ -142,6 +143,7 @@ async function startSlowCodexTurn(input: {
         "--call-log", callsPath),
       stateDirectory,
       ...(input.turnStartTimeoutMs === undefined ? {} : { turnStartTimeoutMs: input.turnStartTimeoutMs }),
+      ...(input.turnStartProgressCeilingMs === undefined ? {} : { turnStartProgressCeilingMs: input.turnStartProgressCeilingMs }),
     });
     try {
       await bundle.transport.request("thread/start", { cwd: tmpdir(), dynamicTools: [] });
@@ -166,6 +168,17 @@ it("keeps waiting for an accepted Codex turn while its startup keeps reporting p
   expect(outcome.elapsedMs).toBeGreaterThan(10_000);
   expect(outcome.turnStarts).toBe(1);
   expect(outcome.diagnostics.join("\n")).not.toContain("adopting the durably accepted");
+}, 60_000);
+
+it("fails an accepted Codex start at the total ceiling while progress never reaches turn/started", async () => {
+  const outcome = await startSlowCodexTurn({
+    label: "endless-progress-turn-start", delayMs: 30_000, progressMs: 1_000,
+    turnStartTimeoutMs: 3_000, turnStartProgressCeilingMs: 8_000,
+  });
+  expect(String(outcome.error)).toContain("runnerd did not report the provider turn identity");
+  expect(outcome.elapsedMs).toBeGreaterThan(7_000);
+  expect(outcome.elapsedMs).toBeLessThan(8_000 + 2_000);
+  expect(outcome.turnStarts).toBe(1);
 }, 60_000);
 
 it("still fails a silent accepted Codex start at its bound when liveness cannot be proven", async () => {
