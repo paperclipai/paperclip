@@ -24,6 +24,21 @@ describe("Claude tool-use admission", () => {
     await expect(admission.admit("turn-1", "toolu_01A", live())).resolves.toBe("tool-use:toolu_01A");
   });
 
+  it("counts only an opening ACP tool_call event as an announcement", async () => {
+    vi.useFakeTimers();
+    const admission = new ClaudeToolUseAdmission();
+    admission.beginTurn("turn-1");
+    admission.observe("turn-1", { type: "tool_call", tag: "tool_call_update", toolCallId: "toolu_update" });
+    admission.observe("turn-1", { type: "status", tag: "tool_call", toolCallId: "toolu_status" });
+    admission.observe("turn-1", { type: "tool_call", tag: "tool_call", toolCallId: "toolu_open" });
+    await expect(admission.admit("turn-1", "toolu_open", live())).resolves.toBe("tool-use:toolu_open");
+    for (const id of ["toolu_update", "toolu_status"]) {
+      const outcome = admission.admit("turn-1", id, live()).catch((error: Error) => error);
+      await vi.advanceTimersByTimeAsync(TOOL_USE_ANNOUNCEMENT_WAIT_MS);
+      expect(await outcome).toMatchObject({ message: "Paperclip tool call was not announced in the active turn" });
+    }
+  });
+
   it("admits a call that arrives before its announcement within the bound", async () => {
     vi.useFakeTimers();
     const admission = new ClaudeToolUseAdmission();
