@@ -180,6 +180,49 @@ try {
     server.close();
   }
 
+  if (only.includes("legacy")) {
+    const { createAgentLifecycle, configureAgentLifecycle } = await import("../../src/services/agent-lifecycle.js");
+    const { heartbeatService } = await import("../../src/services/heartbeat.js");
+    const { createDeliveryWorkCoordinator } = await import("../../src/services/delivery-work-coordinator.js");
+    const { enableDatabaseWorkNotifications } = await import("../../../packages/db/src/work-signals.js");
+    const { eq } = await import("drizzle-orm");
+    enableDatabaseWorkNotifications(db);
+    const lines = Number(process.env.LINES ?? 20), gapMs = Number(process.env.GAP_MS ?? 50);
+    const legacyAgentId = randomUUID(), legacyCompanyId = randomUUID();
+    const { companies } = await import("../../../packages/db/src/index.js");
+    await db.insert(companies).values({ id: legacyCompanyId, name: "Legacy", issuePrefix: `L${legacyCompanyId.slice(0, 6)}`, requireBoardApprovalForNewAgents: false, defaultResponsibleUserId: "legacy-user" });
+    await createAgentLifecycle(db).requestHire(legacyCompanyId, { id: legacyAgentId, name: "Legacy process", role: "engineer", status: "idle",
+      adapterType: "process", adapterConfig: { command: process.execPath,
+        args: ["-e", `let i=0;const t=setInterval(()=>{console.log("output line "+(++i)+" ".padEnd(80,"x"));if(i>=${lines}){clearInterval(t);}},${gapMs});`],
+        cwd: process.cwd() },
+      runtimeConfig: { heartbeat: { enabled: true, intervalSec: 0, wakeOnDemand: true } }, permissions: {} }, { runnerResolved: true });
+    const lifecycleWorker = configureAgentLifecycle(db, { requiredPluginIds: async () => [], runPlugin: async () => "complete", runHost: async () => "complete" });
+    for (let i = 0; i < 4; i++) await lifecycleWorker.process(legacyAgentId);
+    await lifecycleWorker.stop();
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, canReconcile: () => true, onError: error => console.log(`coordinator error ${String(error).slice(0, 200)}`) });
+    const heartbeat = heartbeatService(db, { runtimeEnv: { ...process.env, PAPERCLIP_IN_WORKTREE: undefined } });
+    const dispatch = heartbeat.registerRunDispatchWork(coordinator, () => true);
+    await dispatch.ready;
+    const runOnce = async () => {
+      const run = await heartbeat.wakeup(legacyAgentId, { source: "on_demand", reason: "manual", requestedByActorType: "system" });
+      if (!run) {
+        const { agents, agentWakeupRequests } = await import("../../../packages/db/src/index.js");
+        console.log(JSON.stringify({ agent: (await db.select({ status: agents.status, holds: agents.lifecycleHolds, state: agents.lifecycleState }).from(agents).where(eq(agents.id, legacyAgentId)))[0],
+          wakes: await db.select({ status: agentWakeupRequests.status, reason: agentWakeupRequests.reason, error: agentWakeupRequests.error }).from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, legacyAgentId)) }));
+      }
+      assert.ok(run, "wake accepted");
+      for (let i = 0; i < 600; i++) {
+        const [row] = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+        if (row && !["queued", "running"].includes(row.status)) { if (i === 0 || row.status !== "succeeded") console.log(`legacy run ${row.status}`); break; }
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      await heartbeat.drainActiveRunExecutions();
+    };
+    await measure(`legacy process run lifecycle (wake, queue, start, ${lines} output lines ${gapMs} ms apart, finish), includes the harness's 100 ms status poll`, 3, runOnce);
+    await dispatch.stop();
+    await coordinator.stop();
+  }
+
   if (only.includes("event")) {
     const { PaperclipControlPlanePort } = await import("../../src/services/native-runtime/paperclip-control-plane-port.js");
     const [issue] = await db.insert(issues).values({ companyId, title: "Streaming", status: "in_progress", assigneeAgentId: agentId }).returning();

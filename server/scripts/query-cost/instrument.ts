@@ -201,7 +201,7 @@ export function diff(before: ReturnType<typeof snapshot>) {
     allocated: allocated() - before.allocated, wallMs: performance.now() - before.at, rows };
 }
 
-export function format(label: string, units: number, result: ReturnType<typeof diff>, top = 25) {
+export function format(label: string, units: number, result: ReturnType<typeof diff>, top = Number(process.env.TOP ?? 25)) {
   const kb = (n: number) => (n / 1024 / units).toFixed(1);
   const lines = [`## ${label} (per unit, ${units} units)`,
     `statements ${(result.statements / units).toFixed(1)} (control ${(result.control / units).toFixed(1)}), total allocated ${kb(result.allocated)} KB, built ${kb(result.rows.reduce((s, r) => s + r.buildBytes, 0))} KB, read ${kb(result.rows.reduce((s, r) => s + r.readBytes, 0))} KB, wall ${(result.wallMs / units).toFixed(1)} ms`,
