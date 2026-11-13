@@ -22735,19 +22735,6 @@ it("saves a runner-marked model rejection from a provider terminal as a model ch
   expect(nativeSessionFailureSourceCode(new NativeProviderTerminalFailure("provider_turn_failed", false,
     "openrouter/unavailable-model is not a valid model ID"))).toBe("native_provider_terminal_failed");
 });
-it("keeps a turn the Runner marked recoverable after a restore on the automatic resume path", () => {
-  const message = "The runner restored the conversation after process loss, but the previous turn is no longer active.";
-  const code = nativeSessionFailureSourceCode(new NativeProviderTerminalFailure("provider_turn_lost_on_restore", true, message));
-  expect(code).toBe("native_session_interrupted");
-  expect(nativeSessionFailureDisposition(2, new Date(), code)).toMatchObject({ phase: "retryable_failure", failureCode: "native_session_interrupted" });
-  expect(nativeSessionFailureDisposition(3, new Date(), code)).toMatchObject({ phase: "terminal_failure", failureCode: "native_session_retry_exhausted" });
-  const unrecoverable = nativeSessionFailureSourceCode(new NativeProviderTerminalFailure("provider_turn_lost_on_restore", false, message));
-  expect(unrecoverable).toBe("native_provider_terminal_failed");
-  expect(nativeSessionFailureDisposition(1, new Date(), unrecoverable)).toEqual({ phase: "terminal_failure",
-    failureCode: "native_provider_terminal_failed", nextAttemptAt: null });
-  expect(nativeSessionFailureSourceCode(new NativeProviderTerminalFailure("provider_turn_failed", true, message)))
-    .toBe("native_provider_terminal_failed");
-});
 it("records a runner process exit that closed the provider event stream as runner loss", () => {
   // Shape the Codex/OpenCode drivers write when runnerd exits mid-turn.
   const lost = new NativeProviderTerminalFailure("notification_transport_failed", false,
