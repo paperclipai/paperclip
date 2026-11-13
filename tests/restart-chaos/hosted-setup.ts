@@ -163,7 +163,7 @@ async function removeAgent(api: SetupApi, agentId: string, pollMs: number): Prom
   if (current.status !== "terminated") await api.post(`/api/agents/${agentId}/terminate`);
   for (const until = Date.now() + TERMINATE_WAIT_MS; ;) {
     const agent = await api.get<Json>(`/api/agents/${agentId}`);
-    if (agent.status === "terminated") break;
+    if (agent.status === "terminated" && (agent.lifecycleState === undefined || agent.lifecycleState === null || agent.lifecycleState === "terminated")) break;
     if (Date.now() >= until) throw new Error(`agent still ${String(agent.status)} after ${TERMINATE_WAIT_MS / 1000} s; run --hosted-cleanup-only again`);
     await delay(pollMs);
   }

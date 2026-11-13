@@ -264,6 +264,7 @@ describe("staging-mix board step", () => {
   const failed: TaskSample = { at: 0, reachable: true, serverReady: true, issueStatus: "blocked",
     interruption: { state: "failed", canRetry: true, retryWait: false, workspaceFailure: null, observedRunId: "r1", userAction: null },
     runs: [{ ...running.runs![0]!, status: "failed" }] };
+  const stepIn = (rec: TaskRecord, sample: TaskSample, now: number, faultInProgress: boolean, plan: StagingMixTask) => step(rec, sample, now, faultInProgress, plan);
   const step = async (rec: TaskRecord, sample: TaskSample, now: number, faultInProgress: boolean, plan = task({ followUpAfterMs: 60_000 }),
     reply: () => unknown = () => ({ id: "c1" })) => {
     const posted: string[] = [], retried: number[] = [], notes: string[] = [];
@@ -309,8 +310,18 @@ describe("staging-mix board step", () => {
     expect((await step(rec, running, Math.round(4 * ROUND_SECONDS * 1_000 * 0.85), false, plan)).posted.length).toBe(1);
   });
 
-  it("waits for an overlap to click a Retry, and holds the observer's own click until the hold runs out", async () => {
+  it("never clicks Retry during the wave by default, but records the banner", async () => {
     const rec = record();
+    expect((await step(rec, failed, 1_000, true)).retried).toEqual([]);
+    expect((await step(rec, failed, 9_000, true)).retried).toEqual([]);
+    expect(rec.stagingMix!.retryBanner).toMatchObject({ firstShownAt: 1_000, lastShownAt: 9_000, visibleSince: 1_000 });
+    await step(rec, running, 20_000, false);
+    expect(rec.stagingMix!.retryBanner).toMatchObject({ shownMs: 19_000, visibleSince: null });
+  });
+
+  it("with --mix-retry-during-wave, waits for an overlap to click a Retry, and holds the observer's own click until the hold runs out", async () => {
+    const rec = record();
+    const step = (r: TaskRecord, sample: TaskSample, now: number, overlap: boolean) => stepIn(r, sample, now, overlap, task({ followUpAfterMs: 60_000, retryDuringWave: true }));
     expect((await step(rec, failed, 1_000, false)).retried).toEqual([]);
     expect(holdsRetry(rec, 600_000, 2_000)).toBe(true);
     expect(holdsRetry(rec, 600_000, 1_000 + 600_000)).toBe(false);

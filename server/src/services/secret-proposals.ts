@@ -549,12 +549,17 @@ export function createSecretProposalsService(db: Db) {
   async function listForBoard(
     companyId: string,
     status?: string | null,
-    options: { limit?: number; offset?: number } = {},
+    options: { limit?: number; offset?: number; order?: "created" | "resolved" } = {},
   ) {
     const rows = await db.select().from(companySecretProposals).where(and(
       eq(companySecretProposals.companyId, companyId),
       status ? eq(companySecretProposals.status, status) : undefined,
-    )).orderBy(desc(companySecretProposals.createdAt))
+    )).orderBy(
+      // "resolved" puts the most recent decisions first; undecided rows follow by age.
+      ...(options.order === "resolved"
+        ? [sql`${companySecretProposals.resolvedAt} desc nulls last`, desc(companySecretProposals.createdAt)]
+        : [desc(companySecretProposals.createdAt)]),
+    )
       .limit(options.limit ?? DEFAULT_PROPOSAL_LIST_LIMIT)
       .offset(options.offset ?? 0);
     return Promise.all(rows.map(enrich));

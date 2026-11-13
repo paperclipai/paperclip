@@ -314,6 +314,13 @@ try {
     : spawnSync("git", ["diff", "--quiet", "--", "packages/paperclip-runner"], {
         cwd: workspaceRoot,
       }).status !== 0;
+  // Set only by the Runner image build (the `runner-artifacts` Dockerfile
+  // target): the identity of the inputs the image was built from, which is its
+  // `inputs-<digest>` tag. No check reads it.
+  const runnerInputsDigest = process.env.PAPERCLIP_RUNNER_INPUTS_DIGEST?.trim();
+  if (runnerInputsDigest && !/^[0-9a-f]{64}$/.test(runnerInputsDigest)) {
+    throw new Error("PAPERCLIP_RUNNER_INPUTS_DIGEST must be 64 hexadecimal characters");
+  }
   const payload = {
     compatibility,
     // Semantic digest of the Runner/pack contracts. Image packs are reused only
@@ -330,6 +337,7 @@ try {
     },
     target: { platform: process.platform, architecture: process.arch },
     runnerSourceRevision: `${revision}${dirty ? "-dirty" : ""}`,
+    ...(runnerInputsDigest ? { runnerInputsDigest } : {}),
     distDigest,
     bridgeDigest: `sha256:${createHash("sha256")
       .update(opencodeProxySha)

@@ -171,6 +171,10 @@ export const queryKeys = {
     run: (companyId: string, runId: string) =>
       ["smoke-lab", companyId, "runs", runId] as const,
   },
+  mcpSkills: {
+    list: (companyId: string) => ["mcp-skills", companyId] as const,
+    content: (companyId: string, skillId: string, manifestDigest: string) => ["mcp-skills", companyId, skillId, "content", manifestDigest] as const,
+  },
   companySkills: {
     list: (companyId: string) => ["company-skills", companyId] as const,
     listRecent: (companyId: string) =>

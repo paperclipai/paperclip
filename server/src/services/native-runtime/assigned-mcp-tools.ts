@@ -70,6 +70,12 @@ export async function resolveAssignedConnectionInstructionsForRun(db: Db, bindin
   return gateway ? gateway.resolveConnectionInstructionsForRun(binding) : null;
 }
 
+/** MCP Skills: approved skills of the agent's usable connections; none without a configured gateway. */
+export async function resolveMcpConnectionSkillsForRun(db: Db, binding: { companyId: string; agentId: string; runId: string }) {
+  const gateway = assignedMcpGateways.get(db);
+  return gateway ? gateway.resolveConnectionSkillsForRun(binding) : null;
+}
+
 function assignedToolName(name: string): string {
   const sanitize = (value: string) => value.replace(/[^a-zA-Z0-9_]+/g, "_").replace(/^_+|_+$/g, "");
   const separator = name.lastIndexOf(":");

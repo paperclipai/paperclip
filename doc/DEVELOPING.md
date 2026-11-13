@@ -388,6 +388,26 @@ A maintainer's manual dispatch of `ci-routing.yml` on master exercises the AWS
 metadata gate without launching the test matrix; its non-PR event returns the
 hosted test-runner output.
 
+GitHub starts a limited number of hosted jobs per hour for this repository, and
+every hosted job waits in one first-come queue. Two settings keep community PRs
+from delaying CODEOWNERS work in that queue:
+
+- A PR run on GitHub-hosted runners queues at most four jobs per test matrix
+  (`max-parallel` in `pr-trusted.yml`). It runs the same jobs; the rest wait
+  inside the run instead of in the shared queue. AWS runs are not limited.
+- With `AWS_CI_SHORT_JOBS_ENABLED` set to `true`, the `commitperclip PR Review`
+  job and the `PR merge review notification` job for a CODEOWNER's own
+  same-repository PR use the reserved `paperclip-ci-routing-x64` fleet. Both
+  run only master's scripts, never PR code, and use the same admission
+  variables as the gate. Check-run and commit-status notifications carry no
+  verifiable author and stay GitHub-hosted, as does every community PR.
+  Before setting the variable, allow
+  `paperclipai/paperclip/.github/workflows/commitperclip-review.yml@refs/heads/master`
+  and
+  `paperclipai/paperclip/.github/workflows/pr-merge-review.yml@refs/heads/master`
+  in the `paperclip-ci-routing` runner group. A job routed to a group that
+  does not allow its workflow stays queued.
+
 Keep the `.github/**` rule in `.github/CODEOWNERS` and the active master ruleset's
 code-owner review requirement enabled. This covers the caller, the trusted
 workflow, and CODEOWNERS itself. Existing administrator pull-request bypasses
@@ -442,7 +462,8 @@ Changing that file selects its consumers. Generated/untracked files and unknown
 query loaders retain their consumers conservatively. Other filesystem, process
 and network effects keep their existing fallback.
 
-For a full wall-clock profile of all main PR CI jobs, add `profile-ci` to the PR.
+One in ten CI CODEOWNER PR runs sends its job, step and outside-check timings to
+Honeycomb. For a full wall-clock profile of all main PR CI jobs, add `profile-ci` to the PR.
 See [CI profiling](ci-profiling.md) for the Honeycomb waterfall, coverage,
 operator setup, and activation requirements.
 
@@ -4250,7 +4271,7 @@ CLI configuration support:
 - Provider health is available at `GET /api/companies/:companyId/secret-providers/health` and reports local key permission warnings plus backup guidance.
 
 Per-company provider vaults are configured in the board UI under
-`Company Settings → Secrets → Provider vaults`, backed by
+`Company Settings → Secrets → Vaults`, backed by
 `/api/companies/{companyId}/secret-provider-configs`. The CLI does not own
 vault lifecycle today. See `docs/deploy/secrets.md` (`Provider Vaults` section)
 for the operator model.

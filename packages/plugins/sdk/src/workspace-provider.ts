@@ -119,6 +119,12 @@ export const pluginWorkspaceParamsSchema = z
     deadline: z.string().datetime(),
     runId: z.string().uuid().nullable(),
     agentId: z.string().uuid().nullable(),
+    /** Placement selected by Core for workspace work on the run's Launcher. */
+    taskLease: z.object({
+      environmentId: z.string().uuid(),
+      driverKey: z.string().min(1).max(128),
+      providerLeaseId: z.string().min(1).max(1024),
+    }).strict().optional(),
     operation: workspaceProviderOperationSchema,
   })
   .strict();
