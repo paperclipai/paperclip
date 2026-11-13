@@ -28,7 +28,7 @@ export const callApiAction = {
   },
   "documentation": {
     "title": "Call the Paperclip API",
-    "description": "Fallback only: call a discovered Paperclip API operation when dedicated tools lack the required operation or parameters. Uses the same route permissions as agent REST access. Prefer dedicated tools for common workflows; route denials still apply. For large text responses, read the returned artifact with GET /api/assets/{assetId}/content and responseText; follow nextOffsetBytes until null.",
+    "description": "Fallback only: call a discovered Paperclip API operation when dedicated tools lack the required operation or parameters. Uses the same route permissions as agent REST access. Prefer dedicated tools for common workflows; route denials still apply. Request fields go only in body. To save a non-sensitive GET response as an artifact for a local helper, use save_api_response. For large text responses, read the returned artifact with GET /api/assets/{assetId}/content and responseText; follow nextOffsetBytes until null.",
     "note": "Production HTTP fallback; does not grant privileges or replace dedicated tools."
   },
   "examples": {
@@ -51,7 +51,7 @@ export const callApiAction = {
       "operationId": "call_api",
       "version": 1,
       "title": "Call the Paperclip API",
-      "description": "Fallback only: call a discovered Paperclip API operation when dedicated tools lack the required operation or parameters. Uses the same route permissions as agent REST access. Prefer dedicated tools for common workflows; route denials still apply. For large text responses, read the returned artifact with GET /api/assets/{assetId}/content and responseText; follow nextOffsetBytes until null.",
+      "description": "Fallback only: call a discovered Paperclip API operation when dedicated tools lack the required operation or parameters. Uses the same route permissions as agent REST access. Prefer dedicated tools for common workflows; route denials still apply. Request fields go only in body. To save a non-sensitive GET response as an artifact for a local helper, use save_api_response. For large text responses, read the returned artifact with GET /api/assets/{assetId}/content and responseText; follow nextOffsetBytes until null.",
       "exposure": "optional",
       "requiredClaims": [
         "api:call"
@@ -82,7 +82,7 @@ export const callApiAction = {
             "additionalProperties": true
           },
           "body": {
-            "description": "Request value matching the discovered schema. For JSON object or array requests, pass the object or array directly, never a JSON-encoded string. Strings are for text bodies or endpoints whose schema explicitly accepts a string.",
+            "description": "Request value matching the discovered schema. Required when the operation has a required request body, as most POST, PUT and PATCH operations do; all request fields go here. For JSON object or array requests, pass the object or array directly, never a JSON-encoded string. Strings are for text bodies or endpoints whose schema explicitly accepts a string.",
             "anyOf": [
               { "type": "object", "additionalProperties": true },
               { "type": "array", "items": {} },

@@ -145,16 +145,16 @@ export async function inspectZip(source: string, secrets: readonly string[]) {
     let leak: string | null = null;
     let spawnError: Error | null = null;
     let expanded = 0;
-    const timer = setTimeout(() => { leak = "zip inspection exceeded its time bound"; unzip.kill(); }, 30_000);
+    const timer = setTimeout(() => { leak = "zip inspection exceeded its time bound"; unzip.kill("SIGKILL"); }, 30_000);
 
     unzip.stdout.on("data", (chunk: Buffer) => {
       if (leak) return;
       expanded += chunk.length;
-      if (expanded > 256 * 1024 * 1024) { leak = "zip inspection exceeded its expanded-byte bound"; unzip.kill(); return; }
+      if (expanded > 256 * 1024 * 1024) { leak = "zip inspection exceeded its expanded-byte bound"; unzip.kill("SIGKILL"); return; }
       const data = Buffer.concat([carry, chunk]);
       leak = findSecretLeak(data, secrets, { includeShapes: false });
       carry = data.subarray(Math.max(0, data.length - overlap));
-      if (leak) unzip.kill();
+      if (leak) unzip.kill("SIGKILL");
     });
     // Drain diagnostics so a noisy unzip cannot block. Error text is withheld
     // because archive paths and contents belong to private attempt evidence.

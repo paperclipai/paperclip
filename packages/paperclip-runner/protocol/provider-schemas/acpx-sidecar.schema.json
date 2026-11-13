@@ -9,6 +9,21 @@
   ],
   "$defs": {
     "protocolVersion": { "const": 2 },
+    "turnDispatchJournalFile": {
+      "description": "File name of the sidecar's prompt-dispatch journal in the session runtime directory. It holds turnDispatchJournalRecord lines for the latest turn only.",
+      "const": "paperclip-turn-dispatch.jsonl"
+    },
+    "turnDispatchJournalRecord": {
+      "description": "One journal line. The runtime port truncates the file and writes `received` when it starts the turn, before any provider work. It appends `dispatched` and fsyncs it immediately before the turn's first session/prompt request is written to the provider. The Runner reads the journal only after it proves that the sidecar and provider are gone: a lone `received` line proves the prompt never reached the provider.",
+      "type": "object",
+      "properties": {
+        "schema": { "const": "paperclip.acpx-turn-dispatch.v1" },
+        "turnId": { "type": "string", "minLength": 1 },
+        "phase": { "enum": ["received", "dispatched"] }
+      },
+      "required": ["schema", "turnId", "phase"],
+      "additionalProperties": false
+    },
     "command": {
       "enum": [
         "initialize",

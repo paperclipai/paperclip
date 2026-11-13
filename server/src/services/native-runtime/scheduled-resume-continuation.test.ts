@@ -8,6 +8,7 @@ import {
 } from "../../__tests__/helpers/embedded-postgres.js";
 import {
   decideScheduledResumeContinuation,
+  sameRunResumeClaimEntry,
   scheduledResumeContinuationAllowed,
   type ScheduledResumeContinuationEvidence,
 } from "./scheduled-resume-continuation.js";
@@ -51,6 +52,27 @@ describe("same-run scheduled resume continuation of a turn lost on restore", () 
     ["no attempt was admitted", { ...proven, admittedAttempt: 0 }, "attempt_not_admitted"],
     ["the previous runner has no stop receipt", { ...proven, localStop: null }, "local_stop_unverified"],
   ])("refuses when %s", (_name, evidence, reason) => {
+    expect(decideScheduledResumeContinuation(evidence)).toEqual({ allowed: false, reason });
+  });
+
+  const resumeClaim = (patch: Record<string, unknown> = {}, detail: Record<string, unknown> = {}) =>
+    ({ ...sameRunResumeClaimEntry({ at: new Date(), controllerBootId: "boot-1", providerAttempt: 1,
+      failureDetail: { ...proven.failureDetail, ...detail } }), ...patch });
+  const claimed = (claim: Record<string, unknown> | null, patch: Partial<ScheduledResumeContinuationEvidence> = {}) =>
+    ({ ...proven, coordinatorPhase: "observed", failureDetail: null, resumeClaim: claim, controllerBootId: "boot-1", ...patch });
+
+  it("reads the evidence the resume reconciler recorded when it claimed the run", () => {
+    expect(decideScheduledResumeContinuation(claimed(resumeClaim()))).toEqual({ allowed: true });
+  });
+
+  it.each<[string, ScheduledResumeContinuationEvidence, string]>([
+    ["the last history entry is not the resume claim", claimed(resumeClaim({ disposition: "retryable_failure" })), "not_a_scheduled_same_run_resume"],
+    ["no history entry exists", claimed(null), "not_a_scheduled_same_run_resume"],
+    ["another boot recorded the resume claim", claimed(resumeClaim(), { controllerBootId: "boot-2" }), "not_a_scheduled_same_run_resume"],
+    ["the claimed failure was a bootstrap retry", claimed(resumeClaim({}, { recoveryMode: "bootstrap_retry" })), "not_an_exact_checkpoint_resume"],
+    ["the claimed failure had no checkpoint", claimed(resumeClaim({}, { checkpointExists: false })), "checkpoint_missing"],
+    ["the claimed failure recorded a replacement", claimed(resumeClaim({}, { successorRunId: "run-2" })), "replacement_recorded"],
+  ])("refuses a reconciler-claimed resume when %s", (_name, evidence, reason) => {
     expect(decideScheduledResumeContinuation(evidence)).toEqual({ allowed: false, reason });
   });
 });

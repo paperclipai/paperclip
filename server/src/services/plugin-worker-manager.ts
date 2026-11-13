@@ -1,3 +1,4 @@
+import { isPluginWorkspaceReplay } from "./plugin-workspace-replay-context.js";
 import { withPluginInteractionOrigin } from "./plugin-interaction-context.js";
 import { pluginIdleManifestGeneration, type IdlePluginCatalogEntry } from "./plugin-idle-catalog.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -829,6 +830,10 @@ export interface WorkerDiagnostics {
  * for starting/stopping all workers and routing RPC calls.
  */
 export interface PluginWorkerManager {
+  /** Installs the loader's on-demand re-activation for plugins errored by activation timeouts. */
+  setActivationTimeoutRecovery?(handler: ((plugin: { id: string; status: string; lastError: string | null }) => boolean) | null): void;
+  /** Whether a re-activation of a plugin errored by activation timeouts is now in flight. */
+  requestActivationTimeoutRecovery?(plugin: { id: string; status: string; lastError: string | null }): boolean;
   drainStartup?(contextId: string): Promise<void>;
   recoverStartupAcquisition?(contextId: string, creationOperationId: string): void;
   retireStartup?(contextId: string): Promise<void>;
@@ -1285,15 +1290,19 @@ export function createPluginWorkerHandle(
       if (method === "resourceLifecycle" && params.resourceType === "project" && readNonEmptyString(params.resourceId)) {
         return { companyId: directCompanyId, projectGit: { projectId: params.resourceId as string } };
       }
-      if (method === "workspaceOperation" && isRecord(params.operation)) {
+      if ((method === "workspaceOperation" || method === "workspacePrepare") && isRecord(params.operation)) {
         const operation = params.operation;
         const source = operation.kind === "prepare" ? operation.source : operation.binding;
         const workspaceId = isRecord(source) ? readNonEmptyString(operation.kind === "prepare" ? source.id : source.projectWorkspaceId) : null;
         const projectId = readNonEmptyString(params.projectId);
         if (projectId && workspaceId && (operation.kind === "prepare" || operation.kind === "inspect" || operation.kind === "remove")) {
-          // Only foreground preparation may use a run. Maintenance uses project consent.
-          const runId = operation.kind === "prepare" ? readNonEmptyString(params.runId) : null;
-          const agentId = operation.kind === "prepare" ? readNonEmptyString(params.agentId) : null;
+          const executionWorkspaceId = readNonEmptyString(params.executionWorkspaceId);
+          // Reconciliation preserves the provider's request identity while Git uses project consent.
+          const foreground = operation.kind === "prepare" && !(executionWorkspaceId && isPluginWorkspaceReplay({
+            pluginId, companyId: directCompanyId, projectId, projectWorkspaceId: workspaceId, executionWorkspaceId,
+          }));
+          const runId = foreground ? readNonEmptyString(params.runId) : null;
+          const agentId = foreground ? readNonEmptyString(params.agentId) : null;
           if (Boolean(runId) !== Boolean(agentId)) return { companyId: directCompanyId };
           return { companyId: directCompanyId, projectGit: { projectId, workspaceId, operation: operation.kind,
             ...(runId && agentId ? { runId, agentId } : {}) } };
@@ -3415,7 +3424,7 @@ export function createPluginWorkerHandle(
       log.error({ err: msg }, "worker initialize failed");
       await killProcess();
       setStatus("crashed");
-      throw new Error(`Worker initialize failed for "${pluginId}": ${msg}`);
+      throw new Error(`Worker initialize failed for "${pluginId}": ${msg}`, { cause: err });
     }
 
     // Reset crash counter on successful start
@@ -4089,7 +4098,14 @@ export function createPluginWorkerManager(
   const idleWorkerManifests = new WeakMap<PluginWorkerHandle, string>();
   const idleManagerGeneration = randomUUID();
   let nextIdleWorkerIdentity = 0;
+  let activationTimeoutRecovery: ((plugin: { id: string; status: string; lastError: string | null }) => boolean) | null = null;
   return {
+    setActivationTimeoutRecovery(handler) {
+      activationTimeoutRecovery = handler;
+    },
+    requestActivationTimeoutRecovery(plugin) {
+      return activationTimeoutRecovery?.(plugin) ?? false;
+    },
     onConfigApplied(listener) {
       configApplied.add(listener);
       return () => { configApplied.delete(listener); };

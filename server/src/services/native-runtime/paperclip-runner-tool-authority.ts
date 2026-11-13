@@ -73,9 +73,11 @@ import { getSecretProvider } from "../../secrets/provider-registry.js";
 import { runnerApiSensitiveResponse } from "./runner-api-sensitive-response.js";
 import { workspaceFileResourceService } from "../workspace-file-resources.js";
 import { badRequest, forbidden, notFound, HttpError } from "../../errors.js";
-import { runnerApiCatalog, searchRunnerApi } from "./runner-api-catalog.js";
+import { casesDisabledError } from "../cases-disabled.js";
+import { runnerApiCatalog, searchRunnerApi, withCompanyPagePaths } from "./runner-api-catalog.js";
 import { assertRunnerApiDispatchable, executeRunnerApi, validateRunnerApiCall, RUNNER_API_MAX_BYTES, type RunnerApiCall, type RunnerApiFile, type RunnerApiIo } from "./runner-api-client.js";
-import { acquireRunnerApiResponseSlot, runnerApiCompanyCaptureMaxBytes, RUNNER_API_RESPONSE_MAX_BYTES, RUNNER_API_RESPONSE_RUN_MAX_BYTES, RunnerApiResponseLimitError } from "./runner-api-response-limits.js";
+import { finishPendingRunnerApiCaptureDeletes, markRunnerApiCaptureEvictions, RUNNER_API_CAPTURE_EVICTION_PASSES, runnerApiCaptureCleanupStalled, runnerApiCaptureUsageBytes } from "./runner-api-capture-retention.js";
+import { acquireRunnerApiResponseSlot, RUNNER_API_RESPONSE_DEADLINE_MS, RunnerApiCaptureReservationReclaimedError, runnerApiCompanyCaptureMaxBytes, RUNNER_API_RESPONSE_MAX_BYTES, RUNNER_API_RESPONSE_RUN_MAX_BYTES, RunnerApiResponseLimitError } from "./runner-api-response-limits.js";
 import { and, desc, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -136,6 +138,9 @@ import {
   READ_CHAT_ATTACHMENT_TOOL_NAME,
   type NativeChatAttachmentReadScope,
 } from "./chat-attachment-read.js";
+import { commentsArrivedDuringRun, recordTaskHistoryRead, taskHistoryHandlingGuidance } from "../queued-comment-delivery.js";
+import { recordChildTaskRead } from "./native-child-completion-delivery.js";
+import { logger } from "../../middleware/logger.js";
 
 const EXTERNAL_WORKSPACE_OPERATIONS = new Set(["get_workspace", "list_workspaces", "select_workspace", "prepare_repository", "register_deliverable"]);
 const IMPLEMENTED_OPERATIONS = new Set([
@@ -174,6 +179,19 @@ const RECOVERABLE_READ_OPERATIONS = new Set([
   READ_CURRENT_WAKE_COMMENTS_TOOL_NAME, LIST_CHAT_ATTACHMENTS_TOOL_NAME, READ_CHAT_ATTACHMENT_TOOL_NAME,
   READ_TOOL_RESULT, "connections_search",
 ]);
+// Writes whose effect and idempotency receipt commit in one transaction, with
+// no outside effect before commit, and whose effect is compare-and-swap on the
+// state it read. Recovery may run them again: the receipt proves whether the
+// first attempt applied (see #recoverTransactionalWrite).
+const TRANSACTIONAL_RECEIPT_OPERATIONS = new Set(["write_document"]);
+const TRANSACTIONAL_RECOVERY_REFUSALS = new Set([
+  "paperclip_runner_tool_idempotency_conflict", "paperclip_runner_tool_input_invalid",
+  "paperclip_runner_tool_mode_denied",
+]);
+function nativeToolAllowedInMode(operationId: string, workMode: string): boolean {
+  return CAPABILITY_SEMANTIC_TOOL_CATALOG.some(candidate => candidate.operationId === operationId
+    && candidate.allowedModes.includes(workMode as "standard" | "planning" | "ask"));
+}
 const RECOVERABLE_READ_ERRORS = new Set([
   "paperclip_runner_document_not_found", "paperclip_runner_agent_not_found",
   "paperclip_runner_approval_not_found", "paperclip_runner_tool_input_invalid",
@@ -477,6 +495,7 @@ export class PaperclipRunnerToolAuthority {
       if (!Object.hasOwn(receipt, "result")) return null;
       return { result: await this.#withInstructionMutationReceipt(call.tool, call.callId, input, true) };
     }
+    if (TRANSACTIONAL_RECEIPT_OPERATIONS.has(call.tool)) return this.#recoverTransactionalWrite(call.tool, input);
     // Recovery goes through the receipt owner: it must use the same parsed
     // input, current authority and safe post-commit dispatch as an ordinary
     // retry, without ever falling through to an uncertain mutation.
@@ -541,6 +560,32 @@ export class PaperclipRunnerToolAuthority {
       + " Call list_agents and copy a valid id exactly; nothing was created or changed.");
   }
 
+  /**
+   * Settle a transactional write whose callback a restart cut off. The effect
+   * and its idempotency receipt commit in one transaction under the run and
+   * issue row locks, so the receipt is the durable outcome record: present
+   * means applied, absent means not applied. Running the same receipt-guarded
+   * mutation therefore either replays the saved result or applies the write
+   * for the first time, never twice. A definite pre-commit refusal (a stale
+   * base, a reused key, invalid input) is the call's real outcome and returns
+   * as a tool error; any other failure stays unsettled.
+   */
+  async #recoverTransactionalWrite(tool: string, input: Record<string, unknown>) {
+    try {
+      if (tool === "write_document") return { result: await this.#writeDocument(input, true) };
+      throw new Error(`paperclip_runner_transactional_recovery_unsupported: ${tool}`);
+    } catch (error) {
+      // Each of these is raised before the transaction commits, so it rolls the
+      // write back: the call's outcome is this refusal, not an unknown one.
+      const definite = error instanceof HttpError ? error.status >= 400 && error.status < 500
+        : error instanceof Error && TRANSACTIONAL_RECOVERY_REFUSALS.has(error.message);
+      if (!definite) throw error;
+      return { isError: true, result: {
+        success: false, contentItems: [{ type: "inputText", text: (error as Error).message }],
+      } };
+    }
+  }
+
   async #recoverRead(call: Parameters<PaperclipRunnerToolAuthority["execute"]>[0]) {
     try {
       return { result: await this.execute(call) };
@@ -589,7 +634,7 @@ export class PaperclipRunnerToolAuthority {
     if ((call.tool === "handoff_case" || call.tool === "create_case") && !this.binding.nativeReview) {
       if (this.binding.workMode && this.binding.workMode !== "standard") throw forbidden("Case tools require standard work mode");
       const create = call.tool === "create_case" ? createNativeCaseSchema.parse(call.arguments) : null;
-      if (this.binding.casesEnabled !== true) throw forbidden("Cases are disabled");
+      if (this.binding.casesEnabled !== true) throw casesDisabledError({ inlineRemediation: true });
       if (this.binding.museRuntime) await this.binding.assertBridgeAuthority?.();
       // Both operations use the principal-scoped handoff ledger. A committed
       // receipt stays replayable after ownership moved; fresh work reauthorizes.
@@ -676,6 +721,11 @@ export class PaperclipRunnerToolAuthority {
           !hidden.has(skill.key) && !(savedVersions && Object.prototype.hasOwnProperty.call(savedVersions, skill.key) && !permittedKeys.has(skill.key))) };
         if (call.tool === "list_assigned_skills") return runtimeContext.skills.map(skill => ({ key: skill.key, name: skill.runtimeName, versionId: skill.versionId, digest: skill.bundle.digest }));
         return settleRunnerBridgeRead(() => readAssignedSkill(runtimeContext, input));
+      }
+      if (call.tool === "save_api_response") {
+        // Saving is a separate read tool so call_api's write path carries no
+        // read-only options; the shared client still enforces GET-only export.
+        return apiToolResult(await this.#callApi(call.callId, { ...input, saveResponse: true } as RunnerApiCall));
       }
       return apiToolResult(await this.#callApi(call.callId, taskBridgeApiRequest(call.tool, input)));
     }
@@ -867,7 +917,7 @@ export class PaperclipRunnerToolAuthority {
           conversation: Boolean(context.issue.conversationAgentId),
           companyPrefix: call.tool === "list_projects" ? await this.#companyPagePrefix() : null });
       }
-      case "search_api": return searchRunnerApi(call.arguments);
+      case "search_api": return withCompanyPagePaths(searchRunnerApi(call.arguments), await this.#companyPagePrefix());
       case "hire_agent": {
         return hireAgentResult(await this.#callApi(call.callId, hireAgentApiRequest(input, this.binding)), context.actor.adapterConfig?.provider);
       }
@@ -898,6 +948,9 @@ export class PaperclipRunnerToolAuthority {
         const readableChildren = this.binding.museRuntime
           ? await this.#readableMuseTaskIds(context.run, childTasks.map(task => task.id)) : null;
         const visibleChildTasks = readableChildren ? childTasks.filter(task => readableChildren.has(task.id)) : childTasks;
+        await recordChildTaskRead(this.db, { companyId: this.binding.companyId, agentId: this.binding.agentId,
+          runId: this.binding.runId, parentIssueId: this.binding.issueId, children: visibleChildTasks.slice(0, 100) }).catch(error =>
+          logger.warn({ err: error, runId: this.binding.runId }, "could not record the child tasks a run read"));
         return {
           company: { id: this.binding.companyId },
           actor: redactedActor(context.actor),
@@ -946,6 +999,7 @@ export class PaperclipRunnerToolAuthority {
           authorAgentId: issueComments.authorAgentId,
           authorUserId: issueComments.authorUserId,
           createdAt: issueComments.createdAt,
+          updatedAt: issueComments.updatedAt,
         }).from(issueComments)
           .where(and(
             eq(issueComments.companyId, this.binding.companyId),
@@ -954,10 +1008,15 @@ export class PaperclipRunnerToolAuthority {
           ))
           .orderBy(desc(issueComments.createdAt))
           .limit(limit);
-        return { comments: comments.reverse().map(comment => {
+        await recordTaskHistoryRead(this.db, { companyId: this.binding.companyId, agentId: this.binding.agentId,
+          runId: this.binding.runId, comments }).catch(error =>
+          logger.warn({ err: error, runId: this.binding.runId }, "could not record the task history a run read"));
+        const arrived = await commentsArrivedDuringRun(this.db, { companyId: this.binding.companyId,
+          runId: this.binding.runId, agentId: this.binding.agentId, comments }).catch(() => [] as string[]);
+        return { comments: comments.reverse().map(({ updatedAt: _updatedAt, ...comment }) => {
           const visible = isLowTrustQuarantined(readerSourceTrust) ? comment : sanitizeQuarantinedCommentForHigherTrust(comment);
           return { ...visible, body: fastResponseHistoryBody(visible) };
-        }) };
+        }), ...taskHistoryHandlingGuidance(arrived) };
       }
       case "search_tasks": {
         const tasks = await issueService(this.db).list(this.binding.companyId, { readCondition: await issueReadSqlCondition(this.db, this.#privacyActor(context.run)) });
@@ -1175,7 +1234,7 @@ export class PaperclipRunnerToolAuthority {
       }
       // A new call that would be rejected before dispatch must not reserve a
       // pending receipt; that would make its callId report an unknown outcome.
-      assertRunnerApiDispatchable(operation, input, Object.keys(record(value)));
+      assertRunnerApiDispatchable(operation, input, record(value));
       if (Object.keys(receipts).length >= 512) throw badRequest("Run API mutation limit reached");
       receipts[key] = { digest, operationId: operation.operationId, state: "pending" };
       await tx.update(heartbeatRuns).set({ resultJson: { ...resultJson, apiToolReceipts: receipts } }).where(eq(heartbeatRuns.id, this.binding.runId));
@@ -1459,9 +1518,17 @@ export class PaperclipRunnerToolAuthority {
         if (!reservationId) throw new Error("API response storage reservation is missing");
         const storage = this.binding.storage ?? getStorageService();
         storageAttempted = true;
-        const saved = await storage.putFile({ companyId: this.binding.companyId, namespace: caseId ? `cases/${caseId}/runner-api` : "runner-api", originalFilename: contentType.includes("json") ? "response.json" : "response.bin", contentType, ...(Buffer.isBuffer(bytes) ? { body: bytes } : { body: createReadStream(bytes.path), byteSize: bytes.byteSize, sha256: bytes.sha256 }) });
+        const saved = await storage.putFile({ companyId: this.binding.companyId, namespace: caseId ? `cases/${caseId}/runner-api` : "runner-api", originalFilename: contentType.includes("json") ? "response.json" : "response.bin", contentType, signal: AbortSignal.timeout(RUNNER_API_RESPONSE_DEADLINE_MS), ...(Buffer.isBuffer(bytes) ? { body: bytes } : { body: createReadStream(bytes.path), byteSize: bytes.byteSize, sha256: bytes.sha256 }) });
         const asset = await this.db.transaction(async tx => {
           await this.#lockApiCaptureCompany(tx as unknown as Db);
+          const [held] = await tx.select({ id: runnerApiResponseReservations.id }).from(runnerApiResponseReservations).where(and(
+            eq(runnerApiResponseReservations.id, reservationId!), eq(runnerApiResponseReservations.companyId, this.binding.companyId),
+            isNull(runnerApiResponseReservations.assetId))).for("update");
+          if (!held) {
+            await tx.insert(runnerApiResponseReservations).values({ companyId: this.binding.companyId, runId: null,
+              reservedBytes: saved.byteSize, pendingDeleteObjectKey: saved.objectKey });
+            return null;
+          }
           const asset = await assetService(tx as unknown as Db).create(this.binding.companyId, { ...saved, createdByAgentId: this.binding.agentId });
           await tx.update(runnerApiResponseReservations).set({ assetId: asset.id, reservedBytes: asset.byteSize }).where(and(eq(runnerApiResponseReservations.id, reservationId!), eq(runnerApiResponseReservations.companyId, this.binding.companyId)));
           return asset;
@@ -1478,6 +1545,11 @@ export class PaperclipRunnerToolAuthority {
           }
           throw error;
         });
+        if (!asset) {
+          storageAttempted = false;
+          await finishPendingRunnerApiCaptureDeletes(this.db, storage, this.binding.companyId);
+          throw new RunnerApiCaptureReservationReclaimedError();
+        }
         const activity = await persistActivity(this.db, { companyId: this.binding.companyId, actorType: "agent", actorId: this.binding.agentId, agentId: this.binding.agentId, runId: this.binding.runId, issueId: this.binding.issueId, action: "asset.created", entityType: "asset", entityId: asset.id, details: { source, byteSize: saved.byteSize } });
         publishActivity(activity.publication);
         return { artifactId: asset.id, url: `/api/assets/${asset.id}/content`, contentType, byteSize: saved.byteSize, sha256: saved.sha256 };
@@ -1491,43 +1563,43 @@ export class PaperclipRunnerToolAuthority {
 
   async #reserveApiResponseCapture() {
     const release = acquireRunnerApiResponseSlot(this.binding.companyId);
-    let id: string;
+    let id: string | undefined;
+    let cleanupFailing = false;
     try {
-      id = await this.db.transaction(async tx => {
-        await this.#lockApiCaptureCompany(tx as unknown as Db);
-        const locked = await this.#lockAuthorizedMutationContext(tx as unknown as Db);
-        const resultJson = record(locked.run.resultJson);
-        const used = resultJson.apiResponseCaptureBytes ?? 0;
-        if (typeof used !== "number" || !Number.isSafeInteger(used) || used < 0
-          || used + RUNNER_API_RESPONSE_MAX_BYTES > RUNNER_API_RESPONSE_RUN_MAX_BYTES) {
-          throw new RunnerApiResponseLimitError("api_response_capture_limit", "This run has insufficient capture budget (4 GiB per run). Read an existing asset or narrow the query.");
+      for (let attempt = 0; id === undefined; attempt++) {
+        id = await this.db.transaction(async tx => {
+          await this.#lockApiCaptureCompany(tx as unknown as Db);
+          const locked = await this.#lockAuthorizedMutationContext(tx as unknown as Db);
+          const resultJson = record(locked.run.resultJson);
+          const used = resultJson.apiResponseCaptureBytes ?? 0;
+          if (typeof used !== "number" || !Number.isSafeInteger(used) || used < 0
+            || used + RUNNER_API_RESPONSE_MAX_BYTES > RUNNER_API_RESPONSE_RUN_MAX_BYTES) {
+            throw new RunnerApiResponseLimitError("api_response_capture_limit", "This run has insufficient capture budget (4 GiB per run). Read an existing asset or narrow the query.");
+          }
+          const companyBytes = await runnerApiCaptureUsageBytes(tx as unknown as Db, this.binding.companyId);
+          const overBy = companyBytes + RUNNER_API_RESPONSE_MAX_BYTES - runnerApiCompanyCaptureMaxBytes();
+          if (Number.isSafeInteger(companyBytes) && companyBytes >= 0 && overBy > 0 && attempt < RUNNER_API_CAPTURE_EVICTION_PASSES) {
+            const marked = await markRunnerApiCaptureEvictions(tx as unknown as Db, this.binding.companyId, overBy);
+            if (marked.releasedBytes >= overBy) return this.#insertApiCaptureReservation(tx as unknown as Db, resultJson, used);
+            return undefined;
+          }
+          if (cleanupFailing && overBy > 0) {
+            throw new RunnerApiResponseLimitError("api_response_company_storage_limit", "Saved API responses for this company cannot be stored right now because file storage keeps failing to delete old ones. Paperclip keeps retrying the cleanup automatically. Read a saved response you already have, ask for less data, or try again later.");
+          }
+          if (!Number.isSafeInteger(companyBytes) || companyBytes < 0 || overBy > 0) {
+            throw new RunnerApiResponseLimitError("api_response_company_storage_limit", "Saved API responses for this company are using all of their storage, and none can be removed yet: they belong to runs that are still working, are attached to tasks, or are still being deleted. Read a saved response you already have, ask for less data, or try again in a few minutes.");
+          }
+          return this.#insertApiCaptureReservation(tx as unknown as Db, resultJson, used);
+        });
+        if (id === undefined) {
+          const cleanup = await finishPendingRunnerApiCaptureDeletes(this.db, this.binding.storage ?? getStorageService(), this.binding.companyId);
+          cleanupFailing = cleanup.failed > 0 && await runnerApiCaptureCleanupStalled(this.db, this.binding.companyId);
         }
-        // One company lock covers all runs/processes. Stored assets include
-        // snapshots from before reservations existed; attached reservations
-        // are excluded so completed snapshots are counted exactly once.
-        const [usage] = await tx.select({ bytes: sql<string>`
-          coalesce((select sum(${assets.byteSize}) from ${assets}
-            where ${assets.companyId} = ${this.binding.companyId}
-              and (${assets.objectKey} like ${`${this.binding.companyId}/runner-api/%`}
-                or exists (select 1 from ${runnerApiResponseReservations} capture
-                  where capture.asset_id = ${assets.id} and capture.company_id = ${this.binding.companyId}))), 0)
-          + coalesce((select sum(${runnerApiResponseReservations.reservedBytes}) from ${runnerApiResponseReservations}
-            where ${runnerApiResponseReservations.companyId} = ${this.binding.companyId}
-              and ${runnerApiResponseReservations.assetId} is null), 0)` }).from(heartbeatRuns).where(eq(heartbeatRuns.id, this.binding.runId));
-        const companyBytes = Number(usage.bytes);
-        if (!Number.isSafeInteger(companyBytes) || companyBytes < 0 || companyBytes + RUNNER_API_RESPONSE_MAX_BYTES > runnerApiCompanyCaptureMaxBytes()) {
-          throw new RunnerApiResponseLimitError("api_response_company_storage_limit", "Company API snapshot storage quota is exhausted. Read an existing asset or ask the operator to remove old snapshots or increase the quota.");
-        }
-        // Reserve worst-case bytes durably before creating a temporary file.
-        // Interrupted/failed captures keep the reservation, preventing retry
-        // loops and process restarts from resetting this run's disk-I/O budget.
-        await tx.update(heartbeatRuns).set({ resultJson: { ...resultJson, apiResponseCaptureBytes: used + RUNNER_API_RESPONSE_MAX_BYTES } }).where(eq(heartbeatRuns.id, this.binding.runId));
-        const [reservation] = await tx.insert(runnerApiResponseReservations).values({ companyId: this.binding.companyId, runId: this.binding.runId, reservedBytes: RUNNER_API_RESPONSE_MAX_BYTES }).returning({ id: runnerApiResponseReservations.id });
-        return reservation.id;
-      });
+      }
     } catch (error) { release(); throw error; }
+    const reservationId = id;
     let settled = false;
-    return { id, settle: async (completedBytes?: number, cleaned?: boolean, storageAttempted?: boolean) => {
+    return { id: reservationId, settle: async (completedBytes?: number, cleaned?: boolean, storageAttempted?: boolean) => {
       if (settled) return;
       settled = true;
       try {
@@ -1535,8 +1607,8 @@ export class PaperclipRunnerToolAuthority {
           await this.#lockApiCaptureCompany(tx as unknown as Db);
           // Reclaim a handled pre-storage failure only after disk cleanup.
           // Crashes, failed cleanup, and ambiguous storage failures keep their
-          // reservation until an operator reconciles the possible orphan data.
-          if (cleaned && !storageAttempted) await tx.delete(runnerApiResponseReservations).where(and(eq(runnerApiResponseReservations.id, id), isNull(runnerApiResponseReservations.assetId)));
+          // reservation until company admission reclaims it after the run ends.
+          if (cleaned && !storageAttempted) await tx.delete(runnerApiResponseReservations).where(and(eq(runnerApiResponseReservations.id, reservationId), isNull(runnerApiResponseReservations.assetId)));
           if (completedBytes === undefined) return;
           const [run] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, this.binding.runId), eq(heartbeatRuns.companyId, this.binding.companyId))).for("update");
           if (!run) return;
@@ -1547,6 +1619,12 @@ export class PaperclipRunnerToolAuthority {
         });
       } finally { release(); }
     } };
+  }
+
+  async #insertApiCaptureReservation(tx: Db, resultJson: Record<string, unknown>, used: number): Promise<string> {
+    await tx.update(heartbeatRuns).set({ resultJson: { ...resultJson, apiResponseCaptureBytes: used + RUNNER_API_RESPONSE_MAX_BYTES } }).where(eq(heartbeatRuns.id, this.binding.runId));
+    const [reservation] = await tx.insert(runnerApiResponseReservations).values({ companyId: this.binding.companyId, runId: this.binding.runId, reservedBytes: RUNNER_API_RESPONSE_MAX_BYTES }).returning({ id: runnerApiResponseReservations.id });
+    return reservation.id;
   }
 
   async #dotOwnsApiAsset(assetId: string): Promise<boolean> {
@@ -1850,10 +1928,16 @@ export class PaperclipRunnerToolAuthority {
     return result;
   }
 
-  async #writeDocument(input: Record<string, unknown>): Promise<unknown> {
+  async #writeDocument(input: Record<string, unknown>, recovering = false): Promise<unknown> {
     const idempotencyKey = requiredString(input.idempotencyKey);
     let publication: Awaited<ReturnType<typeof persistActivity>>["publication"] | null = null;
     const result = await this.#withMutationReceipt("write_document", idempotencyKey, input, async (tx, context) => {
+      // execute() checks the work mode before dispatch. A recovered write
+      // applies later, so it checks the mode it locked; a saved receipt
+      // still replays without this check because its effect already applied.
+      if (recovering && !nativeToolAllowedInMode("write_document", context.issue.workMode)) {
+        throw new Error("paperclip_runner_tool_mode_denied");
+      }
       const sourceTrust = this.binding.museRuntime ? await resolveActorSourceTrustForIssue({ db: tx, issue: context.issue,
         actor: { actorType: "agent", actorId: this.binding.agentId, agentId: this.binding.agentId, runId: this.binding.runId } }) : undefined;
       const write = await documentService(tx).upsertIssueDocument({
@@ -1861,7 +1945,7 @@ export class PaperclipRunnerToolAuthority {
         key: requiredString(input.key),
         title: requiredString(input.title),
         format: "markdown",
-        body: requiredString(input.body),
+        body: requiredUntrimmedString(input.body),
         baseRevisionId: nullableProviderId(input.baseRevisionId),
         changeSummary: input.changeSummary === null || input.changeSummary === undefined
           ? null
@@ -3278,8 +3362,12 @@ export class PaperclipRunnerToolAuthority {
 }
 
 function requiredString(value: unknown): string {
+  return requiredUntrimmedString(value).trim();
+}
+
+function requiredUntrimmedString(value: unknown): string {
   if (typeof value !== "string" || value.trim() === "") throw new Error("paperclip_runner_tool_input_invalid");
-  return value.trim();
+  return value;
 }
 
 /**

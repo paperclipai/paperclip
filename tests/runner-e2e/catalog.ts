@@ -32,6 +32,7 @@ import { hiringTemplateTasks, hiringTemplateProfile, hiringTemplateDefinitionDig
 import { copilotProviderDeathTasks } from "./copilot-active-stop-tasks.js";
 import { instructionPersistenceTask } from "./instruction-persistence.js";
 import { apiResponseReadingTask } from "./api-response-reading.js";
+import { CODEX_PLANNING_READ_ONLY_SUITE, codexPlanningReadOnlyTask } from "./codex-planning-read-only.js";
 import { apiArtifactTransferTask } from "./api-artifact-transfer.js";
 import { taskTitleTasks, taskTitleDefinitionDigest, TASK_TITLE_BUDGET_CENTS } from "./task-titles.js";
 import { chatCatalogInventoryDigest, chatCatalogScenarios } from "./chat-catalog-inventory.js";
@@ -1678,6 +1679,14 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     profiles: runnerProfiles.filter(profile => profile.id === "runner-codex"),
     tasks: [apiResponseReadingTask], expectedMatrixSize: 2,
     definitionMetadata: { version: 1, grading: "hidden-evidence-exact-copy-and-api-tool-events", scheduling: "explicit-only" },
+  },
+  {
+    id: CODEX_PLANNING_READ_ONLY_SUITE, label: "Codex planning read-only enforcement", manualOnly: true,
+    description: "Start a native Codex planning turn, attempt one workspace write, and require the sandbox to refuse it before the Plan is approved.",
+    groups: [], environments: runnerEnvironments,
+    profiles: runnerProfiles.filter(profile => profile.id === "runner-codex"),
+    tasks: [codexPlanningReadOnlyTask], expectedMatrixSize: 2,
+    definitionMetadata: { version: 1, grading: "plan-marker-and-refused-shell-write-event", scheduling: "explicit-only", maximumAttemptsPerCell: 1 },
   },
   {
     id: "api-artifact-transfer", label: "Verified API artifact transfer", manualOnly: true,

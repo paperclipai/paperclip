@@ -4,7 +4,7 @@ import {
   runnerLaunchRequirementsDigest,
   type RunnerProviderLaunchRequirements,
 } from "./runner-provider-launch.js";
-import { coldAdmissionTimeoutMs, waitForRunnerCommand } from "./runnerd-codex-transport.js";
+import { coldAdmissionTimeoutMs, describeRunnerCommandStall, RUNNER_MAX_STOPPED_CREDIT_MS, RUNNER_POST_STOP_GRACE_MS, RunnerStallLedger, waitForRunnerCommand } from "./runnerd-codex-transport.js";
 import { configuredEnvironmentProjection } from "../configured-environment.js";
 import { chmod, cp, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, truncate, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
@@ -162,6 +162,38 @@ it("attributes opened candidate sessions to the harness biller instead of the mo
   expect(provider("claude_managed", "codex", "claude-sonnet-5")).toBe("anthropic");
   expect(provider("aws_agentcore", "codex", "global.anthropic.claude-sonnet-4-6")).toBe("aws");
 });
+
+it("uses one durable attachment command and an event for a settled download", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "runnerd-attachment-event-"));
+  let core!: DurablePrpControlPlane;
+  const { transport } = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(),
+    codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(directory),
+    stateDirectory: directory,
+    controlPlaneRegistration: async authority => {
+      core = authority;
+      await authority.start();
+      return { release: () => undefined };
+    },
+  });
+  try {
+    await transport.request("thread/start", { cwd: directory });
+    await expect(transport.downloadAttachment!(() => ({
+      url: "https://127.0.0.1:0/attachment", token: "a".repeat(43),
+      byteSize: 1, sha256: "0".repeat(64), contentType: "image/png",
+    }))).rejects.toThrow("runner_attachment_download_invalid_path");
+    const commands = core.store.state.commands.filter(command => command.type === "runner.attachment.download");
+    expect(commands).toHaveLength(1);
+    expect(commands[0]?.status).toBe("completed");
+    const events = core.store.state.committedEvents.filter(event => event.eventType === "runner.attachment.settled");
+    expect(events).toHaveLength(1);
+    expect(events[0]?.envelope.payload).toMatchObject({ payload: { status: "failed" } });
+  } finally {
+    await transport.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+}, 30_000);
 
 it("replaces an owned v1 runner with fresh v2 authorization before warm attachment", async () => {
   const directory = await mkdtemp(join(tmpdir(), "runnerd-v1-v2-replacement-"));
@@ -371,6 +403,51 @@ it.each(["resolved", "rejected"] as const)(
   },
   15_000,
 );
+
+it("gives the process owner live evidence of the runner's own authenticated connection", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "runnerd-connection-evidence-"));
+  const specs: durableControlPlane.RunnerProcessLaunchSpec[] = [];
+  let child: ReturnType<typeof spawn> | undefined;
+  let exited: Promise<void> | undefined;
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(),
+    codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(directory),
+    stateDirectory: directory,
+    lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 },
+    runnerReconnectGraceMs: 60_000,
+    runnerProcessLauncher: spec => {
+      specs.push(spec);
+      const ownedChild = spawn(spec.command, [...spec.args], { cwd: spec.cwd, env: spec.environment, stdio: "ignore" });
+      child = ownedChild;
+      exited = new Promise(resolveExit => ownedChild.once("exit", () => resolveExit()));
+      return {
+        child: ownedChild,
+        completion: new Promise<durableControlPlane.RunnerProcessResult>(() => {}),
+        isExitConfirmed: () => false,
+      };
+    },
+  });
+  try {
+    await bundle.transport.request("thread/start", { cwd: directory });
+    expect(specs).toHaveLength(1);
+    expect(specs[0]!.isRunnerConnected?.()).toBe(true);
+    child!.kill("SIGKILL");
+    await exited;
+    await vi.waitFor(() => expect(specs[0]!.isRunnerConnected?.()).toBe(false), { timeout: 5_000 });
+  } finally {
+    const providerPid = bundle.evidence().codexPid;
+    if (providerPid) {
+      try { process.kill(providerPid, "SIGKILL"); } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+      }
+    }
+    await bundle.transport.detachControllerForRestart!();
+    child?.kill("SIGKILL");
+    await exited;
+    await rm(directory, { recursive: true, force: true });
+  }
+}, 15_000);
 
 it.each([
   "transport_reconnect_grace_exceeded",
@@ -1486,6 +1563,51 @@ it("refuses a terminal call that arrives before a held call's result (restart ch
   }
 }, 20_000);
 
+it("refuses a finish once for a returned call that never reaches the agent, then accepts the next finish", async () => {
+  const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-unseen-once-"));
+  const OriginalCore = durableControlPlane.DurablePrpControlPlane;
+  let callbacks!: ConstructorParameters<typeof OriginalCore>[0];
+  let core!: DurablePrpControlPlane;
+  const coreSpy = vi.spyOn(durableControlPlane, "DurablePrpControlPlane").mockImplementation(function (options) {
+    callbacks = options;
+    return core = new OriginalCore(options);
+  });
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(stateDirectory), stateDirectory,
+  });
+  const handler = vi.fn(async () => ({ success: true, contentItems: [{ type: "inputText" as const, text: "{\"done\":true}" }] }));
+  bundle.transport.setServerRequestHandler(handler);
+  try {
+    await bundle.transport.request("thread/start", { cwd: tmpdir() });
+    const identity = core.store.state.identity;
+    let seq = 9200;
+    const commit = (eventType: string, payload: Record<string, unknown>) => {
+      seq += 1;
+      core.store.state.committedEvents.push({ sourceSeq: seq, sourceEventId: `unseen-once-${seq}`, eventType, priority: 1,
+        envelope: { payload: { eventType, turnId: identity.turnId, payload } }, deliveryCount: 1, logicalEffectCount: 1 });
+      return `unseen-once-${seq}`;
+    };
+    commit("tool.execution.started", { executionId: "exec-search", transport: "dynamic", name: "paperclip_search_assigned_tools", status: "running" });
+    core.queueCommand("semantic_tool.result", { callId: "exec-search", operationId: "paperclip_search_assigned_tools",
+      inputDigest: "sha256:search", result: { tools: [] }, isError: false }, "command_tool_unseen_once_search", true);
+    const finish = (n: number) => {
+      const sourceEventId = commit("tool.execution.started", { executionId: `exec-finish-${n}`, transport: "dynamic", name: "paperclip_finish", status: "running" });
+      return callbacks.onSemanticToolInput!({ callId: `exec-finish-${n}`, operationId: "paperclip_finish",
+        input: { summary: "Done" }, sourceEventId, sourceEventType: "semantic_tool.input", correlation: identity });
+    };
+    expect(await finish(1)).toMatchObject({ isError: true, result: { error: { code: "terminal_call_before_results" } } });
+    expect(handler).not.toHaveBeenCalled();
+    commit("tool.execution.completed", { executionId: "exec-finish-1", transport: "dynamic", name: "paperclip_finish", status: "failed" });
+    expect((await finish(2)).isError).not.toBe(true);
+    expect(handler).toHaveBeenCalledTimes(1);
+  } finally {
+    coreSpy.mockRestore();
+    await bundle.transport.close().catch(() => undefined);
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+}, 20_000);
+
 it("answers a held call before starting the next turn (restart chaos t101)", async () => {
   const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-held-before-turn-"));
   const OriginalCore = durableControlPlane.DurablePrpControlPlane;
@@ -2402,6 +2524,71 @@ it("does not accept process exit without durable suspension", async () => {
       pollIntervalMs: 0,
     }),
   ).resolves.toBe(false);
+});
+
+it("commits the Runner's exit only once its suspend command completes", async () => {
+  const commands: Array<{ commandId: string; type: string; status: string }> = [];
+  const order: string[] = [];
+  let lifecycle = "ready";
+  let pumps = 0;
+  const exitCommitted = vi.fn(() => { order.push(`exit committed after ${commands.length} attempts`); });
+  await expect(
+    runnerdRecoveryInternals.awaitRunnerSuspensionBarrier({
+      commands: () => commands,
+      queueSuspend: commandId => { commands.push({ commandId, type: "runner.suspend", status: "pending" }); },
+      readRunnerState: async () => {
+        order.push(`state ${lifecycle}`);
+        return { lifecycle };
+      },
+      runnerHasExited: async () => false,
+      pump: () => {
+        pumps += 1;
+        const pending = commands.find(command => command.status === "pending");
+        if (!pending) return;
+        // The first attempt is rejected; the retry stays pending for one
+        // round before the Runner reports it completed.
+        if (commands.length === 1) pending.status = "failed";
+        else if (pumps >= 4) { pending.status = "completed"; lifecycle = "suspended"; }
+      },
+      onExitCommitted: exitCommitted,
+      deadline: Date.now() + 2_000,
+      pollIntervalMs: 0,
+    }),
+  ).resolves.toBe(true);
+  expect(exitCommitted).toHaveBeenCalledOnce();
+  expect(order.indexOf("exit committed after 2 attempts")).toBeGreaterThan(order.indexOf("state ready"));
+  expect(order.at(-1)).toBe("state suspended");
+
+  // A reused completed receipt commits the exit only once the durable state
+  // proves the Runner is still suspended.
+  for (const [state, committed] of [["suspended", true], ["ready", false]] as const) {
+    const reusedCommitted = vi.fn();
+    await runnerdRecoveryInternals.awaitRunnerSuspensionBarrier({
+      commands: () => [{ commandId: "command_prior_suspend", type: "runner.suspend", status: "completed" }],
+      queueSuspend: () => undefined,
+      readRunnerState: async () => ({ lifecycle: state }),
+      runnerHasExited: async () => true,
+      pump: () => undefined,
+      onExitCommitted: reusedCommitted,
+      deadline: Date.now() + 20,
+      pollIntervalMs: 0,
+    });
+    expect(reusedCommitted).toHaveBeenCalledTimes(committed ? 1 : 0);
+  }
+
+  // A rejected or unanswered suspend never commits the exit.
+  const neverCommitted = vi.fn();
+  await expect(runnerdRecoveryInternals.awaitRunnerSuspensionBarrier({
+    commands: () => commands.slice(0, 0),
+    queueSuspend: () => undefined,
+    readRunnerState: async () => ({ lifecycle: "ready" }),
+    runnerHasExited: async () => false,
+    pump: () => undefined,
+    onExitCommitted: neverCommitted,
+    deadline: Date.now() + 20,
+    pollIntervalMs: 0,
+  })).resolves.toBe(false);
+  expect(neverCommitted).not.toHaveBeenCalled();
 });
 
 it("reserves a bounded suspension window after close preparation", () => {
@@ -3778,6 +3965,15 @@ it("keeps reported context-window occupancy on rehydrated usage", () => {
     const rehydrated = rehydrateRunnerdUsageNotification({ ...base, context }, "opened-thread-1", "active-turn-1");
     expect(rehydrated.tokenUsage).not.toHaveProperty("context");
   }
+});
+
+it("keeps the serving host and generation id on rehydrated usage", () => {
+  const base = { cumulative: { inputTokens: 10 }, runDelta: { inputTokens: 3 }, runDeltaAvailable: true };
+  expect(rehydrateRunnerdUsageNotification({ ...base, upstreamProvider: "Novita", providerRequestId: "gen-1" }, "opened-thread-1", "active-turn-1").tokenUsage)
+    .toMatchObject({ upstreamProvider: "Novita", providerRequestId: "gen-1" });
+  const unnamed = rehydrateRunnerdUsageNotification({ ...base, providerRequestId: null }, "opened-thread-1", "active-turn-1").tokenUsage;
+  expect(unnamed).not.toHaveProperty("upstreamProvider");
+  expect(unnamed).not.toHaveProperty("providerRequestId");
 });
 
 it("rehydrates durable cumulative usage for a cold thread read", () => {
@@ -6703,6 +6899,129 @@ it("shares Pi's absolute cold deadline across recovery barriers and rejects a la
   } finally { vi.useRealTimers(); }
 });
 
+// Chaos w-20261111T011704-s9107/t01: the control plane was stopped (SIGSTOP, as in
+// a host sleep) 1 s into the resume barrier, together with the Runner it waits on.
+// On thaw, the wall clock had passed the 30 s deadline before either process could
+// act, so recovery reported "runner.drain timed out" and spent a recovery attempt.
+describe("admission waits do not count time this process was stopped", () => {
+  const pending = (clock: RunnerStallLedger | undefined, deadline: number, status: () => string, type = "runner.drain") =>
+    waitForRunnerCommand({
+      type, deadline, clock, abortOnClose: true, isClosed: () => false,
+      throwIfFailed: () => undefined, command: () => ({ status: status() }),
+      runnerHasExited: async () => false, failureCode: () => "runner_local_connect_failed",
+    });
+
+  it("completes a resume barrier that the Runner answers after a 44 s freeze", async () => {
+    vi.useFakeTimers();
+    const clock = new RunnerStallLedger();
+    const stop = clock.watch();
+    try {
+      let status = "pending";
+      const drain = pending(clock, clock.now() + 30_000, () => status);
+      await vi.advanceTimersByTimeAsync(1_000);
+      // Stopped for 44 s: the wall clock moves, but no timer of this process runs.
+      vi.setSystemTime(Date.now() + 44_000);
+      await vi.advanceTimersByTimeAsync(2_000);
+      status = "completed";
+      await vi.advanceTimersByTimeAsync(10);
+      await expect(drain).resolves.toBeUndefined();
+    } finally { stop(); vi.useRealTimers(); }
+  });
+
+  it("keeps the wall-clock timeout for a wait outside an admission", async () => {
+    vi.useFakeTimers();
+    try {
+      const drain = pending(undefined, Date.now() + 30_000, () => "pending");
+      const rejection = expect(drain).rejects.toThrow("runner_local_connect_failed: PRP command runner.drain timed out");
+      await vi.advanceTimersByTimeAsync(1_000);
+      vi.setSystemTime(Date.now() + 44_000);
+      await vi.advanceTimersByTimeAsync(10);
+      await rejection;
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("still times out a barrier that the Runner never answers after a freeze", async () => {
+    vi.useFakeTimers();
+    const clock = new RunnerStallLedger();
+    const stop = clock.watch();
+    try {
+      const drain = pending(clock, clock.now() + 30_000, () => "pending");
+      const rejection = expect(drain).rejects.toThrow("runner_local_connect_failed: PRP command runner.drain timed out");
+      await vi.advanceTimersByTimeAsync(1_000);
+      vi.setSystemTime(Date.now() + 44_000);
+      // Running time reaches the deadline: 1 s before, then the rest of the
+      // 30 s budget plus the 5 s post-stop grace.
+      await vi.advanceTimersByTimeAsync(40_000);
+      await rejection;
+    } finally { stop(); vi.useRealTimers(); }
+  });
+
+  it("leaves the Runner time to answer after a freeze in a wait's last half second", async () => {
+    vi.useFakeTimers();
+    const clock = new RunnerStallLedger();
+    const stop = clock.watch();
+    try {
+      let status = "pending";
+      const drain = pending(clock, clock.now() + 30_000, () => status);
+      await vi.advanceTimersByTimeAsync(29_500);
+      vi.setSystemTime(Date.now() + 60_000);
+      await vi.advanceTimersByTimeAsync(2_000);
+      status = "completed";
+      await vi.advanceTimersByTimeAsync(10);
+      await expect(drain).resolves.toBeUndefined();
+    } finally { stop(); vi.useRealTimers(); }
+  });
+
+  it("credits a freeze outside any poll loop to the next barrier on the same deadline", async () => {
+    vi.useFakeTimers();
+    const clock = new RunnerStallLedger();
+    const stop = clock.watch();
+    try {
+      const deadline = clock.now() + coldAdmissionTimeoutMs("acpx", "pi", true);
+      let status = "pending";
+      const prepared = pending(clock, clock.now() + 30_000, () => status, "run.prepare");
+      await vi.advanceTimersByTimeAsync(5_000);
+      status = "completed";
+      await vi.advanceTimersByTimeAsync(10);
+      await prepared;
+      // Stopped for 70 s between barriers (a checkpoint flush, a spawn): only the ticker observes it.
+      vi.setSystemTime(Date.now() + 70_000);
+      await vi.advanceTimersByTimeAsync(1_000);
+      status = "pending";
+      const opened = pending(clock, deadline, () => status, "session.open");
+      await vi.advanceTimersByTimeAsync(20_000);
+      status = "completed";
+      await vi.advanceTimersByTimeAsync(10);
+      await expect(opened).resolves.toBeUndefined();
+    } finally { stop(); vi.useRealTimers(); }
+  });
+
+  it("credits only stalls, so a slow but running process still reaches its deadline", () => {
+    let wall = 0;
+    const clock = new RunnerStallLedger(() => wall);
+    const deadline = clock.now() + 30_000;
+    // Every observation is 4.9 s apart on a loaded host: that is running time.
+    while (clock.now() < deadline) wall += 4_900;
+    expect(wall).toBeGreaterThanOrEqual(30_000);
+    expect(wall).toBeLessThan(35_000);
+    expect(clock.creditedMs).toBe(0);
+    // A 6 s gap is a stop: credited in full plus the post-stop grace, and only once.
+    wall += 6_000;
+    clock.now();
+    clock.now();
+    expect(clock.creditedMs).toBe(6_000 + RUNNER_POST_STOP_GRACE_MS);
+    // Total credit is capped, so a process that never runs normally still times out.
+    wall += 2 * RUNNER_MAX_STOPPED_CREDIT_MS;
+    clock.now();
+    expect(clock.creditedMs).toBe(RUNNER_MAX_STOPPED_CREDIT_MS);
+    // A wall-clock grace taken now moves onto the clock without the earlier
+    // credit, so it keeps exactly its own running-time budget.
+    const wallGrace = wall + 5_000;
+    const onClock = wallGrace - clock.creditedMs;
+    expect(onClock - clock.now()).toBe(5_000);
+  });
+});
+
 it("aborts startup promptly on close while allowing the owned cleanup command to drain", async () => {
   vi.useFakeTimers();
   try {
@@ -6754,3 +7073,45 @@ it("launches and closes native Codex without materializing or editing the precon
     await rm(root, { force: true, recursive: true });
   }
 }, 30_000);
+
+// Staging: after a server replacement the new controller's session.snapshot
+// got no answer and the failure said only "timed out". The timeout now names
+// what the command waited behind, so the next occurrence explains the stall.
+describe("a Runner command that gets no answer", () => {
+  const now = Date.parse("2026-11-12T07:13:28.000Z");
+  const command = (seq: number, type: string, status: string, issuedAt: string) =>
+    ({ commandId: `command-${seq}`, controllerSeq: seq, type, status, issuedAt });
+
+  it("says what it waited behind in the timeout", async () => {
+    let failure: unknown;
+    try {
+      await waitForRunnerCommand({ type: "session.snapshot", deadline: Date.now() + 20, abortOnClose: false,
+        isClosed: () => false, throwIfFailed: () => {}, command: () => ({ status: "pending" }),
+        runnerHasExited: async () => false, failureCode: () => "provider_transport_failed",
+        describeStall: () => describeRunnerCommandStall({ now, connectedRunners: 1, disconnectedForMs: null,
+          commandId: "command-9",
+          commands: [command(7, "semantic_tool.result", "pending", "2026-11-12T07:10:20.000Z"),
+            command(8, "turn.steer", "completed", "2026-11-12T07:10:21.000Z"),
+            command(9, "session.snapshot", "pending", "2026-11-12T07:12:58.000Z")],
+          committedEvents: [{ sourceSeq: 152, envelope: { runId: "run-1", payload: { eventType: "item.completed", emittedAt: "2026-11-12T07:10:27.000Z" } } }] }) });
+    } catch (error) { failure = error; }
+    expect((failure as Error).message).toBe("provider_transport_failed: PRP command session.snapshot timed out "
+      + "(runner connected; pending ahead 1 [semantic_tool.result] oldest 188s; last runner event seq 152 181s ago)");
+  });
+
+  it("keeps the plain timeout when there is nothing to describe or the description fails", async () => {
+    for (const describeStall of [undefined, () => null, () => { throw new Error("state unavailable"); }]) {
+      const failure = await waitForRunnerCommand({ type: "session.snapshot", deadline: Date.now() + 10, abortOnClose: false,
+        isClosed: () => false, throwIfFailed: () => {}, command: () => ({ status: "pending" }),
+        runnerHasExited: async () => false, failureCode: () => "provider_transport_failed", describeStall })
+        .catch((error: unknown) => error);
+      expect((failure as Error).message).toBe("provider_transport_failed: PRP command session.snapshot timed out");
+    }
+  });
+
+  it("reports a disconnected Runner and no events", () => {
+    expect(describeRunnerCommandStall({ now, connectedRunners: 0, disconnectedForMs: 125_400, commandId: "command-1",
+      commands: [command(1, "session.snapshot", "pending", "2026-11-12T07:13:00.000Z")], committedEvents: [] }))
+      .toBe("runner disconnected 125s; pending ahead 0; last runner event none");
+  });
+});

@@ -13,6 +13,7 @@ import type { StorageService } from "../../storage/types.js";
 import { lockNativeRunnerCheckpointOwner, validateNativeRunnerCheckpointOwner, type NativeRunnerCheckpointFenceOwner } from "./native-runner-checkpoint.js";
 import { loadConfig } from "../../config.js";
 import { getStorageService } from "../../storage/index.js";
+import { storageOutageWaitFor, waitOutStorageOutages } from "../../storage/storage-unavailable.js";
 import { readNativeHarnessBackupStamp, verifyNativeHarnessBackupStamp } from "./native-harness-backup-stamp.js";
 import { captureNativeHarnessArchive, restoreNativeHarnessArchive, MAX_NATIVE_HARNESS_OBJECT_BYTES } from "./native-harness-backup-archive.js";
 import { removeNativeHarnessBackup } from "./native-harness-backup-cleanup.js";
@@ -193,12 +194,18 @@ export async function assertNativeHarnessBackupOwner(db: Db, owner: NativeRunner
   await db.transaction(tx => fence(tx, owner));
 }
 
-export async function persistNativeHarnessBackup(input: {
+type PersistNativeHarnessBackupInput = {
   db: Db; storage: StorageService; owner: NativeRunnerCheckpointFenceOwner | OfflineOwner | SettledControllerArchiveOwner | SettledNativeHarnessBackupOwner;
   scopeDigest: string; root: string; signal?: AbortSignal; maxArchiveBytes?: number;
   inactiveSource?: { normalizedSessionId: string; runnerInstanceId: string; providerLeaseId: string };
   providerArtifacts?: NativeProviderArtifactSource;
-}): Promise<void> {
+};
+
+export function persistNativeHarnessBackup(input: PersistNativeHarnessBackupInput): Promise<void> {
+  return waitOutStorageOutages(() => storageOutageWaitFor("saving the provider session", () => persistNativeHarnessBackupOnce(input)));
+}
+
+async function persistNativeHarnessBackupOnce(input: PersistNativeHarnessBackupInput): Promise<void> {
   if (!/^[a-f0-9]{64}$/.test(input.scopeDigest)) fail("scope_invalid");
   if ("kind" in input.owner && input.owner.kind === "settled_native_harness_backup"
     && (input.scopeDigest !== input.owner.scopeDigest || input.root !== input.owner.root)) fail("preservation_source_changed");
@@ -242,7 +249,9 @@ export async function persistNativeHarnessBackup(input: {
     });
     await input.storage.putFile({ companyId: ref.companyId, namespace: "native-harness-backups", objectKey: ref.objectKey,
       originalFilename: null, contentType: "application/octet-stream", body: createReadStream(encrypted),
-      byteSize: ref.byteSize, sha256: ref.sha256, signal: input.signal });
+      // The file source lets a request-rate limit (503 SlowDown) or a dropped
+      // connection resend the upload; a stream body can be sent only once.
+      byteSize: ref.byteSize, sha256: ref.sha256, sourceFile: encrypted, signal: input.signal });
     await receive(input.storage, ref, undefined, input.signal);
     await input.db.transaction(async tx => {
       await fence(tx, input.owner, inactiveSource, input.signal);

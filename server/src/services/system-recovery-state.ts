@@ -194,6 +194,10 @@ export function exhaustedSystemRecoveryAction(state: SystemRecoveryState, eviden
     return "Recovery of saved work is waiting to confirm that the previous run stopped. "
       + "Paperclip tries again automatically, and the agent will not repeat its work.";
   const cause = state.failure?.cause ? `, cause: ${state.failure.cause.label}` : "";
+  if (state.failure?.cause?.label === "sandbox_disk_full")
+    return "Saving the agent's files stopped because the sandbox disk is full. Paperclip deletes only inactive tool "
+      + "caches it can prove safe, and that did not free enough space. Automatic recovery does not repeat a save that fails the same way. "
+      + "Retry saves the files again. The agent's result is kept, and the agent will not repeat its work.";
   if (isDeterministicRecoveryRefusal(state)) {
     const code = state.failure!.code;
     // Never promise a release. A retained-file hold the fallback settles

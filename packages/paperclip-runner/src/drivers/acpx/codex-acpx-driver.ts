@@ -66,7 +66,7 @@ import {
   DEFAULT_CODEX_ACPX_RUNTIME_SHUTDOWN_BOUND_MS,
   AcpxProviderProcessLostError,
   openCodexAcpxRuntime,
-} from "./codex-runtime-adapter.js";
+} from "./acpx-runtime-adapter.js";
 import { normalizeAcpxPermission } from "./acp-permission-adapter.js";
 import {
   normalizeAcpFormElicitation,
@@ -1928,7 +1928,7 @@ class CodexAcpxSession implements HarnessSession {
   async #handleElicitation(
     turnId: string,
     request: AcpElicitationRequest,
-    context: AcpElicitationContext,
+    context: AcpElicitationContext & { responseDelivery?: Promise<void> },
   ): Promise<AcpElicitationResponse> {
     if (
       this.#closed ||

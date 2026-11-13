@@ -13,6 +13,7 @@ import {
   eq,
   getTableColumns,
   gt,
+  isNull,
   or,
   sql,
 } from "drizzle-orm";
@@ -57,6 +58,7 @@ import {
 import { isUuidLike } from "@paperclipai/shared";
 import { HEARTBEAT_RUN_LIST_DEFAULT_LIMIT, HEARTBEAT_RUN_LIST_MAX_LIMIT } from "@paperclipai/shared";
 import { isUnsafeSessionWorkspaceCwd } from "../session-workspace-cwd.js";
+import { presentStorageFailureMessage } from "../../storage/storage-unavailable.js";
 
 export const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON =
   "execution_review_participant_recovery";
@@ -1868,6 +1870,8 @@ export function createHeartbeatRunState(db: Db) {
 
         return {
           ...rest,
+          // Saved runs from earlier releases may promise a storage retry no wait owns.
+          ...("error" in rest ? { error: presentStorageFailureMessage(rest) ?? null } : {}),
           contextSnapshot: summarizeHeartbeatRunContextSnapshot({
             issueId: contextIssueId,
             taskId: contextTaskId,
@@ -2051,6 +2055,18 @@ export function createHeartbeatRunState(db: Db) {
         )
         .orderBy(desc(heartbeatRuns.startedAt))
         .limit(1);
+      return run ?? null;
+    },
+
+    getQueuedAssignmentRunForIssue: async (input: { companyId: string; agentId: string; issueId: string }) => {
+      const [run] = await db.select().from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.companyId, input.companyId),
+        eq(heartbeatRuns.agentId, input.agentId),
+        eq(heartbeatRuns.status, "queued"),
+        isNull(heartbeatRuns.startedAt),
+        sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${input.issueId}`,
+        sql`${heartbeatRuns.contextSnapshot}->>'wakeReason' = 'issue_assigned'`,
+      )).orderBy(asc(heartbeatRuns.createdAt)).limit(1);
       return run ?? null;
     },
 

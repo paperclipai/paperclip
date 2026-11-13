@@ -1,7 +1,7 @@
 import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
 import type { Db } from "@paperclipai/db";
-import { heartbeatRuns, livenessDb, nativeRunFinalizations } from "@paperclipai/db";
-import { and, eq, gt, isNull, or, sql, type SQL } from "drizzle-orm";
+import { environmentLeases, heartbeatRuns, livenessDb, nativeRunFinalizations } from "@paperclipai/db";
+import { and, eq, gt, isNotNull, isNull, notExists, or, sql, type SQL } from "drizzle-orm";
 import { currentNativeControllerIdentity, type NativeControllerIdentity } from "./native-restart-recovery.js";
 import { OPERATOR_ATTESTED_CONTROLLER_HOST } from "./native-controller-host-recovery.js";
 import { NATIVE_OWNERSHIP_UNVERIFIED_ERROR_CODE } from "./native-runner-ownership.js";
@@ -126,6 +126,62 @@ export async function lockNativeExecutionLeaseForReacquire(tx: Pick<Db, "execute
   return false;
 }
 
+type OwnNativeRecoveryClaimInput = {
+  companyId: string; runId: string; leaseOwner: string; controller?: NativeControllerIdentity;
+};
+
+async function ownNativeRecoveryClaimCondition(tx: Db, input: OwnNativeRecoveryClaimInput) {
+  const [row] = await tx.select({ controllerGeneration: nativeRunFinalizations.controllerGeneration })
+    .from(nativeRunFinalizations).where(and(eq(nativeRunFinalizations.companyId, input.companyId),
+      eq(nativeRunFinalizations.runId, input.runId), eq(nativeRunFinalizations.leaseOwner, input.leaseOwner)));
+  if (!row) return null;
+  const controller = input.controller ?? await currentNativeControllerIdentity();
+  return and(
+    eq(nativeRunFinalizations.companyId, input.companyId),
+    eq(nativeRunFinalizations.runId, input.runId),
+    eq(nativeRunFinalizations.leaseOwner, input.leaseOwner),
+    eq(nativeRunFinalizations.controllerBootId, controller.bootId),
+    eq(nativeRunFinalizations.controllerPid, controller.pid),
+    eq(nativeRunFinalizations.controllerProcessStartedAt, controller.processStartedAt),
+    isNotNull(nativeRunFinalizations.recoveryState),
+    nativeExecutionLeaseHeldCondition({ remote: false, controllerGeneration: row.controllerGeneration }),
+    notExists(tx.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
+      eq(environmentLeases.companyId, input.companyId), eq(environmentLeases.heartbeatRunId, input.runId),
+      sql`${environmentLeases.provider} <> 'local'`))),
+  )!;
+}
+
+export async function readOwnNativeRecoveryClaimLease(
+  tx: Db, input: OwnNativeRecoveryClaimInput,
+): Promise<"live" | "lapsed_own_claim" | "lost"> {
+  const [row] = await tx.select({
+    live: sql<boolean>`coalesce(${nativeRunFinalizations.leaseExpiresAt} > clock_timestamp(), false)`,
+  }).from(nativeRunFinalizations).where(and(eq(nativeRunFinalizations.companyId, input.companyId),
+    eq(nativeRunFinalizations.runId, input.runId), eq(nativeRunFinalizations.leaseOwner, input.leaseOwner)));
+  if (!row) return "lost";
+  if (row.live) return "live";
+  const condition = await ownNativeRecoveryClaimCondition(tx, input);
+  if (!condition) return "lost";
+  const [held] = await tx.select({ runId: nativeRunFinalizations.runId }).from(nativeRunFinalizations).where(condition);
+  return held ? "lapsed_own_claim" : "lost";
+}
+
+export async function extendOwnNativeRecoveryClaimInTransaction(tx: Db, input: OwnNativeRecoveryClaimInput): Promise<boolean> {
+  const state = await readOwnNativeRecoveryClaimLease(tx, input);
+  if (state === "live") return true;
+  if (state === "lost") return false;
+  const condition = await ownNativeRecoveryClaimCondition(tx, input);
+  if (!condition) return false;
+  const [held] = await tx.update(nativeRunFinalizations)
+    .set({
+      leaseExpiresAt: sql`clock_timestamp() + (${NATIVE_SESSION_EXECUTION_LEASE_TTL_MS} * interval '1 millisecond')`,
+      updatedAt: sql`clock_timestamp()`,
+    })
+    .where(condition)
+    .returning({ runId: nativeRunFinalizations.runId });
+  return Boolean(held);
+}
+
 /** Preparation can perform provider I/O only under its current recovery claim. */
 export async function assertNativeSessionPreparationAuthority(input: {
   db: Db; companyId: string; runId: string; leaseOwner: string | undefined;
@@ -162,6 +218,23 @@ export async function nativeRecoveryClaimRelinquished(input: {
   if (row.leaseOwner !== null && row.leaseOwner !== input.leaseOwner) return true;
   return row.leaseOwner === input.leaseOwner && !row.leaseLive && row.recoveryState === "awaiting_runner_reattach"
     && row.lastDisposition === "restart_suspended";
+}
+
+/**
+ * The run's controller is this process and its execution lease has lapsed
+ * (or was released): the executor that held it detached because of that loss,
+ * not because a shutdown or hot restart handed the run on.
+ */
+export async function ownNativeExecutionLeaseLapsed(db: Db, input: { companyId: string; id: string }): Promise<boolean> {
+  const controller = await currentNativeControllerIdentity();
+  const [row] = await db.select({ runId: nativeRunFinalizations.runId }).from(nativeRunFinalizations)
+    .innerJoin(heartbeatRuns, eq(heartbeatRuns.id, nativeRunFinalizations.runId))
+    .where(and(eq(nativeRunFinalizations.companyId, input.companyId), eq(nativeRunFinalizations.runId, input.id),
+      eq(heartbeatRuns.status, "running"), isNull(nativeRunFinalizations.resultId),
+      eq(nativeRunFinalizations.controllerBootId, controller.bootId), eq(nativeRunFinalizations.controllerPid, controller.pid),
+      or(isNull(nativeRunFinalizations.leaseExpiresAt), sql`${nativeRunFinalizations.leaseExpiresAt} <= clock_timestamp()`)))
+    .limit(1);
+  return Boolean(row);
 }
 
 export async function releaseLapsedNativeRestartClaim(input: {

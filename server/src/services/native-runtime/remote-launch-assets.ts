@@ -171,7 +171,8 @@ export async function stageRemoteLaunchAssets(input: LaunchAssetsInput): Promise
     const directory = input.persistenceDirectories.find(entry => entry.name === "codex-home" && entry.location === "filesystem");
     if (!directory?.targetPath) throw new Error("runner_harness_state_mismatch: bootstrap_target_unavailable");
     const sourcePath = resolve(input.root, "codex-home", "skills");
-    await assertSelectedSkillsTree(sourcePath, input.runtimeContext?.source.skills.map(skill => skill.runtimeName) ?? []);
+    await measure("stage.asset.codex_skills.verify", () =>
+      assertSelectedSkillsTree(sourcePath, input.runtimeContext?.source.skills.map(skill => skill.runtimeName) ?? []));
     await measure("stage.asset.codex_skills", async () => {
       const cleared = await input.runner.execute({
         command: "node",

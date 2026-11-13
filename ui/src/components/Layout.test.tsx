@@ -10,6 +10,8 @@ const classicWorkspace = vi.hoisted(() => ({ enabled: true }));
 vi.mock("@/hooks/useCoordinatorWorkspaceEnabled", () => ({
   useCoordinatorWorkspaceEnabled: () => ({ enabled: !classicWorkspace.enabled, loaded: true, userId: "viewer" }),
 }));
+const browserTimeZoneSync = vi.hoisted(() => vi.fn());
+vi.mock("@/hooks/useBrowserTimeZoneSync", () => ({ useBrowserTimeZoneSync: browserTimeZoneSync }));
 
 const mockDesignSandbox = vi.hoisted(() => ({ enabled: false }));
 vi.mock("@/context/DesignSandboxContext", () => ({ useDesignSandbox: () => mockDesignSandbox.enabled }));
@@ -86,6 +88,7 @@ vi.mock("./CompanySettingsSidebar", () => ({
 
 vi.mock("./AppsSidebar", () => ({
   AppsSidebar: () => <div>Apps sidebar</div>,
+  AppsMobileNav: () => <nav aria-label="Mobile connectors">Browse Review</nav>,
 }));
 
 vi.mock("./AgentContextualSidebar", () => ({
@@ -634,6 +637,19 @@ describe("Layout", () => {
     await act(async () => {
       root.unmount();
     });
+  });
+
+  it.each(["/PAP/apps", "/PAP/apps/review"])("shows top connector segments without a side rail on mobile: %s", async (path) => {
+    currentPathname = path;
+    mockSidebarState.isMobile = true;
+    mockSidebarState.sidebarOpen = false;
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => renderLayoutView(root, queryClient));
+    await flushReact();
+    expect(container.querySelector('#main-content [aria-label="Mobile connectors"]')).not.toBeNull();
+    expect(container.querySelector('.app-content-row [data-secondary-sidebar]')).toBeNull();
+    await act(async () => root.unmount());
   });
 
   it("renders a mobile company settings selector on company settings routes", async () => {

@@ -18,9 +18,10 @@ import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
 import { retryIdempotentDatabaseOperation } from "../database-retry.js";
 import { workspaceRecoveryDisplay } from "./workspace-recovery-receipt.js";
 import { readTaskDrain } from "./task-admission.js";
-import { getStartupRecoveryState } from "../startup-recovery-state.js";
+import { getStartupRecoveryState, startupQueuedRunPassOutstanding } from "../startup-recovery-state.js";
 import { hasPendingRunCleanup } from "./execution-blocker.js";
 import { isAgentAwaitingSetup } from "../modules/agent-lifecycle/index.js";
+import { NATIVE_RESPONSE_WAKE_WAITING_REASON } from "./native-runtime/status-arbiter.js";
 const MAX_PREDECESSOR_CLEANUP_CHECKS = 16;
 const text = (v: unknown) => (typeof v === "string" ? v : null);
 const executionRunColumns = {
@@ -46,7 +47,11 @@ const executionRunColumns = {
     'issueId', ${heartbeatRuns.contextSnapshot}->'issueId',
     'wakeReason', ${heartbeatRuns.contextSnapshot}->'wakeReason',
     'failureRetriesBeforeAiConnectionWait', ${heartbeatRuns.contextSnapshot}->'failureRetriesBeforeAiConnectionWait',
-    'failureRetriesBeforeWorkspaceWait', ${heartbeatRuns.contextSnapshot}->'failureRetriesBeforeWorkspaceWait')`,
+    'failureRetriesBeforeWorkspaceWait', ${heartbeatRuns.contextSnapshot}->'failureRetriesBeforeWorkspaceWait',
+    'executionRetryAccounting', ${heartbeatRuns.contextSnapshot}->'executionRetryAccounting')`,
+  resultJson: sql<Record<string, unknown>>`jsonb_build_object(
+    'finalizationPhase', ${heartbeatRuns.resultJson}->'finalizationPhase',
+    'finalizationReasonCode', ${heartbeatRuns.resultJson}->'finalizationReasonCode')`,
 };
 type Run = Pick<typeof heartbeatRuns.$inferSelect, keyof typeof executionRunColumns>;
 type Coordinator = typeof nativeRunFinalizations.$inferSelect;
@@ -239,6 +244,18 @@ export async function executionProjectionsForRuns(
     }
   }
   const coordinatorByRun = new Map(coordinators.map((row) => [row.runId, row]));
+  const responseWaitRuns = runs.filter(run => run.status === "succeeded"
+    && run.resultJson?.finalizationReasonCode === NATIVE_RESPONSE_WAKE_WAITING_REASON && issueIdOf(run));
+  const responseWaitIssues = responseWaitRuns.length ? await read(async () => db
+    .select({ id: issues.id, status: issues.status, lastStatusDecisionId: issues.lastStatusDecisionId })
+    .from(issues)
+    .where(and(eq(issues.companyId, companyId), inArray(issues.id, [...new Set(responseWaitRuns.map(run => issueIdOf(run)!))])))) : [];
+  const responseWaitIssueById = new Map(responseWaitIssues.map(row => [row.id, row]));
+  const currentResponseWait = (run: Run) => {
+    const issue = responseWaitIssueById.get(issueIdOf(run) ?? "");
+    const decisionId = coordinatorByRun.get(run.id)?.decisionId;
+    return Boolean(issue && decisionId && issue.status === "in_progress" && issue.lastStatusDecisionId === decisionId);
+  };
   for (const run of runs) {
     const issueId = run.nativeIssueId ?? text(run.contextSnapshot?.issueId);
     const matching = recovery.filter(
@@ -260,6 +277,7 @@ export async function executionProjectionsForRuns(
         waitingByRun.get(run.id),
         settlingPredecessorKeys.has(run.id),
         setupByAgent.get(run.agentId),
+        currentResponseWait(run),
       ),
     );
   }
@@ -286,6 +304,7 @@ export function projectExecution(
   waitingForProvider?: WaitingExternalProvider,
   waitingForPredecessor = false,
   setupAgent?: { lifecycleState: string; lifecycleHolds: readonly string[]; retryRequired?: boolean },
+  responseWaitCurrent = false,
 ): ExecutionProjection {
   const detail = coordinator?.failureDetail ?? {};
   const successorRunId = text(detail.successorRunId);
@@ -320,7 +339,7 @@ export function projectExecution(
     Object.assign(projection, { phase, label });
   if (recoveryAction?.status === "resolved" && recoveryAction.evidence?.automaticRecovery) {
     projection.cause = recoveryAction.cause;
-    projection.nextAction = workspaceRecoveryDisplay(recoveryAction.evidence, run.id)?.message
+    projection.nextAction = workspaceRecoveryDisplay(recoveryAction.evidence, run.id, { status: run.status, retryOffered: false })?.message
       ?? recoveryAction.nextAction;
     const continuation = recoveryAction.evidence.explicitUserContinuation as
       { previousRunId?: unknown; runId?: unknown } | undefined;
@@ -341,9 +360,15 @@ export function projectExecution(
   ) {
     if (recoveryAction.evidence.continuationDelivery === "invalidated") {
       projection.cause = "continuation_ownership_changed";
-      projection.nextAction =
-        "The task was closed or reassigned before delivery. Inspect the current task owner and status.";
+      projection.nextAction = "The task changed before this continuation started, so it was not started.";
       return set("failed", "Continuation cancelled");
+    }
+    // A hold the fresh-continuation fallback settled together with another:
+    // the task continues through that record.
+    if (recoveryAction.evidence.continuationDelivery === "coalesced") {
+      projection.cause = null;
+      projection.nextAction = "Paperclip continues the task in a fresh run from its saved work.";
+      return set("queued", "Continuing automatically");
     }
     const reconciliation = recoveryAction.evidence.executionReconciliation;
     if (recoveryAction.cause === "native_restart_recovery_blocked"
@@ -371,10 +396,13 @@ export function projectExecution(
     projection.cause = null;
     projection.nextAction = deliveredRunId
       ? null
-      : "The previous execution is reconciled. Its continuation is queued for delivery.";
+      : recoveryAction.evidence.freshContinuationSettlement
+        ? "Paperclip continues the task in a fresh run from its saved work."
+        : "The previous execution is reconciled. Its continuation is queued for delivery.";
     return set(
       deliveredRunId ? "completed" : "queued",
-      deliveredRunId ? "Continued in another run" : "Continuation queued",
+      deliveredRunId ? "Continued in another run"
+        : recoveryAction.evidence.freshContinuationSettlement ? "Continuing automatically" : "Continuation queued",
     );
   }
   if (
@@ -398,6 +426,10 @@ export function projectExecution(
     const resetAt = run.scheduledRetryAt ? new Date(run.scheduledRetryAt).toISOString() : "its reported reset";
     projection.nextAction = `Waiting for the agent's provider usage limit to reset; the work starts at ${resetAt}. To continue sooner, restore the provider allowance or change the agent's AI connection, then start a manual run.`;
     return set("retry_scheduled", "Waiting for usage limit reset");
+  }
+  if (run.status === "scheduled_retry" && run.scheduledRetryReason === "agent_directory_busy") {
+    projection.nextAction = "Waiting for another run of this agent to finish with its files; this task continues automatically.";
+    return set("retry_scheduled", "Waiting for agent files");
   }
   if (run.status === "scheduled_retry" && run.scheduledRetryReason === "workspace_busy") {
     projection.nextAction = "Waiting for the live workspace holder to finish; the scheduled check will revalidate ownership.";
@@ -461,6 +493,11 @@ export function projectExecution(
           ? "Waiting for access"
           : "Waiting for answer",
       );
+    if (responseWaitCurrent && run.resultJson?.finalizationPhase === "committed" &&
+        run.resultJson.finalizationReasonCode === NATIVE_RESPONSE_WAKE_WAITING_REASON) {
+      projection.nextAction = "The agent finished its turn and is waiting for a reply. Comment on the task or change its status to continue.";
+      return set("waiting_for_answer", "Waiting for a reply");
+    }
     return set("completed", "Completed");
   }
   if (["failed", "cancelled", "timed_out", "interrupted"].includes(run.status))
@@ -504,7 +541,7 @@ export function projectExecution(
   // Process-local, like the drain: while this server starts, recovers, or
   // shuts down, its full queued-run pass has not run (or no longer runs).
   const serverPhase = getStartupRecoveryState().phase;
-  if (run.status === "queued" && serverPhase !== "ready") {
+  if (run.status === "queued" && startupQueuedRunPassOutstanding()) {
     projection.cause = "server_restarting";
     projection.nextAction = serverPhase === "draining"
       ? "The server is restarting for an update. This turn starts automatically on the replacement server."

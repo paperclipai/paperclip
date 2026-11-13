@@ -228,6 +228,30 @@ describeEmbeddedPostgres("secret proposal routes", () => {
     return app;
   }
 
+  it("returns 422, not 500, when a proposal omits a required field", async () => {
+    const fixture = await seedRun();
+
+    const secretMissingJustification = await request(createAgentApp(fixture))
+      .post("/api/agents/me/secret-proposals")
+      .send({ kind: "secret", name: "dev/missing/justification", value: "a-32-character-or-longer-secret", description: "x" });
+    expect(secretMissingJustification.status).toBe(422);
+
+    const secretMissingName = await request(createAgentApp(fixture))
+      .post("/api/agents/me/secret-proposals")
+      .send({ kind: "secret", value: "a-32-character-or-longer-secret", justification: "Needed by the task" });
+    expect(secretMissingName.status).toBe(422);
+
+    const bindingMissingJustification = await request(createAgentApp(fixture))
+      .post("/api/agents/me/secret-proposals")
+      .send({ kind: "binding", sourceConfigPath: "env.SOURCE_TOKEN", configPath: "env.TARGET_TOKEN" });
+    expect(bindingMissingJustification.status).toBe(422);
+
+    const complete = await request(createAgentApp(fixture))
+      .post("/api/agents/me/secret-proposals")
+      .send({ kind: "secret", name: "dev/missing/ok", value: "a-32-character-or-longer-secret", justification: "Needed by the task" });
+    expect(complete.status).toBe(201);
+  });
+
   describe("expiry scheduling", () => {
     let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
     let proposals: ReturnType<typeof createSecretProposalsService>;
@@ -817,6 +841,35 @@ describeEmbeddedPostgres("secret proposal routes", () => {
     expect(history.filter(row => row.action === "secret.proposal.approved")).toHaveLength(2);
   });
 
+  it.each([
+    ["an empty string", ""],
+    ["an empty plain value", { type: "plain", value: "" }],
+  ])("fills a target key left as %s instead of refusing the approved binding", async (_label, blank) => {
+    const fixture = await seedRun();
+    const agentApp = createAgentApp(fixture);
+    const boardApp = createBoardApp(fixture);
+    const secret = await request(agentApp).post("/api/agents/me/secret-proposals").send({
+      kind: "secret", name: "dev/blank/token", value: "blank-fixture", justification: "Needed by task",
+    });
+    const binding = await request(agentApp).post("/api/agents/me/secret-proposals").send({
+      kind: "binding", secretProposalId: secret.body.id, configPath: "env.BLANK_TOKEN", justification: "Use saved secret",
+    });
+    await db.update(agents).set({ adapterConfig: { env: { BLANK_TOKEN: blank, KEEP: "kept" } } })
+      .where(eq(agents.id, fixture.agentId));
+
+    const approved = await request(boardApp)
+      .post(`/api/companies/${fixture.companyId}/secret-proposals/${binding.body.id}/approve`).send({ cascade: true });
+
+    expect(approved.status).toBe(200);
+    const [saved] = await db.select().from(companySecrets);
+    const env = ((await db.select().from(agents))[0].adapterConfig as { env: Record<string, unknown> }).env;
+    expect(env.BLANK_TOKEN).toMatchObject({ type: "secret_ref", secretId: saved.id, version: "latest" });
+    expect(JSON.stringify(env.KEEP)).toContain("kept");
+    expect(await db.select().from(companySecretBindings)).toEqual([
+      expect.objectContaining({ secretId: saved.id, targetId: fixture.agentId, configPath: "env.BLANK_TOKEN" }),
+    ]);
+  });
+
   it("approves a binding without cascade after its secret proposal was approved separately", async () => {
     const fixture = await seedRun();
     const agentApp = createAgentApp(fixture);
@@ -1270,6 +1323,58 @@ describeEmbeddedPostgres("secret proposal routes", () => {
     expect(lastBoardPage.status).toBe(200);
     expect(lastBoardPage.body).toHaveLength(6);
     expect(lastBoardPage.headers["x-next-offset"]).toBeUndefined();
+  });
+
+  it("lists decided proposals by decision time when asked, and rejects an unknown order", async () => {
+    const fixture = await seedRun();
+    const liveSecret = await secretService(db).create(fixture.companyId, {
+      name: "dev/order/source",
+      key: "ORDER_SOURCE",
+      provider: "local_encrypted",
+      value: "order-source-secret",
+    });
+    await secretService(db).createBinding({
+      companyId: fixture.companyId,
+      secretId: liveSecret.id,
+      targetType: "agent",
+      targetId: fixture.agentId,
+      configPath: "access.order_source",
+    });
+    const agentApp = createAgentApp(fixture);
+    const created: string[] = [];
+    for (const index of [0, 1, 2]) {
+      const response = await request(agentApp)
+        .post("/api/agents/me/secret-proposals")
+        .send({
+          kind: "binding",
+          sourceConfigPath: "access.order_source",
+          configPath: `env.ORDER_${index}`,
+          justification: "Exercise decision-time ordering",
+        });
+      expect(response.status).toBe(201);
+      created.push(response.body.id);
+    }
+    // Decide them in the opposite order to their creation: the oldest request is decided last.
+    const decidedAt = [3, 2, 1].map((minutes) => new Date(Date.UTC(2026, 0, 1, 12, minutes)));
+    for (const [index, id] of created.entries()) {
+      await db.update(companySecretProposals)
+        .set({ status: "rejected", resolvedAt: decidedAt[index], createdAt: new Date(Date.UTC(2026, 0, 1, 10, index)) })
+        .where(eq(companySecretProposals.id, id));
+    }
+    const boardApp = createBoardApp(fixture);
+    const base = `/api/companies/${fixture.companyId}/secret-proposals?status=rejected`;
+
+    const byDecision = await request(boardApp).get(`${base}&order=resolved`);
+    expect(byDecision.status).toBe(200);
+    expect(byDecision.body.map((row: { id: string }) => row.id)).toEqual(created);
+
+    const byCreation = await request(boardApp).get(base);
+    expect(byCreation.body.map((row: { id: string }) => row.id)).toEqual([...created].reverse());
+
+    const topDecision = await request(boardApp).get(`${base}&order=resolved&limit=1`);
+    expect(topDecision.body.map((row: { id: string }) => row.id)).toEqual([created[0]]);
+
+    expect((await request(boardApp).get(`${base}&order=newest`)).status).toBe(422);
   });
 
   it("bounds each expiry sweep batch", async () => {

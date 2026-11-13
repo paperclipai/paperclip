@@ -64,7 +64,7 @@ interface InstructionWorkingCopyInput {
   context: Selection["task"]["context"];
   session: {
     taskSession: { lastRunId: string | null } | null;
-    taskSessionForRun: Selection["session"]["taskSessionForRun"];
+    taskSessionForRun: { lastRunId: string | null } | null;
     sessionConfigMetadata: EffectiveRunSessionConfigMetadata;
   };
   workspace: Pick<Selection["workspace"], "executionTarget" | "executionWorkspace" | "persistedExecutionWorkspace">;
@@ -156,7 +156,7 @@ export function createHeartbeatInstructionWorkingCopy(input: InstructionWorkingC
             observabilityCompatibilityKey: input.observabilityCompatibilityKey,
             priorExecution: parseNativeExecutionInput(priorFileInput), companyId: agent.companyId, agentId: agent.id,
             executionWorkspaceId: persistedExecutionWorkspace?.id ?? readRun().id, workspace: executionWorkspace,
-            environmentId: executionTarget?.environmentId ?? null, runId: readRun().id, preparationKey: instructionPreparationKey, forceRetirement: !taskSessionForRun,
+            environmentId: executionTarget?.environmentId ?? null, target: executionTarget, runId: readRun().id, preparationKey: instructionPreparationKey, forceRetirement: !taskSessionForRun,
             adopt: async previousRunId => {
               instructionCopy = await instructionCopies.adopt({ companyId: agent.companyId, agentId: agent.id,
                 runId: readRun().id, previousRunId, target: executionTarget, cwd: executionWorkspace.cwd, allowRetirementHandoff: true });

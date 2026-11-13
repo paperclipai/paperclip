@@ -17,6 +17,9 @@ use sha2::{Digest, Sha256};
 #[path = "support/acpx_turn_end_restart.rs"]
 mod turn_end_restart;
 
+#[path = "support/acpx_cut_turn_start.rs"]
+mod cut_turn_start;
+
 struct Fixture(PathBuf);
 impl Drop for Fixture {
     fn drop(&mut self) {
@@ -122,8 +125,8 @@ impl Harness {
         };
         let descriptor = json!({
             "kind": "acpx", "provider": "acpx", "driver": "acpx_runtime",
-            "providerVersion": "0.13.1", "agent": "claude", "model": "explicit-model",
-            "acpxVersion": "0.13.1", "agentServerPackage": profile["agentServerPackage"],
+            "providerVersion": "0.22.0", "agent": "claude", "model": "explicit-model",
+            "acpxVersion": "0.22.0", "agentServerPackage": profile["agentServerPackage"],
             "agentServerVersion": profile["agentServerVersion"], "agentRuntimePackage": profile["agentRuntimePackage"],
             "agentRuntimeVersion": profile["agentRuntimeVersion"], "commandDigest": digest,
             "sidecarCommand": sidecar, "sidecarArgs": args, "runtimeDirectory": fixture.0,

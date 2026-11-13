@@ -1199,9 +1199,9 @@ describe("Capability live runnerd and Codex session", () => {
 
   describe("Cursor partial usage notice capture", () => {
     function notice(threadId: string, turnId: string): CodexRpcNotification {
-      const canonical = persistedCursorUsageNotice({ promptMessageIds: [] }, {
-        lastRequestId: "request-1", promptMessageIds: ["prompt-1"], cursorPromptUsage: {
-          request_id: "request-1", prompt_message_id: "prompt-1", receipt: {
+      const canonical = persistedCursorUsageNotice({}, {
+        lastRequestId: "request-1", cursorPromptReceipt: {
+          request_id: "request-1", receipt: {
             schema: "paperclip.cursor.native-usage.v1", source: "native_turn_ended",
             promptId: "12345678-1234-1234-1234-123456789abc", completeness: "partial",
             reasons: ["native_counter_semantics_unverified", "child_run_attribution_unverified"],

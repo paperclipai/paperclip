@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   workspaceProviderOperationSchema,
   parseWorkspaceProviderResult,
+  parseWorkspacePrepareResult,
+  pluginWorkspacePrepareParamsSchema,
   type PluginWorkspaceParams,
 } from "../src/workspace-provider.js";
 import { createWorkspaceProviderHarness } from "../src/testing.js";
@@ -50,6 +52,17 @@ const result = {
   branchCreatedByRuntime: true,
 };
 describe("workspace provider SDK", () => {
+  it("validates asynchronous preparation receipts and preserves result scope", () => {
+    const submit = pluginWorkspacePrepareParamsSchema.parse({ ...params, phase: "submit" });
+    const poll = { ...submit, phase: "poll" as const };
+    const pending = { kind: "pending", deadline: "2099-01-01T00:01:00Z" };
+    expect(parseWorkspacePrepareResult(submit, pending)).toEqual(pending);
+    expect(parseWorkspacePrepareResult(poll, result)).toEqual(result);
+    expect(() => parseWorkspacePrepareResult(poll, { kind: "unsupported" })).toThrow();
+    expect(() => parseWorkspacePrepareResult(poll, { ...pending, deadline: "whenever" })).toThrow();
+    expect(() => parseWorkspacePrepareResult(poll, { ...result, binding: { ...result.binding, projectId: id(20) } })).toThrow();
+  });
+
   it("bounds recovery hints to an exact PR number and commit", () => {
     for (const kind of ["inspect", "remove"] as const) {
       const operation = { kind, binding: result.binding, ...(kind === "remove" ? { expectedHeadSha: "a".repeat(40) } : {}) };

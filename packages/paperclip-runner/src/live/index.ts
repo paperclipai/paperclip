@@ -13,4 +13,4 @@ export { probeAcpxCursorInstallation, probeAcpxPiInstallation, probeAcpxKimiInst
 export { probeKimiModels, KimiMetadataProbeError, type KimiVerifiedModelMetadata } from "../drivers/acpx/kimi-models.js";
 export { probeKimiMetadata, validateKimiMetadata, kimiMetadataProbeDigest, kimiMetadataProbeNodeDigest, type KimiMetadataResult } from "../drivers/acpx/kimi-metadata-probe.js";
 
-export { bundledRemoteProviderPackManifestPath, bundledRemoteRunnerBinary } from "./bundled-remote-provider-pack.js";
+export { BUNDLED_REMOTE_RUNNER_IDENTITY_MISMATCH, bundledRemoteProviderPackManifestPath, bundledRemoteRunnerBinary, bundledRemoteRunnerRelease } from "./bundled-remote-provider-pack.js";
