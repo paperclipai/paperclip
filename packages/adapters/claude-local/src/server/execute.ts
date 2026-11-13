@@ -2,6 +2,7 @@ import { isOpenRouterUrl, openRouterClaudeHeaders } from "@paperclipai/shared/op
 import { applyObservabilityEnvironment } from "@paperclipai/adapter-utils/agent-observability";
 import { createProviderStoppedBoundary } from "@paperclipai/adapter-utils/provider-stopped-boundary";
 import { createUsageCheckpointLog } from "@paperclipai/adapter-utils/usage-checkpoint";
+import { prepareSshConversationState } from "@paperclipai/adapter-utils/ssh-conversation-state";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -26,6 +27,7 @@ import {
   resolveAdapterExecutionTargetTimeoutSec,
   resolveAdapterExecutionTargetCommandForLogs,
   runAdapterExecutionTargetProcess,
+  runAdapterExecutionTargetShellCommand,
   startAdapterExecutionTargetPaperclipBridge,
 } from "@paperclipai/adapter-utils/execution-target";
 import {
@@ -637,6 +639,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           adapterKey: "claude",
           timeoutSec,
           workspaceLocalDir: cwd,
+          syncWorkspace: executionTarget?.workspaceRealization?.mode !== "in_place",
           installCommand: SANDBOX_INSTALL_COMMAND,
           detectCommand: command,
           onProgress: (line) => onLog("stdout", line),
@@ -667,6 +670,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ? () => preparedExecutionTargetRuntime.restoreWorkspace((line) => onLog("stdout", line))
     : null;
   let paperclipBridge: Awaited<ReturnType<typeof startAdapterExecutionTargetPaperclipBridge>> = null;
+  let sshSessionState: Awaited<ReturnType<typeof prepareSshConversationState>> | null = null;
   try {
     if (preparedExecutionTargetRuntime?.workspaceRemoteDir) {
       effectiveExecutionCwd = preparedExecutionTargetRuntime.workspaceRemoteDir;
@@ -712,9 +716,27 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? preparedExecutionTargetRuntime?.assetDirs["config-seed"] ??
         path.posix.join(remoteClaudeRuntimeRoot, "config-seed")
       : null;
-    const remoteClaudeConfigDir = useManagedRemoteClaudeConfig && remoteClaudeRuntimeRoot
+    let remoteClaudeConfigDir = useManagedRemoteClaudeConfig && remoteClaudeRuntimeRoot
       ? path.posix.join(remoteClaudeRuntimeRoot, "config")
       : null;
+    if (executionTarget?.kind === "remote" && executionTarget.transport === "ssh" && executionTarget.spec.useHostAuth === false
+      && config.managedAiConnection && executionTarget.workspaceRealization?.mode === "in_place" && remoteClaudeConfigDir) {
+      const account = parseObject(config.managedAiConnection);
+      const identity = asString(account.sessionIdentity, asString(account.identity, ""));
+      if (!identity) throw new Error("Managed SSH Claude execution requires an account identity");
+      const saved = parseObject(runtime.sessionParams);
+      sshSessionState = await prepareSshConversationState({
+        adapterKey: "claude", preserve: ["projects"],
+        remoteRoot: executionTarget.spec.remoteWorkspacePath, companyId: agent.companyId, agentId: agent.id,
+        accountIdentity: identity, executionIdentity: adapterExecutionTargetSessionIdentity(runtimeExecutionTarget),
+        runId, savedScope: saved.sshClaudeAccountScope, savedConversationId: saved.sshClaudeConversationId,
+        run: async command => {
+          const result = await runAdapterExecutionTargetShellCommand(runId, runtimeExecutionTarget, command, { cwd: effectiveExecutionCwd, env: {}, timeoutSec: 15 });
+          if (result.exitCode !== 0 || result.timedOut) throw new Error("Cannot prepare or clean up SSH Claude conversation state");
+        },
+      });
+      remoteClaudeConfigDir = sshSessionState.home;
+    }
     if (executionTarget?.kind === "remote" && executionTarget.transport === "ssh" && executionTarget.spec.useHostAuth === false && config.managedAiConnection && remoteClaudeRuntimeRoot) Object.assign(env, managedRemoteHomeEnvironment(remoteClaudeRuntimeRoot));
     if (remoteClaudeConfigDir && remoteClaudeConfigSeedDir && remoteClaudeRuntimeRoot) {
       env.CLAUDE_CONFIG_DIR = remoteClaudeConfigDir;
@@ -791,6 +813,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     });
     const hasMatchingExecutionTarget = adapterExecutionTargetSessionMatches(runtimeRemoteExecution, runtimeExecutionTarget);
     const canResumeSession =
+      (!sshSessionState || sshSessionState.canResume) &&
       runtimeSessionId.length > 0 &&
       isValidUuid &&
       hasMatchingPromptBundle &&
@@ -1174,6 +1197,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const resolvedSessionParams = resolvedSessionId
         ? ({
           sessionId: resolvedSessionId,
+          ...(sshSessionState ? { sshClaudeConversationId: sshSessionState.conversationId, sshClaudeAccountScope: sshSessionState.scope } : {}),
           cwd,
           promptBundleKey: promptBundle.bundleKey,
           mcpServerIdentity: runtimeMcpIdentity,
@@ -1262,6 +1286,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         : null;
       const mergedResultJson: Record<string, unknown> = {
         ...parsed,
+        ...(sshSessionState && runtimeSessionId && !sshSessionState.canResume
+          ? { sessionReset: { code: "claude_ssh_session_state_unavailable" } } : {}),
         ...(failed && clearSessionForMaxTurns ? { stopReason: "max_turns_exhausted" } : {}),
         ...(failed && poisonedPreviousMessageId ? { stopReason: "claude_poisoned_previous_message_id" } : {}),
         ...(claudeRefusal ? { stopReason: "refusal", errorFamily: "model_refusal" } : {}),
@@ -1429,7 +1455,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       return toAdapterResult(retry, { fallbackSessionId: null, clearSessionOnMissingSession: true });
     }
 
-    return toAdapterResult(initial, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
+    return toAdapterResult(initial, { fallbackSessionId: !sshSessionState || sshSessionState.canResume ? runtimeSessionId || runtime.sessionId : null });
   } finally {
     try {
       await providerStop.collectBeforeRestore();
@@ -1439,12 +1465,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           await paperclipBridge.stop();
         }
       } finally {
-        if (restoreRemoteWorkspace) {
-          await onLog(
-            "stdout",
-            `[paperclip] Restoring workspace changes from ${describeAdapterExecutionTarget(executionTarget)}.\n`,
-          ).catch(() => undefined);
-          await restoreRemoteWorkspace();
+        try {
+          await sshSessionState?.cleanup();
+        } finally {
+          if (restoreRemoteWorkspace) {
+            await onLog(
+              "stdout",
+              `[paperclip] Restoring workspace changes from ${describeAdapterExecutionTarget(executionTarget)}.\n`,
+            ).catch(() => undefined);
+            await restoreRemoteWorkspace();
+          }
         }
       }
     }
