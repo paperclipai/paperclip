@@ -98,6 +98,9 @@ const WORK_CHECKS = [
     ('preparing', 'verifying', 'pausing', 'resuming', 'terminating', 'cleaning_up')`),
   workCheck("decision_invocations", `SELECT 1 FROM decision_invocations WHERE status = 'running'`),
   workCheck("prompt_injection_invocations", `SELECT 1 FROM prompt_injection_invocations WHERE status = 'running'`),
+  // A pending provider task (MCP Tasks) is polled: the provider cannot wake
+  // Paperclip, so the instance stays awake until the task is settled.
+  workCheck("tool_mcp_tasks", `SELECT 1 FROM tool_mcp_tasks WHERE next_poll_at IS NOT NULL`),
   // Persistent machine credentials can receive work without a human opening
   // the instance. They need an ingress wake contract before we can sleep.
   workCheck("agent_api_keys", incomingWakeWorkQuery("agent_api_keys")!),

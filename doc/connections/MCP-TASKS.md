@@ -93,7 +93,13 @@ Paperclip polls, which the specification makes the default.
 
 This is the narrow exception in `rules/sleep-aware-background-work.mdc`: the
 provider offers no wake Paperclip can receive, so an active task is polled.
-Polling stops with the task.
+Polling stops with the task. A pending task is an idle-sleep blocker
+(`tool_mcp_tasks` in `idle-sleep-safety.ts`), so a host that sleeps when idle
+stays awake until every task is settled. Recovery runs even when heartbeat
+scheduling is off; only the agent wake needs the scheduler.
+
+An approved action whose task outlives the wait keeps its approval: the action
+returns to approved, and its next execution attaches to the same task.
 
 ## Follow-ups
 
@@ -102,6 +108,8 @@ Polling stops with the task.
 - Sampling and roots input requests.
 - Showing a long-running provider action's progress (`statusMessage`) in the
   task chat.
+- Validating question-card answers against the provider's form schema (types,
+  required fields) and letting the person correct them before `tasks/update`.
 
 ## Tests
 

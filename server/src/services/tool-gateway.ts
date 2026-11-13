@@ -9539,6 +9539,26 @@ export function createToolGatewayService(
     };
   }
 
+  /** Return a claimed approved action whose provider task is still running to approved, under the same claim. */
+  async function resumeApprovedActionForPendingTask(input: { actionRequestId: string; invocationId: string; claimUpdatedAt: Date; message: string }) {
+    const now = new Date();
+    return db.transaction(async (tx) => {
+      const [invocation] = await tx.select({ status: toolInvocations.status }).from(toolInvocations)
+        .where(eq(toolInvocations.id, input.invocationId)).for("update").limit(1);
+      if (invocation?.status !== "executing") return false;
+      const [actionRequest] = await tx.select({ companyId: toolActionRequests.companyId, status: toolActionRequests.status, updatedAt: toolActionRequests.updatedAt })
+        .from(toolActionRequests).where(eq(toolActionRequests.id, input.actionRequestId)).for("update").limit(1);
+      if (actionRequest?.status !== "executing" || actionRequest.updatedAt.getTime() !== input.claimUpdatedAt.getTime()) return false;
+      await notifyToolReviewChange(tx, actionRequest.companyId);
+      await tx.update(toolInvocations).set({
+        status: "awaiting_approval", startedAt: null, errorCode: "provider_task_pending", errorMessage: input.message, updatedAt: now,
+      }).where(and(eq(toolInvocations.id, input.invocationId), eq(toolInvocations.status, "executing")));
+      await tx.update(toolActionRequests).set({ status: "approved", updatedAt: now })
+        .where(and(eq(toolActionRequests.id, input.actionRequestId), eq(toolActionRequests.status, "executing"), eq(toolActionRequests.updatedAt, input.claimUpdatedAt)));
+      return true;
+    });
+  }
+
   async function markApprovedActionFailed(input: {
     actionRequestId: string;
     invocationId: string;
@@ -10099,6 +10119,13 @@ export function createToolGatewayService(
       });
       return resultValidation.value;
     } catch (error) {
+      // The provider is still working on the approved action. Keep the
+      // approval: the next execution attaches to the same task instead of
+      // asking the person again or starting the work twice.
+      if (error instanceof ToolGatewayHttpError && error.reasonCode === "provider_task_pending"
+        && await resumeApprovedActionForPendingTask({ actionRequestId: claimed.id, invocationId: invocation.id, claimUpdatedAt: claimed.updatedAt, message: error.message })) {
+        throw error;
+      }
       const { reasonCode } = await markApprovedActionFailed({
         actionRequestId: claimed.id,
         invocationId: invocation.id,

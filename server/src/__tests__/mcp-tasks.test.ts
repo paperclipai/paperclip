@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agentWakeupRequests,
+  approvals,
+  toolActionRequests,
   agents,
   connectionGrants,
   toolConnections,
@@ -131,6 +133,8 @@ function taskServer() {
   const requests: Recorded[] = [];
   const tasks = new Map<string, FakeTask>();
   let forgetAll = false;
+  /** The next N task polls fail as if the app were briefly unreachable. */
+  let failingGets = 0;
   const tool = (name: string) => ({ name, description: name, inputSchema: { type: "object", properties: {} }, annotations: { readOnlyHint: true } });
   const ok = (id: unknown, result: Record<string, unknown>) => Response.json({ jsonrpc: "2.0", id, result: { resultType: "complete", ...result } });
   const fail = (status: number, id: unknown, code: number, message: string) => Response.json({ jsonrpc: "2.0", id, error: { code, message } }, { status });
@@ -173,6 +177,7 @@ function taskServer() {
         if (headers.get("mcp-name") !== body.params.taskId) return fail(400, body.id, -32020, "Mcp-Name does not match");
         const task = tasks.get(body.params.taskId);
         if (!task || forgetAll) return fail(200, body.id, -32602, "Failed to retrieve task: Task not found");
+        if (body.method === "tasks/get" && failingGets > 0) { failingGets -= 1; return new Response(null, { status: 503 }); }
         if (body.method === "tasks/cancel") { task.status = "cancelled"; return ok(body.id, {}); }
         if (body.method === "tasks/update") {
           const answered = Object.keys(body.params.inputResponses ?? {});
@@ -206,6 +211,7 @@ function taskServer() {
     /** The running task now needs a person's answer. */
     ask: () => Object.assign(only().task, { status: "input_required", awaiting: ["who"], inputRequests: { who: { method: "elicitation/create", params: { mode: "form", message: "Who is deploying?", requestedSchema: { type: "object", properties: { name: { type: "string" } } } } } } }),
     forget: () => { forgetAll = true; },
+    failGets: (count: number) => { failingGets = count; },
   };
 }
 
@@ -227,7 +233,7 @@ const support = await getEmbeddedPostgresTestSupport();
     if (keyDir) await rm(keyDir, { recursive: true, force: true });
   });
 
-  async function setup(server: ReturnType<typeof taskServer>) {
+  async function setup(server: ReturnType<typeof taskServer>, input: { askFirst?: string[] } = {}) {
     const [org] = await db.insert(companies).values({ name: `Tasks ${randomUUID()}`, issuePrefix: `T${randomUUID().slice(0, 5)}` }).returning();
     await db.insert(companyMemberships).values({ companyId: org.id, principalType: "user", principalId: actor.actorId, status: "active", membershipRole: "admin" });
     const [agent] = await db.insert(agents).values({ companyId: org.id, name: "Task agent", role: "engineer", adapterType: "process", adapterConfig: {}, runtimeConfig: {} }).returning();
@@ -239,7 +245,8 @@ const support = await getEmbeddedPostgresTestSupport();
     const service = toolAccessService(db, options);
     const connected = await service.connectGalleryApp(org.id, { link: `https://tasks-${randomUUID().slice(0, 8)}.example.com/mcp`, name: "Builds" }, actor);
     await service.finishGalleryAppConnection(org.id, connected.connectionId, {
-      enabledCatalogEntryIds: connected.catalog.map((entry) => entry.id), askFirstCatalogEntryIds: [], access: "all_agents",
+      enabledCatalogEntryIds: connected.catalog.map((entry) => entry.id),
+      askFirstCatalogEntryIds: connected.catalog.filter((entry) => input.askFirst?.includes(entry.toolName)).map((entry) => entry.id), access: "all_agents",
     }, actor);
     const gatewayOptions = { ...options, toolActionSigningSecret: "tasks-signing-key" };
     let gateway = createToolGatewayService(db, gatewayOptions);
@@ -694,6 +701,26 @@ const support = await getEmbeddedPostgresTestSupport();
     await ctx.poll({ wake });
     expect(wake).not.toHaveBeenCalled();
     expect((await ctx.rows())[0]!.wakeRequestedAt).toBeInstanceOf(Date);
+  });
+
+  it("keeps an approved action's approval while its provider task is still running", async () => {
+    const server = taskServer();
+    const ctx = await setup(server, { askFirst: ["build"] });
+    await expect(ctx.call("build")).rejects.toMatchObject({ reasonCode: "approval_required" });
+    const [pending] = await db.select().from(toolActionRequests).where(eq(toolActionRequests.companyId, ctx.org.id));
+    if (pending!.approvalId) await db.update(approvals).set({ status: "approved", decidedByUserId: actor.actorId, decidedAt: new Date() }).where(eq(approvals.id, pending!.approvalId));
+    // The app becomes briefly unreachable, so the approved execution hands the task off.
+    server.failGets(3);
+    await ctx.gateway().approveActionRequest({ companyId: ctx.org.id, actionRequestId: pending!.id, actor: { userId: actor.actorId } }).catch((error) => error);
+    expect(server.count("tools/call")).toBe(1);
+    const [request] = await db.select().from(toolActionRequests).where(eq(toolActionRequests.id, pending!.id));
+    expect(request).toMatchObject({ status: "approved" });
+    const [invocation] = await db.select().from(toolInvocations).where(eq(toolInvocations.id, pending!.invocationId));
+    expect(invocation).toMatchObject({ status: "awaiting_approval", errorCode: "provider_task_pending", startedAt: null });
+    // The next execution of the same approved action collects the task, without a second approval or tools/call.
+    server.finish();
+    expect(await ctx.call("build", { timeoutMs: 3_000 })).toMatchObject({ result: { content: "build finished" } });
+    expect(server.count("tools/call")).toBe(1);
   });
 
   it("never lets another agent attach to a task", async () => {
