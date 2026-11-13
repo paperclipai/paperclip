@@ -909,13 +909,19 @@ export async function taskInterruptionPresentation(db: Db, issue: ProjectionIssu
 /**
  * The refusal that admission recorded on this Retry request, when another
  * click cannot change it. A Retry answer must name it instead of reporting
- * the request as accepted: such a request starts no run by itself.
+ * the request as accepted: such a request starts no run by itself. The task
+ * view's projection says whether a quarantined session is still cleaning up.
  */
-export async function taskRetryRefusal(db: Pick<Db, "select">, companyId: string, requestId: string):
+export async function taskRetryRefusal(db: Pick<Db, "select">, companyId: string, requestId: string,
+  presentation?: Pick<TaskInterruptionPresentation, "canRetry" | "retryWait"> | null):
   Promise<{ reason: string; message: string } | null> {
   const [wake] = await db.select({ status: agentWakeupRequests.status, runId: agentWakeupRequests.runId,
     reason: sql<string | null>`${agentWakeupRequests.payload}#>>'{executionWait,reason}'` })
     .from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.id, requestId)));
-  if (!wake || wake.status !== "deferred_issue_execution" || wake.runId || !wake.reason || heldRetryOffersRetry(wake.reason)) return null;
-  return { reason: wake.reason, message: taskRetryWaitMessage(wake.reason) };
+  if (!wake || wake.status !== "deferred_issue_execution" || wake.runId || !wake.reason) return null;
+  const shown = presentation?.retryWait?.reason === wake.reason ? presentation : null;
+  // A quarantined session that is still cleaning up is a refusal only while
+  // the task view hides Retry for it; every other reason has a fixed verdict.
+  if (heldRetryOffersRetry(wake.reason, wake.reason === "cleanup_quarantined" && shown?.canRetry === false)) return null;
+  return { reason: wake.reason, message: shown?.retryWait?.message ?? taskRetryWaitMessage(wake.reason) };
 }

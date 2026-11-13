@@ -10444,6 +10444,7 @@ export function issueRoutes(
     // (for example on the agent's start lock) keeps running after the answer,
     // which then stays "accepted"; maintenance redelivers it after a crash.
     let refused: { reason: string; message: string } | null = null;
+    let admissionSettled: string | null = null;
     if (receipt.accepted && receipt.requestId && !finalizeRunId && !chatActionId) {
       const requestId = receipt.requestId;
       const admitted = heartbeat.resumeTaskRetry(issue.companyId, requestId).then(() => true, err => {
@@ -10456,12 +10457,18 @@ export function issueRoutes(
         timer.unref?.();
       })]);
       if (timer) clearTimeout(timer);
-      if (answeredInTime) refused = await taskRetryRefusal(db, issue.companyId, requestId);
+      if (answeredInTime) admissionSettled = requestId;
     }
+    const presentation = await taskInterruptionPresentation(db, issue);
+    if (admissionSettled) refused = await Promise.resolve()
+      .then(() => taskRetryRefusal(db, issue.companyId, admissionSettled!, presentation)).catch(err => {
+        logger.warn({ err, issueId: issue.id }, "Task Retry admission state could not be read");
+        return null;
+      });
     res.status(receipt.accepted && !refused ? 202 : 200).json({ ...receipt,
       ...(refused ? { accepted: false, refused } : {}),
       ...(scheduledRetry ? { scheduledRetry: { outcome: scheduledRetry.outcome, message: scheduledRetry.message } } : {}),
-      presentation: await taskInterruptionPresentation(db, issue) });
+      presentation });
     if (finalizeRunId) {
       // The saved result is applied again; no provider run starts. The
       // result-commit worker repeats this if the process stops first.

@@ -66884,6 +66884,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       app.use((req, _res, next) => { req.actor = boardActor(companyId); next(); });
       app.use("/api", issueRoutes(db, createStorageService().storage, { chatRunRetries: f.service }));
       app.use(errorHandler);
+      // The route admits a plain Retry before it answers. This test checks
+      // the saved intent, not dispatch: a paused agent keeps it unstarted.
+      await db.update(agents).set({ status: "paused" }).where(eq(agents.id, agentId));
       const continued = await request(app).post(`/api/issues/${issueId}/retry`).send({
         idempotencyKey: input.idempotencyKey, observedRunId: input.observedRunId,
       }).expect(202);
