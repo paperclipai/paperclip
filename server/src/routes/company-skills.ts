@@ -435,7 +435,7 @@ export function companySkillRoutes(db: Db, options: { pluginWorkerManager?: Plug
     const companyId = req.params.companyId as string;
     res.vary("Accept");
     if (!req.get("Accept")?.includes("application/x-ndjson")) {
-      res.json(await sourceOperation(req, companyId, context => sourceSvc.discover(req.body, context)));
+      res.json(await sourceOperation(req, companyId, context => sourceSvc.discover(req.body, context, undefined, companyId)));
       return;
     }
     const controller = new AbortController();
@@ -461,7 +461,7 @@ export function companySkillRoutes(db: Db, options: { pluginWorkerManager?: Plug
       }
     };
     try {
-      const discovery = await sourceOperation(req, companyId, context => sourceSvc.discover(req.body, context, { signal: controller.signal, onProgress: send }));
+      const discovery = await sourceOperation(req, companyId, context => sourceSvc.discover(req.body, context, { signal: controller.signal, onProgress: send }, companyId));
       await send({ type: "complete", discovery });
     } catch (error) {
       if (controller.signal.aborted) return;

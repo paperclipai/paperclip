@@ -284,7 +284,7 @@ function SourceDialog({ companyId, source, onClose, onSaved }: {
     scanController.current?.abort();
     scanController.current = controller;
     setProgress(null); setFound([]);
-    const discover = (mode: 'skills' | 'repository') => skillSourcesApi.discoverStream(companyId, { repositoryUrl, trackingRef: source?.trackingRef, packageMode: mode, connectionId: source ? sourceConnectionId : availableConnectionId }, event => {
+    const discover = (mode: 'skills' | 'repository') => skillSourcesApi.discoverStream(companyId, { repositoryUrl, trackingRef: source?.trackingRef, packageMode: mode, connectionId: source ? sourceConnectionId : availableConnectionId, ...(source ? { sourceId: source.id } : {}) }, event => {
       if (controller.signal.aborted || scanController.current !== controller) return;
       if (event.type === 'progress') setProgress(event);
       else setFound(previous => [...previous.filter(skill => skill.path !== event.candidate.path), event.candidate].slice(-5));

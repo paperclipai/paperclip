@@ -287,6 +287,22 @@ echo updated`;
     expect((await service.discover(input, { ...context, authorizeSecurityOverride: async () => {} })).canOverrideSecurity).toBe(true);
   });
 
+  it('scans a saved source with the permission to edit it, without import permission', async () => {
+    const { companyId, result, context } = await setup(false);
+    const checked: string[] = [];
+    const editOnly: SkillSourceContext = { ...context, authorize: async action => {
+      checked.push(action);
+      if (action === 'skills.import') throw forbidden('Skill policy denies imports.');
+    } };
+    const service = skillSourceService(db);
+    const input = { repositoryUrl: 'https://github.com/acme/other', packageMode: 'repository' as const };
+    await expect(service.discover(input, editOnly, undefined, companyId)).rejects.toMatchObject({ status: 403 });
+    const rescanned = await service.discover({ ...input, sourceId: result.source.id }, editOnly, undefined, companyId);
+    expect(rescanned.repositoryUrl).toBe('https://github.com/acme/skills');
+    expect(checked).toEqual(['skills.import', 'skills.edit']);
+    await expect(service.discover({ ...input, sourceId: randomUUID() }, editOnly, undefined, companyId)).rejects.toMatchObject({ status: 404 });
+  });
+
   it('keeps approved files viewable in the saved source', async () => {
     const { companyId, service, context } = await setup(false);
     const preview = await service.preview(companyId, { repositoryUrl: 'https://github.com/acme/skills', packageMode: 'repository', commitSha: first,

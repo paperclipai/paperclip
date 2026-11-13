@@ -398,7 +398,7 @@ describe('GitHub skill source import', () => {
     expect(document.querySelector('section[aria-label="Security review"] button[role="checkbox"][id$="-trust"]')).toBeNull();
     await act(async () => button('Scan for flagged files').click());
     await flush();
-    expect(skillSourcesApi.discoverStream).toHaveBeenCalledWith('company-1', expect.objectContaining({ repositoryUrl: saved.repositoryUrl, trackingRef: 'HEAD' }), expect.any(Function), expect.any(AbortSignal));
+    expect(skillSourcesApi.discoverStream).toHaveBeenCalledWith('company-1', expect.objectContaining({ repositoryUrl: saved.repositoryUrl, trackingRef: 'HEAD', sourceId: saved.id }), expect.any(Function), expect.any(AbortSignal));
     await act(async () => document.querySelector<HTMLButtonElement>('section[aria-label="Security review"] button[role="checkbox"]')!.click());
     await act(async () => {
       const element = document.querySelector<HTMLTextAreaElement>('section[aria-label="Security review"] textarea')!;

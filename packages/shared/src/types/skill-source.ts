@@ -87,7 +87,7 @@ export interface SkillPackageReference {
   resolvedPath: string;
   kind: 'missing' | 'outside_package';
 }
-export interface SkillSourcePreviewRequest extends SkillSourceDiscoveryRequest {
+export interface SkillSourcePreviewRequest extends Omit<SkillSourceDiscoveryRequest, 'sourceId'> {
   commitSha: string;
   skillPath: string;
   filePath: string;
@@ -194,6 +194,8 @@ export interface SkillSourceDiscoveryRequest {
   repositoryUrl: string;
   trackingRef?: string;
   connectionId?: string | null;
+  /** Scan a saved source again: authorized like editing that source, and scans its stored repository. */
+  sourceId?: string;
 }
 export interface SkillSourceCandidate {
   inspection?: SkillPackageInspection | null;
@@ -241,7 +243,7 @@ export type SkillSourceDiscoveryEvent = SkillSourceScanUpdate
   | { type: 'complete'; discovery: SkillSourceDiscovery }
   | { type: 'error'; error: string; status: number };
 
-export interface SkillSourceCreateRequest extends SkillSourceDiscoveryRequest {
+export interface SkillSourceCreateRequest extends Omit<SkillSourceDiscoveryRequest, 'sourceId'> {
   commitSha: string;
   selectedPaths: string[];
   excludedFolders?: string[];

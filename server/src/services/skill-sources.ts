@@ -113,8 +113,19 @@ export function skillSourceService(db: Db) {
     const [entry] = await db.select().from(entries).where(and(eq(entries.companyId, companyId), eq(entries.skillId, skillId)));
     return entry ? detail(companyId, entry.sourceId) : null;
   }
-  async function discover(input: SkillSourceDiscoveryRequest, context: SkillSourceContext, options?: SkillScanOptions) {
-    await context.authorize('skills.import', { sourceType: 'git', sourceLocator: input.repositoryUrl });
+  async function discover({ sourceId, ...request }: SkillSourceDiscoveryRequest, context: SkillSourceContext, options?: SkillScanOptions, companyId?: string) {
+    let input = request;
+    if (sourceId) {
+      // Scanning a saved source again is part of editing it, so it takes the same permission as saving its
+      // selection and scans the repository the source stores.
+      if (!companyId) throw unprocessable('A saved source scan needs its company.');
+      await skillAccessService(db).assertSource(companyId, sourceId);
+      const source = await row(companyId, sourceId);
+      await context.authorize('skills.edit', { sourceType: 'git', sourceLocator: source.repositoryUrl });
+      input = { ...request, repositoryUrl: source.repositoryUrl };
+    } else {
+      await context.authorize('skills.import', { sourceType: 'git', sourceLocator: input.repositoryUrl });
+    }
     const { skills: _files, repositoryFiles: _repositoryFiles, repositorySubset: _subset, defaultBranch: _defaultBranch, treeSha: _tree, downloadBytes: _download, scanBytes: _scan, ...result } = await scanGitHubSkills(input, context.read(input.connectionId ?? null), { ...options, retainFiles: false });
     // Approving and withdrawing an approval take the same permission, so report it whatever this commit flags.
     // Saving checks the URL as typed or stored and, when it resolves elsewhere, the canonical repository too.
