@@ -3572,6 +3572,28 @@ describe("ACP activity diagnostics", () => {
     expect(result).toMatchObject({ errorCode: "provider_tool_definition_invalid", errorFamily: "configuration" });
     expect(JSON.stringify(result.resultJson?.terminalSessionFailure)).not.toContain("128");
   });
+  it("marks a rate-limit window only on a turn whose session is kept", async () => {
+    const root = await makeTempRoot(), cwd = path.join(root, "worktree");
+    await fs.mkdir(cwd, { recursive: true });
+    const execute = createAcpxEngineExecutor({
+      classifyTerminalSessionFailure: () => ({ errorCode: "provider_quota", errorFamily: "provider_quota", rateLimitWindow: true }),
+      createRuntime: () => ({ ...buildRuntime(), startTurn: () => ({ events: (async function* () {})(), cancel: async () => {},
+        result: Promise.resolve({ status: "completed", stopReason: "end_turn", _meta: { jetbrains: { air: { version: 1, sessionFailure: {
+          severity: "error", category: "limit", details: "REQUEST_LIMIT_EXCEEDED",
+        } } } } }) }) }) as never,
+    });
+    const run = (runId: string, sessionParams?: Record<string, unknown>) => execute({
+      runId, agent: { id: "agent-1", companyId: "company-1" }, runtime: sessionParams ? { sessionParams } : {},
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state"), cwd },
+      context: {}, onMeta: async () => {}, onLog: async () => {} } as never);
+
+    const kept = await run("window-kept");
+    expect(kept).toMatchObject({ errorCode: "provider_quota", clearSession: false, resultJson: { rateLimitWindow: true } });
+
+    const replaced = await run("window-replaced", { ...kept.sessionParams, acpSessionId: "saved-session" });
+    expect(replaced).toMatchObject({ errorCode: "provider_quota", clearSession: true });
+    expect(replaced.resultJson).not.toHaveProperty("rateLimitWindow");
+  });
   it.each(["terminal", "relay_error", "no_events"])(
     "snapshots %s activity before usage reads, failure logging, and cleanup", async (outcome) => {
       const root = await makeTempRoot();

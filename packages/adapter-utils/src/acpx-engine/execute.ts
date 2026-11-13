@@ -5508,7 +5508,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
               : {}),
             ...(failureDiagnostic ? { terminalSessionFailure: failureDiagnostic } : {}),
             ...(classifiedFailure?.errorFamily ? { errorFamily: classifiedFailure.errorFamily } : {}),
-            ...(classifiedFailure?.rateLimitWindow ? { rateLimitWindow: true } : {}),
+            ...(classifiedFailure?.rateLimitWindow && !clearSession ? { rateLimitWindow: true } : {}),
             ...(classifiedFailure?.retryNotBefore
               ? {
                   retryNotBefore: classifiedFailure.retryNotBefore,
