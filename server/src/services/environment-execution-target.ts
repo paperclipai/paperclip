@@ -699,6 +699,7 @@ export async function resolveEnvironmentExecutionTarget(input: {
     leaseId: input.leaseId ?? null,
     remoteCwd,
     spec: {
+      useHostAuth: parsed.config.useHostAuth !== false,
       host: parsed.config.host,
       port: parsed.config.port,
       username: parsed.config.username,
@@ -706,6 +707,7 @@ export async function resolveEnvironmentExecutionTarget(input: {
       privateKey: parsed.config.privateKey,
       knownHosts: parsed.config.knownHosts,
       strictHostKeyChecking: parsed.config.strictHostKeyChecking,
+      ...(parsed.config.tailscaleSocket ? { tailscaleSocket: parsed.config.tailscaleSocket, tailscaleIdentity: parsed.config.tailscaleIdentity } : {}),
       remoteCwd,
     },
   };
