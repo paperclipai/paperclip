@@ -283,6 +283,7 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     const ranked = await connectionIntentService(db).search(claims, "Synthetic notes service connect my account with an API key");
     expect(ranked.results.length).toBeGreaterThan(1);
     expect(ranked.instruction).toMatch(/^These are ranked connection matches[\s\S]*\[Connect your own MCP server\]\(\/[A-Z0-9]+\/apps\/byo\)/);
+    expect(ranked.instruction).toMatch(/link the app's setup page as \[Connect <app name>\]\(\/[A-Z0-9]+\/apps\/connect\?source=<service>\) instead, because connection_request ends your turn/);
     const result = await connectionIntentService(db).search(claims, "Synthetic notes service");
     expect(result.instruction).toMatch(/\[Connect your own MCP server\]\(\/[A-Z0-9]+\/apps\/byo\)/);
     expect(result.instruction).toContain("Do not create the connection yourself, ask for the key in chat");
