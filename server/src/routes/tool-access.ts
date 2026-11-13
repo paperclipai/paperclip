@@ -2359,14 +2359,18 @@ function connectorEnrollmentPrincipal(req: Request): string {
     res.json({ catalog: await svc.listCatalog(existing.id, existing.companyId, getActorInfo(req)) });
   });
 
-  // Provider tool icons for the task chat's tool rows. Display data only:
-  // company members already see these tool names in their tasks' transcripts.
-  router.get("/companies/:companyId/tool-icons", async (req, res) => {
-    assertBoardOrAgent(req);
+  // Provider tool icons for the task chat's tool rows. Same gate and
+  // visibility as the connection list: only icons of connections this viewer
+  // can see.
+  router.get("/companies/:companyId/tool-icons", managementGuard("connections:read", "GET /companies/:companyId/tool-icons", { personal: true }), async (req, res) => {
+    assertBoard(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    const connections = await svc.listConnections(companyId, connectionRequestUserId(req) ?? undefined);
+    const canManageConnections = await isToolConnectionManagerQuiet(req, companyId);
+    const visible = filterVisibleToolConnections(connections, { userId: connectionRequestUserId(req), canManageConnections });
     res.setHeader("Cache-Control", "private, max-age=300");
-    res.json({ icons: await listCompanyProviderToolIcons(db, companyId) });
+    res.json({ icons: await listCompanyProviderToolIcons(db, companyId, visible.map(connection => connection.id)) });
   });
 
   router.get("/tool-connections/:connectionId/activity", managementGuard("connections:audit", "GET /tool-connections/:connectionId/activity", { personal: true }), async (req, res) => {

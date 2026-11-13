@@ -1,4 +1,4 @@
-import { and, eq, isNotNull, ne } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { toolApplications, toolCatalogEntries, toolConnections } from "@paperclipai/db";
 import { readMcpIcons, type ProviderToolIconEntry } from "@paperclipai/shared";
@@ -11,9 +11,10 @@ const MAX_ICON_ENTRIES = 500;
  * Provider icons (SEP-973) for a company's connected tools, keyed the way the
  * tool gateway names them (`mcp.<app>-<connection>:<tool>`), so the task chat
  * can find a transcript row's icon without a request per row. Only tools that
- * declare icons are listed. Icons are re-sanitized on the way out.
+ * declare icons, on connections the caller may see, are listed. Icons are re-sanitized on the way out.
  */
-export async function listCompanyProviderToolIcons(db: Db, companyId: string): Promise<ProviderToolIconEntry[]> {
+export async function listCompanyProviderToolIcons(db: Db, companyId: string, connectionIds: readonly string[]): Promise<ProviderToolIconEntry[]> {
+  if (connectionIds.length === 0) return [];
   const rows = await db.select({
     toolName: toolCatalogEntries.toolName,
     icons: toolCatalogEntries.icons,
@@ -29,6 +30,7 @@ export async function listCompanyProviderToolIcons(db: Db, companyId: string): P
     .where(and(
       eq(toolCatalogEntries.companyId, companyId),
       eq(toolConnections.companyId, companyId),
+      inArray(toolConnections.id, [...connectionIds]),
       isNotNull(toolCatalogEntries.icons),
       eq(toolCatalogEntries.status, "active"),
       ne(toolConnections.status, "archived"),

@@ -362,6 +362,24 @@ const support = await getEmbeddedPostgresTestSupport();
     await http(f.app).get(`/issues/${f.issue.id}/mcp-app-views`).expect(200);
     const denied = await http(f.app).get(`/issues/${f.issue.id}/mcp-app-views/${viewId}`).expect(404);
     expect(denied.body).toMatchObject({ error: "View not found" });
+
+    // Provider icons follow the connection list's visibility: a viewer gets
+    // icons only from connections that list shows them, and none from a draft
+    // connection someone else is setting up.
+    await db.update(toolCatalogEntries).set({ icons: [{ src: "https://cdn.circleback.ai/icon.png" }] })
+      .where(and(eq(toolCatalogEntries.connectionId, f.connectionId), eq(toolCatalogEntries.toolName, "DisplayMeetings")));
+    const teammateConnections = (await http(f.app).get(`/companies/${f.company.id}/tools/connections`).expect(200)).body.connections as Array<{ id: string }>;
+    const teammateIcons = (await http(f.app).get(`/companies/${f.company.id}/tool-icons`).expect(200)).body.icons as unknown[];
+    expect(teammateIcons).toHaveLength(teammateConnections.some(connection => connection.id === f.connectionId) ? 1 : 0);
+    await db.update(toolConnections).set({ status: "draft" }).where(eq(toolConnections.id, f.connectionId));
+    expect((await http(f.app).get(`/companies/${f.company.id}/tool-icons`).expect(200)).body.icons).toEqual([]);
+    await db.update(toolConnections).set({ status: "active" }).where(eq(toolConnections.id, f.connectionId));
+    f.setActor("board");
+    expect((await http(f.app).get(`/companies/${f.company.id}/tool-icons`).expect(200)).body.icons).toEqual([
+      expect.objectContaining({ icons: [{ src: "https://cdn.circleback.ai/icon.png" }] }),
+    ]);
+    f.setActor("agent");
+    await http(f.app).get(`/companies/${f.company.id}/tool-icons`).expect(403);
   });
 
   it("stores a view's context for the task's next run as untrusted app data, only from a viewer who may comment", async () => {

@@ -85,7 +85,6 @@ export function ProviderToolIconsProvider({ companyId, children }: { companyId: 
     queryFn: () => toolsApi.listProviderToolIcons(companyId!),
     enabled: Boolean(companyId),
     staleTime: 10 * 60_000,
-    retry: false,
   });
   const entries = query.data?.icons;
   const lookup = useMemo(() => (entries?.length ? providerToolIconLookup(entries) : NO_ICONS), [entries]);

@@ -84,12 +84,15 @@ describeDatabase("catalog publication", () => {
     // Icons are display data: adding them never changes the reviewed version.
     expect(after.versionHash).toBe(before.versionHash);
     expect(after.status).toBe(before.status);
-    const listed = await listCompanyProviderToolIcons(db, companyId);
+    const listed = await listCompanyProviderToolIcons(db, companyId, [connectionId]);
     expect(listed).toEqual([{ gatewayToolName: `mcp.fixture-connection-${connectionId.replace(/-/g, "").slice(0, 8)}:displaymeetings`, icons: after.icons }]);
     // Another company sees none of them.
     const otherCompanyId = randomUUID();
     await db.insert(companies).values({ id: otherCompanyId, name: "Other", issuePrefix: `O${otherCompanyId.slice(0, 6)}` });
-    expect(await listCompanyProviderToolIcons(db, otherCompanyId)).toEqual([]);
+    expect(await listCompanyProviderToolIcons(db, otherCompanyId, [connectionId])).toEqual([]);
+    // Only connections the caller may see are listed.
+    expect(await listCompanyProviderToolIcons(db, companyId, [])).toEqual([]);
+    expect(await listCompanyProviderToolIcons(db, companyId, [randomUUID()])).toEqual([]);
   });
   it("refreshes known tools from overlapping MCP pages using the last descriptor", async () => {
     await db.update(toolConnections).set({ config: { url: "https://mcp.example.test/mcp" } }).where(eq(toolConnections.id, connectionId));
