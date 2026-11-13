@@ -8938,8 +8938,60 @@ describe("executeNativeSession recovery", () => {
     await executeNativeSession({ input, backend, controlPlane: port, runnerInstanceId: "runner-recovery",
       controlPlaneInstanceId: "control-recovery",
       // Another server generation claims the run while this one prepares the turn.
-      prepareWakeAttachmentPrompt: async () => { takenOver = true; return undefined; } }).catch(() => undefined);
+      prepareWakeAttachmentPrompt: async () => { takenOver = true; return ""; } }).catch(() => undefined);
     expect(takenOver).toBe(true);
+    expect(startTurn).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { label: "at startup", interruptedAtStartup: true },
+    { label: "when the lost turn's terminal arrives", interruptedAtStartup: false },
+  ])("proves it still owns a recovered session right before a restart continuation $label", async ({ interruptedAtStartup }) => {
+    // Same takeover window as the startup turn, on the restart-continuation
+    // path: steered messages and attachments are prepared before the submit.
+    const failure = { code: "provider_turn_lost_on_restore", recoverable: true };
+    const checkpoint: PersistedNativeSession = {
+      backendKind: "runner", driverKind: "acpx_runtime", sessionId: "record-recovery", identity,
+      providerSessionId: "provider-recovery", cursor: "0", activeTurnId: "turn-recovery",
+      terminalTurns: [], semanticResult: null, pendingRuntimeRequests: [], lineage: [],
+    };
+    const interrupted: PersistedNativeSession = {
+      ...checkpoint, activeTurnId: null,
+      terminalTurns: [{ turnId: "turn-recovery", fingerprint: JSON.stringify({ terminalState: "failed", error: failure, result: null }) }],
+    };
+    const startTurn = vi.fn<NativeSession["startTurn"]>(async () => ({ turnId: "turn-continuation" }));
+    const session: NativeSession = {
+      identity: () => identity,
+      async capabilities() { return { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true }; },
+      async *events() {
+        if (!interruptedAtStartup) yield runnerEvent(1, "turn.failed", { status: "failed", error: failure });
+      },
+      startTurn,
+      async result() { return null; },
+      async snapshot() { return structuredClone(interrupted); },
+      async close() {},
+    };
+    const backend: NativeSessionBackend = {
+      async descriptor() { return { kind: "runner", name: "restart", version: "1", capabilities: await session.capabilities() }; },
+      async openSession() { throw new Error("must preserve the provider session"); },
+      async recoverSession() { return { recovered: true, session }; },
+    };
+    let takenOver = false;
+    const port: ControlPlanePort = {
+      async openRun() {},
+      async checkpointSession() { if (takenOver) throw new Error("native_runner_checkpoint_owner_lost"); },
+      async appendEvent(event: PrpEvent) { return { cursor: event.sourceSeq, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" }; },
+      async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; },
+      async completeRun() {},
+    };
+    const prepareWakeAttachmentPrompt = vi.fn(async () => { takenOver = true; return ""; });
+    await executeNativeSession({
+      input, backend, controlPlane: port, persistedSession: interruptedAtStartup ? interrupted : checkpoint,
+      runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery", resumeInterruptedTurn: true,
+      // Another server generation claims the run while this one prepares the continuation.
+      prepareWakeAttachmentPrompt,
+    }).catch(() => undefined);
+    expect(prepareWakeAttachmentPrompt).toHaveBeenCalledOnce();
     expect(startTurn).not.toHaveBeenCalled();
   });
 
