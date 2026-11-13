@@ -16099,7 +16099,8 @@ async function createRunnerdBackendWithinSessionClaim(
   // Codex and OpenCode send dynamic tool calls over authenticated PRP. Keep
   // the assigned gateway on the control plane instead of asking the sandbox to
   // reach the host's HTTP origin (which may be private or loopback-only).
-  const relayAssignedMcp = Boolean(pluginTask) || input.execution.provider.kind === "cursor_cloud" || input.execution.provider.kind === "opencode" || (remoteTarget !== null && input.execution.provider.kind === "codex") || input.execution.schema === "paperclip.native-execution-input.v6";
+  const acpxClaude = input.execution.provider.kind === "acpx" && input.execution.provider.agent === "claude";
+  const relayAssignedMcp = Boolean(pluginTask) || input.execution.provider.kind === "cursor_cloud" || input.execution.provider.kind === "opencode" || acpxClaude || (remoteTarget !== null && input.execution.provider.kind === "codex") || input.execution.schema === "paperclip.native-execution-input.v6";
   const assignedMcpUrl = input.runnerEnvironment?.PAPERCLIP_NATIVE_MCP_URL;
   const assignedMcpToken = input.runnerEnvironment?.PAPERCLIP_NATIVE_MCP_TOKEN;
   const assignedMcpName = input.runnerEnvironment?.PAPERCLIP_NATIVE_MCP_NAME;

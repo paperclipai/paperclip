@@ -179,6 +179,8 @@ type BackendFactoryOptions = {
     };
   }) => unknown;
   dynamicToolHandler?: (call: unknown) => Promise<unknown>;
+  acpxDynamicToolHandler?: (call: unknown) => Promise<unknown>;
+  dynamicTools?: unknown[];
   completionFeedback?: (result: Parameters<typeof completionFeedback.nativeCompletionFeedback>[2]) => Promise<string>;
   onSpawn?: (meta: {
     pid: number;
@@ -18681,21 +18683,35 @@ describe("runnerd provider runtime wiring", () => {
       }
     });
 
-  it.each(["codex", "opencode"] as const)("keeps assigned MCP credentials on the control plane for %s", async (providerKind) => {
+  it.each(["codex", "opencode", "acpx-claude"] as const)("keeps assigned MCP credentials on the control plane for %s", async (providerKind) => {
     const selectedExecution: NativeExecutionInput = providerKind === "opencode"
       ? { ...execution, provider: { kind: "opencode", model: "openrouter/deepseek/deepseek-v4.1-flash-1017", permissionMode: "allow" } }
-      : execution;
+      : providerKind === "acpx-claude"
+        ? { ...execution, provider: { kind: "acpx", agent: "claude", model: "claude-sonnet-5", permissionMode: "approve-all" } } as NativeExecutionInput
+        : execution;
     const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
     vi.stubEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector.test");
     const exporter = new InMemorySpanExporter();
     const provider = new TracerProvider({ spanProcessors: [new SimpleSpanProcessor({ exporter })] });
     expect(trace.setGlobalTracerProvider(provider)).toBe(true);
     try {
-      const assignedMcpTools = { definitions: () => [], has: () => false, execute: vi.fn() };
+      const assignedTool = { name: "app_linear_create_issue_0123456789ab", description: "Linear: Create issue", inputSchema: { type: "object" } };
+      const assignedMcpTools = {
+        definitions: () => [assignedTool], has: (name: string) => name === assignedTool.name,
+        execute: vi.fn(async (_call: unknown) => ({ content: [{ type: "text", text: "created" }] })),
+      };
       state.createAssignedMcpTools.mockResolvedValueOnce(assignedMcpTools);
       state.createBackend.mockClear();
       state.createTransport.mockClear();
       state.toolAuthorityDefinitions.mockClear();
+      state.toolAuthorityDefinitions.mockImplementation(async binding =>
+        ((binding.assignedMcpTools as typeof assignedMcpTools | undefined)?.definitions() ?? []) as never);
+      state.toolAuthorityExecute.mockReset().mockImplementation(async (binding: Record<string, unknown>, call: unknown) => {
+        const tools = binding.assignedMcpTools as typeof assignedMcpTools | undefined;
+        const { tool, arguments: args } = call as { tool: string; arguments: unknown };
+        if (!tools?.has(tool)) throw new Error("unknown tool");
+        return tools.execute({ tool, arguments: args });
+      });
       await createRunnerdBackend({
         db: leaseDb(selectedExecution), execution: selectedExecution, runnerInstanceId: "runner-assigned-mcp",
         runnerEnvironment: {
@@ -18703,7 +18719,7 @@ describe("runnerd provider runtime wiring", () => {
           PAPERCLIP_NATIVE_MCP_URL: "http://127.0.0.1:3217/mcp/gateways/assigned-test",
           PAPERCLIP_NATIVE_MCP_TOKEN: "private-run-token",
         },
-        runnerExecutionTarget: providerKind === "opencode" ? undefined : {
+        runnerExecutionTarget: providerKind !== "codex" ? undefined : {
           kind: "remote", transport: "sandbox", providerKey: "daytona",
           leaseId: "lease-assigned-mcp", remoteCwd: "/home/daytona/paperclip-workspace",
           runner: { execute: vi.fn() },
@@ -18719,6 +18735,12 @@ describe("runnerd provider runtime wiring", () => {
       expect(options.environment.PAPERCLIP_NATIVE_MCP_NAME).toBeUndefined();
       expect(options.environment.PAPERCLIP_NATIVE_MCP_URL).toBeUndefined();
       expect(options.environment.PAPERCLIP_NATIVE_MCP_TOKEN).toBeUndefined();
+      const backendOptions = state.createBackend.mock.calls[0]![1];
+      expect(backendOptions.dynamicTools).toContainEqual(assignedTool);
+      const handler = providerKind === "acpx-claude" ? backendOptions.acpxDynamicToolHandler! : backendOptions.dynamicToolHandler!;
+      await expect(handler({ tool: assignedTool.name, callId: "call-assigned", arguments: { title: "Ship it" } } as never))
+        .resolves.toEqual({ content: [{ type: "text", text: "created" }] });
+      expect(assignedMcpTools.execute).toHaveBeenCalledWith({ tool: assignedTool.name, arguments: { title: "Ship it" } });
       await provider.forceFlush();
       const spans = exporter.getFinishedSpans();
       expect(spans.map(span => span.name)).toEqual(expect.arrayContaining([
@@ -18730,6 +18752,8 @@ describe("runnerd provider runtime wiring", () => {
         expect(JSON.stringify(span.attributes)).not.toContain("private-run-token");
       }
     } finally {
+      state.toolAuthorityDefinitions.mockImplementation(async () => []);
+      state.toolAuthorityExecute.mockReset();
       vi.stubEnv("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint);
       trace.disable();
       await provider.shutdown();
