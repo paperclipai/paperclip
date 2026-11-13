@@ -202,7 +202,16 @@ that sidecar 100 ms to report its goal and session state. If the sidecar is slow
 or declines, Runner stays attached. Runner keeps at most one unanswered read and
 recognizes its late reply. Events received during that read still belong to A
 and are delivered before B attaches. The existing policy still replaces the
-sidecar at the next turn or run attachment; the saved provider identity continues.
+sidecar at park and run attachment; the saved provider identity continues.
+
+Between turns of the same run, Runner keeps a Claude sidecar only when the turn
+completed normally, its terminal reported `backgroundTasks: {"live": 0}`, and
+every condition of the turn-end restart holds. Before the next turn it reads
+`session.snapshot` again and requires the same report. A missing, live or
+malformed report, a failed, cancelled or interrupted turn, any other agent, a
+full settled-turn ledger or a full tool replay ledger replaces the sidecar as
+before. A kept sidecar keeps its tool call-ID tombstones and settled turn
+identities.
 
 The check also inspects the live provider
 after that drain, so a late active-goal notification cannot be hidden by the
