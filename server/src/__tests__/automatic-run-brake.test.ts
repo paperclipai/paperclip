@@ -293,6 +293,17 @@ suite("automatic-run brake", () => {
     expect(await heldCount(createAutomaticRunBrake(), queued, { personOrigin: false })).toBe(queued.length);
   }, 120_000);
 
+  it("stays open when runs that started fine are followed by newer failures before starting", async () => {
+    const { companyId, agentIds: [agentId] } = await seedCompany();
+    const failures = await openBrake(companyId, agentId!);
+    await forgetRuns(failures.map(run => run.id));
+    await insertRuns(companyId, agentId!, 2, () => ({ status: "running", executionStage: "dispatching", lastOutputAt: ago(80_000),
+      startedAt: ago(90_000), createdAt: ago(100_000) }));
+    await failedBeforeStarting(companyId, agentId!, 10);
+    await ageBrake(companyId, AUTOMATIC_RUN_BRAKE.minOpenMs);
+    expect((await createAutomaticRunBrake().refresh(db, companyId)).state).toBe("open");
+  }, 60_000);
+
   it("reopens from a gradual release when runs fail before starting again", async () => {
     const { companyId, agentIds: [agentId] } = await seedCompany();
     const failures = await openBrake(companyId, agentId!);

@@ -251,20 +251,71 @@ suite("automatic-run brake in the recovery passes", () => {
     return { runId, actionId: action!.id };
   }
 
-  it("the held backlog records a wait until the next try while open and continues after", async () => {
+  function runWake() {
+    return vi.fn(async (wakeAgentId: string, opts: { contextSnapshot: Record<string, unknown> }) => {
+      const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: wakeAgentId, invocationSource: "automation",
+        triggerDetail: "system", status: "queued", contextSnapshot: opts.contextSnapshot }).returning();
+      return run!;
+    });
+  }
+
+  const continuationRecords = async (runId: string) => db.select().from(issueRecoveryActions)
+    .where(sql`${issueRecoveryActions.evidence}#>>'{freshContinuation,sourceRunId}' = ${runId}`);
+
+  it("the held backlog records its continuation for free and the delivery creates the run only after the pause", async () => {
     await seedCompany();
     const held = await heldBacklog();
     const failures = await openBrake();
-    expect(await continueHeldExecutions(db, new Date())).toMatchObject({ continued: 0 });
-    const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, held.actionId));
-    expect(action!.evidence).toMatchObject({ freshContinuationCheck: { kind: "backoff" } });
-    expect(action!.evidence.freshContinuation).toBeUndefined();
-    const nextCheckAt = Number((action!.evidence.freshContinuationCheck as { nextCheckAt: number }).nextCheckAt);
-    expect(nextCheckAt).toBeGreaterThan(Date.now() + 30_000);
-    expect(await continueHeldExecutions(db, new Date())).toMatchObject({ checked: 0 });
-
+    expect(await continueHeldExecutions(db, new Date())).toMatchObject({ continued: 1 });
+    expect(await continuationRecords(held.runId)).toHaveLength(1);
+    const wake = runWake();
+    await deliverReconciledExecutions(db, wake as never);
+    expect(wake).not.toHaveBeenCalled();
+    expect((await db.select().from(automaticRunBrakes))[0]!.nextCreationAt).toBeNull();
     await recover(failures);
-    resetBacklogContinuationPacingForTests(db);
-    expect(await continueHeldExecutions(db, new Date(nextCheckAt + 1_000))).toMatchObject({ continued: 1 });
+    await db.delete(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "running")));
+    await deliverReconciledExecutions(db, wake as never);
+    expect(wake).toHaveBeenCalledTimes(1);
   }, 120_000);
+
+  it("one held task spends one creation slot while open", async () => {
+    await seedCompany();
+    await heldBacklog();
+    await openBrake({ startingAutomaticRun: false });
+    expect(await continueHeldExecutions(db, new Date())).toMatchObject({ continued: 1 });
+    expect((await db.select().from(automaticRunBrakes))[0]!.nextCreationAt).toBeNull();
+    const wake = runWake();
+    await deliverReconciledExecutions(db, wake as never);
+    expect(wake).toHaveBeenCalledTimes(1);
+    expect((await db.select().from(automaticRunBrakes))[0]!.nextCreationAt).not.toBeNull();
+  }, 120_000);
+
+  it("never pauses a person's Retry or message at the delivery, the sweep or the held backlog", async () => {
+    await seedCompany();
+    const action = await pendingContinuation();
+    await openBrake();
+    await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "on_demand", triggerDetail: "manual", reason: "task_retry",
+      status: "deferred_issue_execution", requestedByActorType: "user", requestedByActorId: "board", payload: { issueId: action.sourceIssueId } });
+    const wake = runWake();
+    await deliverReconciledExecutions(db, wake as never);
+    expect(wake).toHaveBeenCalledTimes(1);
+
+    const issueId = await strandedTask();
+    const [retry] = await db.select().from(heartbeatRuns).where(sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`);
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId, taskId: issueId, wakeReason: "task_retry" } })
+      .where(eq(heartbeatRuns.id, retry!.id));
+    const enqueueWakeup = wakeQueue();
+    const recovery = recoveryService(db, { enqueueWakeup, scheduleRecoveryRetry: async () => null });
+    expect(await recovery.assignedWork.checkIssue({ companyId, issueId })).toMatchObject({ outcome: "repaired" });
+
+    const held = await heldBacklog();
+    await db.update(heartbeatRuns).set({ contextSnapshot: sql`${heartbeatRuns.contextSnapshot} || '{"wakeReason":"task_retry"}'::jsonb` })
+      .where(eq(heartbeatRuns.id, held.runId));
+    expect(await continueHeldExecutions(db, new Date())).toMatchObject({ continued: 1 });
+    await db.delete(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "queued")));
+    const later = runWake();
+    await deliverReconciledExecutions(db, later as never);
+    expect(later).toHaveBeenCalledTimes(1);
+    expect((await db.select().from(automaticRunBrakes))[0]!.nextCreationAt).toBeNull();
+  }, 180_000);
 });

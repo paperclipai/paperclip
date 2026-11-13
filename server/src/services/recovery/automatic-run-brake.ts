@@ -182,7 +182,7 @@ function evaluate(rows: SignalRow[], state: AutomaticRunBrakeState, lower: numbe
     const startedAt = toDate(row.started_at);
     if (row.status === "running" && (!startedAt || startedAt.getTime() < lower)) return [];
     const outcome = classifyAutomaticRunOutcome(outcomeFacts(row), rules);
-    return outcome === "neutral" ? [] : [{ outcome, row, at: (finishedAt ?? now).getTime() }];
+    return outcome === "neutral" ? [] : [{ outcome, row, at: (finishedAt ?? startedAt!).getTime() }];
   }).sort((left, right) => right.at - left.at);
   const failedBeforeStarting = outcomes.filter(entry => entry.outcome === "failed_before_starting").length;
   const streak = outcomes.slice(0, AUTOMATIC_RUN_BRAKE.consecutiveProviderRefusals);
@@ -206,6 +206,8 @@ function trips(evidence: Evidence) {
   return evidence.providerRefusalStreak || (evidence.counted >= AUTOMATIC_RUN_BRAKE.minCounted
     && evidence.failedBeforeStarting / evidence.counted >= AUTOMATIC_RUN_BRAKE.failureShare);
 }
+
+export type AutomaticWork = { sourceRunId?: string | null; issueId?: string | null };
 
 type CacheEntry = { snapshot: AutomaticRunBrakeSnapshot; readAt: number; skewMs: number; heldUntil: number };
 
@@ -377,9 +379,22 @@ export function createAutomaticRunBrake(options: { loadRules?: () => Promise<Aut
     return (await current(db, companyId)).snapshot;
   }
 
-  async function creationHeldUntil(db: Db, companyId: string): Promise<Date | null> {
+  async function isPersonWork(db: Db, companyId: string, work: AutomaticWork) {
+    if (work.issueId) {
+      const [waiting] = [...await db.execute<{ waiting: boolean }>(sql`select exists (select 1 from agent_wakeup_requests w
+        where w.company_id = ${companyId} and w.requested_by_actor_type = 'user' and w.run_id is null
+          and w.status in ('queued', 'deferred_issue_execution') and w.payload->>'issueId' = ${work.issueId}) as waiting`)];
+      if (waiting?.waiting) return true;
+    }
+    if (!work.sourceRunId) return false;
+    const rules = await rulesOrNull();
+    return !rules || (await rules.listPersonOriginSourceRunIds(db, companyId, [work.sourceRunId])).includes(work.sourceRunId);
+  }
+
+  async function creationHeldUntil(db: Db, companyId: string, work: AutomaticWork = {}): Promise<Date | null> {
     const entry = await current(db, companyId);
     if (entry.snapshot.state !== "open") return null;
+    if (await isPersonWork(db, companyId, work)) return null;
     const recheck = new Date(Date.now() + AUTOMATIC_RUN_BRAKE.creationIntervalMs);
     const lastStartAt = entry.snapshot.evidence.lastStartAt;
     if (lastStartAt !== null && lastStartAt - entry.skewMs > Date.now() - AUTOMATIC_RUN_BRAKE.startProgressMs) return recheck;
@@ -477,8 +492,8 @@ export function createAutomaticRunBrake(options: { loadRules?: () => Promise<Aut
 
 export const automaticRunBrake = createAutomaticRunBrake();
 
-export function automaticRunCreationHeldUntil(db: Db, companyId: string) {
-  return automaticRunBrake.creationHeldUntil(db, companyId);
+export function automaticRunCreationHeldUntil(db: Db, companyId: string, work: AutomaticWork = {}) {
+  return automaticRunBrake.creationHeldUntil(db, companyId, work);
 }
 
 export function automaticWorkStatusText(snapshot: AutomaticRunBrakeSnapshot) {

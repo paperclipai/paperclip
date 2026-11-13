@@ -26,7 +26,6 @@ import { notifyRoutineExecutionStatus } from "./routine-execution-status-notific
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { readRunCancellation } from "./run-cancellation.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
-import { automaticRunCreationHeldUntil } from "./recovery/automatic-run-brake.js";
 
 /**
  * Fresh-continuation fallback: exact resumption of an unfinished run is an
@@ -949,8 +948,6 @@ export async function continueHeldExecutions(db: Db, now = new Date(), limit = B
   for (const candidate of candidates) {
     if (!candidate.runId || seen.has(candidate.runId)) continue;
     seen.add(candidate.runId);
-    const heldUntil = await automaticRunCreationHeldUntil(db, candidate.companyId);
-    if (heldUntil) { await recordFreshContinuationCheck(db, { companyId: candidate.companyId, actionId: candidate.id }, { kind: "backoff", retryAt: heldUntil }, now); continue; }
     times.push(now.getTime());
     try {
       const result = await ensureFreshContinuation(db, { companyId: candidate.companyId, runId: candidate.runId,

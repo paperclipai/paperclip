@@ -527,7 +527,8 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       await deps.settleLostRunProcess?.({ companyId: issue.companyId, runId: verdict.runId! });
       return { verdict, outcome: "settled_lost_run", retryAt: new Date(at.getTime() + 90_000) };
     }
-    const heldUntil = facts.latestRun ? await automaticRunCreationHeldUntil(db, issue.companyId) : null;
+    const heldUntil = facts.latestRun
+      ? await automaticRunCreationHeldUntil(db, issue.companyId, { issueId: issue.id, sourceRunId: facts.latestRun.id }) : null;
     if (heldUntil) return { verdict, outcome: "deferred_rate_limit", retryAt: heldUntil };
     // A small process-wide budget keeps a post-deploy backlog from starting
     // hundreds of runs at once. Deferred tasks come back on their deadline.
