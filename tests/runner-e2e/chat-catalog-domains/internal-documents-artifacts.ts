@@ -37,7 +37,8 @@ export function grade_documents_artifacts(value: unknown) {
       c.add("correct-thread-resolved", annotation?.status === "resolved" && annotation.resolvedByAgentId === o.leadId
         && unrelated?.status === "open" && annotation.documentId === plan?.id && annotation.originalRevisionId === o.state.originalRevisionId,
         "Only the anchored pricing annotation is resolved by the CEO, preserving its original document and revision relationship.");
-      const edited = o.activity.find(row => row.action === "issue.document_updated" && row.agentId === o.leadId);
+      const edited = o.activity.filter(row => row.action === "issue.document_updated" && row.agentId === o.leadId)
+        .sort((a, b) => Date.parse(a.createdAt ?? "") - Date.parse(b.createdAt ?? ""))[0];
       const resolved = o.activity.find(row => row.action === "issue.document_annotation_thread_resolved" && row.agentId === o.leadId && row.details?.threadId === target.id);
       c.add("edit-before-resolution", !!edited && !!resolved && Date.parse(edited.createdAt ?? "") <= Date.parse(resolved.createdAt ?? "")
         && !!plan && o.revisions.some(row => row.id === plan.latestRevisionId && row.createdByAgentId === o.leadId && row.body === plan.body),
@@ -113,7 +114,7 @@ function resolveFeedback(): ChatCatalogCase {
       document: { id: doc.id, key: "plan", latestRevisionId: doc.latestRevisionId! }, annotationId: pricingThread.id });
     return { project: p, task: t, pricingThread, siblingThread, supportText, originalRevisionId: doc.latestRevisionId, selectedSource, factualContextAttachment: selectedSource.factualContextAttachment };
   });
-  return { ...base, sourceFiles: [...base.sourceFiles, "../../packages/shared/src/document-anchors.ts"], async observe(ctx, state) {
+  return { ...base, oracleVersion: "paperclip.chat-catalog.internal.resolve-feedback.v2", sourceFiles: [...base.sourceFiles, "../../packages/shared/src/document-anchors.ts"], async observe(ctx, state) {
     const o = await observeInternal(ctx, state);
     return { ...o, annotations: await ctx.input.api.get<Entity[]>(`/api/issues/${entity(state, "task").id}/documents/plan/annotations?status=all&includeComments=true`) };
   } };

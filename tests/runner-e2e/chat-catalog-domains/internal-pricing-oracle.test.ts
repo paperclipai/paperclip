@@ -41,3 +41,22 @@ it("preserves unrelated content, exact annotation relationships, saved revision 
   expect(grade_documents_artifacts({ ...o, annotations: o.annotations.map(row => ({ ...row, status: "resolved" })) }).passed).toBe(false);
   expect(grade_documents_artifacts({ ...o, activity: [o.activity[1], { ...o.activity[0], createdAt: "2026-10-27T10:00:02Z" }] }).passed).toBe(false);
 });
+
+// Full cohort 9 (master b1ef1f3022): the CEO saved the edit at 00:41:59, resolved at 00:42:03 and saved an identical body
+// again at 00:42:06. Activity is listed newest first, so the check read the later save and reported no edit before resolution.
+it("establishes edit-before-resolution from the earliest CEO edit, whatever order activity is listed in", () => {
+  const task = { id: "task", companyId: "company", title: "Website task", status: "backlog", projectId: "project" };
+  const supportText = "Support is provided by the original launch team fixture-42.";
+  const body = `$19 monthly total for the entire team, not per user.\n\n${supportText}`;
+  const edit = (id: string, at: string) => ({ id, action: "issue.document_updated", agentId: "ceo", createdAt: at });
+  const resolve = { id: "resolve", action: "issue.document_annotation_thread_resolved", agentId: "ceo", details: { threadId: "pricing" }, createdAt: "2026-11-12T00:42:03Z" };
+  const o = (activity: unknown[]) => ({ scenarioId: "documents-artifacts.resolve-feedback", companyId: "company", origin: "https://fixture.test", leadId: "ceo",
+    state: { task, pricingThread: { id: "pricing" }, siblingThread: { id: "sibling" }, supportText, originalRevisionId: "original" }, tasks: [task], projects: [], goals: [], comments: [],
+    documents: [{ id: "document", key: "plan", latestRevisionId: "revision", body }], revisions: [{ id: "revision", body, createdByAgentId: "ceo" }],
+    annotations: [{ id: "pricing", status: "resolved", resolvedByAgentId: "ceo", documentId: "document", originalRevisionId: "original" }, { id: "sibling", status: "open" }],
+    activity, reply: "Fixed.", links: ["/RUN/issues/task"], humanQueries: [], runs: [] });
+  expect(grade_documents_artifacts(o([edit("resave", "2026-11-12T00:42:06Z"), resolve, edit("edit", "2026-11-12T00:41:59Z")])).passed).toBe(true);
+  expect(grade_documents_artifacts(o([edit("edit", "2026-11-12T00:41:59Z"), resolve, edit("resave", "2026-11-12T00:42:06Z")])).passed).toBe(true);
+  expect(grade_documents_artifacts(o([edit("late", "2026-11-12T00:42:06Z"), resolve])).passed).toBe(false);
+  expect(grade_documents_artifacts(o([resolve])).passed).toBe(false);
+});
