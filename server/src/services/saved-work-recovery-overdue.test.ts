@@ -31,7 +31,7 @@ vi.mock("./environment-execution-target.js", async importOriginal => {
 describe("a saved-work recovery the queue has not reached", () => {
   useWorkspaceRecoveryFixture(targets);
 
-  async function stagingShape(stoppedAgoMs: number) {
+  async function stagingShape(stoppedAgoMs: number, clock: { now?: () => Date } = {}) {
     const f = await failedRemotePreparation();
     const finishedAt = new Date(Date.now() - stoppedAgoMs);
     await db.update(heartbeatRuns).set({ finishedAt, startedAt: new Date(finishedAt.getTime() - 10 * 60_000) })
@@ -43,7 +43,7 @@ describe("a saved-work recovery the queue has not reached", () => {
     const onRecovered = vi.fn(async () => undefined);
     // Staging's admission parked every continuation behind the hold.
     const enqueueWakeup = vi.fn(async () => null);
-    const sweep = assignedWorkSweep(db, { enqueueWakeup,
+    const sweep = assignedWorkSweep(db, { enqueueWakeup, ...clock,
       startSavedWorkRecovery: source => startOverdueWorkspaceRecovery(db, f.environmentRuntime, onRecovered, source) });
     return { ...f, sweep, enqueueWakeup, onRecovered };
   }
@@ -83,13 +83,25 @@ describe("a saved-work recovery the queue has not reached", () => {
     expect(successor).toBeDefined();
   }, 90_000);
 
-  it("counts a recovery the queue has time to start as the task's pending path", async () => {
-    const f = await stagingShape(2 * 60_000);
-    expect(await f.sweep.checkIssue({ companyId: f.companyId, issueId: f.issueId })).toMatchObject({
-      verdict: { kind: "ok", clause: "pending_intent", intent: "saved_work_recovery" }, outcome: "ok" });
+  it("counts a recovery the queue has time to start as the task's pending path, and looks again when its bound ends", async () => {
+    let clock = Date.now();
+    const f = await stagingShape(2 * 60_000, { now: () => new Date(clock) });
+    const stoppedAt = (await db.select({ finishedAt: heartbeatRuns.finishedAt }).from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, f.runId)))[0].finishedAt!.getTime();
+    const deadlines: number[] = [];
+    expect(await f.sweep.checkIssue({ companyId: f.companyId, issueId: f.issueId, onDeferredDeadline: at => deadlines.push(at) }))
+      .toMatchObject({ verdict: { kind: "ok", clause: "pending_intent", intent: "saved_work_recovery" }, outcome: "ok" });
     expect(f.enqueueWakeup).not.toHaveBeenCalled();
     expect(readSystemRecovery((await action(f.actionId)).evidence)).toMatchObject({ state: "scheduled", attempts: 0 });
     expect(await continuationEntries(f.issueId)).toHaveLength(0);
+    // The worker keeps this deadline; nothing else needs to wake the task.
+    expect(deadlines).toEqual([stoppedAt + SAVED_WORK_RECOVERY_START_BOUND_MS + 1_000]);
+    clock = deadlines[0];
+    expect(await f.sweep.checkIssue({ companyId: f.companyId, issueId: f.issueId }))
+      .toMatchObject({ verdict: { reason: "saved_work_recovery_overdue" }, outcome: "started_saved_work_recovery" });
+    await vi.waitFor(async () => {
+      expect(readSystemRecovery((await action(f.actionId)).evidence)?.state).toBe("complete");
+    }, { timeout: 20_000, interval: 100 });
   }, 60_000);
 
   it("never starts a second attempt beside one already running for the same run", async () => {

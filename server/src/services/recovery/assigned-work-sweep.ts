@@ -537,6 +537,11 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
   }
 
   async function act(issue: IssueRow, facts: AssignedWorkFacts, verdict: AssignedWorkVerdict, at: Date): Promise<AssignedWorkCheck> {
+    // A queued saved-work recovery is pending only for its bound: look again
+    // when the bound ends, so an overdue recovery is started even if nothing
+    // else wakes this task.
+    if (verdict.kind === "ok" && verdict.clause === "pending_intent" && verdict.intent === "saved_work_recovery" && facts.savedWorkRecovery)
+      return { verdict, outcome: "ok", retryAt: new Date(savedWorkRecoveryDueSince(facts.savedWorkRecovery) + SAVED_WORK_RECOVERY_START_BOUND_MS + 1_000) };
     if (verdict.kind === "not_applicable" || verdict.kind === "ok") return { verdict, outcome: "ok", retryAt: null };
     if (verdict.kind === "settling") return { verdict, outcome: "settling", retryAt: verdict.recheckAt };
     if (verdict.stale) return { verdict, outcome: "stale_reported", retryAt: null };
