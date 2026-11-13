@@ -7120,6 +7120,18 @@ type RunnerdDurableIdentity = Record<string, unknown> & {
   environmentLeaseId: string;
 };
 
+function readRunnerdControllerAckedSourceSeq(root: string): number | null {
+  const statePath = resolve(root, "control-plane", "control-plane-state.json");
+  if (!isSafeNativeStateDirectory(root) || !existsSync(statePath)) return null;
+  try {
+    const acked = record(JSON.parse(readBoundedNativeFile(statePath, NATIVE_CONTROL_PLANE_STATE_MAX_BYTES,
+      "runner_durable_identity_too_large").toString("utf8"))).ackedSourceSeq;
+    return typeof acked === "number" && Number.isSafeInteger(acked) && acked >= 0 ? acked : null;
+  } catch {
+    return null;
+  }
+}
+
 function readRunnerdDurableIdentity(
   root: string,
   allowExternal = false,
@@ -15374,10 +15386,56 @@ async function readRemoteRunnerExitEvidence(runner: CommandManagedRuntimeRunner,
   }
 }
 
+export interface UnansweredRunnerProgressProbe {
+  controllerAckedSourceSeq: number | null;
+  onReplace: () => void;
+  windowMs?: number;
+  pollMs?: number;
+}
+
+const UNANSWERED_RUNNER_PROGRESS_WINDOW_MS = 10_000;
+const UNANSWERED_RUNNER_PROGRESS_POLL_MS = 2_000;
+
+async function observeUnansweredRunnerProgress(input: {
+  runner: CommandManagedRuntimeRunner;
+  stateDirectory: string;
+  identity: Record<string, unknown>;
+  probe: UnansweredRunnerProgressProbe;
+  isAlive: () => Promise<boolean>;
+  recoveryDeadline: number;
+  stall: RemoteRunnerPluginStall;
+}): Promise<"progressing" | "wedged" | "exited"> {
+  const read = async () => {
+    const state = await readRemoteRunnerState({ runner: input.runner, stateDirectory: input.stateDirectory,
+      recoveryDeadline: input.recoveryDeadline, stall: input.stall }).catch(() => null);
+    if (state && REMOTE_RUNNER_IDENTITY_FIELDS.some(field => state[field] !== input.identity[field])) {
+      throw new Error("runner_remote_recovery_identity_mismatch");
+    }
+    return state;
+  };
+  const progressMarker = (state: Record<string, unknown> | null) => state ? JSON.stringify([state.generation ?? null,
+    state.reconnectCount ?? null, state.nextSourceSeq ?? null, state.ackedSourceSeq ?? null,
+    state.lastControllerCommandSeq ?? null, state.lifecycle ?? null]) : null;
+  const settle = async () => await input.isAlive() ? "progressing" as const : "exited" as const;
+  const first = await read();
+  const emittedSourceSeq = Number(first?.nextSourceSeq) - 1;
+  if (input.probe.controllerAckedSourceSeq !== null && Number.isSafeInteger(emittedSourceSeq)
+    && emittedSourceSeq > input.probe.controllerAckedSourceSeq) return settle();
+  const baseline = progressMarker(first);
+  const end = Math.min(Date.now() + (input.probe.windowMs ?? UNANSWERED_RUNNER_PROGRESS_WINDOW_MS), input.recoveryDeadline);
+  while (Date.now() < end) {
+    await new Promise(done => setTimeout(done, Math.min(input.probe.pollMs ?? UNANSWERED_RUNNER_PROGRESS_POLL_MS, end - Date.now())));
+    const current = progressMarker(await read());
+    if (baseline !== null && current !== null && current !== baseline) return settle();
+  }
+  return await input.isAlive() ? "wedged" : "exited";
+}
+
 export async function verifyRemoteRunnerOrSettledExit(
   input: Parameters<typeof verifyRemoteRunnerReattachment>[0] & { providerAttempt: number;
-    claim: { exitedBeforeSessionOpen?: true; replaceUnansweredRunner?: true } },
-) {
+    claim: { exitedBeforeSessionOpen?: true; replaceUnansweredRunner?: true };
+    unansweredRunnerProgress?: UnansweredRunnerProgressProbe },
+): Promise<Awaited<ReturnType<typeof verifyRemoteRunnerReattachment>> | undefined> {
   const recoveryDeadline = Math.min(input.recoveryDeadline ?? Number.POSITIVE_INFINITY,
     Date.now() + REMOTE_RUNNER_RECOVERY_PROBE_BUDGET_MS);
   const stall = input.stall ?? remoteRunnerPluginStall(input.recoveryDeadline);
@@ -15406,7 +15464,19 @@ export async function verifyRemoteRunnerOrSettledExit(
       : state.lifecycle !== "suspended" || !describeExitedRemoteRunner(state).runnerSettled) throw error;
     return undefined;
   }
-  return replaceUnanswered ? undefined : verified;
+  if (!replaceUnanswered) return verified;
+  if (!input.unansweredRunnerProgress) return undefined;
+  const progress = await observeUnansweredRunnerProgress({ runner: target.runner!,
+    stateDirectory: remoteRunnerStateDirectory(target.remoteCwd, input.normalizedSessionId), identity: input.identity,
+    probe: input.unansweredRunnerProgress, isAlive: () => verified.isAlive(), stall,
+    recoveryDeadline: Math.min(input.recoveryDeadline ?? Number.POSITIVE_INFINITY, Date.now() + REMOTE_RUNNER_RECOVERY_PROBE_BUDGET_MS) });
+  if (progress === "progressing") return verified;
+  if (progress === "exited") {
+    const { replaceUnansweredRunner: _replace, ...claim } = input.claim;
+    return verifyRemoteRunnerOrSettledExit({ ...input, claim, unansweredRunnerProgress: undefined });
+  }
+  input.unansweredRunnerProgress.onReplace();
+  return undefined;
 }
 
 function runnerStateAllowsFreshStart(state: Record<string, unknown>): boolean {
@@ -16763,6 +16833,7 @@ async function createRunnerdBackendWithinSessionClaim(
   // exited. The transport then relaunches it from durable state, which needs
   // the admitted provider pack's launch inputs that adoption does not.
   let relaunchesSettledRemoteRunner = false;
+  let replacesUnansweredLiveRunner = false;
   const explicitRemoteCodex = input.runnerRemoteCodexPath?.trim() || null;
   const remoteCodexNpmSpec = input.runnerRemoteCodexNpmSpec?.trim() || null;
   if (explicitRemoteCodex && remoteCodexNpmSpec) {
@@ -17500,6 +17571,9 @@ async function createRunnerdBackendWithinSessionClaim(
                         throw new RemoteRunnerRecoveryError({ stage: "process_verification", reason: "process_not_running" });
                       }
                     });
+                  } else if (sandboxLeaseAcquisition?.outcome === "resumed" && replacesUnansweredLiveRunner) {
+                    await input.onLog?.("stdout", "[paperclip-runner] The runner left its recovery read unanswered and made no progress; "
+                      + "the relaunch stops it and its process lineage, then restores its saved journal.\n");
                   } else if (sandboxLeaseAcquisition?.outcome === "resumed" && !adoptedProcess && !stagedRecovery &&
                       input.restartRecovery?.kind === "reattach_remote_runner" &&
                       await measureNativeRunnerSpan(input.trace, "sandbox.lease.resume", retainsFreshBootstrapRunnerState)) {
@@ -18162,6 +18236,10 @@ async function createRunnerdBackendWithinSessionClaim(
           runId: input.execution.binding.runId,
           normalizedSessionId: nativeSessionKey(input.execution),
           providerAttempt: input.restartRecovery.providerAttempt,
+          unansweredRunnerProgress: {
+            controllerAckedSourceSeq: readRunnerdControllerAckedSourceSeq(root),
+            onReplace: () => { replacesUnansweredLiveRunner = true; },
+          },
         })
       : target.kind === "local" && localRecoveryProcess
         ? {

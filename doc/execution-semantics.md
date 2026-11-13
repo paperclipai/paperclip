@@ -1845,6 +1845,22 @@ mid-turn can leave provider or tool processes that the fence cannot find, so it
 keeps the fail-closed path below, and the task continues in a fresh session from
 the saved work.
 
+A slow answer is not a dead Runner. After a release swap the new server can reach
+a live Runner late, while the Runner is still replaying the events it saved with
+no controller attached; its first command then times out although the Runner is
+working. So a `replaceUnansweredRunner` attempt first checks whether the live
+Runner is making progress. It adopts the Runner, launching no second one and
+signalling nothing, when the Runner's saved event sequence is past the
+controller's last acknowledgement, or when its saved state (event and command
+sequences, generation, lifecycle) changes within a bounded wait of about ten
+seconds. Only a Runner that made no progress in that wait is replaced as above:
+the relaunch's launch fence stops it and its process lineage with proof, and the
+new Runner restores its own journal. This replacement also proceeds on a resumed
+sandbox lease, where the in-place reuse check would otherwise refuse the live
+Runner's unsuspended state (`runner_harness_state_mismatch: resumed_not_suspended`)
+and leave it running. A Runner that exits during the wait follows the exited-Runner
+rules: a settled suspension restores, a mid-turn exit stays fail-closed.
+
 On every `reattach_remote_runner` attempt, a turn the Runner reports as
 `provider_turn_lost_on_restore` with `recoverable: true` continues once in the same
 conversation, as on a local dead-runner resume. The Runner reports that cause only
