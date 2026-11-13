@@ -67,6 +67,7 @@ import { accessService, logActivity, toolAccessPolicyService, toolAccessService,
 import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-gateway.js";
 import { authorizationService } from "../services/authorization.js";
 import { mcpAppViewsService } from "../services/mcp-app-views.js";
+import { listCompanyProviderToolIcons } from "../services/tool-access/catalog/icons.js";
 import { mcpAppToolCallSchema } from "@paperclipai/shared";
 import { RailwayError } from "../services/railway.js";
 import type { VercelConnectClient } from "../services/vercel-connect.js";
@@ -2356,6 +2357,20 @@ function connectorEnrollmentPrincipal(req: Request): string {
     const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
     if (!existing) return;
     res.json({ catalog: await svc.listCatalog(existing.id, existing.companyId, getActorInfo(req)) });
+  });
+
+  // Provider tool icons for the task chat's tool rows. Same gate and
+  // visibility as the connection list: only icons of connections this viewer
+  // can see.
+  router.get("/companies/:companyId/tool-icons", managementGuard("connections:read", "GET /companies/:companyId/tool-icons", { personal: true }), async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const connections = await svc.listConnections(companyId, connectionRequestUserId(req) ?? undefined);
+    const canManageConnections = await isToolConnectionManagerQuiet(req, companyId);
+    const visible = filterVisibleToolConnections(connections, { userId: connectionRequestUserId(req), canManageConnections });
+    res.setHeader("Cache-Control", "private, max-age=300");
+    res.json({ icons: await listCompanyProviderToolIcons(db, companyId, visible.map(connection => connection.id)) });
   });
 
   router.get("/tool-connections/:connectionId/activity", managementGuard("connections:audit", "GET /tool-connections/:connectionId/activity", { personal: true }), async (req, res) => {

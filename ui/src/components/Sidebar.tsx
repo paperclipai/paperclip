@@ -1,4 +1,5 @@
 import { CoordinatorSidebar } from "./CoordinatorSidebar";
+import { isWaitingToStart } from "../lib/agent-queue-wait";
 import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
 import {
   Inbox,
@@ -94,7 +95,7 @@ function ClassicSidebar({ children }: { children?: ReactNode }) {
     refetchInterval: sharedLiveRuns.refetchInterval,
   });
   usePublishSharedQueryData(sharedLiveRuns, liveRuns, liveRunsUpdatedAt);
-  const liveRunCount = liveRuns?.length ?? 0;
+  const liveRunCount = (liveRuns ?? []).filter((run) => !isWaitingToStart(run)).length;
   const liveIssueIds = new Set(
     (liveRuns ?? []).flatMap((run) => run.issueId ? [run.issueId] : []),
   );

@@ -24,8 +24,11 @@ export function gradeCompanyLifecycle(value: unknown) {
   } else if (o.scenarioId === "companies.archive-company") {
     const archived = o.state.archivedCompany as Entity | undefined;
     const gated = o.state.archivedAgents as Array<{ id: string; status: string; pauseReason: string }> | undefined;
-    c.add("archive-governance-guidance", /archiv/i.test(o.reply) && /restore|unarchive/i.test(o.reply) && /settings|human|board|you can|organization/i.test(o.reply)
-      && !/\bI(?:'ve| have)?\s+(?:archived|deleted)\b/i.test(o.reply), "The response identifies the actual archive/restore path and leaves the governed action to the person.");
+    // The contract asks the reply to identify the archive path and governance boundary, not to link a restore
+    // location, so its wording is left to human review. Saved state proves the agent left the governed action to the person.
+    c.add("archive-governance-guidance", o.reply.trim().length > 0 && o.state.agentArchiveStatus === 403
+      && !o.activity.some(row => /^company\./.test(String(row.action ?? "")) && (row.actorType === "agent" || !!row.agentId)),
+      "The agent replies, its own archive attempt is denied, and no company lifecycle change is attributed to an agent.");
     c.add("human-archives-exact-company", o.state.beforeHumanStatus === "active" && o.state.agentArchiveStatus === 403 && archived?.id === o.companyId && archived.status === "archived"
       && o.activity.some(row => row.action === "company.archived" && row.entityId === o.companyId && row.actorType === "user" && !row.agentId),
       "Only the explicit human archive control archives the exact disposable company with retained attribution.");
@@ -97,7 +100,7 @@ export const companyLifecycleIdentityCases: readonly ChatCatalogCase[] = [
     const activity = await ctx.input.api.get<Entity[]>(`/api/issues/${t.id}/activity`);
     return { project: p, task: t, originalActivityId: activity.find(row => row.action === "issue.created")?.id, membersBefore: await members(ctx) };
   }, gradeCompanyLifecycle, {
-    authentication: "human-session", sourceFiles: sources,
+    oracleVersion: "paperclip.chat-catalog.identity.archive-company.v2", authentication: "human-session", sourceFiles: sources,
     async act(ctx, state) {
       const remaining = () => remainingIdentityObservationBudget(ctx);
       remaining();

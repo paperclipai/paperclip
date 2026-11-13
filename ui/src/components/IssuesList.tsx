@@ -59,7 +59,7 @@ import {
 } from "../lib/inbox";
 import { cn, formatDurationMs, formatTokens } from "../lib/utils";
 import { SHOW_TASK_PRIORITY_UI } from "../lib/ui-flags";
-import { collectSubtreeLiveCounts } from "../lib/liveIssueIds";
+import { collectSubtreeLiveCounts, issueWaitingOf } from "../lib/liveIssueIds";
 import {
   InboxIssueMetaLeading,
   InboxIssueTrailingColumns,
@@ -1147,7 +1147,8 @@ function StreamlinedIssuesList({
   );
   const availableIssueColumnSet = useMemo(() => new Set(availableIssueColumns), [availableIssueColumns]);
   const subtreeLiveCounts = useMemo(
-    () => collectSubtreeLiveCounts(issues, liveIssueIds ?? new Set<string>()),
+    // The row chip counts only started sub-tasks; waiting ones are not running below.
+    () => collectSubtreeLiveCounts(issues, liveIssueIds ?? new Set<string>(), { startedOnly: true }),
     [issues, liveIssueIds],
   );
   const visibleTrailingIssueColumns = useMemo(
@@ -2376,6 +2377,7 @@ function StreamlinedIssuesList({
                           <InboxIssueMetaLeading
                             issue={issue}
                             isLive={liveIssueIds?.has(issue.id) === true}
+                            waiting={issueWaitingOf(liveIssueIds, issue.id)}
                             subtreeLiveCount={subtreeLiveCounts.get(issue.id) ?? 0}
                             showStatus={false}
                             showIdentifier={false}
@@ -2411,6 +2413,7 @@ function StreamlinedIssuesList({
                             <InboxIssueMetaLeading
                               issue={issue}
                               isLive={liveIssueIds?.has(issue.id) === true}
+                            waiting={issueWaitingOf(liveIssueIds, issue.id)}
                               subtreeLiveCount={subtreeLiveCounts.get(issue.id) ?? 0}
                               showStatus={visibleIssueColumnSet.has("status") && availableIssueColumnSet.has("status")}
                               showIdentifier={visibleIssueColumnSet.has("id") && availableIssueColumnSet.has("id")}

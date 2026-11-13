@@ -7,6 +7,8 @@ import { formatDurationWords } from "@/lib/issue-chat-messages";
 import { isCommandTool } from "@/lib/transcriptPresentation";
 import { isTerminalRunStatus } from "@/components/task-chat/transcript-adapter";
 import { useTaskChatShimmer } from "./TaskChatShimmer";
+import { AgentQueueWait } from "@/components/AgentQueueWait";
+import { agentQueueWaitOf } from "@/lib/agent-queue-wait";
 
 /**
  * "ran N commands, called M tools" for the live tail's status pill, counted off
@@ -46,6 +48,7 @@ export function toolCountSummaryFromEntries(entries: readonly TranscriptEntry[])
  */
 export function TaskChatLiveRunPill({
   status,
+  execution,
   startedAtMs,
   finishedAtMs,
   toolSummary,
@@ -60,9 +63,12 @@ export function TaskChatLiveRunPill({
 }) {
   const active = !isTerminalRunStatus(status);
   const shimmer = useTaskChatShimmer("working");
+  const agentQueue = status === "queued" ? agentQueueWaitOf(execution) : null;
+  // A specific server hold (maintenance, agent setup) names the wait instead of "Working".
+  const holdLabel = status === "queued" && execution?.cause ? execution.label : null;
   // One shared page-wide ticker drives the live elapsed readout, matching the
   // default view's `useLiveElapsed`.
-  useSecondTick(active && startedAtMs != null);
+  useSecondTick(active && startedAtMs != null && !agentQueue);
 
   const elapsedMs =
     startedAtMs == null ? null : (active ? Date.now() : finishedAtMs ?? Date.now()) - startedAtMs;
@@ -70,8 +76,16 @@ export function TaskChatLiveRunPill({
     ? formatDurationWords(elapsedMs)
     : null;
   const failed = ["failed", "timed_out", "cancelled", "interrupted"].includes(status);
-  const verb = active ? "Working" : failed ? "Stopped" : "Worked";
+  const verb = active ? holdLabel ?? "Working" : failed ? "Stopped" : "Worked";
   const suffix = elapsed ? `for ${elapsed}` : null;
+
+  if (agentQueue) {
+    return (
+      <div className="flex min-w-0 items-center gap-2 py-2" data-testid="task-chat-live-run-pill">
+        <AgentQueueWait queue={agentQueue} />
+      </div>
+    );
+  }
 
   return (
     <div

@@ -2,6 +2,7 @@ import { and, eq, or, sql } from "drizzle-orm";
 import { environmentLeases, sandboxCreationOperations, type Db } from "@paperclipai/db";
 import { hasDeferredEnvironmentCleanup } from "./environment-cleanup-notifications.js";
 import { nextAbandonedWorkspaceFileHoldExpiryAt } from "./remote-workspace-abandoned-files-hold.js";
+import { nextWarmSandboxStopAt } from "./warm-sandbox-expiry.js";
 
 export const ENVIRONMENT_CLEANUP_RETRY_MS = 5 * 60_000;
 
@@ -57,13 +58,15 @@ export function recoverableSandboxCreationCondition() {
 }
 
 /** A run lease the ownership settle moved to cleanup (an orphaned active
- * lease, or a retained orphan sandbox nothing references any more), before its first
- * cleanup attempt. Its holder is proven gone, so the first stop or teardown is
+ * lease, or a retained orphan sandbox nothing references any more), or a warm
+ * sandbox whose warm window ended, before its first cleanup attempt. Its
+ * holder is proven gone, so the first stop or teardown is
  * due now regardless of how recently the lease was used; a failed attempt
  * counts and the normal retry backoff applies from then on. */
 export function recoveredOrphanFirstAttemptSql() {
   return sql`(${environmentLeases.failureReason} in ('orphaned_active_lease_recovered', 'retained_orphan_sandbox_released')
-    or ${environmentLeases.metadata}->'sandboxStopAndRetain'->>'recoveredOrphanedRunLease' = 'true')
+    or ${environmentLeases.metadata}->'sandboxStopAndRetain'->>'recoveredOrphanedRunLease' = 'true'
+    or ${environmentLeases.metadata}->'sandboxStopAndRetain'->>'warmWindowExpired' = 'true')
     and coalesce(${environmentLeases.metadata}->>'pendingCleanupRetryAttempts', '0') = '0'
     and coalesce(${environmentLeases.metadata}->>'pendingCleanupInFlight', 'false') <> 'true'`;
 }
@@ -88,7 +91,8 @@ export async function nextEnvironmentCleanupAt(db: Db, backoffMs = ENVIRONMENT_C
   const [creation] = await db.select({ next: sql<string | null>`min(extract(epoch from ${sandboxCreationOperations.nextAttemptAt}) * 1000)` })
     .from(sandboxCreationOperations).where(recoverableSandboxCreationCondition());
   const expiry = await nextAbandonedWorkspaceFileHoldExpiryAt(db);
-  const deadlines = [row?.next, creation?.next, expiry].filter((value): value is string | number => value != null).map(Number);
+  const warmStop = await nextWarmSandboxStopAt(db);
+  const deadlines = [row?.next, creation?.next, expiry, warmStop].filter((value): value is string | number => value != null).map(Number);
   const saved = deadlines.length ? Math.min(...deadlines) : null;
   const buffered = hasDeferredEnvironmentCleanup(db) ? Date.now() + backoffMs : null;
   return saved === null ? buffered : buffered === null ? saved : Math.min(saved, buffered);
