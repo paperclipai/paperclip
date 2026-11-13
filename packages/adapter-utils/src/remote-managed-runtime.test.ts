@@ -108,7 +108,7 @@ describe("remote managed runtime", () => {
     expect(prepareWorkspaceForSshExecution).not.toHaveBeenCalled();
     expect(syncDirectoryToSsh).toHaveBeenCalledWith(expect.objectContaining({
       localDir: homeDir,
-      remoteDir: "/app/.paperclip-runtime/codex/home",
+      remoteDir: "/app/.paperclip-runtime/runs/run-in-place/codex/home",
     }));
 
     await prepared.restoreWorkspace();
@@ -116,10 +116,270 @@ describe("remote managed runtime", () => {
     expect(restoreWorkspaceFromSshExecution).not.toHaveBeenCalled();
     expect(runSshCommand).toHaveBeenCalledWith(
       expect.anything(),
-      "base64 < '/app/.paperclip-runtime/codex/home/auth.json'",
+      "base64 < '/app/.paperclip-runtime/runs/run-in-place/codex/home/auth.json'",
       { maxBuffer: 1024 * 1024 },
     );
     expect(restoredAuth).toBe('{"token":"remote"}\n');
+    expect(runSshCommand).toHaveBeenCalledWith(
+      expect.anything(),
+      "rm -rf -- '/app/.paperclip-runtime/runs/run-in-place/codex'",
+      { maxBuffer: 1024 * 1024 },
+    );
+  });
+
+  it("stages concurrent in-place SSH runtime assets in distinct run-scoped directories", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-remote-runtime-concurrent-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const homeDir = path.join(rootDir, "home");
+    await mkdir(workspaceDir, { recursive: true });
+    await mkdir(homeDir, { recursive: true });
+
+    const remoteDirs: string[] = [];
+    let releaseBoth!: () => void;
+    const bothStarted = new Promise<void>((resolve) => {
+      releaseBoth = resolve;
+    });
+    syncDirectoryToSsh.mockImplementation(async (input: { localDir: string; remoteDir?: string }) => {
+      if (!input.remoteDir) throw new Error("expected remoteDir");
+      remoteDirs.push(input.remoteDir);
+      if (remoteDirs.length === 2) releaseBoth();
+      await bothStarted;
+    });
+
+    const common = {
+      spec: {
+        host: "127.0.0.1",
+        port: 2222,
+        username: "fixture",
+        remoteWorkspacePath: "/app",
+        remoteCwd: "/app",
+        privateKey: "PRIVATE KEY",
+        knownHosts: "KNOWN HOSTS",
+        strictHostKeyChecking: true,
+      },
+      adapterKey: "codex",
+      workspaceLocalDir: workspaceDir,
+      workspaceRemoteDir: "/app",
+      syncWorkspace: false,
+      assets: [{ key: "home", localDir: homeDir }],
+    };
+
+    const [first, second] = await Promise.all([
+      prepareRemoteManagedRuntime({ ...common, runId: "run-a" }),
+      prepareRemoteManagedRuntime({ ...common, runId: "run-b" }),
+    ]);
+
+    expect(first.runtimeRootDir).toBe("/app/.paperclip-runtime/runs/run-a/codex");
+    expect(second.runtimeRootDir).toBe("/app/.paperclip-runtime/runs/run-b/codex");
+    expect(first.assetDirs.home).not.toBe(second.assetDirs.home);
+    expect(new Set(remoteDirs)).toEqual(new Set([
+      "/app/.paperclip-runtime/runs/run-a/codex/home",
+      "/app/.paperclip-runtime/runs/run-b/codex/home",
+    ]));
+  });
+
+  it("removes the run-scoped runtime when in-place asset restoration fails", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-remote-runtime-restore-failure-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const homeDir = path.join(rootDir, "home");
+    await mkdir(workspaceDir, { recursive: true });
+    await mkdir(homeDir, { recursive: true });
+
+    const prepared = await prepareRemoteManagedRuntime({
+      spec: {
+        host: "127.0.0.1",
+        port: 2222,
+        username: "fixture",
+        remoteWorkspacePath: "/app",
+        remoteCwd: "/app",
+        privateKey: "PRIVATE KEY",
+        knownHosts: "KNOWN HOSTS",
+        strictHostKeyChecking: true,
+      },
+      runId: "run-restore-failed",
+      adapterKey: "codex",
+      workspaceLocalDir: workspaceDir,
+      workspaceRemoteDir: "/app",
+      syncWorkspace: false,
+      assets: [{
+        key: "home",
+        localDir: homeDir,
+        restore: async () => {
+          throw new Error("fixture restore failed");
+        },
+      }],
+    });
+
+    await expect(prepared.restoreWorkspace()).rejects.toThrow("fixture restore failed");
+    expect(runSshCommand).toHaveBeenCalledWith(
+      expect.anything(),
+      "rm -rf -- '/app/.paperclip-runtime/runs/run-restore-failed/codex'",
+      { maxBuffer: 1024 * 1024 },
+    );
+  });
+
+  it("does not replace a successful restoration result when runtime cleanup fails", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-remote-runtime-cleanup-failure-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const homeDir = path.join(rootDir, "home");
+    await mkdir(workspaceDir, { recursive: true });
+    await mkdir(homeDir, { recursive: true });
+    runSshCommand.mockRejectedValueOnce(new Error("fixture cleanup failed"));
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    const prepared = await prepareRemoteManagedRuntime({
+      spec: {
+        host: "127.0.0.1",
+        port: 2222,
+        username: "fixture",
+        remoteWorkspacePath: "/app",
+        remoteCwd: "/app",
+        privateKey: "PRIVATE KEY",
+        knownHosts: "KNOWN HOSTS",
+        strictHostKeyChecking: true,
+      },
+      runId: "run-cleanup-failed",
+      adapterKey: "codex",
+      workspaceLocalDir: workspaceDir,
+      workspaceRemoteDir: "/app",
+      syncWorkspace: false,
+      assets: [{ key: "home", localDir: homeDir }],
+    });
+
+    await expect(prepared.restoreWorkspace()).resolves.toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("run-cleanup-failed"));
+    warnSpy.mockRestore();
+  });
+
+  it("preserves the restoration error when runtime cleanup also fails", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-remote-runtime-double-failure-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const homeDir = path.join(rootDir, "home");
+    await mkdir(workspaceDir, { recursive: true });
+    await mkdir(homeDir, { recursive: true });
+    runSshCommand.mockRejectedValueOnce(new Error("fixture cleanup failed"));
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    const prepared = await prepareRemoteManagedRuntime({
+      spec: {
+        host: "127.0.0.1",
+        port: 2222,
+        username: "fixture",
+        remoteWorkspacePath: "/app",
+        remoteCwd: "/app",
+        privateKey: "PRIVATE KEY",
+        knownHosts: "KNOWN HOSTS",
+        strictHostKeyChecking: true,
+      },
+      runId: "run-double-failed",
+      adapterKey: "codex",
+      workspaceLocalDir: workspaceDir,
+      workspaceRemoteDir: "/app",
+      syncWorkspace: false,
+      assets: [{
+        key: "home",
+        localDir: homeDir,
+        restore: async () => {
+          throw new Error("fixture restore failed first");
+        },
+      }],
+    });
+
+    await expect(prepared.restoreWorkspace()).rejects.toThrow("fixture restore failed first");
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("run-double-failed"));
+    warnSpy.mockRestore();
+  });
+
+  it("rejects a run id that could escape its run-scoped directory", async () => {
+    await expect(prepareRemoteManagedRuntime({
+      spec: {
+        host: "127.0.0.1",
+        port: 2222,
+        username: "fixture",
+        remoteWorkspacePath: "/app",
+        remoteCwd: "/app",
+        privateKey: "PRIVATE KEY",
+        knownHosts: "KNOWN HOSTS",
+        strictHostKeyChecking: true,
+      },
+      runId: "../escape",
+      adapterKey: "codex",
+      workspaceLocalDir: "/local/workspace",
+      workspaceRemoteDir: "/app",
+      syncWorkspace: false,
+    })).rejects.toThrow("runId is not a simple path segment");
+    expect(syncDirectoryToSsh).not.toHaveBeenCalled();
+    expect(runSshCommand).not.toHaveBeenCalled();
+  });
+
+  it("rejects an in-place persistence path that could escape before transfer", async () => {
+    await expect(prepareRemoteManagedRuntime({
+      spec: {
+        host: "127.0.0.1",
+        port: 2222,
+        username: "fixture",
+        remoteWorkspacePath: "/app",
+        remoteCwd: "/app",
+        privateKey: "PRIVATE KEY",
+        knownHosts: "KNOWN HOSTS",
+        strictHostKeyChecking: true,
+      },
+      runId: "run-safe",
+      adapterKey: "codex",
+      workspaceLocalDir: "/local/workspace",
+      workspaceRemoteDir: "/app",
+      syncWorkspace: false,
+      assets: [{
+        key: "home",
+        localDir: "/local/home",
+        inPlaceSshPersistence: { scope: "agent-1", directories: ["../sessions"] },
+      }],
+    })).rejects.toThrow("in-place SSH persistent directory is not a simple path segment");
+    expect(syncDirectoryToSsh).not.toHaveBeenCalled();
+    expect(runSshCommand).toHaveBeenCalledWith(
+      expect.anything(),
+      "rm -rf -- '/app/.paperclip-runtime/runs/run-safe/codex'",
+      { maxBuffer: 1024 * 1024 },
+    );
+  });
+
+  it("removes a partial run-scoped runtime after in-place SSH asset staging fails", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-remote-runtime-failure-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const homeDir = path.join(rootDir, "home");
+    await mkdir(workspaceDir, { recursive: true });
+    await mkdir(homeDir, { recursive: true });
+    syncDirectoryToSsh.mockRejectedValueOnce(new Error("fixture extraction collision"));
+
+    await expect(prepareRemoteManagedRuntime({
+      spec: {
+        host: "127.0.0.1",
+        port: 2222,
+        username: "fixture",
+        remoteWorkspacePath: "/app",
+        remoteCwd: "/app",
+        privateKey: "PRIVATE KEY",
+        knownHosts: "KNOWN HOSTS",
+        strictHostKeyChecking: true,
+      },
+      runId: "run-failed",
+      adapterKey: "codex",
+      workspaceLocalDir: workspaceDir,
+      workspaceRemoteDir: "/app",
+      syncWorkspace: false,
+      assets: [{ key: "home", localDir: homeDir }],
+    })).rejects.toThrow("fixture extraction collision");
+
+    expect(runSshCommand).toHaveBeenCalledWith(
+      expect.anything(),
+      "rm -rf -- '/app/.paperclip-runtime/runs/run-failed/codex'",
+      { maxBuffer: 1024 * 1024 },
+    );
   });
 
   it("stages each additional project into its own isolated SSH dir, isolating one failure", async () => {
@@ -163,16 +423,16 @@ describe("remote managed runtime", () => {
     // Each healthy project staged into its OWN isolated dir under the runtime
     // root; the broken one is skipped, not fatal.
     expect(Object.keys(prepared.additionalSourceDirs).sort()).toEqual(["first", "second"]);
-    expect(prepared.additionalSourceDirs.first).toBe("/app/.paperclip-runtime/codex/project-first");
-    expect(prepared.additionalSourceDirs.second).toBe("/app/.paperclip-runtime/codex/project-second");
+    expect(prepared.additionalSourceDirs.first).toBe("/app/.paperclip-runtime/runs/run-additional/codex/project-first");
+    expect(prepared.additionalSourceDirs.second).toBe("/app/.paperclip-runtime/runs/run-additional/codex/project-second");
     expect(prepared.additionalSourceDirs.broken).toBeUndefined();
     expect(syncDirectoryToSsh).toHaveBeenCalledWith(expect.objectContaining({
       localDir: firstDir,
-      remoteDir: "/app/.paperclip-runtime/codex/project-first",
+      remoteDir: "/app/.paperclip-runtime/runs/run-additional/codex/project-first",
     }));
     expect(syncDirectoryToSsh).toHaveBeenCalledWith(expect.objectContaining({
       localDir: secondDir,
-      remoteDir: "/app/.paperclip-runtime/codex/project-second",
+      remoteDir: "/app/.paperclip-runtime/runs/run-additional/codex/project-second",
     }));
   });
 
