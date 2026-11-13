@@ -80290,7 +80290,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       });
       await restarted.processPendingPublications();
       expect(runtime.posts.at(-1)?.text).toBe("The exact successor answer");
-      expect(runtime.edits).toHaveLength(1);
+      expect(runtime.edits).toHaveLength(2);
+      expect(runtime.edits.at(-1)).toEqual({
+        threadId: context.thread.thread.id,
+        messageId: queued.providerMessageId,
+        text: "Response sent.",
+      });
       await addSelectedChatFinal({
         agentId: fixture.assignedAgentId,
         body: "A separate second answer",
@@ -80300,7 +80305,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       });
       await restarted.processPendingPublications();
       expect(runtime.posts.at(-1)?.text).toBe("A separate second answer");
-      expect(runtime.edits).toHaveLength(1);
+      expect(runtime.edits).toHaveLength(2);
       expect(runtime.posts).toHaveLength(3);
       await expect(restarted.processPendingPublications()).resolves.toBe(0);
     } finally {
