@@ -74,18 +74,18 @@ export function crashLoopShouldFire(target: (typeof CRASH_LOOP_TARGETS)[number],
   return phase === "ready";
 }
 
+export function overlapKillAfterMs(raw: string | undefined, overlapMs: number, name = "RESTART_CHAOS_K15_KILL_OLD_AFTER_SECONDS"): number | null {
+  if (raw === undefined || raw === "") return null;
+  if (!/^[0-9]+$/.test(raw)) throw new Error(`${name} must be a whole number of seconds`);
+  return Math.min(Number(raw) * 1000, overlapMs);
+}
+
 /**
  * Agents reach the server at PAPERCLIP_API_URL. An explicit value wins over the URL the server
  * derives from its public URL (a developer's .paperclip/.env or shell can name a tailnet origin
  * that serves a different instance). Pin this wave's own loopback origin so an agent's key for
  * the temporary instance is only ever sent to that instance.
  */
-export function overlapKillAfterMs(raw: string | undefined, overlapMs: number): number | null {
-  if (raw === undefined || raw === "") return null;
-  if (!/^[0-9]+$/.test(raw)) throw new Error("RESTART_CHAOS_K15_KILL_OLD_AFTER_SECONDS must be a whole number of seconds");
-  return Math.min(Number(raw) * 1000, overlapMs);
-}
-
 export function waveServerUrlEnvironment(port: number): { PAPERCLIP_API_URL: string } {
   return { PAPERCLIP_API_URL: `http://127.0.0.1:${port}` };
 }
@@ -837,7 +837,7 @@ export class ChaosSupervisor {
     await swap("stopping", next);
     const freezeSwaps = process.env.RESTART_CHAOS_K15_FREEZE_SWAPS?.split(",").map(Number) ?? null;
     const freezeMs = freezeSwaps && !freezeSwaps.includes(this.rollingRedeploys) ? null
-      : overlapKillAfterMs(process.env.RESTART_CHAOS_K15_FREEZE_NEW_SECONDS, 600_000);
+      : overlapKillAfterMs(process.env.RESTART_CHAOS_K15_FREEZE_NEW_SECONDS, 600_000, "RESTART_CHAOS_K15_FREEZE_NEW_SECONDS");
     const frozenAt = freezeMs !== null && next.pid ? Date.now() : null;
     if (frozenAt !== null) {
       process.kill(next.pid!, "SIGSTOP");

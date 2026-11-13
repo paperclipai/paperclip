@@ -914,7 +914,6 @@ async function main(): Promise<number> {
       const owned = sweeper as DaytonaWaveSweeper;
       // An interrupted wave still reports what it leaked before cleanup.
       sandboxSweep ??= await owned.sweep(0);
-      // Cleanup only through Paperclip; the harness never changes a sandbox.
       const cleanup = await owned.cleanUp();
       daytonaCleanup = cleanup;
       timeline.add("daytona_cleanup", cleanup);
@@ -922,9 +921,9 @@ async function main(): Promise<number> {
         + `${sandboxSweep.orphanSandboxes.length} orphaned, `
         + `${sandboxSweep.heldLeases.length} held leases${sandboxSweep.error ? `, error ${sandboxSweep.error}` : ""}; `
         + `environment deleted: ${cleanup.environmentDeleted}${cleanup.environmentDeleteBlocked ? " (still blocked by a pending sandbox cleanup)" : ""}; still running after cleanup: ${cleanup.remainingSandboxes.join(", ") || "none"}; `
-        + `archived and left for Daytona's deletion (delete by the wave's company and environment labels): ${cleanup.archivedSandboxes.join(", ") || "none"}`);
-      // A sandbox neither archived nor destroyed after cleanup is a leak for a person to act on.
-      if (cleanup.remainingSandboxes.length) { anyFailure = true; remoteCleanupPending = true; }
+        + `archived: ${cleanup.archivedSandboxes.join(", ") || "none"}; deleted by the harness (this wave's labels only): ${cleanup.deletedSandboxes.join(", ") || "none"}; `
+        + `left after deletion: ${cleanup.undeletedSandboxes.join(", ") || "none"}`);
+      if (cleanup.remainingSandboxes.length || cleanup.undeletedSandboxes.length) { anyFailure = true; remoteCleanupPending = true; }
       // A delete still blocked by pending sandbox cleanup after the settle window
       // is a leak, not a harness error: fail the wave and keep the instance, whose
       // database owns that cleanup work.

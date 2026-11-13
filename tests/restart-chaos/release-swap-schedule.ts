@@ -23,7 +23,7 @@ const FLAGS = {
 
 const MIX_PLANNED = ["mix-fault-spacing-minutes", "mix-minutes"];
 
-const REPLACED = ["storm-minutes","faults", "k15-overlap-seconds", "k15-hold-seconds", "replay", "crash-point", "matrix", "upgrade-from"];
+const REPLACED = ["storm-minutes", "faults", "k15-overlap-seconds", "k15-hold-seconds", "replay", "crash-point", "matrix", "upgrade-from"];
 
 function flagName(arg: string): string | null {
   return arg.startsWith("--") ? arg.slice(2).split("=")[0]! : null;
