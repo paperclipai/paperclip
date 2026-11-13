@@ -25,7 +25,7 @@ import { onboardingFirstTaskAwaitingUserSql } from "./onboarding-first-task-wait
 import { isAiAuthenticationBlocked } from "../ai-auth-failure.js";
 import { RESTRICTED_WORKSPACE_SOURCE_REASON } from "../workspace-source-restriction.js";
 import { hasCommittedNativePlanWait } from "../native-runtime/native-plan-wait.js";
-import { hasCommittedNativeResponseWakeWait } from "../native-runtime/native-response-wake-wait.js";
+import { hasCommittedNativeConversationTurnWait, hasCommittedNativeResponseWakeWait } from "../native-runtime/native-response-wake-wait.js";
 import { listExternalReviewWaits } from "../native-runtime/external-review-wait.js";
 import { isNativeWorkspaceExportRepairCause } from "@paperclipai/shared";
 import { pendingExternalConversationSettlement, settleSlackConversation } from "../slack-conversation-lifecycle.js";
@@ -4865,7 +4865,9 @@ export function recoveryService(
       if (
         issue.conversationAgentId &&
         latestRun?.status === "succeeded" &&
-        parseObject(latestRun.resultJson).finalizationReasonCode === "conversation_turn_finished"
+        (parseObject(latestRun.resultJson).finalizationReasonCode === "conversation_turn_finished" ||
+          await hasCommittedNativeConversationTurnWait(db, { companyId: issue.companyId, issueId: issue.id,
+            runId: latestRun.id, agentId: latestRun.agentId }))
       ) {
         result.skipped += 1;
         continue;

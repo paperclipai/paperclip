@@ -22,6 +22,7 @@ import { flushDeferredEnvironmentCleanup, registerDeferredEnvironmentCleanup, wr
 import { executeEnvironmentTask, pluginEnvironmentSupportsTasks, settleDispatchedEnvironmentTask } from "./environment-task-runtime.js";
 import { allowLegacyShutdownWorkspaceCleanup, legacyShutdownWorkspaceResourceProtected } from "./legacy-shutdown-workspace-settlement.js";
 import { nativeWorkspaceExportPendingForLease, nativeWorkspaceExportPendingForResource } from "./native-runtime/native-workspace-finalization-state.js";
+import { abandonedWorkspaceFilesHeldOnLease, abandonedWorkspaceFilesParked, parkAbandonedWorkspaceFilesLease } from "./remote-workspace-abandoned-files-hold.js";
 import { beginIdleTrackedWork } from "./task-admission.js";
 import { historicalProviderCredentials } from "./historical-provider-credentials.js";
 import { ownedWorkspaceRecoveryLease, type WorkspaceRecoverySourceIdentity } from "./workspace-recovery-source.js";
@@ -1137,14 +1138,16 @@ async function waitForSettlingReusableLease(db: Db, input: {
 }
 
 function reusableLeaseCanBeResumed(input: {
-  lease: Pick<EnvironmentLease, "status" | "heartbeatRunId">;
+  lease: Pick<EnvironmentLease, "status" | "heartbeatRunId" | "metadata">;
   heartbeatRunId: string | null;
 }): boolean {
+  if (abandonedWorkspaceFilesParked(input.lease)) return false;
   if (input.lease.status === "released" || input.lease.status === "retained") return true;
   return input.lease.status === "active" && input.heartbeatRunId !== null && input.lease.heartbeatRunId === input.heartbeatRunId;
 }
 
-function reusableLeaseCanBeCleanedUp(lease: Pick<EnvironmentLease, "status">): boolean {
+function reusableLeaseCanBeCleanedUp(lease: Pick<EnvironmentLease, "status" | "metadata">): boolean {
+  if (abandonedWorkspaceFilesParked(lease)) return false;
   return lease.status === "released" || lease.status === "retained";
 }
 
@@ -3214,6 +3217,10 @@ function createSandboxEnvironmentDriver(
     failureReason: string;
   }): Promise<EnvironmentLease | null> {
     if (await legacyShutdownWorkspaceResourceProtected(db, input.lease)) return null;
+    if (await abandonedWorkspaceFilesHeldOnLease(db, input.lease)) {
+      await parkAbandonedWorkspaceFilesLease(db, input.lease, ["released", "retained", "failed", "pending_cleanup"]);
+      return null;
+    }
     let cleanupStatus: "success" | "failed" = "success";
     let termination: ReturnType<typeof remoteTerminationReceipt>;
     const metadata = input.lease.metadata ?? {};
@@ -4340,6 +4347,9 @@ export function environmentRuntimeService(
     }): Promise<unknown> {
       if (!(await allowLegacyShutdownWorkspaceCleanup(db, input.lease))) {
         throw new Error("Shutdown workspace settlement is still pending.");
+      }
+      if (!hasStopOnlyCleanup(input.lease) && await abandonedWorkspaceFilesHeldOnLease(db, input.lease)) {
+        throw new Error("Unsaved files from an abandoned workspace are held on this sandbox; destructive cleanup is forbidden.");
       }
       if (input.lease.metadata?.legacyShutdownWorkspaceSettlement) {
         const current = await environmentsSvc.getLeaseById(input.lease.id);

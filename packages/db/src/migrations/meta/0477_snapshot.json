@@ -1,6 +1,6 @@
 {
-  "id": "89d27e21-09cc-4ecf-b5d9-3dcd3b56d8dd",
-  "prevId": "8868abfd-f10d-4fc5-acde-ebe7f9885a2a",
+  "id": "24b0754a-cb76-4481-bd6e-ec932fb98ea9",
+  "prevId": "82dcdc57-0796-4162-9451-8ea08a72199e",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -3951,6 +3951,28 @@
           ],
           "isUnique": false,
           "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "agent_wakeup_requests_company_run_idx": {
+          "name": "agent_wakeup_requests_company_run_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "run_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"agent_wakeup_requests\".\"run_id\" IS NOT NULL",
+          "concurrently": true,
           "method": "btree",
           "with": {}
         },
@@ -19858,87 +19880,6 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.company_skill_security_approvals": {
-      "name": "company_skill_security_approvals",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "company_id": {
-          "name": "company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "content_hash": {
-          "name": "content_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "approval": {
-          "name": "approval",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "company_skill_security_approvals_company_content_idx": {
-          "name": "company_skill_security_approvals_company_content_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "content_hash",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "company_skill_security_approvals_company_id_companies_id_fk": {
-          "name": "company_skill_security_approvals_company_id_companies_id_fk",
-          "tableFrom": "company_skill_security_approvals",
-          "tableTo": "companies",
-          "columnsFrom": [
-            "company_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
     "public.company_skill_stars": {
       "name": "company_skill_stars",
       "schema": "",
@@ -20879,12 +20820,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
-        },
-        "security_approval_id": {
-          "name": "security_approval_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {
@@ -21069,19 +21004,6 @@
             "id"
           ],
           "onDelete": "set null",
-          "onUpdate": "no action"
-        },
-        "company_skill_versions_security_approval_id_company_skill_security_approvals_id_fk": {
-          "name": "company_skill_versions_security_approval_id_company_skill_security_approvals_id_fk",
-          "tableFrom": "company_skill_versions",
-          "tableTo": "company_skill_security_approvals",
-          "columnsFrom": [
-            "security_approval_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "restrict",
           "onUpdate": "no action"
         }
       },

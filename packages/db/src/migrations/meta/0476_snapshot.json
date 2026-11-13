@@ -1,5 +1,5 @@
 {
-  "id": "8868abfd-f10d-4fc5-acde-ebe7f9885a2a",
+  "id": "82dcdc57-0796-4162-9451-8ea08a72199e",
   "prevId": "ee1f1f66-0cbe-4b18-b364-5e96708a1f0b",
   "version": "7",
   "dialect": "postgresql",
@@ -3951,6 +3951,28 @@
           ],
           "isUnique": false,
           "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "agent_wakeup_requests_company_run_idx": {
+          "name": "agent_wakeup_requests_company_run_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "run_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"agent_wakeup_requests\".\"run_id\" IS NOT NULL",
+          "concurrently": true,
           "method": "btree",
           "with": {}
         },
@@ -18937,12 +18959,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'[]'::jsonb"
-        },
-        "security_override": {
-          "name": "security_override",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
         },
         "enabled": {
           "name": "enabled",

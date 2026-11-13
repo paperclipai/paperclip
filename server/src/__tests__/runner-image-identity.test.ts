@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -180,6 +180,33 @@ describe("Runner image identity", () => {
       // What a new `packages/paperclip-runner/styles.css` rule does to the build context.
       rmSync(path.join(root, "packages/paperclip-runner/styles.css"));
       expect(digestOf(root)).not.toBe(before);
+    });
+
+    it("keeps out of the build context every directory a build script or a Vite configuration of a package among the identity's inputs writes its output into, so a tree with a local build and a clean checkout of one commit give the build the same files", () => {
+      const rules = readFileSync(path.join(repoRoot, ".dockerignore"), "utf8").split(/\r?\n/).filter((rule) => rule && !rule.startsWith("#"));
+      const lastRuleFor = (target: string) => rules.filter((rule) => target.split("/").some((_, index, segments) =>
+        path.matchesGlob(segments.slice(0, index + 1).join("/"), rule.replace(/^!/, "").replace(/^\//, "")))).at(-1);
+      const outputs = RUNNER_IMAGE_CONTEXT_INPUTS.filter((input) => existsSync(path.join(repoRoot, input, "package.json"))).flatMap((input) => {
+        const manifest = JSON.parse(readFileSync(path.join(repoRoot, input, "package.json"), "utf8"));
+        const scripts = Object.values(manifest.scripts as Record<string, string>).join("\n");
+        const emitted = [...scripts.matchAll(/\btsc -p (\S+)(?!\S| --noEmit)/g)].map((match) =>
+          JSON.parse(readFileSync(path.join(repoRoot, input, match[1]), "utf8")).compilerOptions.outDir as string);
+        const compiled = [...scripts.matchAll(/--manifest-path (\S+)\/Cargo\.toml/g)].map((match) => `${match[1]}/target`);
+        const bundled = readdirSync(path.join(repoRoot, input)).filter((name) => /^vite\..*config\.[cm]?[jt]s$/.test(name)).flatMap((name) =>
+          [...readFileSync(path.join(repoRoot, input, name), "utf8").matchAll(/\boutDir:\s*(?:resolve\(packageRoot,\s*)?"([^"]+)"/g)].map((match) => match[1]));
+        return [...emitted, ...compiled, ...bundled].map((output) => path.posix.join(input, output));
+      });
+      expect(outputs).toEqual(expect.arrayContaining([
+        "packages/paperclip-eval-kernel/dist",
+        "packages/paperclip-runner/dist",
+        "packages/paperclip-runner/dist-browser",
+        "packages/paperclip-runner/dist-issue-thread",
+        "packages/paperclip-runner/dist-scenarios",
+        "packages/paperclip-runner/dist-sdk",
+        "packages/paperclip-runner/dist-standalone",
+        "packages/paperclip-runner/runner/target",
+      ]));
+      for (const output of new Set(outputs)) expect(lastRuleFor(output)?.startsWith("!"), output).toBe(false);
     });
   });
 });
