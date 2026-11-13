@@ -8,24 +8,13 @@ import { executionStartedEventPredicate } from "./pre-dispatch-execution-evidenc
 import { runOwnerFenceHeldSql } from "./remote-workspace-writer-hold.js";
 import { carriesInheritedRunnerIdentity } from "./native-runtime/native-inherited-runner-retry.js";
 import { readFailedBeforeProviderTurnRecord } from "./native-runtime/failed-before-provider-turn.js";
+import { readUnchangedBaseline, UNCHANGED_BASELINE_KEY, UNCHANGED_BASELINE_SCHEMA,
+  type UnchangedBaseline } from "./remote-workspace-unchanged-baseline.js";
 
 const PROVIDER_TURN_EVENT_TYPES = ["turn.started", "turn.completed", "turn.failed", "provider.event", "provider.rpc_result",
   "tool.execution.started", "item.started", "item.completed"];
 
-/**
- * A writer's prepared files equal its saved version only while nothing ran in
- * them. Preparation records that starting point; everything after it leaves a
- * durable record (an operation, a runner checkpoint, a run event or a
- * process) before it can write. A run with none of those changed nothing.
- */
-export const UNCHANGED_BASELINE_KEY = "remoteWorkspaceUnchangedBaseline";
-export const UNCHANGED_BASELINE_SCHEMA = "paperclip.remote-workspace-unchanged-baseline.v1";
-
-export type UnchangedBaseline = {
-  schema: typeof UNCHANGED_BASELINE_SCHEMA; epoch: number; runId: string; snapshotId: string;
-  /** Set once the writer was released without a new save. */
-  releasedAt?: string;
-};
+export { readUnchangedBaseline, UNCHANGED_BASELINE_KEY, UNCHANGED_BASELINE_SCHEMA, type UnchangedBaseline };
 
 type Workspace = Pick<typeof executionWorkspaces.$inferSelect, "id" | "companyId" | "metadata">;
 type Repository = { id: string; relativePath: string; repoUrl: string; ref: string | null; pinnedCommit?: string };
@@ -33,14 +22,6 @@ type Repository = { id: string; relativePath: string; repoUrl: string; ref: stri
 const object = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 
-/** Missing or malformed fields (an older or partial record) never prove anything. */
-export function readUnchangedBaseline(metadata: Record<string, unknown> | null | undefined): UnchangedBaseline | null {
-  const value = object(metadata?.[UNCHANGED_BASELINE_KEY]);
-  if (value.schema !== UNCHANGED_BASELINE_SCHEMA || !Number.isSafeInteger(value.epoch) || (value.epoch as number) < 1
-    || typeof value.runId !== "string" || !value.runId || typeof value.snapshotId !== "string" || !value.snapshotId
-    || (value.releasedAt !== undefined && typeof value.releasedAt !== "string")) return null;
-  return value as UnchangedBaseline;
-}
 
 /** Operations that cannot change the saved files: a restore writes exactly the
  * saved version, and finalize and recovery rows are receipts that wrap a save

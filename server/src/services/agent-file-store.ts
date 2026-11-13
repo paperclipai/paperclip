@@ -16,7 +16,7 @@ import { authorizeInstructionCommit, authorizeInstructionRead } from "./agent-in
 import { assertInstructionPathSafe, instructionPath, instructionBytes, materializeInstructionBytes, readInstructionBytes, MAX_INSTRUCTION_BYTES } from "./agent-instruction-files.js";
 import { agentInstructionsBundleMode, deriveBundleState, resolveManagedInstructionsRoot } from "./agent-instructions.js";
 import type { AuthorizationActor } from "./authorization.js";
-import { durableAgentFilesEnabled, invalidateAgentFileProjection, persistDurableAgentFiles, restoreDurableAgentFiles } from "./agent-file-durability.js";
+import { agentFileProjectionCurrent, durableAgentFilesEnabled, invalidateAgentFileProjection, persistDurableAgentFiles, restoreDurableAgentFiles, uploadAgentFilesBeforeCommit, type PreparedAgentFileObjects } from "./agent-file-durability.js";
 
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type Agent = typeof agents.$inferSelect;
@@ -193,7 +193,8 @@ export async function isAgentFileSaveRecorded(tx: Tx, agent: Agent, relative: st
 export function agentFileStore(db: Db) {
   db = fileStorageDb(db);
   async function locked<T>(companyId: string, agentId: string, actor: AuthorizationActor, write: boolean,
-    fn: (tx: Tx, agent: Agent, root: string, bound: AuthorizationActor, onRollback: (restore: () => Promise<void>) => void) => Promise<T>, texts: string[] = []) {
+    fn: (tx: Tx, agent: Agent, root: string, bound: AuthorizationActor, onRollback: (restore: () => Promise<void>) => void) => Promise<T>, texts: string[] = [],
+    prepared?: PreparedAgentFileObjects) {
     return db.transaction(async tx => {
       if (write) await assertAgentInteraction(tx, { companyId, actorAgentId: actor.type === "agent" ? actor.agentId : null,
         operation: "configure", targetAgentId: agentId, lockAgentIds: texts.flatMap(extractAgentMentionIds), lock: "update" });
@@ -205,7 +206,7 @@ export function agentFileStore(db: Db) {
       let restore: (() => Promise<void>) | undefined;
       try {
         const result = await fn(tx, agent, root, bound, callback => { restore = callback; });
-        if (write) await persistDurableAgentFiles(tx, agent, root);
+        if (write) await persistDurableAgentFiles(tx, agent, root, false, prepared);
         return result;
       } catch (error) {
         await restore?.();
@@ -220,8 +221,42 @@ export function agentFileStore(db: Db) {
       runId: origin ? origin.runId : actor.runId, responsibleUserId: origin ? null : actor.type === "board" ? actor.userId : actor.onBehalfOfUserId,
       action: "agent.files_updated", entityType: "agent", entityId: agent.id, details });
   }
+  /** The write authorization of `locked`, without the row lock or the file
+   * tree, in a transaction that always rolls back. It writes nothing: an
+   * accepted change confirmation stays unconsumed, so only the locked commit
+   * of a save consumes it. It is enough for a save that changes no file, and
+   * it stops a save that will be refused before that save uploads any bytes. */
+  async function authorizeSave(companyId: string, agentId: string, actor: AuthorizationActor) {
+    const rollback = Symbol("authorization preview");
+    await db.transaction(async tx => {
+      await assertAgentInteraction(tx, { companyId, actorAgentId: actor.type === "agent" ? actor.agentId : null,
+        operation: "configure", targetAgentId: agentId });
+      const [agent] = await tx.select().from(agents).where(and(eq(agents.companyId, companyId), eq(agents.id, agentId)));
+      if (!agent) throw notFound("Agent not found");
+      await authorizeInstructionCommit(tx, actor, agent);
+      throw rollback;
+    }).catch(error => { if (error !== rollback) throw error; });
+  }
+  /**
+   * The save of a run that changed no file. When the locked file-tree step
+   * would change nothing (see `agentFileProjectionCurrent`), only the
+   * read-only authorization runs, without the row lock. Otherwise the locked
+   * write runs as for any save, so it adopts, restores or heals the durable
+   * head exactly as before.
+   */
+  async function saveUnchanged(companyId: string, agentId: string, actor: AuthorizationActor) {
+    const [agent] = await db.select().from(agents).where(and(eq(agents.companyId, companyId), eq(agents.id, agentId)));
+    if (agent && agentInstructionsBundleMode(agent) !== "external"
+      && await agentFileProjectionCurrent(db, agent, resolveManagedInstructionsRoot(agent))) {
+      await authorizeSave(companyId, agentId, actor);
+      return;
+    }
+    await locked(companyId, agentId, actor, true, async () => undefined);
+  }
   return {
     locked,
+    authorizeSave,
+    saveUnchanged,
     download: async (companyId: string, agentId: string, relative: string, actor: AuthorizationActor) => {
       const opened: { file: Awaited<ReturnType<typeof openAgentFile>> } = { file: null };
       try {
@@ -324,6 +359,13 @@ export function agentFileStore(db: Db) {
           if (mentions.length) changedMentions.set(name, { hash: fileHash(bytes!), text: mentions.map(id => `[@agent](agent://${id})`).join(" ") });
         }
       }
+      // Upload the run's changed bytes before the row lock, after a preview of
+      // the same write authorization. The commit below runs that authorization,
+      // validates the tree and records only objects with matching digests.
+      if (input.checkpoint) await authorizeSave(input.companyId, input.agentId, actor);
+      const prepared = input.checkpoint ? await uploadAgentFilesBeforeCommit(db, target, input.sourceDir, input.checkpoint.entries
+        .filter(([name, entry]) => entry.kind === "file" && JSON.stringify(incoming.entries.get(name)) !== JSON.stringify(input.baseline.entries.get(name)))
+        .map(([name, entry]) => ({ path: name, size: entry.size!, sha256: entry.hash! }))) : undefined;
       return locked(input.companyId, input.agentId, actor, true, async (tx, agent, root, bound) => {
         if (deriveBundleState(agent).entryFile !== requestedEntry) throw conflict("Agent instructions entry changed; retry the file synchronization");
         const entryPath = deriveBundleState(agent).entryFile;
@@ -392,7 +434,7 @@ export function agentFileStore(db: Db) {
           ...(input.checkpoint ? { snapshots: { source: incoming, current } } : {}) });
         await audit(tx, agent, bound, { sourceRunId: currentPluginInteractionOrigin()?.runId ?? actor.runId, contract: AGENT_FILES_CONTRACT });
         return { storageWarning: storageWarning(total, finalEntries.size, fullFile) };
-      }, [...changedMentions.values()].map(value => value.text));
+      }, [...changedMentions.values()].map(value => value.text), prepared);
     },
   };
 }
