@@ -110,6 +110,7 @@ import {
   shouldQueueFollowupForRunningIssueWake,
   DEFERRED_WAKE_CONTEXT_KEY,
   createHeartbeatQueue,
+  notifyOtherAgentsQueuedOnSettledIssue,
   unsavedWakeAdmissionCount,
 } from "./heartbeat/queue.js";
 export {
@@ -4321,6 +4322,11 @@ export function heartbeatService(
             });
         }
         await startNextQueuedRunForAgent(run.agentId);
+        if (latestRun && isHeartbeatRunTerminalStatus(latestRun.status)) {
+          await notifyOtherAgentsQueuedOnSettledIssue(db, latestRun).catch(err => {
+            logger.warn({ err, runId: run.id }, "failed to wake the task's next owner after execution cleanup");
+          });
+        }
       }
     }
   }
