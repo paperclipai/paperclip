@@ -1,6 +1,7 @@
 import { currentControllerProcess } from "../controller-process-identity.js";
 import { remoteRecoveryLeaseMismatch } from "./remote-recovery-lease-mismatch.js";
 import { isGovernancePauseStop } from "../governance-pause-stop.js";
+import { retryTransientLockContention } from "../transient-lock-contention.js";
 import { nativeLeaseHolder, notifyNativeTokenLeaseClaimed } from "./native-token-lease-settlement.js";
 import { captureRemoteNativeProviderArtifacts, shareNativeProviderArtifactCapture } from "./native-provider-artifact-capture.js";
 import { NativeSessionDiagnostics, nativeSessionDiagnostics, type NativeDiagnosticLease } from "./native-session-diagnostics.js";
@@ -109,7 +110,7 @@ import { createNativeProviderFailureObservation } from "./native-provider-failur
 import { explainNativeTurnFailure } from "./native-run-failure-explanation.js";
 import { nativeStartupRetryExhaustedAction, nativeStartupRetryWait, planNativeStartupRetry } from "./native-startup-retry.js";
 import { admitUnclaimedNativeBootstrapRetry } from "./native-bootstrap-retry.js";
-import { RUNNERD_CONTROL_PLANE_STATE_SCHEMAS, runnerdStateIsIncompleteBootstrap,
+import { attemptLaunchesFreshBootstrap, RUNNERD_CONTROL_PLANE_STATE_SCHEMAS, runnerdStateIsIncompleteBootstrap,
   runnerdStateHasNoProviderTurn, runnerdStateIsOpenedSessionBeforeTurn, runnerdStateIsUnconnectedBootstrap } from "./native-bootstrap-proof.js";
 import { createNativeDeliverableTextObservation } from "./native-deliverable-text.js";
 import { reconcileControllerJournalWithRunner, refreshRetiredWarmOwnerProjection } from "./warm-controller-journal.js";
@@ -12995,7 +12996,7 @@ async function executePaperclipNativeSessionAttempt(
             : nativeRemoteStartupRejectionCode(classifiedFailureCode, error, input.runnerExecutionTarget?.kind === "remote",
               previousStartupSignature);
       const bootstrap = input.useRunnerd && input.runnerExecutionTarget?.kind === "remote"
-          && !input.restartRecovery && !retainedTransition && !remoteWarmRecovery
+          && attemptLaunchesFreshBootstrap(input.restartRecovery) && !retainedTransition && !remoteWarmRecovery
           ? {
               binding: input.execution.binding,
               identity: { runnerInstanceId: effectiveRunnerInstanceId,
@@ -13101,7 +13102,11 @@ async function executePaperclipNativeSessionAttempt(
       // transitions the run into "failed". Read after the transaction
       // commits, so a rolled-back write never reports a false failure.
       let terminalRunToReport: typeof heartbeatRuns.$inferSelect | null = null;
-      await input.db.transaction(async (tx) => {
+      // A lock timeout rolls this write back whole, so a fresh attempt is safe.
+      // Without it a briefly held row strands the run under its dead lease and
+      // the task needs reconciliation instead of its recorded recovery.
+      await retryTransientLockContention(() => input.db.transaction(async (tx) => {
+        terminalRunToReport = null;
         await tx.execute(
           sql`select set_config('statement_timeout', '15000', true), set_config('lock_timeout', '1000', true)`,
         );
@@ -13496,7 +13501,7 @@ async function executePaperclipNativeSessionAttempt(
           supersedeOnIdentityChange:
             recoveryProjection.supersedeOnIdentityChange,
         });
-      }).catch(async (failure: unknown) => {
+      })).catch(async (failure: unknown) => {
         // Emit after rollback so the diagnostic sink cannot deadlock on the
         // coordinator transaction. Reporting failure cannot change fencing.
         if (failure instanceof NativePostResultFailureError) {
@@ -16472,7 +16477,7 @@ async function createRunnerdBackendWithinSessionClaim(
       configuredEnvironmentVersion: description.configuredEnvironmentVersion,
       configuredEnvironment: taskConfiguredEnvironment,
       releaseResumeVersion: description.releaseResumeVersion,
-      resumeCredentialVersion: description.resumeCredentialVersion,
+      resumeLaunchInputsVersion: description.resumeLaunchInputsVersion,
       authorityRunId: description.releaseResumeVersion === 1 ? input.execution.binding.runId : undefined,
       releasedSource: input.remoteWarmRecovery?.releasedSource,
       sessionHandoff: !!input.remoteWarmRecovery?.portableSourceTaskId,

@@ -211,6 +211,14 @@ Betas are manual promotions. Dispatch
   it does not exist or already shipped as a beta
 - the publish waits for approval in the **`npm-beta` environment** — its
   required reviewers are the promotion gate
+- the publish job checks out the source commit and runs
+  `scripts/release.sh beta`, which refuses a commit whose `pnpm-lock.yaml` is
+  behind the Runner's manifests, in a dry run too. An image build installs
+  the Runner with a frozen lockfile, so a plain `docker build` of such a
+  commit fails, and the beta would start a soak that the stable cannot
+  finish. Promote a nightly whose commit includes the lockfile refresh, or
+  cut a candidate branch that does. Check a commit before the dispatch with
+  `node scripts/check-release-runner-lockfile.mjs --commit <ref>`
 - promotions run the release tooling of the source commit, so the source
   nightly must postdate the beta channel's introduction; the selection job
   rejects older sources with a clear error (in practice every nightly cut
@@ -250,7 +258,8 @@ from a short-lived candidate branch:
 4. selection validates the branch name, rejects heads that already shipped
    as a beta, records the cherry-picked commits in the job summary, and the
    head runs **full verification** before publishing (it never went through
-   a canary or nightly)
+   a canary or nightly). The lockfile check above runs against the head of
+   the candidate branch
 5. after the beta ships, land the fixes on `master` normally and delete the
    candidate branch
 
@@ -303,7 +312,9 @@ Before running stable:
    `releases/beta/v<beta-version>.md`) is merged on `master` — or, for
    candidate builds, that the candidate branch itself carries
    `releases/vYYYY.MDD.P.md`
-5. run the stable workflow from that source ref
+5. check that the lockfile of the source commit matches the Runner's
+   manifests: `node scripts/check-release-runner-lockfile.mjs --commit <source_ref>`
+6. run the stable workflow from that source ref
 
 Example:
 
@@ -320,6 +331,12 @@ The workflow:
   `releases/beta/v<beta-version>.md` on `master` (a promoted beta). When
   neither exists the run fails before the `npm-stable` approval gate with
   the missing path named
+- refuses a source commit whose `pnpm-lock.yaml` is behind the Runner's
+  manifests, in a dry run too. `scripts/release.sh stable` makes this check
+  before it builds anything, as `scripts/release.sh beta` did when the beta
+  was cut. An image build installs the Runner with a frozen lockfile, so a
+  plain `docker build` of such a commit fails. Release a commit that
+  includes the lockfile refresh
 - publishes `YYYY.MDD.P` under npm dist-tag `latest`
 - creates git tag `vYYYY.MDD.P`
 - dispatches [`docker.yml`](../.github/workflows/docker.yml) at that tag to
