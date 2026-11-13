@@ -1002,6 +1002,21 @@ describe("live remote runner lease reattachment", () => {
       expect(result.lease.metadata?.sandboxLeaseAcquisition).toEqual({ outcome: "resumed", providerLeaseId: "original-sandbox" });
       expect(result.lease.id).toBe(savedLease.id);
       expect(result.lease.metadata?.remoteCwd).toBe("/remote/workspace");
+      const { resolveEnvironmentExecutionTarget } = await vi.importActual<typeof import("../services/environment-execution-target.js")>("../services/environment-execution-target.js");
+      const config = await import("../services/environment-config.js");
+      const resolveConfig = vi.spyOn(config, "resolveEnvironmentDriverConfigForRuntime").mockResolvedValue({
+        driver: "sandbox", config: { provider: "daytona", reuseLease: false },
+      } as never);
+      let target;
+      try {
+        target = await resolveEnvironmentExecutionTarget({
+          db: {} as never, companyId: input.companyId, adapterType: input.adapterType,
+          environment: result.environment, leaseId: result.lease.id, leaseMetadata: result.lease.metadata,
+          lease: result.lease, environmentRuntime: { ...runtime, supportsSync: () => false },
+        });
+      } finally { resolveConfig.mockRestore(); }
+      expect(target).toMatchObject({ kind: "remote", transport: "sandbox", remoteCwd: "/remote/workspace",
+        sandboxLeaseAcquisition: { outcome: "resumed", providerLeaseId: "original-sandbox" } });
       expect(savedLease).toEqual(before);
       expect(runtime.resumeRunLease).toHaveBeenCalledOnce();
       expect(runtime.acquireRunLease).not.toHaveBeenCalled();

@@ -417,9 +417,6 @@ export function environmentRunOrchestrator(
         if (resumed.metadata?.expired === true) throw remoteRecoveryLeaseMismatch("environment_resume", "lease_expired");
         // Resume confirms allocation readiness. Its optional metadata may
         // describe the allocation root; keep the validated lease's workspace.
-        // The stored acquisition describes when this lease first opened. It
-        // can say "replacement" even though this call resumed that exact
-        // allocation. Project this operation's receipt without changing history.
         acquiredLease = { ...lease, metadata: { ...lease.metadata,
           sandboxLeaseAcquisition: { outcome: "resumed", providerLeaseId: expected.providerLeaseId },
         } };
