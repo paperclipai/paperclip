@@ -886,6 +886,11 @@ impl AcpxProviderSession {
             Err(error) => return Err(self.fail_closed(error)),
         };
         let Some(mut event) = event else {
+            if self.awaiting_provider_turn {
+                if let Some(error) = self.transport.exited_error("provider turn wait") {
+                    return Err(self.fail_closed(error));
+                }
+            }
             return Ok(None);
         };
         let mut terminal_goal = None;
