@@ -293,16 +293,6 @@ export function createSlackFileReceipts(db: Db, options: SlackFileReceiptsOption
       stageSessionSync: boolean;
     },
   ): Promise<void> {
-    if (
-      !(await recordExactOutboundPublicationLink(tx, {
-        publication: input.publication,
-        providerMessageId: input.providerMessageId,
-      }))
-    ) {
-      throw new Error(
-        "Slack file upload message identity conflicts with another publication",
-      );
-    }
     await tx
       .update(chatEndpoints)
       .set({
@@ -316,6 +306,16 @@ export function createSlackFileReceipts(db: Db, options: SlackFileReceiptsOption
           sql`coalesce((${chatEndpoints.setup}->>'runtimeGeneration')::integer, 0) = ${input.runtimeContext.generation}`,
         ),
       );
+    if (
+      !(await recordExactOutboundPublicationLink(tx, {
+        publication: input.publication,
+        providerMessageId: input.providerMessageId,
+      }))
+    ) {
+      throw new Error(
+        "Slack file upload message identity conflicts with another publication",
+      );
+    }
     if (input.stageSessionSync) {
       await stageSlackSessionSync(tx, {
         companyId: input.publication.companyId,
