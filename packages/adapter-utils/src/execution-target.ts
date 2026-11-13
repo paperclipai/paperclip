@@ -1574,7 +1574,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
       workspaceLocalDir: input.workspaceLocalDir,
       workspaceRemoteDir: input.workspaceRemoteDir,
       syncWorkspace: input.syncWorkspace,
-      privateRuntime: input.privateRuntime && target.spec.useHostAuth === false,
+      privateRuntime: input.privateRuntime,
       retainRuntime: input.retainRuntime,
       workspaceFileMode: input.workspaceFileMode,
       workspaceExclude: input.workspaceExclude,

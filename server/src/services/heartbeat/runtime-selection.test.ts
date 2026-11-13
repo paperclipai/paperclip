@@ -198,6 +198,27 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
     expect((await read(f.run.id)).runnerProfileJson).toEqual(saved.runnerProfileJson);
   });
 
+  it.each([
+    { provider: "opencode", model: "openai/gpt-5" },
+    { provider: "acpx", acpxAgent: "copilot", model: "gpt-5.6-luna" },
+    { provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-4-6", acpxPermissionMode: "approve-reads" },
+  ])("retains supported isolated native selection for SSH host auth: $provider $acpxAgent", async adapterConfig => {
+    const f = await fixture();
+    f.input.agent = { ...f.agent, adapterConfig };
+    await db.update(agents).set({ adapterConfig }).where(eq(agents.id, f.agent.id));
+    f.input.workspace.executionTarget = { kind: "remote", transport: "ssh", remoteCwd: "/workspace", spec: {
+      host: "fixture.invalid", port: 22, username: "fixture", remoteWorkspacePath: "/workspace", remoteCwd: "/workspace",
+      useHostAuth: true, privateKey: null, knownHosts: null, strictHostKeyChecking: true,
+    } };
+    f.input.nativeRuntimeResolution = resolveHeartbeatNativeRuntimeMode({ persisted: f.run, enabled: true, runtimeConfig: {},
+      adapterConfig, agent: f.input.agent, issue: f.issue, target: f.input.workspace.executionTarget, workspaceId: null });
+    f.input.config.runtimeConfig.homeMode = "preconfigured";
+    const selected = await selectHeartbeatRuntime(db, f.input);
+    if (!selected.selected || !selected.nativeExecution) throw new Error("Expected native selection");
+    expect("homeMode" in selected.nativeExecution ? selected.nativeExecution.homeMode : "isolated").toBe("isolated");
+    expect(selected.nativeExecution.provider.kind).toBe(adapterConfig.provider === "acpx" ? "acpx" : "opencode");
+  });
+
   it("preserves immutable native recovery when current local Runner configuration is invalid", async () => {
     const f = await fixture();
     const selected = await selectHeartbeatRuntime(db, f.input);

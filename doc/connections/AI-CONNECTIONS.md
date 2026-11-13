@@ -452,6 +452,10 @@ retains its original home contract. Fresh native Runner launch uses the effectiv
 SSH authentication choice. Native Codex Test uses that remote user's login in
 preconfigured mode, without reading or staging controller credentials. Remote
 home discovery uses the SSH shell, including on machines without `getent`.
+Native preconfigured homes support Codex and ACPX Claude with `approve-all`.
+Other native providers, and Claude with stricter permissions, retain their
+supported isolated home mode on SSH. Explicitly unsupported preconfigured
+provider configurations outside this SSH compatibility choice still fail.
 
 Codex CLI host-auth runs also receive the current Paperclip MCP configuration
 and authorized skills. Paperclip merges its managed block into the remote
@@ -460,7 +464,11 @@ The native remote home retains authentication and conversation files; they are
 not uploaded from or copied back to the controller. This mode shares the remote
 user's configuration. Use separate SSH users when independent configuration is
 required. Run-specific skill files are removed at teardown, and the next run
-replaces or removes the managed skill links.
+replaces or removes the managed skill links. Host-auth runtime files use private
+SSH staging, with cleanup registered before upload so partial uploads are removed.
+When company tracing is enabled with a selected remote Codex profile, the overlay
+reads that profile from the remote home and preserves its other settings. Missing
+or linked profile files disable export for that run; execution continues.
 
 Managed SSH runs stage the selected account into a randomly allocated directory
 with owner-only access and set the harness's home/configuration paths there.

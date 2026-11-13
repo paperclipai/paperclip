@@ -16,6 +16,17 @@ if [ -e "$native_codex_home/config.toml" ]; then printf 'present\\n'; base64 < "
   return { home, config: Buffer.from(encodedConfig.join(""), "base64").toString("utf8"), exists: status === "present" };
 }
 
+export async function readCodexSshHostProfile(input: {
+  home: string; profile: string; run: (command: string) => Promise<{ stdout: string }>;
+}): Promise<string> {
+  if (!/^[A-Za-z0-9_-]+$/.test(input.profile)) throw new Error("Invalid remote Codex profile");
+  const result = await input.run(`set -eu
+profile_file=${shellQuote(`${input.home}/${input.profile}.config.toml`)}
+test -f "$profile_file" && test ! -L "$profile_file"
+base64 < "$profile_file"`);
+  return Buffer.from(result.stdout, "base64").toString("utf8");
+}
+
 export function buildCodexSshHostRuntimeInstall(input: { home: string; assetDir: string; exists: boolean; profileFilename?: string }): string {
   if (input.profileFilename && !/^[A-Za-z0-9_-]+\.config\.toml$/.test(input.profileFilename)) throw new Error("Invalid Codex runtime profile");
   const script = `set -eu
