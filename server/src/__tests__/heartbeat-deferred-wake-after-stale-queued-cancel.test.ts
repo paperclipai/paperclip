@@ -305,4 +305,44 @@ describeEmbeddedPostgres("deferred wake promotion after a queued holder is withd
     await drainHeartbeatRunsToQuiescence(db, heartbeat);
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runs[0]!.id)))[0]?.status).toBe("succeeded");
   });
+  it("promotes the deferred wake when the claim gate withdraws the queued holder for a status change", async () => {
+    const { companyId, assigneeAgentId, otherAgentId, issueId, holderRunId } = await seed();
+    await db.update(heartbeatRuns).set({
+      contextSnapshot: {
+        issueId, taskId: issueId, wakeReason: "issue_commented", source: "connection_intent.resolved",
+        interactionId: randomUUID(), interactionKind: "connection_intent", interactionStatus: "accepted",
+        interactionResolvedAt: new Date().toISOString(), mutation: "interaction",
+      },
+    }).where(eq(heartbeatRuns.id, holderRunId));
+    await db.update(issues).set({ status: "todo" }).where(eq(issues.id, issueId));
+
+    const deferredRun = await heartbeat.wakeup(assigneeAgentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_assigned" },
+      requestedByActorType: "user",
+      requestedByActorId: "local-board",
+    });
+    expect(deferredRun).toBeNull();
+    const [deferred] = await deferredWakesFor(assigneeAgentId);
+    expect(deferred).toBeDefined();
+    expect(await issueExecutionRunId(issueId)).toBe(holderRunId);
+
+    await heartbeat.resumeQueuedRunsForAgent(companyId, otherAgentId);
+
+    const holder = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, holderRunId)).then((r) => r[0]);
+    expect(holder?.status).toBe("cancelled");
+    expect(holder?.errorCode).toBe("issue_not_in_progress");
+    expect(holder?.startedAt).toBeNull();
+
+    const promoted = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, deferred!.id)).then((r) => r[0]);
+    expect(promoted?.status).not.toBe("deferred_issue_execution");
+    const runs = await assigneeRuns(assigneeAgentId, holderRunId);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.wakeupRequestId).toBe(deferred!.id);
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runs[0]!.id)))[0]?.status).toBe("succeeded");
+  });
 });
