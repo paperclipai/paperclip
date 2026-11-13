@@ -1,7 +1,7 @@
 import { STORAGE_UNAVAILABLE_WAIT_RETRY_REASON } from "../storage/storage-unavailable.js";
 import { AGENT_DIRECTORY_WAIT_RETRY_REASON } from "./execution-recovery-attempt.js";
 import { boundSetupCommandFailure, readSetupCommandFailure } from "./workspace-setup-command-failure.js";
-import { and, desc, eq, inArray, isNull, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, not, sql, type SQL } from "drizzle-orm";
 import { unidentifiedLocalLaunchRefusals } from "./native-local-process-stop.js";
 import { nativeSessionCleanupBlock } from "../vendor/paperclip-runner/index.js";
 import { agents, agentWakeupRequests, approvals, chatActions, companies, environmentLeases, heartbeatRuns, issueApprovals, issueRecoveryActions,
@@ -23,6 +23,7 @@ import { canonicalExecutionUuid } from "./execution-identity.js";
 import { chatActionDeadline } from "./chat-action-work.js";
 import { NATIVE_CLEANUP_SETTLING_MESSAGE, NATIVE_SESSION_CLEANUP_QUARANTINED } from "./native-runtime/completed-turn-cleanup.js";
 import { isQueuedDependencyWait } from "./run-cancellation.js";
+import { heldRetryOffersRetry } from "./task-retry-eligibility.js";
 import { exhaustedNativeFinalizationCondition, savedResultRetryPendingCondition } from "./native-runtime/exhausted-finalization-retry.js";
 import { AI_CONNECTION_BUSY_RETRY_REASON, AI_CONNECTION_POOL_WAIT_RETRY_REASON, RUNNER_REVISION_WAIT_RETRY_REASON,
   WORKSPACE_BUSY_RETRY_REASON } from "../modules/run-dispatch/index.js";
@@ -161,6 +162,7 @@ const retryWaitMessages: Record<string, string> = {
   // A new click replaces a Retry declined for its requester's access with a
   // fresh attempt under the clicker's access, so Retry stays available.
   retry_authority_denied: "Retry could not start with the requesting user's access. Press Retry to start it with yours.",
+  previous_execution_unverified: "Retry can't continue because Paperclip can't confirm that the previous attempt stopped before it started work. Your message is saved.",
   // An edited saved message can never be replayed; only new input continues.
   retry_source_changed: "Retry cannot continue because its saved message changed. Send a new message to continue from saved work.",
 };
@@ -339,8 +341,7 @@ function projectTaskInterruptionState(issue: ProjectionIssue, input: ProjectionS
     const reason = Object.hasOwn(retryWaitMessages, retryWait.executionWaitReason) ? retryWait.executionWaitReason : "execution_recovery";
     // Keep the latest input receipt so message submission can settle independently.
     return { ...base, state: "failed",
-      canRetry: !["cancelled_by_operator", "retry_source_changed", "workspace_owner_stop_required"].includes(reason)
-        && (reason !== "cleanup_quarantined" || !input.cleanupSettling), retryWait: { reason,
+      canRetry: heldRetryOffersRetry(reason, input.cleanupSettling), retryWait: { reason,
       message: retryWaitMessages[reason] ?? "Retry is waiting for execution checks. Your message is saved." } };
   }
   const queuedDuringRun = Boolean(wait && run.status === "succeeded" && ["todo", "in_progress", "in_review"].includes(issue.status) && run.finishedAt && wait.requestedAt.getTime() <= run.finishedAt.getTime()
@@ -742,6 +743,22 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
       captureTaskInterruptionFailure({ companyId, taskId: issue.id, agentId: run.agentId,
         runId: run.id, runStatus, intentId: presentation.intentId, runErrorCode: run.errorCode ?? null,
         agentAdapter: run.agentAdapter ?? "unknown" });
+    }
+  }
+  const offered = [...result].flatMap(([issueId, presentation]) => presentation?.canRetry && !presentation.retryWait ? [issueId] : []);
+  if (offered.length) {
+    const { executionBlockerPredicate, getExecutionBlocker, restoreHoldPredicate, restoreHoldReleasedForCurrentOwnerPredicate } =
+      await import("./execution-blocker.js");
+    const held = await db.selectDistinct({ issueId: issueRecoveryActions.sourceIssueId }).from(issueRecoveryActions).where(and(
+      eq(issueRecoveryActions.companyId, companyId), inArray(issueRecoveryActions.sourceIssueId, offered),
+      executionBlockerPredicate(), not(restoreHoldReleasedForCurrentOwnerPredicate()), restoreHoldPredicate()));
+    for (const { issueId } of held) {
+      const blocker = await getExecutionBlocker(db, companyId, issueId);
+      const presentation = result.get(issueId);
+      if (!presentation || !blocker || blocker.canRetry) continue;
+      presentation.canRetry = false;
+      if (blocker.workspaceRecovery && blocker.workspaceRecovery.status !== "recovered")
+        presentation.retryWait = { reason: "workspace_repair_required", message: retryWaitMessages.workspace_repair_required! };
     }
   }
   // Redact each explanation with the registry of the run that recorded it: the
