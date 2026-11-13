@@ -12,6 +12,7 @@ import {
   joinReattachPhase,
   markReattachAuthenticated,
   onReattachPhaseEnd,
+  pendingReattachRunIds,
   reattachPhaseRecheckAt,
   resetReattachPhaseForTests,
   settleReattachRun,
@@ -25,14 +26,26 @@ import {
   noteReattachRunsClaimed,
   REATTACH_PHASE_DEFAULT_CAP_MS,
   reattachPhaseCapMs,
+  notifyReattachHandOver,
+  registerReattachPhaseWork,
   settleFinishedReattachRuns,
-  startReattachPhase,
   stopReattachWatch,
 } from "./reattach-phase.js";
+import { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import { isReattachPhaseActive as gateUsedBySweep } from "./run-admission.js";
 
-afterEach(() => {
-  stopReattachWatch();
+const coordinators: ReturnType<typeof createDeliveryWorkCoordinator>[] = [];
+
+async function startReattachPhase(db: Db, options: Parameters<typeof registerReattachPhaseWork>[2]) {
+  const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: () => undefined });
+  coordinators.push(coordinator);
+  await registerReattachPhaseWork(coordinator, db, options)?.ready;
+  return coordinator;
+}
+
+afterEach(async () => {
+  await stopReattachWatch();
+  for (const coordinator of coordinators.splice(0)) await coordinator.stop();
   resetReattachPhaseForTests();
   vi.useRealTimers();
 });
@@ -294,7 +307,7 @@ describe.skipIf(!support.supported)("reattach phase discovery", () => {
     expect(ended).toEqual([expect.objectContaining({ reason: "nothing_to_reattach", gatedStarts: false })]);
     const { run } = await seed("RPC");
     const only = await run("running", { leaseOwner: "native:old", controllerBootId: "old-boot-c" });
-    await startReattachPhase(db, { capMs: 60_000, bootId: "boot-c", refreshMs: 50, onEnd: summary => ended.push(summary) });
+    await startReattachPhase(db, { capMs: 60_000, bootId: "boot-c", recheckMs: 50, onEnd: summary => ended.push(summary) });
     expect(isReattachPhaseActive()).toBe(true);
     settleReattachRun(only, "reached");
     expect(isReattachPhaseActive()).toBe(false);
@@ -312,9 +325,12 @@ describe.skipIf(!support.supported)("reattach phase discovery", () => {
 
     async function handOver(runIds: string[], at = new Date()) {
       for (const runId of runIds) {
-        await db.update(nativeRunFinalizations).set({ leaseExpiresAt: at, recoveryState: "awaiting_runner_reattach",
-          recoveryHistory: [{ at: at.toISOString(), restartKind: "graceful", disposition: "restart_suspended", reason: "SIGTERM" }] })
-          .where(eq(nativeRunFinalizations.runId, runId));
+        await db.transaction(async tx => {
+          await notifyReattachHandOver(tx, runId);
+          await tx.update(nativeRunFinalizations).set({ leaseExpiresAt: at, recoveryState: "awaiting_runner_reattach",
+            recoveryHistory: [{ at: at.toISOString(), restartKind: "graceful", disposition: "restart_suspended", reason: "SIGTERM" }] })
+            .where(eq(nativeRunFinalizations.runId, runId));
+        });
       }
     }
 
@@ -334,7 +350,7 @@ describe.skipIf(!support.supported)("reattach phase discovery", () => {
       await run("running", liveLease());
       await run("running", liveLease());
       const ended: ReattachPhaseSummary[] = [];
-      await startReattachPhase(db, { capMs: 200, bootId: "incoming-boot", refreshMs: 20, onEnd: summary => ended.push(summary) });
+      await startReattachPhase(db, { capMs: 200, bootId: "incoming-boot", recheckMs: 20, onEnd: summary => ended.push(summary) });
       expect(isReattachPhaseActive()).toBe(false);
       expect(await queuedClaimPassesGate()).toBe(true);
       await sleep(350);
@@ -348,7 +364,7 @@ describe.skipIf(!support.supported)("reattach phase discovery", () => {
       const first = await run("running", liveLease());
       const second = await run("running", liveLease());
       const ended: ReattachPhaseSummary[] = [];
-      await startReattachPhase(db, { capMs: 60_000, bootId: "incoming-boot", refreshMs: 20, onEnd: summary => ended.push(summary) });
+      await startReattachPhase(db, { capMs: 60_000, bootId: "incoming-boot", recheckMs: 20, onEnd: summary => ended.push(summary) });
       await sleep(400);
       expect(isReattachPhaseActive()).toBe(false);
       await handOver([first, second]);
@@ -370,7 +386,7 @@ describe.skipIf(!support.supported)("reattach phase discovery", () => {
       const wedged = await run("running", liveLease());
       const fine = await run("running", liveLease());
       const ended: ReattachPhaseSummary[] = [];
-      await startReattachPhase(db, { capMs: 300, bootId: "incoming-boot", refreshMs: 20, onEnd: summary => ended.push(summary) });
+      await startReattachPhase(db, { capMs: 300, bootId: "incoming-boot", recheckMs: 20, onEnd: summary => ended.push(summary) });
       await sleep(450);
       expect(ended.filter(summary => summary.reason === "cap_reached")).toEqual([]);
       await handOver([wedged, fine]);
@@ -384,17 +400,18 @@ describe.skipIf(!support.supported)("reattach phase discovery", () => {
       expect(isReattachPhaseActive()).toBe(false);
     });
 
-    it("begins when a killed owner's lease is observed expired, without any hand-over", async () => {
+    it("begins at a killed owner's lease deadline, without any hand-over or notification", async () => {
       await retireEarlierRuns();
       const { run } = await seed("RPG");
-      const orphan = await run("running", liveLease());
+      const leaseEndsAt = Date.now() + 400;
+      const orphan = await run("running", { ...liveLease(), leaseExpiresAt: new Date(leaseEndsAt) });
       const ended: ReattachPhaseSummary[] = [];
-      await startReattachPhase(db, { capMs: 60_000, bootId: "incoming-boot", refreshMs: 20, onEnd: summary => ended.push(summary) });
+      const coordinator = await startReattachPhase(db, { capMs: 60_000, bootId: "incoming-boot", recheckMs: 20, onEnd: summary => ended.push(summary) });
+      expect(coordinator.nextWakeAt()).toBe(leaseEndsAt);
       await sleep(100);
       expect(isReattachPhaseActive()).toBe(false);
-      const expiredAt = new Date(Date.now() - 1);
-      await db.update(nativeRunFinalizations).set({ leaseExpiresAt: expiredAt }).where(eq(nativeRunFinalizations.runId, orphan));
       await vi.waitFor(() => expect(isReattachPhaseActive()).toBe(true), { timeout: 2_000, interval: 10 });
+      expect(Date.now()).toBeGreaterThanOrEqual(leaseEndsAt);
       settleReattachRun(orphan, "reached");
       expect(ended.filter(summary => summary.reason !== "nothing_to_reattach"))
         .toEqual([expect.objectContaining({ reason: "all_settled", startReason: "lease_expired", liveRuns: 1, reached: 1 })]);
@@ -406,7 +423,7 @@ describe.skipIf(!support.supported)("reattach phase discovery", () => {
       const early = await run("running", liveLease());
       const ended: ReattachPhaseSummary[] = [];
       let resumes = 0;
-      await startReattachPhase(db, { capMs: 60_000, bootId: "incoming-boot", refreshMs: 20,
+      await startReattachPhase(db, { capMs: 60_000, bootId: "incoming-boot", recheckMs: 20,
         onEnd: summary => { ended.push(summary); if (summary.gatedStarts) resumes += 1; } });
       const late = await run("running", liveLease());
       await handOver([early]);
@@ -430,7 +447,7 @@ describe.skipIf(!support.supported)("reattach phase discovery", () => {
       const { run } = await seed("RPJ");
       const claimed = await run("running", liveLease());
       const ended: ReattachPhaseSummary[] = [];
-      await startReattachPhase(db, { capMs: 60_000, bootId: "incoming-boot", refreshMs: 60_000, onEnd: summary => ended.push(summary) });
+      await startReattachPhase(db, { capMs: 60_000, bootId: "incoming-boot", recheckMs: 60_000, onEnd: summary => ended.push(summary) });
       expect(isReattachPhaseActive()).toBe(false);
       await sleep(60);
       const handedOverAt = new Date(Date.now() - 30);
@@ -448,12 +465,54 @@ describe.skipIf(!support.supported)("reattach phase discovery", () => {
       expect(phase.maxReachLatencyMs).toBeGreaterThanOrEqual(125);
     });
 
+    it("does no database work and keeps no deadline on an instance with nothing to reattach", async () => {
+      await retireEarlierRuns();
+      const select = vi.spyOn(db, "select");
+      const coordinator = await startReattachPhase(db, { capMs: 60_000, bootId: "incoming-boot", recheckMs: 20 });
+      const startupQueries = select.mock.calls.length;
+      expect(coordinator.nextWakeAt()).toBeNull();
+      await sleep(200);
+      expect(select.mock.calls.length).toBe(startupQueries);
+      select.mockRestore();
+    });
+
+    it("waits for the hand-over notification or the lease deadline instead of polling while the previous owner drives its runs", async () => {
+      await retireEarlierRuns();
+      const { run } = await seed("RPK");
+      const lease = liveLease();
+      const live = await run("running", lease);
+      const select = vi.spyOn(db, "select");
+      const coordinator = await startReattachPhase(db, { capMs: 60_000, bootId: "incoming-boot", recheckMs: 20 });
+      const startupQueries = select.mock.calls.length;
+      expect(coordinator.nextWakeAt()).toBe(lease.leaseExpiresAt.getTime());
+      await sleep(200);
+      expect(select.mock.calls.length).toBe(startupQueries);
+      select.mockRestore();
+      await handOver([live]);
+      await vi.waitFor(() => expect(isReattachPhaseActive()).toBe(true), { timeout: 2_000, interval: 10 });
+      settleReattachRun(live, "reached");
+      expect(isReattachPhaseActive()).toBe(false);
+    });
+
+    it("stops with the delivery coordinator at shutdown and ignores a later hand-over", async () => {
+      await retireEarlierRuns();
+      const { run } = await seed("RPL");
+      const live = await run("running", liveLease());
+      const coordinator = await startReattachPhase(db, { capMs: 60_000, bootId: "incoming-boot", recheckMs: 20 });
+      await coordinator.stop();
+      expect(coordinator.nextWakeAt()).toBeNull();
+      await handOver([live]);
+      await sleep(200);
+      expect(isReattachPhaseActive()).toBe(false);
+      expect(pendingReattachRunIds()).toEqual([]);
+    });
+
     it("is never true on an instance whose live runs are all its own", async () => {
       await retireEarlierRuns();
       const { run } = await seed("RPI");
       await run("running", { leaseOwner: "native-execution:mine", controllerBootId: "incoming-boot", leaseExpiresAt: new Date(Date.now() - 1) });
       const ended: ReattachPhaseSummary[] = [];
-      await startReattachPhase(db, { capMs: 60_000, bootId: "incoming-boot", refreshMs: 20, onEnd: summary => ended.push(summary) });
+      await startReattachPhase(db, { capMs: 60_000, bootId: "incoming-boot", recheckMs: 20, onEnd: summary => ended.push(summary) });
       expect(isReattachPhaseActive()).toBe(false);
       await sleep(100);
       expect(isReattachPhaseActive()).toBe(false);

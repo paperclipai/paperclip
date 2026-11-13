@@ -6,7 +6,8 @@ import { currentControllerBootId } from "../services/controller-process-identity
 import { evaluateNativeControllerTakeover } from "../services/native-runtime/native-restart-recovery.js";
 import { REMOTE_CONTROLLER_LEASE_MS } from "../services/native-runtime/native-runner-recovery-contract.js";
 import { describeEmbeddedPostgres, nativeRestartFixture } from "./helpers/native-restart.js";
-import { startReattachPhase, stopReattachWatch } from "../services/heartbeat/reattach-phase.js";
+import { registerReattachPhaseWork, stopReattachWatch } from "../services/heartbeat/reattach-phase.js";
+import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { isReattachPhaseActive, pendingReattachRunIds, resetReattachPhaseForTests, settleReattachRun, type ReattachPhaseSummary } from "../services/heartbeat/run-admission.js";
 
 describeEmbeddedPostgres("an outgoing server hands live remote runs over at shutdown start", () => {
@@ -62,15 +63,21 @@ describeEmbeddedPostgres("an outgoing server hands live remote runs over at shut
     expect(await incomingTakeoverReasons(db, runIds)).toEqual(["remote_controller_lease_live"]);
   });
 
-  afterEach(() => {
-    stopReattachWatch();
+  let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
+
+  afterEach(async () => {
+    await stopReattachWatch();
+    await coordinator?.stop();
+    coordinator = undefined;
     resetReattachPhaseForTests();
   });
 
   it("holds the incoming server's queued starts only from the hand-over, not while the outgoing server still drives its runs", async () => {
     const { db, runIds } = await seedLiveRemoteRuns("PHASE", 3);
     const ended: ReattachPhaseSummary[] = [];
-    await startReattachPhase(db, { capMs: 60_000, bootId: "incoming-boot", refreshMs: 20, onEnd: summary => ended.push(summary) });
+    coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: () => undefined });
+    await registerReattachPhaseWork(coordinator, db, { capMs: 60_000, bootId: "incoming-boot", recheckMs: 20,
+      onEnd: summary => ended.push(summary) })?.ready;
     await new Promise(resolve => setTimeout(resolve, 150));
     expect(isReattachPhaseActive()).toBe(false);
     const handedOffAt = Date.now();

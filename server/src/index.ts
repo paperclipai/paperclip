@@ -1,6 +1,6 @@
 import type { IdleDeadlineOwners } from "./services/idle-deadline-types.js";
 import { closeProcessRunAdmission, isProcessRunAdmissionClosed } from "./services/heartbeat/run-admission.js";
-import { startReattachPhase } from "./services/heartbeat/reattach-phase.js";
+import { registerReattachPhaseWork } from "./services/heartbeat/reattach-phase.js";
 import { createRunStartHandover, registerRunStartHandover } from "./services/run-start-handover.js";
 import { registerOwnershipReconciliationWork } from "./services/native-runtime/native-finalization-reconciler.js";
 import { bindIdleDeadlineOwner } from "./services/idle-deadline-owner.js";
@@ -1345,14 +1345,14 @@ async function startServerWithDatabaseTeardown(
   // left `running`, or a queued retry/continuation, keep waiting for the full
   // queued-run pass registered after native restart recovery below.
   if (heartbeat && config.heartbeatSchedulerEnabled && !isWarmStandby()) {
-    trackHeartbeatSchedulerWork(startReattachPhase(db as any, {
+    registerReattachPhaseWork(deliveryWork, db as any, {
       onEnd: summary => {
         if (!summary.gatedStarts || heartbeatSchedulerStopped) return;
         trackHeartbeatSchedulerWork(accountingHeartbeat.resumeQueuedRunsAfterDrain().catch(err => {
           logger.error({ err }, "failed to start queued runs held during the reattach phase");
         }));
       },
-    }));
+    });
   }
   if (heartbeat) {
     const startupHeartbeat = heartbeat;

@@ -7,7 +7,7 @@ import { legacyWorkspaceRecoveryNotMigrated } from "../legacy-workspace-recovery
 import { pendingFailedNativeRetryCancellationCondition } from "../native-runtime/native-cancellation-request.js";
 import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
 import { registerLiveRecoveryWork } from "./live-recovery-work.js";
-import { noteReattachRunsClaimed } from "./reattach-phase.js";
+import { noteReattachRunsClaimed, notifyReattachHandOver } from "./reattach-phase.js";
 import { NATIVE_RETAINED_OWNER_WAIT } from "../native-runtime/native-controller-recovery.js";
 import { nativeEnvironmentSettlementDisposition, nativeEnvironmentSettlementWork } from "../native-runtime/native-environment-settlement-work.js";
 import { nativeWorkspaceFinalizationWork } from "../native-runtime/native-workspace-finalization-work.js";
@@ -1179,6 +1179,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     // A finalizer lease belongs to finalization already in progress here.
     const released = await db.transaction(async tx => {
       await notifyLiveRunRecovery(tx, { companyId: run.companyId, runId: run.id });
+      await notifyReattachHandOver(tx, run.id);
       return tx.update(nativeRunFinalizations).set({
         leaseExpiresAt: sql`case when ${nativeRunFinalizations.resultId} is not null
           and ${nativeRunFinalizations.leaseOwner} like 'native-finalizer:%'

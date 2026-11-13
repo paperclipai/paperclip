@@ -85,6 +85,7 @@ export function createHeartbeatRunOutput(db: Db, input: HeartbeatRunOutputInput)
   let persistedLogBytes = Number(run.logBytes ?? 0);
   let progressWrite: Promise<void> | null = null;
   let recordingFailureReported = false;
+  let deferredLogRecovery: Promise<void> | null = null;
   const flushOutputProgress = async (opts?: { force?: boolean }) => {
     if (progressWrite) {
       await progressWrite;
@@ -295,7 +296,7 @@ export function createHeartbeatRunOutput(db: Db, input: HeartbeatRunOutputInput)
     })();
     if (handle.store === "s3_segments" && run.runtimeMode === "native") {
       const recovering = getNativeExporter().then(exporter => exporter.recover());
-      if (input.deferNativeLogRecovery) void recovering.catch(reportRecordingFailure);
+      if (input.deferNativeLogRecovery) deferredLogRecovery = recovering.catch(reportRecordingFailure);
       else await recovering;
     }
     // Output begins before runtime selection persists native mode. Keep the
@@ -354,6 +355,7 @@ export function createHeartbeatRunOutput(db: Db, input: HeartbeatRunOutputInput)
     },
     outputProgressState,
     flushOutputProgress,
+    settleDeferredLogRecovery: async () => { await deferredLogRecovery; },
     // Finalization awaits I/O and can receive more output before persisting excerpts.
     get stdoutExcerpt() {
       return stdoutExcerpt;

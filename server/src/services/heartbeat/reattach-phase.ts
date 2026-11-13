@@ -1,6 +1,8 @@
 import { and, eq, inArray, isNotNull, isNull, ne, notLike, or } from "drizzle-orm";
 import { heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { logger } from "../../middleware/logger.js";
+import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { currentControllerBootId } from "../controller-process-identity.js";
 import {
   announceReattachPhase,
@@ -20,7 +22,7 @@ import {
 export const REATTACH_PHASE_DEFAULT_CAP_MS = 180_000;
 export const REATTACH_PHASE_MIN_CAP_MS = 5_000;
 export const REATTACH_PHASE_MAX_CAP_MS = 600_000;
-export const REATTACH_PHASE_REFRESH_MS = 2_000;
+export const REATTACH_PHASE_RECHECK_MS = 2_000;
 
 export function reattachPhaseCapMs(env: NodeJS.ProcessEnv = process.env): number {
   const raw = env.PAPERCLIP_REATTACH_PHASE_CAP_MS?.trim();
@@ -80,18 +82,24 @@ export async function settleFinishedReattachRuns(db: Db): Promise<number> {
   return finished.length;
 }
 
+type ReattachWorker = { wake: () => void; stop: () => Promise<void>; ready: Promise<unknown> };
+
 type ReattachWatch = {
   db: Db;
   bootId: string;
-  refreshMs: number;
+  initialized: boolean;
+  notified: boolean;
   watching: boolean;
   leases: Map<string, PreviousControllerRunLease>;
-  timer: ReturnType<typeof setInterval> | null;
-  refreshing: boolean;
+  worker: ReattachWorker | null;
   stopListening: () => void;
 };
 
 let watch: ReattachWatch | null = null;
+
+export async function notifyReattachHandOver(transaction: object, runId: string): Promise<void> {
+  await notifyDeliveryWork(transaction, DELIVERY_QUEUES.reattachPhase, runId);
+}
 
 function observeLeases(current: ReattachWatch, rows: PreviousControllerRunLease[], now = Date.now()): void {
   current.leases = new Map(rows.map(row => [row.runId, row]));
@@ -101,27 +109,43 @@ function observeLeases(current: ReattachWatch, rows: PreviousControllerRunLease[
   current.watching = unjoined.length > claimable.length;
 }
 
-async function refreshReattachWatch(current: ReattachWatch): Promise<void> {
-  if (current.watching) observeLeases(current, await listPreviousControllerRunLeases(current.db, current.bootId));
-  await settleFinishedReattachRuns(current.db);
-  if (!current.watching && pendingReattachRunIds().length === 0) stopRefreshing(current);
+export function nextReattachLeaseDeadline(leases: Iterable<PreviousControllerRunLease>, now = Date.now()): number | null {
+  let next: number | null = null;
+  for (const row of leases) {
+    if (hasJoinedReattachPhase(row.runId)) continue;
+    const at = row.leaseExpiresAt?.getTime();
+    if (at === undefined || at <= now) continue;
+    if (next === null || at < next) next = at;
+  }
+  return next;
 }
 
-function startRefreshing(current: ReattachWatch): void {
-  if (current.timer || watch !== current) return;
-  current.timer = setInterval(() => {
-    if (current.refreshing) return;
-    current.refreshing = true;
-    void refreshReattachWatch(current)
-      .catch(error => logger.warn({ err: error }, "reattach phase refresh failed"))
-      .finally(() => { current.refreshing = false; });
-  }, current.refreshMs);
-  current.timer.unref?.();
-}
-
-function stopRefreshing(current: ReattachWatch): void {
-  if (current.timer) clearInterval(current.timer);
-  current.timer = null;
+async function reconcileReattachWatch(current: ReattachWatch): Promise<void> {
+  if (watch !== current) return;
+  if (!current.initialized) {
+    current.initialized = true;
+    current.notified = false;
+    let rows: PreviousControllerRunLease[];
+    try {
+      rows = await listPreviousControllerRunLeases(current.db, current.bootId);
+    } catch (error) {
+      logger.warn({ err: error }, "reattach phase could not list live runs of a previous server; only runs this server claims or is told about are tracked");
+      return;
+    }
+    if (watch !== current) return;
+    if (rows.length === 0) reportNothingToReattach();
+    else {
+      observeLeases(current, rows);
+      logger.info({ liveRuns: rows.length, claimableNow: rows.filter(row => hasJoinedReattachPhase(row.runId)).length },
+        "reattach phase watching live runs of a previous server: new run starts are held only once they become claimable");
+    }
+  } else if (current.watching || current.notified) {
+    current.notified = false;
+    const rows = await listPreviousControllerRunLeases(current.db, current.bootId);
+    if (watch !== current) return;
+    observeLeases(current, rows);
+  }
+  if (pendingReattachRunIds().length > 0) await settleFinishedReattachRuns(current.db);
 }
 
 export function noteReattachRunsClaimed(runIds: readonly string[], now = Date.now()): void {
@@ -133,7 +157,7 @@ export function noteReattachRunsClaimed(runIds: readonly string[], now = Date.no
     return claimable ?? { runId, reason: "owner_gone" as const, claimableAt: now };
   }), { announce: false }, now);
   if (joined.length === 0) return;
-  startRefreshing(current);
+  current.worker?.wake();
   void classifyClaimedRuns(current, joined, now)
     .catch(error => logger.warn({ err: error }, "reattach phase could not read how claimed runs were released"))
     .finally(() => announceReattachPhase(joined));
@@ -161,43 +185,44 @@ async function classifyClaimedRuns(current: ReattachWatch, runIds: string[], now
   }), now);
 }
 
-export function startReattachPhase(db: Db, options: {
-  capMs?: number;
-  refreshMs?: number;
-  bootId?: string;
-  onEnd?: Parameters<typeof onReattachPhaseEnd>[0];
-} = {}): Promise<void> {
+export function registerReattachPhaseWork(
+  coordinator: Pick<ReturnType<typeof createDeliveryWorkCoordinator>, "register">,
+  db: Db,
+  options: {
+    capMs?: number;
+    recheckMs?: number;
+    bootId?: string;
+    onEnd?: Parameters<typeof onReattachPhaseEnd>[0];
+  } = {},
+): ReattachWorker | null {
   const capMs = options.capMs ?? reattachPhaseCapMs();
-  if (capMs <= 0) return Promise.resolve();
-  if (watch) stopReattachWatch();
+  if (capMs <= 0) return null;
+  if (watch) void stopReattachWatch();
   enableReattachPhase(capMs);
-  const current: ReattachWatch = { db, bootId: options.bootId ?? currentControllerBootId(),
-    refreshMs: options.refreshMs ?? REATTACH_PHASE_REFRESH_MS, watching: false, leases: new Map(), timer: null,
-    refreshing: false, stopListening: options.onEnd ? onReattachPhaseEnd(options.onEnd) : () => undefined };
+  const current: ReattachWatch = { db, bootId: options.bootId ?? currentControllerBootId(), initialized: false,
+    notified: false, watching: false, leases: new Map(), worker: null,
+    stopListening: options.onEnd ? onReattachPhaseEnd(options.onEnd) : () => undefined };
   watch = current;
-  return (async () => {
-    let rows: PreviousControllerRunLease[];
-    try {
-      rows = await listPreviousControllerRunLeases(db, current.bootId);
-    } catch (error) {
-      logger.warn({ err: error }, "reattach phase could not list live runs of a previous server; only runs this server claims are tracked");
-      return;
-    }
+  const release = () => {
     if (watch !== current) return;
-    if (rows.length === 0) {
-      reportNothingToReattach();
-      return;
-    }
-    observeLeases(current, rows);
-    logger.info({ liveRuns: rows.length, claimableNow: rows.filter(row => hasJoinedReattachPhase(row.runId)).length },
-      "reattach phase watching live runs of a previous server: new run starts are held only once they become claimable");
-    if (current.watching || pendingReattachRunIds().length > 0) startRefreshing(current);
-  })();
+    watch = null;
+    current.stopListening();
+  };
+  current.worker = coordinator.register(DELIVERY_QUEUES.reattachPhase, {
+    retryMs: options.recheckMs ?? REATTACH_PHASE_RECHECK_MS,
+    run: () => reconcileReattachWatch(current),
+    hasPending: async () => watch === current && pendingReattachRunIds().length > 0,
+    nextRunAt: () => watch === current && current.watching ? nextReattachLeaseDeadline(current.leases.values()) : null,
+    onSettled: () => { current.notified = true; },
+    onStop: release,
+  });
+  return current.worker;
 }
 
-export function stopReattachWatch(): void {
-  if (!watch) return;
-  stopRefreshing(watch);
-  watch.stopListening();
+export async function stopReattachWatch(): Promise<void> {
+  const current = watch;
+  if (!current) return;
   watch = null;
+  current.stopListening();
+  await current.worker?.stop();
 }

@@ -896,7 +896,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
   // its wake and the task's execution lock stay exactly as they were, queued
   // for the serving server.
   function confirmRunAdmissionStillOpen(claimedRun: unknown) {
-    if (claimedRun && isStartAdmissionClosed()) throw new RunAdmissionClosedDuringClaim();
+    if (claimedRun && isRunAdmissionClosed()) throw new RunAdmissionClosedDuringClaim();
   }
 
   /** System continuations that only make sense for an open task. */

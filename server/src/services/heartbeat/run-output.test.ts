@@ -102,7 +102,7 @@ describe("claiming the run log during a storage outage (storage chaos ST1)", () 
       const pending = (update as (t: unknown) => { set: (v: Partial<Run>) => unknown })(table);
       return { set: (values: Partial<Run>) => { writes.push(values); return pending.set(values); } };
     };
-    const appendRunEvent = vi.fn(async () => undefined);
+    const appendRunEvent = vi.fn(async (_run: unknown, _event: { payload?: { reason?: string } }) => undefined);
     const authority = vi.fn(async () => undefined);
     const seen: Array<{ writes: number; events: number; phase: string | undefined; message: string | undefined }> = [];
     let calls = 0;
@@ -396,6 +396,51 @@ describe("object-backed diagnostic recording", () => {
     expect(row.lastOutputSeq).toBe(110);
     expect(row.lastOutputBytes).toBe(10000);
     expect(writes.filter((write) => write.lastOutputSeq !== undefined)).toHaveLength(2);
+  });
+
+  it.each(["succeeds", "fails"] as const)("holds the log's finalization until a reattach's deferred re-verification %s", async (outcome) => {
+    const row = { ...newRunRow, runtimeMode: "native", logStore: "s3_segments", logRef: "company/agent/run", lastOutputSeq: 4 } as Run;
+    const db = createRunRowDb(row);
+    let releaseRead!: () => void;
+    const read = vi.fn(async () => {
+      await new Promise<void>(resolve => { releaseRead = resolve; });
+      if (outcome === "fails") throw new Error("object store read failed");
+      return { content: "", nextOffset: 0, eof: true };
+    });
+    const appendRunEvent = vi.fn(async (_run: unknown, _event: { payload?: { reason?: string } }) => undefined);
+    const output = createHeartbeatRunOutput(db, {
+      run: row, runId: row.id, issueId: null, secretKeys: new Set(),
+      identityRedactor: { chunk: (_stream, chunk) => chunk, redact: value => value },
+      runLogStore: {
+        begin: async () => ({ store: "s3_segments", logRef: "company/agent/run", initialBytes: 4_000_000, initialSequence: 4,
+          initialSourceCursor: 900 }),
+        append: async () => 0, enqueue: async () => ({ committed: Promise.resolve(0) }), flush: async () => undefined,
+        read: read as never,
+      },
+      appendRunEvent: appendRunEvent as never, getCurrentUserRedactionOptions: async () => ({ enabled: false }),
+      deferNativeLogRecovery: true,
+    });
+    await output.begin(row);
+    await vi.waitFor(() => expect(read).toHaveBeenCalled());
+    let settled = false;
+    const settling = output.settleDeferredLogRecovery().then(() => { settled = true; });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(settled).toBe(false);
+    releaseRead();
+    await settling;
+    expect(settled).toBe(true);
+    if (outcome === "fails") expect(appendRunEvent.mock.calls.some(([, event]) => event.payload?.reason === "object_log_persistence_failed")).toBe(true);
+  });
+
+  it("settles at once when no log re-verification was deferred", async () => {
+    const row = { ...newRunRow } as Run;
+    const output = createHeartbeatRunOutput(createRunRowDb(row), {
+      run: row, runId: row.id, issueId: null, secretKeys: new Set(),
+      identityRedactor: { chunk: (_stream, chunk) => chunk, redact: value => value },
+      runLogStore: { begin: async () => ({ store: "local_file", logRef: "run.ndjson" }), append: async () => 0 } as never,
+      appendRunEvent: vi.fn(async () => undefined) as never, getCurrentUserRedactionOptions: async () => ({ enabled: false }),
+    });
+    await expect(output.settleDeferredLogRecovery()).resolves.toBeUndefined();
   });
 
   it.each([false, true])("lets a reattach start before its existing log is re-verified (deferred %s)", async (deferNativeLogRecovery) => {
