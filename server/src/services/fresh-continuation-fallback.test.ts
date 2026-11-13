@@ -267,14 +267,17 @@ suite("fresh-continuation fallback", () => {
   // A gate after the hook must never consume the recovery: it stays pending
   // and is delivered once the gate clears.
   it("keeps the continuation pending while the agent's daily run limit declines it, then delivers it", async () => {
-    const f = await unfinishedRun({ runtime: "native", errorCode: "native_session_interrupted", hold: "settled_blocked" });
-    await db.update(agents).set({ runtimeConfig: { heartbeat: { maxConcurrentRuns: 1, maxDailyRuns: 1 } } }).where(eq(agents.id, agentId));
+    // The daily limit counts runs started in the current UTC day, and it reads
+    // the clock on every check. Freeze Date (timers stay real) so every check in
+    // this test sees the same day, even when UTC midnight passes mid-test.
+    const now = new Date();
+    vi.useFakeTimers({ toFake: ["Date"], now });
     try {
-      // The daily limit counts runs started in the current UTC day. Pin the
-      // runs to that window so the result does not depend on the hour: the
-      // source run started yesterday (as it does just after 00:00 UTC), and
+      const f = await unfinishedRun({ runtime: "native", errorCode: "native_session_interrupted", hold: "settled_blocked" });
+      await db.update(agents).set({ runtimeConfig: { heartbeat: { maxConcurrentRuns: 1, maxDailyRuns: 1 } } }).where(eq(agents.id, agentId));
+      // Pin the runs to that day so the result does not depend on the hour:
+      // the source run started yesterday (as it does just after 00:00 UTC), and
       // another run started today used the single run.
-      const now = new Date();
       const todayStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
       await db.update(heartbeatRuns).set({ startedAt: new Date(todayStart - 60_000), createdAt: new Date(todayStart - 120_000) })
         .where(eq(heartbeatRuns.id, f.runId));
@@ -291,6 +294,7 @@ suite("fresh-continuation fallback", () => {
       await deliver();
       expect(await successors(f.runId)).toHaveLength(1);
     } finally {
+      vi.useRealTimers();
       await db.update(agents).set({ runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } }).where(eq(agents.id, agentId));
     }
   }, 60_000);
