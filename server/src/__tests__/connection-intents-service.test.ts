@@ -212,7 +212,8 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     }).returning().then(rows => rows[0]!);
     const said: string[] = [];
     try {
-      for (const body of ["Read my Notion and tell me the latest on the launch.", "What is the easiest way to connect Notion here?"]) {
+      for (const body of ["Read my Notion and tell me the latest on the launch.", "What is the easiest way to connect Notion here?",
+        "Connect Slack, then read my Notion."]) {
         said.push((await say(body)).id);
         const result = await connectionIntentService(db).search(claims, "Notion");
         expect(result.results).toEqual([expect.objectContaining({ service: "notion", state: "available" })]);

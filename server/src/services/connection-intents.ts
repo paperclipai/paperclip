@@ -649,7 +649,7 @@ export function connectionIntentService(db: Db) {
       if (results.some(item => item.source === "aggregator")) return discoverySuggestions(results);
       // Only a single unconnected tool result can tell the agent to configure it.
       const setupRequested = !suggestions && results.length === 1
-        && await latestHumanMessageRequestsSetup(run.companyId, issue.id, run.responsibleUserId!);
+        && await latestHumanMessageRequestsSetup(run.companyId, issue.id, run.responsibleUserId!, results[0]!);
       return directSearchResult(query, results, company.prefix, suggestions, setupRequested);
     };
     const targetService = publicService?.slug ?? (indexedMatches.length === 1 ? indexedMatches[0]!.slug : normalizeConnectionQuery(serviceQuery).replaceAll(" ", "-"));
@@ -785,14 +785,23 @@ export function connectionIntentService(db: Db) {
   }
 
   /** Conservative: a false negative only shows the setup card instead of configuring. */
-  async function latestHumanMessageRequestsSetup(companyId: string, issueId: string, userId: string) {
+  async function latestHumanMessageRequestsSetup(companyId: string, issueId: string, userId: string, target: Pick<ConnectionSearchResultItem, "service" | "name">) {
     // Use a persisted human-authored message, never the agent-supplied query.
     const [message] = await db.select({ body: issueComments.body }).from(issueComments).where(and(
       eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId),
       eq(issueComments.authorUserId, userId), isNull(issueComments.authorAgentId),
       isNull(issueComments.createdByRunId), isNull(issueComments.derivedAuthorAgentId), isNull(issueComments.deletedAt),
     )).orderBy(desc(issueComments.createdAt), desc(issueComments.id)).limit(1);
-    return !!message && SETUP_REQUEST_PATTERN.test(message.body.trim());
+    if (!message) return false;
+    // The setup verb must govern this app: "Connect Slack, then read my Notion"
+    // asks to set up Slack, so a Notion result still gets the setup card.
+    const clause = message.body.trim().split(/[,.;:!?\n]|\s+(?:then|and|but)\s+/i)[0] ?? "";
+    if (!SETUP_REQUEST_PATTERN.test(clause)) return false;
+    const words = ` ${normalizeConnectionQuery(clause)} `;
+    return [target.name, target.service].some(name => {
+      const normalized = normalizeConnectionQuery(name);
+      return !!normalized && words.includes(` ${normalized} `);
+    });
   }
 
   async function providerSelections(companyId: string, issueId: string, agentId: string, userId: string, questionId: string) {
