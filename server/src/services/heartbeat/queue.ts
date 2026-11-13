@@ -2589,17 +2589,21 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           noteDeclinedAgedClaim(queuedRun, err.message);
           continue;
         }
-        if (claimed) {
-          claimedRuns.push(claimed);
-          dispatcher.claimed(queuedRun);
-          declinedAgedClaimAt.delete(queuedRun.id);
-        } else {
+        if (!claimed) {
           noteDeclinedAgedClaim(queuedRun, "claim_declined");
+          continue;
         }
+        claimedRuns.push(claimed);
+        dispatcher.claimed(queuedRun);
+        declinedAgedClaimAt.delete(queuedRun.id);
+        // Start each run as soon as it is claimed. The claim committed a legacy
+        // controller lease that only the run's own execution renews; waiting
+        // for the rest of a slow batch to be claimed let that lease lapse.
+        startClaimedRun(claimed);
       }
-      if (claimedRuns.length === 0) return [];
+      return claimedRuns;
 
-      for (const claimedRun of claimedRuns) {
+      function startClaimedRun(claimedRun: typeof heartbeatRuns.$inferSelect) {
         const execution = executeRun(claimedRun.id).catch((err) => {
           logger.error(
             { err, runId: claimedRun.id },
@@ -2617,7 +2621,6 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           activeRunExecutionPromises.delete(execution);
         });
       }
-      return claimedRuns;
     }).finally(async () => {
       // Dispatch promoted inputs after the agent start lock is released.
       try {
