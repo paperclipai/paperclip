@@ -136,7 +136,16 @@ export interface TracingSdkOptions {
   exporter?: SpanExporter;
   /** `/api/` requests recorded before the SDK loaded (`observeApiResources`). */
   apiResources?: ApiResourceCollector;
+  /** Overrides `EARLY_RESOURCE_GRACE_MS` (tests). */
+  earlyResourceGraceMs?: number;
 }
+
+/**
+ * After this long, a navigation whose history change preceded the SDK has
+ * long since committed, so early entries no open measurement claims are
+ * released even if the user never navigates again.
+ */
+export const EARLY_RESOURCE_GRACE_MS = 60_000;
 
 export function startTracingSdk(
   config: BrowserTracingConfig,
@@ -196,17 +205,25 @@ export function startTracingSdk(
   const liveFetchSince = performance.now();
   fetchInstrumentation.enable();
 
+  // Who may still claim the early Resource Timing entries: any measurement
+  // that started before `liveFetchSince` and has not ended, including one not
+  // yet begun (a navigation's start is its history change, which can precede
+  // the SDK while its route commits after it). Navigation starts only move
+  // forward, so once a measurement that started after `liveFetchSince` has
+  // begun, or the grace period has passed, no new claimant can appear; the
+  // entries are released when, in addition, no claimant is open.
   const apiResources = options.apiResources ?? null;
-  // attachSink replays every buffered measurement; all of them need the
-  // early entries, so they are kept until the replay is over.
-  let replaying = true;
-  const releaseApiResources = () => {
-    if (replaying) return;
-    // Once no measurement that started before the SDK is open, nothing else
-    // needs the early entries.
-    const open = recorder.open();
-    if (open === null || open.startTime >= liveFetchSince) apiResources?.stop();
+  const earlyOpen = new Set<number>();
+  let noNewEarlyClaimants = false;
+  const releaseIfUnclaimed = () => {
+    if (apiResources && noNewEarlyClaimants && earlyOpen.size === 0) apiResources.stop();
   };
+  const graceTimer = apiResources
+    ? window.setTimeout(() => {
+      noNewEarlyClaimants = true;
+      releaseIfUnclaimed();
+    }, options.earlyResourceGraceMs ?? EARLY_RESOURCE_GRACE_MS)
+    : undefined;
 
   recorder.attachSink({
     begin(measurement) {
@@ -220,6 +237,12 @@ export function startTracingSdk(
       });
       pageSpans.set(measurement.id, span);
       if (measurement.endTime === null) openPageSpan = span;
+      if (measurement.startTime < liveFetchSince) {
+        earlyOpen.add(measurement.id);
+      } else {
+        noNewEarlyClaimants = true;
+        releaseIfUnclaimed();
+      }
     },
     end(measurement) {
       const span = pageSpans.get(measurement.id);
@@ -230,13 +253,12 @@ export function startTracingSdk(
       if (measurement.loadType === "hard") span.setAttributes(navigationTimingAttributes());
       if (apiResources && measurement.startTime < liveFetchSince) {
         backfillApiSpans(tracer, span, measurement, apiResources.entries(), liveFetchSince);
-        releaseApiResources();
       }
       span.end(measurement.endTime ?? performance.now());
+      earlyOpen.delete(measurement.id);
+      releaseIfUnclaimed();
     },
   });
-  replaying = false;
-  releaseApiResources();
 
   const reportVital = (metric: Metric) => {
     if (stopped) return;
@@ -269,6 +291,7 @@ export function startTracingSdk(
       pageSpans.clear();
       openPageSpan = null;
       fetchInstrumentation.disable();
+      window.clearTimeout(graceTimer);
       apiResources?.stop();
       await provider.shutdown().catch(() => undefined);
       trace.disable();

@@ -86,7 +86,11 @@ request returns). After that, the observer receives every entry even when the
 browser's resource buffer (250 entries by default) is full; only entries that
 overflowed that buffer before tracing started are missed. When the SDK loads it turns
 those entries into child spans of the `page.load` they belong to (see
-[Backfilled API spans](#backfilled-api-spans)) and the observer stops.
+[Backfilled API spans](#backfilled-api-spans)). The observer stops and the
+entries are dropped once no navigation that started before the SDK loaded can
+still claim them: every such navigation has ended, and either a navigation
+that started after the SDK loaded has begun or 60 seconds have passed (a
+navigation whose history change came before the SDK can commit after it).
 Measurements taken before the SDK loads are buffered and exported when it
 arrives.
 

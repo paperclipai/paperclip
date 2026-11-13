@@ -160,6 +160,7 @@ describe("hard-load API spans from Resource Timing", () => {
     handle = startTracingSdk(config, recorder, {
       exporter,
       apiResources: { entries: () => entries, stop: () => { stopped = true; } },
+      earlyResourceGraceMs: 0,
     });
     await handle.forceFlush();
 
@@ -182,6 +183,7 @@ describe("hard-load API spans from Resource Timing", () => {
       { "paperclip.api.area": "companies", "paperclip.api.timing_source": "resource_timing", "http.response.status_code": 404, "paperclip.page.route": "/:companyPrefix/issues", SampleRate: 4 },
       { "paperclip.api.area": "issues", "paperclip.api.timing_source": "resource_timing", "paperclip.page.route": "/:companyPrefix/issues", SampleRate: 4 },
     ]);
+    await new Promise((resolve) => setTimeout(resolve, 10));
     expect(stopped).toBe(true);
   });
 
@@ -213,7 +215,55 @@ describe("hard-load API spans from Resource Timing", () => {
     };
     expect(childrenOf("/:companyPrefix/dashboard")).toEqual(["companies"]);
     expect(childrenOf("/:companyPrefix/issues")).toEqual(["issues"]);
-    expect(entries).toEqual([]);
+  });
+
+  it("keeps early entries for a navigation that started before the SDK loaded but commits after it", async () => {
+    const recorder = idleRecorder();
+    const flush = (recorder as PageLoadRecorder & { flushFrames(): void }).flushFrames;
+    recorder.begin({ routeTemplate: "/:companyPrefix/dashboard", loadType: "hard", startTime: 0 });
+    flush();
+    // The user clicks (history change) just before the SDK finishes loading;
+    // the route commits after it.
+    const historyChange = performance.now();
+    let entries: PerformanceResourceTiming[] = [
+      resource(`${origin()}/api/companies`, 0.5, 1, { responseStatus: 200 }),
+      resource(`${origin()}/api/issues`, historyChange, historyChange + 5, { responseStatus: 200 }),
+    ];
+    let stopped = false;
+    handle = startTracingSdk(config, recorder, {
+      exporter,
+      apiResources: { entries: () => entries, stop: () => { stopped = true; entries = []; } },
+    });
+    expect(stopped).toBe(false);
+    recorder.begin({ routeTemplate: "/:companyPrefix/issues", loadType: "client", startTime: historyChange });
+    flush();
+    await handle.forceFlush();
+
+    const spans = exporter.getFinishedSpans();
+    const childrenOf = (route: string) => {
+      const page = spans.find((span) => span.name === "page.load" && span.attributes["paperclip.page.route"] === route)!;
+      return spans.filter((span) => span.parentSpanContext?.spanId === page.spanContext().spanId).map((span) => span.attributes["paperclip.api.area"]);
+    };
+    expect(childrenOf("/:companyPrefix/dashboard")).toEqual(["companies"]);
+    expect(childrenOf("/:companyPrefix/issues")).toEqual(["issues"]);
+    // Released once a navigation that started after the SDK loaded begins.
+    recorder.begin({ routeTemplate: "/:companyPrefix/agents", loadType: "client", startTime: performance.now() + 1 });
+    expect(stopped).toBe(true);
+  });
+
+  it("releases early entries after the grace period when no later navigation happens", async () => {
+    const recorder = idleRecorder();
+    recorder.begin({ routeTemplate: "/", loadType: "hard", startTime: 0 });
+    (recorder as PageLoadRecorder & { flushFrames(): void }).flushFrames();
+    let stopped = false;
+    handle = startTracingSdk(config, recorder, {
+      exporter,
+      apiResources: { entries: () => [], stop: () => { stopped = true; } },
+      earlyResourceGraceMs: 0,
+    });
+    expect(stopped).toBe(false);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(stopped).toBe(true);
   });
 
   it("does not backfill requests that the live fetch instrumentation already traces", async () => {
