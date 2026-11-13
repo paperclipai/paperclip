@@ -135,4 +135,19 @@ describe("Claude provider-started turns", () => {
       expect(() => parseAcpxProviderTurnArming(params)).toThrow("bounded contract");
     }
   });
+
+  it("keeps the next cycle's first messages when they arrive before the previous cycle has drained", async () => {
+    const { turns, adopted } = harness();
+    turns.observe("inbound", toolCall("toolu_1"));
+    turns.observe("inbound", endMarker());
+    expect(turns.observe("inbound", update({ sessionUpdate: "usage_update", used: 4, size: 100 }))).toBe(true);
+    expect(turns.observe("inbound", toolCall("toolu_2"))).toBe(true);
+    expect(await adopted[0]!.done).toMatchObject({ status: "completed" });
+    expect(adopted[0]!.events.map(event => (event as { toolCallId?: unknown }).toolCallId).filter(Boolean)).toEqual(["toolu_1"]);
+    await vi.waitFor(() => expect(adopted).toHaveLength(2));
+    turns.observe("inbound", endMarker());
+    expect(await adopted[1]!.done).toMatchObject({ status: "completed" });
+    expect(adopted[1]!.events.map(event => [event.type, (event as { tag?: unknown }).tag])).toEqual([
+      ["status", "usage_update"], ["tool_call", "tool_call"], ["status", "usage_update"]]);
+  });
 });

@@ -10,6 +10,7 @@ export const CLAUDE_PROVIDER_TURN_SILENT = "ACPX_PROVIDER_TURN_SILENT";
 
 const START_KINDS = new Set(["usage_update", "tool_call", "tool_call_update", "agent_message_chunk", "agent_thought_chunk", "plan"]);
 const MAX_PENDING_REQUESTS = 256;
+const MAX_DRAIN_BACKLOG = 4_096;
 
 export type ClaudeProviderTurnResult =
   | { status: "completed"; stopReason: "end_turn"; usage: Record<string, unknown> | null }
@@ -33,6 +34,7 @@ export interface ClaudeProviderTurnHooks {
   admit(turn: ClaudeProviderTurn, fail: (code: string, message: string) => void): ClaudeProviderTurnAdmission | null;
   silenceMs?: number;
   mintTurnId?: () => string;
+  unadopted?: () => void;
 }
 
 const ARMING_TURN_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/;
@@ -163,6 +165,8 @@ export class ClaudeProviderTurns {
   readonly #hooks: ClaudeProviderTurnHooks;
   readonly #pending = new Set<string | number>();
   #active: ActiveProviderTurn | null = null;
+  #draining: ActiveProviderTurn | null = null;
+  readonly #backlog: unknown[] = [];
   #retired = false;
   #timer: NodeJS.Timeout | null = null;
 
@@ -179,7 +183,7 @@ export class ClaudeProviderTurns {
   }
 
   observe(direction: "inbound" | "outbound", message: unknown): boolean {
-    if (this.#retired && this.#active === null) return false;
+    if (this.#retired && this.#active === null && this.#draining === null) return false;
     const envelope = record(message);
     const id = envelope.id;
     const hasId = typeof id === "string" || typeof id === "number";
@@ -204,6 +208,14 @@ export class ClaudeProviderTurns {
     }
     if (envelope.method !== "session/update" || !ownSession) return false;
     const update = record(params.update);
+    if (this.#draining && !this.#active) {
+      if (this.#backlog.length >= MAX_DRAIN_BACKLOG) {
+        this.retire();
+        return false;
+      }
+      this.#backlog.push(message);
+      return true;
+    }
     let active = this.#active;
     if (!active) {
       if (this.#retired || this.#pending.size > 0 || this.#hooks.promptActive()) return false;
@@ -214,7 +226,10 @@ export class ClaudeProviderTurns {
     this.#touch();
     active.accept(message);
     if (claudeProviderTurnEndMarker(update)) {
-      active.finishAfterQueued({ status: "completed", stopReason: "end_turn", usage: cycleUsage(update) }, () => this.#clear(active!));
+      const ending = active;
+      this.#clear(ending);
+      this.#draining = ending;
+      ending.finishAfterQueued({ status: "completed", stopReason: "end_turn", usage: cycleUsage(update) }, () => this.#drained(ending));
     }
     return true;
   }
@@ -272,6 +287,14 @@ export class ClaudeProviderTurns {
     };
     this.#timer = setTimeout(check, silenceMs);
     this.#timer.unref?.();
+  }
+
+  #drained(turn: ActiveProviderTurn): void {
+    if (this.#draining !== turn) return;
+    this.#draining = null;
+    for (const message of this.#backlog.splice(0)) {
+      if (!this.observe("inbound", message)) this.#hooks.unadopted?.();
+    }
   }
 
   #clear(turn: ActiveProviderTurn): void {
