@@ -57,7 +57,8 @@ import { hasChatRunOwnedProviderInteraction } from "../chat-interaction-arbitrat
 import { conversationTurnPresentsAnswer } from "../native-runtime/native-governance.js";
 import { readAcceptedTaskContinuationSummary } from "../heartbeat-run-summary.js";
 import { SANDBOX_PROVIDER_PLUGIN_NOT_READY_REASON } from "../recovery/stranded-notice.js";
-import { MAX_TURN_CONTINUATION_RETRY_REASON, isResolvedInteractionContinuationWakeContext } from "../../modules/run-dispatch/index.js";
+import { MAX_TURN_CONTINUATION_RETRY_REASON, allowsIssueInteractionWake, isResolvedInteractionContinuationWakeContext } from "../../modules/run-dispatch/index.js";
+import { ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS } from "../issue-tree-control.js";
 import { redactCurrentUserText } from "../../log-redaction.js";
 import type { createHeartbeatLifecycle } from "./run-lifecycle.js";
 import type { createHeartbeatRunPreparation } from "./run-preparation.js";
@@ -1213,7 +1214,10 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     try {
       // Recorded only once the workspace is settled: it makes the run eligible for retry.
       if (!readPredecessorRetirementFallback(run.resultJson)) {
-        const record = { [PREDECESSOR_RETIREMENT_FALLBACK_KEY]: fallback, executionRecovery: { kind: "bootstrap", providerWorkStarted: false } };
+        const [task] = run.issueId ? await db.select({ status: issues.status }).from(issues)
+          .where(and(eq(issues.companyId, run.companyId), eq(issues.id, run.issueId))) : [];
+        const record = { [PREDECESSOR_RETIREMENT_FALLBACK_KEY]: { ...fallback, ...(task ? { issueStatusAtFailure: task.status } : {}) },
+          executionRecovery: { kind: "bootstrap", providerWorkStarted: false } };
         await db.update(heartbeatRuns).set({ resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify(record)}::jsonb` })
           .where(and(eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "failed")));
         run = { ...run, resultJson: { ...parseObject(run.resultJson), ...record } };
@@ -1229,6 +1233,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     // An answered interaction keeps its own wake, so the retry still carries
     // the answer as a resolved-interaction continuation, in the uncharged lane.
     const wakeReason = isResolvedInteractionContinuationWakeContext(run.contextSnapshot)
+      || allowsIssueInteractionWake(parseObject(run.contextSnapshot), ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS)
       ? readNonEmptyString(parseObject(run.contextSnapshot).wakeReason) : null;
     return scheduleBoundedRetryForRun(run, agent, { retryReason: INTERRUPTED_PREPARATION_RETRY_REASON,
       ...(wakeReason ? { wakeReason } : {}) }).catch((retryError) => {
