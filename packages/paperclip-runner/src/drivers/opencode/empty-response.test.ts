@@ -15,9 +15,6 @@ it.each(["reply", "reply-no-finish", "reply-tool-finish", "two-turn-idle", "slow
   // through OpenRouter): the step's reasoning, then the same text again as an
   // ordinary text part, and no completion call.
   const recordedReasoning = "Task created and already executing (status in_progress, run dafb...). Good. Reply with link. Use finish. Keep concise.\n\nCompletion contract revision 1, criterion \"objective\". I should call paperclip_finish with done. Include evidence refs maybe task link. Let's do.";
-  // Recorded from chat-eval cohort 11 (workspaces.locate-files, DeepSeek v4.1
-  // flash through OpenRouter): the completion call came back as DSML markup in
-  // assistant text rather than as a tool call.
   const recordedMarkup = "\n\n<｜DSML｜ calls>\n<｜DSML｜ invoke name=\"paperclip_paperclip_finish\">\n<｜DSML｜ parameter name=\"reportedWorkDisposition\" string=\"true\">done</｜DSML｜ parameter>\n<｜DSML｜ parameter name=\"summary\" string=\"true\">Created `website-fixture.txt` in the task workspace.</｜DSML｜ parameter>\n</｜DSML｜ invoke>\n</｜DSML｜ calls>";
   let toolTimer: ReturnType<typeof setTimeout> | undefined;
   let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
@@ -156,8 +153,6 @@ it.each(["reply", "reply-no-finish", "reply-tool-finish", "two-turn-idle", "slow
       expect(events.some(event => event.eventType === "harness.diagnostic" && event.payload.code === "opencode_reasoning_echo_discarded")).toBe(true);
     }
     if (mode === "tool-call-markup") {
-      // The unexecuted call never reaches the person, as progress or as the
-      // reply, and the correction says why the tool did not run.
       const assistantText = events.filter(event => event.payload.kind === "agentMessage").map(event => String(event.payload.text ?? ""));
       expect(assistantText.join("")).not.toContain("DSML");
       expect(assistantText.join("")).not.toContain("<｜");

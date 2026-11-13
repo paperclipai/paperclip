@@ -568,7 +568,6 @@ class OpenCodeHarnessSession implements HarnessSession {
   #semanticResultTextBoundary: number | null = null;
   #semanticResultProviderMessageId: string | null = null;
   #lastNonTerminalToolSourceSeq = 0;
-  /** Source sequence of the latest text part that held an unexecuted tool call written as text. */
   #lastToolCallMarkupSourceSeq = 0;
   #usage: Record<string, unknown> | null = null;
   #upstreamServed: UpstreamServed | null = null;
@@ -2185,11 +2184,6 @@ class OpenCodeHarnessSession implements HarnessSession {
     // the start of a completed reasoning part, and release it once it differs.
     if (partType === "reasoning" && content.trim()) this.#reasoningTexts.set(partId, content.trim());
     const reasoningEcho = partType === "text" && this.#echoesReasoning(content, completed);
-    // Some providers return a tool call as raw tool-call syntax inside the
-    // text (DeepSeek DSML through some OpenRouter hosts). That call never ran
-    // and the syntax is not prose, so it never streams as progress and never
-    // becomes the reply. While the part streams, a trailing fragment that
-    // could still become such syntax is held until a later update decides it.
     const markupStart = partType === "text" && completed ? toolCallMarkupStart(content) : -1;
     const visible = partType !== "text"
       ? content
@@ -2302,8 +2296,6 @@ class OpenCodeHarnessSession implements HarnessSession {
         return;
       }
       if (markupStart >= 0) {
-        // The empty-response correction then tells the model its call did
-        // not run and asks it to call the tool properly, once.
         this.#lastToolCallMarkupSourceSeq = this.#sourceSequence;
         this.#emit(
           "harness.diagnostic",
