@@ -12034,6 +12034,7 @@ export function issueService(db: Db) {
             issueData.executionWorkspacePreference !== undefined || issueData.executionWorkspaceSettings !== undefined) {
           Object.assign(patch, await executionWorkspaceService(db).prepareTaskWorkspaceUpdate({
             companyId: receiptExisting.companyId, issueId: receiptExisting.id, patch,
+            ...(actorRunId && actorRunStopId ? { stoppedRun: { runId: actorRunId, stopId: actorRunStopId } } : {}),
           }, tx));
         }
         if (expectedExecutionPolicy !== undefined && !isDeepStrictEqual(
