@@ -9,8 +9,6 @@ import { closeIdleWarmNativeSessionsForRestart } from "../services/native-runtim
 import { nativeRestartFixture, waitForCondition } from "./helpers/native-restart-fixture.js";
 import { getRecoveryPostgresSupport } from "./helpers/recovery-postgres-fixture.js";
 
-// Budget admission is the last locked read before the dispatch gate enters the
-// native executor. An operator Stop can be recorded on the run row before it.
 const admission = vi.hoisted(() => ({ beforeReserve: undefined as ((runId: string) => Promise<void>) | undefined }));
 vi.mock("../services/budget-reservations.js", async importOriginal => {
   const actual = await importOriginal<typeof import("../services/budget-reservations.js")>();
@@ -25,7 +23,6 @@ vi.mock("../services/budget-reservations.js", async importOriginal => {
 
 const support = await getRecoveryPostgresSupport({});
 
-// A stopped run must never open a provider session.
 function nativeBackend(db: ReturnType<typeof createDb>, opened: string[]):
   NonNullable<HeartbeatServiceOptions["nativeSessionBackendFactory"]> {
   const capabilities = { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true };
@@ -84,8 +81,6 @@ describe.skipIf(!support.supported)("heartbeat native Stop before budget admissi
     expect(stopped).toMatchObject({ status: "cancelled", errorCode: "cancelled", error: reason });
     expect(stopped?.resultJson ?? {}).not.toHaveProperty("nativePreDispatchFailure");
     expect(opened).toEqual([]);
-    // A Stop is not an interrupted preparation: nothing retries the work, and
-    // any task hold records the Stop rather than an adapter failure.
     expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId),
       eq(heartbeatRuns.retryOfRunId, runId)))).toHaveLength(0);
     for (const action of await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId)))
@@ -98,9 +93,6 @@ describe.skipIf(!support.supported)("heartbeat native Stop before budget admissi
     const opened: string[] = [];
     const heartbeat = heartbeatService(db, { nativeSessionBackendFactory: nativeBackend(db, opened) });
     try {
-      // Staging: the operator's Stop was durably recorded while native
-      // preparation ran, and its settlement was still pending when admission
-      // read the locked run row. Persist the same Stop fields here.
       admission.beforeReserve = async runId => {
         admission.beforeReserve = undefined;
         const recordedAt = new Date().toISOString();
@@ -124,8 +116,6 @@ describe.skipIf(!support.supported)("heartbeat native Stop before budget admissi
       };
       const { issueId, runId } = await startTask(db, heartbeat);
       const stopped = await expectSettledAsStop(db, runId, issueId, opened, "Recovered durable native run cancellation");
-      // The recorded Stop is acknowledged, so restart recovery has no pending
-      // Stop to reattach to a remote session that never existed.
       expect(stopped.resultJson?.nativeCancellation).toMatchObject({ dispatchState: "acknowledged", dispatched: false });
     } finally {
       admission.beforeReserve = undefined;
