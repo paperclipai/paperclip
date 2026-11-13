@@ -3,6 +3,7 @@ import path from "node:path";
 import type { ServerProcessWindow } from "./multi-server.js";
 import { unshiftJson, unshiftMs, type AgingShift } from "./time-faults.js";
 import { ISSUE_STATUSES } from "../../packages/shared/src/constants.js";
+import type { CompletionEvidence } from "./staging-mix.js";
 import { createDb, type Db } from "../../packages/db/src/index.js";
 
 type Row = Record<string, unknown>;
@@ -58,6 +59,7 @@ export interface WakeEvidenceInput {
   statusChanges: readonly Row[];
   controllers: readonly ControllerRow[];
   windows: readonly ServerProcessWindow[];
+  issues?: readonly Row[];
 }
 
 export function wakeEvidenceForIssue(issueId: string, input: WakeEvidenceInput) {
@@ -68,11 +70,12 @@ export function wakeEvidenceForIssue(issueId: string, input: WakeEvidenceInput) 
   const controllerByBoot = new Map(controllers.map(controller => [controller.bootId, controller]));
   return {
     issueId,
+    completedAt: ms(input.issues?.find(issue => issue.id === issueId)?.completedAt),
     runs: runs.map(run => {
       const owner = controllerByBoot.get(String(run.controllerBootId ?? ""));
       return { runId: text(run.id), status: text(run.status), invocationSource: text(run.invocationSource), triggerDetail: text(run.triggerDetail),
         wakeupRequestId: text(run.wakeupRequestId), createdAt: ms(run.createdAt), startedAt: ms(run.startedAt), finishedAt: ms(run.finishedAt),
-        contextSnapshot: run.contextSnapshot ?? null,
+        acceptedDisposition: text(run.acceptedDisposition), acceptedAt: ms(run.acceptedAt), contextSnapshot: run.contextSnapshot ?? null,
         owner: owner ? { pid: owner.pid, bootId: owner.bootId, epoch: owner.epoch, processSpace: owner.processSpace } : null,
         servingAtCreate: servingAt(ms(run.createdAt), controllers, input.windows) };
     }),
@@ -89,11 +92,18 @@ export function wakeEvidenceForIssue(issueId: string, input: WakeEvidenceInput) 
 async function readRows(db: Pick<Db, "$client">, companyId: string, shifts: readonly AgingShift[]): Promise<Omit<WakeEvidenceInput, "windows">> {
   const client = db.$client;
   const runs = await client.unsafe(
-    `select id::text as id, issue_id::text as "issueId", status, invocation_source as "invocationSource", trigger_detail as "triggerDetail",
-            wakeup_request_id::text as "wakeupRequestId", context_snapshot as "contextSnapshot", controller_boot_id::text as "controllerBootId",
-            floor(extract(epoch from created_at) * 1000) as "createdAt", floor(extract(epoch from started_at) * 1000) as "startedAt",
-            floor(extract(epoch from finished_at) * 1000) as "finishedAt"
-       from heartbeat_runs where company_id::text = $1 order by created_at`, [companyId]) as Row[];
+    `select r.id::text as id, r.issue_id::text as "issueId", r.status, r.invocation_source as "invocationSource", r.trigger_detail as "triggerDetail",
+            r.wakeup_request_id::text as "wakeupRequestId", r.context_snapshot as "contextSnapshot", r.controller_boot_id::text as "controllerBootId",
+            floor(extract(epoch from r.created_at) * 1000) as "createdAt", floor(extract(epoch from r.started_at) * 1000) as "startedAt",
+            floor(extract(epoch from r.finished_at) * 1000) as "finishedAt", accepted.disposition as "acceptedDisposition",
+            floor(extract(epoch from accepted.accepted_at) * 1000) as "acceptedAt"
+       from heartbeat_runs r
+       left join lateral (select coalesce(e.payload->'prpEvent'->'payload'->'result'->>'reportedWorkDisposition', e.payload->'result'->>'reportedWorkDisposition') as disposition, e.created_at as accepted_at
+                            from heartbeat_run_events e where e.run_id = r.id and e.event_type = 'run.result.accepted'
+                           order by e.seq desc limit 1) accepted on true
+      where r.company_id::text = $1 order by r.created_at`, [companyId]) as Row[];
+  const issues = await client.unsafe(
+    `select id::text as id, floor(extract(epoch from completed_at) * 1000) as "completedAt" from issues where company_id::text = $1`, [companyId]) as Row[];
   const wakes = await client.unsafe(
     `select id::text as id, payload->>'issueId' as "issueId", source, trigger_detail as "triggerDetail", reason, payload, status,
             requested_by_actor_type as "requestedByActorType", requested_by_actor_id as "requestedByActorId", idempotency_key as "idempotencyKey",
@@ -113,7 +123,8 @@ async function readRows(db: Pick<Db, "$client">, companyId: string, shifts: read
     .map(row => ({ bootId: String(row.bootId), epoch: Number(row.epoch), processSpace: String(row.processSpace), pid: Number(row.pid),
       startedAt: Number(row.startedAt), endedAt: ms(row.endedAt) }));
   return {
-    runs: unshiftRows(runs, ["createdAt", "startedAt", "finishedAt"], ["contextSnapshot"], shifts),
+    runs: unshiftRows(runs, ["createdAt", "startedAt", "finishedAt", "acceptedAt"], ["contextSnapshot"], shifts),
+    issues: unshiftRows(issues, ["completedAt"], [], shifts),
     wakes: unshiftRows(wakes, ["createdAt", "requestedAt", "claimedAt", "finishedAt"], ["payload"], shifts),
     statusChanges: unshiftRows(statusChanges, ["createdAt"], [], shifts),
     controllers: controllers.map(controller => ({ ...controller, startedAt: unshiftMs(controller.startedAt, shifts),
@@ -122,10 +133,10 @@ async function readRows(db: Pick<Db, "$client">, companyId: string, shifts: read
 }
 
 export async function captureWakeEvidence(input: { db: Pick<Db, "$client">; companyId: string; waveDir: string;
-  observers: ReadonlyArray<{ plan: { taskId: string }; record: { issueId: string | null } }> | null; windows: readonly ServerProcessWindow[];
+  observers: ReadonlyArray<EvidenceObserver> | null; windows: readonly ServerProcessWindow[];
   shifts?: readonly AgingShift[]; redact: (text: string) => string }): Promise<number> {
   const rows = await readRows(input.db, input.companyId, input.shifts ?? []);
-  const observers = input.observers ?? [...new Set(rows.runs.map(run => text(run.issueId)).filter((id): id is string => id !== null))]
+  const observers: readonly EvidenceObserver[] = input.observers ?? [...new Set(rows.runs.map(run => text(run.issueId)).filter((id): id is string => id !== null))]
     .map(issueId => ({ plan: { taskId: `issue-${issueId}` }, record: { issueId } }));
   const directory = path.join(input.waveDir, "wake-evidence");
   await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -134,6 +145,7 @@ export async function captureWakeEvidence(input: { db: Pick<Db, "$client">; comp
     if (!observer.record.issueId) continue;
     const evidence = { schema: "paperclip.restart-chaos.wake-evidence/v1", taskId: observer.plan.taskId,
       ...wakeEvidenceForIssue(observer.record.issueId, { ...rows, windows: input.windows }) };
+    if (observer.plan.stagingMix) (observer.record.stagingMix ??= {}).completion = completionEvidence(evidence);
     await writeFile(path.join(directory, `${observer.plan.taskId}.json`), input.redact(`${JSON.stringify(evidence, null, 2)}\n`), { mode: 0o600 });
     written += 1;
   }
@@ -141,8 +153,18 @@ export async function captureWakeEvidence(input: { db: Pick<Db, "$client">; comp
   return written;
 }
 
+export interface EvidenceObserver {
+  plan: { taskId: string; stagingMix?: unknown };
+  record: { issueId: string | null; stagingMix?: { completion?: CompletionEvidence } };
+}
+
+export function completionEvidence(evidence: ReturnType<typeof wakeEvidenceForIssue>): CompletionEvidence {
+  return { completedAt: evidence.completedAt, runs: evidence.runs.map(run => ({ runId: run.runId, startedAt: run.startedAt,
+    acceptedDisposition: run.acceptedDisposition, acceptedAt: run.acceptedAt })) };
+}
+
 export function wakeEvidenceOnce(input: { databaseUrl: () => string; companyId: string; waveDir: string;
-  observers: () => ReadonlyArray<{ plan: { taskId: string }; record: { issueId: string | null } }>; windows: readonly ServerProcessWindow[];
+  observers: () => ReadonlyArray<EvidenceObserver>; windows: readonly ServerProcessWindow[];
   shifts: readonly AgingShift[]; redact: (text: string) => string; note: (kind: string, data: Record<string, unknown>) => void;
   open?: (url: string) => Pick<Db, "$client"> }): () => Promise<void> {
   let done: Promise<void> | null = null;

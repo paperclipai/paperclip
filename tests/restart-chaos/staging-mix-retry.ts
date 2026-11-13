@@ -2,7 +2,9 @@ import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { ChaosApi } from "./api.js";
-import { bannerShownMs, DUPLICATE_CHECKS, isDoneComment, noteRetryBanner } from "./staging-mix.js";
+import {
+  bannerShownMs, completedAtAnchor, doneCommentsBeforeCompletion, DUPLICATE_CHECKS, firstDoneCommentAt, noteRetryBanner, type CompletionEvidence,
+} from "./staging-mix.js";
 import type { InterruptionSample, OracleResult, TaskPlan, TaskRecord, TaskSample } from "./types.js";
 
 type Json = Record<string, any>;
@@ -175,6 +177,9 @@ export interface ExtraTurn {
   runId: string | null;
   createdAt: number | null;
   startedAt: number | null;
+  completedAt: number | null;
+  completedAtSource: string | null;
+  doneCommentAt: number | null;
   invocationSource: string | null;
   wakeReason: string | null;
   wakeSource: string | null;
@@ -183,19 +188,39 @@ export interface ExtraTurn {
   actorId: string | null;
 }
 
-interface WakeEvidenceFile {
-  runs?: Array<{ runId: string | null; createdAt: number | null; startedAt?: number | null; invocationSource: string | null; triggerDetail: string | null; wakeupRequestId: string | null }>;
+export interface WakeEvidenceFile {
+  completedAt?: number | null;
+  runs?: Array<{ runId: string | null; createdAt: number | null; startedAt?: number | null; invocationSource: string | null; triggerDetail: string | null;
+    wakeupRequestId: string | null; acceptedDisposition?: string | null; acceptedAt?: number | null }>;
   wakes?: Array<{ id: string | null; reason: string | null; source: string | null; triggerDetail: string | null; requestedByActorType: string | null; requestedByActorId: string | null }>;
 }
 
-export function runsAfterDone(taskId: string, evidence: WakeEvidenceFile | null, doneAt: number | null): { started: ExtraTurn[]; neverStarted: ExtraTurn[] } {
+export type CommentRow = { body?: unknown; authorAgentId?: unknown; createdByRunId?: unknown; createdAt?: unknown };
+
+export function commentEvidence(rows: readonly CommentRow[] | null): Array<{ body: string; runId: string | null; createdAt: number | null }> {
+  return (rows ?? []).filter(row => row.authorAgentId).map(row => {
+    const at = typeof row.createdAt === "string" ? Date.parse(row.createdAt) : NaN;
+    return { body: String(row.body ?? ""), runId: typeof row.createdByRunId === "string" ? row.createdByRunId : null, createdAt: Number.isFinite(at) ? at : null };
+  });
+}
+
+export function evidenceCompletion(evidence: WakeEvidenceFile | null, issueCompletedAt?: unknown): CompletionEvidence | null {
+  const fromIssue = typeof issueCompletedAt === "string" && Number.isFinite(Date.parse(issueCompletedAt)) ? Date.parse(issueCompletedAt) : null;
+  if (!evidence && fromIssue === null) return null;
+  return { completedAt: evidence?.completedAt ?? fromIssue, runs: (evidence?.runs ?? []).map(run => ({ runId: run.runId, startedAt: run.startedAt ?? null,
+    acceptedDisposition: run.acceptedDisposition ?? null, acceptedAt: run.acceptedAt ?? null })) };
+}
+
+export function runsAfterDone(taskId: string, evidence: WakeEvidenceFile | null, anchor: { at: number | null; source: string | null }, doneCommentAt: number | null = null):
+  { started: ExtraTurn[]; neverStarted: ExtraTurn[] } {
+  const doneAt = anchor.at;
   if (!evidence || doneAt === null) return { started: [], neverStarted: [] };
   const wakes = new Map((evidence.wakes ?? []).map(wake => [wake.id, wake]));
   const turn = (run: NonNullable<WakeEvidenceFile["runs"]>[number]): ExtraTurn => {
     const wake = run.wakeupRequestId ? wakes.get(run.wakeupRequestId) : undefined;
-    return { taskId, runId: run.runId, createdAt: run.createdAt, startedAt: run.startedAt ?? null, invocationSource: run.invocationSource, wakeReason: wake?.reason ?? null,
-      wakeSource: wake?.source ?? null, triggerDetail: wake?.triggerDetail ?? run.triggerDetail, actorType: wake?.requestedByActorType ?? null,
-      actorId: wake?.requestedByActorId ?? null };
+    return { taskId, runId: run.runId, createdAt: run.createdAt, startedAt: run.startedAt ?? null, completedAt: doneAt, completedAtSource: anchor.source, doneCommentAt,
+      invocationSource: run.invocationSource, wakeReason: wake?.reason ?? null, wakeSource: wake?.source ?? null, triggerDetail: wake?.triggerDetail ?? run.triggerDetail,
+      actorType: wake?.requestedByActorType ?? null, actorId: wake?.requestedByActorId ?? null };
   };
   const runs = evidence.runs ?? [];
   return {
@@ -204,20 +229,22 @@ export function runsAfterDone(taskId: string, evidence: WakeEvidenceFile | null,
   };
 }
 
-export function firstDoneAt(comments: ReadonlyArray<{ body?: unknown; authorAgentId?: unknown; createdAt?: unknown }> | null, nonce: string, completedAt: unknown): number | null {
-  const times = (comments ?? []).filter(comment => comment.authorAgentId && isDoneComment(String(comment.body ?? ""), nonce))
-    .map(comment => Date.parse(String(comment.createdAt))).filter(Number.isFinite);
-  if (times.length) return Math.min(...times);
-  const completed = typeof completedAt === "string" ? Date.parse(completedAt) : NaN;
-  return Number.isFinite(completed) ? completed : null;
-}
+const iso = (at: number | null) => at === null ? "?" : new Date(at).toISOString();
 
 export function extraTurnLine(turn: ExtraTurn): string {
-  const when = turn.startedAt !== null ? `started ${new Date(turn.startedAt).toISOString()} after DONE`
-    : `queued after DONE at ${turn.createdAt === null ? "?" : new Date(turn.createdAt).toISOString()}, never started`;
+  const reference = `completion ${iso(turn.completedAt)}${turn.completedAtSource && turn.completedAtSource !== "accepted_result" ? ` (${turn.completedAtSource})` : ""}`
+    + `${turn.doneCommentAt !== null && turn.doneCommentAt !== turn.completedAt ? `, DONE comment ${iso(turn.doneCommentAt)}` : ""}`;
+  const when = turn.startedAt !== null ? `started ${iso(turn.startedAt)} after ${reference}`
+    : `queued ${iso(turn.createdAt)} after ${reference}, never started`;
   return `- ${turn.taskId}: run ${turn.runId?.slice(0, 8) ?? "?"} ${when}; `
     + `wake ${turn.wakeReason ?? "unknown"} (${turn.wakeSource ?? turn.invocationSource ?? "?"}${turn.triggerDetail ? `/${turn.triggerDetail}` : ""}) `
     + `by ${turn.actorType ?? "unknown"}${turn.actorId ? ` ${turn.actorId}` : ""}`;
+}
+
+export function extraTurnsByReason(turns: readonly ExtraTurn[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const turn of turns) counts[turn.wakeReason ?? "unknown"] = (counts[turn.wakeReason ?? "unknown"] ?? 0) + 1;
+  return counts;
 }
 
 export async function readAssignedWorkInvariant(api: Pick<ChaosApi, "get">, companyId: string): Promise<StagingMixResult["invariant"]> {
@@ -237,12 +264,16 @@ export async function writeStagingMixResults(input: { waveDir: string; api: Pick
   const tasks: ResultTask[] = [];
   const extraTurns: ExtraTurn[] = [];
   const queuedAfterDone: ExtraTurn[] = [];
+  const doneBeforeCompletion: Array<{ taskId: string; runId: string; disposition: string }> = [];
   for (const task of input.tasks) {
     const issue = task.record.issueId ? await input.api.get<Json>(`/api/issues/${task.record.issueId}`, 10_000).catch(() => null) : null;
     const comments = task.record.issueId ? await input.api.get<Json[]>(`/api/issues/${task.record.issueId}/comments`, 10_000).catch(() => null) : null;
     const evidence = await readFile(path.join(input.waveDir, "wake-evidence", `${task.plan.taskId}.json`), "utf8")
       .then(text => JSON.parse(text) as WakeEvidenceFile).catch(() => null);
-    const afterDone = runsAfterDone(task.plan.taskId, evidence, firstDoneAt(comments, task.plan.nonce, issue?.completedAt));
+    const posted = commentEvidence(comments);
+    const completion = evidenceCompletion(evidence, issue?.completedAt);
+    const afterDone = runsAfterDone(task.plan.taskId, evidence, completedAtAnchor(completion, posted, task.plan.nonce), firstDoneCommentAt(posted, task.plan.nonce));
+    doneBeforeCompletion.push(...doneCommentsBeforeCompletion(posted, task.plan.nonce, completion).map(entry => ({ taskId: task.plan.taskId, ...entry })));
     extraTurns.push(...afterDone.started);
     queuedAfterDone.push(...afterDone.neverStarted);
     const grade = await readFile(path.join(input.waveDir, `${task.plan.taskId}.grade.json`), "utf8")
@@ -252,7 +283,7 @@ export async function writeStagingMixResults(input: { waveDir: string; api: Pick
   }
   const result = summarizeStagingMix(tasks, extraClicks, await readAssignedWorkInvariant(input.api, input.companyId));
   await writeFile(path.join(input.waveDir, "staging-mix-results.json"), `${JSON.stringify({ schema: "paperclip.restart-chaos.staging-mix/v1",
-    headline: stagingMixHeadline(result), ...result, extraTurns, queuedAfterDone }, null, 2)}\n`, { mode: 0o600 });
+    headline: stagingMixHeadline(result), ...result, extraTurns, extraTurnsByReason: extraTurnsByReason(extraTurns), queuedAfterDone, doneBeforeCompletion }, null, 2)}\n`, { mode: 0o600 });
   const invariant = result.invariant.violationCount === null ? `unreadable${result.invariant.error ? ` (${result.invariant.error})` : ""}`
     : `${result.invariant.violationCount} violations, ${result.invariant.agentsWithStalledSlots} agents with stalled slots, ${result.invariant.openTasks} open tasks`;
   await writeFile(path.join(input.waveDir, "staging-mix-summary.md"), [...stagingMixHeadline(result), `Assigned-work invariant: ${invariant}`, "",
@@ -260,7 +291,9 @@ export async function writeStagingMixResults(input: { waveDir: string; api: Pick
     ...result.evidenceIncomplete.map(entry => `- ${entry.taskId}: evidence incomplete for ${entry.checks.join(", ")}`),
     ...result.bannerShown.map(entry => `- ${entry.taskId}: Retry banner from ${entry.firstShownAt} for ${Math.round(entry.shownMs / 1000)} s`
       + `${entry.errorCode ? ` (${entry.errorCode})` : ""}${entry.completedAnyway ? ", completed without a click" : ""}`),
-    ...(extraTurns.length ? ["", `Runs started after the task's DONE: ${extraTurns.length}`, ...extraTurns.map(extraTurnLine)] : []),
-    ...(queuedAfterDone.length ? ["", `Runs queued after the task's DONE, never started: ${queuedAfterDone.length}`, ...queuedAfterDone.map(extraTurnLine)] : []), ""].join("\n"), { mode: 0o600 });
+    ...(extraTurns.length ? ["", `Runs started after the task completed: ${extraTurns.length}`, ...extraTurns.map(extraTurnLine)] : []),
+    ...(queuedAfterDone.length ? ["", `Runs queued after the task completed, never started: ${queuedAfterDone.length}`, ...queuedAfterDone.map(extraTurnLine)] : []),
+    ...(doneBeforeCompletion.length ? ["", `DONE comment posted before the task completed: ${doneBeforeCompletion.length}`,
+      ...doneBeforeCompletion.map(entry => `- ${entry.taskId}: run ${entry.runId.slice(0, 8)} posted DONE but its accepted result was ${entry.disposition}`)] : []), ""].join("\n"), { mode: 0o600 });
   return result;
 }

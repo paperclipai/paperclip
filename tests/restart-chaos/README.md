@@ -1555,11 +1555,20 @@ worked when the clicked task meets the same completion rule. The banner list fol
 `GET /api/companies/:id/assigned-work-invariant` at the end of the wave: `violationCount`, `violations` by reason,
 `agentsWithStalledSlots` and `openTasks`.
 
-The summary also lists, by start time, every run that started after a task's DONE, under "Runs started after the
-task's DONE" (`extraTurns` in the JSON). A run queued after DONE that never started is listed on its own, under "Runs
-queued after the task's DONE, never started" (`queuedAfterDone`). The DONE time is the first bare `DONE-<nonce>`
-comment, or else the task's completion time. Each line gives the run's wake reason, source, trigger and requesting
-actor, taken from that task's saved wake evidence.
+The summary also lists, by start time, every run that started after the task completed, under "Runs started after
+the task completed" (`extraTurns`, with counts by wake reason in `extraTurnsByReason`). A run queued after completion
+that never started is listed on its own (`queuedAfterDone`).
+
+The completion time comes from the product's own record, in this order:
+
+1. the earliest accepted run result whose `reportedWorkDisposition` is `done`;
+2. the issue's `completedAt`;
+3. the first bare `DONE-<nonce>` comment, only when neither exists.
+
+Each line prints the DONE comment time too when it differs, and gives the run's wake reason, source, trigger and
+requesting actor from the saved wake evidence. A bare DONE comment posted by a run whose accepted result was not `done`
+(for example `blocked` while a parent waits on its subtasks) is reported on its own, under "DONE comment posted before
+the task completed" (`doneBeforeCompletion`).
 
 **Grade.** The usual R1–R6, U1–U5 and T rules apply. A needed Retry still fails R3. The T-oracle checks the result,
 not the status:
@@ -1571,7 +1580,7 @@ not the status:
 | `rounds_once` | a round line appears twice (a tool ran again) |
 | `done_comment_posted` | no comment's whole body is `DONE-<nonce>`; a summary that quotes the marker does not count |
 | `done_comment_once` | that comment was posted more than once |
-| `completion_once` | more than one run completed the task (a duplicate completion), or the comments could not be read. A run completes the task when it posts the bare `DONE-<nonce>` comment, or a comment that mentions the marker at or after the first one. A progress or blocked comment that says it will post the marker later is not a completion |
+| `completion_once` | more than one run completed the task (a duplicate completion), or the comments could not be read. A run completes the task when its accepted result has disposition `done`, or when it posts a comment that mentions `DONE-<nonce>` at or after the completion time. Without accepted results in the wave evidence, the bare DONE comment counts instead. A progress or blocked comment that says it will post the marker later is not a completion |
 | `follow_up_posted` | a planned follow-up was never posted (the detail lists the post errors) |
 | `follow_up_served` | a follow-up was posted during a run and the ledger lacks its line |
 | `subtask_<k>_done`, `parent_read_subtask_<k>` | a subtask is missing, not done or its ledger fails, or the parent did not report its last hash |
