@@ -195,22 +195,23 @@ async function abandonTurnStart(label: string, providerArgs: string[]) {
 
 it("finishes the run from the provider turn a timed-out turn.start left running once it completes after the reattachment", async () => {
   const attempt = await abandonTurnStart("completed-start", []);
+  let release: ReturnType<typeof setInterval> | undefined;
   try {
     const second = await attempt.reattach();
-    const release = setInterval(() => {
+    release = setInterval(() => {
       if (!second.adopted.evidence().diagnostics.some(line => line.includes("restored its durable PRP session"))) return;
       clearInterval(release);
       void writeFile(attempt.gate, "start");
     }, 20);
     release.unref();
     const completion = await second.execute(attempt.saved);
-    clearInterval(release);
     expect(completion).toMatchObject({ turnId: "provider-turn-1", terminal: { runTerminalState: "succeeded" } });
     expect(second.duplicateLauncher).not.toHaveBeenCalled();
     expect(attempt.events.some(event => event.eventType === "session.failed")).toBe(false);
     const calls = (await readFile(attempt.callLog, "utf8")).trim().split(/\r?\n/);
     expect(calls.filter(call => call === "turn/start")).toHaveLength(1);
   } finally {
+    clearInterval(release);
     await attempt.cleanup();
   }
 }, 90_000);
