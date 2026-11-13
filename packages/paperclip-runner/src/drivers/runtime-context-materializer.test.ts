@@ -26,6 +26,7 @@ import {
 } from "../contracts/runtime-context.js";
 import { nativeMcpLaunchBinding } from "./native-mcp.js";
 import {
+  codexCustomProviders,
   materializeNativeRuntimeSkills,
   prepareIsolatedCodexRecoveryHome,
   prepareIsolatedCodexHome,
@@ -192,8 +193,9 @@ command = "untrusted-command"
     expect(config).toContain('model_provider = "paperclip"');
     expect(config).toContain('base_url = "https://openrouter.ai/api/v1"');
     expect(config).toContain('env_key = "PAPERCLIP_AI_PROVIDER_KEY"');
-    expect(config).toContain('"HTTP-Referer" = "https://paperclip.ing"');
-    expect(config).toContain('"X-OpenRouter-Title" = "Paperclip"');
+    // The projection is serialized as TOML, so header names render as bare keys.
+    expect(config).toContain('HTTP-Referer = "https://paperclip.ing"');
+    expect(config).toContain('X-OpenRouter-Title = "Paperclip"');
     expect(config).toContain("shell_snapshot = false");
     expect(config).not.toMatch(/unrelated|untrusted|unassigned/);
     await expect(stat(join(target, "auth.json"))).rejects.toThrow();
@@ -548,5 +550,66 @@ requires_openai_auth = false
       expect(await readFile(join(codexHome, "auth.json"), "utf8")).toBe(selectedAuth);
       expect((await stat(join(codexHome, "auth.json"))).mode & 0o777).toBe(0o600);
     } else await expect(stat(join(codexHome, "auth.json"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects a selected custom provider that declares http_headers", () => {
+    expect(() => codexCustomProviders({
+      PAPERCLIP_CODEX_PROVIDERS: JSON.stringify({
+        model_provider: "gateway",
+        providers: {
+          gateway: {
+            base_url: "https://gateway.example/v1",
+            http_headers: { "X-Route": "eu" },
+          },
+        },
+      }),
+    })).toThrow(/http_headers/);
+  });
+
+  it("rejects a selected custom provider that declares env_http_headers", () => {
+    expect(() => codexCustomProviders({
+      PAPERCLIP_CODEX_PROVIDERS: JSON.stringify({
+        model_provider: "gateway",
+        providers: {
+          gateway: {
+            base_url: "https://gateway.example/v1",
+            env_http_headers: { "X-Gateway-Key": "GATEWAY_KEY" },
+          },
+        },
+      }),
+    })).toThrow(/env_http_headers/);
+  });
+
+  it("skips an unselected provider with headers while keeping the selected one", () => {
+    const result = codexCustomProviders({
+      PAPERCLIP_CODEX_PROVIDERS: JSON.stringify({
+        model_provider: "plain",
+        providers: {
+          gateway: {
+            base_url: "https://gateway.example/v1",
+            http_headers: { "X-Route": "eu" },
+          },
+          plain: { base_url: "https://plain.example/v1" },
+        },
+      }),
+    });
+    expect(result.modelProvider).toBe("plain");
+    expect(result.providers).toHaveProperty("plain");
+    expect(result.providers).not.toHaveProperty("gateway");
+  });
+
+  it("rejects a selected custom provider whose header value is an env reference", () => {
+    expect(() => codexCustomProviders({
+      PAPERCLIP_CODEX_PROVIDERS: JSON.stringify({
+        model_provider: "gateway",
+        providers: {
+          gateway: {
+            base_url: "https://gateway.example/v1",
+            http_headers: { "X-Auth": "{env:GATEWAY_KEY}" },
+          },
+        },
+      }),
+      GATEWAY_KEY: "gateway-key",
+    })).toThrow(/http_headers/);
   });
 });
