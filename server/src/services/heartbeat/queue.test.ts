@@ -512,7 +512,8 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
   }
 
   it.each([
-    ["issue_continuation_needed", "cancelled"], ["issue_recovery_action_restored", "cancelled"], ["issue_commented", "running"],
+    ["issue_continuation_needed", "cancelled"], ["issue_recovery_action_restored", "cancelled"], ["issue_children_completed", "cancelled"],
+    ["issue_commented", "running"],
   ] as const)("does not start a %s run whose task another run already finished (expected %s)", async (wakeReason, expected) => {
     // Release-swap wave t011: a delivered continuation queued while its task was open started after
     // another run marked the task done, and took an extra turn on a finished task.
@@ -1199,6 +1200,52 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     deps.canStartNewExternalBotWork.mockResolvedValue(true);
     expect(await queue.startNextQueuedRunForAgent(agent.id)).toEqual([expect.objectContaining({ id: run.id, status: "running" })]);
     expect(deps.executeRun).toHaveBeenCalledExactlyOnceWith(run.id);
+  });
+
+  it("starts each claimed run before claiming the next, within the agent's concurrency cap", async () => {
+    // A claim commits a 60 s legacy controller lease that only the run's own
+    // execution renews. A batch whose later claims are slow must not hold the
+    // earlier claimed runs back from executing until their leases lapse.
+    const [company] = await db.insert(companies).values({ name: "Claim batch", issuePrefix: "CB" }).returning();
+    const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Busy agent", role: "engineer", status: "idle",
+      adapterType: "process", adapterConfig: {}, runtimeConfig: { heartbeat: { maxConcurrentRuns: 2 } } }).returning();
+    const queued = [];
+    for (let index = 0; index < 3; index++) {
+      const [issue] = await db.insert(issues).values({ companyId: company.id, title: `Batch task ${index}`, status: "todo",
+        assigneeAgentId: agent.id }).returning();
+      const [wake] = await db.insert(agentWakeupRequests).values({ companyId: company.id, agentId: agent.id, source: "assignment",
+        status: "claimed", claimedAt: new Date() }).returning();
+      const [run] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent.id, status: "queued",
+        invocationSource: "assignment", wakeupRequestId: wake.id, responsibleUserId: "queue-test-user", contextSnapshot: { issueId: issue.id },
+        createdAt: new Date(Date.now() - (3 - index) * 1_000) }).returning();
+      await db.update(issues).set({ executionRunId: run.id, executionAgentNameKey: agent.name, executionLockedAt: new Date() })
+        .where(eq(issues.id, issue.id));
+      queued.push(run);
+    }
+    const deps = callbacks(db);
+    deps.getAgent.mockResolvedValue(agent);
+    let releaseSecondClaim!: () => void;
+    const secondClaimMayContinue = new Promise<void>(resolve => { releaseSecondClaim = resolve; });
+    let budgetChecks = 0;
+    deps.budgets.getInvocationBlock.mockImplementation(async () => {
+      budgetChecks += 1;
+      if (budgetChecks === 2) await secondClaimMayContinue;
+      return null;
+    });
+    const admission = vi.fn(() => false);
+    deps.isRunAdmissionClosed = admission;
+    const pass = createHeartbeatQueue(db, deps).startNextQueuedRunForAgent(agent.id);
+    try {
+      await vi.waitFor(() => expect(budgetChecks).toBe(2));
+      // The first run is executing while the second claim is still in progress.
+      expect(deps.executeRun).toHaveBeenCalledExactlyOnceWith(queued[0]!.id);
+    } finally { releaseSecondClaim(); }
+    const claimed = await pass;
+    expect(claimed.map(run => run.id)).toEqual([queued[0]!.id, queued[1]!.id]);
+    expect(deps.executeRun.mock.calls.map(([runId]) => runId)).toEqual([queued[0]!.id, queued[1]!.id]);
+    // The run-start admission gate is checked before every claim, and the cap holds.
+    expect(admission.mock.calls.length).toBeGreaterThanOrEqual(3);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, queued[2]!.id)))[0].status).toBe("queued");
   });
 
   it("leaves a queued run for the next server when shutdown closes admission during the queue scan", async () => {

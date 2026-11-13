@@ -2304,6 +2304,8 @@ export function renderPaperclipWakePrompt(
     renderPaperclipWakePromptBody(value, options),
     instructions ? `## Assigned connector skills\n\n${instructions}` : "",
     asString(parseObject(parseObject(value).connectionInstructions).text, "").trim(),
+    // Server-rendered and labelled untrusted: what MCP Apps widgets in the task reported.
+    asString(parseObject(value).mcpAppContext, "").trim(),
   ]);
 }
 

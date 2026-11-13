@@ -63,6 +63,7 @@ export const VIOLATION_REASONS = [
   "recovery_block",
   /** Blocked, and nothing recorded says why. */
   "unknown_block",
+  "blocked_with_live_run",
 ] as const;
 export type ViolationReason = (typeof VIOLATION_REASONS)[number];
 
@@ -158,7 +159,8 @@ export type AssignedWorkFacts = {
   lastBlockerResolvedAt?: Date | null;
   openChildren: number;
   reviewPending: boolean;
-  activeRecoveryAction: { cause: string; ownerType: string; resumeAt: Date | null } | null;
+  activeRecoveryAction: { cause: string; ownerType: string; resumeAt: Date | null;
+    continuedBySweep?: boolean; id?: string } | null;
   agent: { status: string; invokable: boolean } | null;
   companyPaused: boolean;
   pauseHold: boolean;
@@ -187,7 +189,12 @@ export function evaluateAssignedWork(facts: AssignedWorkFacts, now: Date = new D
   // fails closed: during a deploy overlap another server may still own it.
   const live = facts.activeRuns.find(run => (run.status === "queued" || run.status === "running")
     && run.owner !== "gone" && run.owner !== "stalled");
-  if (live) return { kind: "ok", clause: "live_run", runId: live.id };
+  if (live) {
+    if (issue.status === "blocked" && !waitingReason(facts, now)) {
+      return { kind: "violation", reason: "blocked_with_live_run", runId: live.id, stale: false };
+    }
+    return { kind: "ok", clause: "live_run", runId: live.id };
+  }
 
   // A run row still says running but its server is proven gone. It holds the
   // task's execution lock, so nothing pending can start until it is settled.
@@ -336,6 +343,8 @@ export function continuationActivityMessage(reason: ViolationReason): string {
       return "Continued automatically after an interruption. Nothing needed you, so Paperclip queued the task again.";
     case "retry_offered":
       return "Continued automatically after an interruption. Paperclip queued the task again, so you don't need to press Retry.";
+    case "blocked_with_live_run":
+      return "No longer blocked: this task is already queued to continue, so nothing needs you.";
     default:
       return "Continued automatically after an interruption. Nothing was running or scheduled, so Paperclip queued the task again.";
   }

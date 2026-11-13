@@ -244,7 +244,7 @@ export function createToolCatalogPublication(db: Db, { now, audit, getConnection
         id: existing?.id, companyId: connection.companyId, applicationId: connection.applicationId,
         connectionId: connection.id, name: existing?.name ?? descriptor.name, toolName: descriptor.name, entryKind: "tool",
         title: descriptor.title ?? null, description: descriptor.description ?? null,
-        inputSchema: descriptor.inputSchema ?? {}, annotations: descriptor.annotations ?? {}, uiMeta: descriptor.ui ?? null, riskLevel,
+        inputSchema: descriptor.inputSchema ?? {}, annotations: descriptor.annotations ?? {}, uiMeta: descriptor.ui ?? null, icons: descriptor.icons ?? null, riskLevel,
         isReadOnly: riskLevel === "read", isWrite: riskLevel === "write", isDestructive: riskLevel === "destructive",
         status, versionHash: hash, schemaHash, firstSeenAt: existing?.firstSeenAt ?? refreshedAt, lastSeenAt: refreshedAt,
         quarantinedAt: existing
@@ -267,7 +267,7 @@ export function createToolCatalogPublication(db: Db, { now, audit, getConnection
         const rows = await tx.insert(toolCatalogEntries).values(chunk)
           .onConflictDoUpdate({ target: [toolCatalogEntries.connectionId, toolCatalogEntries.name], set: {
             title: sql`excluded.title`, description: sql`excluded.description`, inputSchema: sql`excluded.input_schema`,
-            annotations: sql`excluded.annotations`, uiMeta: sql`excluded.ui_meta`, riskLevel: sql`excluded.risk_level`, isReadOnly: sql`excluded.is_read_only`,
+            annotations: sql`excluded.annotations`, uiMeta: sql`excluded.ui_meta`, icons: sql`excluded.icons`, riskLevel: sql`excluded.risk_level`, isReadOnly: sql`excluded.is_read_only`,
             isWrite: sql`excluded.is_write`, isDestructive: sql`excluded.is_destructive`,
             status: sql`CASE WHEN ${toolCatalogEntries.status} = 'disabled' AND ${toolCatalogEntries.quarantineReason} IS DISTINCT FROM 'mcp_tool_removed' THEN 'disabled' ELSE excluded.status END`,
             versionHash: sql`excluded.version_hash`, schemaHash: sql`excluded.schema_hash`, lastSeenAt: sql`excluded.last_seen_at`,

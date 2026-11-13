@@ -24,10 +24,10 @@ async function fixture(request: APIRequestContext) {
       res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify(card));
     } else {
       res.writeHead(200, { "content-type": "text/html" });
-      res.end(`<section data-testid="task-chat-composer-takeover"><div id="interaction-current">
+      res.end(`<section data-testid="task-chat-composer-takeover"><div data-interaction-id="current">
         <p>Approve revised plan</p><button onclick="fetch('/api/issues/parent/interactions/current/accept',{method:'POST'})">Confirm</button>
         <button>Dismiss request</button></div></section>
-        <div id="interaction-stale"><button onclick="fetch('/api/issues/parent/interactions/stale/accept',{method:'POST'})">Confirm</button></div>`);
+        <div id="interaction-stale" data-interaction-id="stale"><button onclick="fetch('/api/issues/parent/interactions/stale/accept',{method:'POST'})">Confirm</button></div>`);
     }
   });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
