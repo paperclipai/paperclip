@@ -33,4 +33,26 @@ describe("tool input schema admission", () => {
     const second = accepted.map(fixture => admitToolInputSchema(fixture.schema));
     expect([...first, ...second].every(admission => admission.ok)).toBe(true);
   });
+
+  const dialects = [
+    "http://json-schema.org/draft-07/schema#",
+    "https://json-schema.org/draft/2019-09/schema",
+    "https://json-schema.org/draft/2020-12/schema",
+  ];
+
+  it.each([
+    ...dialects,
+    "http://json-schema.org/draft-07/schema",
+    "https://json-schema.org/draft/2020-12/schema#",
+    "https://json-schema.org/draft/2019-09/meta/core",
+    "https://json-schema.org/draft/2020-12/meta/core",
+  ])("keeps every compiler usable after a schema that claims the reserved $id %s", reserved => {
+    for (const $schema of dialects) admitToolInputSchema({ $schema, $id: reserved, type: "object" });
+    for (const $schema of dialects) {
+      const admission = admitToolInputSchema({ $schema, type: "object", properties: { name: { type: "string" } }, required: ["name"] });
+      if (!admission.ok) throw new Error(`expected ${$schema} to compile after ${reserved}`);
+      expect(admission.validate({ name: "site" })).toBe(true);
+      expect(admission.validate({})).toBe(false);
+    }
+  });
 });
