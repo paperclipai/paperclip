@@ -167,6 +167,66 @@ describeEmbeddedPostgres("heartbeat terminalizeRunOnLeaseRelease", () => {
     expect(terminal).toMatchObject({ status: "cancelled", error: null, errorCode: null });
   });
 
+  function personCancelRequest(input: { companyId: string; issueId: string; runId: string }) {
+    const requestedAt = new Date().toISOString();
+    return {
+      cancellation: { reason: "Cancelled by a board operator", source: "operator", expected: true,
+        initiator: { id: "board-user", type: "user" }, recordedAt: requestedAt },
+      cancelledByUserId: "board-user",
+      cancelledByActorType: "user",
+      executionCancellation: { state: "requested", requestedAt },
+      startupCancellation: { errorCode: "cancelled", requestedAt, beforeNativeSelection: false },
+      nativeCancellation: {
+        schema: "paperclip.native-cancellation.v1", runId: input.runId, companyId: input.companyId, issueId: input.issueId,
+        scope: "run", reasonCode: "cancellation_run_only", effects: ["release_run_resources"], dispatched: false,
+        dispatchState: "pending", intentId: `native-cancellation:${randomUUID()}`, intentAuditId: randomUUID(),
+        recordedAt: requestedAt,
+      },
+    };
+  }
+
+  it("ends a run cancelled when a person's Stop was recorded before teardown read the run", async () => {
+    const { companyId, issueId, runId } = await seed({ issueStatus: "in_progress", runStatus: "running" });
+    const [run] = await db.update(heartbeatRuns).set({
+      nativeIssueId: issueId,
+      resultJson: personCancelRequest({ companyId, issueId, runId }),
+    }).where(eq(heartbeatRuns.id, runId)).returning();
+
+    const terminal = await heartbeatService(db).terminalizeRunOnLeaseRelease(run!);
+
+    expect(terminal).toMatchObject({ status: "cancelled", errorCode: null });
+    const row = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).then((rows) => rows[0]);
+    expect(row?.status).toBe("cancelled");
+    expect(row?.resultJson).toMatchObject({ cancelledByActorType: "user", cancelledByUserId: "board-user" });
+  });
+
+  it("ends a run cancelled when a person's Stop lands after teardown read the run", async () => {
+    const { companyId, issueId, runId, run: staleRun } = await seed({ issueStatus: "in_progress", runStatus: "running" });
+    await db.update(heartbeatRuns).set({
+      nativeIssueId: issueId,
+      resultJson: personCancelRequest({ companyId, issueId, runId }),
+    }).where(eq(heartbeatRuns.id, runId));
+
+    const terminal = await heartbeatService(db).terminalizeRunOnLeaseRelease(staleRun);
+
+    expect(terminal).toMatchObject({ status: "cancelled", errorCode: null });
+    const row = await db.select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+      .from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).then((rows) => rows[0]);
+    expect(row).toEqual({ status: "cancelled", errorCode: null });
+  });
+
+  it("still reports interruption when only an agent requested the stop", async () => {
+    const { companyId, issueId, runId } = await seed({ issueStatus: "in_progress", runStatus: "running" });
+    const request = personCancelRequest({ companyId, issueId, runId });
+    const [run] = await db.update(heartbeatRuns).set({
+      resultJson: { ...request, cancelledByActorType: "agent", cancelledByUserId: undefined },
+    }).where(eq(heartbeatRuns.id, runId)).returning();
+
+    const terminal = await heartbeatService(db).terminalizeRunOnLeaseRelease(run!);
+
+    expect(terminal).toMatchObject({ status: "interrupted", errorCode: "lease_released_before_terminal" });
+  });
+
   it("preserves an acknowledged agent termination Stop when teardown wins the finalizer race", async () => {
     const { companyId, issueId, runId } = await seed({ issueStatus: "in_progress", runStatus: "running" });
     const [run] = await db.update(heartbeatRuns).set({
