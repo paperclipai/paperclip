@@ -151,8 +151,11 @@ describeEmbeddedPostgres("activity service", () => {
       { ...base, id: failedRunId, status: "failed", errorCode: "native_provider_model_rejected", invocationSource: "assignment", createdAt: at(0) },
       { ...base, id: boardRetryId, status: "succeeded", invocationSource: "on_demand", triggerDetail: "manual", responsibleUserId: "local-board",
         retryOfRunId: failedRunId, wakeupRequestId: await wake("retry_failed_run", "user", "local-board"), createdAt: at(1) },
+      // Task Retry, as the queue saves it: the person's request is linked from
+      // the run context with the source run as previousRunId, and retryOfRunId stays empty.
       { ...base, id: memberRetryId, status: "succeeded", invocationSource: "on_demand", triggerDetail: "manual",
-        retryOfRunId: failedRunId, wakeupRequestId: await wake("task_retry", "user", userId), createdAt: at(2) },
+        wakeupRequestId: await wake("issue_assigned", "user", userId),
+        contextSnapshot: { issueId, previousRunId: failedRunId, forceFreshSession: true, taskRetryRequestId: await wake("task_retry", "user", userId) }, createdAt: at(2) },
       // Automatic recovery keeps the original responsible user; that is not who started it.
       { ...base, id: autoRetryId, status: "succeeded", invocationSource: "automation", triggerDetail: "system", responsibleUserId: "local-board",
         retryOfRunId: failedRunId, wakeupRequestId: await wake("transient_failure_retry", null, null, "automation"), createdAt: at(3) },
@@ -164,7 +167,8 @@ describeEmbeddedPostgres("activity service", () => {
     expect(byId.get(failedRunId)).toBeNull();
     expect(byId.get(boardRetryId)).toEqual({ kind: "person", personName: "Board",
       summary: "Board pressed Retry on the failed run. Paperclip did not retry it automatically." });
-    expect(byId.get(memberRetryId)).toMatchObject({ kind: "person", personName: "Sam Rivera" });
+    expect(byId.get(memberRetryId)).toEqual({ kind: "person", personName: "Sam Rivera",
+      summary: "Sam Rivera pressed Retry on the failed run. Paperclip did not retry it automatically." });
     expect(byId.get(autoRetryId)).toEqual({ kind: "automatic",
       summary: "Paperclip retried the failed run automatically; no person pressed Retry." });
     expect(byId.get(unknownRetryId)).toBeNull();

@@ -76,11 +76,11 @@ export type RunRetriedBy = { kind: "person"; personName: string; summary: string
  * than guessing.
  */
 export function describeRunRetry(
-  run: { retryOfRunId: string | null; invocationSource: string | null },
+  run: { retryOfRunId: string | null; taskRetryRequestId?: string | null; invocationSource: string | null },
   wake: { reason: string | null; requestedByActorType: string | null } | null,
   personName: string | null,
 ): RunRetriedBy | null {
-  if (!run.retryOfRunId) return null;
+  if (!run.retryOfRunId && !run.taskRetryRequestId) return null;
   if (wake?.requestedByActorType === "user" && wake.reason && PERSON_RETRY_WAKE_REASONS.has(wake.reason)) {
     const name = personName?.trim() || "A board member";
     return { kind: "person", personName: name, summary: `${name} pressed Retry on the failed run. Paperclip did not retry it automatically.` };
@@ -551,6 +551,8 @@ export function activityService(db: Db) {
           wakeCommentId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'wakeCommentId'`,
           contextCommentId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'commentId'`,
           contextIssueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`,
+          // A person's Task Retry links its saved request here instead of retryOfRunId.
+          taskRetryRequestId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'taskRetryRequestId'`,
         })
         .from(heartbeatRuns)
         .innerJoin(
@@ -584,9 +586,9 @@ export function activityService(db: Db) {
         .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id));
       const runs = await (limit === undefined ? runsQuery : runsQuery.limit(limit));
 
-      if (runs.length === 0) return runs;
+      if (runs.length === 0) return [];
       const runIds = runs.map((run) => run.runId);
-      if (runIds.length === 0) return runs;
+      if (runIds.length === 0) return [];
 
       const exhaustionRowsQuery = db
         .select({
@@ -632,7 +634,9 @@ export function activityService(db: Db) {
           .where(and(eq(issueDocuments.companyId, companyId), eq(issueDocuments.issueId, issueId), eq(issueDocuments.key, "plan")))
           .limit(1)
         : Promise.resolve([]);
-      const retryWakeIds = runs.flatMap(run => run.retryOfRunId && run.wakeupRequestId ? [run.wakeupRequestId] : []);
+      const retryWakeId = (run: (typeof runs)[number]) => run.taskRetryRequestId && UUID_PATTERN.test(run.taskRetryRequestId)
+        ? run.taskRetryRequestId : run.retryOfRunId ? run.wakeupRequestId : null;
+      const retryWakeIds = [...new Set(runs.flatMap(run => { const id = retryWakeId(run); return id ? [id] : []; }))];
       const retryWakesQuery = retryWakeIds.length
         ? db.select({
           id: agentWakeupRequests.id,
@@ -656,7 +660,8 @@ export function activityService(db: Db) {
         ? await db.select({ id: authUsers.id, name: authUsers.name }).from(authUsers).where(inArray(authUsers.id, retryPersonIds))
         : []).filter(row => row.name?.trim()).map(row => [row.id, row.name!.trim()]));
       const retriedBy = (run: (typeof runs)[number]) => {
-        const wake = run.wakeupRequestId ? retryWakeById.get(run.wakeupRequestId) ?? null : null;
+        const wakeId = retryWakeId(run);
+        const wake = wakeId ? retryWakeById.get(wakeId) ?? null : null;
         const actorId = wake?.requestedByActorId ?? null;
         const personName = wake?.requestedByActorType === "user" && actorId
           ? retryPersonNames.get(actorId) ?? activityActorFallbackName("user", actorId) : null;
