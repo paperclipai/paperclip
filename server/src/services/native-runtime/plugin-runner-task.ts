@@ -123,9 +123,11 @@ export function createPluginRunnerTaskOwner(input: {
     await checkProjectAuth(configurationId);
     preparedLaunchId = configurationId;
   };
-  // An older plugin rejects unknown operation fields, so send only what it advertised.
+  // An older plugin rejects unknown operation fields, so send only what the current provider advertised.
   const deliveredConfiguredEnvironment = () => input.configuredEnvironmentVersion === 1
     && Object.keys(input.configuredEnvironment ?? {}).length > 0 ? input.configuredEnvironment : undefined;
+  // What the running Runner process received; a warm rebind does not change it.
+  let submittedConfiguredEnvironmentKeys: string[] | undefined;
   const prepareLaunch: RunnerLaunchPreparer = async (requirements, recovery) => {
     if (released || stopRequested) throw new Error("Plugin Runner preparation cancelled");
     // Reconnecting the previous authority must not prepare it through the new run's lease.
@@ -225,6 +227,7 @@ export function createPluginRunnerTaskOwner(input: {
     });
     launchIdentity = native.identity;
     launched = true;
+    submittedConfiguredEnvironmentKeys = Object.keys(deliveredConfiguredEnvironment() ?? {}).sort();
     const child: RunnerProcessHandle["child"] = { exitCode: null, signalCode: null,
       kill: () => {
         stopRequested = true;
@@ -469,14 +472,14 @@ export function createPluginRunnerTaskOwner(input: {
     isRetired: () => stoppedState?.executionStopped === true && completed && !detached,
     retiredBeforeClaim: () => retiredBeforeClaim,
     /** Names this task's Runner process received; the warm process keeps its submitted set. */
-    deliveredConfiguredEnvironmentKeys: () => Object.keys(deliveredConfiguredEnvironment() ?? {}).sort(),
+    deliveredConfiguredEnvironmentKeys: () => submittedConfiguredEnvironmentKeys ?? Object.keys(deliveredConfiguredEnvironment() ?? {}).sort(),
     rebind(next: typeof input) {
       if (!launched || stopRequested || stoppedState || detached || next.taskId !== taskId || next.harness !== input.harness ||
           input.accountIdentity !== next.accountIdentity || input.credentialIdentity !== next.credentialIdentity ||
           JSON.stringify(input.projectIds) !== JSON.stringify(next.projectIds)) throw new Error("Plugin warm task cannot be rebound");
-      // The process reuse key fences the values. The warm Runner process keeps the
-      // environment it was submitted with, also across a provider capability upgrade.
-      input = { ...next, configuredEnvironment: input.configuredEnvironment, configuredEnvironmentVersion: input.configuredEnvironmentVersion };
+      // The process reuse key fences the values. The warm Runner process keeps the environment
+      // it was submitted with; later operations follow the current provider's capability.
+      input = next;
       released = false;
       bindStartupAbort();
     },

@@ -291,9 +291,16 @@ describe("plugin native Runner ownership", () => {
     const registration = await owner.registration({} as never, "run");
     const handle = owner.launcher(launchSpec());
     registration.activate(); await registration.ready();
-    // A provider upgrade keeps the warm process; it reports the names that process really has.
-    owner.rebind({ ...ownerInput, configuredEnvironmentVersion: 1 });
-    expect(owner.deliveredConfiguredEnvironmentKeys()).toEqual(configuredEnvironmentVersion ? ["DAY_GITHUB_PUSH_TOKEN", "OPENAI_ADMIN_KEY_READONLY"] : []);
+    // A provider upgrade or rollback keeps the warm process; it reports the names that process really has.
+    const submittedKeys = configuredEnvironmentVersion ? ["DAY_GITHUB_PUSH_TOKEN", "OPENAI_ADMIN_KEY_READONLY"] : [];
+    owner.rebind({ ...ownerInput, configuredEnvironmentVersion: configuredEnvironmentVersion ? undefined : 1 });
+    expect(owner.deliveredConfiguredEnvironmentKeys()).toEqual(submittedKeys);
+    // Later preparation follows the current provider: a rolled-back provider gets no new field.
+    const prepares = () => task.mock.calls.filter(([op]) => op.kind === "prepare").map(([op]) => op);
+    await prepare(owner, preconfigured);
+    if (configuredEnvironmentVersion) expect(prepares().at(-1)).not.toHaveProperty("configuredEnvironmentKeys");
+    else expect(prepares().at(-1)).toMatchObject({ configuredEnvironmentKeys: ["DAY_GITHUB_PUSH_TOKEN", "OPENAI_ADMIN_KEY_READONLY"] });
+    expect(owner.deliveredConfiguredEnvironmentKeys()).toEqual(submittedKeys);
     await registration.release(); await registration.checkpoint("unsettled"); await handle.completion;
     const prepared = task.mock.calls.find(([op]) => op.kind === "prepare")![0];
     const submitted = task.mock.calls.find(([op]) => op.kind === "submit")![0];
