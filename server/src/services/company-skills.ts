@@ -3632,7 +3632,10 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
    * later never changes how an installed version audits.
    */
   async function installedVersionAcceptor(skill: CompanySkill, versionId: string, installedRoot: string) {
-    const entrypoint = asString(skill.metadata?.skillSourcePath);
+    // An editable copy of a source skill keeps the repository path it was copied from.
+    const copied = isPlainRecord(skill.metadata?.copiedFromRepository) ? skill.metadata.copiedFromRepository : null;
+    const entrypoint = asString(skill.metadata?.skillSourcePath) ?? asString(copied?.path);
+    const packageMode = asString(skill.metadata?.packageMode) ?? asString(copied?.packageMode);
     if (!entrypoint) return undefined;
     const record = await installedSecurityApproval(skill.companyId, skill.id, versionId);
     if (!record) return undefined;
@@ -3642,12 +3645,12 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     const fromSkillDirectory = skillRelativeToRepositoryPath(path.posix.dirname(entrypoint));
     // The generated agents/openai.yaml is a copy of the skill directory's policy file; the generated SKILL.md is not an original.
     const policyCopy = path.posix.join(path.posix.dirname(entrypoint), "agents/openai.yaml");
-    const toRepositoryPath = skill.metadata?.packageMode === "repository"
+    const toRepositoryPath = packageMode === "repository"
       ? (filePath: string) => filePath.startsWith(repositoryPrefix) ? filePath.slice(repositoryPrefix.length)
         : filePath === "agents/openai.yaml" ? policyCopy : `${repositoryPrefix}${filePath}`
       : (filePath: string) => filePath === "SKILL.md" ? entrypoint : fromSkillDirectory(filePath);
     const accept = securityOverrideAcceptor([versionApprovalGrant(record)], record.commitSha, toRepositoryPath);
-    if (!accept || skill.metadata?.packageMode !== "repository") return accept;
+    if (!accept || packageMode !== "repository") return accept;
     // The generated SKILL.md repeats the original entrypoint's frontmatter. Accept its findings only
     // when the installed original itself matches the approval.
     const original = await fs.readFile(path.join(installedRoot, REPOSITORY_CONTENT_DIR, ...entrypoint.split("/"))).catch(() => null);
@@ -7473,7 +7476,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
       markdown: files.find(file => file.path === "SKILL.md")!.content,
       fileInventory: serializeFileInventory(files), trustLevel: deriveTrustLevel(files),
       metadata: { sourceKind: "managed",
-        copiedFromRepository: { url: skill.sourceLocator, ref: skill.sourceRef, path: skill.metadata?.skillSourcePath },
+        copiedFromRepository: { url: skill.sourceLocator, ref: skill.sourceRef, path: skill.metadata?.skillSourcePath, packageMode: skill.metadata?.packageMode },
         forkedByUserId: actor.type === "user" ? actor.userId ?? null : null,
         forkedByAgentId: actor.type === "agent" ? actor.agentId ?? null : null,
       },

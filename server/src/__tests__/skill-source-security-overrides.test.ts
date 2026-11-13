@@ -394,6 +394,27 @@ echo third`;
     expect(audit?.findings.filter(finding => finding.code === 'remote_fetch_exec')).toEqual([expect.objectContaining({ path: 'install.sh', severity: 'warning' })]);
   });
 
+  it('keeps the approval on an editable copy kept when the source is disconnected', async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: 'Kept copy', issuePrefix: `K${companyId.slice(0, 6)}` });
+    const files = { 'skills/one/SKILL.md': md('one'), 'skills/one/install.sh': hook };
+    const context: SkillSourceContext = { actor: { type: 'user', userId: 'admin-user' }, authorize: async () => {}, audit: async () => {},
+      read: () => githubFixture(files, {}, first), authorizeSecurityOverride: async () => {} };
+    const service = skillSourceService(db);
+    const created = await service.create(companyId, {
+      repositoryUrl: 'https://github.com/acme/skills', trackingRef: 'main', packageMode: 'skills', commitSha: first, selectedPaths: ['skills/one/SKILL.md'],
+      securityOverride: { commitSha: first, reason: 'Maintained by our platform team.', trustFutureUpdates: false, files: [{ path: 'skills/one/install.sh', sha256: hash(hook) }] },
+    }, context);
+    const skillId = created.source.entries.find(entry => entry.path === 'skills/one/SKILL.md')!.skillId!;
+    const { revision } = await service.detail(companyId, created.source.id);
+    await service.disconnect(companyId, created.source.id, context, { revision, skills: 'copy' });
+    const skills = companySkillService(db);
+    const copy = (await skills.getById(companyId, skillId))!;
+    expect(copy.sourceType).toBe('managed');
+    const audit = await skills.auditSkill(companyId, skillId);
+    expect(audit?.findings.filter(finding => finding.code === 'remote_fetch_exec')).toEqual([expect.objectContaining({ path: 'install.sh', severity: 'warning' })]);
+  });
+
   it('keeps approved files viewable in the saved source', async () => {
     const { companyId, service, context } = await setup(false);
     const preview = await service.preview(companyId, { repositoryUrl: 'https://github.com/acme/skills', packageMode: 'repository', commitSha: first,

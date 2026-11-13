@@ -94,6 +94,10 @@ export function managedSkillContent(db: Db, packageDb: Db = db, storage?: Storag
         return { skill: saved!, version };
       }
     }
+    // A security approval admits exact bytes, so a new managed version keeps the current version's approval:
+    // unchanged approved files stay accepted, and changed ones no longer match it.
+    const [previous] = skill.currentVersionId ? await tx.select({ securityApprovalId: companySkillVersions.securityApprovalId })
+      .from(companySkillVersions).where(and(eq(companySkillVersions.companyId, skill.companyId), eq(companySkillVersions.id, skill.currentVersionId))) : [];
     const [revision] = await tx.select({ next: sql<number>`coalesce(max(${companySkillVersions.revisionNumber}), 0) + 1` })
       .from(companySkillVersions).where(and(eq(companySkillVersions.companyId, skill.companyId), eq(companySkillVersions.companySkillId, skill.id)));
     const [version] = await tx.insert(companySkillVersions).values({
@@ -103,6 +107,7 @@ export function managedSkillContent(db: Db, packageDb: Db = db, storage?: Storag
       migrationAt: candidate.packageSnapshotId ? null : new Date(),
       authorAgentId: actor?.type === "agent" ? actor.agentId : null,
       authorUserId: actor?.type === "user" ? actor.userId : null,
+      securityApprovalId: previous?.securityApprovalId ?? null,
     }).returning();
     const [saved] = await tx.update(companySkills).set({ ...fields, currentVersionId: version!.id, updatedAt: new Date() })
       .where(and(eq(companySkills.companyId, skill.companyId), eq(companySkills.id, skill.id))).returning();
