@@ -2449,6 +2449,58 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     ]);
   });
 
+  it("starts no second continuation after a lost wake acknowledgement of a duplicate decision", async () => {
+    const { sourceIssueId, previousRunId, action, siblings, body, heartbeat } =
+      await seedDuplicateReconciliationHolds();
+    for (const record of [action, ...siblings]) {
+      await db.update(issueRecoveryActions).set({
+        outcome: "restored",
+        evidence: {
+          runId: previousRunId,
+          continuationDelivery: "pending",
+          executionReconciliation: {
+            ...body.executionReconciliation, actorId: "board-user", recordedAt: new Date().toISOString(),
+          },
+        },
+      }).where(eq(issueRecoveryActions.id, record.id));
+    }
+    await db.update(heartbeatRuns).set({ finishedAt: new Date() }).where(eq(heartbeatRuns.id, previousRunId));
+    await db.update(issues).set({ status: "todo" }).where(eq(issues.id, sourceIssueId));
+    const finishPass = async () => {
+      await db.update(heartbeatRuns).set({ status: "succeeded", startedAt: new Date(), finishedAt: new Date() })
+        .where(and(eq(heartbeatRuns.retryOfRunId, previousRunId), eq(heartbeatRuns.status, "queued")));
+      await db.update(issues).set({ executionRunId: null, executionLockedAt: null, checkoutRunId: null })
+        .where(eq(issues.id, sourceIssueId));
+    };
+    let ownerId: string | undefined;
+    let successorId: string | undefined;
+    await deliverReconciledExecutions(db, async (...args) => {
+      const run = await heartbeat.wakeup(...args);
+      ownerId ??= args[1]?.contextSnapshot?.recoveryActionId as string | undefined;
+      successorId ??= run?.id;
+      throw new Error("fixture lost post-commit wake acknowledgement");
+    });
+    expect(successorId).toBeDefined();
+    await finishPass();
+
+    for (let pass = 0; pass < siblings.length + 1; pass += 1) {
+      await deliverReconciledExecutions(db, heartbeat.wakeup);
+      await finishPass();
+    }
+
+    const successors = await db.select().from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, previousRunId));
+    expect(successors.map((run) => run.id)).toEqual([successorId]);
+    const rows = await db.select().from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssueId));
+    expect(rows.find((row) => row.id === ownerId)!.evidence).toMatchObject({
+      continuationDelivery: "delivered", continuationRunId: successorId,
+    });
+    for (const row of rows.filter((row) => row.id !== ownerId)) {
+      expect(row.evidence).toMatchObject({ continuationDelivery: "invalidated", coalescedIntoRecoveryActionId: ownerId });
+    }
+  });
+
   it.each(["live provider", "active checkout"] as const)(
     "preserves all duplicate holds when a %s rejects reconciliation",
     async (guard) => {
