@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   companyPrefixFromOnboardingPath,
+  isAppsConnectPath,
   isOnboardingPath,
   isOnboardingWizardActive,
   onboardingStepForCompany,
   resolveRouteOnboardingOptions,
+  shouldCoverWithOnboardingWizard,
   shouldRedirectCompanylessRouteToOnboarding,
   shouldRouteAgentlessCompanyToOnboarding,
   ONBOARDING_AGENT_STEP,
@@ -21,6 +23,28 @@ describe("isOnboardingPath", () => {
 
   it("ignores non-onboarding routes", () => {
     expect(isOnboardingPath("/pap/dashboard")).toBe(false);
+  });
+});
+
+describe("apps connect during setup", () => {
+  it("recognizes the company connect page", () => {
+    expect(isAppsConnectPath("/BMC/apps/connect")).toBe(true);
+    expect(isAppsConnectPath("/apps/connect")).toBe(true);
+    expect(isAppsConnectPath("/BMC/apps")).toBe(false);
+    expect(isAppsConnectPath("/BMC/dashboard")).toBe(false);
+  });
+
+  it("keeps the setup wizard off the connect page", () => {
+    expect(shouldCoverWithOnboardingWizard({
+      pathname: "/BMC/apps/connect",
+      onboardingOpen: true,
+      routeRequested: false,
+    })).toBe(false);
+    expect(shouldCoverWithOnboardingWizard({
+      pathname: "/BMC/dashboard",
+      onboardingOpen: true,
+      routeRequested: false,
+    })).toBe(true);
   });
 });
 

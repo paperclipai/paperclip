@@ -70,9 +70,7 @@ describe("explicit local subscription import", () => {
     expect(mocks.codexQuota).not.toHaveBeenCalled();
   });
   it.each(["anthropic", "openai", "xai"] as const)("never clones the ambient rotating %s login", async (provider) => {
-    await expect(readVerifiedLocalAiCredential(provider)).rejects.toThrow(provider === "xai"
-      ? "Start local sign-in"
-      : "Start browser sign-in");
+    await expect(readVerifiedLocalAiCredential(provider)).rejects.toThrow("Start browser sign-in");
     expect(mocks.codex).not.toHaveBeenCalled();
     expect(mocks.readFile).not.toHaveBeenCalled();
   });

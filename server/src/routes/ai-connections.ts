@@ -362,9 +362,7 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
       const { localSessionId, ...input } = localAiConnectionSchema.parse(req.body);
       assertLocalLoginAvailable();
       const userId = await assertAiConnectionCreateAccess(db, req, companyId, input);
-      if (!localSessionId) throw unprocessable(input.provider === "xai"
-        ? "Start local sign-in for this connection before connecting."
-        : "Start browser sign-in for this connection before connecting.");
+      if (!localSessionId) throw unprocessable("Start browser sign-in for this connection before connecting.");
       res.status(201).json(await localLogin.complete(companyId, userId, localSessionId, input, connectionRequestContext(req)));
     },
   );

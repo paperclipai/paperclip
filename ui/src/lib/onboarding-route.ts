@@ -3,6 +3,22 @@ type OnboardingRouteCompany = {
   issuePrefix: string;
 };
 
+/** Company connect page. The full-screen setup wizard must not cover it. */
+export function isAppsConnectPath(pathname: string): boolean {
+  const segments = pathname.split("/").filter(Boolean).map((segment) => segment.toLowerCase());
+  const apps = segments.lastIndexOf("apps");
+  return apps >= 0 && segments[apps + 1] === "connect" && apps + 2 === segments.length;
+}
+
+export function shouldCoverWithOnboardingWizard(params: {
+  pathname: string;
+  onboardingOpen: boolean;
+  routeRequested: boolean;
+}): boolean {
+  if (isAppsConnectPath(params.pathname)) return false;
+  return params.onboardingOpen || params.routeRequested;
+}
+
 export function isOnboardingPath(pathname: string): boolean {
   const segments = pathname.split("/").filter(Boolean);
 

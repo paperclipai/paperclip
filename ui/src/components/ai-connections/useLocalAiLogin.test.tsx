@@ -20,9 +20,10 @@ beforeEach(() => {
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
 });
 afterEach(() => { flushSync(() => root.unmount()); host.remove(); });
-function Harness({ name = "Account", provider = "openai", enabled = true }: { name?: string; provider?: "anthropic" | "openai"; enabled?: boolean }) {
+function Harness({ name = "Account", provider = "openai", enabled = true }: { name?: string; provider?: "anthropic" | "openai" | "xai"; enabled?: boolean }) {
   const login = useLocalAiLogin("company", { provider, method: "subscription", name, ownership: "personal", agentIds: [], allAgents: true }, enabled);
-  return <><LocalProviderLoginInstructions adapterType={provider === "anthropic" ? "claude_local" : "codex_local"} login={login} /><button onClick={() => void login.connect()}>Connect</button><button onClick={login.cancel}>Back</button></>;
+  const adapterType = provider === "anthropic" ? "claude_local" : provider === "xai" ? "grok_local" : "codex_local";
+  return <><LocalProviderLoginInstructions adapterType={adapterType} login={login} /><button onClick={() => void login.connect()}>Connect</button><button onClick={login.cancel}>Back</button></>;
 }
 it("checks once under StrictMode, preserves renaming and navigation, and cancels only on explicit retry", async () => {
   flushSync(() => root.render(<StrictMode><Harness name="First name" /></StrictMode>));
@@ -42,6 +43,14 @@ it("checks once under StrictMode, preserves renaming and navigation, and cancels
   await vi.waitFor(() => expect(api.startLocalLogin).toHaveBeenCalledTimes(2));
   expect(api.cancelLocalLogin).toHaveBeenCalledTimes(1);
   expect(api.cancelLocalLogin.mock.invocationCallOrder[0]).toBeLessThan(api.startLocalLogin.mock.invocationCallOrder[1]);
+});
+it("shows a Grok device link and code instead of a terminal command", async () => {
+  api.checkLocalLogin.mockResolvedValue({ status: "sign_in_required", authorizationUrl: "https://accounts.x.ai/oauth2/device?user_code=ABCD-EFGH", code: "ABCD-EFGH" });
+  flushSync(() => root.render(<Harness provider="xai" />));
+  await vi.waitFor(() => expect(host.querySelector('a[href="https://accounts.x.ai/oauth2/device?user_code=ABCD-EFGH"]')?.textContent).toBe("Sign in to Grok"));
+  expect(host.textContent).toContain("ABCD-EFGH");
+  expect(host.textContent).not.toContain("Run this in a terminal");
+  expect(host.textContent).not.toContain("GROK_HOME");
 });
 it.each(["anthropic", "openai"] as const)("detects an already-signed-in %s account before showing instructions, and does not save it until Connect", async provider => {
   api.checkLocalLogin.mockResolvedValue({ status: "ready" });
