@@ -15413,10 +15413,29 @@ describe("native session bounded recovery", () => {
         onLog: async (_stream, text) => { logs.push(text); },
       })).rejects.toBe(failure);
       expect(accountingEvents.secrets).toEqual([secret]);
-      for (const output of [inspect(updates.map(entry => entry.values), { depth: null }), logs.join(""), failure.message]) {
+      for (const output of [inspect(updates.map(entry => entry.values), { depth: null }), logs.join("")]) {
         expect(output).not.toContain(secret);
       }
-      expect(failure.message).toContain("***REDACTED***");
+      expect(inspect(updates.map(entry => entry.values), { depth: null })).toContain("***REDACTED***");
+      expect(failure.message).toBe(`native provider failed: ${secret}`);
+    } finally {
+      service.mockRestore();
+    }
+  });
+
+  it("classifies a native failure from its original text when a bound secret equals words in it", async () => {
+    const failure = new Error("runner_local_connect_failed: PRP command session.open timed out");
+    state.execute.mockReset().mockRejectedValueOnce(failure);
+    state.upsertRecoveryAction.mockReset().mockResolvedValue({});
+    const service = vi.spyOn(issueServiceModule, "issueService").mockReturnValue({
+      update: vi.fn(async () => ({ status: "blocked", statusVersion: 1 })),
+    } as unknown as ReturnType<typeof issueServiceModule.issueService>);
+    try {
+      await expect(executePaperclipNativeSession({
+        db: leaseDb(execution, {}, {}, []), execution, runnerInstanceId: "runner",
+        outputSecrets: ["timed out", "session.open"],
+      })).rejects.toBe(failure);
+      expect(nativeSessionFailureSourceCode(failure)).toBe("provider_session_open_timeout");
     } finally {
       service.mockRestore();
     }

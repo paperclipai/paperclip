@@ -90,6 +90,24 @@ describe("agent output redactor with secret values", () => {
     expect(settled).toEqual({ itemId: "item", outputTails: [{ itemId: "item", payload: { itemId: "item", kind: "commandExecution", text: REDACTED } }] });
   });
 
+  it("masks the rest of a secret that a new redactor receives after a restart", () => {
+    const secret = "abcdefgh1234567890";
+    const before = createAgentIdentityRedactor(undefined, [secret], { maskResumedSuffixes: true });
+    expect(before.chunk("item", "echo abcdefgh")).toBe("echo ");
+    const after = createAgentIdentityRedactor(undefined, [secret], { maskResumedSuffixes: true });
+    expect(after.chunk("item", "1234567890 done") + after.finish("item")).toBe(`${REDACTED} done`);
+    expect(after.chunk("item", " 1234567890")).toBe(" 1234567890");
+    const inside = createAgentIdentityRedactor(undefined, [secret], { maskResumedSuffixes: true });
+    expect(inside.chunk("item", "3456") + inside.chunk("item", "7890 next") + inside.finish("item")).toBe(`${REDACTED}${REDACTED} next`);
+    const pem = createAgentIdentityRedactor(undefined, ["-----BEGIN SYNTHETIC-----\nbody-line-synthetic-0123456789\n-----END SYNTHETIC-----"],
+      { maskResumedSuffixes: true });
+    expect(pem.chunk("item", "body-line-syn") + pem.chunk("item", "thetic-0123456789 x") + pem.finish("item")).toBe(`${REDACTED} x`);
+    const fresh = createAgentIdentityRedactor(undefined, [secret], { maskResumedSuffixes: true });
+    expect(fresh.chunk("item", "hello 7890") + fresh.finish("item")).toBe("hello 7890");
+    const local = createAgentIdentityRedactor(undefined, [secret]);
+    expect(local.chunk("item", "1234567890 done") + local.finish("item")).toBe("1234567890 done");
+  });
+
   it("adds the secrets of a later attempt without dropping earlier ones", () => {
     const redactor = createAgentIdentityRedactor(undefined, ["sk_test_original_value"]);
     redactor.addSecretValues(["sk_test_rotated_value", "sk_test_original_value"]);

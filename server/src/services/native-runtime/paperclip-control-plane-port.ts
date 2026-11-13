@@ -127,7 +127,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     this.#db = db;
     this.#assertControllerActive = options.assertControllerActive;
     this.#assertRunAdmissionActive = options.assertRunAdmissionActive ?? options.assertControllerActive;
-    this.#identityRedactor = createAgentIdentityRedactor(options.privateKeyPem, options.secrets);
+    this.#identityRedactor = createAgentIdentityRedactor(options.privateKeyPem, options.secrets, { maskResumedSuffixes: true });
     this.#binding = structuredClone(binding);
     this.#onCommittedEvent = options.onCommittedEvent;
     this.#onEventPersistence = options.onEventPersistence;

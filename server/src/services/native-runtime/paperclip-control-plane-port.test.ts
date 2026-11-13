@@ -482,6 +482,38 @@ describe("PaperclipControlPlanePort conformance", () => {
     return { identity, runnerId, binding, port, event, snapshot, result };
   }
 
+  it("masks the rest of a secret that arrives after a controller restart between deltas", async () => {
+    const identity = { ...CONTROL_PLANE_CONFORMANCE_OPEN.identity, runId: randomUUID(), sessionId: randomUUID() };
+    const runnerId = randomUUID();
+    const secret = "abcdefgh1234567890";
+    await db.insert(heartbeatRuns).values({
+      id: identity.runId, companyId: identity.companyId, agentId: identity.agentId,
+      status: "running", runtimeMode: "native", nativeIssueId: identity.issueId,
+      nativeSessionId: identity.sessionId, runnerInstanceId: runnerId,
+      completionContractId: contractId, completionContractSha256: contractSha,
+      contextSnapshot: { issueId: identity.issueId },
+    });
+    const binding = { ...identity, completionContractId: contractId, completionContractSha256: contractSha,
+      sourceInstanceId: runnerId, controlPlaneSourceInstanceId: `restart-${identity.runId}` };
+    const delta = (sourceSeq: number, text: string): PrpEvent => ({
+      schema: "paperclip.prp.event.v1", sourceEventId: `${runnerId}:${sourceSeq}`, sourceSeq,
+      sourceInstanceId: runnerId, sourceKind: "runner", runId: identity.runId,
+      normalizedSessionId: identity.sessionId, turnId: "restart-turn", itemId: "restart-item",
+      eventType: "item.delta", schemaVersion: 1, priority: 1, emittedAt: new Date().toISOString(),
+      payload: { itemId: "restart-item", kind: "commandExecution", text, update: { delta: text } },
+    });
+    const before = new PaperclipControlPlanePort(db, binding, { secrets: [secret] });
+    await before.openRun({ identity, backendKind: "mock", sourceInstanceId: runnerId });
+    await before.appendEvent(delta(1, `echo ${secret.slice(0, 8)}`));
+    const after = new PaperclipControlPlanePort(db, binding, { secrets: [secret] });
+    await after.appendEvent(delta(2, `${secret.slice(8)} done`));
+    const persisted = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, identity.runId));
+    expect(JSON.stringify(persisted)).not.toContain(secret.slice(8));
+    expect(JSON.stringify(persisted)).not.toContain(secret.slice(0, 8));
+    expect(JSON.stringify(persisted)).toContain('"text":"echo "');
+    expect(JSON.stringify(persisted)).toContain('"text":"***REDACTED*** done"');
+  });
+
   it("completes a native run when a bound secret equals a protocol word", async () => {
     const observed: PrpEvent[] = [];
     const f = await terminalObserverFixture({ secrets: ["interrupted", "completed", "succeeded", "satisfied"],

@@ -2,6 +2,7 @@ import { REDACTED_EVENT_VALUE } from "../redaction.js";
 import { redactRegisteredSecretValues } from "./run-secret-redaction.js";
 
 export const MIN_SECRET_OUTPUT_VALUE_LENGTH = 8;
+const MIN_RESUMED_SUFFIX_LENGTH = 4;
 
 const PROTOCOL_KEY = /^(?:id|ids|ref|refs|schema|type|kind|status|state|outcome|phase|stream|channel|role|level|color|transport|operation|namespace|provider|model|biller|disposition|priority|mode|method)$|(?:Id|Ids|Ref|Refs|Type|Kind|State|Status|Code|Disposition|Revision|Version|Mode|Schema|Digest|Sha256|At)$|_(?:id|ids|type|kind|state|status|code)$/;
 
@@ -28,6 +29,18 @@ function replaceValues(text: string, values: readonly string[]): string {
   return values.reduce((result, value) => result.split(value).join(REDACTED_EVENT_VALUE), text);
 }
 
+function resumedSuffixLength(text: string, candidates: readonly string[]): number {
+  let longest = 0;
+  for (const value of candidates) {
+    for (let size = value.length - 1; size >= MIN_RESUMED_SUFFIX_LENGTH && size > longest; size--) {
+      const suffix = value.slice(-size);
+      if (text.startsWith(suffix)) { longest = size; break; }
+      if (text.length >= MIN_RESUMED_SUFFIX_LENGTH && text.length > longest && suffix.startsWith(text)) { longest = text.length; break; }
+    }
+  }
+  return longest;
+}
+
 function redactOutputSecretValues<T>(input: T, values: readonly string[], key?: string): T {
   if (values.length === 0 || (key !== undefined && PROTOCOL_KEY.test(key))) return input;
   if (typeof input === "string") return replaceValues(input, values) as T;
@@ -38,7 +51,8 @@ function redactOutputSecretValues<T>(input: T, values: readonly string[], key?: 
 }
 
 /** Keep private material in memory only; do not copy it into run snapshots. */
-export function createAgentIdentityRedactor(privateKeyPem?: string, secrets: readonly string[] = []) {
+export function createAgentIdentityRedactor(privateKeyPem?: string, secrets: readonly string[] = [],
+  options: { maskResumedSuffixes?: boolean } = {}) {
   const values = privateKeyPem ? [...new Set([
     privateKeyPem,
     privateKeyPem.trim(),
@@ -48,6 +62,7 @@ export function createAgentIdentityRedactor(privateKeyPem?: string, secrets: rea
   const secretSources: string[] = [];
   const secretValues: string[] = [];
   const pending = new Map<string, string>();
+  const seenStreams = new Set<string>();
   const deltaStreams = new Map<string, {
     scope: string; itemId?: string; payload: Record<string, unknown>; paths: string[];
   }>();
@@ -65,9 +80,18 @@ export function createAgentIdentityRedactor(privateKeyPem?: string, secrets: rea
     // Hold only a suffix that could begin a secret. Separate buffers prevent
     // interleaved stdout/stderr from defeating matching across output chunks.
     chunk(stream: string, chunk: string): string {
-      const text = (pending.get(stream) ?? "") + chunk;
+      let text = (pending.get(stream) ?? "") + chunk;
       const candidates = [...values, ...secretValues].sort((a, b) => b.length - a.length);
       let output = "";
+      if (options.maskResumedSuffixes && !seenStreams.has(stream) && text.length > 0) {
+        const startsSecret = candidates.some((value) => text.startsWith(value) || value.startsWith(text));
+        const resumed = startsSecret ? 0 : resumedSuffixLength(text, candidates);
+        if (resumed < text.length) seenStreams.add(stream);
+        if (resumed > 0) {
+          output = REDACTED_EVENT_VALUE;
+          text = text.slice(resumed);
+        }
+      }
       let start = 0;
       for (let index = 0; index < text.length;) {
         let matched = 0;

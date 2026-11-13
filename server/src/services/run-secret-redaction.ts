@@ -107,6 +107,12 @@ async function registerEncryptedValues(db: Db, key: string, companyId: string, r
   });
 }
 
+export function withRunRedactionHistory<T extends Record<string, unknown>>(next: T, current: unknown): T {
+  const locked = asRecord(current) ?? {};
+  const preserved = [REGISTRY_KEY, OUTPUT_SECRET_KEY].filter((key) => Array.isArray(locked[key]));
+  return preserved.length === 0 ? next : { ...next, ...Object.fromEntries(preserved.map((key) => [key, locked[key]])) };
+}
+
 export function createRunOutputSecretStore(db: Db) {
   const provider = getSecretProvider("local_encrypted");
   const snapshot = sql`jsonb_build_object('paperclipOutputSecretRedactions', ${heartbeatRuns.contextSnapshot} -> 'paperclipOutputSecretRedactions')`;
