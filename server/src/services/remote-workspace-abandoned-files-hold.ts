@@ -112,13 +112,13 @@ export async function releaseAbandonedWorkspaceFiles(db: Db, input: {
     { companyId: input.companyId });
     const scheduled = unparked.length > 0;
     const summary = input.reason === "retention_expired"
-      ? scheduled ? `Unsaved files from an interrupted run were kept for ${days(keptDays)}. They are scheduled for removal.` : null
+      ? `Unsaved files from an interrupted run were kept for ${days(keptDays)}, and their retention period has ended.${scheduled ? " They are scheduled for removal." : ""}`
       : input.reason === "discarded"
         ? `Unsaved files from an interrupted run were discarded.${scheduled ? " They are scheduled for removal." : ""}`
         : "Unsaved files from an interrupted run were saved to the task's recovered files.";
     logger.info({ companyId: input.companyId, workspaceId: workspace.id, abandonedEpoch: input.epoch, reason: input.reason,
       actorType: input.actorType, actorId: input.actorId, leasesHandedToCleanup: unparked.length }, "abandoned workspace files released");
-    if (summary) await logActivity(tx, { companyId: input.companyId, actorType: input.actorType, actorId: input.actorId,
+    await logActivity(tx, { companyId: input.companyId, actorType: input.actorType, actorId: input.actorId,
       action: "workspace.abandoned_files_released", entityType: issueId ? "issue" : "execution_workspace",
       entityId: issueId ?? workspace.id, runId,
       details: { summary, reason: input.reason, workspaceId: workspace.id, abandonedEpoch: input.epoch,

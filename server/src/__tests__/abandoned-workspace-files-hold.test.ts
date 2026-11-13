@@ -305,7 +305,7 @@ describe.skipIf(!support.supported)("sandbox that holds files from an abandoned 
     const [released] = await entries("workspace.abandoned_files_released");
     expect(released).toMatchObject({ entityType: "issue", entityId: seeded.issueId, actorType: "system", actorId: "workspace-retention" });
     expect(released!.details).toMatchObject({ reason: "retention_expired",
-      summary: "Unsaved files from an interrupted run were kept for 8 days. They are scheduled for removal." });
+      summary: "Unsaved files from an interrupted run were kept for 8 days, and their retention period has ended. They are scheduled for removal." });
     expect(await entries("workspace.abandoned_files_removed")).toEqual([]);
 
     await sweep(runtime);
@@ -333,7 +333,7 @@ describe.skipIf(!support.supported)("sandbox that holds files from an abandoned 
     expect(await leaseRow(seeded)).toMatchObject({ status: "pending_cleanup" });
   });
 
-  it("says nothing on the task when another receipt still holds the sandbox", async () => {
+  it("records the end of retention without scheduling removal when another receipt still holds the sandbox", async () => {
     const seeded = await seed();
     await abandon(seeded);
     const { call, runtime } = worker(seeded);
@@ -347,9 +347,26 @@ describe.skipIf(!support.supported)("sandbox that holds files from an abandoned 
         retainUntil: new Date(Date.now() + 86_400_000).toISOString() },
     ] } }).where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
     await sweep(runtime);
-    expect(await entries("workspace.abandoned_files_released")).toEqual([]);
+    const [ended] = await entries("workspace.abandoned_files_released");
+    expect(ended).toMatchObject({ entityType: "issue", entityId: seeded.issueId, actorType: "system", actorId: "workspace-retention" });
+    expect(ended!.details).toMatchObject({ reason: "retention_expired", leasesHandedToCleanup: 0,
+      summary: expect.not.stringContaining("scheduled for removal") });
+    expect((ended!.details as { summary: string }).summary).toContain("retention period has ended");
     expect(destroyCalls(call)).toEqual([]);
     expect(await leaseRow(seeded)).toMatchObject({ status: "retained" });
+  });
+
+  it("records the end of retention when it expires before the lease was ever parked", async () => {
+    const seeded = await seed();
+    await abandon(seeded);
+    const { runtime } = worker(seeded);
+    await setReceipts(seeded, receipt => ({ ...receipt, retainUntil: new Date(Date.now() - 1_000).toISOString() }));
+    await sweep(runtime);
+    const [ended] = await entries("workspace.abandoned_files_released");
+    expect(ended).toMatchObject({ entityType: "issue", entityId: seeded.issueId, actorId: "workspace-retention" });
+    expect(ended!.details).toMatchObject({ reason: "retention_expired", leasesHandedToCleanup: 0 });
+    expect((ended!.details as { summary: string }).summary).not.toContain("scheduled for removal");
+    expect(await entries("workspace.abandoned_files_removed")).toEqual([]);
   });
 
   it("wakes the cleanup worker at the receipt's retention end, also after a restart, and then goes quiet", async () => {
