@@ -27,6 +27,8 @@ import { legacyExecutionNeedsReconciliation } from "../services/legacy-execution
 import { getServerAdapter, registerServerAdapter, unregisterServerAdapter } from "../adapters/index.js";
 import { waitForPendingRunFailureReports } from "../services/run-failure-report.js";
 import { dotRunnerBroker } from "../services/dot-runner-broker.js";
+import { environmentService } from "../services/environments.js";
+import * as executionConfiguration from "../services/heartbeat/execution-configuration.js";
 
 const captureRunFailure = vi.hoisted(() => vi.fn());
 vi.mock("../sentry.js", async (importOriginal) => ({
@@ -446,6 +448,52 @@ describe("durable, authorized connection routing", () => {
       expect(resolveTaskSessionConfigFreshness({ hasTaskSession: true, configuredModel: String(selected.runtimeConfig.model), taskSessionParams: { __paperclipConfiguredModel: selected.runtimeConfig.model, __paperclipConfigFingerprint: previous.fingerprint, __paperclipConfigFingerprintVersion: previous.version, __paperclipConfigCategoryFingerprints: previous.categoryFingerprints }, configMetadata: current, compatibleConfigMetadata }).reset).toBe(false);
     } finally { await before.cleanup(); await after.cleanup(); }
   });
+  it.each([
+    { useHostAuth: undefined, nativeHomeMode: undefined }, { useHostAuth: true, nativeHomeMode: undefined },
+    { useHostAuth: false, nativeHomeMode: undefined }, { useHostAuth: false, nativeHomeMode: "preconfigured" },
+  ])("applies SSH authentication before selecting a busy pool (%j)", async ({ useHostAuth, nativeHomeMode }) => {
+    const original = await instanceSettingsService(db).getExperimental();
+    await instanceSettingsService(db).updateExperimental({ enableAiConnectionRouters: true, enableNativeRunner: true, enableEnvironments: true, enableWorktreeRunExecution: true });
+    const pool = await makePool({ members: [members[0]!] });
+    const environment = await environmentService(db).create(companyId, { name: `SSH routing fixture ${useHostAuth} ${nativeHomeMode}`, driver: "ssh", status: "active", envVars: {}, config: {
+      host: "ssh.example.test", username: "fixture", remoteWorkspacePath: "/workspace", ...(useHostAuth === undefined ? {} : { useHostAuth }),
+    } });
+    const configured = { provider: "acpx", acpxAgent: "claude", model: "fixture-host-model", ...(nativeHomeMode ? { homeMode: nativeHomeMode } : {}) };
+    const [agent] = await db.insert(agents).values({ companyId, name: "SSH routing fixture", status: "idle", adapterType: "paperclip_runner",
+      adapterConfig: configured, defaultEnvironmentId: environment.id,
+      runtimeConfig: { aiConnection: { mode: "router", connectionId: pool.id }, heartbeat: { enabled: false, wakeOnDemand: true } } }).returning();
+    const [issue] = await db.insert(issues).values({ companyId, title: "SSH pool routing fixture", status: "todo", assigneeAgentId: agent.id, responsibleUserId: "alice", createdByUserId: "alice" }).returning();
+    proposal.mockClear();
+    proposal.mockImplementation(async () => ({ kind: "exhausted", retryAt: new Date(Date.now() + 60_000).toISOString(), skipped: {} }));
+    const preparation = vi.spyOn(executionConfiguration, "prepareHeartbeatExecutionConfiguration").mockRejectedValue(new Error("fixture stopped before provider configuration"));
+    const heartbeat = heartbeatService(db, { pluginWorkerManager: worker, runtimeEnv: {} });
+    try {
+      const run = await heartbeat.wakeup(agent.id, { source: "assignment", reason: "issue_assigned", triggerDetail: "system",
+        payload: { issueId: issue.id }, contextSnapshot: { issueId: issue.id, responsibleUserId: "alice" } });
+      expect(run).not.toBeNull();
+      await heartbeat.drainActiveRunExecutions();
+      const saved = await heartbeat.getRun(run!.id);
+      if (useHostAuth === false) {
+        expect(proposal).toHaveBeenCalled();
+        expect(preparation).not.toHaveBeenCalled();
+        expect(saved?.errorCode).toBe("ai_connection_pool_exhausted");
+      } else {
+        expect(proposal).not.toHaveBeenCalled();
+        expect(saved?.contextSnapshot?.aiRouterSelection).toBeUndefined();
+        expect(saved?.error).toContain("fixture stopped before provider configuration");
+        expect(preparation).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ config: expect.objectContaining({
+          aiBinding: undefined, sourceWorkspaceConfig: expect.objectContaining(configured),
+        }) }));
+      }
+    } finally {
+      await db.update(agents).set({ status: "paused" }).where(eq(agents.id, agent.id));
+      await heartbeat.drainActiveRunExecutions();
+      preparation.mockRestore();
+      proposal.mockImplementation(defaultProposal);
+      await instanceSettingsService(db).updateExperimental(original);
+    }
+  }, 30_000);
+
   it("admits a healthy pool member when the saved Grok connection is held", async () => {
     const original = await instanceSettingsService(db).getExperimental();
     await instanceSettingsService(db).updateExperimental({ enableAiConnectionRouters: true,

@@ -3391,7 +3391,7 @@ export function agentRoutes(
         });
       type = selection.adapterType;
       adapterConfigForTest = { ...selection.adapterConfig,
-        ...(type === "paperclip_runner" && requestedEnvironment?.driver === "ssh" && requestedEnvironment.config.useHostAuth !== false ? { homeMode: "preconfigured" } : {}) };
+        ...(type === "paperclip_runner" && requestedEnvironment?.driver === "ssh" ? { homeMode: requestedEnvironment.config.useHostAuth === false ? "isolated" : "preconfigured" } : {}) };
       if (requestedEnvironment) await assertAdapterTestEnvironmentForCompany(companyId, requestedEnvironment.id, type);
       const adapter = requireServerAdapter(type);
       if (!retainsSavedExecution) await assertSelectableAdapterType(type, adapterConfigForTest, companyId);
