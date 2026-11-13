@@ -95,7 +95,8 @@ The current issue model includes stable issue identifiers, parent/sub-issues, bl
 
 When an agent creates a subtask or follow-up task, its source task's feed shows
 a linked card at creation time with the current title, task number, and status.
-The Tasks tab keeps the full relationship list.
+The Tasks tab keeps the full relationship list and shows each task once. Project
+groups omit tasks already shown in the other sections and disappear when empty.
 
 Agent-owned tasks show **In Progress** only while a task-linked run is queued
 or running. When execution ends, their visible status reflects recovery
@@ -151,6 +152,12 @@ Task reply and new-task composers submit with Enter by default; Shift+Enter
 adds a new line. Settings → Experimental → **Command/Ctrl+Enter to Submit**
 restores the previous behavior, where Enter adds a new line and Command/Ctrl+Enter
 submits.
+
+New-task submission closes the composer immediately and saves in the background.
+The person can start another task while earlier requests are pending. A failed
+save restores its submitted draft and files. If another draft is open, it stays
+intact and offers a retry for the saved request. Each request retains its own
+creation key through retries and reloads.
 
 ### Routine responsibility
 

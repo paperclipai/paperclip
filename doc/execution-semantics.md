@@ -598,6 +598,21 @@ The **Retry now** action returns `waiting` with the saved retry schedule while
 cleanup holds ownership. Its controls show the wait without claiming that a run
 started, and another click can check the gate again.
 
+For legacy local runs, physical cleanup and cost settlement have separate receipts.
+The owning controller can record verified process cleanup while usage is incomplete.
+The accounting worker then records an honest lower bound or an unpriced charge;
+missing usage does not prove zero cost. The run status and saved retry intent stay
+unchanged. A later usage receipt can still reconcile the same charge.
+
+If the controller stops before it saves the cleanup receipt, an authorized board
+member can retry that run through the existing company-scoped cost-accounting
+Retry endpoint. It checks the saved controller and child identities, local
+ownership, and environment cleanup before it records physical closure. A live
+process, an unknown identity, a foreign host, or pending cleanup keeps the hold.
+A repeated request or a lost HTTP response must not add a second charge. This
+action settles accounting; it does not start a provider turn or authorize task
+replay.
+
 A human comment may supersede a retry only while it remains `scheduled_retry`.
 Queued and running retries retain their execution and receive the comment through
 normal wake coalescing. Supersession rechecks the scheduled status atomically with
@@ -6178,6 +6193,18 @@ rollback requires a server that reads this envelope and the supported settled
 warm journal, including its PRP v2 idle goal suffix. Earlier local-only readers
 and readers lacking that suffix handling remain outside that rollback contract.
 
+### Resolved cards queued behind chat runs
+
+A resolved card is an independent continuation. Its saved chat message IDs
+remain authorization bindings even if a prior run received those messages.
+Queue promotion retains live, same-task message bindings for that continuation;
+deleted and self-authored messages still drop out. The new run must pass current
+chat authorization. Ordinary message-only wakes whose input was consumed remain
+cancelled and cannot start another turn.
+Retained bindings that a run already received are not fresh input: they never
+reopen a finished task. A card answer owed to a task the finishing run closed
+still continues it in progress through the owed-answer path.
+
 ### Stop a failed native retry
 
 A failed native run can still own a scheduled same-run bootstrap retry. The
@@ -6204,6 +6231,20 @@ can be accepted without a terminal acknowledgement. The selected run and its
 history refresh after either outcome. Stop does not resume the provider or change
 a manual task hold.
 
+### Provider-pack admission during restart recovery
+
+Provider-pack admission keeps a digest-bound historical proof when a controller
+claim changes its current admission to pending. If a restart or a failed recovery
+barrier interrupts that claim before its admission callback, the next same-run
+claim can reuse that proof only for the unchanged receipt. Normal session,
+company, agent, Runner and environment-lease checks still apply. Current artifact
+retention remains blocked until the new claim publishes verified admission.
+Unknown admission state discards the historical proof; a callback clears it when
+it records its decision. This adds no background work or provider replay.
+Previous-release verified receipts seed this proof on their first new claim.
+Older pending or unknown records without it remain unverified, as before. Older
+readers ignore the added profile field and retain their existing refusal behavior.
+
 ### Native session diagnostic ownership
 
 Native session diagnostics follow the current execution's recorder epoch, including
@@ -6216,3 +6257,11 @@ with company/run identifiers to the process logger; it cannot append provider te
 to a completed run or borrow a successor run's recorder. Canonical native output
 export, source coverage, secret redaction and persistence-failure warnings retain
 their existing contracts.
+
+Exact sandbox reattachment reports the current acquisition as `resumed` only
+when the recorded lease passes scope and identity checks and the provider confirms
+that same allocation. The lease's original acquisition can have been `replacement`;
+that historical label cannot describe the later reattachment. This changes the
+operation receipt passed separately through preparation to the execution target,
+not persisted lease metadata or the Runner verification guard. Missing,
+expired, foreign or changed allocations retain their named recovery refusals.

@@ -12,13 +12,26 @@
 //       (the end time is the latest gate's paint time), otherwise
 //   2b. no query that has no data yet is fetching (the end time is the first
 //       such frame).
-// A new navigation interrupts an open one. A measurement that has not ended
-// after `timeoutMs` ends with outcome `timeout`.
+// A new navigation interrupts an open one.
+//
+// A measurement in a tab that is hidden when it starts, or that hides before
+// it is ready, ends with outcome `hidden` at the moment the tab hid. Browsers
+// stop painting hidden tabs, so it could never become ready; the same rule as
+// `web-vitals`, which stops reporting LCP and FCP once the page has been
+// hidden.
+//
+// A measurement that has not ended `timeoutMs` after it started ends with
+// outcome `timeout`, and its end time is exactly start + `timeoutMs`. Any end
+// observed after that deadline (a timer that fired late, a frame that ran
+// after the computer woke up) is reported as that timeout, never as a longer
+// duration. When the observed end, or a gap between two frames, is more than
+// `SUSPEND_GRACE_MS` late, the measurement is marked `suspended`: the
+// computer slept or the tab was frozen while it was open.
 
 import type { PageContentGateSnapshot } from "./page-content-gates";
 
 export type PageLoadType = "hard" | "client";
-export type PageLoadOutcome = "ready" | "timeout" | "interrupted";
+export type PageLoadOutcome = "ready" | "timeout" | "interrupted" | "hidden";
 export type PageLoadReadySignal = "content" | "idle";
 
 export interface PageLoadMeasurement {
@@ -32,6 +45,10 @@ export interface PageLoadMeasurement {
   readySignal: PageLoadReadySignal | null;
   /** The tab was hidden at some point during the measurement. */
   wasHidden: boolean;
+  /** The computer slept or the tab froze while the measurement was open. */
+  suspended: boolean;
+  /** The page's `?view=`, from an allowlist (`page-view.ts`); null for pages without views. */
+  view: string | null;
 }
 
 /** Receives measurements; implemented by the lazily loaded tracing SDK. */
@@ -49,6 +66,8 @@ export interface PageLoadRecorderDeps {
   isDocumentHidden(): boolean;
   hasPendingPrimaryData(): boolean;
   readGates(): PageContentGateSnapshot;
+  /** The current page view for `routeTemplate` (`pageViewFor`). */
+  readView?(routeTemplate: string): string | null;
 }
 
 export interface PageLoadRecorderOptions {
@@ -59,21 +78,29 @@ export interface PageLoadRecorderOptions {
 }
 
 export interface PageLoadRecorder {
-  begin(input: { routeTemplate: string; loadType: PageLoadType; startTime: number }): PageLoadMeasurement;
+  /**
+   * `hiddenAt`: when the tab was first hidden after `startTime`, if it was
+   * hidden before this call (a hard load opened in a background tab).
+   */
+  begin(input: { routeTemplate: string; loadType: PageLoadType; startTime: number; hiddenAt?: number | null }): PageLoadMeasurement;
   /**
    * A redirect (history replace) while a measurement is open continues it
-   * under the new route. Returns false when no measurement is open.
+   * under the new route, as does one right after a measurement that ended
+   * hidden and has not been exported yet. Returns false otherwise.
    */
   redirect(routeTemplate: string): boolean;
   open(): PageLoadMeasurement | null;
   currentRouteTemplate(): string | null;
   hardLoadRouteTemplate(): string | null;
-  noteHidden(): void;
+  /** The tab became hidden at `time`: an open measurement ends as `hidden`. */
+  noteHidden(time: number): void;
   attachSink(sink: PageLoadSink): void;
   stop(): void;
 }
 
 export const PAGE_LOAD_TIMEOUT_MS = 30_000;
+/** An end, or a frame, this much later than expected means the computer slept. */
+export const SUSPEND_GRACE_MS = 5_000;
 
 export function createPageLoadRecorder(
   deps: PageLoadRecorderDeps,
@@ -93,6 +120,8 @@ export function createPageLoadRecorder(
   let timer: unknown = null;
   let streak = 0;
   let streakStart = 0;
+  let lastFrameAt: number | null = null;
+  let lastEnded: PageLoadMeasurement | null = null;
   const buffered: PageLoadMeasurement[] = [];
 
   function cancelScheduled() {
@@ -102,14 +131,31 @@ export function createPageLoadRecorder(
     timer = null;
   }
 
+  function readView(routeTemplate: string): string | null {
+    return deps.readView ? deps.readView(routeTemplate) : null;
+  }
+
   function finish(measurement: PageLoadMeasurement, outcome: PageLoadOutcome, endTime: number, signal: PageLoadReadySignal | null) {
     if (current === measurement) {
       current = null;
       cancelScheduled();
     }
+    const deadline = measurement.startTime + timeoutMs;
+    if (endTime > deadline) {
+      // Not ready by the deadline, whatever happened after it.
+      if (endTime - deadline > SUSPEND_GRACE_MS) measurement.suspended = true;
+      outcome = "timeout";
+      signal = null;
+      endTime = deadline;
+    }
+    if (outcome === "hidden") measurement.wasHidden = true;
+    // An interrupted measurement keeps the view it had: the URL already
+    // belongs to the next page.
+    if (outcome !== "interrupted") measurement.view = readView(measurement.routeTemplate);
     measurement.outcome = outcome;
     measurement.readySignal = signal;
     measurement.endTime = Math.max(measurement.startTime, endTime);
+    lastEnded = measurement;
     if (measurement.loadType === "hard") hardLoadRoute = measurement.routeTemplate;
     if (sink) {
       sink.end(measurement);
@@ -123,7 +169,13 @@ export function createPageLoadRecorder(
     frame = null;
     const measurement = current;
     if (!measurement || stopped) return;
-    if (deps.isDocumentHidden()) measurement.wasHidden = true;
+    const time = deps.now();
+    if (deps.isDocumentHidden()) {
+      finish(measurement, "hidden", time, null);
+      return;
+    }
+    if (lastFrameAt !== null && time - lastFrameAt > SUSPEND_GRACE_MS) measurement.suspended = true;
+    lastFrameAt = time;
 
     const gates = deps.readGates();
     let signal: PageLoadReadySignal | null = null;
@@ -138,7 +190,7 @@ export function createPageLoadRecorder(
     if (signal === null) {
       streak = 0;
     } else {
-      if (streak === 0) streakStart = deps.now();
+      if (streak === 0) streakStart = time;
       streak += 1;
       if (streak >= stableFrames) {
         const endTime = signal === "content" && gates.lastContentReadyAt !== null
@@ -153,6 +205,7 @@ export function createPageLoadRecorder(
 
   function schedule(measurement: PageLoadMeasurement) {
     streak = 0;
+    lastFrameAt = null;
     frame = deps.requestFrame(tick);
     const remaining = Math.max(0, measurement.startTime + timeoutMs - deps.now());
     timer = deps.setTimer(() => {
@@ -162,8 +215,11 @@ export function createPageLoadRecorder(
   }
 
   return {
-    begin({ routeTemplate, loadType, startTime }) {
-      if (current) finish(current, "interrupted", deps.now(), null);
+    begin({ routeTemplate, loadType, startTime, hiddenAt = null }) {
+      // The open measurement ends where this one starts, so no request or
+      // time is counted under both.
+      if (current) finish(current, "interrupted", Math.min(deps.now(), startTime), null);
+      const hidden = hiddenAt !== null || deps.isDocumentHidden();
       const measurement: PageLoadMeasurement = {
         id: nextId++,
         routeTemplate,
@@ -172,18 +228,31 @@ export function createPageLoadRecorder(
         endTime: null,
         outcome: null,
         readySignal: null,
-        wasHidden: deps.isDocumentHidden(),
+        wasHidden: hidden,
+        suspended: false,
+        view: readView(routeTemplate),
       };
       latestRoute = routeTemplate;
       if (stopped) return measurement;
       current = measurement;
       sink?.begin(measurement);
-      schedule(measurement);
+      if (hidden) finish(measurement, "hidden", hiddenAt ?? startTime, null);
+      else schedule(measurement);
       return measurement;
     },
     redirect(routeTemplate) {
       latestRoute = routeTemplate;
-      if (!current) return false;
+      if (!current) {
+        // A load in a background tab ends as soon as it starts; its redirect
+        // (for example `/` to the dashboard) renames it rather than starting
+        // a second, also hidden, measurement.
+        const ended = lastEnded;
+        if (ended?.outcome !== "hidden" || !deps.isDocumentHidden() || !buffered.includes(ended)) return false;
+        ended.routeTemplate = routeTemplate;
+        ended.view = readView(routeTemplate);
+        if (ended.loadType === "hard") hardLoadRoute = routeTemplate;
+        return true;
+      }
       current.routeTemplate = routeTemplate;
       streak = 0;
       return true;
@@ -191,8 +260,8 @@ export function createPageLoadRecorder(
     open: () => current,
     currentRouteTemplate: () => latestRoute,
     hardLoadRouteTemplate: () => hardLoadRoute ?? (current?.loadType === "hard" ? current.routeTemplate : null),
-    noteHidden() {
-      if (current) current.wasHidden = true;
+    noteHidden(time) {
+      if (current) finish(current, "hidden", time, null);
     },
     attachSink(next) {
       if (stopped) return;

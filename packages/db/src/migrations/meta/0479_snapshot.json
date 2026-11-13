@@ -1,5 +1,5 @@
 {
-  "id": "35196901-e59c-4ede-85fb-03c097ac8267",
+  "id": "f5f852bd-0568-4b2d-bc35-0dac5d9c8c5b",
   "prevId": "349cdd89-db04-4340-a5d3-3b877bf7227d",
   "version": "7",
   "dialect": "postgresql",
@@ -18960,12 +18960,6 @@
           "notNull": true,
           "default": "'[]'::jsonb"
         },
-        "security_override": {
-          "name": "security_override",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
         "enabled": {
           "name": "enabled",
           "type": "boolean",
@@ -35266,6 +35260,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": 1
+        },
+        "native_source_cursors": {
+          "name": "native_source_cursors",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
         },
         "native_phase": {
           "name": "native_phase",
