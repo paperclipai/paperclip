@@ -45,15 +45,26 @@ export interface SkillSourceSecurityOverride {
   trustFutureUpdates: boolean;
   approvedByUserId: string | null;
   approvedAt: string;
-  /**
-   * Earlier approvals that still cover installed skill versions after a new approval replaced them,
-   * for example when a refresh kept a skill on its older commit. They apply only to their own commit,
-   * so audits and scans of those installed versions keep accepting the approved files.
-   */
-  retained?: Array<{ commitSha: string; files: Array<{ path: string; code: string; sha256: string }> }>;
+}
+/**
+ * The security approval that admitted an installed skill version's flagged files, recorded on the
+ * version when it is installed. Audits, update diffs and previews of that version read this record;
+ * a source's current approval only decides what new scans and refreshes include.
+ */
+export interface SkillVersionSecurityApproval {
+  /** The commit this version was installed from. */
+  commitSha: string;
+  /** The commit the administrator reviewed; differs when future-update trust carried the approval. */
+  approvedCommitSha: string;
+  approvedByUserId: string | null;
+  approvedAt: string;
+  reason: string;
+  trustFutureUpdates: boolean;
+  /** The admitted files at their repository paths, with the exact bytes this version installed. */
+  files: Array<{ path: string; code: string; sha256: string }>;
 }
 /** What a source response shows about its saved approval. The approved files stay on the server. */
-export interface SkillSourceSecurityOverrideSummary extends Omit<SkillSourceSecurityOverride, 'files' | 'retained'> {
+export interface SkillSourceSecurityOverrideSummary extends Omit<SkillSourceSecurityOverride, 'files'> {
   fileCount: number;
 }
 export interface SkillRepositoryPackage {

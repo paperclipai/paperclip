@@ -152,20 +152,22 @@ export type GitHubSkillUpdateDiff = ({ supported: true } & SkillPackageDiff) | {
 
 export async function diffGitHubSkillUpdate(
   input: { repositoryUrl: string; packageMode?: SkillSourcePackageMode; skillPath: string; installedCommitSha: string; latestCommitSha: string;
-    /** The source's recorded approval, so approved files compare like the refresh that publishes them. */
-    securityOverrides?: SkillScanOptions['securityOverrides'] },
+    /** The source's saved approval, so the latest commit compares like the refresh that would publish it. */
+    securityOverrides?: SkillScanOptions['securityOverrides'];
+    /** The installed version's own approval record, so its admitted files compare as installed. */
+    installedSecurityOverrides?: SkillScanOptions['securityOverrides'] },
   read: GitHubRead,
   signal?: AbortSignal,
 ): Promise<GitHubSkillUpdateDiff> {
-  const snapshotAt = async (commitSha: string) => {
+  const snapshotAt = async (commitSha: string, securityOverrides: SkillScanOptions['securityOverrides']) => {
     signal?.throwIfAborted();
-    const scan = await scanGitHubSkillsWithPackageFallback({ repositoryUrl: input.repositoryUrl, packageMode: input.packageMode, commitSha, onlySkillPath: input.skillPath }, read, { signal, securityOverrides: input.securityOverrides });
+    const scan = await scanGitHubSkillsWithPackageFallback({ repositoryUrl: input.repositoryUrl, packageMode: input.packageMode, commitSha, onlySkillPath: input.skillPath }, read, { signal, securityOverrides });
     if (scan.commitSha.toLowerCase() !== commitSha.toLowerCase()) throw unprocessable('The source snapshot did not match the requested revision.');
     return packageSnapshot(scan, input);
   };
-  const installed = await snapshotAt(input.installedCommitSha);
+  const installed = await snapshotAt(input.installedCommitSha, input.installedSecurityOverrides);
   if ('partialReason' in installed) return { supported: false, reason: installed.partialReason };
-  const latest = await snapshotAt(input.latestCommitSha);
+  const latest = await snapshotAt(input.latestCommitSha, input.securityOverrides);
   if ('partialReason' in latest) return { supported: false, reason: latest.partialReason };
   signal?.throwIfAborted();
   return { supported: true, ...diffSkillPackageFiles(installed.files, latest.files, { installed: installed.omitted, latest: latest.omitted }) };

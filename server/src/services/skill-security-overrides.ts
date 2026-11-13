@@ -7,6 +7,7 @@ import {
   type SkillSecurityFinding,
   type SkillSecurityOverrideRequest,
   type SkillSourceSecurityOverride,
+  type SkillVersionSecurityApproval,
 } from '@paperclipai/shared';
 import { conflict, unprocessable } from '../errors.js';
 import { skillFileBytes } from './skill-snapshot.js';
@@ -14,7 +15,8 @@ import { skillFileBytes } from './skill-snapshot.js';
 /** Mirrors `SkillSecurityFindingAcceptor` in company-skills.ts without importing that module. */
 export type SecurityFindingAcceptor = (filePath: string, sha256: string, code: string) => boolean;
 
-type OverrideGrant = Pick<SkillSourceSecurityOverride, 'commitSha' | 'trustFutureUpdates' | 'retained'> & {
+/** An approval as a scan applies it: a source's saved approval, a new request, or an installed version's record. */
+export type SecurityOverrideGrant = Pick<SkillSourceSecurityOverride, 'commitSha' | 'trustFutureUpdates'> & {
   files: Array<{ path: string; sha256: string }>;
 };
 
@@ -30,16 +32,13 @@ export function fileSha256(file: CompanySkillVersionFileInventoryEntry) {
  * administrator reviewed, and only to the exact bytes they saw. With the
  * explicit future-updates opt-in it keeps applying to the same paths in later
  * commits. Non-overridable codes are never accepted, whatever the grant says.
- * Approvals a renewal replaced but kept for installed versions apply only to
- * their own commit, so a scan of an installed version reads them as before.
  */
 export function securityOverrideAcceptor(
-  grants: Array<OverrideGrant | null | undefined>,
+  grants: Array<SecurityOverrideGrant | null | undefined>,
   commitSha: string,
   toRepositoryPath: (filePath: string) => string = filePath => filePath,
 ): SecurityFindingAcceptor | undefined {
-  const active = grants.filter((grant): grant is OverrideGrant => Boolean(grant))
-    .flatMap(grant => [grant, ...(grant.retained ?? []).map(retained => ({ ...retained, trustFutureUpdates: false }))]);
+  const active = grants.filter((grant): grant is SecurityOverrideGrant => Boolean(grant));
   if (!active.length) return undefined;
   const commit = commitSha.toLowerCase();
   // Index once per scan: a repository can hold thousands of audited and approved files.
@@ -132,4 +131,26 @@ export function recordedSecurityOverride(request: SkillSecurityOverrideRequest, 
     approvedByUserId: userId,
     approvedAt: now.toISOString(),
   };
+}
+
+/**
+ * The record an installed version keeps of the approval that admitted its flagged files: the accepted
+ * findings inside its package, with the exact bytes installed. Null when the version admits none.
+ */
+export function versionSecurityApproval(
+  approval: SkillSourceSecurityOverride | null | undefined,
+  scan: { commitSha: string; securityFindings?: SkillSecurityFinding[] },
+  packagePaths: ReadonlySet<string>,
+): SkillVersionSecurityApproval | null {
+  if (!approval) return null;
+  const files = (scan.securityFindings ?? []).filter(finding => finding.accepted && finding.overridable && packagePaths.has(finding.path))
+    .map(finding => ({ path: finding.path, code: finding.code, sha256: finding.sha256.toLowerCase() }));
+  if (!files.length) return null;
+  return { commitSha: scan.commitSha.toLowerCase(), approvedCommitSha: approval.commitSha.toLowerCase(), approvedByUserId: approval.approvedByUserId,
+    approvedAt: approval.approvedAt, reason: approval.reason, trustFutureUpdates: approval.trustFutureUpdates, files };
+}
+
+/** An installed version's record as a grant: it accepts exactly the bytes that version installed, at its commit. */
+export function versionApprovalGrant(record: SkillVersionSecurityApproval | null | undefined): SecurityOverrideGrant | null {
+  return record ? { commitSha: record.commitSha, trustFutureUpdates: false, files: record.files } : null;
 }

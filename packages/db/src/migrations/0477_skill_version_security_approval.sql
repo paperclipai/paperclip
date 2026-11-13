@@ -1,0 +1,1 @@
+ALTER TABLE "company_skill_versions" ADD COLUMN IF NOT EXISTS "security_approval" jsonb;

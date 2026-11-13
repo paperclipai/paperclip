@@ -20,7 +20,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { securityOverrideAcceptor, skillRelativeToRepositoryPath } from "./skill-security-overrides.js";
+import { securityOverrideAcceptor, skillRelativeToRepositoryPath, versionApprovalGrant } from "./skill-security-overrides.js";
 import { skillFileBytes, snapshotFile, assertSkillSnapshotPath, skillSnapshotHash, MAX_SKILL_SNAPSHOT_BYTES, MAX_SKILL_SNAPSHOT_FILES } from "./skill-snapshot.js";
 import { fileURLToPath } from "node:url";
 import { and, asc, desc, eq, inArray, isNull, isNotNull, lt, ne, or, sql } from "drizzle-orm";
@@ -31,7 +31,6 @@ import {
   authUsers,
   companies,
   companySkillComments,
-  companySkillSources,
   companySkillStars,
   companySkillTestInputs,
   companySkillTestRunTemplates,
@@ -125,6 +124,7 @@ import {
   parseFrontmatterMarkdown,
   splitFrontmatterBlock,
   stringifyFrontmatter,
+  type SkillVersionSecurityApproval,
 } from "@paperclipai/shared";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
@@ -446,6 +446,8 @@ type CreateVersionOptions = {
   skipInventoryRefresh?: boolean;
   skill?: CompanySkill;
   database?: DbOrTransaction;
+  /** The approval that admitted this version's flagged files, recorded with the version. */
+  securityApproval?: SkillVersionSecurityApproval | null;
 };
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -1963,7 +1965,7 @@ function serializeVersionFileInventory(
 }
 
 function toCompanySkillVersion(row: CompanySkillVersionRow): CompanySkillVersion {
-  const { packageSnapshotId: _package, packageFileMap: _map, migrationAt: _migration, ...publicRow } = row;
+  const { packageSnapshotId: _package, packageFileMap: _map, migrationAt: _migration, securityApproval: _approval, ...publicRow } = row;
   return {
     ...publicRow,
     label: row.label ?? null,
@@ -3605,12 +3607,23 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
   }
 
   /** The approval saved on a skill's GitHub source, applied to the installed files the way the source scan applies it. */
-  async function savedSecurityOverrideAcceptor(skill: CompanySkill, installedRoot: string) {
-    const sourceId = asString(skill.metadata?.skillSourceId);
+  /** The security approval recorded on an installed version when it was installed, if it admitted flagged files. */
+  async function installedSecurityApproval(companyId: string, skillId: string, versionId: string) {
+    const [row] = await db.select({ securityApproval: companySkillVersions.securityApproval }).from(companySkillVersions).where(and(
+      eq(companySkillVersions.companyId, companyId), eq(companySkillVersions.companySkillId, skillId), eq(companySkillVersions.id, versionId)));
+    return row?.securityApproval ?? null;
+  }
+
+  /**
+   * Accepts the flagged files an installed version's own approval record admitted: the same path and the exact
+   * bytes it installed. The source's current approval plays no part, so renewing, withdrawing or narrowing it
+   * later never changes how an installed version audits.
+   */
+  async function installedVersionAcceptor(skill: CompanySkill, versionId: string, installedRoot: string) {
     const entrypoint = asString(skill.metadata?.skillSourcePath);
-    if (!sourceId || !entrypoint) return undefined;
-    const [source] = await db.select({ securityOverride: companySkillSources.securityOverride }).from(companySkillSources)
-      .where(and(eq(companySkillSources.companyId, skill.companyId), eq(companySkillSources.id, sourceId)));
+    if (!entrypoint) return undefined;
+    const record = await installedSecurityApproval(skill.companyId, skill.id, versionId);
+    if (!record) return undefined;
     // A repository package installs the original files under REPOSITORY_CONTENT_DIR at their repository paths;
     // a skill package installs them relative to the skill directory.
     const repositoryPrefix = `${REPOSITORY_CONTENT_DIR}/`;
@@ -3621,16 +3634,8 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
       ? (filePath: string) => filePath.startsWith(repositoryPrefix) ? filePath.slice(repositoryPrefix.length)
         : filePath === "agents/openai.yaml" ? policyCopy : `${repositoryPrefix}${filePath}`
       : (filePath: string) => filePath === "SKILL.md" ? entrypoint : fromSkillDirectory(filePath);
-    const grant = source?.securityOverride;
-    if (!grant) return undefined;
-    // Installed bytes that equal the approved bytes at the same path are accepted whatever commit they
-    // were published from: renewing trust at a new commit can leave an unchanged package on its older sourceRef.
-    // Approvals a renewal replaced still cover the versions a refresh kept installed.
-    const acceptors = [grant, ...(grant.retained ?? []).map(retained => ({ ...retained, trustFutureUpdates: false }))]
-      .flatMap(entry => securityOverrideAcceptor([entry], entry.commitSha, toRepositoryPath) ?? []);
-    if (!acceptors.length) return undefined;
-    const accept = (filePath: string, sha256: string, code: string) => acceptors.some(candidate => candidate(filePath, sha256, code));
-    if (skill.metadata?.packageMode !== "repository") return accept;
+    const accept = securityOverrideAcceptor([versionApprovalGrant(record)], record.commitSha, toRepositoryPath);
+    if (!accept || skill.metadata?.packageMode !== "repository") return accept;
     // The generated SKILL.md repeats the original entrypoint's frontmatter. Accept its findings only
     // when the installed original itself matches the approval.
     const original = await fs.readFile(path.join(installedRoot, REPOSITORY_CONTENT_DIR, ...entrypoint.split("/"))).catch(() => null);
@@ -3654,7 +3659,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
           sourceLocator,
           fileInventory: version.repositorySnapshotId || version.packageSnapshotId
             ? await packageRuntime.inventory(version) : await packages.versionFiles(version),
-        }, true, await savedSecurityOverrideAcceptor(skill, sourceLocator));
+        }, true, await installedVersionAcceptor(skill, versionId, sourceLocator));
       });
     }
     if (skill.sourceType !== "catalog" && skill.sourceType !== "local_path") {
@@ -3898,6 +3903,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
           fileInventory: packageSnapshotId ? [] : fileInventory,
           authorAgentId: actor?.type === "agent" ? actor.agentId ?? null : null,
           authorUserId: actor?.type === "user" ? actor.userId ?? null : null,
+          securityApproval: options.securityApproval ?? null,
         })
         .returning()
         .then((rows) => rows[0] ?? null);
@@ -7616,6 +7622,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     scanProjectWorkspaces,
     importPackageFiles,
     auditSkill,
+    installedSecurityApproval,
     installUpdate,
     resetSkill,
     listRuntimeSkillEntries,

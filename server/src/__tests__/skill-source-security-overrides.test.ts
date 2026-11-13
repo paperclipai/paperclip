@@ -11,6 +11,8 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 import { githubFixture } from './helpers/github-skills.js';
 import { skillSourceService, type SkillSourceContext } from '../services/skill-sources.js';
 import { companySkillService } from '../services/company-skills.js';
+import { diffGitHubSkillUpdate } from '../services/skill-update-diff.js';
+import { versionApprovalGrant } from '../services/skill-security-overrides.js';
 
 const externalUrl = resolveExternalTestDatabaseUrl('PAPERCLIP_SKILL_SOURCES_TEST_DATABASE_URL');
 const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
@@ -270,7 +272,6 @@ echo updated`;
     const audit = await skills.auditSkill(companyId, skillId!);
     expect(audit?.findings.filter(finding => finding.code === 'remote_fetch_exec')).toEqual([expect.objectContaining({ path: 'install.sh', severity: 'warning' })]);
     const listed = await service.detail(companyId, created.source.id);
-    expect(listed.securityOverride).not.toHaveProperty('retained');
     expect(listed.securityOverride).toMatchObject({ commitSha: second, fileCount: 1 });
   });
 
@@ -357,6 +358,64 @@ echo updated`;
 echo again` }, 'c'.repeat(40));
     const later = await service.refresh(companyId, result.source.id, { ...context, authorizeSecurityOverride: undefined });
     expect(later.source.repositoryPackage?.files.map(file => file.path)).toEqual(['skills/one/SKILL.md']);
+    // The version installed after the withdrawal admitted no flagged file, so it records no approval.
+    const skillId = later.source.entries.find(entry => entry.path === 'skills/one/SKILL.md')!.skillId!;
+    const skills = companySkillService(db);
+    const installed = (await skills.getById(companyId, skillId))!;
+    expect(await skills.installedSecurityApproval(companyId, skillId, installed.currentVersionId!)).toBeNull();
+  });
+
+  it('keeps a future-trusted installed version accepted after the source follows another branch', async () => {
+    const { companyId, result, service, context, setFiles } = await setup(true);
+    const changedHook = `${hook}
+echo updated`;
+    setFiles({ 'skills/one/SKILL.md': md('one'), 'hooks/install.sh': changedHook }, second);
+    const carried = await service.refresh(companyId, result.source.id, { ...context, authorizeSecurityOverride: undefined });
+    const skillId = carried.source.entries.find(entry => entry.path === 'skills/one/SKILL.md')!.skillId!;
+    const skills = companySkillService(db);
+    const installed = (await skills.getById(companyId, skillId))!;
+    // Future-update trust admitted the changed bytes, and the version records exactly those.
+    expect(await skills.installedSecurityApproval(companyId, skillId, installed.currentVersionId!)).toMatchObject({
+      commitSha: second, approvedCommitSha: first, trustFutureUpdates: true, files: [{ path: 'hooks/install.sh', sha256: hash(changedHook) }] });
+    const { revision } = await service.detail(companyId, result.source.id);
+    await service.settings(companyId, result.source.id, { revision, trackingRef: 'release' }, { ...context, authorizeSecurityOverride: undefined });
+    const audit = await skills.auditSkill(companyId, skillId);
+    expect(audit?.findings.filter(finding => finding.code === 'remote_fetch_exec'))
+      .toEqual([expect.objectContaining({ path: '.paperclip-repository/hooks/install.sh', severity: 'warning' })]);
+  });
+
+  it('compares an installed version kept on an older commit with its own approval in update diffs', async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: 'Kept diff', issuePrefix: `G${companyId.slice(0, 6)}` });
+    const changedHook = `${hook}
+echo updated`;
+    const atFirst = { 'skills/one/SKILL.md': md('one'), 'skills/one/install.sh': hook };
+    const atSecond = { 'skills/one/SKILL.md': md('one'), 'skills/one/install.sh': changedHook, 'skills/one/leak.sh': leak };
+    const fixtures: Record<string, ReturnType<typeof githubFixture>> = { [first]: githubFixture(atFirst, {}, first), [second]: githubFixture(atSecond, {}, second) };
+    let current = first;
+    const reader = (async (url: string, signal?: AbortSignal) => fixtures[url.match(new RegExp('commits/([0-9a-f]{40})'))?.[1] ?? current]!(url, signal)) as ReturnType<typeof githubFixture>;
+    reader.openSnapshot = (input, options) => fixtures[input.commitSha ?? current]!.openSnapshot(input, options);
+    const context: SkillSourceContext = { actor: { type: 'user', userId: 'admin-user' }, authorize: async () => {}, audit: async () => {},
+      read: () => reader, authorizeSecurityOverride: async () => {} };
+    const service = skillSourceService(db);
+    const created = await service.create(companyId, {
+      repositoryUrl: 'https://github.com/acme/skills', trackingRef: 'main', packageMode: 'skills', commitSha: first, selectedPaths: ['skills/one/SKILL.md'],
+      securityOverride: { commitSha: first, reason: 'Maintained by our platform team.', trustFutureUpdates: false, files: [{ path: 'skills/one/install.sh', sha256: hash(hook) }] },
+    }, context);
+    current = second;
+    const { revision } = await service.detail(companyId, created.source.id);
+    await service.refresh(companyId, created.source.id, context, { revision, selectedPaths: ['skills/one/SKILL.md'], excludedFolders: [],
+      securityOverride: { commitSha: second, reason: 'Reviewed the new hook by hand.', trustFutureUpdates: false, files: [{ path: 'skills/one/install.sh', sha256: hash(changedHook) }] } });
+    const skills = companySkillService(db);
+    const skillId = created.source.entries.find(entry => entry.path === 'skills/one/SKILL.md')!.skillId!;
+    const installed = (await skills.getById(companyId, skillId))!;
+    expect(installed.sourceRef).toBe(first);
+    const [saved] = await db.select({ securityOverride: companySkillSources.securityOverride }).from(companySkillSources).where(eq(companySkillSources.id, created.source.id));
+    const diff = await diffGitHubSkillUpdate({ repositoryUrl: 'https://github.com/acme/skills', packageMode: 'skills', skillPath: 'skills/one/SKILL.md',
+      installedCommitSha: first, latestCommitSha: second, securityOverrides: [saved!.securityOverride],
+      installedSecurityOverrides: [versionApprovalGrant(await skills.installedSecurityApproval(companyId, skillId, installed.currentVersionId!))] }, reader);
+    if (!diff.supported) throw new Error(diff.reason);
+    expect(diff.files.find(file => file.path === 'install.sh')).toMatchObject({ change: 'modified' });
   });
 
   it('does not record a carried approval for a file in a skill that is not installed', async () => {

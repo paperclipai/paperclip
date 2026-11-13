@@ -3326,6 +3326,13 @@
       "when": 1794544325389,
       "tag": "0476_skill_source_security_override",
       "breakpoints": true
+    },
+    {
+      "idx": 477,
+      "version": "7",
+      "when": 1794548468245,
+      "tag": "0477_skill_version_security_approval",
+      "breakpoints": true
     }
   ]
 }

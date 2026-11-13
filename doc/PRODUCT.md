@@ -268,7 +268,12 @@ ends when the source starts following another branch or revision. Each approval,
 and each later commit an opt-in covers, is written to the activity log with the
 approver, files, hashes, and reason. Agents and unattended refreshes can apply a
 recorded approval but never create one. An administrator can withdraw a saved
-approval from the source; later updates then leave the flagged files out. Trust
+approval from the source; later updates then leave the flagged files out. Each
+installed skill version records the approval that admitted its files, with the exact
+bytes it installed. Audits, update comparisons and file previews of that version read
+its own record, so renewing, narrowing or withdrawing the source approval later never
+changes how an installed version is judged; the source approval decides only what new
+scans and refreshes include. Trust
 allows importing the files only; it does not grant scripts any execution rights. Company skill policy can restrict the
 `skills.override_security` action further; legacy broad skill grants do not cover it.
 Authored and unproven legacy versions retain an independent recovery copy. Unused Git

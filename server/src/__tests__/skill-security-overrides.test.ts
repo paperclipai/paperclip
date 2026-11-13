@@ -4,7 +4,7 @@ import { SKILL_SECURITY_OVERRIDE_MAX_PATH_BYTES, skillSecurityOverrideSchema, sk
 import { DEFAULT_JSON_BODY_LIMIT_BYTES } from '../http/body-limits.js';
 import { githubFixture } from './helpers/github-skills.js';
 import { scanGitHubSkills } from '../services/github-skill-source.js';
-import { securityOverrideAcceptor, verifySecurityOverride } from '../services/skill-security-overrides.js';
+import { securityOverrideAcceptor, verifySecurityOverride, versionApprovalGrant, versionSecurityApproval } from '../services/skill-security-overrides.js';
 
 const md = (name: string) => `---\nname: ${name}\ndescription: A useful skill\n---\nFollow these instructions.\n`;
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
@@ -70,15 +70,19 @@ describe('skill security overrides', () => {
     expect(later?.('hooks/install.sh', hash(hook), 'secret_exfiltration')).toBe(false);
   });
 
-  it('applies an approval a renewal kept for an installed version only at the commit of that version', async () => {
+  it('records the approved files a version installs and applies that record only to its own bytes and commit', async () => {
     const installedCommit = 'a'.repeat(40);
-    const grant: SkillSourceSecurityOverride = { commitSha: 'b'.repeat(40), trustFutureUpdates: false, reason: 'Reviewed the new hook by hand.',
-      approvedByUserId: 'admin-user', approvedAt: '2026-11-12T00:00:00.000Z', files: [{ path: 'hooks/install.sh', code: 'remote_fetch_exec', sha256: hash(`${hook}
-echo updated`) }],
-      retained: [{ commitSha: installedCommit, files: [{ path: 'hooks/install.sh', code: 'remote_fetch_exec', sha256: hash(hook) }] }] };
-    const installed = await scanGitHubSkills({ ...repository, commitSha: installedCommit }, githubFixture(files, {}, installedCommit), { securityOverrides: [grant] });
+    const approval: SkillSourceSecurityOverride = { commitSha: 'b'.repeat(40), trustFutureUpdates: true, reason: 'Reviewed the hook by hand.',
+      approvedByUserId: 'admin-user', approvedAt: '2026-11-12T00:00:00.000Z', files: [{ path: 'hooks/install.sh', code: 'remote_fetch_exec', sha256: hash('older bytes') }] };
+    const scan = await scanGitHubSkills({ ...repository, commitSha: installedCommit }, githubFixture(files, {}, installedCommit), { securityOverrides: [approval] });
+    const record = versionSecurityApproval(approval, scan, new Set(scan.repositoryFiles!.map(file => file.path)));
+    // Future-update trust admitted these bytes at this commit, so the version records them, not the reviewed hash.
+    expect(record).toMatchObject({ commitSha: installedCommit, approvedCommitSha: 'b'.repeat(40), trustFutureUpdates: true,
+      files: [{ path: 'hooks/install.sh', code: 'remote_fetch_exec', sha256: hash(hook) }] });
+    const installed = await scanGitHubSkills({ ...repository, commitSha: installedCommit }, githubFixture(files, {}, installedCommit), { securityOverrides: [versionApprovalGrant(record)] });
     expect(installed.repositoryFiles?.some(file => file.path === 'hooks/install.sh')).toBe(true);
-    expect(securityOverrideAcceptor([grant], 'c'.repeat(40))?.('hooks/install.sh', hash(hook), 'remote_fetch_exec')).toBe(false);
+    expect(securityOverrideAcceptor([versionApprovalGrant(record)], 'c'.repeat(40))?.('hooks/install.sh', hash(hook), 'remote_fetch_exec')).toBe(false);
+    expect(versionSecurityApproval(approval, scan, new Set(['skills/plain/SKILL.md']))).toBeNull();
   });
 
   it('validates override requests', () => {

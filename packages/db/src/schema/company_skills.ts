@@ -10,7 +10,7 @@ import {
   uniqueIndex,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import type { CompanySkillFileInventoryEntry, CompanySkillSharingScope } from "@paperclipai/shared";
+import type { CompanySkillFileInventoryEntry, CompanySkillSharingScope, SkillVersionSecurityApproval } from "@paperclipai/shared";
 import { agents } from "./agents.js";
 import { companies } from "./companies.js";
 import { issues } from "./issues.js";
@@ -175,6 +175,8 @@ export const companySkillVersions = pgTable(
     authorAgentId: uuid("author_agent_id").references(() => agents.id, { onDelete: "set null" }),
     authorUserId: text("author_user_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    /** The administrator approval that admitted this version's flagged files, if any. */
+    securityApproval: jsonb("security_approval").$type<SkillVersionSecurityApproval>(),
   },
   (table) => ({
     migrationIdx: index("company_skill_versions_migration_idx").on(table.migrationAt).where(sql`${table.migrationAt} is not null`),
