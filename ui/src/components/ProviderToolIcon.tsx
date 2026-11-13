@@ -3,13 +3,10 @@ import { useQuery } from "@tanstack/react-query";
 import { pickMcpIcon, sanitizeMcpIconSrc, type McpIcon, type ProviderToolIconEntry } from "@paperclipai/shared";
 import { toolsApi } from "@/api/tools";
 import { queryKeys } from "@/lib/queryKeys";
+import { useResolvedTheme } from "@/context/ThemeContext";
 import { cn } from "@/lib/utils";
 
 type IconComponent = ComponentType<SVGProps<SVGSVGElement>>;
-
-function documentTheme(): "light" | "dark" {
-  return typeof document !== "undefined" && document.documentElement.classList.contains("dark") ? "dark" : "light";
-}
 
 /**
  * A provider's tool icon (MCP SEP-973) with the taxonomy icon as fallback.
@@ -28,7 +25,8 @@ export function ProviderToolIcon({
   className?: string;
   testId?: string;
 }) {
-  const icon = pickMcpIcon(icons, documentTheme());
+  // Subscribed, so a theme switch re-picks the icon for the new theme.
+  const icon = pickMcpIcon(icons, useResolvedTheme());
   const src = icon ? sanitizeMcpIconSrc(icon.src, icon.mimeType) : null;
   const [failedSrc, setFailedSrc] = useState<string | null>(null);
   if (!src || failedSrc === src) {

@@ -10,6 +10,7 @@ import {
   ProviderToolIconsStaticProvider,
   providerToolIconLookup,
 } from "./ProviderToolIcon";
+import { ThemeProvider, useTheme } from "@/context/ThemeContext";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -120,5 +121,21 @@ describe("provider icons in task chat tool rows", () => {
       </ProviderToolIconsStaticProvider>,
     );
     expect(container.querySelectorAll("img[data-provider-icon=true]")).toHaveLength(300);
+  });
+
+  it("re-picks the icon when the theme changes", async () => {
+    const themed: McpIcon[] = [
+      { src: "https://cdn.example.com/light.png", theme: "light" },
+      { src: "https://cdn.example.com/dark.png", theme: "dark" },
+    ];
+    let setTheme!: (theme: "light" | "dark") => void;
+    function Toggle() { setTheme = useTheme().setTheme; return null; }
+    const container = await render(
+      <ThemeProvider><Toggle /><ProviderToolIcon icons={themed} fallback={Fallback} /></ThemeProvider>,
+    );
+    await act(async () => setTheme("light"));
+    expect(container.querySelector("img")!.getAttribute("src")).toBe("https://cdn.example.com/light.png");
+    await act(async () => setTheme("dark"));
+    expect(container.querySelector("img")!.getAttribute("src")).toBe("https://cdn.example.com/dark.png");
   });
 });
