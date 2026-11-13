@@ -60,14 +60,18 @@ const pidIdentityRecord = async (pid: number, procRoot = "/proc"): Promise<strin
   }
 };
 
-const expectIdentityExitedOrZombie = async (pid: number, expectedIdentity: string): Promise<void> => {
+const expectIdentityExitedOrZombie = async (
+  pid: number,
+  expectedIdentity: string,
+  procRoot = "/proc",
+): Promise<void> => {
   let stat: string;
   try {
-    stat = await readFile(`/proc/${pid}/stat`, "utf8");
+    stat = await readFile(`${procRoot}/${pid}/stat`, "utf8");
   } catch {
     let currentIdentity: string;
     try {
-      currentIdentity = await pidIdentityRecord(pid);
+      currentIdentity = await pidIdentityRecord(pid, procRoot);
     } catch {
       return;
     }
@@ -319,7 +323,11 @@ describe("sandbox callback bridge startup cleanup", () => {
     })).rejects.toThrow(/start sandbox callback bridge/i);
 
     expect(spawnedPid).toBeGreaterThan(1);
-    await expectIdentityExitedOrZombie(spawnedPid, spawnedIdentity);
+    await expectIdentityExitedOrZombie(
+      spawnedPid,
+      spawnedIdentity,
+      "/definitely-missing-procfs",
+    );
     await expect(readFile(directories.pidFile, "utf8")).rejects.toThrow();
     expect((await readdir(directories.rootDir)).filter((name) => name.includes(".launch-"))).toEqual([]);
   }, 15_000);
