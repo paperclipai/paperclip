@@ -26,6 +26,13 @@ export function queuedRecoveryRunsOf(companyId: SQL | string, agentId: SQL | str
       and queued_recovery.status = 'queued' and queued_recovery.context_snapshot->>'wakeReason' in (${reasons})`;
 }
 
+/**
+ * A soft cap, read before the producer's wake: producers that run at the same
+ * moment can each see room, so the queue can briefly hold one more run per
+ * concurrent producer (two today: continuation delivery and restored-task
+ * wakes). That stays "a few at a time"; the dispatcher keeps every recovery
+ * run behind people's work and re-checks it before it starts.
+ */
 export async function agentRecoveryQueueIsFull(db: Db, companyId: string, agentId: string) {
   const reasons = [...RECOVERY_WAKE_REASONS];
   const [row] = await db.select({ count: sql<number>`count(*)::int` }).from(heartbeatRuns).where(and(
