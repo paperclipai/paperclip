@@ -486,9 +486,6 @@ export async function testEnvironment(
           // separately from generic transient upstream errors: auth works, the
           // subscription's usage window is just spent. Surface it as its own
           // warning instead of a hard probe failure.
-          // An edge rejection (HTML/CDN challenge, or a 403 without a genuine
-          // credential body) is transient. It is not a login failure, so the
-          // server never invalidates the tested credential for it.
           const edgeRejected = detectClaudeEdgeFailure({
             parsed,
             stdout: probe.stdout,

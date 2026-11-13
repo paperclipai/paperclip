@@ -2286,16 +2286,14 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
 
   it("retries a Claude edge rejection on the bounded transient lane with jittered backoff and Retry-After", async () => {
     const now = new Date("2026-07-24T13:00:00.000Z");
-    // No provider hint: the first attempt uses the jittered exponential backoff.
     const plain = { runId: randomUUID(), companyId: randomUUID(), agentId: randomUUID() };
     await seedRetryFixture({ ...plain, now, errorCode: "claude_edge_rejected", errorFamily: "transient_upstream", adapterType: "claude_local" });
     const low = await heartbeat.scheduleBoundedRetry(plain.runId, { now, random: () => 0 });
     expect(low).toMatchObject({ outcome: "scheduled", attempt: 1, maxAttempts: 2 });
     if (low.outcome !== "scheduled") return;
-    expect(low.dueAt.getTime() - now.getTime()).toBe(24_000); // 30 s base, -20 % jitter
+    expect(low.dueAt.getTime() - now.getTime()).toBe(24_000);
     await cleanupRetryFixture();
 
-    // A provider Retry-After later than the backoff is honoured.
     const hinted = { runId: randomUUID(), companyId: randomUUID(), agentId: randomUUID() };
     const retryAfter = new Date(now.getTime() + 120_000);
     await seedRetryFixture({ ...hinted, now, errorCode: "claude_edge_rejected", errorFamily: "transient_upstream",
@@ -2306,7 +2304,6 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect(later.dueAt.getTime()).toBe(retryAfter.getTime());
     await cleanupRetryFixture();
 
-    // The lane is bounded.
     const spent = { runId: randomUUID(), companyId: randomUUID(), agentId: randomUUID() };
     await seedRetryFixture({ ...spent, now, errorCode: "claude_edge_rejected", errorFamily: "transient_upstream",
       adapterType: "claude_local", scheduledRetryAttempt: 2 });

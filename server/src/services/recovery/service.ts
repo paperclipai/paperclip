@@ -589,7 +589,6 @@ const TRANSIENT_INFRA_CONTINUATION_ERROR_CODES = new Set<string>([
   "codex_transient_upstream",
   "codex_harness_crash",
   "claude_transient_upstream",
-  // An edge (HTML/CDN challenge or non-authentication 403) rejection.
   "claude_edge_rejected",
   "provider_quota",
   "timeout",

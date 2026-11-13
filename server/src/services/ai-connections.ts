@@ -66,7 +66,6 @@ function canUseCredential(
   );
 }
 
-/** Distinct genuine failures of one credential generation needed to latch it. */
 export const AI_AUTHENTICATION_FAILURE_LATCH_THRESHOLD = 2;
 const AI_AUTHENTICATION_FAILURE_SCAN_LIMIT = 50;
 export type AiAuthenticationFailureOutcome =
@@ -1113,15 +1112,6 @@ export function aiConnectionService(db: Db) {
     });
   }
 
-  /**
-   * Record a genuine provider authentication failure for one credential
-   * generation. A late failure must never invalidate credentials that were
-   * refreshed or reconnected meanwhile. For runs, one failure alone never
-   * latches a shared connection: only repeated failures of the same generation
-   * from distinct runs, with no success in between, do. An explicit Test or
-   * save probe (no run) latches on one genuine rejection, as before: the probe
-   * classifier already reports edge and HTML rejections under their own codes.
-   */
   async function markAuthenticationFailed(input: {
     companyId: string;
     runId?: string;
@@ -1174,12 +1164,6 @@ export function aiConnectionService(db: Db) {
           outcome = "recovered";
           return;
         }
-        // Count genuine failures of this exact credential generation since its
-        // last successful run. The identity is "grant:user:generation"; match
-        // grant and generation only, so on a shared grant every user's runs
-        // count together and any user's success resets the count. Other
-        // failure kinds (edge, quota, timeout) neither count nor reset, and are
-        // filtered before the scan limit so they cannot crowd out real ones.
         const threshold = input.runId ? AI_AUTHENTICATION_FAILURE_LATCH_THRESHOLD : 1;
         const sameGeneration = and(
           sql`${heartbeatRuns.contextSnapshot}->'aiConnection'->>'identity' like ${`${grant.id}:%`}`,
@@ -1200,8 +1184,6 @@ export function aiConnectionService(db: Db) {
           ),
           sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.createdAt}) >= ${since.toISOString()}::timestamptz`,
         )).limit(AI_AUTHENTICATION_FAILURE_SCAN_LIMIT);
-        // A run counts only through the same history query: a failure whose
-        // check runs late, after a newer success, must not count again.
         const observed = new Set<string>(input.runId ? [] : ["probe:current"]);
         for (const run of failedRuns) if (isAiAuthenticationFailure(run.errorCode)) observed.add(run.id);
         if (observed.size < threshold) {

@@ -1717,8 +1717,6 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     await db.insert(issues).values({ id: issueId, companyId, title: "Fix provider login", status: "in_progress", assigneeAgentId: id });
     const account = await service.save(companyId, userId, { provider, method: "api_key", ownership: "personal", name: "Recovery account", apiKey: "fixture", agentIds: [id], allAgents: false }, "fixture-recovery-key");
     const runtime = await prepareManagedAiRuntime(db, { companyId, agentId: id, responsibleUserId: userId, adapterType, binding: selectedBinding, config: {} });
-    // Another task's run already failed with the same credential generation,
-    // so this second genuine failure is enough to latch the connection.
     await db.insert(heartbeatRuns).values({ companyId, agentId: id, status: "failed", errorCode: "acpx_auth_required", responsibleUserId: userId,
       contextSnapshot: { issueId: randomUUID(), aiConnection: { ...runtime.attribution, identity: runtime.identity } } });
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId: id, status: "failed", errorCode: "acpx_auth_required", responsibleUserId: userId,
@@ -1834,7 +1832,6 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     it("does not count a failure checked late after a newer success", async () => {
       const t = await setup("late-check");
       const attribution = await t.attributionFor(t.agentIds[0]!);
-      // Run A fails, another run succeeds, then run B fails. A's check runs last.
       const early = await t.run(t.agentIds[0]!, "failed", "claude_auth_required", attribution);
       await new Promise(resolve => setTimeout(resolve, 5));
       await t.run(t.agentIds[1] ?? t.agentIds[0]!, "succeeded", null, attribution);
@@ -1853,7 +1850,6 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       const old = await t.attributionFor(t.agentIds[0]!);
       const first = await t.run(t.agentIds[0]!, "failed", "claude_auth_required", old);
       expect(await connectionIntentService(db).requestForRunAuthFailure(first.runId)).toBeNull();
-      // The user reconnects with a new credential: a new generation.
       await service.save(companyId, t.userId, { provider: "anthropic", method: "api_key", ownership: "personal", name: "Threshold stale",
         connectionId: t.account.connectionId, apiKey: "fixture", agentIds: t.agentIds, allAgents: false }, "fixture-threshold-stale-reconnected");
       const late = await t.run(t.agentIds[0]!, "failed", "claude_auth_required", old);
@@ -1862,7 +1858,6 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
         attribution: old as never })).toBe("stale_generation");
       expect(await t.grantStatus()).toBe("active");
       expect(await t.latches()).toBe(0);
-      // The new generation starts its own count.
       const fresh = await t.run(t.agentIds[0]!, "failed", "claude_auth_required", await t.attributionFor(t.agentIds[0]!));
       expect(await connectionIntentService(db).requestForRunAuthFailure(fresh.runId)).toBeNull();
       expect(await t.grantStatus()).toBe("active");
@@ -1882,7 +1877,6 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     it("counts genuine failures past many interleaved non-credential failures", async () => {
       const t = await setup("crowded");
       const attribution = await t.attributionFor(t.agentIds[0]!);
-      // More edge rejections than the scan limit must not hide a genuine failure.
       for (let index = 0; index < 60; index += 1) await t.run(t.agentIds[0]!, "failed", "claude_edge_rejected", attribution);
       const first = await t.run(t.agentIds[0]!, "failed", "claude_auth_required", attribution);
       expect(await connectionIntentService(db).requestForRunAuthFailure(first.runId)).toBeNull();
@@ -1892,9 +1886,6 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     });
 
     it("counts and resets one credential generation across the users of a grant", async () => {
-      // The identity is "grant:user:generation". Another user's runs on the
-      // same grant and generation share the same credential, so they count
-      // toward, and reset, the same failure history.
       const asOtherUser = (attribution: { identity: string }) => {
         const [grantId, , generation] = attribution.identity.split(":");
         return { ...attribution, responsibleUserId: `other-${randomUUID()}`, identity: `${grantId}:other-${randomUUID()}:${generation}` };
