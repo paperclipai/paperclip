@@ -161,6 +161,7 @@ export class CodexSessionState {
    * stricter consumed marker.
    */
   restartContinuationTurnId: string | null = null;
+  awaitingProviderTurn = false;
   turnStarted = false;
   readonly terminalTurns = new Map<string, string>();
   /**
