@@ -71853,13 +71853,19 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
             : answerPublication?.providerMessageId,
         ).toBe(originalWorking!.providerMessageId);
         expect(context.providerRuntime.posts).toHaveLength(3);
-        expect(context.providerRuntime.edits).toHaveLength(1);
-        expect(context.providerRuntime.edits[0]?.messageId).toBe(
-          originalWorking!.providerMessageId,
-        );
-        expect(context.providerRuntime.edits[0]?.messageId).not.toBe(
-          successorWorking!.providerMessageId,
-        );
+        const expectedEdits = [
+          ...(provider === "slack" && order === "published_final"
+            ? ["Response sent."]
+            : []),
+          provider === "slack" || order === "failure_first"
+            ? failurePublication!.payload.text
+            : answerPublication!.payload.text,
+        ].map((text) => ({
+          threadId: context.thread.thread.id,
+          messageId: originalWorking!.providerMessageId,
+          text,
+        }));
+        expect(context.providerRuntime.edits).toEqual(expectedEdits);
         const links = await db
           .select({
             providerMessageId: chatMessageLinks.providerMessageId,
@@ -71899,7 +71905,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         await enqueueChatRunMilestones(db);
         await context.service.processPendingPublications(100);
         expect(context.providerRuntime.posts).toHaveLength(3);
-        expect(context.providerRuntime.edits).toHaveLength(1);
+        expect(context.providerRuntime.edits).toEqual(expectedEdits);
         await expect(
           db
             .select({ status: heartbeatRuns.status })
