@@ -6,7 +6,8 @@ import { OWNABLE_KINDS } from "../services/recovery/ownership-registry.js";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../../..");
 const SOURCE_ROOTS = ["server/src", "packages/paperclip-runner/src"];
-const CALL = /\bcrashPoint\(\s*"([^"]+)"\s*\)/g;
+// A call may pass fail-mode options after the name: crashPoint("<name>", { fail: ... }).
+const CALL = /\bcrashPoint\(\s*"([^"]+)"\s*[,)]/g;
 
 function sourceFiles(directory: string): string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap(entry => {

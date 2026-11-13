@@ -30,6 +30,7 @@ import { hasRemoteTerminationReceipt, remoteTerminationReceipt } from "../remote
 import { persistHeartbeatRunProcessMetadata } from "./run-lifecycle.js";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { hasNativeLocalProcessStop, PROCESS_START_REQUESTED, releaseSettledNativeRunProcess } from "../native-local-process-stop.js";
+import { legacyControllerBootId } from "../legacy-controller-lease.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
 
@@ -211,6 +212,40 @@ describePostgres("heartbeat recovery module ownership", () => {
     await db.insert(issues).values({ id: issueId, companyId, title: "Recover this run", status: "in_progress", assigneeAgentId: agentId });
     return (await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, issueId, invocationSource: "automation", status: "running", runtimeMode: "legacy" }).returning())[0];
   }
+
+  it.each(["unlaunched", "dispatched", "reassigned", "ambiguous"] as const)("claims the same expired portable preparation only with its original task lock (%s)", async state => {
+    const run = await seedRun(), deps = callbacks(db);
+    const environmentId = randomUUID(), leaseId = randomUUID();
+    const oldBootId = randomUUID();
+    await db.update(agents).set({ adapterType: "paperclip_runner" }).where(eq(agents.id, run.agentId));
+    await db.update(heartbeatRuns).set({ scopeKind: "issue", controllerBootId: oldBootId, controllerLeaseExpiresAt: new Date(0),
+      executionStage: "preparing" }).where(eq(heartbeatRuns.id, run.id));
+    if (state !== "reassigned") await db.update(issues).set({ executionRunId: run.id }).where(eq(issues.id, run.issueId!));
+    await db.insert(environments).values({ id: environmentId, name: environmentId, driver: "plugin", config: {} });
+    await db.insert(environmentLeases).values({ id: leaseId, companyId: run.companyId, environmentId, heartbeatRunId: run.id,
+      issueId: run.issueId, provider: "plugin:fixture:tasks", providerLeaseId: "portable-task", status: "active",
+      metadata: { agentId: run.agentId, driver: "plugin", runnerTaskLease: true, portableTaskPreviousLeaseId: randomUUID(),
+        ...(state === "dispatched" ? { runnerTaskDispatched: true } : {}) } });
+    if (state === "ambiguous") await db.insert(environmentLeases).values({ companyId: run.companyId, environmentId,
+      heartbeatRunId: run.id, issueId: run.issueId, provider: "plugin:fixture:tasks", providerLeaseId: "competing-task", status: "active" });
+    const scope = { companyId: run.companyId, runId: run.id };
+    const recovery = createHeartbeatRecovery(db, deps);
+    await Promise.all([recovery.recoverActiveExecutions(scope), recovery.recoverActiveExecutions(scope)]);
+    if (state === "unlaunched") {
+      expect(deps.executeRun).toHaveBeenCalledExactlyOnceWith(run.id, { portablePreparationLeaseId: leaseId });
+      expect(deps.setRunStatusFromLive).not.toHaveBeenCalled();
+      const [current] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+      expect(current).toMatchObject({ status: "running", controllerBootId: legacyControllerBootId, executionStage: "preparing" });
+      expect(current.controllerLeaseExpiresAt!.getTime()).toBeGreaterThan(Date.now());
+      expect((await db.select().from(issues).where(eq(issues.id, run.issueId!)))[0].executionRunId).toBe(run.id);
+      expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, leaseId)))[0]).toMatchObject({
+        status: "active", providerLeaseId: "portable-task", heartbeatRunId: run.id,
+      });
+    } else {
+      expect(deps.executeRun).not.toHaveBeenCalled();
+      expect(deps.setRunStatusFromLive).toHaveBeenCalledOnce();
+    }
+  });
 
   it.each([false, true])("delivers scoped recovery to a preparation without a runner PID or checkpoint (locally tracked=%s)", async tracked => {
     const run = await seedRun(), deps = callbacks(db);

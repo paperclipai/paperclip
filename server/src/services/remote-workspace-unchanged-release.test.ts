@@ -19,6 +19,7 @@ import {
   prepareRemoteWorkspace, readRemoteWorkspaceAuthority, RemoteWorkspaceWriterActiveError, reserveRemoteWorkspace, saveRemoteWorkspace,
 } from "./remote-workspaces.js";
 import { UNCHANGED_BASELINE_KEY } from "./remote-workspace-unchanged-proof.js";
+import { releaseUnchangedFallbackWorkspace } from "./heartbeat/predecessor-retirement-fallback.js";
 
 const exec = promisify(execFile);
 const support = await getEmbeddedPostgresTestSupport();
@@ -177,6 +178,48 @@ describe.skipIf(!support.supported)("remote workspace writer that ended without 
     const f = await preparedFollowUp({ runtimeProvisionCommand: "echo provisioned > provisioned.txt" });
     await f.end();
     await expectFullSave(f, true);
+  });
+
+  // A follow-up that could not retire its predecessor fails before provider
+  // work; its next attempt moves to a fresh sandbox only with nothing unsaved.
+  it.each([
+    { label: "an untouched workspace", provision: undefined, released: true },
+    { label: "setup that wrote into the workspace", provision: "echo provisioned > provisioned.txt", released: false },
+  ])("hands on the workspace of a run that could not retire its predecessor only for $label", async ({ provision, released }) => {
+    const f = await preparedFollowUp(provision ? { runtimeProvisionCommand: provision } : {});
+    // The heartbeat still holds the run's controller lease when it settles the failure.
+    await f.end({ status: "failed", errorCode: "adapter_failed", controllerLeaseExpiresAt: new Date(Date.now() + 60_000) });
+    expect(await releaseUnchangedFallbackWorkspace(db, { id: f.runB, companyId: f.companyId })).toBe(released);
+    expect(readRemoteWorkspaceAuthority((await f.workspace()).metadata)).toMatchObject(released
+      ? { dirty: false, writerRunId: null, snapshotId: f.savedA.snapshotId } : { dirty: true, writerRunId: f.runB });
+  });
+
+  it.each([
+    { label: "the settled predecessor's warm Runner identity", own: false, event: false, released: true },
+    { label: "a Runner identity of its own", own: true, event: false, released: false },
+    { label: "the predecessor's identity and its own identity record", own: false, event: true, released: false },
+  ])("hands on the workspace of a follow-up that carries $label only when it never had its own Runner", async ({ own, event, released }) => {
+    const f = await preparedFollowUp();
+    const nativeSessionId = randomUUID(), processStartedAt = new Date(Date.now() - 60_000);
+    await db.update(heartbeatRuns).set({ nativeSessionId, processPid: 41_001, processGroupId: 41_001, processStartedAt })
+      .where(eq(heartbeatRuns.id, f.runA));
+    await db.update(heartbeatRuns).set({ nativeSessionId, processPid: own ? 41_002 : 41_001,
+      processGroupId: own ? 41_002 : 41_001, processStartedAt }).where(eq(heartbeatRuns.id, f.runB));
+    if (event) await f.event("native.process_identity_recorded");
+    await f.end({ status: "failed", errorCode: "native_session_interrupted", controllerLeaseExpiresAt: new Date(Date.now() + 60_000) });
+    expect(await releaseUnchangedFallbackWorkspace(db, { id: f.runB, companyId: f.companyId })).toBe(released);
+    expect(readRemoteWorkspaceAuthority((await f.workspace()).metadata)).toMatchObject(released
+      ? { dirty: false, writerRunId: null, snapshotId: f.savedA.snapshotId } : { dirty: true, writerRunId: f.runB });
+  });
+
+  it.each([1, 0])("queues no fallback attempt beside another writer (epoch change %i)", async epochChange => {
+    const f = await preparedFollowUp();
+    await f.end({ status: "failed", errorCode: "adapter_failed" });
+    const current = await f.workspace();
+    const authority = readRemoteWorkspaceAuthority(current.metadata)!;
+    await db.update(executionWorkspaces).set({ metadata: { ...current.metadata, remoteWorkspace: { ...authority,
+      writerRunId: randomUUID(), epoch: authority.epoch + epochChange } } }).where(eq(executionWorkspaces.id, current.id));
+    expect(await releaseUnchangedFallbackWorkspace(db, { id: f.runB, companyId: f.companyId })).toBe(false);
   });
 
   it("keeps the full save while the writer's owner may still act, and while it is still running", async () => {

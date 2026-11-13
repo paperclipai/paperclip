@@ -8,7 +8,7 @@ import type {
   NativeExecutionInput,
   PersistedNativeSession,
 } from "../../vendor/paperclip-runner/index.js";
-import { canonicalNativeRuntimeContextDigest, parseNativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
+import { canonicalNativeRuntimeContextDigest, parseNativeExecutionInput, type NativeRuntimeContextSnapshot } from "../../vendor/paperclip-runner/index.js";
 
 export type NativeToolExecutionTargetKind = "local" | "remote";
 
@@ -101,6 +101,19 @@ export const NATIVE_TOOL_CONTRACT_FINGERPRINT =
 /** The runner proved that this run's saved provider session cannot be
  * restored by the current runner build. Its checkpoint is not resumable. */
 export const NATIVE_PROVIDER_STATE_INCOMPATIBLE = "native_provider_state_incompatible";
+/**
+ * `runnerProfileJson` key on a run whose result was accepted but whose
+ * provider state backup was not saved. Its per-turn sandbox is released after
+ * the run, so that backup was the only copy of the provider session. The next
+ * run on the session starts a fresh provider session instead of resuming.
+ * Records without the key, including every record written before it existed,
+ * keep the ordinary resume path.
+ */
+export const NATIVE_PROVIDER_STATE_UNSAVED_KEY = "nativeProviderStateUnsaved";
+
+export function isNativeProviderStateUnsaved(profile: unknown): boolean {
+  return record(record(profile)[NATIVE_PROVIDER_STATE_UNSAVED_KEY]).code === NATIVE_PROVIDER_STATE_INCOMPATIBLE;
+}
 /** The saved session owned a side-effecting call without a delivered result.
  * Recovery requires an explicit reconciliation of that action. */
 export const NATIVE_PROVIDER_SIDE_EFFECT_PENDING = "native_provider_side_effect_pending";
@@ -362,11 +375,13 @@ async function selectNativeSessionResumeBarrier(db: Db, input: NativeSessionResu
         nativeExecutionInput: unknown;
         sessionCheckpoint: unknown;
         nativeControllerRecovery: unknown;
+        nativeProviderStateUnsaved?: unknown;
       }>`jsonb_build_object(
         'nativeToolContractFingerprint', ${heartbeatRuns.runnerProfileJson}->'nativeToolContractFingerprint',
         'nativeExecutionInput', ${heartbeatRuns.runnerProfileJson}->'nativeExecutionInput',
         'sessionCheckpoint', ${heartbeatRuns.runnerProfileJson}->'sessionCheckpoint',
-        'nativeControllerRecovery', ${heartbeatRuns.runnerProfileJson}->'nativeControllerRecovery'
+        'nativeControllerRecovery', ${heartbeatRuns.runnerProfileJson}->'nativeControllerRecovery',
+        '${sql.raw(NATIVE_PROVIDER_STATE_UNSAVED_KEY)}', ${heartbeatRuns.runnerProfileJson}->'${sql.raw(NATIVE_PROVIDER_STATE_UNSAVED_KEY)}'
       )`,
       contextSnapshot: sql<{
         paperclipWake: unknown;
@@ -597,6 +612,15 @@ export function buildNativeExecutionWithCheckpoint(input: {
   };
 }
 
+export function nativeRuntimeContextsMatch(
+  previous: NativeRuntimeContextSnapshot,
+  current: NativeRuntimeContextSnapshot,
+  toolRefreshOnResume?: boolean,
+): boolean {
+  return previous.aggregateDigest === current.aggregateDigest ||
+    (toolRefreshOnResume === true && canonicalNativeRuntimeContextDigest({ ...previous, mcp: current.mcp }) === current.aggregateDigest);
+}
+
 /**
  * Rebind a completed prior run's provider checkpoint to a new heartbeat run.
  * The provider/driver session identity is retained, while every per-turn and
@@ -625,6 +649,9 @@ export function rebindNativeSessionCheckpoint(input: {
   // reconciled continuation then starts a fresh session in the same workspace.
   if (input.previousRun.errorCode === NATIVE_PROVIDER_SIDE_EFFECT_PENDING) return null;
   const previousProfile = record(input.previousRun.runnerProfileJson);
+  // The source's result was accepted, but its provider state was never saved
+  // and its sandbox is gone. Resuming would only fail, so start fresh now.
+  if (isNativeProviderStateUnsaved(previousProfile)) return null;
   if (
     previousProfile.nativeToolContractFingerprint !==
     nativeToolContractFingerprintForTarget(input.executionTargetKind ?? "local", input.currentExecution.provider.kind)
@@ -679,12 +706,7 @@ export function rebindNativeSessionCheckpoint(input: {
     ("homeMode" in previousExecution ? previousExecution.homeMode : "isolated") !== ("homeMode" in current ? current.homeMode : "isolated") ||
     ("runtimeContext" in previousExecution &&
       "runtimeContext" in current &&
-      previousExecution.runtimeContext.aggregateDigest !== current.runtimeContext.aggregateDigest &&
-      !(input.toolRefreshOnResume === true &&
-        canonicalNativeRuntimeContextDigest({
-          ...previousExecution.runtimeContext,
-          mcp: current.runtimeContext.mcp,
-        }) === current.runtimeContext.aggregateDigest))
+      !nativeRuntimeContextsMatch(previousExecution.runtimeContext, current.runtimeContext, input.toolRefreshOnResume))
   )
     return null;
 

@@ -1,5 +1,5 @@
 /**
- * Universal checks U1–U4: scenario-independent rules graded on every task of
+ * Universal checks U1–U5: scenario-independent rules graded on every task of
  * every wave, whatever its workload. Pure functions over observer samples (no
  * I/O), so they also run over saved evidence (`universal-audit.ts`).
  *
@@ -14,7 +14,7 @@
  */
 import type { RunSample, TaskRecord, TaskSample } from "./types.js";
 
-export type UniversalId = "U1" | "U2" | "U3" | "U4";
+export type UniversalId = "U1" | "U2" | "U3" | "U4" | "U5";
 export interface UniversalResult { verdict: "pass" | "fail" | "n/a"; detail: string; enforced: boolean;
   /** Measurements behind the verdict (milliseconds or counts), for bound tuning. */
   metrics?: Record<string, number> }
@@ -31,6 +31,7 @@ export interface UniversalBounds {
   sameFailureRuns: number;
   /** U4: longest a failure or Retry notice may remain after a later run succeeded. */
   staleNoticeMs: number;
+  maxRuns: number;
 }
 
 /**
@@ -45,10 +46,11 @@ export const DEFAULT_UNIVERSAL_BOUNDS: UniversalBounds = {
   silentRunMs: 3 * 60_000,
   sameFailureRuns: 3,
   staleNoticeMs: 60_000,
+  maxRuns: 10,
 };
 
 /** Rules that fail a task. The rest are warnings until the audit shows no false positive on known-good waves. */
-export const ENFORCED_UNIVERSAL: ReadonlySet<UniversalId> = new Set<UniversalId>(["U1", "U2", "U4"]);
+export const ENFORCED_UNIVERSAL: ReadonlySet<UniversalId> = new Set<UniversalId>(["U1", "U2", "U4", "U5"]);
 
 export function universalBounds(env: NodeJS.ProcessEnv = process.env): UniversalBounds {
   const seconds = (name: string, fallback: number) => {
@@ -64,6 +66,7 @@ export function universalBounds(env: NodeJS.ProcessEnv = process.env): Universal
     silentRunMs: DEFAULT_UNIVERSAL_BOUNDS.silentRunMs,
     sameFailureRuns: Math.round(seconds("RESTART_CHAOS_U2_SAME_FAILURE_RUNS", DEFAULT_UNIVERSAL_BOUNDS.sameFailureRuns)),
     staleNoticeMs: seconds("RESTART_CHAOS_U4_STALE_SECONDS", DEFAULT_UNIVERSAL_BOUNDS.staleNoticeMs / 1000) * 1000,
+    maxRuns: Math.round(seconds("RESTART_CHAOS_U5_MAX_RUNS", DEFAULT_UNIVERSAL_BOUNDS.maxRuns)),
   };
 }
 
@@ -293,6 +296,13 @@ export function gradeU4(record: TaskRecord, bounds: UniversalBounds): Omit<Unive
   return { verdict: "pass", metrics: { staleNoticeMs: worst }, detail: worst ? `notice cleared ${seconds(worst)} after success` : "no notice after success" };
 }
 
+export function gradeU5(record: TaskRecord, bounds: UniversalBounds): Omit<UniversalResult, "enforced"> {
+  const runs = finalRuns(record).size;
+  return runs > bounds.maxRuns
+    ? { verdict: "fail", metrics: { runs }, detail: `run_budget_exceeded ${runs} runs > ${bounds.maxRuns}` }
+    : { verdict: "pass", metrics: { runs }, detail: `${runs} runs` };
+}
+
 export function gradeUniversal(record: TaskRecord, options: { bounds?: UniversalBounds; db?: UniversalDbEvidence;
   enforced?: ReadonlySet<UniversalId> } = {}): UniversalGrade {
   const bounds = options.bounds ?? universalBounds();
@@ -302,6 +312,7 @@ export function gradeUniversal(record: TaskRecord, options: { bounds?: Universal
     U2: gradeU2(record, bounds),
     U3: gradeU3(record, options.db),
     U4: gradeU4(record, bounds),
+    U5: gradeU5(record, bounds),
   };
   return Object.fromEntries(Object.entries(results).map(([id, result]) => [id, { ...result, enforced: enforced.has(id as UniversalId) }])) as UniversalGrade;
 }

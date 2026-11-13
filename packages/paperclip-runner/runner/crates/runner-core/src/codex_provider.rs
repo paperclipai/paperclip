@@ -5896,6 +5896,10 @@ done
     #[test]
     #[cfg(unix)]
     fn exited_child_reader_deadline_bounds_continuous_descendant_stdout() {
+        // The provider exits and leaves its flooding subshell orphaned until
+        // shutdown stops it. Declared first, so it is released last.
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let _orphans = crate::process_lineage::host_orphans::may_orphan();
         let mut provider = completion_tail_provider_with_stdout_flood(true);
         let cwd = provider.config.cwd.clone();
         provider.start_turn("Replacement", &cwd).unwrap_err();

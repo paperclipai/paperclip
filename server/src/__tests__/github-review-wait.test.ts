@@ -136,6 +136,21 @@ describe("inherited GitHub review wait projection", () => {
     expect(await readInheritedGitHubReviewWaits(db, [])).toEqual([]);
   });
 
+  it("reads the waits of forty runs with the statements of four runs", async () => {
+    const first = await seedGitHubReviewWait(db);
+    const runs = [first.run];
+    while (runs.length < 40) runs.push((await seedGitHubReviewWait(db, { companyId: first.companyId, agentId: first.agentId })).run);
+    const few = await withStatements(db, () => readInheritedGitHubReviewWaits(db, runs.slice(0, 4)));
+    const many = await withStatements(db, () => readInheritedGitHubReviewWaits(db, runs));
+    expect(many.result.map(wait => wait?.kind)).toEqual(runs.map(() => "published"));
+    expect(many.result.slice(0, 4)).toEqual(few.result);
+    // The requester lineage, the source message link, the reviews and the
+    // publications: one statement each, for any number of runs.
+    expect({ few: few.sql.length, many: many.sql.length }).toEqual({ few: 4, many: 4 });
+    expect(many.sql.filter(text => /from "run_identity_contexts"/i.test(text))).toHaveLength(1);
+    expect(many.sql.filter(text => /from "chat_message_links"/i.test(text))).toHaveLength(2);
+  });
+
   it("binds each call afresh while reusing the compiled query", async () => {
     const first = await seedGitHubReviewWait(db), second = await seedGitHubReviewWait(db);
     const queries: CapturedReviewWaitQuery[] = [];

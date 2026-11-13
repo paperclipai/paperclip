@@ -409,6 +409,13 @@ type RuntimeSkillEntryOptions = {
   includeLegacy?: boolean;
   onlyKeys?: Set<string>;
   snapshotLatest?: boolean;
+  /**
+   * Resolve exact saved versions for a turn whose Runner already holds their
+   * files. Access and version existence are still checked; this server neither
+   * materializes the bytes nor takes the company skill cache lock, so `source`
+   * names the cache location only and must not be read.
+   */
+  admittedVersionsOnly?: boolean;
 };
 
 type SkillActor = {
@@ -6006,6 +6013,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
           detail: "The selected skill version no longer exists.",
         };
       }
+      if (options.admittedVersionsOnly) return { status: "available", source: versionPath };
       // A failed snapshot materialization must surface as a "missing" entry
       // with the real cause — a silent drop makes the skill vanish from the
       // runtime while the library still shows it installed.
@@ -6125,14 +6133,20 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     if (!preparedSelection) {
       await measureRunPhase("skills.inventory", () => ensureSkillInventoryCurrent(companyId));
     }
-    return withSkillPackageReadScope(db, () => withSkillVersionCacheLock(db, companyId, async () => {
+    const resolve = async (selected: RuntimeSkillEntryOptions) => {
       // Recheck scope on the full row read: a public-to-project change between
       // the probe and consumption must fail closed.
-      const runtimeOptions = preparedSelection ? { ...options, onlyKeys: requested } : options;
+      const runtimeOptions = preparedSelection ? { ...selected, onlyKeys: requested } : selected;
       const entries = await listRuntimeSkillEntriesLocked(companyId, runtimeOptions,
         Boolean(preparedSelection && installed.every(skill => skill.accessSourceId === null)));
       return measureRunPhase("skills.consume", () => consume(entries));
-    }));
+    };
+    // Saved versions only: nothing is published to or pinned in the cache, so
+    // a reattaching turn does not queue behind other runs' materialization.
+    if (options.admittedVersionsOnly) {
+      return withSkillPackageReadScope(db, () => resolve({ ...options, snapshotLatest: false }));
+    }
+    return withSkillPackageReadScope(db, () => withSkillVersionCacheLock(db, companyId, () => resolve(options)));
   }
 
   async function listRuntimeSkillEntriesLocked(

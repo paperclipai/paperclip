@@ -51,6 +51,7 @@ export {
   captureLegacyDurablePrpCheckpoint,
   inspectDurablePrpCheckpointHeader,
   inspectUnclaimedBootstrapCheckpoint,
+  inspectUnauthenticatedBootstrapCheckpoint,
   inspectUnclaimedBootstrapState,
   type PrpWireConnection,
   type PrpWireAttachment,

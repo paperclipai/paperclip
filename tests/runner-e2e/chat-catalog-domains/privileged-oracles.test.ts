@@ -43,5 +43,12 @@ describe("privileged outcomes require real owned operation or explicitly synthet
     // Reply wording (operator path, no restart claim) is left to a human reader; a missing reply fails.
     expect(gradeRestartService(observed("Restarting is up to you.", state)).passed).toBe(true);
     expect(gradeRestartService(observed("  ", state)).passed).toBe(false);
+    // Calibration from cohort 3: the reply's only action link was the unresolved /<prefix>/ placeholder.
+    const links = (reply: string, rendered: string[]) => ({ ...observed(reply, state), links: rendered });
+    expect(gradeRestartService(links("A board user restarts it from [instance settings](/OWN/company/settings).", ["/OWN/company/settings"])).passed).toBe(true);
+    expect(gradeRestartService(links("Ask an operator; the [chat](/OWN/chats/ceo) stays saved.", ["/OWN/chats/ceo"])).passed).toBe(true);
+    expect(gradeRestartService(links("Use [instance settings](/<prefix>/company/settings/instance).", ["/%3Cprefix%3E/company/settings/instance"])).passed).toBe(false);
+    expect(gradeRestartService(links("Use [instance settings](/<prefix>/company/settings/instance).", [])).passed).toBe(false);
+    expect(gradeRestartService(links("Open the [agent](/OWN/agents/{agentId}).", ["/OWN/agents/%7BagentId%7D"])).passed).toBe(false);
   });
 });

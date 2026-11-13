@@ -703,10 +703,13 @@ export function createOAuthAuthorizationStart(db: Db, dependencies: Dependencies
         // refresh/reconnect/revoke reuse the same pair rather than re-deriving it.
         issuer: endpoints.issuer ?? oauthConfig(saved).issuer ?? null,
         expectedIssuer: endpoints.issuer ?? null,
+        // RFC 9207: when the server promises `iss`, a callback without it is refused.
+        expectIssParameter: Boolean(endpoints.issuer) && endpoints.issParameterSupported === true,
         resource:
           endpoints.resource ?? oauthConfig(saved).resource ?? null,
         clientIdMetadataDocumentSupported:
           endpoints.clientIdMetadataDocumentSupported === true,
+        issParameterSupported: endpoints.issParameterSupported === true,
       };
       const nextConfig = { ...saved.config, oauth: { ...oauthConfig(saved), ...oauth } };
       const nextTransportConfig = { ...saved.transportConfig, oauth: { ...asRecord(saved.transportConfig.oauth), ...oauth } };

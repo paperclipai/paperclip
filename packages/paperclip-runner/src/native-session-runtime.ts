@@ -18,7 +18,7 @@ import type {
   NativeSession,
   NativeSessionBackend,
 } from "./contracts/native-session-backend.js";
-import type { PersistedNativeSession } from "./contracts/native-session-backend.js";
+import type { NativeSessionRecoveryResult, PersistedNativeSession } from "./contracts/native-session-backend.js";
 import {
   PROVIDER_ATTACH_REFUSED,
   PROVIDER_SIDE_EFFECT_PENDING,
@@ -308,10 +308,10 @@ export interface ExecuteNativeSessionOptions {
   getFreshSessionHandoff?: () => Promise<string | null>;
   /**
    * Seals this run's first-turn input immediately before `turn.start` and
-   * returns user messages that arrived while the run was preparing. Repeated
-   * calls for the same run return the same messages.
+   * returns user messages that arrived while the run was preparing.
    */
   getFirstTurnQueuedInput?: () => Promise<string | null>;
+  prepareWakeAttachmentPrompt?: () => Promise<string>;
   /**
    * Steered messages the provider acknowledged but the model never read, read
    * when a restart continuation starts. The provider lost them with the
@@ -482,6 +482,7 @@ function terminalFromEvent(
 async function attemptOptionalSessionCancellation(
   session: NativeSession,
   reason: string,
+  failure: unknown,
 ): Promise<{ settlement: Promise<PromiseSettledResult<void>[]> } | null> {
   if (session.cancel === undefined) return null;
   const cancellationAbort = new AbortController();
@@ -493,6 +494,7 @@ async function attemptOptionalSessionCancellation(
     cleanup = session.cancel({
       reason,
       signal: cancellationAbort.signal,
+      ...(failure instanceof NativeSessionProtocolIntegrityError ? {} : { failureCleanup: true }),
     }).cleanup;
   } catch {
     return null;
@@ -1629,6 +1631,7 @@ async function consumeTurn(
       const deferredCancellation = await attemptOptionalSessionCancellation(
         session,
         "Native session event consumption failed.",
+        error,
       );
       deferredSessionCancellationSettlement =
         deferredCancellation?.settlement ?? null;
@@ -1915,6 +1918,61 @@ function checkpointCursor(cursor: string | null | undefined): number {
   if (cursor === undefined || cursor === null || cursor === "") return 0;
   const parsed = Number(cursor);
   return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0;
+}
+
+/**
+ * A follow-up after a governed wait normally requires the same provider
+ * session. When the Runner proved the saved session state is gone, and nothing
+ * proves this run started provider work of its own, a fresh session cannot
+ * repeat a turn or a tool side effect: only the earlier conversation context is
+ * lost. Every other case keeps the named refusal. The reconciled checkpoint must
+ * be the untouched rebind of the previous run (no cursor progress, turn,
+ * runtime request, result, terminal or governed wait of this run), and the
+ * control plane must prove durably, across runner instances, that the run has
+ * no provider event, tool invocation or accepted result. A control plane
+ * without that proof, or a checkpoint missing those fields, keeps the refusal.
+ */
+const GOVERNED_WAIT_PROVIDER_WORK_PROOF_TIMEOUT_MS = 30_000;
+
+async function governedWaitFollowUpMayStartFresh(input: {
+  input: NativeExecutionInput;
+  checkpoint: PersistedNativeSession;
+  recovery: NativeSessionRecoveryResult;
+  restartInterruption: boolean;
+  controlPlane: ControlPlanePort;
+  timeoutMs: number;
+}): Promise<boolean> {
+  const { checkpoint, recovery } = input;
+  if (
+    checkpoint.providerRecoveryPolicy !== "allow_replacement_after_governed_wait" ||
+    ("homeMode" in input.input && input.input.homeMode === "preconfigured") ||
+    recovery.failureClass !== PROVIDER_STATE_INCOMPATIBLE ||
+    recovery.resumeStateUnavailable !== true ||
+    input.restartInterruption ||
+    checkpoint.identity.runId !== input.input.binding.runId ||
+    !(checkpoint.cursor === null || checkpoint.cursor === "0") ||
+    checkpoint.activeTurnId !== null ||
+    !Array.isArray(checkpoint.terminalTurns) || checkpoint.terminalTurns.length > 0 ||
+    !Array.isArray(checkpoint.pendingRuntimeRequests) || checkpoint.pendingRuntimeRequests.length > 0 ||
+    checkpoint.semanticResult !== null ||
+    checkpoint.terminal !== null ||
+    checkpoint.governedWait !== undefined ||
+    checkpoint.dispositionOnlyRecoveryConsumed !== false ||
+    !input.controlPlane.provesNoRunProviderWork
+  ) return false;
+  const controlPlane = input.controlPlane;
+  // A proof that fails or expires is no proof: keep the named refusal and its
+  // Retry rather than surfacing a generic interruption.
+  const timeoutMs = Math.min(input.timeoutMs, GOVERNED_WAIT_PROVIDER_WORK_PROOF_TIMEOUT_MS);
+  try {
+    return await runAbortableOperationWithin({
+      timeoutMs,
+      timeoutMessage: `native session provider-work proof timed out after ${timeoutMs}ms`,
+      operation: (signal) => controlPlane.provesNoRunProviderWork!({ signal }),
+    }) === true;
+  } catch {
+    return false;
+  }
 }
 
 async function reconcileRecoveryCheckpoint(input: {
@@ -2520,16 +2578,30 @@ export async function executeNativeSession(
       if (recovery.failureClass === PROVIDER_ATTACH_REFUSED) {
         throw new NativeProviderStateIncompatibleError(recovery.reason ?? "unknown");
       }
-      if (!replacementAllowed) {
+      const governedWaitFollowUpLostState = !replacementAllowed && await governedWaitFollowUpMayStartFresh({
+        input,
+        checkpoint: providerRecoveryCheckpoint,
+        recovery,
+        restartInterruption: Boolean(checkpointedInterruption),
+        controlPlane: options.controlPlane,
+        timeoutMs: recoveryTimeoutMs,
+      });
+      if (!replacementAllowed && !governedWaitFollowUpLostState) {
         if (recovery.failureClass === PROVIDER_STATE_INCOMPATIBLE) {
           throw new NativeProviderStateIncompatibleError(recovery.reason ?? "unknown");
         }
-        throw new Error(
+        const failure = new Error(
           `native_session_recovery_failed: ${recovery.reason ?? "unknown"}`,
         );
+        if (recovery.runnerExitConfirmed === true) {
+          Object.defineProperty(failure, "runnerExitConfirmed", { value: true, enumerable: false });
+        }
+        throw failure;
       }
       continuityBreak = {
-        reason: recovery.reason ?? "provider session is no longer recoverable",
+        reason: governedWaitFollowUpLostState
+          ? `saved provider state is unavailable, so the follow-up continues in a fresh provider session without the earlier conversation context (${recovery.reason ?? "unknown"})`
+          : recovery.reason ?? "provider session is no longer recoverable",
         previousDriverSessionId: providerRecoveryCheckpoint.sessionId,
         previousProviderSessionId:
           providerRecoveryCheckpoint.providerSessionId ?? null,
@@ -2727,7 +2799,7 @@ export async function executeNativeSession(
       return snapshot;
     };
     const recoveredSnapshot = await session.snapshot();
-    const restartContinuation = (steeredMessages: Array<{ id: string; text: string }>) => ({
+    const restartContinuation = (steeredMessages: Array<{ id: string; text: string }>, attachmentPrompt?: string) => ({
       message: { role: "user" as const, text: JSON.stringify({
         schema: "paperclip.native-continuation.v1",
         events: [
@@ -2741,6 +2813,7 @@ export async function executeNativeSession(
           "Do not repeat completed work. Before you repeat an action with external effects, such as a push, a message or a deployment, check whether it already took effect. If you cannot determine that, report the specific blocker.",
           "Finish in this turn. Nothing resumes this conversation after the turn ends, so do not end it to wait for a background command or a notification; wait for or check that work first.",
           "Then invoke exactly one paperclip_finish or paperclip_block with the accurate disposition.",
+          ...(attachmentPrompt ? ["", attachmentPrompt] : []),
         ].join("\n"),
         ...(steeredMessages.length > 0 ? { steeredMessages: steeredMessages.map(message => message.text) } : {}),
         completion: {
@@ -2792,7 +2865,9 @@ export async function executeNativeSession(
         // later snapshot may already show the marker returned.
         const steeredMessages = await options.getUnreadSteeredMessages?.() ?? [];
         signal?.throwIfAborted();
-        const started = await session.startTurn(restartContinuation(steeredMessages));
+        const attachmentPrompt = await options.prepareWakeAttachmentPrompt?.();
+        signal?.throwIfAborted();
+        const started = await session.startTurn(restartContinuation(steeredMessages, attachmentPrompt));
         restartContinuationTurnId = started.turnId;
         if (started.borrowedDispositionMarker === true) borrowedContinuationTurnId = started.turnId;
         await checkpoint(signal);
@@ -3123,12 +3198,14 @@ export async function executeNativeSession(
           if ("workspace" in modelEnvelope && modelEnvelope.workspace && recoveredSnapshot.workingDirectory) {
             modelEnvelope.workspace.cwd = recoveredSnapshot.workingDirectory;
           }
-          if (!(dispositionOnlyRecovery && !effectFreeInitialAcpxTurn) && options.getFirstTurnQueuedInput) {
-            const queuedInput = await options.getFirstTurnQueuedInput();
-            if (queuedInput && "task" in modelEnvelope) {
-              modelEnvelope.task.prompt = `${modelEnvelope.task.prompt}\n\n${queuedInput}`;
-            } else if (queuedInput && "events" in modelEnvelope) {
-              modelEnvelope.events = `${modelEnvelope.events}\n\n${queuedInput}`;
+          if (!dispositionOnlyRecovery || effectFreeInitialAcpxTurn) {
+            const attachments = await options.prepareWakeAttachmentPrompt?.();
+            const queuedInput = await options.getFirstTurnQueuedInput?.();
+            const supplemental = [attachments, queuedInput].filter(Boolean).join("\n\n");
+            if (supplemental && "task" in modelEnvelope) {
+              modelEnvelope.task.prompt = `${modelEnvelope.task.prompt}\n\n${supplemental}`;
+            } else if (supplemental && "events" in modelEnvelope) {
+              modelEnvelope.events = `${modelEnvelope.events}\n\n${supplemental}`;
             }
           }
           await session.startTurn({

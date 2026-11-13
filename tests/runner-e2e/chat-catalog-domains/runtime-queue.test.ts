@@ -1,6 +1,6 @@
-import { it, expect } from "vitest";
+import { describe, it, expect } from "vitest";
 import { deflateRawSync } from "node:zlib";
-import { gradeQueuedFollowup, promptCarriesComment, zipEntryTexts } from "./runtime-queue.js";
+import { gradeQueuedFollowup, historyReadRevisions, keyboardMoveQueuedMessageUp, promptCarriesComment, readCurrentRevision, zipEntryTexts } from "./runtime-queue.js";
 /** A minimal zip with one deflated and one stored entry, laid out as zip tools write it. */
 function zip(entries: Array<{ name: string; text: string; deflate: boolean }>) {
   const locals: Buffer[] = [], centrals: Buffer[] = []; let offset = 0;
@@ -56,4 +56,50 @@ it("finds the saved comment when a continuation envelope nests the events JSON a
   expect(promptCarriesComment(prompt, comment)).toBe(true);
   expect(promptCarriesComment(JSON.stringify({ events: JSON.stringify({ messages: [{ id: "c-1", body: "Add a section." }] }) }), comment)).toBe(false);
   expect(promptCarriesComment(JSON.stringify({ events: JSON.stringify({ messages: [{ id: "c-2", body: comment.body }], note: "c-1" }) }), comment)).toBe(false);
+});
+
+// Full cohort 5 on 98c18784c6 (steering.approval-delivery, steering.edit-queued-message): the gesture was pressed
+// right after Save while the handle was still disabled, so no PUT /queued-comments/order was sent.
+function reorderPage(enableAfterMs: number) {
+  const enabledAt = Date.now() + enableAfterMs, pressed: Array<{ key: string; enabled: boolean }> = [];
+  let resolveResponse!: (value: unknown) => void;
+  const page = { waitForResponse: (match: (response: unknown) => boolean, options: { timeout: number }) => new Promise((resolve, reject) => {
+    resolveResponse = value => { if (match(value)) resolve(value); };
+    setTimeout(() => reject(new Error("timeout")), options.timeout);
+  }) };
+  const handle = { isEnabled: async () => Date.now() >= enabledAt, focus: async () => undefined,
+    press: async (key: string) => {
+      const enabled = Date.now() >= enabledAt; pressed.push({ key, enabled });
+      if (enabled && key === "Space" && pressed.filter(row => row.key === "Space").length === 2)
+        resolveResponse({ request: () => ({ method: () => "PUT" }), url: () => "http://127.0.0.1/api/issues/t/queued-comments/order", status: () => 200 });
+    } };
+  return { page: page as never, handle: handle as never, pressed };
+}
+it("waits for the reorder handle to be enabled before the keyboard gesture, and returns the order request's status", async () => {
+  const fake = reorderPage(300);
+  const result = await keyboardMoveQueuedMessageUp(fake.page, fake.handle, 3_000, 20);
+  expect(result.status).toBe(200); expect(result.waitedForEnabledMs).toBeGreaterThanOrEqual(250);
+  expect(fake.pressed.every(row => row.enabled)).toBe(true);
+});
+it("fails when the handle never enables or the gesture sends no order request", async () => {
+  await expect(keyboardMoveQueuedMessageUp(reorderPage(10_000).page, reorderPage(10_000).handle, 200, 20)).rejects.toThrow(/stayed disabled/);
+  const silent = reorderPage(0);
+  const handle = { ...(silent.handle as object), press: async () => undefined };
+  await expect(keyboardMoveQueuedMessageUp(silent.page, handle as never, 200, 20)).rejects.toThrow(/sent no queue order request/);
+});
+
+describe("task history reads", () => {
+  const event = (comments: unknown, eventType = "task_history.read") => ({ eventType, payload: { comments } });
+  it("keeps the newest revision each comment was read at, from history-read events only", () => {
+    expect(historyReadRevisions([event({ a: "2026-11-12T21:50:00.000Z" }), event({ a: "2026-11-12T21:52:30.494Z", b: "2026-11-12T21:50:24.404Z" }),
+      event({ a: "2026-11-12T21:49:00.000Z" }), event({ c: "2026-11-12T21:59:00.000Z" }, "tool.execution.completed"), event(["a"]), event({ d: "not a date" })]))
+      .toEqual({ a: "2026-11-12T21:52:30.494Z", b: "2026-11-12T21:50:24.404Z" });
+  });
+  it("counts a read only at or after the comment's current revision", () => {
+    const reads = { a: "2026-11-12T21:52:30.494Z" };
+    expect(readCurrentRevision(reads, { id: "a", updatedAt: "2026-11-12T21:52:30.494Z" })).toBe(true);
+    expect(readCurrentRevision(reads, { id: "a", updatedAt: "2026-11-12T21:52:31.000Z" })).toBe(false);
+    expect(readCurrentRevision(reads, { id: "b", updatedAt: "2026-11-12T21:50:00.000Z" })).toBe(false);
+    expect(readCurrentRevision(reads, undefined)).toBe(false);
+  });
 });

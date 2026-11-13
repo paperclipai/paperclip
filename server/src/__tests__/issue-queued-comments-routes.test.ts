@@ -1018,6 +1018,37 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     },
   );
 
+  it.each(["preparing", "native"] as const)(
+    "reports the messages a %s run's first turn takes, before and after it seals them",
+    async (runtime) => {
+      const seeded = await seedFirstTurnQueue(runtime);
+      const client = app(seeded.companyId);
+      // The sandbox is still booting: the messages are sent, not waiting for Steer.
+      const before = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+      expect(before.body.firstTurnCommentIds).toEqual(seeded.commentIds);
+
+      if (runtime === "preparing") {
+        await db.update(heartbeatRuns).set({ runtimeMode: "native", runtimeModeResolvedAt: new Date(),
+          nativeIssueId: seeded.issueId }).where(eq(heartbeatRuns.id, seeded.runId));
+      }
+      await claimFirstTurnQueuedInput(db, { companyId: seeded.companyId, runId: seeded.runId,
+        issueId: seeded.issueId, agentId: seeded.agentId });
+      // After the seal the queue hides them; the view still needs to know where they went.
+      const after = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+      expect(after.body.entries).toEqual([]);
+      expect(after.body.firstTurnCommentIds).toEqual(seeded.commentIds);
+    },
+  );
+
+  it("reports no first-turn messages once the run's turn already started", async () => {
+    const seeded = await seedFirstTurnQueue("native");
+    await appendHeartbeatRunEvent(db, { companyId: seeded.companyId, runId: seeded.runId, agentId: seeded.agentId,
+      eventType: "turn.accepted", stream: "system", level: "info", message: "turn accepted" });
+    const queue = await request(app(seeded.companyId)).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+    expect(queue.body.entries).toHaveLength(2);
+    expect(queue.body.firstTurnCommentIds ?? []).toEqual([]);
+  });
+
   it("still interrupts a preparing run when its queue holds another user's message", async () => {
     const seeded = await seedFirstTurnQueue("native");
     // Ordinary comments from two users merge into one wake that keeps the

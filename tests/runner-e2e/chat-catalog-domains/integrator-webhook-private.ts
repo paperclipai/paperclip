@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { chromium, type Cookie } from "@playwright/test";
+import { readPrivateChildFailure } from "./private-child-failure.js";
+import { WEBHOOK_PRIVATE_STEPS } from "./integrator-webhook-private-steps.js";
 export interface WebhookHumanReceipt { processIsolation: true; testRunnerAttached: false; credentialVisibleInHumanUI: true; setupFinished: true; invalidStatus: number; validStatus: number; invalidCreatedInvocation: boolean; invocationId: string; linkedIssueId: string; triggerId: string }
 export async function finishPrivateWebhook(input: { baseURL: string; route: string; routineId: string; triggerId: string; setupPending: boolean; signingMode: string; nonce: string; cookies: Cookie[] }, registerSecret: (value: string) => void): Promise<WebhookHumanReceipt> {
   const dir = await mkdtemp(path.join(tmpdir(), "paperclip-routine-webhook-private-"));
@@ -15,7 +17,7 @@ export async function finishPrivateWebhook(input: { baseURL: string; route: stri
     const worker = fileURLToPath(new URL("./integrator-webhook-private-worker.ts", import.meta.url)); const loader = fileURLToPath(new URL("../../../server/node_modules/tsx/dist/loader.mjs", import.meta.url));
     let output: string;
     try { output = (await promisify(execFile)(process.execPath, ["--import", loader, worker, request], { timeout: 120_000, maxBuffer: 8192, env: { PATH: process.env.PATH ?? "", NODE_ENV: "test", DO_NOT_TRACK: "1", HOME: dir, TMPDIR: dir } })).stdout; }
-    catch { throw new Error("Private routine webhook setup failed; credential-bearing child diagnostics withheld"); }
+    catch { throw new Error(`Private routine webhook setup failed${await readPrivateChildFailure(dir, WEBHOOK_PRIVATE_STEPS)}; credential-bearing child diagnostics withheld`); }
     const secret = await readFile(path.join(dir, "secret.txt"), "utf8"); if (!/^[a-f0-9]{48}$/i.test(secret)) throw new Error("Invalid private one-time webhook credential handoff"); registerSecret(secret);
     const receipt = JSON.parse(output) as WebhookHumanReceipt;
     if (receipt.processIsolation !== true || receipt.testRunnerAttached !== false || receipt.credentialVisibleInHumanUI !== true || receipt.setupFinished !== true || receipt.triggerId !== input.triggerId

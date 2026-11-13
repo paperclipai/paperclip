@@ -88,15 +88,34 @@ export function validateRunnerApiCall(value: unknown, context: RunnerApiContext)
  * older accepted call with validateRunnerApiCall, so these rules stay out of it.
  * Callers that reserve a mutation receipt must run this before the reservation.
  */
-export function assertRunnerApiDispatchable(operation: RunnerApiOperation, input: RunnerApiCall, receivedKeys: readonly string[]): void {
-  if (operation.method === "PATCH" && input.body === undefined && !input.files?.length && operation.requestBody?.required) {
-    // A PATCH without a body changes nothing but still returns success, which
-    // reads as a completed update. Name the missing argument instead.
-    throw badRequest(`This request was not sent: this PATCH requires body, a JSON object with the fields to change${patchFieldHint(operation)}. Received arguments: ${[...receivedKeys].sort().join(", ")}.`);
+export function assertRunnerApiDispatchable(operation: RunnerApiOperation, input: RunnerApiCall, received: Readonly<Record<string, unknown>>): void {
+  assertBodyPresent(operation, input, Object.keys(received));
+  if (operation.method !== "GET" && setsResponseWindow(received.responseText)) {
+    throw badRequest(`This request was not sent: responseText applies only to GET reads and never carries request fields. Resend ${operation.operationId} once without responseText, with its request fields in body${requestFieldHint(operation)}.`);
   }
 }
 
-function patchFieldHint(operation: RunnerApiOperation): string {
+function setsResponseWindow(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  return Object.entries(value).some(([key, setting]) => setting !== undefined && !(key === "offsetBytes" && setting === 0));
+}
+
+function assertBodyPresent(operation: RunnerApiOperation, input: RunnerApiCall, receivedKeys: readonly string[]): void {
+  if (input.body !== undefined || input.files?.length || !operation.requestBody?.required) return;
+  // A PATCH without a body succeeds as a no-op that reads like a completed
+  // update. A POST or PUT without a body whose schema names required fields
+  // can only fail at the route. Name the missing argument before sending.
+  const schema = operation.requestBody.content?.["application/json"]?.schema as { required?: unknown } | undefined;
+  const requiresFields = Array.isArray(schema?.required) && schema.required.length > 0;
+  if (!(operation.method === "PATCH" || ((operation.method === "POST" || operation.method === "PUT") && requiresFields))) return;
+  const received = [...receivedKeys].sort();
+  const misplaced = received.filter(key => ["query", "responseText", "saveResponse"].includes(key));
+  throw badRequest(`This request was not sent: ${operation.operationId} requires body, a JSON object with the request fields${requestFieldHint(operation)}. `
+    + `Received arguments: ${received.join(", ")}. Resend with a top-level body argument: {"operationId": ${JSON.stringify(operation.operationId)}, "pathParams": {...}, "body": {...}}.`
+    + (misplaced.length ? ` ${misplaced.join(", ")} never carr${misplaced.length === 1 ? "ies" : "y"} request fields.` : ""));
+}
+
+function requestFieldHint(operation: RunnerApiOperation): string {
   const schema = operation.requestBody?.content?.["application/json"]?.schema as { properties?: Record<string, unknown> } | undefined;
   const fields = Object.keys(schema?.properties ?? {});
   if (!fields.length) return "";
@@ -184,7 +203,7 @@ export function runnerApiPagination(headers: Headers) {
 export async function executeRunnerApi(input: RunnerApiCall, context: RunnerApiContext, io: RunnerApiIo) {
   const inlineBytes = RUNNER_API_INLINE_BYTES;
   const { operation, input: validated } = validateRunnerApiCall(input, context);
-  assertRunnerApiDispatchable(operation, validated, Object.keys(input));
+  assertRunnerApiDispatchable(operation, validated, input);
   input = validated;
   const sensitiveResponse = runnerApiSensitiveResponse(operation.method, operation.path);
   const url = runnerApiUrl(operation, input, context, io.apiUrl);

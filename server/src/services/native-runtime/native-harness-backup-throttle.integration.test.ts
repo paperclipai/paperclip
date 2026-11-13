@@ -142,4 +142,51 @@ describeEmbeddedPostgres("durable native provider backups under an object-storag
       await new Promise<void>(resolve => server.close(() => resolve()));
     }
   });
+
+  it("waits out a throttle that outlasts one request's backoff instead of losing the backup", async () => {
+    const f = await fixture();
+    const objects = new Map<string, Buffer>(), refusals = new Map<string, number>();
+    const server = createServer((request, response) => {
+      const key = new URL(request.url!, "http://localhost").pathname;
+      const chunks: Buffer[] = [];
+      request.on("data", chunk => chunks.push(chunk));
+      request.on("end", () => {
+        if (request.method === "PUT") {
+          const refused = refusals.get(key) ?? 0;
+          if (refused < 9) {
+            refusals.set(key, refused + 1);
+            response.writeHead(503, { "Content-Type": "application/xml" }).end(
+              "<Error><Code>SlowDown</Code><Message>Please reduce your request rate.</Message><RequestId>throttled</RequestId></Error>");
+            return;
+          }
+          objects.set(key, Buffer.concat(chunks));
+          response.writeHead(200, { ETag: `"${createHash("md5").update(objects.get(key)!).digest("hex")}"` }).end();
+        } else if (request.method === "GET" || request.method === "HEAD") {
+          const body = objects.get(key);
+          if (!body) { response.writeHead(404, { "Content-Type": "application/xml" }).end("<Error><Code>NoSuchKey</Code></Error>"); return; }
+          response.writeHead(200, { "Content-Length": body.length, ETag: `"${createHash("md5").update(body).digest("hex")}"`,
+            "Content-Type": "application/octet-stream" }).end(request.method === "GET" ? body : undefined);
+        } else if (request.method === "DELETE") {
+          objects.delete(key); response.writeHead(204).end();
+        } else response.writeHead(500).end();
+      });
+    });
+    await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
+    vi.stubEnv("AWS_ACCESS_KEY_ID", "fixture"); vi.stubEnv("AWS_SECRET_ACCESS_KEY", "fixture");
+    const random = vi.spyOn(Math, "random").mockReturnValue(0);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const storage = createStorageService(createS3StorageProvider({ bucket: "bucket", region: "us-east-1", forcePathStyle: true,
+      endpoint: `http://127.0.0.1:${(server.address() as AddressInfo).port}` }));
+    try {
+      await persistNativeHarnessBackup({ ...f, storage });
+      expect([...refusals.values()]).toEqual([9]);
+      const [current] = await f.db.select().from(nativeHarnessBackups).where(and(eq(nativeHarnessBackups.scopeDigest, f.scopeDigest),
+        eq(nativeHarnessBackups.status, "current")));
+      expect(current).toBeDefined();
+    } finally {
+      random.mockRestore(); warn.mockRestore();
+      server.closeAllConnections();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  }, 60_000);
 });

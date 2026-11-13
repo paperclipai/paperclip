@@ -238,8 +238,7 @@ describe("heartbeat retry module callbacks", () => {
     await extracted.createHeartbeatRetries(database.db, spawnDeps)
       .scheduleInteractionContinuationInfrastructureRetryIfEligible(spawnFailure, { adapterType: "codex_local" } as Agent);
     expect(spawnDeps.appendRunEvent).toHaveBeenCalledWith(spawnFailure, exhaustion);
-    expect(database.access).not.toHaveBeenCalled();
-  });
+    expect(database.access).not.toHaveBeenCalled();  });
 });
 
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
@@ -329,6 +328,27 @@ describePostgres("heartbeat retry module database wiring", () => {
       await db.delete(projectWorkspaces).where(eq(projectWorkspaces.companyId, companyId));
       await db.delete(projects).where(eq(projects.companyId, companyId));
     }
+  });
+
+  // A run that could not retire its predecessor re-queues in the uncharged lane
+  // with the answered interaction's own wake, so the retry still carries it.
+  it("keeps an answered interaction in an uncharged interrupted-preparation retry that keeps its wake", async () => {
+    const { run, agent, companyId } = await fixture();
+    const [wake] = await db.insert(agentWakeupRequests).values({ companyId, agentId: agent.id,
+      runId: run.id, source: "automation", status: "failed" }).returning();
+    const contextSnapshot = { ...run.contextSnapshot, interactionId: randomUUID(), interactionStatus: "answered",
+      interactionKind: "ask_user_questions", mutation: "interaction", wakeReason: "issue_commented" };
+    const [failed] = await db.update(heartbeatRuns).set({ wakeupRequestId: wake!.id, runtimeMode: "native",
+      errorCode: "adapter_failed", contextSnapshot }).where(eq(heartbeatRuns.id, run.id)).returning();
+    const { retries } = boundRetries();
+    expect(isResolvedInteractionContinuationWakeContext(failed!.contextSnapshot)).toBe(true);
+    const scheduled = await retries.scheduleBoundedRetryForRun(failed!, agent,
+      { now, retryReason: "interrupted_preparation", wakeReason: "issue_commented" });
+    expect(scheduled.outcome).toBe("scheduled");
+    const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run.id));
+    expect(isResolvedInteractionContinuationWakeContext(successor!.contextSnapshot)).toBe(true);
+    expect(successor!.contextSnapshot).toMatchObject({ interactionId: contextSnapshot.interactionId,
+      retryReason: "interrupted_preparation", executionRetryAccounting: { failureRetries: 0 } });
   });
 
   it("bounds answered chat attestation retries across restarts and escalates their exhaustion", async () => {

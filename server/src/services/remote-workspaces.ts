@@ -9,6 +9,7 @@ import os from "node:os";
 import path from "node:path";
 import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { crashPoint } from "@paperclipai/shared/crash-points";
+import { sandboxDiskFullFaultTarget } from "./sandbox-disk-full-fault.js";
 import {
   companies, environmentLeases, executionWorkspaces, executionWorkspaceSnapshots, heartbeatRuns, issues, workspaceOperations, type Db,
 } from "@paperclipai/db";
@@ -912,7 +913,9 @@ export async function saveRemoteWorkspace(input: {
     const existingUpload = snapshot.status === "uploaded" ? await getWorkspaceSnapshot(input.db, { companyId: input.workspace.companyId,
       workspaceId: input.workspace.id, snapshotId: snapshot.id }) : null;
     if (existingUpload) timing.reusedUpload = true;
-    captured = existingUpload ? null : await captureRemoteWorkspaceArchive({ target, remoteCwd: expected.location.remoteCwd,
+    captured = existingUpload ? null : await captureRemoteWorkspaceArchive({ remoteCwd: expected.location.remoteCwd,
+      // Test-only DF1 hook (sandbox-disk-full-fault.ts): the target itself unless a harness armed this save.
+      target: sandboxDiskFullFaultTarget(target, { boundary, issueId: operation.issueId, runId: input.runId }),
       operationId: operation.id, timing });
     await input.assertOwned();
     const uploadStarted = performance.now();

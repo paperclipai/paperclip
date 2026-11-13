@@ -11,7 +11,7 @@ import { withEnvironmentLeaseController } from "./environment-lease-controller.j
 import { randomUUID } from "node:crypto";
 
 import { SANDBOX_PLATFORM_PROBE_METADATA_KEY } from "./environment-custom-image-runtime.js";
-import { and, asc, desc, eq, inArray, isNull, ne, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, ne, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -274,7 +274,7 @@ function resolveKubernetesConfig(
   return companyIdOrConfig;
 }
 
-function toEnvironmentLease(row: EnvironmentLeaseRow): EnvironmentLease {
+export function toEnvironmentLease(row: EnvironmentLeaseRow): EnvironmentLease {
   return {
     id: row.id,
     companyId: row.companyId,
@@ -993,6 +993,7 @@ export function environmentService(db: Db) {
     },
 
     getLeaseById: async (id: string): Promise<EnvironmentLease | null> => {
+      if (!id.trim()) return null;
       const row = await db
         .select()
         .from(environmentLeases)
@@ -1390,7 +1391,7 @@ export function environmentService(db: Db) {
         db
           .select({ count: sql<number>`count(*)::int` })
           .from(projects)
-          .where(or(eq(projects.environmentId, id), sql`${projects.executionWorkspacePolicy} ->> 'environmentId' = ${id}`)),
+          .where(sql`${projects.executionWorkspacePolicy} ->> 'environmentId' = ${id}`),
         db
           .select({ count: sql<number>`count(*)::int` })
           .from(companySecretBindings)
@@ -1649,6 +1650,7 @@ export function environmentService(db: Db) {
                       // lease holds older session state. That claim and this
                       // handoff compete on this row, so only one of them wins.
                       sql`not (coalesce(${environmentLeases.metadata}, '{}'::jsonb) ? 'reusableSandboxLeaseSuperseded')`,
+                      sql`not (coalesce(${environmentLeases.metadata}, '{}'::jsonb) ? 'portableTaskSuccessor')`,
                     ),
                   )
                   .returning();

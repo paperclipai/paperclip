@@ -115,11 +115,12 @@ const projectFields = {
   visibility: z.enum(["open", "private"]).optional().default("open"),
   status: z.enum(PROJECT_STATUSES).optional().default("backlog"),
   leadAgentId: z.string().guid().optional().nullable(),
+  // PAP-749 task 1d: the project's decision owner (a user). `null` clears it.
+  decisionOwnerUserId: z.string().min(1).optional().nullable(),
   targetDate: z.string().optional().nullable(),
   color: z.string().optional().nullable(),
   icon: z.enum(PROJECT_ICON_NAMES).optional().nullable(),
   env: envConfigSchema.optional().nullable(),
-  environmentId: z.string().guid().optional().nullable(),
   executionWorkspacePolicy: projectExecutionWorkspacePolicySchema.optional().nullable(),
   archivedAt: z.string().datetime().optional().nullable(),
 };
@@ -137,7 +138,7 @@ export const createProjectSchema = z.object({
 export type CreateProject = z.infer<typeof createProjectSchema>;
 
 export const updateProjectSchema = objectWithoutDefaults(
-  z.object({ ...projectFields, expectedStorageProviderPluginId: z.string().guid().nullable().optional() }),
+  z.object(projectFields),
 ).partial();
 
 export type UpdateProject = z.infer<typeof updateProjectSchema>;

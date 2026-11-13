@@ -157,7 +157,7 @@ POST /api/routines/{routineId}/triggers
 }
 ```
 
-- `signingMode`: `bearer` (default) or `hmac_sha256`
+- `signingMode`: `bearer` (default) or `hmac_sha256`. Agents can only create authenticated webhook triggers; if a sender cannot authenticate, ask a person to set that trigger up on the board.
 - `replayWindowSec`: 30-86400 (default 300)
 - Response includes the webhook URL (`publicId`-based) and the signing secret
 - Fire externally: `POST /api/routine-triggers/public/{publicId}/fire`

@@ -83,8 +83,8 @@ fn checkpoints_the_sidecar_and_rebinds_consecutive_warm_runs_before_accepting_wo
     };
     let mut descriptor = json!({
         "kind": "acpx", "provider": "acpx", "driver": "acpx_runtime",
-        "providerVersion": "0.13.1", "agent": "codex", "model": "gpt-5.6-sol",
-        "acpxVersion": "0.13.1", "agentServerPackage": "@agentclientprotocol/codex-acp",
+        "providerVersion": "0.22.0", "agent": "codex", "model": "gpt-5.6-sol",
+        "acpxVersion": "0.22.0", "agentServerPackage": "@agentclientprotocol/codex-acp",
         "agentServerVersion": "1.6.2", "agentRuntimePackage": "@openai/codex",
         "agentRuntimeVersion": "0.160.0", "commandDigest": PROFILE_DIGEST,
         "sidecarCommand": sidecar, "sidecarArgs": args, "runtimeDirectory": fixture.0,
@@ -243,8 +243,8 @@ fn reopens_the_conversation_for_a_turn_after_a_suspension_stop() {
     };
     let descriptor = json!({
         "kind": "acpx", "provider": "acpx", "driver": "acpx_runtime",
-        "providerVersion": "0.13.1", "agent": "codex", "model": "gpt-5.6-sol",
-        "acpxVersion": "0.13.1", "agentServerPackage": "@agentclientprotocol/codex-acp",
+        "providerVersion": "0.22.0", "agent": "codex", "model": "gpt-5.6-sol",
+        "acpxVersion": "0.22.0", "agentServerPackage": "@agentclientprotocol/codex-acp",
         "agentServerVersion": "1.6.2", "agentRuntimePackage": "@openai/codex",
         "agentRuntimeVersion": "0.160.0", "commandDigest": PROFILE_DIGEST,
         "sidecarCommand": sidecar, "sidecarArgs": args, "runtimeDirectory": fixture.0,
@@ -361,8 +361,8 @@ fn restores_the_conversation_after_losing_an_active_turn_to_a_runner_restart() {
     };
     let descriptor = json!({
         "kind": "acpx", "provider": "acpx", "driver": "acpx_runtime",
-        "providerVersion": "0.13.1", "agent": "codex", "model": "gpt-5.6-sol",
-        "acpxVersion": "0.13.1", "agentServerPackage": "@agentclientprotocol/codex-acp",
+        "providerVersion": "0.22.0", "agent": "codex", "model": "gpt-5.6-sol",
+        "acpxVersion": "0.22.0", "agentServerPackage": "@agentclientprotocol/codex-acp",
         "agentServerVersion": "1.6.2", "agentRuntimePackage": "@openai/codex",
         "agentRuntimeVersion": "0.160.0", "commandDigest": PROFILE_DIGEST,
         "sidecarCommand": sidecar, "sidecarArgs": args, "runtimeDirectory": fixture.0,
@@ -504,8 +504,8 @@ fn restores_a_turn_lost_to_a_runner_upgrade_under_the_new_launch_profile() {
     };
     let descriptor = json!({
         "kind": "acpx", "provider": "acpx", "driver": "acpx_runtime",
-        "providerVersion": "0.13.1", "agent": "codex", "model": "gpt-5.6-sol",
-        "acpxVersion": "0.13.1", "agentServerPackage": "@agentclientprotocol/codex-acp",
+        "providerVersion": "0.22.0", "agent": "codex", "model": "gpt-5.6-sol",
+        "acpxVersion": "0.22.0", "agentServerPackage": "@agentclientprotocol/codex-acp",
         "agentServerVersion": "1.6.2", "agentRuntimePackage": "@openai/codex",
         "agentRuntimeVersion": "0.160.0", "commandDigest": PROFILE_DIGEST,
         "sidecarCommand": sidecar, "sidecarArgs": args, "runtimeDirectory": fixture.0,
@@ -634,8 +634,8 @@ fn a_lost_cancellation_reply_still_settles_the_turn_and_suspends_the_runner() {
     };
     let descriptor = json!({
         "kind": "acpx", "provider": "acpx", "driver": "acpx_runtime",
-        "providerVersion": "0.13.1", "agent": "codex", "model": "gpt-5.6-sol",
-        "acpxVersion": "0.13.1", "agentServerPackage": "@agentclientprotocol/codex-acp",
+        "providerVersion": "0.22.0", "agent": "codex", "model": "gpt-5.6-sol",
+        "acpxVersion": "0.22.0", "agentServerPackage": "@agentclientprotocol/codex-acp",
         "agentServerVersion": "1.6.2", "agentRuntimePackage": "@openai/codex",
         "agentRuntimeVersion": "0.160.0", "commandDigest": PROFILE_DIGEST,
         "sidecarCommand": sidecar, "sidecarArgs": args, "runtimeDirectory": fixture.0,

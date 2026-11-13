@@ -21,6 +21,8 @@ import {
   heartbeatRunEvents,
   heartbeatRuns,
   issues,
+  nativeHarnessBackups,
+  nativeRunFinalizations,
   nativeRunResults,
 } from "@paperclipai/db";
 import { describe, expect, it, vi } from "vitest";
@@ -59,11 +61,13 @@ import {
   REUSE_CHAT_ATTACHMENT_TOOL_DEFINITION,
 } from "./chat-attachment-reuse.js";
 import { buildNativeExecutionInput } from "./native-execution-input.js";
+import { clearRunProviderStateUnsaved, markAcceptedRunProviderStateUnsaved } from "./native-provider-state-unsaved.js";
 import {
   buildNativeExecutionWithCheckpoint,
   findNativeSessionResumeRun,
   NATIVE_PROVIDER_SIDE_EFFECT_PENDING,
   NATIVE_PROVIDER_STATE_INCOMPATIBLE,
+  NATIVE_PROVIDER_STATE_UNSAVED_KEY,
   NATIVE_TOOL_CONTRACT_FINGERPRINT,
   isUnusedLegacyNativeRetryReplacement,
   nativeToolContractFingerprintForTarget,
@@ -308,6 +312,48 @@ describe("a source whose saved provider session the runner proved incompatible",
     expect(result.execution.binding.executionWorkspaceId).toBe(current.binding.executionWorkspaceId);
     expect(result.execution.workspace).toEqual(current.workspace);
   });
+});
+
+describe("a source whose provider state was not saved after its result was accepted", () => {
+  const unsaved = { [NATIVE_PROVIDER_STATE_UNSAVED_KEY]: { code: NATIVE_PROVIDER_STATE_INCOMPATIBLE,
+    reason: "harness_backup_not_saved", recordedAt: "2026-11-11T00:00:00.000Z" } };
+  const withPolicy = (policy: "resume_failure" | "governed_wait" | "same_session", overrides: Record<string, unknown> = {}) => {
+    const source = previousRun(overrides);
+    const checkpoint = (source.runnerProfileJson as Record<string, unknown>).sessionCheckpoint as Record<string, unknown>;
+    if (policy === "governed_wait") checkpoint.semanticResult = { schema: "paperclip.run_result.v1", reportedWorkDisposition: "yielded",
+      summary: "Waiting for a response.", continuation: { kind: "response_wake", idempotencyKey: "interaction-response:one" } };
+    if (policy === "same_session") checkpoint.goal = { status: "paused", objective: "Keep working" };
+    return source;
+  };
+
+  it.each(["resume_failure", "governed_wait", "same_session"] as const)(
+    "starts the next run in a fresh provider session directly (%s policy)", (policy) => {
+      const current = execution(currentRunId);
+      expect(rebindNativeSessionCheckpoint({ previousRun: withPolicy(policy, unsaved), currentExecution: current })).toBeNull();
+      const buildExecution = vi.fn(({ normalizedSessionId: sessionId, resumedSession }) => {
+        const built = execution(currentRunId);
+        built.session.normalizedSessionId = sessionId;
+        built.task.prompt = resumedSession ? "wake delta" : "original goal and complete handoff";
+        return built;
+      });
+      const result = buildNativeExecutionWithCheckpoint({ previousRun: withPolicy(policy, unsaved), normalizedSessionId, buildExecution });
+      expect(result.checkpoint).toBeNull();
+      expect(result.normalizedSessionId).not.toBe(normalizedSessionId);
+      expect(result.execution.task.prompt).toContain("complete handoff");
+      expect(result.execution.workspace).toEqual(current.workspace);
+    });
+
+  it.each(["resume_failure", "governed_wait", "same_session"] as const)(
+    "keeps the resume path for a record without the mark (%s policy)", (policy) => {
+      const expected = { resume_failure: "allow_replacement_after_resume_failure",
+        governed_wait: "allow_replacement_after_governed_wait", same_session: "same_session_only" }[policy];
+      // Records written before the mark existed, and runs whose backup saved.
+      for (const overrides of [{}, { [NATIVE_PROVIDER_STATE_UNSAVED_KEY]: null },
+        { [NATIVE_PROVIDER_STATE_UNSAVED_KEY]: { code: "some_other_code" } }]) {
+        expect(rebindNativeSessionCheckpoint({ previousRun: withPolicy(policy, overrides), currentExecution: execution(currentRunId) }))
+          .toMatchObject({ providerRecoveryPolicy: expected, identity: { runId: currentRunId } });
+      }
+    });
 });
 
 it("wires exact-session recovery and guarded selected identity into heartbeat persistence", () => {
@@ -1112,6 +1158,67 @@ const recoveryFakeCodex = resolve(
 (databaseSupported ? describe : describe.skip)(
   "native session recovery database orchestration",
   () => {
+    it.each(["accepted", "no_result", "rejected", "backup_current"] as const)(
+      "marks the checkpoint not resumable only after an accepted result (%s)", async (outcome) => {
+        const database = await startEmbeddedPostgresTestDatabase("paperclip-native-unsaved-state-");
+        const db = createDb(database.connectionString);
+        try {
+          await db.insert(companies).values({ id: companyId, name: "Unsaved provider state", issuePrefix: "NPS" });
+          await db.insert(agents).values({ id: agentId, companyId, name: "Native runner" });
+          await db.insert(issues).values({ id: issueId, companyId, title: "Keep the task" });
+          const source = previousRun();
+          const sourceExecution = source.runnerProfileJson.nativeExecutionInput;
+          await db.insert(completionContracts).values({ id: sourceExecution.completionContract.id, companyId, issueId,
+            revision: 1, schemaVersion: "paperclip.completion-contract.v1", policyVersion: "unsaved-state-v1", risk: "standard",
+            completionAuthority: "server_arbiter", incompleteCriteriaPolicy: "preserve_non_terminal",
+            contractJson: { ...sourceExecution.completionContract.contract }, canonicalSha256: sourceExecution.completionContract.sha256,
+            createdByActorType: "system", createdByActorId: "test" });
+          const resultJson = { result: { summary: "Done." }, terminal: { runTerminalState: "succeeded" } };
+          await db.insert(heartbeatRuns).values({ id: previousRunId, companyId, agentId, status: "succeeded",
+            runtimeMode: "native", nativeIssueId: issueId, nativeSessionId: normalizedSessionId, runnerInstanceId: randomUUID(),
+            completionContractId: sourceExecution.completionContract.id, completionContractSha256: sourceExecution.completionContract.sha256,
+            createdAt: new Date(Date.UTC(2026, 10, 11, 0, 0, 0)), resultJson, runnerProfileJson: source.runnerProfileJson });
+          const resultId = randomUUID();
+          if (outcome !== "no_result") await db.insert(nativeRunResults).values({ id: resultId, companyId, issueId, runId: previousRunId,
+            completionContractId: sourceExecution.completionContract.id, serverFingerprint: "test",
+            schemaStatus: outcome === "rejected" ? "rejected" : "accepted", resultJson, canonicalSha256: "a".repeat(64) });
+          await db.insert(nativeRunFinalizations).values({ runId: previousRunId, companyId, issueId,
+            phase: outcome === "accepted" || outcome === "backup_current" ? "committed" : "observed",
+            resultId: outcome === "no_result" ? null : resultId });
+          // The durable backup became current before a later step failed.
+          if (outcome === "backup_current") await db.insert(nativeHarnessBackups).values({ companyId, issueId, runId: previousRunId,
+            scopeDigest: "b".repeat(64), manifestSha256: `sha256:${"c".repeat(64)}`, status: "current", reference: {} });
+          const binding = { companyId, issueId, runId: previousRunId };
+          const selection = { companyId, agentId, issueId, normalizedSessionId, currentRunId,
+            beforeCreatedAt: new Date(Date.UTC(2026, 10, 11, 0, 1, 0)) };
+          const [before] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, previousRunId));
+
+          expect(await markAcceptedRunProviderStateUnsaved(db, binding)).toBe(outcome === "accepted");
+          const [after] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, previousRunId));
+          // The accepted result and the run outcome are untouched.
+          expect({ ...after, runnerProfileJson: null }).toEqual({ ...before, runnerProfileJson: null });
+          const selected = await findNativeSessionResumeRun(db, selection);
+          expect(selected?.id).toBe(previousRunId);
+          const rebound = rebindNativeSessionCheckpoint({ previousRun: selected!, currentExecution: execution(currentRunId) });
+          if (outcome === "accepted") {
+            expect(after.runnerProfileJson).toMatchObject({ ...source.runnerProfileJson,
+              [NATIVE_PROVIDER_STATE_UNSAVED_KEY]: { code: NATIVE_PROVIDER_STATE_INCOMPATIBLE, reason: "harness_backup_not_saved" } });
+            expect(rebound).toBeNull();
+            // A later save of the same run's state restores the resume path.
+            await clearRunProviderStateUnsaved(db, binding);
+            const restored = await findNativeSessionResumeRun(db, selection);
+            expect(rebindNativeSessionCheckpoint({ previousRun: restored!, currentExecution: execution(currentRunId) }))
+              .toMatchObject({ providerRecoveryPolicy: "allow_replacement_after_resume_failure" });
+          } else {
+            // A failure before acceptance, or after the backup became current, keeps today's path.
+            expect(after.runnerProfileJson).toEqual(before.runnerProfileJson);
+            expect(rebound).toMatchObject({ providerRecoveryPolicy: "allow_replacement_after_resume_failure" });
+          }
+        } finally {
+          await database.cleanup();
+        }
+      }, 60_000);
+
     it("uses scoped latest checkpoints, preserves progress barriers, and guards bootstrap persistence after the row lock", async () => {
       const database = await startEmbeddedPostgresTestDatabase(
         "paperclip-native-resume-selection-",

@@ -99,4 +99,11 @@ export interface ControlPlanePort {
     result: NativeRunResult | CompleteControlPlaneRunInput,
     options?: FinalizeControlPlaneOperationOptions,
   ): Promise<void>;
+  /**
+   * Durable proof, across every runner instance, that this run has recorded no
+   * provider event, tool invocation, or accepted result. True only when the
+   * control plane can prove it; a port without this proof keeps every
+   * recovery refusal unchanged.
+   */
+  provesNoRunProviderWork?(options: FinalizeControlPlaneOperationOptions): Promise<boolean>;
 }

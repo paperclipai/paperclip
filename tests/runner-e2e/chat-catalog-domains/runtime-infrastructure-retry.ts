@@ -1,66 +1,68 @@
 import { chatCatalogNativePhaseDeadline, chatCatalogNativePhaseIsTimely, chatCatalogNativePhaseRemainingBudget } from "../chat-catalog-contract.js";
 import { expect, type Page } from "@playwright/test";
-import { readFile, realpath, writeFile } from "node:fs/promises";
-import path from "node:path";
+import { writeFile } from "node:fs/promises";
 import type { HeartbeatRun } from "../../../packages/shared/src/types/heartbeat.js";
-import type { Issue, IssueRecoveryAction } from "../../../packages/shared/src/types/issue.js";
+import type { Issue } from "../../../packages/shared/src/types/issue.js";
 import { pollUntil } from "../api.js";
 import { sendChatMessage } from "../chat-flow.js";
 import { checks, type Entity } from "./internal-support.js";
-import { releaseRuntimeWorker, type RuntimeBriefGate } from "./runtime-busy-worker.js";
-import { controllerReadRecovery, exhaustedNativeInfrastructure, isExhaustedNativeRecovery, linksSourceTask, runtimeInfrastructureCases } from "./runtime-infrastructure.js";
-import type { NativeFaultRun } from "./runtime-native-fault.js";
+import { prepareRuntimeWorkerGate, releasedRetryListener, releaseRuntimeWorker, retriesOriginalRun, type RuntimeBriefGate } from "./runtime-busy-worker.js";
+import { controllerReadRecovery, linksSourceTask, sourceRunRecovery, type SourceRecoveryActions } from "./runtime-infrastructure.js";
+import { unavailableNativeModelFailure } from "./runtime-native-failure.js";
+import type { ChatCatalogContext } from "../chat-catalog-contract.js";
 import { runtimeDefinition, runtimeObservation, observeRuntime, type RuntimeAgent } from "./runtime-support.js";
-/** The person's Retry for the stopped task: the failed-run marker in the
- * thread, or the task's own Retry when automatic recovery has stopped and the
- * run is held for recovery (the thread then omits the marker's Retry). */
 export function humanRetryControl(page: Page) {
   return page.getByTestId("task-chat-run-failed-try-again").or(page.getByTestId("task-execution-retry")).last();
 }
-/** Either supported Retry request for this task and its assignee. */
 export function isHumanRetryRequest(request: { method(): string; url(): string }, taskId: string, workerId: string) {
   const path = new URL(request.url()).pathname;
   return request.method() === "POST" && (path === `/api/agents/${workerId}/wakeup` || path === `/api/issues/${taskId}/retry`);
 }
-/**
- * Whether a run is a Retry of the original run. A person's task Retry names its
- * source in the execution continuation (`task_retry` from the original run);
- * an automatic scheduled retry names it in `retryOfRunId`.
- */
-export function retriesOriginalRun(run: Pick<HeartbeatRun, "retryOfRunId" | "contextSnapshot">, originalRunId: string) {
-  if (run.retryOfRunId === originalRunId) return true;
-  const context = (run.contextSnapshot ?? {}) as { previousRunId?: unknown; executionContinuation?: { trigger?: { reason?: unknown; sourceRunId?: unknown } } };
-  const trigger = context.executionContinuation?.trigger;
-  return context.previousRunId === originalRunId && trigger?.reason === "task_retry" && trigger.sourceRunId === originalRunId;
+export { releasedRetryListener, retriesOriginalRun };
+export const PERSON_OWNED_RETRY_FAILURE_CODE = "native_provider_model_rejected";
+export function isPersonOwnedRetryFailure(input: { run?: Pick<HeartbeatRun, "id" | "status" | "errorCode" | "companyId" | "agentId"> & { nativePhase?: string | null }; companyId: string; agentId: string;
+  taskStatus?: string; freshContinuations: number; successorRuns: number }) {
+  const run = input.run;
+  return !!run && run.status === "failed" && run.errorCode === PERSON_OWNED_RETRY_FAILURE_CODE && run.companyId === input.companyId && run.agentId === input.agentId
+    && input.taskStatus === "blocked" && input.freshContinuations === 0 && input.successorRuns === 0;
 }
-/**
- * The released Retry's own brief listener. A Retry can start in a fresh
- * isolated workspace, so read the directory from that run's saved execution
- * input, never from the task's earlier binding. It must be the worker's one
- * retry of the original run for this task, inside the owned attempt root, and
- * its script must already wait for the brief there.
- */
-export async function releasedRetryListener(run: HeartbeatRun, expected: { companyId: string; workerId: string; taskId: string; originalRunId: string; gateName: string },
-  root = process.env.PAPERCLIP_RUNNER_E2E_TEMP_ROOT) {
-  const profile = (run as { runnerProfileJson?: { nativeExecutionInput?: { workspace?: { cwd?: unknown }; binding?: { executionWorkspaceId?: unknown } } } }).runnerProfileJson;
-  const cwd = profile?.nativeExecutionInput?.workspace?.cwd, workspaceId = profile?.nativeExecutionInput?.binding?.executionWorkspaceId;
-  if (!root || run.companyId !== expected.companyId || run.agentId !== expected.workerId || !retriesOriginalRun(run, expected.originalRunId)
-    || ![run.contextSnapshot?.issueId, run.contextSnapshot?.taskId].includes(expected.taskId) || typeof cwd !== "string" || typeof workspaceId !== "string") return null;
-  const real = await realpath(cwd).catch(() => null), ownedRoot = await realpath(root);
-  if (!real || !real.startsWith(`${ownedRoot}${path.sep}`)) return null;
-  const ready = await realpath(path.join(real, `${expected.gateName}.waiting`)).catch(() => null);
-  if (!ready || path.dirname(ready) !== real || (await readFile(ready, "utf8")).trim() !== "waiting") return null;
-  return { gate: path.join(real, expected.gateName), workspaceId };
+export async function personOwnedNativeFailure(ctx: ChatCatalogContext) {
+  const { worker, gate, company } = await prepareRuntimeWorkerGate(ctx, { taskBound: true });
+  let task: Entity | undefined;
+  const failure = await unavailableNativeModelFailure(ctx, worker, async () => {
+    task = await ctx.input.api.post<Entity>(`${company}/issues`, { title: "Website task", status: "todo", assigneeAgentId: worker.id, allowDuplicate: true,
+      description: `The website brief is being supplied by the human. Run ${gate.command} once and wait for its real output. Do not invent a brief, replace the script, or mark work complete before it returns. Once the brief arrives, save it as a task document and finish normally.` });
+    return { issueId: task.id };
+  });
+  if (!task || failure.failedIssueId !== task.id) throw new Error("Person-owned failure did not stop the fixture's own Website task");
+  const companyId = ctx.input.fixtures.company.id, failedRunId = failure.failedRun.id, websiteId = task.id;
+  const load = async () => {
+    const [current, run, recovery, runs] = await Promise.all([ctx.input.api.get<Issue>(`/api/issues/${websiteId}`), ctx.input.api.get<HeartbeatRun>(`/api/heartbeat-runs/${failedRunId}`),
+      sourceRunRecovery(ctx, websiteId, failedRunId), ctx.allRuns()]);
+    return { current, run, recovery, freshContinuations: (recovery.actions ?? []).filter(action => !!(action.evidence as Record<string, unknown>).freshContinuation).length,
+      successorRuns: runs.filter(row => row.agentId === worker.id && row.id !== failedRunId).length };
+  };
+  const accepted = (v: Awaited<ReturnType<typeof load>>) => isPersonOwnedRetryFailure({ run: v.run, companyId, agentId: worker.id, taskStatus: v.current.status,
+    freshContinuations: v.freshContinuations, successorRuns: v.successorRuns });
+  await pollUntil({ label: "The person-owned failure waits for the person's Retry", deadlineAt: Date.now() + 90_000, load, accept: accepted,
+    reject: v => v.successorRuns > 0 || v.freshContinuations > 0 ? "A person-owned failure was continued without the person" : undefined });
+  const settled = await pollUntil({ label: "No automatic continuation follows the person-owned failure", deadlineAt: Date.now() + 60_000, load,
+    accept: v => accepted(v) && Date.now() - Date.parse(String(v.run.finishedAt)) >= 45_000,
+    reject: v => accepted(v) ? undefined : "A person-owned failure was continued without the person" });
+  const before = await ctx.input.api.get<SourceRecoveryActions>(`/api/issues/${websiteId}/recovery-actions`);
+  await ctx.input.evidence("runtime-person-owned-failure.json", { runId: failedRunId, errorCode: settled.run.errorCode, taskStatus: settled.current.status,
+    activeRecovery: before.active ? { id: before.active.id, ownerType: before.active.ownerType, cause: before.active.cause, status: before.active.status } : null,
+    freshContinuations: settled.freshContinuations, successorRuns: settled.successorRuns });
+  return { worker, gate, task: settled.current, workerRunId: failedRunId, failure: settled.run, recoveryBefore: before.active ?? null,
+    freshContinuationsBefore: settled.freshContinuations, successorRunsBefore: settled.successorRuns, failureKind: failure.failureKind };
 }
 export function gradeInfrastructureRetry(value: unknown) {
   const c = checks(), o = runtimeObservation(value);
-  c.add("actual-exhausted-retry-and-current-gates", !!o, "The genuine exhausted native run, real human Retry controls and independently observed admission gates are required."); if (!o) return c.result();
+  c.add("actual-person-owned-failure-retry-and-current-gates", !!o, "The genuine person-owned native failure, real human Retry controls and independently observed admission gates are required."); if (!o) return c.result();
   const s = o.state;
-  c.add("actual-original-infrastructure-exhaustion", !!s.failure && isExhaustedNativeRecovery(s.recoveryBefore as IssueRecoveryAction, s.failure as NativeFaultRun, o.companyId, (s.task as Entity).id, (s.worker as Entity).id),
-    "The original task really exposes the exhausted three-attempt native infrastructure action; an unavailable-model failure is insufficient.");
-  // Reply wording is not graded: each declared phase is bound to its own
-  // controller run, which must have read the task's saved recovery record or
-  // runs before answering. A person reads the replies for meaning.
+  c.add("actual-person-owned-failure-awaits-retry", isPersonOwnedRetryFailure({ run: s.failure as HeartbeatRun, companyId: o.companyId, agentId: (s.worker as Entity)?.id,
+    taskStatus: (s.task as Issue)?.status, freshContinuations: Number(s.freshContinuationsBefore), successorRuns: Number(s.successorRunsBefore) }),
+    "The original task stopped for a reason only the person can resolve, stays blocked for the person, and the system starts no continuation of its own; an infrastructure loss continues automatically and is insufficient.");
   c.add("ordinary-human-retry-guidance", s.queryRecoveryRead === true && s.retryVisible === true && linksSourceTask(o, s.task as Entity),
     "The canonical reply comes from a run that read the saved recovery record and links the original task, where the real human Retry control is visible.");
   c.add("actual-closed-gate-prevents-new-execution", s.budgetHeldBeforeRetry === true && [200, 202, 409].includes(Number(s.heldRetryStatus))
@@ -78,14 +80,21 @@ export function gradeInfrastructureRetry(value: unknown) {
     "A separately declared factual follow-up receives its own native reply from a run that read the task's actual runs.");
   return c.result();
 }
-export const runtimeInfrastructureRetryCases = [runtimeDefinition("recovery.retry-exhausted", exhaustedNativeInfrastructure, gradeInfrastructureRetry, {
-  oracleVersion: "paperclip.chat-catalog.runtime.retry-exhausted.v5", authentication: "human-session", expectedHumanMessageCount: 3, expectedRunCount: 5, attemptTimeoutMs: 1_800_000,
-  setupPolicy: runtimeInfrastructureCases[0]!.setupPolicy, verifySetup: runtimeInfrastructureCases[0]!.verifySetup,
+export const runtimeInfrastructureRetryCases = [runtimeDefinition("recovery.retry-exhausted", personOwnedNativeFailure, gradeInfrastructureRetry, {
+  oracleVersion: "paperclip.chat-catalog.runtime.retry-exhausted.v6", authentication: "human-session", expectedHumanMessageCount: 3, expectedRunCount: 5, attemptTimeoutMs: 1_800_000,
+  setupPolicy: { readiness: "preserve-scenario", invariantCheckIds: ["lead-ready", "person-owned-failure-awaits-retry"] },
+  async verifySetup(ctx, state) { const c = checks(), lead = await ctx.input.api.get<RuntimeAgent>(`/api/agents/${ctx.input.fixtures.agent.id}`), task = state.task as Issue, worker = state.worker as Entity;
+    const [current, run, recovery, runs] = await Promise.all([ctx.input.api.get<Issue>(`/api/issues/${task.id}`), ctx.input.api.get<HeartbeatRun>(`/api/heartbeat-runs/${state.workerRunId}`),
+      sourceRunRecovery(ctx, task.id, String(state.workerRunId)), ctx.allRuns()]);
+    c.add("lead-ready", lead.lifecycleState === "ready" && ["active", "idle"].includes(lead.status ?? ""), "The actual controller remains independently admitted.");
+    c.add("person-owned-failure-awaits-retry", isPersonOwnedRetryFailure({ run, companyId: ctx.input.fixtures.company.id, agentId: worker.id, taskStatus: current.status,
+      freshContinuations: (recovery.actions ?? []).filter(action => !!(action.evidence as Record<string, unknown>).freshContinuation).length,
+      successorRuns: runs.filter(row => row.agentId === worker.id && row.id !== run.id).length }), "The original task waits for the person's Retry after a failure only the person can resolve."); return c.result(); },
   runPolicy: { kind: "terminal-counts", terminalStatusCounts: { failed: 1, succeeded: 4 } },
-  sourceFiles: ["chat-catalog-domains/runtime-infrastructure-retry.ts", "chat-catalog-domains/runtime-infrastructure.ts", "chat-catalog-domains/api-read-receipts.ts", "chat-catalog-domains/runtime-native-fault.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-support.ts", "../../server/src/services/hot-restart.ts", "../../server/src/vendor/paperclip-runner/index.ts", "chat-scenarios/recovery.yaml"],
+  sourceFiles: ["chat-catalog-domains/runtime-infrastructure-retry.ts", "chat-catalog-domains/runtime-infrastructure.ts", "chat-catalog-domains/api-read-receipts.ts", "chat-catalog-domains/runtime-native-fault.ts", "chat-catalog-domains/runtime-native-failure.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-support.ts", "../../server/src/services/hot-restart.ts", "../../server/src/vendor/paperclip-runner/index.ts", "chat-scenarios/recovery.yaml"],
   async act(ctx, state) {
     const task = state.task as Issue, worker = state.worker as RuntimeAgent;
-    const initial = await pollUntil({ label: "Canonical human Retry guidance after actual infrastructure exhaustion", deadlineAt: chatCatalogNativePhaseDeadline(ctx, Date.now() + 150_000),
+    const initial = await pollUntil({ label: "Canonical human Retry guidance after the person-owned failure", deadlineAt: chatCatalogNativePhaseDeadline(ctx, Date.now() + 150_000),
       load: async () => { await ctx.refreshIssue(); return { source: ctx.issue(), runs: await ctx.allRuns() }; },
       accept: v => chatCatalogNativePhaseIsTimely(ctx) && (v.source?.conversationState === "waiting" && v.runs.length === 2 && v.runs.some(row => row.id === state.workerRunId && row.status === "failed") && v.runs.some(row => row.agentId === ctx.input.fixtures.agent.id && row.status === "succeeded")) });
     state.queryReply = (await observeRuntime(ctx, state)).reply; const source = ctx.input.page.url(), root = `/api/companies/${ctx.input.fixtures.company.id}`;
@@ -106,7 +115,6 @@ export const runtimeInfrastructureRetryCases = [runtimeDefinition("recovery.retr
     state.budgetHeldBeforeRetry = held.lifecycleHolds?.includes("budget") === true;
     const rejected = ctx.input.page.waitForResponse(r => isHumanRetryRequest(r.request(), task.id, worker.id));
     await retry.click(); state.heldRetryStatus = (await rejected).status();
-    // The worker's runs other than the exhausted one. None may exist while held.
     const workerRetryRuns = async () => (await ctx.allRuns()).filter(row => row.agentId === worker.id && row.id !== state.workerRunId).length;
     const holdSamples = [await workerRetryRuns()];
     // Wait on the open page as a person would, without reloading: the task
@@ -168,7 +176,7 @@ export const runtimeInfrastructureRetryCases = [runtimeDefinition("recovery.retr
     state.retryBoundToOriginal = !!full && retriesOriginalRun(full, String(state.workerRunId)) && [full.contextSnapshot?.issueId, full.contextSnapshot?.taskId].includes(task.id);
     state.retryAdmissionAfterGateClear = !!full && Date.parse(String(full.createdAt)) >= Number(state.gatesClearedAt);
     await ctx.input.page.goto(source, { waitUntil: "domcontentloaded" });
-    const finalQuery = `I restored Morgan's budget and used the supported Retry for Website ${task.identifier ?? task.id}. What is the actual result now, and is the earlier exhausted attempt still retained?`;
+    const finalQuery = `I restored Morgan's budget and used the supported Retry for Website ${task.identifier ?? task.id}. What is the actual result now, and is the earlier failed attempt still retained?`;
     await sendChatMessage(ctx.input.page, finalQuery, chatCatalogNativePhaseRemainingBudget(ctx));
     const final = await pollUntil({ label: "Own final source reply reports actual eligible Retry result", deadlineAt: chatCatalogNativePhaseDeadline(ctx, Date.now() + 150_000),
       load: async () => { await ctx.refreshIssue(); return { source: ctx.issue(), runs: await ctx.allRuns() }; }, accept: v => chatCatalogNativePhaseIsTimely(ctx) && (v.source?.conversationState === "waiting" && v.runs.length === 5 && v.runs.filter(row => row.id !== state.workerRunId).every(row => row.status === "succeeded")) });

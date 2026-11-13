@@ -130,13 +130,16 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', li
 });`;
     const children: ChildProcess[] = [];
     let armed = false;
+    // ACPX 0.22 ignores observer errors. The adapter keeps the failed write and
+    // throws it from the turn's assertActive, which ACPX calls before the write.
+    let failure: Error | null = null;
     const runtime = createAcpRuntime({
       cwd: dir,
       agentRegistry: createAgentRegistry({ overrides: { claude: "fixture" } }),
       sessionStore: createRuntimeStore({ stateDir: join(dir, "state") }),
       permissionMode: "deny-all",
       onAcpMessage: (direction, value) => {
-        if (armed && direction === "outbound" && isAcpPromptRequest(value)) throw new Error("ENOSPC: dispatch record not written");
+        if (armed && direction === "outbound" && isAcpPromptRequest(value)) failure = new Error("ENOSPC: dispatch record not written");
       },
       spawnAgent: () => {
         const child = spawn(process.execPath, ["-e", peer], { cwd: dir, env: { ...process.env, SEEN: seen }, stdio: ["pipe", "pipe", "pipe"] });
@@ -147,7 +150,8 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', li
     try {
       const handle = await runtime.ensureSession({ sessionKey: "journal-refused", agent: "claude", mode: "persistent", cwd: dir });
       armed = true;
-      const turn = runtime.startTurn({ handle, text: "fixture", mode: "prompt", requestId: "turn-refused", timeoutMs: 5_000 });
+      const turn = runtime.startTurn({ handle, text: "fixture", mode: "prompt", requestId: "turn-refused", timeoutMs: 5_000,
+        assertActive: () => { if (failure) throw failure; } });
       const drain = (async () => { for await (const _event of turn.events) { /* drain */ } })().catch(() => undefined);
       const result = await turn.result.catch((error: unknown) => ({ status: "rejected", error }));
       await drain;

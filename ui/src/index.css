@@ -5089,13 +5089,13 @@ html:has(.design-proposal-theme) .design-navigation-group-label {
   :is(.artifact-tile, .empty-state-artwork) :is([data-artifact-rotate][data-artifact-spread], [data-artifact-front]) {
     transition: transform var(--artifact-hover-ease);
   }
-  :is(.artifact-tile:hover, .artifact-tile:focus-visible, .empty-state-artwork:has(button:hover, button:focus-visible), .empty-state-artwork:has(.empty-state-graphic:hover)) [data-artifact-front] {
+  :is(.artifact-tile:hover, .artifact-tile:focus-visible, .empty-state-artwork:has(button:hover, button:focus-visible)) [data-artifact-front] {
     transform: translateY(-6px);
   }
-  :is(.artifact-tile:hover, .artifact-tile:focus-visible, .empty-state-artwork:has(button:hover, button:focus-visible), .empty-state-artwork:has(.empty-state-graphic:hover)) [data-artifact-spread="left"] {
+  :is(.artifact-tile:hover, .artifact-tile:focus-visible, .empty-state-artwork:has(button:hover, button:focus-visible)) [data-artifact-spread="left"] {
     transform: rotate(calc(var(--artifact-base, 0deg) + 5deg));
   }
-  :is(.artifact-tile:hover, .artifact-tile:focus-visible, .empty-state-artwork:has(button:hover, button:focus-visible), .empty-state-artwork:has(.empty-state-graphic:hover)) [data-artifact-spread="right"] {
+  :is(.artifact-tile:hover, .artifact-tile:focus-visible, .empty-state-artwork:has(button:hover, button:focus-visible)) [data-artifact-spread="right"] {
     transform: rotate(calc(var(--artifact-base, 0deg) - 5deg));
   }
 }
@@ -5148,6 +5148,12 @@ html:has(.design-proposal-theme) .design-navigation-group-label {
 }
 /* Reuse proposal geometry locally; the Coordinator navigation and conversation
    hierarchy remain independent of the global Design Proposals theme. */
+.coordinator-workspace .sidebar-shell-panel {
+  border-inline-end: var(--task-row-rule-width) solid var(--design-sidebar-border);
+  background: var(--primary-sidebar-background);
+  background-clip: padding-box;
+}
+.coordinator-workspace .sidebar-shell-panel .coordinator-sidebar { border-inline-end: 0; }
 html:not(.dark) .coordinator-workspace [data-sidebar-account] { background: var(--primary-sidebar-background); }
 html.dark .coordinator-workspace [data-sidebar-account] { background: var(--primary-sidebar-background); }
 .coordinator-sidebar, .coordinator-task-list {
@@ -5185,13 +5191,32 @@ html:not(.dark) .coordinator-sidebar {
 .coordinator-workspace .task-chat-composer-dock > :last-child { border-radius: var(--coordinator-card-radius); }
 .coordinator-workspace [cmdk-root] { height: auto; flex: none; }
 .coordinator-workspace [cmdk-list] { flex: none; }
-.coordinator-decision-card { border: 1px solid var(--border); border-radius: var(--coordinator-card-radius, var(--radius-xl)); padding: var(--coordinator-card-inset, calc(var(--spacing) * 6)); background: var(--card); box-shadow: var(--coordinator-card-shadow); }
+/* PAP-775 (Paper "A · Compact cards"): a 20px card with a type label, the ask,
+   an inset context panel and a footer of 32px actions. */
+.coordinator-decision-card { border: 1px solid var(--border); border-radius: var(--radius-lg); padding: calc(var(--spacing) * 5); background: var(--card); box-shadow: var(--coordinator-card-shadow); }
 .coordinator-decision-card > .rounded-lg { border: 0; padding: 0; background: transparent; box-shadow: none; }
 .coordinator-decision-card [data-testid="interaction-status-badge"], .coordinator-decision-card [data-testid="interaction-addressee-badge"] { display: none; }
-.coordinator-decision-card :is(h2,h3) { font-size: var(--text-lg); line-height: var(--text-lg--line-height); font-weight: var(--font-weight-medium); }
+.coordinator-decision-card :is(h2,h3) { font-size: var(--text-base); line-height: var(--text-base--line-height); font-weight: var(--font-weight-medium); }
 .coordinator-decision-card :is(p, label) { font-size: var(--text-sm); line-height: var(--text-sm--line-height); }
-.coordinator-decision-card [data-decision-prompt] { font-size: var(--text-lg); line-height: var(--text-lg--line-height); font-weight: var(--font-weight-medium); }
+.coordinator-decision-card [data-attention-context] :is(p, span, button, time) { font-size: var(--text-xs); line-height: var(--text-xs--line-height); }
+.coordinator-decision-card [data-decision-prompt] { font-size: var(--text-base); line-height: var(--text-base--line-height); font-weight: var(--font-weight-medium); }
+/* The Needs You toolbar fits one row: the search takes what the filters leave. */
+.coordinator-needs-you [data-toolbar-search] { width: 100%; min-width: 0; }
+.coordinator-needs-you [data-toolbar-search] input { flex: 1; width: auto; }
+.coordinator-decision-card [data-needs-you-panel] :is(p, label) { font-size: var(--text-compact); line-height: calc(var(--spacing) * 5); }
+.coordinator-decision-card [data-needs-you-panel] :is(p, label, span).text-xs { font-size: var(--text-xs); line-height: calc(var(--spacing) * 4.5); }
+.coordinator-decision-card [data-decision-actions] :is(button, a):is([data-slot="button"], [data-variant]) { height: calc(var(--spacing) * 8); padding-inline: calc(var(--spacing) * 2.5); font-size: var(--text-compact); }
+/* The footer owns its top spacing; nested stacks and empty live regions must
+   not add margins around it. Match the card's bottom and right inset. */
+.coordinator-decision-card [data-decision-footer] { margin-block: 0; padding-block-start: calc(var(--spacing) * 5); row-gap: calc(var(--spacing) * 5); }
+.coordinator-decision-card :has(+ [data-decision-footer]),
+.coordinator-decision-card :has(+ [data-decision-action-row]),
+.coordinator-decision-card :has(+ [aria-live]:empty) { margin-block-end: 0; }
 .coordinator-decision-card [id^="interaction-"]:focus { outline-color: var(--ring); }
+/* Focus review panel (PAP-770): the artifact is the context, so the pinned
+   footer keeps only the card's actions — not its summary, audience or prompt. */
+.coordinator-review-actions [data-presentation] > :not(:last-child),
+.coordinator-review-actions [data-presentation] > :last-child > div > :first-child:has([data-decision-prompt]) { display: none; }
 @media (max-width: 767px) {
   .coordinator-workspace { --coordinator-card-inset: calc(var(--spacing) * 5); }
 }
@@ -5217,8 +5242,12 @@ html:not(.dark) .coordinator-sidebar {
   background: var(--card);
 }
 .coordinator-task-commitment-content { position: relative; min-width: 0; }
-.coordinator-decision-motion { border-radius: var(--coordinator-card-radius, var(--radius-xl)); box-shadow: var(--coordinator-card-shadow); }
+.coordinator-decision-motion { border-radius: var(--radius-lg); box-shadow: var(--coordinator-card-shadow); }
+/* The motion shell owns the single 1px border and shadow. */
 .coordinator-decision-motion > .coordinator-task-commitment-content > :is(.coordinator-decision-card, .coordinator-decision-receipt) { border: 0; box-shadow: none; }
+/* Highlight the existing border when its artifact is open, keeping the same width. */
+.coordinator-decision-card[data-reviewing],
+.coordinator-decision-motion:has(.coordinator-decision-card[data-reviewing]) { border-color: var(--ring); }
 .coordinator-task-commitment[data-motion="arrive"] { animation: coordinator-task-arrive var(--coordinator-task-arrive-duration) var(--coordinator-task-ease) both; }
 .coordinator-task-light { display: none; position: absolute; inset: 1px; border-radius: inherit; overflow: hidden; pointer-events: none; }
 .coordinator-task-commitment[data-motion="gather"] > .coordinator-task-light { display: block; background: radial-gradient(ellipse at 25% 20%, color-mix(in oklab, var(--foreground) 8%, transparent), transparent 75%); animation: coordinator-task-gather var(--coordinator-task-light-duration) var(--coordinator-task-ease) both; }
@@ -5458,7 +5487,7 @@ span.paperclip-patch-line { display: block; }
   .agent-config-save-bar, .agent-file-copy-notice { transition: none; }
 }
 
-.agent-settings-instructions { padding-bottom: var(--agent-save-bar-clearance); }
+.agent-settings-with-save-bar { padding-bottom: calc(var(--agent-save-bar-clearance) + var(--spacing) * 4); }
 
 /* Identity file chrome uses the same input surface and keeps filenames on one line. */
 :root {
@@ -5521,3 +5550,201 @@ html:has(.design-proposal-theme) .agent-markdown-name-field [data-slot="input"],
   }
 }
 .agent-contact-pin-row[data-has-unread="true"] .agent-pin-text { mask-image: none; }
+
+/* Only the active row reserves space for its contextual Archive action. */
+.task-row-refreshed [data-task-archive] {
+  max-width: 0;
+  padding-inline: 0;
+  margin-inline-start: calc(-1 * var(--task-row-gap));
+  overflow: hidden;
+  white-space: nowrap;
+  opacity: 0;
+  transition: max-width var(--motion-duration-base) var(--motion-ease-out-expo), padding var(--motion-duration-base) var(--motion-ease-out-expo), margin var(--motion-duration-base) var(--motion-ease-out-expo), opacity var(--motion-duration-fast) ease-out;
+}
+.task-row-refreshed:is(:hover, :focus-within) [data-task-archive] {
+  max-width: 8rem;
+  padding-inline: calc(2 * var(--spacing));
+  margin-inline-start: 0;
+  opacity: 1;
+}
+@media (hover: none) {
+  .task-row-refreshed [data-task-archive] { max-width: 8rem; padding-inline: calc(2 * var(--spacing)); margin-inline-start: 0; opacity: 1; }
+}
+.agent-instruction-file-row[aria-selected="true"] { background: var(--muted-highlight); color: var(--foreground); }
+.agent-header-custom-title:is(textarea, input) { color: var(--foreground); }
+
+.agent-identity-file-name-input { field-sizing: content; width: auto; max-width: 100%; min-width: 1ch; }
+.agent-instruction-file-pending[aria-selected="true"] { color: var(--muted-foreground); }
+
+/* Portrait org-chart geometry is also read by the hierarchy layout. */
+:root {
+  --org-card-width: 240px;
+  --org-card-height: 336px;
+}
+.org-chart-agent-card {
+  width: var(--org-card-width);
+  height: var(--org-card-height);
+  background: var(--secondary);
+}
+
+:root { --org-card-filtered-opacity: 0.12; }
+.org-chart-agent-card { transition: opacity var(--motion-duration-fast), border-color var(--motion-duration-fast), box-shadow var(--motion-duration-fast); }
+.org-chart-agent-card[data-filter-match="false"], .org-reporting-edge[data-filter-match="false"] { opacity: var(--org-card-filtered-opacity); }
+.org-reporting-edge { transition: opacity var(--motion-duration-fast); }
+@media (prefers-reduced-motion: reduce) { .org-chart-agent-card, .org-reporting-edge { transition: none; } }
+
+/* Mobile-only collection and agent layouts; desktop composition is unchanged. */
+@media (width < 48rem) {
+  .agent-character-header {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    row-gap: calc(var(--spacing) * 4);
+  }
+  .agent-character-header > :last-child {
+    grid-column: 1 / -1;
+    justify-self: end;
+    flex-wrap: wrap;
+  }
+  .agent-identity-preview-header { align-items: flex-start; flex-wrap: wrap; }
+  .agent-identity-preview-header > :first-child { flex: 1; }
+  .agent-identity-preview-header > :last-child { flex-shrink: 0; }
+  .agent-identity-file-heading { flex-direction: column; align-items: flex-start; }
+  .agent-identity-file-heading > * { max-width: 100%; }
+  .agent-identity-file-heading > span { white-space: nowrap; }
+  .agent-runner-upgrade { flex-direction: column; align-items: stretch; }
+  .agent-runner-upgrade > button { align-self: flex-end; }
+  .agent-config-panels { display: flex; flex-direction: column; }
+  .agent-trust-cards { grid-template-columns: minmax(0, 1fr); }
+  :is(.paperclip-task-list-toolbar, .mobile-task-toolbar) > :first-child {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: var(--collection-toolbar-gap);
+  }
+  :is(.paperclip-task-list-toolbar, .mobile-task-toolbar) [data-slot="collection-toolbar-context"] { grid-column: 1; grid-row: 1; }
+  :is(.paperclip-task-list-toolbar, .mobile-task-toolbar) [data-slot="collection-toolbar-search"] { grid-column: 2; grid-row: 1; }
+  :is(.paperclip-task-list-toolbar, .mobile-task-toolbar) [data-slot="collection-toolbar-search"] :is(input, div) { min-width: 0; max-width: 100%; }
+  :is(.paperclip-task-list-toolbar, .mobile-task-toolbar) > :first-child > :last-child { grid-column: 1 / -1; grid-row: 2; margin-inline-start: 0; flex-wrap: wrap; }
+  :is(.paperclip-task-list-toolbar, .mobile-task-toolbar) [data-slot="collection-toolbar-context"] button {
+    width: auto;
+    padding-inline: var(--collection-toolbar-padding);
+  }
+}
+
+/* Compact hierarchy: leadership leads, report groups wrap to the viewport. */
+:root {
+  --org-leader-width: 280px;
+  --org-leader-height: 368px;
+  --org-manager-width: 232px;
+  --org-manager-height: 320px;
+  --org-member-width: 192px;
+  --org-member-height: 116px;
+  --org-member-character-width: 64px;
+  --org-member-detail-size: 11px;
+  --org-member-detail-leading: 14px;
+  --org-member-inset: calc(var(--spacing) * 3);
+  --org-gap: 32px;
+  --org-level-gap: 72px;
+  --org-padding: 48px;
+  --org-sparse-padding: 80px;
+  --org-fit-zoom-max: 1.25;
+  --org-sparse-fit-zoom-max: 1;
+  --org-leader-character-scale: 100%;
+  --org-leader-name-size: 24px;
+  --org-leader-name-leading: 29px;
+  --org-manager-name-size: 19px;
+  --org-manager-name-leading: 26px;
+  --org-leader-title-size: 13px;
+  --org-leader-title-leading: 19px;
+  --org-leader-inset: calc(var(--spacing) * 6);
+  --org-manager-inset: calc(var(--spacing) * 5);
+  --org-badge-slot-width: 72px;
+  --org-badge-slot-height: 16px;
+  --org-badge-rule: 1px solid color-mix(in oklab, var(--foreground) 5%, transparent);
+  --org-task-height: 32px;
+  --org-report-line: color-mix(in oklab, var(--foreground) 22%, transparent);
+  --org-task-line: color-mix(in oklab, var(--foreground) 35%, transparent);
+}
+.org-chart-agent-card { padding: calc(var(--spacing) * 4); }
+.org-card-name { font-size: var(--text-xl); line-height: var(--text-xl--line-height); }
+.org-card-title { font-size: var(--text-sm); line-height: var(--text-sm--line-height); }
+.org-chart-agent-card[data-leader="true"] { --org-card-inset: var(--org-manager-inset); display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; padding: 0; border-radius: var(--radius-xl); background: var(--card); }
+.org-chart-agent-card[data-tier="1"] { --org-card-inset: var(--org-leader-inset); }
+.org-card-badge-slot { width: var(--org-badge-slot-width); height: var(--org-badge-slot-height); justify-self: center; margin-block: calc(var(--org-card-inset) / 1.5); border: var(--org-badge-rule); border-radius: var(--org-badge-slot-height); background: var(--background); }
+.org-chart-agent-card[data-leader="true"] .org-card-heading { position: relative; padding-inline: var(--org-card-inset); }
+.org-card-star { position: absolute; top: 0; right: var(--org-card-inset); }
+.org-card-star:not([aria-pressed="true"]) { color: var(--muted-foreground); }
+.org-chart-agent-card[data-leader="true"] .org-card-name { padding-inline-end: calc(var(--spacing) * 9); font-weight: var(--font-weight-medium); }
+.org-card-status { font-size: var(--org-leader-title-size); line-height: var(--org-leader-title-leading); }
+.org-chart-agent-card[data-tier="1"] .org-card-name { font-size: var(--org-leader-name-size); line-height: var(--org-leader-name-leading); }
+.org-chart-agent-card[data-tier="2"] .org-card-name { font-size: var(--org-manager-name-size); line-height: var(--org-manager-name-leading); }
+.org-chart-agent-card[data-leader="true"] .org-card-title { font-size: var(--org-leader-title-size); line-height: var(--org-leader-title-leading); }
+.org-chart-agent-card[data-leader="true"] .org-card-model { font-size: var(--text-sm); line-height: var(--text-sm--line-height); }
+.org-chart-agent-card[data-leader="true"] .org-card-character { padding: calc(var(--spacing) * 2) var(--org-card-inset); }
+.org-card-character { min-width: 0; min-height: 0; }
+.org-card-avatar[data-slot="agent-avatar"] { width: 100%; height: 100%; min-height: 0; }
+.org-card-live-character { width: var(--org-leader-character-scale); height: var(--org-leader-character-scale); min-width: 0; min-height: 0; }
+.org-card-live-character > [data-slot="agent-avatar"] { width: 100%; height: 100%; }
+.org-card-model { font-size: var(--text-xs); line-height: var(--text-xs--line-height); }
+.org-card-model-mark { display: inline-flex; flex-shrink: 0; margin-inline-end: var(--spacing); vertical-align: text-bottom; }
+/* Leadership badges keep the model and secondary effort in a separated footer. */
+.org-chart-agent-card[data-leader="true"] .org-card-model { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--spacing); padding: calc(var(--org-card-inset) / 1.5) var(--org-card-inset); border-top: var(--org-badge-rule); text-align: center; }
+.org-chart-agent-card[data-leader="true"] .org-card-model-label { display: inline-flex; align-items: center; min-width: 0; max-width: 100%; }
+.org-chart-agent-card[data-leader="true"] .org-card-model-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.org-chart-agent-card[data-leader="true"] .org-card-effort { flex-shrink: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Names span the card; the remaining details share space with a bottom-right portrait. */
+.org-chart-agent-card[data-leader="false"] { display: grid; grid-template-columns: minmax(0, 1fr) var(--org-member-character-width); grid-template-rows: auto minmax(0, 1fr) auto; column-gap: calc(var(--spacing) * 2); row-gap: calc(var(--spacing) / 2); padding: var(--org-member-inset); }
+.org-chart-agent-card[data-leader="false"] .org-card-character { grid-column: 2; grid-row: 2 / 4; align-self: end; height: var(--org-member-character-width); max-height: 100%; translate: calc(var(--org-member-inset) / 2) calc(var(--org-member-inset) / 2); }
+.org-chart-agent-card[data-leader="false"] .org-card-heading { display: contents; }
+.org-chart-agent-card[data-leader="false"] .org-card-name { grid-column: 1 / -1; grid-row: 1; min-width: 0; font-size: var(--text-sm); line-height: var(--text-sm--line-height); }
+.org-chart-agent-card[data-leader="false"] .org-card-title { grid-column: 1; grid-row: 2; align-self: start; min-width: 0; overflow-wrap: anywhere; }
+.org-chart-agent-card[data-leader="false"] :is(.org-card-title, .org-card-model) { font-size: var(--org-member-detail-size); line-height: var(--org-member-detail-leading); }
+.org-chart-agent-card[data-leader="false"] .org-card-model { grid-column: 1; grid-row: 3; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; text-align: left; }
+.org-chart-agent-card[data-leader="false"] .org-card-model-mark, .org-chart-agent-card[data-leader="false"] .org-card-model-mark > :is(img, svg) { width: var(--text-xs); height: var(--text-xs); }
+.org-reporting-edge { stroke: var(--org-report-line); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.org-task-edge { stroke: var(--org-task-line); stroke-width: 1; stroke-dasharray: 4 5; vector-effect: non-scaling-stroke; }
+.org-task-label { background: var(--background); }
+.org-task-legend { max-width: 32ch; }
+
+/* The organization is an edge-to-edge canvas beneath its floating toolbar. */
+:root {
+  --org-toolbar-clearance: 88px;
+  --org-task-band-height: 64px;
+  --org-task-label-width: 208px;
+  --org-task-legend-height: 20px;
+  --org-toolbar-layer: 30;
+  --org-mask-open: white;
+  --org-mask-card: black;
+}
+#main-content:has(.agents-surface) { scrollbar-gutter: stable; }
+#main-content:has(.agents-org-surface) { padding: 0; overflow: hidden; }
+/* Reserve camera-control space in both views so only opacity changes. */
+.agents-org-controls-reveal { opacity: 0; visibility: hidden; pointer-events: none; transition: opacity var(--motion-duration-exit) var(--motion-ease-in), visibility 0s var(--motion-duration-exit); }
+.agents-org-controls-reveal[data-visible="true"] { opacity: 1; visibility: visible; pointer-events: auto; transition: opacity var(--motion-duration-enter) var(--motion-ease-out), visibility 0s; }
+.org-chart-controls { flex-wrap: nowrap; }
+.agents-org-controls-reveal .org-chart-controls { width: max-content; }
+@starting-style { .agents-org-controls-reveal[data-visible="true"] { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .agents-org-controls-reveal, .agents-org-controls-reveal[data-visible="true"] { transition: none; } }
+.agents-org-surface { position: relative; isolation: isolate; }
+.agents-org-toolbar { position: absolute; inset: 0 0 auto; z-index: var(--org-toolbar-layer); padding: calc(var(--spacing) * 6); background: linear-gradient(var(--background), color-mix(in oklab, var(--background) 90%, transparent), transparent); }
+.agents-org-content { position: absolute; inset: 0; }
+.org-chart-shell { height: 100%; }
+.org-chart-canvas { background: var(--background); }
+.org-chart-cards { z-index: var(--z-1); }
+.org-task-overlay { z-index: var(--z-2); }
+.org-task-band { z-index: var(--z-20); pointer-events: none; }
+.org-task-legend { height: var(--org-task-legend-height); max-width: none; padding-inline: var(--org-padding); text-align: center; pointer-events: auto; }
+.org-task-strip { height: var(--org-task-height); overflow-x: auto; overflow-y: hidden; scrollbar-width: none; pointer-events: auto; }
+.org-task-label { border: var(--task-row-rule-width) dashed var(--border); background: color-mix(in oklab, var(--background) 92%, transparent); }
+.org-task-mask-open { fill: var(--org-mask-open); }
+.org-task-mask-card { fill: var(--org-mask-card); }
+@media (width < 48rem) {
+  .agents-org-toolbar { padding: calc(var(--spacing) * 4); }
+  .paperclip-app-shell:has(.agents-org-surface) { display: flex; flex-direction: column; height: 100dvh; min-height: 0; overflow: hidden; }
+  .paperclip-app-shell:has(.agents-org-surface) :is(.app-main-row, .app-content-row) { display: flex; flex: 1; min-height: 0; overflow: hidden; }
+  .paperclip-app-shell:has(.agents-org-surface) .app-content-column { flex: 1; min-height: 0; }
+  .paperclip-app-shell:has(.agents-org-surface) .app-breadcrumb { flex-shrink: 0; }
+  #main-content:has(.agents-org-surface) { min-height: 0; padding-bottom: var(--tc-composer-visible-nav-offset); }
+  .agents-org-toolbar [data-toolbar-search] { flex: 1; min-width: 0; }
+  .agents-org-toolbar .design-toolbar-actions { width: 100%; justify-content: flex-end; gap: var(--spacing); }
+  .agents-org-toolbar .org-chart-controls { gap: var(--spacing); }
+}

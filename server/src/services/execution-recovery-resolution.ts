@@ -36,6 +36,8 @@ import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
 import { provenGoneLegacyControllerBootId } from "./legacy-controller-lease.js";
+import { continueFreshInTransaction, continueHeldExecutions, freshContinuationCheckDue, recordFreshContinuationCheck,
+  settleCoalescedFreshContinuationHolds } from "./fresh-continuation-fallback.js";
 import { alias } from "drizzle-orm/pg-core";
 
 /** An operator records observed outcomes; this is not permission to blindly retry. */
@@ -46,8 +48,13 @@ import { alias } from "drizzle-orm/pg-core";
  */
 export function executionRecoverySettlementNote(input: {
   current: boolean; cause: string; workspaceRestoreFailed: boolean;
+  /** The hold's recorded trigger; a same-run retry is not a server restart. */
+  trigger?: unknown;
 }): string {
   if (!input.current) return "Recovery closed because the task's owner, execution, or status changed. No work was replayed.";
+  if (input.cause === "native_restart_recovery_blocked" && input.trigger === "same_run_retry") {
+    return "Automatic retry of this run stopped. Saved work is preserved; actions with unverified outcomes will not be repeated.";
+  }
   if (input.cause === "native_restart_recovery_blocked") {
     return "Automatic recovery stopped after a server restart because the previous execution could not be verified. Saved work is preserved; actions with unverified outcomes will not be repeated.";
   }
@@ -392,7 +399,27 @@ export async function deliverReconciledExecutions(
             evidence: sql`${issueRecoveryActions.evidence} || '{"continuationDelivery":"invalidated"}'::jsonb`,
           })
           .where(pendingDecision);
+        await settleCoalescedFreshContinuationHolds(db, { companyId: action.companyId, primaryId: action.id, delivery: "invalidated" });
         continue;
+      }
+      // A fresh continuation is the task's next run only while nothing else
+      // started one: a person's Retry or saved input that ran since it was
+      // recorded already continues the task, so it is never a second run.
+      const fresh = action.evidence.freshContinuation as { recordedAt?: unknown } | undefined;
+      if (fresh && typeof fresh.recordedAt === "string") {
+        const [newer] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+          eq(heartbeatRuns.companyId, action.companyId), sql`${heartbeatRuns.id}::text <> ${decision.runId}`,
+          or(eq(heartbeatRuns.nativeIssueId, task.id), eq(heartbeatRuns.issueId, task.id),
+            sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${task.id}::text`),
+          sql`${heartbeatRuns.createdAt} >= ${fresh.recordedAt}::timestamptz`)).limit(1);
+        if (newer) {
+          await db.update(issueRecoveryActions).set({ evidence: sql`${issueRecoveryActions.evidence} || ${JSON.stringify(
+            { continuationDelivery: "delivered", continuationRunId: newer.id, continuationSupersededByRun: true })}::jsonb` })
+            .where(pendingDecision);
+          await settleCoalescedFreshContinuationHolds(db, { companyId: action.companyId, primaryId: action.id,
+            delivery: "delivered", continuationRunId: newer.id });
+          continue;
+        }
       }
       const run = await wake(action.returnOwnerAgentId, {
         source: "automation",
@@ -411,6 +438,8 @@ export async function deliverReconciledExecutions(
           forceFreshSession: true,
           wakeReason: "issue_recovery_action_restored",
           source: "execution.reconciled",
+          ...((action.evidence.freshContinuation as { isolation?: unknown } | undefined)?.isolation === "fresh_isolated_workspace"
+            ? { freshContinuationIsolation: action.id } : {}),
         },
       });
       if (run)
@@ -438,6 +467,8 @@ export async function deliverReconciledExecutions(
               )}::jsonb`,
             })
             .where(pendingDecision);
+          await settleCoalescedFreshContinuationHolds(tx as unknown as Db, { companyId: action.companyId, primaryId: action.id,
+            delivery: "delivered", continuationRunId: run.id });
         });
     } catch {
       logger.warn(
@@ -494,6 +525,8 @@ export function unresolvedExecutionDispositions(db: Db, limit: number) {
         sql`not (${issueRecoveryActions.evidence} ? 'systemRecovery')`,
         inArray(issueRecoveryActions.status, ["active", "escalated"]),
         eq(issueRecoveryActions.kind, "active_run_watchdog"),
+        // A fresh continuation that backed off is checked again when due.
+        freshContinuationCheckDue(new Date()),
         or(inArray(issueRecoveryActions.cause, [...EXECUTION_RECONCILIATION_CAUSES]), and(
           eq(heartbeatRuns.runtimeMode, "native"), eq(heartbeatRuns.nativePhase, "terminal_failure"),
           eq(nativeRunFinalizations.phase, "terminal_failure"), isNull(nativeRunFinalizations.nextAttemptAt),
@@ -695,8 +728,22 @@ export async function settleUnrecoverableExecutions(
           !["done", "cancelled"].includes(task.status) &&
           (!task.executionRunId || task.executionRunId === run.id) &&
           (!task.checkoutRunId || task.checkoutRunId === run.id);
+        // Exact recovery is ruled out. Unless the cause is the person's, the
+        // task continues in a fresh run from its last saved work instead of
+        // waiting for a person.
+        // A preparation that never started provider work keeps its own replay
+        // lane, which takes over the settled hold; the held sweep follows it.
+        if (current && !isInterruptedNativePreparationCandidate(run)) {
+          const fresh = await continueFreshInTransaction(tx as unknown as Db, { companyId: task.companyId, runId: run.id,
+            trigger: "recovery_refused", now });
+          if (["continued", "already_continued", "successor_exists"].includes(fresh.kind)) return;
+          if (fresh.kind === "backoff" || fresh.kind === "exact_recovery_pending") {
+            await recordFreshContinuationCheck(tx as unknown as Db, { companyId: task.companyId, actionId: action.id }, fresh, now);
+            return;
+          }
+        }
         const note = executionRecoverySettlementNote({ current, cause: action.cause,
-          workspaceRestoreFailed: hasWorkspaceRestoreFailure(run.resultJson) });
+          workspaceRestoreFailed: hasWorkspaceRestoreFailure(run.resultJson), trigger: action.evidence.trigger });
         await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: task.companyId, issueId: task.id });
         let nativeFailureBlock = action.evidence.nativeFailureBlock;
         let nativeBootstrapFailureBlock = action.evidence.nativeBootstrapFailureBlock;
@@ -798,4 +845,7 @@ export async function settleUnrecoverableExecutions(
       );
     }
   }
+  // Tasks already held by settled records (including those older releases
+  // saved) continue from their saved work on this worker too.
+  await continueHeldExecutions(db, now);
 }

@@ -25,6 +25,7 @@ import { prepareNativeWorkspaceSync } from "../native-runtime/native-workspace-s
 import { resolveHeartbeatNativeRuntimeMode } from "../native-runtime/runtime-mode.js";
 import { claimNativeRestartRecoveries } from "../native-runtime/native-restart-recovery.js";
 import { buildNativeModelEnvelope, canonicalNativeRuntimeContextDigest } from "../../vendor/paperclip-runner/index.js";
+import * as runner from "../../vendor/paperclip-runner/index.js";
 import { prepareAndSelectHeartbeatRuntime, selectHeartbeatRuntime, type HeartbeatRuntimeSelectionInput } from "./runtime-selection.js";
 import { resolveRunnerEnvironmentForRun, resolveWarmRunnerIdleTimeoutMsForRun } from "../runner-environment-lifecycle.js";
 import { reserveRunBudget } from "../budget-reservations.js";
@@ -82,7 +83,7 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
       run, agent,
       nativeRuntimeResolution: resolveHeartbeatNativeRuntimeMode({ persisted: run, enabled: true, runtimeConfig: {}, adapterConfig: agent.adapterConfig, agent, issue, target: null, workspaceId: null }),
       task: { issueRef: issue, issueContext: null, context: { paperclipTaskMarkdown: "Complete this task" }, executionContinuation: null, safeWakeComments: [], safeWakeCommentContext: null, paperclipWakePayload: null, acceptedPlanContinuationWake: false },
-      session: { persistedNativeExecutionInput: null, persistedRunnerProfile: {}, taskSessionCredentialCompatible: true, taskSessionDecodedParams: null, taskSessionForRun: null, isFailedChatRunRetry: false, getFreshSessionHandoff: vi.fn(async () => "Earlier context") },
+      session: { persistedNativeExecutionInput: null, persistedRunnerProfile: {}, taskResumeSessionId: null, isFailedChatRunRetry: false, getFreshSessionHandoff: vi.fn(async () => "Earlier context") },
       workspace: { persistedExecutionWorkspace: null, executionWorkspace: { cwd: "/tmp/paperclip-runtime-selection", repoUrl: null, repoRef: null, branchName: null }, executionTarget: null, isDotRun: false, projectRepositoryPaths: [],
         activeEnvironmentLease: { lease: { id: randomUUID(), companyId: company.id, environmentId: null, executionWorkspaceId: null, issueId: issue.id, heartbeatRunId: run.id, status: "active", leasePolicy: "ephemeral", provider: null, providerLeaseId: null, acquiredAt: now, lastUsedAt: now, expiresAt: null, releasedAt: null, failureReason: null, cleanupStatus: null, metadata: null, createdAt: now, updatedAt: now } },
       },
@@ -96,6 +97,58 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
   const read = (id: string) => db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)).then(rows => rows[0]!);
   const coordinators = (id: string) => db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, id));
   const sandbox = { kind: "remote" as const, transport: "sandbox" as const, remoteCwd: "/workspace", reusableLeaseConfigured: false };
+
+  it.each(["uninspected", "confirmed", "replaced"])("selects an independent native session after %s disk-only recovery", async placement => {
+    const { input, run, issue } = await fixture();
+    const priorSession = randomUUID();
+    const lease = input.workspace.activeEnvironmentLease!.lease;
+    const description = { kind: "description" as const, taskId: randomUUID(), runner: { version: "test", digest: `sha256:${"a".repeat(64)}` } };
+    const previousDescription = placement === "replaced" ? { ...description, taskId: randomUUID() } : description;
+    const pending = { ...lease, providerLeaseId: description.taskId, metadata: { portableTaskPreviousLeaseId: randomUUID(),
+      portableTaskPredecessor: { operation: { identity: { normalizedSessionId: priorSession } } },
+    } };
+    const ready = { ...pending.metadata, portableTaskOwnershipReady: true, portableTaskCheckpointUnavailable: true };
+    await db.insert(environmentLeases).values(placement === "confirmed" ? { ...pending, metadata: ready } : pending);
+    input.workspace.activeEnvironmentLease!.lease = pending;
+    if (placement !== "uninspected") input.workspace.activeEnvironmentLease!.pluginTaskDescription = previousDescription;
+    const taskRpc = vi.fn(async ({ kind }: { kind: string }) => {
+      expect(kind).toBe("describe");
+      await db.update(environmentLeases).set({
+        metadata: ready,
+      }).where(eq(environmentLeases.id, lease.id));
+      return description;
+    });
+    input.workspace.executionTarget = { ...sandbox, leaseId: lease.id, runnerTask: taskRpc,
+      reusableLeaseConfigured: true, effectiveCapabilities: { reusableLeases: true },
+      runnerLifecyclePolicy: { mode: "warm", idleTimeoutMs: 300_000 } } as never;
+    input.session.taskResumeSessionId = priorSession;
+    const network = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("Cloud is unavailable"));
+    try {
+      const selected = await selectHeartbeatRuntime(db, input);
+      expect(selected.selected).toBe(true);
+      if (!selected.selected || !selected.nativeExecution) throw new Error("Expected native selection");
+      const saved = await read(run.id);
+      expect(saved.nativeSessionId).toBeTruthy();
+      expect(saved.nativeSessionId).not.toBe(priorSession);
+      expect(await selected.getNativeFreshSessionHandoff?.()).toBe("Earlier context");
+      expect((await db.select().from(issues).where(eq(issues.id, issue.id)))[0]).toEqual(issue);
+      expect(selected.pluginTaskDescription).toEqual(description);
+      expect(taskRpc).toHaveBeenCalledTimes(placement === "confirmed" ? 0 : 1);
+      expect(network).not.toHaveBeenCalled();
+
+      // A lost reply after committing selection must allow the same replacement run to retry.
+      input.run = saved;
+      input.session.persistedRunnerProfile = saved.runnerProfileJson ?? {};
+      input.session.persistedNativeExecutionInput = selected.nativeExecution;
+      await expect(selectHeartbeatRuntime(db, input)).resolves.toMatchObject({
+        selected: true, nativeExecution: selected.nativeExecution,
+      });
+      input.run = { ...saved, nativeSessionId: priorSession };
+      await expect(selectHeartbeatRuntime(db, input)).rejects.toThrow("native_portable_reseed_session_already_attached");
+    } finally {
+      network.mockRestore();
+    }
+  });
 
   it("rejects invalid local Runner configuration before native authority and retains the preparation owner", async () => {
     const f = await fixture();
@@ -623,10 +676,14 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
   });
 
   it("restores the immutable admitted input and saved checkpoint when newer context arrives", async () => {
+    using discovery = vi.spyOn(runner, "describeRunnerdNativeSessionBackend");
     const { input, run } = await fixture();
     const selected = await selectHeartbeatRuntime(db, input);
     if (!selected.selected || !selected.nativeExecution) throw new Error("Expected native selection");
+    expect(selected.toolRefreshOnResume).toBe(true);
+    expect(discovery).toHaveBeenCalledTimes(1);
     const saved = await read(run.id);
+    expect(saved.runnerProfileJson?.nativeToolRefreshOnResume).toBe(true);
     const profile = { ...saved.runnerProfileJson, sessionCheckpoint: { retained: "checkpoint" } };
     await db.update(heartbeatRuns).set({ runnerProfileJson: profile }).where(eq(heartbeatRuns.id, run.id));
     input.run = await read(run.id);
@@ -636,11 +693,13 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
     input.task.safeWakeComments = [{ id: randomUUID(), body: "New direction belongs to a separate wake" }];
     vi.mocked(buildNativeRuntimeContext).mockClear();
     const resumed = await selectHeartbeatRuntime(db, input);
-    expect(resumed).toMatchObject({ selected: true, nativeExecution: selected.nativeExecution, nativeRunnerInstanceId: selected.nativeRunnerInstanceId });
+    expect(resumed).toMatchObject({ selected: true, nativeExecution: selected.nativeExecution, nativeRunnerInstanceId: selected.nativeRunnerInstanceId,
+      toolRefreshOnResume: true });
     expect((await read(run.id)).runnerProfileJson).toMatchObject(profile);
     expect(await db.select().from(completionContracts)).toHaveLength(1);
     expect(await coordinators(run.id)).toHaveLength(1);
     expect(buildNativeRuntimeContext).not.toHaveBeenCalled();
+    expect(discovery).toHaveBeenCalledTimes(1);
   });
 
   it("rejects an admitted input bound to another run without replacing the saved runtime", async () => {

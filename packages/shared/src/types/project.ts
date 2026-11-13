@@ -143,12 +143,17 @@ export interface Project {
   privacyOwnerUserId?: string | null;
   status: ProjectStatus;
   leadAgentId: string | null;
+  /**
+   * PAP-749 task 1d: the project's decision owner. A Needs You card on this
+   * project's work that names no person goes to this user's "For you" list,
+   * before the company's default decision owner. Placement only — the resolver
+   * policy still gates who may act. Omitted by older servers/fixtures.
+   */
+  decisionOwnerUserId?: string | null;
   targetDate: string | null;
   color: string | null;
   icon: string | null;
   env: AgentEnvConfig | null;
-  /** Project-owned execution target; null inherits the agent/instance default. */
-  environmentId?: string | null;
   pauseReason: PauseReason | null;
   pausedAt: Date | null;
   executionWorkspacePolicy: ProjectExecutionWorkspacePolicy | null;

@@ -804,6 +804,7 @@ function InboxCollectionToolbar({
   if (streamlined) {
     return (
       <CollectionToolbar
+        className={ariaLabel === "Tasks controls" ? "mobile-task-toolbar" : undefined}
         ariaLabel={ariaLabel}
         context={context}
         search={search}
