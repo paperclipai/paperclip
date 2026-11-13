@@ -19,6 +19,7 @@ import { buildExecutionContinuation } from "./execution-continuation.js";
 import { currentProcessSpaceHash } from "./controller-process-identity.js";
 import { executionControlSchedule } from "./execution-control-work.js";
 import { readFreshWorkspaceReadiness } from "./fresh-workspace-continuation.js";
+import { requestTaskRetry } from "./task-retry.js";
 import { taskInterruptionPresentation } from "./task-interruption-presentation.js";
 import { agentRunWritesRevoked, assertAgentRunWriteAllowed } from "../agent-run-cancellation.js";
 import { loadAgentRunAuthentication } from "../middleware/agent-run-authentication.js";
@@ -318,6 +319,28 @@ suite("fresh-continuation fallback", () => {
     await deliver();
     expect(await successors(f.runId)).toHaveLength(1);
     expect((await pendingRecord(f.issueId))!.evidence.continuationDelivery).toBe("delivered");
+  }, 60_000);
+
+  it("runs a person's Retry pressed before delivery as the recorded isolated continuation, never in the shared directory", async () => {
+    const f = await unfinishedRun({ runtime: "legacy", errorCode: "controller_lease_lost", error: "Legacy controller lease lost" });
+    await db.update(heartbeatRuns).set({ processPid: 4242, processHostHash: "replaced-server", processStartedAt: new Date(Date.now() - 600_000) })
+      .where(eq(heartbeatRuns.id, f.runId));
+    await db.update(issues).set({ projectId: null, projectWorkspaceId: null, executionWorkspaceId: null }).where(eq(issues.id, f.issueId));
+    expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" }))
+      .toMatchObject({ kind: "continued", isolation: "fresh_isolated_workspace", delivery: "recorded" });
+    await occupySlot();
+    const taskRuns = async () => db.select().from(heartbeatRuns).where(and(
+      sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${f.issueId}`, sql`${heartbeatRuns.id} <> ${f.runId}`));
+    const retry = await requestTaskRetry({ db, companyId, issueId: f.issueId, actorId: userId, observedRunId: f.runId, idempotencyKey: randomUUID() })
+      .catch((error: unknown) => ({ error: String(error) }));
+    await deliver();
+    expect(retry).toMatchObject({ accepted: true });
+    const [retryWake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, (retry as { requestId: string }).requestId));
+    expect(retryWake).toMatchObject({ status: "deferred_issue_execution", runId: null });
+    const runs = await taskRuns();
+    expect(runs).toHaveLength(1);
+    expect(runs[0]!.contextSnapshot).toMatchObject({ freshContinuationIsolation: f.actionId });
+    expect(await readFreshWorkspaceReadiness(db, runs[0]!)).toMatchObject({ mode: "fresh_isolated_workspace", retryIntentId: f.actionId });
   }, 60_000);
 
   it("re-drives an isolated continuation pending past the bound itself; a repair wake never replaces it", async () => {
