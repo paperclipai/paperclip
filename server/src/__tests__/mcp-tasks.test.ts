@@ -504,8 +504,12 @@ const support = await getEmbeddedPostgresTestSupport();
     const server = taskServer();
     const { call } = await setup(server);
     await expect(call("build", { timeoutMs: 400 })).rejects.toMatchObject({ reasonCode: "provider_task_pending" });
+    const gets = server.count("tasks/get");
+    const both = Promise.all([call("build", { timeoutMs: 3_000 }).catch((error) => error), call("build", { timeoutMs: 3_000 }).catch((error) => error)]);
+    // Both calls have looked for the task before it finishes.
+    await vi.waitFor(() => expect(server.count("tasks/get")).toBeGreaterThan(gets));
     server.finish();
-    const outcomes = await Promise.all([call("build", { timeoutMs: 1_500 }).catch((error) => error), call("build", { timeoutMs: 1_500 }).catch((error) => error)]);
+    const outcomes = await both;
     expect(outcomes.filter((outcome) => outcome?.status === "completed")).toHaveLength(1);
     expect(outcomes.filter((outcome) => outcome?.reasonCode === "provider_task_pending")).toHaveLength(1);
     expect(server.count("tools/call")).toBe(1);
@@ -526,12 +530,12 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(server.count("tasks/get")).toBe(gets);
   });
 
-  it("wakes the agent when a background task asks a new question, and its next call shows it", async () => {
+  it("wakes the agent when a background task needs a link opened, and its next call shows the link", async () => {
     const server = taskServer();
     const ctx = await setup(server);
     await expect(ctx.call("build", { timeoutMs: 400 })).rejects.toMatchObject({ reasonCode: "provider_task_pending" });
     await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, ctx.run.id));
-    server.ask();
+    Object.assign(server.only().task, { status: "input_required", inputRequests: { consent: { method: "elicitation/create", params: { mode: "url", message: "Approve access", url: "https://auth.example.com/consent?flow=9" } } } });
     await db.update(toolMcpTasks).set({ nextPollAt: new Date(Date.now() - 1_000) }).where(eq(toolMcpTasks.companyId, ctx.org.id));
     const wake = vi.fn(async () => undefined);
     await ctx.gateway().pollDueMcpTasks({ wake });
@@ -544,10 +548,10 @@ const support = await getEmbeddedPostgresTestSupport();
     const session = await ctx.gateway().createSession({ companyId: ctx.org.id, agentId: ctx.agent.id, runId: woken!.id });
     const tool = (await ctx.gateway().listToolsForSession(session.token)).find((candidate) => candidate.name.endsWith(":build"))!;
     expect(await ctx.gateway().executeTool({ sessionToken: session.token, tool: tool.name, parameters: { ref: "main" }, timeoutMs: 2_000 }).catch((error) => error))
-      .toMatchObject({ reasonCode: "elicitation_required" });
+      .toMatchObject({ reasonCode: "provider_interaction_required", details: { upstreamPending: { links: [{ url: "https://auth.example.com/consent?flow=9" }] } } });
   });
 
-  it("caps wakes when a provider keeps asking new questions", async () => {
+  it("shows rotating form questions on cards without spending wakes", async () => {
     const server = taskServer();
     const ctx = await setup(server);
     await expect(ctx.call("build", { timeoutMs: 400 })).rejects.toMatchObject({ reasonCode: "provider_task_pending" });
@@ -559,10 +563,42 @@ const support = await getEmbeddedPostgresTestSupport();
       await db.update(toolMcpTasks).set({ nextPollAt: new Date(Date.now() - 1_000), inputWakeAt: null }).where(eq(toolMcpTasks.companyId, ctx.org.id));
       await ctx.gateway().pollDueMcpTasks({ wake });
     }
-    expect(wake).toHaveBeenCalledTimes(3);
+    // Form questions go straight onto cards, so no wake is spent on them.
+    expect(wake).toHaveBeenCalledTimes(0);
+    const cards = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, ctx.issue.id));
+    expect(cards).toHaveLength(6);
     const [row] = await ctx.rows();
-    expect(row!.inputWakeCount).toBe(3);
     expect(row!.surfacedInputKeys.length).toBeLessThanOrEqual(64);
+  });
+
+  it("caps wakes and cards when a provider keeps rotating its questions", async () => {
+    const server = taskServer();
+    const ctx = await setup(server);
+    await expect(ctx.call("build", { timeoutMs: 400 })).rejects.toMatchObject({ reasonCode: "provider_task_pending" });
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, ctx.run.id));
+    const wake = vi.fn(async () => undefined);
+    for (let round = 0; round < 14; round += 1) {
+      Object.assign(server.only().task, { status: "input_required", inputRequests: {
+        [`f${round}`]: { method: "elicitation/create", params: { mode: "form", message: "Again?", requestedSchema: { type: "object", properties: {} } } },
+        [`u${round}`]: { method: "elicitation/create", params: { mode: "url", message: "Open", url: `https://auth.example.com/step?n=${round}` } },
+      } });
+      await db.update(toolMcpTasks).set({ nextPollAt: new Date(Date.now() - 1_000), inputWakeAt: null }).where(eq(toolMcpTasks.companyId, ctx.org.id));
+      await ctx.gateway().pollDueMcpTasks({ wake });
+    }
+    expect(wake).toHaveBeenCalledTimes(3);
+    expect(await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, ctx.issue.id))).toHaveLength(10);
+    expect((await ctx.rows())[0]!.inputWakeCount).toBe(3);
+  });
+
+  it("puts a follow-up question on a card even when no wake is left", async () => {
+    const server = taskServer();
+    const ctx = await setup(server);
+    await expect(ctx.call("build", { timeoutMs: 400 })).rejects.toMatchObject({ reasonCode: "provider_task_pending" });
+    await db.update(toolMcpTasks).set({ inputWakeCount: 3, inputWakeAt: new Date(), nextPollAt: new Date(Date.now() - 1_000) }).where(eq(toolMcpTasks.companyId, ctx.org.id));
+    server.ask();
+    await ctx.gateway().pollDueMcpTasks({ wake: vi.fn(async () => undefined) });
+    const [card] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, ctx.issue.id));
+    expect(card).toMatchObject({ kind: "ask_user_questions", status: "pending", continuationPolicy: "wake_assignee" });
   });
 
   it("stops background work once the grant is revoked", async () => {
@@ -570,7 +606,9 @@ const support = await getEmbeddedPostgresTestSupport();
     const ctx = await setup(server);
     await expect(ctx.call("build", { timeoutMs: 400 })).rejects.toMatchObject({ reasonCode: "provider_task_pending" });
     await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.connectionId, ctx.connected.connectionId));
-    await db.update(toolMcpTasks).set({ nextPollAt: new Date(Date.now() - 1_000) }).where(eq(toolMcpTasks.companyId, ctx.org.id));
+    await db.update(toolMcpTasks).set({ nextPollAt: new Date(Date.now() - 1_000), leaseExpiresAt: null, leaseOwner: null }).where(eq(toolMcpTasks.companyId, ctx.org.id));
+    // Let any request the timed-out call had in flight land before counting.
+    await new Promise((resolve) => setTimeout(resolve, 300));
     const gets = server.count("tasks/get");
     await ctx.gateway().pollDueMcpTasks();
     expect(server.count("tasks/get")).toBe(gets);

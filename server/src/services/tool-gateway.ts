@@ -6598,6 +6598,30 @@ export function createToolGatewayService(
     ];
   }
 
+  /** The question card a provider's input request becomes; answering it wakes the assignee. */
+  function createElicitationCard(input: {
+    companyId: string; issueId: string; agentId: string | null; toolName: string;
+    request: McpElicitationRequest; idempotencyKey: string;
+  }) {
+    return interactions.create(
+      { id: input.issueId, companyId: input.companyId },
+      {
+        kind: "ask_user_questions",
+        idempotencyKey: input.idempotencyKey,
+        title: "Tool needs input",
+        summary: `${input.toolName} asked for more information before it can continue.`,
+        continuationPolicy: "wake_assignee",
+        payload: {
+          version: 1,
+          title: input.request.message.slice(0, 240),
+          submitLabel: "Send response",
+          questions: elicitationQuestions(input.request),
+        },
+      },
+      { agentId: input.agentId },
+    );
+  }
+
   async function requestElicitationForRecordedToolCall(input: {
     session: ToolGatewaySession;
     tool: ToolGatewayDescriptor;
@@ -6614,23 +6638,11 @@ export function createToolGatewayService(
         { invocationId: input.invocationId, tool: input.tool.name },
       );
     }
-    const interaction = await interactions.create(
-      { id: input.session.issueId, companyId: input.session.companyId },
-      {
-        kind: "ask_user_questions",
-        idempotencyKey: input.idempotencyKey ?? `mcp-elicitation:${input.invocationId}`,
-        title: "Tool needs input",
-        summary: `${input.tool.name} asked for more information before it can continue.`,
-        continuationPolicy: "wake_assignee",
-        payload: {
-          version: 1,
-          title: input.request.message.slice(0, 240),
-          submitLabel: "Send response",
-          questions: elicitationQuestions(input.request),
-        },
-      },
-      { agentId: input.session.agentId },
-    );
+    const interaction = await createElicitationCard({
+      companyId: input.session.companyId, issueId: input.session.issueId, agentId: input.session.agentId,
+      toolName: input.tool.name, request: input.request,
+      idempotencyKey: input.idempotencyKey ?? `mcp-elicitation:${input.invocationId}`,
+    });
     const now = new Date();
     await db
       .update(toolInvocations)
@@ -6784,6 +6796,8 @@ export function createToolGatewayService(
   /** At most this many wakes per task for new input requests, this far apart. */
   const MCP_TASK_MAX_INPUT_WAKES = 3;
   const MCP_TASK_INPUT_WAKE_SPACING_MS = 30 * 60_000;
+  /** At most this many question cards per task, whatever keys the provider sends. */
+  const MCP_TASK_MAX_CARDS = 10;
   /** Provider-chosen keys kept per task; older ones drop off first. */
   const boundedMcpTaskKeys = (keys: Iterable<string>) => [...new Set(keys)].slice(-64);
   const mcpTaskSecret = () => options.toolActionSigningSecret?.trim() || resolveToolActionSigningSecret();
@@ -7381,6 +7395,26 @@ export function createToolGatewayService(
       // shows it. Keys come from the provider, so wakes per task are capped
       // and spaced; a provider rotating keys cannot keep waking the agent.
       const surfaced = new Set(row.surfacedInputKeys ?? []);
+      // A form question is put on a card right away, so a person sees it even
+      // when no wake is left for this task; answering the card wakes the agent.
+      const cardCount = plan.waitingForm && row.issueId && !surfaced.has(plan.waitingForm.key)
+        ? (await db.select({ count: sql<number>`count(*)::int` }).from(issueThreadInteractions).where(and(
+            eq(issueThreadInteractions.companyId, row.companyId), eq(issueThreadInteractions.issueId, row.issueId),
+            sql`${issueThreadInteractions.idempotencyKey} like ${`mcp-task-input:${row.id}:%`}`)))[0]?.count ?? 0
+        : Infinity;
+      if (!plan.unsupported && plan.waitingForm && row.issueId && cardCount < MCP_TASK_MAX_CARDS) {
+        const card = await createElicitationCard({
+          companyId: row.companyId, issueId: row.issueId, agentId: row.agentId, toolName: row.catalogToolName,
+          request: plan.waitingForm.request, idempotencyKey: mcpTaskInputKey(row, plan.waitingForm.key),
+        });
+        surfaced.add(plan.waitingForm.key);
+        await updateMcpTask(row, { surfacedInputKeys: boundedMcpTaskKeys(surfaced) }, { owner });
+        await writeAudit({
+          session: context.session, companyId: row.companyId, agentId: row.agentId, runId: row.runId, issueId: row.issueId,
+          action: "tool_gateway.elicitation_requested",
+          details: { invocationId: row.invocationId, taskRecordId: row.id, interactionId: card.id, tool: row.catalogToolName, reasonCode: "elicitation_required" },
+        });
+      }
       const unseen = Object.keys(state.inputRequests ?? {}).filter((key) => !answered.has(key) && !surfaced.has(key)).sort();
       const wakeAllowed = row.inputWakeCount < MCP_TASK_MAX_INPUT_WAKES
         && (!row.inputWakeAt || row.inputWakeAt.getTime() <= Date.now() - MCP_TASK_INPUT_WAKE_SPACING_MS);
