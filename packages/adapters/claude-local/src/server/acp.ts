@@ -55,7 +55,16 @@ import {
 } from "./probe-diagnostics.js";
 import { createWorkspaceRestoreTeardown } from "@paperclipai/adapter-utils/workspace-restore-teardown";
 import { buildLocalAdapterTestProbeEnv } from "./probe-env.js";
-import { detectClaudeLoginRequired, extractClaudeRetryNotBefore, isClaudeProviderQuotaError, parseClaudeStreamJson } from "./parse.js";
+import {
+  CLAUDE_EDGE_REJECTED_ERROR_CODE,
+  describeClaudeEdgeFailure,
+  detectClaudeEdgeFailure,
+  detectClaudeLoginRequired,
+  extractClaudeRetryAfter,
+  extractClaudeRetryNotBefore,
+  isClaudeProviderQuotaError,
+  parseClaudeStreamJson,
+} from "./parse.js";
 import { buildClaudeProbePermissionArgs, claudeSandboxPermissionEnv } from "./permissions.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
 import {
@@ -372,7 +381,20 @@ export function classifyClaudeTerminalSessionFailure(
   // Claude's typed AIR access category is emitted for auth_required. This is
   // a provider signal, including its generic fallback, not a tool permission
   // error inferred from text. Keep it on the existing sign-in recovery path.
-  if (failure.category === "access") return { errorCode: "acpx_auth_required" };
+  if (failure.category === "access") {
+    // An HTML edge page or a 403 without a genuine credential body is a
+    // transient edge rejection, even when the provider labels it access.
+    const text = [failure.title, failure.details].filter(Boolean).join("\n");
+    if (detectClaudeEdgeFailure({ parsed: null, stdout: "", stderr: text })) {
+      const retryNotBefore = extractClaudeRetryAfter({ stderr: text }, now)?.toISOString();
+      return {
+        errorCode: CLAUDE_EDGE_REJECTED_ERROR_CODE,
+        errorFamily: "transient_upstream",
+        ...(retryNotBefore ? { retryNotBefore } : {}),
+      };
+    }
+    return { errorCode: "acpx_auth_required" };
+  }
   // `limit` also includes context, turn, rate and configured budget limits.
   // Only the provider's quota wording qualifies for a quota wait.
   if (failure.category !== "limit") return null;
@@ -428,6 +450,19 @@ export function mapClaudeAcpAuthErrorCode(
   result: AdapterExecutionResult,
 ): AdapterExecutionResult {
   if (result.errorCode !== ACPX_AUTH_REQUIRED_ERROR_CODE) return result;
+  // The shared engine labels any thrown "auth" text as auth required. An edge
+  // rejection wrapped in "Failed to authenticate" is not a credential failure.
+  const edgeFailure = result.errorMessage
+    ? detectClaudeEdgeFailure({ parsed: null, stdout: "", stderr: result.errorMessage })
+    : null;
+  if (edgeFailure) {
+    return {
+      ...result,
+      errorCode: CLAUDE_EDGE_REJECTED_ERROR_CODE,
+      errorFamily: "transient_upstream",
+      errorMessage: describeClaudeEdgeFailure(edgeFailure),
+    };
+  }
   return {
     ...result,
     errorCode: CLAUDE_AUTH_REQUIRED_ERROR_CODE,

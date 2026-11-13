@@ -190,3 +190,13 @@ it.each([
 ])("does not treat a tool or workspace request failure as a login rejection: %s", (title) => {
   expect(classifyClaudeTerminalSessionFailure({ category: "request", title }, now)).toBeNull();
 });
+
+it("classifies a typed ACP access failure carrying an edge page as a transient edge rejection", () => {
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  expect(classifyClaudeTerminalSessionFailure({
+    category: "access", title: "Failed to authenticate", details: "API Error: 403 Attention Required! | Cloudflare\nretry-after: 30",
+  }, now)).toEqual({ errorCode: "claude_edge_rejected", errorFamily: "transient_upstream", retryNotBefore: "2026-01-01T00:00:30.000Z" });
+  expect(classifyClaudeTerminalSessionFailure({
+    category: "access", title: "Failed to authenticate", details: "API Error: 401 Invalid bearer token",
+  }, now)).toEqual({ errorCode: "acpx_auth_required" });
+});
