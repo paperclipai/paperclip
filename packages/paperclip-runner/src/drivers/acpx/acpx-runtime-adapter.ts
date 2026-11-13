@@ -537,7 +537,7 @@ export async function openQualifiedAcpxRuntime(
         || (rawSessionId !== undefined && rawSessionId !== request.sessionId)) {
         return { outcome: "reject_once" };
       }
-      const cycleDecision = providerCycles?.undecided();
+      const cycleDecision = providerCycles?.decisionFor(objectRecord(objectRecord(request.raw).toolCall).toolCallId);
       if (cycleDecision && !(await cycleDecision)) return { outcome: "cancel" };
       if ((permissionBoundary.hasAdmittedTurn && !extensionBoundary.active)
         || extensionBoundary.active?.signal.aborted || context.signal.aborted) return { outcome: "cancel" };
@@ -1884,6 +1884,7 @@ function runtimePort(
       drop: () => cycles.drop(),
       cancel: () => cycles.cancel(),
       undecided: () => cycles.undecided(),
+      decisionFor: (toolCallId) => cycles.decisionFor(toolCallId),
     };
   }
   return port;
