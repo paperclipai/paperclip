@@ -3329,6 +3329,14 @@ function requestedExpiresAtParam(
     : undefined;
 }
 
+function withoutPortableTaskHandoff(metadata: Record<string, unknown> | null | undefined) {
+  const {
+    portableTaskPreviousLeaseId: _previous, portableTaskPredecessor: _predecessor,
+    portableTaskOwnershipReady: _ready, portableTaskCheckpointUnavailable: _unavailable, ...rest
+  } = metadata ?? {};
+  return rest;
+}
+
 function pluginDriverProviderKey(config: PluginEnvironmentConfig): string {
   return `${config.pluginKey}:${config.driverKey}`;
 }
@@ -3558,16 +3566,26 @@ function createPluginEnvironmentDriver(
           (freshPortableSession || previous.metadata?.runnerTaskFingerprint !== fingerprint)) {
         // A fresh logical session or changed mount scope must retire the old process before provisioning.
         await this.releaseRunLease({environment:input.environment,lease:toEnvironmentLeaseSnapshot(previous),status:"released"});
-      } else if (!handoffPrevious && previous?.providerLeaseId) {
+      } else if (previous?.providerLeaseId) {
         // Resume only inspects the exact computer; an unavailable reply must not create a replacement.
-        resumed = await workerManager.call(plugin.id, "environmentResumeLease", {
+        const resumeRequest = {
           driverKey: parsed.config.driverKey, companyId: input.companyId, environmentId: input.environment.id,
           issueId: input.issueId, config: parsed.config.driverConfig, runId: input.heartbeatRunId!,
           providerLeaseId: previous.providerLeaseId, leaseMetadata: previous.metadata ?? undefined,
-        });
-        if (!resumed?.providerLeaseId) {
-          await releasePluginRunLease({ environment: input.environment, lease: toEnvironmentLeaseSnapshot(previous), status: "released" }, true);
+        };
+        try {
+          resumed = await workerManager.call(plugin.id, "environmentResumeLease", resumeRequest);
+        } catch (error) {
+          if (!handoffPrevious) throw error;
+          logger.warn({ err: error, leaseId: previous.id, pluginId: plugin.id },
+            "plugin task warm resume failed; handing the session off to a new computer");
           resumed = undefined;
+        }
+        if (!resumed?.providerLeaseId) {
+          resumed = undefined;
+          if (!handoffPrevious) {
+            await releasePluginRunLease({ environment: input.environment, lease: toEnvironmentLeaseSnapshot(previous), status: "released" }, true);
+          }
         }
       }
       const providerLease = resumed ?? await createOwnedSandbox(db, {
@@ -3591,6 +3609,7 @@ function createPluginEnvironmentDriver(
         executionWorkspaceId: input.executionWorkspaceId ?? undefined,
         adapterType: input.adapterType ?? undefined,
         executionWorkspaceSettings: input.executionWorkspaceSettings,
+        ...(lifecyclePolicy.mode === "warm" ? { runnerLifecyclePolicy: lifecyclePolicy } : {}),
         // Forward a caller deadline so the provider configures a provider-side
         // expiry at or before it and returns the real provider expiry.
         ...(requestedExpiresAtParam(input.requestedExpiresAt) !== undefined
@@ -3611,13 +3630,13 @@ function createPluginEnvironmentDriver(
         providerLeaseId: providerLease.providerLeaseId,
         expiresAt: providerAttestedLeaseExpiry(input.requestedExpiresAt, parseExpiresAt(providerLease.expiresAt)),
         metadata: {
-          ...(resumed && previous ? { ...previous.metadata, runnerTaskReused: true, runnerTaskPreviousLeaseId: previous.id } : {}),
+          ...(resumed && previous ? { ...withoutPortableTaskHandoff(previous.metadata), runnerTaskReused: true, runnerTaskPreviousLeaseId: previous.id } : {}),
           runnerTaskLifecyclePolicy: lifecyclePolicy, runnerTaskFingerprint: fingerprint,
           runnerTaskRequestedExpiresAt:requestedExpiresAtParam(input.requestedExpiresAt) ?? null,
           ...(warm ? {runnerTaskProjectIds:[...input.runnerTaskProjectIds ?? []]} : {}),remoteCwd:".",
           ...(input.agentId ? { agentId: input.agentId } : {}),
           providerMetadata: providerLease.metadata ?? {},
-          ...(handoffPrevious ? { portableTaskPreviousLeaseId: handoffPrevious.id } : {}),
+          ...(handoffPrevious && !resumed ? { portableTaskPreviousLeaseId: handoffPrevious.id } : {}),
           ...(input.purpose ? { purpose: input.purpose, loginCommandKey: input.loginCommandKey } : {}),
           environmentId: input.environment.id,
           ...(input.purpose !== "login" && input.adapterType === "paperclip_runner" && driver.supportsTasks === true ? { runnerTaskLease: true } : {}),

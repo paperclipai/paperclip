@@ -366,6 +366,17 @@ a Core-managed credential identity before lease acquisition. The saved warm
 preference does not bypass account ownership checks. Drivers without warm
 capability and setup probes remain ephemeral.
 
+A driver that also declares `sessionHandoffVersion: 1` gets a resume attempt
+first. Core calls `onEnvironmentResumeLease` with the retained lease. When the
+driver returns the same provider lease, Core reuses it and does not move the
+session. When the driver returns no provider lease or fails, Core moves the
+session to a new task lease as before and keeps the retained lease as the
+handoff source. The reused lease does not keep the handoff claim of its
+predecessor. For a warm lease, `onEnvironmentAcquireLease` receives
+`runnerLifecyclePolicy` with the idle window that Core records for the
+Runner. A provider with its own idle shutdown can use it to stop only after
+that window.
+
 Plugin task execution uses the public, run-scoped GitHub credential broker
 when the provider advertises its versioned contract. Warm preparation updates
 the command capability before admitting the new run. Restart recovery retains
