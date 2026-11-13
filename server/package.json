@@ -146,7 +146,6 @@
     "@types/tar-stream": "^3.1.5",
     "@types/ws": "^8.18.2",
     "cross-env": "^10.1.0",
-    "oxc-parser": "0.127.0",
     "supertest": "^7.0.0",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",

@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { parseSync } from "oxc-parser";
+import { parseAst } from "vite";
 import { expect, it } from "vitest";
 
 // /api/ready means "this server can serve requests and take over". Each step
@@ -38,8 +38,8 @@ function walk(node: Node, functions: Node[], visit: (node: Node, owner: Node | u
 it("holds readiness only on named, listed preconditions", () => {
   const file = fileURLToPath(new URL("../index.ts", import.meta.url));
   const source = readFileSync(file, "utf8");
-  const { program, errors } = parseSync(file, source);
-  expect(errors).toEqual([]);
+  // Vite's parser (already a server dependency) reads TypeScript as ESTree.
+  const program = parseAst(source, { lang: "ts" });
 
   // The boot path is the function that moves the phase from "recovering" to
   // "ready". Awaits inside nested closures run in the background.
