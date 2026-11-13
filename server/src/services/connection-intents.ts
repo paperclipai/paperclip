@@ -133,6 +133,10 @@ function availableToolConnectionMethods(
 // Large enough for first-party catalogs such as GitHub's; aggregator catalogs
 // stay bounded and still report their total.
 const MAX_SCOPED_REQUEST_TOOL_NAMES = 100;
+// A message that opens with a setup verb, such as "Connect Notion" or "Can you
+// set up Slack?". Questions and data requests ("What is the easiest way to
+// connect Notion?", "Read my Notion") do not match and get the setup card.
+const SETUP_REQUEST_PATTERN = /^(?:please\s+)?(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?)?(?:connect|reconnect|set\s*up|configure|install|link|hook\s+up)\b/i;
 
 /** Tells an agent outside a connection's grant how to request scoped access to it. */
 function scopedToolRequestGuidance(connectionId: string, catalog: ReadonlyArray<{ toolName: string }>) {
@@ -640,9 +644,13 @@ export function connectionIntentService(db: Db) {
     const ranked = () => [...candidates, ...yieldedRoutes].sort((a, b) => b.score - a.score || a.item.name.localeCompare(b.item.name))
       .slice(0, 40).map(({ item }) => item);
     // Aggregator routes need a recorded provider choice before connection_request.
-    const rankedResult = (suggestions = false) => {
+    const rankedResult = async (suggestions = false) => {
       const results = ranked();
-      return results.some(item => item.source === "aggregator") ? discoverySuggestions(results) : directSearchResult(query, results, company.prefix, suggestions);
+      if (results.some(item => item.source === "aggregator")) return discoverySuggestions(results);
+      // Only a single unconnected tool result can tell the agent to configure it.
+      const setupRequested = !suggestions && results.length === 1
+        && await latestHumanMessageRequestsSetup(run.companyId, issue.id, run.responsibleUserId!);
+      return directSearchResult(query, results, company.prefix, suggestions, setupRequested);
     };
     const targetService = publicService?.slug ?? (indexedMatches.length === 1 ? indexedMatches[0]!.slug : normalizeConnectionQuery(serviceQuery).replaceAll(" ", "-"));
     // Indexed-only app labels must be identical when requests re-search the slug.
@@ -753,7 +761,7 @@ export function connectionIntentService(db: Db) {
     }
   }
 
-  function directSearchResult(query: string, results: ConnectionSearchResultItem[], prefix: string, suggestions = false): ConnectionsSearchResult {
+  function directSearchResult(query: string, results: ConnectionSearchResultItem[], prefix: string, suggestions = false, setupRequested = false): ConnectionsSearchResult {
     const ownServer = `the person adds it as their own MCP server on [Connect your own MCP server](/${prefix}/apps/byo): they enter the URL and type any API key into that page's secure field themselves. `
       + "An agent cannot enter the key. Do not create the connection yourself, ask for the key in chat or search for another route; link that page and reply.";
     return { version: 1, query, results, instruction: !results.length
@@ -771,7 +779,20 @@ export function connectionIntentService(db: Db) {
       : results[0]!.methods.every(method => method.purpose && method.purpose !== "tool")
         ? "Choose the method relevant to the task using its purpose and label. If method.management.allowed, configure through search_api/call_api using nextApiOperation. Hand off only required human authentication or consent at the saved setupPath. These methods do not use the tool connection_request card. Do not claim tools or an inbox are ready before setup finishes."
       : results[0]!.state === "ready" ? "Use the installed connection. Do not create another connection request."
-      : "The user asked to connect. If method.management.allowed, use search_api/call_api with nextApiOperation to configure it. Reuse a saved draft. Use connection_request only for required human input or access. Do not ask a generic confirmation or silently change policy to bypass a failed tool call." };
+      : setupRequested
+        ? "The person asked you to set up this connection. If method.management.allowed, use search_api/call_api with nextApiOperation to configure it. Reuse a saved draft. Use connection_request only for required human input or access. Do not ask a generic confirmation or silently change policy to bypass a failed tool call."
+        : `The person has not asked you to set up this connection: they asked about ${results[0]!.name} or need its data. Do not create a connection or a saved draft yourself. Call connection_request with service ${results[0]!.service} to show the inline setup card, which lets the person choose a setup method or decline, and answer their question from these results in plain words. Until the connection is ready, do not claim access to ${results[0]!.name} or report its data.` };
+  }
+
+  /** Conservative: a false negative only shows the setup card instead of configuring. */
+  async function latestHumanMessageRequestsSetup(companyId: string, issueId: string, userId: string) {
+    // Use a persisted human-authored message, never the agent-supplied query.
+    const [message] = await db.select({ body: issueComments.body }).from(issueComments).where(and(
+      eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId),
+      eq(issueComments.authorUserId, userId), isNull(issueComments.authorAgentId),
+      isNull(issueComments.createdByRunId), isNull(issueComments.derivedAuthorAgentId), isNull(issueComments.deletedAt),
+    )).orderBy(desc(issueComments.createdAt), desc(issueComments.id)).limit(1);
+    return !!message && SETUP_REQUEST_PATTERN.test(message.body.trim());
   }
 
   async function providerSelections(companyId: string, issueId: string, agentId: string, userId: string, questionId: string) {
