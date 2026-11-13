@@ -144,6 +144,39 @@ its own, as in this repository, can take a built image or tree in its place
 with `--build-context <stage>=<image or directory>`. The stage is then not
 built.
 
+### Choosing the Runner for an image build
+
+`scripts/runner-image-resolve.mjs` decides whether a build of a checkout can
+copy the published image. No build uses its answer yet. It has two commands,
+so that the one that builds reads no registry credential:
+
+```sh
+node scripts/runner-image-resolve.mjs inputs --dir "$dir"
+node scripts/runner-image-resolve.mjs resolve --dir "$dir"
+```
+
+`inputs` exports the Runner build context, checks the lockfile and computes
+the inputs digest in the build, as the publication workflow does. Run it on
+the committed files, before any step that rewrites `pnpm-lock.yaml`.
+`resolve` looks up `inputs-<digest>` and reports:
+
+- `mode`: `published` or `inline`, and `reason`;
+- `image` and `slim_image`: both variants, pinned by index digest. The slim
+  digest is the one the full index names (see "Pairing");
+- `build_contexts`: one `--build-context` value on each line, which replace
+  the `runner-artifacts` and `runner-artifacts-slim` stages;
+- `labels`: `io.paperclip.runner.image` and
+  `io.paperclip.runner.inputs-digest`, for the image that copies the Runner.
+
+`published` needs a complete publication whose full index names these inputs
+and both platforms. Every other answer is `inline`, with the last four values
+empty: the lockfile is behind the Runner's manifests (`lock-behind`), the
+image does not exist (`absent`), a publication is `incomplete` or `broken`,
+the full index does not match (`mismatch`), or the registry refused, failed
+or could not be reached (`unknown`). An inline build runs the Runner stages
+itself and carries neither label. The command does not wait for a publication
+and does not verify the attestation of the image.
+
 ## Publication
 
 `.github/workflows/runner-image.yml` publishes on a `master` push in this
