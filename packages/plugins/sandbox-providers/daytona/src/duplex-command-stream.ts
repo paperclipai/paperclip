@@ -110,16 +110,8 @@ export interface DaytonaDuplexChannelOptions {
   onWriteError?: (reason: DaytonaDuplexWriteErrorReason) => void;
 }
 
-/**
- * The longest time a session close waits for the remote PTY kill before it
- * releases the socket. The SDK kill is a toolbox request with a 24-hour default
- * timeout, so a stalled sandbox can hold it open. The host gives a close
- * acknowledgement 10 seconds and retires the whole worker when it is late, which
- * fails every other call in flight on that worker. Keep this well inside that.
- */
 export const DUPLEX_CHANNEL_CLOSE_KILL_TIMEOUT_MS = 5_000;
 
-/** Waits for `action` to settle, or for `timeoutMs`, whichever comes first. Never rejects. */
 async function settleWithin(action: Promise<unknown>, timeoutMs: number): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -300,9 +292,7 @@ export async function openDaytonaDuplexChannelSession(
     async close(): Promise<void> {
       // Stop the child and release the socket. `kill` ends the gateway and `wait`
       // resolves with the exit; `disconnect` releases the PTY socket. Both are
-      // safe to call more than one time, so close stays idempotent. A kill that
-      // outlives the deadline keeps running; the socket is released regardless,
-      // exactly as for a kill that rejects.
+      // safe to call more than one time, so close stays idempotent.
       await settleWithin(handle.kill(), DUPLEX_CHANNEL_CLOSE_KILL_TIMEOUT_MS);
       await handle.disconnect().catch(() => undefined);
     },

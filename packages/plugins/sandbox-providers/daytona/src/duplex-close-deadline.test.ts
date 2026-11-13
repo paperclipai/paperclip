@@ -10,8 +10,6 @@ vi.mock("@daytonaio/sdk", () => ({
 import { DUPLEX_CHANNEL_CLOSE_KILL_TIMEOUT_MS, openDaytonaDuplexChannelSession } from "./duplex-command-stream.js";
 import plugin, { __resetDaytonaSandboxHandleCacheForTest } from "./plugin.js";
 
-// The host waits this long for a duplex close acknowledgement before it retires
-// the whole worker, which fails every other call in flight on that worker.
 const HOST_DUPLEX_CLOSE_TIMEOUT_MS = 10_000;
 
 function fakePty() {
@@ -62,8 +60,6 @@ describe("Daytona duplex channel close deadline", () => {
   it("releases the session socket at the kill deadline when the remote kill never settles", async () => {
     const pty = fakePty();
     const session = await openDaytonaDuplexChannelSession({ createPty: async () => pty }, ["fixture-bridge"]);
-    // The SDK kill is a toolbox request with a 24-hour default timeout; a
-    // stalled sandbox can hold it open.
     pty.kill.mockImplementation(() => new Promise<void>(() => {}));
     vi.useFakeTimers();
 
@@ -91,8 +87,6 @@ describe("Daytona duplex channel close deadline", () => {
     expect(pty.kill).toHaveBeenCalledTimes(1);
     expect(pty.disconnect).toHaveBeenCalledTimes(1);
 
-    // The route stays retired: a later close acknowledges the same pair, and the
-    // route can never open again.
     await expect(plugin.definition.onDuplexChannelClose!({ hostRouteId: opened.hostRouteId })).resolves.toEqual(opened);
     await expect(plugin.definition.onDuplexChannelOpen!({
       driverKey: "daytona", companyId: "fixture-company", environmentId: "fixture-environment",
