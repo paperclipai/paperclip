@@ -127,6 +127,7 @@ import {
   canJumpToOnboardingStep,
   companyPrefixFromOnboardingPath,
   resolveRouteOnboardingOptions,
+  shouldCoverWithOnboardingWizard,
 } from "../lib/onboarding-route";
 import { useCloudInstance } from "../hooks/useCloudInstance";
 import { PillGuy } from "./onboarding/PillGuy";
@@ -487,8 +488,11 @@ function OnboardingWizardInner({
           companies,
           cloudManaged: Boolean(cloudInstance),
         });
-  const effectiveOnboardingOpen =
-    onboardingOpen || (routeOnboardingOptions !== null && !routeDismissed);
+  const effectiveOnboardingOpen = shouldCoverWithOnboardingWizard({
+    pathname: location.pathname,
+    onboardingOpen,
+    routeRequested: routeOnboardingOptions !== null && !routeDismissed,
+  });
   const effectiveOnboardingOptions = onboardingOpen
     ? onboardingOptions
     : routeOnboardingOptions ?? {};

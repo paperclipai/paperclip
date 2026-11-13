@@ -194,6 +194,33 @@ describe.skipIf(process.platform === "win32")("local browser subscription login"
     expect(login.code).toBe("ABCD-EFGHJ");
   });
 
+  it("surfaces a Grok device link and code from a local PTY without a user shell command", async () => {
+    const home = await fakeCli("grok", [
+      '[ "$1 $2" = "login --device-auth" ] || exit 11',
+      '[ "$GROK_HOME" = "$PAPERCLIP_TEST_LOGIN_GROK_HOME" ] || exit 12',
+      '[ -z "$XAI_API_KEY$GROK_API_KEY" ] || exit 14',
+      'printf "To sign in, open this URL in your browser:\\n\\n  https://accounts.x.ai/oauth2/device?user_code=ABCD-EFGH\\n\\nConfirm this code in your browser:\\n\\n  ABCD-EFGH\\n"',
+    ].join("\n"));
+    vi.stubEnv("PAPERCLIP_TEST_LOGIN_GROK_HOME", home);
+    vi.stubEnv("XAI_API_KEY", "unrelated-host-value");
+    vi.stubEnv("GROK_API_KEY", "unrelated-host-value");
+    const login = startLocalBrowserLogin("xai", home);
+    await vi.waitFor(() => expect(login.outcome).toBe("success"), { timeout: 5000 });
+    expect(login.authorizationUrl).toBe("https://accounts.x.ai/oauth2/device?user_code=ABCD-EFGH");
+    expect(login.code).toBe("ABCD-EFGH");
+    expect(JSON.stringify(login)).not.toContain("grok login");
+  });
+
+  it("reports a missing Grok CLI without revealing the host PATH", async () => {
+    const home = await fakeCli("grok", "exit 0");
+    process.env.PATH = "/usr/bin:/bin";
+    const login = startLocalBrowserLogin("xai", home);
+    await vi.waitFor(() => expect(login.outcome).toBe("failure"), { timeout: 5000 });
+    expect(login.error).toMatch(/requires the Grok CLI.*Install Grok.*Paperclip's PATH/);
+    expect(JSON.stringify(login)).not.toContain(process.env.PATH);
+    expect(login.authorizationUrl).toBeUndefined();
+  });
+
   it("reports a missing Claude CLI instead of an abandoned sign-in", async () => {
     const home = await fakeCli("claude", "exit 0");
     process.env.PATH = "/usr/bin:/bin";

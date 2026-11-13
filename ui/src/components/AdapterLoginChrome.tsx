@@ -505,7 +505,7 @@ export function LocalProviderLoginInstructions({ adapterType, login }: {
   const provider = adapterType === "antigravity_runtime" ? "Google Antigravity" : adapterType === "claude_local" ? "Claude Code" : adapterType === "grok_local" ? "Grok CLI" : "Codex CLI";
   const isolated = login?.isolated ?? (adapterType === "codex_local" || adapterType === "grok_local");
   const command = login?.command;
-  const browserLogin = adapterType === "claude_local" || adapterType === "codex_local" || adapterType === "antigravity_runtime";
+  const browserLogin = adapterType === "claude_local" || adapterType === "codex_local" || adapterType === "antigravity_runtime" || adapterType === "grok_local";
   async function submitBrowserCode() {
     if (!browserCode.trim() || !login?.submitCode || submitting) return;
     setSubmitting(true);

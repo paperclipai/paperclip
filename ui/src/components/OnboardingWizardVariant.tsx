@@ -2,7 +2,7 @@ import { lazy, useEffect } from "react";
 import { useDialogActions, useDialogState } from "../context/DialogContext";
 import { useOptionalCompany } from "../context/CompanyContext";
 import { useLocation, useNavigate } from "../lib/router";
-import { isOnboardingPath } from "../lib/onboarding-route";
+import { isOnboardingPath, shouldCoverWithOnboardingWizard } from "../lib/onboarding-route";
 import { DeferredOverlay } from "./DeferredOverlay";
 import { LanguageSwitcher } from "./LanguageSwitcher";
 import { OnboardingOrganizationSwitch } from "./OnboardingOrganizationSwitch";
@@ -23,7 +23,11 @@ export function OnboardingWizardVariant() {
   useEffect(() => {
     setOnboardingRouteDismissed(false);
   }, [pathname, setOnboardingRouteDismissed]);
-  const requested = onboardingOpen || (isOnboardingPath(pathname) && !onboardingRouteDismissed);
+  const requested = shouldCoverWithOnboardingWizard({
+    pathname,
+    onboardingOpen,
+    routeRequested: isOnboardingPath(pathname) && !onboardingRouteDismissed,
+  });
   return (
     <>
       {requested && companyState ? (

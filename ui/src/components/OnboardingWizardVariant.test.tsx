@@ -44,6 +44,13 @@ describe("OnboardingWizardVariant", () => {
     await renderVariant();
     expect(container.querySelector('[data-testid="wizard-capsule"]')).not.toBeNull();
   });
+  it("leaves the connect page uncovered while setup is open", async () => {
+    state.onboardingOpen = true;
+    state.pathname = "/BMC/apps/connect";
+    await renderVariant();
+    expect(container.querySelector('[data-testid="wizard-capsule"]')).toBeNull();
+    expect(mount).not.toHaveBeenCalled();
+  });
   it("loads on dialog request and preserves the mounted wizard after closing", async () => {
     await renderVariant();
     state.onboardingOpen = true;

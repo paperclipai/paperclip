@@ -94,14 +94,6 @@ async function waitForFreshConnection(input: ConnectionFlowInput, before: Set<st
         await input.checkpoint("awaiting_provider_login");
         console.log(`[provider-connections] Sign in to ${harness.label} in the opened browser (${config.browser.accountAlias}); complete the code/consent step in Paperclip. This test resumes automatically.`);
       }
-      // Grok currently exposes a terminal handoff; do not pretend it has the same browser flow.
-      if (!loginOpened && harness.id === "grok" && await page.getByRole("button", { name: "Copy sign-in command" }).isVisible()) {
-        loginOpened = true;
-        evidence.assisted = true;
-        evidence.waits.push({ kind: "provider_login", startedAt: new Date().toISOString() });
-        await input.checkpoint("awaiting_provider_login");
-        console.log("[provider-connections] Grok requires the sign-in command shown in Paperclip. Complete that production handoff; the test will resume automatically.");
-      }
       const connect = page.getByRole("button", { name: "Connect", exact: true }).last();
       if (!connected && await connect.isVisible() && await connect.isEnabled()) { await connect.click(); connected = true; }
       if (await page.getByRole("alert").filter({ hasText: /expired|could not|failed|invalid/i }).count()) throw new ConnectionFailure("provider_login_reported_error");
