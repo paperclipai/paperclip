@@ -1,3 +1,4 @@
+import type { HttpError } from "../errors.js";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, rmSync } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
@@ -1299,7 +1300,7 @@ describeEmbeddedPostgres("secretService", () => {
         configPath,
         actorSource: "agent_jwt",
         heartbeatRunId,
-        registerForRedaction: (value) => redactedValues.push(value),
+        registerForRedaction: (value) => { redactedValues.push(value); },
       })).resolves.toEqual({ value: "runtime-secret", version: 1 });
     }
 
@@ -2210,7 +2211,7 @@ describeEmbeddedPostgres("secretService", () => {
     vi.spyOn(awsSecretsManagerProvider, "createSecret").mockImplementation(async (input) => {
       nextVersion += 1;
       const externalRef =
-        `arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/${input.context.secretKey}`;
+        `arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/${input.context!.secretKey}`;
       return preparedAwsVersion(externalRef, `aws-version-${nextVersion}`, `value-sha-${nextVersion}`, `fingerprint-sha-${nextVersion}`);
     });
     const deleteSpy = vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive").mockResolvedValue();
@@ -2331,8 +2332,8 @@ describeEmbeddedPostgres("secretService", () => {
       providerConfigId: null,
     });
 
-    expect(updated.latestVersion).toBe(secret.latestVersion);
-    expect(updated.status).toBe(secret.status);
+    expect(updated!.latestVersion).toBe(secret.latestVersion);
+    expect(updated!.status).toBe(secret.status);
     const versions = await db
       .select()
       .from(companySecretVersions)
@@ -2611,7 +2612,7 @@ describeEmbeddedPostgres("secretService", () => {
         set: () => ({
           where: () => Promise.reject(new Error("metadata write failed")),
         }),
-      }) as ReturnType<typeof db.update>,
+      }) as unknown as ReturnType<typeof db.update>,
     );
 
     const resolved = await svc.resolveEnvBindings(companyId, env, {
@@ -3409,6 +3410,9 @@ describeEmbeddedPostgres("secretService", () => {
         requiredCapability: "secretsmanager:CreateSecret",
       },
     });
+    expect(((thrown as HttpError).details as { actionableMessage?: string } | undefined)?.actionableMessage).toContain(
+      "Ensure the Paperclip server runtime can resolve valid AWS credentials",
+    );
     expect(JSON.stringify(thrown)).not.toContain("arn:aws");
     expect(JSON.stringify(thrown)).not.toContain("123456789012");
     expect(thrown instanceof Error ? thrown.message : String(thrown)).not.toContain("arn:aws");

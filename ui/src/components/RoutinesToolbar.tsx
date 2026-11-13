@@ -8,7 +8,7 @@ export type RoutineGroupBy = "folder" | "none" | "project" | "assignee";
 export type RoutineSortField = "updated" | "created" | "title" | "lastRun";
 export type RoutineSortDir = "asc" | "desc";
 
-export function RoutinesToolbar({ query, onQueryChange, sortField, sortDir, groupBy, onSortChange, onGroupChange, onNewFolder, onCreateRoutine, runsHref, selectMode, onToggleSelect }: {
+export function RoutinesToolbar({ query, onQueryChange, sortField, sortDir, groupBy, onSortChange, onGroupChange, onNewFolder, onCreateRoutine, tasksHref, selectMode, onToggleSelect }: {
   query: string;
   onQueryChange: (value: string) => void;
   sortField: RoutineSortField;
@@ -18,7 +18,7 @@ export function RoutinesToolbar({ query, onQueryChange, sortField, sortDir, grou
   onGroupChange: (value: RoutineGroupBy) => void;
   onNewFolder?: () => void;
   onCreateRoutine: () => void;
-  runsHref?: string;
+  tasksHref?: string;
   selectMode?: boolean;
   onToggleSelect?: () => void;
 }) {
@@ -98,7 +98,7 @@ export function RoutinesToolbar({ query, onQueryChange, sortField, sortDir, grou
     </Popover>
     <div className="design-toolbar-actions">
       {onToggleSelect && <Button variant="outline" size="sm" onClick={onToggleSelect}>{selectMode ? "Done" : "Select"}</Button>}
-      {runsHref && <Button variant="outline" size="sm" asChild><Link data-toolbar-control to={runsHref}>View all runs</Link></Button>}
+      {tasksHref && <Button variant="outline" size="sm" asChild><Link data-toolbar-control to={tasksHref}>View all tasks</Link></Button>}
       {onNewFolder && <Button variant="outline" size="sm" onClick={onNewFolder}><Plus className="h-4 w-4" />New folder</Button>}
       <Button variant="outline" size="sm" data-toolbar-primary onClick={onCreateRoutine}><Plus className="h-4 w-4" />Create routine</Button>
     </div>

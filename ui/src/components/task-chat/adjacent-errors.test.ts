@@ -47,6 +47,23 @@ describe("compactAdjacentErrors", () => {
     expect(compactAdjacentErrors([failed, legacy]).items).toEqual([legacy]);
   });
 
+  it.each([
+    "Paperclip tried to start this task again, but it still could not start. Press Retry to start it again.",
+    "Paperclip tried to continue this task again, but it still could not continue after 3 tries. Press Retry to start it again from the saved work.",
+  ])("recognizes the current recovery notice: %s", (text) => {
+    const titled = { ...recovery, text, presentation: { ...recovery.presentation!, title: "Task could not continue" } };
+    expect(compactAdjacentErrors([failed, titled]).items).toEqual([titled]);
+    const unstructured = { ...recovery, text, presentation: null };
+    expect(compactAdjacentErrors([failed, unstructured]).items).toEqual([unstructured]);
+    const retitled: TaskChatMessageItem = { ...recovery, text,
+      presentation: { ...recovery.presentation!, title: "Automatic recovery blocked" },
+      metadata: { version: 1, sections: [{ title: "Recovery", rows: [
+        { type: "key_value", label: "Recovery action", value: "recovery-action-1" }] }] } };
+    expect(compactAdjacentErrors([failed, retitled]).items).toEqual([retitled]);
+    const quoted = { ...recovery, presentation: null, text: `Child task report: ${text}` };
+    expect(compactAdjacentErrors([failed, quoted]).items).toEqual([failed, quoted]);
+  });
+
   it.each(["Automatic recovery blocked", "Error: usage limit reached"])(
     "recognizes a saved stranded-recovery notice with the producer title %s", (title) => {
       // buildStrandedRecoveryEscalationNotice saves this metadata even when

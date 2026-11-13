@@ -30,6 +30,14 @@ const ordinaryRetry: NonNullable<Story["play"]> = async ({ canvasElement }) => {
   await expect(canvas.queryByRole("checkbox")).not.toBeInTheDocument();
 };
 export const Stopped: Story = { play: ordinaryRetry };
+export const FailedInConversation: Story = {
+  render: (args) => <>
+    <TaskChatBubble item={{ id: "saved-request", kind: "message", author: "human", authorName: "Alex",
+      text: "Summarize the project's progress and list the next steps." }} />
+    <ExecutionBlockerNotice {...args} />
+  </>,
+  play: ordinaryRetry,
+};
 export const FileRecovery: Story = { play: ordinaryRetry };
 export const RecoveringSavedWork: Story = {
   args: { presentation: { ...failed, state: "working" } },

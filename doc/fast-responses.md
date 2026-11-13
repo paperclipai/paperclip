@@ -26,7 +26,7 @@ External publication uses the existing sanitized outbox, exact originating endpo
 
 ## Accounting and endpoints
 
-Every dispatched attempt uses the existing accounting lock, budget checks, reservation and cost ledger with `usageKind = fast_response`. Settlement is idempotent and keeps actual charges even when output is suppressed. OpenRouter supplies reported costs. Direct OpenAI/Anthropic models covered by the repository's reviewed rate cards receive explicit estimates. Unsupported pricing and ambiguous network outcomes remain unpriced, never fabricated as zero; reservations remain held until billing reconciliation.
+Every dispatched attempt uses shared manual-control admission fences, best-effort budget checks, its own reservation and an independent cost-ledger transaction with `usageKind = fast_response`. Settlement is idempotent, avoids the company writer mutex, and keeps actual charges even when output is suppressed. Durable budget work is evaluated asynchronously. OpenRouter supplies reported costs. Direct OpenAI/Anthropic models covered by the repository's reviewed rate cards receive explicit estimates. Unsupported pricing and ambiguous network outcomes remain unpriced, never fabricated as zero; reservations remain held until billing reconciliation.
 
 **Costs → Fast responses** shows connection, model, tokens, cost, timing, generation outcome and current publication outcome. Operational request rows contain identifiers and safe outcome codes, not prompts. Delivered comment text remains in conversation history.
 

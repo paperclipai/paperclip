@@ -7,6 +7,7 @@ import {
 } from "../runner-e2e/dashboard.js";
 import { buildRunnerCampaign } from "../runner-e2e/history.js";
 import type { MatrixExecution, RunnerE2EResult } from "../runner-e2e/types.js";
+import { projectTaskChatThread } from "../runner-e2e/task-chat.js";
 
 const reportUrl = "http://runner-e2e.test/campaign/";
 
@@ -72,6 +73,27 @@ function resultFor(
     evidenceFiles: ["final-state.png"],
   };
 }
+
+test("expanding test details exposes the complete saved task conversation", async ({ page }) => {
+  const execution = runnerExecutionById("core-compatibility.runner-codex.local.message-marker");
+  const entry = resultFor(execution, "passed");
+  const longReply = "Here is the result.\n\n" + "Retained paragraph. ".repeat(200) + "END OF COMPLETE REPLY";
+  entry.result.taskChat = { schema: "paperclip.runner-e2e.task-chat/v1", capturedAt: "2026-10-28T12:01:00Z",
+    status: "complete", missing: [], threads: [projectTaskChatThread(
+      { id: "task", title: "Find the saved artifact", identifier: "E2E-1", description: "Find our saved report.", createdAt: "2026-10-28T12:00:00Z" },
+      [{ id: "request", body: "Please include the download link.", createdAt: "2026-10-28T12:00:01Z" },
+        { id: "reply", authorAgentId: "agent", body: longReply, createdAt: "2026-10-28T12:00:02Z" }], [], new Map([["agent", "Morgan"]]))] };
+  await openReport(page, renderRunnerE2EDashboard({ title: "Task chat recording", catalog: [execution], entries: [entry], expected: [execution.id], generatedAt: "2026-10-28T12:01:00Z" }));
+  const chat = page.getByRole("region", { name: "Task chat", exact: true });
+  await expect(chat).not.toBeVisible();
+  await page.getByText("Test details", { exact: true }).click();
+  await expect(chat).toBeVisible();
+  await expect(chat.getByText("Find our saved report.", { exact: true })).toBeVisible();
+  await expect(chat.getByText("Please include the download link.", { exact: true })).toBeVisible();
+  await expect(chat.getByText("Morgan", { exact: true })).toBeVisible();
+  await expect(chat.locator(".transcript-text").last()).toHaveText(longReply);
+  await expect(chat.getByText(/END OF COMPLETE REPLY/)).toBeVisible();
+});
 
 test("filters execution previews and pages through the filtered screenshot gallery", async ({
   page,
@@ -362,4 +384,33 @@ test("case status dots summarize matching results and open failures", async ({ p
   await expect(topLink).toHaveAccessibleDescription("failed · 2/3 configurations passed");
   await page.getByRole("button", { name: "Legacy Codex · Daytona sandbox", exact: true }).click();
   await expect(topLink).toHaveAttribute("data-case-status", "failed");
+});
+
+test("keeps long feedback fingerprints inside a scrollable review table on phones", async ({ page }) => {
+  const { emptyFeedbackSummary } = await import("../runner-e2e/feedback.js");
+  const { feedbackReviewTemplate } = await import("../runner-e2e/feedback-dispositions.js");
+  const execution = runnerExecutionById(executionIds[0]);
+  const entry = resultFor(execution, "passed");
+  entry.result.feedback = { ...emptyFeedbackSummary(), collection: "complete", invocationCollection: "complete",
+    complaints: 2, bodiesCollected: 2,
+    review: ["a", "b"].map(value => ({ fingerprint: value.repeat(64), kind: "complaint", occurrences: 1, disposition: "needs_investigation" })),
+  };
+  const campaign = buildRunnerCampaign({ campaignId: "feedback-mobile", generatedAt: entry.result.finishedAt, expected: [execution.id], results: [entry.result] });
+  campaign.feedbackReview = { ...feedbackReviewTemplate(campaign), version: 1, reviewedAt: "2026-10-20T01:00:00Z", reviewedBy: "agent",
+    decisions: [{ fingerprint: "a".repeat(64), disposition: "actionable", issueNumber: 123 },
+      { fingerprint: "b".repeat(64), disposition: "duplicate", duplicateOf: "a".repeat(64) }],
+  };
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openReport(page, renderRunnerE2EDashboard({ title: "Feedback review", generatedAt: campaign.generatedAt,
+    expected: campaign.expected, catalog: [execution], entries: [entry], campaign }));
+  await page.getByText("Campaign usage and spend", { exact: true }).click();
+  const decisions = page.getByRole("region", { name: "Feedback review decisions" });
+  await expect(decisions).toBeVisible();
+  expect(await decisions.evaluate(element => element.scrollWidth > element.clientWidth)).toBe(true);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+  await decisions.focus();
+  await page.keyboard.press("Tab");
+  const followup = decisions.getByRole("link", { name: "#123" });
+  await expect(followup).toBeFocused();
+  await expect(followup).toBeInViewport();
 });

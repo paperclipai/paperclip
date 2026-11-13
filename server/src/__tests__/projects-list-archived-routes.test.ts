@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
+import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { companies, companyMemberships, createDb, projectAccessMembers, projects } from "@paperclipai/db";
+import { activityLog, companies, companyMemberships, createDb, environments, projectAccessMembers, projects } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -54,6 +55,7 @@ describeEmbeddedPostgres("project list archived route defaults", () => {
   }, 120_000);
 
   afterEach(async () => {
+    await db.delete(activityLog);
     await db.delete(companyMemberships);
     await db.delete(projects);
     await db.delete(companies);
@@ -107,6 +109,20 @@ describeEmbeddedPostgres("project list archived route defaults", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.map((project: { id: string }) => project.id).sort()).toEqual([activeProjectId, archivedProjectId].sort());
+  });
+
+  it("omits the database-only legacy environment from the DELETE response", async () => {
+    const { activeProjectId, companyId } = await seed();
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "user-1",
+      status: "active", membershipRole: "operator" });
+    const [environment] = await db.insert(environments).values({ name: randomUUID(), driver: "ssh" }).returning();
+    await db.update(projects).set({ legacyEnvironmentId: environment.id }).where(eq(projects.id, activeProjectId));
+    const app = createApp(db, boardActor(companyId));
+    const res = await request(app).delete(`/api/projects/${activeProjectId}`);
+    expect(res.status).toBe(200);
+    expect(res.body.id).toBe(activeProjectId);
+    expect(res.body).not.toHaveProperty("legacyEnvironmentId");
+    expect(res.body).not.toHaveProperty("environmentId");
   });
 });
 

@@ -4,7 +4,7 @@ This runbook covers Paperclip Tools & Access runtime slots for MCP connections. 
 
 Do not print raw bearer tokens, gateway session tokens, credential headers, environment variables, or secret values while following this runbook. The APIs below return redacted state and audit metadata; keep shell tracing disabled when exporting credentials.
 
-Tool action approvals require `PAPERCLIP_TOOL_ACTION_SIGNING_SECRET` to be set independently from auth/JWT secrets. `paperclipai onboard` generates it for local instances, and worktree setup propagates or generates an independent value in the worktree `.env`; operator-managed deployments must set it explicitly. Rotate it deliberately: changing it invalidates outstanding signed tool-action approvals, so drain or reject pending approvals before rotation.
+Tool action approvals and sensitive request identities use a durable key independent from auth/JWT secrets. `PAPERCLIP_TOOL_ACTION_SIGNING_SECRET` takes precedence when configured. `paperclipai onboard` generates it for local instances, and worktree setup propagates or generates an independent value in the worktree `.env`. When unset, the server derives a separate key from the persisted secrets master key, using its configured environment value or durable key file. Processes serving the same instance must share that signing key or master key, and operators must back it up with the database. Rotation can invalidate outstanding approvals and retry matching; drain or reject pending approvals and reconcile completed writes before rotating.
 
 ## Support Matrix
 

@@ -19,6 +19,8 @@ skills/** @cryppadotta @devinfoley @nickyleach @forgottendev
 # package.json matches recursively at all depths (covers root + all workspaces)
 package.json @cryppadotta @devinfoley @nickyleach @forgottendev
 pnpm-lock.yaml @cryppadotta @devinfoley @nickyleach @forgottendev
+/tests/runner-e2e/report-lock.json @cryppadotta @devinfoley @nickyleach @forgottendev
+/tests/runner-e2e/report-lock.patch @cryppadotta @devinfoley @nickyleach @forgottendev
 pnpm-workspace.yaml @cryppadotta @devinfoley @nickyleach @forgottendev
 .npmrc @cryppadotta @devinfoley @nickyleach @forgottendev
 

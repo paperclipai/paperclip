@@ -1,3 +1,5 @@
+import { retainCurrentWorkspaceSource } from "../workspace-source-lock.js";
+import { localWorkspaceSourcePaths } from "../execution-workspace-source-roots.js";
 import { effectiveProjectWorkspacePolicy } from "../project-workspace-provider.js";
 import { canonicalRepositoryRoot } from "../execution-workspace-source-roots.js";
 import { assertTaskWorkspaceExecutionAccess } from "../task-workspace-access.js";
@@ -7,6 +9,7 @@ import { deriveRepoNameFromRepoUrl, managedProjectCheckoutName, projectRepositor
 import { forbidden } from "../../errors.js";
 import { readGitConnectionFailure } from "../git-connection-failure.js";
 import { materializeManagedProjectWorkspace, ensureManagedRepositoriesIgnored } from "../managed-repository-checkout.js";
+import { addNestedRepositoryWorktree, isVerifiedNestedRepositoryBase, nestedRepositoryBaseCandidates, readLinkedNestedCheckout, repairMovedNestedRepositoryWorktree } from "../nested-repository-worktrees.js";
 export { materializeManagedProjectWorkspace } from "../managed-repository-checkout.js";
 import { sql } from "drizzle-orm";
 import { materializeIsolatedTaskDirectory } from "../isolated-task-directory.js";
@@ -503,6 +506,7 @@ export async function prepareProjectRepositoryWorkspaces(input: {
   beforePublish?: () => Promise<void>;
   prepareLocalSource?: (sourceCwd: string, projectWorkspaceId: string) => Promise<() => Promise<void>>;
   restoredContents?: GitWorkspaceContents;
+  sharedBase?: { companyId: string; projectId: string };
 }): Promise<Array<{ workspaceId: string; cwd: string; repoUrl: string; repoRef: string | null }>> {
   const identity = projectRepositoryIdentity;
   const seen = new Set(input.anchorRepoUrl ? [identity(input.anchorRepoUrl)] : []);
@@ -527,6 +531,11 @@ export async function prepareProjectRepositoryWorkspaces(input: {
     const existing = await fs.lstat(cwd).catch(() => null);
     if (!existing && input.restoredContents?.checkouts.some(checkout => checkout.name === key)) throw new GitCacheRestorationFailure();
     if (existing && (!existing.isDirectory() || existing.isSymbolicLink())) throw new Error("Invalid project repository checkout path");
+    const baseCandidates = input.sharedBase ? nestedRepositoryBaseCandidates({ ...input.sharedBase, repoUrl }) : null;
+    const linked = existing ? await readLinkedNestedCheckout(cwd, baseCandidates ?? []).catch(() => {
+      throw new Error("Invalid project repository checkout path");
+    }) : null;
+    if (linked && !await isVerifiedNestedRepositoryBase(linked.base, baseCandidates!, repoUrl)) throw new Error("Invalid project repository checkout path");
     const configuredLocalSource = workspace.cwd && workspace.cwd !== REPO_ONLY_CWD_SENTINEL ? workspace.cwd : null;
     const localSource = configuredLocalSource
       && await fs.stat(configuredLocalSource).then((entry) => entry.isDirectory()).catch(() => false)
@@ -539,8 +548,17 @@ export async function prepareProjectRepositoryWorkspaces(input: {
       await recheckLocalSource?.();
       await input.beforePublish?.();
     };
-    const result = await materializeManagedProjectWorkspace(cwd, { repoUrl, repoRef: workspace.repoRef, localSource, resolveGitAuth: input.resolveGitAuth, beforePublish });
-    if (result.warning) throw new Error(result.warning);
+    if (!linked) {
+      const shared = input.sharedBase && !existing && !localSource
+        ? await ensureManagedProjectWorkspace({ ...input.sharedBase, repoUrl, resolveGitAuth: input.resolveGitAuth }) : null;
+      if (shared && !shared.warning && await isVerifiedNestedRepositoryBase(shared.cwd, baseCandidates!, repoUrl)) {
+        await addNestedRepositoryWorktree({ base: shared.cwd, cwd, repoUrl, repoRef: workspace.repoRef,
+          resolveGitAuth: input.resolveGitAuth, beforeAdd: beforePublish });
+      } else {
+        const result = await materializeManagedProjectWorkspace(cwd, { repoUrl, repoRef: workspace.repoRef, localSource, resolveGitAuth: input.resolveGitAuth, beforePublish });
+        if (result.warning) throw new Error(result.warning);
+      }
+    }
     await beforePublish();
     results.push({ workspaceId: workspace.id, cwd, repoUrl, repoRef: workspace.repoRef });
   }
@@ -549,8 +567,10 @@ export async function prepareProjectRepositoryWorkspaces(input: {
   for (const entry of await fs.readdir(root)) {
     if (active.has(entry) || entry.startsWith("task-repo-") || entry.includes(".clone-")) continue;
     const retained = path.join(input.cwd, ".paperclip-runtime", "detached-repositories", randomUUID());
+    const linked = await readLinkedNestedCheckout(path.join(root, entry)).catch(() => null);
     await fs.mkdir(path.dirname(retained), { recursive: true });
     await fs.rename(path.join(root, entry), retained);
+    if (linked) await repairMovedNestedRepositoryWorktree(linked.base, retained);
   }
   return results;
 }
@@ -571,6 +591,7 @@ async function resolveConfiguredOrManagedProjectCwd(input: {
 }): Promise<{ cwd: string; warning: string | null }> {
   const configuredCwd = readNonEmptyString(input.cwd);
   if (configuredCwd && configuredCwd !== REPO_ONLY_CWD_SENTINEL) {
+    await retainCurrentWorkspaceSource(configuredCwd);
     return { cwd: configuredCwd, warning: null };
   }
   return ensureManagedProjectWorkspace({
@@ -1599,7 +1620,7 @@ export interface ReferencedProjectFailure {
 export interface ResolvedRunReferencedProjects {
   /** The anchor (primary) project — retains the existing git-worktree run path; never re-authorized here. */
   anchor: RunReferencedProject | null;
-  /** Additional read-only referenced projects that each passed per-project `project:read` authorization. */
+  /** Additional referenced projects that each passed per-project `project:read` authorization. */
   additional: RunReferencedProject[];
   /** Human-readable warnings for every referenced project that was dropped (unavailable, unauthorized, or capped). */
   warnings: string[];
@@ -2598,7 +2619,8 @@ export function buildWorkspaceConfigFreshnessOperation(
       previousWorkspaceId: input.previousWorkspaceId,
       activeWorkspaceId: input.activeWorkspaceId,
     },
-    system: `[paperclip] ${workspaceConfigFreshnessActionLabel(input.decision.action)} after config freshness check${categorySummary}: ${reasonSummary}\n`,
+    system: `[paperclip] ${(input.workspaceReused && input.decision.action === "replace"
+      ? "reused execution workspace" : workspaceConfigFreshnessActionLabel(input.decision.action))} after config freshness check${categorySummary}: ${reasonSummary}\n`,
   };
 }
 
@@ -2782,6 +2804,7 @@ function buildSessionConfigCategoryValues(input: {
   // the timestamp here makes every comment invalidate an otherwise reusable
   // task session.
   delete workspaceConfig.issueConfigRevisionAt;
+  delete workspaceConfig.projectConfigRevisionAt;
   // This row is runtime state, not requested configuration. It is absent
   // before the first reusable run is realized and present on the next turn;
   // fingerprinting that transition would rotate the native session exactly
@@ -2819,6 +2842,8 @@ export async function buildEffectiveRunSessionConfigMetadata(input: {
   adapterType: string;
   effectiveAdapterConfig: Record<string, unknown>;
   managedAiHome?: string;
+  managedInstructions?: { entryFile: string; contentHash: string | null } | null;
+  retainManagedInstructionPaths?: boolean;
   agentRuntimeConfig: unknown;
   issueOverrides: unknown;
   workspaceConfig: unknown;
@@ -2832,12 +2857,37 @@ export async function buildEffectiveRunSessionConfigMetadata(input: {
   agentIdentityKeyId?: string;
 }): Promise<EffectiveRunSessionConfigMetadata> {
   const secretManifest = input.secretManifest ?? [];
-  const instructions = await resolveInstructionsConfigFingerprintMetadata(
-    input.effectiveAdapterConfig,
-  );
+  const instructions = input.managedInstructions ? {
+    configured: true, bundleMode: "managed", entryFile: input.managedInstructions.entryFile,
+    pathKind: "absolute", readPolicy: "root_bound", readable: input.managedInstructions.contentHash !== null,
+    ...(input.managedInstructions.contentHash !== null ? { contentHash: input.managedInstructions.contentHash } : {}),
+  } : await resolveInstructionsConfigFingerprintMetadata(input.effectiveAdapterConfig);
+  const effectiveAdapterConfig = { ...managedAiSessionFingerprintConfig(input.effectiveAdapterConfig, input.managedAiHome) };
+  // Migration 0443 cleared the stored per_turn creation default from native
+  // agents. Fingerprint an unset lifecycle as that stored value so clearing it
+  // keeps saved task sessions and their provider history. An explicit change
+  // to warm still starts a new session.
+  if (input.adapterType === "paperclip_runner" && effectiveAdapterConfig.lifecycleMode === undefined) {
+    effectiveAdapterConfig.lifecycleMode = "per_turn";
+  }
+  if (input.managedInstructions && !input.retainManagedInstructionPaths) {
+    delete effectiveAdapterConfig.instructionsRootPath;
+    delete effectiveAdapterConfig.instructionsFilePath;
+  }
+  // A selected immutable skill version is its identity; source is merely its
+  // disposable projection. Unversioned/local skills retain their path boundary.
+  const versionedSkills = (value: unknown) => Array.isArray(value) ? value.map(entry => {
+    const skill = parseObject(entry);
+    return readNonEmptyString(skill.versionId)
+      ? { key: skill.key, runtimeName: skill.runtimeName, versionId: skill.versionId }
+      : entry;
+  }) : value;
+  if (effectiveAdapterConfig.paperclipRuntimeSkills !== undefined) {
+    effectiveAdapterConfig.paperclipRuntimeSkills = versionedSkills(effectiveAdapterConfig.paperclipRuntimeSkills);
+  }
   const categoryValues = buildSessionConfigCategoryValues({
     adapterType: input.adapterType,
-    effectiveAdapterConfig: managedAiSessionFingerprintConfig(input.effectiveAdapterConfig, input.managedAiHome),
+    effectiveAdapterConfig,
     agentRuntimeConfig: input.agentRuntimeConfig,
     instructions,
     issueOverrides: input.issueOverrides,
@@ -2847,7 +2897,7 @@ export async function buildEffectiveRunSessionConfigMetadata(input: {
     projectEnv: input.projectEnv,
     routineEnv: input.routineEnv,
     secretManifest,
-    runtimeSkills: input.runtimeSkills,
+    runtimeSkills: versionedSkills(input.runtimeSkills),
     agentConfigRevision: input.agentConfigRevision ?? null,
     agentIdentityKeyId: input.agentIdentityKeyId,
   });
@@ -3359,6 +3409,7 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
       managedBase && workspace.repoUrl
         ? `${managedBase}-${createHash("sha256").update(workspace.repoUrl).digest("hex").slice(0, 12)}` : null,
     ].filter((value): value is string => Boolean(value));
+    for (const sourceCwd of localWorkspaceSourcePaths(workspace)) await retainCurrentWorkspaceSource(sourceCwd);
     const cwd = await resolvePersistedGitWorkspaceSource({
       companyId: agent.companyId,
       projectId: sourceProjectId,
@@ -3613,6 +3664,7 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
         .then((stats) => stats.isDirectory())
         .catch(() => false);
       if (sessionCwdExists) {
+        await retainCurrentWorkspaceSource(sessionCwd!);
         return {
           cwd: sessionCwd,
           source: "task_session" as const,
@@ -3634,6 +3686,7 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
     const cwd = configuredCwd ? path.resolve(configuredCwd)
       : issueId ? await materializeIsolatedTaskDirectory({ companyId: agent.companyId, issueId })
       : resolveDefaultAgentWorkspaceDir(agent.id);
+    await retainCurrentWorkspaceSource(cwd);
     await fs.mkdir(cwd, { recursive: true });
     const warnings: string[] = [];
     if (sessionCwd && sessionCwdLooksUnsafe) {
@@ -3690,6 +3743,7 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
       previousSessionParams,
       opts,
     );
+    await retainCurrentWorkspaceSource(anchor.cwd);
     if (!isMultiProjectWorkspaceSyncEnabled()) {
       return {
         ...anchor,

@@ -4,12 +4,12 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { pathToFileURL } from "node:url";
 import test from "node:test";
+import { acpxInternals } from "./support/acpx-bundle-internals.mjs";
 
 const require = createRequire(import.meta.url);
 const acpxRoot = process.env.PAPERCLIP_TEST_ACPX_PACKAGE_ROOT ?? dirname(require.resolve("acpx/package.json"));
-const { k: AcpClient } = await import(pathToFileURL(join(acpxRoot, "dist/live-checkpoint-BSIrfgVo.js")));
+const { AcpClient } = await acpxInternals(["AcpClient"], acpxRoot);
 const fixture = String.raw`
 const readline=require('node:readline');
 const send=value=>process.stdout.write(JSON.stringify({jsonrpc:'2.0',...value})+'\n');

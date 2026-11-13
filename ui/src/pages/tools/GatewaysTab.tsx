@@ -1,3 +1,4 @@
+import { companyProjectsQuery } from "@/lib/company-projects-query";
 import { type FormEvent, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
@@ -9,13 +10,14 @@ import type {
 } from "@paperclipai/shared";
 import { Check, ChevronDown, Copy, KeyRound, Link as LinkIcon, Plus, RotateCcw, X } from "lucide-react";
 import { agentsApi } from "@/api/agents";
-import { projectsApi } from "@/api/projects";
 import { toolsApi } from "@/api/tools";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/context/ToastContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { copyTextToClipboard } from "@/lib/clipboard";
-import { ErrorState, LoadingState, RelativeTime, ToolsPageHeader } from "./shared";
+import { LoadingState, RelativeTime, ToolsPageHeader } from "./shared";
+import { describeError } from "@/api/errors";
 
 type CreateGatewayDraft = {
   name: string;
@@ -139,9 +141,9 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
     queryFn: () => agentsApi.list(companyId),
   });
   const projectsQuery = useQuery({
-    queryKey: queryKeys.projects.list(companyId, { includeArchived: true }),
-    queryFn: () => projectsApi.list(companyId, { includeArchived: true }),
+    ...companyProjectsQuery(companyId, { includeArchived: true }),
   });
+  const gatewaysView = useQueryView(gatewaysQuery);
 
   const origin = useMemo(() => {
     if (typeof window === "undefined") return "";
@@ -175,7 +177,7 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
       await invalidateGateways();
     },
     onError: (error) => {
-      pushToast({ title: "Gateway was not created", body: error instanceof Error ? error.message : String(error), tone: "error" });
+      pushToast({ title: "Gateway was not created", body: describeError(error).body, tone: "error" });
     },
   });
 
@@ -198,7 +200,7 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
       await invalidateGateways();
     },
     onError: (error) => {
-      pushToast({ title: "Token was not issued", body: error instanceof Error ? error.message : String(error), tone: "error" });
+      pushToast({ title: "Token was not issued", body: describeError(error).body, tone: "error" });
     },
   });
 
@@ -210,7 +212,7 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
       await invalidateGateways();
     },
     onError: (error) => {
-      pushToast({ title: "Token was not revoked", body: error instanceof Error ? error.message : String(error), tone: "error" });
+      pushToast({ title: "Token was not revoked", body: describeError(error).body, tone: "error" });
     },
   });
 
@@ -219,7 +221,7 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
       await copyTextToClipboard(value);
       pushToast({ title: "Copied to clipboard", body: label, tone: "success" });
     } catch (error) {
-      pushToast({ title: "Copy failed", body: error instanceof Error ? error.message : "Clipboard access is unavailable.", tone: "error" });
+      pushToast({ title: "Copy failed", body: describeError(error).body, tone: "error" });
     }
   }
 
@@ -252,8 +254,17 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
     createTokenMutation.mutate(gatewayId);
   }
 
-  if (gatewaysQuery.isLoading) return <LoadingState label="Loading gateways..." />;
-  if (gatewaysQuery.isError) return <ErrorState error={gatewaysQuery.error} />;
+  if (gatewaysQuery.isLoading || gatewaysView.kind === "reconnecting") return <LoadingState label="Loading gateways..." />;
+  if (gatewaysView.kind === "error") {
+    return (
+      <QueryErrorState
+        error={gatewaysQuery.error}
+        action="load gateways"
+        onRetry={gatewaysView.retry}
+        retrying={gatewaysView.isFetching}
+      />
+    );
+  }
 
   const gateways = gatewaysQuery.data?.gateways ?? [];
   const profileLoading = profilesQuery.isLoading;

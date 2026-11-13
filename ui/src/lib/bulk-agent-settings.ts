@@ -11,7 +11,7 @@ export const sameBinding = (a: AiRuntimeConnectionBinding | undefined, b: AiRunt
 export function bulkAgentDisabledReason(agent: Agent): string | undefined {
   if (["terminated", "pending_approval"].includes(agent.status)) return "This agent is not available for bulk edits";
   if (agentConnection(agent)?.mode === "router") return "Edit connection pool members on the agent's configuration page";
-  if (!["codex_local", "claude_local", "gemini_local", "grok_local", "opencode_local", "hermes_local", "pi_local", "copilot_runtime", "cursor_local"].includes(bulkAgentHarness(agent))) return "Connection and model are managed externally";
+  if (!["codex_local", "claude_local", "gemini_local", "grok_local", "opencode_local", "hermes_local", "pi_local", "copilot_runtime", "antigravity_runtime", "cursor_local"].includes(bulkAgentHarness(agent))) return "Connection and model are managed externally";
 }
 
 export function resolveBulkConnection(binding: AiConnectionBinding | undefined, accounts: AiConnectionList) {

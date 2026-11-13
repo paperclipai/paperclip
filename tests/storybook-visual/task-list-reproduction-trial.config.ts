@@ -12,7 +12,7 @@ export default defineConfig({
     viewport: { width: 1440, height: 900 },
     deviceScaleFactor: 1,
     colorScheme: "dark",
-    reducedMotion: "reduce",
+    contextOptions: { reducedMotion: "reduce" },
     locale: "en-US",
     timezoneId: "America/Los_Angeles",
     launchOptions: { executablePath: process.env.TRIAL_CHROMIUM_EXECUTABLE },

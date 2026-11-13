@@ -140,6 +140,7 @@ export function isSupportedCodexNotificationMethod(method: string): boolean {
     method === "model/rerouted" ||
     method === "model/verification" ||
     method === "model/safetyBuffering/updated" ||
+    method === "mcpServer/startupStatus/updated" ||
     method.startsWith("item/") ||
     method === "paperclip/canonicalProviderEvent" ||
     method === "paperclip/runtimeRequestExpired" ||

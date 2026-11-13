@@ -54,6 +54,7 @@ export function RuntimeTestCard({
   disabled = false,
   variant = "connection",
   metadataOnly = false,
+  tone = "card",
 }: {
   state: TestState | "warn";
   result: AdapterEnvironmentTestResult | null;
@@ -62,6 +63,7 @@ export function RuntimeTestCard({
   disabled?: boolean;
   variant?: "connection" | "prerequisites";
   metadataOnly?: boolean;
+  tone?: "card" | "tile";
 }) {
   const missingRuntime = state === "fail"
     ? result?.checks.find(check => check.code === "acpx_runtime_package_missing")
@@ -85,9 +87,10 @@ export function RuntimeTestCard({
   return (
     <section
       aria-label="Runtime test"
-      className="rounded-lg border border-border bg-card"
+      data-agent-tile={tone === "tile" ? "" : undefined}
+      className={tone === "tile" ? "rounded-lg bg-(--agent-detail-tile)" : "rounded-lg border border-border bg-card"}
     >
-      <div className="flex items-start gap-3 p-4 sm:items-center">
+      <div className={cn("flex items-start gap-3 sm:items-center", tone === "tile" ? "p-(--agent-detail-module-inset)" : "p-4")}>
         <span
           aria-hidden="true"
           className={cn(

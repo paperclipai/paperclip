@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
-import { agents, companies, createDb, applyPendingMigrations, heartbeatRuns, museRunnerAssignments, museAgentBindings } from "@paperclipai/db";
+import { agents, companies, createDb, applyPendingMigrations, heartbeatRuns, museRunnerAssignments, museAgentBindings, subscribeDatabaseWork } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
+import { notifyMuseContactVerification, parseMuseVerificationHint } from "../modules/external-agents/index.js";
 import { startMuseMaintenance } from "./muse-maintenance.js";
 import { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
@@ -84,6 +85,74 @@ describeDatabase("Muse commit and deadline maintenance", () => {
     });
   }
 
+  it("registers first-contact intent before its write, including a currently paused identity", async () => {
+    const binding = await fixture();
+    await db.update(agents).set({ status: "paused", lifecycleState: "paused" }).where(eq(agents.id, binding.agentId));
+    await db.update(museAgentBindings).set({ pairedAt: new Date() }).where(eq(museAgentBindings.id, binding.id));
+    const hints: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.museMaintenance, (event, values) => {
+      if (event === "intent") hints.push(...values ?? []);
+    });
+    try {
+      await expect(db.transaction(async tx => {
+        expect(await notifyMuseContactVerification(tx, {
+          companyId: binding.companyId, bindingId: binding.id, generation: binding.generation,
+        }, "contact-persist")).toBe(1);
+        expect(hints.map(parseMuseVerificationHint)).toEqual([{
+          kind: "muse-contact-verification", companyId: binding.companyId,
+          bindingId: binding.id, generation: binding.generation,
+        }]);
+        const [before] = await tx.select().from(museAgentBindings).where(eq(museAgentBindings.id, binding.id));
+        expect(before.receiverContactAt).toBeNull();
+        await tx.update(museAgentBindings).set({ receiverContactAt: new Date() }).where(eq(museAgentBindings.id, binding.id));
+        throw new Error("first contact rollback");
+      })).rejects.toThrow("first contact rollback");
+      const [after] = await db.select().from(museAgentBindings).where(eq(museAgentBindings.id, binding.id));
+      expect(after.receiverContactAt).toBeNull();
+      expect(after.challengeHash).toBeNull();
+    } finally { unsubscribe(); }
+  });
+
+  it("targets only pending contact bindings for the affected company and operator", async () => {
+    const binding = await fixture();
+    const foreign = await fixture();
+    const otherOperator = await fixture();
+    for (const pending of [binding, foreign, otherOperator]) {
+      await db.update(museAgentBindings).set({ pairedAt: new Date(), receiverContactAt: new Date() })
+        .where(eq(museAgentBindings.id, pending.id));
+    }
+    const [otherAgent] = await db.insert(agents).values({ companyId: binding.companyId, name: "Other Muse agent" }).returning();
+    await db.update(museAgentBindings).set({ companyId: binding.companyId, agentId: otherAgent.id,
+      operatorId: "another-operator" }).where(eq(museAgentBindings.id, otherOperator.id));
+    const hints: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.museMaintenance, (event, values) => {
+      if (event === "intent") hints.push(...values ?? []);
+    });
+    try {
+      await db.transaction(async tx => {
+        expect(await notifyMuseContactVerification(tx, {
+          companyId: binding.companyId, operatorId: binding.operatorId,
+        })).toBe(1);
+      });
+      expect(hints.map(parseMuseVerificationHint)).toEqual([{
+        kind: "muse-contact-verification", companyId: binding.companyId,
+        bindingId: binding.id, generation: binding.generation,
+      }]);
+      expect(hints.some(hint => hint.includes(foreign.id) || hint.includes(otherOperator.id))).toBe(false);
+      await db.transaction(async tx => {
+        expect(await notifyMuseContactVerification(tx, { companyId: binding.companyId,
+          bindingId: binding.id, generation: binding.generation + 1 })).toBe(0);
+      });
+      expect(hints).toHaveLength(1);
+      await db.update(museAgentBindings).set({ verifiedReplyAt: new Date() }).where(eq(museAgentBindings.id, binding.id));
+      await db.transaction(async tx => {
+        expect(await notifyMuseContactVerification(tx, { companyId: binding.companyId,
+          operatorId: binding.operatorId })).toBe(0);
+      });
+      expect(hints).toHaveLength(1);
+    } finally { unsubscribe(); }
+  });
+
   it("stays SQL-quiet after startup with no bindings, including during drain", async () => {
     await start();
     const baseline = [...calls];
@@ -138,10 +207,25 @@ describeDatabase("Muse commit and deadline maintenance", () => {
     expect(effects.endQualification).not.toHaveBeenCalled();
     expect(coordinator.nextWakeAt()).toBeNull();
   });
-  it("retains recovery only until an outstanding assignment settles", async () => {
+  it("does not poll a running Muse assignment waiting for a real event", async () => {
     const b = await fixture();
     const [run] = await db.insert(heartbeatRuns).values({ companyId: b.companyId, agentId: b.agentId,
       invocationSource: "automation", status: "running" }).returning();
+    await db.insert(museRunnerAssignments).values({ companyId: b.companyId,
+      agentId: b.agentId, bindingId: b.id, bindingGeneration: b.generation, runId: run.id,
+      normalizedSessionId: randomUUID(), turnId: randomUUID(), controllerGeneration: 1,
+      catalogDigest: "test", status: "accepted", projection: {}, acceptBy: new Date(), expiresAt: new Date(Date.now() + 3_600_000) });
+    await start();
+    expect(coordinator.nextWakeAt()).toBeNull();
+    const baseline = [...calls];
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(calls).toEqual(baseline);
+  });
+
+  it("retries a terminal assignment only until its concrete settlement completes", async () => {
+    const b = await fixture();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: b.companyId, agentId: b.agentId,
+      invocationSource: "automation", status: "succeeded", finishedAt: new Date() }).returning();
     const [assignment] = await db.insert(museRunnerAssignments).values({ companyId: b.companyId,
       agentId: b.agentId, bindingId: b.id, bindingGeneration: b.generation, runId: run.id,
       normalizedSessionId: randomUUID(), turnId: randomUUID(), controllerGeneration: 1,
@@ -149,11 +233,40 @@ describeDatabase("Muse commit and deadline maintenance", () => {
     await start();
     expect(coordinator.nextWakeAt()).toBeGreaterThan(Date.now());
     effects.reconcileTerminalAssignments.mockImplementationOnce(async () => {
-      await db.update(museRunnerAssignments).set({ status: "settled", acceptedResultAt: new Date(), finalizedAt: new Date() })
+      await db.update(museRunnerAssignments).set({ status: "settled", acceptedResultAt: new Date(), finalizedAt: run.finishedAt })
         .where(eq(museRunnerAssignments.id, assignment.id));
     });
     await vi.advanceTimersByTimeAsync(5000); await settle();
     expect(coordinator.nextWakeAt()).toBeNull();
+    const baseline = [...calls];
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(calls).toEqual(baseline);
+  });
+  it("honors a nearer qualification deadline while terminal settlement remains", async () => {
+    const at = new Date(Date.now() + 1000);
+    const expiring = await fixture(at);
+    const b = await fixture();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: b.companyId, agentId: b.agentId,
+      invocationSource: "automation", status: "succeeded", finishedAt: new Date() }).returning();
+    const [assignment] = await db.insert(museRunnerAssignments).values({ companyId: b.companyId,
+      agentId: b.agentId, bindingId: b.id, bindingGeneration: b.generation, runId: run.id,
+      normalizedSessionId: randomUUID(), turnId: randomUUID(), controllerGeneration: 1,
+      catalogDigest: "test", status: "accepted", projection: {}, acceptBy: new Date(),
+      expiresAt: new Date(Date.now() + 60_000) }).returning();
+    await start();
+    expect(coordinator.nextWakeAt()).toBe(at.getTime());
+    expect(effects.endQualification).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(Math.max(0, at.getTime() - Date.now())); await settle();
+    expect(effects.endQualification).toHaveBeenCalledWith(expect.objectContaining({ bindingId: expiring.id }));
+    expect((await db.select().from(museRunnerAssignments).where(eq(museRunnerAssignments.id, assignment.id)))[0].finalizedAt).toBeNull();
+    expect(coordinator.nextWakeAt()).toBeGreaterThan(Date.now());
+    effects.reconcileTerminalAssignments.mockImplementationOnce(async () => {
+      await db.update(museRunnerAssignments).set({ status: "settled", acceptedResultAt: new Date(), finalizedAt: run.finishedAt })
+        .where(eq(museRunnerAssignments.id, assignment.id));
+    });
+    await vi.advanceTimersByTimeAsync(5000); await settle();
+    expect(coordinator.nextWakeAt()).toBeNull();
+    expect(errors).toEqual([]);
     const baseline = [...calls];
     await vi.advanceTimersByTimeAsync(600_000);
     expect(calls).toEqual(baseline);
@@ -180,7 +293,7 @@ describeDatabase("Muse commit and deadline maintenance", () => {
     expect(calls).toEqual([]);
     enabled = true;
     await vi.advanceTimersByTimeAsync(5000); await settle();
-    expect(effects.reconcileTerminalAssignments).toHaveBeenCalledWith(binding.companyId, binding.agentId, binding.id);
+    expect(effects.reconcileTerminalAssignments).toHaveBeenCalledWith(binding.companyId, binding.agentId, binding.id, { limit: 100 });
     expect(calls.filter(c => c === "update")).toHaveLength(1);
   });
   it("pauses deadline maintenance during drain and catches up after release", async () => {

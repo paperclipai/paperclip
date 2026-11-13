@@ -1,5 +1,5 @@
 import type { DbTransaction } from "../types.js";
-import { captureRunIdentity } from "../../run-identity.js";
+import { captureRunIdentity, runIdentityBrokerFields } from "../../run-identity.js";
 import { and, eq, gte, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { connectionTokenIssuances, companyMemberships, heartbeatRuns, toolConnections, toolProfileBindings, toolProfileEntries, toolProfiles } from "@paperclipai/db";
@@ -75,11 +75,11 @@ export function createTokenBrokerAdmission(db: Db, now: () => Date) {
     runId: string;
   }) {
     const [initialRun] = await db
-      .select()
+      .select(runIdentityBrokerFields)
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, input.runId));
     const run = initialRun?.activeIdentityContextId
-      ? (await captureRunIdentity(db, input)).run
+      ? (await captureRunIdentity(db, input, { readScope: "token_broker" })).run
       : initialRun;
     if (
       !run ||
