@@ -98,14 +98,12 @@ describe("implementation-independent GitHub credential broker", () => {
 });
 
 describe("configured environment", () => {
-  const digest = `hmac-sha256:${"b".repeat(64)}`;
-  const configured = { ...submit, configuredEnvironment: { STRIPE_SECRET_KEY: "fixture-value", EMPTY_OK: "" }, configuredEnvironmentDigest: digest };
-  it("accepts bounded variables and a keyed digest on submit and resume", () => {
+  const configured = { ...submit, configuredEnvironment: { STRIPE_SECRET_KEY: "fixture-value", EMPTY_OK: "" } };
+  it("accepts bounded variables on submit and on a handoff resume", () => {
     expect(environmentTaskOperationSchema.parse(configured)).toEqual(configured);
     const identity = { runnerInstanceId: "runner", environmentLeaseId: "lease", runId: "run", normalizedSessionId: "session", turnId: "turn", itemId: "item" };
-    const resume = { kind: "resume", identity, bootstrapTicket: "synthetic", configuredEnvironmentDigest: digest };
+    const resume = { kind: "resume", identity, bootstrapTicket: "synthetic", configuredEnvironment: { A: "1" } };
     expect(environmentTaskOperationSchema.parse(resume)).toEqual(resume);
-    expect(environmentTaskOperationSchema.parse({ ...resume, configuredEnvironment: { A: "1" } })).toEqual({ ...resume, configuredEnvironment: { A: "1" } });
   });
   it.each([
     ["an invalid name", { "1BAD": "x" }],
@@ -117,8 +115,8 @@ describe("configured environment", () => {
   ])("rejects %s", (_label, configuredEnvironment) => {
     expect(environmentTaskOperationSchema.safeParse({ ...configured, configuredEnvironment }).success).toBe(false);
   });
-  it("rejects an unkeyed digest", () => {
-    expect(environmentTaskOperationSchema.safeParse({ ...configured, configuredEnvironmentDigest: `sha256:${"b".repeat(64)}` }).success).toBe(false);
+  it("has no digest field", () => {
+    expect(environmentTaskOperationSchema.safeParse({ ...configured, configuredEnvironmentDigest: `hmac-sha256:${"b".repeat(64)}` }).success).toBe(false);
   });
   it("lets a provider advertise support", () => {
     const description = { kind: "description", taskId: "task", runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` }, configuredEnvironmentVersion: 1 };

@@ -60,8 +60,6 @@ export const environmentTaskConfiguredEnvironmentSchema = z.record(
   }
 });
 export type PluginEnvironmentTaskConfiguredEnvironment = z.infer<typeof environmentTaskConfiguredEnvironmentSchema>;
-/** Keyed digest of the configured environment. Providers compare it, never invert it. */
-const configuredEnvironmentDigest = z.string().regex(/^hmac-sha256:[a-f0-9]{64}$/);
 
 /** Only provider authentication is transferred. Paths and executable settings remain provider-owned. */
 export const environmentTaskCredentialSchema = z.discriminatedUnion("type", [
@@ -127,11 +125,10 @@ export const environmentTaskOperationSchema = z.discriminatedUnion("kind", [
     /**
      * Sent only to providers that describe `configuredEnvironmentVersion: 1`.
      * The provider sets these variables in the Runner's environment, and lets
-     * its own launch variables win on a name collision.
+     * its own launch variables win on a name collision. Core starts a new task,
+     * not a warm resume, when the values change.
      */
     configuredEnvironment: environmentTaskConfiguredEnvironmentSchema.optional(),
-    /** Sent with `configuredEnvironment`. Compare on resume: a retained Runner keeps the environment it started with. */
-    configuredEnvironmentDigest: configuredEnvironmentDigest.optional(),
     /** Core supplies these protected launch inputs for native agent runs. */
     launch: z.object({
       runnerVersion: z.string().min(1), runnerDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
@@ -160,9 +157,7 @@ export const environmentTaskOperationSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("release"), identity: durableIdentity }).strict(),
   z.object({ kind: z.literal("resume"), identity: durableIdentity, bootstrapTicket: credentialValue,
     handoffCredential: z.object({ accountIdentity: z.string().min(1).max(1024), environment: claudeCredentialEnvironment }).strict().optional(),
-    /** A retained Runner whose start digest differs must report `unavailable`. */
-    configuredEnvironmentDigest: configuredEnvironmentDigest.optional(),
-    /** Only for a session handoff, which starts a new Runner. Always sent with the digest. */
+    /** Only for a session handoff, which starts a new Runner. */
     configuredEnvironment: environmentTaskConfiguredEnvironmentSchema.optional(),
   }).strict(),
   z.object({
@@ -219,7 +214,7 @@ export const environmentTaskResultSchema = z.discriminatedUnion("kind", [
     projectAuthCheckVersion: z.literal(1).optional(),
     workspaceFileReadVersion: z.literal(1).optional(),
     githubCredentialBrokerVersion: z.literal(1).optional(),
-    /** Accepts `configuredEnvironment` and its digest on submit and resume. */
+    /** Accepts `configuredEnvironment` on submit and on a session handoff resume. */
     configuredEnvironmentVersion: z.literal(1).optional(),
   }).strict(),
   z.object({

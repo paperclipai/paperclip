@@ -1,6 +1,5 @@
 import { measureRunPhase } from "../execution-preparation-timing.js";
-import { createHash, createHmac } from "node:crypto";
-import { resolveDecisionSigningSecret } from "../decision-signing.js";
+import { createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { environmentTaskOperationSchema, environmentTaskResultSchema, parseEnvironmentTaskResult, type PluginEnvironmentTaskOperation, type PluginEnvironmentTaskResult, type PluginEnvironmentTaskCredential } from "@paperclipai/plugin-sdk";
 import type { RunnerIngressEndpoint } from "@paperclipai/adapter-utils/runner-connectivity";
@@ -8,16 +7,6 @@ import { RUNNER_PRP_PROTOCOL_MIN, RUNNER_PRP_PROTOCOL_MAX, type RunnerProcessHan
   type DurablePrpControlPlane, type RunnerExecutionDriver, type RunnerLaunchPreparer, type DurableRecoveryIdentity, type PrpEvent } from "../../vendor/paperclip-runner/index.js";
 import { connectRunnerPrpIngress } from "../../realtime/runner-prp-outbound.js";
 import type { NativeExecutionContext } from "./native-execution-context.js";
-
-/**
- * Keyed so that a stored digest cannot confirm a guessed secret value offline.
- * Providers compare it to decide whether a retained Runner can be reused.
- */
-export function pluginTaskConfiguredEnvironmentDigest(environment: Readonly<Record<string, string>>): string {
-  const canonical = JSON.stringify(Object.keys(environment).sort().map(key => [key, environment[key]]));
-  return `hmac-sha256:${createHmac("sha256", resolveDecisionSigningSecret())
-    .update("paperclip.plugin-task.configured-environment.v1\0").update(canonical).digest("hex")}`;
-}
 
 export async function verifyPluginRunnerTaskReattachment(
   task: (operation: unknown) => Promise<unknown>, identity: unknown,
@@ -98,12 +87,10 @@ export function createPluginRunnerTaskOwner(input: {
   const running = new Promise<void>((resolve, reject) => { markReady = resolve; failReady = reject; });
   void running.catch(() => undefined);
   if (input.adoptIdentity) markReady();
-  const configuredEnvironmentFields = (values: boolean) => {
-    if (input.configuredEnvironmentVersion !== 1) return {};
-    const environment = { ...input.configuredEnvironment };
-    return { configuredEnvironmentDigest: pluginTaskConfiguredEnvironmentDigest(environment),
-      ...(values ? { configuredEnvironment: environment } : {}) };
-  };
+  // Value changes never reach a retained Runner: the process reuse key includes
+  // them, so Core starts a new task instead of a warm resume.
+  const configuredEnvironmentFields = (launchesRunner: boolean) =>
+    input.configuredEnvironmentVersion === 1 && launchesRunner ? { configuredEnvironment: { ...input.configuredEnvironment } } : {};
   const call = async (operation: PluginEnvironmentTaskOperation) => {
     const phase = ({ prepare: "execution.plugin_prepare", check_project_auth: "execution.plugin_project_auth",
       submit: "execution.plugin_submit", connection: "execution.plugin_connection" } as const)[operation.kind as "prepare" | "check_project_auth" | "submit" | "connection"];
@@ -446,7 +433,7 @@ export function createPluginRunnerTaskOwner(input: {
       : undefined;
     const result = await call(environmentTaskOperationSchema.parse({ kind: "resume", identity, bootstrapTicket,
       ...(handoffCredential ? { handoffCredential } : {}),
-      // A handoff starts a new Runner; a same-computer resume only proves the environment is unchanged.
+      // A handoff starts a new Runner on another computer.
       ...configuredEnvironmentFields(!!input.sessionHandoff),
     }));
     requireReleaseResume();
