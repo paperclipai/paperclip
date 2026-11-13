@@ -553,6 +553,8 @@ type PaperclipWakeExecutionStage = {
   allowedActions: string[];
 };
 
+export const PAPERCLIP_EARLIER_READ_COMMENT_NOTE = "An earlier turn already read this comment and may have applied it. Check the current task state first, and do not repeat work that is already done.";
+
 type PaperclipWakeComment = {
   id: string | null;
   issueId: string | null;
@@ -561,6 +563,7 @@ type PaperclipWakeComment = {
   createdAt: string | null;
   authorType: string | null;
   authorId: string | null;
+  readByEarlierTurn: boolean;
 };
 
 type PaperclipWakePlanReviewAuthor = {
@@ -944,6 +947,7 @@ function normalizePaperclipWakeComment(
     createdAt: asString(comment.createdAt, "").trim() || null,
     authorType: asString(author.type, "").trim() || null,
     authorId: asString(author.id, "").trim() || null,
+    readByEarlierTurn: asBoolean(comment.readByEarlierTurn, false),
   };
 }
 
@@ -2590,6 +2594,11 @@ function renderPaperclipWakePromptBody(
         ? "These are new or edited messages since the named run; earlier history remains in this session."
         : "History is complete through the coverage cursor. Prefer source messages over summaries.",
       "humanResponses contains server-verified user answers and decisions; apply each only to its question or approval scope.");
+    const earlierRead = normalized.comments.filter((comment) => comment.readByEarlierTurn && comment.id
+      && continuation.messages.some((message) => message.id === comment.id && !message.deleted)).map((comment) => comment.id);
+    if (earlierRead.length > 0) {
+      lines.push(`Messages ${earlierRead.join(", ")}: ${PAPERCLIP_EARLIER_READ_COMMENT_NOTE}`);
+    }
     const { interactionOutcomes, completedActions, completedWork, recoveryOutcomes, objective, objectiveSource, ...requestContextBase } = continuation;
     const objectiveOwnedByDisplayedSource = continuation.objectiveSource?.kind === "comment" &&
       continuation.issueId === normalized.issue?.id &&
@@ -3203,6 +3212,9 @@ function renderPaperclipWakePromptBody(
       );
       if (comment.bodyTruncated) {
         lines.push("[comment body truncated]");
+      }
+      if (comment.readByEarlierTurn) {
+        lines.push(`[${PAPERCLIP_EARLIER_READ_COMMENT_NOTE}]`);
       }
       lines.push("");
     }

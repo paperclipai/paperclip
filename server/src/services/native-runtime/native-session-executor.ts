@@ -8860,6 +8860,16 @@ export function nativeRunnerExitedBeforeSessionOpen(error: unknown): boolean {
   return nativeRunnerExitConfirmed(error) && runnerExitBeforeSessionOpenMessage(error);
 }
 
+export function nativeRecoveryCommandUnanswered(error: unknown, depth = 0): boolean {
+  if (!error || typeof error !== "object" || depth > 5) return false;
+  const value = error as Record<string, unknown>;
+  const message = typeof value.message === "string" ? value.message : "";
+  if (message.startsWith("native_session_recovery_failed:")
+    && /PRP command [\w.]+ timed out|runnerd exited while waiting for [\w.]+/.test(message)
+    && !/mismatch|different|identity|authority|integrity|incompatible/i.test(message)) return true;
+  return nativeRecoveryCommandUnanswered(value.cause, depth + 1);
+}
+
 /** Same provider, category and message (numbers ignored): a retry would meet the same fault. */
 export function nativeStartupFailureSignature(failure: unknown): string | null {
   const value = record(failure);
@@ -13054,6 +13064,9 @@ async function executePaperclipNativeSessionAttempt(
                 ? { runnerExitConfirmed: true } : {}),
               ...(input.runnerExecutionTarget?.kind === "remote" && nativeRunnerExitedBeforeSessionOpen(error)
                 ? { runnerExitedBeforeSessionOpen: true } : {}),
+              ...(input.runnerExecutionTarget?.kind === "remote" && input.restartRecovery?.kind === "reattach_remote_runner"
+                && input.restartRecovery.remote.kind !== "plugin_task" && nativeRecoveryCommandUnanswered(error)
+                ? { adoptedRunnerUnanswered: true } : {}),
               ...(providerCooldownAt ? { providerCooldownAt: providerCooldownAt.toISOString() } : {}),
               ...(providerLimit?.plan.resetAt ? { providerLimitResetAt: providerLimit.plan.resetAt.toISOString() } : {}),
               recoveryOwner: recoveryProjection.recoveryOwner,
@@ -14987,7 +15000,8 @@ const REMOTE_RUNNER_PROCESS_STDERR_TRIM_SCRIPT =
  * A launch therefore stops a `paperclip-runnerd` that is still serving this
  * exact `--state-dir`. A launch only happens after the server chose not to
  * adopt a Runner: a same-run reattachment proves the marker's Runner gone
- * first, and a transient reattachment failure never reaches a launch.
+ * first, or replaces a Runner that left the previous attempt's recovery read
+ * unanswered. Any other transient reattachment failure never reaches a launch.
  *
  * The stop runs in node ($1 the runnerd binary, $2 the state directory, then
  * candidate PIDs):
@@ -15270,16 +15284,20 @@ async function readRemoteRunnerExitEvidence(runner: CommandManagedRuntimeRunner,
 
 export async function verifyRemoteRunnerOrSettledExit(
   input: Parameters<typeof verifyRemoteRunnerReattachment>[0] & { providerAttempt: number;
-    claim: { exitedBeforeSessionOpen?: true } },
+    claim: { exitedBeforeSessionOpen?: true; replaceUnansweredRunner?: true } },
 ) {
   const recoveryDeadline = Math.min(input.recoveryDeadline ?? Number.POSITIVE_INFINITY,
     Date.now() + REMOTE_RUNNER_RECOVERY_PROBE_BUDGET_MS);
   const stall = input.stall ?? remoteRunnerPluginStall(input.recoveryDeadline);
+  const target = input.target;
+  const replaceUnanswered = input.claim.replaceUnansweredRunner === true
+    && input.providerAttempt <= NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT
+    && target?.kind === "remote" && target.transport === "sandbox" && Boolean(target.runner);
+  let verified: Awaited<ReturnType<typeof verifyRemoteRunnerReattachment>>;
   try {
-    return await verifyRemoteRunnerReattachment({ ...input, recoveryDeadline, stall });
+    verified = await verifyRemoteRunnerReattachment({ ...input, recoveryDeadline, stall });
   } catch (error) {
     const diagnostic = readRemoteRunnerRecoveryError(error);
-    const target = input.target;
     const exitedBeforeSessionOpen = input.claim.exitedBeforeSessionOpen === true;
     if (input.providerAttempt > NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT || diagnostic?.stage !== "process_verification" ||
         diagnostic.reason !== "process_not_running" ||
@@ -15292,6 +15310,7 @@ export async function verifyRemoteRunnerOrSettledExit(
       : state.lifecycle !== "suspended" || !describeExitedRemoteRunner(state).runnerSettled) throw error;
     return undefined;
   }
+  return replaceUnanswered ? undefined : verified;
 }
 
 function runnerStateAllowsFreshStart(state: Record<string, unknown>): boolean {

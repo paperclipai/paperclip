@@ -332,7 +332,7 @@ export function InboxIssueTrailingColumns({
                 <AgentIdentity
                   agent={assigneeAgent ?? { id: issue.assigneeAgentId, name: assigneeName ?? issue.assigneeAgentId.slice(0, 8) }}
                   size="sm"
-                  className="min-w-0"
+                  className="min-w-0 max-w-full"
                 />
               </span>
             );
@@ -345,7 +345,7 @@ export function InboxIssueTrailingColumns({
                   name={userLabel}
                   avatarUrl={assigneeUserAvatarUrl}
                   size="sm"
-                  className="min-w-0"
+                  className="min-w-0 max-w-full"
                 />
               </span>
             );
@@ -368,7 +368,7 @@ export function InboxIssueTrailingColumns({
                     <AgentIdentity
                       agent={creatorAgent ?? { id: originatingActor.id, name }}
                       size="sm"
-                      className="min-w-0"
+                      className="min-w-0 max-w-full"
                     />
                   </span>
                 </TooltipTrigger>
@@ -387,7 +387,7 @@ export function InboxIssueTrailingColumns({
                       name={creatorUserLabel}
                       avatarUrl={creatorUserAvatarUrl}
                       size="sm"
-                      className="min-w-0"
+                      className="min-w-0 max-w-full"
                     />
                   </span>
                 </TooltipTrigger>
