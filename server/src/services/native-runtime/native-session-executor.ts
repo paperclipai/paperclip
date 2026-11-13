@@ -908,6 +908,7 @@ function forgetWarmNativeSession(scope: string, entry: WarmNativeSession) {
   if (warmNativeSessions.get(scope) !== entry) return;
   warmNativeSessions.delete(scope);
   entry.onReleased();
+  releaseIdleSessionToolAuthority(scope);
 }
 
 const pluginTaskSessionOwners = new WeakMap<NativeSession, ReturnType<typeof createPluginRunnerTaskOwner>>();

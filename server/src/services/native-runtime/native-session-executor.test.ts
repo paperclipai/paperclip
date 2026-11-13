@@ -12483,6 +12483,36 @@ describe("native warm session supervision", () => {
       expect(state.execute).toHaveBeenCalledTimes(2);
     });
 
+    it("releases a superseded warm session's tool authority and keeps only the retained session's", async () => {
+      const { base, next } = fixture("authority-supersede");
+      const root = await mkdtemp(join(tmpdir(), "native-authority-supersede-"));
+      const previous = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+      process.env.PAPERCLIP_RUNNER_STATE_DIR = root;
+      const close = vi.fn(async () => undefined);
+      state.execute.mockReset().mockImplementationOnce(async options => {
+        await options.onSession?.({ close }); return result;
+      }).mockImplementationOnce(async options => {
+        await options.onSession?.({ close: vi.fn(async () => undefined) }); return result;
+      });
+      try {
+        const before = sessionToolAuthorityCount();
+        const run = (input: NativeExecutionInputV1) => executePaperclipNativeSession({
+          db: leaseDb(input), execution: input, runnerInstanceId: "runner", useRunnerd: true,
+        });
+        await run(base);
+        expect(sessionToolAuthorityCount()).toBe(before + 1);
+        await run(next);
+        expect(close).toHaveBeenCalledWith({ reason: "warm native session identity changed" });
+        expect(sessionToolAuthorityCount()).toBe(before + 1);
+        await closeIdleWarmNativeSessionsForRestart();
+        expect(sessionToolAuthorityCount()).toBe(before);
+      } finally {
+        if (previous === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+        else process.env.PAPERCLIP_RUNNER_STATE_DIR = previous;
+        await rm(root, { recursive: true, force: true });
+      }
+    });
+
     it("awaits prior idle ownership retirement before launching the accepted-plan session", async () => {
       const { base, next, run } = fixture("identity-handoff");
       let finishClose!: () => void;
