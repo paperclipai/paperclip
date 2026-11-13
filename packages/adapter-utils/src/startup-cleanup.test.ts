@@ -39,13 +39,25 @@ const startInput = (runner: { execute: (input: RunnerInput) => Promise<RunProces
   timeoutMs: 1_000,
 });
 
-const pidIdentityRecord = async (pid: number): Promise<string> => {
-  const stat = await readFile(`/proc/${pid}/stat`, "utf8");
-  const commandEnd = stat.lastIndexOf(") ");
-  const fieldsAfterCommand = stat.slice(commandEnd + 2).trim().split(/\s+/);
-  const startTime = fieldsAfterCommand[19];
-  if (!startTime) throw new Error(`Missing process start time for PID ${pid}.`);
-  return `${pid} ${startTime}\n`;
+const pidIdentityRecord = async (pid: number, procRoot = "/proc"): Promise<string> => {
+  try {
+    const stat = await readFile(`${procRoot}/${pid}/stat`, "utf8");
+    const commandEnd = stat.lastIndexOf(") ");
+    const fieldsAfterCommand = stat.slice(commandEnd + 2).trim().split(/\s+/);
+    const startTime = fieldsAfterCommand[19];
+    if (!startTime) throw new Error(`Missing process start time for PID ${pid}.`);
+    return `${pid} ${startTime}\n`;
+  } catch {
+    const completed = await execFile("/bin/sh", [
+      "-c",
+      'started_at="$(LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null | awk \'{$1=$1; print}\')"; [ -n "$started_at" ] || exit 1; printf \'%s\' "$started_at" | cksum | awk \'{print $1}\'',
+      "sh",
+      String(pid),
+    ]);
+    const startTime = completed.stdout.trim();
+    if (!/^\d+$/.test(startTime)) throw new Error(`Missing process start time for PID ${pid}.`);
+    return `${pid} ${startTime}\n`;
+  }
 };
 
 const expectIdentityExitedOrZombie = async (pid: number, expectedIdentity: string): Promise<void> => {
@@ -53,6 +65,20 @@ const expectIdentityExitedOrZombie = async (pid: number, expectedIdentity: strin
   try {
     stat = await readFile(`/proc/${pid}/stat`, "utf8");
   } catch {
+    let currentIdentity: string;
+    try {
+      currentIdentity = await pidIdentityRecord(pid);
+    } catch {
+      return;
+    }
+    if (currentIdentity !== expectedIdentity) return;
+    let completed: Awaited<ReturnType<typeof execFile>>;
+    try {
+      completed = await execFile("ps", ["-o", "state=", "-p", String(pid)]);
+    } catch {
+      return;
+    }
+    expect(String(completed.stdout).trim().slice(0, 1)).toBe("Z");
     return;
   }
   const commandEnd = stat.lastIndexOf(") ");
@@ -115,6 +141,11 @@ describe("sandbox callback bridge startup cleanup", () => {
     for (const directory of cleanupDirs.splice(0)) {
       await rm(directory, { recursive: true, force: true });
     }
+  });
+
+  it("records portable process identity when procfs is unavailable", async () => {
+    const identity = await pidIdentityRecord(process.pid, "/definitely-missing-procfs");
+    expect(identity).toMatch(new RegExp(`^${process.pid} \\d+\\n$`));
   });
 
   it("stops a launched callback bridge when readiness fails before a server handle is returned", async () => {
