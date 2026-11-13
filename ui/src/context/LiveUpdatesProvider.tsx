@@ -1071,9 +1071,13 @@ const taskIndexRefreshes = new WeakMap<
   Map<string, { lastRequestedAt: number; timer: ReturnType<typeof setTimeout> | null }>
 >();
 
-function refreshTaskIndexForActivity(queryClient: QueryClient, companyId: string) {
+function refreshTaskIndexForActivity(queryClient: QueryClient, companyId: string, ownActivity: boolean) {
   const queryKey = queryKeys.issues.listIndex(companyId);
   if (queryClient.getQueryData(queryKey) === undefined) return;
+  if (ownActivity) {
+    queryClient.invalidateQueries({ queryKey, exact: true });
+    return;
+  }
   const query = queryClient.getQueryCache().find({ queryKey, exact: true });
   if (!query) return;
   if (query.getObserversCount() === 0) {
@@ -1677,7 +1681,7 @@ function invalidateActivityQueries(
       queryKey: queryKeys.issues.list(companyId),
       predicate: excludingQueryKeys(queryKeys.issues.mentionPool(companyId), queryKeys.issues.listIndex(companyId)),
     });
-    refreshTaskIndexForActivity(queryClient, companyId);
+    refreshTaskIndexForActivity(queryClient, companyId, ownActorActivity);
     refreshMentionPoolForActivity(
       queryClient,
       companyId,

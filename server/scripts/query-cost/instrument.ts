@@ -6,7 +6,7 @@ import { PgRelationalQuery, RelationalQueryBuilder } from "drizzle-orm/pg-core/q
 type Entry = {
   key: string; operation: string; callers: string[]; builds: number; executions: number;
   sqlBytes: number; buildBytes: number; buildMs: number; readBytes: number; readMs: number;
-  rows: number; resultBytes: number; fields: number; calibratedBytes?: number; calibratedMs?: number;
+  rows: number; resultBytes: number; fields: number; calibratedBytes?: number; calibratedMs?: number; sqlPrefix?: string;
 };
 const CALIBRATED = 3, LOOP = 40;
 
@@ -108,6 +108,7 @@ function wrapPrepare(proto: any, operation: string) {
     e.buildBytes += buildBytes;
     e.buildMs += buildMs;
     e.sqlBytes += Buffer.byteLength(prepared?.queryString ?? "");
+    e.sqlPrefix ??= String(prepared?.queryString ?? "").slice(0, 200);
     e.fields = Array.isArray(prepared?.fields) ? prepared.fields.length : 0;
     wrapPrepared(prepared, info);
     return prepared;
@@ -163,6 +164,7 @@ const originalExecute = (PgDatabase.prototype as any).execute;
   e.buildBytes += bytes;
   e.buildMs += ms;
   e.sqlBytes += Buffer.byteLength(raw?.query?.sql ?? "");
+  e.sqlPrefix ??= String(raw?.query?.sql ?? "").slice(0, 200);
   const execute = raw.execute;
   raw.execute = function (this: unknown, ...args: unknown[]) {
     if (enabled) e.executions += 1;
@@ -206,5 +208,6 @@ export function format(label: string, units: number, result: ReturnType<typeof d
     const calls = Math.max(row.executions, row.builds);
     lines.push(`| ${row.key}${row.callers[1] ? ` <- ${row.callers.slice(1).join(" <- ")}` : ""} | ${(calls / units).toFixed(2)} | ${(row.builds / units).toFixed(2)} | ${row.builds ? Math.round(row.sqlBytes / row.builds) : 0} | ${(row.buildBytes / 1024 / Math.max(1, row.builds)).toFixed(1)} | ${(row.readBytes / 1024 / Math.max(1, row.executions)).toFixed(1)} | ${(row.rows / Math.max(1, row.executions)).toFixed(1)} | ${(row.resultBytes / 1024 / Math.max(1, row.executions)).toFixed(1)} | ${row.fields} | ${(row.buildMs / Math.max(1, row.builds)).toFixed(3)} |`);
   }
+  if (process.env.SQL_PREFIX) for (const row of result.rows.slice(0, top)) lines.push(`- ${row.key}: \`${row.sqlPrefix}\``);
   return lines.join("\n");
 }

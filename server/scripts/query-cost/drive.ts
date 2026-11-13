@@ -148,6 +148,38 @@ try {
     });
   }
 
+  if (only.includes("agent")) {
+    process.env.PAPERCLIP_AGENT_JWT_SECRET = randomBytes(32).toString("hex");
+    const { createLocalAgentJwt } = await import("../../src/agent-auth-jwt.js");
+    const { actorMiddleware } = await import("../../src/middleware/auth.js");
+    const { issueRoutes } = await import("../../src/routes/issues.js");
+    const { errorHandler } = await import("../../src/middleware/index.js");
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running", issueId: fixture.taskIds[3]!,
+      contextSnapshot: { issueId: fixture.taskIds[3]! }, startedAt: new Date() });
+    const token = createLocalAgentJwt(agentId, companyId, "codex_local", runId);
+    assert.ok(token, "agent token");
+    const app = express();
+    app.use(express.json());
+    app.use(actorMiddleware(db, { deploymentMode: "authenticated", localAgentProcessBoundary: null }));
+    app.get("/api/whoami", (req, res) => { res.json({ type: (req as unknown as { actor: { type: string } }).actor.type }); });
+    app.use("/api", issueRoutes(db, {} as never));
+    app.use(errorHandler);
+    const server = app.listen(0, "127.0.0.1");
+    await new Promise(resolve => server.once("listening", resolve));
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api`;
+    const get = async (route: string) => {
+      const response = await fetch(`${base}${route}`, { headers: { authorization: `Bearer ${token}`, "x-paperclip-run-id": runId } });
+      const body = await response.text();
+      assert.equal(response.status, 200, `${route}: ${body.slice(0, 300)}`);
+      return body;
+    };
+    assert.match(await get("/whoami"), /agent/);
+    await measure("agent request authentication only (actorMiddleware, agent JWT)", 20, async () => { await get("/whoami"); });
+    await measure("agent GET issues/:id (auth + route)", 5, async () => { await get(`/issues/${fixture.taskIds[3]}`); });
+    server.close();
+  }
+
   if (only.includes("event")) {
     const { PaperclipControlPlanePort } = await import("../../src/services/native-runtime/paperclip-control-plane-port.js");
     const [issue] = await db.insert(issues).values({ companyId, title: "Streaming", status: "in_progress", assigneeAgentId: agentId }).returning();

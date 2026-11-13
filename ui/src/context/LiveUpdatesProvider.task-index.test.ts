@@ -102,6 +102,48 @@ describe("LiveUpdatesProvider company task index", () => {
     unmount();
   });
 
+  it("refreshes at once for the viewer's own task activity, even inside a window", async () => {
+    const index = serverList([task("t1")]);
+    const unmount = mount(client, INDEX_KEY, index.queryFn);
+    await settle();
+    emit(client, { entityId: "t1", action: "issue.comment_added" });
+    await settle(1_000);
+    index.set([task("t1"), task("t2")]);
+    __liveUpdatesTestUtils.invalidateActivityQueries(client, COMPANY,
+      { entityType: "issue", entityId: "t2", action: "issue.created", actorType: "user", actorId: "user-1", details: { identifier: "T2" } }, ACTOR);
+    await settle();
+    expect(client.getQueryData(INDEX_KEY)).toEqual([task("t1"), task("t2")]);
+    unmount();
+  });
+
+  it("refreshes at once when this tab changes a task and invalidates the company task lists", async () => {
+    const index = serverList([task("t1")]);
+    const unmount = mount(client, INDEX_KEY, index.queryFn);
+    await settle();
+    emit(client, { entityId: "t1", action: "issue.comment_added" });
+    await settle(1_000);
+    index.set([task("t1", { status: "done" })]);
+    await client.invalidateQueries({ queryKey: queryKeys.issues.list(COMPANY) });
+    await settle();
+    expect(client.getQueryData(INDEX_KEY)).toEqual([task("t1", { status: "done" })]);
+    unmount();
+  });
+
+  it("never loses an event inside the window: the last state shows when the window ends after activity stops", async () => {
+    const index = serverList([task("t1")]);
+    const unmount = mount(client, INDEX_KEY, index.queryFn);
+    await settle(WINDOW_MS);
+    for (let second = 0; second < 10; second += 1) {
+      index.set([task("t1", { title: `Edit ${second}` })]);
+      emit(client, { entityId: "t1", action: "issue.updated", details: { title: `Edit ${second}` } });
+      await settle(1_000);
+    }
+    expect(client.getQueryData(INDEX_KEY)).not.toEqual([task("t1", { title: "Edit 9" })]);
+    await settle(WINDOW_MS);
+    expect(client.getQueryData(INDEX_KEY)).toEqual([task("t1", { title: "Edit 9" })]);
+    unmount();
+  });
+
   it("marks an unwatched index stale without fetching, and a later mount refetches it", async () => {
     const index = serverList([task("t1")]);
     const unmount = mount(client, INDEX_KEY, index.queryFn);
