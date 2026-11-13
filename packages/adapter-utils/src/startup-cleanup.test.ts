@@ -140,6 +140,7 @@ describe("sandbox callback bridge startup cleanup", () => {
     expect(cleanupScript).toContain('/proc/$pid/stat');
     expect(calls[0]?.args?.[1]).toContain("start_time");
     expect(calls[0]?.args?.[1]).toContain("Callback bridge process did not publish its identity.");
+    expect(calls[0]?.args?.[1]).toContain('if [ -r "/proc/$pid/stat" ]; then');
     expect(calls[0]?.args?.[1]).toContain('IFS= read -r stat_line < "/proc/$pid/stat"');
     expect(calls[0]?.args?.[1]).toContain('ps -o lstart= -p "$pid"');
     expect(calls[0]?.args?.[1]).toContain("cksum");

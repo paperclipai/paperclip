@@ -81,8 +81,6 @@ export function buildHermesConfig(
     ac.promptTemplate = v.promptTemplate;
   }
 
-  // Structured-result flags are schema-driven UI fields. Preserve explicit
-  // booleans only; malformed values must not loosen execution behavior.
   if (typeof v.adapterSchemaValues?.quiet === "boolean") {
     ac.quiet = v.adapterSchemaValues.quiet;
   }

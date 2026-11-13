@@ -1851,11 +1851,14 @@ export async function startSandboxCallbackBridgeServer(input: {
     "pid=$$",
     'node_command="$1"',
     'bridge_entrypoint="$2"',
-    'stat_line=""',
-    'IFS= read -r stat_line < "/proc/$pid/stat" || true',
-    'start_time="${stat_line##*) }"',
-    'set -- $start_time',
-    'start_time="${20:-}"',
+    'start_time=""',
+    'if [ -r "/proc/$pid/stat" ]; then',
+    '  stat_line=""',
+    '  IFS= read -r stat_line < "/proc/$pid/stat" || true',
+    '  start_time="${stat_line##*) }"',
+    '  set -- $start_time',
+    '  start_time="${20:-}"',
+    'fi',
     'case "$start_time" in ""|*[!0-9]*) portable_started_at="$(LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null | awk \'{$1=$1; print}\')"; if [ -n "$portable_started_at" ]; then start_time="$(printf \'%s\' "$portable_started_at" | cksum 2>/dev/null | awk \'{print $1}\')"; fi ;; esac',
     `case "$start_time" in ""|*[!0-9]*) rm -f ${shellQuote(launchStateFile)}; echo "Unable to record callback bridge process identity." >&2; exit 1 ;; esac`,
     `printf '%s %s\\n' "$pid" "$start_time" > ${shellQuote(directories.pidFile)}`,
@@ -1972,11 +1975,6 @@ export async function startSandboxCallbackBridgeServer(input: {
       },
     };
   } catch (error) {
-    // The bridge process is started with nohup before readiness is checked. If
-    // readiness or response validation fails, no server handle reaches the
-    // caller, so the caller cannot stop that process. Reconnect through the
-    // command-managed runner and clean the fresh run-scoped PID before
-    // preserving the original startup failure.
     await stopSandboxCallbackBridgeServerProcess({
       runner: input.runner,
       remoteCwd: input.remoteCwd,
