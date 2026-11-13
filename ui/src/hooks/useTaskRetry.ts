@@ -15,6 +15,7 @@ export const STALE_TASK_RETRY_MESSAGE = "This attempt was already replaced, so R
 export const ALREADY_MOVED_ON_MESSAGE = "The task already moved on, so nothing new was started. It now shows its current state.";
 
 export function taskRetryNotStartedReason(result: RetryResult): string | null {
+  if (!result.accepted && result.refused) return result.refused.message;
   if (!result.accepted && result.alreadyMovedOn) return ALREADY_MOVED_ON_MESSAGE;
   if (!result.accepted) return STALE_TASK_RETRY_MESSAGE;
   const outcome = result.scheduledRetry?.outcome;

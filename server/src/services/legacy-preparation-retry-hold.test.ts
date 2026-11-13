@@ -1,8 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agents, agentWakeupRequests, companies, createDb, environmentLeases, executionWorkspaces,
+import express from "express";
+import request from "supertest";
+import { agents, agentWakeupRequests, companies, companyMemberships, createDb, environmentLeases, executionWorkspaces,
   heartbeatRunEvents, heartbeatRuns, issueRecoveryActions, issues } from "@paperclipai/db";
+import { errorHandler } from "../middleware/index.js";
+import { issueRoutes } from "../routes/issues.js";
 import { startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { requestTaskRetry } from "./task-retry.js";
 import { heartbeatService } from "./heartbeat.js";
@@ -123,4 +127,33 @@ describe("Retry of a legacy preparation that automatic recovery stopped", () => 
       expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
         eq(heartbeatRuns.status, "queued")))).toHaveLength(0);
     });
+
+  // The Retry answer must never say "accepted" for a request that admission
+  // refuses for a reason another click cannot change. Here the stopped
+  // preparation recorded a provider event, so its outcome is really unknown.
+  it("answers a refused Retry with its refusal instead of accepted, and keeps the request saved", async () => {
+    const f = await seed();
+    await db.insert(heartbeatRunEvents).values({ companyId: f.companyId, agentId: f.agentId,
+      runId: f.source.id, seq: 5, eventType: "tool.execution.started", stream: "system" });
+    await db.insert(companyMemberships).values({ companyId: f.companyId, principalType: "user", principalId: "board-user",
+      status: "active", membershipRole: "admin" });
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", userId: "board-user", companyIds: [f.companyId],
+        memberships: [{ companyId: f.companyId, membershipRole: "admin", status: "active" }],
+        isInstanceAdmin: false, source: "session" } as Express.Request["actor"];
+      next();
+    });
+    app.use("/api", issueRoutes(db, {} as never));
+    app.use(errorHandler);
+    const res = await request(app).post(`/api/issues/${f.issueId}/retry`)
+      .send({ idempotencyKey: randomUUID(), observedRunId: f.source.id });
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ accepted: false, requestId: expect.any(String),
+      refused: { reason: "previous_execution_unverified", message: expect.stringContaining("can't confirm") } });
+    // The saved request still starts by itself if the gate clears later.
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, res.body.requestId));
+    expect(wake).toMatchObject({ status: "deferred_issue_execution", runId: null });
+  }, 60_000);
 });
