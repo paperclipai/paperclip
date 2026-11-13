@@ -42,6 +42,7 @@ const apiPrefixes: Record<string, string> = {
   "board-chat.ts": "/api",
   "browser-use.ts": "/api",
   "mcp-apps.ts": "/api",
+  "mcp-skills.ts": "/api",
   "built-in-agents.ts": "/api",
   "chat-channels.ts": "/api",
   "slack-tools.ts": "/api",
@@ -396,6 +397,14 @@ describe("openapi routes", () => {
     expect(operation.requestBody.content).toHaveProperty("application/json");
     expect(spec.paths).not.toHaveProperty("/api/routine-triggers/public/{publicId}/sentry-run-failures");
   });
+  it("documents connected-app skill review as board only and file reads as agent-run only", () => {
+    const spec = buildOpenApiSpec() as any;
+    const files = spec.paths["/api/agents/me/mcp-skills/{skillId}/files"].get;
+    expect(files["x-paperclip-authorization"]).toEqual({ actor: "agent", heartbeatBound: true });
+    expect(files.security).not.toContainEqual({ BoardSessionAuth: [] });
+    expect(spec.paths["/api/companies/{companyId}/mcp-skills/{skillId}/approve"].post["x-paperclip-authorization"]).toEqual({ actor: "board" });
+  });
+
   it.each(["summary", "tasks"])("documents the board-only compact attention %s contract", projection => {
     const spec = buildOpenApiSpec() as any;
     const operation = spec.paths[`/api/companies/{companyId}/attention/${projection}`].get;

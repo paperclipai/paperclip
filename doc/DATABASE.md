@@ -2422,7 +2422,7 @@ the optional live environment FK uses SET NULL. Company/run deletion must not
 erase an outstanding remote-resource obligation.
 
 The unique company/environment/run/request index fences duplicate creation and
-ambiguous successful lease commits. Since migration 0474 it covers only operations
+ambiguous successful lease commits. Since migration 0475 it covers only operations
 that are not `resolved`. A later attempt for the same run and request that meets an
 `attached` operation whose lease is closed checks the same stop proof same-run
 recovery requires (a termination receipt for that sandbox, stored or derived from a

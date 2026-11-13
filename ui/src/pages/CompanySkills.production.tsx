@@ -26,6 +26,7 @@ import type {
   CompanySkillVersionSummary,
 } from "@paperclipai/shared";
 import { companySkillsApi } from "../api/companySkills";
+import { ConnectedAppSkills } from "../components/skills/ConnectedAppSkills";
 import { foldersApi } from "../api/folders";
 import { agentsApi } from "../api/agents";
 import { useCompany } from "../context/CompanyContext";
@@ -5441,6 +5442,8 @@ export function CompanySkills() {
           </div>
         </div>
       ) : isDiscovery ? (
+        <>
+        <ConnectedAppSkills companyId={selectedCompanyId} />
         <DiscoveryGrid
           tab={discoveryTab}
           tabCounts={discoveryTabCounts}
@@ -5530,6 +5533,7 @@ export function CompanySkills() {
           onClearSelected={showInstalledFolders ? () => setSelectedSkillIds([]) : undefined}
           folderNudgeStorageKey={showInstalledFolders ? `paperclip:skills-folder-nudge:${selectedCompanyId ?? "none"}` : undefined}
         />
+        </>
       ) : activeView === "installed" && selectedSkillId ? (
         <SkillDetailPage
           detail={activeDetail}

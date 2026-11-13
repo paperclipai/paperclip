@@ -139,6 +139,7 @@ import {
   type NativeChatAttachmentReadScope,
 } from "./chat-attachment-read.js";
 import { recordTaskHistoryRead } from "../queued-comment-delivery.js";
+import { recordChildTaskRead } from "./native-child-completion-delivery.js";
 import { logger } from "../../middleware/logger.js";
 
 const EXTERNAL_WORKSPACE_OPERATIONS = new Set(["get_workspace", "list_workspaces", "select_workspace", "prepare_repository", "register_deliverable"]);
@@ -947,6 +948,9 @@ export class PaperclipRunnerToolAuthority {
         const readableChildren = this.binding.museRuntime
           ? await this.#readableMuseTaskIds(context.run, childTasks.map(task => task.id)) : null;
         const visibleChildTasks = readableChildren ? childTasks.filter(task => readableChildren.has(task.id)) : childTasks;
+        await recordChildTaskRead(this.db, { companyId: this.binding.companyId, agentId: this.binding.agentId,
+          runId: this.binding.runId, parentIssueId: this.binding.issueId, children: visibleChildTasks.slice(0, 100) }).catch(error =>
+          logger.warn({ err: error, runId: this.binding.runId }, "could not record the child tasks a run read"));
         return {
           company: { id: this.binding.companyId },
           actor: redactedActor(context.actor),
