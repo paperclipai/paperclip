@@ -619,10 +619,20 @@ custom gateway, local endpoint, and OpenRouter connections. The probe calls the
 configured endpoint's OpenAI-compatible model list (`GET {base URL}/models`)
 with the entered credential. It fills the connection's model ID field. Results
 are deduplicated, sorted, and capped at the routing schema's model limit. The
-read stops when the response passes 1 MiB. Local endpoint discovery runs on the
-Paperclip server's loopback, so only the local operator can use it. Gateway
-targets must resolve to public addresses. Bedrock has no compatible model list;
-enter its model IDs manually.
+read stops when the response passes 1 MiB.
+
+The destination rules are relative to the Paperclip server, not the agent's
+execution environment. The probe fetch runs on the server, so a `local` route
+means the server's own loopback; only the local operator can use it. A model
+server that is reachable only from agents inside a container, sandbox, or
+other host is not discoverable this way, even when agents can reach it at run
+time. Gateway targets must resolve to public addresses. A gateway on a private
+network — for example another container on a Docker bridge network — is
+rejected by design. For these deployments, enter the model IDs manually on the
+agent; the connection still routes runs correctly because discovery is a
+setup-time convenience, not the run path. An administrator-configured
+destination allowlist for gateway discovery is a possible future extension.
+Bedrock has no compatible model list; enter its model IDs manually.
 
 OpenRouter connections without an explicit model list automatically load its public
 [model catalog](https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties),
