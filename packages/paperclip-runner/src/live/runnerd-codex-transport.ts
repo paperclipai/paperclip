@@ -1088,14 +1088,15 @@ async function awaitRunnerSuspensionBarrier(input: {
   deadline: number;
   proofWindowMs?: number;
   proofSettleMs?: number;
-  proofRefutation?: () => RunnerSuspensionProofRefutation | null;
+  onProofRefutation?: (refutation: RunnerSuspensionProofRefutation | null) => void;
   pollIntervalMs?: number;
 }): Promise<boolean> {
   let proofDeadline: number | null = null;
   let notSuspendedSince: number | null = null;
+  let refutation: RunnerSuspensionProofRefutation | null = null;
+  let readGeneration = 0;
   const deadline = () => {
     if (proofDeadline === null) return input.deadline;
-    const refutation = input.proofRefutation?.() ?? null;
     if (refutation === "identity") return input.deadline;
     if (refutation === "lifecycle") {
       notSuspendedSince ??= Date.now();
@@ -1112,16 +1113,32 @@ async function awaitRunnerSuspensionBarrier(input: {
   const readRunnerState = async (): Promise<Record<string, unknown> | undefined> => {
     const remainingMs = deadline() - Date.now();
     if (remainingMs <= 0) return undefined;
+    const generation = ++readGeneration;
+    const startedAfterCompletion = proofDeadline !== null;
+    let expired = false;
+    const observe = (observed: RunnerSuspensionProofRefutation | null) => {
+      if (expired || !startedAfterCompletion || generation !== readGeneration) return;
+      refutation = observed;
+      input.onProofRefutation?.(observed);
+    };
+    const read = input.readRunnerState().then(
+      (state) => { observe(null); return state; },
+      (error: unknown) => {
+        if (error instanceof RunnerSuspensionProofRefutedError) observe(error.refutation);
+        throw error;
+      },
+    );
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       return await Promise.race([
-        input.readRunnerState(),
+        read,
         new Promise<undefined>(resolveDeadline => {
-          timer = setTimeout(() => resolveDeadline(undefined), remainingMs);
+          timer = setTimeout(() => { expired = true; resolveDeadline(undefined); }, remainingMs);
         }),
       ]);
     } finally {
       clearTimeout(timer);
+      read.catch(() => undefined);
     }
   };
   let existing = [...input.commands()]
@@ -1225,6 +1242,12 @@ async function awaitRunnerSuspensionBarrier(input: {
 }
 
 export type RunnerSuspensionProofRefutation = "identity" | "lifecycle";
+
+export class RunnerSuspensionProofRefutedError extends Error {
+  constructor(readonly refutation: RunnerSuspensionProofRefutation) {
+    super("native_runner_authority_rotation_requires_settled_state");
+  }
+}
 
 function runnerSuspensionProofRefutation(state: Record<string, unknown>, expected: DurableRecoveryIdentity): RunnerSuspensionProofRefutation | null {
   if (state.schema !== "paperclip.runner.durable.state.v1" || !recoveryIdentityMatches(state, expected)) return "identity";
@@ -5812,8 +5835,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
             try {
               const state = await this.#readDurableRunnerState();
               lastSuspensionState = state;
-              if (suspensionExitCommitted) suspensionProofRefutation = runnerSuspensionProofRefutation(state, this.#core!.store.state.identity);
-              assertSuspendedRunnerState(state, this.#core!.store.state.identity);
+              const refuted = runnerSuspensionProofRefutation(state, this.#core!.store.state.identity);
+              if (refuted) throw new RunnerSuspensionProofRefutedError(refuted);
               return state;
             } finally {
               timings.proofReadMs = (timings.proofReadMs ?? 0) + Date.now() - readStartedAt;
@@ -5830,7 +5853,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           deadline: closeDeadline,
           proofWindowMs: this.options.closeProofReadMs ?? RUNNER_SUSPENSION_PROOF_READ_MS,
           proofSettleMs: this.options.closeProofSettleMs ?? RUNNER_SUSPENSION_PROOF_SETTLE_MS,
-          proofRefutation: () => suspensionProofRefutation,
+          onProofRefutation: (observed) => { suspensionProofRefutation = observed; },
         });
       } finally {
         stopObservingExit();
@@ -9764,6 +9787,7 @@ export const runnerdRecoveryInternals = Object.freeze({
   awaitProviderDrainBarrier,
   awaitAdoptedRunnerAuthentication,
   awaitRunnerSuspensionBarrier,
+  RunnerSuspensionProofRefutedError,
   providerDrainStateFromSnapshot,
   providerTurnIsActiveFromCommittedEvents,
   recoveredRunAttachment,

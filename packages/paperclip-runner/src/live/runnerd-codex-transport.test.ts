@@ -2484,14 +2484,13 @@ async function suspendProofAfterCompletion(input: { lifecycleAt: (sinceCompletio
   const commands: Array<{ commandId: string; type: string; status: string }> = [];
   const startedAt = Date.now();
   let completedAt: number | null = null;
-  let refutation: "identity" | "lifecycle" | null = null;
   const proven = await runnerdRecoveryInternals.awaitRunnerSuspensionBarrier({
     commands: () => commands,
     queueSuspend: commandId => { commands.push({ commandId, type: "runner.suspend", status: "pending" }); },
     readRunnerState: async () => {
       const lifecycle = input.lifecycleAt(completedAt === null ? 0 : Date.now() - completedAt);
-      refutation = input.runId ? "identity" : lifecycle === "suspended" ? null : "lifecycle";
-      if (refutation) throw new Error("native_runner_authority_rotation_requires_settled_state");
+      const refutation = input.runId ? "identity" : lifecycle === "suspended" ? null : "lifecycle";
+      if (refutation) throw new runnerdRecoveryInternals.RunnerSuspensionProofRefutedError(refutation);
       return { lifecycle };
     },
     runnerHasExited: async () => true,
@@ -2504,7 +2503,6 @@ async function suspendProofAfterCompletion(input: { lifecycleAt: (sinceCompletio
     deadline: startedAt + input.deadlineMs,
     proofWindowMs: input.proofWindowMs,
     proofSettleMs: input.proofSettleMs,
-    proofRefutation: () => refutation,
     pollIntervalMs: 20,
   });
   return { proven, elapsedMs: Date.now() - startedAt };
@@ -2522,6 +2520,40 @@ it("fails a suspension whose state stays ready after the settle window, not afte
   expect(proven).toBe(false);
   expect(elapsedMs).toBeGreaterThanOrEqual(900);
   expect(elapsedMs).toBeLessThan(3_000);
+});
+
+it("ignores a not-suspended read that started before the suspend completed, even when it answers after the proof window opened", async () => {
+  const commands: Array<{ commandId: string; type: string; status: string }> = [];
+  let completedAt: number | null = null;
+  let reads = 0;
+  const refutations: Array<string | null> = [];
+  const proven = await runnerdRecoveryInternals.awaitRunnerSuspensionBarrier({
+    commands: () => commands,
+    queueSuspend: commandId => { commands.push({ commandId, type: "runner.suspend", status: "pending" }); },
+    readRunnerState: async () => {
+      reads += 1;
+      if (reads === 1) {
+        await new Promise(resolve => setTimeout(resolve, 150));
+        throw new runnerdRecoveryInternals.RunnerSuspensionProofRefutedError("lifecycle");
+      }
+      if (Date.now() - completedAt! < 1_500) throw new Error("remote runner state read failed");
+      return { lifecycle: "suspended" };
+    },
+    runnerHasExited: async () => true,
+    pump: () => {
+      if (commands[0] && completedAt === null && reads >= 1) {
+        commands[0].status = "completed";
+        completedAt = Date.now();
+      }
+    },
+    deadline: Date.now() + 100,
+    proofWindowMs: 30_000,
+    proofSettleMs: 500,
+    onProofRefutation: refutation => refutations.push(refutation),
+    pollIntervalMs: 20,
+  });
+  expect(proven).toBe(true);
+  expect(refutations).not.toContain("lifecycle");
 });
 
 it("fails at the close deadline when the durable state belongs to another run", async () => {
