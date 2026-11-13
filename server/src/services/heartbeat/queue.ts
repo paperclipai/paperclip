@@ -10,6 +10,7 @@ import { hasAutomaticInteractionDeliveryHold, INTERACTION_DELIVERY_DENIED, reche
 import { deferredWorkIntentWait } from "../work-intent-outbox.js";
 import { notifyIssueRecovery } from "../issue-recovery-notifications.js";
 import { createHeartbeatTimerPolicy } from "./timer-policy.js";
+import { RECOVERY_DISPATCH_SHARE, isRecoveryWakeReason, isSystemRecoveryRun, createQueuedRunDispatcher } from "./queued-run-dispatch-order.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { PersistedExecutionWaitRefusal, writeDeferredExecutionWait } from "../deferred-execution-wait.js";
 import { notifyDeferredExecutionWork } from "../deferred-execution-notifications.js";
@@ -96,6 +97,7 @@ import {
   gt,
   gte,
   inArray,
+  isNotNull,
   isNull,
   lte,
   ne,
@@ -2201,6 +2203,68 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       .catch(() => logger.warn({ agentId: agent.id }, "Could not attach queued agent setup connection request"));
   }
 
+  async function queuedRunDispatcherForAgent(
+    agent: typeof agents.$inferSelect,
+    queuedRuns: Array<typeof heartbeatRuns.$inferSelect>,
+    dependencyReadiness: Map<string, { isDependencyReady: boolean }>,
+    issueById: Map<string, { status: string; priority: string | null }>,
+  ) {
+    const now = new Date();
+    const wakeReasonOf = (run: typeof heartbeatRuns.$inferSelect) =>
+      readNonEmptyString(parseObject(run.contextSnapshot).wakeReason);
+    const requestIds = [...new Set(queuedRuns.flatMap(run => run.wakeupRequestId ? [run.wakeupRequestId] : []))];
+    const userRequests = queuedRuns.length > 1 && requestIds.length
+      ? await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
+        eq(agentWakeupRequests.companyId, agent.companyId), inArray(agentWakeupRequests.id, requestIds),
+        eq(agentWakeupRequests.requestedByActorType, "user")))
+      : [];
+    const userRequestIds = new Set(userRequests.map(row => row.id));
+    const sourceRunIdOf = (run: typeof heartbeatRuns.$inferSelect) =>
+      readNonEmptyString(parseObject(run.contextSnapshot).previousRunId) ?? run.retryOfRunId ?? null;
+    const recoveryRuns = queuedRuns.filter(run => isSystemRecoveryRun({ wakeReason: wakeReasonOf(run),
+      requestedByUser: Boolean(run.wakeupRequestId && userRequestIds.has(run.wakeupRequestId)) }));
+    const sourceRunIds = [...new Set(recoveryRuns.flatMap(run => sourceRunIdOf(run) ?? []))];
+    const sourceRows = queuedRuns.length > 1 && sourceRunIds.length
+      ? await db.select({ id: heartbeatRuns.id, finishedAt: heartbeatRuns.finishedAt }).from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.companyId, agent.companyId), inArray(heartbeatRuns.id, sourceRunIds)))
+      : [];
+    const sourceEndedAt = new Map(sourceRows.map(row => [row.id, row.finishedAt]));
+    let startsSinceRecovery = 0;
+    if (recoveryRuns.length && recoveryRuns.length < queuedRuns.length) {
+      const oldestRecoveryAt = new Date(Math.min(...recoveryRuns.map(run => run.createdAt.getTime())));
+      const recentStarts = await db.select({ wakeReason: sql<string | null>`${heartbeatRuns.contextSnapshot}->>'wakeReason'` })
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.companyId, agent.companyId), eq(heartbeatRuns.agentId, agent.id),
+          isNotNull(heartbeatRuns.startedAt), gte(heartbeatRuns.startedAt, oldestRecoveryAt)))
+        .orderBy(desc(heartbeatRuns.startedAt))
+        .limit(RECOVERY_DISPATCH_SHARE);
+      const lastRecovery = recentStarts.findIndex(row => isRecoveryWakeReason(row.wakeReason));
+      startsSinceRecovery = lastRecovery < 0 ? recentStarts.length : lastRecovery;
+    }
+    const facts = queuedRuns.map(run => {
+      const issueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+      const ready = issueId ? (dependencyReadiness.get(issueId)?.isDependencyReady ?? true) : true;
+      const issue = issueId ? issueById.get(issueId) : null;
+      const sourceRunId = sourceRunIdOf(run);
+      return {
+        run,
+        id: run.id,
+        createdAt: run.createdAt,
+        wakeReason: wakeReasonOf(run),
+        requestedByUser: Boolean(run.wakeupRequestId && userRequestIds.has(run.wakeupRequestId)),
+        sourceEndedAt: sourceRunId ? sourceEndedAt.get(sourceRunId) ?? null : null,
+        readinessRank: issueId ? (ready ? (issue?.status === "in_progress" ? 0 : 1) : 3) : 2,
+        priorityRank: issueRunPriorityRank(issue?.priority),
+      };
+    });
+    const dispatcher = createQueuedRunDispatcher(facts, { now, startsSinceRecovery });
+    const byRun = new Map(facts.map(entry => [entry.run, entry]));
+    return {
+      next: () => dispatcher.next()?.run ?? null,
+      claimed: (run: typeof heartbeatRuns.$inferSelect) => { const entry = byRun.get(run); if (entry) dispatcher.claimed(entry); },
+    };
+  }
+
   async function startNextQueuedRunForAgent(agentId: string, attachSetupRequest = false) {
     // Null unless this server has not read the run-start hand-over recently.
     const refreshing = refreshRunAdmission();
@@ -2277,51 +2341,10 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         );
       const issueById = new Map(issueRows.map((row) => [row.id, row]));
       const companyAgents = await listCompanyAgentOrgRows(agent.companyId);
-      const prioritizedRuns = [...queuedRuns].sort((left, right) => {
-        const leftIssueId = readNonEmptyString(
-          parseObject(left.contextSnapshot).issueId,
-        );
-        const rightIssueId = readNonEmptyString(
-          parseObject(right.contextSnapshot).issueId,
-        );
-        const leftReadiness = leftIssueId
-          ? dependencyReadiness.get(leftIssueId)
-          : null;
-        const rightReadiness = rightIssueId
-          ? dependencyReadiness.get(rightIssueId)
-          : null;
-        const leftReady = leftIssueId
-          ? (leftReadiness?.isDependencyReady ?? true)
-          : true;
-        const rightReady = rightIssueId
-          ? (rightReadiness?.isDependencyReady ?? true)
-          : true;
-        const leftIssue = leftIssueId ? issueById.get(leftIssueId) : null;
-        const rightIssue = rightIssueId ? issueById.get(rightIssueId) : null;
-        const leftRank = leftIssueId
-          ? leftReady
-            ? leftIssue?.status === "in_progress"
-              ? 0
-              : 1
-            : 3
-          : 2;
-        const rightRank = rightIssueId
-          ? rightReady
-            ? rightIssue?.status === "in_progress"
-              ? 0
-              : 1
-            : 3
-          : 2;
-        if (leftRank !== rightRank) return leftRank - rightRank;
-        const leftPriorityRank = issueRunPriorityRank(leftIssue?.priority);
-        const rightPriorityRank = issueRunPriorityRank(rightIssue?.priority);
-        if (leftPriorityRank !== rightPriorityRank)
-          return leftPriorityRank - rightPriorityRank;
-        return left.createdAt.getTime() - right.createdAt.getTime();
-      });
+      const dispatcher = await queuedRunDispatcherForAgent(agent, queuedRuns, dependencyReadiness, issueById);
 
       const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
-      for (const queuedRun of prioritizedRuns) {
+      for (let queuedRun = dispatcher.next(); queuedRun; queuedRun = dispatcher.next()) {
         if (claimedRuns.length >= availableSlots || isRunAdmissionClosed()) break;
         let claimed: typeof heartbeatRuns.$inferSelect | null;
         try {
@@ -2338,7 +2361,10 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           );
           continue;
         }
-        if (claimed) claimedRuns.push(claimed);
+        if (claimed) {
+          claimedRuns.push(claimed);
+          dispatcher.claimed(queuedRun);
+        }
       }
       if (claimedRuns.length === 0) return [];
 
