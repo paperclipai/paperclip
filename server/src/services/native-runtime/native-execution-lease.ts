@@ -364,9 +364,23 @@ type RenewalState = {
   confirmedDeadline: number; adopt(confirmedDeadline: number): void;
   /** `performance.now()` at which the next renewal is due, and the cadence. */
   nextRenewAt: number; intervalMs: number; ttlMs: number;
+  /** Renews alone (not in a shared batch) after its own renewal failed where others succeeded. */
+  solo: boolean;
   /** Settles one renewal attempt of `binding` from its batch outcome. */
-  renew(outcome: BatchOutcome, binding: RenewalInput): Promise<void>;
+  renew(outcome: BatchOutcome, binding: RenewalInput): Promise<RenewalResult>;
 };
+type RenewalResult = "renewed" | "failed" | "settled";
+
+/** A cancelled statement or a deadlock says nothing about the lease; retry it. */
+function retryableRenewalError(error: unknown) {
+  for (let cause = error, depth = 0; cause && depth < 4; cause = (cause as { cause?: unknown }).cause, depth++) {
+    // 40P01: taking back a lapsed lease locks the run after the coordinator;
+    // a writer holding them in the other order can deadlock.
+    const code = (cause as { code?: unknown }).code;
+    if (code === "57014" || code === "40P01") return true;
+  }
+  return false;
+}
 
 // Preparation and execution share one renewal. Each caller releases its own
 // reference; the final release drains any SQL already in flight.
@@ -396,8 +410,13 @@ const renewals = new WeakMap<Db, Map<string, RenewalState>>();
  *   `native_session_lease_lost`, independently of the other runs.
  * Like the single path, a batch sends no recovery signal: a renewal only moves
  * a deadline later, and recovery re-reads the row at the deadline it holds.
- * A failed batch transaction extends nothing; its runs retry after
- * `RENEWAL_BATCH_RETRY_MS`, and each run's own deadline still detaches it.
+ * A batch that is cancelled (statement timeout or deadlock) extends nothing,
+ * and its runs retry after `RENEWAL_BATCH_RETRY_MS`. Any other batch failure,
+ * also one thrown while the statement is built, may come from one bad row, so
+ * each of its runs renews alone at once and only a bad row's own run can fail.
+ * A run that fails alone while others in its batch renew keeps renewing
+ * alone. During an outage every single renewal fails too; those runs return
+ * to the batch at their next interval, not after a short retry.
  */
 const RENEWAL_BATCH_MAX_ROWS = 200;
 const RENEWAL_BATCH_RETRY_MS = 1_000;
@@ -523,15 +542,26 @@ function startRenewalBatches(db: Db, schedule: RenewalSchedule, due: RenewalStat
   const flush = now;
   schedule.flushing = flush;
   const batches: Promise<unknown>[] = [];
-  for (let offset = 0; offset < due.length; offset += RENEWAL_BATCH_MAX_ROWS) {
-    const rows = due.slice(offset, offset + RENEWAL_BATCH_MAX_ROWS).map(state => ({ state, binding: state.input }));
+  for (const state of due) if (state.solo) state.pending = state.renew({ alone: true }, state.input).then(() => undefined);
+  const batched = due.filter(state => !state.solo);
+  for (let offset = 0; offset < batched.length; offset += RENEWAL_BATCH_MAX_ROWS) {
+    const rows = batched.slice(offset, offset + RENEWAL_BATCH_MAX_ROWS).map(state => ({ state, binding: state.input }));
+    // An async function: an error while the statement is built rejects here too.
     const result = renewNativeExecutionLeaseBatch(db, rows).catch((error: unknown) => error);
     // Each run settles its own outcome (and any single renewal it needs);
     // stop() drains exactly that. The next batch waits only for this one.
-    for (const row of rows) {
-      row.state.pending = result.then(outcomes => row.state.renew(outcomes instanceof Map
-        ? outcomes.get(row.state) ?? { alone: true } : { failed: outcomes }, row.binding));
-    }
+    const settled = rows.map(row => result.then(outcomes => row.state.renew(outcomes instanceof Map
+      ? outcomes.get(row.state) ?? { alone: true } : { failed: outcomes }, row.binding)));
+    rows.forEach((row, index) => { row.state.pending = settled[index]!.then(() => undefined); });
+    void result.then(outcomes => {
+      if (outcomes instanceof Map || retryableRenewalError(outcomes)) return;
+      // The batch failed but some runs renewed alone: the runs that failed
+      // alone are the cause, so keep them out of later batches.
+      void Promise.all(settled).then(results => {
+        if (!results.includes("renewed")) return;
+        results.forEach((result, index) => { if (result === "failed") rows[index]!.state.solo = true; });
+      });
+    });
     batches.push(result);
   }
   void Promise.all(batches).finally(() => {
@@ -597,42 +627,43 @@ export function startNativeSessionExecutionLeaseRenewal(input: RenewalInput): Na
       if (state!.input !== binding) return;
       // A cancelled statement can retry at the next tick, but does not
       // extend the ownership deadline. Never queue overlapping attempts.
-      for (let cause = error, depth = 0; cause && depth < 4; cause = (cause as { cause?: unknown }).cause, depth++) {
-        // 40P01: taking back a lapsed lease locks the run after the
-        // coordinator; a writer holding them in the other order can deadlock.
-        const code = (cause as { code?: unknown }).code;
-        if (code === "57014" || code === "40P01") return;
-      }
+      if (retryableRenewalError(error)) return;
       const advanced = await attemptAdvancedUnderOwner(binding).catch(() => null);
       if (advanced !== false || state!.input !== binding) return;
       lose(error);
     };
-    const renew = async (outcome: BatchOutcome, binding: RenewalInput) => {
+    const renew = async (outcome: BatchOutcome, binding: RenewalInput): Promise<RenewalResult> => {
+      let retrySoon = false, moreSql = false;
       try {
-        if (state!.lost) return;
-        if ("renewed" in outcome) renewed(outcome.renewed);
-        else if ("lost" in outcome) await failed(new Error("native_session_lease_lost"), binding);
-        else if ("failed" in outcome) {
-          // The shared transaction failed for every run in it, so it says
-          // nothing about any one lease: extend nothing and retry soon. Each
-          // run's own deadline still detaches it if renewals keep failing.
+        if (state!.lost) return "settled";
+        if ("renewed" in outcome) { renewed(outcome.renewed); return "renewed"; }
+        if ("lost" in outcome) { moreSql = true; await failed(new Error("native_session_lease_lost"), binding); return "failed"; }
+        if ("failed" in outcome && retryableRenewalError(outcome.failed)) {
+          // A cancelled shared statement says nothing about any one lease:
+          // extend nothing and retry soon. Each run's own deadline still
+          // detaches it if renewals keep failing.
+          retrySoon = true;
           state!.nextRenewAt = Math.min(state!.nextRenewAt, performance.now() + RENEWAL_BATCH_RETRY_MS);
-        } else {
-          await renewNativeSessionExecutionLeaseDeadline({ ...binding, leaseTtlMs: ttlMs,
-            reacquire: reacquires(binding) ? { controllerGeneration: binding.controllerGeneration! } : undefined })
-            .then(renewed, (error: unknown) => failed(error, binding));
+          return "settled";
         }
+        // Renew alone: the single path decides this row, and when the batch
+        // failed for another reason, a bad row costs only its own run.
+        moreSql = true;
+        return await renewNativeSessionExecutionLeaseDeadline({ ...binding, leaseTtlMs: ttlMs,
+          reacquire: reacquires(binding) ? { controllerGeneration: binding.controllerGeneration! } : undefined })
+          .then((confirmed): RenewalResult => { renewed(confirmed); state!.solo = false; return "renewed"; },
+            async (error: unknown): Promise<RenewalResult> => { await failed(error, binding); return "failed"; });
       } finally {
         state!.busy = false;
         // A tick that passed while this attempt was in flight is skipped, as
         // a fixed interval would skip it: a slow database gets no extra load.
-        if (!("failed" in outcome)) {
+        if (!retrySoon) {
           const now = performance.now();
           while (state!.nextRenewAt <= now) state!.nextRenewAt += intervalMs;
         }
         // The batch reschedules once for all of its runs that settled with
         // it; only a run that needed more SQL reschedules on its own.
-        if ("alone" in outcome || "lost" in outcome) scheduleRenewals(input.db, schedule);
+        if (moreSql) scheduleRenewals(input.db, schedule);
       }
     };
     const confirmedDeadline = input.confirmedDeadline ?? performance.now() + ttlMs;
@@ -644,7 +675,7 @@ export function startNativeSessionExecutionLeaseRenewal(input: RenewalInput): Na
     };
     state = { input, references: 1, pending: Promise.resolve(), busy: false, lost: null,
       deadline: deadline(confirmedDeadline - performance.now()), confirmedDeadline, loss: Promise.resolve(), adopt,
-      nextRenewAt: performance.now() + intervalMs, intervalMs, ttlMs, renew };
+      nextRenewAt: performance.now() + intervalMs, intervalMs, ttlMs, solo: false, renew };
     owners.set(input.leaseOwner, state);
     schedule.leases.add(state);
     scheduleRenewals(input.db, schedule);

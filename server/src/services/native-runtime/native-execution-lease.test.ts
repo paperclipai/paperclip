@@ -89,18 +89,34 @@ describe("native execution renewal ownership", () => {
     await guard.stop();
     expect(vi.getTimerCount()).toBe(0);
   });
-  it("treats a failed shared transaction as no renewal for anyone, retries it soon, and loses no run for it", async () => {
+  it("renews alone at once after a shared transaction fails for a reason other than a cancelled statement", async () => {
     vi.useFakeTimers();
-    const { input, returning } = fixture();
-    returning.mockRejectedValueOnce(Object.assign(new Error("Connection terminated unexpectedly"), { code: "08006" }));
+    const { input, returning, update } = fixture();
+    returning.mockRejectedValueOnce(Object.assign(new Error("integer out of range"), { code: "22003" }));
     const guard = startNativeSessionExecutionLeaseRenewal({ ...input, confirmedDeadline: performance.now() + 60_000 });
     await vi.advanceTimersByTimeAsync(20_000);
-    expect(returning).toHaveBeenCalledTimes(1);
-    expect(guard.remainingMs()).toBe(40_000);
-    await vi.advanceTimersByTimeAsync(1_000);
+    // The batch UPDATE failed, then the single path renewed this run alone.
     expect(returning).toHaveBeenCalledTimes(2);
+    expect(update).toHaveBeenCalledTimes(1);
     expect(guard.remainingMs()).toBe(60_000);
     expect(input.onLost).not.toHaveBeenCalled();
+    await guard.stop();
+  });
+  it("does not retry every second when the shared and the single renewal both fail (database outage)", async () => {
+    vi.useFakeTimers();
+    const { input, returning, coordinator } = fixture();
+    const outage = Object.assign(new Error("Connection terminated unexpectedly"), { code: "08006" });
+    returning.mockRejectedValueOnce(outage).mockRejectedValueOnce(outage);
+    coordinator.mockRejectedValueOnce(outage);
+    const guard = startNativeSessionExecutionLeaseRenewal({ ...input, confirmedDeadline: performance.now() + 60_000 });
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(returning).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(19_000);
+    expect(returning).toHaveBeenCalledTimes(2);
+    // The next interval goes back to the shared batch.
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(returning).toHaveBeenCalledTimes(3);
+    expect(guard.remainingMs()).toBe(60_000);
     await guard.stop();
   });
   it("detaches at the deadline while a database response is missing and cannot regain authority from a late response", async () => {

@@ -217,6 +217,63 @@ describeEmbeddedPostgres("batched native execution lease renewal", () => {
     }
   }, 60_000);
 
+  it("confines a binding that makes the shared statement fail to its own run", async () => {
+    const runs = await seedRuns(5);
+    const before = await expiries(runs.map(run => run.runId));
+    const healthy = runs.slice(1).map(run => start(run));
+    // An attempt outside the integer range: PostgreSQL rejects the whole
+    // shared UPDATE (22003) for every run in it.
+    const poison = { run: runs[0]!, onLost: vi.fn(async () => undefined), guard: startNativeSessionExecutionLeaseRenewal({
+      db: owner, companyId, ...runs[0]!, attempt: 2 ** 40, controller, remote: true,
+      confirmedDeadline: performance.now() + 25_000, onLost: async () => { await poison.onLost(); } }) };
+    try {
+      await renewNativeExecutionLeasesNow(owner);
+      const after = await expiries(runs.map(run => run.runId));
+      for (const { run, onLost, guard } of healthy) {
+        expect(onLost).not.toHaveBeenCalled();
+        expect(after.get(run.runId)!.expiresAt!.getTime()).toBeGreaterThan(before.get(run.runId)!.expiresAt!.getTime());
+        expect(guard.remainingMs()).toBeGreaterThan(REMOTE_CONTROLLER_LEASE_MS - 5_000);
+      }
+      expect(after.get(poison.run.runId)).toEqual(before.get(poison.run.runId));
+      // The healthy runs go back to one shared transaction; nothing is stuck busy.
+      const cost = meter.read();
+      await renewNativeExecutionLeasesNow(owner);
+      const healthyCost = meter.read();
+      expect(healthyCost.transactions - cost.transactions).toBe(1);
+      for (const { onLost } of healthy) expect(onLost).not.toHaveBeenCalled();
+      // Only the bad binding's own run is lost.
+      await vi.waitFor(() => expect(poison.onLost).toHaveBeenCalledTimes(1));
+    } finally {
+      await stopAll([...healthy.map(item => item.guard), poison.guard]);
+    }
+  }, 60_000);
+
+  it("handles an error thrown while the shared statement is built and leaves no lease busy", async () => {
+    const runs = await seedRuns(3);
+    const healthy = runs.slice(1).map(run => start(run));
+    const onLost = vi.fn(async () => undefined);
+    // An invalid date throws in toISOString() while the VALUES list is built.
+    const broken = startNativeSessionExecutionLeaseRenewal({ db: owner, companyId, ...runs[0]!, attempt: 1,
+      controller: { ...controller, processStartedAt: new Date(Number.NaN) }, remote: true,
+      confirmedDeadline: performance.now() + 25_000, onLost });
+    try {
+      await renewNativeExecutionLeasesNow(owner);
+      const after = await expiries(runs.map(run => run.runId));
+      for (const { run, onLost: healthyLost } of healthy) {
+        expect(healthyLost).not.toHaveBeenCalled();
+        expect(after.get(run.runId)!.expiresAt!.getTime()).toBeGreaterThan(Date.now() + 50_000);
+      }
+      // Every lease settled: a second call renews again instead of finding them busy.
+      const before = meter.read();
+      await renewNativeExecutionLeasesNow(owner);
+      expect(meter.read().transactions - before.transactions).toBe(1);
+      for (const { guard } of healthy) expect(guard.remainingMs()).toBeGreaterThan(REMOTE_CONTROLLER_LEASE_MS - 5_000);
+      await vi.waitFor(() => expect(onLost).toHaveBeenCalledTimes(1));
+    } finally {
+      await stopAll([...healthy.map(item => item.guard), broken]);
+    }
+  }, 60_000);
+
   it("renews local and remote leases together, each for its own lease length", async () => {
     const [remote, local] = await seedRuns(2);
     const started = [start(remote!), start(local!, { remote: false, controllerGeneration: 1 })];
