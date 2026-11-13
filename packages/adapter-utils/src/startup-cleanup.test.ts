@@ -141,6 +141,10 @@ describe("sandbox callback bridge startup cleanup", () => {
     expect(calls[0]?.args?.[1]).toContain("start_time");
     expect(calls[0]?.args?.[1]).toContain("Callback bridge process did not publish its identity.");
     expect(calls[0]?.args?.[1]).toContain('IFS= read -r stat_line < "/proc/$pid/stat"');
+    expect(calls[0]?.args?.[1]).toContain('ps -o lstart= -p "$pid"');
+    expect(calls[0]?.args?.[1]).toContain("cksum");
+    expect(cleanupScript).toContain('ps -o lstart= -p "$pid"');
+    expect(cleanupScript).toContain('ps -o command= -p "$pid"');
     expect(cleanupScript).toContain('*[!0-9]*');
     expect(calls[2]?.env?.PAPERCLIP_EXPECTED_BRIDGE_ENTRYPOINT).toContain("paperclip-bridge-server.mjs");
     expect(cleanupScript).toContain("rm -f");
