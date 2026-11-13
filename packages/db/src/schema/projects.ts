@@ -34,6 +34,7 @@ export const projects = pgTable(
     pauseReason: text("pause_reason"),
     pausedAt: timestamp("paused_at", { withTimezone: true }),
     executionWorkspacePolicy: jsonb("execution_workspace_policy").$type<Record<string, unknown>>(),
+    repositoryCheckout: text("repository_checkout").notNull().default("all"),
     archivedAt: timestamp("archived_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -42,6 +43,7 @@ export const projects = pgTable(
     companyIdUq: uniqueIndex("projects_company_id_uq").on(table.companyId, table.id),
     companyIdx: index("projects_company_idx").on(table.companyId),
     visibilityCheck: check("projects_visibility_check", sql`${table.visibility} in ('open', 'private')`),
+    repositoryCheckoutCheck: check("projects_repository_checkout_check", sql`${table.repositoryCheckout} in ('all', 'primary')`),
     personalOwnerUq: uniqueIndex("projects_company_personal_owner_uq")
       .on(table.companyId, table.personalOwnerUserId)
       .where(sql`${table.personalOwnerUserId} is not null`),

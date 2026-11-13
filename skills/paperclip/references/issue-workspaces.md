@@ -32,6 +32,8 @@ If `currentExecutionWorkspace` is `null`, the issue does not currently have a re
 
 `POST /api/issues/:issueId/workspace/repositories` accepts a stable `requestKey`, optional `ref`, and `repository: { kind: "catalog", id: "<authorized-repository-id>" }`. Discover IDs with `list_project_repositories`. Existing public HTTPS GitHub URLs can use `{ kind: "url", url: "https://github.com/owner/repo" }`; URLs do not grant private credentials or create a remote repository.
 
+`GET /api/issues/:issueId/workspace` also returns `projectRepositories`: the project's checkout scope (`all` or `primary`) and each project repository with its `projectWorkspaceId`, `isPrimary`, and `requested` flag. A project with checkout scope `primary` gives a new task only its primary repository. When the task needs another project repository, request it with `POST /api/issues/:issueId/workspace/project-repositories` and `{ "projectWorkspaceId": "<id>" }`. The task keeps a requested or already checked-out repository on every later admission.
+
 Root selections and repository preparation return `next_normal_admission`. The active process retains its root. Do not claim a queued checkout is ready or repeatedly request it. A different ref cannot silently reset an existing checkout. New noncoding work can proceed immediately in task files without any repository. Explicitly shared folders remain shared; do not remove them when finishing one task.
 
 ## Control Services

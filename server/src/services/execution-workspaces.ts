@@ -31,6 +31,7 @@ import { instanceSettingsService } from "./instance-settings.js";
 import { taskWorkspaceSelectableCondition } from "./task-workspace-selection.js";
 import { bindsRelativesExecutionWorkspace, buildIndependentTaskWorkspaceSettings } from "./task-workspace-lineage.js";
 import { executionWorkspaceRepositoryService, canonicalRepositoryRoot } from "./execution-workspace-repositories.js";
+import { readRequestedProjectRepositoryIds } from "./project-repository-requests.js";
 import { assertSelectedWorkspaceTrust, type TaskWorkspaceCreationTrustContext } from "./task-repository-acquisition.js";
 import { forbidden } from "../errors.js";
 import { retryIdempotentDatabaseOperation } from "../database-retry.js";
@@ -4628,7 +4629,11 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           const repositoryRows = await tx.select().from(projectWorkspaces).where(and(
             eq(projectWorkspaces.companyId, row.companyId), eq(projectWorkspaces.projectId, row.projectId!),
           )).orderBy(asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id));
+          const [repositoryProject] = await tx.select({ repositoryCheckout: projects.repositoryCheckout }).from(projects)
+            .where(and(eq(projects.companyId, row.companyId), eq(projects.id, row.projectId!)));
           await prepareProjectRepositoryWorkspaces({ cwd: targetCwd, anchorRepoUrl: row.repoUrl, workspaces: repositoryRows,
+            repositoryCheckout: repositoryProject?.repositoryCheckout === "primary" ? "primary" : "all",
+            keepWorkspaceIds: [...(recipe?.contents?.checkouts.map(checkout => checkout.source.id) ?? []), ...readRequestedProjectRepositoryIds(row.metadata)],
             sharedBase: { companyId: row.companyId, projectId: row.projectId! }, resolveGitAuth: gitAuth,
             prepareLocalSource: async sourceCwd => {
               const sourceIdentity = await fs.realpath(sourceCwd);
