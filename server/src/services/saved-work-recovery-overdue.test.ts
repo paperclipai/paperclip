@@ -1,6 +1,8 @@
 import { and, eq, sql } from "drizzle-orm";
-import { describe, expect, it, vi } from "vitest";
-import { activityLog, heartbeatRuns, issues } from "@paperclipai/db";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { activityLog, heartbeatRuns, issueRecoveryActions, issues } from "@paperclipai/db";
+import { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
+import { registerIssueRecoveryWork } from "./recovery/work.js";
 import type { AdapterSandboxExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { readSystemRecovery } from "./system-recovery-state.js";
 import { startOverdueWorkspaceRecovery } from "./workspace-recovery.js";
@@ -9,7 +11,7 @@ import { heartbeatService } from "./heartbeat.js";
 import { deliverReconciledExecutions } from "./execution-recovery-resolution.js";
 import { assignedWorkSweep, ASSIGNED_WORK_CONTINUED_ACTION } from "./recovery/assigned-work-sweep.js";
 import { SAVED_WORK_RECOVERY_START_BOUND_MS } from "./recovery/assigned-work-invariant.js";
-import { action, db, failedRemotePreparation, useWorkspaceRecoveryFixture } from "./__tests__/workspace-recovery-fixture.js";
+import { action, connectionString, db, failedRemotePreparation, useWorkspaceRecoveryFixture } from "./__tests__/workspace-recovery-fixture.js";
 
 const targets = vi.hoisted(() => new Map<string, AdapterSandboxExecutionTarget>());
 vi.mock("./environment-execution-target.js", async importOriginal => {
@@ -30,6 +32,11 @@ vi.mock("./environment-execution-target.js", async importOriginal => {
  */
 describe("a saved-work recovery the queue has not reached", () => {
   useWorkspaceRecoveryFixture(targets);
+  beforeEach(() => {
+    vi.stubEnv("DATABASE_URL", connectionString);
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "63".repeat(32));
+  });
+  afterEach(() => { vi.unstubAllEnvs(); });
 
   async function stagingShape(stoppedAgoMs: number, clock: { now?: () => Date } = {}) {
     const f = await failedRemotePreparation();
@@ -122,4 +129,31 @@ describe("a saved-work recovery the queue has not reached", () => {
       .where(eq(heartbeatRuns.id, f.runId));
     expect(row.count).toBe(1);
   }, 60_000);
+
+  it("reaches a blocked task with an active saved-work hold through the recovery worker", async () => {
+    const f = await stagingShape(45 * 60_000);
+    // The same hold, still active, on a task the recovery left blocked.
+    await db.update(issueRecoveryActions).set({ status: "active", outcome: null, resolvedAt: null })
+      .where(eq(issueRecoveryActions.id, f.actionId));
+    await db.update(issues).set({ status: "blocked", blockedTransitionAt: new Date(Date.now() - 40 * 60_000) })
+      .where(eq(issues.id, f.issueId));
+    expect((await f.sweep.listSuspects({ companyId: f.companyId }, null, 50)).map(row => row.id)).toContain(f.issueId);
+    const onError = vi.fn();
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, canReconcile: () => true, onError });
+    const noop = async () => ({ enqueueFailed: 0, incomplete: 0 });
+    const worker = registerIssueRecoveryWork(db, coordinator, { stranded: noop, orphanBlockers: noop, recoveryActions: noop,
+      dependencies: noop, locks: noop, watchdogs: noop, schedulingSuppressed: async () => false,
+      assignedWork: { listSuspects: f.sweep.listSuspects, checkIssue: f.sweep.checkIssue } }, () => true);
+    try {
+      await worker.ready;
+      await vi.waitFor(async () => {
+        expect(readSystemRecovery((await action(f.actionId)).evidence)?.state).toBe("complete");
+      }, { timeout: 30_000, interval: 250 });
+      expect(f.enqueueWakeup).not.toHaveBeenCalled();
+      expect(onError).not.toHaveBeenCalled();
+    } finally {
+      await worker.stop();
+      await coordinator.stop();
+    }
+  }, 90_000);
 });

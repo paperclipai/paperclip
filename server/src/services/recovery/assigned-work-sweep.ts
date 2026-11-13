@@ -508,6 +508,10 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       sql`not exists (select 1 from issue_recovery_actions ra where ra.company_id = ${issues.companyId}
         and ra.source_issue_id = ${issues.id} and ra.status in ('active', 'escalated')
         and (ra.cause in ('configuration_incomplete', 'ownership_owner_unprovable') or ${issues.status} = 'blocked')
+        -- except a saved-work recovery the queue still owes: the predicate
+        -- counts it pending for its bound and starts it once it is overdue
+        and not (${issues.status} = 'blocked' and ra.cause not in ('configuration_incomplete', 'ownership_owner_unprovable')
+          and coalesce(ra.evidence#>>'{systemRecovery,state}', '') in ('scheduled', 'running', 'awaiting_evidence'))
         -- except a recent board escalation, which the predicate judges by its failed run's cause
         and not (ra.kind = ${STRANDED_KIND} and ra.owner_type = 'board' and exists (select 1 from heartbeat_runs sr
           where sr.company_id = ra.company_id and sr.id::text = ra.evidence->>'latestRunId'
