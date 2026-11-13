@@ -843,6 +843,69 @@ export const toolMcpAppViews = pgTable(
   ],
 );
 
+/**
+ * MCP Skills extension (`io.modelcontextprotocol/skills`): one row per skill a
+ * connected MCP server publishes. Identity is (connection, skill URI); the
+ * name is only a label. Approval binds to `manifestDigest`, the order-free
+ * digest of every `{uri, digest, size}` in the server's manifest, and any
+ * other manifest revokes it.
+ */
+export const toolMcpSkills = pgTable(
+  "tool_mcp_skills",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    connectionId: uuid("connection_id").notNull().references(() => toolConnections.id, { onDelete: "cascade" }),
+    skillUri: text("skill_uri").notNull(),
+    name: text("name").notNull(),
+    description: text("description").notNull().default(""),
+    /** The entry's frontmatter, verbatim. */
+    frontmatter: jsonb("frontmatter").$type<Record<string, unknown>>().notNull(),
+    /** `[{uri, digest, size}]` sorted by URI, or null for a dynamic skill. */
+    manifest: jsonb("manifest").$type<Array<{ uri: string; digest: string; size: number }> | null>(),
+    manifestDigest: text("manifest_digest"),
+    /** pending_review | approved | declined | unavailable */
+    status: text("status").notNull().default("pending_review"),
+    /** new | changed | dynamic | too_large | invalid | verification_failed | removed */
+    statusReason: text("status_reason"),
+    approvedManifestDigest: text("approved_manifest_digest"),
+    /** The skill's `allowed-tools`, honored only when approved with the skill. */
+    allowedToolsApproved: boolean("allowed_tools_approved").notNull().default(false),
+    reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+    reviewedByUserId: text("reviewed_by_user_id"),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("tool_mcp_skills_connection_uri_idx").on(table.companyId, table.connectionId, table.skillUri),
+    index("tool_mcp_skills_company_status_idx").on(table.companyId, table.status),
+  ],
+);
+
+/**
+ * Verified skill files, written only by the server after a size and SHA-256
+ * check and never changed in place. Rows are keyed by connection and digest,
+ * so the same URI from two servers never shares bytes. Agents cannot write
+ * here and nothing scans it for skills.
+ */
+export const toolMcpSkillFiles = pgTable(
+  "tool_mcp_skill_files",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    connectionId: uuid("connection_id").notNull().references(() => toolConnections.id, { onDelete: "cascade" }),
+    fileUri: text("file_uri").notNull(),
+    digest: text("digest").notNull(),
+    size: integer("size").notNull(),
+    contentBase64: text("content_base64").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("tool_mcp_skill_files_digest_idx").on(table.companyId, table.connectionId, table.fileUri, table.digest),
+  ],
+);
+
 export const toolActionRequests = pgTable(
   "tool_action_requests",
   {

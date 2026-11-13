@@ -67,6 +67,7 @@ function registerRouteMocks() {
       reportRunActivity: vi.fn(async () => undefined),
       getRun: vi.fn(async () => null),
       getActiveRunForAgent: vi.fn(async () => null),
+      getQueuedAssignmentRunForIssue: vi.fn(async () => null),
       cancelRun: vi.fn(async () => null),
     }),
     instanceSettingsService: () => ({

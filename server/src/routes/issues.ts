@@ -24,6 +24,7 @@ import { listIssueStatusBlockerAttention } from "../services/issue-status-presen
 import { assertNoCaseHandoffMutation } from "../services/heartbeat/case-handoff-lifecycle.js";
 import { assertHandedOffRunTaskOwnership } from "../run-task-ownership.js";
 import { recordNativeHumanSelfHandoff } from "../services/native-runtime/native-human-self-handoff.js";
+import { recordChildTaskRead } from "../services/native-runtime/native-child-completion-delivery.js";
 import { runRetainsIssueIdentity } from "../services/task-repository-acquisition.js";
 import { withConversationReadState } from "../services/agent-chat-read-state.js";
 import { markIssueReadSchema } from "@paperclipai/shared";
@@ -1467,6 +1468,7 @@ const ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS = new Set([
   "missing_issue_comment",
   "process_lost_retry",
   "run_liveness_continuation",
+  "execution_reconciliation_required",
   "heartbeat.disabled",
   "heartbeat.timer.no_actionable_work",
   "heartbeat.wakeOnDemand.disabled",
@@ -1495,7 +1497,7 @@ function projectWakeDiagnosticSource(value: string | null) {
   return ISSUE_WAKE_DIAGNOSTIC_KNOWN_SOURCES.has(value) ? value : "other";
 }
 
-function projectWakeDiagnosticReason(value: string | null) {
+export function projectWakeDiagnosticReason(value: string | null) {
   if (!value) return null;
   return ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS.has(value) ? value : "other";
 }
@@ -3609,6 +3611,13 @@ function logIssueListRequest(input: {
       "safe authenticated GET observed",
     );
   });
+}
+
+async function recordAgentChildTaskRead(db: Db, req: Request, issue: { id: string; companyId: string; parentId: string | null; status: string; updatedAt: Date; lastStatusDecisionId?: string | null }) {
+  if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.runId || !issue.parentId || issue.status !== "done") return;
+  await recordChildTaskRead(db, { companyId: issue.companyId, agentId: req.actor.agentId, runId: req.actor.runId,
+    parentIssueId: issue.parentId, children: [issue] })
+    .catch(error => logger.warn({ err: error, runId: req.actor.runId }, "could not record the child task a run read"));
 }
 
 export function issueRoutes(
@@ -7666,14 +7675,19 @@ export function issueRoutes(
   }
 
   async function resolveQueuedOutgoingAssigneeRun(issue: {
+    id: string;
     companyId: string;
     assigneeAgentId: string | null;
     executionRunId?: string | null;
   }) {
-    if (!issue.executionRunId || !issue.assigneeAgentId) return null;
-    const run = await heartbeat.getRun(issue.executionRunId);
-    return run && run.status === "queued" && run.companyId === issue.companyId &&
-      run.agentId === issue.assigneeAgentId ? run : null;
+    if (!issue.assigneeAgentId) return null;
+    const run = issue.executionRunId ? await heartbeat.getRun(issue.executionRunId) : null;
+    if (run && run.status === "queued" && run.companyId === issue.companyId && run.agentId === issue.assigneeAgentId) return run;
+    if (run && ["queued", "running", "scheduled_retry"].includes(run.status)) return null;
+    const assignmentRun = await heartbeat.getQueuedAssignmentRunForIssue({
+      companyId: issue.companyId, agentId: issue.assigneeAgentId, issueId: issue.id,
+    });
+    return assignmentRun ? await heartbeat.getRun(assignmentRun.id) : null;
   }
 
   type IssueQueueDb = Db | Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -10079,6 +10093,7 @@ export function issueRoutes(
     // and related-task enrichment. This never refreshes external providers.
     if (req.query.view === "core") {
       const core = await readIssueCore(issue, timing.time);
+      await recordAgentChildTaskRead(db, req, issue);
       res.setHeader("Server-Timing", timing.header());
       res.json(core);
       return;
@@ -10160,6 +10175,7 @@ export function issueRoutes(
     const visibleMentionedProjects = mentionedProjects.filter((_, index) => mentionedProjectVisibility[index]);
     // Recovery revalidation may change the blocker; read it afterwards.
     const executionBlocker = await timing.time("execution_blocker", () => getExecutionBlocker(db, issue.companyId, issue.id));
+    await recordAgentChildTaskRead(db, req, issue);
     res.setHeader("Server-Timing", timing.header());
     res.json({
       ...issue,
@@ -11366,6 +11382,7 @@ export function issueRoutes(
     const docs = await documentsSvc.listIssueDocuments(issue.id, {
       includeSystem: req.query.includeSystem === "true",
     });
+    await recordAgentChildTaskRead(db, req, issue);
     res.json(docs);
   });
 
@@ -11399,6 +11416,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Document not found" });
       return;
     }
+    await recordAgentChildTaskRead(db, req, issue);
     if (!shouldIncludeDocumentAnnotations(req)) {
       res.json(doc);
       return;

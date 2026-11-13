@@ -62,6 +62,16 @@ describe("wake evidence", () => {
     expect(notes).toEqual([["wake_evidence_failed", { error: "Error: database is gone" }]]);
   });
 
+  it("keeps only issue status transitions, not other actions' status fields (w-20261112T223803-s7101 t001)", () => {
+    const evidence = wakeEvidenceForIssue("i1", { runs: [], wakes: [], controllers: [], windows: [], statusChanges: [
+      { issueId: "i1", action: "issue.created", actorType: "user", actorId: "local-board", fromStatus: null, toStatus: "todo", createdAt: 1_794_523_115_500 },
+      { issueId: "i1", action: "runner.api_called", actorType: "agent", runId: "37724b59", fromStatus: null, toStatus: "201", createdAt: 1_794_525_164_631 },
+      { issueId: "i1", action: "issue.updated", actorType: "agent", runId: "37724b59", fromStatus: "in_progress", toStatus: "done", createdAt: 1_794_525_165_000 },
+      { issueId: "i1", action: "issue.updated", actorType: "agent", fromStatus: null, toStatus: "200", createdAt: 1_794_525_166_000 },
+    ] });
+    expect(evidence.statusChanges.map(change => [change.action, change.from, change.to])).toEqual([["issue.created", null, "todo"], ["issue.updated", "in_progress", "done"]]);
+  });
+
   it("joins each run to its wake, owner and status changes for one issue", () => {
     const evidence = wakeEvidenceForIssue("i1", {
       runs: [{ id: "r1", issueId: "i1", status: "succeeded", wakeupRequestId: "w2", controllerBootId: "boot-b", createdAt: 550_000, contextSnapshot: { wakeReason: "retry" } },

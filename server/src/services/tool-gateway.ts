@@ -5,6 +5,7 @@ import { approvalSnapshotsMatch, approvalTargetChangeMessage, oauthApprovalConfi
 import { isToolApprovalConnectionError, toolApprovalConnectionRevision, toolApprovalConnectionCanResume,
   TOOL_APPROVAL_CONNECTION_MESSAGE, TOOL_APPROVAL_CONNECTION_REQUIRED } from "./tool-approval-connection.js";
 import { notifyChatRunMilestones } from "./chat-run-milestone-notifications.js";
+import { McpSkillVerificationError, mcpSkillContentBytes, mcpSkillManifestFile, mcpSkillsService, verifyMcpSkillFileBytes, verifyMcpSkillFrontmatter, type McpSkillRow } from "./mcp-skills.js";
 import { writeToolConnectionHealthChange } from "./tool-connection-health-notifications.js";
 import { writeApprovalChange } from "./approval-work-notifications.js";
 import { toolReviewProjectionService } from "./tool-review-projection.js";
@@ -101,6 +102,7 @@ import {
   toolInvocations,
   toolMcpGateways,
   toolMcpGatewayTokens,
+  toolMcpSkills,
   toolPolicies,
   toolProfileBindings,
   toolProfileEntries,
@@ -6038,6 +6040,116 @@ export function createToolGatewayService(
     );
   }
 
+  const mcpSkills = mcpSkillsService(db);
+  /** How long a run waits for connected-app skills before starting without the late ones. */
+  const MCP_SKILL_LOAD_BUDGET_MS = 3_000;
+
+  /**
+   * One verified file of an approved MCP skill, read with this session's own
+   * access to the skill's connection. Only files in the approved manifest are
+   * read; cached bytes are re-hashed. Content that fails verification is never
+   * returned: the entry is refreshed with `skills/get` and leaves use until the
+   * board approves it again.
+   */
+  async function readVerifiedMcpSkillFile(session: ToolGatewaySession, connection: typeof toolConnections.$inferSelect,
+    skill: McpSkillRow, relativePath: string): Promise<Buffer> {
+    const resource = mcpSkillManifestFile(skill, relativePath);
+    if (!resource) {
+      throw new ToolGatewayHttpError(404, "That file is not part of this skill.", "mcp_skill_file_not_listed");
+    }
+    try {
+      const cached = await mcpSkills.cachedFile(skill, resource);
+      if (cached) {
+        // Cached bytes match the digest, but the listed frontmatter may have
+        // changed since; check it on every load, not only on fetch.
+        if (resource.uri === skill.skillUri) verifyMcpSkillFrontmatter(cached.toString("utf8"), skill.frontmatter, skill.skillUri);
+        return cached;
+      }
+      const result = await callAssignedConnectionProtocol({
+        session, connection, method: "resources/read", params: { uri: resource.uri },
+        // JSON or SSE framing escapes the bytes; leave headroom over the listed size.
+        maxResponseBytes: Math.max(256 * 1024, resource.size * 2 + 64 * 1024),
+        markHealth: false,
+      });
+      const bytes = mcpSkillContentBytes(result, resource.uri);
+      if (!bytes) throw new McpSkillVerificationError("The app returned no content for a listed file.", resource.uri);
+      verifyMcpSkillFileBytes(bytes, resource);
+      if (resource.uri === skill.skillUri) verifyMcpSkillFrontmatter(bytes.toString("utf8"), skill.frontmatter, skill.skillUri);
+      await mcpSkills.cacheFile(skill, resource, bytes);
+      return bytes;
+    } catch (error) {
+      if (!(error instanceof McpSkillVerificationError)) throw error;
+      await refreshMcpSkillAfterFailure(session, connection, skill, error.message);
+      throw new ToolGatewayHttpError(409, "This skill changed in its app and needs to be reviewed again.", "mcp_skill_verification_failed");
+    }
+  }
+
+  /**
+   * After a verification failure the skill leaves use unless a refresh shows
+   * a different manifest (which already needs review). Anything else, including
+   * an answer for another URI or no usable entry, takes this skill out of use.
+   */
+  async function refreshMcpSkillAfterFailure(session: ToolGatewaySession, connection: typeof toolConnections.$inferSelect,
+    skill: McpSkillRow, detail: string) {
+    const actor = { actorType: "system" as const, actorId: "mcp-skills", agentId: session.agentId, runId: session.runId };
+    let refreshed: McpSkillRow | null = null;
+    try {
+      const result = asRecord(await callAssignedConnectionProtocol({
+        session, connection, method: "skills/get", params: { uri: skill.skillUri }, markHealth: false,
+      }));
+      const entry = asRecord(result?.skill);
+      if (entry?.uri === skill.skillUri) refreshed = await mcpSkills.applyEntry(connection, entry, actor);
+    } catch (error) {
+      if (error instanceof ToolGatewayHttpError && asRecord(error.details)?.code === -32602) {
+        await mcpSkills.markRemoved(skill, actor);
+        return;
+      }
+    }
+    if (refreshed && refreshed.id === skill.id && refreshed.status !== "approved") return;
+    await mcpSkills.markVerificationFailed(refreshed?.id === skill.id ? refreshed : skill, actor, detail);
+  }
+
+  /** A run-bound session for an agent, as connection instructions use. */
+  async function agentRunSession(binding: { companyId: string; agentId: string; runId: string }) {
+    const runContext = await resolveRunContext(binding);
+    await assertAgentInCompany(binding.companyId, binding.agentId);
+    return captureSessionIdentity({
+      ...binding, ...runContext, id: randomUUID(), token: "", createdAt: new Date(), expiresAt: new Date(Date.now() + 60_000),
+    });
+  }
+
+  /** Connections whose tools this agent may use now (allowed or ask first) and whose grant resolves. */
+  async function usableConnectionsForAgent(session: ToolGatewaySession, candidates: Array<typeof toolConnections.$inferSelect>) {
+    const candidateIds = new Set(candidates.map((connection) => connection.id));
+    const tools = (await connectionToolsForContext(session))
+      .filter((tool) => tool.connectionId && candidateIds.has(tool.connectionId));
+    const decisions = await decideToolsForListing(tools, (tool) => policyInputForTool({ session, tool }));
+    const visible = new Set(decisions.flatMap(({ tool, decision }) =>
+      (decision.allowed || decision.decision === "require_approval") && tool.connectionId ? [tool.connectionId] : [],
+    ));
+    const usable: Array<typeof toolConnections.$inferSelect> = [];
+    for (const connection of candidates) {
+      if (!visible.has(connection.id)) continue;
+      try {
+        await resolveConnectionGrant(session, connection, false);
+        usable.push(connection);
+      } catch (error) {
+        if (!(error instanceof ToolGatewayHttpError) && !(error instanceof HttpError)) throw error;
+        if (error.status >= 500) throw error;
+      }
+    }
+    return usable;
+  }
+
+  async function approvedMcpSkillConnections(companyId: string, connectionId?: string) {
+    return db.select().from(toolConnections).where(and(
+      eq(toolConnections.companyId, companyId), eq(toolConnections.enabled, true), eq(toolConnections.status, "active"),
+      ...(connectionId ? [eq(toolConnections.id, connectionId)] : []),
+      inArray(toolConnections.id, db.select({ id: toolMcpSkills.connectionId }).from(toolMcpSkills)
+        .where(and(eq(toolMcpSkills.companyId, companyId), eq(toolMcpSkills.status, "approved")))),
+    ));
+  }
+
   function contextHandle(
     kind: "resource" | "prompt",
     connectionId: string,
@@ -10175,6 +10287,107 @@ export function createToolGatewayService(
         }
       }
       return composeConnectionInstructions(sources);
+    },
+
+    /**
+     * MCP Skills: approved skills of the connections this agent can use, each
+     * with its verified SKILL.md. A skill that cannot be loaded now is left out
+     * with a reason; it never blocks the run. Runs in a company without an
+     * approved MCP skill cost one indexed read.
+     */
+    async resolveConnectionSkillsForRun(binding: { companyId: string; agentId: string; runId: string }, options: { budgetMs?: number } = {}) {
+      const loaded: Array<{ skill: McpSkillRow; appName: string; markdown: string }> = [];
+      const skipped: Array<{ skillName: string; appName: string; reason: string }> = [];
+      if (!(await mcpSkills.hasApproved(binding.companyId))) return { loaded, skipped };
+      // The whole optional step shares one deadline: a slow database or app
+      // must not hold the run back. Reads still in flight at the deadline
+      // finish in the background and fill the cache for later runs.
+      const budgetMs = options.budgetMs ?? MCP_SKILL_LOAD_BUDGET_MS;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const deadline = new Promise<"late">((resolve) => { timer = setTimeout(() => resolve("late"), budgetMs); });
+      try {
+        const prepare = (async () => {
+          const candidates = await approvedMcpSkillConnections(binding.companyId);
+          if (!candidates.length) return null;
+          const session = await agentRunSession(binding);
+          const usable = await usableConnectionsForAgent(session, candidates);
+          const skills = await mcpSkills.approvedForConnections(binding.companyId, usable.map((connection) => connection.id));
+          return { session, skills, byId: new Map(usable.map((connection) => [connection.id, connection])) };
+        })();
+        prepare.catch(() => undefined);
+        const prepared = await Promise.race([prepare, deadline]);
+        if (prepared === "late") {
+          skipped.push({ skillName: "", appName: "", reason: "Skills from connected apps took too long to prepare." });
+          return { loaded, skipped };
+        }
+        if (!prepared) return { loaded, skipped };
+        const { session, skills, byId } = prepared;
+        await Promise.all(skills.map(async (skill) => {
+          const connection = byId.get(skill.connectionId)!;
+          const read = readVerifiedMcpSkillFile(session, connection, skill, "SKILL.md");
+          read.catch(() => undefined);
+          try {
+            const bytes = await Promise.race([read, deadline]);
+            if (bytes === "late") {
+              skipped.push({ skillName: skill.name, appName: connection.name, reason: "The app took too long to answer." });
+              return;
+            }
+            loaded.push({ skill, appName: connection.name, markdown: bytes.toString("utf8") });
+          } catch (error) {
+            skipped.push({ skillName: skill.name, appName: connection.name,
+              reason: error instanceof ToolGatewayHttpError ? error.message : "The app could not be reached." });
+          }
+        }));
+      } finally {
+        clearTimeout(timer);
+      }
+      loaded.sort((a, b) => a.skill.id.localeCompare(b.skill.id));
+      return { loaded, skipped };
+    },
+
+    /**
+     * MCP Skills: one supporting file of an approved skill, for an agent in an
+     * active run. The file must be listed in the approved manifest, and the
+     * read goes only to the skill's own connection.
+     */
+    async readConnectionSkillFile(input: { companyId: string; agentId: string; runId: string; skillId: string; path: string }) {
+      const skill = await mcpSkills.get(input.companyId, input.skillId).catch(() => null);
+      if (!skill || skill.status !== "approved" || skill.approvedManifestDigest !== skill.manifestDigest) {
+        throw new ToolGatewayHttpError(404, "Skill not found", "mcp_skill_not_found");
+      }
+      const [connection] = await approvedMcpSkillConnections(input.companyId, skill.connectionId);
+      if (!connection) throw new ToolGatewayHttpError(404, "Skill not found", "mcp_skill_not_found");
+      const session = await agentRunSession(input);
+      if (!(await usableConnectionsForAgent(session, [connection])).length) {
+        throw new ToolGatewayHttpError(404, "Skill not found", "mcp_skill_not_found");
+      }
+      return readVerifiedMcpSkillFile(session, connection, skill, input.path);
+    },
+
+    /**
+     * MCP Skills: the SKILL.md of any listed skill, for a board member to read
+     * before deciding. It is read with the viewer's own access, verified like
+     * any other read, and never counts as loading the skill.
+     */
+    async readConnectionSkillForReview(input: { companyId: string; userId: string; skillId: string }) {
+      const skill = await mcpSkills.get(input.companyId, input.skillId);
+      if (!skill.manifest) throw new ToolGatewayHttpError(409, "This skill's content can't be checked, so it can't be shown.", "mcp_skill_not_verifiable");
+      const [connection] = await db.select().from(toolConnections)
+        .where(and(eq(toolConnections.id, skill.connectionId), eq(toolConnections.companyId, input.companyId))).limit(1);
+      if (!connection) throw new ToolGatewayHttpError(404, "Skill not found", "mcp_skill_not_found");
+      const session: ToolGatewaySession = {
+        id: "mcp-skill-review", token: "mcp-skill-review", companyId: input.companyId, agentId: null, runId: null,
+        issueId: null, projectId: null, actorType: "user", actorId: input.userId, responsibleUserId: input.userId,
+        createdAt: new Date(), expiresAt: new Date(Date.now() + DEFAULT_SESSION_TTL_MS),
+      };
+      try {
+        await resolveConnectionGrant(session, connection, false);
+      } catch {
+        throw new ToolGatewayHttpError(404, "Skill not found", "mcp_skill_not_accessible");
+      }
+      const bytes = await readVerifiedMcpSkillFile(session, connection, skill, "SKILL.md");
+      // The digest the content was verified against, so the board approves what it read.
+      return { markdown: bytes.toString("utf8"), manifestDigest: skill.manifestDigest! };
     },
 
     async browserUseResources(binding: { companyId: string; agentId: string; runId?: string; issueId?: string }) {
