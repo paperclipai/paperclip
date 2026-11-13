@@ -1799,7 +1799,13 @@ only while the old Runner is alive: the launch fence stops that
 the launch closed when it cannot prove them gone. A Runner that already exited
 mid-turn can leave provider or tool processes that the fence cannot find, so it
 keeps the fail-closed path below, and the task continues in a fresh session from
-the saved work. The fresh Runner
+the saved work.
+
+The first unanswered read can come on the last of the three provider attempts,
+for example when a server restart used the second attempt. The run then gets one
+more attempt for the replacement only: the failure stays retryable, the claim
+admits attempt 4 with `replaceUnansweredRunner`, and a live Runner is replaced as
+above. That attempt never gets another one; any failure on it ends the run. The fresh Runner
 restores the provider thread; its in-flight turn is reconciled from history and
 never submitted again. The provider attempt budget still bounds these attempts.
 

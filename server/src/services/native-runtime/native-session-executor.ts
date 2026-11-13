@@ -8797,6 +8797,21 @@ export function nativeSessionFailureDisposition(
   };
 }
 
+export function nativeAdmittedProviderAttemptLimit(claim: NativeRestartRecoveryClaim | null | undefined): number {
+  return claim?.kind === "reattach_remote_runner" && claim.replaceUnansweredRunner === true
+    ? NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT + 1 : NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT;
+}
+
+export function nativeUnansweredRunnerReplacementDisposition(
+  disposition: ReturnType<typeof nativeSessionFailureDisposition>,
+  input: { attempt: number; now: Date; adoptedRunnerUnanswered: boolean; replacing: boolean },
+): ReturnType<typeof nativeSessionFailureDisposition> {
+  if (!input.adoptedRunnerUnanswered || input.replacing || input.attempt !== NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT
+    || disposition.failureCode !== "native_session_retry_exhausted") return disposition;
+  return { phase: "retryable_failure", failureCode: "native_session_interrupted",
+    nextAttemptAt: new Date(input.now.getTime() + 30_000) };
+}
+
 export function nativeSessionRecoveryProjection(input: {
   phase: "retryable_failure" | "terminal_failure";
   failureCode: string;
@@ -11134,7 +11149,7 @@ async function executePaperclipNativeSessionAttempt(
             recovering?.kind,
             !recovering || !("chargesProviderAttempt" in recovering) || recovering.chargesProviderAttempt !== false,
           );
-          if (nextAttempt > 3)
+          if (nextAttempt > nativeAdmittedProviderAttemptLimit(recovering))
             throw new Error("native_session_retry_exhausted");
           const scheduledResumeDecision = await scheduledResumeContinuationAllowed(tx as unknown as Db, {
             companyId: input.execution.binding.companyId,
@@ -12937,11 +12952,17 @@ async function executePaperclipNativeSessionAttempt(
         sourceFailureCode,
         bootstrap,
       });
-      const disposition = nativeSessionFailureDisposition(
+      const adoptedRunnerUnanswered = input.runnerExecutionTarget?.kind === "remote"
+        && input.restartRecovery?.kind === "reattach_remote_runner"
+        && input.restartRecovery.remote.kind !== "plugin_task" && nativeRecoveryCommandUnanswered(error);
+      const disposition = nativeUnansweredRunnerReplacementDisposition(nativeSessionFailureDisposition(
         attempt,
         now,
         sourceFailureCode,
-      );
+      ), {
+        attempt, now, adoptedRunnerUnanswered,
+        replacing: input.restartRecovery?.kind === "reattach_remote_runner" && input.restartRecovery.replaceUnansweredRunner === true,
+      });
       const phase =
         recoveryEvidence.recoveryMode === "ambiguous_state"
           ? ("terminal_failure" as const)
@@ -13075,9 +13096,7 @@ async function executePaperclipNativeSessionAttempt(
                 ? { runnerExitConfirmed: true } : {}),
               ...(input.runnerExecutionTarget?.kind === "remote" && nativeRunnerExitedBeforeSessionOpen(error)
                 ? { runnerExitedBeforeSessionOpen: true } : {}),
-              ...(input.runnerExecutionTarget?.kind === "remote" && input.restartRecovery?.kind === "reattach_remote_runner"
-                && input.restartRecovery.remote.kind !== "plugin_task" && nativeRecoveryCommandUnanswered(error)
-                ? { adoptedRunnerUnanswered: true } : {}),
+              ...(adoptedRunnerUnanswered ? { adoptedRunnerUnanswered: true } : {}),
               ...(providerCooldownAt ? { providerCooldownAt: providerCooldownAt.toISOString() } : {}),
               ...(providerLimit?.plan.resetAt ? { providerLimitResetAt: providerLimit.plan.resetAt.toISOString() } : {}),
               recoveryOwner: recoveryProjection.recoveryOwner,
@@ -15304,7 +15323,7 @@ export async function verifyRemoteRunnerOrSettledExit(
   const stall = input.stall ?? remoteRunnerPluginStall(input.recoveryDeadline);
   const target = input.target;
   const replaceUnanswered = input.claim.replaceUnansweredRunner === true
-    && input.providerAttempt <= NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT
+    && input.providerAttempt <= NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT + 1
     && target?.kind === "remote" && target.transport === "sandbox" && Boolean(target.runner);
   let verified: Awaited<ReturnType<typeof verifyRemoteRunnerReattachment>>;
   try {
