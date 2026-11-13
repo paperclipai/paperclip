@@ -234,6 +234,9 @@ export function createMcpAppHost(options: McpAppHostOptions) {
         const update = options.updateModelContext;
         const id = message.id;
         contextQueue = contextQueue.then(async () => {
+          // A torn-down view's queued updates are dropped: its replacement
+          // reports its own current context.
+          if (disposed) return;
           if (serialized === lastModelContext) {
             respond(id, {});
             return;

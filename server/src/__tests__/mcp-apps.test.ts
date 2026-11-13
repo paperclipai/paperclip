@@ -147,10 +147,10 @@ const support = await getEmbeddedPostgresTestSupport();
     const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id, issueId: issue.id });
     const app = express();
     app.use(express.json());
-    let actorKind: "board" | "agent" | "teammate" = "board";
+    let actorKind: "board" | "agent" | "teammate" | "board_key" = "board";
     app.use((req, _res, next) => {
       req.actor = actorKind !== "agent"
-        ? { type: "board", userId: actorKind === "teammate" ? "circleback-teammate" : actor.actorId, source: "session", companyIds: [company.id],
+        ? { type: "board", userId: actorKind === "teammate" ? "circleback-teammate" : actor.actorId, source: actorKind === "board_key" ? "board_key" : "session", companyIds: [company.id],
           memberships: [{ companyId: company.id, status: "active", membershipRole: actorKind === "teammate" ? "member" : "admin" }] }
         : { type: "agent", companyId: company.id, agentId: agent.id, source: "agent_key" };
       next();
@@ -171,7 +171,7 @@ const support = await getEmbeddedPostgresTestSupport();
         return { release, entered };
       },
       otherAgent,
-      setActor: (kind: "board" | "agent" | "teammate") => { actorKind = kind; } };
+      setActor: (kind: "board" | "agent" | "teammate" | "board_key") => { actorKind = kind; } };
   }
 
   it("keeps the view declaration, hides app-only tools from the agent, and records the call's view", async () => {
@@ -399,6 +399,12 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(logged[0]).toMatchObject({ actorType: "user", actorId: actor.actorId, entityId: f.issue.id, details: expect.objectContaining({ viewId, applicationName: "Circleback" }) });
     // Bounded in size.
     await http(f.app).put(contextUrl).send({ content: [{ type: "text", text: "x".repeat(20_000) }] }).expect(413);
+    // Equality ignores key order after the jsonb round trip.
+    const multiKey = { content: update.content, structuredContent: { selectedMeetingId: "m1", attendees: 3, folder: "Partners" } };
+    expect((await http(f.app).put(contextUrl).send(multiKey).expect(200)).body).toEqual({ updated: true });
+    const reordered = { content: update.content, structuredContent: { folder: "Partners", attendees: 3, selectedMeetingId: "m1" } };
+    expect((await http(f.app).put(contextUrl).send(reordered).expect(200)).body).toEqual({ updated: false });
+    expect((await http(f.app).put(contextUrl).send(update).expect(200)).body).toEqual({ updated: true });
 
     // The task's next run gets it, labelled untrusted and quoted as data.
     const entries = await mcpAppViewsService(db).runContextForIssue(f.company.id, f.issue.id);
@@ -420,7 +426,9 @@ const support = await getEmbeddedPostgresTestSupport();
     expect((await http(f.app).put(contextUrl).send({}).expect(200)).body).toEqual({ updated: true });
     expect(await mcpAppViewsService(db).runContextForIssue(f.company.id, f.issue.id)).toEqual([]);
 
-    // Agents cannot write a view's context.
+    // Agents and board API keys cannot write a view's context.
+    f.setActor("board_key");
+    await http(f.app).put(contextUrl).send(update).expect(403);
     f.setActor("agent");
     await http(f.app).put(contextUrl).send(update).expect(403);
   });
@@ -456,7 +464,9 @@ const support = await getEmbeddedPostgresTestSupport();
     await http(f.app).post(messagesUrl).send({ clientRequestId: oldRequestId }).expect(404);
     await http(f.app).post(messagesUrl).send({ commentId: comment.id }).expect(400);
 
-    // Agents never send as the viewer.
+    // Board API keys and agents never act as the viewer.
+    f.setActor("board_key");
+    await http(f.app).post(messagesUrl).send({ clientRequestId }).expect(403);
     f.setActor("agent");
     await http(f.app).post(messagesUrl).send({ clientRequestId }).expect(403);
   });

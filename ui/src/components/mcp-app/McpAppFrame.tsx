@@ -78,7 +78,6 @@ export function McpAppFrame({
   const latest = useRef({ callTool, toolInput, toolResult, displayMode, onRequestDisplayMode, proposeMessage, updateModelContext });
   latest.current = { callTool, toolInput, toolResult, displayMode, onRequestDisplayMode, proposeMessage, updateModelContext };
   const hostRef = useRef<ReturnType<typeof createMcpAppHost> | null>(null);
-  // Capabilities are fixed for the life of a document: they are advertised in `ui/initialize`.
   const canProposeMessages = Boolean(proposeMessage);
   const canUpdateModelContext = Boolean(updateModelContext);
   const canChangeDisplayMode = Boolean(onRequestDisplayMode);
@@ -87,7 +86,10 @@ export function McpAppFrame({
   if (documentVersion.current.srcDoc !== srcDoc) {
     documentVersion.current = { srcDoc, version: documentVersion.current.version + 1 };
   }
-  const frameKey = `${generation}:${documentVersion.current.version}`;
+  // Capabilities are advertised once, in `ui/initialize`, so a change in them
+  // needs a new document and handshake, not a new host on the old document.
+  const capabilityKey = `${proposeMessage ? "m" : ""}${updateModelContext ? "c" : ""}${onRequestDisplayMode ? "d" : ""}`;
+  const frameKey = `${generation}:${documentVersion.current.version}:${capabilityKey}`;
 
   // Layout effect: the listener must exist before the view's first script posts `ui/initialize`.
   useLayoutEffect(() => {
@@ -159,7 +161,8 @@ export function McpAppFrame({
     };
     // srcDoc is captured by frameKey; tool input and result are read through `latest`.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [frameKey, viewId, toolName, canProposeMessages, canUpdateModelContext, canChangeDisplayMode]);
+    // The capability flags are part of frameKey.
+  }, [frameKey, viewId, toolName]);
 
   // The view hears about a mode change with its new container.
   const lastDisplayMode = useRef(displayMode);

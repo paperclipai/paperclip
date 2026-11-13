@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { McpIcon } from "@paperclipai/shared";
 import { TaskChatToolCard } from "./task-chat/TaskChatToolCard";
 import {
@@ -89,5 +89,36 @@ describe("provider icons in task chat tool rows", () => {
     expect(icons[0]!.tagName).toBe("IMG");
     expect(icons[0]!.getAttribute("referrerpolicy")).toBe("no-referrer");
     expect(icons[1]!.tagName.toLowerCase()).toBe("svg");
+  });
+
+  it("indexes a company's icons once and finds each row's icon in constant work at realistic size", async () => {
+    const ENTRIES = 500;
+    const ROWS = 600;
+    const big = Array.from({ length: ENTRIES }, (_, index) => ({
+      gatewayToolName: `mcp.app${index % 25}-${(index % 25).toString(16).padStart(8, "0")}:tool-${index}`,
+      icons: [PNG],
+    }));
+    const rawName = (index: number) => `mcp__paperclip__mcp.app${index % 25}-${(index % 25).toString(16).padStart(8, "0")}:tool-${index % ENTRIES}`;
+    const set = vi.spyOn(Map.prototype, "set");
+    const lookup = providerToolIconLookup(big);
+    // The index is built once: one insert per entry.
+    expect(set.mock.calls.length).toBe(ENTRIES);
+    set.mockRestore();
+    const get = vi.spyOn(Map.prototype, "get");
+    let found = 0;
+    for (let index = 0; index < ROWS; index += 1) if (lookup(rawName(index))) found += 1;
+    // At most two index reads per row (exact name, then without a duplicate suffix); no scans.
+    expect(get.mock.calls.length).toBeLessThanOrEqual(2 * ROWS);
+    get.mockRestore();
+    expect(found).toBe(ROWS);
+
+    const container = await render(
+      <ProviderToolIconsStaticProvider entries={big}>
+        {Array.from({ length: 300 }, (_, index) => (
+          <TaskChatToolCard key={index} item={{ kind: "tool", id: `t${index}`, name: `Tool ${index}`, rawName: rawName(index), status: "completed" }} />
+        ))}
+      </ProviderToolIconsStaticProvider>,
+    );
+    expect(container.querySelectorAll("img[data-provider-icon=true]")).toHaveLength(300);
   });
 });

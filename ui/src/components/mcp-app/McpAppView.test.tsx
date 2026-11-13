@@ -2,8 +2,11 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
+vi.mock("@/api/mcpApps", () => ({ mcpAppsApi: { messageSent: vi.fn(async () => ({ commentId: "c1" })) } }));
 import type { McpAppViewDetail } from "@paperclipai/shared";
-import { McpAppViewContent, type McpAppViewContentProps } from "./McpAppView";
+import { McpAppViewContent, useMcpAppMessageProposal, type McpAppViewContentProps } from "./McpAppView";
+import { McpAppFrame } from "./McpAppFrame";
+import { McpAppIssueProvider } from "./McpAppIssueContext";
 import { mcpAppNavigationGuardSupported } from "./mcp-app-host";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -85,5 +88,44 @@ describe("McpAppViewContent", () => {
     expect(onDisplayModeChange).toHaveBeenCalledWith("inline");
     await act(async () => root.unmount());
     container.remove();
+  });
+
+  it("starts a new frame when the host's capabilities change, so the view handshakes again", async () => {
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    const frame = (proposeMessage?: (text: string) => Promise<void>) => (
+      <McpAppFrame title="Circleback" viewId="view-1" toolName="DisplayMeetings" resource={detail.resource}
+        toolInput={{}} toolResult={{ content: [] }} callTool={async () => ({ content: [] })} proposeMessage={proposeMessage} />
+    );
+    await act(async () => root.render(frame()));
+    const first = container.querySelector("iframe");
+    await act(async () => root.render(frame(async () => undefined)));
+    expect(container.querySelector("iframe")).not.toBe(first);
+    await act(async () => root.unmount());
+  });
+
+  it("retries a failed Send with the same request id, so the comment is posted once", async () => {
+    const sendMessage = vi.fn()
+      .mockRejectedValueOnce(new Error("Network error"))
+      .mockResolvedValueOnce(undefined);
+    let api: ReturnType<typeof useMcpAppMessageProposal> | null = null;
+    function Harness() {
+      api = useMcpAppMessageProposal("issue-1", "view-1");
+      return null;
+    }
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    await act(async () => root.render(<McpAppIssueProvider issueId="issue-1" sendMessage={sendMessage}><Harness /></McpAppIssueProvider>));
+    let settled = false;
+    await act(async () => { void api!.proposeMessage!("Summarize m1").then(() => { settled = true; }); });
+    await act(async () => { api!.onSend!(); });
+    expect(api!.proposal).toMatchObject({ status: "error" });
+    expect(settled).toBe(false);
+    await act(async () => { api!.onSend!(); });
+    expect(sendMessage).toHaveBeenCalledTimes(2);
+    expect(sendMessage.mock.calls[0]![1]).toBe(sendMessage.mock.calls[1]![1]);
+    expect(settled).toBe(true);
+    expect(api!.proposal).toBeNull();
+    await act(async () => root.unmount());
   });
 });

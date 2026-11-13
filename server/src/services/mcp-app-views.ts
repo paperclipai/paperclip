@@ -1,4 +1,4 @@
-import { and, desc, eq, isNotNull } from "drizzle-orm";
+import { and, desc, eq, isNotNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { toolMcpAppViews } from "@paperclipai/db";
 import {
@@ -155,14 +155,18 @@ export function mcpAppViewsService(db: Db) {
      * Returns whether anything changed, so identical updates are not logged.
      */
     async setModelContext(companyId: string, viewId: string, context: McpAppModelContext | null): Promise<boolean> {
-      const [current] = await db.select({ modelContext: toolMcpAppViews.modelContext }).from(toolMcpAppViews)
-        .where(and(eq(toolMcpAppViews.companyId, companyId), eq(toolMcpAppViews.id, viewId))).limit(1);
-      if (!current) return false;
-      if (JSON.stringify(current.modelContext ?? null) === JSON.stringify(context)) return false;
-      await db.update(toolMcpAppViews)
+      // One atomic write. jsonb equality ignores key order, so an identical
+      // update after a reload is not mistaken for a change.
+      const value = context === null ? null : JSON.stringify(context);
+      const updated = await db.update(toolMcpAppViews)
         .set({ modelContext: context, modelContextUpdatedAt: context ? new Date() : null })
-        .where(and(eq(toolMcpAppViews.companyId, companyId), eq(toolMcpAppViews.id, viewId)));
-      return true;
+        .where(and(
+          eq(toolMcpAppViews.companyId, companyId),
+          eq(toolMcpAppViews.id, viewId),
+          sql`${toolMcpAppViews.modelContext} IS DISTINCT FROM ${value}::jsonb`,
+        ))
+        .returning({ id: toolMcpAppViews.id });
+      return updated.length > 0;
     },
 
     /** The current app context for a task's next run, newest first and bounded. */

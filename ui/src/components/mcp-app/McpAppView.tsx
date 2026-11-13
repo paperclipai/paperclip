@@ -163,10 +163,12 @@ function sendErrorMessage(error: unknown): string {
  * The view's `ui/message` proposals. At most one waits per view; the view
  * hears "sent" only after the viewer clicked Send and the comment went out.
  */
-function useMessageProposal(issueId: string, viewId: string) {
+export function useMcpAppMessageProposal(issueId: string, viewId: string) {
   const sendMessage = useMcpAppSendMessage();
   const [proposal, setProposal] = useState<McpAppMessageProposal | null>(null);
-  const pending = useRef<{ text: string; resolve: () => void; reject: (error: Error) => void } | null>(null);
+  // One request id per proposal: a retry after a lost response reuses it, so
+  // the comment endpoint's duplicate protection keeps it to one comment.
+  const pending = useRef<{ text: string; clientRequestId: string; resolve: () => void; reject: (error: Error) => void } | null>(null);
 
   useEffect(() => () => {
     pending.current?.reject(new Error("The view was closed"));
@@ -178,7 +180,7 @@ function useMessageProposal(issueId: string, viewId: string) {
       reject(new Error("A message from this view is already waiting for the user"));
       return;
     }
-    pending.current = { text, resolve, reject };
+    pending.current = { text, clientRequestId: crypto.randomUUID(), resolve, reject };
     setProposal({ text, status: "pending" });
   }), []);
 
@@ -186,7 +188,7 @@ function useMessageProposal(issueId: string, viewId: string) {
     const current = pending.current;
     if (!current || !sendMessage) return;
     setProposal({ text: current.text, status: "sending" });
-    const clientRequestId = crypto.randomUUID();
+    const { clientRequestId } = current;
     try {
       await sendMessage(current.text, clientRequestId);
     } catch (error) {
@@ -231,12 +233,17 @@ export function McpAppView({ issueId, view, displayName, displayMode, onDisplayM
     (name: string, args: Record<string, unknown>) => mcpAppsApi.callTool(issueId, view.id, name, args),
     [issueId, view.id],
   );
-  const { proposeMessage, proposal, onSend, onDismiss } = useMessageProposal(issueId, view.id);
+  const { proposeMessage, proposal, onSend, onDismiss } = useMcpAppMessageProposal(issueId, view.id);
   // Context goes with messages: a viewer who can't post here can't steer the agent either.
-  const updateModelContext = useCallback(
-    async (context: McpAppModelContext | null) => { await mcpAppsApi.updateModelContext(issueId, view.id, context); },
-    [issueId, view.id],
-  );
+  // Writes are ordered per view, across frames: a write from a frame replaced
+  // by the full-screen one always lands before the new frame's writes.
+  const contextWrites = useRef<Promise<unknown>>(Promise.resolve());
+  const updateModelContext = useCallback((context: McpAppModelContext | null) => {
+    const write = contextWrites.current.catch(() => undefined)
+      .then(() => mcpAppsApi.updateModelContext(issueId, view.id, context));
+    contextWrites.current = write;
+    return write.then(() => undefined);
+  }, [issueId, view.id]);
   return (
     <McpAppViewContent
       detail={query.data}

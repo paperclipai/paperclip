@@ -80,12 +80,14 @@ export function mcpAppsRoutes(db: Db, toolGateway: McpAppsGateway) {
 
   /**
    * Acting on a view for the agent (its context, its messages) is the viewer's
-   * own act on the task: a signed-in person who may comment on it. Agents and
-   * API keys cannot.
+   * own act on the task: a signed-in person who may comment on it. Agents,
+   * board API keys and MCP clients cannot.
    */
   async function viewerWhoMayComment(req: Request, res: Response): Promise<string | null> {
     const issue = res.locals.mcpAppIssue as McpAppIssue;
-    const userId = req.actor.type === "board" ? req.actor.userId : undefined;
+    // A person in the app, not a board API key or an MCP client acting for them.
+    const interactive = req.actor.source === "session" || req.actor.source === "local_implicit" || req.actor.source === "cloud_tenant";
+    const userId = req.actor.type === "board" && interactive ? req.actor.userId : undefined;
     if (!userId) {
       res.status(403).json({ error: "Only a signed-in person viewing the task can do this" });
       return null;

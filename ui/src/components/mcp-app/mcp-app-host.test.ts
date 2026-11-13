@@ -184,6 +184,22 @@ describe("view requests that act for the user", () => {
     expect(updateModelContext).toHaveBeenCalledTimes(2);
   });
 
+  it("drops a torn-down view's queued context updates", async () => {
+    let release!: () => void;
+    const updateModelContext = vi.fn(async () => { if (!release) await new Promise<void>((resolve) => { release = resolve; }); });
+    const { host } = setup({ updateModelContext });
+    init(host);
+    host.receive({ jsonrpc: "2.0", method: "ui/notifications/initialized" });
+    host.receive({ jsonrpc: "2.0", id: 1, method: "ui/update-model-context", params: { content: [{ type: "text", text: "first" }] } });
+    host.receive({ jsonrpc: "2.0", id: 2, method: "ui/update-model-context", params: { content: [{ type: "text", text: "stale" }] } });
+    await flush();
+    host.teardown();
+    release();
+    await flush();
+    await flush();
+    expect(updateModelContext).toHaveBeenCalledTimes(1);
+  });
+
   it("switches display mode only to a mode both the host and the view support", async () => {
     let mode: "inline" | "fullscreen" = "inline";
     const setDisplayMode = vi.fn((next: "inline" | "fullscreen") => { mode = next; });
