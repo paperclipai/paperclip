@@ -19,9 +19,21 @@ type Failure = { count: number; status: number; message: string; details?: unkno
  */
 export class RepeatedToolFailureGuard {
   readonly #failures = new Map<string, Failure>();
+  // Identical calls a model sends in parallel run one after another, so each
+  // sees the failures before it. Different calls never wait on each other.
+  readonly #inFlight = new Map<string, Promise<unknown>>();
 
-  async run<T>(call: ToolCall, execute: () => Promise<T>): Promise<T> {
+  run<T>(call: ToolCall, execute: () => Promise<T>): Promise<T> {
     const key = callKey(call);
+    const previous = this.#inFlight.get(key);
+    const current = previous ? previous.then(() => this.#run(key, call, execute), () => this.#run(key, call, execute)) : this.#run(key, call, execute);
+    const settled = current.then(() => undefined, () => undefined);
+    this.#inFlight.set(key, settled);
+    void settled.then(() => { if (this.#inFlight.get(key) === settled) this.#inFlight.delete(key); });
+    return current;
+  }
+
+  async #run<T>(key: string, call: ToolCall, execute: () => Promise<T>): Promise<T> {
     const prior = this.#failures.get(key);
     if (prior && prior.count >= REPEATED_TOOL_FAILURE_LIMIT) {
       throw new HttpError(prior.status, `This call was not run: ${call.tool} already failed ${prior.count} times in this run with these exact arguments. `
@@ -35,7 +47,8 @@ export class RepeatedToolFailureGuard {
     } catch (error) {
       const failure = deterministicFailure(error);
       if (!failure) throw error;
-      const count = prior && prior.message === failure.message && prior.status === failure.status ? prior.count + 1 : 1;
+      const latest = this.#failures.get(key);
+      const count = latest && latest.message === failure.message && latest.status === failure.status ? latest.count + 1 : 1;
       this.#remember(key, { ...failure, count });
       if (count < REPEATED_TOOL_FAILURE_LIMIT) throw error;
       throw new HttpError(failure.status, `${failure.message} This exact call has now failed ${count} times with the same arguments. `

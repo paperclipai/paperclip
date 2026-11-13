@@ -73,4 +73,23 @@ describe("repeated identical failing tool calls", () => {
     expect(errors.map(error => error?.message)).toEqual(["refusal 1", "refusal 2", "refusal 3"]);
     expect(authority.execute).toHaveBeenCalledTimes(3);
   });
+  it("counts identical calls sent in parallel and runs at most two of them", async () => {
+    const { authority, epoch } = epochWith(async () => { await new Promise(resolve => setTimeout(resolve, 5)); throw badRequest("body is required"); });
+    const errors = await Promise.all([1, 2, 3, 4].map(n => failure(epoch, { tool: "call_api", callId: `p${n}`, arguments: dropped })));
+    expect(authority.execute).toHaveBeenCalledTimes(2);
+    expect(errors[0]?.message).toBe("body is required");
+    expect(errors[1]?.message).toContain("failed 2 times with the same arguments");
+    expect(errors[2]?.message).toMatch(/^This call was not run/);
+    expect(errors[3]?.message).toMatch(/^This call was not run/);
+  });
+
+  it("does not hold back a different call while an identical one runs", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const { epoch } = epochWith(async call => { if (call.callId === "slow") await gate; return call.callId; });
+    const slow = epoch.execute({ tool: "list_agents", callId: "slow", arguments: {} });
+    await expect(epoch.execute({ tool: "list_projects", callId: "other", arguments: {} })).resolves.toBe("other");
+    release();
+    await expect(slow).resolves.toBe("slow");
+  });
 });
