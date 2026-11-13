@@ -2,7 +2,7 @@ import { notifyMuseContactVerification } from "../modules/external-agents/index.
 import { idleApiActivity } from "../services/idle-api-activity.js";
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { Request, RequestHandler } from "express";
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, exists, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -29,7 +29,7 @@ import { isUuidLike, normalizeAgentApiKeyScope, type DeploymentMode } from "@pap
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
 import { localAgentProcessBoundary, type LocalAgentProcessBoundary } from "./local-agent-process-boundary.js";
-import { captureRunIdentity } from "../services/run-identity.js";
+import { resolveRequestRunIdentity } from "../services/run-identity.js";
 import { boardAuthService } from "../services/board-auth.js";
 import { retryIdempotentDatabaseOperation } from "../database-retry.js";
 import { beginIdleTrackedWork } from "../services/task-admission.js";
@@ -70,53 +70,33 @@ function invalidAgentTokenMessage(token: string) {
   return "Agent token did not verify; obtain fresh credentials and retry";
 }
 
-async function resolveLegacyRunResponsibleUserId(
-  db: Db,
-  input: { companyId: string; agentId: string; runId: string },
-) {
-  if (!isUuidLike(input.runId)) return null;
-  const run = await db
-    .select({ responsibleUserId: heartbeatRuns.responsibleUserId })
-    .from(heartbeatRuns)
-    .where(
-      and(
-        eq(heartbeatRuns.id, input.runId),
-        eq(heartbeatRuns.companyId, input.companyId),
-        eq(heartbeatRuns.agentId, input.agentId),
-      ),
-    )
-    .then((rows) => rows[0] ?? null);
-  return normalizeOptionalString(run?.responsibleUserId);
-}
+const agentAuthenticationFields = {
+  companyId: agents.companyId,
+  status: agents.status,
+  lifecycleHolds: agents.lifecycleHolds,
+};
 
 async function loadResponsibleUserMemberships(
   db: Db,
   input: { companyId: string; userId: string | null },
 ) {
   if (!input.userId) return [];
-  const [user, memberships] = await Promise.all([
-    db
-      .select({ id: authUsers.id })
-      .from(authUsers)
-      .where(eq(authUsers.id, input.userId))
-      .then((rows) => rows[0] ?? null),
-    db
-      .select({
-        companyId: companyMemberships.companyId,
-        membershipRole: companyMemberships.membershipRole,
-        status: companyMemberships.status,
-      })
-      .from(companyMemberships)
-      .where(
-        and(
-          eq(companyMemberships.companyId, input.companyId),
-          eq(companyMemberships.principalType, "user"),
-          eq(companyMemberships.principalId, input.userId),
-          eq(companyMemberships.status, "active"),
-        ),
+  return db
+    .select({
+      companyId: companyMemberships.companyId,
+      membershipRole: companyMemberships.membershipRole,
+      status: companyMemberships.status,
+    })
+    .from(companyMemberships)
+    .where(
+      and(
+        eq(companyMemberships.companyId, input.companyId),
+        eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.principalId, input.userId),
+        eq(companyMemberships.status, "active"),
+        exists(db.select({ id: authUsers.id }).from(authUsers).where(eq(authUsers.id, input.userId))),
       ),
-  ]);
-  return user ? memberships : [];
+    );
 }
 
 /**
@@ -323,7 +303,8 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       return;
     }
 
-    const boardKey = await boardAuth.findBoardApiKeyByToken(token);
+    const verifiedClaims = verifyLocalAgentJwt(token);
+    const boardKey = verifiedClaims ? null : await boardAuth.findBoardApiKeyByToken(token);
     if (boardKey) {
       const access = await boardAuth.resolveBoardAccess(boardKey.userId);
       if (access.user) {
@@ -348,22 +329,21 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       }
     }
 
-    const tokenHash = hashToken(token);
-    const key = await db
+    const key = verifiedClaims ? null : await db
       .select()
       .from(agentApiKeys)
-      .where(and(eq(agentApiKeys.keyHash, tokenHash), isNull(agentApiKeys.revokedAt)))
+      .where(and(eq(agentApiKeys.keyHash, hashToken(token)), isNull(agentApiKeys.revokedAt)))
       .then((rows) => rows[0] ?? null);
 
     if (!key) {
-      const claims = verifyLocalAgentJwt(token);
+      const claims = verifiedClaims;
       if (!claims) {
         next(unauthorized(invalidAgentTokenMessage(token)));
         return;
       }
 
       const agentRecord = await db
-        .select()
+        .select(agentAuthenticationFields)
         .from(agents)
         .where(eq(agents.id, claims.sub))
         .then((rows) => rows[0] ?? null);
@@ -422,11 +402,9 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           code: conversation ? "conversation_turn_cancelled" : "agent_run_cancelled" });
         return;
       }
-      if (identityRun?.activeIdentityContextId && identityRun.status === "running") {
-        const captured = await captureRunIdentity(db, { companyId: claims.company_id, agentId: claims.sub, runId: claims.run_id },
-          { readScope: "request_authentication" });
-        identityRun.activeIdentityContextId = captured.context?.id ?? null;
-        identityRun.responsibleUserId = captured.context?.responsibleUserId ?? null;
+      if (identityRun) {
+        Object.assign(identityRun, await resolveRequestRunIdentity(db,
+          { companyId: claims.company_id, agentId: claims.sub, runId: claims.run_id }, identityRun));
       }
       if (claims.authorizing_user_id) {
         // This signed projection exists only for internal native tools. Recheck
@@ -455,11 +433,9 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         ? identityRun.responsibleUserId
         : claims.responsible_user_id !== undefined
         ? normalizeOptionalString(claims.responsible_user_id)
-        : await resolveLegacyRunResponsibleUserId(db, {
-            companyId: claims.company_id,
-            agentId: claims.sub,
-            runId: claims.run_id,
-          });
+        : isUuidLike(claims.run_id)
+        ? normalizeOptionalString(identityRun?.responsibleUserId)
+        : null;
       const onBehalfOfMemberships = await loadResponsibleUserMemberships(db, {
         companyId: claims.company_id,
         userId: onBehalfOfUserId,
@@ -488,7 +464,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       .where(eq(agentApiKeys.id, key.id));
 
     const agentRecord = await db
-      .select()
+      .select(agentAuthenticationFields)
       .from(agents)
       .where(eq(agents.id, key.agentId))
       .then((rows) => rows[0] ?? null);

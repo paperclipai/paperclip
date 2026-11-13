@@ -9,6 +9,54 @@ use serde_json::{json, Value};
 
 const PROJECTED_INPUT_PROVIDER_ID: &str = "input / réquest";
 
+static BACKGROUND_TASKS: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+
+fn background_tasks_mode(snapshot: bool) -> Option<String> {
+    let path = BACKGROUND_TASKS.get()?.as_ref()?;
+    let modes = std::fs::read_to_string(path).unwrap_or_default();
+    let mut tokens = modes.split_whitespace();
+    let terminal = tokens.next().unwrap_or("").to_owned();
+    if !snapshot {
+        return Some(terminal);
+    }
+    Some(
+        tokens
+            .find_map(|token| token.strip_prefix("snapshot-"))
+            .map(str::to_owned)
+            .unwrap_or(terminal),
+    )
+}
+
+fn background_tasks_value(mode: &str) -> Option<Value> {
+    match mode {
+        "quiet" => Some(json!({"live":0})),
+        "live" => Some(json!({"live":1})),
+        "malformed" => Some(json!({"live":"0"})),
+        _ => None,
+    }
+}
+
+fn apply_background_snapshot(response: &mut Value, id: u64, idle: bool) {
+    let Some(mode) = background_tasks_mode(true) else {
+        return;
+    };
+    if mode == "reject" {
+        *response = json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,"id":id,"ok":false,
+            "error":{"code":"temporarily_unavailable","message":"Snapshot is unavailable.","retryable":true}});
+        return;
+    }
+    let result = &mut response["result"];
+    if idle {
+        result["turnId"] = Value::Null;
+        result["pendingToolCount"] = json!(0);
+        result["pendingInputCount"] = json!(0);
+        result["pendingRuntimeRequests"] = json!([]);
+    }
+    if let Some(tasks) = background_tasks_value(&mode) {
+        result["backgroundTasks"] = tasks;
+    }
+}
+
 fn main() {
     if let Err(error) = run() {
         eprintln!("fake-acpx-sidecar: {error}");
@@ -34,6 +82,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .map(|pair| pair[1].parse::<u64>())
         .transpose()?;
     let mut opened_identity: Option<Value> = None;
+    let _ = BACKGROUND_TASKS.set(
+        args.windows(2)
+            .find(|pair| pair[0] == "--background-tasks")
+            .map(|pair| pair[1].clone()),
+    );
     let lifetime_fence_candidates = args
         .windows(2)
         .find(|pair| pair[0] == "--lifetime-fence-ports")
@@ -188,6 +241,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     "turnId":if fault == "active" {json!("unexpected-turn")} else {json!(source_pending_completion)},
                     "pendingToolCount":if fault == "tool" || source_pending_completion.is_some() {1} else {0}, "pendingInputCount":0,
                     "pendingRuntimeRequests":[]});
+            }
+            if command == "session.snapshot" {
+                apply_background_snapshot(&mut response, id, false);
             }
             if command == "session.snapshot" && fault == "foreign-snapshot" {
                 response["result"]["identity"]["agentSessionId"] = json!("foreign-session");
@@ -379,13 +435,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     json!({"type":"text_delta", "text":"Completed fake ACPX work."}),
                 )?;
                 next_sequence += 1;
+                let status = background_tasks_mode(true)
+                    .and_then(|_| std::fs::read_to_string(BACKGROUND_TASKS.get()?.as_ref()?).ok())
+                    .and_then(|modes| {
+                        modes
+                            .split_whitespace()
+                            .find_map(|token| token.strip_prefix("status-").map(str::to_owned))
+                    })
+                    .unwrap_or_else(|| "completed".to_owned());
                 write_turn_event(
                     &mut stdout,
                     next_sequence,
                     "runtime.turn_terminal",
                     &source_run,
                     turn,
-                    json!({"status":"completed"}),
+                    json!({"status":status}),
                 )?;
                 next_sequence += 1;
             }
@@ -745,6 +809,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         }
                         continue;
                     }
+                }
+                if command == "session.snapshot" {
+                    apply_background_snapshot(&mut response, id, true);
                 }
                 if command == "session.suspend" {
                     if let Some(delay_ms) = suspend_delay_ms {
@@ -1365,8 +1432,15 @@ fn write_turn_event(
     event_type: &str,
     run_id: &str,
     turn_id: &str,
-    payload: Value,
+    mut payload: Value,
 ) -> io::Result<()> {
+    if event_type == "runtime.turn_terminal" {
+        if let Some(tasks) =
+            background_tasks_mode(false).and_then(|mode| background_tasks_value(&mode))
+        {
+            payload["backgroundTasks"] = tasks;
+        }
+    }
     write_json(
         output,
         &json!({

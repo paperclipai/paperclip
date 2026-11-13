@@ -63,7 +63,10 @@ for `0.25`), so Honeycomb's `COUNT` and percentiles are weighted correctly.
 
 Volume per sampled session: one `page.load` span per navigation, up to three
 `web_vital.*` spans per page lifetime, and one span per same-origin `/api/`
-request made during a measured navigation or after the SDK loads.
+request that starts while a navigation is being measured (see
+[Live API spans](#live-api-spans)). Requests made while no navigation is being
+measured, such as background polling in an idle tab, send nothing, and request
+spans carry no span events.
 
 ## Load-speed cost
 
@@ -193,8 +196,36 @@ URLs, server addresses, status messages, and event attributes, is dropped.
 | --- | --- |
 | `page.load` | One per hard load or client navigation. |
 | `web_vital.lcp`, `web_vital.inp`, `web_vital.cls` | Core Web Vitals, from Google's `web-vitals`, usually reported as the tab hides. Zero duration; the value is an attribute. |
-| `GET`, `POST`, … | A `fetch` to this origin's `/api/`. Its `traceparent` header joins the server's request span to the same trace. While a `page.load` span is open it is the parent, so one trace shows the navigation, its API calls, and (when server tracing is on) their server spans. |
+| `GET`, `POST`, … | A `fetch` to this origin's `/api/` that starts while a `page.load` span is open, as its child. Its `traceparent` header joins the server's request span to the same trace, so one trace shows the navigation, its API calls, and (when server tracing is on) their server spans. See below. |
 | `HTTP` | A request to this origin's `/api/` made before the SDK loaded, during a measured navigation (in practice the hard load), rebuilt from Resource Timing. See below. |
+
+### Live API spans
+
+The rule: **a `fetch` to this origin's `/api/` is recorded only when it starts
+while a `page.load` measurement is open.** It is a child of that `page.load`
+and sends a `traceparent`, even if it finishes after the navigation ends.
+
+A request that starts while no measurement is open (background polling, a
+refetch after a live update, a mutation in a page that already loaded) gets no
+span and no `traceparent`. The fetch instrumentation receives a non-recording
+span with an invalid trace context for it, so nothing is exported and the
+standard trace context propagator sends no header
+(`measuredRequestsOnly` in `ui/src/lib/browser-tracing/sdk.ts`). The server
+traces such a request on its own, exactly as it does for a tab that is not
+sampled. There is therefore no browser span without a `page.load` parent and
+no server span that points at a browser span that was never sent.
+
+Failed idle requests are not kept either: the server's own request span
+already records a server error, and keeping them would mean recording every
+idle request and sending its `traceparent` before its status is known.
+
+Request spans carry **no span events**. The fetch instrumentation runs with
+`ignoreNetworkEvents: true`, so the per-request Resource Timing events
+(`fetchStart`, `domainLookupStart`, `domainLookupEnd`, `connectStart`,
+`secureConnectionStart`, `connectEnd`, `requestStart`, `responseStart`,
+`responseEnd`) are not sent. Honeycomb stores each span event as its own
+event, so they multiplied request volume by about 10, and the span's own
+duration already covers the request.
 
 ### Backfilled API spans
 
@@ -250,7 +281,8 @@ not sent here because Sentry already reports them
 ([observability.md](observability.md#sentry-error-monitoring)).
 
 Trace headers go only to this origin (`propagateTraceHeaderCorsUrls` is empty),
-so no third party receives a `traceparent`. Same-origin requests need no CORS
+and only on requests that start during a measured navigation, so no third
+party receives a `traceparent`. Same-origin requests need no CORS
 change. The server's OpenTelemetry HTTP instrumentation continues the trace
 when server tracing is enabled ([observability.md](observability.md#enabling-tracing)).
 

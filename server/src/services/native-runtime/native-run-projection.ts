@@ -19,7 +19,8 @@ import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js"
 import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
 import { isNewTerminalRunFailure, reportRunFailure } from "../run-failure-report.js";
 import { nativeRunnerOwnershipNotHeldCondition } from "./native-runner-ownership.js";
-import { explainFailedRun, NATIVE_RUN_FAILED_UNEXPLAINED } from "./native-run-failure-explanation.js";
+import { explainFailedRun, explainNativeTurnFailure, NATIVE_RUN_FAILED_UNEXPLAINED } from "./native-run-failure-explanation.js";
+import { readNativeTurnFailureDiagnostic } from "./native-provider-failure.js";
 
 
 export function projectNativeTerminalRunStatus(
@@ -161,7 +162,7 @@ export async function projectCommittedRun(input: {
   const projected = await input.db.transaction(async transaction => {
     const tx = transaction as unknown as Db;
     const [before] = await tx.select({ status: heartbeatRuns.status, runtimeMode: heartbeatRuns.runtimeMode,
-      nativePhase: heartbeatRuns.nativePhase, finishedAt: heartbeatRuns.finishedAt })
+      nativePhase: heartbeatRuns.nativePhase, finishedAt: heartbeatRuns.finishedAt, resultJson: heartbeatRuns.resultJson })
       .from(heartbeatRuns).where(needsRepair).for("update").limit(1);
     if (!before) return null;
     await notifyExternalAgentSettlement(tx, { companyId: input.run.companyId, runId: input.run.id });
@@ -195,9 +196,10 @@ export async function projectCommittedRun(input: {
                 || jsonb_build_object('finalizationPhase', 'committed', 'failureCode', null, 'originalFailureCode', null, 'nextAttemptAt', null)`,
             }
           : {
-              // A failed accepted result keeps any recorded cause, and otherwise
-              // names the unexplained failure.
-              ...(terminalState === "failed" ? explainFailedRun(NATIVE_RUN_FAILED_UNEXPLAINED, { preserveCancelled: false }) : {}),
+              // A failed accepted result keeps any recorded cause, then names a
+              // recorded runner turn failure, and otherwise the unexplained failure.
+              ...(terminalState === "failed" ? explainFailedRun(explainNativeTurnFailure(readNativeTurnFailureDiagnostic(
+                before.resultJson?.nativeTurnFailure)) ?? NATIVE_RUN_FAILED_UNEXPLAINED, { preserveCancelled: false }) : {}),
               resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || jsonb_build_object('finalizationPhase', 'committed', 'failureCode', null, 'originalFailureCode', null, 'nextAttemptAt', null)`,
             }),
         updatedAt: now,
