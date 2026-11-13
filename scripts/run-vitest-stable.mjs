@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { loadShardDurations, selectGeneralServerShard } from "./general-server-shard.mjs";
 import { invocationEnv } from "./ci-profile/record.mjs";
 import { vitestRetryArgs } from "./ci/vitest-retry.mjs";
+import { startResourceSampler } from "./ci/resource-sampler.mjs";
 
 import { assertSelectedTests, partitionTestLines } from "./test-line-shard.mjs";
 import { loadSelection, selectedShard } from "./ci/test-selection-manifest.mjs";
@@ -470,6 +471,7 @@ async function runVitest(args, label, testShard = null, exactFiles = false) {
     const runFilters = selected.lines.map((line) => `${chatSuite}:${chatSuiteRunLine(sourceLines, line)}`);
     args = [...args.filter((arg) => arg !== chatSuite), ...runFilters, "--allowOnly=false"];
   }
+  const stopSampler = startResourceSampler(label);
   await new Promise((resolve, reject) => {
     const command = exactFiles ? process.execPath : "pnpm";
     const prefix = exactFiles ? [path.join(scriptsDir, "ci/run-selected-vitest.mjs")] : ["exec", "vitest", "run"];
@@ -484,7 +486,7 @@ async function runVitest(args, label, testShard = null, exactFiles = false) {
       if (code === 0) resolve();
       else reject(new Error(`${label} failed (${signal ?? code})`));
     });
-  });
+  }).finally(stopSampler);
 }
 
 async function runGeneralSuites(routeTests, chatShards) {
@@ -510,8 +512,12 @@ async function runProjectGroup(projects, groupName, shardIndex = null, shardCoun
   }
 }
 
+function serverShardWorkers(shardIndex) {
+  return [3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5][shardIndex ?? 0] ?? 3;
+}
+
 function chatShardWorkers(index, count) {
-  const workers = count > 1 && !hasSharedTestDatabase && !options.serialChat ? 2 : 1;
+  const workers = count > 1 && !hasSharedTestDatabase && !options.serialChat ? 3 : 1;
   return Array.from({ length: workers }, (_, offset) => ({
     index: (index ?? 0) * workers + offset,
     count: (count ?? 1) * workers,
@@ -568,7 +574,7 @@ async function runGeneralGroup(routeTests, groupName, shardIndex = null, shardCo
           // An explicit shared test database cannot be isolated this way.
           ...(hasSharedTestDatabase
             ? serializedServerVitestArgs
-            : ["--pool=forks", "--isolate", "--fileParallelism", "--maxWorkers=3"]),
+            : ["--pool=forks", "--isolate", "--fileParallelism", `--maxWorkers=${serverShardWorkers(shardIndex)}`]),
           ...shardFiles,
         ],
         `${groupName} shard ${shardIndex + 1}/${shardCount}`,
@@ -745,7 +751,7 @@ try {
       const serverArgs = project !== "@paperclipai/server" ? []
         : options.mode === serializedModeName || hasSharedTestDatabase
           ? ["--pool=forks", "--isolate", ...serializedServerVitestArgs]
-          : ["--pool=forks", "--isolate", "--fileParallelism", "--maxWorkers=3"];
+          : ["--pool=forks", "--isolate", "--fileParallelism", `--maxWorkers=${serverShardWorkers(options.shardIndex)}`];
       await runVitest(["--project", project, ...serverArgs, ...files],
         `selected ${project}: ${files.length} files`, null, true);
     }
