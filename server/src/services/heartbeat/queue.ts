@@ -909,7 +909,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
 
   /** System continuations that only make sense for an open task. */
   const SYSTEM_CONTINUATION_WAKE_REASONS = new Set(["issue_recovery_action_restored", "issue_continuation_needed",
-    "issue_assignment_recovery", ISSUE_BLOCKER_STALLED_WAKE_REASON]);
+    "issue_assignment_recovery", ISSUE_BLOCKER_STALLED_WAKE_REASON, "issue_children_completed"]);
 
   /**
    * Cancels a system continuation whose task closed while it was queued,
@@ -985,9 +985,11 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     // A system continuation queued while its task was open has nothing left to
     // do once another run finished or cancelled the task before this one
     // started. A person's message on a done task is not one of these reasons.
-    const systemContinuationReason = readNonEmptyString(parseObject(run.contextSnapshot).wakeReason);
-    const continuedIssueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
-    if (systemContinuationReason && SYSTEM_CONTINUATION_WAKE_REASONS.has(systemContinuationReason) && continuedIssueId) {
+    const runContext = parseObject(run.contextSnapshot);
+    const systemContinuationReason = readNonEmptyString(runContext.wakeReason);
+    const continuedIssueId = readNonEmptyString(runContext.issueId);
+    if (systemContinuationReason && SYSTEM_CONTINUATION_WAKE_REASONS.has(systemContinuationReason) && continuedIssueId
+      && runContext.onboardingCompletion !== true) {
       const [target] = await db.select({ status: issues.status }).from(issues)
         .where(and(eq(issues.companyId, run.companyId), eq(issues.id, continuedIssueId)));
       if (target && ["done", "cancelled"].includes(target.status)) {
@@ -2360,10 +2362,18 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         eq(agentWakeupRequests.requestedByActorType, "user")))
       : [];
     const userRequestIds = new Set(userRequests.map(row => row.id));
+    const joinedUserRequests = queuedRuns.length > 1
+      ? await db.select({ runId: agentWakeupRequests.runId }).from(agentWakeupRequests).where(and(
+        eq(agentWakeupRequests.companyId, agent.companyId), inArray(agentWakeupRequests.runId, queuedRuns.map(run => run.id)),
+        eq(agentWakeupRequests.agentId, agent.id), eq(agentWakeupRequests.requestedByActorType, "user")))
+      : [];
+    const userRunIds = new Set(joinedUserRequests.flatMap(row => row.runId ? [row.runId] : []));
+    const requestedByUser = (run: typeof heartbeatRuns.$inferSelect) =>
+      userRunIds.has(run.id) || Boolean(run.wakeupRequestId && userRequestIds.has(run.wakeupRequestId));
     const sourceRunIdOf = (run: typeof heartbeatRuns.$inferSelect) =>
       readNonEmptyString(parseObject(run.contextSnapshot).previousRunId) ?? run.retryOfRunId ?? null;
     const recoveryRuns = queuedRuns.filter(run => isSystemRecoveryRun({ wakeReason: wakeReasonOf(run),
-      requestedByUser: Boolean(run.wakeupRequestId && userRequestIds.has(run.wakeupRequestId)) }));
+      requestedByUser: requestedByUser(run) }));
     const sourceRunIds = [...new Set(recoveryRuns.flatMap(run => sourceRunIdOf(run) ?? []))];
     const sourceRows = queuedRuns.length > 1 && sourceRunIds.length
       ? await db.select({ id: heartbeatRuns.id, finishedAt: heartbeatRuns.finishedAt }).from(heartbeatRuns)
@@ -2392,7 +2402,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         id: run.id,
         createdAt: run.createdAt,
         wakeReason: wakeReasonOf(run),
-        requestedByUser: Boolean(run.wakeupRequestId && userRequestIds.has(run.wakeupRequestId)),
+        requestedByUser: requestedByUser(run),
         sourceEndedAt: sourceRunId ? sourceEndedAt.get(sourceRunId) ?? null : null,
         readinessRank: issueId ? (ready ? (issue?.status === "in_progress" ? 0 : 1) : 3) : 2,
         priorityRank: issueRunPriorityRank(issue?.priority),

@@ -19,7 +19,7 @@ import type {
   PersistedHarnessSession,
   PersistedHarnessTurnTerminal,
 } from "../../contracts/harness-driver.js";
-import { NativeSessionProtocolIntegrityError, nativeRestartInterruptedTurnId } from "../../contracts/native-session-backend.js";
+import { NativeSessionProtocolIntegrityError, isNativeProviderRecoveryDeadlineError, nativeRestartInterruptedTurnId } from "../../contracts/native-session-backend.js";
 import { HarnessReconciliationError, isRunnerResumeStateUnavailable, PROVIDER_SIDE_EFFECT_PENDING, PROVIDER_STATE_INCOMPATIBLE, runnerRecoveryFailureClass } from "../../contracts/harness-driver.js";
 import {
   CODEX_CODEX_PROTOCOL_VERSION,
@@ -117,7 +117,7 @@ function bootstrapCancellation(
     // until its pending RPCs have been rejected and TERM/KILL cleanup has
     // completed. The cancellation reason remains authoritative if cleanup
     // itself reports a secondary failure.
-    void close().then(
+    void close(isNativeProviderRecoveryDeadlineError(signal?.reason) && transport.recoversForStop?.() !== true).then(
       () =>
         rejectAborted(signal?.reason ?? new Error("Codex bootstrap aborted")),
       () =>
@@ -472,9 +472,9 @@ export class CodexAppServerDriver implements HarnessDriver {
     // A recovery whose Runner command timed out or lost its transport detaches
     // from the Runner, as a restart does, for the same run's next
     // reattachment: the Runner may still own an in-flight turn, and stopping
-    // or killing it loses the turn. An abort (a Stop or the recovery
-    // deadline), identity refusals, other recovery failures and protocol
-    // integrity faults still close and stop it.
+    // or killing it loses the turn. The provider recovery deadline detaches
+    // the same way. A Stop, identity refusals, other recovery failures and
+    // protocol integrity faults still close and stop it.
     const cancellation = bootstrapCancellation(transport, options.signal);
     try {
       await cancellation.wait(this.#persistProcessOwnership(transport));

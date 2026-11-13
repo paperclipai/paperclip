@@ -3,6 +3,7 @@ import { companies, environmentLeases, executionWorkspaces, heartbeatRuns, issue
 import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
 import { writeEnvironmentCleanup } from "./environment-cleanup-notifications.js";
+import { reusableSandboxNotKeptAfterReplacementSql } from "./reusable-sandbox-kept-marker.js";
 import {
   ABANDONED_WORKSPACE_FILES_RETENTION_DAYS, ABANDONED_WORKSPACE_FILES_RETENTION_MS, REMOTE_WORKSPACE_ABANDONED_EPOCH_SCHEMA,
 } from "./remote-workspace-epoch-abandonment.js";
@@ -129,7 +130,7 @@ export async function releaseAbandonedWorkspaceFiles(db: Db, input: {
         || ${JSON.stringify({ [ABANDONED_WORKSPACE_FILES_RELEASE_KEY]: marker })}::jsonb`,
     }).where(and(eq(environmentLeases.companyId, input.companyId), eq(environmentLeases.providerLeaseId, providerLeaseId),
       eq(environmentLeases.status, "retained"), sql`${environmentLeases.metadata} ? ${ABANDONED_WORKSPACE_FILES_PARKED_KEY}`,
-      sql`not ${abandonedWorkspaceFilesHeldOnLeaseRowSql()}`)).returning({ id: environmentLeases.id }),
+      sql`not ${abandonedWorkspaceFilesHeldOnLeaseRowSql()}`, reusableSandboxNotKeptAfterReplacementSql())).returning({ id: environmentLeases.id }),
     { companyId: input.companyId });
     const scheduled = unparked.length > 0;
     const summary = input.reason === "retention_expired"

@@ -403,6 +403,43 @@ describe("OpenCodeServerDriver", () => {
     }
   });
 
+  it("protects configured secrets in OpenCode output across controller and runner cutovers in one saved session", async () => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-output-custody-"));
+    roots.push(root);
+    const configured = { PUBLISHING_API_KEY: "synthetic-delivered-secret", PLAIN_SETTING: "ordinary-setting" };
+    const launch = async (secretKeys: string[]) => {
+      const driver = new OpenCodeServerDriver({
+        model: "openrouter/test-model", command: fixture, runtimeDirectory: root,
+        environment: { ...configuredEnvironmentProjection(configured, secretKeys), PATH: process.env.PATH },
+      });
+      const session = await driver.openSession({ runId: `custody-${secretKeys.length}`, normalizedSessionId: "custody", workingDirectory: root });
+      try {
+        const config = JSON.parse(await readFile(join(root, "custody", "config", "opencode", "opencode.json"), "utf8"));
+        const environment = JSON.parse(await readFile(join(root, "custody", "data", "fake-environment.json"), "utf8"));
+        return { config, environment, ids: session.ids() };
+      } finally {
+        await session.close({ reason: "test" });
+      }
+    };
+    // Saved by a controller that predates secret names: today's launch, unchanged.
+    const before = await launch([]);
+    expect(before.config.plugin).toEqual([]);
+    expect(before.config.shell).toBeUndefined();
+    expect(before.environment.keys).not.toContain("PAPERCLIP_OUTPUT_CUSTODY_KEYS");
+    // Resumed by a controller that names the secret: custody applies to the same session.
+    const after = await launch(["PUBLISHING_API_KEY"]);
+    expect(after.config.shell).toMatch(/output-custody\/[0-9a-f]{24}\/(?:zsh|bash|sh)$/);
+    expect(after.config.plugin).toEqual([expect.stringMatching(/^file:\/\/.*\/\.paperclip-output-custody\/paperclip-output-custody\.js$/)]);
+    expect(after.environment.keys).toEqual(expect.arrayContaining(["PAPERCLIP_OUTPUT_CUSTODY_KEYS", "PAPERCLIP_OUTPUT_CUSTODY_NONCE", "PAPERCLIP_OUTPUT_CUSTODY_DIR", "PUBLISHING_API_KEY"]));
+    expect(after.environment.keys).not.toContain("PAPERCLIP_SECRET_ENV_KEYS");
+    expect(JSON.stringify(after.config)).not.toContain(configured.PUBLISHING_API_KEY);
+    // A rollback to a controller without secret names still launches the saved session.
+    const rollback = await launch([]);
+    expect(rollback.config.plugin).toEqual([]);
+    expect(rollback.ids).toMatchObject({ providerSessionId: expect.any(String) });
+  });
+
   it.each([false, true])("uses the native MCP client ceiling only for durable tool requests (%s)", async durableToolRequests => {
     await chmod(fixture, 0o755);
     const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-tool-budget-"));

@@ -10,7 +10,9 @@ function valid() {
       queryReply: "Use Steer beside your saved message to send this direction to Morgan's active turn; waiting in the queue is separate from delivery.",
       steerObservedBranch: "same-run-acknowledged", steerStatus: 200, acknowledgedSameRun: true, steerAuditBound: true, idempotentRetryStatus: 200, ordinaryConsumerCount: 0,
       actualBlueArtifact: true, artifactRegisteredAfterDirection: true, deliveryRevisionBound: true, workerTaskDone: true, queueEmptyAtEnd: true,
-      steerFailureCode: "" as string | undefined, providerFailureVisible: false, failureRetainedMessage: false, supportedContinuationVisible: false, continuationInputBound: false } };
+      steerFailureCode: "" as string | undefined, providerFailureVisible: false, failureRetainedMessage: false, supportedContinuationVisible: false, continuationInputBound: false,
+      leadRelayCount: 0, queuedComments: [{ id: "blue", updatedAt: "2026-11-13T04:01:38.950Z", body: "Switch to a blue design while you are working." }] as Array<{ id: string; updatedAt: string; body: string }>,
+      workerCommentReceipts: { reads: {} as Record<string, string>, cited: [] as string[] } } };
 }
 it("accepts real explicit same-turn delivery and actual blue result", () => expect(gradeActiveSteering(valid()).passed).toBe(true));
 it("accepts an actual visible provider rejection with retained one-time normal delivery", () => {
@@ -81,7 +83,8 @@ it("binds only the requested website-delivery document written by the consuming 
 // Retained runner-opencode attempt (gha-43077703607): the CEO relayed the direction as its own comment on Morgan's task.
 // It queues beside the person's message and reaches Morgan through normal admission; it is not the person's to steer.
 it("accepts a same-turn steer when the chat lead's own relay stays queued for one normal continuation", () => {
-  const o = valid(); Object.assign(o.state, { leadRelayCount: 1, ordinaryConsumerCount: 1 });
+  const o = valid(); Object.assign(o.state, { leadRelayCount: 1, ordinaryConsumerCount: 1, continuationInputBound: true });
+  o.state.queuedComments.push({ id: "relay", updatedAt: "2026-11-13T04:02:58.671Z", body: "Use a blue palette." });
   o.state.queueAfterAction.entries = [{ comment: { id: "relay", body: "Use a blue palette.", authorAgentId: "ceo" } } as never]; o.runs.push({ id: "relay-consumer", status: "succeeded" });
   expect(gradeActiveSteering(o).passed).toBe(true);
   o.state.ordinaryConsumerCount = 0; expect(gradeActiveSteering(o).passed).toBe(false);
@@ -95,6 +98,7 @@ it("rejects an extra run after a same-turn steer when no relay was queued", () =
 });
 it("accepts an unsupported runtime whose continuation also consumes the chat lead's relay", () => {
   const o = unsupported(); Object.assign(o.state, { leadRelayCount: 1 });
+  o.state.queuedComments.push({ id: "relay", updatedAt: "2026-11-13T04:02:58.671Z", body: "Use a blue palette." });
   o.state.queueAfterAction.entries.push({ comment: { id: "relay", body: "Use a blue palette.", authorAgentId: "ceo" } } as never);
   expect(gradeActiveSteering(o).passed).toBe(true);
 });
@@ -129,3 +133,26 @@ describe("the final website may come from either of the worker's runs, once, aft
     const twice = unsupported(); Object.assign(twice.state, { ordinaryConsumerCount: 2 }); expect(gradeActiveSteering(twice).passed).toBe(false);
   });
 });
+
+const relay = { id: "relay", updatedAt: "2026-11-13T04:02:58.671Z", body: "Morgan, the person asked for a blue design." };
+function citedInTurn() {
+  const o = unsupported(); o.runs.pop();
+  Object.assign(o.state, { ordinaryConsumerCount: 0, continuationInputBound: false, leadRelayCount: 1 });
+  o.state.queuedComments = [o.state.queuedComments[0]!, relay];
+  o.state.workerCommentReceipts = { reads: { blue: "2026-11-13T04:01:38.950Z", relay: "2026-11-13T04:02:58.671Z" }, cited: ["relay", "blue"] };
+  return o;
+}
+it("accepts the retained cohort-10 shape: the running turn read and cited both queued messages, built blue, and no continuation ran", () => expect(gradeActiveSteering(citedInTurn()).passed).toBe(true));
+it("accepts the target handled in turn while the uncited relay reaches one continuation", () => {
+  const o = citedInTurn(); o.state.workerCommentReceipts.cited = ["blue"]; o.state.ordinaryConsumerCount = 1; o.state.continuationInputBound = true; o.runs.push({ id: "ordinary", status: "succeeded" });
+  expect(gradeActiveSteering(o).passed).toBe(true);
+});
+it.each([
+  ["reads the direction without citing it and starts no continuation", (o: ReturnType<typeof citedInTurn>) => { o.state.workerCommentReceipts.cited = ["relay"]; }],
+  ["cites a revision it never read", (o: ReturnType<typeof citedInTurn>) => { o.state.workerCommentReceipts.reads = { relay: relay.updatedAt }; }],
+  ["read an older revision of an edited direction", (o: ReturnType<typeof citedInTurn>) => { o.state.queuedComments[0]!.updatedAt = "2026-11-13T04:03:30.000Z"; }],
+  ["cites the direction but never builds a blue page", (o: ReturnType<typeof citedInTurn>) => { o.state.actualBlueArtifact = false; }],
+  ["cites the direction and still replays it in a continuation", (o: ReturnType<typeof citedInTurn>) => { o.state.ordinaryConsumerCount = 1; o.state.continuationInputBound = false; o.runs.push({ id: "ordinary", status: "succeeded" }); }],
+  ["handles it in turn and admits an extra run", (o: ReturnType<typeof citedInTurn>) => { o.runs.push({ id: "extra", status: "succeeded" }); }],
+  ["loses the relayed copy from the observed queue", (o: ReturnType<typeof citedInTurn>) => { o.state.queuedComments = [o.state.queuedComments[0]!]; }],
+])("rejects a running turn that %s", (_label, mutate) => { const o = citedInTurn(); mutate(o); expect(gradeActiveSteering(o).passed).toBe(false); });
