@@ -106,8 +106,6 @@ describePostgres("assigned-work invariant sweep", () => {
   }, 60_000);
 
   it("a wake deferred behind a run that ended long ago is not a pending path; a fresh one still is", async () => {
-    // The 8/14 release-swap wave: a person's follow-up stayed deferred_issue_execution
-    // after restart recovery ended the run it waited behind, and the report said "queued_wake".
     const f = await seedCompany();
     const issueId = await f.issue();
     await f.run(issueId, { status: "failed", errorCode: "native_restart_recovery_blocked" });
@@ -117,7 +115,6 @@ describePostgres("assigned-work invariant sweep", () => {
     await deferred(new Date(Date.now() - 30 * 60_000));
     const queue = wakeQueue();
     const recovery = recoveryService(db, { enqueueWakeup: queue.enqueueWakeup, scheduleRecoveryRetry: async () => null });
-    // The periodic sweep finds it too: a stale deferred wake no longer hides the task from the suspect list.
     expect((await recovery.assignedWork.listSuspects({ companyId: f.companyId }, null, 50)).map(row => row.id)).toContain(issueId);
     expect(await recovery.assignedWork.checkIssue({ companyId: f.companyId, issueId }))
       .toMatchObject({ outcome: "repaired", verdict: { kind: "violation", reason: "no_pending_path" } });
@@ -133,7 +130,6 @@ describePostgres("assigned-work invariant sweep", () => {
   }, 60_000);
 
   it("a wake claimed long ago that never became a run is not a pending path", async () => {
-    // Wave w-20261112T211412-s7201: wake 49c5540e claimed at 22:20:16, run_id still null at 22:35.
     const f = await seedCompany();
     const issueId = await f.issue();
     await f.run(issueId, { status: "succeeded", errorCode: null, livenessState: null });

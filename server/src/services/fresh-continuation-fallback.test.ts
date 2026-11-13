@@ -317,7 +317,6 @@ suite("fresh-continuation fallback", () => {
   }, 60_000);
 
   it("re-drives an isolated continuation pending past the bound itself; a repair wake never replaces it", async () => {
-    // A projectless task whose old local writer may still be alive (its controller ran on the replaced server).
     const f = await unfinishedRun({ runtime: "legacy", errorCode: "controller_lease_lost", error: "Legacy controller lease lost" });
     await db.update(heartbeatRuns).set({ processPid: 4242, processHostHash: "replaced-server", processStartedAt: new Date(Date.now() - 600_000) })
       .where(eq(heartbeatRuns.id, f.runId));
@@ -327,18 +326,13 @@ suite("fresh-continuation fallback", () => {
     await occupySlot();
     const taskRuns = async () => db.select().from(heartbeatRuns).where(and(
       sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${f.issueId}`, sql`${heartbeatRuns.id} <> ${f.runId}`));
-    // Within the bound, the repair wake is coalesced into the pending record.
     expect(await sweepWake(f.issueId)).toBeNull();
     expect(await taskRuns()).toHaveLength(0);
-    // Delivery is stuck past the bound. The repair wake still does not start a run of its own,
-    // which would carry neither the isolation nor a fresh session.
     const recordedAt = new Date(Date.now() - PENDING_CONTINUATION_BOUND_MS - 60_000).toISOString();
     await db.update(issueRecoveryActions).set({ resolvedAt: new Date(recordedAt), evidence: sql`jsonb_set(${issueRecoveryActions.evidence},
       '{freshContinuation,recordedAt}', to_jsonb(${recordedAt}::text))` }).where(eq(issueRecoveryActions.id, f.actionId!));
     expect(await sweepWake(f.issueId)).toBeNull();
     expect(await taskRuns()).toHaveLength(0);
-    // Delivery re-drives the recorded continuation itself, past the full queue: one successor,
-    // in a new isolated workspace, never the shared directory.
     await deliver();
     const runs = await taskRuns();
     expect(runs).toHaveLength(1);
@@ -346,7 +340,6 @@ suite("fresh-continuation fallback", () => {
     expect(await readFreshWorkspaceReadiness(db, runs[0]!)).toMatchObject({ mode: "fresh_isolated_workspace", retryIntentId: f.actionId });
     const [record] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.actionId!));
     expect(record!.evidence).toMatchObject({ continuationDelivery: "delivered", continuationRunId: runs[0]!.id });
-    // Later wakes add nothing.
     await sweepWake(f.issueId);
     await deliver();
     expect(await taskRuns()).toHaveLength(1);
@@ -841,8 +834,6 @@ suite("fresh-continuation fallback", () => {
   }, 60_000);
 
   it("names the subtasks, comments and documents the cut-off run already created, so the fresh run does not repeat them", async () => {
-    // Release-swap wave: the interrupted run and its continuation each created the two
-    // subtasks, and a DONE comment was posted twice.
     const f = await unfinishedRun({ runtime: "native", errorCode: "native_restart_recovery_blocked" });
     for (const title of ["SM sub 1 b3d70e77s1", "SM sub 2 b3d70e77s2"])
       await db.insert(issues).values({ companyId, title, status: "todo", assigneeAgentId: agentId, parentId: f.issueId,
@@ -884,7 +875,6 @@ suite("fresh-continuation fallback", () => {
     await db.insert(heartbeatRunEvents).values({ companyId, runId: f.runId, agentId, seq: 1, eventType: "task_history.read",
       stream: "system", level: "info", payload: { comments: { [followUp!.id]: followUp!.updatedAt.toISOString() } },
     } as typeof heartbeatRunEvents.$inferInsert);
-    // The person edits the follow-up after the run read it.
     await db.update(issueComments).set({ body: "Additional requirement: include the line FOLLOWUP-NEW",
       updatedAt: new Date(followUp!.updatedAt.getTime() + 60_000) }).where(eq(issueComments.id, followUp!.id));
     expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" })).toMatchObject({ kind: "continued" });

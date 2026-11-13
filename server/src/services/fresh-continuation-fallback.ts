@@ -199,11 +199,8 @@ async function unverifiedActions(tx: Db, run: typeof heartbeatRuns.$inferSelect)
 }
 
 export type FreshContinuationCreatedObjects = { subtasks: string[]; comments: string[]; documents: string[]; readFollowUps?: string[];
-  /** Messages the run read that a person edited afterwards: the run never saw the current text. */
   editedFollowUps?: string[] };
 
-/** Comment ids the run read through get_task_history, with the read time and
- * the comment revision it read (the queued-comment owner's `task_history.read` reader). */
 async function taskHistoryReadsOfRun(tx: Db, run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId">) {
   const reads = await taskHistoryReadsForRun(tx, { companyId: run.companyId, runId: run.id });
   return new Map(reads.map(read => [read.commentId, read]));
@@ -211,8 +208,6 @@ async function taskHistoryReadsOfRun(tx: Db, run: Pick<typeof heartbeatRuns.$inf
 
 const quoted = (value: string, max = 80) => `"${value.replace(/\s+/g, " ").trim().slice(0, max)}${value.length > max ? "..." : ""}"`;
 
-/** Paperclip objects the cut-off run already created. They exist now, whatever
- * the run's own outcome, so the continuation must not create them again. */
 async function createdObjects(tx: Db, run: typeof heartbeatRuns.$inferSelect): Promise<FreshContinuationCreatedObjects> {
   const [children, comments, revisions] = await Promise.all([
     tx.select({ identifier: issues.identifier, title: issues.title }).from(issues).where(and(
@@ -230,8 +225,6 @@ async function createdObjects(tx: Db, run: typeof heartbeatRuns.$inferSelect): P
     .from(issueComments).where(and(
       eq(issueComments.companyId, run.companyId), inArray(issueComments.id, [...reads.keys()]),
       eq(issueComments.authorType, "user"), isNull(issueComments.deletedAt))).limit(10) : [];
-  // Only the revision the run read counts as read: a message edited since then
-  // is quoted as changed, so the agent treats its current text as new.
   const unchanged = (comment: (typeof readComments)[number]) => comment.updatedAt.getTime() <= reads.get(comment.id)!.revision.getTime();
   const edited = readComments.filter(comment => !unchanged(comment));
   return {
@@ -935,12 +928,6 @@ export async function settleCoalescedFreshContinuationHolds(db: Db, input: { com
       sql`${issueRecoveryActions.evidence}->>'continuationDelivery' = 'coalesced'`));
 }
 
-/** A fresh continuation of this task is recorded and its run does not exist
- * yet. The recorded continuation is the task's one successor: it alone carries
- * the isolation and fresh-session decision, so another wake never replaces it,
- * at any age. A wake coalesced into it re-drives it instead: delivery is
- * notified, and delivery admits a record held past
- * RECOVERY_CONTINUATION_MAX_HOLD_MS even when the agent's queue is full. */
 export async function hasPendingFreshContinuation(db: Db, companyId: string, issueId: string) {
   const [row] = await db.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(and(
     eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId),

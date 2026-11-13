@@ -85,8 +85,6 @@ describe("assigned-work invariant", () => {
     }
 
     it("stops believing system recovery is working once the last run ended longer ago than the bound", () => {
-      // A recorded continuation that is never delivered keeps the projection at
-      // "working" forever; the invariant must see it as nothing pending.
       const working = { responsibility: "system" as const, state: "working", userAction: null, nextRetryAt: null, canRetry: false };
       const run = (msAgo: number) => ({ id: "run-1", status: "failed", errorCode: "native_restart_recovery_blocked",
         finishedAt: ago(msAgo), settlingUntil: null, operatorStopped: false });

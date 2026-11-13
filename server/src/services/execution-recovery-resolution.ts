@@ -390,10 +390,6 @@ export async function deliverReconciledExecutions(
           seenActionIds.size ? not(inArray(issueRecoveryActions.id, [...seenActionIds])) : undefined,
           seenAgentIds.size ? sql`coalesce(${issueRecoveryActions.returnOwnerAgentId}::text, '') <> all(${sql.param([...seenAgentIds])}::text[])` : undefined,
           companies.length ? not(inArray(issueRecoveryActions.companyId, companies)) : undefined,
-          // One queued recovery run per agent paces the rest, but only within
-          // the hold bound: a continuation held past it is admitted like one
-          // held behind ordinary work (agentHasRoom), or it would wait as long
-          // as that other run stays queued.
           sql`(${heldSince} <= ${heldBound}::timestamptz or not exists (select 1 from ${heartbeatRuns} queued_recovery
             where queued_recovery.company_id = ${issueRecoveryActions.companyId}
               and queued_recovery.agent_id = ${issueRecoveryActions.returnOwnerAgentId}

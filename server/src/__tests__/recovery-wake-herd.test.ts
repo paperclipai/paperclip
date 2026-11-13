@@ -291,8 +291,6 @@ suite("recovery wake herd", () => {
     const presentation = await taskInterruptionPresentation(db, issueRow!);
     expect(presentation).toMatchObject({ canRetry: false, state: "working", responsibility: "system" });
 
-    // Pacing admits a held continuation within its hold bound. One still pending well past
-    // that is not going to be delivered, so it no longer counts as the task's pending path.
     const recordedAt = new Date(Date.now() - PENDING_CONTINUATION_BOUND_MS - 60_000).toISOString();
     await db.update(issueRecoveryActions).set({ resolvedAt: new Date(recordedAt), evidence: sql`jsonb_set(${issueRecoveryActions.evidence},
       '{freshContinuation,recordedAt}', to_jsonb(${recordedAt}::text))` }).where(eq(issueRecoveryActions.id, held.action.id));
