@@ -144,6 +144,12 @@ Runtime discovery must not replace the turn with a generic spinner or a
 A queued turn shows the same `Working` header and shimmering `Thinking` activity
 as a running turn, starting at message submission. Keep specific server holds,
 such as `Waiting for maintenance` or agent setup, visible during admission.
+A run that waits for one of its agent's concurrency slots is a hold too: show
+`Waiting for <agent> · N slots max · P of Q in line · Configure` (the shared
+`AgentQueueWait` component) with no spinner or elapsed timer, link Configure to the
+agent's run policy, and take the place in line from the server's dispatch order.
+Task rows show a quiet `Waiting` instead of the pulsing `Live`, and live counts
+count only started runs.
 This is presentation only; queue and execution authority stay unchanged. A saved
 message that starts this queued turn stays in history, including when it reopens an older
 task. This placement is not a consumption receipt. Later follow-ups remain in
