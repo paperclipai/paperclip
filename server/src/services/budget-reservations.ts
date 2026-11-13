@@ -9,6 +9,7 @@ import { budgetServiceInTransaction } from "./budgets.js";
 import { withBudgetSpan } from "./budget-tracing.js";
 import type { ActivityPublication } from "./activity-log.js";
 import { readClaimedNativeStopRecovery } from "./native-runtime/native-cancellation-request.js";
+import { NativeCancellationPendingRecoveryError } from "./native-runtime/native-session-executor.js";
 import { extendOwnNativeRecoveryClaimInTransaction, readOwnNativeRecoveryClaimLease } from "./native-runtime/native-execution-lease.js";
 
 /** Native finalization takes its coordinator before issue/run locks. Recovery
@@ -99,7 +100,10 @@ export async function reserveRunBudget(db: Db, companyId: string, runId: string,
     const [run] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, companyId))).for("update");
     if (!run) throw notFound("Run not found");
     const stopRecovery = await readClaimedNativeStopRecovery(tx, run, recoveryLeaseOwner);
-    if ((run.resultJson?.cancellation || run.resultJson?.startupCancellation) && !stopRecovery) throw conflict("Run cancellation already requested");
+    // A Stop recorded while native preparation ran is that cancellation, not a
+    // run failure: the runtime settles it like a Stop seen when the session opens.
+    if ((run.resultJson?.cancellation || run.resultJson?.startupCancellation) && !stopRecovery)
+      throw run.runtimeMode === "native" ? new NativeCancellationPendingRecoveryError() : conflict("Run cancellation already requested");
     if (run.costAccountedAt || !["queued", "running"].includes(run.status)) throw conflict("Run can no longer start provider work");
     const [existing] = await tx.select().from(budgetReservations).where(and(eq(budgetReservations.companyId, companyId), eq(budgetReservations.runId, runId)));
     if (existing) {
