@@ -822,6 +822,36 @@ describe("Codex ACPX runtime adapter", () => {
     expect(port.steeringCapability!()).toBeNull();
     await port.close({ reason: "test finished" });
   });
+  it.each([true, false])("holds a permission request of Claude's own cycle until the cycle is adopted (%s) or dropped", async (adopt) => {
+    const options = openOptions(fakeCommand());
+    options.profile = { ...options.profile, agent: "claude" };
+    let runtimeOptions: AcpRuntimeOptions | undefined;
+    const port = await openCodexAcpxRuntime(options, {
+      createRegistry: () => registry(), createStore: () => store(),
+      createRuntime: (created) => { runtimeOptions = created; return fakeRuntime(); },
+    });
+    const cycles = port.providerCycles!()!;
+    runtimeOptions!.onAcpMessage!("inbound", { jsonrpc: "2.0", method: "session/update", params: { sessionId: "backend-1",
+      update: { sessionUpdate: "tool_call", toolCallId: "toolu_cycle", title: "Bash", kind: "execute", status: "pending" } } });
+    runtimeOptions!.onAcpMessage!("inbound", { jsonrpc: "2.0", id: 5, method: "session/request_permission",
+      params: { sessionId: "backend-1", toolCall: { toolCallId: "toolu_cycle" }, options: [] } });
+    const answer = vi.fn(async () => ({ outcome: "allow_once" as const }));
+    let outcome: unknown;
+    const decided = runtimeOptions!.onPermissionRequest!(permissionRequest("backend-1", "execute"), { signal: new AbortController().signal })
+      .then((value) => { outcome = value; });
+    try {
+      expect(await cycles.next()).toMatchObject({ type: "started" });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(outcome).toBeUndefined();
+      if (adopt) expect(cycles.adopt({ onPermissionRequest: answer, busy: () => false })).toBe(true);
+      else cycles.drop();
+      await decided;
+      expect(answer).toHaveBeenCalledTimes(adopt ? 1 : 0);
+      expect(outcome).toEqual({ outcome: adopt ? "allow_once" : "cancel" });
+    } finally {
+      await port.close({ reason: "test finished" });
+    }
+  });
   it.each(["approve-reads", "approve-paperclip"] as const)("%s stops unassigned operations when approval has no handler", async (permissionMode) => {
     const runtime = fakeRuntime();
     let runtimeOptions: AcpRuntimeOptions | undefined;
