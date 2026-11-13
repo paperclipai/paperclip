@@ -343,7 +343,10 @@ function readTransientRetryNotBeforeFromRun(
   run: Pick<typeof heartbeatRuns.$inferSelect, "resultJson">,
 ) {
   const resultJson = parseObject(run.resultJson);
-  const value = resultJson.retryNotBefore ?? resultJson.transientRetryNotBefore;
+  const value =
+    resultJson.retryNotBefore ??
+    resultJson.transientRetryNotBefore ??
+    resultJson.providerQuotaRetryNotBefore;
   if (!(
     typeof value === "string" ||
     typeof value === "number" ||
@@ -353,6 +356,18 @@ function readTransientRetryNotBeforeFromRun(
   }
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function providerQuotaRetryCount(run: {
+  contextSnapshot?: Record<string, unknown> | null;
+}): number {
+  const snapshot = parseObject(run.contextSnapshot);
+  const value =
+    snapshot.providerQuotaRetryAttempt ?? snapshot.providerQuotaRetries;
+  if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) {
+    return value;
+  }
+  return snapshot.providerQuotaRetryNotBefore ? 1 : 0;
 }
 
 export function readTransientRecoveryContractFromRun(
@@ -366,6 +381,53 @@ export function readTransientRecoveryContractFromRun(
         retryNotBefore: readTransientRetryNotBeforeFromRun(run),
       }
     : null;
+}
+
+function isTemporaryCapacityFailure(run: {
+  error?: string | null;
+  resultJson?: unknown;
+}) {
+  const result = parseObject(run.resultJson);
+  const terminalFailure = parseObject(result.terminalSessionFailure);
+  const text = [
+    run.error,
+    result.errorMessage,
+    result.message,
+    result.error,
+    terminalFailure.title,
+    terminalFailure.details,
+    terminalFailure.message,
+  ]
+    .filter((value): value is string => typeof value === "string")
+    .join(" ");
+  return /(?:model (?:is )?at capacity|at capacity for this model|capacity limit|\bat capacity\b|server\s*overloaded)/i.test(
+    text,
+  );
+}
+
+const PROVIDER_QUOTA_RESET_CUSHION_MS = 60_000;
+
+export function readLimitResetRetryAt(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode" | "resultJson"> & {
+    error?: string | null;
+  },
+  now: Date,
+): Date | null | undefined {
+  const transient = readTransientRecoveryContractFromRun(run);
+  if (transient?.errorFamily !== "provider_quota") return undefined;
+
+  const retryNotBefore = transient.retryNotBefore;
+  if (retryNotBefore) {
+    return new Date(
+      Math.max(now.getTime() + 1_000, retryNotBefore.getTime() + PROVIDER_QUOTA_RESET_CUSHION_MS),
+    );
+  }
+
+  if (isTemporaryCapacityFailure(run)) {
+    return undefined;
+  }
+
+  return null;
 }
 
 function isSpawnLikeFailureMessage(value: unknown) {
@@ -559,6 +621,18 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         : interruptedPreparation ? INTERRUPTED_PREPARATION_RETRY_REASON : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON);
     const wakeReason =
       opts?.wakeReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON;
+    const limitRetryAt =
+      retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON
+        ? readLimitResetRetryAt(run, now)
+        : undefined;
+    if (limitRetryAt === null) {
+      return {
+        outcome: "not_scheduled" as const,
+        reason:
+          "Limit reset time is ambiguous; automatic fast retry suppressed.",
+        issueId: readNonEmptyString(run.contextSnapshot?.issueId),
+      };
+    }
     // Interrupted preparation spent no provider work: its own lane, bounded
     // like the native controller-generation cap (execution-recovery-attempt).
     const interruptedPreparationLane = retryReason === INTERRUPTED_PREPARATION_RETRY_REASON;
@@ -574,36 +648,43 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     const consumedAttempts = serverRestartLane
       ? serverRestartAttemptCount(run, now) : executionRetryAttemptCount(run, retryReason);
     const nextAttempt = consumedAttempts + 1;
+    const consumedQuotaAttempts =
+      limitRetryAt !== undefined ? providerQuotaRetryCount(run) : 0;
+    const nextQuotaAttempt = consumedQuotaAttempts + 1;
+    const quotaExhausted = limitRetryAt !== undefined && nextQuotaAttempt > 1;
+    const overallExhausted = nextAttempt > maxAttempts;
     // An interrupted preparation never spends failures, but it never revives
     // a chain whose real failures already spent the failure budget either.
     const failureBudgetSpent = interruptedPreparationLane && opts?.maxAttempts == null
       && executionFailureRetryCount(run) >= BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS;
-    const computedBaseSchedule = failureBudgetSpent ? null
-      : opts?.delayMs != null
-        ? nextAttempt <= maxAttempts
+
+    const retryDelayMs = limitRetryAt
+      ? Math.max(1_000, limitRetryAt.getTime() - now.getTime())
+      : opts?.delayMs;
+    const computedBaseSchedule =
+      failureBudgetSpent || quotaExhausted || overallExhausted
+        ? null
+        : retryDelayMs != null
           ? {
               attempt: nextAttempt,
-              baseDelayMs: Math.max(0, Math.floor(opts.delayMs)),
-              delayMs: Math.max(0, Math.floor(opts.delayMs)),
+              baseDelayMs: Math.max(0, Math.floor(retryDelayMs)),
+              delayMs: Math.max(0, Math.floor(retryDelayMs)),
               dueAt: new Date(
-                now.getTime() + Math.max(0, Math.floor(opts.delayMs)),
+                now.getTime() + Math.max(0, Math.floor(retryDelayMs)),
               ),
-              maxAttempts,
+              maxAttempts: quotaExhausted ? 1 : maxAttempts,
             }
-          : null
-        : nextAttempt <= maxAttempts
           // Both lanes start the first continuation at once and back off
           // after that, so a run that keeps taking the server down is slowed.
-          ? interruptedPreparationLane || serverRestartLane
+          : interruptedPreparationLane || serverRestartLane
             ? computeInterruptedPreparationRetrySchedule(nextAttempt, now, opts?.random)
             : computeBoundedTransientHeartbeatRetrySchedule(
               nextAttempt,
               now,
               opts?.random,
-            )
-          : null;
+            );
     const baseSchedule = computedBaseSchedule
-      ? { ...computedBaseSchedule, maxAttempts }
+      ? { ...computedBaseSchedule, maxAttempts: quotaExhausted ? 1 : maxAttempts }
       : null;
     const transientRecovery =
       (retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON
@@ -625,14 +706,16 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     if (!baseSchedule) {
       const exhaustion = {
         retryReason,
-        scheduledRetryAttempt: consumedAttempts,
-        maxAttempts,
+        scheduledRetryAttempt: quotaExhausted
+          ? consumedQuotaAttempts
+          : consumedAttempts,
+        maxAttempts: quotaExhausted ? 1 : maxAttempts,
       };
       await appendRunEvent(run, {
         eventType: "lifecycle",
         stream: "system",
         level: "warn",
-        message: `Bounded retry exhausted after ${consumedAttempts} scheduled attempts; no further automatic retry will be queued`,
+        message: `Bounded retry exhausted after ${exhaustion.scheduledRetryAttempt} scheduled attempts; no further automatic retry will be queued`,
         payload: exhaustion,
         retryExhaustion: exhaustion,
       });
@@ -655,8 +738,8 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       }
       return {
         outcome: "retry_exhausted" as const,
-        attempt: nextAttempt,
-        maxAttempts,
+        attempt: quotaExhausted ? nextQuotaAttempt : nextAttempt,
+        maxAttempts: quotaExhausted ? 1 : maxAttempts,
       };
     }
 
@@ -820,6 +903,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         ...(transientRecovery?.errorFamily === "provider_quota" &&
         transientRetryNotBefore
           ? {
+              providerQuotaRetryAttempt: nextQuotaAttempt,
               providerQuotaRetryNotBefore:
                 transientRetryNotBefore.toISOString(),
             }
@@ -1189,6 +1273,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
                 ...(transientRecovery?.errorFamily === "provider_quota" &&
                 transientRetryNotBefore
                   ? {
+                      providerQuotaRetryAttempt: nextQuotaAttempt,
                       providerQuotaRetryNotBefore:
                         transientRetryNotBefore.toISOString(),
                     }
@@ -1447,6 +1532,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         ...(transientRecovery?.errorFamily === "provider_quota" &&
         transientRetryNotBefore
           ? {
+              providerQuotaRetryAttempt: nextQuotaAttempt,
               providerQuotaRetryNotBefore:
                 transientRetryNotBefore.toISOString(),
             }
