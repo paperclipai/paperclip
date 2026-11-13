@@ -25,6 +25,7 @@ import { assertNoCaseHandoffMutation } from "../services/heartbeat/case-handoff-
 import { assertHandedOffRunTaskOwnership } from "../run-task-ownership.js";
 import { recordNativeHumanSelfHandoff } from "../services/native-runtime/native-human-self-handoff.js";
 import { recordChildTaskRead } from "../services/native-runtime/native-child-completion-delivery.js";
+import { recordCompletedHandoffRead } from "../services/chat-completion-delivery.js";
 import { runRetainsIssueIdentity } from "../services/task-repository-acquisition.js";
 import { withConversationReadState } from "../services/agent-chat-read-state.js";
 import { markIssueReadSchema } from "@paperclipai/shared";
@@ -3613,8 +3614,11 @@ function logIssueListRequest(input: {
   });
 }
 
-async function recordAgentChildTaskRead(db: Db, req: Request, issue: { id: string; companyId: string; parentId: string | null; status: string; updatedAt: Date; lastStatusDecisionId?: string | null }) {
-  if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.runId || !issue.parentId || issue.status !== "done") return;
+async function recordAgentChildTaskRead(db: Db, req: Request, issue: { id: string; companyId: string; parentId: string | null; status: string; updatedAt: Date; lastStatusDecisionId?: string | null; statusVersion?: number | null }) {
+  if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.runId || issue.status !== "done") return;
+  await recordCompletedHandoffRead(db, { companyId: issue.companyId, agentId: req.actor.agentId, runId: req.actor.runId, task: issue })
+    .catch(error => logger.warn({ err: error, runId: req.actor.runId }, "could not record the completed handoff a run read"));
+  if (!issue.parentId) return;
   await recordChildTaskRead(db, { companyId: issue.companyId, agentId: req.actor.agentId, runId: req.actor.runId,
     parentIssueId: issue.parentId, children: [issue] })
     .catch(error => logger.warn({ err: error, runId: req.actor.runId }, "could not record the child task a run read"));

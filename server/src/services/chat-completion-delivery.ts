@@ -1,13 +1,17 @@
 import { notifyDeliveryWork, DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import { notifyNativeResponsePresentation } from "./native-response-presentation-notifications.js";
 import { nativeResponsePresentationCandidates } from "./native-runtime/native-response-presentation-query.js";
-import { and, asc, desc, eq, inArray, isNull, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lte, ne, sql } from "drizzle-orm";
 import { agents, agentWakeupRequests, chatCompletionDeliveries as deliveries, chatTaskHandoffs as handoffs,
-  heartbeatRuns, issueComments, issueDocuments, issueThreadInteractions, issues, type Db } from "@paperclipai/db";
+  heartbeatRunEvents, heartbeatRuns, issueComments, issueDocuments, issueThreadInteractions, issues, type Db } from "@paperclipai/db";
+import { extractIssueReferenceMatches } from "@paperclipai/shared";
+import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { conflict, forbidden, notFound } from "../errors.js";
 
 export const CHAT_COMPLETION_WAKE_REASON = "chat_task_completed";
+/** Run event: the conversation agent read its handed-off task after it was done. */
+export const COMPLETED_HANDOFF_READ_EVENT = "chat_handoff.completed_read";
 const MAX_ATTEMPTS = 5;
 const LEASE_MS = 60_000;
 type Issue = typeof issues.$inferSelect;
@@ -139,6 +143,47 @@ export async function isCompletedOnboardingHandoffWake(db: Connection, input: {
     children.every(child => ["done", "cancelled"].includes(child.status));
 }
 
+/** Records that the conversation agent read a handed-off task in its done state. The
+ * completion turn uses this to recognize a completion that an earlier reply reported. */
+export async function recordCompletedHandoffRead(db: Db, input: {
+  companyId: string; agentId: string; runId: string;
+  task: { id: string; status: string; statusVersion?: number | null };
+}) {
+  if (input.task.status !== "done" || typeof input.task.statusVersion !== "number") return;
+  const [handoff] = await db.select({ agentId: handoffs.agentId }).from(handoffs)
+    .where(and(eq(handoffs.taskId, input.task.id), eq(handoffs.companyId, input.companyId)));
+  if (handoff?.agentId !== input.agentId) return;
+  await appendHeartbeatRunEvent(db, { companyId: input.companyId, runId: input.runId, agentId: input.agentId,
+    eventType: COMPLETED_HANDOFF_READ_EVENT, stream: "system", level: "info",
+    payload: { taskId: input.task.id, statusVersion: input.task.statusVersion } });
+}
+
+/** A reply in this conversation already reported this completion when a turn of the same
+ * agent read the task at this exact done status and then linked the task in its reply. */
+async function earlierCompletionReply(tx: Connection, row: NonNullable<Awaited<ReturnType<typeof loadAudience>>>, runId: string) {
+  const { task, handoff, delivery } = row;
+  if (!task.completedAt || !task.identifier) return null;
+  const replies = await tx.select({ id: issueComments.id, body: issueComments.body, runId: issueComments.createdByRunId,
+    createdAt: issueComments.createdAt }).from(issueComments).where(and(
+    eq(issueComments.companyId, handoff.companyId), eq(issueComments.issueId, handoff.conversationId),
+    eq(issueComments.authorAgentId, handoff.agentId), isNull(issueComments.deletedAt),
+    isNotNull(issueComments.createdByRunId), ne(issueComments.createdByRunId, runId),
+    gte(issueComments.createdAt, task.completedAt),
+  )).orderBy(asc(issueComments.createdAt), asc(issueComments.id)).limit(20);
+  for (const reply of replies) {
+    if (!extractIssueReferenceMatches(reply.body).some(match => match.identifier.toUpperCase() === task.identifier!.toUpperCase())) continue;
+    const [read] = await tx.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
+      eq(heartbeatRunEvents.companyId, handoff.companyId), eq(heartbeatRunEvents.runId, reply.runId!),
+      eq(heartbeatRunEvents.eventType, COMPLETED_HANDOFF_READ_EVENT),
+      sql`${heartbeatRunEvents.payload}->>'taskId' = ${task.id}`,
+      sql`(${heartbeatRunEvents.payload}->>'statusVersion')::int = ${delivery.statusVersion}`,
+      lte(heartbeatRunEvents.createdAt, reply.createdAt),
+    )).limit(1);
+    if (read) return reply.id;
+  }
+  return null;
+}
+
 /** Freeze the input at turn start. New completions cannot be consumed by an already-running turn. */
 export async function prepareChatCompletionTurn(db: Db, run: Run): Promise<Run> {
   const issueId = run.contextSnapshot?.issueId;
@@ -165,20 +210,39 @@ export async function prepareChatCompletionTurn(db: Db, run: Run): Promise<Run> 
       .orderBy(asc(deliveries.createdAt)).limit(20);
     const updates: Awaited<ReturnType<typeof taskResult>>[] = [];
     const accepted: string[] = [];
+    const reported: string[] = [];
     for (const { delivery } of rows) {
       const row = await loadAudience(tx, delivery.id);
       if (!row || !current(row)) {
         await tx.update(deliveries).set({ status: "superseded" }).where(eq(deliveries.id, delivery.id));
         continue;
       }
+      const reportedBy = await earlierCompletionReply(tx, row, run.id);
+      if (reportedBy) {
+        // An earlier turn already told the person; repeating it would post the same news twice.
+        await tx.update(deliveries).set({ status: "delivered", responseCommentId: reportedBy, error: null }).where(eq(deliveries.id, delivery.id));
+        reported.push(delivery.id);
+        continue;
+      }
       accepted.push(delivery.id); updates.push(await taskResult(tx, row.task));
       await tx.update(deliveries).set({ status: "queued", targetRunId: run.id }).where(eq(deliveries.id, delivery.id));
+    }
+    if (accepted.length === 0 && reported.length > 0) {
+      const contextSnapshot = { ...run.contextSnapshot, chatCompletionDeliveryIds: [], chatCompletionAlreadyReported: reported };
+      await tx.update(heartbeatRuns).set({ contextSnapshot }).where(eq(heartbeatRuns.id, run.id));
+      return { ...run, contextSnapshot };
     }
     if (accepted.length === 0) throw new Error("chat_completion_superseded");
     const contextSnapshot = { ...run.contextSnapshot, chatCompletionDeliveryIds: accepted, chatCompletionUpdates: updates };
     await tx.update(heartbeatRuns).set({ contextSnapshot }).where(eq(heartbeatRuns.id, run.id));
     return { ...run, contextSnapshot };
   });
+}
+
+/** True when every completion this turn was woken for had already been reported. */
+export function chatCompletionAlreadyReported(run: Run) {
+  const reported = run.contextSnapshot?.chatCompletionAlreadyReported;
+  return Array.isArray(reported) && reported.length > 0 && ids(run).length === 0;
 }
 
 export function chatCompletionInstruction(context: Record<string, unknown>) {
