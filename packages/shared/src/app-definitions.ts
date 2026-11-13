@@ -8,6 +8,10 @@ export const CONNECTABLE_APP_SLUGS = new Set([
   "responses-api", "messages-api", "chat-completions-api", "local",
   "agentmail",
   "browser-use-cloud",
+  "daytona",
+  "unikraft",
+  "vercel",
+  "1password",
   "cognee",
   ...SELF_SERVE_MCP_CANDIDATES.map((entry) => entry.slug),
   "monday",
@@ -17,6 +21,7 @@ export const CONNECTABLE_APP_SLUGS = new Set([
   "executor",
   "slack",
   "notion",
+  "paperclip-notebook",
   "railway",
   "posthog",
   "linear",
@@ -32,9 +37,11 @@ export const CONNECTABLE_APP_SLUGS = new Set([
   "google-chat",
   "google-people",
   "google-workspace-search",
+  "google-workspace",
   "github",
   "github-code-review-bot",
   "discord",
+  "speko",
   "microsoft-teams",
   "telegram",
   "imessage-photon",
@@ -261,7 +268,15 @@ export function recommendedDefaultsForApp(app: AppDefinition, methodKey?: string
   // concrete app/method. Connection finalization remains a configure-authorized,
   // audited operation, and Ask first stays available as an operator-selected
   // policy for any action after the connection is made.
-  void methodKey;
+  const method = methodKey
+    ? app.methods.find((candidate) => candidate.key === methodKey)
+    : null;
+  if (app.slug === "gmail" && method?.capabilityProfile?.key === "archive") {
+    return {
+      access: "all_agents",
+      askFirstRiskLevels: ["write", "destructive"],
+    };
+  }
   // Enterpret's run_graph_query self-reports readOnlyHint but executes Cypher
   // and has not been established as read-only. Classify it as write (server
   // classifyRisk) and require Ask first so new token connections do not ship

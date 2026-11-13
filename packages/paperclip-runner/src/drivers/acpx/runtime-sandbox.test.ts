@@ -1,4 +1,6 @@
+import { composeCopilotSystemInstructions, COPILOT_TASK_ORIENTATION_INSTRUCTIONS } from "./copilot-profile.js";
 import { configuredEnvironmentProjection } from "../../configured-environment.js";
+import { preconfiguredHomeEnvironment } from "../preconfigured-home.js";
 import {
   chmod,
   lstat,
@@ -6,6 +8,7 @@ import {
   mkdtemp,
   open,
   readFile,
+  realpath,
   rename,
   rm,
   stat,
@@ -41,6 +44,8 @@ describe("ACPX runtime sandbox", () => {
     const pages = { PAPERCLIP_PAGE_AWS_SECRET_ACCESS_KEY: "task-pages-secret", CUSTOM_TOKEN: "task-service-secret" };
     const sandbox = await prepareAcpxRuntimeSandbox({ binding: fixture.binding, agent: "codex", environment: {
       PATH: process.env.PATH, OPENAI_API_KEY: "provider-secret", HOST_SECRET: "unselected-secret",
+      PAPERCLIP_OBSERVABILITY_CODEX_CONFIG: JSON.stringify({ exporter: "none", trace_exporter: "none", metrics_exporter: "none" }),
+      OTEL_EXPORTER_OTLP_LOGS_HEADERS: "authorization=Bearer%20export-canary",
       ...configuredEnvironmentProjection(pages), ...(identity ? { PAPERCLIP_AGENT_KEY_ID: "agent-key" } : {}),
     } });
     const config = await readFile(join(sandbox.agentHomeDirectory, "config.toml"), "utf8");
@@ -48,8 +53,72 @@ describe("ACPX runtime sandbox", () => {
     expect(keys).toEqual(expect.arrayContaining(Object.keys(pages)));
     expect(keys).not.toContain("OPENAI_API_KEY");
     expect(keys).not.toContain("HOST_SECRET");
+    expect(keys).not.toContain("PAPERCLIP_OBSERVABILITY_CODEX_CONFIG");
+    expect(keys).not.toContain("OTEL_EXPORTER_OTLP_LOGS_HEADERS");
+    expect(sandbox.persistedEnvironment).not.toHaveProperty("PAPERCLIP_OBSERVABILITY_CODEX_CONFIG");
     expect(sandbox.launchEnvironment).toMatchObject(pages);
     for (const value of Object.values(pages)) expect(config).not.toContain(value);
+  });
+
+  it.each(["claude", "codex"] as const)("uses existing %s home without creating or changing config", async (agent) => {
+    const fixture = await sandboxFixture(agent);
+    const home = join(temporaryDirectories.at(-1)!, "user-home");
+    await mkdir(home, { mode: 0o755 });
+    const providerHome = join(home, agent === "claude" ? ".claude" : ".codex");
+    await mkdir(providerHome);
+    const config = join(providerHome, agent === "claude" ? "settings.json" : "config.toml");
+    const contents = agent === "claude" ? '{"permissions":{"ask":["Bash"]}}' : 'approval_policy = "never"';
+    await writeFile(config, contents);
+    const environment = { HOME: home, PAPERCLIP_RUNNER_HOME_MODE: "preconfigured", PATH: "/usr/bin:/bin" };
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const sandbox = await prepareAcpxRuntimeSandbox({ binding: fixture.binding, agent, environment });
+      expect(sandbox.homeDirectory).toBe(await realpath(home));
+      expect(sandbox.agentHomeDirectory).toBe(await realpath(providerHome));
+      expect(sandbox.launchEnvironment.PAPERCLIP_ACPX_ISOLATED_CONTEXT).toBeUndefined();
+      expect(sandbox.protectedPaths).not.toContain(home);
+      expect(await readFile(config, "utf8")).toBe(contents);
+      expect((await stat(home)).mode & 0o777).toBe(0o755);
+      await expect(stat(join(sandbox.root, "home"))).rejects.toMatchObject({ code: "ENOENT" });
+    }
+  });
+
+  it("reuses a prepared Claude home without importing old permission settings", async () => {
+    const fixture = await sandboxFixture("claude");
+    const home = await realpath(fixture.root);
+    const profile = join(home, "profile");
+    await mkdir(profile, {mode: 0o700});
+    const skills = join(home, "skills");
+    await mkdir(skills);
+    await writeFile(join(skills, "SKILL.md"), "Shared skills");
+    await symlink(skills, join(profile, "skills"));
+    await writeFile(join(profile, "settings.json"), '{"agentOwned":true}');
+    const environment = { HOME: home, PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME: profile };
+    const first = await prepareAcpxRuntimeSandbox({ binding: fixture.binding, agent: "claude", environment, providerPolicy: {readOnly:true} });
+    await first.initializeOwnedConfiguration!();
+    expect(first.agentHomeDirectory).toBe(profile);
+    expect(first.launchEnvironment.CLAUDE_CONFIG_DIR).toBe(profile);
+    expect(first.persistedEnvironment.CLAUDE_CONFIG_DIR).toBe(profile);
+    expect(first.launchEnvironment.PAPERCLIP_ACPX_ISOLATED_CONTEXT).toBe("1");
+    expect(first.protectedPaths).toContain(profile);
+    const settings = JSON.parse(await readFile(join(profile, "settings.json"), "utf8"));
+    expect(settings.agentOwned).toBeUndefined();
+    expect(settings.model).toBe(fixture.binding.requestedModel);
+    expect(await readFile(join(profile, "skills", "SKILL.md"), "utf8")).toBe("Shared skills");
+    const other = await sandboxFixture("claude");
+    const second = await prepareAcpxRuntimeSandbox({ binding: other.binding, agent: "claude", environment });
+    expect(second.agentHomeDirectory).toBe(profile);
+    expect(second.root).not.toBe(first.root);
+    const conflicting = { ...environment, CLAUDE_CONFIG_DIR: "ignored-relative-path" };
+    const overridden = await prepareAcpxRuntimeSandbox({ binding: other.binding, agent: "claude", environment: conflicting });
+    expect(overridden.agentHomeDirectory).toBe(profile);
+    expect(overridden.launchEnvironment.CLAUDE_CONFIG_DIR).toBe(profile);
+    expect(conflicting.CLAUDE_CONFIG_DIR).toBe("ignored-relative-path");
+    expect(preconfiguredHomeEnvironment(conflicting)).toEqual(preconfiguredHomeEnvironment(environment));
+    const alias = join(home, "profile-alias");
+    await symlink(profile, alias);
+    for (const invalid of ["relative-profile", alias]) {
+      await expect(prepareAcpxRuntimeSandbox({ binding: other.binding, agent: "claude", environment: {...environment, PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME: invalid} })).rejects.toThrow("prepared_harness_home_invalid");
+    }
   });
 
   it("restores Grok permission controls on recovery without importing compatible hooks or credentials", async () => {
@@ -68,6 +137,14 @@ describe("ACPX runtime sandbox", () => {
     expect(config).toContain('[compat.claude]\nhooks = false\nmcps = false');
     expect(await readFile(requirementsPath, "utf8")).toContain('disable_bypass_permissions_mode = true');
     expect((await stat(requirementsPath)).mode & 0o777).toBe(0o600);
+  });
+
+  it.each([true, false])("preserves Grok search policy %s above compatible project settings", async disabled => {
+    const fixture = await sandboxFixture("grok");
+    const sandbox = await prepareAcpxRuntimeSandbox({ binding: { ...fixture.binding, grokDisableWebSearch: disabled }, agent: "grok" });
+    expect(await readFile(join(sandbox.agentHomeDirectory, "config.toml"), "utf8")).toContain(`disable_web_search = ${disabled}`);
+    const requirements = await readFile(join(sandbox.agentHomeDirectory, "requirements.toml"), "utf8");
+    expect(requirements.includes("disable_web_search = true")).toBe(disabled);
   });
 
   it("keeps provider credentials outside identity-enabled Codex shell commands", async () => {
@@ -90,6 +167,20 @@ describe("ACPX runtime sandbox", () => {
     for (const value of ["provider-secret", "configured-secret", "scoped-run-token", "private-identity"]) expect(config).not.toContain(value);
   });
 
+  it("seeds an isolated Antigravity API-key profile without inherited login/configuration", async () => {
+    const fixture = await sandboxFixture("antigravity");
+    const sandbox = await prepareAcpxRuntimeSandbox({ binding: fixture.binding, agent: "antigravity",
+      environment: { GEMINI_API_KEY: "bound-key", GEMINI_HOME: "/foreign/profile", GOOGLE_APPLICATION_CREDENTIALS: "/foreign/adc.json" } });
+    await sandbox.initializeOwnedConfiguration?.();
+    expect(sandbox.launchEnvironment.GEMINI_HOME).toBe(sandbox.agentHomeDirectory);
+    expect(sandbox.launchEnvironment.AGY_ACP_FORCE_FILE_STORAGE).toBe("1");
+    expect(sandbox.launchEnvironment.GOOGLE_APPLICATION_CREDENTIALS).toBeUndefined();
+    const settings = join(sandbox.agentHomeDirectory, "antigravity-acp/settings.json");
+    expect(JSON.parse(await readFile(settings, "utf8"))).toEqual({ auth: { type: "gemini-api-key" } });
+    expect((await stat(settings)).mode & 0o777).toBe(0o600);
+    expect(JSON.stringify(sandbox.persistedEnvironment)).not.toContain("bound-key");
+  });
+
   it.each(["claude-sonnet-5", "sonnet", "custom-deployment-id"])(
     "preserves the requested Claude model %s in its isolated settings",
     async (model) => {
@@ -98,6 +189,7 @@ describe("ACPX runtime sandbox", () => {
         binding: { ...fixture.binding, requestedModel: model },
         agent: "claude",
       });
+      await sandbox.initializeOwnedConfiguration?.();
       const settingsPath = join(sandbox.agentHomeDirectory, "settings.json");
       expect(JSON.parse(await readFile(settingsPath, "utf8"))).toMatchObject({
         model,
@@ -113,10 +205,27 @@ describe("ACPX runtime sandbox", () => {
       const binding = { ...fixture.binding, requestedModel: model, effectiveModel: model };
       for (let attempt = 0; attempt < 2; attempt += 1) {
         const sandbox = await prepareAcpxRuntimeSandbox({ binding, agent: "claude" });
+        await sandbox.initializeOwnedConfiguration?.();
         const settings = JSON.parse(await readFile(join(sandbox.agentHomeDirectory, "settings.json"), "utf8"));
         expect(settings).toMatchObject({ model, availableModels: [model] });
       }
     }
+  });
+
+  it("restores bound Claude effort in private settings across cold connections", async () => {
+    const fixture = await sandboxFixture("claude");
+    for (const claudeEffort of ["high", "xhigh", "max"] as const) {
+      const binding = { ...fixture.binding, claudeEffort };
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const sandbox = await prepareAcpxRuntimeSandbox({ binding, agent: "claude" });
+        await sandbox.initializeOwnedConfiguration?.();
+        const settings = JSON.parse(await readFile(join(sandbox.agentHomeDirectory, "settings.json"), "utf8"));
+        expect(settings.effortLevel).toBe(claudeEffort);
+      }
+    }
+    const sandbox = await prepareAcpxRuntimeSandbox({ binding: fixture.binding, agent: "claude" });
+    await sandbox.initializeOwnedConfiguration?.();
+    expect(JSON.parse(await readFile(join(sandbox.agentHomeDirectory, "settings.json"), "utf8"))).not.toHaveProperty("effortLevel");
   });
 
   it.each([
@@ -429,15 +538,16 @@ it("refreshes Copilot native instructions privately on every admission, includin
     const sandbox = await prepareAcpxRuntimeSandbox({
       binding: fixture.binding, agent: "copilot", providerPolicy: { readOnly: false, systemInstructions },
     });
-    await refreshCopilotSystemInstructions(sandbox, systemInstructions);
+    await refreshCopilotSystemInstructions(sandbox, composeCopilotSystemInstructions(systemInstructions));
     return sandbox;
   };
+  const composed = (value: string) => `${value}\n\n# Paperclip task orientation\n${COPILOT_TASK_ORIENTATION_INSTRUCTIONS}\n`;
   const first = await prepare("Original registered instructions.");
   const path = join(first.agentHomeDirectory, "copilot-instructions.md");
-  expect(await readFile(path, "utf8")).toBe("Original registered instructions.\n");
+  expect(await readFile(path, "utf8")).toBe(composed("Original registered instructions."));
   await prepareAcpxRuntimeSandbox({ binding: fixture.binding, agent: "copilot",
     providerPolicy: { readOnly: false, systemInstructions: "Contender must not write during preparation." } });
-  expect(await readFile(path, "utf8")).toBe("Original registered instructions.\n");
+  expect(await readFile(path, "utf8")).toBe(composed("Original registered instructions."));
   expect((await stat(path)).mode & 0o777).toBe(0o600);
   expect(first.protectedPaths).toContain(dirname(dirname(first.root)));
   expect(path.startsWith(`${first.protectedPaths[0]}/`)).toBe(true);
@@ -448,14 +558,14 @@ it("refreshes Copilot native instructions privately on every admission, includin
   await prepare("Current registered instructions.");
   expect((await lstat(path)).isSymbolicLink()).toBe(false);
   expect(await readFile(target, "utf8")).toBe("Do not overwrite.");
-  expect(await readFile(path, "utf8")).toBe("Current registered instructions.\n");
+  expect(await readFile(path, "utf8")).toBe(composed("Current registered instructions."));
   await prepare("");
-  expect(await readFile(path, "utf8")).toBe("\n");
+  expect(await readFile(path, "utf8")).toBe(composed(""));
   await expect(prepare("x".repeat(32 * 1024 + 1))).rejects.toThrow("bounded size");
-  expect(await readFile(path, "utf8")).toBe("\n");
+  expect(await readFile(path, "utf8")).toBe(composed(""));
 });
 
-async function sandboxFixture(agent: "pi" | "claude" | "codex" | "grok" | "cursor" | "copilot") {
+async function sandboxFixture(agent: "pi" | "claude" | "codex" | "grok" | "cursor" | "copilot" | "antigravity") {
   const root = await mkdtemp(join(tmpdir(), "paperclip-acpx-sandbox-"));
   temporaryDirectories.push(root);
   const workspace = join(root, "workspace");
@@ -468,6 +578,7 @@ async function sandboxFixture(agent: "pi" | "claude" | "codex" | "grok" | "curso
     codex: "gpt-5.6-sol",
     cursor: "provider-model-cursor",
     copilot: "provider-model-copilot",
+    antigravity: "provider-model-antigravity",
   } as const;
   const binding = await createAcpxRecoveryBinding({
     runtimeDirectory,

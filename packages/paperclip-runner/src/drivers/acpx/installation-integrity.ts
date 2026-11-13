@@ -2,6 +2,7 @@ import { MAX_ACPX_RUNTIME_EXECUTABLE_BYTES, ACPX_PRIVATE_SNAPSHOT_ENV, createAcp
 import { createNativeAcpxDistributionSnapshot, NATIVE_ACPX_BOOTSTRAP_NAME, readNativeAcpxDistributionEntries, type NativeAcpxDistributionInput } from "./native-distribution-integrity.js";
 export type { NativeAcpxDistributionInput } from "./native-distribution-integrity.js";
 import { createHash } from "node:crypto";
+import { executableDigestCache, type ExecutableFileIdentity } from "../../executable-digest-cache.js";
 import {
   spawn as spawnChildProcess,
   type ChildProcess,
@@ -29,7 +30,8 @@ import {
 } from "node:path";
 import type { Readable, Writable } from "node:stream";
 
-import { resolveQualifiedAcpxProfile, type QualifiedAcpxProfile } from "./qualified-profiles.js";
+import { assertAcpxProfileReleased, resolveQualifiedAcpxProfile, type QualifiedAcpxProfile } from "./qualified-profiles.js";
+import { resolveInstalledProviderAuthority } from "./installed-provider-authority.js";
 import {
   VERIFIED_RUNTIME_EXECUTABLE_ENV,
   verifiedRuntimeExecutableHandoff,
@@ -59,6 +61,12 @@ const QUALIFIED_CLAUDE_LINUX_X64_RUNTIME = Object.freeze({
   executableDigest:
     "sha256:fe503f65c6289d59c23e5b21ae44f03583f997dd33a2cbfc75ab4f96fb8fc73f",
   environmentVariable: "CLAUDE_CODE_EXECUTABLE",
+});
+
+const QUALIFIED_CLAUDE_LINUX_ARM64_RUNTIME = Object.freeze({
+  ...QUALIFIED_CLAUDE_LINUX_X64_RUNTIME,
+  packageName: "@anthropic-ai/claude-agent-sdk-linux-arm64",
+  executableDigest: "sha256:0292fa22ac2fd43e16be9d0e511ddd8347280d6e0ebaca744ef5b27e05d8d0f8",
 });
 
 const QUALIFIED_CLAUDE_DARWIN_RUNTIMES = {
@@ -354,7 +362,7 @@ export function createAcpxPackageJsonResolver(
       resolvePackageJsonFromIssuer(packageName, canonicalIssuer),
     );
     if (!pathIsInside(canonicalNodeModules, packageJsonPath)
-      && !isDeclaredHoistedCodexPlatform(canonicalRoot, canonicalManifest, canonicalIssuer, packageName, packageJsonPath)) {
+      && !isDeclaredHoistedProviderPlatform(canonicalRoot, canonicalManifest, canonicalIssuer, packageName, packageJsonPath)) {
       throw new Error(
         `ACPX provider package ${packageName} resolves outside the selected provider root`,
       );
@@ -365,25 +373,36 @@ export function createAcpxPackageJsonResolver(
   return resolver;
 }
 
-function hasPublishedCodexPlatformDeclaration(resolver: AcpxPackageJsonResolver, runtimeManifest: string): boolean {
+function hasPublishedProviderPlatformDeclaration(
+  resolver: AcpxPackageJsonResolver,
+  runtimeManifest: string,
+  qualified: { runtimePackageName: string; runtimePackageVersion: string; packageName: string; dependencyDeclaration: string },
+): boolean {
   const authority = rootedPackageResolvers.get(resolver);
   if (!authority || !pathIsInside(authority.root, runtimeManifest)) return false;
   const selected = readResolverPackageJson(authority.manifest);
   const runtime = readResolverPackageJson(runtimeManifest);
   const declarations = selected.optionalDependencies as Record<string, unknown> | undefined;
   return selected.name === "@paperclipai/server"
-    && runtime.name === QUALIFIED_CODEX_LINUX_X64_RUNTIME.runtimePackageName
-    && runtime.version === QUALIFIED_CODEX_LINUX_X64_RUNTIME.runtimePackageVersion
+    && runtime.name === qualified.runtimePackageName
+    && runtime.version === qualified.runtimePackageVersion
     && runtime.optionalDependencies === undefined
-    && declarations?.[QUALIFIED_CODEX_LINUX_X64_RUNTIME.packageName] === QUALIFIED_CODEX_LINUX_X64_RUNTIME.dependencyDeclaration;
+    && declarations?.[qualified.packageName] === qualified.dependencyDeclaration;
 }
 
 // npm installs an optional platform alias outside a bundled server graph.
 // Admit only the qualified executable package through its declared npm slot;
 // all executable bytes still pass the existing digest/no-follow admission.
-function isDeclaredHoistedCodexPlatform(root: string, manifest: string, issuer: string, packageName: string, packageJsonPath: string): boolean {
-  const qualified = QUALIFIED_CODEX_LINUX_X64_RUNTIME;
-  if (packageName !== qualified.packageName || issuer === manifest) return false;
+function isDeclaredHoistedProviderPlatform(root: string, manifest: string, issuer: string, packageName: string, packageJsonPath: string): boolean {
+  const platformQualification = [
+    { qualified: QUALIFIED_CODEX_LINUX_X64_RUNTIME, os: "linux", cpu: "x64", alias: true },
+    { qualified: QUALIFIED_CLAUDE_LINUX_X64_RUNTIME, os: "linux", cpu: "x64", alias: false },
+    { qualified: QUALIFIED_CLAUDE_LINUX_ARM64_RUNTIME, os: "linux", cpu: "arm64", alias: false },
+    { qualified: QUALIFIED_CLAUDE_DARWIN_RUNTIMES.arm64, os: "darwin", cpu: "arm64", alias: false },
+    { qualified: QUALIFIED_CLAUDE_DARWIN_RUNTIMES.x64, os: "darwin", cpu: "x64", alias: false },
+  ].find(value => value.qualified.packageName === packageName);
+  if (!platformQualification || issuer === manifest) return false;
+  const { qualified, os, cpu, alias } = platformQualification;
   try {
     const selected = readResolverPackageJson(manifest);
     const runtime = readResolverPackageJson(issuer);
@@ -404,10 +423,10 @@ function isDeclaredHoistedCodexPlatform(root: string, manifest: string, issuer: 
     });
     if (!declaredSlot) return false;
     const platform = readResolverPackageJson(packageJsonPath);
-    return (platform.name === qualified.packageName || platform.name === qualified.runtimePackageName)
+    return (platform.name === qualified.packageName || (alias && platform.name === qualified.runtimePackageName))
       && platform.version === qualified.packageVersion
-      && Array.isArray(platform.os) && platform.os.includes("linux")
-      && Array.isArray(platform.cpu) && platform.cpu.includes("x64");
+      && Array.isArray(platform.os) && platform.os.includes(os)
+      && Array.isArray(platform.cpu) && platform.cpu.includes(cpu);
   } catch { return false; }
 }
 
@@ -588,13 +607,7 @@ export async function awaitVerifiedAcpxProviderExit(
   await exitProof;
 }
 
-interface VerifiedAcpxCommandIdentity {
-  device: string;
-  inode: string;
-  size: string;
-  modifiedNanoseconds: string;
-  changedNanoseconds: string;
-}
+type VerifiedAcpxCommandIdentity = ExecutableFileIdentity;
 
 interface VerifiedAcpxRuntimeExecutable {
   path: string;
@@ -633,19 +646,37 @@ export async function verifyQualifiedAcpxInstallation(
   profile: QualifiedAcpxProfile,
   resolvePackageJson: AcpxPackageJsonResolver = defaultPackageJsonResolver,
 ): Promise<VerifiedAcpxInstallation> {
-  // Keep the selected package authority available when its bundled Codex
+  assertAcpxProfileReleased(profile.agent);
+  // Keep the selected package authority available when its bundled provider
   // wrapper delegates platform installation to the published server manifest.
-  if (profile.agent === "codex" && resolvePackageJson === defaultPackageJsonResolver && process.env.PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT !== undefined) {
-    resolvePackageJson = createAcpxPackageJsonResolver(
-      process.env.PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT,
-      process.env.PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST,
-    );
+  if ((profile.agent === "codex" || profile.agent === "claude") && resolvePackageJson === defaultPackageJsonResolver) {
+    const boundRoot = process.env.PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT;
+    const authority = boundRoot === undefined ? resolveInstalledProviderAuthority(import.meta.url) : {
+      root: boundRoot,
+      manifest: process.env.PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST,
+    };
+    if (authority) resolvePackageJson = createAcpxPackageJsonResolver(authority.root, authority.manifest);
   }
   const builtin = profile.agent === "grok";
   if (builtin && (profile.agentServerPackage !== "builtin:grok-acp" || profile.agentServerVersion !== "1" || profile.agentRuntimePackage !== "native:grok" || profile.agentRuntimeVersion !== "1.0.13")) {
     throw new Error("Grok builtin profile identity mismatch");
   }
-  const serverPackageJsonPath = builtin ? null : await realpath(resolvePackageJson(profile.agentServerPackage));
+  let serverPackageJsonPath: string | null = null;
+  if (!builtin) {
+    try {
+      serverPackageJsonPath = await realpath(resolvePackageJson(profile.agentServerPackage));
+    } catch (error) {
+      if ((profile.agent === "claude" || profile.agent === "codex") &&
+          error instanceof Error && "code" in error &&
+          (error.code === "MODULE_NOT_FOUND" || error.code === "ERR_MODULE_NOT_FOUND")) {
+        throw Object.assign(new Error(
+          `The ACPX ${profile.agent} runtime is incomplete: required package ${profile.agentServerPackage} is missing. ` +
+          "Reinstall or rebuild Paperclip with its bundled provider dependencies, restart the server, then test the agent's runtime before retrying.",
+        ), { code: "ACPX_RUNTIME_PACKAGE_MISSING" });
+      }
+      throw error;
+    }
+  }
   const serverPackage: AcpxPackageMetadata = builtin
     ? { version: "1", bin: "launcher.cjs", type: "commonjs" }
     : await readPackageJson(serverPackageJsonPath!, profile.agentServerPackage);
@@ -995,7 +1026,9 @@ async function verifyQualifiedRuntimeExecutable(input: {
     input.profile.agent === "claude"
       ? process.platform === "darwin" && (process.arch === "arm64" || process.arch === "x64")
         ? QUALIFIED_CLAUDE_DARWIN_RUNTIMES[process.arch]
-        : QUALIFIED_CLAUDE_LINUX_X64_RUNTIME
+        : process.platform === "linux" && process.arch === "arm64"
+          ? QUALIFIED_CLAUDE_LINUX_ARM64_RUNTIME
+          : QUALIFIED_CLAUDE_LINUX_X64_RUNTIME
       : input.profile.agent === "codex"
         ? QUALIFIED_CODEX_LINUX_X64_RUNTIME
         : null;
@@ -1009,7 +1042,7 @@ async function verifyQualifiedRuntimeExecutable(input: {
     );
   }
   if (!((process.platform === "linux" && process.arch === "x64")
-    || (input.profile.agent === "claude" && process.platform === "darwin" && (process.arch === "arm64" || process.arch === "x64")))) {
+    || (input.profile.agent === "claude" && ["linux", "darwin"].includes(process.platform) && (process.arch === "arm64" || process.arch === "x64")))) {
     throw new Error(
       `ACPX ${input.profile.agent} verified runtime executable is unavailable for ${process.platform} ${process.arch}`,
     );
@@ -1019,8 +1052,8 @@ async function verifyQualifiedRuntimeExecutable(input: {
   const ownDeclaration = typeof optionalDependencies === "object"
     && optionalDependencies !== null && !Array.isArray(optionalDependencies)
     && (optionalDependencies as Record<string, unknown>)[qualification.packageName] === qualification.dependencyDeclaration;
-  const publishedDeclaration = input.profile.agent === "codex" && optionalDependencies === undefined
-    && hasPublishedCodexPlatformDeclaration(input.resolvePackageJson, input.runtimePackageJsonPath);
+  const publishedDeclaration = optionalDependencies === undefined
+    && hasPublishedProviderPlatformDeclaration(input.resolvePackageJson, input.runtimePackageJsonPath, qualification);
   if (!ownDeclaration && !publishedDeclaration) {
     throw new Error(
       `ACPX ${input.profile.agent} runtime omitted its verified platform executable package`,
@@ -1166,7 +1199,7 @@ async function inspectCommand(
   }
 }
 
-async function openVerifiedRuntimeExecutable(
+export async function openVerifiedRuntimeExecutable(
   executablePath: string,
   expectedDigest: string,
   agent: string,
@@ -1208,23 +1241,31 @@ async function openVerifiedRuntimeExecutable(
         `ACPX ${agent} runtime executable must be a bounded executable file`,
       );
     }
-    const hash = createHash("sha256");
-    const buffer = Buffer.alloc(1024 * 1024);
+    const cachedDigest = await executableDigestCache.read(fileIdentity(before));
+    let digest = cachedDigest;
     let position = 0;
-    try {
-      while (position < Number(before.size)) {
-        const { bytesRead } = await handle.read(
-          buffer,
-          0,
-          Math.min(buffer.length, Number(before.size) - position),
-          position,
-        );
-        if (bytesRead === 0) break;
-        hash.update(buffer.subarray(0, bytesRead));
-        position += bytesRead;
+    if (digest === null) {
+      const hash = createHash("sha256");
+      const buffer = Buffer.alloc(1024 * 1024);
+      try {
+        while (position < Number(before.size)) {
+          const { bytesRead } = await handle.read(
+            buffer,
+            0,
+            Math.min(buffer.length, Number(before.size) - position),
+            position,
+          );
+          if (bytesRead === 0) break;
+          hash.update(buffer.subarray(0, bytesRead));
+          position += bytesRead;
+        }
+      } finally {
+        buffer.fill(0);
       }
-    } finally {
-      buffer.fill(0);
+      digest = `sha256:${hash.digest("hex")}`;
+    }
+    if (cachedDigest === null && position === Number(before.size) && digest === expectedDigest) {
+      await executableDigestCache.write(fileIdentity(before), digest);
     }
     const after = await handle.stat({ bigint: true });
     const lexicalAfter = await lstat(executablePath, { bigint: true }).catch(
@@ -1233,7 +1274,7 @@ async function openVerifiedRuntimeExecutable(
     const beforeIdentity = fileIdentity(before);
     const afterIdentity = fileIdentity(after);
     if (
-      position !== Number(before.size) ||
+      (cachedDigest === null && position !== Number(before.size)) ||
       lexicalAfter === null ||
       lexicalAfter.isSymbolicLink() ||
       !lexicalAfter.isFile() ||
@@ -1245,7 +1286,6 @@ async function openVerifiedRuntimeExecutable(
         `ACPX ${agent} runtime executable changed while it was verified`,
       );
     }
-    const digest = `sha256:${hash.digest("hex")}`;
     if (digest !== expectedDigest) {
       throw new Error(`ACPX ${agent} runtime executable digest mismatch`);
     }
@@ -1444,7 +1484,7 @@ function commandLease(
   privateSnapshot: AcpxPrivateSnapshot | null,
 ): VerifiedAcpxCommandLease {
   let consumed = false;
-  let directoriesReleased = false;
+  let directoriesRelease: Promise<void> | undefined;
   let spawnedChild: ChildProcess | null = null;
   let childExit: Promise<void> | null = null;
   let snapshotCleanup: Promise<void> | null = null;
@@ -1456,24 +1496,23 @@ function commandLease(
     }
     return snapshotCleanup;
   };
-  const releaseDirectories = async (): Promise<void> => {
-    if (directoriesReleased) return;
-    directoriesReleased = true;
-    await Promise.all([
+  const releaseDirectories = (): Promise<void> => {
+    return (directoriesRelease ??= Promise.all([
       commandDirectory.close(),
       ...dependencyAncestors.map((handle) => handle.close()),
       ...(providerRuntimeExecutable === null
         ? []
         : [providerRuntimeExecutable.close()]),
-    ]);
+    ]).then(() => undefined));
   };
   const releaseDirectoriesBestEffort = (): void => {
     void releaseDirectories().catch(() => undefined);
   };
   const close = async (): Promise<void> => {
-    if (consumed && privateSnapshot === null) return;
+    const wasConsumed = consumed;
     consumed = true;
-    verifiedBytes.fill(0);
+    // A spawned command owns its source buffer until its pipe write completes.
+    if (!wasConsumed) verifiedBytes.fill(0);
     await releaseDirectories();
     // A spawned provider may still read the snapshot. Runtime shutdown runs in
     // parallel and retires that child; do not remove its bytes or report command
@@ -1568,7 +1607,7 @@ function commandLease(
           environment[VERIFIED_PROVIDER_RUNTIME_TARGET_ENV] =
             providerRuntimeEnvironmentVariable;
         }
-        child = spawnChildProcess(
+        child = spawnedChild = spawnChildProcess(
           runtimeHandoff.executable,
           guarded
             ? [
@@ -2222,11 +2261,4 @@ export async function probeAcpxClaudeInstallation(model: string): Promise<void> 
 
 export async function probeAcpxGrokInstallation(model: string): Promise<void> {
   await verifyQualifiedAcpxInstallation(resolveQualifiedAcpxProfile("grok", model));
-}
-
-/** Verify the pinned Pi closure and snapshot lease without launching a provider. */
-export async function probeAcpxPiInstallation(model: string): Promise<void> {
-  const installation = await verifyQualifiedAcpxInstallation(resolveQualifiedAcpxProfile("pi", model));
-  const lease = await installation.openCommand();
-  await lease.close();
 }

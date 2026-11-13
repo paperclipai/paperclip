@@ -106,6 +106,13 @@ export function railwayRisk(name: string): "read" | "write" | "destructive" {
   return "write";
 }
 
+export function classifyRailwayToolRisk(tool: { name: string; annotations?: Record<string, unknown> }): "read" | "write" | "destructive" {
+  const risk = railwayRisk(tool.name);
+  const annotations = tool.annotations ?? {};
+  return risk === "read" && (annotations.readOnlyHint === false || annotations.writeHint === true)
+    ? "write" : risk;
+}
+
 export class RailwayError extends Error {
   constructor(readonly code: string, message: string, readonly status = 502) { super(message); this.name = "RailwayError"; }
 }

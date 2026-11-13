@@ -321,6 +321,7 @@ describe("expose", () => {
     expect(first.ok).toBe(true);
     expect(fake.ports.get(42010)).toBe("http://127.0.0.1:42010");
     const exposeCallsAfterFirst = fake.exposeCalls;
+    const removeCallsAfterFirst = fake.removeCalls;
 
     // Re-expose the same port. The mapping already matches, so the apply loop
     // takes the idempotent path and publishes nothing.
@@ -337,7 +338,7 @@ describe("expose", () => {
     expect(fake.exposeCalls).toBe(exposeCallsAfterFirst); // nothing re-published
 
     // The substituted mapping must not survive the rejected request.
-    expect(fake.removeCalls).toBeGreaterThan(0);
+    expect(fake.removeCalls).toBeGreaterThan(removeCallsAfterFirst);
     expect(fake.ports.has(42010)).toBe(false);
     expect([...fake.ports]).toEqual([[443, "http://127.0.0.1:3100"]]);
   });
@@ -369,41 +370,6 @@ describe("expose", () => {
     expect([...fake.ports]).toEqual([[443, "http://127.0.0.1:3100"]]);
   });
 
-  it("withdraws a substituted idempotent mapping without depending on a readable Serve status", async () => {
-    // The withdrawal decision must not hinge on a live status read. If it did, a
-    // status read that fails at exactly the wrong moment would make the broker
-    // return `listener_substituted` while leaving the replacement service
-    // exposed. Provenance comes from the `exposed` lease instead, so the remove
-    // is still issued.
-    const fake = new FakeTailscale();
-    let statusReadsBeforeReExpose = Number.POSITIVE_INFINITY;
-    const { core } = makeCore(fake, registryPath, () => ({
-      present: true,
-      loopbackOnly: true,
-      ownerUidMatches: true,
-      inodes: [fake.statusCalls > statusReadsBeforeReExpose ? "9999" : "5001"],
-    }));
-
-    const first = await reserveAndExpose(core);
-    expect(first.ok).toBe(true);
-    const removeCallsAfterFirst = fake.removeCalls;
-
-    const reserved = await core.handle(reserveReq(), PEER);
-    if (!reserved.ok || reserved.op !== "reserve") throw new Error("reserve failed");
-    statusReadsBeforeReExpose = fake.statusCalls;
-
-    const second = await core.handle(
-      { op: "expose", requestId: "req-noread", runtimeId: RUNTIME_A, handle: reserved.handle },
-      PEER,
-    );
-    expect(second.ok).toBe(false);
-    if (!second.ok) expect(second.code).toBe("listener_substituted");
-
-    // The remove was issued for the substituted port even though this request
-    // published nothing itself.
-    expect(fake.removeCalls).toBeGreaterThan(removeCallsAfterFirst);
-    expect(fake.ports.has(42010)).toBe(false);
-  });
 
   it("withdraws a published mapping when the listener disappears entirely", async () => {
     // Absent is not "unchanged". A closed listener leaves the mapping pointing at

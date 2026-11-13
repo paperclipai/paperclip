@@ -1,0 +1,215 @@
+import { createHash } from "node:crypto";
+import { and, asc, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
+import { heartbeatRuns, runUsageReceipts, type Db } from "@paperclipai/db";
+import type { AdapterUsageCheckpoint } from "@paperclipai/adapter-utils";
+import type { NativeExecutionInput, PrpEvent } from "../../vendor/paperclip-runner/index.js";
+import { priceAnthropicReceipt } from "../anthropic-pricing.js";
+import { priceCodexReceipt } from "../codex-pricing.js";
+import { liveRunUsageCostCents } from "../budget-live-usage.js";
+import { receiptFingerprint } from "../receipt-fingerprint.js";
+import { persistUsageReceipt, type UsageReceiptEnvelope } from "../usage-receipts.js";
+import { createNativeTurnAccounting, NATIVE_LOST_TURN_USAGE_EVIDENCE, NATIVE_TURN_LOST_ON_RESTORE, nativeUsageCostUsd, normalizeNativeUsage } from "./native-usage-accounting.js";
+
+const terminal = new Set(["turn.completed", "turn.failed", "turn.cancelled", "turn.interrupted"]);
+const uuid = (identity: string) => {
+  const hex = createHash("sha256").update(identity).digest("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+};
+
+type NativeUsageDeliveryInput = {
+  companyId: string; runId: string; runnerInstanceId: string;
+  provider: NativeExecutionInput["provider"];
+  billing: Pick<AdapterUsageCheckpoint, "provider" | "biller" | "billingType">;
+};
+
+export async function createNativeUsageDelivery(db: Db, input: NativeUsageDeliveryInput) {
+  const sourceId = uuid(`${input.runId}:${input.runnerInstanceId}`);
+  const [bound] = await db.update(heartbeatRuns).set({ usageJson: sql`
+    coalesce(${heartbeatRuns.usageJson}, '{}'::jsonb) || '{"accountingReceiptOwner":"native_producer"}'::jsonb ||
+    case when ${heartbeatRuns.usageJson}->>'accountingReceiptSourceId' = ${sourceId}
+      then '{}'::jsonb else
+        case when jsonb_typeof(${heartbeatRuns.usageJson}->'accountingReceiptSourceId') = 'string'
+          then jsonb_build_object('accountingReceiptSourceFences',
+            coalesce(${heartbeatRuns.usageJson}->'accountingReceiptSourceFences', '{}'::jsonb)
+            || jsonb_build_object(${heartbeatRuns.usageJson}->>'accountingReceiptSourceId',
+              coalesce(${heartbeatRuns.usageJson}->'accountingReceiptSequence', '0'::jsonb)))
+          else '{}'::jsonb end
+        || ${JSON.stringify({ accountingReceiptSourceId: sourceId, accountingReceiptSequence: 0, accountingReceiptReady: false })}::jsonb end`
+  }).where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId),
+    isNull(heartbeatRuns.costAccountedAt))).returning({ id: heartbeatRuns.id });
+  if (!bound) throw new Error("native_usage_run_not_available");
+  return createNativeUsageReceiver(db, input, sourceId, await loadNativeUsageReceipts(db, input, sourceId));
+}
+
+/** Drain the authenticated previous producer's accounting without acquiring or
+ * resetting its ownership. Finalized sources retain normal receipt equality
+ * and reconciliation rules; this grants no business/tool execution authority. */
+export async function createNativeUsageContinuationDelivery(db: Db, input: Omit<NativeUsageDeliveryInput, "billing">) {
+  const sourceId = uuid(`${input.runId}:${input.runnerInstanceId}`);
+  const [source] = await db.select({ runnerInstanceId: heartbeatRuns.runnerInstanceId, usage: heartbeatRuns.usageJson, finishedAt: heartbeatRuns.finishedAt })
+    .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId)));
+  if (source?.runnerInstanceId !== input.runnerInstanceId || source.usage?.accountingReceiptOwner !== "native_producer"
+    || source.usage.accountingReceiptSourceId !== sourceId) throw new Error("native_usage_continuation_source_mismatch");
+  const saved = await loadNativeUsageReceipts(db, input, sourceId);
+  const classification = (receipt: Pick<AdapterUsageCheckpoint, "provider" | "biller" | "billingType">) => ({
+    provider: receipt.provider, biller: receipt.biller, billingType: receipt.billingType,
+  });
+  const receipts = saved.map(row => (row.receipt as UsageReceiptEnvelope).receipt as AdapterUsageCheckpoint);
+  const recorded = source.usage as Partial<AdapterUsageCheckpoint>;
+  if (!receipts.length && !recorded.biller) throw new Error("native_usage_continuation_receipts_missing");
+  const billing = classification(receipts[0] ?? recorded as AdapterUsageCheckpoint);
+  if (receipts.some(receipt => receiptFingerprint(classification(receipt)) !== receiptFingerprint(billing)
+    || receipt.model !== (input.provider.model ?? "unknown"))) throw new Error("native_usage_source_conflict");
+  const terminalAcknowledged = source.finishedAt !== null && input.provider.kind === "codex"
+    && !saved.some(row => terminal.has((row.receipt as UsageReceiptEnvelope).producerEvent?.eventType ?? ""));
+  return createNativeUsageReceiver(db, { ...input, billing }, sourceId, saved, true, terminalAcknowledged);
+}
+
+function loadNativeUsageReceipts(db: Db, input: Pick<NativeUsageDeliveryInput, "companyId" | "runId">, sourceId: string) {
+  return db.select({ receipt: runUsageReceipts.receiptJson, hash: runUsageReceipts.receiptHash,
+    sequence: runUsageReceipts.sequence }).from(runUsageReceipts).where(and(
+    eq(runUsageReceipts.companyId, input.companyId), eq(runUsageReceipts.runId, input.runId),
+    eq(runUsageReceipts.sourceId, sourceId),
+    // A journaled late tail is durable evidence, not an accepted delivery. Keep
+    // replaying it through the explicit reconciliation response after restart.
+    sql`not exists (select 1 from ${heartbeatRuns} r where r.id = ${runUsageReceipts.runId}
+      and r.company_id = ${runUsageReceipts.companyId} and r.usage_json->>'accountingLateReceiptPending' = 'true'
+      and (r.usage_json->>'accountingLateReceiptId' = ${runUsageReceipts.id}::text
+        or coalesce(r.usage_json->'accountingLateReceiptDebts', '{}'::jsonb) ? ${runUsageReceipts.id}::text))`)).orderBy(asc(runUsageReceipts.sequence));
+}
+
+const isUuid = (value: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+const finishedRunStatuses = ["succeeded", "failed", "timed_out", "cancelled", "interrupted"];
+
+/** The Runner names a late report's owner when the turn proves it. A session's
+ * usage belongs to that session, so an unproven owner is the session's last
+ * finished run, recorded as inferred. */
+async function captureLateUsageForOwner(db: Db, input: NativeUsageDeliveryInput, event: PrpEvent, payload: Record<string, unknown>) {
+  const reconciliation = payload.reconciliation;
+  if (!reconciliation || typeof reconciliation !== "object" || !isUuid(event.normalizedSessionId)) return false;
+  const measured = { runDelta: payload.runDelta };
+  const usage = normalizeNativeUsage(measured, { inputIncludesCacheReads: input.provider.kind === "codex" });
+  // An older Runner reports only an invalidation, with zero-filled counters.
+  // It has no increment to move and still belongs to the delivering run.
+  if (!usage || (usage.inputTokens + usage.outputTokens + (usage.cachedInputTokens ?? 0)) <= 0) return false;
+  const prior = (reconciliation as Record<string, unknown>).priorOrigin as Record<string, unknown> | null | undefined;
+  const runs = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.nativeSessionId, event.normalizedSessionId),
+    inArray(heartbeatRuns.status, finishedRunStatuses), ne(heartbeatRuns.id, input.runId),
+  )).orderBy(desc(heartbeatRuns.finishedAt));
+  const exact = runs.find(run => run.id === prior?.runId && prior?.normalizedSessionId === event.normalizedSessionId);
+  // With no finished run in this session, the delivering run is the only owner
+  // left. Its own delta already excludes this usage, so it is never counted twice.
+  const owner = exact ?? runs[0] ?? { id: input.runId };
+  const receipt = priceAnthropicReceipt(priceCodexReceipt({ ...input.billing, model: input.provider.model ?? "unknown", usage, usageBasis: "per_run",
+    complete: true, costUsd: nativeUsageCostUsd(measured, input.provider) ?? null }));
+  await persistUsageReceipt(db, { schema: "paperclip/accounting-receipt/v1", id: uuid(`${owner.id}:${input.runnerInstanceId}:${event.sourceEventId}`),
+    companyId: input.companyId, runId: owner.id, adapterType: "paperclip_runner", sourceId: uuid(`late:${owner.id}:${input.runId}:${input.runnerInstanceId}`),
+    sequence: event.sourceSeq, receivedAt: event.emittedAt, receipt,
+    producerEvent: { sourceEventId: event.sourceEventId, turnId: event.turnId, eventType: event.eventType, usage: { runDelta: payload.runDelta, reconciliation } },
+    lateDelta: { attribution: exact ? "exact" : "inferred", reportedByRunId: input.runId } });
+  return true;
+}
+
+function createNativeUsageReceiver(db: Db, input: NativeUsageDeliveryInput, sourceId: string,
+  saved: Awaited<ReturnType<typeof loadNativeUsageReceipts>>, verifySaved = false, terminalAcknowledged = false) {
+  const accepted = new Map<string, UsageReceiptEnvelope>();
+  const turnAccounting = ["opencode", "acpx"].includes(input.provider.kind) ? createNativeTurnAccounting(input.provider) : null;
+  let observedUsage: Record<string, unknown> | null = null;
+  let observedTurn: string | undefined;
+  let activeProviderTurn: string | undefined;
+  const observe = (envelope: UsageReceiptEnvelope) => {
+    const fact = envelope.producerEvent!;
+    if (fact.eventType === "turn.started") activeProviderTurn = fact.providerTurnId ?? fact.sourceEventId;
+    const accountingTurn = fact.providerTurnId ?? activeProviderTurn ?? fact.turnId;
+    const interpretedUsage = fact.usage ? { ...fact.usage, runDeltaComplete: fact.usage.runDeltaComplete === true
+      && (input.provider.kind !== "codex" || fact.usage.runDeltaBasis === "run") } : undefined;
+    const event = { sourceInstanceId: input.runnerInstanceId, sourceSeq: envelope.sequence,
+      turnId: accountingTurn, eventType: fact.eventType,
+      payload: interpretedUsage ? { kind: "usage", usage: interpretedUsage }
+        : fact.lostOnRestore ? { error: { code: NATIVE_TURN_LOST_ON_RESTORE } } : {} } as PrpEvent;
+    if (turnAccounting) {
+      turnAccounting.observe(event);
+      return turnAccounting.snapshot();
+    }
+    if (fact.eventType === "turn.started") observedTurn = undefined;
+    if (interpretedUsage) {
+      observedUsage = interpretedUsage;
+      observedTurn = normalizeNativeUsage(observedUsage, { inputIncludesCacheReads: input.provider.kind === "codex" }) ? accountingTurn : undefined;
+    }
+    const closesRun = terminal.has(fact.eventType) || (terminalAcknowledged && interpretedUsage !== undefined);
+    return { usage: observedUsage, complete: closesRun && observedTurn !== undefined && observedTurn === accountingTurn };
+  };
+  for (const row of saved) {
+    const envelope = row.receipt as UsageReceiptEnvelope;
+    if (!envelope.producerEvent) throw new Error("native_usage_receipt_missing_producer");
+    if (verifySaved && (envelope.companyId !== input.companyId || envelope.runId !== input.runId
+      || envelope.sourceId !== sourceId || envelope.sequence !== row.sequence || envelope.adapterType !== "paperclip_runner"
+      || envelope.id !== uuid(`${input.runId}:${input.runnerInstanceId}:${envelope.producerEvent.sourceEventId}`)
+      || receiptFingerprint(envelope) !== row.hash || accepted.has(envelope.producerEvent.sourceEventId))) {
+      throw new Error("native_usage_source_conflict");
+    }
+    accepted.set(envelope.producerEvent.sourceEventId, envelope);
+    observe(envelope);
+  }
+  let pending: UsageReceiptEnvelope | undefined;
+  let chain = Promise.resolve();
+  const capture = async (event: PrpEvent) => {
+    // A restore is journaled only for turn-reporting providers with an open
+    // turn, so a rebuilt receiver can close that turn as a lower bound.
+    // Receivers that predate it replay the receipt as an ignored event.
+    if (event.eventType === "session.resumed") {
+      // Never fail delivery for a lifecycle event: an unacknowledged event
+      // would replay without end. Another source's restore is not ours.
+      if (!turnAccounting || event.runId !== input.runId || event.sourceInstanceId !== input.runnerInstanceId
+        || (!turnAccounting.hasOpenTurn() && !accepted.has(event.sourceEventId))) return;
+    } else if (event.eventType !== "usage.reported" && event.eventType !== "turn.started" && !terminal.has(event.eventType)) return;
+    if (event.runId !== input.runId || event.sourceInstanceId !== input.runnerInstanceId) throw new Error("native_usage_source_mismatch");
+    const payload = event.payload as Record<string, unknown>;
+    if (event.eventType === "usage.reported" && await captureLateUsageForOwner(db, input, event, payload)) return;
+    const fact: NonNullable<UsageReceiptEnvelope["producerEvent"]> = {
+      sourceEventId: event.sourceEventId, turnId: event.turnId, eventType: event.eventType,
+      ...(typeof payload.providerTurnId === "string" ? { providerTurnId: payload.providerTurnId } : {}),
+      ...(event.eventType === "usage.reported" ? { usage: { runDelta: payload.runDelta, runDeltaComplete: payload.runDeltaAvailable === true, runDeltaBasis: payload.runDeltaBasis,
+        ...(payload.reconciliation && typeof payload.reconciliation === "object" ? { reconciliation: payload.reconciliation } : {}) } } : {}),
+      ...(event.eventType === "turn.failed" && payload.error && typeof payload.error === "object"
+        && (payload.error as Record<string, unknown>).code === NATIVE_TURN_LOST_ON_RESTORE ? { lostOnRestore: true as const } : {}),
+    };
+    const previous = accepted.get(event.sourceEventId) ?? (pending?.producerEvent?.sourceEventId === event.sourceEventId ? pending : undefined);
+    // A receipt saved before the marker existed replays without it.
+    const { lostOnRestore: _marker, ...unmarked } = fact;
+    const comparable = previous?.producerEvent?.lostOnRestore ? fact : unmarked;
+    if (previous && (previous.sequence !== event.sourceSeq || previous.receivedAt !== event.emittedAt
+      || receiptFingerprint(previous.producerEvent) !== receiptFingerprint(comparable))) throw new Error("native_usage_source_conflict");
+    if (accepted.has(event.sourceEventId)) return;
+    if (pending && pending.producerEvent?.sourceEventId !== event.sourceEventId) throw new Error("native_usage_report_pending");
+    if (!pending) {
+      const envelope: UsageReceiptEnvelope = { schema: "paperclip/accounting-receipt/v1",
+        id: uuid(`${input.runId}:${input.runnerInstanceId}:${event.sourceEventId}`), companyId: input.companyId,
+        runId: input.runId, adapterType: "paperclip_runner", sourceId, sequence: event.sourceSeq,
+        receivedAt: event.emittedAt, producerEvent: fact, receipt: { complete: false } };
+      const snapshot = observe(envelope);
+      const usage = normalizeNativeUsage(snapshot.usage, { inputIncludesCacheReads: input.provider.kind === "codex" });
+      envelope.receipt = priceAnthropicReceipt(priceCodexReceipt({ ...input.billing,
+        model: input.provider.model ?? "unknown", usage, usageBasis: "per_run", complete: snapshot.complete && usage !== undefined,
+        costUsd: usage ? nativeUsageCostUsd(snapshot.usage, input.provider) ?? null : null,
+        costUsdExact: typeof snapshot.usage?.accountingCostUsdExact === "string" ? snapshot.usage.accountingCostUsdExact : undefined,
+        costStatus: usage === undefined || snapshot.usage?.accountingCostIncomplete === true ? "unpriced"
+          : input.provider.kind === "aws_agentcore" ? "estimated" : undefined,
+        ...(snapshot.usage?.accountingUsageLost === true ? { pricingProvenance: {
+          source: typeof snapshot.usage.accountingCostUsdExact === "string" ? "provider_reported" as const : "unknown" as const,
+          version: "accounting-receipt/v1", evidence: NATIVE_LOST_TURN_USAGE_EVIDENCE } } : {}),
+      }));
+      envelope.liveCostCents = liveRunUsageCostCents(envelope.receipt as AdapterUsageCheckpoint);
+      pending = envelope;
+    }
+    await persistUsageReceipt(db, pending);
+    accepted.set(event.sourceEventId, pending);
+    pending = undefined;
+  };
+  return { capture(event: PrpEvent) {
+    const result = chain.then(() => capture(event));
+    chain = result.catch(() => undefined);
+    return result;
+  } };
+}

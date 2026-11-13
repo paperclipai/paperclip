@@ -13,7 +13,9 @@ import {
   agentTaskSessions,
   agentWakeupRequests,
   agents,
+  authUsers,
   companies,
+  companyMemberships,
   companySkills,
   createDb,
   documentRevisions,
@@ -41,7 +43,7 @@ import { issueService } from "../services/issues.ts";
 
 const execFileAsync = promisify(execFile);
 
-const adapterExecute = vi.hoisted(() => vi.fn(async () => ({
+const adapterExecute = vi.hoisted(() => vi.fn(async (_input?: unknown) => ({
   exitCode: 0,
   signal: null,
   timedOut: false,
@@ -107,6 +109,17 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   const tempRoots: string[] = [];
 
+  async function grantResponsibleUser(companyId: string) {
+    await db.insert(authUsers).values({
+      id: "responsible-user", name: "Responsible user", email: "accepted-plan@example.test",
+      createdAt: new Date(), updatedAt: new Date(),
+    }).onConflictDoNothing();
+    await db.insert(companyMemberships).values({
+      companyId, principalType: "user", principalId: "responsible-user",
+      status: "active", membershipRole: "member",
+    });
+  }
+
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-accepted-plan-workspace-");
     db = createDb(tempDb.connectionString);
@@ -154,6 +167,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
     await db.delete(agents);
     await db.delete(workspaceOperations);
     await db.delete(companySkills);
+    await db.delete(companyMemberships);
     await db.delete(companies);
   });
 
@@ -302,6 +316,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       createdAt: new Date(),
       updatedAt: new Date(),
     });
+    await grantResponsibleUser(companyId);
     await db.insert(projects).values({
       id: projectId,
       companyId,
@@ -476,6 +491,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       createdAt: new Date(),
       updatedAt: new Date(),
     });
+    await grantResponsibleUser(companyId);
     await db.insert(projects).values({
       id: projectId,
       companyId,
@@ -634,9 +650,9 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       },
     });
 
-    let childRunWorkspace:
+    let childRunWorkspace = null as
       | { cwd: string; branchName: string; executionWorkspaceId: string }
-      | null = null;
+      | null;
     adapterExecute.mockImplementationOnce(async (input) => {
       const context = (input as { context?: Record<string, unknown> }).context ?? {};
       const workspace = context.paperclipWorkspace as Record<string, unknown> | undefined;
@@ -712,6 +728,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       createdAt: new Date(),
       updatedAt: new Date(),
     });
+    await grantResponsibleUser(companyId);
     await db.insert(projects).values({
       id: projectId,
       companyId,
@@ -846,7 +863,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       otherActiveClaimIdentifier: "PAP-9302",
     }));
     expect(adapterInput.context.paperclipTaskMarkdown).toContain("Make the plan only.");
-    expect(adapterInput.context.paperclipTaskMarkdown).not.toContain("Create child issues from the approved plan only");
+    expect(adapterInput.context.paperclipTaskMarkdown).not.toContain("Implement the accepted plan on this issue.");
   }, 20_000);
 
   it("guards cross-issue accepted-plan retries even when the waking issue is standard work mode", async () => {
@@ -871,6 +888,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       createdAt: new Date(),
       updatedAt: new Date(),
     });
+    await grantResponsibleUser(companyId);
     await db.insert(projects).values({
       id: projectId,
       companyId,
@@ -1007,7 +1025,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       otherActiveClaimIdentifier: "PAP-9402",
     }));
     expect(adapterInput.context.paperclipTaskMarkdown).toContain("Issue: \"PAP-9401\"");
-    expect(adapterInput.context.paperclipTaskMarkdown).not.toContain("Create child issues from the approved plan only");
+    expect(adapterInput.context.paperclipTaskMarkdown).not.toContain("Implement the accepted plan on this issue.");
   }, 20_000);
 
   it("preserves accepted-plan instructions but replaces a pre-identity session when the wake issue owns the in-flight claim", async () => {
@@ -1031,6 +1049,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       createdAt: new Date(),
       updatedAt: new Date(),
     });
+    await grantResponsibleUser(companyId);
     await db.insert(projects).values({
       id: projectId,
       companyId,
@@ -1144,7 +1163,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
     expect(adapterInput.runtime.sessionId).toBeNull();
     expect(adapterInput.context.acceptedPlanWakeRouting).toBeUndefined();
     expect(adapterInput.context.paperclipTaskMarkdown).toContain(
-      "Implement the accepted plan on this issue when the work is small and cohesive.",
+      "Implement the accepted plan on this issue.",
     );
   }, 20_000);
 });

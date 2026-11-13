@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
+import { createRequire } from "node:module";
 import { startLocalBrowserLogin } from "./local-ai-browser-login.js";
 import { resolveCodexCommand } from "../vendor/paperclip-runner/index.js";
 
@@ -18,6 +20,7 @@ afterEach(async () => {
   Object.defineProperty(process, "arch", initialArchitecture);
   process.env.PATH = initialPath;
   vi.unstubAllEnvs();
+  vi.restoreAllMocks();
   vi.clearAllMocks();
   if (root) await rm(root, { recursive: true, force: true });
   root = undefined;
@@ -35,14 +38,37 @@ async function fakeCli(name: string, source: string) {
   return realpath(home);
 }
 
-function targetPlatform(platform: string, architecture: string) {
+function targetPlatform(platform: string, architecture: string, glibc = true, glibcVersionRuntime = "2.39") {
   Object.defineProperty(process, "platform", { ...initialPlatform, value: platform });
   Object.defineProperty(process, "arch", { ...initialArchitecture, value: architecture });
+  if (platform === "linux") vi.spyOn(process.report, "getReport").mockReturnValue({ header: glibc ? { glibcVersionRuntime } : {} } as never);
+}
+
+function resolveFixtureCodexCommand(home: string): string {
+  const source = `
+    import { resolveCodexCommand } from ${JSON.stringify(new URL("../../../packages/paperclip-runner/src/drivers/codex/codex-command.ts", import.meta.url).href)};
+    try { console.log(JSON.stringify({ command: resolveCodexCommand(${JSON.stringify(path.join(root!, "issuer.js"))}, { PATH: "/missing-codex" }, ${JSON.stringify(home)}) })); }
+    catch (error) { console.log(JSON.stringify({ error: error.message })); }
+  `;
+  const result = JSON.parse(execFileSync(process.execPath, [
+    "--no-global-search-paths", "--import", createRequire(import.meta.url).resolve("tsx"),
+    "--input-type=module", "--eval", source,
+  ], { cwd: root, env: { PATH: "/usr/bin:/bin", NODE_PATH: "", NODE_OPTIONS: "" },
+    encoding: "utf8", timeout: 10000, maxBuffer: 16384 }));
+  if (typeof result.error === "string") throw new Error(result.error);
+  if (typeof result.command !== "string") throw new Error("Fixture resolver returned no executable");
+  return result.command;
 }
 
 describe.skipIf(process.platform === "win32")("local browser subscription login", () => {
-  it.each([false, true])("uses the selected Codex command with its credential home and ambient HOME/cwd (legacy Linux ARM64: %s)", async (legacy) => {
-    if (legacy) targetPlatform("linux", "arm64");
+  it.each(["native", "arm32", "musl", "glibc-2.38", "glibc-3.0", "unknown"])("uses the selected Codex command with its credential home and ambient HOME/cwd (%s)", async platform => {
+    const legacy = platform === "arm32";
+    if (platform === "native") targetPlatform("linux", "x64");
+    if (platform === "arm32") targetPlatform("linux", "arm");
+    if (platform === "musl") targetPlatform("linux", "arm64", false);
+    if (platform === "glibc-2.38") targetPlatform("linux", "arm64", true, "2.38");
+    if (platform === "glibc-3.0") targetPlatform("linux", "arm64", true, "3.0");
+    if (platform === "unknown") targetPlatform("linux", "x64", true, "unknown");
     const home = await fakeCli("codex", [
       '[ "$1 $2" = "login --device-auth" ] || exit 11',
       '[ "$HOME" = "$CLAUDE_CONFIG_DIR" ] && [ "$HOME" != "$CODEX_HOME" ] && [ "$CODEX_HOME" = "$PAPERCLIP_TEST_LOGIN_CODEX_HOME" ] || exit 12',
@@ -60,13 +86,60 @@ describe.skipIf(process.platform === "win32")("local browser subscription login"
     for (const key of ["OPENAI_API_KEY", "CODEX_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"])
       vi.stubEnv(key, "unrelated-host-value");
     const login = startLocalBrowserLogin("openai", home);
-    await vi.waitFor(() => expect(login.outcome).toBe("success"), { timeout: 5000 });
+    await vi.waitFor(() => expect(login.outcome).toBeDefined(), { timeout: 5000 });
+    expect(login.outcome).toBe("success");
     if (legacy) expect(resolveCodexCommand).not.toHaveBeenCalled();
     else expect(resolveCodexCommand).toHaveBeenCalledOnce();
     expect(login.code).toBe("ABCD-EFGHJ");
   });
 
-  it.each([["linux", "x64"], ["darwin", "arm64"], ["darwin", "x64"]] as const)("reports an unavailable Codex CLI on %s/%s without revealing private details", async (platform, architecture) => {
+  it.each(["x64", "arm64"].flatMap(architecture => ["2.38", "musl", "unknown"].map(libc => ({ architecture, libc }))))("uses the installed Codex dependency for login on Linux $architecture/$libc without a global CLI", async ({ architecture, libc }) => {
+    targetPlatform("linux", architecture, libc !== "musl", libc);
+    const home = await fakeCli("codex", [
+      'echo owned > "$CODEX_HOME/owned-cli"',
+      'printf "1. Open this link in your browser and sign in to your account\\nhttps://auth.openai.com/codex/device\\n2. Enter this one-time code (expires in 15 minutes)\\nABCD-EFGHJ\\n"',
+    ].join("\n"));
+    const dependency = path.join(root!, "node_modules/@openai/codex");
+    await mkdir(path.join(dependency, "bin"), { recursive: true });
+    await writeFile(path.join(dependency, "package.json"), JSON.stringify({ name: "@openai/codex", version: "0.1.0", bin: { codex: "bin/codex" } }));
+    await writeFile(path.join(dependency, "bin/codex"), await readFile(path.join(root!, "bin/codex")), { mode: 0o700 });
+    const command = resolveFixtureCodexCommand(home);
+    expect(command).toBe(await realpath(path.join(dependency, "bin/codex")));
+    vi.mocked(resolveCodexCommand).mockReturnValue(command);
+    process.env.PATH = "/usr/bin:/bin";
+    const login = startLocalBrowserLogin("openai", home);
+    try {
+      await vi.waitFor(() => expect(login.outcome).toBeDefined(), { timeout: 5000 });
+      expect(login.outcome).toBe("success");
+      expect(await readFile(path.join(home, "owned-cli"), "utf8")).toBe("owned\n");
+      expect(resolveCodexCommand).toHaveBeenCalledOnce();
+      expect(process.report.getReport).not.toHaveBeenCalled();
+    } finally { login.abort(); }
+  });
+
+  it.each(["2.38", "musl", "unknown"])("reports a real owned-dependency containment failure on Linux/%s without falling back to another CLI", async libc => {
+    targetPlatform("linux", "arm64", libc !== "musl", libc);
+    const home = await fakeCli("codex", 'echo invoked > "$CODEX_HOME/unreviewed-cli"');
+    const dependency = path.join(root!, "node_modules/@openai/codex");
+    await mkdir(dependency, { recursive: true });
+    await writeFile(path.join(dependency, "package.json"), JSON.stringify({ name: "@openai/codex", version: "0.1.0", bin: { codex: "../outside-codex" } }));
+    let resolutionError: unknown;
+    try { resolveFixtureCodexCommand(home); } catch (error) { resolutionError = error; }
+    expect(resolutionError).toBeInstanceOf(Error);
+    expect((resolutionError as Error).message).toContain("executable escapes its package");
+    vi.mocked(resolveCodexCommand).mockImplementation(() => { throw resolutionError; });
+    const login = startLocalBrowserLogin("openai", home);
+    try {
+      await vi.waitFor(() => expect(login.outcome).toBeDefined(), { timeout: 5000 });
+      expect(login.outcome).toBe("failure");
+      expect(login.error).toMatch(/requires an installed Codex CLI.*Install Codex/);
+      expect(JSON.stringify(login)).not.toContain(root!);
+      await expect(readFile(path.join(home, "unreviewed-cli"))).rejects.toMatchObject({ code: "ENOENT" });
+      expect(resolveCodexCommand).toHaveBeenCalledOnce();
+    } finally { login.abort(); }
+  });
+
+  it.each([["linux", "x64"], ["linux", "arm64"], ["darwin", "arm64"], ["darwin", "x64"]] as const)("reports an unavailable Codex CLI on %s/%s without revealing private details", async (platform, architecture) => {
     targetPlatform(platform, architecture);
     const home = await fakeCli("codex", 'echo invoked > "$CODEX_HOME/unreviewed-cli"');
     const failure = new Error("private-installation-path-or-provider-output");
@@ -79,8 +152,8 @@ describe.skipIf(process.platform === "win32")("local browser subscription login"
     expect(login.authorizationUrl).toBeUndefined();
   });
 
-  it("reports a missing Linux ARM64 Codex CLI without revealing the host PATH", async () => {
-    targetPlatform("linux", "arm64");
+  it("reports a missing Linux ARM32 Codex CLI without revealing the host PATH", async () => {
+    targetPlatform("linux", "arm");
     const home = await fakeCli("codex", "exit 0");
     process.env.PATH = "/usr/bin:/bin";
     const login = startLocalBrowserLogin("openai", home);
@@ -91,6 +164,7 @@ describe.skipIf(process.platform === "win32")("local browser subscription login"
   });
 
   it("reports a missing terminal prerequisite without exposing spawn details", async () => {
+    targetPlatform("linux", "x64");
     const home = await fakeCli("codex", "exit 0");
     process.env.PATH = path.join(root!, "no-python");
     const login = startLocalBrowserLogin("openai", home);

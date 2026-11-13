@@ -1,3 +1,5 @@
+export const TASK_COLLECTION_PREFERENCES_CHANGED = "paperclip:task-collection-preferences-changed";
+
 export const TASK_COLLECTION_PREFERENCES_VERSION = 1 as const;
 
 type StorageLike = Pick<Storage, "getItem" | "setItem">;
@@ -79,6 +81,9 @@ export function saveTaskCollectionPreferences<TViewState, TColumn extends string
 
   try {
     storage.setItem(taskCollectionPreferencesStorageKey(location), JSON.stringify(envelope));
+    if (typeof window !== "undefined" && storage === browserStorage()) {
+      queueMicrotask(() => window.dispatchEvent(new Event(TASK_COLLECTION_PREFERENCES_CHANGED)));
+    }
     // Dual-write during migration so older builds using the same worktree keep
     // reading the latest presentation state.
     if (location.legacyViewStorageKey) {

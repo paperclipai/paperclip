@@ -120,6 +120,7 @@ describe("authSessionSchema", () => {
     });
     expect(result.success).toBe(true);
     expect(result.success && result.data.user.name).toBe("Jane");
+    expect(result.success && result.data.sentryDsn).toBe(null);
   });
 
   it("parses a session where user name is null", () => {
@@ -148,16 +149,6 @@ describe("authSessionSchema", () => {
       user: { id: "u1", email: "a@b.com", name: "Jane", image: null },
     });
     expect(result.success).toBe(false);
-  });
-
-  it("accepts a null sentryDsn", () => {
-    const result = authSessionSchema.safeParse({
-      session: { id: "s1", userId: "u1" },
-      user: { id: "u1", email: "a@b.com", name: "Jane", image: null },
-      sentryDsn: null,
-    });
-    expect(result.success).toBe(true);
-    expect(result.success && result.data.sentryDsn).toBe(null);
   });
 
   it.each([undefined, null, "staging", "production"])(

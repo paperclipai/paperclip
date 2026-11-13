@@ -20,6 +20,7 @@ import {
   OnboardingLoginCard,
 } from "../AdapterLoginChrome";
 import { ModelSourceTiles, type ModelConnectionMode } from "../onboarding/ModelSourceTiles";
+import { useQueryView } from "../QueryView";
 import { CredentialModeLink } from "../onboarding/CredentialModeLink";
 import { FooterNav } from "../onboarding/FooterNav";
 import { MAKE_ROOM, CARD_ENTER } from "../onboarding/onboarding-motion";
@@ -39,6 +40,8 @@ export function AgentProviderConnection({
   adapterType,
   environmentId,
   canLogin,
+  requiresAgent = false,
+  agentId,
   localEnvironment = false,
   onConnected,
   onDraftChanged,
@@ -49,9 +52,11 @@ export function AgentProviderConnection({
   advancedConnection,
 }: {
   companyId: string;
-  adapterType: "claude_local" | "codex_local" | "grok_local";
+  adapterType: "claude_local" | "codex_local" | "grok_local" | "antigravity_runtime";
   environmentId: string | null;
   canLogin: boolean;
+  requiresAgent?: boolean;
+  agentId?: string;
   localEnvironment?: boolean;
   onConnected: (connection: ProviderConnection) => void;
   onDraftChanged?: () => void;
@@ -70,6 +75,10 @@ export function AgentProviderConnection({
   };
 }) {
   const health = useQuery({ queryKey: queryKeys.health, queryFn: healthApi.get, enabled: localEnvironment });
+  // Read health through the shared view: a transient failure keeps the saved
+  // local-login path usable,anda no-data failure shows readable copy.
+
+  const healthView = useQueryView(health);
   const canUseLocalLogin = localEnvironment && (health.data?.localAiLoginSupported ?? health.data?.deploymentMode === "local_trusted");
   const epoch = useRef(0);
   useEffect(
@@ -84,11 +93,15 @@ export function AgentProviderConnection({
     setOpened(false);
     setAuthorizationUrl(null);
     setLoginPhase("preparing");
+    setLoginRequested(false);
   };
   const [methodChoice, setMethod] = useState<"subscription" | "api" | null>(managedAccount?.initialMethod === "api_key" ? "api" : managedAccount ? "subscription" : null);
   const [advanced, setAdvanced] = useState(false);
   // Connections already selected the provider before showing this step.
   const [opened, setOpened] = useState(Boolean(advancedConnection || managedAccount));
+  const [loginRequested, setLoginRequested] = useState(false);
+  const automaticComputer = requiresAgent && !agentId;
+  const awaitingLoginRequest = automaticComputer && !loginRequested;
   const [authorizationUrl, setAuthorizationUrl] = useState<string | null>(null);
   const [loginPhase, setLoginPhase] = useState<"preparing" | "ready" | "waiting" | "connecting">("preparing");
   const phaseBeforeSubmit = useRef<"ready" | "waiting">("ready");
@@ -97,10 +110,10 @@ export function AgentProviderConnection({
   const [error, setError] = useState<string | null>(null);
   const [storedConnection, setStoredConnection] =
     useState<ProviderConnection | null>(null);
-  const provider = adapterType === "claude_local" ? "Claude" : adapterType === "grok_local" ? "Grok" : "OpenAI";
+  const provider = adapterType === "antigravity_runtime" ? "Google" : adapterType === "claude_local" ? "Claude" : adapterType === "grok_local" ? "Grok" : "OpenAI";
   const envKey =
-    adapterType === "claude_local" ? "ANTHROPIC_API_KEY" : adapterType === "grok_local" ? "XAI_API_KEY" : "OPENAI_API_KEY";
-  const aiProvider = adapterType === "claude_local" ? "anthropic" : adapterType === "grok_local" ? "xai" : "openai";
+    adapterType === "antigravity_runtime" ? "GEMINI_API_KEY" : adapterType === "claude_local" ? "ANTHROPIC_API_KEY" : adapterType === "grok_local" ? "XAI_API_KEY" : "OPENAI_API_KEY";
+  const aiProvider = adapterType === "antigravity_runtime" ? "google" : adapterType === "claude_local" ? "anthropic" : adapterType === "grok_local" ? "xai" : "openai";
   const availableKeys = useSavedProviderKeys(companyId, envKey);
   // Add/reconnect creates the requested account, never copies a saved account's
   // credential or silently changes its ownership. Agent setup retains reuse.
@@ -122,6 +135,10 @@ export function AgentProviderConnection({
   const storedLogin = managedAccount
     ? { ...savedKeys.storedLogin, data: undefined, isPending: false, isError: false }
     : savedKeys.storedLogin;
+  // Read the saved-login status through the shared view: cached results stay
+  // visible during a transient refetch failure,and a no-data failure shows copy.
+
+  const storedLoginView = useQueryView(storedLogin);
   const savedManagedAccount = useRef<{ connectionId: string; grantId: string } | null>(null);
   const method = methodChoice ?? (
     (savedKeys.subscriptions.length > 0 || (adapterType === "claude_local" && !savedSubscription && storedLogin.data))
@@ -157,8 +174,7 @@ export function AgentProviderConnection({
         adapterType,
         environmentId ?? undefined,
       ),
-    retry: false,
-    enabled: !managedAccount && !advanced,
+    enabled: !managedAccount && !advanced && adapterType !== "antigravity_runtime",
   });
   async function connect() {
     if (busy || managedAccount?.disabled) return;
@@ -230,7 +246,7 @@ export function AgentProviderConnection({
   }
   const needsLogin =
     method === "subscription" &&
-    canLogin &&
+    canLogin && adapterType !== "antigravity_runtime" &&
     environmentId &&
     !savedSubscription &&
     !savedKeys.loading &&
@@ -358,8 +374,10 @@ export function AgentProviderConnection({
                   />
                 )}
               </OnboardingLoginCard>
-            ) : needsLogin ? (
+            ) : needsLogin ? !awaitingLoginRequest && (
               <AdapterLoginPanel
+                requiresAgent={requiresAgent}
+                agentId={agentId}
                 companyId={companyId}
                 adapterType={adapterType}
                 environmentId={environmentId}
@@ -411,7 +429,7 @@ export function AgentProviderConnection({
           </div>
         )}
       </motion.div>
-      {method === "subscription" && storedLogin.isError && (
+      {!managedAccount && method === "subscription" && storedLoginView.kind === "error" && (
         <p role="alert" className="mt-4 text-sm text-destructive">
           Could not check your saved Claude subscription. Try again.
         </p>
@@ -421,7 +439,7 @@ export function AgentProviderConnection({
           {testError ?? error}
         </p>
       )}
-      {localEnvironment && health.isError && (
+      {localEnvironment && healthView.kind === "error" && (
         <p role="alert" className="mt-4 text-sm text-destructive">Could not prepare sign-in. Reload this page to try again.</p>
       )}
       <FooterNav
@@ -431,9 +449,9 @@ export function AgentProviderConnection({
         }}
         primaryLabel={
           opened && needsLogin
-            ? loginPhase === "waiting" ? "Waiting for code"
+            ? loginPhase === "waiting" ? adapterType === "codex_local" ? "Waiting for auth…" : "Waiting for code"
               : loginPhase === "connecting" ? "Connecting"
-              : `Sign in to ${provider}`
+              : automaticComputer && authorizationUrl ? `Continue to ${provider}` : `Sign in to ${provider}`
             : busy
             ? "Connecting"
             : method === "subscription" &&
@@ -448,22 +466,26 @@ export function AgentProviderConnection({
           (Boolean(managedAccount) && method === "subscription" && !canLogin && !canUseLocalLogin) ||
           (localEnvironment && health.isPending) || localLogin.preparing || Boolean(localLogin.error) ||
           (method === "subscription" && canUseLocalLogin && !savedSubscription && !storedLogin.data && localLogin.status !== "ready") ||
-          (!managedAccount && auth.isPending) ||
+          (!managedAccount && adapterType !== "antigravity_runtime" && auth.isPending) ||
           savedKeys.loading ||
           (adapterType === "claude_local" && storedLogin.isPending) ||
           // The saved-subscription chooser renders outside the opened section,
           // so reusing the visible choice must not wait for a tile click.
           (!opened && !(method === "subscription" && savedSubscription)) ||
-          (Boolean(needsLogin) && (!authorizationUrl || loginPhase !== "ready")) ||
+          (Boolean(needsLogin) && !awaitingLoginRequest && (!authorizationUrl || loginPhase !== "ready")) ||
           (method === "api" &&
             !apiKey.trim() &&
             !storedConnection &&
             !selectedKey)
         }
         loading={busy}
-        primaryIcon={opened && needsLogin ? loginPhase === "ready" ? "none" : "spinner" : undefined}
+        primaryIcon={opened && needsLogin && !awaitingLoginRequest ? loginPhase === "ready" ? "none" : "spinner" : undefined}
         onPrimary={() => {
           if (needsLogin) {
+            if (awaitingLoginRequest) {
+              setLoginRequested(true);
+              return;
+            }
             if (!authorizationUrl || loginPhase !== "ready") return;
             window.open(authorizationUrl, "_blank", "noreferrer,noopener");
             setLoginPhase("waiting");

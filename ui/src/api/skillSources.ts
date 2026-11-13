@@ -1,8 +1,13 @@
-import type { ProjectRepositoryOptions, SkillSourceFilePreview, SkillSourcePreviewRequest, SkillSource, SkillSourceCreateRequest, SkillSourceDiscovery, SkillSourceDiscoveryRequest, SkillSourceRefreshResult, SkillSourceSelectionRequest, SkillSourceScanUpdate, SkillSourceDiscoveryEvent } from '@paperclipai/shared';
+import type { ProjectRepositoryOptions, ProjectSkillRepository, SkillSourceSettingsRequest, SkillSourceFilePreview, SkillSourcePreviewRequest, SkillSource, SkillSourceCreateRequest, SkillSourceDiscovery, SkillSourceDiscoveryRequest, SkillSourceRefreshResult, SkillSourceSelectionRequest, SkillSourceScanUpdate, SkillSourceDiscoveryEvent, SkillSourceDisconnectRequest, SkillSourceDisconnectResult } from '@paperclipai/shared';
 import { api, ApiError, requestResponse } from './client';
+import type { SkillSourceBranches, SkillSourceBranchesQuery } from '@paperclipai/shared';
 const base = (companyId: string) => `/companies/${companyId}/skill-sources`;
 export const skillSourcesApi = {
   list: (companyId: string) => api.get<SkillSource[]>(base(companyId)),
+  projectRepositories: (companyId: string) => api.get<ProjectSkillRepository[]>(`${base(companyId)}/project-repositories`),
+  adoptProject: (companyId: string, workspaceId: string) => api.post<{ bindingId: string }>(`${base(companyId)}/adopt-project`, { workspaceId }),
+  settings: (companyId: string, id: string, input: SkillSourceSettingsRequest) => api.patch<SkillSource>(`${base(companyId)}/${id}/settings`, input),
+  branches: (companyId: string, id: string, input: SkillSourceBranchesQuery = {}, signal?: AbortSignal) => api.get<SkillSourceBranches>(`${base(companyId)}/${id}/branches${input.connectionId ? `?connectionId=${encodeURIComponent(input.connectionId)}` : ''}`, { signal }),
   repositories: (companyId: string) => api.get<ProjectRepositoryOptions>(`${base(companyId)}/repositories`),
   discover: (companyId: string, input: SkillSourceDiscoveryRequest) => api.post<SkillSourceDiscovery>(`${base(companyId)}/discover`, input),
   discoverStream: async (companyId: string, input: SkillSourceDiscoveryRequest, onProgress: (event: SkillSourceScanUpdate) => void, signal?: AbortSignal): Promise<SkillSourceDiscovery> => {
@@ -41,5 +46,5 @@ export const skillSourcesApi = {
   create: (companyId: string, input: SkillSourceCreateRequest) => api.post<SkillSourceRefreshResult>(base(companyId), input),
   select: (companyId: string, id: string, input: SkillSourceSelectionRequest) => api.patch<SkillSourceRefreshResult>(`${base(companyId)}/${id}`, input),
   refresh: (companyId: string, id: string) => api.post<SkillSourceRefreshResult>(`${base(companyId)}/${id}/refresh`, {}),
-  disconnect: (companyId: string, id: string) => api.delete<SkillSource>(`${base(companyId)}/${id}`),
+  disconnect: (companyId: string, id: string, input: SkillSourceDisconnectRequest) => api.delete<SkillSourceDisconnectResult>(`${base(companyId)}/${id}`, input),
 };

@@ -32,6 +32,14 @@ docker build -t paperclip-local \
   --build-arg USER_UID=$(id -u) --build-arg USER_GID=$(id -g) .
 ```
 
+The image starts the server from a runtime bundle, `server/dist-runtime/index.mjs`,
+with plain `node`. The build creates it from the server's `tsc` output with
+`pnpm --filter @paperclipai/server build:runtime` (`server/scripts/bundle-runtime.mjs`),
+compiling in the workspace packages that otherwise load as TypeScript source.
+This avoids transpiling them through the tsx loader on every boot. To check a
+build boots, run `scripts/server-boot-smoke.sh node server/dist-runtime/index.mjs`;
+PR CI runs the same check after `pnpm build`.
+
 ## Standard images and downstream composition
 
 The Docker workflow publishes the standard `production` target for Linux AMD64
@@ -96,14 +104,27 @@ All persisted under your bind mount (`./data/docker-paperclip` in the example ab
 
 ## Docker Compose
 
+### Persistent signing secrets
+
+Before the first launch, generate two independent values with `openssl rand -hex 32`
+and save them in `docker/.env`. Keep any existing deployment's values unchanged:
+
+```dotenv
+BETTER_AUTH_SECRET=<session-signing-secret>
+PAPERCLIP_TOOL_ACTION_SIGNING_SECRET=<tool-action-signing-secret>
+```
+
+Restrict this file to its owner (`chmod 600 docker/.env`) and keep it out of version
+control. Compose reads it for both commands below. Reuse the values on every
+restart. Rotate the tool-action secret only after outstanding approvals are
+resolved, because pending signatures use the previous value.
+
 ### Quickstart (embedded SQLite)
 
 Single container, no external database. Data persists via a bind mount.
 
 ```sh
-BETTER_AUTH_SECRET=$(openssl rand -hex 32) \
-PAPERCLIP_TOOL_ACTION_SIGNING_SECRET=$(openssl rand -hex 32) \
-  docker compose -f docker/docker-compose.quickstart.yml up --build
+docker compose -f docker/docker-compose.quickstart.yml up --build
 ```
 
 Defaults:
@@ -129,11 +150,17 @@ Pass `OPENAI_API_KEY` and/or `ANTHROPIC_API_KEY` to enable local adapter runs.
 Paperclip server + PostgreSQL 17. The database is health-checked before the server starts.
 
 ```sh
-BETTER_AUTH_SECRET=$(openssl rand -hex 32) \
-  docker compose -f docker/docker-compose.yml up --build
+docker compose -f docker/docker-compose.yml up --build
 ```
 
 PostgreSQL data persists in a named Docker volume (`pgdata`). Paperclip data persists in `paperclip-data`.
+
+Both Compose files pass `PAPERCLIP_TOOL_ACTION_SIGNING_SECRET` to the server.
+When configured, keep it independent from `BETTER_AUTH_SECRET`. When unset,
+the server derives a separate signing key from its persisted secrets master key.
+Keep that key with database backups, and share the signing key or master key
+across processes serving the same instance. Approvals fail closed if valid key
+material cannot be loaded; rotating it can invalidate approvals and retry matching.
 
 ### Untrusted PR review
 
@@ -340,6 +367,8 @@ Notes:
 ## General Notes
 
 - The `docker-entrypoint.sh` adjusts the container `node` user UID/GID at startup to match the values passed via `USER_UID`/`USER_GID`, avoiding permission issues on bind-mounted volumes.
+- Before it drops privileges, the entrypoint makes sure `PAPERCLIP_HOME` is owned by the `node` user. Each boot checks only the home directory and its first three levels. The first boot (and any boot after a UID/GID change) also checks the full tree, and then writes `PAPERCLIP_HOME/.paperclip-ownership-verified`. While that marker is current, later boots skip the full-tree walk, which can take minutes on homes with many files. A mismatch triggers a recursive `chown`. If files deep in the tree get the wrong owner (for example, after a restore as root), delete the marker and restart to force a full check. If a check fails (for example, with an I/O error), the entrypoint does not write the marker, so the next boot checks again.
+- The entrypoint writes timestamped lines when it starts, around the full ownership check or any repair (with the duration), and just before it starts the server, so you can measure the pre-start time from the container log.
 - Paperclip data persists via Docker volumes/bind mounts (compose) or at `~/.local/share/paperclip` (quadlet).
 
 ## Native Runner build cache

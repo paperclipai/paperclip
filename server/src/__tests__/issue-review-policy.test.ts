@@ -112,7 +112,7 @@ describeEmbeddedPostgres("issue review verdict policy", () => {
       issue: seeded.issue,
       actor: { type: "agent", id: seeded.requesterAgentId },
     });
-    await expect(denied).rejects.toMatchObject<HttpError>({
+    await expect(denied).rejects.toMatchObject<Partial<HttpError>>({
       status: 403,
       details: expect.objectContaining({
         code: "review_policy_denied",
@@ -156,7 +156,7 @@ describeEmbeddedPostgres("issue review verdict policy", () => {
     await expect(assertIssueReviewVerdictActorAllowed(db, {
       issue: seeded.issue,
       actor: { type: "agent", id: seeded.requesterAgentId },
-    })).rejects.toMatchObject<HttpError>({
+    })).rejects.toMatchObject<Partial<HttpError>>({
       status: 403,
       details: expect.objectContaining({ code: "review_policy_denied" }),
     });
@@ -227,7 +227,7 @@ describeEmbeddedPostgres("issue review verdict policy", () => {
       issue: seeded.issue,
       actor: { type: "agent", id: seeded.requesterAgentId },
     });
-    await expect(denied).rejects.toMatchObject<HttpError>({
+    await expect(denied).rejects.toMatchObject<Partial<HttpError>>({
       status: 403,
       details: expect.objectContaining({
         code: "review_policy_denied",

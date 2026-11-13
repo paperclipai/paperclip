@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { expect, test } from "@playwright/test";
 
+test.use({ trace: "retain-on-failure" });
+
 // The tenant UI and task database are real. Cloud is an external dependency:
 // simulate its entry endpoint and independent session states at the HTTP edge.
 for (const cloudOrigin of ["https://my.paperclip.app", "https://my-staging.paperclip.app"]) {
@@ -42,7 +44,9 @@ for (const cloudOrigin of ["https://my.paperclip.app", "https://my-staging.paper
         authenticated = true;
         await route.fulfill({ status: 302, headers: { Location: `${baseURL}${target}` } });
       });
+      const returnedFromCloud = page.waitForURL((url) => handoffs === 1 && url.href === `${baseURL}${target}`);
       await page.goto(entry === "auth" ? `/auth?next=${encodeURIComponent(target)}` : target);
+      await returnedFromCloud;
       await expect(page.getByRole("heading", { name: issue.title, exact: true })).toBeVisible();
       expect(page.url()).toBe(`${baseURL}${target}`);
       expect(handoffs).toBe(1);

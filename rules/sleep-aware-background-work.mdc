@@ -1,0 +1,119 @@
+---
+description: Prevent new idle polling; require event-driven work, shared deadlines, and recoverable sleep-safe lifecycle behavior.
+globs: "server/src/**,packages/db/src/**,packages/adapter-utils/src/**,packages/adapters/*/src/**,packages/plugins/*/src/**,packages/paperclip-runner/src/**,packages/paperclip-runner/runner/**"
+alwaysApply: false
+---
+
+# Background work must become idle
+
+Apply to new or materially changed background work, its producers, and its
+startup/lifecycle wiring. This includes `server/src/index.ts`, service workers,
+DB connection management, adapters, and plugin or runner background activity.
+
+This is a prospective review requirement, not a demand to migrate every existing
+loop. Do not block unrelated edits on untouched polling. Adding a duty to an
+existing heartbeat or sweep, extending its lifetime, or copying its polling
+pattern is new behavior and must meet this rule. An unchanged adjacent loop is
+not precedent or permission.
+
+## Choose the trigger before the mechanism
+
+An idle subsystem must not repeatedly query the database or contact another
+service merely to discover that it is still idle. Ask: if nothing changes, is
+there a real obligation to act at a future time?
+
+| Obligation | Required approach |
+| --- | --- |
+| Local state changes or an operation completes | Direct call, event, promise, or completion callback |
+| A database write creates work | Transaction-aware notification from the supported producer |
+| A routine, expiry, or retry is due later | Register its actual next deadline with the shared scheduler |
+| Delivery, cleanup, a claim, or a write remains unresolved | Recovery tied to that concrete obligation and its resolution |
+| Work must survive restart | Reconstruct from the existing durable source of truth at startup/resume |
+
+Split mixed duties. Deliver on an event; schedule a retry only after failure or
+while an obligation remains. Do not add `setInterval`, recursive timeouts, sleep
+loops, or heartbeat callbacks that scan empty work indefinitely. Putting the
+same scan behind the scheduler is still polling. A larger interval or `.unref()`
+does not establish idle behavior. Configuration or retained completed history
+alone must not keep an otherwise idle worker scanning.
+
+## Reuse the shared lifecycle
+
+- Server workers use [delivery-work-coordinator.ts](../server/src/services/delivery-work-coordinator.ts)
+  and its [work-scheduler.ts](../server/src/services/work-scheduler.ts) for
+  coalescing, non-overlapping execution, retries, and named deadlines. Do not
+  create a per-feature scheduler or independent maintenance timer in `index.ts`.
+  Adapter, plugin, and runner work uses the owning host's lifecycle interface;
+  extend that boundary when needed instead of importing server internals.
+- Register, replace, and cancel the actual next deadline. No pending work,
+  unresolved write, or future obligation means no scheduled scan. An unconditional
+  `nextRunAt = now + interval` is not a deadline unless a real obligation requires it.
+- Existing rows remain durable truth; notifications are hints to inspect them.
+  Do not add a table per timer or thread recovery bookkeeping through callers.
+  Keep work predicates and provider behavior in their owning services, consistent
+  with [module-boundaries.mdc](module-boundaries.mdc).
+- Use [notifyDeliveryWork](../server/src/services/delivery-work-notifications.ts)
+  and [work-signals.ts](../packages/db/src/work-signals.ts) for database-produced
+  work. Await intent registration before the relevant write in its transaction.
+  A nested savepoint release is not an outer commit. Preserve uncertainty until
+  the transaction protocol establishes settlement; one empty query or elapsed
+  timeout cannot prove an uncertain write will not commit later.
+- Account for every supported producer. Process-local notifications do not cover
+  other replicas, independent SQL writers, or external events without ingress.
+  Do not remove their only recovery path without replacing that contract.
+- Use the shared [database client](../packages/db/src/client.ts) for idle
+  connection release and reconnect. Do not add permanent DB keepalives/listeners
+  or scattered connect/disconnect wrappers as a substitute for a wake contract.
+
+## Preserve obligations through drain and sleep
+
+A wake is consumed by successful reconciliation, not notification receipt or a
+skipped run. Preserve changes arriving during a sweep, a first write during
+drain, and failed work whose retry enters drain. Passive `hasPending` checks
+must not reintroduce recurring SQL while `run` is paused. Resume must still
+process the retained work. Stop subscriptions/timers and cancel or await active
+work on shutdown.
+
+The in-process scheduler cannot wake stopped compute. `nextWakeAt()` covers
+registered tasks; it is not proof that Cloud has persisted an alarm or that all
+work is represented. Before relaxing a sleep blocker, verify the exact durable
+wake and admission contract in [idle-sleep-safety.md](../doc/idle-sleep-safety.md).
+Preserve unsupported obligations as blockers. Do not change a business deadline
+merely because it was inspected, or discard unfinished work to claim quiet.
+
+## Narrow exceptions, with evidence
+
+A bounded readiness probe for an active operation, protocol-required renewal
+for a live resource, or reconciliation of an external source with no usable
+notification/replay mechanism can need polling. The PR must identify why an
+event or deadline is insufficient, the active scope, cadence/backoff, stop
+condition, and sleep impact. External-source reconciliation must stop when
+unconfigured/disabled; being configured is not by itself an exemption. If its
+contract requires activity while otherwise idle, disclose the sleep limitation
+and preserve the corresponding blocker until a supported external wake exists.
+Required periodic reconciliation still uses the shared scheduler; this exception
+does not justify a new independent tenant maintenance interval.
+
+Timers inside the scheduler, timeouts for active requests, and an in-memory
+empty-buffer check are not automatically sleep blockers. Assess actual SQL,
+network, CPU, and connection effects; do not flag every timer mechanically.
+These exceptions do not permit a permanent "just in case" recovery scan.
+
+## Review and verification
+
+Require changes to state the trigger, source of truth, pending-work predicate,
+next deadline/retry, and condition that makes the worker quiet. Block added or
+expanded idle scans without the narrow exception evidence above. Name the
+specific recurring effect and the owning event/deadline alternative in feedback.
+
+For changed behavior, verify no recurring SQL/network calls after startup and
+settlement in applicable states: no configuration, configured but idle, and
+retained completed history. Prove the first real producer reactivates it. Cover
+relevant transaction rollback/outer commit, restart reconstruction, retry,
+drain/resume, concurrent wakes, and shutdown boundaries. Select tests for the
+changed risks; do not require an unrelated fleet-wide migration or every matrix
+case for a small change. Timer-call assertions alone do not prove quiet.
+
+Worker quiet, DB disconnect, and actual host suspension are separate claims.
+Do not claim deployed sleep, successful external wake, or cost savings from
+unit tests or an internal deadline alone.

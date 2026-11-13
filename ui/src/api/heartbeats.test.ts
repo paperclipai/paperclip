@@ -31,6 +31,11 @@ describe("heartbeatsApi.list", () => {
     expect(mockApi.get).toHaveBeenCalledWith("/companies/company-1/heartbeat-runs?limit=200&summary=true");
   });
 
+  it("bounds an omitted limit for agent history consumers", async () => {
+    await heartbeatsApi.list("company-1", "agent-1");
+    expect(mockApi.get).toHaveBeenCalledWith("/companies/company-1/heartbeat-runs?agentId=agent-1&limit=200");
+  });
+
   it("keeps full row requests as the default for run-history screens", async () => {
     await heartbeatsApi.list("company-1", "agent-1", 25);
 

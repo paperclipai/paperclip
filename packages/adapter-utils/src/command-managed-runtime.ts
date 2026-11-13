@@ -1,3 +1,4 @@
+import type { WorkspaceCheckpointMetrics } from "./workspace-checkpoint.js";
 import { promises as fs } from "node:fs";
 import { randomUUID } from "node:crypto";
 import os from "node:os";
@@ -11,6 +12,7 @@ import {
   type SandboxManagedRuntimeClient,
   type SandboxRemoteExecutionSpec,
   type SandboxSyncOperation,
+  type SandboxSyncOptions,
   type SandboxSyncResult,
   type WorkspaceDurableSeedPaths,
   type WorkspaceInboundMode,
@@ -115,9 +117,9 @@ export interface CommandManagedRuntimeRunner {
    * orchestrator either uses the native path for both directions or falls back
    * to the base64 transport for both.
    */
-  syncIn?(operations: SandboxSyncOperation[]): Promise<SandboxSyncResult>;
+  syncIn?(operations: SandboxSyncOperation[], options?: SandboxSyncOptions): Promise<SandboxSyncResult>;
   /** Optional native outbound file transfer. See {@link syncIn}. */
-  syncOut?(operations: SandboxSyncOperation[]): Promise<SandboxSyncResult>;
+  syncOut?(operations: SandboxSyncOperation[], options?: SandboxSyncOptions): Promise<SandboxSyncResult>;
   /**
    * Optional persistent duplex channel. Present only when the sandbox provider's
    * effective capability grants `duplexCommandStream`. The runner opens one
@@ -188,7 +190,9 @@ function formatFailedCommandOutput(result: RunProcessResult): string {
 function requireSuccessfulResult(result: RunProcessResult, action: string): void {
   if (result.exitCode === 0 && !result.timedOut) return;
   const detail = formatFailedCommandOutput(result);
-  throw new Error(`${action} failed with exit code ${result.exitCode ?? "null"}${detail}`);
+  throw Object.assign(new Error(`${action} failed with exit code ${result.exitCode ?? "null"}${detail}`), {
+    exitCode: result.exitCode, timedOut: result.timedOut,
+  });
 }
 
 function bufferToArrayBuffer(buffer: Buffer): ArrayBuffer {
@@ -414,6 +418,7 @@ export function createCommandManagedRuntimeClient(input: {
         args: shellCommandArgs(`rm -rf ${shellQuote(remotePath)}`),
         cwd: input.commandCwd,
         timeoutMs: input.timeoutMs,
+        bypassSession: true,
       });
       requireSuccessfulResult(result, `remove ${remotePath}`);
     },
@@ -423,6 +428,9 @@ export function createCommandManagedRuntimeClient(input: {
         args: shellCommandArgs(command),
         cwd: input.commandCwd,
         timeoutMs: options.timeoutMs,
+        // These helpers consume only exit status. They need neither a
+        // persistent shell nor its separate, streamed output observations.
+        bypassSession: true,
       });
       requireSuccessfulResult(result, command);
     },
@@ -521,15 +529,17 @@ export function createCommandManagedRuntimeClient(input: {
   client.allowConcurrentSyncOperations = hasNativeBoth
     ? input.runner.allowConcurrentSyncOperations === true
     : true;
-  client.syncIn = async (operations) => {
+  client.syncIn = async (operations, options) => {
     assertPostUploadCommandsConfined(operations);
     if (hasNativeBoth) {
-      return await nativeSyncIn!(operations);
+      return await (options === undefined ? nativeSyncIn!(operations) : nativeSyncIn!(operations, options));
     }
     return await fallbackSyncIn(operations);
   };
   if (hasNativeBoth) {
-    client.syncOut = (operations) => nativeSyncOut!(operations);
+    client.syncOut = (operations, options) => options === undefined
+      ? nativeSyncOut!(operations)
+      : nativeSyncOut!(operations, options);
   }
 
   return client;
@@ -544,11 +554,18 @@ export async function prepareCommandManagedRuntime(input: {
   runtimeRootDir?: string;
   syncWorkspace?: boolean;
   workspaceInboundMode?: WorkspaceInboundMode;
+  workspaceSnapshotIsolation?: "worker";
+  workspaceGitIndexRefresh?: boolean;
   workspaceDurableSeed?: WorkspaceDurableSeedPaths;
+  workspaceCheckpoint?: boolean;
+  onWorkspaceCheckpoint?: (metrics: WorkspaceCheckpointMetrics) => Promise<void>;
+  workspaceSeedCacheDirectory?: string;
+  workspaceSeedCacheCompanyDirectory?: string;
+  workspaceSeedCacheScope?: "workspace" | "company";
   workspaceBaseline?: DirectorySnapshot;
   workspaceGitSnapshot?: GitWorkspaceSnapshot | null;
+  workspaceRepositories?: NonNullable<GitWorkspaceSnapshot["repositories"]>;
   workspaceExclude?: string[];
-  /** Plain persistent directories include all files, independent of Git and task cache exclusions. */
   workspaceFileMode?: "all";
   preserveAbsentOnRestore?: string[];
   assets?: CommandManagedRuntimeAsset[];
@@ -614,9 +631,17 @@ export async function prepareCommandManagedRuntime(input: {
           runtimeRootDir: input.runtimeRootDir,
           syncWorkspace: input.syncWorkspace,
           workspaceInboundMode: input.workspaceInboundMode,
+          workspaceSnapshotIsolation: input.workspaceSnapshotIsolation,
+          workspaceGitIndexRefresh: input.workspaceGitIndexRefresh,
           workspaceDurableSeed: input.workspaceDurableSeed,
+          workspaceCheckpoint: input.workspaceCheckpoint,
+          onWorkspaceCheckpoint: input.onWorkspaceCheckpoint,
+          workspaceSeedCacheDirectory: input.workspaceSeedCacheDirectory,
+          workspaceSeedCacheCompanyDirectory: input.workspaceSeedCacheCompanyDirectory,
+          workspaceSeedCacheScope: input.workspaceSeedCacheScope,
           workspaceBaseline: input.workspaceBaseline,
           workspaceGitSnapshot: input.workspaceGitSnapshot,
+          workspaceRepositories: input.workspaceRepositories,
           workspaceExclude: mergeRuntimeExcludes(input.workspaceExclude),
           workspaceFileMode: input.workspaceFileMode,
           preserveAbsentOnRestore: input.preserveAbsentOnRestore,
@@ -660,9 +685,17 @@ export async function prepareCommandManagedRuntime(input: {
     runtimeRootDir: input.runtimeRootDir,
     syncWorkspace: input.syncWorkspace,
     workspaceInboundMode: input.workspaceInboundMode,
+    workspaceSnapshotIsolation: input.workspaceSnapshotIsolation,
+    workspaceGitIndexRefresh: input.workspaceGitIndexRefresh,
     workspaceDurableSeed: input.workspaceDurableSeed,
+    workspaceCheckpoint: input.workspaceCheckpoint,
+    onWorkspaceCheckpoint: input.onWorkspaceCheckpoint,
+    workspaceSeedCacheDirectory: input.workspaceSeedCacheDirectory,
+    workspaceSeedCacheCompanyDirectory: input.workspaceSeedCacheCompanyDirectory,
+    workspaceSeedCacheScope: input.workspaceSeedCacheScope,
     workspaceBaseline: input.workspaceBaseline,
     workspaceGitSnapshot: input.workspaceGitSnapshot,
+    workspaceRepositories: input.workspaceRepositories,
     workspaceExclude: mergeRuntimeExcludes(input.workspaceExclude),
     workspaceFileMode: input.workspaceFileMode,
     preserveAbsentOnRestore: input.preserveAbsentOnRestore,

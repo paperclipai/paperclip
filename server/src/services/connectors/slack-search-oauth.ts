@@ -16,6 +16,7 @@ import {
 import { z } from "zod";
 import {
   badRequest,
+  conflict,
   forbidden,
   notFound,
   unprocessable,
@@ -43,6 +44,28 @@ export function slackSearchOAuthService(
 ) {
   const secrets = secretService(db);
   const vault = toolAccessService(db);
+  async function searchConnectionTransaction<T>(companyId: string, connectionId: string, userId: string,
+    operation: (tx: Parameters<Parameters<Db["transaction"]>[0]>[0]) => Promise<T>): Promise<T> {
+    for (let attempt = 0; ; attempt++) {
+      let guarded = false;
+      try {
+        return await db.transaction(async tx => {
+          const grantScope = and(eq(connectionGrants.companyId, companyId), eq(connectionGrants.connectionId, connectionId),
+            eq(connectionGrants.kind, "user"), eq(connectionGrants.subjectUserId, userId));
+          await tx.select({ id: connectionGrants.id }).from(connectionGrants).where(grantScope).orderBy(connectionGrants.id).for("update");
+          await tx.select({ id: toolConnections.id }).from(toolConnections)
+            .where(and(eq(toolConnections.id, connectionId), eq(toolConnections.companyId, companyId))).for("update");
+          await tx.select({ id: connectionGrants.id }).from(connectionGrants).where(grantScope).orderBy(connectionGrants.id).for("update", { noWait: true });
+          guarded = true;
+          return operation(tx);
+        });
+      } catch (error) {
+        const failure = error as { code?: string; cause?: { code?: string } };
+        if (guarded || (failure?.cause?.code ?? failure?.code) !== "55P03") throw error;
+        if (attempt >= 2) throw conflict("Slack search authorization changed. Try again.", { retryable: true });
+      }
+    }
+  }
   const redirectUri = () => {
     if (!publicBaseUrl)
       throw badRequest(
@@ -199,17 +222,7 @@ export function slackSearchOAuthService(
     /** Search-only credential acquisition; no caller may use this token for writes. */
     async accessToken(companyId: string, endpointId: string, userId: string) {
       const initial = await linked(companyId, endpointId, userId);
-      return db.transaction(async (tx) => {
-        await tx
-          .select({ id: toolConnections.id })
-          .from(toolConnections)
-          .where(
-            and(
-              eq(toolConnections.id, initial.connection.id),
-              eq(toolConnections.companyId, companyId),
-            ),
-          )
-          .for("update");
+      return searchConnectionTransaction(companyId, initial.connection.id, userId, async (tx) => {
         const [connection] = await tx
           .select()
           .from(toolConnections)
@@ -559,19 +572,9 @@ export function slackSearchOAuthService(
         throw forbidden(
           "Slack token identity does not match the linked account",
         );
-      return db.transaction(async (tx) => {
+      return searchConnectionTransaction(pending.companyId, row.connection.id, userId, async (tx) => {
         // Disconnect deletes pending and in-flight states. Consume under the same
         // connection lock as configuration/refresh so a late callback cannot revive access.
-        await tx
-          .select({ id: toolConnections.id })
-          .from(toolConnections)
-          .where(
-            and(
-              eq(toolConnections.id, row.connection.id),
-              eq(toolConnections.companyId, pending.companyId),
-            ),
-          )
-          .for("update");
         const [liveConnection] = await tx
           .select()
           .from(toolConnections)
@@ -699,17 +702,7 @@ export function slackSearchOAuthService(
     },
     async disconnect(companyId: string, endpointId: string, userId: string) {
       const row = await endpoint(companyId, endpointId);
-      await db.transaction(async (tx) => {
-        await tx
-          .select({ id: toolConnections.id })
-          .from(toolConnections)
-          .where(
-            and(
-              eq(toolConnections.id, row.connection.id),
-              eq(toolConnections.companyId, companyId),
-            ),
-          )
-          .for("update");
+      await searchConnectionTransaction(companyId, row.connection.id, userId, async (tx) => {
         await tx
           .update(connectionGrants)
           .set({

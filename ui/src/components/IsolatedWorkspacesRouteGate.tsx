@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Navigate, Outlet } from "@/lib/router";
 import { instanceSettingsApi } from "@/api/instanceSettings";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { queryKeys } from "@/lib/queryKeys";
 
 /**
@@ -14,16 +15,33 @@ import { queryKeys } from "@/lib/queryKeys";
  * {@link HiddenSettingsPageGate}.
  *
  * Nothing renders until the flag query settles, so an instance that has the
- * feature on never flashes a redirect on a hard load.
+ * feature on never flashes a redirect on a hard load. The same holds when the
+ * flag cannot be read at all: an outage waits quietly for the reconnect, and
+ * a real failure shows readable copy with Retry, because with no settings
+ * there is no flag to redirect on.
  */
 export function IsolatedWorkspacesRouteGate() {
-  const { data: experimentalSettings, isFetched } = useQuery({
+  const query = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
   });
+  const view = useQueryView(query);
 
-  if (!isFetched) return null;
-  if (experimentalSettings?.enableIsolatedWorkspaces !== true) {
+  if (query.data === undefined) {
+    if (view.kind === "error") {
+      return (
+        <QueryErrorState
+          size="page"
+          error={view.error}
+          action="load workspaces"
+          onRetry={view.retry}
+          retrying={view.isFetching}
+        />
+      );
+    }
+    return null;
+  }
+  if (query.data.enableIsolatedWorkspaces !== true) {
     return <Navigate to="/dashboard" replace />;
   }
   return <Outlet />;

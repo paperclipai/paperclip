@@ -3,6 +3,8 @@ import { TelemetryClient } from "./client.js";
 import { resolveTelemetryConfig } from "./config.js";
 import type { TelemetryConfig, TelemetryDimensions, TelemetryState } from "./types.js";
 
+const CONTRACT_KEYS = new Set(["app", "schemaVersion", "installId", "version", "events", "batchId"]);
+
 const TEST_STATE: TelemetryState = {
   installId: "test-install",
   salt: "test-salt",
@@ -174,7 +176,8 @@ describe("TelemetryClient chunking (count + bytes)", () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true });
     vi.stubGlobal("fetch", fetchMock);
     const cap = 2;
-    const { client } = makeClient(undefined, { maxEventsPerBatch: cap });
+    const maxBodyBytes = 4096;
+    const { client } = makeClient(undefined, { maxEventsPerBatch: cap, maxBodyBytes });
 
     for (let i = 0; i < 5; i++) client.track("install.started", {});
     await client.flush();
@@ -185,6 +188,14 @@ describe("TelemetryClient chunking (count + bytes)", () => {
     expect(bodies.map((b) => (b.events as unknown[]).length)).toEqual([2, 2, 1]);
     for (const body of bodies) {
       expect((body.events as unknown[]).length).toBeLessThanOrEqual(cap);
+      for (const key of Object.keys(body)) {
+        expect(CONTRACT_KEYS.has(key)).toBe(true);
+      }
+      expect(body.schemaVersion).toBe("1");
+    }
+    for (const call of fetchMock.mock.calls) {
+      const body = String((call[1] as RequestInit).body);
+      expect(Buffer.byteLength(body)).toBeLessThanOrEqual(maxBodyBytes);
     }
   });
 
@@ -200,6 +211,7 @@ describe("TelemetryClient chunking (count + bytes)", () => {
     await client.flush();
 
     expect(fetchMock.mock.calls.length).toBeGreaterThan(1);
+    expect(sentBodies().reduce((sum, body) => sum + (body.events as unknown[]).length, 0)).toBe(6);
     for (const call of fetchMock.mock.calls) {
       const body = String((call[1] as RequestInit).body);
       expect(Buffer.byteLength(body)).toBeLessThanOrEqual(maxBodyBytes);
@@ -394,6 +406,7 @@ describe("TelemetryClient batched retry + backoff", () => {
 
     const bodies = sentBodies();
     expect(bodies[0]?.batchId).toBe(bodies[1]?.batchId); // identical id on retry
+    expect(bodies[1]?.events).toEqual(bodies[0]?.events);
     client.stop();
   });
 

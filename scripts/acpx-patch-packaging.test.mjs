@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import {
   existsSync,
+  cpSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -16,7 +17,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { createRequire } from "node:module";
-import { runInNewContext } from "node:vm";
 
 import cliEsbuildConfig from "../cli/esbuild.config.mjs";
 import { bundledCliNpmDependencies } from "./cli-bundled-npm-dependencies.mjs";
@@ -41,7 +41,7 @@ function esbuildFixture(t) {
     writeFileSync(join(location, "package.json"), JSON.stringify(metadata));
     return location;
   };
-  const acpx = writePackage(join(graph, "acpx"), { name: "acpx", version: "0.13.1" });
+  const acpx = writePackage(join(graph, "acpx"), { name: "acpx", version: "0.22.0" });
   const esbuild = writePackage(join(acpx, "node_modules/esbuild"), {
     name: "esbuild", version: "0.28.2", scripts: { postinstall: "node install.js" },
     optionalDependencies: Object.fromEntries([...nativeTargets, "win32-x64"].map(target => [`@esbuild/${target}`, "0.28.2"])),
@@ -51,11 +51,38 @@ function esbuildFixture(t) {
   });
   writePackage(join(graph, "unrelated-linux-x64"), { name: "unrelated-linux-x64", version: "1.0.0" });
   const publish = { name: "@paperclipai/adapter-utils", version: "0.3.1", bundleDependencies: ["acpx"],
-    dependencies: { acpx: "0.13.1" }, optionalDependencies: { unrelated: "1.0.0" } };
+    dependencies: { acpx: "0.22.0" }, optionalDependencies: { unrelated: "1.0.0" } };
   return { directory, graph, esbuild, producerBinary, publish, writePackage };
 }
 const codexTargets = ["linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64", "win32-x64", "win32-arm64"];
 const codexOptional = Object.fromEntries(codexTargets.map(target => [`@openai/codex-${target}`, `npm:@openai/codex@0.160.0-${target}`]));
+const claudeTargets = [...codexTargets, "linux-x64-musl", "linux-arm64-musl"];
+const claudeOptional = Object.fromEntries(claudeTargets.map(target => [`@anthropic-ai/claude-agent-sdk-${target}`, "0.3.286"]));
+function claudeFixture(t) {
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), "paperclip-bundled-claude-")));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const graph = join(directory, "node_modules");
+  const writePackage = (location, metadata) => {
+    mkdirSync(location, { recursive: true });
+    writeFileSync(join(location, "package.json"), JSON.stringify(metadata));
+    return location;
+  };
+  const bridge = writePackage(join(graph, "@agentclientprotocol/claude-agent-acp"), {
+    name: "@agentclientprotocol/claude-agent-acp", version: "0.73.0", dependencies: { "@anthropic-ai/claude-agent-sdk": "0.3.286" },
+  });
+  writeFileSync(join(bridge, "index.js"), "export {};\n");
+  const runtime = writePackage(join(graph, "@anthropic-ai/claude-agent-sdk"), {
+    name: "@anthropic-ai/claude-agent-sdk", version: "0.3.286", exports: { ".": "./sdk.mjs" }, optionalDependencies: claudeOptional,
+  });
+  writeFileSync(join(runtime, "sdk.mjs"), "// official JavaScript fixture, never executed\n");
+  const producer = writePackage(join(graph, "@anthropic-ai/claude-agent-sdk-linux-x64"), {
+    name: "@anthropic-ai/claude-agent-sdk-linux-x64", version: "0.3.286", os: ["linux"], cpu: ["x64"],
+  });
+  writeFileSync(join(producer, "claude"), "producer native fixture, never executed");
+  const profiles = [{ agent: "claude", ...profileData.profiles.claude }];
+  const publish = { name: "paperclip-claude-pack-fixture", version: "1.0.0", dependencies: { "@agentclientprotocol/claude-agent-acp": "0.73.0" }, bundleDependencies: ["@agentclientprotocol/claude-agent-acp"] };
+  return { directory, graph, bridge, runtime, producer, profiles, publish, writePackage };
+}
 function codexFixture(t) {
   const directory = realpathSync(mkdtempSync(join(tmpdir(), "paperclip-bundled-codex-")));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
@@ -93,7 +120,7 @@ const releaseLib = await readFile(new URL("./release-lib.sh", import.meta.url), 
 const buildNpmScript = await readFile(new URL("./build-npm.sh", import.meta.url), "utf8");
 
 const acpxRuntimePatch = await readFile(
-  new URL("../patches/acpx@0.13.1.patch", import.meta.url),
+  new URL("../patches/acpx@0.22.0.patch", import.meta.url),
   "utf8",
 );
 const claudeAcpPatch = await readFile(
@@ -135,7 +162,7 @@ function assertUnifiedHunkBodyCounts(patch, label) {
   return hunks;
 }
 
-for (const version of ["0.12.0", "0.13.1"]) {
+for (const version of ["0.22.0"]) {
   test(`ACPX ${version} release patch uses portable generated unified hunks`, async () => {
     const patch = await readFile(
       new URL(`../patches/acpx@${version}.patch`, import.meta.url),
@@ -211,19 +238,28 @@ test("unified hunk validation accepts bare empty context and rejects surplus bod
 
 test("published packages preserve the patched ACPX runtime", () => {
   assert.equal(
-    rootPackage.pnpm.patchedDependencies["acpx@0.12.0"],
-    "patches/acpx@0.12.0.patch",
+    rootPackage.pnpm.patchedDependencies["acpx@0.22.0"],
+    "patches/acpx@0.22.0.patch",
   );
-  assert.equal(
-    rootPackage.pnpm.patchedDependencies["acpx@0.13.1"],
-    "patches/acpx@0.13.1.patch",
-  );
-  assert.equal(adapterUtilsPackage.dependencies.acpx, "0.12.0");
+  assert.equal(adapterUtilsPackage.dependencies.acpx, "0.22.0");
   assert.deepEqual(adapterUtilsPackage.bundleDependencies, ["acpx"]);
-  assert.equal(serverPackage.dependencies.acpx, "0.13.1");
+  assert.equal(serverPackage.dependencies.acpx, "0.22.0");
   assert.ok(serverPackage.bundleDependencies.includes("acpx"));
   assert.equal(bundledCliNpmDependencies.has("acpx"), true);
   assert.equal(cliEsbuildConfig.external.includes("acpx"), false);
+});
+
+test("published Claude bridge pins its qualified SDK and provider dependency closure", () => {
+  const published = materializePublishManifest(serverPackage);
+  const { installManifest } = configureBundledProviderOverrides(
+    createBundledInstallManifest(published, serverPackage.bundleDependencies),
+    serverPackage.bundleDependencies, rootPackage, profileData,
+  );
+  assert.deepEqual(installManifest.overrides["@agentclientprotocol/claude-agent-acp@0.73.0"], {
+    "@anthropic-ai/claude-agent-sdk": "0.3.286",
+    "@agentclientprotocol/sdk": "1.4.0",
+    zod: "4.4.3",
+  });
 });
 
 test("published Codex bridge uses its qualified producer closure without consumer overrides", () => {
@@ -232,7 +268,7 @@ test("published Codex bridge uses its qualified producer closure without consume
     createBundledInstallManifest(published, serverPackage.bundleDependencies),
     serverPackage.bundleDependencies, rootPackage, profileData,
   );
-  assert.equal(profiles.length, 1);
+  assert.deepEqual(profiles.map(profile => profile.agent), ["codex", "claude"]);
   for (const profile of profiles) {
     assert.equal(published.dependencies[profile.agentServerPackage], profile.agentServerVersion);
     assert.ok(published.bundleDependencies.includes(profile.agentServerPackage));
@@ -249,6 +285,58 @@ test("published Codex bridge uses its qualified producer closure without consume
   const conflict = createBundledInstallManifest(published, serverPackage.bundleDependencies);
   conflict.overrides = { "@agentclientprotocol/codex-acp@1.6.2": { "@openai/codex": "0.156.1" } };
   assert.throws(() => configureBundledProviderOverrides(conflict, serverPackage.bundleDependencies, rootPackage, profileData), /conflicting producer override/);
+});
+
+test("Linux-produced Claude bundles retain the SDK and install native packages for the consumer platform", (t) => {
+  const { directory, bridge, runtime, producer, profiles, publish } = claudeFixture(t);
+  const bridgeBefore = readFileSync(join(bridge, "package.json"), "utf8");
+  const staged = stageBundledProviderOptionalDependencies(directory, publish, profiles);
+  assert.deepEqual(staged.optionalDependencies, claudeOptional);
+  assert.equal(existsSync(producer), false);
+  assert.equal(JSON.parse(readFileSync(join(runtime, "package.json"), "utf8")).optionalDependencies, undefined);
+  assert.equal(readFileSync(join(bridge, "package.json"), "utf8"), bridgeBefore);
+  assert.deepEqual(stageBundledProviderOptionalDependencies(directory, staged, profiles), staged);
+  writeFileSync(join(directory, "package.json"), JSON.stringify(staged));
+  const packs = JSON.parse(execFileSync("npm", ["pack", "--ignore-scripts", "--offline", "--json"], {
+    cwd: directory, encoding: "utf8", timeout: 30_000,
+    env: { ...process.env, HOME: directory, npm_config_cache: join(directory, "cache"), npm_config_update_notifier: "false" },
+  }));
+  const paths = packs[0].files.map(file => file.path);
+  assert.ok(paths.some(path => path.endsWith("@anthropic-ai/claude-agent-sdk/sdk.mjs")));
+  assert.equal(paths.some(path => /@anthropic-ai\/claude-agent-sdk-(?:linux|darwin|win32)-/.test(path)), false);
+});
+
+test("Claude bundle validation rejects unqualified declarations before removing native payloads", (t) => {
+  const { directory, runtime, producer, profiles, publish } = claudeFixture(t);
+  const file = join(runtime, "package.json"), original = JSON.parse(readFileSync(file, "utf8"));
+  for (const metadata of [
+    { ...original, version: "0.3.285" },
+    { ...original, optionalDependencies: { ...claudeOptional, "@anthropic-ai/claude-agent-sdk-darwin-arm64": "latest" } },
+    { ...original, optionalDependencies: {} },
+  ]) {
+    writeFileSync(file, JSON.stringify(metadata));
+    assert.throws(() => stageBundledProviderOptionalDependencies(directory, publish, profiles), /version mismatch|not qualified/);
+    assert.equal(existsSync(producer), true);
+  }
+});
+
+test("mixed provider bundles validate both runtimes before removing either producer executable", (t) => {
+  const codex = codexFixture(t), claude = claudeFixture(t);
+  for (const name of ["@agentclientprotocol/claude-agent-acp", "@anthropic-ai/claude-agent-sdk", "@anthropic-ai/claude-agent-sdk-linux-x64"]) {
+    cpSync(join(claude.graph, name), join(codex.graph, name), { recursive: true });
+  }
+  const profiles = [...codex.profiles, ...claude.profiles];
+  const publish = { ...codex.publish, dependencies: { ...codex.publish.dependencies, ...claude.publish.dependencies },
+    bundleDependencies: [...codex.publish.bundleDependencies, ...claude.publish.bundleDependencies] };
+  const file = join(codex.graph, "@anthropic-ai/claude-agent-sdk/package.json");
+  const metadata = JSON.parse(readFileSync(file, "utf8"));
+  writeFileSync(file, JSON.stringify({ ...metadata, version: "0.3.285" }));
+  assert.throws(() => stageBundledProviderOptionalDependencies(codex.directory, publish, profiles), /Claude runtime version mismatch/);
+  assert.equal(existsSync(codex.producer), true);
+  assert.deepEqual(JSON.parse(readFileSync(join(codex.runtime, "package.json"), "utf8")).optionalDependencies, codexOptional);
+  writeFileSync(file, JSON.stringify(metadata));
+  const staged = stageBundledProviderOptionalDependencies(codex.directory, publish, profiles);
+  assert.deepEqual(staged.optionalDependencies, { ...codexOptional, ...claudeOptional });
 });
 
 test("Codex bundles retain pinned JavaScript and delegate official consumer platform aliases without native payloads", (t) => {
@@ -370,19 +458,22 @@ test("bundled esbuild cannot follow a platform payload or package namespace outs
 });
 
 test("Paperclip Runner pins the qualified ACPX host callbacks", () => {
-  assert.equal(rootPackage.pnpm.patchedDependencies["acpx@0.13.1"], "patches/acpx@0.13.1.patch");
+  assert.equal(rootPackage.pnpm.patchedDependencies["acpx@0.22.0"], "patches/acpx@0.22.0.patch");
   assert.equal(
     rootPackage.pnpm.patchedDependencies["@agentclientprotocol/claude-agent-acp@0.73.0"],
     "patches/@agentclientprotocol__claude-agent-acp@0.73.0.patch",
   );
-  assert.equal(runnerPackage.dependencies.acpx, "0.13.1");
+  assert.equal(runnerPackage.dependencies.acpx, "0.22.0");
   assert.equal(runnerPackage.dependencies["@agentclientprotocol/claude-agent-acp"], "0.73.0");
   assert.equal(runnerPackage.dependencies["@agentclientprotocol/codex-acp"], "1.6.2");
   for (const callback of [
-    "spawnEnvironment", "spawnCwd", "spawnAgent", "isPlainStringEnvironment",
-    "onAgentSpawn", "onAgentStderr", "onAgentExit",
-    "onSessionNotification", "onClientOperation",
+    "spawnAgent", "requestExtension", "protocolGuardFactory",
   ]) assert.match(acpxRuntimePatch, new RegExp(callback));
+  // Moved to stock 0.22 hooks (spawnAgent, processLifecycle, onAcpMessage).
+  const added = acpxRuntimePatch.split("\n").filter(line => line.startsWith("+")).join("\n");
+  for (const removed of ["spawnCwd", "onAgentSpawn", "onAgentStderr", "onSessionNotification", "onClientOperation", "spawnEnvironment", "agentGoalCapability", "onAgentInitialize"]) {
+    assert.doesNotMatch(added, new RegExp(removed));
+  }
   assert.match(claudeAcpPatch, /usage: \{/);
   assert.match(claudeAcpPatch, /cache_creation_input_tokens/);
 });
@@ -580,12 +671,12 @@ mkdir -p "$destination/node_modules/.pnpm"
 set -euo pipefail
 printf 'npm %s\\n' "$*" >> "$FAKE_CALL_LOG"
 [ "$*" = "install --omit=dev --ignore-scripts --no-audit --no-fund" ]
-node -e 'const fs = require("node:fs"); const pkg = require("./package.json"); if ("devDependencies" in pkg) process.exit(1); for (const [name, version] of Object.entries(pkg.dependencies)) { const dir = "node_modules/" + name; fs.mkdirSync(dir + "/dist", { recursive: true }); fs.writeFileSync(dir + "/package.json", JSON.stringify({ name, version })); } for (const [bridge, runtimes] of Object.entries(pkg.overrides ?? {})) { for (const [name, version] of Object.entries(runtimes)) { const dir = "node_modules/" + name; fs.mkdirSync(dir, { recursive: true }); const native = name === "@openai/codex"; const optionalDependencies = native ? Object.fromEntries(["linux-x64","linux-arm64","darwin-x64","darwin-arm64","win32-x64","win32-arm64"].map(target => [name+"-"+target,"npm:"+name+"@"+version+"-"+target])) : undefined; fs.writeFileSync(dir + "/package.json", JSON.stringify({ name, version, optionalDependencies })); } }'
+node -e 'const fs = require("node:fs"); const pkg = require("./package.json"); if ("devDependencies" in pkg) process.exit(1); for (const [name, version] of Object.entries(pkg.dependencies)) { const dir = "node_modules/" + name; fs.mkdirSync(dir + "/dist", { recursive: true }); fs.writeFileSync(dir + "/package.json", JSON.stringify({ name, version })); } for (const [bridge, runtimes] of Object.entries(pkg.overrides ?? {})) { for (const [name, version] of Object.entries(runtimes)) { const dir = "node_modules/" + name; fs.mkdirSync(dir, { recursive: true }); const native = name === "@openai/codex"; const targets = ["linux-x64","linux-arm64","darwin-x64","darwin-arm64","win32-x64","win32-arm64"]; const optionalDependencies = native ? Object.fromEntries(targets.map(target => [name+"-"+target,"npm:"+name+"@"+version+"-"+target])) : name === "@anthropic-ai/claude-agent-sdk" ? Object.fromEntries([...targets,"linux-x64-musl","linux-arm64-musl"].map(target => [name+"-"+target,version])) : undefined; fs.writeFileSync(dir + "/package.json", JSON.stringify({ name, version, optionalDependencies })); } }'
 node -e 'const fs=require("node:fs");fs.cpSync(process.env.FAKE_NATIVE_ARTIFACTS+"/@openai/codex-linux-x64","node_modules/@openai/codex-linux-x64",{recursive:true});fs.mkdirSync("node_modules/@openai/codex/vendor",{recursive:true});fs.writeFileSync("node_modules/@openai/codex/vendor/codex","producer fallback fixture");'
 mkdir -p node_modules/acpx/dist
 node -e 'const fs=require("node:fs");fs.mkdirSync("node_modules/esbuild",{recursive:true});fs.writeFileSync("node_modules/esbuild/package.json",JSON.stringify({name:"esbuild",version:"0.28.2",scripts:{postinstall:"node install.js"},optionalDependencies:Object.fromEntries(["linux-x64","darwin-arm64","darwin-x64"].map(target=>["@esbuild/"+target,"0.28.2"]))}));fs.mkdirSync("node_modules/@esbuild/linux-x64",{recursive:true});fs.writeFileSync("node_modules/@esbuild/linux-x64/package.json",JSON.stringify({name:"@esbuild/linux-x64",version:"0.28.2",os:["linux"],cpu:["x64"]}));'
 printf 'unpatched runtime\\n' > node_modules/acpx/dist/runtime.js
-printf '{"name":"acpx","version":"0.13.1"}\\n' > node_modules/acpx/package.json
+printf '{"name":"acpx","version":"0.22.0"}\\n' > node_modules/acpx/package.json
 `,
   );
   writeExecutable(
@@ -607,10 +698,9 @@ printf '%s\\n' "$patch_input" > "$target/applied.patch"
 if [[ "$target" != */acpx ]]; then
   exit 0
 fi
-grep -q spawnEnvironment <<< "$patch_input"
+grep -q requestExtension <<< "$patch_input"
 grep -q spawnAgent <<< "$patch_input"
-grep -q onAgentStderr <<< "$patch_input"
-printf 'patched spawnEnvironment runtime\\n' > "$target/dist/runtime.js"
+printf 'patched requestExtension runtime\\n' > "$target/dist/runtime.js"
 `,
   );
 
@@ -640,7 +730,7 @@ printf 'patched spawnEnvironment runtime\\n' > "$target/dist/runtime.js"
   assert.equal(lstatSync(stagedAcpxDir).isSymbolicLink(), false);
   assert.equal(existsSync(join(destinationDir, "node_modules/.pnpm")), false);
   const stagedManifest = JSON.parse(readFileSync(join(destinationDir, "package.json"), "utf8"));
-  for (const [name, version] of Object.entries(codexOptional)) {
+  for (const [name, version] of Object.entries({ ...codexOptional, ...claudeOptional })) {
     assert.equal(stagedManifest.optionalDependencies[name], version);
     assert.equal(existsSync(join(destinationDir, "node_modules", name)), false);
     assert.equal(stagedManifest.bundleDependencies.includes(name), false);
@@ -654,7 +744,7 @@ printf 'patched spawnEnvironment runtime\\n' > "$target/dist/runtime.js"
   assert.equal(JSON.parse(readFileSync(join(destinationDir, "node_modules/esbuild/package.json"))).scripts.postinstall, "node install.js");
   assert.match(
     readFileSync(join(stagedAcpxDir, "dist/runtime.js"), "utf8"),
-    /spawnEnvironment/,
+    /requestExtension/,
   );
   assert.match(
     readFileSync(callLog, "utf8"),
@@ -704,21 +794,3 @@ test("npm builds use corepack instead of requiring a global pnpm", () => {
 });
 
 
-test("installed ACPX runtime persists and restores optional goal capabilities", () => {
-  const requireRunner = createRequire(new URL("../packages/paperclip-runner/package.json", import.meta.url));
-  const runtimeSource = readFileSync(requireRunner.resolve("acpx/runtime"), "utf8");
-  const start = runtimeSource.indexOf("function persistedGoalCapability(");
-  const end = runtimeSource.indexOf("function planUpdateEvent(", start);
-  assert.ok(start >= 0 && end > start, "the installed patch must define both goal helpers");
-  const helpers = runInNewContext(runtimeSource.slice(start, end) + ";({ persistedGoalCapability, restoredGoalCapability })", {
-    isRecord: (value) => value !== null && typeof value === "object" && !Array.isArray(value),
-  });
-  assert.equal(helpers.persistedGoalCapability(undefined), undefined);
-  assert.equal(helpers.restoredGoalCapability(undefined), undefined);
-  const goal = { version: 1, controlMethod: "_session/goal", actions: ["set", "pause", "clear"] };
-  const saved = JSON.parse(JSON.stringify(helpers.persistedGoalCapability(goal)));
-  assert.equal(saved.control_method, "_session/goal");
-  assert.deepEqual(JSON.parse(JSON.stringify(helpers.restoredGoalCapability(saved))), goal);
-  assert.equal(helpers.persistedGoalCapability({ ...goal, version: 2 }), undefined);
-  assert.equal(helpers.persistedGoalCapability({ ...goal, actions: ["set"] }), undefined);
-});

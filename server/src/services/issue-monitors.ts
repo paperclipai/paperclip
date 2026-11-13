@@ -149,18 +149,30 @@ export function prepareIssueMonitorUpdate(
   return { ...transition.patch, executionPolicy: Object.keys(storedPolicy).length ? storedPolicy : null } as Partial<typeof issues.$inferInsert>;
 }
 
-/** Timestamp presence alone is not authority to park a native task. */
-export function eligibleIssueMonitorWait(
+/** A saved result can settle into this schedule even if its limits elapsed
+ * during workspace recovery. The scheduler owns applying those limits next. */
+export function scheduledIssueMonitorWait(
   issue: typeof issues.$inferSelect,
   agentId: string,
-  now = new Date(),
 ): string | null {
   if (issue.assigneeAgentId !== agentId || issue.assigneeUserId ||
       !["in_progress", "in_review"].includes(issue.status) || !issue.monitorNextCheckAt) return null;
   const monitor = normalizeIssueExecutionPolicy(issue.executionPolicy)?.monitor;
   if (!monitor || monitor.serviceName === PROVIDER_QUOTA_MONITOR_SERVICE_NAME ||
-      Date.parse(monitor.nextCheckAt) !== issue.monitorNextCheckAt.getTime() ||
-      (monitor.timeoutAt && Date.parse(monitor.timeoutAt) <= now.getTime()) ||
-      (monitor.maxAttempts != null && issue.monitorAttemptCount >= monitor.maxAttempts)) return null;
+      Date.parse(monitor.nextCheckAt) !== issue.monitorNextCheckAt.getTime()) return null;
   return issue.monitorNextCheckAt.toISOString();
+}
+
+/** New provider results still need an unexpired, unexhausted monitor. */
+export function eligibleIssueMonitorWait(
+  issue: typeof issues.$inferSelect,
+  agentId: string,
+  now = new Date(),
+): string | null {
+  const nextCheckAt = scheduledIssueMonitorWait(issue, agentId);
+  if (!nextCheckAt) return null;
+  const monitor = normalizeIssueExecutionPolicy(issue.executionPolicy)!.monitor!;
+  if ((monitor.timeoutAt && Date.parse(monitor.timeoutAt) <= now.getTime()) ||
+      (monitor.maxAttempts != null && issue.monitorAttemptCount >= monitor.maxAttempts)) return null;
+  return nextCheckAt;
 }

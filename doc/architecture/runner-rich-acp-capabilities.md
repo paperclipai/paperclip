@@ -1,6 +1,49 @@
 # Rich ACP integration and qualification report
 
-## Current integration — 2026-10-08
+## Current profile identity
+
+Every ACPX provider's `commandDigest` attests only its own upstream release.
+Copilot (profile 92), Grok (20) and Pi (37) bind their upstream package
+versions, their platform closure pins and, for Grok, the launcher bytes.
+`scripts/acpx-release-attestations.mjs` computes these digests,
+`generate:acpx-profiles` writes them to `acpx-profiles.json`, and
+`check:acpx-profiles` refuses drift. Cursor (17) attests the release declaration
+in `cursor-contract.json`; Claude, Codex and Antigravity attest their upstream
+packages or distributions. Runner source changes do not change any of them.
+Every ACPX harness binds the shared ACPX layer the same way: saved inputs must
+match the current ACPX version, and the provider pack's `contractDigest` binds
+the Runner's ACPX patch with the other Runner contracts. Launch
+and recovery admission require the exact current profile and digest. Saved
+inputs with an earlier profile version still decode, so recovery can refuse
+them. A profile identity is not evidence of live qualification.
+
+## Profile chronology
+
+Until 2026-10-30, these digests hashed Paperclip source files, so each change
+to a bound file advanced the profile version. The dated sections below record
+that period; their profile versions and digests are not current.
+
+## Historical source integration — 2026-10-14
+
+Pi profile 25 (`sha256:dd67387487dadb08da76534c057dc0aa059f7698d1779cbd5fc452813828167a`)
+advances the shared sandbox source attestation after Claude settings initialization
+moved behind provider lifetime ownership. Profile 23 remains an immutable
+historical identity. Pi's provider executable closures, model/effort options and
+platform qualification are unchanged; retained live evidence keeps its literal
+profile/source identity. Copilot remains pending at profile 19. Current package
+and source controls are separate from those retained provider execution results.
+
+The actual Codex squash `adb69e8f09852c772d9901ae270e5b2d66e39c77`
+already owns Copilot profile 18 for the Grok descriptor schema. The combined
+Claude effort sources use profile 19
+(`sha256:a4c7e955df18bf2448224ecce2120b43ede8054fe00e7b33b4044b8bd284b321`),
+with executable, permission policy and pending qualification unchanged. The
+prior unmerged Claude profile-18 attestation was recorded separately; earlier
+evidence keeps its literal source. Pi profile 25 and its source digest remain unchanged by
+this reconciliation. Existing settings and effort/session admission still need
+final packaged and real-provider qualification on the composed Claude source.
+
+## Historical integration — 2026-10-08
 
 The experimental Runner admits **Pi profile 22** (`sha256:e92078bee3c23bec4100aa589013a44613d054cd686826534025d8019e9f39a9`) and
 **Cursor profile 15**. Copilot remains pending at **profile 17**. Legacy
@@ -797,7 +840,7 @@ deterministic evidence are mapped separately after the comparison.
 
 | Shared capability | User-visible surface | Inspectable implementation / deterministic evidence |
 | --- | --- | --- |
-| Text, tools and child activity | Task transcript; bounded activity details preserve provider/session/tool attribution | `src/drivers/acpx/codex-runtime-adapter.test.ts`, `runner/crates/runner-core/tests/acpx_rich_events.rs`, `ui/src/components/task-chat/TaskChatProtocolActivityRow.test.tsx` |
+| Text, tools and child activity | Task transcript; bounded activity details preserve provider/session/tool attribution | `src/drivers/acpx/acpx-runtime-adapter.test.ts`, `runner/crates/runner-core/tests/acpx_rich_events.rs`, `ui/src/components/task-chat/TaskChatProtocolActivityRow.test.tsx` |
 | Native questions and permissions | Existing question/confirmation cards; only offered decisions can be submitted | `src/protocol/permission-request.test.ts`, `src/drivers/acpx/acp-permission-adapter.test.ts`, `server/src/services/native-runtime/native-question-bridge.test.ts`, `ui/src/components/task-chat/TaskChatProtocolCard.test.tsx` |
 | Native plan decisions | Full plan description followed by a revision-bound decision; no implicit plan acceptance | Cursor provider fixtures; `ui/storybook/fixtures/evidence/rich-acp-browser-proof.darwin-arm64.json` records the real renderer with a canonical fixture |
 | Active steering and queued follow-up | Existing active-turn control where a bound method is negotiated; no native Pi queue selector yet | `src/drivers/acpx/turn-controls.test.ts`; provider reports state which wire method is absent or not surfaced |

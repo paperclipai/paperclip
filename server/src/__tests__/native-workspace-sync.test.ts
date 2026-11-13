@@ -13,6 +13,7 @@ import {
   classifyNativeWorkspaceInbound,
   nativeWorkspaceSyncInternals,
   readNativeWorkspaceSyncReference,
+  readNativeWorkspaceSyncLocalCwd,
   resumeNativeWorkspaceSync,
   prepareNativeWorkspaceSync,
   cleanupNativeWorkspaceSync,
@@ -108,7 +109,7 @@ describe("native workspace sync durable metadata", () => {
       restartRecovery: { kind: "reattach_remote_runner", runId: "run", leaseOwner: "controller", controllerGeneration: 2,
         providerAttempt: 1, restartKind: "graceful", recoveryRequestId: null,
         remote: { providerLeaseId: "original", remoteCwd: "/workspace" } },
-    })).rejects.toThrow("native_remote_recovery_lease_mismatch");
+    })).rejects.toThrow(new Error("native_remote_recovery_lease_mismatch: stage=workspace_sync field=provider_lease_id"));
     expect(select).not.toHaveBeenCalled();
   });
 
@@ -185,6 +186,9 @@ describe("native workspace sync durable metadata", () => {
     const recovered = await nativeWorkspaceSyncInternals.readDescriptor({ runId, reference });
     expect(recovered.baseline.entries.get("private-filename-雪")).toMatchObject({ kind: "file" });
     await disposeDirectorySnapshot(recovered.baseline);
+    await expect(readNativeWorkspaceSyncLocalCwd({ runId, companyId: "company", workspaceId: "workspace", reference })).resolves.toBe(workspace);
+    await expect(readNativeWorkspaceSyncLocalCwd({ runId, companyId: "other-company", workspaceId: "workspace", reference })).rejects.toThrow(/binding_mismatch/);
+    await expect(readNativeWorkspaceSyncLocalCwd({ runId, companyId: "company", workspaceId: "other-workspace", reference })).rejects.toThrow(/binding_mismatch/);
     if (tamper === "corrupt") {
       await appendFile(serialized.entries.filePath, "corrupt");
     } else if (tamper === "symlink") {

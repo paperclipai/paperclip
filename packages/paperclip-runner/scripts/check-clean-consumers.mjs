@@ -16,6 +16,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { withInstalledPackagePackInput } from "./lib/installed-package-pack.mjs";
+import { collectRunnerRuntimeDependencyRoots } from "./lib/runner-runtime-dependency-roots.mjs";
 
 const runnerRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const scratchParent = process.env.PAPERCLIP_RUN_SCRATCH_DIR
@@ -101,7 +102,6 @@ async function pack(packageRoot, destination, { runner = false } = {}) {
 }
 
 async function packRunnerRuntimeDependencies(destination) {
-  const runnerManifest = JSON.parse(await readFile(resolve(runnerRoot, "package.json"), "utf8"));
   const overrides = {};
   const packed = new Map();
   const queued = new Set();
@@ -127,8 +127,8 @@ async function packRunnerRuntimeDependencies(destination) {
     }
   };
 
-  for (const packageName of Object.keys(runnerManifest.dependencies ?? {}).sort()) {
-    await enqueue(resolve(runnerRoot, "node_modules", packageName), packageName);
+  for (const { packageRoot, dependencyName } of await collectRunnerRuntimeDependencyRoots(runnerRoot)) {
+    await enqueue(packageRoot, dependencyName);
   }
   while (queue.length > 0) {
     const current = queue.shift();

@@ -350,6 +350,8 @@ export {
   builtInAgentResetSchema,
   createAgentHireSchema,
   updateAgentSchema,
+  agentRuntimeSettingsPatchSchema,
+  type AgentRuntimeSettingsPatch,
   agentRuntimeConfigSchema,
   agentInstructionsBundleModeSchema,
   updateAgentInstructionsBundleSchema,
@@ -365,8 +367,10 @@ export {
   wakeAgentSchema,
   resetAgentSessionSchema,
   testAdapterEnvironmentSchema,
+  qualifyAgentRunnerSchema,
   agentPermissionsSchema,
   updateAgentPermissionsSchema,
+  addAgentProjectAccessSchema,
   type CreateAgent,
   type BuiltInAgentProvision,
   type BuiltInAgentReset,
@@ -420,6 +424,8 @@ export {
 
 export {
   createIssueSchema,
+  issueSummariesQuerySchema,
+  issueChatBootstrapQuerySchema,
   setIssueTitleSchema,
   type SetIssueTitle,
   createIssueInputSchema,
@@ -435,12 +441,20 @@ export {
   updateIssueSchema,
   stalledReviewDecisionSchema,
   issueExecutionPolicySchema,
+  requiredQualityReviewSchema,
   issueExecutionMonitorPolicySchema,
   issueExecutionStateSchema,
   issueRecoveryActionReadModelSchema,
   resolveIssueRecoveryActionSchema,
   isValidExistingBranchName,
   retryWorkspaceExportSchema,
+  recoverWorkspaceSchema,
+  taskRetrySchema,
+  reconstructWorkspaceSchema,
+  resumeWorkspaceFinalizationSchema,
+  confirmNativeControllerStoppedSchema,
+  confirmRunStoppedSchema,
+  confirmOwnerGoneSchema,
   issueReviewRequestSchema,
   issueExecutionWorkspaceSettingsSchema,
   checkoutIssueSchema,
@@ -450,6 +464,8 @@ export {
   issueCommentMetadataSectionSchema,
   issueCommentMetadataSchema,
   addIssueCommentSchema,
+  sendChatMessageSchema,
+  markIssueReadSchema,
   issueThreadInteractionStatusSchema,
   issueThreadInteractionKindSchema,
   issueThreadInteractionCanonicalResolverPolicySchema,
@@ -471,6 +487,7 @@ export {
   askUserQuestionsAnswerSchema,
   askUserQuestionsResultSchema,
   requestConfirmationIssueDocumentTargetSchema,
+  requestConfirmationIssueAttachmentTargetSchema,
   requestConfirmationCustomTargetSchema,
   requestConfirmationTargetSchema,
   requestConfirmationPayloadSchema,
@@ -640,14 +657,23 @@ export {
   createApprovalSchema,
   resolveApprovalSchema,
   requestApprovalRevisionSchema,
+  cancelApprovalSchema,
   resubmitApprovalSchema,
   addApprovalCommentSchema,
   type CreateApproval,
   type ResolveApproval,
   type RequestApprovalRevision,
+  type CancelApproval,
   type ResubmitApproval,
   type AddApprovalComment,
 } from "./approval.js";
+
+export {
+  attentionCloseSchema,
+  attentionTransferSchema,
+  type AttentionClose,
+  type AttentionTransfer,
+} from "./attention.js";
 
 export {
   envBindingPlainSchema,
@@ -734,26 +760,6 @@ export {
   type CreateAssetImageMetadata,
 } from "./asset.js";
 
-export {
-  pipelineAutomationRetryCleanupOptionsSchema,
-  pipelineAutomationRetryRequestSchema,
-  pipelineAutomationRetryScopeSchema,
-  pipelineStageAutomationSchema,
-  pipelineStageApproverSchema,
-  pipelineStageConfigSchema,
-  pipelineStageKindSchema,
-  pipelineStageOnEnterSchema,
-  pipelineStageVariableSchema,
-  type PipelineAutomationRetryCleanupOptions,
-  type PipelineAutomationRetryRequest,
-  type PipelineAutomationRetryScope,
-  type PipelineStageAutomationConfig,
-  type PipelineStageApprover,
-  type PipelineStageConfig,
-  type PipelineStageKind,
-  type PipelineStageOnEnter,
-  type PipelineStageVariable,
-} from "./pipeline.js";
 
 export {
   createCompanyInviteSchema,
@@ -773,6 +779,8 @@ export {
   updateCompanyMemberWithPermissionsSchema,
   archiveCompanyMemberSchema,
   updateMemberPermissionsSchema,
+  updateAgentPermissionGrantSchema,
+  type UpdateAgentPermissionGrant,
   searchAdminUsersQuerySchema,
   updateUserCompanyAccessSchema,
   type CreateCompanyInvite,
@@ -996,3 +1004,5 @@ export { restoreAgentInstructionSchema } from "./agent.js";
 
 export * from "./skill-source.js";
 export * from "./agent-commentary.js";
+export * from "./task-workspace.js";
+export * from "./workspace-repository.js";

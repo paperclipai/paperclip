@@ -3,6 +3,7 @@ import { installDatabaseWorkSignals } from "../../../packages/db/src/work-signal
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { registerChatDeliveryWork } from "../services/chat-delivery-work.js";
 import { notifyChatDeliveryWork, notifyChatPublicationWork } from "../services/chat-work-notifications.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "../services/delivery-work-notifications.js";
 
 const coordinators: ReturnType<typeof createDeliveryWorkCoordinator>[] = [];
 afterEach(async () => {
@@ -27,6 +28,8 @@ function setup() {
     nextInboundDeliveryAt: vi.fn(async (): Promise<number | null> => null),
     nextPublicationAt: vi.fn(async (): Promise<number | null> => null),
     nextSlackReceiptAt: vi.fn(async (): Promise<number | null> => null),
+    processPendingGitHubReviewPublications: vi.fn(async () => {}),
+    nextGitHubReviewPublicationAt: vi.fn(async (): Promise<number | null> => null),
     onPublicationsSettled: vi.fn(),
   };
   const start = () => registerChatDeliveryWork(coordinator, service, enabled);
@@ -38,7 +41,7 @@ describe("chat delivery work", () => {
     const s = setup();
     await s.start().ready;
     await vi.advanceTimersByTimeAsync(3_600_000);
-    for (const run of [s.service.processQueuedDeliveries, s.service.scheduleQueuedPublications, s.service.processPendingSlackFileUploadReceipts]) expect(run).toHaveBeenCalledTimes(1);
+    for (const run of [s.service.processQueuedDeliveries, s.service.scheduleQueuedPublications, s.service.processPendingSlackFileUploadReceipts, s.service.processPendingGitHubReviewPublications]) expect(run).toHaveBeenCalledTimes(1);
     expect(s.coordinator.nextWakeAt()).toBeNull();
     expect(vi.getTimerCount()).toBe(0);
   });
@@ -98,6 +101,23 @@ describe("chat delivery work", () => {
     s.enabled.mockReturnValue(true);
     await vi.advanceTimersByTimeAsync(1000);
     expect(s.service.processQueuedDeliveries).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it("restores GitHub retry deadlines on startup and wakes after a publication commit", async () => {
+    const s = setup();
+    const due = Date.now() + 60_000;
+    s.service.nextGitHubReviewPublicationAt.mockResolvedValue(due);
+    await s.start().ready;
+    expect(s.coordinator.nextWakeAt()).toBe(due);
+    await vi.advanceTimersByTimeAsync(59_999);
+    expect(s.service.processPendingGitHubReviewPublications).toHaveBeenCalledTimes(1);
+    s.service.nextGitHubReviewPublicationAt.mockResolvedValue(null);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(s.service.processPendingGitHubReviewPublications).toHaveBeenCalledTimes(2);
+    await s.owner.transaction(tx => notifyDeliveryWork(tx, DELIVERY_QUEUES.chatGitHubPublications));
+    await vi.advanceTimersByTimeAsync(1);
+    expect(s.service.processPendingGitHubReviewPublications).toHaveBeenCalledTimes(3);
+    expect(s.service.scheduleQueuedPublications).toHaveBeenCalledTimes(1);
     expect(vi.getTimerCount()).toBe(0);
   });
   it("retries failed selection without losing its startup recovery", async () => {

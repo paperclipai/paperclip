@@ -11,7 +11,84 @@
     "providerRequestId": { "type": ["string", "null"], "maxLength": 240 },
     "cumulative": { "$ref": "#/$defs/measurement" },
     "runDeltaAvailable": { "type": "boolean" },
-    "runDelta": { "$ref": "#/$defs/measurement" }
+    "runDeltaBasis": { "const": "run" },
+    "reconciliation": {
+      "type": "object",
+      "required": [
+        "reason",
+        "receivedTurnId",
+        "cumulative",
+        "priorOrigin"
+      ],
+      "properties": {
+        "reason": {
+          "const": "accounting_reconciliation_required"
+        },
+        "receivedTurnId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 240
+        },
+        "cumulative": {
+          "$ref": "#/$defs/measurement"
+        },
+        "priorOrigin": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "required": [
+            "runnerInstanceId",
+            "runId",
+            "normalizedSessionId",
+            "turnId",
+            "itemId"
+          ],
+          "properties": {
+            "runnerInstanceId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 240
+            },
+            "runId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 240
+            },
+            "normalizedSessionId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 240
+            },
+            "turnId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 240
+            },
+            "itemId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 240
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "runDelta": { "$ref": "#/$defs/measurement" },
+    "context": {
+      "description": "Live context-window occupancy for the provider session after this usage, when the provider reports it.",
+      "type": "object",
+      "required": ["usedTokens", "windowTokens"],
+      "properties": {
+        "usedTokens": { "type": "integer", "minimum": 0 },
+        "windowTokens": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    }
   },
   "additionalProperties": false,
   "$defs": {

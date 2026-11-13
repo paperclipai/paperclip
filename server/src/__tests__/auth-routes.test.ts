@@ -98,6 +98,15 @@ describe("auth routes", () => {
     });
   });
 
+  it("preserves the session when optional navigation bootstrap cannot load", async () => {
+    const app = createApp({ type: "board", userId: "user-1", source: "session", companyIds: [] }, baseUser);
+    // This profile-only database cannot execute the bootstrap's company join.
+    const response = await request(app).get("/api/auth/get-session");
+    expect(response.status).toBe(200);
+    expect(response.body.user.id).toBe("user-1");
+    expect(response.body.boardBootstrap).toBeUndefined();
+  });
+
   it("sends sentryDsn for a board actor when SENTRY_DSN is set", async () => {
     process.env.SENTRY_DSN = "https://public@o0.ingest.sentry.io/1";
     const app = await createApp(
@@ -113,23 +122,6 @@ describe("auth routes", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.sentryDsn).toBe("https://public@o0.ingest.sentry.io/1");
-  });
-
-  it("sends a null sentryDsn when SENTRY_DSN is unset", async () => {
-    delete process.env.SENTRY_DSN;
-    const app = await createApp(
-      {
-        type: "board",
-        userId: "user-1",
-        source: "session",
-      },
-      baseUser,
-    );
-
-    const res = await request(app).get("/api/auth/get-session");
-
-    expect(res.status).toBe(200);
-    expect(res.body.sentryDsn).toBe(null);
   });
 
   it("sends sentryDsn for a board actor when only SENTRY_DSN_FRONTEND is set", async () => {

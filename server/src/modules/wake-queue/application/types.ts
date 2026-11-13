@@ -23,6 +23,14 @@ export type RunSnapshot = {
   configurationIncompletePayload: Record<string, unknown> | null;
   /** The host schedules failed conversation turns with its durable retry budget. */
   conversationContinuation?: boolean;
+  /**
+   * True when a person deliberately stopped this run: the board cancel route
+   * (`resultJson.cancelledByActorType` of `user`/`board`), an operator interrupt,
+   * or an agent pause. Release must not immediately re-queue such a run.
+   */
+  operatorStopped?: boolean;
+  retryableBeforeProviderWork?: boolean;
+  executionRetryAccounting?: Record<string, unknown> | null;
 };
 
 export type IssueSnapshot = {
@@ -52,6 +60,7 @@ export type InvokableAgentSnapshot = {
   companyId: string;
   name: string | null;
   invokable: boolean;
+  paused?: boolean;
 };
 
 /** A new heartbeat run reached the queued state and should be published and dispatched. */

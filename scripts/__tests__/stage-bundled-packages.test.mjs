@@ -47,18 +47,18 @@ test('the installs run at the same time, each with its own source and target', a
       if (Date.now() > deadline) { console.error('the other install never started'); process.exit(3); }
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
     }
-    writeFileSync(join(target, 'package.json'), '{}');
+    writeFileSync(join(target, 'package.json'), JSON.stringify({ cache: process.env.npm_config_cache }));
   `);
   const entries = entriesFor(root, ['@paperclipai/server', '@paperclipai/db']);
   for (const { target } of entries) mkdirSync(target);
-  const installs = startBundledInstalls(entries, { logDir: root, cwd: root, script });
+  const installs = startBundledInstalls(entries, { logDir: root, cwd: root, script, env: { ...process.env, npm_config_cache: join(root, 'shared-cache') } });
   assert.deepEqual(installs.map(({ slug }) => slug), ['server', 'db']);
   await Promise.all(installs.map(({ handle }) => handle.done));
   for (const [index, { stagedSource, target, slug, handle }] of installs.entries()) {
     assert.equal(handle.child.exitCode, 0);
     assert.equal(readFileSync(join(root, `bundled-${slug}.log`), 'utf8'), `install ${stagedSource} -> ${target}\n`);
     assert.equal(target, join(root, `package-${index}`));
-    assert.ok(existsSync(join(target, 'package.json')));
+    assert.equal(JSON.parse(readFileSync(join(target, 'package.json'), 'utf8')).cache, join(root, 'shared-cache'));
   }
   const timings = bundledInstallTimings(installs);
   assert.deepEqual(Object.keys(timings), ['stage_bundled_server_ms', 'stage_bundled_db_ms']);

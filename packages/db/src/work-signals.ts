@@ -1,25 +1,26 @@
 import { sql } from "drizzle-orm";
+import { randomUUID } from "node:crypto";
 
-// Process-local hints about existing durable queues. No SQL triggers, tables,
-// background timers, or driver query replay. Only opted-in transactions fetch
-// an XID, so unrelated transactions keep their existing SQL behavior.
-type Listener = (event: "intent" | "settled") => void;
-type Transaction = { topics: Set<string>; xid?: Promise<string>; uncertain: boolean };
-type Scope = { listeners: Map<string, Set<Listener>>; transactions: Set<Transaction>; root: Connection };
+// Hints about existing durable queues; process-local by default, with optional
+// commit-bound PostgreSQL notifications during controller replacement. No SQL
+// triggers, tables, timers, or query replay. Only registered work fetches an XID.
+type Listener = (event: "intent" | "settled", hints?: ReadonlySet<string>) => void;
+type Transaction = { topics: Set<string>; hints: Map<string, Set<string>>; xid?: Promise<string>; uncertain: boolean };
+type Scope = { key: object; listeners: Map<string, Set<Listener>>; transactions: Set<Transaction>; root: Connection; notificationOrigin: string; notify: boolean };
 type Context = { scope: Scope; transaction?: Transaction };
 type Connection = { transaction: (...args: any[]) => Promise<any>; execute: (...args: any[]) => Promise<any> };
 const contexts = new WeakMap<object, Context>();
 
-function publish(scope: Scope, topic: string, event: "intent" | "settled" = "settled") {
+function publish(scope: Scope, topic: string, event: "intent" | "settled" = "settled", hints?: ReadonlySet<string>) {
   for (const listener of scope.listeners.get(topic) ?? []) {
-    try { listener(event); }
+    try { listener(event, hints); }
     catch (error) { process.emitWarning(`Database work listener failed: ${String(error)}`); }
   }
 }
 
 /** Installed once by createDb; dedicated child pools share their owner's scope. */
 export function installDatabaseWorkSignals<T extends Connection>(db: T, owner?: object): T {
-  const scope = (owner && contexts.get(owner)?.scope) || { listeners: new Map(), transactions: new Set(), root: db };
+  const scope = (owner && contexts.get(owner)?.scope) || { key: {}, listeners: new Map(), transactions: new Set(), root: db, notificationOrigin: randomUUID(), notify: false };
   install(db, { scope });
   return db;
 }
@@ -30,7 +31,7 @@ function install(connection: Connection, context: Context) {
   connection.transaction = async function (callback, ...options) {
     // Nested savepoints belong to the outermost transaction. Even a released
     // savepoint must not wake a consumer before its parent commits.
-    const state = context.transaction ?? { topics: new Set<string>(), uncertain: false };
+    const state = context.transaction ?? { topics: new Set<string>(), hints: new Map<string, Set<string>>(), uncertain: false };
     try {
       const result = await transaction.call(this, async (tx: Connection) => {
         install(tx, { scope: context.scope, transaction: state });
@@ -47,20 +48,25 @@ function install(connection: Connection, context: Context) {
       }
       throw error;
     } finally {
-      if (!context.transaction) for (const topic of state.topics) publish(context.scope, topic);
+      if (!context.transaction) for (const topic of state.topics) publish(context.scope, topic, "settled", state.hints.get(topic));
     }
   };
 }
 
 /** Await BEFORE the queue write, on its transaction. Nested transactions work. */
-export async function signalDatabaseWork(connection: object, topic: string): Promise<void> {
+export async function signalDatabaseWork(connection: object, topic: string, hint?: string): Promise<void> {
   const context = contexts.get(connection);
   if (!context) return; // Lightweight service test doubles have no DB lifecycle.
   const state = context.transaction;
   if (!state) throw new Error("Database work must be registered inside a transaction");
   state.topics.add(topic);
+  if (hint !== undefined) {
+    let hints = state.hints.get(topic);
+    if (!hints) state.hints.set(topic, hints = new Set());
+    hints.add(hint);
+  }
   context.scope.transactions.add(state);
-  publish(context.scope, topic, "intent");
+  publish(context.scope, topic, "intent", state.hints.get(topic));
   if (!state.xid) {
     state.xid = (connection as Connection).execute(sql`select pg_current_xact_id()::text as xid`)
       .then((rows: { xid: string }[]) => rows[0]!.xid);
@@ -68,6 +74,42 @@ export async function signalDatabaseWork(connection: object, topic: string): Pro
   // Keep a failed acquisition distinguishable from an uncertain queue write.
   try { await state.xid; }
   catch (error) { state.xid = undefined; throw error; }
+  if (context.scope.notify) {
+    // PostgreSQL delivers only after the outer commit, including savepoints.
+    // Queue rows remain authoritative; notification payloads contain no data.
+    await (connection as Connection).execute(sql`select pg_notify(${DATABASE_WORK_CHANNEL}, ${notification(context.scope, topic)})`);
+  }
+}
+
+export const DATABASE_WORK_CHANNEL = "paperclip_work_v1";
+const validTopic = (topic: string) => /^[a-zA-Z0-9:_-]{1,200}$/.test(topic);
+function notification(scope: Scope, topic: string) {
+  if (!validTopic(topic)) throw new Error("Invalid database work topic");
+  return JSON.stringify({ version: 1, origin: scope.notificationOrigin, topic });
+}
+export function enableDatabaseWorkNotifications(owner: object): void {
+  const scope = contexts.get(owner)?.scope;
+  if (!scope) throw new Error("Database work notifications require createDb");
+  scope.notify = true;
+}
+/** A post-commit invalidation hint, for already-persisted live UI state. */
+export async function publishDatabaseWorkHint(owner: object, topic: string): Promise<void> {
+  const scope = contexts.get(owner)?.scope;
+  if (scope?.notify) await scope.root.execute(sql`select pg_notify(${DATABASE_WORK_CHANNEL}, ${notification(scope, topic)})`);
+}
+export function receiveDatabaseWorkNotification(owner: object, payload: string): void {
+  const scope = contexts.get(owner)?.scope;
+  if (!scope || payload.length > 1024) return;
+  let value: { version?: unknown; origin?: unknown; topic?: unknown };
+  try { value = JSON.parse(payload); } catch { return; }
+  if (!value || value.version !== 1 || typeof value.origin !== "string" || value.origin === scope.notificationOrigin
+    || typeof value.topic !== "string" || !validTopic(value.topic)) return;
+  publish(scope, value.topic);
+}
+/** Reconnect can lose hints. Reconstruct existing durable queues once; no poll. */
+export function reconcileDatabaseWorkNotifications(owner: object): void {
+  const scope = contexts.get(owner)?.scope;
+  if (scope) for (const topic of scope.listeners.keys()) publish(scope, topic);
 }
 
 export function databaseWorkPending(owner: object, topic: string): boolean {
@@ -91,7 +133,7 @@ export async function reconcileDatabaseWork(owner: object, topic: string): Promi
       throw new Error("Unexpected database transaction status");
     }
     scope.transactions.delete(state);
-    for (const affected of state.topics) publish(scope, affected);
+    for (const affected of state.topics) publish(scope, affected, "settled", state.hints.get(affected));
   }
 }
 
@@ -106,4 +148,8 @@ export function subscribeDatabaseWork(owner: object, topic: string, listener: Li
     try { listener("intent"); } catch (error) { process.emitWarning(`Database work listener failed: ${String(error)}`); }
   }
   return () => { listeners.delete(listener); };
+}
+
+export function databaseWorkScopeKey(connection: object): object {
+  return contexts.get(connection)?.scope.key ?? connection;
 }

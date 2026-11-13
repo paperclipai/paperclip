@@ -48,6 +48,41 @@ Managed instances select a distribution key through the existing
 compatibility, worker and health mechanisms apply. A worker or install failure
 is recorded as a plugin error without taking down the application.
 
+A managed instance can also give a selected plugin process variables through
+`plugins.workerEnv`. The document holds variable names, not values. The deployment
+sets the values in the server's process environment:
+
+```json
+{ "plugins": {
+  "autoInstall": ["example-extension"],
+  "workerEnv": { "example-extension": ["EXAMPLE_ORIGIN", "EXAMPLE_CAPABILITY"] }
+} }
+```
+
+Each key must be in `autoInstall`. Startup fails if a name looks like a host
+credential, such as one with `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `DATABASE` or
+`JWT` as a word, or if it controls how the worker loads code, such as
+`NODE_OPTIONS`. Give a granted variable a name for its own use, not a reused host
+variable. Only the plugin with that catalog key receives the variables. A managed
+instance runs a selected plugin only from the current image, so an install from
+another source does not start.
+
+A grant does not give access to any company. To let a plugin serve a company with
+no saved configuration, name the company in `plugins.enabledCompanies`:
+
+```json
+{ "plugins": {
+  "autoInstall": ["example-extension"],
+  "enabledCompanies": { "example-extension": ["<company-uuid>"] }
+} }
+```
+
+The plugin then receives resource lifecycle events for that company and can use
+project instance secrets there. A company can still disable the plugin. This does
+not give access for background worker calls. Those still need a saved company
+configuration. Core reads the list from the document on each use and does not save
+it, so a database restore cannot bring back access that the document removed.
+
 The catalog alone does not auto-enable plugins on self-hosted instances.
 Operators can explicitly install catalog entries through the normal plugin
 CLI. The package's manifest ID and version must match the catalog.
