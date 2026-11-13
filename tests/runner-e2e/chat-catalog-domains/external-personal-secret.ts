@@ -649,7 +649,8 @@ export const personalSecretExternalCases = [
           initialQuestionOptionId: question.optionId, initialQuestionPayloadHash: question.payloadHash });
         const path = `/${ctx.input.fixtures.company.issuePrefix}/company/settings/secrets`,
           // Graded by its rendered link, followed as a person would; wording is left to human review.
-          replyLink = commentHandoff && reply?.commentId ? await followPersonalSecretReplyLink(ctx.input.page, {
+          // A question or confirmation card already carries the handoff, so a reply link is then optional.
+          replyLink = !question && !confirmation && commentHandoff && reply?.commentId ? await followPersonalSecretReplyLink(ctx.input.page, {
             commentId: reply.commentId, origin: initial.origin, prefix: String(ctx.input.fixtures.company.issuePrefix),
             definitionId: String(state.definitionId), definitionKey: "PERSONAL_PUBLISHING_KEY", timeout: remaining(),
           }) : undefined,

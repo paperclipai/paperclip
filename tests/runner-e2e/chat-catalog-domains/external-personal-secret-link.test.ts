@@ -24,9 +24,10 @@ it.skipIf(process.env.PAPERCLIP_CHAT_EVAL_SECRET_ROUTE_CANARY !== "1")("grades t
   const browser = await chromium.launch({ headless: true, ...process.env.PAPERCLIP_RUNNER_E2E_CHROMIUM_EXECUTABLE ? { executablePath: process.env.PAPERCLIP_RUNNER_E2E_CHROMIUM_EXECUTABLE } : {} });
   const page = await browser.newPage();
   const ownEntry = (id: string, button = "Set value") => `<ul><li data-testid="my-secret-${id}"><span>Personal publishing credential</span><code>${key}</code><button>${button}</button></li></ul>`;
-  const scenarios: Array<{ name: string; reply: string; accepted?: true; entry?: string; secretsPage?: string }> = [
+  const scenarios: Array<{ name: string; reply: string; accepted?: true; entry?: string; secretsPage?: string; sheetKey?: string }> = [
     { name: "retained valid reply", reply: retained, accepted: true },
-    { name: "link carrying the definition", reply: `<p>Use <a href="${secrets}?definition=${definition}">this page</a>.</p>`, accepted: true },
+    { name: "link opening the definition's detail sheet", reply: `<p>Use <a href="${secrets}?definition=${definition}">this page</a>.</p>`, accepted: true },
+    { name: "definition link whose sheet shows another key", reply: `<p>Use <a href="${secrets}?definition=${definition}">this page</a>.</p>`, sheetKey: "OTHER_KEY" },
     { name: "tab selected after the click", reply: retained, accepted: true,
       secretsPage: `<button role="tab" aria-selected="false" onclick="document.querySelector('#own').hidden=false">My secrets</button><div id="own" hidden>${ownEntry(definition)}</div>` },
     { name: "no link, only wording", reply: "<p>Open My secrets in Settings → Secrets and choose Set my value.</p>" },
@@ -42,9 +43,12 @@ it.skipIf(process.env.PAPERCLIP_CHAT_EVAL_SECRET_ROUTE_CANARY !== "1")("grades t
     for (const scenario of scenarios) {
       await page.unroute("**/*");
       await page.route("**/*", async route => {
-        const path = new URL(route.request().url()).pathname;
+        const url = new URL(route.request().url()), path = url.pathname;
+        // Like the real page: a definition link opens that definition's detail sheet over the list.
+        const sheet = url.searchParams.get("definition") === definition
+          ? `<div role="dialog" data-testid="secret-details"><code>${scenario.sheetKey ?? key}</code><button>Set my value</button></div>` : "";
         const body = path === secrets
-          ? scenario.secretsPage ?? `<button role="tab" aria-selected="true">My secrets</button>${scenario.entry ?? ownEntry(definition)}`
+          ? sheet + (scenario.secretsPage ?? `<button role="tab" aria-selected="true">My secrets</button>${scenario.entry ?? ownEntry(definition)}`)
           : `<main><article id="comment-final-reply">${scenario.reply}</article></main>`;
         await route.fulfill({ contentType: "text/html; charset=utf-8", body });
       });

@@ -75,12 +75,20 @@ export async function followPersonalSecretReplyLink(page: Page, input: {
   try {
     await chosen.anchor.click({ timeout: remaining() });
     await page.waitForURL(url => url.origin === input.origin && url.pathname === new URL(chosen!.route).pathname, { timeout: remaining() });
-    const tab = page.getByRole("tab", { name: "My secrets", exact: true });
-    if (await tab.count() === 1 && await tab.getAttribute("aria-selected") !== "true") await tab.click({ timeout: remaining() });
-    // The row is bound to the required definition by its identity, and shows its key.
-    const row = page.locator(`[data-testid=${JSON.stringify(`my-secret-${input.definitionId}`)}]`)
-      .filter({ has: page.getByText(input.definitionKey, { exact: true }) });
-    const entry = row.getByRole("button", { name: "Set value", exact: true });
+    let entry: Locator;
+    if (new URL(chosen.route).searchParams.get("definition") === input.definitionId) {
+      // A link naming the definition opens its detail sheet, whose own-value action is "Set my value".
+      const sheet = page.locator('[data-testid="secret-details"]').filter({ has: page.getByText(input.definitionKey, { exact: true }) });
+      entry = sheet.getByRole("button", { name: "Set my value", exact: true });
+    } else {
+      const tab = page.getByRole("tab", { name: "My secrets", exact: true });
+      await tab.waitFor({ state: "visible", timeout: remaining() }).catch(() => undefined);
+      if (await tab.count() === 1 && await tab.getAttribute("aria-selected") !== "true") await tab.click({ timeout: remaining() });
+      // The row is bound to the required definition by its identity, and shows its key.
+      const row = page.locator(`[data-testid=${JSON.stringify(`my-secret-${input.definitionId}`)}]`)
+        .filter({ has: page.getByText(input.definitionKey, { exact: true }) });
+      entry = row.getByRole("button", { name: "Set value", exact: true });
+    }
     await entry.waitFor({ state: "visible", timeout: remaining() }).catch(() => undefined);
     if (Date.now() >= deadline || !await visible(entry, remaining())) return;
     return { commentId: input.commentId, route: chosen.route, linkText: chosen.text, reachedOwnValueEntry: true, definitionKey: input.definitionKey };
