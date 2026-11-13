@@ -14,8 +14,14 @@ import {
   isOpenCodeUnknownSessionError,
 } from "@paperclipai/adapter-opencode-local/server";
 import { sessionCodec as acpxSessionCodec } from "@paperclipai/adapter-utils/acpx-engine/session-codec";
+import { PAPERCLIP_RUNTIME_MCP_NAMES } from "../services/heartbeat/mcp-server-names.js";
 
 describe("adapter session codecs", () => {
+  it("uses identifier-safe names for the runtime MCP servers (#20492)", () => {
+    for (const name of Object.values(PAPERCLIP_RUNTIME_MCP_NAMES)) {
+      expect(name).toMatch(/^[a-zA-Z_][a-zA-Z0-9_]*$/);
+    }
+  });
   it("normalizes claude session params with cwd", () => {
     const parsed = claudeSessionCodec.deserialize({
       session_id: "claude-session-1",
@@ -42,7 +48,7 @@ describe("adapter session codecs", () => {
       sessionId: "11111111-1111-4111-8111-111111111111",
       cwd: "/tmp/workspace",
       mcpServerIdentity: JSON.stringify([{
-        name: "Paperclip projects",
+        name: "paperclip_projects",
         url: "http://localhost:3100/api/mcp/project-tools",
         connectionId: "paperclip-project-tools",
       }]),
