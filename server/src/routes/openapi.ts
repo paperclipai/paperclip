@@ -5548,8 +5548,9 @@ registry.registerPath({
   },
 });
 
-const ROUTINE_WEBHOOK_SECRET_GUIDANCE = "A webhook response includes secretMaterial.webhookUrl and secretMaterial.webhookSecret. The URL and signing mode are not secret and may be shared in chat. "
+const ROUTINE_WEBHOOK_SECRET_GUIDANCE = "A webhook response includes secretMaterial.webhookUrl and secretMaterial.webhookSecret. "
   + "The webhookSecret is a credential: never write its value, or a header containing it, in a chat reply, comment, document or task. "
+  + "For a signed or bearer trigger, the URL and signing mode may be shared in chat. With signingMode none the URL alone starts the routine, so treat that URL as a credential too and do not write it in chat. "
   + "Instead link the person to the routine's Triggers page, /<prefix>/routines/<routineId>/triggers, as a Markdown link, where Paperclip shows a key once: "
   + "for a trigger still awaiting setup, link /<prefix>/routines/<routineId>/triggers?triggerSetup=<triggerId> and tell them to choose Generate new key; "
   + "otherwise tell them to choose Edit webhook, then Replace key. Replacing the key invalidates the earlier one.";

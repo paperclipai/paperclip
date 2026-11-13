@@ -12,4 +12,5 @@ it.each([
   expect(description).toContain("/<prefix>/routines/<routineId>/triggers, as a Markdown link");
   expect(description).toContain("/<prefix>/routines/<routineId>/triggers?triggerSetup=<triggerId> and tell them to choose Generate new key");
   expect(description).toContain("Edit webhook, then Replace key");
+  expect(description).toContain("With signingMode none the URL alone starts the routine, so treat that URL as a credential too");
 });
