@@ -488,7 +488,7 @@
       "chat-catalog-domains/identity-support.ts",
       "chat-scenarios/agents.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.runtime-primary.v5",
+    "oracleVersion": "paperclip.chat-catalog.runtime-primary.v6",
     "coverageGaps": [],
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
@@ -5535,7 +5535,7 @@
       "chat-rendered-links.ts",
       "chat-scenarios/steering.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.edit-queued-message.structural.v6",
+    "oracleVersion": "paperclip.chat-catalog.edit-queued-message.structural.v7",
     "coverageGaps": [],
     "expectedRunCount": 3,
     "minimumRunCount": 2,
@@ -5843,7 +5843,7 @@
       "chat-catalog-domains/identity-support.ts",
       "chat-rendered-links.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.internal.ambiguous-task.v5",
+    "oracleVersion": "paperclip.chat-catalog.internal.ambiguous-task.v8",
     "coverageGaps": [],
     "expectedRunCount": 2,
     "expectedHumanMessageCount": 2,
