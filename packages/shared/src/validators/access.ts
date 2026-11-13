@@ -8,6 +8,7 @@ import {
   PERMISSION_KEYS,
 } from "../constants.js";
 import { optionalAgentAdapterTypeSchema } from "../adapter-type.js";
+import { updateCompanyStaffProfileSchema } from "./staff-profile.js";
 
 export const createCompanyInviteSchema = z.object({
   allowedJoinTypes: z.enum(INVITE_JOIN_TYPES).default("both"),
@@ -116,8 +117,9 @@ const editableMembershipStatuses = ["pending", "active", "suspended"] as const;
 export const updateCompanyMemberSchema = z.object({
   membershipRole: z.enum(HUMAN_COMPANY_MEMBERSHIP_ROLES).optional().nullable(),
   status: z.enum(editableMembershipStatuses).optional(),
-}).refine((value) => value.membershipRole !== undefined || value.status !== undefined, {
-  message: "membershipRole or status is required",
+  staffProfile: updateCompanyStaffProfileSchema.optional(),
+}).refine((value) => value.membershipRole !== undefined || value.status !== undefined || value.staffProfile !== undefined, {
+  message: "membershipRole, status, or staffProfile is required",
 });
 
 export type UpdateCompanyMember = z.infer<typeof updateCompanyMemberSchema>;

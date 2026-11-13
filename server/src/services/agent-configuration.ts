@@ -23,6 +23,7 @@ import type { ActivityPublication } from "../types/activity-publication.js";
 import { secretService, assertClaudeOAuthBindingInvariant } from "./secrets.js";
 import { agentCredentialService } from "./agent-credentials.js";
 import { clearPrimaryAgent } from "./primary-agent.js";
+import { assertAgentReportsToPrincipal } from "./company-org.js";
 import { budgetServiceInTransaction } from "./budgets.js";
 
 export async function lockAgentConfigurationInteractions(tx: Db, id: string, data: AgentConfigurationPatch, options?: UpdateAgentOptions) {
@@ -60,11 +61,22 @@ export async function prepareAgentConfiguration(db: Db, existing: AgentConfigura
     }
   }
 
-  if (data.reportsTo !== undefined) {
-    if (data.reportsTo) {
-      await ensureManager(existing.companyId, data.reportsTo);
+  if (data.reportsTo !== undefined || data.reportsToUserId !== undefined) {
+    const nextReportsTo = data.reportsTo !== undefined ? data.reportsTo : existing.reportsTo;
+    const nextReportsToUserId = data.reportsToUserId !== undefined ? data.reportsToUserId : existing.reportsToUserId;
+    await assertAgentReportsToPrincipal(db, existing.companyId, id, nextReportsTo, nextReportsToUserId);
+    if (data.reportsTo !== undefined) {
+      if (data.reportsTo) {
+        await ensureManager(existing.companyId, data.reportsTo);
+      }
+      await assertNoCycle(id, data.reportsTo);
     }
-    await assertNoCycle(id, data.reportsTo);
+    if (data.reportsToUserId) {
+      data.reportsTo = null;
+    }
+    if (data.reportsTo) {
+      data.reportsToUserId = null;
+    }
   }
 
   if (data.name !== undefined) {
@@ -129,7 +141,7 @@ export async function prepareAgentConfiguration(db: Db, existing: AgentConfigura
   await notifyStrandedAgentStatus(db, { companyId: existing.companyId, agentId: existing.id });
   await notifyRunDispatch(db, { companyId: existing.companyId });
   await notifyDeferredExecutionEligibility(db, { companyId: existing.companyId });
-  if (normalizedPatch.runtimeConfig !== undefined || normalizedPatch.reportsTo !== undefined) {
+  if (normalizedPatch.runtimeConfig !== undefined || normalizedPatch.reportsTo !== undefined || normalizedPatch.reportsToUserId !== undefined) {
     await notifyDeliveryWork(db, DELIVERY_QUEUES.agentTimers);
   }
   if (normalizedPatch.adapterConfig !== undefined) {

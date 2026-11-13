@@ -1,8 +1,9 @@
-const description = "Send a Markdown message directly to your own persistent chat with this task's responsible human. The destination is automatic. Use for requested digests and proactive task updates; report_progress writes to this task and comment_on_task writes to a chosen task. This sends no message to other agents, starts no chat run, and changes no task status. Reuse idempotencyKey on retries.";
+const description = "Send a Markdown message to a company human's agent chat. By default this targets the task's responsible human. Set recipientUserId to message another active company member instead. Use for requested digests, handoffs, and questions. report_progress writes to this task and comment_on_task writes to a chosen task. This starts no chat run and changes no task status. Reuse idempotencyKey on retries.";
 const inputSchema = {
   type: "object", properties: {
     body: { type: "string", minLength: 1, maxLength: 20000, description: "The message the human should see." },
     idempotencyKey: { type: "string", minLength: 1, maxLength: 240, description: "Stable key for this message within the source task, including across run retries." },
+    recipientUserId: { type: "string", minLength: 1, maxLength: 256, description: "Optional company member user id when messaging someone other than the task's responsible human." },
   }, required: ["body", "idempotencyKey"], additionalProperties: false,
 } as const;
 

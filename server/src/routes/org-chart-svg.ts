@@ -6,8 +6,10 @@
 
 export interface OrgNode {
   id: string;
+  kind?: "agent" | "user";
   name: string;
   role: string;
+  title?: string | null;
   status: string;
   reports: OrgNode[];
   /** Populated by collapseTree: the flattened list of hidden descendants for avatar grid rendering. */
@@ -152,6 +154,9 @@ function guessRoleTag(node: OrgNode): string {
 }
 
 function getRoleInfo(node: OrgNode) {
+  if (node.kind === "user") {
+    return { tag: "human", ...ROLE_ICONS.default, roleLabel: node.title?.trim() || "Member" };
+  }
   const tag = guessRoleTag(node);
   return { tag, ...(ROLE_ICONS[tag] || ROLE_ICONS.default) };
 }

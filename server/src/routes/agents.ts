@@ -211,6 +211,8 @@ import {
   resolveNativeRuntimeRequest,
 } from "../services/native-runtime/native-session-executor.js";
 import { renderOrgChartSvg, renderOrgChartPng, type OrgNode, type OrgChartStyle, ORG_CHART_STYLES } from "./org-chart-svg.js";
+import { hybridOrgForCompany } from "../services/company-org.js";
+import { filterHybridOrgForActor } from "./hybrid-org-filter.js";
 import {
   instanceSettingsService,
   isTruthyRuntimeEnvValue,
@@ -3062,8 +3064,10 @@ export function agentRoutes(
       : [];
     return {
       id: String(node.id),
+      kind: node.kind === "user" ? "user" : "agent",
       name: String(node.name),
       role: String(node.role),
+      title: node.title == null ? null : String(node.title),
       status: String(node.status),
       reports,
     };
@@ -4093,8 +4097,8 @@ export function agentRoutes(
   router.get("/companies/:companyId/org", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const tree = await filterAgentsForActor(req, await svc.orgForCompany(companyId), companyId);
-    const leanTree = tree.map((node) => toLeanOrgNode(node as Record<string, unknown>));
+    const tree = await filterHybridOrgForActor(req, await hybridOrgForCompany(db, companyId), companyId, decideAgentRead);
+    const leanTree = tree.map((node) => toLeanOrgNode(node as unknown as Record<string, unknown>));
     res.json(leanTree);
   });
 
@@ -4102,8 +4106,8 @@ export function agentRoutes(
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const style = (ORG_CHART_STYLES.includes(req.query.style as OrgChartStyle) ? req.query.style : "warmth") as OrgChartStyle;
-    const tree = await filterAgentsForActor(req, await svc.orgForCompany(companyId), companyId);
-    const leanTree = tree.map((node) => toLeanOrgNode(node as Record<string, unknown>));
+    const tree = await filterHybridOrgForActor(req, await hybridOrgForCompany(db, companyId), companyId, decideAgentRead);
+    const leanTree = tree.map((node) => toLeanOrgNode(node as unknown as Record<string, unknown>));
     const svg = renderOrgChartSvg(leanTree as unknown as OrgNode[], style);
     res.setHeader("Content-Type", "image/svg+xml");
     res.setHeader("Cache-Control", "no-cache");
@@ -4114,8 +4118,8 @@ export function agentRoutes(
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const style = (ORG_CHART_STYLES.includes(req.query.style as OrgChartStyle) ? req.query.style : "warmth") as OrgChartStyle;
-    const tree = await filterAgentsForActor(req, await svc.orgForCompany(companyId), companyId);
-    const leanTree = tree.map((node) => toLeanOrgNode(node as Record<string, unknown>));
+    const tree = await filterHybridOrgForActor(req, await hybridOrgForCompany(db, companyId), companyId, decideAgentRead);
+    const leanTree = tree.map((node) => toLeanOrgNode(node as unknown as Record<string, unknown>));
     const png = await renderOrgChartPng(leanTree as unknown as OrgNode[], style);
     res.setHeader("Content-Type", "image/png");
     res.setHeader("Cache-Control", "no-cache");

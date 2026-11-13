@@ -26,6 +26,7 @@ const CONFIG_REVISION_FIELDS = [
   "icon",
   "appearance",
   "reportsTo",
+  "reportsToUserId",
   "capabilities",
   "adapterType",
   "adapterConfig",

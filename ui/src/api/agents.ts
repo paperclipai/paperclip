@@ -72,8 +72,10 @@ export interface ClaudeLoginResult {
 
 export interface OrgNode {
   id: string;
+  kind?: "agent" | "user";
   name: string;
   role: string;
+  title?: string | null;
   status: string;
   reports: OrgNode[];
 }
