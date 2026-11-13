@@ -63,6 +63,14 @@ describe.skipIf(!support.supported)("retrying a run whose model the provider rej
     expect((await rejectedModelRetryRefusal(db, { failedRun: f.run, agent: agent!, issue: f.issue }))?.details).toMatchObject({ setting: "agent_model", rejectedModel: "grok-4.7" });
   });
 
+  it("refuses when an omitted model resolves to the provider default that was rejected", async () => {
+    const f = await seed({ agentModel: "" });
+    await db.update(agents).set({ adapterConfig: { provider: "acpx", acpxAgent: "claude" } }).where(eq(agents.id, f.agent.id));
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeExecutionInput: { provider: { kind: "acpx", model: "claude-opus-5-5" } } } }).where(eq(heartbeatRuns.id, f.run.id));
+    const [agent] = await db.select().from(agents).where(eq(agents.id, f.agent.id));
+    expect((await rejectedModelRetryRefusal(db, { failedRun: f.run, agent: agent!, issue: f.issue }))?.details.rejectedModel).toBe("claude-opus-5-5");
+  });
+
   it("ignores another company's run with the same id shape", async () => {
     const f = await seed({ agentModel: REJECTED });
     const other = await seed({ agentModel: REJECTED });
