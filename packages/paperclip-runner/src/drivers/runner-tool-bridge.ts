@@ -33,6 +33,9 @@ export interface RunnerToolCall {
   callId: string;
   arguments: unknown;
   signal: AbortSignal;
+  /** Provider-assigned tool-use identity read from `params._meta`, present only
+   * when the bridge was started with `providerToolUseIdMetaKey`. */
+  providerToolUseId?: string;
   /** Internal, invocation-owned evidence. Snapshot before forwarding; commit only
    * after that exact normalized input is forwarded. Never supplied by the model. */
   captureNormalizedInput?: (input: unknown) => (() => void);
@@ -43,6 +46,9 @@ export interface RunnerToolBridgeOptions {
   /** Claude-only: avoid tool search for task naming and terminal disposition. */
   preloadClaudeTaskTools?: boolean;
   preserveToolNames?: boolean;
+  /** `params._meta` key naming the provider's tool use behind a call. When set,
+   * a valid id is passed to the handler and identifies the call for replay. */
+  providerToolUseIdMetaKey?: string;
   /** Runner-owned operations that are callable but never model-visible. */
   privateTools?: readonly Readonly<Record<string, unknown>>[];
   handler(call: RunnerToolCall): Promise<unknown>;
@@ -88,6 +94,7 @@ const DEFAULT_MAX_BODY_BYTES = 1_048_576;
 const DEFAULT_REQUEST_BODY_TIMEOUT_MS = 30_000;
 const MAX_CALLS = 2_048;
 const MAX_RESULT_CHUNK_BYTES = 64 * 1024;
+const PROVIDER_TOOL_USE_ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
 const RESERVED_TOOLS: readonly RunnerToolDefinition[] = [
   {
     name: PRP_COMPLETION_TOOL_NAME,
@@ -149,6 +156,8 @@ export async function startRunnerToolBridge(
     validators,
     calls,
     controllers,
+    requestCalls: new Map<string, string>(),
+    providerToolUseIdMetaKey: options.providerToolUseIdMetaKey,
     sessionScope: options.sessionScope,
     scopeToken: options.scopeToken,
     sessions: new Map<string, string>(),
@@ -238,6 +247,8 @@ async function handleRequest(
     validators: Map<string, ValidateFunction>;
     calls: Map<string, AdmittedCall>;
     controllers: Map<string, AbortController>;
+    requestCalls: Map<string, string>;
+    providerToolUseIdMetaKey: string | undefined;
     handler: RunnerToolBridgeOptions["handler"];
     captureSemanticReceipt: RunnerToolBridgeOptions["captureSemanticReceipt"];
     timeoutMs: number | null;
@@ -296,7 +307,7 @@ async function handleRequest(
     if (!scope) { response.statusCode = 403; response.end(); return; }
     if (context.activeScope !== scope) {
       for (const controller of context.controllers.values()) controller.abort();
-      context.sessions.clear(); context.calls.clear(); context.controllers.clear();
+      context.sessions.clear(); context.calls.clear(); context.controllers.clear(); context.requestCalls.clear();
       context.activeScope = scope;
     }
     if (method !== "initialize") {
@@ -311,7 +322,8 @@ async function handleRequest(
     const params = isRecord(message.params) ? message.params : {};
     const requestId = params.requestId;
     if (typeof requestId === "string" || typeof requestId === "number") {
-      context.controllers.get(sessionKey + rpcIdKey(requestId))?.abort();
+      const requestKey = sessionKey + rpcIdKey(requestId);
+      context.controllers.get(context.requestCalls.get(requestKey) ?? requestKey)?.abort();
     }
     response.statusCode = 202;
     response.end();
@@ -365,8 +377,20 @@ async function handleRequest(
     );
     return;
   }
+  let providerToolUseId: string | undefined;
+  if (context.providerToolUseIdMetaKey !== undefined) {
+    const supplied = isRecord(params._meta) ? params._meta[context.providerToolUseIdMetaKey] : undefined;
+    if (supplied !== undefined) {
+      if (typeof supplied !== "string" || !PROVIDER_TOOL_USE_ID.test(supplied)) {
+        writeToolError(response, id, "Invalid provider tool-use identity.");
+        return;
+      }
+      providerToolUseId = supplied;
+    }
+  }
   const callId = context.sessionScope ? sessionKey + rpcIdKey(id) : String(id);
-  const callKey = sessionKey + rpcIdKey(id);
+  const requestKey = sessionKey + rpcIdKey(id);
+  const callKey = providerToolUseId === undefined ? requestKey : `tool-use:${providerToolUseId}`;
   const args = params.arguments ?? {};
   const validator = context.validators.get(tool);
   if (validator === undefined || !validator(args)) {
@@ -438,6 +462,7 @@ async function handleRequest(
             callId,
             arguments: structuredClone(args),
             signal: controller!.signal,
+            ...(providerToolUseId === undefined ? {} : { providerToolUseId }),
             ...(context.captureSemanticReceipt && (tool === PRP_COMPLETION_TOOL_NAME || tool === PRP_BLOCK_TOOL_NAME)
               ? { captureNormalizedInput } : {}),
           }),
@@ -458,11 +483,16 @@ async function handleRequest(
       .finally(() => context.controllers.delete(callKey))
       .catch(() => undefined);
   }
+  if (callKey !== requestKey) context.requestCalls.set(requestKey, callKey);
   try {
     const result = await execution;
     writeRpc(response, id, result);
   } catch (error) {
     writeToolError(response, id, safeError(error));
+  } finally {
+    if (callKey !== requestKey && context.requestCalls.get(requestKey) === callKey) {
+      context.requestCalls.delete(requestKey);
+    }
   }
 }
 
