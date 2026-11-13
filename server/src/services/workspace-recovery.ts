@@ -40,6 +40,7 @@ import { capturePolicyRearmDueCondition, retainedSourceFallbackDueCondition, sto
 import { rearmExhaustedCapturePolicy } from "./workspace-recovery-capture-policy.js";
 import { rearmExhaustedStopProof } from "./workspace-recovery-stop-proof.js";
 import { settleRecoveredWorkspaceRestoreHolds } from "./workspace-restore-hold-settlement.js";
+import { reusableSandboxNotKeptAfterReplacementSql } from "./reusable-sandbox-kept-marker.js";
 
 const exportCauses = ["native_workspace_sync_out_unrecoverable", "native_workspace_sync_out_retry_exhausted"];
 const terminal = ["failed", "interrupted", "timed_out", "cancelled", "succeeded"];
@@ -600,7 +601,8 @@ export async function scheduleRecoveredWorkspaceCleanup(db: Db, run: typeof hear
     eq(environmentLeases.heartbeatRunId, run.id), eq(environmentLeases.providerLeaseId, ref.providerLeaseId),
     eq(environmentLeases.status, "released"), eq(environmentLeases.cleanupStatus, "success"),
     sql`${environmentLeases.metadata} = ${JSON.stringify(lease.metadata)}::jsonb`,
-    sql`${environmentLeases.metadata}->>'workspaceRecoveryCleanup' is null`)), { companyId: run.companyId, runId: run.id });
+    sql`${environmentLeases.metadata}->>'workspaceRecoveryCleanup' is null`, reusableSandboxNotKeptAfterReplacementSql())),
+  { companyId: run.companyId, runId: run.id });
 }
 /** `dueOnly` narrows the obligations to exhausted holds whose re-arm or
  * fallback is due now. Cleanup, interrupted preparation and saved input that
