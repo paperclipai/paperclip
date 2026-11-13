@@ -22,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mode: [parallel]
+        mode: [sequential, parallel]
         attempt: [1, 2, 3]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -52,7 +52,7 @@ jobs:
       - name: Select the pinned Runner Rust toolchain
         working-directory: packages/paperclip-runner
         run: |
-          set -uo pipefail
+          set +e -uo pipefail
           if ! command -v rustup >/dev/null 2>&1; then exit 0; fi
           rustup show
           toolchain="$(rustup show active-toolchain | awk '{print $1}')"
@@ -80,7 +80,7 @@ jobs:
         env:
           MODE: ${{ matrix.mode }}
         run: |
-          set -uo pipefail
+          set +e -uo pipefail
           out="$RUNNER_TEMP/bench"; mkdir -p "$out"
           sampler() {
             while :; do
