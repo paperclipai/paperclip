@@ -218,7 +218,7 @@ type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
 type QueuedRunCandidate = Pick<HeartbeatRun, "id" | "companyId" | "agentId" | "status" | "invocationSource" | "createdAt"
   | "startedAt" | "wakeupRequestId" | "retryOfRunId" | "scheduledRetryAt" | "scheduledRetryAttempt" | "scheduledRetryReason"
   | "contextSnapshot">;
-type QueuedDispatchRequest = { attachSetupRequest: boolean; retryRefused: boolean; triedRunIds: ReadonlySet<string> };
+type QueuedDispatchRequest = { attachSetupRequest: boolean; retryRefused: boolean; continuesChain: boolean; triedRunIds: ReadonlySet<string> };
 type HeartbeatRunState = ReturnType<typeof createHeartbeatRunState>;
 type RunPreparation = ReturnType<typeof createHeartbeatRunPreparation>;
 
@@ -2443,7 +2443,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
   }
 
   function startNextQueuedRunForAgent(agentId: string, attachSetupRequest = false, retryRefused = false) {
-    return requestQueuedDispatch(agentId, { attachSetupRequest, retryRefused, triedRunIds: new Set() });
+    return requestQueuedDispatch(agentId, { attachSetupRequest, retryRefused, continuesChain: false, triedRunIds: new Set() });
   }
 
   function requestQueuedDispatch(agentId: string, request: QueuedDispatchRequest) {
@@ -2453,7 +2453,9 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       merge: (current, next) => ({
         attachSetupRequest: current.attachSetupRequest || next.attachSetupRequest,
         retryRefused: current.retryRefused || next.retryRefused,
-        triedRunIds: new Set([...current.triedRunIds, ...next.triedRunIds]),
+        continuesChain: current.continuesChain && next.continuesChain,
+        triedRunIds: current.continuesChain && next.continuesChain
+          ? new Set([...current.triedRunIds, ...next.triedRunIds]) : new Set<string>(),
       }),
       run: (request, signal) => runQueuedDispatchPass(agentId, request, signal),
       track: (pass) => {
@@ -2542,7 +2544,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         if (triedRunIds.has(candidate.id) || (!retryRefused && claimBackedOff(candidate.id, new Date(), taskStamp))) continue;
         if (claimAttempts >= QUEUED_RUN_CLAIM_ATTEMPTS_PER_PASS) {
           void requestQueuedDispatch(agentId, { attachSetupRequest: false, retryRefused,
-            triedRunIds: new Set([...triedRunIds, ...triedThisPass]) });
+            continuesChain: true, triedRunIds: new Set([...triedRunIds, ...triedThisPass]) });
           break;
         }
         claimAttempts += 1;

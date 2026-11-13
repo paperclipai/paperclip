@@ -4312,6 +4312,7 @@ export function heartbeatService(
       } finally {
         controllerLease.stop();
         activeRunExecutions.delete(run.id);
+        heartbeatQueue.releaseClaimBackoffsForTask(run);
         if (restartClaimLapsed || detachedWithoutHandoff) scheduleNativeSessionResumeDispatch(run.id, new Date(), "restart");
         // A failed owned Stop remains visible until this exact executor settles,
         // including a graceful exit result arriving after the cancellation error.
@@ -4388,7 +4389,6 @@ export function heartbeatService(
               logger.warn({ err, runId: run.id }, "failed to deliver settled tool reviews after execution cleanup");
             });
         }
-        heartbeatQueue.releaseClaimBackoffsForTask(latestRun ?? run);
         await startNextQueuedRunForAgent(run.agentId);
         if (latestRun && isHeartbeatRunTerminalStatus(latestRun.status)) {
           await notifyOtherAgentsQueuedOnSettledIssue(db, latestRun).catch(err => {

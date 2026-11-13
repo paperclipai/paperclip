@@ -286,4 +286,39 @@ suite("queued-run dispatch under a trigger burst", () => {
       await heartbeat.drainActiveRunExecutions();
     }
   }, 120_000);
+
+  it("starts a run that becomes ready during a chain of passes when a fresh trigger arrives", async () => {
+    held.reset();
+    passes.started = 0; passes.active = 0; passes.peak = 0;
+    const agentId = await seedAgent();
+    const otherTask = await task(agentId);
+    const ready = await queuedContinuation(agentId, { minutesAgo: 200, wakeReason: "issue_continuation_needed", sourceIssueId: otherTask.id });
+    for (let index = 0; index < 30; index += 1) {
+      await queuedContinuation(agentId, { minutesAgo: 180 - index, wakeReason: "issue_continuation_needed", sourceIssueId: otherTask.id });
+    }
+    let refusedOffers = 0;
+    let freshTrigger: Promise<unknown> | null = null;
+    const heartbeat = heartbeatService(db, {
+      beforeChatControlRecoveryCheck: async ({ runId, stage }) => {
+        if (stage !== "claim" || runId === ready.id) return;
+        refusedOffers += 1;
+        if (refusedOffers !== 5) return;
+        const source = await finishedRun(agentId, ready.issueId!, 205);
+        await db.update(heartbeatRuns).set({ retryOfRunId: source.id,
+          contextSnapshot: { ...ready.contextSnapshot, previousRunId: source.id } }).where(eq(heartbeatRuns.id, ready.id));
+        await db.update(issues).set({ updatedAt: new Date() }).where(eq(issues.id, ready.issueId!));
+        freshTrigger = heartbeat.resumeQueuedRunsForAgent(companyId, agentId);
+      },
+    });
+    try {
+      await heartbeat.resumeQueuedRunsForAgent(companyId, agentId);
+      await passesSettle();
+      await freshTrigger;
+      const [row] = await db.select({ startedAt: heartbeatRuns.startedAt }).from(heartbeatRuns).where(eq(heartbeatRuns.id, ready.id));
+      expect(row!.startedAt).not.toBeNull();
+    } finally {
+      held.release();
+      await heartbeat.drainActiveRunExecutions();
+    }
+  }, 120_000);
 });
