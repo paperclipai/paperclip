@@ -1,5 +1,6 @@
 const UNIQUE_VIOLATION = "23505";
 const FOREIGN_KEY_VIOLATION = "23503";
+const INVALID_TEXT_REPRESENTATION = "22P02";
 const MAX_CAUSE_DEPTH = 4;
 
 /**
@@ -46,6 +47,16 @@ export function isForeignKeyViolation(error: unknown): boolean {
   for (let depth = 0; depth < MAX_CAUSE_DEPTH && current && typeof current === "object"; depth += 1) {
     const candidate = current as { code?: unknown; cause?: unknown };
     if (candidate.code === FOREIGN_KEY_VIOLATION) return true;
+    current = candidate.cause;
+  }
+  return false;
+}
+
+export function isInvalidTextRepresentation(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < MAX_CAUSE_DEPTH && current && typeof current === "object"; depth += 1) {
+    const candidate = current as { code?: unknown; cause?: unknown };
+    if (candidate.code === INVALID_TEXT_REPRESENTATION) return true;
     current = candidate.cause;
   }
   return false;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isUniqueViolation } from "../db-errors.js";
+import { isInvalidTextRepresentation, isUniqueViolation } from "../db-errors.js";
 
 const CONSTRAINT = "issues_open_routine_execution_uq";
 
@@ -47,5 +47,33 @@ describe("isUniqueViolation", () => {
     const looped: { cause?: unknown } = {};
     looped.cause = looped;
     expect(isUniqueViolation(looped, CONSTRAINT)).toBe(false);
+  });
+});
+
+describe("isInvalidTextRepresentation", () => {
+  it("matches a bare driver invalid-text-representation failure", () => {
+    expect(isInvalidTextRepresentation({ code: "22P02" })).toBe(true);
+  });
+
+  it("matches the error Drizzle wraps around the driver failure", () => {
+    const wrapped = new Error("Failed query: select \"id\" from \"plugins\" where \"id\" = $1");
+    (wrapped as { cause?: unknown }).cause = {
+      code: "22P02",
+      message: 'invalid input syntax for type uuid: "acme.linear"',
+    };
+    expect(isInvalidTextRepresentation(wrapped)).toBe(true);
+  });
+
+  it("ignores errors that are not invalid-text-representation failures", () => {
+    expect(isInvalidTextRepresentation({ cause: { code: "23505" } })).toBe(false);
+    expect(isInvalidTextRepresentation(new Error("boom"))).toBe(false);
+    expect(isInvalidTextRepresentation(null)).toBe(false);
+    expect(isInvalidTextRepresentation(undefined)).toBe(false);
+  });
+
+  it("stops walking a self-referential cause chain", () => {
+    const looped: { cause?: unknown } = {};
+    looped.cause = looped;
+    expect(isInvalidTextRepresentation(looped)).toBe(false);
   });
 });
