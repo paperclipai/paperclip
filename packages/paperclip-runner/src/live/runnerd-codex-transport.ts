@@ -1087,10 +1087,22 @@ async function awaitRunnerSuspensionBarrier(input: {
   onExitCommitted?: () => void;
   deadline: number;
   proofWindowMs?: number;
+  proofSettleMs?: number;
+  proofRefutation?: () => RunnerSuspensionProofRefutation | null;
   pollIntervalMs?: number;
 }): Promise<boolean> {
   let proofDeadline: number | null = null;
-  const deadline = () => proofDeadline === null ? input.deadline : Math.max(input.deadline, proofDeadline);
+  let notSuspendedSince: number | null = null;
+  const deadline = () => {
+    if (proofDeadline === null) return input.deadline;
+    const refutation = input.proofRefutation?.() ?? null;
+    if (refutation === "identity") return input.deadline;
+    if (refutation === "lifecycle") {
+      notSuspendedSince ??= Date.now();
+      return Math.max(input.deadline, Math.min(proofDeadline, notSuspendedSince + (input.proofSettleMs ?? 0)));
+    }
+    return Math.max(input.deadline, proofDeadline);
+  };
   if (Date.now() >= deadline()) return false;
   const commitExit = () => {
     if (proofDeadline !== null) return;
@@ -1212,6 +1224,13 @@ async function awaitRunnerSuspensionBarrier(input: {
   return false;
 }
 
+export type RunnerSuspensionProofRefutation = "identity" | "lifecycle";
+
+function runnerSuspensionProofRefutation(state: Record<string, unknown>, expected: DurableRecoveryIdentity): RunnerSuspensionProofRefutation | null {
+  if (state.schema !== "paperclip.runner.durable.state.v1" || !recoveryIdentityMatches(state, expected)) return "identity";
+  return state.lifecycle === "suspended" ? null : "lifecycle";
+}
+
 function runnerCloseGraceMs(options: Pick<CapabilityRunnerdCodexTransportOptions, "provider" | "acpxAgent" | "closeGraceMs">): number {
   // Native Pi retirement allows thirty seconds for snapshot cleanup and five
   // for its lifetime fence. Keep a drain round trip and suspension reserve too.
@@ -1221,6 +1240,7 @@ function runnerCloseGraceMs(options: Pick<CapabilityRunnerdCodexTransportOptions
 }
 
 const RUNNER_SUSPENSION_PROOF_READ_MS = 30_000;
+const RUNNER_SUSPENSION_PROOF_SETTLE_MS = 3_000;
 const RUNNER_CLOSE_EXIT_PROBE_SLICE_MS = 5_000;
 const RUNNER_CONNECTED_EXIT_PROBE_SLICE_MS = 1_000;
 
@@ -1713,6 +1733,7 @@ export interface CapabilityRunnerdCodexTransportOptions extends RunnerExecutionD
   baseInstructions?: string;
   closeGraceMs?: number;
   closeProofReadMs?: number;
+  closeProofSettleMs?: number;
   /** Bounded provider turn-admission wait; defaults to 30 seconds. */
   turnStartTimeoutMs?: number;
   turnStartProgressCeilingMs?: number;
@@ -5712,6 +5733,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       && this.options.recoveryPurpose !== "stop_cleanup"
       && (this.options.runnerProcessLauncher !== undefined || adoptedRunner !== undefined);
     let lastSuspensionState: Record<string, unknown> | null = null;
+    let suspensionExitCommitted = false;
+    let proofWindowEnd: string | null = null;
+    let suspensionProofRefutation: RunnerSuspensionProofRefutation | null = null;
     let suspensionState: {
       commandStatus: string | null;
       runnerLifecycle: string | null;
@@ -5788,6 +5812,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
             try {
               const state = await this.#readDurableRunnerState();
               lastSuspensionState = state;
+              if (suspensionExitCommitted) suspensionProofRefutation = runnerSuspensionProofRefutation(state, this.#core!.store.state.identity);
               assertSuspendedRunnerState(state, this.#core!.store.state.identity);
               return state;
             } finally {
@@ -5797,14 +5822,22 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           runnerHasExited: () => this.#runnerExitObservedWithin(
             Math.min(closeDeadline, Date.now() + RUNNER_CLOSE_EXIT_PROBE_SLICE_MS), "barrierExitProbe"),
           pump: () => this.#pumpEventsSafely(),
-          // Also covers a completed receipt acknowledged before this close.
-          onExitCommitted: () => this.#quiesceControlPlaneRoutes(),
+          onExitCommitted: () => {
+            suspensionExitCommitted = true;
+            suspensionProofRefutation = null;
+            this.#quiesceControlPlaneRoutes();
+          },
           deadline: closeDeadline,
           proofWindowMs: this.options.closeProofReadMs ?? RUNNER_SUSPENSION_PROOF_READ_MS,
+          proofSettleMs: this.options.closeProofSettleMs ?? RUNNER_SUSPENSION_PROOF_SETTLE_MS,
+          proofRefutation: () => suspensionProofRefutation,
         });
       } finally {
         stopObservingExit();
         timings.suspendMs = Date.now() - suspendStartedAt;
+        proofWindowEnd = runnerSuspended ? "proven" : !suspensionExitCommitted ? "suspend_not_completed"
+          : suspensionProofRefutation === "identity" ? "wrong_identity"
+            : suspensionProofRefutation === "lifecycle" ? "not_suspended_after_settle" : "unreadable_after_window";
       }
       runnerLost = !runnerSuspended && this.#handle !== null && this.#lostRunnerHandle === this.#handle;
       if (!runnerSuspended) {
@@ -5913,7 +5946,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           finalProviderState.providerSettled));
     let runnerSettled = runnerSuspended && settledApartFromSuspension();
     const closeIdentity = this.#core ? structuredClone(this.#core.store.state.identity) : null;
-    const lateSuspensionProvable = () => suspensionRequired && !runnerSuspended && !runnerLost
+    const lateSuspensionProvable = () => suspensionRequired && !runnerSuspended && !runnerLost && suspensionProofRefutation === null
       && suspensionState?.commandStatus === "completed" && closeIdentity !== null && settledApartFromSuspension();
     const proveSuspensionLate = async () => {
       if (!lateSuspensionProvable()) return;
@@ -5947,6 +5980,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           semanticTools: this.#core?.semanticToolSettlementDiagnostics(),
           finalProviderState,
           timings: { ...timings, totalMs: Date.now() - closeStartedAt },
+          proofWindowEnd,
         };
         try {
           this.options.onDiagnostic?.(`native_session_settlement_incomplete ${JSON.stringify(settlement)}`);

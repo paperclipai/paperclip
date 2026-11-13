@@ -2479,6 +2479,58 @@ it("gives a suspend that completes near the close deadline its whole proof windo
   expect(Date.now()).toBeLessThanOrEqual(completedAt + 400 + 50);
 });
 
+async function suspendProofAfterCompletion(input: { lifecycleAt: (sinceCompletionMs: number) => string; runId?: string;
+  deadlineMs: number; proofWindowMs: number; proofSettleMs: number }) {
+  const commands: Array<{ commandId: string; type: string; status: string }> = [];
+  const startedAt = Date.now();
+  let completedAt: number | null = null;
+  let refutation: "identity" | "lifecycle" | null = null;
+  const proven = await runnerdRecoveryInternals.awaitRunnerSuspensionBarrier({
+    commands: () => commands,
+    queueSuspend: commandId => { commands.push({ commandId, type: "runner.suspend", status: "pending" }); },
+    readRunnerState: async () => {
+      const lifecycle = input.lifecycleAt(completedAt === null ? 0 : Date.now() - completedAt);
+      refutation = input.runId ? "identity" : lifecycle === "suspended" ? null : "lifecycle";
+      if (refutation) throw new Error("native_runner_authority_rotation_requires_settled_state");
+      return { lifecycle };
+    },
+    runnerHasExited: async () => true,
+    pump: () => {
+      if (commands[0] && completedAt === null) {
+        commands[0].status = "completed";
+        completedAt = Date.now();
+      }
+    },
+    deadline: startedAt + input.deadlineMs,
+    proofWindowMs: input.proofWindowMs,
+    proofSettleMs: input.proofSettleMs,
+    proofRefutation: () => refutation,
+    pollIntervalMs: 20,
+  });
+  return { proven, elapsedMs: Date.now() - startedAt };
+}
+
+it("proves a suspension whose suspended state appears 1.5 s after the command completed", async () => {
+  const { proven } = await suspendProofAfterCompletion({ lifecycleAt: since => since >= 1_500 ? "suspended" : "ready",
+    deadlineMs: 200, proofWindowMs: 30_000, proofSettleMs: 3_000 });
+  expect(proven).toBe(true);
+});
+
+it("fails a suspension whose state stays ready after the settle window, not after the whole proof window", async () => {
+  const { proven, elapsedMs } = await suspendProofAfterCompletion({ lifecycleAt: () => "ready",
+    deadlineMs: 200, proofWindowMs: 30_000, proofSettleMs: 1_000 });
+  expect(proven).toBe(false);
+  expect(elapsedMs).toBeGreaterThanOrEqual(900);
+  expect(elapsedMs).toBeLessThan(3_000);
+});
+
+it("fails at the close deadline when the durable state belongs to another run", async () => {
+  const { proven, elapsedMs } = await suspendProofAfterCompletion({ lifecycleAt: () => "suspended", runId: "another-run",
+    deadlineMs: 200, proofWindowMs: 30_000, proofSettleMs: 3_000 });
+  expect(proven).toBe(false);
+  expect(elapsedMs).toBeLessThan(1_000);
+});
+
 it("bounds the proof window from the observed completion, so a proof read that never answers still ends", async () => {
   const commands: Array<{ commandId: string; type: string; status: string }> = [];
   const startedAt = Date.now();
