@@ -53,6 +53,8 @@ type ProjectionRun = Pick<typeof heartbeatRuns.$inferSelect,
   nativeResumeAt?: Date | null;
   /** When the native coordinator saved this run's terminal failure, if it did. */
   nativeFailedAt?: Date | null;
+  /** When native recovery of this run's provider failure last moved, while that recovery is still undecided. */
+  providerRecoveryAt?: Date | null;
   /** A succeeded native run whose accepted result ran out of finalization retries; Retry applies it again. */
   nativeFinalizationRetry?: boolean;
   /** A saved-result Retry of this succeeded run is still being applied. */
@@ -100,6 +102,7 @@ type ProjectionState = {
   freshContinuation?: { state: "continuing" } | { state: "scheduled"; nextCheckAt: number };
   automaticDispositionAt?: number;
   waitingContinuation?: { queuedAt: number; personRequested: boolean };
+  recoveryHandedToPerson?: boolean;
 };
 
 // A task read reports the change that made a task fail, not every later read of
@@ -340,6 +343,10 @@ function projectTaskInterruptionState(issue: ProjectionIssue, input: ProjectionS
   if (nativeResumeAt && !system && now - nativeResumeAt < NATIVE_RESUME_DISPATCH_GRACE_MS)
     return { ...base, state: "working" };
   if (recoveryRunning) return { ...base, state: "working", ...(recoveryStep ? { recoveryStep } : {}) };
+  const providerRecoveryAt = run.providerRecoveryAt?.getTime();
+  if (providerRecoveryAt !== undefined && run.status === "failed" && !input.recoveryHandedToPerson && system?.state !== "exhausted"
+      && now - Math.max(providerRecoveryAt, run.finishedAt?.getTime() ?? 0, action?.updatedAt.getTime() ?? 0) < AUTOMATIC_DISPOSITION_GRACE_MS)
+    return { ...base, state: "working", ...(recoveryStep ? { recoveryStep } : {}) };
   const dependencies = input.retryDependencies;
   if (retryWait?.sourceRunId === run.id && !retryWait.executionWaitReason && !retryWait.preparationStatus && dependencies?.count)
     return { ...base, intentId: retryWait.id, state: "working",
@@ -459,6 +466,12 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
       nativeFailedAt: sql<Date | null>`(select ${nativeRunFinalizations.updatedAt} from ${nativeRunFinalizations}
         where ${nativeRunFinalizations.companyId} = ${heartbeatRuns.companyId} and ${nativeRunFinalizations.runId} = ${heartbeatRuns.id}
           and ${nativeRunFinalizations.phase} = 'terminal_failure')`.mapWith(value => value == null ? null : new Date(value)),
+      providerRecoveryAt: sql<Date | null>`(select ${nativeRunFinalizations.updatedAt} from ${nativeRunFinalizations}
+        where ${nativeRunFinalizations.companyId} = ${heartbeatRuns.companyId} and ${nativeRunFinalizations.runId} = ${heartbeatRuns.id}
+          and ${heartbeatRuns.runtimeMode} = 'native' and ${heartbeatRuns.status} = 'failed'
+          and ${nativeRunFinalizations.phase} = 'terminal_failure' and ${nativeRunFinalizations.failureCode} = 'native_provider_terminal_failed'
+          and ${nativeRunFinalizations.resultId} is null and ${nativeRunFinalizations.leaseOwner} is null
+          and coalesce(${nativeRunFinalizations.failureDetail}->>'successorRunId', '') = '')`.mapWith(value => value == null ? null : new Date(value)),
       nativeFinalizationRetry: exhaustedNativeFinalizationCondition(),
       nativeFinalizationRetryPending: savedResultRetryPendingCondition(),
       // The run whose resultJson supplied providerFailure. A scheduled retry
@@ -619,6 +632,13 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
       inArray(issueRecoveryActions.cause, [...EXECUTION_RECONCILIATION_CAUSES]), isNull(issueRecoveryActions.ownerUserId),
       sql`not (${issueRecoveryActions.evidence} ?| array['systemRecovery', 'executionReconciliation', 'freshContinuation',
         'freshContinuationCheck', 'ownerGoneAttestation', 'explicitUserContinuation'])`)) : [];
+  const recoveringRunIds = runs.flatMap(run => run.providerRecoveryAt ? [run.id] : []);
+  const handedToPerson = new Set((recoveringRunIds.length ? await db.select({ issueId: issueRecoveryActions.sourceIssueId })
+    .from(issueRecoveryActions).where(and(eq(issueRecoveryActions.companyId, companyId), inArray(issueRecoveryActions.sourceIssueId, ids),
+      inArray(sql`${issueRecoveryActions.evidence}->>'runId'`, recoveringRunIds),
+      sql`(${issueRecoveryActions.evidence} ?| array['ownerGoneAttestation', 'explicitUserContinuation']
+        or coalesce(${issueRecoveryActions.evidence}#>>'{freshContinuationCheck,kind}', 'exact_recovery_pending') not in ('exact_recovery_pending', 'backoff'))`)) : [])
+    .map(row => row.issueId));
   const automaticDispositionAt = new Map<string, number>();
   if (dispositionRows.length) {
     const { isPersonOwnedFailureCode } = await import("./fresh-continuation-fallback.js");
@@ -759,6 +779,7 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
       freshContinuation: freshContinuationFor(issue.id, facts.run?.id),
       automaticDispositionAt: automaticDispositionAt.get(issue.id),
       waitingContinuation: waitingContinuationFor(facts.run),
+      recoveryHandedToPerson: handedToPerson.has(issue.id),
       interruptWait: interruptWaitFor(issue.id),
       projectAccessAllowed: denied?.length === 0,
       projectAccessProjectId: denied?.includes(issue.projectId ?? "") ? issue.projectId : null,
