@@ -21,6 +21,24 @@ import { ProviderVaultsTab, Secrets } from "./Secrets";
 import { ApiError } from "../api/client";
 import { queryKeys } from "../lib/queryKeys";
 
+// Counts origin classification, the per-row work of the managed grouping, and
+// throws above a limit so a runaway render fails at once.
+const originWork = vi.hoisted(() => ({ calls: 0, limit: Number.POSITIVE_INFINITY }));
+
+vi.mock("./secrets/secret-origin", async () => {
+  const actual = await vi.importActual<typeof import("./secrets/secret-origin")>("./secrets/secret-origin");
+  return {
+    ...actual,
+    classifySecretOrigin: (input: Parameters<typeof actual.classifySecretOrigin>[0]) => {
+      originWork.calls += 1;
+      if (originWork.calls > originWork.limit) {
+        throw new Error(`classifySecretOrigin ran ${originWork.calls} times; the limit is ${originWork.limit}`);
+      }
+      return actual.classifySecretOrigin(input);
+    },
+  };
+});
+
 const mockSecretsApi = vi.hoisted(() => ({
   list: vi.fn(),
   providers: vi.fn(),
@@ -1124,6 +1142,24 @@ describe("Secrets page layout", () => {
     expect(mockSecretsApi.create).not.toHaveBeenCalled();
   });
 
+  it("keeps a value pasted into Value as it is, even when it looks like NAME=value", async () => {
+    await renderSecrets(container);
+    await openNewSecret();
+    await typeInto("new-secret-name", "Signing key");
+
+    // Base64 padding makes a raw credential look like an assignment.
+    const paste = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, "clipboardData", { value: { getData: () => "abc123==" } });
+    await act(async () => {
+      byId("new-secret-value")!.dispatchEvent(paste);
+    });
+    await flushReact();
+
+    expect(paste.defaultPrevented).toBe(false);
+    expect(byId<HTMLInputElement>("new-secret-name")?.value).toBe("Signing key");
+    expect(byId<HTMLTextAreaElement>("new-secret-value")?.value).toBe("");
+  });
+
   it("fills name and value from a pasted NAME=value and masks the value until shown", async () => {
     await renderSecrets(container);
     await openNewSecret();
@@ -1192,6 +1228,54 @@ describe("Secrets page layout", () => {
 
     expect(bodyText()).toContain("Create secret");
     expect(bodyText()).toContain("Select a provider.");
+  });
+
+  it("groups a large inventory with work proportional to its size, including while searching", async () => {
+    const managed = Array.from({ length: 1700 }, (_, index) =>
+      makeCompanySecret({
+        id: `managed-${index}`,
+        name: `chat.slack.${String(index).padStart(8, "0")}.botToken.565d9081`,
+        key: `chat_slack_${index}_bottoken`,
+      }),
+    );
+    const team = Array.from({ length: 300 }, (_, index) =>
+      makeCompanySecret({ id: `team-${index}`, name: `team/SERVICE_${index}_KEY`, key: `service-${index}-key` }),
+    );
+    const total = managed.length + team.length;
+    mockSecretsApi.list.mockResolvedValue([...managed, ...team]);
+    mockAgentsApi.list.mockResolvedValue(
+      Array.from({ length: 200 }, (_, index) =>
+        makeAgent({
+          id: `agent-${index}`,
+          name: `Agent ${index}`,
+          adapterConfig: { env: Object.fromEntries(team.slice(index, index + 10).map((secret) => [`VAR_${secret.id}`, secretRef(secret.id)])) },
+        }),
+      ),
+    );
+    originWork.calls = 0;
+    // Each row is classified once per change to the filtered list. Loading settles in a few such changes.
+    originWork.limit = total * 4;
+    try {
+      await renderSecrets(container);
+      await waitForReact(() => document.querySelector('[data-testid="managed-secrets"]') !== null);
+
+      expect(originWork.calls).toBeGreaterThanOrEqual(total);
+      expect(document.querySelector('[data-testid="managed-secrets"]')?.textContent).toContain("1700");
+
+      // A search that matches a handful of rows classifies only the rows that match.
+      originWork.calls = 0;
+      originWork.limit = total;
+      const search = document.querySelector<HTMLInputElement>('input[aria-label="Search secrets"]')!;
+      await act(async () => setInputValue(search, "SERVICE_29"));
+      await flushReact();
+
+      // SERVICE_29 and SERVICE_290 to SERVICE_299.
+      expect(bodyText()).toContain("11 matches across all folders");
+      expect(originWork.calls).toBeLessThanOrEqual(total);
+      expect(document.querySelector('[data-testid="managed-secrets"]')).toBeNull();
+    } finally {
+      originWork.limit = Number.POSITIVE_INFINITY;
+    }
   });
 
   it("offers Stored in only when there is more than one place to store a secret", async () => {
@@ -1607,6 +1691,53 @@ describe("Secrets page layout", () => {
     await click(findControl("Enable", document.querySelector('[data-testid="provider-vault-vault-off"]')));
 
     expect(mockSecretsApi.updateProviderConfig).toHaveBeenCalledWith("vault-off", { status: "ready" });
+  });
+
+  it("unlocks a vault's menu again once its action has finished", async () => {
+    const vault = makeProviderConfig({ id: "vault-aws", provider: "aws_secrets_manager", displayName: "prod-us-east" });
+    mockSecretsApi.providerConfigs.mockResolvedValue([vault]);
+    await renderSecrets(container);
+    await openTab("Vaults");
+    const row = () => document.querySelector('[data-testid="provider-vault-vault-aws"]');
+    const menuButton = () => row()?.querySelector('button[aria-label="Actions for prod-us-east"]') as HTMLButtonElement;
+
+    await click(findControl("Check connection", row()));
+    await waitForReact(() => mockPushToast.mock.calls.some(([toast]) => toast.title === "The vault is working"));
+    await flushReact();
+
+    expect(mockSecretsApi.checkProviderConfigHealth).toHaveBeenCalledWith("vault-aws");
+    expect(menuButton().disabled).toBe(false);
+    expect((findControl("Edit connection", row()) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("returns a disabled draft vault to its draft status, which is the only one the server accepts for it", async () => {
+    const draft = makeProviderConfig({ id: "vault-gcp", provider: "gcp_secret_manager", displayName: "gcp-draft", status: "disabled" });
+    mockSecretsApi.providerConfigs.mockResolvedValue([draft]);
+    mockSecretsApi.updateProviderConfig.mockResolvedValue({ ...draft, status: "coming_soon" });
+    await renderSecrets(container);
+    await openTab("Vaults");
+
+    await click(findControl("Enable", document.querySelector('[data-testid="provider-vault-vault-gcp"]')));
+
+    expect(mockSecretsApi.updateProviderConfig).toHaveBeenCalledWith("vault-gcp", { status: "coming_soon" });
+  });
+
+  it("says so when the check of a new vault could not run, and keeps the vault", async () => {
+    const saved = makeProviderConfig({ id: "vault-new", provider: "aws_secrets_manager", displayName: "prod-eu-west" });
+    mockSecretsApi.createProviderConfig.mockResolvedValue(saved);
+    mockSecretsApi.checkProviderConfigHealth.mockRejectedValue(new ApiError("Service unavailable", 503, {}));
+    await renderSecrets(container);
+    await openAwsVaultDialog();
+    await typeInto("vault-name", "prod-eu-west");
+    await typeInto("provider-vault-aws-region", "eu-west-1");
+
+    await click(findControl("Connect vault", openDialog()));
+    await waitForReact(() => mockPushToast.mock.calls.some(([toast]) => toast.title === "Couldn't check prod-eu-west"));
+
+    const toast = mockPushToast.mock.calls.map(([entry]) => entry).find((entry) => entry.title === "Couldn't check prod-eu-west");
+    expect(toast.tone).toBe("error");
+    expect(toast.body).toContain("The vault is saved. Use Check connection in its menu to try again.");
+    expect(mockSecretsApi.createProviderConfig).toHaveBeenCalledTimes(1);
   });
 
   it("offers the vault kinds Paperclip supports and marks the rest Coming soon", async () => {

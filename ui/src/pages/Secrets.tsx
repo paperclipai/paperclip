@@ -1016,7 +1016,9 @@ export function Secrets() {
           : normalizeSecretKeyForPreview(name),
     }));
   }
-  function splitPastedAssignment(event: React.ClipboardEvent<HTMLInputElement | HTMLTextAreaElement>) {
+  // Only the Name field splits a pasted NAME=value. A value can itself contain
+  // "=" (base64 padding, connection strings), so a paste into Value is kept as is.
+  function splitPastedAssignment(event: React.ClipboardEvent<HTMLInputElement>) {
     if (secretValueProvider !== "company" || createMode !== "managed" || editingDefinition) return;
     const pair = parseEnvAssignment(event.clipboardData.getData("text"));
     if (!pair) return;
@@ -1132,8 +1134,13 @@ export function Secrets() {
     const byOrigin = new Map<SecretOrigin, UnifiedSecretRow[]>();
     for (const row of filteredRows) {
       const origin = classifySecretOrigin(row.kind === "company" ? row.secret : row.definition);
-      if (origin === "team") team.push(row);
-      else byOrigin.set(origin, [...(byOrigin.get(origin) ?? []), row]);
+      if (origin === "team") {
+        team.push(row);
+        continue;
+      }
+      const group = byOrigin.get(origin);
+      if (group) group.push(row);
+      else byOrigin.set(origin, [row]);
     }
     const groups = SECRET_ORIGIN_GROUPS.flatMap((group) => {
       const rows = byOrigin.get(group.id);
@@ -1478,7 +1485,13 @@ export function Secrets() {
               pushToast({ title: `${saved.displayName} can't be reached`, body: health.message, tone: "error" });
             }
           })
-          .catch(() => undefined)
+          .catch((error) => {
+            pushToast({
+              title: `Couldn't check ${saved.displayName}`,
+              body: `${describeError(error).body} The vault is saved. Use Check connection in its menu to try again.`,
+              tone: "error",
+            });
+          })
           .finally(() => invalidateAll());
       }
       setVaultDialogOpen(false);
@@ -1526,7 +1539,13 @@ export function Secrets() {
   });
 
   const enableVaultMutation = useMutation({
-    mutationFn: (id: string) => secretsApi.updateProviderConfig(id, { status: "ready" }),
+    // Providers Paperclip can't use yet only accept their draft status back.
+    mutationFn: (id: string) => {
+      const provider = providerConfigs.find((config) => config.id === id)?.provider;
+      return secretsApi.updateProviderConfig(id, {
+        status: provider ? defaultProviderVaultStatus(provider) : "ready",
+      });
+    },
     onSuccess: (updated) => {
       pushToast({ title: "Vault enabled", body: updated.displayName, tone: "success" });
       invalidateAll();
@@ -2017,6 +2036,13 @@ export function Secrets() {
     );
   }
 
+  // Only an action still in flight locks a vault's menu. A mutation keeps its
+  // last variables after it settles, so those alone would lock it for good.
+  const pendingVaultActionId =
+    [disableVaultMutation, enableVaultMutation, removeVaultMutation, defaultVaultMutation, healthVaultMutation].find(
+      (mutation) => mutation.isPending,
+    )?.variables ?? null;
+
   function rowAgents(row: UnifiedSecretRow): readonly Agent[] {
     return (
       (row.kind === "company"
@@ -2496,14 +2522,7 @@ export function Secrets() {
             onSetDefault={(config) => defaultVaultMutation.mutate(config.id)}
             onHealthCheck={(config) => healthVaultMutation.mutate(config.id)}
             onImportSecrets={openImportFromVault}
-            pendingActionId={
-              disableVaultMutation.variables ??
-              enableVaultMutation.variables ??
-              removeVaultMutation.variables ??
-              defaultVaultMutation.variables ??
-              healthVaultMutation.variables ??
-              null
-            }
+            pendingActionId={pendingVaultActionId}
           />
         </TabsContent>
         )}
@@ -2921,7 +2940,6 @@ export function Secrets() {
                     onChange={(event) =>
                       setCreateForm((current) => ({ ...current, value: event.target.value }))
                     }
-                    onPaste={splitPastedAssignment}
                     onKeyDown={(event) => {
                       if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) submitCreate();
                     }}

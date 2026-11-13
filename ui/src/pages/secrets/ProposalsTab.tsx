@@ -191,7 +191,7 @@ function PendingProposal({
                 className="font-mono"
               />
             </label>
-            {vaults.length > 1 ? (
+            {vaults.length + (defaultVaultId ? 0 : 1) > 1 ? (
               <label
                 htmlFor={`${fieldId}-vault`}
                 className="flex flex-col gap-1.5 text-sm font-medium"
@@ -204,7 +204,7 @@ function PendingProposal({
                   disabled={!canDecide || decision.isBusy}
                   className="font-normal"
                 >
-                  {defaultVaultId ? null : <option value="">Default vault</option>}
+                  {defaultVaultId ? null : <option value="">Paperclip</option>}
                   {vaults.map((vault) => (
                     <option key={vault.id} value={vault.id}>
                       {vault.displayName}
@@ -394,8 +394,10 @@ export function ProposalsTab({
   });
   const decidedQueries = useQueries({
     queries: DECIDED_STATUSES.map((status) => ({
-      queryKey: queryKeys.secrets.proposals(companyId, status),
-      queryFn: () => secretsApi.listProposals(companyId, status),
+      queryKey: [...queryKeys.secrets.proposals(companyId, status), "recent"] as const,
+      // Ordered by decision time on the server, so the newest decisions are
+      // in the page even when the request itself is old.
+      queryFn: () => secretsApi.listProposals(companyId, status, { order: "resolved", limit: DECIDED_LIMIT }),
       enabled: Boolean(companyId),
     })),
   });

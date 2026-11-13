@@ -349,6 +349,30 @@ describe("ProposalsTab", () => {
     });
   });
 
+  it("offers the only vault as a choice when it is not the default, so it can be picked", async () => {
+    mockProposals([makeSecretProposal()]);
+    await renderTab("company-1", [
+      { ...providerConfigs[0], id: "vault-team", displayName: "Team vault", isDefault: false },
+    ] as CompanySecretProviderConfig[]);
+    await waitForReact(() => Boolean(findButton("Approve and save secret")));
+
+    const vault = fieldByLabel<HTMLSelectElement>("Stored in");
+    expect([...(vault?.options ?? [])].map((option) => [option.value, option.textContent])).toEqual([
+      ["", "Paperclip"],
+      ["vault-team", "Team vault"],
+    ]);
+    await act(async () => {
+      if (vault) {
+        vault.value = "vault-team";
+        vault.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+    });
+    await act(async () => findButton("Approve and save secret")?.click());
+    await waitForReact(() => mockSecretsApi.approveProposal.mock.calls.length > 0);
+
+    expect(mockSecretsApi.approveProposal.mock.calls[0][2].overrides.providerConfigId).toBe("vault-team");
+  });
+
   it("shows the agent's proposed description for review", async () => {
     mockProposals([makeSecretProposal({ proposedDescription: "CI token" })]);
     await renderTab();
@@ -557,6 +581,14 @@ describe("ProposalsTab", () => {
       "expired",
       "pending",
       "rejected",
+    ]);
+    // Decided lists are asked for by decision time, so a fresh decision on an old request is in the page.
+    expect(
+      mockSecretsApi.listProposals.mock.calls.filter((call) => call[1] !== "pending").map((call) => call[2]),
+    ).toEqual([
+      { order: "resolved", limit: 10 },
+      { order: "resolved", limit: 10 },
+      { order: "resolved", limit: 10 },
     ]);
     expect(document.body.textContent).toContain("You’re caught up. No requests are waiting.");
     const decided = [

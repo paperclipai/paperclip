@@ -1148,10 +1148,11 @@ function ReviewStep({
             {drafts.map((draft) => {
               const ref = draft.candidate.externalRef;
               const remoteName = draft.candidate.remoteName;
-              const error = reviewErrors.get(ref);
+              // A validation message for this row, written by this dialog (not an API error).
+              const rowProblem = reviewErrors.get(ref);
               const failure = failures.get(ref);
               // A row whose problem is in a tucked-away field always shows that field.
-              const showDetails = detailsOpen || (error !== undefined && error.field !== "name");
+              const showDetails = detailsOpen || (rowProblem !== undefined && rowProblem.field !== "name");
               return (
                 <li
                   key={ref}
@@ -1170,7 +1171,7 @@ function ReviewStep({
                         spellCheck={false}
                         autoComplete="off"
                         aria-label={`Name for ${remoteName}`}
-                        aria-invalid={error?.field === "name"}
+                        aria-invalid={rowProblem?.field === "name"}
                         disabled={importing}
                         data-testid={`review-name-${ref}`}
                       />
@@ -1200,7 +1201,7 @@ function ReviewStep({
                           className="font-mono text-foreground"
                           spellCheck={false}
                           autoComplete="off"
-                          aria-invalid={error?.field === "key"}
+                          aria-invalid={rowProblem?.field === "key"}
                           disabled={importing}
                           data-testid={`review-key-${ref}`}
                         />
@@ -1212,20 +1213,20 @@ function ReviewStep({
                           onChange={(e) => updateDraft(ref, { description: e.target.value })}
                           className="text-foreground"
                           autoComplete="off"
-                          aria-invalid={error?.field === "description"}
+                          aria-invalid={rowProblem?.field === "description"}
                           disabled={importing}
                           data-testid={`review-description-${ref}`}
                         />
                       </label>
                     </div>
                   )}
-                  {error && (
+                  {rowProblem && (
                     <p
                       role="alert"
                       className="text-xs text-destructive"
                       data-testid={`review-error-${ref}`}
                     >
-                      {error.message}
+                      {rowProblem.message}
                     </p>
                   )}
                   {failure && (
