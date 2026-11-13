@@ -72,18 +72,22 @@ export async function preparePredecessorRetirementFallback(db: Db, run: Run, err
  * After the failed run ended: hand its prepared remote workspace on at the
  * saved version, but only through the shared unchanged-files proof (no runner
  * command, workspace operation such as a provisioning command, execution event
- * or result recorded). True when nothing of this run's is left to save. False
+ * or result recorded). An object when nothing of this run's is left to save;
+ * it names the marked sandboxes kept because they hold abandoned files. False
  * keeps the workspace dirty, so the caller preserves it as today and the
  * marked sandbox is never replaced.
  */
-export async function releaseUnchangedFallbackWorkspace(db: Db, run: Run): Promise<boolean> {
+export type FallbackWorkspaceRelease = false | { retainedProviderLeaseIds: string[] };
+
+export async function releaseUnchangedFallbackWorkspace(db: Db, run: Run): Promise<FallbackWorkspaceRelease> {
+  const released = { retainedProviderLeaseIds: [] as string[] };
   const [current] = await db.select({ profile: heartbeatRuns.runnerProfileJson }).from(heartbeatRuns)
     .where(and(eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, run.id)));
   if (!current || current.profile?.nativeWorkspaceSync != null) return false;
-  if (current.profile?.remoteWorkspace == null) return true;
+  if (current.profile?.remoteWorkspace == null) return released;
   const reference = remoteWorkspaceRunReferenceSchema.safeParse(current.profile.remoteWorkspace);
   if (!reference.success) return false;
-  if (reference.data.state !== "prepared") return true;
+  if (reference.data.state !== "prepared") return released;
   return db.transaction(async tx => {
     const [workspace] = await tx.select().from(executionWorkspaces).where(and(
       eq(executionWorkspaces.companyId, run.companyId), eq(executionWorkspaces.id, reference.data.workspaceId))).for("update");
@@ -94,13 +98,25 @@ export async function releaseUnchangedFallbackWorkspace(db: Db, run: Run): Promi
     // the task. Do not queue a second attempt beside it.
     if (authority.writerRunId !== run.id) return false;
     // The heartbeat that owns this writer is the caller, and it started no runner.
-    if (await releaseUnchangedRemoteWorkspaceWriter(tx, { workspace, authority, callerOwnsWriter: true })) return true;
+    if (await releaseUnchangedRemoteWorkspaceWriter(tx, { workspace, authority, callerOwnsWriter: true })) return released;
     if (!readFailedBeforeProviderTurnRecord(current.profile) || !authority.location || authority.epoch !== reference.data.epoch) return false;
     const [writer] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
       eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, run.id))).for("update", { skipLocked: true });
     if (!writer) return false;
+    const location = authority.location;
     await tx.transaction(savepoint => abandonUnverifiedRemoteWorkspaceEpoch(savepoint, { companyId: run.companyId,
-      workspaceId: workspace.id, runId: run.id, epoch: authority.epoch, snapshotId: authority.snapshotId, location: authority.location! }));
-    return true;
+      workspaceId: workspace.id, runId: run.id, epoch: authority.epoch, snapshotId: authority.snapshotId, location }));
+    const retained = await tx.update(environmentLeases).set({
+      metadata: sql`${environmentLeases.metadata} - ${REPLACE_BEFORE_REUSE_KEY}`, updatedAt: new Date(),
+    }).where(and(eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
+      eq(environmentLeases.providerLeaseId, location.providerLeaseId),
+      sql`${environmentLeases.metadata}->${REPLACE_BEFORE_REUSE_KEY}->>'runId' = ${run.id}`))
+      .returning({ providerLeaseId: environmentLeases.providerLeaseId });
+    const retainedProviderLeaseIds = retained.map(lease => lease.providerLeaseId!);
+    if (retainedProviderLeaseIds.length > 0) await persistActivity(tx as unknown as Db, { companyId: run.companyId,
+      actorType: "system", actorId: "native-runtime", action: "environment.lease_replacement_withdrawn", entityType: "heartbeat_run",
+      entityId: run.id, runId: run.id, details: { reason: "abandoned_files_retained", workspaceId: workspace.id,
+        abandonedEpoch: authority.epoch, providerLeaseIds: retainedProviderLeaseIds } });
+    return { retainedProviderLeaseIds };
   });
 }

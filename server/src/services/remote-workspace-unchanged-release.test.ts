@@ -21,6 +21,8 @@ import {
 import { UNCHANGED_BASELINE_KEY } from "./remote-workspace-unchanged-proof.js";
 import { releaseUnchangedFallbackWorkspace } from "./heartbeat/predecessor-retirement-fallback.js";
 import { FAILED_BEFORE_PROVIDER_TURN_KEY, FAILED_BEFORE_PROVIDER_TURN_SCHEMA } from "./native-runtime/failed-before-provider-turn.js";
+import { readReplaceBeforeReuseMarker, REPLACE_BEFORE_REUSE_KEY, REPLACE_BEFORE_REUSE_SCHEMA } from "./native-runtime/predecessor-retirement.js";
+import { retireReplacedReusableSandboxLease, reusableSandboxReplacementIsSafe } from "./reusable-sandbox-resume-replacement.js";
 
 const exec = promisify(execFile);
 const support = await getEmbeddedPostgresTestSupport();
@@ -122,7 +124,7 @@ describe.skipIf(!support.supported)("remote workspace writer that ended without 
     const event = (eventType: string) => db.insert(heartbeatRunEvents).values({ companyId, runId: runB, agentId,
       seq: 1, stream: "system", level: "info", eventType });
     return { companyId, runA, runB, issueId, savedA, workspace, end, saveB, snapshotOperations, reserveNext, parkWaiter, event,
-      remoteRoot: b.remoteRoot, captures: () => captures };
+      remoteRoot: b.remoteRoot, leaseB: b.lease, captures: () => captures };
   }
 
   async function expectFullSave(f: Awaited<ReturnType<typeof preparedFollowUp>>, changed = false) {
@@ -190,7 +192,7 @@ describe.skipIf(!support.supported)("remote workspace writer that ended without 
     const f = await preparedFollowUp(provision ? { runtimeProvisionCommand: provision } : {});
     // The heartbeat still holds the run's controller lease when it settles the failure.
     await f.end({ status: "failed", errorCode: "adapter_failed", controllerLeaseExpiresAt: new Date(Date.now() + 60_000) });
-    expect(await releaseUnchangedFallbackWorkspace(db, { id: f.runB, companyId: f.companyId })).toBe(released);
+    expect(await releaseUnchangedFallbackWorkspace(db, { id: f.runB, companyId: f.companyId }).then(Boolean)).toBe(released);
     expect(readRemoteWorkspaceAuthority((await f.workspace()).metadata)).toMatchObject(released
       ? { dirty: false, writerRunId: null, snapshotId: f.savedA.snapshotId } : { dirty: true, writerRunId: f.runB });
   });
@@ -208,7 +210,7 @@ describe.skipIf(!support.supported)("remote workspace writer that ended without 
       processGroupId: own ? 41_002 : 41_001, processStartedAt }).where(eq(heartbeatRuns.id, f.runB));
     if (event) await f.event("native.process_identity_recorded");
     await f.end({ status: "failed", errorCode: "native_session_interrupted", controllerLeaseExpiresAt: new Date(Date.now() + 60_000) });
-    expect(await releaseUnchangedFallbackWorkspace(db, { id: f.runB, companyId: f.companyId })).toBe(released);
+    expect(await releaseUnchangedFallbackWorkspace(db, { id: f.runB, companyId: f.companyId }).then(Boolean)).toBe(released);
     expect(readRemoteWorkspaceAuthority((await f.workspace()).metadata)).toMatchObject(released
       ? { dirty: false, writerRunId: null, snapshotId: f.savedA.snapshotId } : { dirty: true, writerRunId: f.runB });
   });
@@ -287,15 +289,41 @@ describe.skipIf(!support.supported)("remote workspace writer that ended without 
       controllerLeaseExpiresAt: new Date(Date.now() + 60_000) });
   }
 
+  async function markForReplacement(f: Awaited<ReturnType<typeof preparedFollowUp>>) {
+    await db.update(environmentLeases).set({ status: "released", executionWorkspaceId: (await f.workspace()).id,
+      leasePolicy: "reuse_by_environment", metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({
+        [REPLACE_BEFORE_REUSE_KEY]: { schema: REPLACE_BEFORE_REUSE_SCHEMA, runId: f.runB, predecessorRunId: null,
+          recordedAt: new Date().toISOString() } })}::jsonb` }).where(eq(environmentLeases.id, f.leaseB.id));
+  }
+
+  async function nextAcquisitionReplaces(f: Awaited<ReturnType<typeof preparedFollowUp>>, runC: string) {
+    const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.leaseB.id));
+    const replace = readReplaceBeforeReuseMarker(lease!.metadata) !== null && await reusableSandboxReplacementIsSafe({ db,
+      lease: lease as EnvironmentLease, companyId: f.companyId, heartbeatRunId: runC,
+      executionWorkspaceId: lease!.executionWorkspaceId, adapterType: null, cause: new Error("native_predecessor_retirement_unproven") });
+    if (replace) await retireReplacedReusableSandboxLease({ db, lease: lease as EnvironmentLease, companyId: f.companyId, heartbeatRunId: runC });
+    return (await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.leaseB.id)))[0]!;
+  }
+
   it("hands on the workspace unchanged when the Runner ledger proves the failed run sent no provider turn", async () => {
     const f = await preparedFollowUp();
     await failBeforeProviderTurn(f, { proof: true });
-    expect(await releaseUnchangedFallbackWorkspace(db, { id: f.runB, companyId: f.companyId })).toBe(true);
+    expect(await releaseUnchangedFallbackWorkspace(db, { id: f.runB, companyId: f.companyId })).toBeTruthy();
     const workspace = await f.workspace();
     expect(readRemoteWorkspaceAuthority(workspace.metadata)).toMatchObject({ dirty: false, writerRunId: null,
       snapshotId: f.savedA.snapshotId, epoch: 2 });
     expect(workspace.metadata?.[UNCHANGED_BASELINE_KEY]).toMatchObject({ runId: f.runB, releasedAt: expect.any(String) });
     expect(workspace.metadata?.remoteWorkspaceAbandonedEpochs).toBeUndefined();
+  });
+
+  it("replaces the marked sandbox when the failed run provably left its files unchanged", async () => {
+    const f = await preparedFollowUp();
+    await failBeforeProviderTurn(f, { proof: true });
+    await markForReplacement(f);
+    const released = await releaseUnchangedFallbackWorkspace(db, { id: f.runB, companyId: f.companyId });
+    const { runC } = await f.reserveNext();
+    expect(await nextAcquisitionReplaces(f, runC)).toMatchObject({ status: "pending_cleanup" });
+    expect(released).toEqual({ retainedProviderLeaseIds: [] });
   });
 
   it("keeps today's preservation for the same evidence without the Runner ledger proof", async () => {
@@ -318,7 +346,7 @@ describe.skipIf(!support.supported)("remote workspace writer that ended without 
     await writeFile(path.join(f.remoteRoot, "unsaved.md"), "kept\n");
     await setup(f);
     await failBeforeProviderTurn(f, { proof: true });
-    expect(await releaseUnchangedFallbackWorkspace(db, { id: f.runB, companyId: f.companyId })).toBe(true);
+    expect(await releaseUnchangedFallbackWorkspace(db, { id: f.runB, companyId: f.companyId })).toBeTruthy();
     const workspace = await f.workspace();
     expect(readRemoteWorkspaceAuthority(workspace.metadata)).toMatchObject({ dirty: false, writerRunId: null, location: null,
       snapshotId: f.savedA.snapshotId, epoch: 3 });
@@ -328,5 +356,21 @@ describe.skipIf(!support.supported)("remote workspace writer that ended without 
     await expect(access(path.join(f.remoteRoot, "unsaved.md"))).resolves.toBeUndefined();
     const { runC } = await f.reserveNext();
     expect(readRemoteWorkspaceAuthority((await f.workspace()).metadata)).toMatchObject({ writerRunId: runC, location: null });
+  });
+
+  it("keeps the sandbox that holds abandoned files out of replacement and cleanup", async () => {
+    const f = await preparedFollowUp({ runtimeProvisionCommand: "echo provisioned > provisioned.txt" });
+    await writeFile(path.join(f.remoteRoot, "unsaved.md"), "kept\n");
+    await failBeforeProviderTurn(f, { proof: true });
+    await markForReplacement(f);
+    const released = await releaseUnchangedFallbackWorkspace(db, { id: f.runB, companyId: f.companyId });
+    const { runC } = await f.reserveNext();
+    const lease = await nextAcquisitionReplaces(f, runC);
+    expect(lease.status).toBe("released");
+    expect(released).toEqual({ retainedProviderLeaseIds: [f.leaseB.providerLeaseId] });
+    expect(lease.metadata ?? {}).not.toHaveProperty(REPLACE_BEFORE_REUSE_KEY);
+    expect(await db.select().from(environmentLeases).where(and(eq(environmentLeases.companyId, f.companyId),
+      eq(environmentLeases.status, "pending_cleanup")))).toHaveLength(0);
+    await expect(access(path.join(f.remoteRoot, "unsaved.md"))).resolves.toBeUndefined();
   });
 });
