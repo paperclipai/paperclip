@@ -1,12 +1,16 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { hostname } from "node:os";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { eq } from "drizzle-orm";
 import { afterEach, expect, it, vi } from "vitest";
-import { completionContracts, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults } from "@paperclipai/db";
+import { completionContracts, environmentLeases, heartbeatRunEvents, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
+import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { describeEmbeddedPostgres, nativeRestartFixture } from "../../__tests__/helpers/native-restart.js";
-import { DurablePrpControlPlane, parseNativeExecutionInput, QUALIFIED_ACPX_PROFILES, QUALIFIED_ACPX_VERSION, type NativeSessionBackend, type PersistedNativeSession } from "../../vendor/paperclip-runner/index.js";
+import { DurablePrpControlPlane, parseNativeExecutionInput, QUALIFIED_ACPX_PROFILES, QUALIFIED_ACPX_VERSION, type NativeExecutionInput, type NativeSessionBackend, type PersistedNativeSession } from "../../vendor/paperclip-runner/index.js";
 import { createNativeControllerRecovery } from "./native-controller-recovery.js";
 import { nativeRunnerCheckpointWriter } from "./native-runner-checkpoint.js";
 import { createRunnerdBackend, executePaperclipNativeSession, nativeControllerMigrationDescriptor, scopedRunnerdStateRoot } from "./native-session-executor.js";
@@ -33,6 +37,33 @@ vi.mock("./paperclip-runner-tool-authority.js", () => ({ PaperclipRunnerToolAuth
   close() {}
 } }));
 
+async function savedUnstartedAttachment(db: Db, execution: NativeExecutionInput, runnerInstanceId: string) {
+  const deadChild = async () => { const child = spawn(process.execPath, ["-e", "process.exit(0)"], { stdio: "ignore" }); const pid = child.pid!; await once(child, "exit"); return pid; };
+  const birth = new Date(), runnerPid = await deadChild(), providerPid = await deadChild(), runId = randomUUID(), environmentLeaseId = randomUUID();
+  const source = { ...execution, binding: { ...execution.binding, runId } }, { companyId, agentId, issueId } = source.binding;
+  await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, issueId, nativeIssueId: issueId, runtimeMode: "native", status: "failed",
+    nativeSessionId: source.session.normalizedSessionId, runnerInstanceId, finishedAt: new Date(), runnerProfileJson: { nativeExecutionInput: source } });
+  await db.insert(nativeRunFinalizations).values({ runId, companyId, issueId: issueId!, phase: "terminal_failure" });
+  await db.insert(environmentLeases).values({ id: environmentLeaseId, companyId, heartbeatRunId: runId, provider: "local", status: "failed", releasedAt: new Date() });
+  await appendHeartbeatRunEvent(db, { companyId, runId, agentId, eventType: "native.process_identity_recorded", payload: {
+    hostname: hostname(), targetKind: "local", processPid: runnerPid, processGroupId: null, processStartedAt: birth.toISOString() } });
+  const scoped = scopedRunnerdStateRoot(source), root = join(dirname(scoped), "quarantine", `${basename(scoped)}.identity_indeterminate.${Date.now()}.${randomUUID()}`,
+    "continuity-breaks", `${Date.now()}-${randomUUID()}`);
+  const identity = { runId, runnerInstanceId, environmentLeaseId, normalizedSessionId: source.session.normalizedSessionId,
+    turnId: `turn-${runId}`, itemId: `item-${runId}` };
+  const command = { commandId: "attachment-1", controllerSeq: 1, type: "run.attach", status: "pending" };
+  const files = {
+    "control-plane/control-plane-state.json": { schema: "paperclip.runner.durable.control-plane-state.v2", identity, connectionCount: 1, ackedSourceSeq: 0, committedEvents: [], commands: [command] },
+    "runner/runner-state.json": { schema: "paperclip.runner.durable.state.v1", ...identity, lifecycle: "ready", nextSourceSeq: 1, ackedSourceSeq: 0, outbox: [],
+      processedCommands: { "attachment-1": { ...command, commandType: command.type } } },
+    "runner/codex-provider-state.json": { schema: "paperclip.runner.codex-provider-state.v1", lifecycle: "prepared", ambiguousTurnStartPending: false,
+      startupAttempt: { schema: "paperclip.provider_startup.v1", phase: "spawned", origin: identity, command: { ...command, commandType: command.type },
+        processId: providerPid, processGroupId: null, authenticatedThreadId: null }, pendingEvents: [], queuedEvents: [] },
+  };
+  for (const [name, value] of Object.entries(files)) { await mkdir(join(root, name, ".."), { recursive: true }); await writeFile(join(root, name), JSON.stringify(value)); }
+  return async () => { for (const [name, value] of Object.entries(files)) expect(await readFile(join(root, name), "utf8")).toBe(JSON.stringify(value)); };
+}
+
 describeEmbeddedPostgres("legacy harness continuation without provider-home files", () => {
   const environment = nativeRestartFixture();
   const homes: string[] = [];
@@ -41,7 +72,8 @@ describeEmbeddedPostgres("legacy harness continuation without provider-home file
   it.each([["codex", "per_turn"], ["opencode", "per_turn"], ["codex", "warm"]] as const)("preserves explicit %s %s recovery policy through server and Runner on both homes", async (provider, lifecycle) => {
     for (const policy of ["allow_replacement_after_resume_failure", "allow_replacement_after_governed_wait"] as const) {
       const observations = [];
-      for (const pose of ["original", "empty"] as const) {
+      for (const pose of (provider === "codex" && lifecycle === "per_turn" && policy === "allow_replacement_after_resume_failure"
+        ? ["original", "empty", "unstarted-local"] : ["original", "empty"])) {
         vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "61".repeat(32));
         const f = await environment.seedRun(randomUUID());
         const { companyId, agentId, runtimeRoot } = environment.current;
@@ -62,7 +94,8 @@ describeEmbeddedPostgres("legacy harness continuation without provider-home file
         });
         const semanticResult = { schema: "paperclip.run_result.v1", reportedWorkDisposition: policy === "allow_replacement_after_governed_wait" ? "yielded" : "done", summary: "Prior provider result", completionClaim: { contractRevision: "1", objectiveSatisfied: policy !== "allow_replacement_after_governed_wait", criteria: [{ criterionId: "objective", status: "satisfied", evidenceRefs: [] }], remainingWork: [] }, evidence: [], verification: [], attentionRequests: [], artifacts: [], ...(policy === "allow_replacement_after_governed_wait" ? { continuation: { kind: "response_wake", summary: "Continue after the answer", idempotencyKey: "fixture-answer" } } : {}) };
         const snapshot: PersistedNativeSession = { backendKind: "runner", driverKind: execution.session.driverKind, sessionId: "retained-driver-session", providerSessionId: "retained-provider-session", identity: { companyId, agentId, issueId: f.issueId, runId: f.runId, sessionId: f.native.normalizedSessionId }, cursor: "0", activeTurnId: null, pendingRuntimeRequests: [], terminalTurns: [], lineage: [], semanticResult: semanticResult as never, goal: null };
-        const fingerprint = nativeToolContractFingerprintForTarget("remote", provider);
+        const targetKind = pose === "unstarted-local" ? "local" : "remote";
+        const fingerprint = nativeToolContractFingerprintForTarget(targetKind, provider);
         const descriptor = nativeControllerMigrationDescriptor(execution, fingerprint);
         const bootId = randomUUID(), leaseOwner = randomUUID();
         await f.db.update(nativeRunFinalizations).set({ controllerBootId: bootId, controllerGeneration: 1, controllerPid: 2_147_483_000, controllerProcessStartedAt: new Date(Date.now() - 60_000), leaseOwner, leaseExpiresAt: new Date(Date.now() + 60_000) }).where(eq(nativeRunFinalizations.runId, f.runId));
@@ -70,8 +103,11 @@ describeEmbeddedPostgres("legacy harness continuation without provider-home file
         for (const type of ["run.prepare", "session.open", "turn.start", "runner.suspend"]) Object.assign(core.queueCommand(type), { status: "completed", result: { status: "completed" } });
         core.store.state.committedEvents.push({ sourceSeq: 1, sourceEventId: "fixture-terminal", eventType: "run.terminal", priority: 0, envelope: { ...core.store.state.identity }, deliveryCount: 1, logicalEffectCount: 1 });
         core.store.state.ackedSourceSeq = 1;
-        core.setCheckpointPersistence(nativeRunnerCheckpointWriter(f.db, { companyId, issueId: f.issueId, runId: f.runId, authorityRunId: f.runId, bootId, generation: 1, leaseOwner }));
-        await core.flushCheckpoint(); await core.stop();
+        if (pose !== "unstarted-local") {
+          core.setCheckpointPersistence(nativeRunnerCheckpointWriter(f.db, { companyId, issueId: f.issueId, runId: f.runId, authorityRunId: f.runId, bootId, generation: 1, leaseOwner }));
+          await core.flushCheckpoint();
+        }
+        await core.stop();
         const [result] = await f.db.insert(nativeRunResults).values({ companyId, issueId: f.issueId, runId: f.runId, completionContractId: (await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0]!.completionContractId!, serverFingerprint: randomUUID(), schemaStatus: "accepted", resultJson: semanticResult, canonicalSha256: "a".repeat(64) }).returning();
         const sourceProfile = { ...f.preparedProfile, nativeExecutionInput: execution, nativeToolContractFingerprint: fingerprint, sessionCheckpoint: snapshot, nativeControllerRecovery: createNativeControllerRecovery(snapshot, { configDigest: descriptor.configDigest, processConfigDigest: null }, { runId: f.runId, runnerInstanceId: f.native.runnerInstanceId, normalizedSessionId: f.native.normalizedSessionId }) };
         await f.db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date(), runnerProfileJson: sourceProfile }).where(eq(heartbeatRuns.id, f.runId));
@@ -81,7 +117,7 @@ describeEmbeddedPostgres("legacy harness continuation without provider-home file
         const [run] = await f.db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, nativeIssueId: f.issueId, issueId: f.issueId, status: "running", runtimeMode: "native", nativeSessionId: f.native.normalizedSessionId, runnerInstanceId: f.native.runnerInstanceId, completionContractId: sourceRun!.completionContractId, completionContractSha256: sourceRun!.completionContractSha256 }).returning();
         const native = await prepareNativeHeartbeatRun({ db: f.db, run: run!, issue: { id: f.issueId, title: "Retained provider work", description: null }, environmentLeaseId: randomUUID() });
         const current = { ...execution, binding: { ...execution.binding, runId } };
-        const rebound = rebindNativeSessionCheckpoint({ previousRun: { id: f.runId, companyId, agentId, nativeSessionId: f.native.normalizedSessionId, runnerProfileJson: sourceProfile }, currentExecution: current, executionTargetKind: "remote" });
+        const rebound = rebindNativeSessionCheckpoint({ previousRun: { id: f.runId, companyId, agentId, nativeSessionId: f.native.normalizedSessionId, runnerProfileJson: sourceProfile }, currentExecution: current, executionTargetKind: targetKind });
         expect(rebound?.providerRecoveryPolicy).toBe(policy);
         const [prepared] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
         await f.db.update(heartbeatRuns).set({ runnerProfileJson: { ...prepared!.runnerProfileJson, nativeExecutionInput: current, sessionCheckpoint: rebound } }).where(eq(heartbeatRuns.id, runId));
@@ -91,7 +127,9 @@ describeEmbeddedPostgres("legacy harness continuation without provider-home file
         const fresh = vi.fn(async () => { throw new Error("fixture replacement observed before provider turn"); });
         const describe = vi.fn<NativeSessionBackend["descriptor"]>(async () => ({ kind: "runner", name: "controlled provider boundary", version: "fixture", capabilities: { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true }, runtimeContextCapabilities: { instructions: "native", skills: "native", mcp: "native" } }));
         const backend: NativeSessionBackend = { descriptor: describe, recoverSession: recover, openSession: fresh, openReplacementSession: fresh };
-        const failure = await executePaperclipNativeSession({ db: f.db, execution: current, runnerInstanceId: native.runnerInstanceId, useRunnerd: true, backend, runnerExecutionTarget: { kind: "remote", transport: "sandbox", remoteCwd: runtimeRoot, environmentId: randomUUID(), leaseId: randomUUID(), providerKey: "fixture", reusableLeaseConfigured: true, runner: { execute: async () => { throw new Error("unexpected remote process execution"); } }, sandboxLeaseAcquisition: { outcome: "created", providerLeaseId: "new-fixture-sandbox" } } as never }).catch(error => error);
+        const preservedAttachment = pose === "unstarted-local" ? await savedUnstartedAttachment(f.db, execution, native.runnerInstanceId) : null;
+        const failure = await executePaperclipNativeSession({ db: f.db, execution: current, runnerInstanceId: native.runnerInstanceId, useRunnerd: true, backend,
+          ...(pose === "unstarted-local" ? {} : { runnerExecutionTarget: { kind: "remote", transport: "sandbox", remoteCwd: runtimeRoot, environmentId: randomUUID(), leaseId: randomUUID(), providerKey: "fixture", reusableLeaseConfigured: true, runner: { execute: async () => { throw new Error("unexpected remote process execution"); } }, sandboxLeaseAcquisition: { outcome: "created", providerLeaseId: "new-fixture-sandbox" } } as never }) }).catch(error => error);
         // A warm owner whose controller a restart replaced, on a newly created
         // sandbox, is retired like a per-turn owner and resumes the same way.
         expect(recover, String(failure)).toHaveBeenCalledOnce();
@@ -106,6 +144,13 @@ describeEmbeddedPostgres("legacy harness continuation without provider-home file
         }
         expect(recover.mock.calls[0]![0]).toMatchObject({ providerRecoveryPolicy: policy });
         expect(fresh).toHaveBeenCalledTimes(policy === "allow_replacement_after_resume_failure" ? 1 : 0);
+        if (preservedAttachment) {
+          await preservedAttachment();
+          const verified = await f.db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, runId));
+          expect(verified.filter(event => event.eventType === "native.unstarted_attachment_verified")).toHaveLength(1);
+          observations.push({ providerSessionId: recover.mock.calls[0]![0].providerSessionId, policy: recover.mock.calls[0]![0].providerRecoveryPolicy, replacementAttempts: fresh.mock.calls.length });
+          continue;
+        }
         const digest = `sha256:${"a".repeat(64)}`;
         const artifacts = Object.fromEntries(Object.entries({ grokLauncher: "dist/providers/grok/launcher.cjs", nodeCommand: "node_modules/node/bin/node",
           productionLock: "pnpm-lock.yaml", opencodeCommand: "node_modules/.bin/opencode", opencodeExecutable: "node_modules/opencode-ai/bin/opencode.exe",
