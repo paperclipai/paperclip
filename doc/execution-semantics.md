@@ -772,7 +772,9 @@ expired or revoked credential message, stays a credential failure.
 One credential failure does not mark a shared AI connection for sign-in.
 Paperclip marks the connection `needs_reauthorization` only after two distinct
 runs, or a run and a probe, fail with the same credential generation and no
-successful run in between. A successful run resets the count. A failure of an
+successful run in between. An explicit Test or save probe, which has no run, is
+the exception: one genuine rejection marks the connection, so testing a
+connection can stop its agents at once. A successful run resets the count. A failure of an
 older generation never marks a refreshed or reconnected connection, and it
 does not create a reconnect card. Below the threshold, Paperclip records
 `ai_connection.authentication_failure_observed` and the run keeps its ordinary
