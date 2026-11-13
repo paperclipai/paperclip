@@ -496,6 +496,32 @@ echo updated`;
     expect(audit?.findings.filter(finding => finding.code === 'remote_fetch_exec')).toEqual([expect.objectContaining({ path: 'install.sh', severity: 'warning' })]);
   });
 
+  it('restores a skill-package version of a copy that later switched to a repository package with its approval', async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: 'Layout restore', issuePrefix: `L${companyId.slice(0, 6)}` });
+    const files = { 'skills/one/SKILL.md': md('one'), 'skills/one/install.sh': hook };
+    const context: SkillSourceContext = { actor: { type: 'user', userId: 'admin-user' }, authorize: async () => {}, audit: async () => {},
+      read: () => githubFixture(files, {}, first), authorizeSecurityOverride: async () => {} };
+    const service = skillSourceService(db);
+    const approval = { commitSha: first, reason: 'Maintained by our platform team.', trustFutureUpdates: false, files: [{ path: 'skills/one/install.sh', sha256: hash(hook) }] };
+    const created = await service.create(companyId, {
+      repositoryUrl: 'https://github.com/acme/skills', trackingRef: 'main', packageMode: 'skills', commitSha: first, selectedPaths: ['skills/one/SKILL.md'],
+      securityOverride: approval,
+    }, context);
+    const skillId = created.source.entries.find(entry => entry.path === 'skills/one/SKILL.md')!.skillId!;
+    const skills = companySkillService(db);
+    const skillPackage = (await skills.getById(companyId, skillId))!.currentVersionId!;
+    let { revision } = await service.detail(companyId, created.source.id);
+    await service.refresh(companyId, created.source.id, context, { revision, packageMode: 'repository', selectedPaths: ['skills/one/SKILL.md'], excludedFolders: [],
+      securityOverride: approval });
+    expect((await skills.getById(companyId, skillId))!.currentVersionId).not.toBe(skillPackage);
+    ({ revision } = await service.detail(companyId, created.source.id));
+    await service.disconnect(companyId, created.source.id, context, { revision, skills: 'copy' });
+    await skills.createVersion(companyId, skillId, { sourceVersionId: skillPackage }, { type: 'user', userId: 'admin-user' });
+    const audit = await skills.auditSkill(companyId, skillId);
+    expect(audit?.findings.filter(finding => finding.code === 'remote_fetch_exec')).toEqual([expect.objectContaining({ path: 'install.sh', severity: 'warning' })]);
+  });
+
   it('keeps approved files viewable in the saved source', async () => {
     const { companyId, service, context } = await setup(false);
     const preview = await service.preview(companyId, { repositoryUrl: 'https://github.com/acme/skills', packageMode: 'repository', commitSha: first,

@@ -3644,10 +3644,12 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
    * bytes it installed. The source's current approval plays no part, so renewing, withdrawing or narrowing it
    * later never changes how an installed version audits.
    */
-  async function installedVersionAcceptor(skill: CompanySkill, versionId: string, installedRoot: string) {
+  async function installedVersionAcceptor(skill: CompanySkill, versionId: string, installedRoot: string,
+    inventory: ReadonlyArray<{ path: string }>) {
     const layout = repositoryLayout(skill);
     const entrypoint = layout?.path ?? null;
-    const packageMode = layout?.packageMode ?? null;
+    // The audited version's own files show its package layout; a restored or older version may differ from the skill's latest one.
+    const packageMode = inventory.some(file => file.path.startsWith(`${REPOSITORY_CONTENT_DIR}/`)) ? "repository" : "skills";
     if (!entrypoint) return undefined;
     const record = await installedSecurityApproval(skill.companyId, skill.id, versionId);
     if (!record) return undefined;
@@ -3689,13 +3691,14 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
         const version = await readVersionMetadata(companyId, skill.id, versionId);
         if (!version) throw unprocessable("Installed skill version is unavailable.");
         const sourceLocator = await materializeVersionSnapshot(companyId, skill, version);
+        const fileInventory = version.repositorySnapshotId || version.packageSnapshotId
+          ? await packageRuntime.inventory(version) : await packages.versionFiles(version);
         return auditInstalledSkillBytes({
           ...skill,
           sourceType: "local_path",
           sourceLocator,
-          fileInventory: version.repositorySnapshotId || version.packageSnapshotId
-            ? await packageRuntime.inventory(version) : await packages.versionFiles(version),
-        }, true, await installedVersionAcceptor(skill, versionId, sourceLocator));
+          fileInventory,
+        }, true, await installedVersionAcceptor(skill, versionId, sourceLocator, fileInventory));
       });
     }
     if (skill.sourceType !== "catalog" && skill.sourceType !== "local_path") {
