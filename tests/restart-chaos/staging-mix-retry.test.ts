@@ -210,23 +210,30 @@ describe("staging-mix completion comments", () => {
 
 describe("staging-mix runs after DONE", () => {
   const evidence = {
-    runs: [{ runId: "6b825e48-aaaa", createdAt: 1_000, invocationSource: "assignment", triggerDetail: null, wakeupRequestId: "w1" },
-      { runId: "37724b59-bbbb", createdAt: 5_000, invocationSource: "automation", triggerDetail: null, wakeupRequestId: "w2" },
-      { runId: "91f0c3d2-cccc", createdAt: 9_000, invocationSource: "automation", triggerDetail: "system", wakeupRequestId: "w3" },
-      { runId: "aa11bb22-dddd", createdAt: 9_500, invocationSource: "on_demand", triggerDetail: "manual", wakeupRequestId: null }],
+    runs: [{ runId: "6b825e48-aaaa", createdAt: 1_000, startedAt: 1_100, invocationSource: "assignment", triggerDetail: null, wakeupRequestId: "w1" },
+      { runId: "37724b59-bbbb", createdAt: 5_000, startedAt: 5_100, invocationSource: "automation", triggerDetail: null, wakeupRequestId: "w2" },
+      { runId: "5e5e5e5e-eeee", createdAt: 7_000, startedAt: 8_500, invocationSource: "automation", triggerDetail: null, wakeupRequestId: "w2" },
+      { runId: "91f0c3d2-cccc", createdAt: 9_000, startedAt: 9_100, invocationSource: "automation", triggerDetail: "system", wakeupRequestId: "w3" },
+      { runId: "aa11bb22-dddd", createdAt: 9_500, startedAt: null, invocationSource: "on_demand", triggerDetail: "manual", wakeupRequestId: null },
+      { runId: "0f0f0f0f-ffff", createdAt: 7_500, startedAt: null, invocationSource: "on_demand", triggerDetail: null, wakeupRequestId: null }],
     wakes: [{ id: "w1", reason: "issue_assigned", source: "assignment", triggerDetail: null, requestedByActorType: "user", requestedByActorId: "u1" },
       { id: "w2", reason: "issue_children_completed", source: "automation", triggerDetail: null, requestedByActorType: "system", requestedByActorId: null },
       { id: "w3", reason: "issue_recovery_action_restored", source: "automation", triggerDetail: "system", requestedByActorType: "system", requestedByActorId: "sweep" }],
   };
 
-  it("lists each run that started after the task's DONE with its wake reason and actor", () => {
-    const turns = runsAfterDone("t001", evidence, 8_000);
-    expect(turns.map(turn => [turn.runId, turn.wakeReason, turn.actorType, turn.actorId])).toEqual([
-      ["91f0c3d2-cccc", "issue_recovery_action_restored", "system", "sweep"], ["aa11bb22-dddd", null, null, null]]);
-    expect(extraTurnLine(turns[0]!)).toBe(`- t001: run 91f0c3d2 started ${new Date(9_000).toISOString()} after DONE; wake issue_recovery_action_restored (automation/system) by system sweep`);
-    expect(extraTurnLine(turns[1]!)).toBe(`- t001: run aa11bb22 started ${new Date(9_500).toISOString()} after DONE; wake unknown (on_demand/manual) by unknown`);
-    expect(runsAfterDone("t001", evidence, null)).toEqual([]);
-    expect(runsAfterDone("t001", null, 1)).toEqual([]);
+  it("lists runs by when they started: one queued before DONE that started after it is included, one started before DONE is not", () => {
+    const { started } = runsAfterDone("t001", evidence, 8_000);
+    expect(started.map(turn => [turn.runId, turn.wakeReason, turn.actorType, turn.actorId])).toEqual([
+      ["5e5e5e5e-eeee", "issue_children_completed", "system", null], ["91f0c3d2-cccc", "issue_recovery_action_restored", "system", "sweep"]]);
+    expect(extraTurnLine(started[1]!)).toBe(`- t001: run 91f0c3d2 started ${new Date(9_100).toISOString()} after DONE; wake issue_recovery_action_restored (automation/system) by system sweep`);
+  });
+
+  it("lists a run queued after DONE that never started separately, and ignores one queued before DONE", () => {
+    const { neverStarted } = runsAfterDone("t001", evidence, 8_000);
+    expect(neverStarted.map(turn => turn.runId)).toEqual(["aa11bb22-dddd"]);
+    expect(extraTurnLine(neverStarted[0]!)).toBe(`- t001: run aa11bb22 queued after DONE at ${new Date(9_500).toISOString()}, never started; wake unknown (on_demand/manual) by unknown`);
+    expect(runsAfterDone("t001", evidence, null)).toEqual({ started: [], neverStarted: [] });
+    expect(runsAfterDone("t001", null, 1)).toEqual({ started: [], neverStarted: [] });
   });
 
   it("anchors DONE on the first DONE comment, else on the issue's completion time", () => {

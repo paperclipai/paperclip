@@ -174,6 +174,7 @@ export interface ExtraTurn {
   taskId: string;
   runId: string | null;
   createdAt: number | null;
+  startedAt: number | null;
   invocationSource: string | null;
   wakeReason: string | null;
   wakeSource: string | null;
@@ -183,19 +184,24 @@ export interface ExtraTurn {
 }
 
 interface WakeEvidenceFile {
-  runs?: Array<{ runId: string | null; createdAt: number | null; invocationSource: string | null; triggerDetail: string | null; wakeupRequestId: string | null }>;
+  runs?: Array<{ runId: string | null; createdAt: number | null; startedAt?: number | null; invocationSource: string | null; triggerDetail: string | null; wakeupRequestId: string | null }>;
   wakes?: Array<{ id: string | null; reason: string | null; source: string | null; triggerDetail: string | null; requestedByActorType: string | null; requestedByActorId: string | null }>;
 }
 
-export function runsAfterDone(taskId: string, evidence: WakeEvidenceFile | null, doneAt: number | null): ExtraTurn[] {
-  if (!evidence || doneAt === null) return [];
+export function runsAfterDone(taskId: string, evidence: WakeEvidenceFile | null, doneAt: number | null): { started: ExtraTurn[]; neverStarted: ExtraTurn[] } {
+  if (!evidence || doneAt === null) return { started: [], neverStarted: [] };
   const wakes = new Map((evidence.wakes ?? []).map(wake => [wake.id, wake]));
-  return (evidence.runs ?? []).filter(run => run.createdAt !== null && run.createdAt > doneAt).map(run => {
+  const turn = (run: NonNullable<WakeEvidenceFile["runs"]>[number]): ExtraTurn => {
     const wake = run.wakeupRequestId ? wakes.get(run.wakeupRequestId) : undefined;
-    return { taskId, runId: run.runId, createdAt: run.createdAt, invocationSource: run.invocationSource, wakeReason: wake?.reason ?? null,
+    return { taskId, runId: run.runId, createdAt: run.createdAt, startedAt: run.startedAt ?? null, invocationSource: run.invocationSource, wakeReason: wake?.reason ?? null,
       wakeSource: wake?.source ?? null, triggerDetail: wake?.triggerDetail ?? run.triggerDetail, actorType: wake?.requestedByActorType ?? null,
       actorId: wake?.requestedByActorId ?? null };
-  });
+  };
+  const runs = evidence.runs ?? [];
+  return {
+    started: runs.filter(run => run.startedAt != null && run.startedAt > doneAt).map(turn),
+    neverStarted: runs.filter(run => run.startedAt == null && run.createdAt !== null && run.createdAt > doneAt).map(turn),
+  };
 }
 
 export function firstDoneAt(comments: ReadonlyArray<{ body?: unknown; authorAgentId?: unknown; createdAt?: unknown }> | null, nonce: string, completedAt: unknown): number | null {
@@ -207,7 +213,9 @@ export function firstDoneAt(comments: ReadonlyArray<{ body?: unknown; authorAgen
 }
 
 export function extraTurnLine(turn: ExtraTurn): string {
-  return `- ${turn.taskId}: run ${turn.runId?.slice(0, 8) ?? "?"} started ${turn.createdAt === null ? "?" : new Date(turn.createdAt).toISOString()} after DONE; `
+  const when = turn.startedAt !== null ? `started ${new Date(turn.startedAt).toISOString()} after DONE`
+    : `queued after DONE at ${turn.createdAt === null ? "?" : new Date(turn.createdAt).toISOString()}, never started`;
+  return `- ${turn.taskId}: run ${turn.runId?.slice(0, 8) ?? "?"} ${when}; `
     + `wake ${turn.wakeReason ?? "unknown"} (${turn.wakeSource ?? turn.invocationSource ?? "?"}${turn.triggerDetail ? `/${turn.triggerDetail}` : ""}) `
     + `by ${turn.actorType ?? "unknown"}${turn.actorId ? ` ${turn.actorId}` : ""}`;
 }
@@ -228,12 +236,15 @@ export async function writeStagingMixResults(input: { waveDir: string; api: Pick
   const extraClicks = new Set(input.timeline.filter(entry => entry.kind === "release_swap_retry_clicked" && typeof entry.issueId === "string").map(entry => String(entry.issueId)));
   const tasks: ResultTask[] = [];
   const extraTurns: ExtraTurn[] = [];
+  const queuedAfterDone: ExtraTurn[] = [];
   for (const task of input.tasks) {
     const issue = task.record.issueId ? await input.api.get<Json>(`/api/issues/${task.record.issueId}`, 10_000).catch(() => null) : null;
     const comments = task.record.issueId ? await input.api.get<Json[]>(`/api/issues/${task.record.issueId}/comments`, 10_000).catch(() => null) : null;
     const evidence = await readFile(path.join(input.waveDir, "wake-evidence", `${task.plan.taskId}.json`), "utf8")
       .then(text => JSON.parse(text) as WakeEvidenceFile).catch(() => null);
-    extraTurns.push(...runsAfterDone(task.plan.taskId, evidence, firstDoneAt(comments, task.plan.nonce, issue?.completedAt)));
+    const afterDone = runsAfterDone(task.plan.taskId, evidence, firstDoneAt(comments, task.plan.nonce, issue?.completedAt));
+    extraTurns.push(...afterDone.started);
+    queuedAfterDone.push(...afterDone.neverStarted);
     const grade = await readFile(path.join(input.waveDir, `${task.plan.taskId}.grade.json`), "utf8")
       .then(text => JSON.parse(text) as { grade?: { T?: OracleResult } }).catch(() => null);
     tasks.push({ taskId: task.plan.taskId, issueId: task.record.issueId, record: task.record, finalStatus: issue?.status ?? task.record.finalStatus,
@@ -241,7 +252,7 @@ export async function writeStagingMixResults(input: { waveDir: string; api: Pick
   }
   const result = summarizeStagingMix(tasks, extraClicks, await readAssignedWorkInvariant(input.api, input.companyId));
   await writeFile(path.join(input.waveDir, "staging-mix-results.json"), `${JSON.stringify({ schema: "paperclip.restart-chaos.staging-mix/v1",
-    headline: stagingMixHeadline(result), ...result, extraTurns }, null, 2)}\n`, { mode: 0o600 });
+    headline: stagingMixHeadline(result), ...result, extraTurns, queuedAfterDone }, null, 2)}\n`, { mode: 0o600 });
   const invariant = result.invariant.violationCount === null ? `unreadable${result.invariant.error ? ` (${result.invariant.error})` : ""}`
     : `${result.invariant.violationCount} violations, ${result.invariant.agentsWithStalledSlots} agents with stalled slots, ${result.invariant.openTasks} open tasks`;
   await writeFile(path.join(input.waveDir, "staging-mix-summary.md"), [...stagingMixHeadline(result), `Assigned-work invariant: ${invariant}`, "",
@@ -249,6 +260,7 @@ export async function writeStagingMixResults(input: { waveDir: string; api: Pick
     ...result.evidenceIncomplete.map(entry => `- ${entry.taskId}: evidence incomplete for ${entry.checks.join(", ")}`),
     ...result.bannerShown.map(entry => `- ${entry.taskId}: Retry banner from ${entry.firstShownAt} for ${Math.round(entry.shownMs / 1000)} s`
       + `${entry.errorCode ? ` (${entry.errorCode})` : ""}${entry.completedAnyway ? ", completed without a click" : ""}`),
-    ...(extraTurns.length ? ["", `Runs started after the task's DONE: ${extraTurns.length}`, ...extraTurns.map(extraTurnLine)] : []), ""].join("\n"), { mode: 0o600 });
+    ...(extraTurns.length ? ["", `Runs started after the task's DONE: ${extraTurns.length}`, ...extraTurns.map(extraTurnLine)] : []),
+    ...(queuedAfterDone.length ? ["", `Runs queued after the task's DONE, never started: ${queuedAfterDone.length}`, ...queuedAfterDone.map(extraTurnLine)] : []), ""].join("\n"), { mode: 0o600 });
   return result;
 }

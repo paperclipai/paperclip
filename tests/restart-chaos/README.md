@@ -1555,10 +1555,11 @@ worked when the clicked task meets the same completion rule. The banner list fol
 `GET /api/companies/:id/assigned-work-invariant` at the end of the wave: `violationCount`, `violations` by reason,
 `agentsWithStalledSlots` and `openTasks`.
 
-The summary also lists every run that started after a task's DONE, under "Runs started after the task's DONE"
-(`extraTurns` in the JSON). The DONE time is the first bare `DONE-<nonce>` comment, or else the task's completion time.
-Each line gives the run's wake reason, source, trigger and requesting actor, taken from that task's saved wake
-evidence.
+The summary also lists, by start time, every run that started after a task's DONE, under "Runs started after the
+task's DONE" (`extraTurns` in the JSON). A run queued after DONE that never started is listed on its own, under "Runs
+queued after the task's DONE, never started" (`queuedAfterDone`). The DONE time is the first bare `DONE-<nonce>`
+comment, or else the task's completion time. Each line gives the run's wake reason, source, trigger and requesting
+actor, taken from that task's saved wake evidence.
 
 **Grade.** The usual R1–R6, U1–U5 and T rules apply. A needed Retry still fails R3. The T-oracle checks the result,
 not the status:
@@ -1983,7 +1984,8 @@ re-arms the task's own triggered faults instead of using their offsets.
   - each run's `context_snapshot`, invocation source and trigger;
   - the `agent_wakeup_requests` row behind each run and every wake for the issue: reason, source, trigger detail,
     requesting actor, idempotency key, payload and times;
-  - the issue's status changes from the activity log.
+  - the issue's status changes from the activity log: only `issue.*` entries whose status is an issue status, so a
+    `runner.api_called` entry with an HTTP status is not mistaken for one.
 
   Each wake and run also names the server generations alive when it was created (`servingAtCreate`): the pid, boot
   id, epoch and process space from `controller_instances`, and the harness's own primary or secondary role during an

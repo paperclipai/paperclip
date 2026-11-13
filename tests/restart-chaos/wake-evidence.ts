@@ -2,6 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { ServerProcessWindow } from "./multi-server.js";
 import { unshiftJson, unshiftMs, type AgingShift } from "./time-faults.js";
+import { ISSUE_STATUSES } from "../../packages/shared/src/constants.js";
 import { createDb, type Db } from "../../packages/db/src/index.js";
 
 type Row = Record<string, unknown>;
@@ -13,6 +14,12 @@ const ms = (value: unknown) => value === null || value === undefined ? null : Nu
 const text = (value: unknown) => value === null || value === undefined ? null : String(value);
 
 export const PROCESS_MATCH_SLACK_MS = 60_000;
+
+const STATUSES: ReadonlySet<string> = new Set(ISSUE_STATUSES);
+
+export function isIssueStatusTransition(row: Row): boolean {
+  return String(row.action ?? "").startsWith("issue.") && STATUSES.has(String(row.toStatus ?? "")) && (row.fromStatus == null || STATUSES.has(String(row.fromStatus)));
+}
 
 export function boundByProcessExit(controllers: readonly ControllerRow[], windows: readonly ServerProcessWindow[]): ControllerRow[] {
   return controllers.map(controller => {
@@ -74,7 +81,7 @@ export function wakeEvidenceForIssue(issueId: string, input: WakeEvidenceInput) 
       status: text(wake.status), runId: text(wake.runId), payload: wake.payload ?? null, error: text(wake.error),
       createdAt: ms(wake.createdAt), requestedAt: ms(wake.requestedAt), claimedAt: ms(wake.claimedAt), finishedAt: ms(wake.finishedAt),
       servingAtCreate: servingAt(ms(wake.createdAt), controllers, input.windows) })),
-    statusChanges: input.statusChanges.filter(change => change.issueId === issueId).map(change => ({ at: ms(change.createdAt), action: text(change.action),
+    statusChanges: input.statusChanges.filter(change => change.issueId === issueId && isIssueStatusTransition(change)).map(change => ({ at: ms(change.createdAt), action: text(change.action),
       actorType: text(change.actorType), actorId: text(change.actorId), runId: text(change.runId), from: text(change.fromStatus), to: text(change.toStatus) })),
   };
 }
@@ -98,8 +105,8 @@ async function readRows(db: Pick<Db, "$client">, companyId: string, shifts: read
     `select entity_id as "issueId", action, actor_type as "actorType", actor_id as "actorId", run_id::text as "runId",
             coalesce(details->'_previous'->>'status', details->>'previousStatus') as "fromStatus", details->>'status' as "toStatus",
             floor(extract(epoch from created_at) * 1000) as "createdAt"
-       from activity_log where company_id::text = $1 and entity_type = 'issue'
-        and (details ? 'status' or details->'_previous' ? 'status' or details ? 'previousStatus') order by created_at`, [companyId]) as Row[];
+       from activity_log where company_id::text = $1 and entity_type = 'issue' and action like 'issue.%'
+        and details ? 'status' order by created_at`, [companyId]) as Row[];
   const controllers = (await client.unsafe(
     `select boot_id as "bootId", epoch, process_space as "processSpace", pid, floor(extract(epoch from started_at) * 1000) as "startedAt",
             floor(extract(epoch from coalesce(stopped_at, fenced_at)) * 1000) as "endedAt" from controller_instances order by epoch`) as Row[])
