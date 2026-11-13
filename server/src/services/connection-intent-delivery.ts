@@ -3,7 +3,8 @@ import { agents, companies } from "@paperclipai/db";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { connectionIntentService } from "./connection-intents.js";
 import { connectionContinuationPendingResponse, findSatisfiedToolConnection, satisfiedConnectionIntentService } from "./satisfied-connection-intents.js";
-import { isAiConnectionConfigurationFailure } from "./ai-auth-failure.js";
+import { isAiAuthenticationRepairable, isAiConnectionConfigurationFailure } from "./ai-auth-failure.js";
+import { connectionIntentPayloadSchema } from "@paperclipai/shared";
 import { and, eq, isNull, lte, asc, inArray, notInArray, desc, sql } from "drizzle-orm";
 import { connectionIntentDeliveries, issueThreadInteractions, issues, agentWakeupRequests, companyMemberships, heartbeatRuns, chatConversations, chatEndpoints, type Db } from "@paperclipai/db";
 import type { heartbeatService } from "./heartbeat.js";
@@ -23,10 +24,13 @@ export async function wakeConnectionIntentAfterResolution(
     status: string;
     actorId: string;
     actorType?: "user" | "system";
+    /** A task linked to the card wakes under its own key, and only from in_progress. */
+    linkedIssue?: true;
   },
 ) {
   const agentId = input.loaded.issue.assigneeAgentId;
-  if (!agentId || !["in_progress", "in_review"].includes(input.loaded.issue.status)) return;
+  const wakeStatuses = input.linkedIssue ? ["in_progress"] : ["in_progress", "in_review"];
+  if (!agentId || !wakeStatuses.includes(input.loaded.issue.status)) return;
   const resolvedAt = input.loaded.interaction.resolvedAt;
   const interactionResolvedAt = resolvedAt instanceof Date ? resolvedAt.toISOString() : resolvedAt;
   const payload = input.loaded.interaction.payload;
@@ -45,7 +49,7 @@ export async function wakeConnectionIntentAfterResolution(
       interactionStatus: input.status,
       mutation: "interaction",
     },
-    idempotencyKey: `connection-intent:${input.loaded.interaction.id}:${input.status}`,
+    idempotencyKey: connectionIntentWakeKey(input.loaded.interaction.id, input.status, input.linkedIssue ? input.loaded.issue.id : undefined),
     requestedByActorType: input.actorType ?? "user",
     requestedByActorId: input.actorId,
     contextSnapshot: {
@@ -68,10 +72,14 @@ export async function wakeConnectionIntentAfterResolution(
       ...(repairsProviderAuthentication ? { forceFreshSession: true } : { refreshTools: true }),
     },
     issueStateGuard: {
-      statuses: ["in_progress", "in_review"],
+      statuses: wakeStatuses,
       assigneeAgentId: agentId,
     },
   });
+}
+
+function connectionIntentWakeKey(interactionId: string, status: string, linkedIssueId?: string) {
+  return `connection-intent:${interactionId}:${status}${linkedIssueId ? `:${linkedIssueId}` : ""}`;
 }
 
 
@@ -82,18 +90,20 @@ export function connectionIntentDeliveryService(db: Db, heartbeat: Pick<Heartbea
   async function restoreAiBlockedTask(loaded: {
     issue: typeof issues.$inferSelect;
     interaction: typeof issueThreadInteractions.$inferSelect;
-  }) {
+  }, options: { sourceRunId?: string | null; assigneeAgentId?: string | null; system?: boolean } = {}) {
+    const sourceRunId = options.sourceRunId ?? loaded.interaction.sourceRunId;
+    const assigneeAgentId = options.assigneeAgentId ?? loaded.issue.assigneeAgentId;
     const publications: ActivityPublication[] = [];
     const restored = await db.transaction(async (tx) => {
       const [issue] = await tx.select().from(issues).where(and(
         eq(issues.id, loaded.issue.id), eq(issues.companyId, loaded.issue.companyId),
       )).for("update");
-      if (!issue || issue.status !== "blocked" || issue.assigneeAgentId !== loaded.issue.assigneeAgentId) return null;
+      if (!issue || issue.status !== "blocked" || issue.assigneeAgentId !== assigneeAgentId) return null;
       const [latest] = await tx.select().from(heartbeatRuns).where(and(
         eq(heartbeatRuns.companyId, issue.companyId),
         sql`coalesce(${heartbeatRuns.contextSnapshot}->>'issueId', ${heartbeatRuns.contextSnapshot}->>'taskId') = ${issue.id}`,
       )).orderBy(desc(heartbeatRuns.createdAt)).limit(1);
-      if (latest?.id !== loaded.interaction.sourceRunId || latest.status !== "failed"
+      if (latest?.id !== sourceRunId || latest.status !== "failed"
         || !isAiConnectionConfigurationFailure(latest)) return null;
       // Restricted external chat retries require their original chat provenance.
       // Their existing Try again path owns that authorization and delivery.
@@ -107,18 +117,68 @@ export function connectionIntentDeliveryService(db: Db, heartbeat: Pick<Heartbea
       if (!recovery || recovery.cause !== "configuration_incomplete" || recovery.evidence.latestRunId !== latest.id) return null;
       const actorId = loaded.interaction.resolvedByUserId ?? loaded.interaction.addresseeUserId!;
       const updated = await issueService(db).update(issue.id, {
-        status: "in_progress", actorUserId: actorId, companyGuard: issue.companyId,
+        status: "in_progress", actorUserId: options.system ? null : actorId, companyGuard: issue.companyId,
       }, tx, publications);
       await recoveries.resolveActiveForIssue({ companyId: issue.companyId, sourceIssueId: issue.id,
         actionId: recovery.id, status: "resolved", outcome: "restored", resolutionNote: "AI connection restored by the responsible user." }, tx);
       return updated;
     });
     for (const publication of publications) publishActivity(publication);
-    if (restored) await logActivity(db, { companyId: restored.companyId, actorType: "user",
-      actorId: loaded.interaction.resolvedByUserId ?? loaded.interaction.addresseeUserId!,
+    if (restored) await logActivity(db, { companyId: restored.companyId, actorType: options.system ? "system" : "user",
+      actorId: options.system ? "connection-reconciliation" : loaded.interaction.resolvedByUserId ?? loaded.interaction.addresseeUserId!,
       action: "issue.updated", entityType: "issue", entityId: restored.id,
       details: { status: restored.status, _previous: { status: "blocked" }, source: "ai_connection_restored", interactionId: loaded.interaction.id } });
     return restored;
+  }
+
+  /**
+   * A system reconciliation resumes a task only while it still waits on this
+   * repair: its latest run is the failed source run, it is open and not held
+   * for review, and its dependencies are resolved. A human answer keeps its
+   * existing delivery rules.
+   */
+  async function waitingOnAiRepair(issue: typeof issues.$inferSelect, sourceRunId: string | null | undefined) {
+    if (!sourceRunId || issue.status !== "in_progress" || issue.assigneeUserId) return false;
+    const [latest] = await db.select().from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, issue.companyId),
+      sql`coalesce(${heartbeatRuns.contextSnapshot}->>'issueId', ${heartbeatRuns.contextSnapshot}->>'taskId', ${heartbeatRuns.nativeIssueId}::text) = ${issue.id}`,
+    )).orderBy(desc(heartbeatRuns.createdAt)).limit(1);
+    if (latest?.id !== sourceRunId || latest.status !== "failed" || !isAiAuthenticationRepairable(latest)) return false;
+    return (await issueService(db).getDependencyReadiness(issue.id)).isDependencyReady;
+  }
+
+  /** Wake each task linked to a resolved AI repair card at most once. */
+  async function wakeLinkedAiRepairTasks(interaction: typeof issueThreadInteractions.$inferSelect, connectionRestored: boolean) {
+    const payload = connectionIntentPayloadSchema.safeParse(interaction.payload).data;
+    if (payload?.purpose !== "ai" || !payload.linkedIssues?.length || !interaction.addresseeUserId) return;
+    for (const linked of payload.linkedIssues) {
+      const [issue] = await db.select().from(issues).where(and(
+        eq(issues.id, linked.issueId), eq(issues.companyId, interaction.companyId)));
+      if (!issue || issue.assigneeAgentId !== linked.agentId) continue;
+      let current = issue;
+      if (connectionRestored && current.status === "blocked") {
+        const restored = await restoreAiBlockedTask({ issue: current, interaction },
+          { sourceRunId: linked.sourceRunId, assigneeAgentId: linked.agentId, system: interaction.status !== "accepted" });
+        if (!restored) continue;
+        current = restored;
+      }
+      if (!await waitingOnAiRepair(current, linked.sourceRunId)) continue;
+      if (connectionRestored && !await connectionIntentService(db).usableConnectionForAgent({ companyId: interaction.companyId,
+        agentId: linked.agentId, responsibleUserId: interaction.addresseeUserId, serviceSlug: payload.serviceSlug,
+        purpose: "ai", sourceRunId: linked.sourceRunId })) continue;
+      const key = connectionIntentWakeKey(interaction.id, interaction.status, current.id);
+      const [woken] = await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
+        eq(agentWakeupRequests.companyId, interaction.companyId), eq(agentWakeupRequests.idempotencyKey, key),
+        notInArray(agentWakeupRequests.status, ["skipped", "failed", "cancelled"]))).limit(1);
+      if (woken) continue;
+      await wakeConnectionIntentAfterResolution(heartbeat, {
+        loaded: { issue: current, interaction },
+        status: interaction.status,
+        actorId: interaction.status === "accepted" ? interaction.resolvedByUserId ?? interaction.addresseeUserId : "connection-reconciliation",
+        ...(interaction.status === "accepted" ? {} : { actorType: "system" as const }),
+        linkedIssue: true,
+      });
+    }
   }
 
   async function deliver(interactionId: string) {
@@ -137,12 +197,20 @@ export function connectionIntentDeliveryService(db: Db, heartbeat: Pick<Heartbea
     const retiredForAvailableConnection = interaction?.status === "expired"
       && interaction.result?.outcome === "expired" && "connectionId" in interaction.result
       && typeof interaction.result.connectionId === "string";
-    const payload = interaction?.payload as { requestingAgentId?: string; serviceSlug?: string; purpose?: "ai"; agentSetup?: true; agentSetupOperationId?: string } | undefined;
-    if (!loaded || !interaction || (!retiredForAvailableConnection && !["accepted", "rejected"].includes(interaction.status))
-      || ["done", "cancelled"].includes(loaded.issue.status) || loaded.issue.assigneeAgentId !== payload?.requestingAgentId) {
-      await db.update(connectionIntentDeliveries).set({ deliveredAt: new Date() }).where(and(eq(connectionIntentDeliveries.interactionId, interactionId),
-        eq(connectionIntentDeliveries.companyId, claimed.companyId),
-        eq(connectionIntentDeliveries.nextAttemptAt, claimed.nextAttemptAt), isNull(connectionIntentDeliveries.deliveredAt)));
+    const payload = interaction?.payload as { requestingAgentId?: string; serviceSlug?: string; purpose?: "ai"; agentSetup?: true; agentSetupOperationId?: string; linkedIssues?: unknown[] } | undefined;
+    const settle = () => db.update(connectionIntentDeliveries).set({ deliveredAt: new Date() }).where(and(eq(connectionIntentDeliveries.interactionId, interactionId),
+      eq(connectionIntentDeliveries.companyId, claimed.companyId),
+      eq(connectionIntentDeliveries.nextAttemptAt, claimed.nextAttemptAt), isNull(connectionIntentDeliveries.deliveredAt)));
+    if (!loaded || !interaction || (!retiredForAvailableConnection && !["accepted", "rejected"].includes(interaction.status))) {
+      await settle();
+      return;
+    }
+    const ownerStale = ["done", "cancelled"].includes(loaded.issue.status) || loaded.issue.assigneeAgentId !== payload?.requestingAgentId;
+    // Tasks linked to one shared AI repair card resume even when the task that
+    // owns the card was closed or reassigned meanwhile.
+    const fanOut = payload?.purpose === "ai" && payload.agentSetup !== true && Boolean(payload.linkedIssues?.length);
+    if (ownerStale && !fanOut) {
+      await settle();
       return;
     }
     const userId = interaction.addresseeUserId;
@@ -152,9 +220,14 @@ export function connectionIntentDeliveryService(db: Db, heartbeat: Pick<Heartbea
         eq(companyMemberships.principalId, userId ?? ""), eq(companyMemberships.status, "active"),
       )).limit(1);
       if (!membership?.membershipRole || membership.membershipRole === "viewer") {
-        await db.update(connectionIntentDeliveries).set({ deliveredAt: new Date() }).where(and(eq(connectionIntentDeliveries.interactionId, interactionId),
-        eq(connectionIntentDeliveries.companyId, claimed.companyId),
-        eq(connectionIntentDeliveries.nextAttemptAt, claimed.nextAttemptAt), isNull(connectionIntentDeliveries.deliveredAt)));
+        await settle();
+        return;
+      }
+    }
+    if (fanOut) {
+      await wakeLinkedAiRepairTasks(interaction, interaction.status === "accepted");
+      if (ownerStale) {
+        await settle();
         return;
       }
     }

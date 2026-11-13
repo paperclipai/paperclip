@@ -779,6 +779,12 @@ older generation never marks a refreshed or reconnected connection, and it
 does not create a reconnect card. Below the threshold, Paperclip records
 `ai_connection.authentication_failure_observed` and the run keeps its ordinary
 failure recovery.
+
+A latched AI connection raises one reconnect card for each recipient,
+provider and connection. Runs on other tasks that fail on the same connection
+do not raise more cards. Paperclip adds each such task to the card's linked
+tasks, and the run waits on that card. When the person completes or declines
+the card, Paperclip wakes each linked task once, under its own idempotency key.
 AI account selection failures use the selector's owned configuration evidence:
 missing defaults, unavailable or incompatible connections, missing responsible
 users, and credential sharing refusals park automatic host verification until

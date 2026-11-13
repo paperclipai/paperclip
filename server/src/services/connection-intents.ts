@@ -145,6 +145,9 @@ function scopedToolRequestGuidance(connectionId: string, catalog: ReadonlyArray<
   return `Call connection_request again with connectionId ${JSON.stringify(connectionId)} and toolNames set to only the exact names this task needs. Available indexed tool names (first ${listed.length} of ${names.length}): ${JSON.stringify(listed)}. No access was granted.`;
 }
 
+/** The most tasks one AI repair card links. Beyond it, a new card starts. */
+const AI_REPAIR_CARD_LINK_LIMIT = 100;
+
 export function connectionIntentService(db: Db) {
   const interactions = issueThreadInteractionService(db);
   const access = toolAccessService(db);
@@ -870,7 +873,7 @@ export function connectionIntentService(db: Db) {
   async function requestWithContext(
     context: Awaited<ReturnType<typeof loadRunContext>>,
     serviceSlug: string,
-    options: { agentSetup?: true; agentSetupOperationId?: string; purpose?: "ai" | "channel"; selectionInteractionId?: string; targetService?: string; connectionId?: string; toolNames?: string[] } = {},
+    options: { agentSetup?: true; agentSetupOperationId?: string; purpose?: "ai" | "channel"; selectionInteractionId?: string; targetService?: string; connectionId?: string; toolNames?: string[]; repairConnectionId?: string } = {},
   ): Promise<ConnectionRequestResult> {
     const claims = { sub: context.agent.id, company_id: context.run.companyId, run_id: context.run.id, responsible_user_id: context.run.responsibleUserId! };
     const route = parseAggregatorRoute(serviceSlug);
@@ -992,6 +995,7 @@ export function connectionIntentService(db: Db) {
           ...(accessRequest ? { accessRequest } : {}),
           serviceSlug: app.slug,
           ...(options.purpose ? { purpose: options.purpose } : {}),
+          ...(options.purpose === "ai" && options.repairConnectionId ? { repairConnectionId: options.repairConnectionId } : {}),
           serviceName: accessRequest ? app.name : upstreamService ? `${upstreamService.name} through ${app.name}` : app.name,
           ...(upstreamService ? { upstreamService } : {}),
           serviceLogoUrl: app.branding.logoUrl ?? null,
@@ -1020,6 +1024,63 @@ export function connectionIntentService(db: Db) {
       connectionId: null,
       interactionId: interaction.id,
       instruction: `A connection card was sent to the responsible user. Finish independent work, then yield and wait for continuation. Do not repeat this request.`,
+    };
+  }
+
+  /**
+   * One provider-authentication repair card per AI connection and recipient.
+   * The caller holds the connection's advisory lock in this transaction, so
+   * concurrent failures across agents and tasks reuse one pending card. A
+   * failure on another task is appended to the card's linked tasks, and the
+   * card's resolution wakes those tasks too.
+   */
+  async function requestSharedAiRepair(
+    context: Awaited<ReturnType<typeof loadRunContext>>,
+    provider: string,
+    connectionId: string,
+  ): Promise<ConnectionRequestResult> {
+    const responsibleUserId = context.run.responsibleUserId!;
+    const [existing] = await db.select().from(issueThreadInteractions).where(and(
+      eq(issueThreadInteractions.companyId, context.run.companyId),
+      eq(issueThreadInteractions.kind, "connection_intent"),
+      eq(issueThreadInteractions.status, "pending"),
+      eq(issueThreadInteractions.addresseeUserId, responsibleUserId),
+      sql`${issueThreadInteractions.payload}->>'purpose' = 'ai'`,
+      sql`${issueThreadInteractions.payload}->>'serviceSlug' = ${provider}`,
+      sql`${issueThreadInteractions.payload}->>'repairConnectionId' = ${connectionId}`,
+      sql`${issueThreadInteractions.payload}->'agentSetup' is null`,
+    )).orderBy(desc(issueThreadInteractions.createdAt)).limit(1).for("update");
+    const payload = existing ? connectionIntentPayloadSchema.safeParse(existing.payload).data : undefined;
+    const linked = payload?.linkedIssues ?? [];
+    const alreadyLinked = existing?.issueId === context.issue.id || linked.some(entry => entry.issueId === context.issue.id);
+    if (!existing || !payload || (!alreadyLinked && linked.length >= AI_REPAIR_CARD_LINK_LIMIT)) {
+      return requestWithContext(context, provider, { purpose: "ai", repairConnectionId: connectionId });
+    }
+    const ready = await usableConnectionForAgent({ companyId: context.run.companyId, agentId: context.agent.id,
+      responsibleUserId, serviceSlug: provider, purpose: "ai", sourceRunId: context.run.id });
+    if (ready) {
+      return { version: 1, service: provider, state: "ready", connectionId: ready.id, interactionId: null,
+        instruction: `${payload.serviceName} authentication is available for the next execution.` };
+    }
+    if (existing.issueId !== context.issue.id) {
+      // Keep the newest failed run for each task: an older run of the same
+      // task is superseded and must not be the one a resolution resumes.
+      const entry = { issueId: context.issue.id, agentId: context.agent.id, sourceRunId: context.run.id };
+      const linkedIssues = [...linked.filter(item => item.issueId !== entry.issueId), entry];
+      const next = connectionIntentPayloadSchema.parse({ ...payload, linkedIssues });
+      await db.update(issueThreadInteractions).set({ payload: next, updatedAt: new Date() })
+        .where(and(eq(issueThreadInteractions.id, existing.id), eq(issueThreadInteractions.status, "pending")));
+      await logActivity(db, {
+        companyId: context.run.companyId, actorType: "system", actorId: "connection-reconciliation",
+        agentId: context.agent.id, runId: context.run.id,
+        action: "issue.connection_intent_linked", entityType: "issue", entityId: context.issue.id,
+        details: { interactionId: existing.id, interactionKind: "connection_intent", ownerIssueId: existing.issueId,
+          connectionId, purpose: "ai" },
+      });
+    }
+    return {
+      version: 1, service: provider, state: "needs_user_action", connectionId: null, interactionId: existing.id,
+      instruction: "A connection card for this AI account is already waiting for the responsible user. Finish independent work, then yield and wait for continuation. Do not repeat this request.",
     };
   }
 
@@ -1498,6 +1559,8 @@ export function connectionIntentService(db: Db) {
   return {
     validate: (claims: ConnectionRunClaims) => loadRunContext(claims),
     requestForQueuedAgentSetup,
+    /** Internal: call only inside the connection's advisory-locked transaction. */
+    requestSharedAiRepair,
     usableConnectionForAgent,
     search,
     request,
@@ -1528,7 +1591,15 @@ export function connectionIntentService(db: Db) {
           attribution: attribution as unknown as AiConnectionAttribution & { identity: string } });
         if (outcome === "below_threshold" || outcome === "stale_generation" || outcome === "recovered") return null;
       }
-      return requestWithContext(context, binding.provider, { purpose: "ai" });
+      const repairConnectionId = (saved || managed) && attribution && typeof attribution.connectionId === "string"
+        ? attribution.connectionId : undefined;
+      if (!repairConnectionId) return requestWithContext(context, binding.provider, { purpose: "ai" });
+      // Serialise repair cards for one connection and recipient, so concurrent
+      // failures across agents and tasks raise exactly one card.
+      return db.transaction(async (tx) => {
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`ai-repair-card:${run.companyId}:${run.responsibleUserId}:${binding.provider}:${repairConnectionId}`}, 0))`);
+        return connectionIntentService(tx as unknown as Db).requestSharedAiRepair(context, binding.provider, repairConnectionId);
+      });
     },
     loadIntent,
     setupOptions,

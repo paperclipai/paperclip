@@ -1,6 +1,8 @@
 import { completeSetupTokenAiConnection } from "../services/setup-token-ai-connection.js";
 import { connectionIntentService } from "../services/connection-intents.js";
 import { connectionIntentDeliveryService } from "../services/connection-intent-delivery.js";
+import { satisfiedConnectionIntentService } from "../services/satisfied-connection-intents.js";
+import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
 import { localAiLoginService } from "../services/local-ai-login.js";
 // Background plan observations have their own provider-fixture coverage. Runtime
@@ -17,7 +19,7 @@ import { mkdtemp, realpath, rm, access, readFile, writeFile, stat } from "node:f
 import os from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
-import { createDb, type Db, activityLog, companies, agents, agentTaskSessions, heartbeatRuns, companyMemberships, connectionGrants, toolApplications, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, plugins, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests, companySecrets, companySecretVersions, secretAccessEvents, userSecretDefinitions, principalPermissionGrants } from "@paperclipai/db";
+import { createDb, type Db, activityLog, issueRelations, companies, agents, agentTaskSessions, heartbeatRuns, companyMemberships, connectionGrants, toolApplications, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, plugins, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests, companySecrets, companySecretVersions, secretAccessEvents, userSecretDefinitions, principalPermissionGrants } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { fetchCompanyQuotaWindows } from "../services/quota-windows.js";
 import { quotaCredentialRecoveryPath, quotaCredentialRecovery, quotaCredentialHash } from "../services/quota-credential-recovery.js";
@@ -1935,6 +1937,93 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       expect(await t.grantStatus()).toBe("needs_reauthorization");
       expect(await t.latches()).toBe(1);
       expect(results.filter(result => result?.state === "needs_user_action").length).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  describe("one AI repair card per connection and healthy-connection reconciliation", () => {
+    const binding = { provider: "anthropic", method: "api_key", mode: "responsible_user" } as const;
+    // The sweep pages through 50 pending cards per pass; cover every page.
+    const sweepAll = async () => {
+      const sweeper = satisfiedConnectionIntentService(db);
+      for (let page = 0; page < 20; page++) if ((await sweeper.sweepPending()).scanned < 50) break;
+    };
+    async function fleet(label: string, agentCount: number, options: { userId?: string } = {}) {
+      const userId = options.userId ?? `repair-card-${label}-${randomUUID()}`;
+      if (!options.userId) await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+      const agentIds = Array.from({ length: agentCount }, () => randomUUID());
+      for (const id of agentIds) await db.insert(agents).values({ id, companyId, name: `Repair ${label}`, adapterType: "claude_local", runtimeConfig: { aiConnection: binding } });
+      const account = await service.save(companyId, userId, { provider: "anthropic", method: "api_key", ownership: "personal", name: `Repair ${label}`, apiKey: "fixture", agentIds, allAgents: false }, `fixture-repair-${label}`);
+      const attribution = async (agentId: string) => {
+        const runtime = await prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: userId, adapterType: "claude_local", binding, config: {} });
+        try { return { ...runtime.attribution, identity: runtime.identity }; } finally { await runtime.cleanup(); }
+      };
+      const failedRun = async (agentId: string, issueId: string, aiConnection: Record<string, unknown> | null) => {
+        const [row] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "failed", errorCode: "claude_auth_required", responsibleUserId: userId,
+          startedAt: new Date(), finishedAt: new Date(), contextSnapshot: { issueId, ...(aiConnection ? { aiConnection } : {}) } }).returning();
+        return row!.id;
+      };
+      const tasks = [] as Array<{ agentId: string; issueId: string; runId?: string }>;
+      for (const agentId of agentIds) {
+        const issueId = randomUUID();
+        await db.insert(issues).values({ id: issueId, companyId, title: `Repair ${label}`, status: "in_progress", assigneeAgentId: agentId });
+        tasks.push({ agentId, issueId });
+      }
+      const reconnect = () => service.save(companyId, userId, { provider: "anthropic", method: "api_key", ownership: "personal", name: `Repair ${label}`,
+        connectionId: account.connectionId, apiKey: "fixture", agentIds, allAgents: false }, `fixture-repair-${label}-reconnected-${randomUUID()}`);
+      const cardsFor = async (issueIds: string[]) => (await db.select().from(issueThreadInteractions).where(and(
+        eq(issueThreadInteractions.companyId, companyId), eq(issueThreadInteractions.kind, "connection_intent"))))
+        .filter(card => issueIds.includes(card.issueId));
+      const deliverAll = async (cardIds: string[]) => {
+        const wakeup = vi.fn(async (wokenAgentId: string, opts: { idempotencyKey: string }) => {
+          await db.insert(agentWakeupRequests).values({ companyId, agentId: wokenAgentId, source: "automation", status: "queued", idempotencyKey: opts.idempotencyKey });
+          return null;
+        });
+        const delivery = connectionIntentDeliveryService(db, { wakeup } as never);
+        for (const id of cardIds) await delivery.deliver(id);
+        return wakeup;
+      };
+      return { userId, agentIds, account, attribution, failedRun, tasks, reconnect, cardsFor, deliverAll };
+    }
+    // Latch the shared connection with two genuine failures, then fail every task.
+    async function latchedFleet(label: string, agentCount: number) {
+      const f = await fleet(label, agentCount);
+      const identity = await f.attribution(f.agentIds[0]!);
+      await f.failedRun(f.agentIds[0]!, randomUUID(), identity);
+      for (const task of f.tasks) task.runId = await f.failedRun(task.agentId, task.issueId, identity);
+      return { ...f, identity };
+    }
+
+    it("raises exactly one card for concurrent failures across agents and links every affected task", async () => {
+      const f = await latchedFleet("dedup", 3);
+      const results = await Promise.all(f.tasks.map(task => connectionIntentService(db).requestForRunAuthFailure(task.runId!)));
+      const ids = new Set(results.map(result => result?.interactionId));
+      expect(ids.size).toBe(1);
+      expect([...ids][0]).toBeTruthy();
+      const cards = await f.cardsFor(f.tasks.map(task => task.issueId));
+      expect(cards).toHaveLength(1);
+      const payload = cards[0]!.payload as { repairConnectionId?: string; linkedIssues?: Array<{ issueId: string; agentId: string; sourceRunId: string }> };
+      expect(payload.repairConnectionId).toBe(f.account.connectionId);
+      const owner = f.tasks.find(task => task.issueId === cards[0]!.issueId)!;
+      expect(payload.linkedIssues?.map(entry => entry.issueId).sort()).toEqual(f.tasks.filter(task => task !== owner).map(task => task.issueId).sort());
+      // A repeated failure of a linked task reuses the same card.
+      const again = f.tasks.find(task => task !== owner)!;
+      expect((await connectionIntentService(db).requestForRunAuthFailure(again.runId!))?.interactionId).toBe(cards[0]!.id);
+      expect(await f.cardsFor(f.tasks.map(task => task.issueId))).toHaveLength(1);
+    });
+
+    it("wakes every linked task once after the person reconnects and completes the card", async () => {
+      const f = await latchedFleet("accepted", 3);
+      for (const task of f.tasks) await connectionIntentService(db).requestForRunAuthFailure(task.runId!);
+      const [card] = await f.cardsFor(f.tasks.map(task => task.issueId));
+      await f.reconnect();
+      await connectionIntentService(db).complete(card!.id, f.account.connectionId, f.userId);
+      const wakeup = await f.deliverAll([card!.id]);
+      expect(wakeup.mock.calls.map(([agentId]) => agentId).sort()).toEqual([...f.agentIds].sort());
+      for (const task of f.tasks) {
+        expect(wakeup).toHaveBeenCalledWith(task.agentId, expect.objectContaining({
+          payload: expect.objectContaining({ issueId: task.issueId, interactionStatus: "accepted" }) }));
+      }
+      expect(await f.deliverAll([card!.id])).not.toHaveBeenCalled();
     });
   });
 
