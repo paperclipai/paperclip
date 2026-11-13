@@ -3608,6 +3608,19 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     });
   }
 
+  /**
+   * Where a skill's files came from in a repository: its source, or for an editable copy or fork the source it was
+   * copied from. Audits map installed files back to repository paths with it.
+   */
+  function repositoryLayout(skill: Pick<CompanySkill, "metadata" | "sourceLocator" | "sourceRef">) {
+    const copied = isPlainRecord(skill.metadata?.copiedFromRepository) ? skill.metadata.copiedFromRepository : null;
+    const path = asString(skill.metadata?.skillSourcePath) ?? asString(copied?.path);
+    if (!path) return null;
+    return { url: asString(skill.metadata?.skillSourcePath) ? skill.sourceLocator : asString(copied?.url) ?? null,
+      ref: asString(skill.metadata?.skillSourcePath) ? skill.sourceRef : asString(copied?.ref) ?? null,
+      path, packageMode: asString(skill.metadata?.packageMode) ?? asString(copied?.packageMode) ?? null };
+  }
+
   /** Stores an approval record once per company and content; the versions one publish installs share it. */
   async function saveSecurityApproval(tx: DbOrTransaction, companyId: string, approval: SkillVersionSecurityApproval) {
     const contentHash = createHash("sha256").update(JSON.stringify(approval)).digest("hex");
@@ -3632,10 +3645,9 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
    * later never changes how an installed version audits.
    */
   async function installedVersionAcceptor(skill: CompanySkill, versionId: string, installedRoot: string) {
-    // An editable copy of a source skill keeps the repository path it was copied from.
-    const copied = isPlainRecord(skill.metadata?.copiedFromRepository) ? skill.metadata.copiedFromRepository : null;
-    const entrypoint = asString(skill.metadata?.skillSourcePath) ?? asString(copied?.path);
-    const packageMode = asString(skill.metadata?.packageMode) ?? asString(copied?.packageMode);
+    const layout = repositoryLayout(skill);
+    const entrypoint = layout?.path ?? null;
+    const packageMode = layout?.packageMode ?? null;
     if (!entrypoint) return undefined;
     const record = await installedSecurityApproval(skill.companyId, skill.id, versionId);
     if (!record) return undefined;
@@ -4704,6 +4716,10 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
       throw forbidden("Project skills cannot be published through a public link.");
     }
     const files = forkSource ? await collectVersionFileInventory(companyId, forkSource) : [];
+    const forkLayout = forkSource ? repositoryLayout(forkSource) : null;
+    // A fork copies the source's current files, so it keeps the approval that admitted them; audits still check exact bytes.
+    const forkApprovalId = forkSource?.currentVersionId ? (await db.select({ id: companySkillVersions.securityApprovalId }).from(companySkillVersions)
+      .where(and(eq(companySkillVersions.companyId, companyId), eq(companySkillVersions.id, forkSource.currentVersionId))))[0]?.id ?? null : null;
     const fallbackMarkdown = ["---", stringifyFrontmatter({ name: input.name,
       ...(input.description?.trim() ? { description: input.description.trim() } : {}) }),
       "---", "", `# ${input.name}`, "", input.description?.trim() || "Describe what this skill does.", ""].join("\n");
@@ -4730,12 +4746,14 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
       forkedFromSkillId: forkSource?.id ?? null, forkedFromCompanyId: forkSource?.companyId ?? null,
       metadata: { sourceKind: "managed", ...(forkSource ? {
         forkedFromSkillId: forkSource.id, forkedFromCompanyId: forkSource.companyId,
+        // A fork of a repository skill keeps where its files came from, so its approved files still map in audits.
+        ...(forkLayout ? { copiedFromRepository: forkLayout } : {}),
         forkedByAgentId: actor?.type === "agent" ? actor.agentId ?? null : null,
         forkedByUserId: actor?.type === "user" ? actor.userId ?? null : null,
       } : {}) },
     };
     const result = await managedContent.create(values, candidate, actor, {
-      ...publication, label: publication.label ?? "Initial version",
+      ...publication, label: publication.label ?? "Initial version", securityApprovalId: forkApprovalId,
       validate: async tx => {
         await publication.validate?.(tx);
         if (input.folderId) await folderService(tx as unknown as Db).validateSkillFolder(companyId, input.folderId);
