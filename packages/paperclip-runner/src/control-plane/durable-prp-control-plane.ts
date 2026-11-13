@@ -2117,6 +2117,7 @@ export class DurablePrpControlPlane {
   #beforeAuthenticatedConnection?: DurablePrpControlPlaneOptions["beforeAuthenticatedConnection"];
   #onProtocolIntegrityError?: DurablePrpControlPlaneOptions["onProtocolIntegrityError"];
   #onAuthenticatedConnection?: DurablePrpControlPlaneOptions["onAuthenticatedConnection"];
+  readonly #runnerExitListeners = new Set<() => void>();
   #protocolIntegrityError: NativeSessionProtocolIntegrityError | null = null;
   #eventDeliveryStall: { runId: string; ackedSourceSeq: number; since: number; failures: number } | null = null;
   #connectionLeaseTtlMs: number;
@@ -2197,6 +2198,19 @@ export class DurablePrpControlPlane {
     this.#readableStateListeners.add(listener);
     return () => {
       this.#readableStateListeners.delete(listener);
+    };
+  }
+
+  /**
+   * Notify when the Runner reports a completed suspend or shutdown. The
+   * listener runs after the result is saved and before its acknowledgement;
+   * the Runner exits once acknowledged, so a dropped connection after this
+   * point is that exit, not a transport loss.
+   */
+  onRunnerExitCommitted(listener: () => void): () => void {
+    this.#runnerExitListeners.add(listener);
+    return () => {
+      this.#runnerExitListeners.delete(listener);
     };
   }
 
@@ -4215,6 +4229,15 @@ export class DurablePrpControlPlane {
     command.result = structuredClone(result);
     this.#store.save();
     if (turnStart) crashPoint("runner.turn_start.after_controller_journal_before_db_checkpoint");
+    if (this.#isTerminalLifecycleCommand(command) && status === "completed") {
+      for (const listener of this.#runnerExitListeners) {
+        try {
+          listener();
+        } catch {
+          // An observer can never change the acknowledgement.
+        }
+      }
+    }
     this.#ackTerminalCommandResult(connection, command);
     this.#releaseServingLifecycle(connection, command);
     if (!this.#isTerminalLifecycleCommand(command) || connection.terminalLifecycleCommandId === null) {

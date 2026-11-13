@@ -3,9 +3,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 afterEach(() => vi.unstubAllEnvs());
 
-import { ACPX_CREDENTIAL_BINDING_ENV, CLAUDE_TODO_TOOLS_ENV, createAcpxCredentialBinding, createAcpxSidecarHostEnvironment, createSanitizedAcpxSpawnInput } from "./environment.js";
+import { ACPX_CREDENTIAL_BINDING_ENV, CLAUDE_CRON_DISABLE_ENV, CLAUDE_TODO_TOOLS_ENV, createAcpxCredentialBinding, createAcpxSidecarHostEnvironment, createSanitizedAcpxSpawnInput } from "./environment.js";
 
-const claudeLauncherEnv = { [CLAUDE_TODO_TOOLS_ENV]: "1" };
+const claudeLauncherEnv = { [CLAUDE_TODO_TOOLS_ENV]: "1", [CLAUDE_CRON_DISABLE_ENV]: "1" };
 
 describe("ACPX launch environment", () => {
   it("enables Claude's task-list tools for the native plan and only for Claude", () => {
@@ -13,6 +13,13 @@ describe("ACPX launch environment", () => {
     expect(createSanitizedAcpxSpawnInput(host, "claude").env[CLAUDE_TODO_TOOLS_ENV]).toBe("1");
     expect(createSanitizedAcpxSpawnInput({ PATH: "/bin" }, "claude").env[CLAUDE_TODO_TOOLS_ENV]).toBe("1");
     expect(createSanitizedAcpxSpawnInput(host, "codex").env[CLAUDE_TODO_TOOLS_ENV]).toBeUndefined();
+  });
+
+  it("disables Claude's own cron scheduler for every Claude launch and only for Claude", () => {
+    const host = { PATH: "/bin", [CLAUDE_CRON_DISABLE_ENV]: "0" };
+    expect(createSanitizedAcpxSpawnInput(host, "claude").env[CLAUDE_CRON_DISABLE_ENV]).toBe("1");
+    expect(createSanitizedAcpxSpawnInput({ PATH: "/bin", PAPERCLIP_RUNNER_HOME_MODE: "preconfigured" }, "claude").env[CLAUDE_CRON_DISABLE_ENV]).toBe("1");
+    expect(createSanitizedAcpxSpawnInput(host, "codex").env[CLAUDE_CRON_DISABLE_ENV]).toBeUndefined();
   });
 
   it("rejects task shell selectors without a controller-owned helper projection", () => {

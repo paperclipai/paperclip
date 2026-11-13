@@ -322,6 +322,14 @@ describe("durable task Retry admission", () => {
   it.each(["admission", "preparation"] as const)(
     "continues a fresh-workspace Retry that a shutdown stopped before provider work (selected at %s)", async selectedAt => {
       const f = await seedFreshAttemptStoppedByShutdown(selectedAt);
+      const refusal = { intentId: f.retryRequestId, workspaceId: randomUUID(), leaseId: randomUUID() };
+      if (selectedAt === "preparation") {
+        await db.insert(environmentLeases).values({ id: refusal.leaseId, companyId: f.input.companyId,
+          heartbeatRunId: f.parent.id, issueId: f.input.issueId, status: "released",
+          releasedAt: new Date(), cleanupStatus: "success", provider: "plugin:test:tasks" });
+        await db.update(heartbeatRuns).set({ contextSnapshot: { ...f.parent.contextSnapshot, retryWorkspaceRefusal: refusal } })
+          .where(eq(heartbeatRuns.id, f.parent.id));
+      }
       const scope = { companyId: f.input.companyId };
       await Promise.all([heartbeatService(db).reconcileStrandedAssignedIssues(scope),
         heartbeatService(db).reconcileStrandedAssignedIssues(scope)]);
@@ -334,6 +342,11 @@ describe("durable task Retry admission", () => {
       await expect(dispatchRun(f.input, successor)).resolves.toMatchObject({ interruptedRunId: f.parent.id });
       // Preparation of the successor selects the same fresh attempt.
       expect(await readFreshWorkspaceReadiness(db, successor)).toEqual(f.readiness);
+      if (selectedAt === "preparation") {
+        expect(successor.contextSnapshot?.retryWorkspaceRefusal).toEqual({ ...refusal, leaseId: null });
+        const [parent] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.parent.id));
+        expect(parent.contextSnapshot?.retryWorkspaceRefusal).toEqual(refusal);
+      }
       // A second upgrade stops the continuation too: it carries the same attempt on.
       const finishedAt = new Date(Date.now() - 30_000);
       const [stopped] = await db.update(heartbeatRuns).set({ status: "interrupted", errorCode: "server_shutdown_interrupted",
@@ -347,6 +360,28 @@ describe("durable task Retry admission", () => {
       await expect(dispatchRun(f.input, next[0]!)).resolves.toMatchObject({ interruptedRunId: stopped.id });
       expect(await readFreshWorkspaceReadiness(db, next[0]!)).toEqual(f.readiness);
     });
+  it("leaves the parent verification lease with cleanup before scheduling a shutdown successor", async () => {
+    const f = await seedFreshAttemptStoppedByShutdown("preparation");
+    const refusal = { intentId: f.retryRequestId, workspaceId: randomUUID(), leaseId: randomUUID() };
+    await db.insert(environmentLeases).values({ id: refusal.leaseId, companyId: f.input.companyId,
+      heartbeatRunId: f.parent.id, issueId: f.input.issueId, status: "pending_cleanup",
+      releasedAt: new Date(), cleanupStatus: "failed", provider: "plugin:test:tasks" });
+    const [parent] = await db.update(heartbeatRuns).set({ contextSnapshot: { ...f.parent.contextSnapshot, retryWorkspaceRefusal: refusal } })
+      .where(eq(heartbeatRuns.id, f.parent.id)).returning();
+    expect(await heartbeatService(db).scheduleBoundedRetry(parent.id, { now: new Date() }))
+      .toMatchObject({ outcome: "not_scheduled", errorCode: "workspace_verification_cleanup_pending" });
+    expect(await successorsOf(parent.id)).toHaveLength(0);
+    const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, refusal.leaseId));
+    expect(lease).toMatchObject({ status: "pending_cleanup", heartbeatRunId: parent.id });
+    await db.update(environmentLeases).set({ status: "released", cleanupStatus: "success" })
+      .where(eq(environmentLeases.id, refusal.leaseId));
+    await heartbeatService(db).reconcileStrandedAssignedIssues({ companyId: f.input.companyId });
+    const successors = await successorsOf(parent.id);
+    expect(successors).toHaveLength(1);
+    expect(successors[0].contextSnapshot?.retryWorkspaceRefusal).toEqual({ ...refusal, leaseId: null });
+    await expect(dispatchRun(f.input, successors[0])).resolves.toMatchObject({ interruptedRunId: parent.id });
+    expect(await readFreshWorkspaceReadiness(db, successors[0])).toEqual(f.readiness);
+  });
   it.each(["other_retry", "other_source", "failed_not_stopped"] as const)(
     "keeps a fresh-workspace Retry's own contract when it does not match: %s", async kind => {
       const f = await seedFreshAttemptStoppedByShutdown("admission");
