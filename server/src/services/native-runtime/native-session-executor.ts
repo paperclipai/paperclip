@@ -712,7 +712,6 @@ type WarmNativeSession = {
   pluginTaskId?: string;
   /** The sandbox that holds this owner's Runner, when it runs in one. */
   providerLeaseId?: string;
-  /** Reads this owner's sandbox lease rows after a failed idle close. */
   sandboxLeaseDb?: Db;
   /** A successor's retirement of this owner failed; it stays registered for its own sandbox. */
   retirementUnproven?: boolean;

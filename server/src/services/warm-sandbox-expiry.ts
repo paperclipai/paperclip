@@ -40,7 +40,6 @@ export const WARM_SANDBOX_IDLE_TIMEOUT_KEY = "warmSandboxIdleTimeoutMs";
 /** Marker on the stop-and-retain intent: the warm window ended. */
 export const WARM_WINDOW_EXPIRED_KEY = "warmWindowExpired";
 
-/** How long the stop waits past the window for the host's own idle close of the warm runner. */
 export const WARM_SANDBOX_IDLE_CLOSE_MARGIN_MS = 2 * 60_000;
 
 const STOP_PAGE_SIZE = 25;
