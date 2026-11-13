@@ -1782,6 +1782,35 @@ in-flight turn stay for the next same-run reattachment. An abort (a Stop or the
 recovery deadline), any identity or authority refusal, any other recovery
 failure, and a protocol integrity fault still stop it.
 
+A kept Runner can answer its WebSocket pings but no recovery command. On
+staging, a reattached Codex Runner authenticated and restored its session, then
+left `session.snapshot` unanswered (`pending ahead 0; last runner event seq 338
+76s ago`), and each later attempt adopted the same Runner and failed the same
+way until the attempt budget ended the run. When a same-run reattachment fails
+because its Runner left a recovery command unanswered (`PRP command <type> timed
+out`, or `runnerd exited while waiting for <type>`), and the failure is not an
+identity, authority or integrity refusal, the run records
+`adoptedRunnerUnanswered` on its failure and the next claim carries
+`replaceUnansweredRunner`. That attempt does not adopt the Runner again. After
+the usual identity checks it launches a fresh Runner from the Runner's saved
+journal and resumes the provider session from the saved checkpoint. This applies
+only while the old Runner is alive: the launch fence stops that
+`paperclip-runnerd` on the state folder and its whole process lineage, and fails
+the launch closed when it cannot prove them gone. A Runner that already exited
+mid-turn can leave provider or tool processes that the fence cannot find, so it
+keeps the fail-closed path below, and the task continues in a fresh session from
+the saved work. The fresh Runner
+restores the provider thread; its in-flight turn is reconciled from history and
+never submitted again. The provider attempt budget still bounds these attempts.
+
+A paginated Codex history read (`thread/turns/list`, `thread/items/list`) that
+fails without an answer is reported as `codex_history_read_failed: <method> read
+failed`, with the underlying error. Only a provider answer that refuses the method
+on its first page means the build lacks paginated history. Then the driver reads
+the complete thread once (`thread/read` with `includeTurns: true`) and uses its
+turns and items, failing closed when that read names another thread or omits
+turns, items or turn identities. A refusal on a later page still fails closed.
+
 A failed close can leave its `runner.suspend` (or `runner.shutdown`) pending in
 the saved journal of a Runner it kept alive. The controller sends one command at
 a time, so neither that command nor any command queued after it reached the
@@ -5896,7 +5925,8 @@ lifecycle `suspended`, an empty outbox and no pending terminal delivery, provide
 cleanup or warm transition, the retry launches a Runner from that state instead
 of adopting one. This matches a settled staged source. Any other exit stays
 fail-closed for reconciliation, and the provider attempt budget still bounds the
-retries.
+retries. A live Runner that left the previous attempt's recovery read unanswered
+is replaced, not adopted (see above).
 The final admitted provider attempt may use this path; attempts above the limit
 cannot. Process verification and the final state read share one recovery
 deadline. A timeout, command failure, transport failure or invalid saved JSON on
