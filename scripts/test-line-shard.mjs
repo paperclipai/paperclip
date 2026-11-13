@@ -12,9 +12,7 @@ function validateTests(tests, file) {
 }
 
 // Keep all cases registered on one source line together, including it.each
-// and loop-generated cases. With recorded durations, balance by recorded time;
-// cases without a record take the median. Without durations, balance by
-// collected case count.
+// and loop-generated cases.
 export function partitionTestLines(tests, count, file, durations = {}) {
   validateTests(tests, file);
   assert.ok(Number.isSafeInteger(count) && count > 0, "invalid shard count");
