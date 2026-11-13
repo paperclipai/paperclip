@@ -3,7 +3,7 @@ import type { ConnectionManagementContext } from "./connection-management.js";
 import { WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { withAccountHomeSecretMutationLock } from "@paperclipai/adapter-codex-local/server";
 import { syncConnectionCredentialBindings } from "./connection-credential-bindings.js";
-import { isAiAuthenticationFailure } from "./ai-auth-failure.js";
+import { AI_AUTHENTICATION_FAILURE_CODE_PATTERN, AI_AUTHENTICATION_FAILURE_CODES, isAiAuthenticationFailure } from "./ai-auth-failure.js";
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { and, eq, gte, inArray, or, sql } from "drizzle-orm";
@@ -1172,22 +1172,31 @@ export function aiConnectionService(db: Db) {
           outcome = "recovered";
           return;
         }
-        // Count genuine failures of this exact credential generation (the
-        // identity embeds it) since its last successful run. A success resets
-        // the count; other failure kinds (edge, quota, timeout) neither count
-        // nor reset. A probe has no run row, so its observation is recorded in
-        // the activity log below and counted from there.
+        // Count genuine failures of this exact credential generation since its
+        // last successful run. The identity is "grant:user:generation"; match
+        // grant and generation only, so on a shared grant every user's runs
+        // count together and any user's success resets the count. Other
+        // failure kinds (edge, quota, timeout) neither count nor reset, and are
+        // filtered before the scan limit so they cannot crowd out real ones. A
+        // probe has no run row, so its observation is recorded in the activity
+        // log below and counted from there.
+        const sameGeneration = and(
+          sql`${heartbeatRuns.contextSnapshot}->'aiConnection'->>'identity' like ${`${grant.id}:%`}`,
+          sql`${heartbeatRuns.contextSnapshot}->'aiConnection'->>'identity' like ${`%:${generation}`}`,
+        );
         const [lastSuccess] = await tx.select({ at: sql<Date>`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.createdAt})` })
           .from(heartbeatRuns).where(and(
-            eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.status, "succeeded"),
-            sql`${heartbeatRuns.contextSnapshot}->'aiConnection'->>'identity' = ${attribution.identity}`,
+            eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.status, "succeeded"), sameGeneration,
             gte(heartbeatRuns.createdAt, grant.updatedAt),
           ))
           .orderBy(sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.createdAt}) desc`).limit(1);
         const since = lastSuccess?.at ? new Date(Math.max(new Date(lastSuccess.at).getTime(), grant.updatedAt.getTime())) : grant.updatedAt;
         const failedRuns = await tx.select({ id: heartbeatRuns.id, errorCode: heartbeatRuns.errorCode }).from(heartbeatRuns).where(and(
-          eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.status, "failed"),
-          sql`${heartbeatRuns.contextSnapshot}->'aiConnection'->>'identity' = ${attribution.identity}`,
+          eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.status, "failed"), sameGeneration,
+          or(
+            sql`${heartbeatRuns.errorCode} ~* ${AI_AUTHENTICATION_FAILURE_CODE_PATTERN}`,
+            inArray(heartbeatRuns.errorCode, AI_AUTHENTICATION_FAILURE_CODES),
+          ),
           sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.createdAt}) >= ${since.toISOString()}::timestamptz`,
         )).limit(AI_AUTHENTICATION_FAILURE_SCAN_LIMIT);
         const probeObservations = await tx.select({ id: activityLog.id }).from(activityLog).where(and(
