@@ -276,6 +276,7 @@ import {
   type ActivityPublication,
 } from "./activity-log.js";
 import { buildIssueChanges } from "./issue-change-receipt.js";
+import { isHeartbeatWakeOnDemandEnabled } from "./heartbeat-policy.js";
 import { ensurePersonalPrivateProject } from "./projects.js";
 import { projectSafeChatPublication } from "./chat-publication-projection.js";
 import { issueThreadInteractionAttentionAgentAllowed } from "./issue-thread-interaction-resolution.js";
@@ -3581,6 +3582,7 @@ type IssueBlockerAttentionAgentRow = {
   id: string;
   companyId: string;
   status: string;
+  runtimeConfig: Record<string, unknown>;
 };
 
 async function activeRunMapForIssues(
@@ -4464,7 +4466,7 @@ async function readIssueBlockerAttentionBatch(
 
   const agentRows: IssueBlockerAttentionAgentRow[] = [];
   for (const chunk of chunkList([...agentIds], ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE)) {
-    agentRows.push(...await dbOrTx.select({ id: agents.id, companyId: agents.companyId, status: agents.status })
+    agentRows.push(...await dbOrTx.select({ id: agents.id, companyId: agents.companyId, status: agents.status, runtimeConfig: agents.runtimeConfig })
       .from(agents).where(and(eq(agents.companyId, companyId), inArray(agents.id, chunk))));
   }
   const agentsById = new Map(agentRows.map((agent) => [agent.id, agent]));
@@ -4476,7 +4478,8 @@ async function readIssueBlockerAttentionBatch(
     if (agentCanRun(target.agentId)) activeIssueIds.add(target.issueId);
   }
   for (const [issueId, ownerAgentId] of agentUnblockOwnerByIssueId) {
-    if (agentCanRun(ownerAgentId)) explicitWaitingIssueIds.add(issueId);
+    const owner = agentsById.get(ownerAgentId);
+    if (agentCanRun(ownerAgentId) && owner && isHeartbeatWakeOnDemandEnabled(owner)) explicitWaitingIssueIds.add(issueId);
   }
 
   type PathClassification = {
