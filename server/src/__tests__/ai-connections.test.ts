@@ -2192,6 +2192,33 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       expect(woken).toContain(f.tasks.find(task => task.issueId === card!.issueId)!.agentId);
       for (const held of [done!, blockedByDependency!, inReview!]) expect(woken).not.toContain(held.agentId);
     });
+
+    it("does not restore a linked task whose newer failure is on another connection", async () => {
+      const f = await latchedFleet("other-connection", 2);
+      for (const task of f.tasks) await connectionIntentService(db).requestForRunAuthFailure(task.runId!);
+      const [card] = await f.cardsFor(f.tasks.map(task => task.issueId));
+      const moved = f.tasks.find(task => task.issueId !== card!.issueId)!;
+      // The linked task's agent moves to connection B, which also fails.
+      const other = await service.save(companyId, f.userId, { provider: "anthropic", method: "api_key", ownership: "personal", name: "Repair other-connection B",
+        apiKey: "fixture", agentIds: [moved.agentId], allAgents: false }, "fixture-repair-other-connection-b");
+      await db.update(agents).set({ runtimeConfig: { aiConnection: { ...binding, mode: "delegated", connectionId: other.connectionId, grantId: other.grantId } } })
+        .where(eq(agents.id, moved.agentId));
+      await db.update(connectionGrants).set({ status: "needs_reauthorization" }).where(eq(connectionGrants.id, other.grantId));
+      const [onB] = await db.insert(heartbeatRuns).values({ companyId, agentId: moved.agentId, status: "failed", errorCode: "configuration_incomplete",
+        responsibleUserId: f.userId, startedAt: new Date(), finishedAt: new Date(),
+        resultJson: { configurationIncomplete: { reason: "ai_connection_unavailable" } }, contextSnapshot: { issueId: moved.issueId } }).returning();
+      await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, moved.issueId));
+      await issueRecoveryActionService(db).upsertSourceScoped({ companyId, sourceIssueId: moved.issueId, kind: "configuration_validation",
+        cause: "configuration_incomplete", fingerprint: `ai:${moved.issueId}`, nextAction: "Reconnect", ownerType: "board", evidence: { latestRunId: onB!.id } });
+      // Connection A is reconnected and its card reconciled.
+      await f.reconnect();
+      await sweepAll();
+      expect((await f.cardsFor([card!.issueId]))[0]!.status).toBe("expired");
+      const wakeup = await f.deliverAll([card!.id]);
+      expect(wakeup.mock.calls.map(([agentId]) => agentId)).not.toContain(moved.agentId);
+      expect((await db.select().from(issues).where(eq(issues.id, moved.issueId)))[0]!.status).toBe("blocked");
+      expect(await issueRecoveryActionService(db).getActiveForIssue(companyId, moved.issueId)).toMatchObject({ cause: "configuration_incomplete" });
+    });
   });
 
   it("offers a compatible connection for legacy auth failures without silently adopting it", async () => {

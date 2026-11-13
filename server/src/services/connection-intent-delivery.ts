@@ -168,10 +168,23 @@ export function connectionIntentDeliveryService(db: Db, heartbeat: Pick<Heartbea
   async function wakeLinkedAiRepairTasks(interaction: typeof issueThreadInteractions.$inferSelect, connectionRestored: boolean) {
     const payload = connectionIntentPayloadSchema.safeParse(interaction.payload).data;
     if (payload?.purpose !== "ai" || !payload.linkedIssues?.length || !interaction.addresseeUserId) return;
+    // The connection this card was resolved against: the one a person chose,
+    // or the repaired connection a system reconciliation recorded.
+    const resolvedConnectionId = interaction.result && "connectionId" in interaction.result
+      && typeof interaction.result.connectionId === "string" ? interaction.result.connectionId : payload.repairConnectionId;
     for (const linked of payload.linkedIssues) {
       const [issue] = await db.select().from(issues).where(and(
         eq(issues.id, linked.issueId), eq(issues.companyId, interaction.companyId)));
       if (!issue || issue.assigneeAgentId !== linked.agentId) continue;
+      // Check the agent's usable connection before changing the task: a task
+      // whose agent now fails on another connection waits on that connection's
+      // own card, and this card must not restore or wake it.
+      if (connectionRestored) {
+        const usable = await connectionIntentService(db).usableConnectionForAgent({ companyId: interaction.companyId,
+          agentId: linked.agentId, responsibleUserId: interaction.addresseeUserId, serviceSlug: payload.serviceSlug,
+          purpose: "ai", sourceRunId: linked.sourceRunId });
+        if (!usable || (resolvedConnectionId && usable.id !== resolvedConnectionId)) continue;
+      }
       let current = issue;
       if (connectionRestored && current.status === "blocked") {
         const restored = await restoreAiBlockedTask({ issue: current, interaction },
@@ -180,9 +193,6 @@ export function connectionIntentDeliveryService(db: Db, heartbeat: Pick<Heartbea
         current = restored;
       }
       if (!await waitingOnAiRepair(current, linked.sourceRunId)) continue;
-      if (connectionRestored && !await connectionIntentService(db).usableConnectionForAgent({ companyId: interaction.companyId,
-        agentId: linked.agentId, responsibleUserId: interaction.addresseeUserId, serviceSlug: payload.serviceSlug,
-        purpose: "ai", sourceRunId: linked.sourceRunId })) continue;
       const key = connectionIntentWakeKey(interaction.id, interaction.status, current.id);
       const [woken] = await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
         eq(agentWakeupRequests.companyId, interaction.companyId), eq(agentWakeupRequests.idempotencyKey, key),
