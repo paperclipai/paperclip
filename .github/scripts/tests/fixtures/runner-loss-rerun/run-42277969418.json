@@ -970,10 +970,130 @@
         "message": "Process completed with exit code 1.",
         "raw_details": ""
       }
+    ],
+    "128101015916": [
+      {
+        "path": ".github",
+        "start_line": 130,
+        "end_line": 130,
+        "annotation_level": "failure",
+        "title": "",
+        "message": "The operation was canceled.",
+        "raw_details": ""
+      }
+    ],
+    "128101015978": [
+      {
+        "path": ".github",
+        "start_line": 130,
+        "end_line": 130,
+        "annotation_level": "failure",
+        "title": "",
+        "message": "The operation was canceled.",
+        "raw_details": ""
+      }
+    ],
+    "128101016153": [
+      {
+        "path": ".github",
+        "start_line": 133,
+        "end_line": 133,
+        "annotation_level": "failure",
+        "title": "",
+        "message": "The operation was canceled.",
+        "raw_details": ""
+      }
+    ],
+    "128101016200": [
+      {
+        "path": ".github",
+        "start_line": 133,
+        "end_line": 133,
+        "annotation_level": "failure",
+        "title": "",
+        "message": "The operation was canceled.",
+        "raw_details": ""
+      }
+    ],
+    "128101016304": [
+      {
+        "path": ".github",
+        "start_line": 133,
+        "end_line": 133,
+        "annotation_level": "failure",
+        "title": "",
+        "message": "The operation was canceled.",
+        "raw_details": ""
+      }
+    ],
+    "128101016340": [
+      {
+        "path": ".github",
+        "start_line": 133,
+        "end_line": 133,
+        "annotation_level": "failure",
+        "title": "",
+        "message": "The operation was canceled.",
+        "raw_details": ""
+      }
+    ],
+    "128101016402": [
+      {
+        "path": ".github",
+        "start_line": 133,
+        "end_line": 133,
+        "annotation_level": "failure",
+        "title": "",
+        "message": "The operation was canceled.",
+        "raw_details": ""
+      }
+    ],
+    "128101016432": [
+      {
+        "path": ".github",
+        "start_line": 133,
+        "end_line": 133,
+        "annotation_level": "failure",
+        "title": "",
+        "message": "The operation was canceled.",
+        "raw_details": ""
+      }
+    ],
+    "128101016453": [
+      {
+        "path": ".github",
+        "start_line": 133,
+        "end_line": 133,
+        "annotation_level": "failure",
+        "title": "",
+        "message": "The operation was canceled.",
+        "raw_details": ""
+      }
+    ],
+    "128101016461": [
+      {
+        "path": ".github",
+        "start_line": 133,
+        "end_line": 133,
+        "annotation_level": "failure",
+        "title": "",
+        "message": "The operation was canceled.",
+        "raw_details": ""
+      }
     ]
   },
   "logs": {
-    "128101016102": "2026-11-06T19:24:29.1450769Z ##[error]The runner has received a shutdown signal. This can happen when the runner service is stopped, or a manually started runner is canceled.\n2026-11-06T19:24:29.1898916Z ##[error]The operation was canceled.\n2026-11-06T19:24:29.1977091Z Cleaning up orphan processes\n"
+    "128101016102": "2026-11-06T19:24:29.1450769Z ##[error]The runner has received a shutdown signal. This can happen when the runner service is stopped, or a manually started runner is canceled.\n2026-11-06T19:24:29.1898916Z ##[error]The operation was canceled.\n2026-11-06T19:24:29.1977091Z Cleaning up orphan processes\n",
+    "128101015916": "2026-11-06T19:24:29.1391073Z ##[error]The runner has received a shutdown signal. This can happen when the runner service is stopped, or a manually started runner is canceled.\n2026-11-06T19:24:41.6585509Z ##[error]The operation was canceled.\n",
+    "128101015978": "2026-11-06T19:24:29.1982327Z ##[error]The runner has received a shutdown signal. This can happen when the runner service is stopped, or a manually started runner is canceled.\n2026-11-06T19:24:41.7170843Z ##[error]The operation was canceled.\n",
+    "128101016153": "2026-11-06T19:24:29.1786229Z ##[error]The runner has received a shutdown signal. This can happen when the runner service is stopped, or a manually started runner is canceled.\n2026-11-06T19:24:41.6972420Z ##[error]The operation was canceled.\n",
+    "128101016200": "2026-11-06T19:24:29.1721198Z ##[error]The runner has received a shutdown signal. This can happen when the runner service is stopped, or a manually started runner is canceled.\n2026-11-06T19:24:41.6975527Z ##[error]The operation was canceled.\n",
+    "128101016304": "2026-11-06T19:24:29.1377822Z ##[error]The runner has received a shutdown signal. This can happen when the runner service is stopped, or a manually started runner is canceled.\n2026-11-06T19:24:41.6673266Z ##[error]The operation was canceled.\n",
+    "128101016340": "2026-11-06T19:24:29.1341317Z ##[error]The runner has received a shutdown signal. This can happen when the runner service is stopped, or a manually started runner is canceled.\n2026-11-06T19:24:41.6500655Z ##[error]The operation was canceled.\n",
+    "128101016402": "2026-11-06T19:24:29.1167345Z ##[error]The runner has received a shutdown signal. This can happen when the runner service is stopped, or a manually started runner is canceled.\n2026-11-06T19:24:41.6423716Z ##[error]The operation was canceled.\n",
+    "128101016432": "2026-11-06T19:24:29.0692803Z ##[error]The runner has received a shutdown signal. This can happen when the runner service is stopped, or a manually started runner is canceled.\n2026-11-06T19:24:41.5851488Z ##[error]The operation was canceled.\n",
+    "128101016453": "2026-11-06T19:24:29.2339015Z ##[error]The runner has received a shutdown signal. This can happen when the runner service is stopped, or a manually started runner is canceled.\n2026-11-06T19:24:41.7586244Z ##[error]The operation was canceled.\n",
+    "128101016461": "2026-11-06T19:24:29.1057916Z ##[error]The runner has received a shutdown signal. This can happen when the runner service is stopped, or a manually started runner is canceled.\n2026-11-06T19:24:41.6269036Z ##[error]The operation was canceled.\n"
   },
   "total_count": 48
 }

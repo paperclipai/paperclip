@@ -20,7 +20,7 @@ import { awaitingQuestionAnswer, collectQuestionArtifacts, questionStep } from "
 import { isSessionFault, rotateAgentSession } from "./session-faults.js";
 import { awaitingRewake, collectRewakeArtifacts, isRewakeWorkload, rewakeStep } from "./rewake.js";
 import { withLongTurn } from "./long-turn.js";
-import { collectStagingMixArtifacts, holdsRetry, stagingMixDefinition, stagingMixStep } from "./staging-mix.js";
+import { collectStagingMixArtifacts, followUpAfterEndRange, holdsRetry, stagingMixDefinition, stagingMixStep } from "./staging-mix.js";
 import { captureRemoteWorkspaceFiles, readRemoteWorkspaceFile } from "./remote-workspace-files.js";
 import { taskFaultSchedule } from "./scheduler.js";
 import { g1ChildTitle, g1Decision, workloadDefinitions, type WorkloadAgents } from "./workloads.js";
@@ -492,7 +492,12 @@ export class TaskObserver {
     await this.captureRemoteFilesAtDone(sample);
     this.readySince = sample.reachable && sample.serverReady ? (this.readySince ?? now) : null;
     await this.observeBenchProgress();
+    const afterEndPosts = this.record.stagingMix?.afterEndFollowUps?.length ?? 0;
     await this.governanceStep(sample, now);
+    if ((this.record.stagingMix?.afterEndFollowUps?.length ?? 0) > afterEndPosts) {
+      this.restCandidateSince = null;
+      return;
+    }
     if (this.journey && await this.journey.step({ sample, now, pendingFaults: this.pendingFaults,
       quiet: sample.reachable && sample.serverReady && !this.supervisor.faultInProgress })) this.restCandidateSince = null;
     if (await this.observeChildStalls(now)) {
@@ -859,6 +864,8 @@ export class TaskObserver {
     if (this.plan.workload === "H1") return Boolean(governance?.budgetPausedAt) && !governance?.resume && !governance?.pauseLostAt;
     if (this.plan.workload === "Q1" || this.plan.workload === "Q4") return awaitingQuestionAnswer(this.record);
     if (isRewakeWorkload(this.plan.workload)) return awaitingRewake(this.record);
+    const afterEnd = followUpAfterEndRange();
+    if (afterEnd && this.plan.stagingMix?.followUpAfterMs != null) return (this.record.stagingMix?.afterEndFollowUps?.length ?? 0) < afterEnd.count;
     return false;
   }
 

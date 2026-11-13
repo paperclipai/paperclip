@@ -13,10 +13,13 @@ import {
 const fixture = (runId) => JSON.parse(readFileSync(
   new URL(`./fixtures/runner-loss-rerun/run-${runId}.json`, import.meta.url), "utf8",
 ));
-const MIXED = 42271918832; // six lost runners, one shutdown in the log, one real test timeout
+const MIXED = 42271918832; // six lost runners, four shutdowns in the log, one real test timeout
 const REAL = 42264785415; // a real assertion failure
 const ALL_LOST = 42272083862; // one lost runner
-const LOG_ONLY = 42277969418; // shutdown signal visible only in the job log
+const LOG_ONLY = 42277969418; // shutdown signals visible only in the job logs
+const CANCELLED_RUN = 43285064435;
+const NOISY_LOST = 43325855069;
+const CANCELLED_MESSAGE = "The operation was canceled.";
 const workflow = readFileSync(new URL("../../workflows/ci-runner-loss-rerun.yml", import.meta.url), "utf8");
 
 const json = (body, headers = {}) => new Response(JSON.stringify(body), {
@@ -58,7 +61,7 @@ function fakeGithub(data, {
     if (match) return json(data.annotations[match[1]] ?? []);
     match = route.match(/^\/actions\/jobs\/(\d+)\/logs$/);
     if (match) return new Response(data.logs[match[1]] ?? "", { status: 200 });
-    if (route === `/commits/${run.head_sha}/pulls`) return json(pulls ?? [openPr]);
+    if (route === `/commits/${run.head_sha}/pulls`) return json((typeof pulls === "function" ? pulls(calls) : pulls) ?? [openPr]);
     if (route === "/actions/workflows/pr.yml/runs") {
       const runs = prRuns ?? [{ id: run.id, conclusion: "failure" }];
       return json({ total_count: runs.length, workflow_runs: runs });
@@ -106,19 +109,131 @@ test("a shutdown signal found only in the job log counts as runner loss", async 
   assert.deepEqual(data.annotations["128101016102"].map((annotation) => annotation.message), ["The operation was canceled."]);
   const { decision, calls } = await runMain(data);
   assert.equal(decision.rerun, true);
-  assert.match(decision.jobs[0].evidence, /job log/);
+  assert.equal(decision.jobs.length, 11);
+  assert.ok(decision.jobs.every((job) => job.lost && /job log/.test(job.evidence)));
   assert.ok(calls.some((call) => call.path.endsWith("/actions/jobs/128101016102/logs")));
   assert.equal(posted(calls).length, 1);
+});
+
+test("a cancelled run whose cancelled job lost its runner is re-run once", async () => {
+  const data = fixture(CANCELLED_RUN);
+  assert.equal(data.run.conclusion, "cancelled");
+  const { decision, calls } = await runMain(data, {}, { conclusion: "cancelled" });
+  assert.equal(decision.rerun, true);
+  assert.deepEqual(decision.jobs.map((job) => [job.name, job.lost]), [["ci / General tests (server (8/12))", true]]);
+  assert.match(decision.jobs[0].evidence, /job log/);
+  assert.deepEqual(posted(calls).map((call) => call.path),
+    [`/repos/paperclipai/paperclip/actions/runs/${CANCELLED_RUN}/rerun-failed-jobs`]);
+});
+
+test("runner loss in the log wins over error annotations the workload printed", async () => {
+  const data = fixture(NOISY_LOST);
+  const suite = data.jobs.find((job) => job.name === "ci / Runner support suite");
+  assert.ok(data.annotations[suite.id].some((annotation) => annotation.message === "gateway_indexing_incomplete"));
+  const { decision, calls } = await runMain(data);
+  assert.equal(decision.rerun, true);
+  assert.deepEqual(decision.jobs.map((job) => [job.name, job.lost]), [
+    ["ci / Runner support suite", true],
+    ["ci / General tests (server (2/12))", true],
+  ]);
+  assert.equal(posted(calls).length, 1);
+});
+
+function cancelEverything(data, { log = `2026-11-12T19:03:32.0000000Z ##[error]${CANCELLED_MESSAGE}\n` } = {}) {
+  data.annotations = {};
+  data.logs = {};
+  for (const [index, job] of data.jobs.entries()) {
+    if (job.name.startsWith("ci / gate / ")) continue;
+    job.conclusion = "cancelled";
+    if (index % 4 === 3) continue;
+    data.annotations[job.id] = [{ annotation_level: "failure", message: CANCELLED_MESSAGE }];
+    data.logs[job.id] = log;
+  }
+  return data;
+}
+
+test("a run superseded by a new push is not re-run, and no job is classified", async () => {
+  const data = cancelEverything(fixture(CANCELLED_RUN));
+  assert.ok(data.jobs.filter((job) => job.conclusion === "cancelled").length >= 40);
+  const { decision, calls } = await runMain(data, {
+    pulls: [{ state: "open", base: { repo: { id: 1170821064 } }, head: { sha: "0".repeat(40), repo: { id: 1170821064 } } }],
+  }, { conclusion: "cancelled" });
+  assert.equal(decision.rerun, false);
+  assert.match(decision.reason, /no open pull request/);
+  assert.equal(calls.some((call) => call.path.includes("/check-runs/") || call.path.endsWith("/logs")), false);
+  assert.equal(posted(calls).length, 0);
+});
+
+test("a push while job logs are read stops the re-run", async () => {
+  const data = fixture(CANCELLED_RUN);
+  const moved = [{ state: "open", base: { repo: { id: 1170821064 } }, head: { sha: "0".repeat(40), repo: { id: 1170821064 } } }];
+  const { decision, calls } = await runMain(data, {
+    pulls: (seen) => (seen.some((call) => call.path.endsWith("/logs")) ? moved : undefined),
+  }, { conclusion: "cancelled" });
+  assert.equal(decision.rerun, false);
+  assert.match(decision.reason, /no open pull request/);
+  assert.equal(decision.jobs[0].lost, true);
+  assert.equal(calls.filter((call) => call.path.endsWith("/pulls")).length, 2);
+  assert.equal(posted(calls).length, 0);
+});
+
+test("a run a person cancelled is not re-run", async () => {
+  const data = cancelEverything(fixture(CANCELLED_RUN));
+  const { decision, calls } = await runMain(data, {}, { conclusion: "cancelled" });
+  assert.equal(decision.rerun, false);
+  assert.ok(decision.jobs.length >= 40);
+  assert.equal(decision.jobs.some((job) => job.lost), false);
+  assert.match(decision.reason, /failed jobs did not lose their runner/);
+  assert.equal(posted(calls).length, 0);
+});
+
+test("a cancelled run with one lost job and one real test failure is not re-run", async () => {
+  const data = fixture(CANCELLED_RUN);
+  const failing = data.jobs.find((job) => job.name === "ci / General tests (server (1/12))");
+  failing.conclusion = "failure";
+  data.annotations[failing.id] = [
+    { annotation_level: "failure", message: "AssertionError: expected 'queued' to be 'running'" },
+    { annotation_level: "failure", message: "Process completed with exit code 1." },
+  ];
+  const { decision, calls } = await runMain(data, {}, { conclusion: "cancelled" });
+  assert.equal(decision.rerun, false);
+  assert.deepEqual(decision.jobs.map((job) => [job.name, job.lost]), [
+    ["ci / General tests (server (1/12))", false],
+    ["ci / General tests (server (8/12))", true],
+  ]);
+  assert.match(decision.reason, /1 of 2 failed jobs did not lose their runner/);
+  assert.equal(posted(calls).length, 0);
+});
+
+test("a cancelled run is re-run at most once", async () => {
+  const { decision, calls } = await runMain(fixture(CANCELLED_RUN), {
+    mutateRun: (run) => ({ ...run, run_attempt: 2 }),
+  }, { conclusion: "cancelled" });
+  assert.equal(decision.rerun, false);
+  assert.match(decision.reason, /attempt 2/);
+  assert.deepEqual(calls.map((call) => call.path), [`/repos/paperclipai/paperclip/actions/runs/${CANCELLED_RUN}`]);
+});
+
+test("a cancelled routing gate is left for a human re-run", async () => {
+  const data = fixture(CANCELLED_RUN);
+  const gate = data.jobs.find((job) => job.name === "ci / gate / Select trusted runner");
+  gate.conclusion = "cancelled";
+  data.annotations[gate.id] = [{ annotation_level: "failure", message: CANCELLED_MESSAGE }];
+  data.logs[gate.id] = data.logs[Object.keys(data.logs)[0]];
+  const { decision, calls } = await runMain(data, {}, { conclusion: "cancelled" });
+  assert.equal(decision.rerun, false);
+  assert.match(decision.jobs.find((job) => job.id === gate.id).evidence, /routing gate/);
+  assert.equal(posted(calls).length, 0);
 });
 
 test("mixed runner loss and a real test failure: no re-run", async () => {
   const { decision, calls, summary } = await runMain(fixture(MIXED));
   assert.equal(decision.rerun, false);
-  assert.equal(decision.jobs.length, 8);
+  assert.equal(decision.jobs.length, 11);
   assert.deepEqual(decision.jobs.filter((job) => !job.lost).map((job) => job.name), ["ci / General tests (workspaces-a (1/2))"]);
   assert.equal(decision.jobs.find((job) => job.name === "ci / Verify Paperclip Runner (vitest package)").lost, true);
   assert.equal(posted(calls).length, 0);
-  assert.match(decision.reason, /1 of 8 failed jobs did not lose their runner/);
+  assert.match(decision.reason, /1 of 11 failed jobs did not lose their runner/);
   assert.match(summary, /\*\*No automatic re-run\*\*/);
 });
 
@@ -209,7 +324,7 @@ test("job listing follows Link pagination across pages", async () => {
   const pages = github.calls.filter((call) => call.path.endsWith("/attempts/1/jobs"));
   assert.deepEqual(pages.map((call) => new URLSearchParams(call.query).get("page")), [null, "2", "3"]);
   // Failed jobs on pages 2 and 3 are all classified.
-  assert.equal(decision.jobs.length, 8);
+  assert.equal(decision.jobs.length, 11);
   assert.equal(decision.rerun, false);
 });
 
@@ -236,9 +351,20 @@ test("classification is conservative about cancelled jobs", async () => {
   // A job timeout also cancels the step, but adds its own failure annotation.
   const timedOut = await classifyJob({ id: 1 }, {
     annotations: [{ annotation_level: "failure", message: "The job has exceeded the maximum execution time of 30m0s" }, ...cancelled],
-    readLog: async () => { throw new Error("log must not be read"); },
+    readLog: async () => "##[error]The job has exceeded the maximum execution time of 30m0s\n##[error]The operation was canceled.\n",
   });
   assert.equal(timedOut.lost, false);
+  assert.match(timedOut.evidence, /maximum execution time/);
+  const notStarted = await classifyJob({ id: 1, conclusion: "cancelled" }, {
+    annotations: [],
+    readLog: async () => { throw new Error("log must not be read"); },
+  });
+  assert.equal(notStarted.lost, false);
+  const exitOnly = await classifyJob({ id: 1 }, {
+    annotations: [{ annotation_level: "failure", message: "Process completed with exit code 1." }],
+    readLog: async () => { throw new Error("log must not be read"); },
+  });
+  assert.equal(exitOnly.lost, false);
   // Notices and warnings are not failure evidence.
   const warning = await classifyJob({ id: 1 }, {
     annotations: [{ annotation_level: "warning", message: "The self-hosted runner lost communication with the server." }],
@@ -250,7 +376,7 @@ test("classification is conservative about cancelled jobs", async () => {
   assert.equal(logShowsRunnerLoss(fixture(MIXED).logs["128078674151"]), true);
 });
 
-test("a real failure before the runner was lost is not counted as runner loss", async () => {
+test("runner-loss evidence wins over other failure annotations in the same job", async () => {
   const lostMessage = "The self-hosted runner lost communication with the server. Verify the machine is running.";
   const noLog = async () => { throw new Error("log must not be read"); };
   // A test fails, then the runner is lost during an always() upload step.
@@ -262,8 +388,8 @@ test("a real failure before the runner was lost is not counted as runner loss", 
     ],
     readLog: noLog,
   });
-  assert.equal(testThenLost.lost, false);
-  assert.match(testThenLost.evidence, /Test timed out/);
+  assert.equal(testThenLost.lost, true);
+  assert.match(testThenLost.evidence, /lost communication/);
   // The order of the annotations does not matter.
   const lostThenExit = await classifyJob({ id: 1 }, {
     annotations: [
@@ -272,7 +398,22 @@ test("a real failure before the runner was lost is not counted as runner loss", 
     ],
     readLog: noLog,
   });
-  assert.equal(lostThenExit.lost, false);
+  assert.equal(lostThenExit.lost, true);
+  const noisy = [
+    { annotation_level: "failure", message: "gateway_indexing_incomplete" },
+    { annotation_level: "failure", message: CANCELLED_MESSAGE },
+  ];
+  const noisyLost = await classifyJob({ id: 1 }, {
+    annotations: noisy,
+    readLog: async () => "##[error]gateway_indexing_incomplete\n##[error]The runner has received a shutdown signal.\n",
+  });
+  assert.equal(noisyLost.lost, true);
+  const noisyCancelled = await classifyJob({ id: 1 }, {
+    annotations: noisy,
+    readLog: async () => "##[error]gateway_indexing_incomplete\n##[error]The operation was canceled.\n",
+  });
+  assert.equal(noisyCancelled.lost, false);
+  assert.match(noisyCancelled.evidence, /gateway_indexing_incomplete/);
   // Runner loss with a cancellation only is still runner loss.
   const lostAndCancelled = await classifyJob({ id: 1 }, {
     annotations: [
@@ -292,14 +433,15 @@ test("summary cells cannot break the table", () => {
   assert.match(summary, /\| ci \/ a\\\|b \| no \| line one line \\\| two \|/);
 });
 
-test("workflow acts only on failed first attempts of the canonical PR workflow", () => {
+test("workflow acts only on failed or cancelled first attempts of the canonical PR workflow", () => {
   const condition = workflow.match(/^ {4}if: >-\n((?: {6}.+\n)+)/m)?.[1].replace(/\s+/g, " ").trim();
   assert.equal(condition, [
     "github.repository == 'paperclipai/paperclip' &&",
     "github.repository_id == '1170821064' &&",
     "github.event.workflow_run.event == 'pull_request' &&",
     "github.event.workflow_run.path == '.github/workflows/pr.yml' &&",
-    "github.event.workflow_run.conclusion == 'failure' &&",
+    "(github.event.workflow_run.conclusion == 'failure' ||",
+    "github.event.workflow_run.conclusion == 'cancelled') &&",
     "github.event.workflow_run.run_attempt == 1",
   ].join(" "));
   assert.match(workflow, /^on:\n {2}workflow_run:\n {4}workflows: \[PR\]\n {4}types: \[completed\]$/m);
