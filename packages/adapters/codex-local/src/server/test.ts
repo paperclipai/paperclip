@@ -22,6 +22,7 @@ import {
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
+import { copyBackCodexAuth } from "./codex-auth-copyback.js";
 import { parseCodexJsonl } from "./parse.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { codexHomeDir, readCodexAuthInfo } from "./quota.js";
@@ -103,12 +104,17 @@ async function prepareCodexHelloProbe(input: {
   let probeHomeLocalDir: string | null = null;
 
   const cleanup = async () => {
-    await preparedRuntime?.restoreWorkspace().catch(() => {});
-    if (preparedRuntimeWorkspaceLocalDir) {
-      await fs.rm(preparedRuntimeWorkspaceLocalDir, { recursive: true, force: true }).catch(() => {});
-    }
-    if (probeHomeLocalDir) {
-      await fs.rm(probeHomeLocalDir, { recursive: true, force: true }).catch(() => {});
+    try {
+      await preparedRuntime?.restoreWorkspace();
+    } catch (error) {
+      if (input.managedAiConnection) throw error;
+    } finally {
+      if (preparedRuntimeWorkspaceLocalDir) {
+        await fs.rm(preparedRuntimeWorkspaceLocalDir, { recursive: true, force: true }).catch(() => {});
+      }
+      if (probeHomeLocalDir) {
+        await fs.rm(probeHomeLocalDir, { recursive: true, force: true }).catch(() => {});
+      }
     }
   };
 
@@ -207,6 +213,15 @@ async function prepareCodexHelloProbe(input: {
           key: "home",
           localDir: probeHomeLocalDir,
           followSymlinks: true,
+          restore: input.managedAiConnection
+            ? async ({ assetDir, readFile }) => {
+              await copyBackCodexAuth({
+                readSandboxAuth: () => readFile(path.posix.join(assetDir, "auth.json")),
+                hostAuthPath: path.join(effectiveHome, "auth.json"),
+                log: async () => {},
+              });
+            }
+            : undefined,
         },
       ],
     });
