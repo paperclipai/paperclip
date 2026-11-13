@@ -1564,13 +1564,15 @@ It first runs the steps that write shared outputs, one at a time:
    (`typecheck-test-programs.mjs --prepare-only`).
 4. Typecheck the Runner. Its typecheck rebuilds the eval kernel, which other
    checks read, so it cannot run beside them.
+5. Run the CLI guidance test. It runs here, before the parallel checks, because
+   one of its cases took 17 seconds beside them against a 15 second timeout.
 
 Then it runs the remaining checks in parallel, as many as the machine has CPUs
 (default) or `--concurrency`. Each `tsc` uses one thread. The server
 declaration layers start first, because the test layers and the test projects
-read them. The test programs, the other build-gap workspaces and the CLI
-guidance test run at a lower CPU priority, so they use only the CPU that the
-server layers and the release registry tests leave free.
+read them. The test programs and the other build-gap workspaces run at a lower
+CPU priority, so they use only the CPU that the server layers and the release
+registry tests leave free.
 
 A passing check prints its output in a collapsed log group. A failing check
 prints its output in full, between `=== FAILED ...` and `=== end of ...`
@@ -1580,6 +1582,10 @@ of each check's start time, duration and result. If a preparation step fails,
 nothing else runs.
 
 To add a check to the job, add it to `planLane` in the script.
+
+PR runs take the workflow from `master` but check out the PR's merge commit. A
+stacked PR, whose base is another branch, can have a merge commit without this
+script. The job then runs the six earlier commands one after another instead.
 
 #### Typecheck test files outside the build
 
