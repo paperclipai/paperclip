@@ -598,6 +598,21 @@ The **Retry now** action returns `waiting` with the saved retry schedule while
 cleanup holds ownership. Its controls show the wait without claiming that a run
 started, and another click can check the gate again.
 
+For legacy local runs, physical cleanup and cost settlement have separate receipts.
+The owning controller can record verified process cleanup while usage is incomplete.
+The accounting worker then records an honest lower bound or an unpriced charge;
+missing usage does not prove zero cost. The run status and saved retry intent stay
+unchanged. A later usage receipt can still reconcile the same charge.
+
+If the controller stops before it saves the cleanup receipt, an authorized board
+member can retry that run through the existing company-scoped cost-accounting
+Retry endpoint. It checks the saved controller and child identities, local
+ownership, and environment cleanup before it records physical closure. A live
+process, an unknown identity, a foreign host, or pending cleanup keeps the hold.
+A repeated request or a lost HTTP response must not add a second charge. This
+action settles accounting; it does not start a provider turn or authorize task
+replay.
+
 A human comment may supersede a retry only while it remains `scheduled_retry`.
 Queued and running retries retain their execution and receive the comment through
 normal wake coalescing. Supersession rechecks the scheduled status atomically with

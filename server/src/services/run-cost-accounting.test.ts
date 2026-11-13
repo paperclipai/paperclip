@@ -2,24 +2,43 @@ import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { runChildProcess } from "../adapters/utils.js";
+import { currentControllerProcessStamp, currentProcessStartedAtMs, type ControllerProcess } from "./controller-process-identity.js";
+import { currentProcessProbe } from "./owner-proof.js";
+import { proveRunProcessGone } from "./run-process-owner.js";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, budgetEvaluationWork, budgetPolicies, companies, costEvents, costAdjustments, createDb, heartbeatRuns, projects, promptInjectionInvocations, runUsageReceipts, type Db } from "@paperclipai/db";
+import { agents, applyPendingMigrations, closeRegisteredClients, environmentLeases, budgetReservations, budgetEvaluationWork, budgetPolicies, companies, costEvents, costAdjustments, createDb, heartbeatRuns, projects, promptInjectionInvocations, runUsageReceipts, type Db } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
+import { resolveExternalTestDatabaseUrl } from "../__tests__/helpers/external-test-database.js";
 import { accountRunCost, createCostAccountingReconciler, readCostAccountingWork } from "./run-cost-accounting.js";
 import { createRunUsageRecorder, persistUsageReceipt, type UsageReceiptEnvelope } from "./usage-receipts.js";
 import * as usageReceipts from "./usage-receipts.js";
 import { billingReconciliationService } from "./billing-reconciliation.js";
 import { accountingIntegrityService } from "./accounting-integrity.js";
+import { legacyControllerBootId } from "./legacy-controller-lease.js";
+import { recordLegacyProcessSettlement } from "./heartbeat/legacy-process-settlement.js";
+import { DELIVERY_QUEUES, subscribeDeliveryWork } from "./delivery-work-notifications.js";
 
-const support = await getEmbeddedPostgresTestSupport();
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_ACCOUNTING_TEST_DATABASE_URL");
+// An explicitly owned external fixture must not depend on embedded support.
+// Keep the normal supplied-admin SELECT1/max1/finally-join admission probe.
+if (external && process.env.PAPERCLIP_TEST_POSTGRES_ADMIN_URL?.trim()) await getEmbeddedPostgresTestSupport();
+const support = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("run cost accounting work", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: Db;
   let directory: string;
+  let fixtureCompanySequence = 0;
   beforeAll(async () => {
-    database = await startEmbeddedPostgresTestDatabase("run-cost-work-");
-    db = createDb(database.connectionString);
+    if (external) {
+      await applyPendingMigrations(external);
+      database = { connectionString: external, cleanup: () => closeRegisteredClients(external, { scope: "database" }) };
+    } else {
+      database = await startEmbeddedPostgresTestDatabase("run-cost-work-");
+    }
+    db = createDb(database.connectionString, external ? { maxConnections: 2 } : undefined);
     directory = await fs.mkdtemp(path.join(os.tmpdir(), "run-cost-work-"));
   }, 60_000);
   afterEach(async () => { await db.transaction(async tx => {
@@ -30,7 +49,7 @@ const support = await getEmbeddedPostgresTestSupport();
 
   async function seed(change: Partial<typeof heartbeatRuns.$inferInsert> = {}) {
     const companyId = randomUUID(), agentId = randomUUID(), runId = randomUUID();
-    await db.insert(companies).values({ id: companyId, name: "Accounting", issuePrefix: "ACCT" });
+    await db.insert(companies).values({ id: companyId, name: "Accounting", issuePrefix: `ACCT${++fixtureCompanySequence}` });
     await db.insert(agents).values({ id: agentId, companyId, name: "Accounting", role: "engineer", status: "idle", adapterType: "process" });
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, invocationSource: "on_demand", status: "succeeded",
       costAccountingPending: true, finishedAt: new Date(),
@@ -45,6 +64,281 @@ const support = await getEmbeddedPostgresTestSupport();
         provider: "test", biller: "test", model: "test", billingType: "metered_api", costUsd, costStatus: "reported",
         pricingProvenance: { source: "provider_reported", version: "test" } } };
   }
+
+  async function stoppedLegacy() {
+    const sourceId = randomUUID(), processStartedAt = new Date(Date.now() - 1000), finishedAt = new Date();
+    const owner = await seed({ runtimeMode: "legacy", status: "failed", errorCode: "codex_harness_crash",
+      controllerBootId: legacyControllerBootId, controllerLeaseExpiresAt: null,
+      processPid: 42, processGroupId: 42, processStartedAt, finishedAt,
+      usageJson: { accountingReceiptSourceId: sourceId, accountingReceiptSequence: 1, accountingReceiptReady: false,
+        provider: "openai", model: "test", billingType: "metered_api", costStatus: "unpriced" } });
+    await db.update(agents).set({ adapterType: "codex_local" }).where(eq(agents.id, owner.agentId));
+    await db.insert(budgetReservations).values({ companyId: owner.companyId, agentId: owner.agentId,
+      runId: owner.runId, amountCents: "0", state: "held", providerStartedAt: processStartedAt });
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, owner.runId));
+    const proof = { schema: "paperclip.legacy-process-settlement.v1", runId: run.id,
+      companyId: run.companyId, agentId: run.agentId, runtimeMode: "legacy", targetKind: "local",
+      controllerBootId: run.controllerBootId, processPid: run.processPid, processGroupId: run.processGroupId,
+      processStartedAt: processStartedAt.toISOString(), finishedAt: finishedAt.toISOString(), status: "failed" };
+    return { ...owner, sourceId, run, proof };
+  }
+
+  it("normal legacy accounting joins the host-owned process receipt before settling unknown crash usage", async () => {
+    const owner = await stoppedLegacy();
+    expect(await accountRunCost(db, owner.runId)).toBe(false);
+    expect(await readCostAccountingWork(db, Date.now(), directory)).toEqual({ pending: false, nextRunAt: null });
+    const wake = vi.fn(), unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.accounting, wake);
+    try {
+      // Controlled normal owner port: physical absence/cleanup is supplied by
+      // the same host caller, not inferred from failed status or released lease.
+      expect(await recordLegacyProcessSettlement(db, owner.run, () => true)).toBe(true);
+      expect(wake).toHaveBeenCalledOnce();
+      const [pending] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, owner.runId));
+      expect(pending.costAccountingPending).toBe(true);
+      expect(pending.usageJson).toMatchObject({ accountingReceiptReady: false });
+      expect(pending.legacyProcessSettlement).toEqual(owner.proof);
+    } finally { unsubscribe(); }
+    // A new normal reconciler recovers the committed row without a callback,
+    // including a lost publication reply or server restart after that commit.
+    expect((await readCostAccountingWork(db, Date.now(), directory)).pending).toBe(true);
+    await createCostAccountingReconciler(db)();
+    const [settled] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, owner.runId));
+    expect(settled).toMatchObject({ status: "failed", errorCode: "codex_harness_crash", costAccountingPending: false,
+      costAccountedAt: expect.any(Date), usageJson: { accountingReceiptReady: false, accountingReceiptUnavailable: true } });
+    expect(settled.usageJson?.accountingProviderWorkStarted).toBeUndefined();
+    expect(settled.usageJson?.accountingClosureTimedOut).toBeUndefined();
+    const [hold] = await db.select().from(budgetReservations).where(eq(budgetReservations.runId, owner.runId));
+    expect(hold).toMatchObject({ state: "settled", settledAt: expect.any(Date) });
+    const charges = await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, owner.runId));
+    expect(charges).toHaveLength(1); expect(charges[0].costStatus).toBe("unpriced");
+    const late = { ...receipt(owner, owner.sourceId, 2, 0.02),
+      receipt: { ...receipt(owner, owner.sourceId, 2, 0.02).receipt, provider: "openai", biller: "openai" } };
+    await persistUsageReceipt(db, late); await persistUsageReceipt(db, late);
+    await createCostAccountingReconciler(db)();
+    expect(await accountRunCost(db, owner.runId)).toBe(false);
+    const final = await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, owner.runId));
+    expect(final).toHaveLength(2);
+    expect(final.reduce((sum, row) => sum + row.costCents, 0)).toBeCloseTo(2);
+    expect(final.filter(row => row.idempotencyKey === `heartbeat:${owner.runId}:late:${late.id}`)).toHaveLength(1);
+    const [after] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, owner.runId));
+    expect(after.costAccountingPending).toBe(false);
+
+    const rollbackOwner = await stoppedLegacy();
+    const rollbackWake = vi.fn(), stopWatching = subscribeDeliveryWork(db, DELIVERY_QUEUES.accounting, rollbackWake);
+    try {
+      await expect(db.transaction(async tx => {
+        expect(await recordLegacyProcessSettlement(tx as unknown as Db, rollbackOwner.run, () => true)).toBe(true);
+        expect(rollbackWake).not.toHaveBeenCalled();
+        throw new Error("controlled producer rollback");
+      })).rejects.toThrow("controlled producer rollback");
+      expect(rollbackWake).not.toHaveBeenCalled();
+      const [unpublished] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, rollbackOwner.runId));
+      expect(unpublished.legacyProcessSettlement).toBeNull();
+      expect(unpublished.costAccountingPending).toBe(true);
+      expect((await readCostAccountingWork(db, Date.now(), directory)).pending).toBe(false);
+      expect(await recordLegacyProcessSettlement(db, rollbackOwner.run, () => true)).toBe(true);
+      expect(rollbackWake).toHaveBeenCalledOnce();
+    } finally { stopWatching(); }
+    // Reconstruct using only committed work, with no live callback attached.
+    expect((await readCostAccountingWork(db, Date.now(), directory)).pending).toBe(true);
+    await createCostAccountingReconciler(db)();
+    const [recovered] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, rollbackOwner.runId));
+    expect(recovered.costAccountingPending).toBe(false);
+  });
+
+  it.skipIf(process.platform === "win32")("normal accounting Retry reconstructs an uncommitted legacy receipt after its real controller and child exited", async () => {
+    const identityModule = new URL('./controller-process-identity.ts', import.meta.url).href;
+    const loader = fileURLToPath(import.meta.resolve('tsx/esm'));
+    async function joinedIdentity() {
+      const command = `console.error("accounting-identity:program-entered"); const identity = await import(${JSON.stringify(identityModule)}); console.error("accounting-identity:module-imported"); await identity.currentProcessStartedAtMs(); console.error("accounting-identity:birth-read"); console.log(JSON.stringify(identity.currentControllerProcessStamp()));`;
+      let groupId: number | null = null;
+      let observedStderrChars = 0;
+      const result = await runChildProcess(randomUUID(), process.execPath,
+        ['--import', loader, '--input-type=module', '-e', command], {
+          cwd: process.cwd(), env: { NODE_OPTIONS: process.env.NODE_OPTIONS ?? '', PATH: process.env.PATH ?? '' },
+          timeoutSec: 5, graceSec: 1, onLog: async (stream, chunk) => {
+            if (stream === "stderr" && observedStderrChars < 8192) {
+              const observed = chunk.slice(0, 8192 - observedStderrChars);
+              observedStderrChars += observed.length;
+              process.stderr.write(observed);
+            }
+          },
+          onSpawn: async meta => { groupId = meta.processGroupId ?? null; },
+        });
+      expect(result.exitCode, JSON.stringify({ exitCode: result.exitCode, signal: result.signal, timedOut: result.timedOut, pid: result.pid, startedAt: result.startedAt, stdoutTail: result.stdout.slice(-8192), stderrTail: result.stderr.slice(-8192) })).toBe(0);
+      const identity = JSON.parse(result.stdout.trim()) as ControllerProcess;
+      expect(identity.processStartedAt).not.toBeNull();
+      expect(Number.isSafeInteger(groupId) && groupId! > 1).toBe(true);
+      return { ...identity, groupId };
+    }
+    const controller = await joinedIdentity(), child = await joinedIdentity();
+    const owner = await stoppedLegacy();
+    await db.update(heartbeatRuns).set({ controllerBootId: controller.bootId, controllerProcess: controller,
+      processPid: child.pid, processGroupId: child.groupId, processStartedAt: new Date(child.processStartedAt!),
+      processHostHash: child.hostHash, legacyProcessSettlement: null })
+      .where(eq(heartbeatRuns.id, owner.runId));
+    // Controlled local lease input; the actual child/controller OS observations,
+    // not these status fields, must establish physical receipt-source closure.
+    await db.insert(environmentLeases).values({ companyId: owner.companyId, heartbeatRunId: owner.runId,
+      provider: 'local', providerLeaseId: null, status: 'failed', leasePolicy: 'ephemeral',
+      releasedAt: new Date(), metadata: { driver: 'local' } });
+    const [base] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, owner.runId));
+    await currentProcessStartedAtMs();
+    const liveController = currentControllerProcessStamp();
+    // Classification-only controlled probe: the original child's birth is real,
+    // but no actual OS PID reuse or physical receipt is fabricated by this port.
+    const reused = await proveRunProcessGone(base, 'legacy-accounting-reuse-component', {
+      ...currentProcessProbe(), controllerInstance: undefined,
+      pidExists: () => true, processGroupExists: () => false,
+      readStartedAt: async () => new Date(Date.parse(child.processStartedAt!) + 2000),
+    });
+    expect(reused).toEqual({ verdict: 'gone', reason: 'pid_reused' });
+    for (const change of [
+      { processHostHash: 'unknown-foreign-process-space' },
+      { status: 'cancelled' },
+      { controllerLeaseExpiresAt: new Date(Date.now() + 60_000) },
+      { executionControlDeadlineAt: new Date() },
+      { resultJson: { executionCancellation: { state: 'requested' } } },
+      // A genuine current live controller without the heartbeat idle-owner
+      // callback cannot certify that its run's cleanup has settled.
+      { controllerBootId: liveController.bootId, controllerProcess: liveController },
+    ]) {
+      await db.update(heartbeatRuns).set({ ...base, ...change }).where(eq(heartbeatRuns.id, owner.runId));
+      expect(await accountingIntegrityService(db).retry(owner.companyId, owner.runId, 'board')).toEqual({ accounted: false });
+      const [held] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, owner.runId));
+      expect(held.legacyProcessSettlement).toBeNull(); expect(held.costAccountingPending).toBe(true);
+    }
+    await db.update(heartbeatRuns).set(base).where(eq(heartbeatRuns.id, owner.runId));
+    await db.update(environmentLeases).set({ status: 'active', releasedAt: null })
+      .where(eq(environmentLeases.heartbeatRunId, owner.runId));
+    expect(await accountingIntegrityService(db).retry(owner.companyId, owner.runId, 'board')).toEqual({ accounted: false });
+    await db.update(environmentLeases).set({ status: 'failed', releasedAt: new Date() })
+      .where(eq(environmentLeases.heartbeatRunId, owner.runId));
+    await db.update(environmentLeases).set({ cleanupStatus: 'failed' })
+      .where(eq(environmentLeases.heartbeatRunId, owner.runId));
+    expect(await accountingIntegrityService(db).retry(owner.companyId, owner.runId, 'board')).toEqual({ accounted: false });
+    await db.update(environmentLeases).set({ cleanupStatus: null })
+      .where(eq(environmentLeases.heartbeatRunId, owner.runId));
+    let leaseLocked!: () => void, releaseLease!: () => void;
+    const locked = new Promise<void>(resolve => { leaseLocked = resolve; });
+    const release = new Promise<void>(resolve => { releaseLease = resolve; });
+    const holder = db.transaction(async tx => {
+      await tx.select().from(environmentLeases).where(eq(environmentLeases.heartbeatRunId, owner.runId)).for('update');
+      leaseLocked(); await release;
+    });
+    await locked;
+    try {
+      // A skipped subset cannot certify all current leases; no waiting cycle.
+      expect(await accountingIntegrityService(db).retry(owner.companyId, owner.runId, 'board')).toEqual({ accounted: false });
+    } finally { releaseLease(); await holder; }
+    const precommitLost = new Proxy(db, { get(target, property) {
+      if (property === 'transaction') return async (callback: Parameters<Db['transaction']>[0], options?: Parameters<Db['transaction']>[1]) =>
+        target.transaction(async tx => {
+          await callback(tx);
+          throw new Error('controlled closure publication rollback');
+        }, options);
+      const value = Reflect.get(target, property);
+      return typeof value === 'function' ? value.bind(target) : value;
+    } }) as Db;
+    // Proof inspection remains outside this publication transaction.
+    await expect(accountingIntegrityService(precommitLost).retry(owner.companyId, owner.runId, 'board'))
+      .rejects.toThrow('controlled closure publication rollback');
+    expect(await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, owner.runId))).toEqual([]);
+    const [uncommitted] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, owner.runId));
+    expect(uncommitted.legacyProcessSettlement).toBeNull();
+    expect(uncommitted.costAccountingPending).toBe(true);
+    // Lose the next committed transaction reply, not its durable mutation.
+    let lostReply = false;
+    const replyLost = new Proxy(db, { get(target, property) {
+      if (property === 'transaction') return async (...args: Parameters<Db['transaction']>) => {
+        const result = await target.transaction(...args);
+        if (!lostReply) { lostReply = true; throw new Error('controlled committed reply loss'); }
+        return result;
+      };
+      const value = Reflect.get(target, property);
+      return typeof value === 'function' ? value.bind(target) : value;
+    } }) as Db;
+    await expect(accountingIntegrityService(replyLost).retry(owner.companyId, owner.runId, 'board'))
+      .rejects.toThrow('controlled committed reply loss');
+    // Existing API, fresh service, no new implementation-only method or argument.
+    const result = await accountingIntegrityService(db).retry(owner.companyId, owner.runId, 'board');
+    expect(result.accounted).toBe(true);
+    const [settled] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, owner.runId));
+    expect(settled.legacyProcessSettlement).toMatchObject({ controllerBootId: controller.bootId,
+      processPid: child.pid, processGroupId: child.groupId, schema: 'paperclip.legacy-process-settlement.v1' });
+    expect(settled.usageJson).toMatchObject({ accountingReceiptReady: false, accountingReceiptUnavailable: true });
+    expect(await accountingIntegrityService(db).retry(owner.companyId, owner.runId, 'board')).toEqual({ accounted: false });
+    expect(await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, owner.runId))).toHaveLength(1);
+  });
+
+  it("keeps missing malformed foreign live and controlled legacy closure evidence pending", async () => {
+    const owner = await stoppedLegacy();
+    for (const bad of [null, {}, [], { ...owner.proof, extra: true }, { ...owner.proof, processPid: "42" },
+      ...Object.keys(owner.proof).map(key => ({ ...owner.proof, [key]: "foreign" }))]) {
+      await db.update(heartbeatRuns).set({ legacyProcessSettlement: sql`${JSON.stringify(bad)}::jsonb` }).where(eq(heartbeatRuns.id, owner.runId));
+      expect(await accountRunCost(db, owner.runId)).toBe(false);
+      expect((await readCostAccountingWork(db, Date.now(), directory)).pending).toBe(false);
+    }
+    for (const changed of [{ status: "running" }, { controllerLeaseExpiresAt: new Date(Date.now() + 1000) },
+      { controllerBootId: randomUUID() }, { processPid: 43 }, { processGroupId: 43 },
+      { processStartedAt: new Date(0) }, { processPid: null, processGroupId: null, processStartedAt: null },
+      { runtimeMode: "native" }, { executionControlDeadlineAt: new Date() },
+      { resultJson: { executionCancellation: { state: "requested" } } }]) {
+      await db.update(heartbeatRuns).set({ ...owner.run, legacyProcessSettlement: owner.proof, ...changed })
+        .where(eq(heartbeatRuns.id, owner.runId));
+      expect(await accountRunCost(db, owner.runId)).toBe(false);
+    }
+    expect(await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, owner.runId))).toEqual([]);
+  });
+
+  it("preserves observed spend as a lower bound when the stopped legacy provider lost its final receipt", async () => {
+    const owner = await stoppedLegacy();
+    await db.update(heartbeatRuns).set({ legacyProcessSettlement: owner.proof,
+      usageJson: { ...owner.run.usageJson, costUsd: 0.01, inputTokens: 5, outputTokens: 2,
+        budgetExposure: { sourceId: owner.sourceId, sequence: 1, costCents: "2.0000000" } } })
+      .where(eq(heartbeatRuns.id, owner.runId));
+    expect(await accountRunCost(db, owner.runId)).toBe(true);
+    const [charge] = await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, owner.runId));
+    expect(charge).toMatchObject({ costCents: 2, inputTokens: 5, outputTokens: 2, costStatus: "estimated" });
+    expect(charge.pricingProvenance?.evidence).toContain("lower bound");
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, owner.runId));
+    expect(run.usageJson).toMatchObject({ accountingReceiptReady: false, accountingReceiptUnavailable: true });
+  });
+
+  it("preserves included subscription cost policy while legacy usage remains explicitly incomplete", async () => {
+    const owner = await stoppedLegacy();
+    await db.update(heartbeatRuns).set({ legacyProcessSettlement: owner.proof,
+      usageJson: { ...owner.run.usageJson, billingType: 'subscription_included', costUsd: null } })
+      .where(eq(heartbeatRuns.id, owner.runId));
+    expect(await accountRunCost(db, owner.runId)).toBe(true);
+    const [charge] = await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, owner.runId));
+    expect(charge).toMatchObject({ billingType: 'subscription_included', costStatus: 'reported', costCents: 0 });
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, owner.runId));
+    expect(run.usageJson).toMatchObject({ accountingReceiptReady: false, accountingReceiptUnavailable: true });
+  });
+
+  it("revalidates exact legacy process receipt and claim after the accounting spool pre-read", async () => {
+    const owner = await stoppedLegacy();
+    await db.update(heartbeatRuns).set({ legacyProcessSettlement: owner.proof }).where(eq(heartbeatRuns.id, owner.runId));
+    let changed = false;
+    const replacementClaim = randomUUID();
+    const observed = new Proxy(db, { get(target, property) {
+      if (property === "transaction") return async (...args: Parameters<Db["transaction"]>) => {
+        if (!changed) { changed = true; await db.update(heartbeatRuns).set({
+          controllerBootId: replacementClaim, legacyProcessSettlement: { ...owner.proof, controllerBootId: replacementClaim },
+        }).where(eq(heartbeatRuns.id, owner.runId)); }
+        return target.transaction(...args);
+      };
+      const value = Reflect.get(target, property);
+      return typeof value === "function" ? value.bind(target) : value;
+    } }) as Db;
+    const race = await Promise.allSettled([accountRunCost(observed, owner.runId)]);
+    if (race[0].status === 'fulfilled') expect(race[0].value).toBe(false);
+    else expect(race[0].reason.message).toContain('closure changed');
+    expect(await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, owner.runId))).toEqual([]);
+    const [pending] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, owner.runId));
+    expect(pending.costAccountingPending).toBe(true);
+  });
 
   it("returns from settled or running calls without opening an accounting transaction", async () => {
     const { runId } = await seed({ costAccountingPending: false });

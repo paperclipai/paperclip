@@ -6,6 +6,7 @@ import { receiptFingerprint } from "./receipt-fingerprint.js";
 import { withAccountingReadSnapshot, withOperationAccountingTransaction } from "./accounting-transaction.js";
 import { logActivity } from "./activity-log.js";
 import { accountRunCost } from "./run-cost-accounting.js";
+import { recoverLegacyProcessSettlement } from "./heartbeat/legacy-process-settlement.js";
 import type { BudgetServiceHooks } from "./budgets.js";
 
 /** Independent aggregation: deliberately does not reuse writer projections. */
@@ -57,7 +58,8 @@ async function inspect(tx: Db, companyId: string): Promise<AccountingInspection>
   return { companyId, findings, fingerprint: receiptFingerprint({ companyId, findings }), checkedAt: new Date().toISOString() };
 }
 
-export function accountingIntegrityService(db: Db, hooks: BudgetServiceHooks = {}) {
+export function accountingIntegrityService(db: Db, hooks: BudgetServiceHooks = {},
+  recoverLegacyReceipt = (companyId: string, runId: string) => recoverLegacyProcessSettlement(db, companyId, runId)) {
   return {
     inspect: (companyId: string) => withAccountingReadSnapshot(db, companyId, tx => inspect(tx, companyId)),
     repair: (companyId: string, fingerprint: string, reason: string, actorId: string) => withOperationAccountingTransaction(db, companyId, async (tx, publications) => {
@@ -74,7 +76,10 @@ export function accountingIntegrityService(db: Db, hooks: BudgetServiceHooks = {
       const [run] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, runId)));
       if (!run) throw notFound("Accounting run not found");
       await logActivity(db, { companyId, actorType: "user", actorId, action: "accounting.retry_requested", entityType: "heartbeat_run", entityId: runId });
-      try { return { accounted: await accountRunCost(db, runId, hooks) }; }
+      try {
+        await recoverLegacyReceipt(companyId, runId);
+        return { accounted: await accountRunCost(db, runId, hooks) };
+      }
       catch (error) {
         await db.update(heartbeatRuns).set({ accountingLastAttemptAt: new Date(), accountingAttemptCount: sql`${heartbeatRuns.accountingAttemptCount} + 1`,
           accountingLastError: error instanceof Error ? error.message.slice(0,1000) : "Accounting retry failed",
