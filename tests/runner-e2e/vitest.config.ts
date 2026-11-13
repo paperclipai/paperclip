@@ -1,3 +1,4 @@
+import { availableParallelism } from "node:os";
 import { fileURLToPath } from "node:url";
 import { configDefaults, defineConfig } from "vitest/config";
 
@@ -14,6 +15,6 @@ export default defineConfig({
     // These use node:test and run separately in test:e2e:runner:unit.
     exclude: [...configDefaults.exclude, "product-regression-testops.test.mjs", "reliability-testops.test.mjs", "native-completion-{checks,git-source,source-contract}.test.mjs", "artifact-budget.test.mjs", "chat-feature-testops-api.test.mjs", "chat-feature-testops-cli.test.mjs", "chat-feature-testops-results.test.mjs", "testops-chat-reporter.test.mjs", "chat-completion-testops-{api,contract}.test.mjs", "chat-full-catalog-testops-*.test.mjs", "chat-catalog-testops-streaming.test.mjs"],
     testTimeout: 30_000,
-    ...(process.env.GITHUB_ACTIONS === "true" ? { maxWorkers: 4 } : {}),
+    ...(process.env.GITHUB_ACTIONS === "true" ? { maxWorkers: Math.min(4, availableParallelism()) } : {}),
   },
 });

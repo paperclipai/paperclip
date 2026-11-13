@@ -1220,9 +1220,11 @@ diagnostic and exit 2. Assertion failures retain the test runner's exit status
 and output; assess installed-product failures from those assertions separately.
 
 Each Vitest file runs in its own isolated worker, so every file loads its
-imports again. The suite is CPU-bound on the 4-vCPU CI runner: more workers do
-not make it faster. The unit command sets `NODE_COMPILE_CACHE` to
-`<tmpdir>/paperclip-runner-e2e-compile-cache` unless it is already set, so
+imports again. The suite is CPU-bound on the 4-vCPU CI runner. In GitHub
+Actions it runs up to four files at a time, bounded by available CPUs; local
+runs keep Vitest's default of one fewer than the CPU count. The unit command
+sets `NODE_COMPILE_CACHE` to `<tmpdir>/paperclip-runner-e2e-compile-cache`
+unless it is already set, so
 workers and the Node processes that tests start reuse compiled code for
 dependencies such as `@playwright/test`. Node checks each cache entry against
 the source and recompiles on a mismatch. Set `NODE_DISABLE_COMPILE_CACHE=1` to
