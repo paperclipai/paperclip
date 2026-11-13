@@ -152,6 +152,26 @@ describe("deferred receipt durable dispatch", () => {
         runs: remaining.map(run => ({ id: run.id, at: run.scheduledRetryAt, error: run.errorCode })) })).toHaveLength(0);
     });
   }
+  it("declines a board Retry while the task has unresolved blockers (#20479)", async () => {
+    const f = await fixture();
+    const [blocker] = await db.insert(issues).values({ companyId: f.companyId, title: "Blocking task",
+      status: "todo" }).returning();
+    await db.insert(issueRelations).values({ companyId: f.companyId, issueId: blocker.id,
+      relatedIssueId: f.issue.id, type: "blocks" });
+    const input = { db, companyId: f.companyId, issueId: f.issue.id, actorId: f.actorId,
+      actorSource: "cloud_tenant" as const, observedRunId: f.source.id, idempotencyKey: randomUUID() };
+    const declined = await requestTaskRetry(input);
+    expect(declined).toMatchObject({ accepted: false, stale: false,
+      blockedBy: { unresolvedBlockerIssueIds: [blocker.id] } });
+    // No deferred wakeup is admitted, so dispatch cannot re-skip it every sweep.
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId)))
+      .toHaveLength(0);
+    // Resolving the blocker admits the Retry normally again.
+    await db.update(issues).set({ status: "done", completedAt: new Date() }).where(eq(issues.id, blocker.id));
+    const accepted = await requestTaskRetry({ ...input, idempotencyKey: randomUUID() });
+    expect(accepted).toMatchObject({ accepted: true });
+  });
+
   it("is quiet after empty reconstruction and terminal receipt history", async () => {
     const f = await fixture();
     await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agent.id,
