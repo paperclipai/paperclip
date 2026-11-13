@@ -1,4 +1,5 @@
 import type { StormFault, StormPlan } from "./types.js";
+import { MIX_MAX_MINUTES } from "./staging-mix.js";
 
 export interface ReleaseSwapOptions {
   swaps: number;
@@ -81,6 +82,10 @@ export function expandReleaseSwapArgs(input: readonly string[]): { args: string[
     if (planned) throw new Error(`--release-swap plans the staging-mix swap slots; do not combine it with --${planned}`);
   }
   const spacingMinutes = Math.ceil(options.spacingMs / 60_000);
+  if (mix && options.swaps * spacingMinutes + 1 > MIX_MAX_MINUTES) {
+    throw new Error(`--release-swap-count ${options.swaps} × --release-swap-spacing-minutes ${spacingMinutes} needs a ${options.swaps * spacingMinutes + 1}-minute `
+      + `staging-mix wave; the longest is ${MIX_MAX_MINUTES} minutes. Lower the swap count or the spacing.`);
+  }
   const clock = mix
     ? ["--mix-fault-spacing-minutes", String(spacingMinutes), "--mix-minutes", String(options.swaps * spacingMinutes + 1)]
     : ["--storm-minutes", String(Math.min(240, Math.ceil((options.swaps * options.spacingMs) / 60_000)))];

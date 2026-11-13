@@ -5,6 +5,7 @@ import type { AdapterId, FaultKind, OracleArtifacts, OracleResult, TaskFaultKind
 import type { WorkloadAgents, WorkloadDefinition } from "./workloads.js";
 
 export const STAGING_MIX = "staging-mix";
+export const MIX_MAX_MINUTES = 600;
 export const ROUND_TICKS = 45;
 export const ROUND_SECONDS = ROUND_TICKS * 2;
 export const SUBTASKS_PER_PARENT = 2;
@@ -145,7 +146,7 @@ export function applyStagingMix(options: WaveOptions, values: MixArgs, environme
     throw new Error(`--workload ${STAGING_MIX} takes restart faults only`);
   }
   const turnMinutes = parseRange(String(values["mix-turn-minutes"] ?? "15-45"), "mix-turn-minutes", 1, 60);
-  const minutes = whole(values["mix-minutes"], "mix-minutes", 240, 1, 600);
+  const minutes = whole(values["mix-minutes"], "mix-minutes", 240, 1, MIX_MAX_MINUTES);
   const faultSpacingMinutes = whole(values["mix-fault-spacing-minutes"], "mix-fault-spacing-minutes", 40, 1, 600);
   const arrivalCutoffMinutes = whole(values["mix-arrival-cutoff-minutes"], "mix-arrival-cutoff-minutes", turnMinutes[1], 0, 600);
   const runCapDefault = whole(environment.RESTART_CHAOS_MIX_RUN_CAP, "RESTART_CHAOS_MIX_RUN_CAP", 30, 1, 200);

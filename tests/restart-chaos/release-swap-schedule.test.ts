@@ -39,6 +39,9 @@ describe("release swap options", () => {
     expect(args).toEqual(["--env", "daytona", "--workload", "staging-mix", "--mix-fault-spacing-minutes", "5", "--mix-minutes", "11",
       "--faults", "K15", "--k15-overlap-seconds", "120", "--k15-fresh-home", "--ephemeral-server"]);
     expect(() => expandReleaseSwapArgs(["--workload", "staging-mix", "--release-swap", "--mix-minutes", "30"])).toThrow(/--mix-minutes/);
+    const longest = ["--workload", "staging-mix", "--release-swap", "--release-swap-count", "6", "--release-swap-spacing-minutes"];
+    expect(() => expandReleaseSwapArgs([...longest, "100"])).toThrow(/--release-swap-count 6 × --release-swap-spacing-minutes 100 needs a 601-minute staging-mix wave; the longest is 600/);
+    expect(expandReleaseSwapArgs([...longest, "99"]).args).toEqual(expect.arrayContaining(["--mix-minutes", "595"]));
     const command = parseCommand(["--env", "local", "--storage", "s3", "--workload", "staging-mix", "--mix-tasks", "6", "--mix-runs", "4", "--mix-queue", "2",
       "--mix-turn-minutes", "5", "--seed", "7", "--release-swap", "--release-swap-count", "2", "--release-swap-spacing-minutes", "5",
       "--release-swap-overlap-seconds", "120", "--release-swap-settle-minutes", "2"], 0);
