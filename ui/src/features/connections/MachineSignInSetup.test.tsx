@@ -116,14 +116,18 @@ describe("Machine sign-in setup", () => {
 
   it("resumes the key draft this tab started instead of creating another", async () => {
     sessionStorage.setItem("paperclip.machine-sign-in-draft:company-1:https://mcp.example/mcp", "connection-1");
+    let finish!: (value: typeof draft.machineSignIn) => void;
     const client: MachineSignInClient = {
       create: vi.fn(),
       test: vi.fn(),
-      status: vi.fn(async () => draft.machineSignIn),
+      status: vi.fn(() => new Promise<typeof draft.machineSignIn>((resolve) => { finish = resolve; })),
     };
     await act(async () => {
       root.render(<MachineSignInSetup companyId="company-1" link="https://mcp.example/mcp" client={client} onBack={() => undefined} onConnected={() => undefined} />);
     });
+    // No second draft can be started while the saved one loads.
+    expect(button("Create key")?.disabled).toBe(true);
+    await act(async () => { finish(draft.machineSignIn); });
     await flush();
     expect(client.status).toHaveBeenCalledWith("connection-1");
     expect(container.textContent).toContain("Register this public key");

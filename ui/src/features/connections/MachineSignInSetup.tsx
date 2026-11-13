@@ -101,19 +101,24 @@ export function MachineSignInSetup({
   const [error, setError] = useState<string | null>(initialError);
   const [busy, setBusy] = useState<"creating" | "testing" | null>(null);
   const storageKey = draftStorageKey(companyId, link);
+  // While a saved draft loads, creating another would race it; wait for it.
+  const [restoring, setRestoring] = useState(() => !initialSetup && Boolean(readDraftId(storageKey)));
 
   useEffect(() => {
     if (initialSetup) return;
     const draftId = readDraftId(storageKey);
     if (!draftId) return;
     let cancelled = false;
+    setRestoring(true);
     client.status(draftId).then((status) => {
       if (cancelled) return;
       setSetup({ connectionId: draftId, machineSignIn: status });
       setMethod(status.method);
       setClientId((current) => current || (status.clientId ?? ""));
       setScopes((current) => current || status.scopes.join(" "));
-    }, () => writeDraftId(storageKey, null));
+    }, () => writeDraftId(storageKey, null)).finally(() => {
+      if (!cancelled) setRestoring(false);
+    });
     return () => { cancelled = true; };
   }, [client, initialSetup, storageKey]);
 
@@ -245,7 +250,7 @@ export function MachineSignInSetup({
       <div className="flex items-center justify-between pt-3">
         <Button variant="ghost" onClick={onBack} disabled={busy !== null}>Back</Button>
         {!setup && method === "paperclip_key" ? (
-          <Button onClick={() => void createDraft()} disabled={busy !== null || !canCreate}>
+          <Button onClick={() => void createDraft()} disabled={busy !== null || restoring || !canCreate}>
             {busy === "creating" && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
             {busy === "creating" ? "Creating key…" : "Create key"}
           </Button>
@@ -255,7 +260,7 @@ export function MachineSignInSetup({
               const target = setup ?? await createDraft();
               if (target) await testConnection(target, setup ? clientSecret : "");
             }}
-            disabled={busy !== null || (setup ? !canTest : !canCreate)}
+            disabled={busy !== null || restoring || (setup ? !canTest : !canCreate)}
           >
             {busy !== null && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
             {busy === "testing" ? "Testing…" : busy === "creating" ? "Saving…" : "Test connection"}
