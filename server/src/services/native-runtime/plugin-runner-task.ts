@@ -49,12 +49,15 @@ export function createPluginRunnerTaskOwner(input: {
   pollMs?: number;
   warmTaskVersion?: 1;
   releaseResumeVersion?: 1;
+  resumeCredentialVersion?: 1;
   releasedSource?: DurableRecoveryIdentity;
   sessionHandoff?: boolean;
   onResumed?: (identity: DurableRecoveryIdentity) => Promise<void>;
   onRetired?: (identity: DurableRecoveryIdentity) => Promise<void>;
   githubBroker?: { url: string; token: string };
   githubCredentialBrokerVersion?: 1;
+  configuredEnvironmentVersion?: 1;
+  configuredEnvironment?: Readonly<Record<string, string>>;
   adoptIdentity?: DurableRecoveryIdentity;
 }) {
   const taskId = input.taskId;
@@ -83,6 +86,9 @@ export function createPluginRunnerTaskOwner(input: {
   const running = new Promise<void>((resolve, reject) => { markReady = resolve; failReady = reject; });
   void running.catch(() => undefined);
   if (input.adoptIdentity) markReady();
+  const configuredEnvironmentFields = (launchesRunner: boolean) =>
+    input.configuredEnvironmentVersion === 1 && launchesRunner ? { configuredEnvironment: { ...input.configuredEnvironment } } : {};
+  let configuredEnvironmentDelivered: boolean | undefined = input.adoptIdentity ? undefined : false;
   const call = async (operation: PluginEnvironmentTaskOperation) => {
     const phase = ({ prepare: "execution.plugin_prepare", check_project_auth: "execution.plugin_project_auth",
       submit: "execution.plugin_submit", connection: "execution.plugin_connection" } as const)[operation.kind as "prepare" | "check_project_auth" | "submit" | "connection"];
@@ -204,6 +210,7 @@ export function createPluginRunnerTaskOwner(input: {
       ...(input.credentialIdentity ? { credentialIdentity: input.credentialIdentity } : {}),
       ...(input.accountIdentity ? { accountIdentity: input.accountIdentity } : {}),
       ...(input.credential ? { credential: input.credential } : {}),
+      ...configuredEnvironmentFields(true),
       runner: { protocolMin: RUNNER_PRP_PROTOCOL_MIN, protocolMax: RUNNER_PRP_PROTOCOL_MAX,
         harness: input.harness,
         runnerId: native.identity.runnerInstanceId, leaseId: native.identity.environmentLeaseId,
@@ -217,6 +224,7 @@ export function createPluginRunnerTaskOwner(input: {
     });
     launchIdentity = native.identity;
     launched = true;
+    configuredEnvironmentDelivered = "configuredEnvironment" in operation;
     const child: RunnerProcessHandle["child"] = { exitCode: null, signalCode: null,
       kill: () => {
         stopRequested = true;
@@ -426,9 +434,12 @@ export function createPluginRunnerTaskOwner(input: {
       : undefined;
     const result = await call(environmentTaskOperationSchema.parse({ kind: "resume", identity, bootstrapTicket,
       ...(handoffCredential ? { handoffCredential } : {}),
+      ...(input.resumeCredentialVersion === 1 && input.credential ? { credential: input.credential } : {}),
+      ...configuredEnvironmentFields(!!input.sessionHandoff),
     }));
     requireReleaseResume();
     if (result.kind !== "resume") throw new Error("Plugin Runner resume result unavailable");
+    if (result.outcome === "resumed" && input.sessionHandoff) configuredEnvironmentDelivered = input.configuredEnvironmentVersion === 1;
     if (result.outcome === "unavailable") {
       const state = await call({ kind: "status" }).catch(() => undefined);
       retiredBeforeClaim = state?.kind === "status" && state.executionStopped === true && state.sessionStateAvailable === true;
@@ -462,6 +473,7 @@ export function createPluginRunnerTaskOwner(input: {
     // stop request. Completion also proves credential/writeback obligations ran.
     isRetired: () => stoppedState?.executionStopped === true && completed && !detached,
     retiredBeforeClaim: () => retiredBeforeClaim,
+    configuredEnvironmentDelivered: () => configuredEnvironmentDelivered,
     rebind(next: typeof input) {
       if (!launched || stopRequested || stoppedState || detached || next.taskId !== taskId || next.harness !== input.harness ||
           input.accountIdentity !== next.accountIdentity || input.credentialIdentity !== next.credentialIdentity ||

@@ -28,7 +28,7 @@ export const MEETING_CARDS_VIEW_HTML = String.raw`<!doctype html>
 </head>
 <body>
 <div id="list"><div class="who">Waiting for the meeting list…</div></div>
-<div class="actions"><button id="refresh" type="button">Refresh</button><span class="status" id="status"></span></div>
+<div class="actions"><button id="refresh" type="button">Refresh</button> <button id="ask" type="button" hidden>Ask the agent</button> <button id="mode" type="button" hidden>Full screen</button><span class="status" id="status"></span></div>
 <script>
   let nextId = 1;
   const pending = new Map();
@@ -38,8 +38,15 @@ export const MEETING_CARDS_VIEW_HTML = String.raw`<!doctype html>
     return new Promise((resolve, reject) => pending.set(id, { resolve, reject }));
   }
   function notify(method, params) { parent.postMessage({ jsonrpc: "2.0", method, params }, "*"); }
+  let displayMode = "inline";
+  let capabilities = {};
+  let meetingNames = [];
   function applyContext(context) {
     if (!context) return;
+    if (context.displayMode) displayMode = context.displayMode;
+    const modeButton = document.getElementById("mode");
+    if (context.availableDisplayModes) modeButton.hidden = !context.availableDisplayModes.includes("fullscreen");
+    modeButton.textContent = displayMode === "fullscreen" ? "Back to chat" : "Full screen";
     if (context.theme) document.documentElement.style.colorScheme = context.theme;
     const vars = context.styles && context.styles.variables;
     if (vars) for (const key of Object.keys(vars)) document.documentElement.style.setProperty(key, vars[key]);
@@ -62,6 +69,11 @@ export const MEETING_CARDS_VIEW_HTML = String.raw`<!doctype html>
       list.appendChild(row);
     }
     if (!meetings.length) list.innerHTML = '<div class="who">No meetings</div>';
+    meetingNames = meetings.map((meeting) => meeting.name);
+    // Tell the agent what the user is looking at, where the host supports it.
+    if (capabilities.updateModelContext) {
+      request("ui/update-model-context", { content: [{ type: "text", text: "Meetings shown: " + meetingNames.join("; ") }], structuredContent: { meetingIds: meetings.map((meeting) => meeting.id) } }).catch(() => undefined);
+    }
     reportSize();
   }
   function reportSize() { notify("ui/notifications/size-changed", { height: Math.ceil(document.body.getBoundingClientRect().height) }); }
@@ -89,8 +101,29 @@ export const MEETING_CARDS_VIEW_HTML = String.raw`<!doctype html>
     }
     reportSize();
   });
-  request("ui/initialize", { protocolVersion: "2026-01-26", appCapabilities: { availableDisplayModes: ["inline"] }, clientInfo: { name: "meeting-cards-fixture", version: "1" } })
-    .then((result) => { applyContext(result.hostContext); notify("ui/notifications/initialized", {}); reportSize(); });
+  document.getElementById("ask").addEventListener("click", async () => {
+    const status = document.getElementById("status");
+    status.textContent = "Waiting for you to send it…";
+    try {
+      await request("ui/message", { role: "user", content: [{ type: "text", text: "Summarize the action items from " + (meetingNames[1] || meetingNames[0] || "my last meeting") + "." }] });
+      status.textContent = "Sent";
+    } catch (error) {
+      status.textContent = "Not sent";
+    }
+    reportSize();
+  });
+  document.getElementById("mode").addEventListener("click", async () => {
+    const result = await request("ui/request-display-mode", { mode: displayMode === "fullscreen" ? "inline" : "fullscreen" });
+    applyContext({ displayMode: result.mode });
+  });
+  request("ui/initialize", { protocolVersion: "2026-01-26", appCapabilities: { availableDisplayModes: ["inline", "fullscreen"] }, clientInfo: { name: "meeting-cards-fixture", version: "1" } })
+    .then((result) => {
+      capabilities = result.hostCapabilities || {};
+      document.getElementById("ask").hidden = !capabilities.message;
+      applyContext(result.hostContext);
+      notify("ui/notifications/initialized", {});
+      reportSize();
+    });
 </script>
 </body>
 </html>`;

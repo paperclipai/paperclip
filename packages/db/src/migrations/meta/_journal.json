@@ -3330,8 +3330,15 @@
     {
       "idx": 477,
       "version": "7",
-      "when": 1794554569973,
-      "tag": "0477_ambiguous_gamora",
+      "when": 1794554569782,
+      "tag": "0477_friendly_toro",
+      "breakpoints": true
+    },
+    {
+      "idx": 478,
+      "version": "7",
+      "when": 1794577077558,
+      "tag": "0478_pretty_colonel_america",
       "breakpoints": true
     }
   ]

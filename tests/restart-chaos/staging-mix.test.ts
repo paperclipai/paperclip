@@ -4,7 +4,7 @@ import { parseCommand } from "./config.js";
 import {
   agentRunCaps, assignAdapters, childLine, childNonce, doneMarker, expectedRoundHash, followUpMarker, gradeStagingMix, holdsRetry, planArrivals,
   arrivalEndMs, followUpRequestId, planStagingMixWave, plannedTaskCount, posixCksum, retryDue, roundCommand, ROUND_SECONDS, setOverlapProbe, stagingMixDescription,
-  stagingMixBudgetMs, stagingMixStep, SUBTASK_ROUNDS, verifyLedger, type StagingMixTask,
+  slotTimesMs, stagingMixBudgetMs, stagingMixStep, SUBTASK_ROUNDS, verifyLedger, type StagingMixTask,
 } from "./staging-mix.js";
 import { descendantsOf, parseMemInfo, parsePs, parseVmStat, StagingMixRun, stagingMixSeedOptions, type ResourceSample } from "./staging-mix-run.js";
 import type { OracleArtifacts, TaskRecord, TaskSample } from "./types.js";
@@ -115,6 +115,14 @@ describe("staging-mix options", () => {
 });
 
 describe("staging-mix planning", () => {
+  it("moves the first fault slot early without adding a slot (release swap: 2 swaps 4 minutes apart)", () => {
+    expect(slotTimesMs({ minutes: 9, faultSpacingMinutes: 4 }, undefined)).toEqual([240_000, 480_000]);
+    expect(slotTimesMs({ minutes: 9, faultSpacingMinutes: 4 }, "30")).toEqual([30_000, 270_000]);
+    expect(slotTimesMs({ minutes: 29, faultSpacingMinutes: 14 }, "60")).toEqual([60_000, 900_000]);
+    expect(slotTimesMs({ minutes: 28, faultSpacingMinutes: 14 }, "60")).toEqual([60_000]);
+    expect(slotTimesMs({ minutes: 3, faultSpacingMinutes: 4 }, "30")).toEqual([]);
+  });
+
   it("interleaves adapters so every prefix keeps the ratio", () => {
     const adapters = assignAdapters([["opencode", 60], ["codex", 25], ["claude", 15]], 100);
     const count = (slice: string[], adapter: string) => slice.filter(entry => entry === adapter).length;

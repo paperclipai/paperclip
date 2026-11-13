@@ -11,8 +11,11 @@ import {
 
 /** The saved version is unchanged by a failed restore; the run names the failed step. */
 export const REMOTE_WORKSPACE_RESTORE_NEXT_ACTION =
-  "Open the failed run to see which restore step failed. The saved workspace version was kept. "
-  + "If the sandbox folder is already occupied, inspect and move it aside, then retry the task.";
+  "The saved work could not be put back into the sandbox, so no agent work started. The saved version was kept. "
+  + "Press Retry to start again from it.";
+
+export const RETRY_FROM_SAVED_WORK_NEXT_ACTION =
+  "This attempt could not be finished. Press Retry to start it again from the saved work.";
 
 // Short human-readable body plus the presentation header for one recovery
 // family. The escalation path merges in the metadata rows only it knows
@@ -31,8 +34,7 @@ export type StrandedRecoveryEscalationNotice = {
 };
 
 export const DEFAULT_STRANDED_RECOVERY_NOTICE_BODY =
-  "Paperclip could not restore a live execution path for this issue automatically. " +
-  "Moving it to `blocked` so it is visible for intervention.";
+  "This attempt could not be finished automatically. Press Retry to start it again from the saved work.";
 
 const DEFAULT_STRANDED_RECOVERY_NOTICE_TITLE = "Automatic recovery blocked";
 
@@ -53,17 +55,26 @@ const STRANDED_RECOVERY_NOTICE_TITLES_BY_RUN_ERROR_CODE: Record<string, string> 
   acpx_auth_required: "Error: agent login required",
 };
 
+const TEMPORARY_SETUP_NEXT_ACTION = "Setting up the workspace took too long, so no agent work started. "
+  + "Paperclip tries again automatically.";
+
+const AUTOMATIC_RETRY_SENTENCE = "Paperclip tries again automatically.";
+const MANUAL_RETRY_SENTENCE = "Press Retry to start it again.";
+
+const TEMPORARY_SETUP_CODES = new Set(["remote_workspace_prepare_timeout", "reusable_sandbox_resume_failed"]);
+
 const WORKSPACE_SCAN_NOTICES: Record<string, { title: string; nextAction: string }> = {
-  workspace_git_scan_timeout: { title: "Workspace scan timed out", nextAction: "Check repository access and server load, then retry the task." },
-  remote_workspace_prepare_timeout: { title: "Workspace setup timed out", nextAction: "Inspect the failed run and check repository access and sandbox load before retrying the task." },
+  workspace_git_scan_timeout: { title: "Workspace scan timed out", nextAction: "Reading the task's files took too long, so no agent work started. Press Retry to start it again." },
+  remote_workspace_prepare_timeout: { title: "Workspace setup timed out", nextAction: TEMPORARY_SETUP_NEXT_ACTION },
   remote_workspace_restore_failed: { title: "Saved workspace could not be restored", nextAction: REMOTE_WORKSPACE_RESTORE_NEXT_ACTION },
-  plugin_worker_unavailable: { title: "Environment plugin was not running", nextAction: "Check the environment plugin's worker status, then retry the task once it is running." },
+  plugin_worker_unavailable: { title: "Environment plugin was not running", nextAction: "The plugin that starts this agent's sandbox was not running, so no agent work started. Press Retry once it is running again." },
   environment_provider_unavailable: { title: "Environment provider was temporarily unavailable", nextAction: "Paperclip retried automatically before the agent started, but the provider was still unavailable. No agent work started. Retry the task once the provider is available." },
-  reusable_sandbox_resume_failed: { title: "Saved sandbox could not be resumed", nextAction: "Inspect the failed run and the sandbox provider; the saved sandbox was kept. Retry the task once the provider can start it." },
-  workspace_git_scan_saturated: { title: "Workspace scan queue is full", nextAction: "Check server load and the workspace scan queue, then retry the task." },
-  workspace_git_scan_output_limit: { title: "Workspace scan exceeded its limit", nextAction: "Check the repository size and workspace scan output limit before retrying the task." },
-  workspace_git_scan_failed: { title: "Workspace scan failed", nextAction: "Inspect the failed run and check repository access and integrity before retrying the task." },
-  workspace_git_scan_cancelled: { title: "Workspace scan was cancelled", nextAction: "Inspect why workspace preparation was cancelled before retrying the task." },
+  reusable_sandbox_resume_failed: { title: "Saved sandbox could not be resumed", nextAction: "The sandbox service did not start the saved sandbox in time. "
+    + "The saved sandbox and its files were kept, and no agent work started. Paperclip tries again automatically." },
+  workspace_git_scan_saturated: { title: "Workspace scan queue is full", nextAction: "The server was too busy to read the task's files, so no agent work started. Press Retry to start it again." },
+  workspace_git_scan_output_limit: { title: "Workspace scan exceeded its limit", nextAction: "The task's files are larger than Paperclip can read at once, so no agent work started. Press Retry to start it again." },
+  workspace_git_scan_failed: { title: "Workspace scan failed", nextAction: "The task's files could not be read, so no agent work started. Press Retry to start it again." },
+  workspace_git_scan_cancelled: { title: "Workspace scan was cancelled", nextAction: "Preparing the task's files was stopped, so no agent work started. Press Retry to start it again." },
 };
 
 const SETUP_FAILURE_NOTICES: Record<string, StrandedRecoveryNoticeSeed> = {
@@ -76,26 +87,34 @@ const SETUP_FAILURE_NOTICES: Record<string, StrandedRecoveryNoticeSeed> = {
   },
 };
 
+export const NO_RUNNING_EXECUTION_NOTICE_TITLE = "Task could not continue";
+
+export function buildNoRunningExecutionNoticeSeed(input: {
+  status: "todo" | "in_progress";
+  attempts?: number;
+}): StrandedRecoveryNoticeSeed {
+  const tries = input.attempts && input.attempts > 1 ? ` after ${input.attempts} tries` : "";
+  return {
+    body: input.status === "todo"
+      ? `Paperclip tried to start this task again, but it still could not start${tries}. Press Retry to start it again.`
+      : `Paperclip tried to continue this task again, but it still could not continue${tries}. `
+        + "Press Retry to start it again from the saved work.",
+    title: NO_RUNNING_EXECUTION_NOTICE_TITLE,
+    tone: "danger",
+  };
+}
+
 export function buildImmediateExecutionPathRecoveryNoticeSeed(input: {
   status: "todo" | "in_progress";
 }): StrandedRecoveryNoticeSeed {
-  const retryDescription = input.status === "todo"
-    ? "Paperclip automatically retried dispatch for this assigned `todo` issue during terminal run recovery"
-    : "Paperclip automatically retried continuation for this assigned `in_progress` issue during terminal run recovery";
-  return {
-    body:
-      `${retryDescription}, but it still has no live execution path. ` +
-      "Moving it to `blocked` so it is visible for intervention.",
-    title: "No live execution path",
-    tone: "danger",
-  };
+  return buildNoRunningExecutionNoticeSeed(input);
 }
 
 export function buildWorkspaceValidationRecoveryNoticeSeed(): StrandedRecoveryNoticeSeed {
   return {
     body:
-      "Paperclip stopped before launching the local adapter because the issue workspace failed validation. " +
-      "Moving it to `blocked` so the workspace link, cwd, or git checkout can be repaired before resuming.",
+      "The task's workspace could not be used, so the agent did not start. " +
+      "Press Retry to start it again.",
     title: "Workspace validation failed",
     tone: "danger",
   };
@@ -137,8 +156,8 @@ export function buildConfigurationIncompleteRecoveryNoticeSeed(
   if (readNonEmptyStringField(configurationIncomplete, "reason") === "workspace_base_ref_unresolved") {
     return {
       title: "Workspace base ref unavailable",
-      body: "Paperclip stopped before the agent started because the configured workspace base ref could not be resolved to a Git commit. The task is blocked until its workspace configuration or repository access is repaired.",
-      nextAction: "Check that the configured base ref exists and the repository is accessible. Correct the task or project workspace settings, then retry the task.",
+      body: "The agent did not start because the starting branch set for this task's workspace was not found in the repository.",
+      nextAction: "Set a starting branch that exists in the repository, then press Retry.",
       tone: "danger",
     };
   }
@@ -147,7 +166,7 @@ export function buildConfigurationIncompleteRecoveryNoticeSeed(
       return {
         title: "Shared workspace still held",
         body: "Paperclip stopped before the agent started because another run still holds this task's shared workspace but has produced no output for more than an hour, and this execution environment cannot place concurrent agents in one physical shared folder.",
-        nextAction: "Check whether the other run is still working and stop it if it is stuck, or select an isolated task workspace, then retry the task.",
+        nextAction: "Stop the other run on this task, or choose a separate workspace for this task, then press Retry.",
         tone: "danger",
       };
     }
@@ -215,8 +234,8 @@ export function buildConfigurationIncompleteRecoveryNoticeSeed(
   }
   return {
     body:
-      "Paperclip stopped before dispatching the adapter because required secret/env bindings are missing. " +
-      "Moving it to `blocked` so an operator can bind the missing secret(s) before resuming.",
+      "The agent did not start because a secret it needs is not set. " +
+      "Add the secret in the agent's settings, then press Retry.",
     title: "Configuration incomplete",
     tone: "danger",
   };
@@ -225,9 +244,8 @@ export function buildConfigurationIncompleteRecoveryNoticeSeed(
 export function buildExecutionReviewParticipantRecoveryNoticeSeed(): StrandedRecoveryNoticeSeed {
   return {
     body:
-      "Paperclip retried the pending execution-review participant once, but the review stage still has no " +
-      "completed decision or live reviewer run. Moving it to `blocked` so the board can inspect the evidence, repair the " +
-      "reviewer runtime, restore the review stage, or record an intentional manual resolution.",
+      "The reviewer for this task did not finish the review, even after Paperclip asked again. " +
+      "Choose a reviewer, or press Retry to ask the same reviewer again.",
     title: "Review recovery stalled",
     tone: "danger",
   };
@@ -236,10 +254,8 @@ export function buildExecutionReviewParticipantRecoveryNoticeSeed(): StrandedRec
 export function buildExecutionReviewParticipantUnavailableNoticeSeed(): StrandedRecoveryNoticeSeed {
   return {
     body:
-      "Paperclip cannot continue the pending execution-review participant because the participant is not " +
-      "invokable and the review stage has no completed decision or live reviewer run. Moving it to `blocked` " +
-      "so the board can inspect the evidence, repair the reviewer runtime, restore the review stage, or record an " +
-      "intentional manual resolution.",
+      "The reviewer for this task cannot take work right now, so the review could not continue. " +
+      "Choose another reviewer, or press Retry once the reviewer is available.",
     title: "Review recovery stalled",
     tone: "danger",
   };
@@ -253,6 +269,7 @@ export function buildStrandedRecoveryEscalationNotice(input: {
   fallbackBody?: string | null;
   recoveryCause?: string | null;
   recoveryActionId: string;
+  continuesAutomatically?: boolean;
   recoveryOwner: { id: string; name: string | null } | null | undefined;
   sourceRun: {
     id: string;
@@ -262,10 +279,16 @@ export function buildStrandedRecoveryEscalationNotice(input: {
     errorSummary?: string | null;
   } | null | undefined;
 }): StrandedRecoveryEscalationNotice {
-  const workspaceScan = WORKSPACE_SCAN_NOTICES[input.sourceRun?.errorCode ?? ""];
+  const scanNotice = WORKSPACE_SCAN_NOTICES[input.sourceRun?.errorCode ?? ""];
+  const retriesItself = TEMPORARY_SETUP_CODES.has(input.sourceRun?.errorCode ?? "") && input.continuesAutomatically === true;
+  const workspaceScan = scanNotice && TEMPORARY_SETUP_CODES.has(input.sourceRun?.errorCode ?? "") && !retriesItself
+    ? { ...scanNotice, nextAction: scanNotice.nextAction.replace(AUTOMATIC_RETRY_SENTENCE, MANUAL_RETRY_SENTENCE) }
+    : scanNotice;
   const seed = workspaceScan ? {
     ...workspaceScan,
-    body: `Paperclip could not prepare the workspace before the agent started. Automatic recovery could not continue. ${workspaceScan.nextAction}`,
+    body: retriesItself
+      ? `Paperclip could not prepare the workspace before the agent started. ${workspaceScan.nextAction}`
+      : `Paperclip could not prepare the workspace before the agent started. Automatic recovery could not continue. ${workspaceScan.nextAction}`,
     tone: "danger" as const,
   } : SETUP_FAILURE_NOTICES[input.sourceRun?.errorCode ?? ""] ?? input.seed;
   const fallbackBody = input.fallbackBody?.trim();
@@ -283,13 +306,13 @@ export function buildStrandedRecoveryEscalationNotice(input: {
       : keyValueRow(
           "Recovery owner",
           // A pre-dispatch provider outage needs no board decision, only Retry.
-          input.recoveryCause === ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE ? "Retry when ready" : "Board decision required",
+          input.recoveryCause === ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE ? "Retry when ready" : "Waiting for you",
         ),
     keyValueRow(
       "Next action",
       seed?.nextAction ?? (input.recoveryOwner
-        ? "The recovery owner should either restore a live execution path or record the manual resolution on the source issue"
-        : "Inspect the evidence, then retry the original owner, explicitly reassign, repair the execution path, or record an intentional resolution"),
+        ? "The assigned agent continues the task from the saved work"
+        : RETRY_FROM_SAVED_WORK_NEXT_ACTION),
     ),
   ];
 
