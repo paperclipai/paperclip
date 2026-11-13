@@ -938,6 +938,9 @@ export const toolMcpTasks = pgTable(
     answeredInputKeys: jsonb("answered_input_keys").$type<string[]>().notNull().default([]),
     /** Input request keys already shown to the agent (a link or a question card). */
     surfacedInputKeys: jsonb("surfaced_input_keys").$type<string[]>().notNull().default([]),
+    /** Wakes requested for new input requests; capped, so a provider cannot wake an agent without end. */
+    inputWakeCount: integer("input_wake_count").notNull().default(0),
+    inputWakeAt: timestamp("input_wake_at", { withTimezone: true }),
     errorCode: text("error_code"),
     wakeRequestedAt: timestamp("wake_requested_at", { withTimezone: true }),
     deliveredAt: timestamp("delivered_at", { withTimezone: true }),

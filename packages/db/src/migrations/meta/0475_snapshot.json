@@ -1,5 +1,5 @@
 {
-  "id": "214d0cff-e42f-4819-8b32-99d85d51b37e",
+  "id": "29ab162b-0abf-4ddb-91e0-e284fb2f4099",
   "prevId": "a7108924-4d75-41e2-9139-f43f9396c02d",
   "version": "7",
   "dialect": "postgresql",
@@ -61142,6 +61142,19 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'[]'::jsonb"
+        },
+        "input_wake_count": {
+          "name": "input_wake_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "input_wake_at": {
+          "name": "input_wake_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         },
         "error_code": {
           "name": "error_code",

@@ -6781,6 +6781,11 @@ export function createToolGatewayService(
   /** The background worker's hold on a task, and its bound on one provider request. */
   const MCP_TASK_WORKER_LEASE_MS = 60_000;
   const MCP_TASK_WORKER_REQUEST_MS = 30_000;
+  /** At most this many wakes per task for new input requests, this far apart. */
+  const MCP_TASK_MAX_INPUT_WAKES = 3;
+  const MCP_TASK_INPUT_WAKE_SPACING_MS = 30 * 60_000;
+  /** Provider-chosen keys kept per task; older ones drop off first. */
+  const boundedMcpTaskKeys = (keys: Iterable<string>) => [...new Set(keys)].slice(-64);
   const mcpTaskSecret = () => options.toolActionSigningSecret?.trim() || resolveToolActionSigningSecret();
   const mcpTaskScope = (row: Pick<McpTaskRow, "companyId" | "connectionId">) => ({ companyId: row.companyId, connectionId: row.connectionId });
   const mcpTaskInputKey = (row: McpTaskRow, key: string) =>
@@ -7117,7 +7122,7 @@ export function createToolGatewayService(
     if (!keys.length) return;
     await sendMcpTaskRequest(transport, "tasks/update", { taskId, inputResponses: plan.responses }, signal);
     for (const key of keys) answered.add(key);
-    await updateMcpTask(row, { answeredInputKeys: [...answered] }, { owner });
+    await updateMcpTask(row, { answeredInputKeys: boundedMcpTaskKeys(answered) }, { owner });
     await writeAudit({
       session, companyId: row.companyId, agentId: row.agentId, runId: row.runId, issueId: row.issueId,
       action: "tool_gateway.task_input_sent",
@@ -7228,7 +7233,7 @@ export function createToolGatewayService(
             if (stop.aborted) throw mcpTaskPendingError();
           }
           const shown = [...plan.linkKeys, ...(plan.waitingForm ? [plan.waitingForm.key] : [])];
-          if (shown.length) await own({ surfacedInputKeys: [...new Set([...(row.surfacedInputKeys ?? []), ...shown])] });
+          if (shown.length) await own({ surfacedInputKeys: boundedMcpTaskKeys([...(row.surfacedInputKeys ?? []), ...shown]) });
           if (plan.links.length) {
             const pending: ToolUpstreamPending = { kind: "authorization", links: plan.links, ...(plan.linkMessage ? { message: plan.linkMessage } : {}) };
             await retainUpstreamHandoff(wait.invocationId, pending);
@@ -7372,13 +7377,20 @@ export function createToolGatewayService(
       if (!plan.unsupported) {
         await sendMcpTaskResponses(row, owner, context.session, context.transport, context.taskId, plan, answered, requestSignal).catch(() => undefined);
       }
-      // A new question or link nobody has seen: wake the agent, whose call shows it.
+      // A new question or link nobody has seen: wake the agent, whose call
+      // shows it. Keys come from the provider, so wakes per task are capped
+      // and spaced; a provider rotating keys cannot keep waking the agent.
       const surfaced = new Set(row.surfacedInputKeys ?? []);
       const unseen = Object.keys(state.inputRequests ?? {}).filter((key) => !answered.has(key) && !surfaced.has(key)).sort();
-      if (unseen.length) {
-        const outcome = await wakeAgentForMcpTask(row, wake, `mcp-task:${row.id}:input:${createHash("sha256").update(unseen.join("\0")).digest("hex").slice(0, 32)}`);
+      const wakeAllowed = row.inputWakeCount < MCP_TASK_MAX_INPUT_WAKES
+        && (!row.inputWakeAt || row.inputWakeAt.getTime() <= Date.now() - MCP_TASK_INPUT_WAKE_SPACING_MS);
+      if (unseen.length && wakeAllowed) {
+        const outcome = await wakeAgentForMcpTask(row, wake, `mcp-task:${row.id}:input:${row.inputWakeCount + 1}`);
         if (outcome === "woken" || outcome === "skipped") {
-          await updateMcpTask(row, { surfacedInputKeys: [...new Set([...surfaced, ...unseen])] }, { owner });
+          await updateMcpTask(row, {
+            surfacedInputKeys: boundedMcpTaskKeys([...surfaced, ...unseen]),
+            ...(outcome === "woken" ? { inputWakeCount: row.inputWakeCount + 1, inputWakeAt: new Date() } : {}),
+          }, { owner });
         }
         if (outcome === "deferred") {
           return updateMcpTask(row, { leaseExpiresAt: null, leaseOwner: null, nextPollAt: new Date(Date.now() + MCP_TASK_WAKE_RECHECK_MS) }, { owner });

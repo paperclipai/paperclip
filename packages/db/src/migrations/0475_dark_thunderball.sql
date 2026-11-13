@@ -29,6 +29,8 @@ CREATE TABLE "tool_mcp_tasks" (
 	"arguments_identity" text NOT NULL,
 	"answered_input_keys" jsonb DEFAULT '[]'::jsonb NOT NULL,
 	"surfaced_input_keys" jsonb DEFAULT '[]'::jsonb NOT NULL,
+	"input_wake_count" integer DEFAULT 0 NOT NULL,
+	"input_wake_at" timestamp with time zone,
 	"error_code" text,
 	"wake_requested_at" timestamp with time zone,
 	"delivered_at" timestamp with time zone,

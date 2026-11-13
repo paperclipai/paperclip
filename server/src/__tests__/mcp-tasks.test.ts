@@ -547,6 +547,24 @@ const support = await getEmbeddedPostgresTestSupport();
       .toMatchObject({ reasonCode: "elicitation_required" });
   });
 
+  it("caps wakes when a provider keeps asking new questions", async () => {
+    const server = taskServer();
+    const ctx = await setup(server);
+    await expect(ctx.call("build", { timeoutMs: 400 })).rejects.toMatchObject({ reasonCode: "provider_task_pending" });
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, ctx.run.id));
+    const wake = vi.fn(async () => undefined);
+    for (let round = 0; round < 6; round += 1) {
+      // The provider rotates its input keys on every poll.
+      Object.assign(server.only().task, { status: "input_required", inputRequests: { [`k${round}`]: { method: "elicitation/create", params: { mode: "form", message: "Again?", requestedSchema: { type: "object", properties: {} } } } } });
+      await db.update(toolMcpTasks).set({ nextPollAt: new Date(Date.now() - 1_000), inputWakeAt: null }).where(eq(toolMcpTasks.companyId, ctx.org.id));
+      await ctx.gateway().pollDueMcpTasks({ wake });
+    }
+    expect(wake).toHaveBeenCalledTimes(3);
+    const [row] = await ctx.rows();
+    expect(row!.inputWakeCount).toBe(3);
+    expect(row!.surfacedInputKeys.length).toBeLessThanOrEqual(64);
+  });
+
   it("stops background work once the grant is revoked", async () => {
     const server = taskServer();
     const ctx = await setup(server);
