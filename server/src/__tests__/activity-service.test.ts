@@ -129,6 +129,49 @@ describeEmbeddedPostgres("activity service", () => {
     await db.delete(authUsers).where(eq(authUsers.id, userId));
   });
 
+  // Recorded in chat-eval cohort 13 (runs-adapters.inspect-failed-run): the
+  // agent told the person "Paperclip retried automatically" about a run the
+  // board started with Retry, because the run read gave only raw invocation
+  // fields (on_demand, manual) and an owner id.
+  it("says who started each retry run: a named person's Retry or automatic recovery", async () => {
+    const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), userId = `member-${companyId}`;
+    const failedRunId = randomUUID(), boardRetryId = randomUUID(), memberRetryId = randomUUID(), autoRetryId = randomUUID(), unknownRetryId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Retries", issuePrefix: `R${companyId.slice(0, 6)}` });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Morgan", adapterType: "process" });
+    await db.insert(authUsers).values({ id: userId, name: "Sam Rivera", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Website", assigneeAgentId: agentId });
+    const wake = async (reason: string, requestedByActorType: string | null, requestedByActorId: string | null, source = "on_demand") => {
+      const [row] = await db.insert(agentWakeupRequests).values({ companyId, agentId, source, triggerDetail: source === "automation" ? "system" : "manual",
+        reason, requestedByActorType, requestedByActorId, status: "completed", payload: { issueId } }).returning();
+      return row!.id;
+    };
+    const base = { companyId, agentId, issueId, scopeKind: "issue", contextSnapshot: { issueId } } as const;
+    const at = (seconds: number) => new Date(Date.UTC(2026, 10, 13, 18, 0, seconds));
+    await db.insert(heartbeatRuns).values([
+      { ...base, id: failedRunId, status: "failed", errorCode: "native_provider_model_rejected", invocationSource: "assignment", createdAt: at(0) },
+      { ...base, id: boardRetryId, status: "succeeded", invocationSource: "on_demand", triggerDetail: "manual", responsibleUserId: "local-board",
+        retryOfRunId: failedRunId, wakeupRequestId: await wake("retry_failed_run", "user", "local-board"), createdAt: at(1) },
+      { ...base, id: memberRetryId, status: "succeeded", invocationSource: "on_demand", triggerDetail: "manual",
+        retryOfRunId: failedRunId, wakeupRequestId: await wake("task_retry", "user", userId), createdAt: at(2) },
+      // Automatic recovery keeps the original responsible user; that is not who started it.
+      { ...base, id: autoRetryId, status: "succeeded", invocationSource: "automation", triggerDetail: "system", responsibleUserId: "local-board",
+        retryOfRunId: failedRunId, wakeupRequestId: await wake("transient_failure_retry", null, null, "automation"), createdAt: at(3) },
+      { ...base, id: unknownRetryId, status: "succeeded", invocationSource: "on_demand", triggerDetail: "manual", retryOfRunId: failedRunId, createdAt: at(4) },
+    ]);
+
+    const rows = await activityService(db).runsForIssue(companyId, issueId);
+    const byId = new Map(rows.map(row => [row.runId, row.retriedBy]));
+    expect(byId.get(failedRunId)).toBeNull();
+    expect(byId.get(boardRetryId)).toEqual({ kind: "person", personName: "Board",
+      summary: "Board pressed Retry on the failed run. Paperclip did not retry it automatically." });
+    expect(byId.get(memberRetryId)).toMatchObject({ kind: "person", personName: "Sam Rivera" });
+    expect(byId.get(autoRetryId)).toEqual({ kind: "automatic",
+      summary: "Paperclip retried the failed run automatically; no person pressed Retry." });
+    expect(byId.get(unknownRetryId)).toBeNull();
+    expect(JSON.stringify([...byId.values()])).not.toMatch(/local-board|member-/);
+    await db.delete(authUsers).where(eq(authUsers.id, userId));
+  });
+
   it("limits company activity lists", async () => {
     const companyId = randomUUID();
 
