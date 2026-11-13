@@ -539,8 +539,10 @@ describe.skipIf(!support.supported)("durable Tailscale consent state", () => {
     expect(claim).not.toHaveBeenCalled();
   });
   it("consumes a denial once and never exchanges credentials", async () => {
-    const { state } = await start();
-    await expect(service.complete({ state, userId: "fixture-owner", error: "authorization_denied", authorizeCompany })).rejects.toMatchObject({ status: 400 });
+    const { result, state } = await start();
+    const authorize = vi.fn(authorizeCompany);
+    await expect(service.complete({ state, userId: "fixture-owner", error: "authorization_denied", authorizeCompany: authorize })).rejects.toMatchObject({ status: 400 });
+    expect(authorize).toHaveBeenCalledExactlyOnceWith(companyId, result.connection.id);
     await expect(service.complete({ state, userId: "fixture-owner", claimId: "fixture-claim", authorizeCompany })).rejects.toMatchObject({ status: 400 });
     expect(claim).not.toHaveBeenCalled();
   });

@@ -16,6 +16,12 @@ with the normal Tailscale application, enable macOS Remote Login. Tailscale SSH
 server support on macOS requires the open-source tailscaled variant; ordinary
 OpenSSH over Tailscale works with the standard Mac application.
 
+Cloud reauthentication saves the pending OAuth handoff in the current browser
+tab before redirecting. If consent is canceled or completion fails after the
+state and company checks, the browser returns to the saved connection with a
+fixed explanation and a retry. The return URL contains only the connection ID
+and a known outcome, without provider error text, claims, or OAuth state.
+
 SSH setup hides the Network selector when Direct connection is the only
 available option. A sole connected tailnet is selected automatically and its
 connection selector is hidden; multiple connected tailnets remain selectable.

@@ -110,7 +110,7 @@ export function tailscaleConnectionService(db: Db, dependencies: {
       const session = await client.startAuthorization({ subject: input.userId, companyId: input.companyId, profile: "tailscale.tailnet", returnUri: input.returnUri, returnState: state });
       return { connection: projection(started), ...session };
     },
-    async complete(input: { state: string; userId: string; claimId?: string; error?: string; authorizeCompany: (companyId: string) => void }) {
+    async complete(input: { state: string; userId: string; claimId?: string; error?: string; authorizeCompany: (companyId: string, connectionId: string) => void }) {
       if (!/^[A-Za-z0-9_-]{43}$/.test(input.state)) throw badRequest("Tailscale authorization expired. Connect again.");
       const stateHash = hash(input.state);
       const [row] = await db.update(tailscaleConnections).set({ oauthExpiresAt: null, updatedAt: now() }).where(and(
@@ -121,7 +121,7 @@ export function tailscaleConnectionService(db: Db, dependencies: {
         eq(tailscaleConnections.oauthStateHash, stateHash), isNull(tailscaleConnections.oauthExpiresAt));
       let secretId: string | null = null;
       try {
-        input.authorizeCompany(row.companyId);
+        input.authorizeCompany(row.companyId, row.id);
         if (input.error || !input.claimId) throw badRequest("Tailscale authorization did not complete. Connect again.");
         const grant = await connector().claim({ subject: input.userId, companyId: row.companyId, profile: "tailscale.tailnet", claimId: input.claimId, redemptionId: input.state });
         const expires = grant.accessTokenExpiresAt ? Date.parse(grant.accessTokenExpiresAt) : NaN;

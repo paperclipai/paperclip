@@ -6,8 +6,9 @@ import { Button } from "@/components/ui/button";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { tailscaleConnectionsKey, useTailscaleConnections } from "@/hooks/useTailscaleConnections";
-import { Link } from "@/lib/router";
-import { prepareOAuthNavigation } from "@/lib/oauthHandoff";
+import { Link, useSearchParams } from "@/lib/router";
+import { prepareOAuthNavigation, savePendingCloudHandoff } from "@/lib/oauthHandoff";
+import { navigateTopLevel } from "@/lib/browserNavigation";
 import { AppLogo } from "./AppLogo";
 
 export const TAILSCALE_CONNECTOR_PATH = "/apps/tailscale";
@@ -35,10 +36,13 @@ export function TailscaleConnector() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const client = useQueryClient();
+  const [searchParams] = useSearchParams();
   const connections = useTailscaleConnections(selectedCompanyId);
   const connect = useMutation({ mutationFn: async (connectionId?: string) => {
     const result = await tailscaleApi.connect(selectedCompanyId!, connectionId);
-    window.location.assign((await prepareOAuthNavigation(result)).url);
+    const target = await prepareOAuthNavigation(result);
+    if (target.kind === "reauthentication" && result.handoff) savePendingCloudHandoff(result.handoff.session);
+    navigateTopLevel(target.url);
   } });
   const disconnect = useMutation({ mutationFn: (connectionId: string) => tailscaleApi.disconnect(selectedCompanyId!, connectionId),
     onSuccess: () => client.invalidateQueries({ queryKey: tailscaleConnectionsKey(selectedCompanyId) }) });
@@ -51,10 +55,15 @@ export function TailscaleConnector() {
   if (connections.access.error) return <p role="alert" className="text-sm text-destructive">{describeError(connections.access.error, { action: "check Tailscale management access" }).body}</p>;
   if (!connections.canManage) return <p className="text-sm text-muted-foreground">Ask an instance administrator to connect or manage Tailscale networks.</p>;
   const error = connect.error ?? disconnect.error ?? connections.error;
+  const outcome = searchParams.get("tailscale_error");
+  const returnError = outcome === "cancelled" ? "Tailscale authorization was canceled. Try again to connect your network."
+    : outcome === "failed" ? "Tailscale authorization could not be completed. Try again." : null;
+  const retryConnection = connections.data?.find(connection => connection.id === searchParams.get("tailscale_connection"));
   return <div className="max-w-3xl space-y-6 pb-8">
     <header className="flex items-center gap-3"><AppLogo name="Tailscale" brandKey="tailscale" size={36} /><h1 className="text-xl font-semibold">Tailscale</h1></header>
     <p className="text-sm text-muted-foreground">Give Paperclip access to your tailnet, then choose one of its machines when creating an SSH environment. Agents can use any harness supported by that environment.</p>
     {connections.isPending && <p className="text-sm text-muted-foreground">Loading tailnet connections…</p>}
+    {returnError && <div role="alert" className="space-y-3"><p className="text-sm text-destructive">{returnError}</p>{retryConnection && <Button variant="outline" disabled={connect.isPending} onClick={() => connect.mutate(retryConnection.id)}>Try again</Button>}</div>}
     {error && <div role="alert" className="space-y-3"><p className="text-sm text-destructive">{describeError(error, { action: "connect Tailscale" }).body}</p><Button variant="outline" onClick={() => void connections.refetch()}>Refresh connections</Button></div>}
     <div className="divide-y divide-border">{(connections.data ?? []).map(connection => <div key={connection.id} className="flex flex-wrap items-center justify-between gap-3 py-3">
       <div className="min-w-0 flex-1 space-y-1"><p className="font-medium">{connection.name}</p><p className="text-sm text-muted-foreground">{connection.status === "connected" ? "Connected" : connection.status === "connecting" ? "Connecting" : connection.status === "disconnected" ? "Disconnected" : "Authorization not completed"}</p></div>

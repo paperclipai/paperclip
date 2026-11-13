@@ -5,14 +5,17 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TailscaleConnector, TailscaleConnectorCard } from "./TailscaleConnector";
 import { ApiError } from "@/api/client";
+import { readPendingCloudHandoff } from "@/lib/oauthHandoff";
+import { PaperclipCloudOAuthHandoffPage } from "./PaperclipCloudOAuthHandoff";
 
-const fixture = vi.hoisted(() => ({ companyId: "company-1", access: vi.fn(), list: vi.fn(), connect: vi.fn(), disconnect: vi.fn(), breadcrumbs: vi.fn() }));
+const fixture = vi.hoisted(() => ({ companyId: "company-1", search: "", navigate: vi.fn(), access: vi.fn(), list: vi.fn(), connect: vi.fn(), disconnect: vi.fn(), breadcrumbs: vi.fn() }));
 vi.mock("@/api/access", () => ({ accessApi: { getCurrentBoardAccess: fixture.access } }));
 vi.mock("@/api/tailscale", () => ({ tailscaleApi: { list: fixture.list, connect: fixture.connect, disconnect: fixture.disconnect } }));
 vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: fixture.companyId }) }));
 vi.mock("@/context/BreadcrumbContext", () => ({ useBreadcrumbs: () => ({ setBreadcrumbs: fixture.breadcrumbs }) }));
 vi.mock("./AppLogo", () => ({ AppLogo: () => null }));
-vi.mock("@/lib/router", () => ({ Link: ({ to, children, ...props }: { to: string; children: React.ReactNode }) => <a href={to} {...props}>{children}</a> }));
+vi.mock("@/lib/router", () => ({ Link: ({ to, children, ...props }: { to: string; children: React.ReactNode }) => <a href={to} {...props}>{children}</a>, useSearchParams: () => [new URLSearchParams(fixture.search)] }));
+vi.mock("@/lib/browserNavigation", () => ({ navigateTopLevel: (url: string) => fixture.navigate(url) }));
 const connected = { id: "tailnet-1", companyId: "company-1", name: "Home tailnet", status: "connected" };
 let root: Root;
 let container: HTMLDivElement;
@@ -31,6 +34,8 @@ describe("Tailscale network connector", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     fixture.companyId = "company-1";
+    fixture.search = "";
+    window.sessionStorage.clear();
     fixture.access.mockResolvedValue({ source: "session", isInstanceAdmin: true, companyIds: ["company-1", "company-2"] });
     fixture.list.mockResolvedValue([connected]);
     fixture.connect.mockImplementation(() => new Promise(() => {}));
@@ -39,7 +44,7 @@ describe("Tailscale network connector", () => {
     root = createRoot(container);
     client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   });
-  afterEach(() => { flushSync(() => root.unmount());client.clear();container.remove(); });
+  afterEach(() => { flushSync(() => root.unmount());client.clear();container.remove();vi.unstubAllGlobals(); });
 
   it("does not offer setup or request tailnets to a company member without instance-admin rights", async () => {
     fixture.access.mockResolvedValue({ source: "session", isInstanceAdmin: false, companyIds: ["company-1"] });
@@ -90,6 +95,49 @@ describe("Tailscale network connector", () => {
     render();await settle();
     flushSync(() => button("Reconnect Home tailnet").click());await settle();
     expect(fixture.connect).toHaveBeenCalledWith("company-1", "tailnet-1");
+  });
+
+  it("preserves the current tab's Cloud handoff through reauthentication and resumes consent", async () => {
+    const session = "tailscale_handoff_session_abcdefghijklmnop";
+    const reauthenticationUrl = new URL(`/cloud/connections/reauth?session=${session}`, window.location.origin).toString();
+    fixture.connect.mockResolvedValue({ authorizationUrl: "", handoff: { kind: "paperclip_cloud", session } });
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(Response.json({ error: "RECENT_LOGIN_REQUIRED", reauthenticationUrl }, { status: 401 }))
+      .mockResolvedValueOnce(Response.json({ authorizationUrl: "https://login.tailscale.com/a/oauth_authorize" })));
+    fixture.navigate.mockImplementationOnce(() => {
+      expect(readPendingCloudHandoff()).toEqual({ kind: "paperclip_cloud", session });
+    });
+    render();await settle();
+    flushSync(() => button("Connect Tailscale Network").click());await settle();
+    expect(readPendingCloudHandoff()).toEqual({ kind: "paperclip_cloud", session });
+    expect(fixture.navigate).toHaveBeenCalledWith(reauthenticationUrl);
+    flushSync(() => root.render(<PaperclipCloudOAuthHandoffPage />));await settle();
+    expect(fixture.navigate).toHaveBeenLastCalledWith("https://login.tailscale.com/a/oauth_authorize");
+    expect(readPendingCloudHandoff()).toBeNull();
+    expect(container.textContent).not.toContain("expired");
+  });
+
+  it.each(["cancelled", "failed"])("explains %s consent and retries the same saved connection", async outcome => {
+    fixture.search = `tailscale_connection=tailnet-1&tailscale_error=${outcome}`;
+    fixture.list.mockResolvedValue([{ ...connected, status: "pending" }]);
+    render();await settle();
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(outcome === "cancelled" ? "was canceled" : "could not be completed");
+    flushSync(() => button("Try again").click());await settle();
+    expect(fixture.connect).toHaveBeenCalledExactlyOnceWith("company-1", "tailnet-1");
+  });
+
+  it("does not offer a saved-connection retry for a connection outside the current company", async () => {
+    fixture.search = "tailscale_connection=foreign-connection&tailscale_error=cancelled";
+    render();await settle();
+    expect([...container.querySelectorAll("button")].some(element => element.textContent === "Try again")).toBe(false);
+    expect(fixture.connect).not.toHaveBeenCalled();
+  });
+
+  it("does not display untrusted error text from the return URL", async () => {
+    fixture.search = new URLSearchParams({ tailscale_connection: "tailnet-1", tailscale_error: "untrusted-provider-error<script>" }).toString();
+    render();await settle();
+    expect(container.textContent).not.toContain("untrusted-provider-error");
+    expect(fixture.connect).not.toHaveBeenCalled();
   });
 
   it("refreshes connector status after a deliberate disconnect", async () => {

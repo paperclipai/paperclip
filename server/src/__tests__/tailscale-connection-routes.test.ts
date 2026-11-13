@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { tailscaleConnectionRoutes } from "../routes/tailscale-connections.js";
 import { boardMutationGuard } from "../middleware/board-mutation-guard.js";
 import { errorHandler } from "../middleware/error-handler.js";
+import { badRequest } from "../errors.js";
 
 const fixture = vi.hoisted(() => ({
   service: { list: vi.fn(), start: vi.fn(), devices: vi.fn(), complete: vi.fn(), disconnect: vi.fn(), pairing: vi.fn() },
@@ -36,7 +37,7 @@ describe("Tailscale connector routes", () => {
     fixture.service.list.mockResolvedValue([{ id: connectionId, name: "Home", status: "connected", companyId }]);
     fixture.service.start.mockResolvedValue({ connection: { id: connectionId }, authorizationUrl: "https://login.tailscale.com/a/oauth_authorize" });
     fixture.service.devices.mockResolvedValue([{ id: "stable-device", name: "Home Mac", online: true }]);
-    fixture.service.complete.mockImplementation(async input => { input.authorizeCompany(companyId); return { id: connectionId, companyId }; });
+    fixture.service.complete.mockImplementation(async input => { input.authorizeCompany(companyId, connectionId); return { id: connectionId, companyId }; });
     fixture.service.disconnect.mockResolvedValue({ id: connectionId, companyId, status: "disconnected" });
     fixture.service.pairing.mockResolvedValue({ privateKeySecretId: "fixture-key-ref", publicKey: "fixture-public-key", command: "fixture-public-pairing-command" });
   });
@@ -76,6 +77,40 @@ describe("Tailscale connector routes", () => {
   });
   it("rechecks current company membership on the callback", async () => {
     expect((await request(app({ ...board, companyIds: [] })).get("/api/tools/oauth/tailscale/callback").query({ state: "s".repeat(43), claim_id: "opaque-claim" })).status).toBe(403);
+    expect(fixture.activity).not.toHaveBeenCalled();
+  });
+  it.each(["access_denied", "authorization_denied", "untrusted-provider-error<script>"])("returns %s consent to the same saved connection with a safe outcome", async error => {
+    fixture.service.complete.mockImplementationOnce(async input => {
+      input.authorizeCompany(companyId, connectionId);
+      throw badRequest("untrusted-provider-error with private state and claim data");
+    });
+    const response = await request(app()).get("/api/tools/oauth/tailscale/callback").set("Accept", "text/html").query({ state: "s".repeat(43), error });
+    expect(response.status).toBe(303);
+    const reason = error === "untrusted-provider-error<script>" ? "failed" : "cancelled";
+    expect(response.headers.location).toBe(`/FIX/apps/tailscale?tailscale_connection=${connectionId}&tailscale_error=${reason}`);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.headers["referrer-policy"]).toBe("no-referrer");
+    expect(response.text).not.toContain("untrusted-provider-error");
+    expect(fixture.activity).toHaveBeenCalledExactlyOnceWith(expect.anything(), {
+      companyId, actorType: "user", actorId: "fixture-user", action: "tailscale.authorization_failed",
+      entityType: "tailscale_connection", entityId: connectionId, details: { reason },
+    });
+  });
+  it("does not redirect an expired or unverified callback to a saved connection", async () => {
+    fixture.service.complete.mockRejectedValueOnce(badRequest("Authorization expired"));
+    const response = await request(app()).get("/api/tools/oauth/tailscale/callback").set("Accept", "text/html").query({ state: "s".repeat(43), error: "access_denied" });
+    expect(response.status).toBe(400);
+    expect(response.headers.location).toBeUndefined();
+    expect(fixture.activity).not.toHaveBeenCalled();
+  });
+  it("retains JSON error responses for programmatic callbacks", async () => {
+    fixture.service.complete.mockImplementationOnce(async input => {
+      input.authorizeCompany(companyId, connectionId);
+      throw badRequest("Authorization did not complete");
+    });
+    const response = await request(app()).get("/api/tools/oauth/tailscale/callback").set("Accept", "application/json").query({ state: "s".repeat(43), error: "access_denied" });
+    expect(response.status).toBe(400);
+    expect(response.headers.location).toBeUndefined();
     expect(fixture.activity).not.toHaveBeenCalled();
   });
   it("starts existing instance enrollment when no broker identity exists", async () => {

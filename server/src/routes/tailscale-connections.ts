@@ -75,14 +75,30 @@ export function tailscaleConnectionRoutes(db: Db) {
   router.get("/tools/oauth/tailscale/callback", async (req, res) => {
     const userId = operator(req);
     const query = z.object({ state: z.string().min(1).max(128), claim_id: z.string().max(256).optional(), error: z.string().max(128).optional() }).parse(req.query);
-    const result = await service.complete({ state: query.state, claimId: query.claim_id, error: query.error, userId,
-      authorizeCompany: companyId => assertCompanyAccess(req, companyId),
+    let authorizedConnection: { companyId: string; id: string } | undefined;
+    let result: { companyId: string; id: string };
+    let reason: "cancelled" | "failed" | undefined;
+    try {
+      result = await service.complete({ state: query.state, claimId: query.claim_id, error: query.error, userId,
+        authorizeCompany: (companyId, connectionId) => {
+          assertCompanyAccess(req, companyId);
+          authorizedConnection = { companyId, id: connectionId };
+        },
+      });
+    } catch (error) {
+      if (!authorizedConnection || !req.accepts("html")) throw error;
+      result = authorizedConnection;
+      reason = query.error === "access_denied" || query.error === "authorization_denied" ? "cancelled" : "failed";
+    }
+    await logActivity(db, { companyId: result.companyId, actorType: "user", actorId: userId,
+      action: reason ? "tailscale.authorization_failed" : "tailscale.connected", entityType: "tailscale_connection", entityId: result.id,
+      ...(reason ? { details: { reason } } : {}),
     });
-    await logActivity(db, { companyId: result.companyId, actorType: "user", actorId: userId, action: "tailscale.connected", entityType: "tailscale_connection", entityId: result.id });
     const [company] = await db.select({ prefix: companies.issuePrefix }).from(companies).where(eq(companies.id, result.companyId));
     res.setHeader("Cache-Control", "no-store");
     res.setHeader("Referrer-Policy", "no-referrer");
-    res.redirect(303, `/${encodeURIComponent(company!.prefix)}/apps/tailscale?tailscale_connection=${encodeURIComponent(result.id)}`);
+    const params = new URLSearchParams({ tailscale_connection: result.id, ...(reason ? { tailscale_error: reason } : {}) });
+    res.redirect(303, `/${encodeURIComponent(company!.prefix)}/apps/tailscale?${params}`);
   });
   return router;
 }
