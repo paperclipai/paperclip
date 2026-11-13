@@ -1,4 +1,6 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { cp, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -33,7 +35,7 @@ const {
   resolveCommandForLogs: vi.fn(async () => "ssh://fixture@127.0.0.1:2222/remote/workspace :: claude"),
   prepareWorkspaceForSshExecution: vi.fn(async () => ({ gitBacked: false })),
   restoreWorkspaceFromSshExecution: vi.fn(async () => undefined),
-  syncDirectoryToSsh: vi.fn(async () => undefined),
+  syncDirectoryToSsh: vi.fn(async (_input?: { localDir: string; remoteDir: string }) => undefined),
   runSshCommand: vi.fn(async (_spec: unknown, command: string) => ({ stdout: command.includes("mktemp -d") ? "/tmp/paperclip-ssh-runtime.claude\n" : "", stderr: "" })),
   startAdapterExecutionTargetPaperclipBridge: vi.fn(async () => ({
     env: {
@@ -82,6 +84,7 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
 
 import { createPromptContextFixture } from "@paperclipai/adapter-utils/test-fixtures/prompt-context";
 import { execute } from "./execute.js";
+import { sessionCodec } from "./index.js";
 import { resetClaudeCliCapabilitiesCacheForTests } from "./cli-capabilities.js";
 
 describe("claude remote execution", () => {
@@ -95,6 +98,98 @@ describe("claude remote execution", () => {
       const dir = cleanupDirs.pop();
       if (!dir) continue;
       await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+
+  it.each([false, true])("keeps managed SSH Claude conversations and scrubs credentials (follow-up fails=%s)", async fails => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-ssh-conversation-"));
+    cleanupDirs.push(root);
+    const workspace = path.join(root, "workspace");
+    await mkdir(workspace);
+    const homes = await Promise.all(["first", "next"].map(async name => {
+      const home = path.join(root, name); await mkdir(home); return home;
+    }));
+    const sessionId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const originalRun = runChildProcess.getMockImplementation()!;
+    const originalSsh = runSshCommand.getMockImplementation()!;
+    const originalSync = syncDirectoryToSsh.getMockImplementation()!;
+    let firstHome = "";
+    let calls = 0;
+    const privateRoots: string[] = [];
+    runSshCommand.mockImplementation(async (_spec, command) => {
+      const result = await promisify(execFile)("sh", ["-c", command]);
+      if (command.includes("mktemp -d")) privateRoots.push(result.stdout.trim());
+      return result;
+    });
+    syncDirectoryToSsh.mockImplementation(async input => { await cp(input!.localDir, input!.remoteDir, { recursive: true }); });
+    runChildProcess.mockImplementation(async (...args: unknown[]) => {
+      const argv = args[2] as string[];
+      if (!argv.includes("--print")) return originalRun(args[0] as string, args[1] as string, argv);
+      const options = args[3] as { env: Record<string, string>; cwd: string };
+      const home = options.env.CLAUDE_CONFIG_DIR!;
+      const transcript = path.join(home, "projects", "fixture-workspace", sessionId + ".jsonl");
+      calls += 1;
+      expect(options.cwd).toBe(workspace);
+      if (calls === 1) {
+        firstHome = home;
+        await mkdir(path.dirname(transcript), { recursive: true });
+        await writeFile(transcript, "fixture prior conversation");
+      } else if (calls === 2) {
+        expect(home).toBe(firstHome);
+        expect(argv).toContain("--resume");
+        expect(argv).toContain(sessionId);
+        expect(await readFile(transcript, "utf8")).toBe("fixture prior conversation");
+      } else {
+        expect(home).not.toBe(firstHome);
+        expect(argv).not.toContain("--resume");
+        await expect(stat(transcript)).rejects.toMatchObject({ code: "ENOENT" });
+      }
+      await writeFile(path.join(home, ".credentials.json"), "fixture credential");
+      await writeFile(path.join(home, "settings.json"), "fixture private config");
+      if (calls === 2 && fails) throw new Error("fixture Claude follow-up failed");
+      return { exitCode: 0, signal: null, timedOut: false, stdout: JSON.stringify({ type: "result", subtype: "success", session_id: sessionId, result: "hello" }), stderr: "", pid: 123, startedAt: new Date().toISOString() };
+    });
+    const context = {
+      agent: { id: "agent-1", companyId: "company-1", name: "Selected agent", adapterType: "claude_local", adapterConfig: {} },
+      context: { paperclipWorkspace: { cwd: workspace, source: "project_primary" } },
+      executionTarget: { kind: "remote" as const, transport: "ssh" as const, remoteCwd: workspace,
+        spec: { useHostAuth: false, host: "ssh.example.test", port: 22, username: "agent", remoteWorkspacePath: workspace, remoteCwd: workspace, privateKey: null, knownHosts: null, strictHostKeyChecking: true },
+        workspaceRealization: { mode: "in_place" as const, authoritativeRoot: workspace, pathAliases: [], outboundRestorePaths: [] } },
+      onLog: async () => {},
+    };
+    const config = (home: string) => ({ engine: "cli", command: "claude", managedAiConnection: { provider: "anthropic", method: "subscription", identity: "selected-account", sessionIdentity: "selected-account-session" },
+      env: { HOME: home, CLAUDE_CONFIG_DIR: home, CLAUDE_CODE_OAUTH_TOKEN: "fixture-token", ANTHROPIC_API_KEY: "" } });
+    try {
+      const first = await execute({ ...context, runId: "first", config: config(homes[0]!), runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: "task" } });
+      expect(first.sessionId).toBe(sessionId);
+      expect(await readdir(firstHome)).toEqual(["projects"]);
+      const saved = sessionCodec.deserialize(JSON.parse(JSON.stringify(sessionCodec.serialize(first.sessionParams!))))!;
+      await rm(homes[0]!, { recursive: true, force: true });
+      const next = execute({ ...context, runId: "next", config: config(homes[1]!), runtime: { sessionId, sessionParams: saved, sessionDisplayId: sessionId, taskKey: "task" } });
+      if (fails) await expect(next).rejects.toThrow("fixture Claude follow-up failed");
+      else expect((await next).sessionId).toBe(sessionId);
+      expect(calls).toBe(2);
+      expect(await readdir(firstHome)).toEqual(["projects"]);
+      expect((await stat(firstHome)).mode & 0o077).toBe(0);
+      await expect(stat(homes[0]!)).rejects.toMatchObject({ code: "ENOENT" });
+      if (!fails) {
+        const changed = config(homes[1]!);
+        changed.managedAiConnection.sessionIdentity = "another-account-session";
+        for (const [runId, nextConfig, sessionParams] of [
+          ["another-account", changed, saved],
+          ["old-params", config(homes[1]!), { sessionId, cwd: workspace, remoteExecution: saved.remoteExecution }],
+        ] as const) {
+          const result = await execute({ ...context, runId, config: nextConfig, runtime: { sessionId, sessionParams, sessionDisplayId: sessionId, taskKey: "task" } });
+          expect(result.resultJson).toMatchObject({ sessionReset: { code: "claude_ssh_session_state_unavailable" } });
+          expect(result.sessionParams?.sshClaudeConversationId).not.toBe(saved.sshClaudeConversationId);
+        }
+        expect(calls).toBe(4);
+      }
+      for (const dir of privateRoots) await expect(stat(dir)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      runChildProcess.mockReset().mockImplementation(originalRun);
+      runSshCommand.mockReset().mockImplementation(originalSsh);
+      syncDirectoryToSsh.mockReset().mockImplementation(originalSync);
     }
   });
 

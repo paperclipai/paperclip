@@ -183,7 +183,9 @@ async function prepareCodexRemoteManagedHome(
 ): Promise<AcpxRemoteManagedHomeResult> {
   const { env, runId, onLog } = input;
   // The host managed Codex home the engine seeded and set on env.CODEX_HOME.
-  const effectiveCodexHome = env.CODEX_HOME;
+  let effectiveCodexHome = env.CODEX_HOME;
+  let currentLog = onLog;
+  const copybackLog: typeof onLog = (stream, chunk) => currentLog(stream, chunk);
   if (!effectiveCodexHome) {
     // No managed home resolved (e.g. custom CODEX_HOME cleared) — stage the
     // workspace with no home asset, identical to the no-seam fallback.
@@ -214,7 +216,7 @@ async function prepareCodexRemoteManagedHome(
           void (await copyBackCodexAuth({
             readSandboxAuth: () => readFile(path.posix.join(assetDir, "auth.json")),
             hostAuthPath: path.join(input.config.managedAiConnection ? effectiveCodexHome : resolveSharedCodexHomeDir(process.env), "auth.json"),
-            log: (line) => onLog("stdout", `${line}\n`),
+            log: (line) => copybackLog("stdout", `${line}\n`),
           })),
       },
     ]);
@@ -229,6 +231,13 @@ async function prepareCodexRemoteManagedHome(
 
   return {
     stagedRuntime,
+    rebindRun: binding => {
+      if (input.config.managedAiConnection) {
+        if (!binding.env.CODEX_HOME) throw new Error("Managed Codex copyback requires the current account home");
+        effectiveCodexHome = binding.env.CODEX_HOME;
+      }
+      currentLog = binding.onLog;
+    },
     // Subscription copy-back fires on EVERY run's teardown (including a compatible
     // resume that reuses this staged runtime). It reads the sandbox auth.json /
     // workspace live and copies back to the host; it does NOT remove the staged
@@ -242,7 +251,7 @@ async function prepareCodexRemoteManagedHome(
     // mask the run result.
     teardown: createWorkspaceRestoreTeardown({
       stagedRuntime,
-      onLog,
+      onLog: copybackLog,
       startMessage: apiKeyAuth
         ? "[paperclip] Restoring workspace changes from the sandbox.\n"
         : "[paperclip] Restoring workspace changes and Codex auth from the sandbox.\n",

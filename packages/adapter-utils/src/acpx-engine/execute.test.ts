@@ -4570,13 +4570,18 @@ describe("ACPX engine remote managed-home seam (PR 2: per-adapter home seed)", (
     const workspace = path.posix.join(remoteCwd, ".paperclip-runtime/runs/run-1/workspace");
     const runtimeRootDir = path.posix.join(workspace, ".paperclip-runtime/custom");
     const executionTarget = { kind: "remote", transport: "ssh", remoteCwd, spec: { useHostAuth: false, host: "ssh.example.test", port: 22, username: "agent", remoteCwd, remoteWorkspacePath: remoteCwd, privateKey: null, knownHosts: null, strictHostKeyChecking: true } };
-    const restore = vi.fn(async () => {}), dispose = vi.fn(async () => {});
+    let copybackHome = "";
+    const restore = vi.fn(async () => {
+      await fs.mkdir(copybackHome, { recursive: true });
+      await fs.writeFile(path.join(copybackHome, "copyback"), "fixture refreshed credential");
+    }), dispose = vi.fn(async () => {});
     const stopControl = vi.fn(async () => {}), stopProcess = vi.fn(async () => {});
     const stagedRuntimes: NonNullable<AcpxEngineExecutorOptions["stagedRuntimes"]> = new Map();
     const seam = vi.fn(async (input: Parameters<NonNullable<AcpxEngineExecutorOptions["prepareRemoteManagedHome"]>>[0]) => {
-      const stagedRuntime = await input.stage([{ key: "home", localDir: input.env.CODEX_HOME! }]);
+      copybackHome = input.env.CODEX_HOME!;
+      const stagedRuntime = await input.stage([{ key: "home", localDir: copybackHome }]);
       input.env.CODEX_HOME = stagedRuntime.assetDirs.home!;
-      return { stagedRuntime };
+      return { stagedRuntime, rebindRun: async ({ env }: { env: Readonly<Record<string, string>> }) => { copybackHome = env.CODEX_HOME!; } };
     });
     const actual = await vi.importActual<typeof import("@paperclipai/adapter-utils/execution-target")>("@paperclipai/adapter-utils/execution-target");
     vi.mocked(prepareAdapterExecutionTargetRuntime).mockResolvedValue({ target: executionTarget as never, workspaceRemoteDir: workspace, runtimeRootDir,
@@ -4605,6 +4610,7 @@ describe("ACPX engine remote managed-home seam (PR 2: per-adapter home seed)", (
       expect(stopControl).toHaveBeenCalledOnce();
       expect(stopProcess).toHaveBeenCalledOnce();
       expect(dispose).not.toHaveBeenCalled();
+      await fs.rm(homes[0]!, { recursive: true, force: true });
       const resumed = await runExecutor(configForTurn(1), { ...options, runId: "run-2", runtime: { sessionParams: result.result.sessionParams } });
       expect(resumed.sessionInputs[0]?.cwd).toBe(result.sessionInputs[0]?.cwd);
       expect(resumed.sessionInputs[0]?.resumeSessionId).toBe(result.result.sessionId);
@@ -4613,6 +4619,8 @@ describe("ACPX engine remote managed-home seam (PR 2: per-adapter home seed)", (
       expect(resumedEnv.OPENAI_API_KEY).toBe("fixture-token-1");
       expect(seam).toHaveBeenCalledOnce();
       expect(restore).toHaveBeenCalledTimes(2);
+      await expect(fs.readFile(path.join(homes[1]!, "provider", "copyback"), "utf8")).resolves.toBe("fixture refreshed credential");
+      await expect(fs.stat(homes[0]!)).rejects.toMatchObject({ code: "ENOENT" });
       if (failure === "bridge") {
         vi.mocked(startAdapterExecutionTargetProcessSessionBridge).mockRejectedValueOnce(new Error("fixture SSH bridge unavailable"));
         await expect(runExecutor(configForTurn(2), { ...options, runId: "run-3", runtime: { sessionParams: resumed.result.sessionParams } })).rejects.toThrow("fixture SSH bridge unavailable");
@@ -4621,6 +4629,8 @@ describe("ACPX engine remote managed-home seam (PR 2: per-adapter home seed)", (
         await runExecutor(configForTurn(2), { ...options, runId: "run-3", expectedExitCode: 1, runtime: { sessionParams: resumed.result.sessionParams } });
       }
       expect(restore).toHaveBeenCalledTimes(3);
+      await expect(fs.readFile(path.join(homes[2]!, "provider", "copyback"), "utf8")).resolves.toBe("fixture refreshed credential");
+      await expect(fs.stat(homes[0]!)).rejects.toMatchObject({ code: "ENOENT" });
       expect(stopControl.mock.invocationCallOrder[2]).toBeLessThan(restore.mock.invocationCallOrder[2]!);
       expect(restore.mock.invocationCallOrder[2]).toBeLessThan(dispose.mock.invocationCallOrder[0]!);
       expect(dispose).toHaveBeenCalledOnce();

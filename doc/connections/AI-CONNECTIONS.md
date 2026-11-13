@@ -463,8 +463,8 @@ reader reports confirmed file absence as `ENOENT`, which needs no copyback.
 Connection and file-read failures still fail the probe. A disconnected target can prevent remote cleanup; the run reports
 the resulting failure rather than silently selecting another account.
 
-Codex CLI runs in an in-place SSH workspace keep conversation files and native
-SQLite indexes in a private remote home scoped to the company, agent, AI account,
+Claude and Codex CLI runs in an in-place SSH workspace keep conversation files
+(and Codex's native SQLite indexes) in a private remote home scoped to the company, agent, AI account,
 and conversation. The home path stays stable across turns and token refreshes.
 Each turn installs the current managed files, copies refreshed authentication
 back, and removes everything except conversation state, including on provider
@@ -475,7 +475,11 @@ root also removes the retained conversation state.
 Older SSH host-auth sessions keep their existing remote home. A managed SSH
 session saved before conversation retention has no retained state reference and
 starts a fresh conversation instead of reusing an unavailable thread. This reset
-is recorded as `codex_ssh_session_state_unavailable`; existing saved files remain.
+is recorded as `claude_ssh_session_state_unavailable` or
+`codex_ssh_session_state_unavailable`; existing saved files remain. Claude retains
+only its `projects` transcript directory, removing credentials and configuration
+after every turn. Saved CLI sessions preserve normalized remote identity and
+account-scoped conversation references across server persistence.
 
 ACP SSH sessions use the existing remote process bridge and session reuse
 lifecycle. A compatible session can retain its private remote home; workspace
@@ -484,7 +488,10 @@ removes the home on retirement. Workspace identity includes the company, agent,
 task and execution fingerprint. The fingerprint normalizes temporary managed-home
 paths and credential refreshes against the stable account session identity.
 Switching accounts or changing other adapter environment values starts a fresh
-conversation. The launch still receives the current credentials.
+conversation. The launch still receives the current credentials. When a Codex
+ACP session reuses its staged remote home, credential copyback and logging bind
+to the current run's local managed home before the remote environment is applied.
+Refreshed credentials cannot recreate a retired run's local home.
 Older managed SSH ACP sessions used a different
 working-directory identity and start fresh after this change. Native runner
 session identities and sandbox staging are unchanged.

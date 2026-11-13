@@ -167,7 +167,7 @@ import {
   type ChildStderrState,
   type RuntimeCacheEntry,
 } from "./run-site-host.js";
-import { createSandboxRunSite, type SandboxRunSite } from "./run-site-sandbox.js";
+import { createSandboxRunSite, type SandboxRunSite, type ManagedHomeRunRebind } from "./run-site-sandbox.js";
 import {
   createRuntimeSpanRunner,
   emitRunPhaseTiming,
@@ -243,6 +243,7 @@ type AcpxRuntimeFactory = (options: PaperclipAcpRuntimeOptions) => AcpRuntime;
  * in-sandbox staged workspace + home, which this cache reuses.
  */
 export interface StagedRuntimeCacheEntry {
+  rebindRun?: ManagedHomeRunRebind;
   observabilityCompatibilityKey?: string;
   stagedRuntime: PreparedAdapterExecutionTargetRuntime;
   /**
@@ -355,6 +356,8 @@ export interface AcpxRemoteManagedHomeContext {
 }
 
 export interface AcpxRemoteManagedHomeResult {
+  /** Rebind a retained home's copyback destination before a compatible follow-up. */
+  rebindRun?: ManagedHomeRunRebind;
   stagedRuntime: PreparedAdapterExecutionTargetRuntime;
   /**
    * Per-run copy-back, invoked once on every teardown/exit path (mirrors the CLI
@@ -509,7 +512,7 @@ interface AcpxPreparedRuntime {
   // keeps the runtime warm. Null for local runs, the runner-less fallback, and
   // adapters with no disposable temp.
   remoteStagingDispose: (() => Promise<void>) | null;
-  remoteStagingOwner?: Pick<StagedRuntimeCacheEntry, "teardown" | "dispose">;
+  remoteStagingOwner?: Pick<StagedRuntimeCacheEntry, "teardown" | "dispose" | "rebindRun">;
   // PR 3: for the remote runner-backed lane, the env keys the managed-home seam
   // mutated on this run (or the reused delta on a compatible resume), so the
   // executor can cache/refresh the staged-runtime entry after a clean turn.
@@ -2409,7 +2412,7 @@ async function buildRuntime(input: {
   let stagedRuntime: PreparedAdapterExecutionTargetRuntime | null = null;
   let remoteManagedHomeTeardown: (() => Promise<WorkspaceRestoreOutcome>) | null = null;
   let remoteStagingDispose: (() => Promise<void>) | null = null;
-  let remoteStagingOwner: Pick<StagedRuntimeCacheEntry, "teardown" | "dispose"> | undefined;
+  let remoteStagingOwner: Pick<StagedRuntimeCacheEntry, "teardown" | "dispose" | "rebindRun"> | undefined;
   let remoteStagingEnvDelta: Record<string, string> | null = null;
   let sessionStagingLeaseRelease: (() => void) | null = null;
   // The sandbox run site owns the sandbox lane's staging, the per-session
@@ -2431,6 +2434,7 @@ async function buildRuntime(input: {
       spawnCwd: cwd,
       target: remoteTarget,
       env,
+      managedHomeRunBinding: { env: { ...env }, onLog: input.ctx.onLog },
       isCompatibleResume,
       observabilityCompatibilityKey: input.ctx.observability?.compatibilityKey,
       stage: async (assets) => {
@@ -2469,6 +2473,7 @@ async function buildRuntime(input: {
             }) : { stagedRuntime: await stage([]) };
             return {
               stagedRuntime: seeded.stagedRuntime,
+              rebindRun: seeded.rebindRun,
               teardown: seeded.teardown ?? (remoteTarget.transport === "ssh" ? createWorkspaceRestoreTeardown({
                 stagedRuntime: seeded.stagedRuntime, onLog: input.ctx.onLog,
                 startMessage: "[paperclip] Restoring SSH workspace and managed credentials.\n",
@@ -2568,9 +2573,9 @@ async function buildRuntime(input: {
     stagedRuntime = placedStaged?.stagedRuntime ?? null;
     remoteManagedHomeTeardown = placedStaged?.teardown ?? null;
     remoteStagingDispose = placedStaged?.dispose ?? null;
+    remoteStagingOwner = { teardown: remoteManagedHomeTeardown, dispose: remoteStagingDispose, rebindRun: placedStaged?.rebindRun };
     if (remoteTarget.transport === "ssh") {
-      const owner = { teardown: remoteManagedHomeTeardown, dispose: remoteStagingDispose };
-      remoteStagingOwner = owner;
+      const owner = remoteStagingOwner;
       let copyBackComplete = false;
       let disposeRequested = false;
       remoteManagedHomeTeardown = async () => {
@@ -3791,6 +3796,7 @@ function saveStagedRuntimeAfterCleanTurn(input: {
   input.handles.set(prepared.sessionKey, {
     observabilityCompatibilityKey: input.observabilityCompatibilityKey,
     stagedRuntime: prepared.stagedRuntime,
+    rebindRun: prepared.remoteStagingOwner?.rebindRun,
     envDelta: prepared.remoteStagingEnvDelta,
     teardown: prepared.remoteStagingOwner?.teardown ?? prepared.remoteManagedHomeTeardown,
     dispose: prepared.remoteStagingOwner?.dispose ?? prepared.remoteStagingDispose,
