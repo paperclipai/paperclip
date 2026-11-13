@@ -1016,6 +1016,7 @@ export function recoveryService(
     settleLostRunProcess?: (scope: { companyId: string; runId: string; onDeferredDeadline?: (at: number) => void }) => Promise<unknown>;
     /** Starts a saved-work recovery the recovery queue has not reached in time. */
     startSavedWorkRecovery?: AssignedWorkDeps["startSavedWorkRecovery"];
+    cancelStalledQueuedRun?: AssignedWorkDeps["cancelStalledQueuedRun"];
     beforeOrphanedRunTerminalWrite?: (runId: string) => Promise<void>;
     beforeStaleLockClear?: (issueId: string) => Promise<void>;
     afterStrandedLatestRunRead?: (input: { issueId: string; runId: string | null }) => Promise<void>;
@@ -6902,6 +6903,7 @@ export function recoveryService(
     liveRunExecutions: deps.liveRunExecutions,
     settleLostRunProcess: deps.settleLostRunProcess,
     startSavedWorkRecovery: deps.startSavedWorkRecovery,
+    cancelStalledQueuedRun: deps.cancelStalledQueuedRun,
   });
 
   return {
