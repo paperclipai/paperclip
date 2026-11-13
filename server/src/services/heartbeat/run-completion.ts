@@ -1205,13 +1205,11 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     if (!fallback || run.status !== "failed") return null;
     // Files this run's setup may have written are never dropped: without the
     // shared unchanged-files proof the workspace stays dirty and preserved.
-    const released = await releaseUnchangedFallbackWorkspace(db, run).catch((error): false => {
+    const released = await releaseUnchangedFallbackWorkspace(db, run).catch((error) => {
       logger.warn({ err: error, runId: run.id }, "could not prove the failed run left its workspace unchanged");
       return false;
     });
     if (!released) return { outcome: "workspace_preservation_required" as const };
-    if (released.retainedProviderLeaseIds.length > 0) fallback = { ...fallback, replacedProviderLeaseIds:
-      fallback.replacedProviderLeaseIds.filter(id => !released.retainedProviderLeaseIds.includes(id)) };
     try {
       // Recorded only once the workspace is settled: it makes the run eligible for retry.
       if (!readPredecessorRetirementFallback(run.resultJson)) {

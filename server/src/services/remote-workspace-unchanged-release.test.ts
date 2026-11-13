@@ -22,7 +22,9 @@ import { UNCHANGED_BASELINE_KEY } from "./remote-workspace-unchanged-proof.js";
 import { releaseUnchangedFallbackWorkspace } from "./heartbeat/predecessor-retirement-fallback.js";
 import { FAILED_BEFORE_PROVIDER_TURN_KEY, FAILED_BEFORE_PROVIDER_TURN_SCHEMA } from "./native-runtime/failed-before-provider-turn.js";
 import { readReplaceBeforeReuseMarker, REPLACE_BEFORE_REUSE_KEY, REPLACE_BEFORE_REUSE_SCHEMA } from "./native-runtime/predecessor-retirement.js";
-import { retireReplacedReusableSandboxLease, reusableSandboxReplacementIsSafe } from "./reusable-sandbox-resume-replacement.js";
+import { retireReplacedReusableSandboxLease, reusableSandboxReplacementPlan } from "./reusable-sandbox-resume-replacement.js";
+import { ABANDONED_WORKSPACE_FILES_PARKED_REASON, abandonedWorkspaceFilesHeldOnLease } from "./remote-workspace-abandoned-files-hold.js";
+import { heartbeatService } from "./heartbeat.js";
 
 const exec = promisify(execFile);
 const support = await getEmbeddedPostgresTestSupport();
@@ -298,11 +300,20 @@ describe.skipIf(!support.supported)("remote workspace writer that ended without 
 
   async function nextAcquisitionReplaces(f: Awaited<ReturnType<typeof preparedFollowUp>>, runC: string) {
     const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.leaseB.id));
-    const replace = readReplaceBeforeReuseMarker(lease!.metadata) !== null && await reusableSandboxReplacementIsSafe({ db,
+    const replace = readReplaceBeforeReuseMarker(lease!.metadata) !== null && await reusableSandboxReplacementPlan({ db,
       lease: lease as EnvironmentLease, companyId: f.companyId, heartbeatRunId: runC,
-      executionWorkspaceId: lease!.executionWorkspaceId, adapterType: null, cause: new Error("native_predecessor_retirement_unproven") });
+      executionWorkspaceId: lease!.executionWorkspaceId, adapterType: null,
+      cause: new Error("native_predecessor_retirement_unproven") }) === "retire";
     if (replace) await retireReplacedReusableSandboxLease({ db, lease: lease as EnvironmentLease, companyId: f.companyId, heartbeatRunId: runC });
     return (await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.leaseB.id)))[0]!;
+  }
+
+  async function sweepCleanup() {
+    const calls: string[] = [];
+    const runtime = new Proxy({}, { get: (_target, name) => typeof name === "string" && name !== "then"
+      ? async () => { calls.push(name); return name === "isPendingCleanupWorkerReady" ? true : { destroyed: true }; } : undefined });
+    await heartbeatService(db, { environmentRuntime: runtime as never }).sweepPendingCleanupLeases({ backoffMs: 0 });
+    return calls;
   }
 
   it("hands on the workspace unchanged when the Runner ledger proves the failed run sent no provider turn", async () => {
@@ -323,7 +334,8 @@ describe.skipIf(!support.supported)("remote workspace writer that ended without 
     const released = await releaseUnchangedFallbackWorkspace(db, { id: f.runB, companyId: f.companyId });
     const { runC } = await f.reserveNext();
     expect(await nextAcquisitionReplaces(f, runC)).toMatchObject({ status: "pending_cleanup" });
-    expect(released).toEqual({ retainedProviderLeaseIds: [] });
+    expect(released).toBe(true);
+    expect(await sweepCleanup()).toEqual(expect.arrayContaining(["destroyRunLease"]));
   });
 
   it("keeps today's preservation for the same evidence without the Runner ledger proof", async () => {
@@ -358,19 +370,21 @@ describe.skipIf(!support.supported)("remote workspace writer that ended without 
     expect(readRemoteWorkspaceAuthority((await f.workspace()).metadata)).toMatchObject({ writerRunId: runC, location: null });
   });
 
-  it("keeps the sandbox that holds abandoned files out of replacement and cleanup", async () => {
+  it("continues on a fresh sandbox and parks the one that holds abandoned files, which cleanup leaves alone", async () => {
     const f = await preparedFollowUp({ runtimeProvisionCommand: "echo provisioned > provisioned.txt" });
     await writeFile(path.join(f.remoteRoot, "unsaved.md"), "kept\n");
     await failBeforeProviderTurn(f, { proof: true });
     await markForReplacement(f);
     const released = await releaseUnchangedFallbackWorkspace(db, { id: f.runB, companyId: f.companyId });
     const { runC } = await f.reserveNext();
+    expect(released).toBe(true);
     const lease = await nextAcquisitionReplaces(f, runC);
-    expect(lease.status).toBe("released");
-    expect(released).toEqual({ retainedProviderLeaseIds: [f.leaseB.providerLeaseId] });
-    expect(lease.metadata ?? {}).not.toHaveProperty(REPLACE_BEFORE_REUSE_KEY);
-    expect(await db.select().from(environmentLeases).where(and(eq(environmentLeases.companyId, f.companyId),
-      eq(environmentLeases.status, "pending_cleanup")))).toHaveLength(0);
+    expect(lease).toMatchObject({ status: "retained", failureReason: ABANDONED_WORKSPACE_FILES_PARKED_REASON });
+    expect(lease.metadata).toHaveProperty(REPLACE_BEFORE_REUSE_KEY);
+    expect(await abandonedWorkspaceFilesHeldOnLease(db, lease)).toBe(true);
+    expect(await sweepCleanup()).not.toEqual(expect.arrayContaining(["destroyRunLease"]));
+    expect(await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.leaseB.id)))
+      .toEqual([expect.objectContaining({ status: "retained" })]);
     await expect(access(path.join(f.remoteRoot, "unsaved.md"))).resolves.toBeUndefined();
   });
 });
