@@ -6,7 +6,7 @@ import { canSelectFreshWorkspace, freshReadinessSchema, retainedIssueWorkspaceFo
 import { verifiedWorkspaceSnapshotReceipt } from "./workspace-recovery-snapshot.js";
 import { readTaskRetryIntent, retireTaskRetriesContinuedBy } from "./task-retry.js";
 import { isPreDispatchExecutionWaitVerified } from "./pre-dispatch-execution-wait.js";
-import { readSystemRecovery } from "./system-recovery-state.js";
+import { readSystemRecovery, savedFilesUnrecoverable, unrecoverableSavedFilesFailure, unrecoverableSavedFilesNotice } from "./system-recovery-state.js";
 import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state.js";
 import { hasVerifiedWorkspaceRepair } from "./workspace-recovery-receipt.js";
 import { readMigratedLegacyWorkspaceSource } from "./legacy-workspace-recovery-migration.js";
@@ -39,6 +39,7 @@ import { firstTurnDeliveredCommentIds, historyReadDeliveredCommentIds } from "./
 import { canResumePreservedResultFinalization } from "./preserved-result-finalization.js";
 import { isServerReplacementInterruption } from "./server-replacement-interruption.js";
 import { normalizeAgentNameKey } from "./agent-name-key.js";
+import { liftInterruptionBlock } from "./interruption-block-release.js";
 
 type Run = Pick<typeof heartbeatRuns.$inferSelect,
   "id" | "companyId" | "agentId" | "status" | "startedAt" | "finishedAt" | "createdAt" |
@@ -77,6 +78,7 @@ const continuationRunFields = {
   executionStage: heartbeatRuns.executionStage,
 };
 const terminal = ["failed", "interrupted", "timed_out", "cancelled"];
+const PREVIOUS_EXECUTION_UNVERIFIED = "Paperclip can't confirm that the previous attempt stopped before it started work, so Retry can't continue from it. Your message is saved.";
 
 export function isUserCommentContinuationReason(reason: string | null | undefined): boolean {
   return reason === "issue_commented" || reason === "issue_reopened_via_comment" || reason === "issue_assigned";
@@ -193,6 +195,8 @@ export async function admitExplicitNativeContinuation(input: {
 }): Promise<{ previousRunId: string; commentId: string | null; failedRunId?: string; taskRetryRequestId?: string; queuedCommentInterruptId?: string; readiness?: ContinuationReadiness } | null> {
   const { db, companyId, issueId, agentId, actorId, commentId } = input;
   const blocked = (reason: string, message: string) => { input.onBlocked?.(reason, message); return null; };
+  let blocker: Awaited<ReturnType<typeof getExecutionBlocker>> = null;
+  const refused = (reason: string, message: string) => blocker ? blocked(reason, message) : null;
   if (input.actorType !== "user" || !actorId) return null;
   const retry = input.reason === "retry_failed_run" &&
     z.string().guid().safeParse(input.failedRunId).success;
@@ -280,7 +284,7 @@ export async function admitExplicitNativeContinuation(input: {
   const authorizedAt = nativeQueuedSend ? interruptRequestedAt!
     : response?.comment.createdAt ?? comment?.createdAt ?? retryWake?.requestedAt ?? new Date();
   if (!input.dryRun) await preserveTaskRemoteWorkspaceWriter(db, companyId, issueId);
-  const blocker = await getExecutionBlocker(db, companyId, issueId);
+  blocker = await getExecutionBlocker(db, companyId, issueId);
   const [boundary] = await db.select({ createdAt: issueComments.createdAt }).from(issues).innerJoin(issueComments, and(
     eq(issueComments.companyId, issues.companyId), eq(issueComments.issueId, issues.id),
     eq(issueComments.id, issues.conversationBoundaryCommentId),
@@ -349,7 +353,7 @@ export async function admitExplicitNativeContinuation(input: {
     )).for("update");
     if (!source || (source.nativeIssueId ?? source.issueId ?? source.contextSnapshot?.issueId) !== issueId
       || adapterExecutionControls.has(source.id) ||
-      !(await isFailedNativePreparation(db, source, coordinator) || await isPreDispatchExecutionWaitVerified(db, source))) return null;
+      !(await isFailedNativePreparation(db, source, coordinator) || await isPreDispatchExecutionWaitVerified(db, source))) return refused("previous_execution_unverified", PREVIOUS_EXECUTION_UNVERIFIED);
     sourceChecks.push({ cause: "legacy_execution_requires_reconciliation", evidence: { runId: source.id } });
   }
   if (!sourceChecks.length && !nativeQueuedSend) return null;
@@ -385,7 +389,7 @@ export async function admitExplicitNativeContinuation(input: {
       eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, run.id),
     )).for("update");
     if (!lockedRun || lockedRun.status !== run.status || lockedRun.agentId !== run.agentId ||
-        lockedRun.finishedAt?.getTime() !== run.finishedAt.getTime()) return null;
+        lockedRun.finishedAt?.getTime() !== run.finishedAt.getTime()) return refused("execution_settling", "Waiting for the previous run to stop. Your message will start automatically.");
     run = lockedRun;
     // A user's message written after their Stop request is new direction even
     // when the stopped native run settled later.
@@ -421,12 +425,16 @@ export async function admitExplicitNativeContinuation(input: {
       // a conversation. Those adapters retain their reconciliation contract.
       if (historicalAdapter && !isConversationAdapter(historicalAdapter)) {
         if (!(taskRetry && run.id !== taskRetry.sourceRunId && freshIntent && agentIsNative &&
-              historicalAdapter === "paperclip_runner" && run.status === "failed") ||
-            run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > new Date() ||
-            await hasPendingRunCleanup(db, companyId, run.id) ||
-            !await isFailedNativePreparationRetryAncestor(db, run, coordinator)) return null;
+              historicalAdapter === "paperclip_runner" && run.status === "failed"))
+          return refused("previous_execution_unverified", PREVIOUS_EXECUTION_UNVERIFIED);
+        if (run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > new Date())
+          return refused("execution_settling", "Waiting for the previous run to stop. Your message will start automatically.");
+        if (await hasPendingRunCleanup(db, companyId, run.id))
+          return refused("cleanup_pending", "Waiting for the previous run to finish cleanup. Your message is saved.");
+        if (!await isFailedNativePreparationRetryAncestor(db, run, coordinator))
+          return refused("previous_execution_unverified", PREVIOUS_EXECUTION_UNVERIFIED);
       }
-      if (!historicalAdapter && agent.adapterType === "paperclip_runner") return null;
+      if (!historicalAdapter && agent.adapterType === "paperclip_runner") return refused("previous_execution_unverified", PREVIOUS_EXECUTION_UNVERIFIED);
     }
     const interruptedByThisClick = queuedInterrupt &&
       interruptIntent?.targetRunId === run.id && run.resultJson?.operatorInterrupted === true &&
@@ -468,6 +476,7 @@ export async function admitExplicitNativeContinuation(input: {
             and ${issueRecoveryActions.evidence}->'workspaceOwnerStop' is null`,
           recoveryState: sql<string | null>`${issueRecoveryActions.evidence}#>>'{systemRecovery,state}'`,
           retryClass: sql<string | null>`${issueRecoveryActions.evidence}#>>'{systemRecovery,failure,retryClass}'`,
+          evidence: issueRecoveryActions.evidence,
         }).from(issueRecoveryActions).where(and(
           eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
           inArray(issueRecoveryActions.status, ["active", "escalated"]),
@@ -478,11 +487,12 @@ export async function admitExplicitNativeContinuation(input: {
         // A spent recovery budget finishes nothing by itself. Another Retry
         // starts one new recovery generation (task-retry), so name that action
         // instead of an endless finalizing wait (RC-50b, s14).
-        if (live.length && live.every(row => row.recoveryState === "exhausted"))
+        if (!live.length || !live.every(row => row.recoveryState === "exhausted"))
+          return blocked("finalizing_saved_result", "Paperclip is finishing the saved result.");
+        if (!freshIntent || !live.every(row => savedFilesUnrecoverable(readSystemRecovery(row.evidence))))
           return live.some(row => row.retryClass === "service_required")
-            ? blocked("saved_work_recovery_refused", "Paperclip refused to recover the saved files because a safety check on them cannot pass. Retry runs the same check again.")
+            ? blocked("saved_work_recovery_refused", "Paperclip refused to recover the saved files because a safety check on them cannot pass. Your Retry is saved.")
             : blocked("saved_work_recovery_failed", "Saving the agent's files failed. Retry to try again.");
-        return blocked("finalizing_saved_result", "Paperclip is finishing the saved result.");
       }
     }
     // A repaired export no longer blocks execution. Its machine receipt still
@@ -511,7 +521,7 @@ export async function admitExplicitNativeContinuation(input: {
     if (retry && run.status === "cancelled" && !canContinueCancelledRun(run) && !cancelledStartup)
       return blocked("cancelled_by_operator", "Inspect the stopped run and send a new message to continue.");
     if (cancelledStartup) cancelledStartupIds.add(run.id);
-    if (run.runtimeMode !== "native" && !unusedAdmission && !legacyUserTurn && !cancelledStartup) return null;
+    if (run.runtimeMode !== "native" && !unusedAdmission && !legacyUserTurn && !cancelledStartup) return refused("previous_execution_unverified", PREVIOUS_EXECUTION_UNVERIFIED);
     // A provider failure can finish the normal result/assessment commit path.
     // Its accepted failed result is immutable history, not a live controller.
     // Only a new user turn may pass this gate; the process/lease stop proofs
@@ -559,7 +569,7 @@ export async function admitExplicitNativeContinuation(input: {
       if (!leases.every(lease => hasRemoteTerminationReceipt(lease) || hasRecoveredCleanupStopReceipt(lease))) return blocked("remote_cleanup", "Waiting for the previous environment to stop. Your message will start automatically.");
       if (run.runtimeMode === "native" && !input.dryRun && !leases.every(lease => completeTerminatedRemoteNativeSessionCleanup({
         companyId, runId: run.id, remoteCleanupScope: remoteLeaseCleanupScope(lease)!,
-      }))) return null;
+      }))) return refused("remote_cleanup", "Waiting for the previous environment to stop. Your message will start automatically.");
     } else {
       if (leases.some(lease => !lease.releasedAt || lease.cleanupStatus === "failed")) return blocked("local_cleanup", "Waiting for the previous environment to finish cleanup. Your message will start automatically.");
       if (!unusedAdmission && !cancelledStartup && !failedPreparation) {
@@ -652,7 +662,7 @@ export async function admitExplicitNativeContinuation(input: {
   const nativeSources = sources.filter(run => run.runtimeMode === "native");
   const executedSources = sources.filter(run => run.runtimeMode === "native" || run.errorCode !== "execution_reconciliation_required" || run.startedAt);
   if (!executedSources.length || (retry && !sources.some(run => run.id === input.failedRunId)) ||
-      (taskRetry && !sources.some(run => run.id === taskRetry.sourceRunId))) return null;
+      (taskRetry && !sources.some(run => run.id === taskRetry.sourceRunId))) return refused("previous_execution_unverified", PREVIOUS_EXECUTION_UNVERIFIED);
   const [active] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
     eq(heartbeatRuns.companyId, companyId),
     or(eq(heartbeatRuns.nativeIssueId, issueId), sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`),
@@ -708,12 +718,15 @@ export async function admitExplicitNativeContinuation(input: {
     failureDetail: sql`coalesce(${nativeRunFinalizations.failureDetail}, '{}'::jsonb) || ${JSON.stringify({ replacementDenied: "explicit_user_continuation" })}::jsonb`,
     updatedAt: new Date(),
   }).where(and(eq(nativeRunFinalizations.companyId, companyId), inArray(nativeRunFinalizations.runId, nativeSources.map(run => run.id))));
+  const unrecoverable = actions.map(action => freshSources.has(String(action.evidence.runId))
+    ? unrecoverableSavedFilesFailure(readSystemRecovery(action.evidence)) : null).find(failure => failure !== null) ?? null;
   if (actions.length) await db.transaction(async tx => {
     await notifyUnsafeWorkspaceExportRecovery(tx, { companyId, issueId });
   for (const action of actions) {
     await tx.update(issueRecoveryActions).set({
       status: "resolved", outcome: "cancelled", resolvedAt: new Date(), updatedAt: new Date(),
-      nextAction: "The user started a fresh conversation turn. Prior action outcomes remain recorded.",
+      nextAction: unrecoverable ? unrecoverableSavedFilesNotice(unrecoverable)
+        : "The user started a fresh conversation turn. Prior action outcomes remain recorded.",
       resolutionNote: "The user continued after the prior execution stopped. No action outcomes were inferred.",
       wakePolicy: null, monitorPolicy: null,
       evidence: { ...action.evidence, explicitUserContinuation: authorization,
@@ -726,6 +739,11 @@ export async function admitExplicitNativeContinuation(input: {
         } } : {}),
       },
     }).where(eq(issueRecoveryActions.id, action.id));
+  }
+  if (unrecoverable) {
+    const { issueService } = await import("./issues.js");
+    await issueService(db).addComment(issueId, unrecoverableSavedFilesNotice(unrecoverable), {},
+      { authorType: "system" }, tx);
   }
   });
   await persistActivity(db, { companyId, actorType: "user", actorId,
@@ -748,6 +766,7 @@ export async function admitExplicitNativeContinuation(input: {
       : sql`jsonb_set(${payload}, '{taskRetry,continuation}', ${JSON.stringify(authorization)}::jsonb)`,
     }).where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.id, input.taskRetryRequestId)));
   }
+  await liftInterruptionBlock(db, task, actions, sources, input.successorRunId);
   return continuation;
 }
 

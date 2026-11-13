@@ -1601,6 +1601,8 @@ export type {
   ToolApplication,
   ToolConnection,
   ToolCatalogEntry,
+  ProviderToolIconEntry,
+  ProviderToolIconsResponse,
   ToolRuntimeSlot,
   ToolConnectionHealthCheckResult,
   ToolCatalogRefreshResult,

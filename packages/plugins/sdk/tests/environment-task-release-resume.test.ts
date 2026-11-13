@@ -22,6 +22,21 @@ const ownership = {
   sourceTaskId: "source-task", sourceGeneration: "source-generation", targetGeneration: "target-generation", policy: "reclaim_if_needed",
 } as const;
 const description = { kind: "description", taskId: "task", runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } };
+const submit = { kind: "submit", projectIds: [], bootstrapTicket: "fixture-ticket", runner: { harness: "claude", protocolMin: 1, protocolMax: 3,
+  runnerId: "runner", leaseId: "lease", runId: "run", sessionId: "session", turnId: "turn", itemId: "item" } } as const;
+const credentials: [string, unknown, boolean][] = [
+  ["a Claude OAuth token", { type: "claude-env", environment: { CLAUDE_CODE_OAUTH_TOKEN: "fixture-oauth" } }, true],
+  ["a Claude API key", { type: "claude-env", environment: { ANTHROPIC_API_KEY: "fixture-key" } }, true],
+  ["a Codex auth file", { type: "codex-auth-json", authJson: "{\"tokens\":{}}" }, true],
+  ["two Claude credentials", { type: "claude-env", environment: { CLAUDE_CODE_OAUTH_TOKEN: "a", ANTHROPIC_API_KEY: "b" } }, false],
+  ["no Claude credential", { type: "claude-env", environment: {} }, false],
+  ["an unsupported Claude variable", { type: "claude-env", environment: { ANTHROPIC_BASE_URL: "https://example.test" } }, false],
+  ["an empty value", { type: "claude-env", environment: { CLAUDE_CODE_OAUTH_TOKEN: "" } }, false],
+  ["a NUL byte", { type: "claude-env", environment: { CLAUDE_CODE_OAUTH_TOKEN: "a\0b" } }, false],
+  ["an oversized value", { type: "codex-auth-json", authJson: "x".repeat(65_537) }, false],
+  ["an unknown type", { type: "gemini-env", environment: { GEMINI_API_KEY: "fixture" } }, false],
+  ["an extra field", { type: "codex-auth-json", authJson: "{}", path: "/home/agent/.codex" }, false],
+];
 
 async function invoke(operation: unknown, handler: (params: PluginEnvironmentTaskParams) => Promise<PluginEnvironmentTaskResult>) {
   const stdin = new PassThrough(), stdout = new PassThrough(), lines = createInterface({ input: stdout });
@@ -44,6 +59,22 @@ describe("release and resume task contract", () => {
       expect(environmentTaskResultSchema.parse({ ...description, ...capabilities })).toEqual({ ...description, ...capabilities });
     }
     expect(environmentTaskResultSchema.safeParse({ ...description, releaseResumeVersion: 2 }).success).toBe(false);
+    expect(environmentTaskResultSchema.parse({ ...description, resumeCredentialVersion: 1 })).toEqual({ ...description, resumeCredentialVersion: 1 });
+    expect(environmentTaskResultSchema.safeParse({ ...description, resumeCredentialVersion: 2 }).success).toBe(false);
+  });
+
+  it.each(credentials)("validates %s on resume as on submit", (_label, credential, valid) => {
+    expect(environmentTaskOperationSchema.safeParse({ ...submit, credential }).success).toBe(valid);
+    expect(environmentTaskOperationSchema.safeParse({ ...resume, credential }).success).toBe(valid);
+  });
+
+  it("dispatches a resume credential through the serialized worker RPC", async () => {
+    const operation = { ...resume, credential: { type: "claude-env", environment: { CLAUDE_CODE_OAUTH_TOKEN: "fixture-oauth" } } } as const;
+    const result = { kind: "resume", taskId: "task", outcome: "resumed" } as const;
+    expect(await invoke(operation, async params => {
+      expect(params.operation).toEqual(operation);
+      return result;
+    })).toMatchObject({ result });
   });
 
   it.each([release, resume])("requires the exact durable identity for $kind", operation => {

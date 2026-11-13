@@ -88,6 +88,21 @@ PATCH /api/agents/{agentId}
 }
 ```
 
+### Protected environment variables
+
+A plugin environment driver can declare `protectedEnvironmentKeys`: variables
+that it sets on its own tasks. Create, hire, update and configuration rollback
+check `adapterConfig.env` against them:
+
+- If the agent's environment (its `defaultEnvironmentId`, or the instance
+  default when it has none) uses a driver that protects a key, the request
+  fails with `422` and code `protected_environment_variable`. The response
+  details name the `keys` and the `environmentId`.
+- If another active environment protects the key, the save succeeds. The
+  response includes `configurationWarnings` entries with code
+  `protected_environment_variable`, a `field` such as `adapterConfig.env.KEY`,
+  and a `message` that names those environments.
+
 ## Pause Agent
 
 ```

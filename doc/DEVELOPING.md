@@ -1656,6 +1656,13 @@ the Runner's first build step and the prepare step remove any existing stamp
 before a rebuild starts, so a build that stops partway never leaves a stamp
 that vouches for it.
 
+Set `PAPERCLIP_RUNNER_VENDOR_REQUIRE_CURRENT=1` when the Runner under
+`packages/paperclip-runner/dist` was built elsewhere and this build must not
+build it again, for example because it has no Rust toolchain. The step then
+reuses a current build as usual. When the build is not current it prints the
+reason and fails, without starting a rebuild and without removing the stamp.
+Setting both variables fails.
+
 ### Task search evaluation
 
 The task search relevance rubric and regression corpus are documented in

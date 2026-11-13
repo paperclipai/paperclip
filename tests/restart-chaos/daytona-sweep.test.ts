@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
-  assertHarnessMayMutate, DaytonaWaveSweeper, isProtectedSandbox, leaksForTask, readOnlyDaytona, reconcileSandboxes, selectWaveSandboxes,
-  PENDING_CLEANUP_RETRY_MS, R6_SETTLE_MS, sweepHasLeaks, unattributedLeaks, type DaytonaSandboxRow, type DaytonaSweepResult,
+  assertHarnessMayMutate, daytonaRestDelete, DaytonaWaveSweeper, isProtectedSandbox, leaksForTask, readOnlyDaytona, reconcileSandboxes, selectWaveSandboxes,
+  PENDING_CLEANUP_RETRY_MS, R6_SETTLE_MS, SANDBOX_DELETE_MIN_TIMEOUT_MS, sweepHasLeaks, unattributedLeaks, type DaytonaSandboxRow, type DaytonaSweepResult,
 } from "./daytona-sweep.js";
 import { ENVIRONMENT_CLEANUP_RETRY_MS } from "../../server/src/services/environment-cleanup-state.js";
+import { gradeWarmShutdown } from "./warm-shutdown.js";
 
 describe("R6 settle window", () => {
   it("covers the product's pending-cleanup retry backoff plus a sweep, capped at 8 minutes", () => {
@@ -16,6 +17,7 @@ describe("R6 settle window", () => {
 describe("cleanup through Paperclip", () => {
   const COMPANY = "11111111-1111-4111-8111-111111111111";
   const ENVIRONMENT = "22222222-2222-4222-8222-222222222222";
+  const OTHER_COMPANY = "33333333-3333-4333-8333-333333333333";
   const listing = { list: () => (async function* () {})() };
 
   it("treats a 409 pending-cleanup environment delete as blocked, not a harness error, and retries it", async () => {
@@ -27,6 +29,76 @@ describe("cleanup through Paperclip", () => {
     expect(result).toMatchObject({ environmentDeleted: false, errors: [], remainingSandboxes: [] });
     expect(result.environmentDeleteBlocked).toMatch(/409/);
     expect(calls).toBeGreaterThan(1);
+  });
+
+  const waveRows = (states: string[], extra: Partial<DaytonaSandboxRow> = {}): DaytonaSandboxRow[] => states.map(state =>
+    ({ id: state, name: `paperclip-create-${state}`, state, labels: { "paperclip-company-id": COMPANY, "paperclip-environment-id": ENVIRONMENT }, ...extra }));
+  const deletingDaytona = (rows: DaytonaSandboxRow[]) => {
+    const removed: string[] = [];
+    const client = readOnlyDaytona({ list: () => (async function* () { yield* rows.map(row => ({ ...row })); })() });
+    const removeSandbox = async (id: string) => {
+      removed.push(id);
+      const row = rows.find(candidate => candidate.id === id);
+      if (row) row.state = "destroyed";
+    };
+    return { client, removeSandbox, removed };
+  };
+
+  it("deletes the wave's archived setup sandboxes and every other sandbox carrying both wave labels, and leaves nothing behind", async () => {
+    const rows = [...waveRows(["started", "archiving", "archived", "destroyed"]),
+      { id: "fleet", name: "paperclip-create-fleet", state: "archived", labels: { "paperclip-company-id": OTHER_COMPANY, "paperclip-environment-id": ENVIRONMENT } },
+      { id: "other-env", name: "paperclip-create-x", state: "archived", labels: { "paperclip-company-id": COMPANY, "paperclip-environment-id": OTHER_COMPANY } }];
+    const { client, removeSandbox, removed } = deletingDaytona(rows);
+    const sweeper = new DaytonaWaveSweeper({ apiKey: "unused", companyId: COMPANY, environmentId: ENVIRONMENT, api: { delete: async () => undefined } as never, removeSandbox });
+    (sweeper as unknown as { client: unknown }).client = client;
+    const result = await sweeper.cleanUp(0, 1_000);
+    expect(result.remainingSandboxes).toEqual(["started:started"]);
+    expect(result.archivedSandboxes).toEqual(["archiving:archiving", "archived:archived"]);
+    expect(removed.sort()).toEqual(["archived", "archiving", "started"]);
+    expect(result.deletedSandboxes.sort()).toEqual(["archived:archived", "archiving:archiving", "started:started"]);
+    expect(result.undeletedSandboxes).toEqual([]);
+    expect(rows.find(row => row.id === "fleet")!.state).toBe("archived");
+    expect(rows.find(row => row.id === "other-env")!.state).toBe("archived");
+  });
+
+  it("fails cleanup when a wave sandbox survives deletion, and never deletes a fleet snapshot even with the wave's labels", async () => {
+    const rows = [...waveRows(["archived"]), ...waveRows(["fleet"], { snapshot: "fleet-sbx-9", state: "archived" })];
+    const { client, removeSandbox, removed } = deletingDaytona(rows);
+    const sweeper = new DaytonaWaveSweeper({ apiKey: "unused", companyId: COMPANY, environmentId: ENVIRONMENT, api: { delete: async () => undefined } as never, removeSandbox });
+    (sweeper as unknown as { client: unknown }).client = client;
+    const result = await sweeper.cleanUp(0, 1_000);
+    expect(removed).toEqual(["archived"]);
+    expect(result.undeletedSandboxes).toEqual(["fleet:archived"]);
+    expect(result.errors.join(" ")).toMatch(/sandbox delete fleet: Refusing to change protected/);
+    expect(gradeWarmShutdown({ cleanup: result, serverLog: "" })).toMatchObject({ verdict: "fail", leakedSandboxes: ["fleet:archived"] });
+  });
+
+  it("sends the Daytona delete for one sandbox id with the wave's key", async () => {
+    const calls: Array<{ url: string; init: RequestInit | undefined }> = [];
+    const remove = daytonaRestDelete("key-1", "https://daytona.test/api", (async (url: string, init?: RequestInit) => {
+      calls.push({ url, init });
+      return new Response(null, { status: url.endsWith("gone") ? 404 : url.endsWith("bad") ? 500 : 200 });
+    }) as typeof fetch);
+    const signal = new AbortController().signal;
+    await remove("abc", signal);
+    await remove("gone", signal);
+    await expect(remove("bad", signal)).rejects.toThrow(/returned 500/);
+    expect(calls[0]).toEqual({ url: "https://daytona.test/api/sandbox/abc", init: { method: "DELETE", headers: { Authorization: "Bearer key-1" }, signal } });
+  });
+
+  it("aborts a hung delete at the cleanup deadline and reports the sandbox as left", async () => {
+    const rows = waveRows(["archived"]);
+    const client = readOnlyDaytona({ list: () => (async function* () { yield* rows.map(row => ({ ...row })); })() });
+    const removeSandbox = (_id: string, signal: AbortSignal) => new Promise<void>((_resolve, reject) => {
+      signal.addEventListener("abort", () => reject(new Error("delete aborted")), { once: true });
+    });
+    const sweeper = new DaytonaWaveSweeper({ apiKey: "unused", companyId: COMPANY, environmentId: ENVIRONMENT, api: { delete: async () => undefined } as never, removeSandbox });
+    (sweeper as unknown as { client: unknown }).client = client;
+    const started = Date.now();
+    const result = await sweeper.cleanUp(0, 1_000);
+    expect(Date.now() - started).toBeLessThan(SANDBOX_DELETE_MIN_TIMEOUT_MS + 3_000);
+    expect(result.undeletedSandboxes).toEqual(["archived:archived"]);
+    expect(result.errors.join(" ")).toMatch(/sandbox delete archived: delete aborted/);
   });
 
   it("reports other environment delete failures as errors", async () => {
@@ -79,13 +151,13 @@ describe("wave sandbox selection is read-only and exact", () => {
     expect(() => readOnlyDaytona({} as never)).toThrow(/no list\(\)/);
   });
 
-  it("hard-refuses fleet sandboxes and anything not labelled for the wave, even with matching labels", () => {
+  it("hard-refuses fleet snapshots and anything not labelled for the wave; a plugin-created name with the wave's labels is the wave's own", () => {
     const waveLabels = { "paperclip-company-id": COMPANY, "paperclip-environment-id": ENVIRONMENT };
-    expect(isProtectedSandbox({ name: "paperclip-create-1" })).toBe(true);
     expect(isProtectedSandbox({ name: "x", snapshot: "fleet-sbx-2" })).toBe(true);
-    expect(() => assertHarnessMayMutate(labelled("a", waveLabels, { name: "paperclip-create-1" }), wave)).toThrow(/protected/);
     expect(() => assertHarnessMayMutate(labelled("b", waveLabels, { name: "probe", snapshot: "fleet-sbx-2" }), wave)).toThrow(/protected/);
     expect(() => assertHarnessMayMutate(labelled("c", {}, { name: "probe" }), wave)).toThrow(/not labelled for this wave/);
+    expect(() => assertHarnessMayMutate(labelled("e", { "paperclip-company-id": OTHER }, { name: "paperclip-create-1" }), wave)).toThrow(/not labelled for this wave/);
+    expect(() => assertHarnessMayMutate(labelled("a", waveLabels, { name: "paperclip-create-1" }), wave)).not.toThrow();
     expect(() => assertHarnessMayMutate(labelled("d", waveLabels, { name: "probe" }), wave)).not.toThrow();
   });
 });

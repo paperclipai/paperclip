@@ -19,6 +19,7 @@ export const ACPX_CREDENTIAL_NAMES: Readonly<Record<QualifiedAcpxAgent, readonly
 };
 /** Enables Claude Code's TaskCreate/TaskUpdate tools, which feed the native plan. */
 export const CLAUDE_TODO_TOOLS_ENV = "CLAUDE_CODE_ENABLE_TODO_TOOLS";
+export const CLAUDE_CRON_DISABLE_ENV = "CLAUDE_CODE_DISABLE_CRON";
 export const CLAUDE_ROUTING_ENV_KEYS =["ANTHROPIC_BASE_URL", "ANTHROPIC_CUSTOM_HEADERS", "CLAUDE_CODE_USE_BEDROCK", "AWS_REGION", "AWS_DEFAULT_REGION", "AWS_EC2_METADATA_DISABLED", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL"] as const;
 
 /** Keep the task projection consistent when excluding general IAM from Pi. */
@@ -188,6 +189,7 @@ export function createSanitizedAcpxSpawnInput(
   // Paperclip renders that list as the turn plan (ACP `plan` -> `plan.updated`),
   // so the launcher owns this value; a host setting cannot switch it off.
   if (agent === "claude") result[CLAUDE_TODO_TOOLS_ENV] = "1";
+  if (agent === "claude") result[CLAUDE_CRON_DISABLE_ENV] = "1";
   if (agent === "claude" && isOpenRouterUrl(result.ANTHROPIC_BASE_URL)) {
     result.ANTHROPIC_CUSTOM_HEADERS = openRouterClaudeHeaders(result.ANTHROPIC_CUSTOM_HEADERS);
   }

@@ -84,6 +84,9 @@ export function buildNativeContinuationPrompt(input: {
     ...(wake.childIssueSummaries.length ? { childResults: wake.childIssueSummaries } : {}),
     ...(wake.childIssueSummaryTruncated ? { childResultsTruncated: true } : {}),
     ...(wake.unresolvedBlockerIssueIds.length ? { unresolvedBlockerIssueIds: wake.unresolvedBlockerIssueIds } : {}),
+    // Server-rendered "App context (untrusted)" from the task's MCP Apps widgets:
+    // a resumed turn sees the current selection as well as the new comment.
+    ...(typeof rawWake.mcpAppContext === "string" && rawWake.mcpAppContext.trim() ? { appContext: rawWake.mcpAppContext.trim() } : {}),
   };
   const earlierRead = wake.comments.filter((comment) => comment.readByEarlierTurn && comment.id
     && events.messages.some((message) => message.id === comment.id)).map((comment) => comment.id!);

@@ -27,9 +27,11 @@ import { DiskFullFaultSeam, isDiskFullFault, receiptsForIssue, withDiskFullCheck
 import { CREDENTIAL_FOR_ADAPTER, parseCommand, replayCommand, waveIdFor } from "./config.js";
 import { assertControllerMatchesImage, assertProviderPackMismatch, defaultDaytonaImageCacheRoot, prepareDaytonaImageArtifacts } from "./daytona-image.js";
 import { PLUGIN_BUILD_STAMP, pluginBuildState } from "./plugin-build.js";
+import { finishDaytonaCleanup } from "./daytona-cleanup.js";
 import { DaytonaWaveSweeper, leaksForTask, unattributedLeaks, type DaytonaSweepResult } from "./daytona-sweep.js";
 import { knownSecretValues, redactKnownSecrets, wakeEvidenceOnce, writeEvidenceBundle } from "./evidence.js";
 import { gradeTask } from "./grader.js";
+import { loadWaveGradeInputs } from "./wave-grade-inputs.js";
 import { releaseInstance } from "../runner-e2e/instance-retention.js";
 import { checkPlanInvariants, readUniversalDbEvidence, summarizeViolations, type InvariantCheck } from "./invariants.js";
 import { collectContentionEvidence, RunRowPressure } from "./contention.js";
@@ -140,7 +142,7 @@ async function prepareDaytona(plan: WavePlan, timeline: Timeline): Promise<Recor
   const image = plan.options.daytonaImage!;
   const artifacts = await prepareDaytonaImageArtifacts({ image, cacheRoot: defaultDaytonaImageCacheRoot(),
     log: line => console.info(`[daytona-image] ${line}`) });
-  const { localContentId } = await assertControllerMatchesImage(artifacts, repositoryRoot);
+  const { localContentId } = await assertControllerMatchesImage(artifacts, plan.options.serverFrom ?? repositoryRoot);
   timeline.add("daytona_image_matched", { image, contentId: artifacts.contentId, localContentId, sourceRevision: artifacts.sourceRevision,
     runnerdSha256: artifacts.runnerdSha256, providerPackDigest: artifacts.providerPackDigest, platformManifestDigest: artifacts.platformManifestDigest });
   ensureDaytonaPlugin(timeline);
@@ -265,6 +267,11 @@ async function main(): Promise<number> {
     supervisor.crashPointHoldMs = plan.options.crashPointHoldMs ?? 0;
     supervisor.useCrashPointControl({ controlPath: path.join(supervisor.paths.temporaryRoot, "crash-point.control"),
       receiptPath: path.join(waveDir, "crash-point-receipts.jsonl") });
+  }
+  const externalCrashControl = process.env.RESTART_CHAOS_EXTERNAL_CRASH_CONTROL;
+  if (!crashPoint && !plan.options.failRecoveryStep && externalCrashControl) {
+    supervisor.useCrashPointControl({ controlPath: externalCrashControl,
+      receiptPath: process.env.RESTART_CHAOS_EXTERNAL_CRASH_RECEIPT ?? path.join(waveDir, "crash-point-receipts.jsonl") });
   }
   let sweeper: DaytonaWaveSweeper | null = null;
   let sandboxSweep: DaytonaSweepResult | null = null;
@@ -784,6 +791,7 @@ async function main(): Promise<number> {
     const universalByIssue = await readUniversalDbEvidence(evidenceDb, lab.companyId).catch(error => {
       timeline.add("universal_db_evidence_failed", { error: String(error) }); return null; });
     const allRunMessages = new Map([...(universalByIssue?.values() ?? [])].flatMap(entry => [...entry.runMessages]));
+    const gradeInputs = await loadWaveGradeInputs(waveDir, plan.options.stagingMix);
     const costSummary = launched.some(observer => observer.plan.workload === "L1")
       ? await api.get<Record<string, unknown>>(`/api/companies/${lab.companyId}/costs/summary?period=all`)
         .then(summary => typeof summary.spendCents === "number"
@@ -822,8 +830,9 @@ async function main(): Promise<number> {
         observer.record.faultIds, parseRecoveryStepReceipts(await readFile(recoveryStepReceipts, "utf8").catch(() => "")), artifacts?.runs ?? []);
       // CR1–CR3: the task's own fault applied (CR2 killed a provider, CR3 stalled the plugin worker; class-r.ts).
       const toolOracle = withClassRCheck(stepOracle, observer.plan, faults);
+      Object.assign(observer.record, await gradeInputs.prepare(observer.plan.taskId, observer.record));
       const grade = gradeTask(observer.record, faults, observer.definition.budgetMs, toolOracle, universalByIssue ? {
-        runMessages: allRunMessages, recoveryActions: universalByIssue.get(observer.record.issueId ?? "")?.recoveryActions ?? [] } : undefined);
+        runMessages: allRunMessages, recoveryActions: universalByIssue.get(observer.record.issueId ?? "")?.recoveryActions ?? [] } : undefined, gradeInputs.queue);
       let evidence: string | null = null;
       if (!grade.pass) {
         anyFailure = true;
@@ -911,31 +920,12 @@ async function main(): Promise<number> {
     await board?.close().catch(() => undefined);
     await closeJourneyApps();
     try { if (sweeper) try {
-      const owned = sweeper as DaytonaWaveSweeper;
-      // An interrupted wave still reports what it leaked before cleanup.
-      sandboxSweep ??= await owned.sweep(0);
-      // Cleanup only through Paperclip; the harness never changes a sandbox.
-      const cleanup = await owned.cleanUp();
-      daytonaCleanup = cleanup;
-      timeline.add("daytona_cleanup", cleanup);
-      console.info(`Daytona R6 sweep: ${sandboxSweep.liveSandboxes.length} live, ${sandboxSweep.archivedSandboxes.length} archived after release, `
-        + `${sandboxSweep.orphanSandboxes.length} orphaned, `
-        + `${sandboxSweep.heldLeases.length} held leases${sandboxSweep.error ? `, error ${sandboxSweep.error}` : ""}; `
-        + `environment deleted: ${cleanup.environmentDeleted}${cleanup.environmentDeleteBlocked ? " (still blocked by a pending sandbox cleanup)" : ""}; still running after cleanup: ${cleanup.remainingSandboxes.join(", ") || "none"}`);
-      // A sandbox neither archived nor destroyed after cleanup is a leak for a person to act on.
-      if (cleanup.remainingSandboxes.length) { anyFailure = true; remoteCleanupPending = true; }
-      // A delete still blocked by pending sandbox cleanup after the settle window
-      // is a leak, not a harness error: fail the wave and keep the instance, whose
-      // database owns that cleanup work.
-      if (cleanup.environmentDeleteBlocked) {
-        anyFailure = true;
-        remoteCleanupPending = true;
-        timeline.add("daytona_environment_delete_blocked", { detail: cleanup.environmentDeleteBlocked });
-      }
-      if (cleanup.errors.length) remoteCleanupPending = true;
-      if (cleanup.errors.length) harnessError ??= new Error(`Daytona cleanup incomplete: ${cleanup.errors.join("; ")}`);
-      await writeFile(path.join(waveDir, "sandbox-sweep.json"), `${JSON.stringify({ sweep: sandboxSweep, cleanup }, null, 2)}\n`, { mode: 0o600 })
-        .catch(error => timeline.add("sandbox_sweep_write_failed", { error: String(error) }));
+      const outcome = await finishDaytonaCleanup({ sweeper: sweeper as DaytonaWaveSweeper, sweep: sandboxSweep, waveDir, timeline });
+      sandboxSweep = outcome.sweep;
+      daytonaCleanup = outcome.cleanup;
+      if (outcome.failed) anyFailure = true;
+      if (outcome.remotePending) remoteCleanupPending = true;
+      if (outcome.error) harnessError ??= outcome.error;
     } catch (error) {
       harnessError ??= error;
       remoteCleanupPending = true;
