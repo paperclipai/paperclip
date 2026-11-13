@@ -8896,6 +8896,53 @@ describe("executeNativeSession recovery", () => {
     ).toEqual(["run.result.accepted", "run.terminal"]);
   });
 
+  it("proves it still owns a recovered session right before starting a turn in it", async () => {
+    // Staging run cd2bf273: a turn nobody can attribute appeared in the same
+    // provider thread across server swaps. The recovery checkpoint is fenced
+    // (controller boot, generation, lease), but preparing the turn's input can
+    // take a while and another generation may take the run over meanwhile.
+    // The fenced checkpoint is repeated right before the submit, so the
+    // replaced server submits nothing.
+    const checkpoint: PersistedNativeSession = {
+      backendKind: "mock", sessionId: "driver-recovery", identity, providerSessionId: "provider-recovery", cursor: "1",
+      activeTurnId: null, terminalTurns: [], pendingRuntimeRequests: [], lineage: [],
+    };
+    const startTurn = vi.fn(async () => ({ turnId: "late-turn" }));
+    const session: NativeSession = {
+      identity: () => identity,
+      async capabilities() { return { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true }; },
+      events: () => (async function* () {})(),
+      startTurn,
+      async result() { return null; },
+      async snapshot() { return structuredClone(checkpoint); },
+      async close() {},
+    };
+    const backend: NativeSessionBackend = {
+      async descriptor() {
+        return { kind: "mock", name: "recovery-backend", version: "1",
+          capabilities: { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true } };
+      },
+      async openSession() { throw new Error("must recover the provider session"); },
+      async recoverSession() { return { recovered: true, session }; },
+    };
+    let takenOver = false;
+    const checkpointSession = vi.fn(async () => { if (takenOver) throw new Error("native_runner_checkpoint_owner_lost"); });
+    const port: ControlPlanePort = {
+      async openRun() {},
+      async loadSessionCheckpoint() { return structuredClone(checkpoint); },
+      checkpointSession,
+      async appendEvent() { return { cursor: 1, highestContiguousSourceSeq: 0, disposition: "committed" }; },
+      async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; },
+      completeRun: vi.fn(async () => undefined),
+    };
+    await executeNativeSession({ input, backend, controlPlane: port, runnerInstanceId: "runner-recovery",
+      controlPlaneInstanceId: "control-recovery",
+      // Another server generation claims the run while this one prepares the turn.
+      prepareWakeAttachmentPrompt: async () => { takenOver = true; return undefined; } }).catch(() => undefined);
+    expect(takenOver).toBe(true);
+    expect(startTurn).not.toHaveBeenCalled();
+  });
+
   it("resolves a checkpointed result-less disposition without resubmitting when its terminal event is missing", async () => {
     const workProposal: PrpEvent = {
       ...runnerEvent(1, "run.result.proposed", result),
