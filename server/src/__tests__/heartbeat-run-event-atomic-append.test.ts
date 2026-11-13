@@ -5,6 +5,7 @@ import { eq, inArray, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import { agents, companies, createDb, heartbeatRunEvents, heartbeatRuns, issues, nativeRunnerCheckpoints } from "@paperclipai/db";
 import { appendHeartbeatRunEvent } from "../services/heartbeat-run-events.js";
+import { nativeSha256 } from "../services/native-runtime/canonical.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 const externalTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_ATOMIC_EVENTS_TEST_DATABASE_URL");
@@ -136,7 +137,7 @@ describeEmbeddedPostgres("atomic ordinary run events", () => {
     // own so that the append reads a snapshot taken after the lock was granted.
     expect(first.statements).toHaveLength(4);
     expect(first.statements[0]).toMatch(/^begin/i);
-    expect(first.statements[1]).toMatch(/^select "company_id", "agent_id" from "heartbeat_runs" .* for no key update$/);
+    expect(first.statements[1]).toMatch(/^select "company_id", "agent_id", \("native_source_cursors" ->> \$1\)::bigint as "source_cursor" from "heartbeat_runs" .* for no key update$/);
     expect(first.statements[2]).toMatch(/^with existing as .* insert into heartbeat_run_events /);
     expect(first.statements[3]).toMatch(/^commit/i);
     expect(first.result).toMatchObject({ disposition: "committed", highestContiguousSourceSeq: 1 });
@@ -160,6 +161,48 @@ describeEmbeddedPostgres("atomic ordinary run events", () => {
     expect(checks).toBe(2);
     expect(checked.result).toMatchObject({ disposition: "committed", highestContiguousSourceSeq: 3 });
     expect((await readEvents(runId)).map(row => [row.seq, row.sourceSeq])).toEqual([[1, 1], [2, 2], [3, 3]]);
+  });
+
+  it("keeps the source cursor on the run so an in-order append does not count the run's events", async () => {
+    const runId = await makeRun();
+    await appendHeartbeatRunEvent(db, nativeEvent(runId, 1));
+    for (let sourceSeq = 2; sourceSeq <= 6; sourceSeq += 1) {
+      const appended = await sentStatements(db.$client, () => appendHeartbeatRunEvent(db, nativeEvent(runId, sourceSeq)));
+      expect(appended.result).toMatchObject({ disposition: "committed", highestContiguousSourceSeq: sourceSeq });
+      expect(appended.statements).toHaveLength(4);
+      // The append statement reads no other event of the run.
+      expect(appended.statements[2]).not.toMatch(/count\(|max\(source_seq\)/);
+    }
+    const replay = await sentStatements(db.$client, () => appendHeartbeatRunEvent(db, nativeEvent(runId, 3)));
+    expect(replay.result).toMatchObject({ disposition: "duplicate", highestContiguousSourceSeq: 6 });
+    expect(replay.statements[2]).not.toMatch(/count\(/);
+    expect((await readRun(runId)).nativeSourceCursors).toEqual({ "native-writer": 6 });
+  });
+
+  it("recounts a source whose run has no cursor or a cursor behind its stored events", async () => {
+    const runId = await makeRun();
+    const stored = (sourceSeqs: number[], firstSeq: number) => db.insert(heartbeatRunEvents).values(sourceSeqs.map((sourceSeq, index) => ({
+      companyId, agentId, runId, seq: firstSeq + index, eventType: "item.delta", stream: "system", level: "info",
+      payload: { prpEvent: { sourceSeq } }, sourceInstanceId: "native-writer", sourceEventId: `native-writer:${sourceSeq}`,
+      sourceSeq, sourcePayloadSha256: nativeSha256({ sourceSeq }), protocolSchemaVersion: 1,
+    })));
+    // A server from before the cursor stored events 1 to 3 of a run that is still streaming.
+    await stored([1, 2, 3], 1);
+    await db.update(heartbeatRuns).set({ nextEventSeq: 4 }).where(eq(heartbeatRuns.id, runId));
+    expect(await appendHeartbeatRunEvent(db, nativeEvent(runId, 4))).toMatchObject({ disposition: "committed", highestContiguousSourceSeq: 4 });
+    expect((await readRun(runId)).nativeSourceCursors).toEqual({ "native-writer": 4 });
+    // A writer that does not keep the cursor stored 5 to 7.
+    await stored([5, 6, 7], 5);
+    await db.update(heartbeatRuns).set({ nextEventSeq: 8 }).where(eq(heartbeatRuns.id, runId));
+    expect(await appendHeartbeatRunEvent(db, nativeEvent(runId, 6))).toMatchObject({ disposition: "duplicate" });
+    expect(await appendHeartbeatRunEvent(db, nativeEvent(runId, 8))).toMatchObject({ disposition: "committed", highestContiguousSourceSeq: 8 });
+    expect((await readRun(runId)).nativeSourceCursors).toEqual({ "native-writer": 8 });
+    // A gap removes the cursor, so the event that fills it recounts.
+    expect(await appendHeartbeatRunEvent(db, nativeEvent(runId, 10))).toMatchObject({ highestContiguousSourceSeq: 8 });
+    expect((await readRun(runId)).nativeSourceCursors).toEqual({});
+    expect(await appendHeartbeatRunEvent(db, nativeEvent(runId, 9))).toMatchObject({ highestContiguousSourceSeq: 10 });
+    expect((await readRun(runId)).nativeSourceCursors).toEqual({ "native-writer": 10 });
+    expect((await readEvents(runId)).map(row => row.sourceSeq)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 10, 9]);
   });
 
   it("registers a native event's wakes before its write and only when the event is new", async () => {
@@ -288,7 +331,7 @@ describeEmbeddedPostgres("atomic ordinary run events", () => {
       query.includes('from "heartbeat_runs"') && query.endsWith("for no key update"));
     expect(lockReads).toHaveLength(2);
     for (const query of lockReads) {
-      expect(query).toMatch(/^select "company_id", "agent_id" from "heartbeat_runs" /);
+      expect(query).toMatch(/^select "company_id", "agent_id"(, \("native_source_cursors" ->> \$1\)::bigint as "source_cursor")? from "heartbeat_runs" /);
       expect(query).not.toMatch(/context_snapshot|runner_profile_json|result_json|stdout_excerpt/);
     }
   });

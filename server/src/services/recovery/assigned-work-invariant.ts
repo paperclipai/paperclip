@@ -26,6 +26,7 @@ export const PENDING_INTENTS = [
   "pending_handoff",
   "session_goal",
   "system_recovery_working",
+  "saved_work_recovery",
 ] as const;
 export type PendingIntent = (typeof PENDING_INTENTS)[number];
 
@@ -64,6 +65,10 @@ export const VIOLATION_REASONS = [
   /** Blocked, and nothing recorded says why. */
   "unknown_block",
   "blocked_with_live_run",
+  /** The task's saved files must be recovered before it can run, and the
+   * recovery queue has not started that recovery within its bound. Repaired
+   * by starting the recovery, never by a wake its hold would refuse. */
+  "saved_work_recovery_overdue",
 ] as const;
 export type ViolationReason = (typeof VIOLATION_REASONS)[number];
 
@@ -102,6 +107,12 @@ export const SETTLING_GRACE_MS = 90_000;
 /** Upper bound on how long another server's lease can keep a finished run settling. */
 export const SETTLING_MAX_MS = 5 * 60_000;
 export const SYSTEM_RECOVERY_WORKING_BOUND_MS = 17 * 60_000;
+/** How long a queued saved-work recovery may wait for the recovery queue to
+ * start it, counted from the run stopping or its last attempt, before the
+ * sweep starts it itself. */
+export const SAVED_WORK_RECOVERY_START_BOUND_MS = 10 * 60_000;
+/** A running saved-work recovery renews its observation every 15 seconds. */
+const SAVED_WORK_RECOVERY_ACTIVE_MS = 45_000;
 /** Blocked tasks older than this are reported, never continued automatically. */
 export const STALE_BLOCK_MS = 7 * 24 * 60 * 60_000;
 /** Automatic continuations per task, shared with the server-restart lane. */
@@ -161,6 +172,9 @@ export type AssignedWorkFacts = {
   reviewPending: boolean;
   activeRecoveryAction: { cause: string; ownerType: string; resumeAt: Date | null;
     continuedBySweep?: boolean; id?: string } | null;
+  /** A saved-work recovery the recovery queue still owes this task: the
+   * task's saved files must be recovered before any run can start. */
+  savedWorkRecovery?: SavedWorkRecoveryFact | null;
   agent: { status: string; invokable: boolean } | null;
   companyPaused: boolean;
   pauseHold: boolean;
@@ -168,6 +182,33 @@ export type AssignedWorkFacts = {
   /** Who moved the task to `blocked`, from its activity. */
   blockedBy: "user" | "assignee" | "system" | "unknown" | null;
 };
+
+export type SavedWorkRecoveryFact = {
+  actionId: string;
+  runId: string;
+  state: "scheduled" | "running" | "awaiting_evidence";
+  /** When the next attempt is due (epoch ms); null when due now. */
+  nextAttemptAt: number | null;
+  /** Last observation of a running attempt (epoch ms). */
+  activeAt: number | null;
+  /** When the recovered run stopped. */
+  sourceFinishedAt: Date | null;
+};
+
+/** Whether the recovery queue still has time to start or finish this
+ * recovery: an attempt is running, the next one is scheduled, or it became
+ * due less than SAVED_WORK_RECOVERY_START_BOUND_MS ago. */
+export function savedWorkRecoveryPending(recovery: SavedWorkRecoveryFact, now: Date): boolean {
+  const at = now.getTime();
+  if (recovery.activeAt !== null && recovery.activeAt > at - SAVED_WORK_RECOVERY_ACTIVE_MS) return true;
+  if (recovery.nextAttemptAt !== null && recovery.nextAttemptAt > at) return true;
+  return at - savedWorkRecoveryDueSince(recovery) < SAVED_WORK_RECOVERY_START_BOUND_MS;
+}
+
+/** When the queue became responsible for the next attempt. */
+export function savedWorkRecoveryDueSince(recovery: SavedWorkRecoveryFact): number {
+  return Math.max(recovery.sourceFinishedAt?.getTime() ?? 0, recovery.nextAttemptAt ?? 0, recovery.activeAt ?? 0);
+}
 
 export type AssignedWorkVerdict =
   | { kind: "not_applicable" }
@@ -216,6 +257,10 @@ export function evaluateAssignedWork(facts: AssignedWorkFacts, now: Date = new D
   const waiting = waitingReason(facts, now);
   if (waiting) return { kind: "ok", clause: "waiting", reason: waiting };
 
+  // The saved files must be recovered first, and the queue has not reached
+  // them in time. A continuation wake would only wait behind the same hold.
+  if (facts.savedWorkRecovery) return { kind: "violation", reason: "saved_work_recovery_overdue", stale: false };
+
   if (issue.status === "blocked") {
     const blockedAt = issue.blockedTransitionAt ?? issue.updatedAt;
     const stale = now.getTime() - blockedAt.getTime() > STALE_BLOCK_MS;
@@ -237,6 +282,7 @@ function pendingIntent(facts: AssignedWorkFacts, now: Date): PendingIntent | nul
   if (facts.pendingHandoff) return "pending_handoff";
   if (facts.sessionGoal === "active") return "session_goal";
   if (facts.issue.monitorNextCheckAt && facts.issue.monitorNextCheckAt.getTime() > now.getTime()) return "scheduled_monitor";
+  if (facts.savedWorkRecovery && savedWorkRecoveryPending(facts.savedWorkRecovery, now)) return "saved_work_recovery";
   const interruption = facts.interruption;
   if (interruption?.responsibility === "system") {
     if (interruption.state === "working" && !(facts.latestRun?.finishedAt
@@ -345,6 +391,8 @@ export function continuationActivityMessage(reason: ViolationReason): string {
       return "Continued automatically after an interruption. Paperclip queued the task again, so you don't need to press Retry.";
     case "blocked_with_live_run":
       return "No longer blocked: this task is already queued to continue, so nothing needs you.";
+    case "saved_work_recovery_overdue":
+      return "Paperclip started recovering this task's saved files. The task continues once they are recovered.";
     default:
       return "Continued automatically after an interruption. Nothing was running or scheduled, so Paperclip queued the task again.";
   }
