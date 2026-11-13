@@ -1248,6 +1248,14 @@ graph, exact Vitest specifications, and stable test runner are shared with CI.
 Serialized server tests retain their owner. Native server tests remain in local
 coverage. Selected chat tests retain six sequential isolated line shards.
 
+When the change touches `packages/shared/src`, `packages/plugins/sdk/src`, or an
+SDK build input such as `pnpm-lock.yaml`, the command first checks the committed
+SDK public input pins (`tests/runner-e2e/source-sdk-public-inputs.json`) against
+the working tree. If they are stale it exits 1 and prints the refresh command:
+commit the change, run
+`node tests/runner-e2e/source-sdk-public-inputs.mjs $(git rev-parse HEAD) --write`,
+and commit the updated registry. Otherwise the Runner support suite fails in CI.
+
 Successful selected checks with complete input graphs are reusable in this
 worktree. Opaque filesystem, subprocess, network, generated/untracked-module, and
 unreviewed dependency consumers continue to run fresh. A selected pass never
