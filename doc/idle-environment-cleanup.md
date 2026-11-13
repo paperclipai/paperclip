@@ -72,12 +72,16 @@ provider, and nonsecret configuration references. Its environment FK uses SET NU
 company/run/task identifiers remain after those records are removed. One operation
 owns each company/environment/run/request until it is resolved. A retry of an
 attached operation returns its active lease. Pending or unresolved ownership never
-authorizes another create. An attached operation resolves when its lease is
-released with successful cleanup and a valid termination receipt for the sandbox
-it created; a recovered cleanup operation resolves when its cleanup lease settles.
-A resolved operation releases its key, so a same-run recovery can create one
-replacement. Failed cleanup, success without a receipt, a retained lease, and
-pending cleanup keep the operation and its key.
+authorizes another create. An attached operation resolves when its lease is proven
+stopped, checked at the next creation with the same key: the closed lease must
+carry the stop proof same-run recovery requires (`remoteExecutionHasStopped`), a
+termination receipt for the sandbox this operation created, whether release, the
+Runner `complete` operation, or a destroyed reusable successor supplied it. That
+creation resolves the operation and records its replacement in one transaction,
+so concurrent recoveries make one provider call. A recovered cleanup operation
+resolves when its cleanup lease settles. Failed cleanup, success without a
+receipt, a receipt for another sandbox, a retained lease, and pending cleanup keep
+the operation and its key.
 Normal success transfers operation ownership and the lease in one transaction.
 Current company binding and run authority are checked again at attachment.
 Declared secret-reference fields retain only their references and nonsecret value

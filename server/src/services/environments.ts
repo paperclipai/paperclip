@@ -8,7 +8,6 @@ import { notifyEnvironmentCleanup } from "./environment-cleanup-notifications.js
 import { notifyDeferredExecutionWork } from "./deferred-execution-notifications.js";
 import { withoutCleanupVerification } from "./cleanup-verification-proof.js";
 import { withEnvironmentLeaseController } from "./environment-lease-controller.js";
-import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { randomUUID } from "node:crypto";
 
 import { SANDBOX_PLATFORM_PROBE_METADATA_KEY } from "./environment-custom-image-runtime.js";
@@ -1771,6 +1770,7 @@ export function environmentService(db: Db) {
         const [previous] = await tx.select({ companyId: environmentLeases.companyId, issueId: environmentLeases.issueId,
           heartbeatRunId: environmentLeases.heartbeatRunId, status: environmentLeases.status,
           cleanupStatus: environmentLeases.cleanupStatus, releasedAt: environmentLeases.releasedAt,
+          creationOperationId: sql<string | null>`${environmentLeases.metadata}->>'creationOperationId'`,
         }).from(environmentLeases).where(condition).for("update");
         if (!previous) return null;
         await notifyEnvironmentCleanup(tx, { companyId: previous.companyId, runId: previous.heartbeatRunId ?? undefined, leaseId: id });
@@ -1791,6 +1791,11 @@ export function environmentService(db: Db) {
           await notifyDeferredExecutionWork(tx, { companyId: previous.companyId });
           await promoteDeferredWorkIntents(tx, { companyId: previous.companyId, trigger: "lock_released", issueId: previous.issueId });
         }
+        if (previous.creationOperationId && previous.status === "pending_cleanup" && options?.cleanupStatus === "success" && status !== "pending_cleanup") {
+          await tx.update(sandboxCreationOperations).set({ state: "resolved", updatedAt: now })
+            .where(and(eq(sandboxCreationOperations.id, previous.creationOperationId), eq(sandboxCreationOperations.companyId, previous.companyId),
+              eq(sandboxCreationOperations.leaseId, id), eq(sandboxCreationOperations.state, "cleanup_pending")));
+        }
         const released = await tx.update(environmentLeases)
         .set({
           status,
@@ -1808,25 +1813,7 @@ export function environmentService(db: Db) {
         .where(condition)
         .returning()
         .then((rows) => rows[0] ?? null);
-        if (!released) return null;
-        // A creation operation is finished once its sandbox is proven stopped,
-        // and a resolved operation no longer holds its creation key. A
-        // termination receipt proves any operation bound to this lease; a
-        // settled teardown proves only a recovered cleanup operation. Anything
-        // less (failed or unconfirmed cleanup, retained, pending cleanup) keeps
-        // the operation and its key.
-        const finished = hasRemoteTerminationReceipt(released) ? ["attached", "cleanup_pending"]
-          : previous.status === "pending_cleanup" && options?.cleanupStatus === "success" && status !== "pending_cleanup" ? ["cleanup_pending"] : [];
-        if (finished.length > 0) {
-          await tx.update(sandboxCreationOperations).set({ state: "resolved", updatedAt: now }).where(and(
-            eq(sandboxCreationOperations.companyId, released.companyId), eq(sandboxCreationOperations.leaseId, id),
-            inArray(sandboxCreationOperations.state, finished),
-            // A task replacement can leave an earlier operation attached to this
-            // lease; only the operation whose sandbox the lease holds is proven.
-            sql`coalesce(${sandboxCreationOperations.metadata}->>'creationProviderLeaseId', ${released.providerLeaseId}) = ${released.providerLeaseId}`,
-          ));
-        }
-        await clearRemoteWorkspaceLocationForReleasedLease({ db: tx, lease: toEnvironmentLease(released) });
+        if (released) await clearRemoteWorkspaceLocationForReleasedLease({ db: tx, lease: toEnvironmentLease(released) });
         return released;
       });
       return row ? toEnvironmentLease(row) : null;

@@ -2423,8 +2423,11 @@ erase an outstanding remote-resource obligation.
 
 The unique company/environment/run/request index fences duplicate creation and
 ambiguous successful lease commits. Since migration 0474 it covers only operations
-that are not `resolved`: an operation resolves when its sandbox is proven stopped,
-and a later attempt for the same run and request may then create a replacement.
+that are not `resolved`. A later attempt for the same run and request that meets an
+`attached` operation whose lease is closed checks the same stop proof same-run
+recovery requires (a termination receipt for that sandbox, stored or derived from a
+destroyed reusable successor); with it, one transaction resolves the operation and
+records the replacement.
 Normal lease attachment and operation transfer share a transaction. Recovery transfers one claimed cleanup lease after provider
 ownership lookup. The pending deadline index drives the existing cleanup worker.
 `needs_reconciliation` is a durable manual outcome, not an automatic retry or an
