@@ -184,6 +184,20 @@ export class NativeSessionCloseUnrecoverableError extends Error {
   }
 }
 
+/** The provider recovery deadline ended a recovery that was still waiting on its Runner. */
+export class NativeProviderRecoveryDeadlineError extends Error {
+  readonly code = "native_provider_recovery_deadline";
+
+  constructor(readonly timeoutMs: number) {
+    super(`native session provider recovery timed out after ${timeoutMs}ms`);
+    this.name = "NativeProviderRecoveryDeadlineError";
+  }
+}
+
+export function isNativeProviderRecoveryDeadlineError(error: unknown): error is NativeProviderRecoveryDeadlineError {
+  return error instanceof Error && "code" in error && error.code === "native_provider_recovery_deadline";
+}
+
 /** An authenticated, exactly bound runner event failed permanent integrity checks. */
 export class NativeSessionProtocolIntegrityError extends Error {
   readonly code = "native_event_replay_conflict";

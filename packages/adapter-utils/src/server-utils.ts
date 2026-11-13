@@ -552,6 +552,8 @@ type PaperclipWakeExecutionStage = {
   allowedActions: string[];
 };
 
+export const PAPERCLIP_EARLIER_READ_COMMENT_NOTE = "An earlier turn already read this comment and may have applied it. Check the current task state first, and do not repeat work that is already done.";
+
 type PaperclipWakeComment = {
   id: string | null;
   issueId: string | null;
@@ -560,6 +562,7 @@ type PaperclipWakeComment = {
   createdAt: string | null;
   authorType: string | null;
   authorId: string | null;
+  readByEarlierTurn: boolean;
 };
 
 type PaperclipWakePlanReviewAuthor = {
@@ -943,6 +946,7 @@ function normalizePaperclipWakeComment(
     createdAt: asString(comment.createdAt, "").trim() || null,
     authorType: asString(author.type, "").trim() || null,
     authorId: asString(author.id, "").trim() || null,
+    readByEarlierTurn: asBoolean(comment.readByEarlierTurn, false),
   };
 }
 
@@ -2300,6 +2304,8 @@ export function renderPaperclipWakePrompt(
     renderPaperclipWakePromptBody(value, options),
     instructions ? `## Assigned connector skills\n\n${instructions}` : "",
     asString(parseObject(parseObject(value).connectionInstructions).text, "").trim(),
+    // Server-rendered and labelled untrusted: what MCP Apps widgets in the task reported.
+    asString(parseObject(value).mcpAppContext, "").trim(),
   ]);
 }
 
@@ -2589,6 +2595,11 @@ function renderPaperclipWakePromptBody(
         ? "These are new or edited messages since the named run; earlier history remains in this session."
         : "History is complete through the coverage cursor. Prefer source messages over summaries.",
       "humanResponses contains server-verified user answers and decisions; apply each only to its question or approval scope.");
+    const earlierRead = normalized.comments.filter((comment) => comment.readByEarlierTurn && comment.id
+      && continuation.messages.some((message) => message.id === comment.id && !message.deleted)).map((comment) => comment.id);
+    if (earlierRead.length > 0) {
+      lines.push(`Messages ${earlierRead.join(", ")}: ${PAPERCLIP_EARLIER_READ_COMMENT_NOTE}`);
+    }
     const { interactionOutcomes, completedActions, completedWork, recoveryOutcomes, objective, objectiveSource, ...requestContextBase } = continuation;
     const objectiveOwnedByDisplayedSource = continuation.objectiveSource?.kind === "comment" &&
       continuation.issueId === normalized.issue?.id &&
@@ -3202,6 +3213,9 @@ function renderPaperclipWakePromptBody(
       );
       if (comment.bodyTruncated) {
         lines.push("[comment body truncated]");
+      }
+      if (comment.readByEarlierTurn) {
+        lines.push(`[${PAPERCLIP_EARLIER_READ_COMMENT_NOTE}]`);
       }
       lines.push("");
     }
@@ -4826,6 +4840,22 @@ export async function runChildProcess(
       "CLAUDE_CODE_PARENT_SESSION",
     ] as const;
     for (const key of CLAUDE_CODE_NESTING_VARS) {
+      delete rawMerged[key];
+    }
+
+    // Strip systemd service-manager vars so the spawned agent process can't
+    // reach the Paperclip server's own readiness/socket-activation channel.
+    // NOTIFY_SOCKET in particular lets any process with it in its env call
+    // sd_notify on the server's readiness socket; systemd only accepts
+    // notifications from the service's registered main PID, so an agent
+    // subprocess inheriting it just spams "reception only permitted for
+    // main PID" warnings, but it's still an unintended channel and must not
+    // be handed to child processes. These vars can arrive either via
+    // process.env (systemd sets them on the server process) or via
+    // opts.env (adapters that build their env as `{ ...process.env, ... }`),
+    // so strip them after the merge, not just from the process.env side.
+    const SERVICE_MANAGER_VARS = ["NOTIFY_SOCKET", "LISTEN_FDS", "LISTEN_PID", "LISTEN_FDNAMES"] as const;
+    for (const key of SERVICE_MANAGER_VARS) {
       delete rawMerged[key];
     }
 

@@ -1239,11 +1239,13 @@ describe("startServer feedback export wiring", () => {
       await markIdleBackupWakeRequired(directory);
       starting = startServer();
       await vi.waitFor(() => expect(runDatabaseBackup).toHaveBeenCalledOnce());
+      // The dump grows with the database: it holds idle eligibility, not readiness.
+      await starting;
+      expect(getStartupRecoveryState().phase).toBe("ready");
       expect(eligible).not.toHaveBeenCalled();
       expect(idleWorkSnapshot().active).toBeGreaterThan(0);
       finish();
-      await starting;
-      expect(eligible).toHaveBeenCalledWith({ scheduledBackups: true });
+      await vi.waitFor(() => expect(eligible).toHaveBeenCalledWith({ scheduledBackups: true }));
       const options = createAppMock.mock.calls[0]?.[1] as unknown as { prepareIdleDatabaseBackup?: unknown };
       expect(Boolean(options.prepareIdleDatabaseBackup)).toBe(checkpointMode);
       expect(existsSync(idleBackupWakeMarker(directory))).toBe(fails);
@@ -1666,6 +1668,51 @@ describe("startServer feedback export wiring", () => {
     });
     await startServer();
     expect(externalObjectsServiceMock.registerRefreshWork).toHaveBeenCalledOnce();
+  });
+
+  // paperclip.staging, 2026-11-13: under a large backlog these first passes ran
+  // past the deploy health-check window, so two replacement servers in a row
+  // never reported ready and were killed.
+  it.each([true, false])("reports ready while backlog queues' first passes never finish (scheduler=%s)", async enabled => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: enabled }));
+    const held = new Set<string>([
+      DELIVERY_QUEUES.toolReviewExpiry, DELIVERY_QUEUES.toolReviewRecovery, DELIVERY_QUEUES.toolReviewInterruption,
+      DELIVERY_QUEUES.toolReviewProjection, DELIVERY_QUEUES.gatewayCredentialExpiry,
+      DELIVERY_QUEUES.budgetEnforcement, DELIVERY_QUEUES.accounting, DELIVERY_QUEUES.fastResponse,
+      DELIVERY_QUEUES.chatCompletion, DELIVERY_QUEUES.connection, DELIVERY_QUEUES.toolAction, DELIVERY_QUEUES.question,
+      DELIVERY_QUEUES.connectionEvents, DELIVERY_QUEUES.connectionContinuity, DELIVERY_QUEUES.terminalWorkspaces,
+      DELIVERY_QUEUES.environmentCleanup, DELIVERY_QUEUES.databaseBackups,
+    ]);
+    const original = deliveryWorkRegisterMock.getMockImplementation()!;
+    const releases: Array<() => void> = [];
+    deliveryWorkRegisterMock.mockImplementation((queue, task) => {
+      if (!held.has(queue)) return original(queue, task);
+      const pass = Promise.withResolvers<void>();
+      releases.push(pass.resolve);
+      return { ready: pass.promise, wake: vi.fn(), stop: vi.fn(async () => {}),
+        reconciliationSnapshot: () => ({ revision: `held-${queue}:1`, reconciled: false }) };
+    });
+    try {
+      const outcome = await Promise.race([
+        startServer().then(() => "ready"),
+        new Promise(resolve => setTimeout(() => resolve("still starting"), 2_000)),
+      ]);
+      expect(outcome).toBe("ready");
+      expect(getStartupRecoveryState().phase).toBe("ready");
+      const readiness = vi.mocked(logger.info).mock.calls.find(([, message]) => message === "startup timeline at readiness");
+      const fields = readiness![0] as unknown as { readinessStepsMs: Record<string, number>; backgroundStepsOutstanding: string[] };
+      expect(fields.backgroundStepsOutstanding).toEqual(expect.arrayContaining(enabled
+        ? ["tool_reviews", "gateway_sessions", "delivery_workers", "github_connections", "terminal_workspaces"]
+        // Without the scheduler, tool reviews and gateway sessions sweep once
+        // directly instead of registering a queue.
+        : ["delivery_workers", "github_connections", "environment_lease_cleanup"]));
+      expect(Object.keys(fields.readinessStepsMs)).toEqual(expect.arrayContaining(["listen", "external_adapters"]));
+    } finally {
+      deliveryWorkRegisterMock.mockImplementation(original);
+      // Held passes are tracked idle work; finish them so later tests start idle.
+      for (const release of releases) release();
+      await settleStartupHousekeeping();
+    }
   });
 
   it("keeps external object refresh active when heartbeat scheduling is disabled", async () => {

@@ -59,6 +59,7 @@ export const queryKeys = {
     activity: (endpointId: string) => ["chat-endpoints", endpointId, "activity"] as const,
   },
   tools: {
+    providerIcons: (companyId: string) => ["tools", companyId, "provider-icons"] as const,
     aggregatorApps: (connectionId: string, userId: string | null) => ["tools", "aggregator-apps", connectionId, userId] as const,
     composioApps: (connectionId: string) => ["tools", "composio-apps", connectionId] as const,
     applications: (companyId: string) =>
@@ -170,6 +171,10 @@ export const queryKeys = {
     runs: (companyId: string) => ["smoke-lab", companyId, "runs"] as const,
     run: (companyId: string, runId: string) =>
       ["smoke-lab", companyId, "runs", runId] as const,
+  },
+  mcpSkills: {
+    list: (companyId: string) => ["mcp-skills", companyId] as const,
+    content: (companyId: string, skillId: string, manifestDigest: string) => ["mcp-skills", companyId, skillId, "content", manifestDigest] as const,
   },
   companySkills: {
     list: (companyId: string) => ["company-skills", companyId] as const,

@@ -130,6 +130,7 @@ export interface Project {
   id: string;
   companyId: string;
   urlKey: string;
+  configurationWarnings?: import("../runner-configuration-warnings.js").AgentConfigurationWarning[];
   /** @deprecated Use goalIds / goals instead */
   goalId: string | null;
   goalIds: string[];

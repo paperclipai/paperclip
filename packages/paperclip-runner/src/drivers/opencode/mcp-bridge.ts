@@ -1,7 +1,8 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { Socket } from "node:net";
-import { Ajv2020, type ValidateFunction } from "ajv/dist/2020.js";
+import type { ValidateFunction } from "ajv/dist/2020.js";
+import { admitToolInputSchema } from "../tool-input-schema.js";
 import { toolInputError } from "../tool-input-error.js";
 
 import {
@@ -216,8 +217,11 @@ function normalizeTools(
 }
 
 function compileValidators(tools: readonly OpenCodeMcpToolDefinition[]): Map<string, ValidateFunction> {
-  const ajv = new Ajv2020({ allErrors: true, strict: false });
-  return new Map(tools.map((tool) => [tool.name, ajv.compile(tool.inputSchema)]));
+  return new Map(tools.map((tool) => {
+    const admission = admitToolInputSchema(tool.inputSchema);
+    if (!admission.ok) throw new Error(`OpenCode tool ${tool.name} has an invalid input schema`);
+    return [tool.name, admission.validate];
+  }));
 }
 
 async function handleRequest(
@@ -342,7 +346,7 @@ async function handleRequest(
         ? "continuation" : errors.some(error => error.instancePath === "") ? "root" : "other";
       context.diagnoseFinishInput({ input: params.arguments, callId, validationCategory });
     }
-    const error = toolInputError(validator);
+    const error = toolInputError(validator, args);
     try { context.onRejectedCall?.({ tool, callId, arguments: args }, error); } catch {}
     outcome = "error";
     writeRpc(response, id, {

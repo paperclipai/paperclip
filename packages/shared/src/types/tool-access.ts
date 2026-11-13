@@ -1,4 +1,4 @@
-import type { McpAppToolUi } from "../mcp-apps.js";
+import type { McpAppToolUi, McpIcon } from "../mcp-apps.js";
 import type {
   ConnectionTokenIssuanceOutcome,
   ConnectionTokenIssuancePath,
@@ -571,6 +571,8 @@ export interface ToolCatalogEntry {
   annotations: Record<string, unknown> | null;
   /** MCP Apps view declaration (`_meta.ui`), when the tool renders one. */
   uiMeta?: McpAppToolUi | null;
+  /** Sanitized provider icons (SEP-973), when the tool declares any. */
+  icons?: McpIcon[] | null;
   riskLevel: ToolRiskLevel;
   isReadOnly: boolean;
   isWrite: boolean;
@@ -1760,4 +1762,18 @@ export interface ToolConnectionTestCallStatus {
   requestedAt: string;
   /** ISO timestamp the request was resolved (approved/denied/cancelled), when applicable. */
   resolvedAt?: string | null;
+}
+
+/** A connected tool's provider icons, keyed by its tool gateway name. */
+export interface ProviderToolIconEntry {
+  /** `mcp.<app>-<connection>:<tool>`, as agents see the tool. */
+  gatewayToolName: string;
+  /** `app_<name>_<digest>`, the name native runners (and so their transcripts) use. */
+  nativeToolName?: string;
+  icons: McpIcon[];
+}
+
+/** `GET /api/companies/:companyId/tool-icons` */
+export interface ProviderToolIconsResponse {
+  icons: ProviderToolIconEntry[];
 }

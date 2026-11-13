@@ -5,6 +5,8 @@ import { persistActivity } from "./activity-log.js";
 
 type Transaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 export const REMOTE_WORKSPACE_ABANDONED_EPOCH_SCHEMA = "paperclip.remote-workspace-abandoned-epoch.v1";
+export const ABANDONED_WORKSPACE_FILES_RETENTION_DAYS = 7;
+export const ABANDONED_WORKSPACE_FILES_RETENTION_MS = ABANDONED_WORKSPACE_FILES_RETENTION_DAYS * 24 * 60 * 60 * 1000;
 
 /**
  * Ends an epoch whose unsaved files cannot be verified, without applying them.
@@ -35,9 +37,20 @@ export async function abandonUnverifiedRemoteWorkspaceEpoch(tx: Transaction, inp
   const abandoned = { schema: REMOTE_WORKSPACE_ABANDONED_EPOCH_SCHEMA, epoch: current.epoch, runId: input.runId,
     snapshotId: current.snapshotId, location, providerRef: workspace.providerRef,
     ...(workspace.metadata?.nativeWorkspaceMigration !== undefined ? { nativeWorkspaceMigration: workspace.metadata.nativeWorkspaceMigration } : {}),
-    abandonedAt: new Date().toISOString() };
+    abandonedAt: new Date().toISOString(), retainUntil: new Date(Date.now() + ABANDONED_WORKSPACE_FILES_RETENTION_MS).toISOString() };
+  const held = (receipt: unknown) => {
+    const value = receipt as { schema?: unknown; released?: unknown; location?: { providerLeaseId?: unknown } } | null;
+    return value?.schema === REMOTE_WORKSPACE_ABANDONED_EPOCH_SCHEMA && value.released == null
+      && typeof value.location?.providerLeaseId === "string";
+  };
+  const sameRoot = (receipt: unknown) => {
+    const value = receipt as { location?: { providerLeaseId?: unknown; remoteCwd?: unknown } };
+    return held(receipt) && value.location?.providerLeaseId === location.providerLeaseId && value.location?.remoteCwd === location.remoteCwd;
+  };
+  const kept = [...prior.filter(receipt => !sameRoot(receipt)), abandoned];
+  const releasedHistory = kept.filter(receipt => !held(receipt)).slice(-20);
   const metadata: Record<string, unknown> = { ...workspace.metadata, remoteWorkspace: next,
-    remoteWorkspaceAbandonedEpochs: [...prior, abandoned].slice(-20) };
+    remoteWorkspaceAbandonedEpochs: kept.filter(receipt => held(receipt) || releasedHistory.includes(receipt)) };
   // The migration receipt names the old root as the next preparation's root.
   delete metadata.nativeWorkspaceMigration;
   const [saved] = await tx.update(executionWorkspaces).set({ providerRef: null, cwd: `/workspaces/${workspace.id}`, metadata,

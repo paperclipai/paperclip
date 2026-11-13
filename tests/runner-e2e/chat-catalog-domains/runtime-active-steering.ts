@@ -8,7 +8,8 @@ import { checks, type Entity } from "./internal-support.js";
 import { probeAgentPermission, cleanupIdentityProbes } from "./identity-support.js";
 import { busyRuntimeWorker, releaseRuntimeWorker } from "./runtime-busy-worker.js";
 import { renderRuntimeArtifact } from "./runtime-rendered-artifact.js";
-import { runtimeQueueCases } from "./runtime-queue.js";
+import { runCommentReceipts, runtimeQueueCases, settledQueue } from "./runtime-queue.js";
+import { continuationCarriesOwed, owedAfterTurn, type CommentReceipts, type QueuedFollowUp } from "./runtime-cited-delivery.js";
 import { deliveryRevisionBound } from "./runtime-interruption.js";
 import { runtimeDefinition, observeRuntime, runtimeObservation } from "./runtime-support.js";
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
@@ -59,16 +60,20 @@ export function gradeActiveSteering(value: unknown) {
   c.add("human-only-control-without-forged-delivery", s.agentSteerStatus === 403 && (unsupported ? s.humanSteerAttempted === true : s.humanSteerSelected === true),
   "Only the person's own action can steer the message; the agent's attempt is refused.");
   const retained = after?.entries.some(row => row.comment.id === s.targetId && row.comment.body === direction) === true;
+  const queued = Array.isArray(s.queuedComments) ? s.queuedComments as QueuedFollowUp[] : [], receipts = s.workerCommentReceipts as CommentReceipts | undefined;
+  const queuedComplete = queued.filter(row => row.id === s.targetId).length === 1 && queued.length === 1 + Number(s.leadRelayCount ?? 0) && new Set(queued.map(row => row.id)).size === queued.length;
+  const owed = owedAfterTurn(queued.filter(row => !(accepted && row.id === s.targetId)), receipts);
+  const consumed = queuedComplete && (owed.length ? s.ordinaryConsumerCount === 1 && s.continuationInputBound === true : s.ordinaryConsumerCount === 0);
   c.add("delivery-distinct-from-queue-with-no-loss", s.steerObservedBranch === branch && (accepted
-    ? s.acknowledgedSameRun === true && after?.entries.every(row => row.comment.authorAgentId === o.leadId) === true && s.steerAuditBound === true && s.idempotentRetryStatus === 200 && s.ordinaryConsumerCount === (Number(s.leadRelayCount) ? 1 : 0)
+    ? s.acknowledgedSameRun === true && after?.entries.every(row => row.comment.authorAgentId === o.leadId) === true && s.steerAuditBound === true && s.idempotentRetryStatus === 200 && consumed
     : branch === "unsupported-queued-normal-continuation"
       ? s.steerStatus === 409 && s.steerFailureCode === "steering_unsupported" && s.steeredActivityCount === 0 && retained && s.unsupportedStateRetained === true
-        && s.ordinaryConsumerCount === 1 && s.continuationInputBound === true
+        && consumed
       : branch === "provider-rejected-normal-continuation" && ["steering_rejected", "steering_unsupported"].includes(String(s.steerFailureCode)) && s.steerStatus === 409 && s.providerFailureVisible === true
-        && s.failureRetainedMessage === true && retained && s.supportedContinuationVisible === true && s.ordinaryConsumerCount === 1 && s.continuationInputBound === true),
-  "A durable same-run ACK is required for delivery; a runtime that cannot steer (or a provider rejection) instead keeps the exact message visibly queued, records no steering, and one normal continuation consumes it.");
+        && s.failureRetainedMessage === true && retained && s.supportedContinuationVisible === true && consumed),
+  "A durable same-run ACK is required for steering; a runtime that cannot steer (or a provider rejection) instead keeps the exact message visibly queued and records no steering. Every queued message is delivered once: the running turn read it and cited it as handled, or one normal continuation receives each message not handled in turn and none that was.");
   c.add("actual-blue-output-correct-native-owner", s.actualBlueArtifact === true && s.artifactRegisteredAfterDirection === true && s.deliveryRevisionBound === true && s.workerTaskDone === true && s.queueEmptyAtEnd === true
-    && o.runs.length === (accepted && !Number(s.leadRelayCount) ? 2 : 3) && o.runs.every(row => row.status === "succeeded") && o.tasks.length === 1,
+    && o.runs.length === 2 + (owed.length ? 1 : 0) && o.runs.every(row => row.status === "succeeded") && o.tasks.length === 1,
   "The website the worker registered last, after the direction was saved, renders blue (whichever of its runs applied the direction), and the delivery document is current at a run of that work, with no duplicate work or hidden run.");
   return c.result();
 }
@@ -97,9 +102,9 @@ export const runtimeActiveSteeringCases = [runtimeDefinition("steering.steer-act
   await ctx.input.page.goto(source, { waitUntil: "domcontentloaded" });
   return { ...state, humanId: session.user.id, queueBefore: before, targetId, ...controls };
 }, gradeActiveSteering, {
-  authentication: "human-session", expectedRunCount: 3, minimumRunCount: 2, attemptTimeoutMs: 720_000, oracleVersion: "paperclip.chat-catalog.runtime.steer-active.v8",
+  authentication: "human-session", expectedRunCount: 3, minimumRunCount: 2, attemptTimeoutMs: 720_000, oracleVersion: "paperclip.chat-catalog.runtime.steer-active.v9",
   setupPolicy: runtimeQueueCases[0]!.setupPolicy, verifySetup: runtimeQueueCases[0]!.verifySetup,
-  sourceFiles: ["chat-catalog-domains/runtime-active-steering.ts", "chat-catalog-domains/runtime-rendered-artifact.ts", "chat-catalog-domains/runtime-queue.ts", "chat-catalog-domains/runtime-interruption.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-support.ts", "chat-catalog-domains/identity-support.ts", "registered-artifact.ts", "chat-scenarios/steering.yaml"],
+  sourceFiles: ["chat-catalog-domains/runtime-active-steering.ts", "chat-catalog-domains/runtime-rendered-artifact.ts", "chat-catalog-domains/runtime-queue.ts", "chat-catalog-domains/runtime-cited-delivery.ts", "chat-catalog-domains/runtime-interruption.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-support.ts", "chat-catalog-domains/identity-support.ts", "registered-artifact.ts", "chat-scenarios/steering.yaml"],
   async act(ctx, state) {
     await pollUntil({ label: "Canonical steering guidance while the original native owner remains active", deadlineAt: Date.now() + 150_000,
       load: async () => { await ctx.refreshIssue(); return { source: ctx.issue(), runs: await ctx.allRuns() }; },
@@ -112,7 +117,7 @@ export const runtimeActiveSteeringCases = [runtimeDefinition("steering.steer-act
     const human = before.entries.filter(row => !row.comment.authorAgentId), relays = before.entries.filter(row => row.comment.authorAgentId === ctx.input.fixtures.agent.id);
     if (human.length !== 1 || human[0]?.comment.id !== targetId || human.length + relays.length !== before.entries.length || before.targetRunId !== state.workerRunId)
       throw new Error("Canonical guidance lost or duplicated the saved human direction");
-    state.leadRelayCount = relays.length;
+    state.leadRelayCount = relays.length; state.leadRelayIds = relays.map(row => row.comment.id);
     const mutation = { queueId: before.queueId, revision: before.revision, targetRunId: before.targetRunId };
     state.agentSteerStatus = await probeAgentPermission(ctx, `${endpoint}/${targetId}/steer`, "POST", mutation);
     await ctx.input.page.goto(`/${ctx.input.fixtures.company.issuePrefix}/issues/${task.identifier ?? task.id}`, { waitUntil: "domcontentloaded" });
@@ -157,16 +162,21 @@ export const runtimeActiveSteeringCases = [runtimeDefinition("steering.steer-act
     await writeFile((state.gate as { gate: string }).gate, state.steerStatus === 200
       ? `The human brief is ready. ${build} Use the actual design direction you received, then complete normally. Preserve saved human requirements for normal admission; do not create tasks or publish externally.`
       : `The human brief is ready. ${build} Then finish this current turn normally. Keep human requirements queued by Paperclip intact for normal delivery; when one arrives, apply it to website.html, register the updated file, update the delivery document, and complete the task. Do not create tasks or publish externally.`, "utf8");
-    const finished = await pollUntil({ label: "Actual selected steering or preserved normal continuation produces its website", deadlineAt: Date.now() + 240_000,
+    const done = (v: { runs: Array<{ status: string }>; queue: IssueQueuedCommentQueue; task: Entity }) => v.task.status === "done" && v.queue.entries.length === 0 && v.runs.every(row => row.status === "succeeded");
+    const settledInTurn = settledQueue((v: { runs: Array<{ status: string }>; queue: IssueQueuedCommentQueue; task: Entity }) => done(v) && v.runs.length === 2, 30_000);
+    const finished = await pollUntil({ label: "Actual selected steering, in-turn handling or preserved normal continuation produces its website", deadlineAt: Date.now() + 240_000,
       load: async () => ({ runs: await ctx.allRuns(), queue: await ctx.input.api.get<IssueQueuedCommentQueue>(endpoint), task: await ctx.input.api.get<Entity>(`/api/issues/${task.id}`) }),
-      accept: v => v.task.status === "done" && v.queue.entries.length === 0 && v.runs.length === (state.steerStatus === 200 && !Number(state.leadRelayCount) ? 2 : 3) && v.runs.every(row => row.status === "succeeded"),
+      accept: v => settledInTurn(v) || done(v) && v.runs.length === 3,
       reject: v => v.runs.length > 3 || v.runs.some(row => ["failed", "cancelled", "timed_out"].includes(row.status)) ? "Steered work failed or admitted an undeclared execution" : undefined });
     const successors = finished.runs.filter(row => row.agentId === (state.worker as Entity).id && row.id !== state.workerRunId);
-    state.ordinaryConsumerCount = successors.length; state.outputRunId = state.steerStatus === 200 ? state.workerRunId : successors[0]?.id;
-    if (state.steerStatus === 200 && Number(state.leadRelayCount) && successors.length === 1) state.relayConsumerRunId = successors[0]!.id;
+    state.ordinaryConsumerCount = successors.length; state.outputRunId = state.steerStatus === 200 || !successors.length ? state.workerRunId : successors[0]!.id;
+    if (successors.length === 1) state.relayConsumerRunId = successors[0]!.id;
+    const comments = await ctx.input.api.get<Entity[]>(`/api/issues/${task.id}/comments?order=asc`), queuedIds = [targetId, ...(state.leadRelayIds as string[])];
+    const queued = queuedIds.map(id => comments.find(row => row.id === id)).filter((row): row is Entity => !!row).map(row => ({ id: String(row.id), updatedAt: row.updatedAt, body: String(row.body ?? "") }));
+    const receipts = await runCommentReceipts(ctx, String(state.workerRunId)); state.queuedComments = queued; state.workerCommentReceipts = receipts;
     if (successors.length === 1) {
-      const full = await ctx.input.api.get<{ contextSnapshot?: { wakeCommentIds?: string[] }; runnerProfileJson?: { nativeExecutionInput?: { task?: { prompt?: string } } } }>(`/api/heartbeat-runs/${successors[0]!.id}`);
-      state.continuationInputBound = full.contextSnapshot?.wakeCommentIds?.filter(id => id === targetId).length === 1 && full.runnerProfileJson?.nativeExecutionInput?.task?.prompt?.includes(direction) === true;
+      const full = await ctx.input.api.get<{ contextSnapshot?: { wakeCommentIds?: string[]; paperclipWake?: { comments?: Array<{ id?: string; readByEarlierTurn?: boolean }> } }; runnerProfileJson?: { nativeExecutionInput?: { task?: { prompt?: string } } } }>(`/api/heartbeat-runs/${successors[0]!.id}`);
+      state.continuationInputBound = continuationCarriesOwed(queued.filter(row => !(state.steerStatus === 200 && row.id === targetId)), receipts, { contextSnapshot: full.contextSnapshot, prompt: full.runnerProfileJson?.nativeExecutionInput?.task?.prompt });
     }
     state.workerTaskDone = finished.task.status === "done"; state.queueEmptyAtEnd = finished.queue.entries.length === 0;
     await ctx.input.page.goto(source, { waitUntil: "domcontentloaded" });

@@ -4,7 +4,7 @@ import { parseCommand } from "./config.js";
 import {
   agentRunCaps, assignAdapters, childLine, childNonce, doneMarker, expectedRoundHash, followUpMarker, gradeStagingMix, holdsRetry, planArrivals,
   arrivalEndMs, followUpRequestId, planStagingMixWave, plannedTaskCount, posixCksum, retryDue, roundCommand, ROUND_SECONDS, setOverlapProbe, stagingMixDescription,
-  stagingMixStep, SUBTASK_ROUNDS, verifyLedger, type StagingMixTask,
+  slotTimesMs, stagingMixBudgetMs, stagingMixStep, SUBTASK_ROUNDS, verifyLedger, type StagingMixTask,
 } from "./staging-mix.js";
 import { descendantsOf, parseMemInfo, parsePs, parseVmStat, StagingMixRun, stagingMixSeedOptions, type ResourceSample } from "./staging-mix-run.js";
 import type { OracleArtifacts, TaskRecord, TaskSample } from "./types.js";
@@ -115,6 +115,14 @@ describe("staging-mix options", () => {
 });
 
 describe("staging-mix planning", () => {
+  it("moves the first fault slot early without adding a slot (release swap: 2 swaps 4 minutes apart)", () => {
+    expect(slotTimesMs({ minutes: 9, faultSpacingMinutes: 4 }, undefined)).toEqual([240_000, 480_000]);
+    expect(slotTimesMs({ minutes: 9, faultSpacingMinutes: 4 }, "30")).toEqual([30_000, 270_000]);
+    expect(slotTimesMs({ minutes: 29, faultSpacingMinutes: 14 }, "60")).toEqual([60_000, 900_000]);
+    expect(slotTimesMs({ minutes: 28, faultSpacingMinutes: 14 }, "60")).toEqual([60_000]);
+    expect(slotTimesMs({ minutes: 3, faultSpacingMinutes: 4 }, "30")).toEqual([]);
+  });
+
   it("interleaves adapters so every prefix keeps the ratio", () => {
     const adapters = assignAdapters([["opencode", 60], ["codex", 25], ["claude", 15]], 100);
     const count = (slice: string[], adapter: string) => slice.filter(entry => entry === adapter).length;
@@ -264,6 +272,7 @@ describe("staging-mix board step", () => {
   const failed: TaskSample = { at: 0, reachable: true, serverReady: true, issueStatus: "blocked",
     interruption: { state: "failed", canRetry: true, retryWait: false, workspaceFailure: null, observedRunId: "r1", userAction: null },
     runs: [{ ...running.runs![0]!, status: "failed" }] };
+  const stepIn = (rec: TaskRecord, sample: TaskSample, now: number, faultInProgress: boolean, plan: StagingMixTask) => step(rec, sample, now, faultInProgress, plan);
   const step = async (rec: TaskRecord, sample: TaskSample, now: number, faultInProgress: boolean, plan = task({ followUpAfterMs: 60_000 }),
     reply: () => unknown = () => ({ id: "c1" })) => {
     const posted: string[] = [], retried: number[] = [], notes: string[] = [];
@@ -302,6 +311,43 @@ describe("staging-mix board step", () => {
     expect(keys[0]).not.toBe(followUpRequestId("i2", "n1"));
   });
 
+  it("with an after-end delay, retries a failed post with the same key, and grades every post as answered and served", async () => {
+    const previous = { ...process.env };
+    Object.assign(process.env, { RESTART_CHAOS_MIX_FOLLOW_UP_AFTER_END_MS: "300000-300000", RESTART_CHAOS_MIX_FOLLOW_UP_COUNT: "1" });
+    try {
+      const ended: TaskSample = { ...running, issueStatus: "done",
+        runs: [{ ...running.runs![0]!, status: "succeeded", finishedAt: new Date(10_000).toISOString() }] };
+      const rec = record();
+      expect((await step(rec, ended, 300_000, false)).posted).toEqual([]);
+      await step(rec, ended, 310_000, false, undefined, () => { throw new Error("HTTP 502"); });
+      expect(rec.stagingMix!.afterEndFollowUps).toEqual([]);
+      expect(rec.stagingMix!.followUpErrors).toEqual(["HTTP 502"]);
+      expect((await step(rec, ended, 313_000, false)).posted.length).toBe(1);
+      expect(rec.stagingMix!.afterEndFollowUps).toEqual([{ afterRunEndAt: 10_000, at: 313_000, delayMs: 303_000, commentId: "c1" }]);
+      expect(new Set(requests.slice(-2)).size).toBe(1);
+      expect((await step(rec, ended, 320_000, false)).posted).toEqual([]);
+
+      const nonce = "cafe0002";
+      const plan = task({ followUpAfterMs: 1 });
+      const afterEndFollowUps = [{ afterRunEndAt: 10_000, at: 313_000, delayMs: 303_000, commentId: "c1" }];
+      const served = (comments: Array<{ body: string; runId: string | null; createdAt: number }>, extra: string[]) => gradeStagingMix(nonce, plan, artifacts({
+        documents: { ledger: ledgerFor(nonce, 4, extra) }, agentComments: comments.map(comment => comment.body),
+        stagingMix: { followUp: { at: 313_000, commentId: "c1", duringRun: false, inOverlap: false, error: null }, followUpErrors: [], retries: [], comments, afterEndFollowUps } }))
+        .checks.find(check => check.name === "after_end_follow_ups_served")!;
+      expect(served([{ body: doneMarker(nonce), runId: "r1", createdAt: 9_000 }], [followUpMarker(nonce)]).ok).toBe(false);
+      expect(served([{ body: doneMarker(nonce), runId: "r2", createdAt: 400_000 }], []).ok).toBe(false);
+      expect(served([{ body: doneMarker(nonce), runId: "r2", createdAt: 400_000 }], [followUpMarker(nonce)]).ok).toBe(true);
+      const never = gradeStagingMix(nonce, plan, artifacts({ documents: { ledger: ledgerFor(nonce, 4) }, agentComments: [doneMarker(nonce)],
+        stagingMix: { followUp: null, followUpErrors: ["HTTP 502"], retries: [], comments: [] } }));
+      expect(never.checks.find(check => check.name === "after_end_follow_ups_served")).toMatchObject({ ok: false, detail: "posted=0/1; unanswered=none" });
+      expect(stagingMixBudgetMs(plan) - stagingMixBudgetMs(task())).toBe(300_000 + 4 * ROUND_SECONDS * 1_000);
+    } finally {
+      for (const key of ["RESTART_CHAOS_MIX_FOLLOW_UP_AFTER_END_MS", "RESTART_CHAOS_MIX_FOLLOW_UP_COUNT"]) {
+        if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key];
+      }
+    }
+  });
+
   it("posts the follow-up before the turn's last rounds when no overlap comes", async () => {
     const rec = record();
     const plan = task({ rounds: 4, followUpAfterMs: 60_000 });
@@ -309,8 +355,18 @@ describe("staging-mix board step", () => {
     expect((await step(rec, running, Math.round(4 * ROUND_SECONDS * 1_000 * 0.85), false, plan)).posted.length).toBe(1);
   });
 
-  it("waits for an overlap to click a Retry, and holds the observer's own click until the hold runs out", async () => {
+  it("never clicks Retry during the wave by default, but records the banner", async () => {
     const rec = record();
+    expect((await step(rec, failed, 1_000, true)).retried).toEqual([]);
+    expect((await step(rec, failed, 9_000, true)).retried).toEqual([]);
+    expect(rec.stagingMix!.retryBanner).toMatchObject({ firstShownAt: 1_000, lastShownAt: 9_000, visibleSince: 1_000 });
+    await step(rec, running, 20_000, false);
+    expect(rec.stagingMix!.retryBanner).toMatchObject({ shownMs: 19_000, visibleSince: null });
+  });
+
+  it("with --mix-retry-during-wave, waits for an overlap to click a Retry, and holds the observer's own click until the hold runs out", async () => {
+    const rec = record();
+    const step = (r: TaskRecord, sample: TaskSample, now: number, overlap: boolean) => stepIn(r, sample, now, overlap, task({ followUpAfterMs: 60_000, retryDuringWave: true }));
     expect((await step(rec, failed, 1_000, false)).retried).toEqual([]);
     expect(holdsRetry(rec, 600_000, 2_000)).toBe(true);
     expect(holdsRetry(rec, 600_000, 1_000 + 600_000)).toBe(false);

@@ -22,7 +22,7 @@ import { handoffCaseSchema } from "@paperclipai/shared";
 import { skillAccessService } from "../skill-access.js";
 import { SKILL_LIBRARY_SCHEMAS, SKILL_LIBRARY_TOOL_DEFINITIONS, SkillLibraryReadCache, executeSkillLibraryTool } from "./native-skill-library-tools.js";
 import { withExternalExecutionAdmission, type ExternalAdmissionTransaction } from "../../modules/external-agents/index.js";
-import { callTaskWorkspaceTool, pendingTaskRepositoryContinuation } from "../task-workspace-tools.js";
+import { apiResultMayHaveWorkspace, callTaskWorkspaceTool, pendingTaskRepositoryContinuation, withWorkspacePageHref } from "../task-workspace-tools.js";
 import { TaskAttachmentReadCache, TASK_ATTACHMENT_DEFINITIONS, TASK_ATTACHMENT_SCHEMAS, listTaskAttachments, readTaskAttachment } from "./runner-task-attachments.js";
 import { RUNNER_BRIDGE_READ_OPERATIONS, RUNNER_BRIDGE_SCHEMAS, runnerBridgeDefinitions, readAssignedSkill, executeWorkspaceTool, readWorkspaceUploadFile, settleRunnerBridgeRead, assertRunnerWorkspacePathAllowed } from "./runner-bridge-tools.js";
 import type { NativeRuntimeContextSnapshot } from "../../vendor/paperclip-runner/index.js";
@@ -138,6 +138,9 @@ import {
   READ_CHAT_ATTACHMENT_TOOL_NAME,
   type NativeChatAttachmentReadScope,
 } from "./chat-attachment-read.js";
+import { commentsArrivedDuringRun, recordTaskHistoryRead, taskHistoryHandlingGuidance } from "../queued-comment-delivery.js";
+import { recordChildTaskRead } from "./native-child-completion-delivery.js";
+import { logger } from "../../middleware/logger.js";
 
 const EXTERNAL_WORKSPACE_OPERATIONS = new Set(["get_workspace", "list_workspaces", "select_workspace", "prepare_repository", "register_deliverable"]);
 const IMPLEMENTED_OPERATIONS = new Set([
@@ -724,7 +727,7 @@ export class PaperclipRunnerToolAuthority {
         // read-only options; the shared client still enforces GET-only export.
         return apiToolResult(await this.#callApi(call.callId, { ...input, saveResponse: true } as RunnerApiCall));
       }
-      return apiToolResult(await this.#callApi(call.callId, taskBridgeApiRequest(call.tool, input)));
+      return apiToolResult(await this.#withWorkspacePageHref(await this.#callApi(call.callId, taskBridgeApiRequest(call.tool, input))));
     }
     if (this.binding.firstPartyOnly && (call.tool === READ_TOOL_RESULT || this.binding.assignedMcpTools?.has(call.tool) || isConnectorTool(call.tool)
       || RUNTIME_CONNECTION_TOOL_DEFINITIONS.some(tool => tool.name === call.tool))) throw forbidden("This Grok Bot connection exposes first-party Paperclip operations. Use your own provider apps under their existing permissions.");
@@ -922,7 +925,7 @@ export class PaperclipRunnerToolAuthority {
         // PRP reserves operationId/callId for semantic result identity. The
         // HTTP operation is metadata, including in previously saved receipts;
         // exposing it as operationId makes the runner reject a valid response.
-        return apiToolResult(await this.#callApi(call.callId, call.arguments));
+        return apiToolResult(await this.#withWorkspacePageHref(await this.#callApi(call.callId, call.arguments)));
       }
       case "get_task_context": {
         if (this.#apiScope(context).kind === "skill_test") return {
@@ -945,6 +948,9 @@ export class PaperclipRunnerToolAuthority {
         const readableChildren = this.binding.museRuntime
           ? await this.#readableMuseTaskIds(context.run, childTasks.map(task => task.id)) : null;
         const visibleChildTasks = readableChildren ? childTasks.filter(task => readableChildren.has(task.id)) : childTasks;
+        await recordChildTaskRead(this.db, { companyId: this.binding.companyId, agentId: this.binding.agentId,
+          runId: this.binding.runId, parentIssueId: this.binding.issueId, children: visibleChildTasks.slice(0, 100) }).catch(error =>
+          logger.warn({ err: error, runId: this.binding.runId }, "could not record the child tasks a run read"));
         return {
           company: { id: this.binding.companyId },
           actor: redactedActor(context.actor),
@@ -993,6 +999,7 @@ export class PaperclipRunnerToolAuthority {
           authorAgentId: issueComments.authorAgentId,
           authorUserId: issueComments.authorUserId,
           createdAt: issueComments.createdAt,
+          updatedAt: issueComments.updatedAt,
         }).from(issueComments)
           .where(and(
             eq(issueComments.companyId, this.binding.companyId),
@@ -1001,10 +1008,15 @@ export class PaperclipRunnerToolAuthority {
           ))
           .orderBy(desc(issueComments.createdAt))
           .limit(limit);
-        return { comments: comments.reverse().map(comment => {
+        await recordTaskHistoryRead(this.db, { companyId: this.binding.companyId, agentId: this.binding.agentId,
+          runId: this.binding.runId, comments }).catch(error =>
+          logger.warn({ err: error, runId: this.binding.runId }, "could not record the task history a run read"));
+        const arrived = await commentsArrivedDuringRun(this.db, { companyId: this.binding.companyId,
+          runId: this.binding.runId, agentId: this.binding.agentId, comments }).catch(() => [] as string[]);
+        return { comments: comments.reverse().map(({ updatedAt: _updatedAt, ...comment }) => {
           const visible = isLowTrustQuarantined(readerSourceTrust) ? comment : sanitizeQuarantinedCommentForHigherTrust(comment);
           return { ...visible, body: fastResponseHistoryBody(visible) };
-        }) };
+        }), ...taskHistoryHandlingGuidance(arrived) };
       }
       case "search_tasks": {
         const tasks = await issueService(this.db).list(this.binding.companyId, { readCondition: await issueReadSqlCondition(this.db, this.#privacyActor(context.run)) });
@@ -1141,6 +1153,12 @@ export class PaperclipRunnerToolAuthority {
   async #workspacePagePrefix() {
     return (await instanceSettingsService(this.db).getExperimental()).enableIsolatedWorkspaces
       ? this.#companyPagePrefix() : null;
+  }
+
+  /** Gives workspace reads the same page href get_workspace returns, reading the setting only for those reads. */
+  async #withWorkspacePageHref(result: unknown) {
+    return apiResultMayHaveWorkspace(result)
+      ? withWorkspacePageHref(result, await this.#workspacePagePrefix(), this.binding.companyId) : result;
   }
 
   #apiToken(context: {

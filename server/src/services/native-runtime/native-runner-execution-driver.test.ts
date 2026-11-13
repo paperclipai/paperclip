@@ -183,6 +183,26 @@ describe("shared Runner execution driver", () => {
     expect(transport.connect.mock.results[0].value.close).toHaveBeenCalledOnce();
   });
 
+  it("quiesces its ingress when the Runner's exit is committed, before release closes it", async () => {
+    const quiesce = vi.fn();
+    const close = vi.fn(async () => {});
+    transport.connect.mockReturnValue({ ready: Promise.resolve(), quiesce, close });
+    const driver = createNativeRunnerExecutionDriver({
+      target: { ...sandbox(), getRunnerIngressEndpoint: async () => endpoint() } as AdapterExecutionTarget,
+      binding, runnerIngressAuthorized: true, prepareRemote: async () => {}, processStarted: Promise.resolve(),
+    });
+    const connection = await driver.controlPlaneRegistration!(authority);
+    connection.quiesce!();
+    expect(quiesce).not.toHaveBeenCalled();
+    await connection.activate!();
+    await connection.ready!();
+    connection.quiesce!();
+    expect(quiesce).toHaveBeenCalledOnce();
+    expect(close).not.toHaveBeenCalled();
+    await connection.release();
+    expect(close).toHaveBeenCalledOnce();
+  });
+
   it("does not fall back to outbound WSS when sandbox ingress is unauthorized", async () => {
     const prepare = vi.fn();
     const acquire = vi.fn();

@@ -187,14 +187,21 @@ AWS fleet. A stale admission roster can allocate only the short metadata gate;
 the fresh CODEOWNERS check still denies PR execution for a removed owner.
 
 AWS runners are sometimes lost mid-job. `ci-runner-loss-rerun.yml` re-runs the
-failed jobs of a PR's first CI attempt once when every failed job lost its
-runner. A lost runner is recognized by the check-run annotation "lost
-communication with the server" or "received a shutdown signal". When the only
-annotation is "The operation was canceled.", the job log is checked for the
-same messages. The `verify` and `e2e` aggregates are not counted. Any other
-failure, a failed routing gate, or a PR whose head has moved prevents the
-automatic re-run. The workflow job summary lists each failed job and its
-evidence. Like a maintainer's "Re-run failed jobs", the re-run reuses the
+failed jobs of a PR's first CI attempt once when every failed or cancelled job
+lost its runner. A spot reclaim often ends the job, and the run, as
+`cancelled`. A lost runner is recognized by the check-run annotation "lost
+communication with the server" or "received a shutdown signal". When a job has
+the annotation "The operation was canceled.", the job log is checked for the
+same messages. This evidence counts even if the job also has other error
+annotations, so a test that really failed just before a reclaim gets one
+wasted re-run. A cancelled job without this evidence, such as a job a person
+cancelled, counts as a real failure. The `verify` and `e2e` aggregates are not
+counted. Any other failure, a failed or cancelled routing gate, or a PR whose
+head has moved prevents the automatic re-run. The head check runs before any
+job is classified, so a run cancelled by a newer push costs no log reads. It
+runs again just before the re-run, because a re-run of an old run joins the
+PR's `cancel-in-progress` concurrency group and would cancel the newer CI. The
+workflow job summary lists each failed or cancelled job and its evidence. Like a maintainer's "Re-run failed jobs", the re-run reuses the
 gate's successful outputs, including its AWS admission. Attempt 2's
 triggering actor is `github-actions[bot]`, so `profile-ci` does not export
 that attempt. Later attempts are never re-run automatically.
@@ -462,7 +469,8 @@ Changing that file selects its consumers. Generated/untracked files and unknown
 query loaders retain their consumers conservatively. Other filesystem, process
 and network effects keep their existing fallback.
 
-For a full wall-clock profile of all main PR CI jobs, add `profile-ci` to the PR.
+One in ten CI CODEOWNER PR runs sends its job, step and outside-check timings to
+Honeycomb. For a full wall-clock profile of all main PR CI jobs, add `profile-ci` to the PR.
 See [CI profiling](ci-profiling.md) for the Honeycomb waterfall, coverage,
 operator setup, and activation requirements.
 
@@ -1247,6 +1255,14 @@ graph, exact Vitest specifications, and stable test runner are shared with CI.
 Serialized server tests retain their owner. Native server tests remain in local
 coverage. Selected chat tests retain six sequential isolated line shards.
 
+When the change touches `packages/shared/src`, `packages/plugins/sdk/src`, or an
+SDK build input such as `pnpm-lock.yaml`, the command first checks the committed
+SDK public input pins (`tests/runner-e2e/source-sdk-public-inputs.json`) against
+the working tree. If they are stale it exits 1 and prints the refresh command:
+commit the change, run
+`node tests/runner-e2e/source-sdk-public-inputs.mjs $(git rev-parse HEAD) --write`,
+and commit the updated registry. Otherwise the Runner support suite fails in CI.
+
 Successful selected checks with complete input graphs are reusable in this
 worktree. Opaque filesystem, subprocess, network, generated/untracked-module, and
 unreviewed dependency consumers continue to run fresh. A selected pass never
@@ -1620,6 +1636,13 @@ stamp is only written after a Runner build that passed every step, and both
 the Runner's first build step and the prepare step remove any existing stamp
 before a rebuild starts, so a build that stops partway never leaves a stamp
 that vouches for it.
+
+Set `PAPERCLIP_RUNNER_VENDOR_REQUIRE_CURRENT=1` when the Runner under
+`packages/paperclip-runner/dist` was built elsewhere and this build must not
+build it again, for example because it has no Rust toolchain. The step then
+reuses a current build as usual. When the build is not current it prints the
+reason and fails, without starting a rebuild and without removing the stamp.
+Setting both variables fails.
 
 ### Task search evaluation
 
@@ -4270,7 +4293,7 @@ CLI configuration support:
 - Provider health is available at `GET /api/companies/:companyId/secret-providers/health` and reports local key permission warnings plus backup guidance.
 
 Per-company provider vaults are configured in the board UI under
-`Company Settings → Secrets → Provider vaults`, backed by
+`Company Settings → Secrets → Vaults`, backed by
 `/api/companies/{companyId}/secret-provider-configs`. The CLI does not own
 vault lifecycle today. See `docs/deploy/secrets.md` (`Provider Vaults` section)
 for the operator model.

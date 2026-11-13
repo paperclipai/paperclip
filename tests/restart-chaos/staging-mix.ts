@@ -5,6 +5,7 @@ import type { AdapterId, FaultKind, OracleArtifacts, OracleResult, TaskFaultKind
 import type { WorkloadAgents, WorkloadDefinition } from "./workloads.js";
 
 export const STAGING_MIX = "staging-mix";
+export const MIX_MAX_MINUTES = 600;
 export const ROUND_TICKS = 45;
 export const ROUND_SECONDS = ROUND_TICKS * 2;
 export const SUBTASKS_PER_PARENT = 2;
@@ -30,6 +31,8 @@ export interface StagingMixOptions {
   minFreeMb: number;
   arrivalCutoffMinutes: number;
   arrivalEndMs: number;
+  retryDuringWave: boolean;
+  settleMinutes: number;
   tasks?: number;
 }
 
@@ -42,20 +45,38 @@ export interface StagingMixTask {
   followUpAfterMs: number | null;
   arriveAtMs: number;
   holdMs: number;
+  retryDuringWave?: boolean;
 }
 
 export interface StagingMixRecord {
   followUpErrors?: string[];
   followUp?: { at: number; commentId: string | null; duringRun: boolean; inOverlap: boolean; error: string | null };
+  afterEndFollowUps?: Array<{ afterRunEndAt: number; at: number; delayMs: number; commentId: string }>;
   retrySeenAt?: number | null;
   retries?: Array<{ at: number; inOverlap: boolean }>;
+  retryBanner?: RetryBanner;
+  retryAfterSettle?: { at: number; accepted: boolean | null; issueStatusAtClick: string | null };
+  completion?: CompletionEvidence;
 }
+
+export interface CompletionEvidence {
+  completedAt: number | null;
+  runs: Array<{ runId: string | null; startedAt: number | null; acceptedDisposition: string | null; acceptedAt: number | null; answersFollowUp?: boolean }>;
+}
+
+export interface RetryBanner { firstShownAt: number; lastShownAt: number; shownMs: number; visibleSince: number | null; errorCode: string | null }
 
 export interface StagingMixArtifacts {
   followUp: StagingMixRecord["followUp"] | null;
   followUpErrors: string[];
   retries: NonNullable<StagingMixRecord["retries"]>;
+  comments?: Array<{ body: string; runId: string | null; createdAt?: number | null }>;
+  commentsUnreadable?: boolean;
+  completion?: CompletionEvidence;
+  afterEndFollowUps?: NonNullable<StagingMixRecord["afterEndFollowUps"]>;
 }
+
+export const DUPLICATE_CHECKS: ReadonlySet<string> = new Set(["rounds_once", "done_comment_once", "completion_once", "subtasks_once", "subtask_rounds_once"]);
 
 export const STAGING_MIX_ARG_OPTIONS = {
   workload: { type: "string" },
@@ -71,6 +92,8 @@ export const STAGING_MIX_ARG_OPTIONS = {
   "mix-run-cap": { type: "string" },
   "mix-tasks": { type: "string" },
   "mix-arrival-cutoff-minutes": { type: "string" },
+  "mix-retry-during-wave": { type: "boolean" },
+  "mix-settle-minutes": { type: "string" },
 } as const;
 
 type MixArgs = Partial<Record<keyof typeof STAGING_MIX_ARG_OPTIONS, string | boolean | undefined>> & Record<string, unknown>;
@@ -123,7 +146,7 @@ export function applyStagingMix(options: WaveOptions, values: MixArgs, environme
     throw new Error(`--workload ${STAGING_MIX} takes restart faults only`);
   }
   const turnMinutes = parseRange(String(values["mix-turn-minutes"] ?? "15-45"), "mix-turn-minutes", 1, 60);
-  const minutes = whole(values["mix-minutes"], "mix-minutes", 240, 1, 600);
+  const minutes = whole(values["mix-minutes"], "mix-minutes", 240, 1, MIX_MAX_MINUTES);
   const faultSpacingMinutes = whole(values["mix-fault-spacing-minutes"], "mix-fault-spacing-minutes", 40, 1, 600);
   const arrivalCutoffMinutes = whole(values["mix-arrival-cutoff-minutes"], "mix-arrival-cutoff-minutes", turnMinutes[1], 0, 600);
   const runCapDefault = whole(environment.RESTART_CHAOS_MIX_RUN_CAP, "RESTART_CHAOS_MIX_RUN_CAP", 30, 1, 200);
@@ -141,6 +164,8 @@ export function applyStagingMix(options: WaveOptions, values: MixArgs, environme
     minFreeMb: whole(environment.RESTART_CHAOS_MIX_MIN_FREE_MB, "RESTART_CHAOS_MIX_MIN_FREE_MB", DEFAULT_MIN_FREE_MB, 0, 1_048_576),
     arrivalCutoffMinutes,
     arrivalEndMs: arrivalEndMs({ minutes, faultSpacingMinutes, arrivalCutoffMinutes }, options),
+    retryDuringWave: values["mix-retry-during-wave"] === true,
+    settleMinutes: whole(values["mix-settle-minutes"], "mix-settle-minutes", 15, 0, 120),
     ...(values["mix-tasks"] !== undefined ? { tasks: whole(values["mix-tasks"], "mix-tasks", 1, 1, 2_000) } : {}),
   };
   if (mix.tasks === undefined && mix.arrivalEndMs < (mix.runs + mix.queue) * BURST_GAP_MS) {
@@ -196,10 +221,12 @@ function meanCycleMs(mix: Pick<StagingMixOptions, "turnMinutes">): number {
   return ((mix.turnMinutes[0] + mix.turnMinutes[1]) / 2 + 5) * 60_000;
 }
 
-export function slotTimesMs(mix: Pick<StagingMixOptions, "minutes" | "faultSpacingMinutes">): number[] {
-  const times: number[] = [];
-  for (let at = mix.faultSpacingMinutes * 60_000; at < mix.minutes * 60_000; at += mix.faultSpacingMinutes * 60_000) times.push(at);
-  return times;
+export function slotTimesMs(mix: Pick<StagingMixOptions, "minutes" | "faultSpacingMinutes">,
+  firstSlotRaw = process.env.RESTART_CHAOS_MIX_FIRST_SLOT_SECONDS): number[] {
+  const spacing = mix.faultSpacingMinutes * 60_000;
+  const first = firstSlotRaw && /^[0-9]+$/.test(firstSlotRaw) ? Math.min(Number(firstSlotRaw) * 1000, spacing) : spacing;
+  const count = Math.max(0, Math.ceil((mix.minutes * 60_000 - spacing) / spacing));
+  return Array.from({ length: count }, (_, index) => first + index * spacing);
 }
 
 export function maxSlotHoldMs(options: Pick<WaveOptions, "faults" | "k15HoldMs" | "k4HoldMaxMs">): number {
@@ -269,7 +296,8 @@ export function planStagingMixTasks(options: WaveOptions, rng = createRng((optio
       holdMs: 0,
       followUpAfterMs: null,
       nonce: rng.hex(8),
-      stagingMix: { turnMinutes, rounds, subtasks, followUpAfterMs, arriveAtMs, holdMs: mix.holdMinutes * 60_000 },
+      stagingMix: { turnMinutes, rounds, subtasks, followUpAfterMs, arriveAtMs, holdMs: mix.holdMinutes * 60_000,
+        ...(mix.retryDuringWave ? { retryDuringWave: true } : {}) },
     };
   });
 }
@@ -346,16 +374,69 @@ export function stagingMixDescription(nonce: string, task: StagingMixTask, agent
   lines.push(`${step++}. ${roundsSteps(nonce, task.rounds).join("\n   ")}`);
   lines.push(`${step++}. If the board comments while you work and asks you to include a line, keep working and include that line on its own line in the document below.`);
   if (parent) {
-    lines.push(`${step++}. Wait until both subtasks are done. If they are not done yet, end your turn without marking this task done; you will be woken when they finish.`,
+    lines.push(`${step++}. Wait until both subtasks are done. If they are not done yet, end your turn now: do not save the \`ledger\` document, do not post the`
+      + ` \`${doneMarker(nonce)}\` comment and do not mark this task done. You will be woken when they finish.`,
       `   Then read each subtask's \`ledger\` document and take the hash at the end of its last ROUND line.`);
   }
   lines.push(`${step++}. Save this issue's document with key \`ledger\` (title "Ledger"): the full contents of \`${ledgerFile(nonce)}\` exactly as the file reads,`
     + ` then every line the board asked for${parent ? `, then one line \`${childLine(1, "<hash>")}\` per subtask (CHILD-2 for subtask 2), with <hash> from that subtask's ledger` : ""}.`);
-  lines.push(`${step++}. Post exactly one comment on this task with the body \`${doneMarker(nonce)}\`. Then mark this task done.`);
+  lines.push(`${step++}. ${parent ? "Only after both subtasks are done and both CHILD lines are in the `ledger` document, post" : "Post"} exactly one comment on this task`
+    + ` with the body \`${doneMarker(nonce)}\`. Then mark this task done.`);
   return lines.join("\n");
 }
 
 export const followUpRequestId = (issueId: string, nonce: string) => stableRequestId(`followup-${issueId}-${nonce}`);
+
+type CommentEvidence = { body: string; runId: string | null; createdAt?: number | null };
+
+export function firstDoneCommentAt(comments: readonly CommentEvidence[], nonce: string): number | null {
+  const times = comments.filter(comment => isDoneComment(comment.body, nonce) && typeof comment.createdAt === "number").map(comment => comment.createdAt!);
+  return times.length ? Math.min(...times) : null;
+}
+
+export function hasDispositions(completion: CompletionEvidence | null | undefined): completion is CompletionEvidence {
+  return Boolean(completion?.runs.some(run => run.acceptedDisposition !== null));
+}
+
+export function completedAtAnchor(completion: CompletionEvidence | null | undefined, comments: readonly CommentEvidence[], nonce: string):
+  { at: number | null; source: "accepted_result" | "completed_at" | "done_comment" | null } {
+  const accepted = (completion?.runs ?? []).filter(run => run.acceptedDisposition === "done" && run.acceptedAt !== null).map(run => run.acceptedAt!);
+  if (accepted.length) return { at: Math.min(...accepted), source: "accepted_result" };
+  if (completion?.completedAt != null) return { at: completion.completedAt, source: "completed_at" };
+  const comment = firstDoneCommentAt(comments, nonce);
+  return { at: comment, source: comment === null ? null : "done_comment" };
+}
+
+export function completionRunIds(comments: readonly CommentEvidence[], nonce: string, completion?: CompletionEvidence | null): string[] {
+  const anchor = completedAtAnchor(completion, comments, nonce).at;
+  const summaries = comments.filter(comment => anchor !== null && typeof comment.createdAt === "number" && comment.createdAt >= anchor
+    && comment.body.includes(doneMarker(nonce)) && comment.runId).map(comment => comment.runId!);
+  if (hasDispositions(completion)) {
+    const byId = new Map(completion.runs.flatMap(run => run.runId ? [[run.runId, run] as const] : []));
+    const reportedAt = (runId: string) => {
+      const run = byId.get(runId);
+      if (run?.acceptedDisposition === "done" && run.acceptedAt !== null) return run.acceptedAt;
+      const posted = comments.filter(comment => comment.runId === runId && typeof comment.createdAt === "number").map(comment => comment.createdAt!);
+      return posted.length ? Math.min(...posted) : run?.startedAt ?? Number.POSITIVE_INFINITY;
+    };
+    const accepted = completion.runs.filter(run => run.acceptedDisposition === "done" && run.runId).map(run => run.runId!);
+    const ordered = [...new Set([...accepted, ...summaries])].sort((a, b) => reportedAt(a) - reportedAt(b));
+    return ordered.filter((runId, index) => index === 0 || !byId.get(runId)?.answersFollowUp);
+  }
+  return [...new Set([...comments.filter(comment => isDoneComment(comment.body, nonce) && comment.runId).map(comment => comment.runId!), ...summaries])];
+}
+
+export function doneCommentsBeforeCompletion(comments: readonly CommentEvidence[], nonce: string, completion?: CompletionEvidence | null):
+  Array<{ runId: string; disposition: string }> {
+  if (!hasDispositions(completion)) return [];
+  const dispositions = new Map(completion.runs.flatMap(run => run.runId ? [[run.runId, run.acceptedDisposition] as const] : []));
+  return [...new Set(comments.filter(comment => isDoneComment(comment.body, nonce) && comment.runId).map(comment => comment.runId!))]
+    .flatMap(runId => { const disposition = dispositions.get(runId); return disposition && disposition !== "done" ? [{ runId, disposition }] : []; });
+}
+
+export function isDoneComment(body: string, nonce: string): boolean {
+  return body.trim().replace(/\.$/, "").replace(/^`+|`+$/g, "").trim() === doneMarker(nonce);
+}
 
 export function followUpComment(nonce: string): string {
   return `Additional requirement: include the line \`${followUpMarker(nonce)}\` on its own line in this task's \`ledger\` document. Keep going with your rounds: a round whose ROUND line is already in the ledger file is finished, and a round without one must still be run.`;
@@ -390,42 +471,63 @@ export function verifyLedger(nonce: string, rounds: number, text: string | null 
 export function gradeStagingMix(nonce: string, task: StagingMixTask, artifacts: OracleArtifacts): OracleResult {
   const ledger = artifacts.documents.ledger ?? null;
   const own = verifyLedger(nonce, task.rounds, ledger);
-  const doneComments = artifacts.agentComments.filter(body => body.includes(doneMarker(nonce))).length;
+  const comments = artifacts.stagingMix?.comments ?? artifacts.agentComments.map(body => ({ body, runId: null }));
+  const doneComments = comments.filter(comment => isDoneComment(comment.body, nonce)).length;
+  const completionRuns = completionRunIds(comments, nonce, artifacts.stagingMix?.completion);
   const followUp = artifacts.stagingMix?.followUp ?? null;
   const children = (artifacts.children ?? []).filter(child => (child.title ?? "").includes(nonce));
   const checks: OracleResult["checks"] = [
     { name: "issue_done", ok: artifacts.issueStatus === "done", detail: `status=${artifacts.issueStatus ?? "unknown"}` },
     { name: "ledger_rounds_verified", ok: own.verified, detail: own.detail },
+    { name: "done_comment_posted", ok: doneComments >= 1, detail: `comments=${doneComments}` },
     { name: "rounds_once", ok: own.duplicates === 0, detail: `duplicates=${own.duplicates}` },
-    { name: "done_comment_once", ok: doneComments === 1, detail: `comments=${doneComments}` },
+    { name: "done_comment_once", ok: doneComments <= 1, detail: `comments=${doneComments}` },
+    artifacts.stagingMix?.commentsUnreadable ? { name: "completion_once", ok: false, detail: "unreadable: the task's comments could not be read" }
+      : { name: "completion_once", ok: completionRuns.length <= 1,
+        detail: completionRuns.length > 1 ? `duplicate completion: runs ${completionRuns.map(id => id.slice(0, 8)).join(", ")} each reported completion` : `runs=${completionRuns.length}` },
   ];
   if (task.followUpAfterMs !== null) {
     const errors = artifacts.stagingMix?.followUpErrors ?? [];
     checks.push({ name: "follow_up_posted", ok: Boolean(followUp?.commentId),
       detail: followUp?.commentId ? `comment ${followUp.commentId}` : `never posted${errors.length ? `; errors: ${errors.slice(-3).join(" | ")}` : ""}` });
   }
+  const afterEnd = artifacts.stagingMix?.afterEndFollowUps ?? [];
+  const range = task.followUpAfterMs !== null ? followUpAfterEndRange() : null;
+  if (range || afterEnd.length) {
+    const replies = artifacts.stagingMix?.comments ?? [];
+    const unanswered = afterEnd.filter(entry => !replies.some(comment => comment.createdAt != null && comment.createdAt >= entry.at));
+    checks.push({ name: "after_end_follow_ups_served",
+      ok: afterEnd.length >= (range?.count ?? 1) && unanswered.length === 0 && (ledger ?? "").includes(followUpMarker(nonce)),
+      detail: `posted=${afterEnd.length}/${range?.count ?? afterEnd.length}; unanswered=${unanswered.map(entry => entry.commentId).join(", ") || "none"}` });
+  }
   if (followUp?.commentId && followUp.duringRun) {
     checks.push({ name: "follow_up_served", ok: (ledger ?? "").includes(followUpMarker(nonce)),
       detail: `posted ${new Date(followUp.at).toISOString()}${followUp.inOverlap ? " in overlap" : ""}` });
   }
   if (task.subtasks > 0) {
-    checks.push({ name: "subtasks_once", ok: children.length === task.subtasks, detail: `subtasks=${children.length}/${task.subtasks}` });
+    checks.push({ name: "subtasks_once", ok: children.length <= task.subtasks, detail: `subtasks=${children.length}/${task.subtasks}` });
+    let childDuplicates = 0;
     for (let part = 1; part <= task.subtasks; part += 1) {
       const nonceOf = childNonce(nonce, part);
       const child = children.filter(candidate => (candidate.title ?? "").includes(nonceOf));
-      const result = verifyLedger(nonceOf, SUBTASK_ROUNDS, child[0]?.documents.ledger);
+      const results = child.map(candidate => ({ candidate, result: verifyLedger(nonceOf, SUBTASK_ROUNDS, candidate.documents.ledger) }));
+      const best = results.find(entry => entry.candidate.status === "done" && entry.result.verified) ?? results[0];
+      childDuplicates += results.reduce((sum, entry) => sum + entry.result.duplicates, 0);
       const lastHash = expectedRoundHash(nonceOf, SUBTASK_ROUNDS);
-      checks.push({ name: `subtask_${part}_done`, ok: child.length === 1 && child[0]!.status === "done" && result.verified && result.duplicates === 0,
-        detail: child.length ? `status=${child[0]!.status} ${result.detail}` : "missing" });
+      checks.push({ name: `subtask_${part}_done`, ok: Boolean(best && best.candidate.status === "done" && best.result.verified),
+        detail: best ? `status=${best.candidate.status} ${best.result.detail}` : "missing" });
       checks.push({ name: `parent_read_subtask_${part}`, ok: (ledger ?? "").includes(childLine(part, lastHash)), detail: childLine(part, lastHash) });
     }
+    checks.push({ name: "subtask_rounds_once", ok: childDuplicates === 0, detail: `duplicates=${childDuplicates}` });
   }
   return { verdict: checks.every(check => check.ok) ? "pass" : "fail", checks };
 }
 
 export function stagingMixBudgetMs(task: StagingMixTask): number {
   const turnMs = task.rounds * ROUND_SECONDS * 1_000;
-  return Math.round(turnMs * 1.5) + 20 * 60_000 + (task.subtasks ? 20 * 60_000 : 0);
+  const afterEnd = task.followUpAfterMs !== null ? followUpAfterEndRange() : null;
+  return Math.round(turnMs * 1.5) + 20 * 60_000 + (task.subtasks ? 20 * 60_000 : 0)
+    + (afterEnd ? afterEnd.count * (afterEnd.maxMs + turnMs) : 0);
 }
 
 export function stagingMixDefinition(task: StagingMixTask): WorkloadDefinition {
@@ -481,13 +583,45 @@ export interface StagingMixStepInput {
   note: (kind: string, data: Record<string, unknown>) => void;
 }
 
+export function followUpAfterEndRange(environment: NodeJS.ProcessEnv = process.env): { minMs: number; maxMs: number; count: number } | null {
+  const raw = environment.RESTART_CHAOS_MIX_FOLLOW_UP_AFTER_END_MS;
+  if (!raw) return null;
+  const [low, high] = parseRange(raw, "RESTART_CHAOS_MIX_FOLLOW_UP_AFTER_END_MS", 0, 3_600_000);
+  const count = whole(environment.RESTART_CHAOS_MIX_FOLLOW_UP_COUNT, "RESTART_CHAOS_MIX_FOLLOW_UP_COUNT", 2, 1, 10);
+  return { minMs: low, maxMs: high, count };
+}
+
 export async function stagingMixStep(input: StagingMixStepInput): Promise<void> {
   const { record, task, sample, now } = input;
   const state = record.stagingMix ??= {};
   if (!sample.reachable || !record.issueId || record.createdAt === null) return;
   const overlap = insideOverlapWindow(now, { faultInProgress: input.faultInProgress, reachable: sample.reachable });
   const running = (sample.runs ?? []).some(run => run.status === "running");
-  if (task.followUpAfterMs !== null && !state.followUp && running) {
+  const afterEnd = followUpAfterEndRange();
+  if (afterEnd && task.followUpAfterMs !== null) {
+    const posted = state.afterEndFollowUps ??= [];
+    const runs = sample.runs ?? [];
+    const active = runs.some(run => ACTIVE.has(run.status));
+    const lastEnd = Math.max(0, ...runs.map(run => Date.parse(run.finishedAt ?? "") || 0));
+    if (!active && lastEnd > 0 && posted.length < afterEnd.count && !posted.some(entry => entry.afterRunEndAt === lastEnd)) {
+      const span = afterEnd.maxMs - afterEnd.minMs;
+      const delay = afterEnd.minMs + (span > 0 ? (Number.parseInt(input.nonce.slice(0, 6), 16) * (posted.length + 1)) % (span + 1) : 0);
+      if (now >= lastEnd + delay) {
+        const index = posted.length;
+        let commentId: string | null = null; let error: string | null = null;
+        try {
+          const comment = await input.api.post<{ id?: string }>(`/api/issues/${record.issueId}/comments`, { body: followUpComment(input.nonce),
+            clientRequestId: followUpRequestId(record.issueId, `${input.nonce}-after-end-${index}`) });
+          commentId = typeof comment?.id === "string" ? comment.id : null;
+          if (!commentId) error = "the comment response had no id";
+        } catch (caught) { error = caught instanceof Error ? caught.message : String(caught); }
+        if (commentId) posted.push({ afterRunEndAt: lastEnd, at: now, delayMs: now - lastEnd, commentId });
+        else (state.followUpErrors ??= []).push(error!);
+        input.note("staging_mix_follow_up_after_end", { index, delayMs: now - lastEnd, commentId, error });
+        if (commentId && !state.followUp) state.followUp = { at: now, commentId, duringRun: false, inOverlap: overlap, error: null };
+      }
+    }
+  } else if (task.followUpAfterMs !== null && !state.followUp && running) {
     const plannedAt = record.createdAt + task.followUpAfterMs;
     const latestAt = Math.min(plannedAt + task.holdMs, record.createdAt + Math.round(task.rounds * ROUND_SECONDS * 1_000 * 0.85));
     if (now >= plannedAt && (overlap || now >= latestAt)) {
@@ -505,17 +639,51 @@ export async function stagingMixStep(input: StagingMixStepInput): Promise<void> 
       input.note("staging_mix_follow_up", { ...followUp });
     }
   }
+  noteRetryBanner(state, retryShown(sample), now, latestFailureCode(sample));
   if (!retryOffered(sample) || !retryDue(record)) {
     if (!retryOffered(sample)) state.retrySeenAt = null;
     return;
   }
   state.retrySeenAt ??= now;
-  if (!overlap) return;
+  if (!overlap || !task.retryDuringWave) return;
   (state.retries ??= []).push({ at: now, inOverlap: true });
   input.note("staging_mix_retry_in_overlap", { waitedMs: now - state.retrySeenAt });
   await input.retry(sample, now);
 }
 
-export function stagingMixArtifacts(record: TaskRecord): StagingMixArtifacts {
-  return { followUp: record.stagingMix?.followUp ?? null, followUpErrors: record.stagingMix?.followUpErrors ?? [], retries: record.stagingMix?.retries ?? [] };
+export function retryShown(sample: Pick<TaskSample, "reachable" | "issueStatus" | "interruption">): boolean {
+  return sample.reachable && sample.issueStatus !== "done" && Boolean(sample.interruption?.canRetry);
+}
+
+export function latestFailureCode(sample: Pick<TaskSample, "runs">): string | null {
+  const failed = (sample.runs ?? []).filter(run => run.status === "failed" || run.status === "timed_out" || run.errorCode)
+    .sort((a, b) => Date.parse(b.createdAt ?? "") - Date.parse(a.createdAt ?? ""));
+  return failed[0]?.errorCode ?? failed[0]?.failureCause ?? null;
+}
+
+export function noteRetryBanner(state: StagingMixRecord, shown: boolean, now: number, errorCode: string | null): void {
+  const banner = state.retryBanner;
+  if (!shown) {
+    if (banner?.visibleSince != null) { banner.shownMs += now - banner.visibleSince; banner.visibleSince = null; }
+    return;
+  }
+  if (!banner) { state.retryBanner = { firstShownAt: now, lastShownAt: now, shownMs: 0, visibleSince: now, errorCode }; return; }
+  banner.lastShownAt = now;
+  banner.visibleSince ??= now;
+  banner.errorCode = errorCode ?? banner.errorCode;
+}
+
+export function bannerShownMs(banner: RetryBanner, now: number): number {
+  return banner.shownMs + (banner.visibleSince === null ? 0 : now - banner.visibleSince);
+}
+
+export function collectStagingMixArtifacts(record: TaskRecord,
+  rows: ReadonlyArray<{ body?: unknown; authorAgentId?: unknown; createdByRunId?: unknown; createdAt?: unknown }> | null): StagingMixArtifacts {
+  const time = (value: unknown) => typeof value === "string" && Number.isFinite(Date.parse(value)) ? Date.parse(value) : null;
+  return { followUp: record.stagingMix?.followUp ?? null, followUpErrors: record.stagingMix?.followUpErrors ?? [], retries: record.stagingMix?.retries ?? [],
+    ...(record.stagingMix?.completion ? { completion: record.stagingMix.completion } : {}),
+    ...(record.stagingMix?.afterEndFollowUps?.length ? { afterEndFollowUps: record.stagingMix.afterEndFollowUps } : {}),
+    ...(rows ? { comments: rows.filter(row => row.authorAgentId).map(row => ({ body: String(row.body ?? ""),
+      runId: typeof row.createdByRunId === "string" ? row.createdByRunId : null, createdAt: time(row.createdAt) })) }
+      : { commentsUnreadable: true }) };
 }
