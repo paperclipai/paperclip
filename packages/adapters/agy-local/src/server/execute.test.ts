@@ -669,7 +669,12 @@ describe("agy-local execute", () => {
 });
 
 describe("agy-local execute run outcome", () => {
-  const runWithOutput = async (stdout: string, stderr = "", exitCode = 0) => {
+  const runWithOutput = async (
+    stdout: string,
+    stderr = "",
+    exitCode = 0,
+    env: Record<string, string> = {},
+  ) => {
     vi.mocked(runChildProcess).mockResolvedValueOnce({
       exitCode,
       signal: null,
@@ -688,7 +693,7 @@ describe("agy-local execute run outcome", () => {
         adapterConfig: {},
       },
       runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
-      config: {},
+      config: { env },
       context: { paperclipWorkspace: { cwd: "/tmp/workspace" } },
       onLog: async (_stream, chunk) => {
         logs.push(chunk);
@@ -696,6 +701,49 @@ describe("agy-local execute run outcome", () => {
     });
     return { result, logs: logs.join("") };
   };
+
+  it("bills an API-key run as metered API usage with unknown cost, not free subscription", async () => {
+    // A Gemini API key makes execute write settings.json under HOME, so
+    // point HOME at a scratch dir rather than the real home.
+    const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "agy-exec-billing-"));
+    try {
+      const { result } = await runWithOutput(SIMPLE_RUN, "", 0, {
+        HOME: tempHome,
+        GEMINI_API_KEY: "test-key",
+      });
+      expect(result.exitCode).toBe(0);
+      expect(result.billingType).toBe("api");
+      expect(result.costUsd).toBeNull();
+      expect(result.costStatus).toBe("unpriced");
+    } finally {
+      await fs.rm(tempHome, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+
+  it("bills a subscription run as subscription with zero cost", async () => {
+    const { result } = await runWithOutput(SIMPLE_RUN);
+    expect(result.exitCode).toBe(0);
+    expect(result.billingType).toBe("subscription");
+    expect(result.costUsd).toBe(0);
+    expect(result.costStatus).toBeUndefined();
+  });
+
+  it("bills a blank API key as subscription", async () => {
+    // A non-empty-looking key still triggers the settings write under
+    // HOME, so use a scratch home even though billing falls back.
+    const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "agy-exec-billing-"));
+    try {
+      const { result } = await runWithOutput(SIMPLE_RUN, "", 0, {
+        HOME: tempHome,
+        GEMINI_API_KEY: "   ",
+      });
+      expect(result.exitCode).toBe(0);
+      expect(result.billingType).toBe("subscription");
+      expect(result.costUsd).toBe(0);
+    } finally {
+      await fs.rm(tempHome, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
 
   it("reports a SUCCESS run as succeeded despite a recovered tool error and auth-like transcript text", async () => {
     const stdout = TOOL_ERROR_RECOVERED_RUN.replace(

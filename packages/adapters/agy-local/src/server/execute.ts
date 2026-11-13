@@ -101,6 +101,22 @@ export function resolveAgyPrintTimeoutSec(timeoutSec: number): number {
   return Math.max(30, timeoutSec - margin);
 }
 
+/**
+ * Billing for an Antigravity run follows the credential the CLI actually
+ * uses: a Gemini API key is metered API usage, while the OAuth token is a
+ * subscription run. Only GEMINI_API_KEY is consulted — it is the key the
+ * CLI consumes (and the key the server injects for api_key connections).
+ * The adapter's AGY_API_KEY/ANTIGRAVITY_API_KEY aliases are readiness
+ * conveniences that nothing maps into GEMINI_API_KEY, so a run with only
+ * an alias set falls back to OAuth and is correctly billed subscription.
+ * Mirrors gemini-local's resolveGeminiBillingType.
+ */
+function resolveAgyBillingType(env: Record<string, string>): "api" | "subscription" {
+  return typeof env.GEMINI_API_KEY === "string" && env.GEMINI_API_KEY.trim().length > 0
+    ? "api"
+    : "subscription";
+}
+
 export async function discoverAgySessionArtifacts(
   sessionId: string,
   cliHomeDirs?: string[],
@@ -784,6 +800,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const failed = outcome.failed;
 
     const provider = inferModelProvider(model);
+    const billingType = resolveAgyBillingType(runtimeEnv);
 
     return {
       exitCode: synthesizedExitCode,
@@ -810,8 +827,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       provider,
       biller: "google",
       model: resolvedModelEffort.model || null,
-      billingType: "subscription",
-      costUsd: attempt.parsed.costUsd ?? 0,
+      billingType,
+      // The CLI never reports a price (parse sets costUsd: null), so an
+      // API-key run's cost is unknown — never zero. A subscription run
+      // stays 0, as before.
+      costUsd: attempt.parsed.costUsd ?? (billingType === "api" ? null : 0),
+      ...(billingType === "api" && attempt.parsed.costUsd == null
+        ? { costStatus: "unpriced" as const }
+        : {}),
       resultJson: {
         stdout: attempt.proc.stdout,
         stderr: attempt.proc.stderr,
