@@ -553,13 +553,11 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
     if (verdict.kind === "not_applicable" || verdict.kind === "ok") return { verdict, outcome: "ok", retryAt: null };
     if (verdict.kind === "settling") return { verdict, outcome: "settling", retryAt: verdict.recheckAt };
     if (verdict.stale) return { verdict, outcome: "stale_reported", retryAt: null };
+    if (verdict.reason === "saved_work_recovery_overdue") return startSavedWorkRecovery(issue, facts, verdict, at);
+    if (isReattachPhaseActive()) return { verdict, outcome: "deferred_reattach_phase", retryAt: reattachPhaseRecheckAt(at.getTime()) };
     if (verdict.reason === "blocked_with_live_run") {
       return { verdict, outcome: await liftBlockBehindLiveRun(issue, at) ? "repaired" : "changed", retryAt: null };
     }
-    // The saved files come first: start their overdue recovery. Its hold
-    // refuses any wake until it completes, and its completion continues the
-    // task (or, if the files cannot be recovered, offers a working Retry).
-    if (verdict.reason === "saved_work_recovery_overdue") return startSavedWorkRecovery(issue, facts, verdict, at);
     // A task blocked under an active recovery hold is re-continued by the
     // hold's owner (the fresh-continuation fallback, same per-task cap). The
     // sweep reports it and repairs only blocks that have no hold at all, so
@@ -582,7 +580,6 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
     if (repairTimes.length >= ASSIGNED_WORK_REPAIRS_PER_MINUTE) {
       return { verdict, outcome: "deferred_rate_limit", retryAt: new Date(repairTimes[0] + 60_000 + Math.floor(Math.random() * 5_000)) };
     }
-    if (isReattachPhaseActive()) return { verdict, outcome: "deferred_reattach_phase", retryAt: reattachPhaseRecheckAt(at.getTime()) };
     const claimed = await claimContinuation(issue, at);
     if (claimed.kind !== "claimed") return { verdict, outcome: claimed.kind === "capped" ? "deferred_cap" : claimed.kind === "changed" ? "changed" : "deferred_rate_limit",
       retryAt: claimed.kind === "changed" ? null : claimed.retryAt };
