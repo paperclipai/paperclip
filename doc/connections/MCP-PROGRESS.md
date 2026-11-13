@@ -35,7 +35,9 @@ Spec: [MCP 2026-07-28, Progress](https://modelcontextprotocol.io/specification/2
    asked to follow, after the same run read check.
 5. **Task chat.** `ToolCallProgressProvider` (one per chat) keeps the latest
    update per call. A running tool row subscribes to it and finds its call by
-   run and tool name. When a running row first mounts, the chat reads
+   run and tool name. Each update carries both the gateway name and the name
+   native runners give the tool (`assignedToolName`: shortened, with a hash),
+   since native transcripts show the latter. When a running row first mounts, the chat reads
    `GET /api/issues/:issueId/tool-call-progress` once, so a reload mid-call
    shows the latest saved state. Finished rows never fetch or re-render for
    progress.

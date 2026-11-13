@@ -5,6 +5,7 @@ import {
   TOOL_CALL_PROGRESS_PUBLISH_INTERVAL_MS,
   TOOL_CALL_PROGRESS_SAVE_INTERVAL_MS,
 } from "../services/tool-call-progress.js";
+import { assignedToolName } from "../services/native-runtime/assigned-mcp-tools.js";
 
 function reporter() {
   const published: Array<{ companyId: string; type: string; payload: Record<string, unknown> }> = [];
@@ -66,6 +67,7 @@ describe("tool call progress reporter", () => {
         issueId: "issue-a",
         agentId: "agent-a",
         toolName: "kv_demo__slow_with_progress",
+        nativeToolName: assignedToolName("kv_demo__slow_with_progress"),
         startedAt: "2026-11-13T10:00:00.000Z",
         updatedAt: "2026-11-13T10:00:01.000Z",
         progress: 1,
@@ -153,6 +155,17 @@ describe("tool call progress reporter", () => {
     release();
     await vi.advanceTimersByTimeAsync(TOOL_CALL_PROGRESS_SAVE_INTERVAL_MS * 3);
     expect(saves).toEqual([1, 4]);
+  });
+
+  it("names the tool the way native runners name it, so their rows can find the call", () => {
+    const instance = createToolCallProgressReporter({
+      companyId: "c", runId: "r", issueId: null, agentId: null, invocationId: "i",
+      toolName: "mcp.kv-demo-1a2b3c4d:slow-with-progress",
+      publish: (event) => { names.push(event.payload.nativeToolName); },
+    });
+    const names: unknown[] = [];
+    instance.report({ progress: 1 });
+    expect(names).toEqual(["app_mcp_kv_demo_1a2b3c4d_slow_with_progress_889fb9a8d98e"]);
   });
 
   it("gives each call its own progress token", () => {

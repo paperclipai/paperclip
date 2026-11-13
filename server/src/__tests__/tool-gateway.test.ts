@@ -8,6 +8,7 @@ import express from "express";
 import { and, eq, sql } from "drizzle-orm";
 import type { LiveEvent } from "@paperclipai/shared";
 import { subscribeCompanyLiveEvents } from "../services/live-events.js";
+import { assignedToolName as nativeAssignedToolName } from "../services/native-runtime/assigned-mcp-tools.js";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -3660,7 +3661,8 @@ rl.on("line", (line) => {
       expect(progress.length).toBeGreaterThanOrEqual(3);
       expect(progress.length).toBeLessThanOrEqual(7);
       expect(progress.every((event) => event.companyId === company.id && event.payload.runId === run.id
-        && event.payload.issueId === issue.id && event.payload.toolName === slowTool!.name)).toBe(true);
+        && event.payload.issueId === issue.id && event.payload.toolName === slowTool!.name
+        && event.payload.nativeToolName === nativeAssignedToolName(slowTool!.name))).toBe(true);
       expect(progress[0]!.payload).toMatchObject({ progress: 1, total: 6, message: "Finished step 1 of 6", done: false });
       expect(progress.at(-1)!.payload).toMatchObject({ done: true });
       expect(otherEvents.filter((event) => event.type === "heartbeat.run.tool_progress")).toEqual([]);

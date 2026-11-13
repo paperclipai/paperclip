@@ -9,6 +9,7 @@ import {
 } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
+import { assignedToolName } from "./native-runtime/assigned-mcp-tools.js";
 
 /**
  * Live progress for a connected-app tool call that an agent run made.
@@ -83,7 +84,8 @@ export function createToolCallProgressReporter(input: {
   let finished = false;
   let last: ToolCallProgress | null = null;
   const snapshot = (progress: ToolCallProgress, done: boolean): ToolCallProgressSnapshot => ({
-    ...progress, invocationId: input.invocationId, runId: input.runId, toolName: input.toolName, startedAt, done,
+    ...progress, invocationId: input.invocationId, runId: input.runId, toolName: input.toolName,
+    nativeToolName: assignedToolName(input.toolName), startedAt, done,
   });
   const send = (value: ToolCallProgressSnapshot) => {
     try {
@@ -171,6 +173,7 @@ export async function listRunningToolCallProgress(db: Db, companyId: string, iss
       invocationId: row.id,
       runId: row.runId,
       toolName: row.toolName,
+      nativeToolName: assignedToolName(row.toolName),
       startedAt: (row.startedAt ?? row.createdAt).toISOString(),
       done: false,
     }];

@@ -22,6 +22,8 @@ export interface ToolCallProgressSnapshot extends ToolCallProgress {
   runId: string;
   /** The tool name the agent called through Paperclip. */
   toolName: string;
+  /** The name native runners give that tool (shortened, with a hash); their transcripts show it. */
+  nativeToolName?: string | null;
   /** When the call started (ISO), for elapsed time. */
   startedAt: string;
   /** True once the call has finished; the row then drops its progress. */

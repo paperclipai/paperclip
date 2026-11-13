@@ -48,12 +48,20 @@ export function readToolCallProgressEvent(payload: Record<string, unknown>): Too
   const invocationId = typeof payload.invocationId === "string" ? payload.invocationId : null;
   const runId = typeof payload.runId === "string" ? payload.runId : null;
   const toolName = typeof payload.toolName === "string" ? payload.toolName : null;
+  const nativeToolName = typeof payload.nativeToolName === "string" ? payload.nativeToolName : null;
   const startedAt = typeof payload.startedAt === "string" && Number.isFinite(Date.parse(payload.startedAt)) ? payload.startedAt : null;
   if (!invocationId || !runId || !toolName || !startedAt) return null;
   const updatedAt = typeof payload.updatedAt === "string" && Number.isFinite(Date.parse(payload.updatedAt)) ? new Date(payload.updatedAt) : new Date();
   const progress = normalizeToolCallProgress(payload, updatedAt);
   if (!progress) return null;
-  return { ...progress, invocationId, runId, toolName, startedAt, done: payload.done === true };
+  return { ...progress, invocationId, runId, toolName, nativeToolName, startedAt, done: payload.done === true };
+}
+
+/** Whether a row is a call of this tool, under its gateway name or the native runner's name for it. */
+export function rowShowsTool(item: Pick<TaskChatToolItem, "rawName" | "name">, entry: Pick<ToolCallProgressSnapshot, "toolName" | "nativeToolName">): boolean {
+  const rowName = item.rawName ?? item.name;
+  return toolCallNameMatches(rowName, entry.toolName)
+    || (Boolean(entry.nativeToolName) && toolCallNameMatches(rowName, entry.nativeToolName!));
 }
 
 /** The progress for a row: the latest unfinished call of the same tool, in the same run when known. */
@@ -65,7 +73,7 @@ export function pickToolCallProgress(
   let best: ToolCallProgressSnapshot | null = null;
   for (const entry of entries) {
     if (entry.done || (runId && entry.runId !== runId)) continue;
-    if (!toolCallNameMatches(item.rawName ?? item.name, entry.toolName)) continue;
+    if (!rowShowsTool(item, entry)) continue;
     if (!best || entry.startedAt > best.startedAt) best = entry;
   }
   return best;

@@ -44,6 +44,17 @@ describe("tool call progress matching", () => {
     expect(toolCallNameMatches("mcp__paperclip__mcp.kv-demo-99999999:slow-with-progress", "mcp.kv-demo-1a2b3c4d:slow-with-progress")).toBe(false);
   });
 
+  it("finds a native runner's row by the shortened, hashed name it gives the tool", () => {
+    const gatewayName = "mcp.kv-demo-1a2b3c4d:slow-with-progress";
+    const nativeName = "app_mcp_kv_demo_1a2b3c4d_slow_with_progress_889fb9a8d98e";
+    const entry = snapshot({ toolName: gatewayName, nativeToolName: nativeName });
+    expect(pickToolCallProgress([entry], tool({ rawName: nativeName, name: nativeName }), "run-1")).toBe(entry);
+    expect(pickToolCallProgress([entry], tool({ rawName: `mcp__paperclip__${nativeName}` }), "run-1")).toBe(entry);
+    // Another tool's hash never matches.
+    expect(pickToolCallProgress([entry], tool({ rawName: "app_mcp_kv_demo_1a2b3c4d_slow_with_progress_000000000000" }), "run-1")).toBeNull();
+    expect(readToolCallProgressEvent({ ...entry })?.nativeToolName).toBe(nativeName);
+  });
+
   it("picks the newest unfinished call of the row's tool in the row's run", () => {
     const entries = [
       snapshot({ invocationId: "old", startedAt: "2026-11-13T09:00:00.000Z" }),

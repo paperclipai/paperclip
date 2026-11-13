@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { agents, companies, createDb, heartbeatRuns, issues, toolInvocations, type Db } from "@paperclipai/db";
 import { listRunningToolCallProgress, saveToolCallProgress } from "../services/tool-call-progress.js";
+import { assignedToolName } from "../services/native-runtime/assigned-mcp-tools.js";
 import { startRecoveryPostgres } from "./helpers/recovery-postgres.js";
 
 describe("saved tool call progress", () => {
@@ -44,6 +45,7 @@ describe("saved tool call progress", () => {
 
     expect(await listRunningToolCallProgress(db, mine.companyId, mine.issueId, now)).toEqual([{
       invocationId: running.id, runId: mine.runId, toolName: "kv_demo__slow_with_progress",
+      nativeToolName: assignedToolName("kv_demo__slow_with_progress"),
       startedAt: "2026-11-13T10:00:00.000Z", progress: 4, total: 10, message: "Exporting",
       updatedAt: "2026-11-13T10:00:05.000Z", done: false,
     }]);
