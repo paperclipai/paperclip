@@ -29,6 +29,8 @@ import { customerSuccessRoutes } from "./routes/customer-success.js";
 import { cloudWarmStandbyMiddleware } from "./middleware/cloud-warm-standby.js";
 import type { CloudWarmStandby } from "./services/cloud-warm-standby.js";
 import { browserUseRoutes } from "./routes/browser-use.js";
+import { mcpAppsRoutes } from "./routes/mcp-apps.js";
+import { mcpSkillsRoutes } from "./routes/mcp-skills.js";
 import { registerChatActionWork } from "./services/chat-action-work.js";
 import { registerChatDeliveryWork } from "./services/chat-delivery-work.js";
 import { registerBrowserUseCleanup } from "./services/browser-use-work.js";
@@ -1019,6 +1021,8 @@ export async function createApp(
     (session, run) => toolGateway.browserUseSessionAuthorized({ ...session, runId: run.heartbeatRunId, invocationId: run.invocationId }));
   api.use(browserUseRoutes(db, browserUse));
   api.use(toolGatewayRoutes(db, toolGateway));
+  api.use(mcpAppsRoutes(db, toolGateway));
+  api.use(mcpSkillsRoutes(db, toolGateway));
   api.use(
     pluginRoutes(
       db,

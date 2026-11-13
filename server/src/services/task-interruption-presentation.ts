@@ -89,6 +89,9 @@ type ProjectionState = {
    * remote environment, or a scheduled close in this process. Without one,
    * nothing settles the gate by itself, so Retry is the way forward. */
   cleanupSettling?: boolean;
+  /** The fresh-continuation fallback is continuing this run's task (recorded,
+   * not yet started) or will check it again at `nextCheckAt`. */
+  freshContinuation?: { state: "continuing" } | { state: "scheduled"; nextCheckAt: number };
 };
 
 // A task read reports the change that made a task fail, not every later read of
@@ -263,6 +266,10 @@ function projectTaskInterruptionState(issue: ProjectionIssue, input: ProjectionS
       && !(retryWait?.sourceRunId === run.id && retryWait.preparationStatus) && system?.state !== "exhausted")
     return { ...base, intentId: interruptWait.id, state: "working" };
   if (["running", "queued"].includes(run.status)) return { ...base, state: "working" };
+  // Paperclip is continuing the task by itself: no failed attempt and no Retry.
+  if (input.freshContinuation?.state === "continuing") return { ...base, state: "working", canRetry: false };
+  if (input.freshContinuation?.state === "scheduled" && input.freshContinuation.nextCheckAt > now)
+    return { ...base, state: "retry_scheduled", nextRetryAt: new Date(input.freshContinuation.nextCheckAt).toISOString(), canRetry: false };
   const deniedProject = deniedProjectId(issue, run);
   let projectAccess: TaskInterruptionPresentation["projectAccess"];
   if (deniedProject !== undefined) {
@@ -560,6 +567,25 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
     inArray(sql`${issueRecoveryActions.evidence}->>'runId'`, runIds),
     sql`${issueRecoveryActions.evidence} ? 'systemRecovery'`,
   )).orderBy(issueRecoveryActions.sourceIssueId, desc(issueRecoveryActions.createdAt)) : [];
+  // The fresh-continuation fallback's records for these runs.
+  const freshRows = runIds.length ? await db.select({ issueId: issueRecoveryActions.sourceIssueId,
+    runId: sql<string>`${issueRecoveryActions.evidence}->>'runId'`,
+    delivery: sql<string | null>`${issueRecoveryActions.evidence}->>'continuationDelivery'`,
+    recorded: sql<boolean>`${issueRecoveryActions.evidence} ? 'freshContinuation'`,
+    checkKind: sql<string | null>`${issueRecoveryActions.evidence}#>>'{freshContinuationCheck,kind}'`,
+    nextCheckAt: sql<string | null>`${issueRecoveryActions.evidence}#>>'{freshContinuationCheck,nextCheckAt}'` })
+    .from(issueRecoveryActions).where(and(eq(issueRecoveryActions.companyId, companyId), inArray(issueRecoveryActions.sourceIssueId, ids),
+      inArray(sql`${issueRecoveryActions.evidence}->>'runId'`, runIds),
+      sql`(${issueRecoveryActions.evidence} ? 'freshContinuationSettlement' or ${issueRecoveryActions.evidence} ? 'freshContinuationCheck')`)) : [];
+  const freshContinuationFor = (issueId: string, runId: string | undefined): ProjectionState["freshContinuation"] => {
+    const rows = freshRows.filter(row => row.issueId === issueId && row.runId === runId);
+    // Only the primary record (it carries `freshContinuation`) says whether a
+    // continuation is still on its way; holds coalesced into it never do.
+    if (rows.some(row => row.recorded && ["pending", "not_requested"].includes(row.delivery ?? ""))) return { state: "continuing" };
+    const scheduled = rows.filter(row => ["exact_recovery_pending", "backoff"].includes(row.checkKind ?? "") && row.nextCheckAt)
+      .map(row => Number(row.nextCheckAt)).sort((a, b) => a - b)[0];
+    return scheduled ? { state: "scheduled", nextCheckAt: scheduled } : undefined;
+  };
   const ownerStops = runIds.length ? await db.select({ issueId: issueRecoveryActions.sourceIssueId,
     runId: sql<string>`${issueRecoveryActions.evidence}->>'runId'` }).from(issueRecoveryActions).where(and(
     eq(issueRecoveryActions.companyId, companyId), inArray(issueRecoveryActions.sourceIssueId, ids),
@@ -659,6 +685,7 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
     const facts = { run: runMap.get(issue.id), action: actionMap.get(issue.id), wait: waitMap.get(issue.id),
       retryWait: retryWaitMap.get(issue.id) };
     const presentation = projectTaskInterruption(issue, { ...facts,
+      freshContinuation: freshContinuationFor(issue.id, facts.run?.id),
       interruptWait: interruptWaitFor(issue.id),
       projectAccessAllowed: denied?.length === 0,
       projectAccessProjectId: denied?.includes(issue.projectId ?? "") ? issue.projectId : null,
