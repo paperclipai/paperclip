@@ -320,7 +320,7 @@ async function handleRequest(
     const requestId = params.requestId;
     if (typeof requestId === "string" || typeof requestId === "number") {
       const requestKey = sessionKey + rpcIdKey(requestId);
-      context.controllers.get(context.requestCalls.get(requestKey) ?? requestKey)?.abort();
+      context.controllers.get(context.requestCalls.get(mcpSessionKey(request) + requestKey) ?? requestKey)?.abort();
     }
     response.statusCode = 202;
     response.end();
@@ -388,6 +388,7 @@ async function handleRequest(
   const callId = context.sessionScope ? sessionKey + rpcIdKey(id) : String(id);
   const requestKey = sessionKey + rpcIdKey(id);
   const callKey = providerToolUseId === undefined ? requestKey : `tool-use:${providerToolUseId}`;
+  const cancelKey = mcpSessionKey(request) + requestKey;
   const args = params.arguments ?? {};
   const validator = context.validators.get(tool);
   if (validator === undefined || !validator(args)) {
@@ -480,17 +481,22 @@ async function handleRequest(
       .finally(() => context.controllers.delete(callKey))
       .catch(() => undefined);
   }
-  if (callKey !== requestKey) context.requestCalls.set(requestKey, callKey);
+  if (callKey !== requestKey) context.requestCalls.set(cancelKey, callKey);
   try {
     const result = await execution;
     writeRpc(response, id, result);
   } catch (error) {
     writeToolError(response, id, safeError(error));
   } finally {
-    if (callKey !== requestKey && context.requestCalls.get(requestKey) === callKey) {
-      context.requestCalls.delete(requestKey);
+    if (callKey !== requestKey && context.requestCalls.get(cancelKey) === callKey) {
+      context.requestCalls.delete(cancelKey);
     }
   }
+}
+
+function mcpSessionKey(request: IncomingMessage): string {
+  const session = request.headers["mcp-session-id"];
+  return typeof session === "string" ? `${session}\u0000` : "";
 }
 
 function normalizeTools(
