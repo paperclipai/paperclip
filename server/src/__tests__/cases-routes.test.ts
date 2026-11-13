@@ -202,7 +202,22 @@ describeEmbeddedPostgres("cases routes", () => {
     }).returning();
     const http = request(app(boardActor));
 
-    await http.get(`/api/companies/${company.id}/cases`).expect(403);
+    const denied = await http.get(`/api/companies/${company.id}/cases`).expect(403);
+    // The denial is final and names the page where an instance admin turns Cases on.
+    expect(denied.body).toMatchObject({ error: "Cases are disabled", code: "cases_disabled" });
+    expect(denied.body.remediation).toContain("[Experimental settings](/<prefix>/company/settings/instance/experimental)");
+    expect(denied.body.remediation).toContain("Agent credentials cannot change that setting");
+    // Hiding only the Cases switch keeps the page, so the denial must not send the person there.
+    const previousHidden = process.env.PAPERCLIP_HIDDEN_SETTINGS;
+    process.env.PAPERCLIP_HIDDEN_SETTINGS = "instance.experimental.enableCases";
+    try {
+      const hiddenDenial = await http.get(`/api/companies/${company.id}/cases`).expect(403);
+      expect(hiddenDenial.body.remediation).toContain("An instance operator controls it.");
+      expect(hiddenDenial.body.remediation).not.toContain("/instance/experimental");
+    } finally {
+      if (previousHidden === undefined) delete process.env.PAPERCLIP_HIDDEN_SETTINGS;
+      else process.env.PAPERCLIP_HIDDEN_SETTINGS = previousHidden;
+    }
     await http.get(`/api/companies/${company.id}/cases/types`).expect(403);
     await http.post(`/api/companies/${company.id}/cases`).send({ caseType: "bug", title: "Bug" }).expect(403);
     await http.get(`/api/cases/${caseRow!.id}`).expect(403);
@@ -212,6 +227,16 @@ describeEmbeddedPostgres("cases routes", () => {
     await http.post(`/api/cases/${caseRow!.id}/links`).send({ issueId: randomUUID(), role: "work" }).expect(403);
     await http.post(`/api/cases/${caseRow!.id}/attachments`).attach("file", Buffer.from("x"), "x.txt").expect(403);
     await http.get(`/api/cases/${caseRow!.id}/events`).expect(403);
+  });
+
+  it("tells a caller that Cases is off for good and names the setting instead of a substitute", async () => {
+    const company = await seedCompany("OFFX");
+    const response = await request(app(boardActor)).get(`/api/companies/${company.id}/cases`).expect(403);
+    expect(response.body).toMatchObject({ error: "Cases are disabled", code: "cases_disabled" });
+    expect(response.body.remediation).toContain("this denial is final");
+    expect(response.body.remediation).toContain("Do not create a task, project or other record in place of the case before the person chooses");
+    expect(response.body.remediation).toContain("[Experimental settings](/<prefix>/company/settings/instance/experimental)");
+    expect(response.body.remediation).toContain("offer to track the request as an ordinary task instead");
   });
 
   it("returns not found for unknown case IDs on the former shared routes", async () => {

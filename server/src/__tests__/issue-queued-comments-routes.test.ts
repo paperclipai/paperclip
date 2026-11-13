@@ -692,6 +692,39 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     expect(steerNativeSessionMock.mock.calls).toHaveLength(calls);
   });
 
+  it("keeps a fresh-session approval and its Interrupt in view when another agent's comment queues after it", async () => {
+    const seeded = await seedResponseQueue(true);
+    const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
+    await db.update(agentWakeupRequests).set({ payload: { ...receipt.payload,
+      _paperclipWakeContext: { ...seeded.context, forceFreshSession: true } } }).where(eq(agentWakeupRequests.id, seeded.wakeId));
+    const [ceo] = await db.insert(agents).values({ companyId: seeded.companyId, name: "CEO", role: "ceo", status: "idle",
+      adapterType: "paperclip_runner", adapterConfig: {}, runtimeConfig: {}, permissions: {} }).returning();
+    const directionId = randomUUID(), later = new Date(Date.now() + 60_000);
+    await db.insert(issueComments).values({ id: directionId, companyId: seeded.companyId, issueId: seeded.issueId,
+      authorType: "agent", authorAgentId: ceo.id, body: "CEO direction: restart with the approved layout",
+      createdAt: later, updatedAt: later });
+    const [agentWake] = await db.insert(agentWakeupRequests).values({ companyId: seeded.companyId, agentId: seeded.agentId,
+      source: "issue_comment", reason: "issue_commented", status: "deferred_issue_execution",
+      requestedByActorType: "agent", requestedByActorId: ceo.id, requestedAt: later,
+      payload: { issueId: seeded.issueId, commentId: directionId,
+        _paperclipWakeContext: { commentId: directionId, wakeCommentId: directionId, wakeCommentIds: [directionId] } } }).returning();
+    const client = app(seeded.companyId);
+
+    const queue = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+    expect(queue.body.queueId).toBe(seeded.wakeId);
+    expect(queue.body.entries).toEqual([expect.objectContaining({
+      source: expect.objectContaining({ interactionId: seeded.interactionId, requiresFreshSession: true }) })]);
+
+    const personId = randomUUID(), latest = new Date(Date.now() + 120_000);
+    await db.insert(issueComments).values({ id: personId, companyId: seeded.companyId, issueId: seeded.issueId,
+      authorType: "user", authorUserId: "queue-owner", body: "Also keep the signup button", createdAt: latest, updatedAt: latest });
+    await db.update(agentWakeupRequests).set({ payload: { issueId: seeded.issueId, commentId: personId,
+      _paperclipWakeContext: { commentId: personId, wakeCommentId: personId, wakeCommentIds: [directionId, personId] } } })
+      .where(eq(agentWakeupRequests.id, agentWake.id));
+    const withPersonMessage = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+    expect(withPersonMessage.body.queueId).toBe(agentWake.id);
+  });
+
   it("does not steer a plan approval that requires a fresh execution session", async () => {
     const seeded = await seedResponseQueue(true);
     const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
@@ -1017,6 +1050,37 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
         .filter(row => row.status === "queued")).toEqual([]);
     },
   );
+
+  it.each(["preparing", "native"] as const)(
+    "reports the messages a %s run's first turn takes, before and after it seals them",
+    async (runtime) => {
+      const seeded = await seedFirstTurnQueue(runtime);
+      const client = app(seeded.companyId);
+      // The sandbox is still booting: the messages are sent, not waiting for Steer.
+      const before = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+      expect(before.body.firstTurnCommentIds).toEqual(seeded.commentIds);
+
+      if (runtime === "preparing") {
+        await db.update(heartbeatRuns).set({ runtimeMode: "native", runtimeModeResolvedAt: new Date(),
+          nativeIssueId: seeded.issueId }).where(eq(heartbeatRuns.id, seeded.runId));
+      }
+      await claimFirstTurnQueuedInput(db, { companyId: seeded.companyId, runId: seeded.runId,
+        issueId: seeded.issueId, agentId: seeded.agentId });
+      // After the seal the queue hides them; the view still needs to know where they went.
+      const after = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+      expect(after.body.entries).toEqual([]);
+      expect(after.body.firstTurnCommentIds).toEqual(seeded.commentIds);
+    },
+  );
+
+  it("reports no first-turn messages once the run's turn already started", async () => {
+    const seeded = await seedFirstTurnQueue("native");
+    await appendHeartbeatRunEvent(db, { companyId: seeded.companyId, runId: seeded.runId, agentId: seeded.agentId,
+      eventType: "turn.accepted", stream: "system", level: "info", message: "turn accepted" });
+    const queue = await request(app(seeded.companyId)).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+    expect(queue.body.entries).toHaveLength(2);
+    expect(queue.body.firstTurnCommentIds ?? []).toEqual([]);
+  });
 
   it("still interrupts a preparing run when its queue holds another user's message", async () => {
     const seeded = await seedFirstTurnQueue("native");

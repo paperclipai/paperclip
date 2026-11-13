@@ -1,7 +1,6 @@
 import { AbortMultipartUploadCommand, CompleteMultipartUploadCommand, CreateMultipartUploadCommand, UploadPartCommand, type S3Client } from "@aws-sdk/client-s3";
 import { sendThroughStorageOutage } from "./storage-unavailable.js";
 import { recordStorageBackoff, recordStoragePart, recordStorageThrottle, withStorageRequestStats } from "./request-stats.js";
-import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
@@ -10,6 +9,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { PutObjectInput, PutObjectReceipt } from "./types.js";
 import { withS3FailureDiagnostics } from "./s3-failure.js";
 import { cleanupStorageFailure, STORAGE_FAILURE_CLEANUP_MS } from "./failure-cleanup.js";
+import { digestFileOffThread } from "./file-crypto-pool.js";
 
 const bufferedPartSize = 8 * 1024 * 1024;
 const bufferedPayloadLimit = 4 * bufferedPartSize;
@@ -160,7 +160,6 @@ const FILE_PART_ATTEMPTS = 3;
 export const THROTTLED_PART_ATTEMPTS = 8;
 const THROTTLE_BACKOFF_BASE_MS = 1_000;
 const THROTTLE_BACKOFF_MAX_MS = 20_000;
-const FILE_READ_BYTES = 1024 * 1024;
 
 /**
  * S3 answers a request-rate limit with 503 SlowDown; compatible gateways also
@@ -210,11 +209,10 @@ export async function sendFileRequestWithRetry<T>(signal: AbortSignal | undefine
   }
 }
 
-/** Base64 MD5 of an inclusive byte range, as the Content-MD5 header expects. */
+/** Base64 MD5 of an inclusive byte range, as the Content-MD5 header expects. Hashed off the server's thread. */
 export async function fileRangeMd5(file: string, start: number, end: number, signal?: AbortSignal) {
-  const digest = createHash("md5");
-  for await (const chunk of createReadStream(file, { start, end, signal, highWaterMark: FILE_READ_BYTES })) digest.update(chunk);
-  return digest.digest("base64");
+  const digest = await digestFileOffThread({ file, start, end, algorithm: "md5" }, signal);
+  return Buffer.from(digest.hex, "hex").toString("base64");
 }
 
 export async function assertSourceFileSize(file: string, contentLength: number) {
@@ -253,9 +251,18 @@ export async function putS3MultipartFile(
     // only for requests sent after the previous one, so a burst of parallel
     // throttled parts halves the rate once rather than once per part.
     let concurrency = FILE_PART_CONCURRENCY, reductions = 0;
+    const partMd5 = (index: number) => fileRangeMd5(file, index * partSize, Math.min((index + 1) * partSize, input.contentLength) - 1, controller.signal);
+    // The first round of parts is digested before any of them is sent. They
+    // leave together, as they did when this thread digested them side by side,
+    // so a rate limit still answers one burst rather than a trickle of requests.
+    // Every digest of the round has ended, also a failed or cancelled one,
+    // before a part goes on: none still reads the file when the upload settles.
+    const firstRound = Array.from({ length: Math.min(FILE_PART_CONCURRENCY, count) }, (_, index) => partMd5(index));
+    const firstRoundEnded = Promise.allSettled(firstRound);
     const sendPart = async (index: number) => {
       const start = index * partSize, length = Math.min(partSize, input.contentLength - start), end = start + length - 1;
-      const contentMd5 = await fileRangeMd5(file, start, end, controller.signal);
+      if (index < firstRound.length) await firstRoundEnded;
+      const contentMd5 = await (firstRound[index] ?? partMd5(index));
       for (let failures = 0, throttles = 0; ;) {
         controller.signal.throwIfAborted();
         const body = createReadStream(file, { start, end, highWaterMark: 64 * 1024 });

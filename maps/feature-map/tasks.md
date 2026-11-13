@@ -119,7 +119,7 @@ uses a real disposable server and paused process agent, with no inference, to
 check both task interfaces. Done and cancelled tasks hide the paused-agent
 warning; reopening restores it. The agent stays paused and no run starts.
 
-Manual: For a disposable task owned by a legacy agent, have its current run
+Manual: For a disposable task owned by a legacy or native agent, have its current run
 assign the task to a human with status In review. Verify that assignment and
 status persist, that the current run finishes without `issue_reassigned`, and
 that slow workspace restoration does not turn the task Blocked. Try a later edit

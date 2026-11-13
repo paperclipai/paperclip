@@ -94,7 +94,11 @@ export function isUnrunnableWorktreeCombo(input: {
   resolvedStrategy: string | null | undefined;
   reusableExecutionWorkspaceAvailable?: boolean | null;
   hasResolvablePriorSessionWorkspace?: boolean | null;
+  /** The wake continues a cut-off run in a new isolated workspace that the run
+   * prepares itself (`create_new`); it never needs the task's old binding. */
+  freshIsolatedContinuation?: boolean | null;
 }): boolean {
+  if (input.freshIsolatedContinuation === true) return false;
   if (input.resolvedMode !== "isolated_workspace" && input.resolvedMode !== "operator_branch") return false;
   if (input.resolvedStrategy !== "git_worktree") return false;
   if (input.issue.projectId || input.issue.projectWorkspaceId) return false;
@@ -274,7 +278,6 @@ export function selectEnvironmentExecutionWorkspaceSettings(
 
 export type ExecutionWorkspaceEnvironmentSource =
   | "issue"
-  | "project"
   | "run"
   | "agent"
   | "instance"
@@ -300,7 +303,6 @@ export class ManagedSandboxUnavailableError extends Error {
 export function resolveExecutionWorkspaceEnvironmentId(input: {
   /** Explicit operator-selected sandbox for a task with a low-trust boundary. */
   lowTrustIssueEnvironmentId?: string | null;
-  projectEnvironmentId?: string | null;
   agentDefaultEnvironmentId: string | null;
   instanceDefaultEnvironmentId: string | null;
   localDefaultEnvironmentId: string;
@@ -318,9 +320,6 @@ export function resolveExecutionWorkspaceEnvironmentId(input: {
   const resolved = ((): ExecutionWorkspaceEnvironmentResolution => {
     if (input.lowTrustIssueEnvironmentId) {
       return {environmentId: input.lowTrustIssueEnvironmentId, source: "issue"};
-    }
-    if (input.projectEnvironmentId) {
-      return { environmentId: input.projectEnvironmentId, source: "project" };
     }
     if (input.agentDefaultEnvironmentId) {
       return {

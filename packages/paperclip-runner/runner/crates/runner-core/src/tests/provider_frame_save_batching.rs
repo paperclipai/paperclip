@@ -520,6 +520,9 @@ fn streamed_turn_before_tool_call_with(
 #[cfg(unix)]
 #[test]
 fn a_held_cancellation_that_cannot_reach_the_provider_keeps_the_completed_turn() {
+    // Shutdown during the script's `sleep 2` can orphan it for a moment.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let _orphans = crate::process_lineage::host_orphans::may_orphan();
     let tail = r#"{"id":"tool-1","method":"item/tool/call","params":{"threadId":"thread-1","turnId":"turn-1","callId":"call-streamed","tool":"get_task_context","arguments":{}}}"#;
     let after = r#"exec 0<&-; printf '%s\n' '{"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}}'; sleep 2; exit 0"#;
     let (directory, mut executor) = streamed_turn_then(10, 0, tail, after, true, |_| {});

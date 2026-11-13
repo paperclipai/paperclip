@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promi
 import os from "node:os";
 import path from "node:path";
 import { createAcpRuntime, createAgentRegistry, createRuntimeStore } from "../../packages/adapter-utils/node_modules/acpx/dist/runtime.js";
+import { stockAcpRuntimeOptions } from "../../packages/adapter-utils/src/acpx-engine/stock-runtime-options.js";
 
 const argument = process.argv.indexOf("--agent-command");
 const command = argument < 0 ? "gemini --acp" : process.argv[argument + 1];
@@ -46,18 +47,21 @@ try {
       security: { auth: { selectedType: "gemini-api-key" } }, telemetry: { enabled: false },
     }), { mode: 0o600 });
     active = { calls: 0, file, tool: scenario === "read-existing" ? "read_file" : "write_file" };
-    const runtime = createAcpRuntime({
+    const agentEnvironment = {
+      HOME: home, PATH: process.env.PATH ?? "", GEMINI_MODEL: "gemini-3.1-flash-lite",
+      GEMINI_API_KEY: "synthetic-invalid-key", GOOGLE_GEMINI_BASE_URL: origin,
+    };
+    const runtime = createAcpRuntime(stockAcpRuntimeOptions({
       cwd, sessionStore: createRuntimeStore({ stateDir: path.join(root, scenario, "state") }),
       agentRegistry: createAgentRegistry({ overrides: { gemini: command } }),
-      permissionMode: "approve-all", nonInteractivePermissions: "deny", inheritProcessEnv: false,
+      permissionMode: "approve-all", nonInteractivePermissions: "deny",
+      // Exactly this environment, as the engine launches agents.
+      agentEnvironment: () => agentEnvironment,
       onAgentStderr: () => { /* Child diagnostics may contain untrusted material. */ },
-    });
+    }));
     const handle = await runtime.ensureSession({
       sessionKey: `gemini-filesystem-${scenario}`, agent: "gemini", mode: "oneshot", cwd,
-      sessionOptions: { env: {
-        HOME: home, PATH: process.env.PATH ?? "", GEMINI_MODEL: "gemini-3.1-flash-lite",
-        GEMINI_API_KEY: "synthetic-invalid-key", GOOGLE_GEMINI_BASE_URL: origin,
-      } },
+      sessionOptions: { env: agentEnvironment },
     });
     try {
       let completedTools = 0; let failedTools = 0; let missingFileSignal = false;

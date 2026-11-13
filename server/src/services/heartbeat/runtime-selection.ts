@@ -39,6 +39,8 @@ import {
 } from "@paperclipai/db";
 import { getStartupTracer } from "../../instrumentation.js";
 import { documentService } from "../documents.js";
+import { readPortableTaskReseed } from "../plugin-task-ownership.js";
+import type { PluginTaskDescription } from "../environment-task-runtime.js";
 import { managedAgentProfileService } from "../managed-agent-profiles.js";
 import { remoteAgentProfileService } from "../remote-agent-profiles.js";
 import {
@@ -47,7 +49,6 @@ import {
   buildNativeRuntimeContext,
   ensureNativeCompletionContract,
   findNativeSessionResumeRun,
-  isNativeSessionId,
   isUnusedNativeSessionBootstrap,
   isUnusedLegacyNativeRetryReplacement,
   materializeNativeInteractionResponses,
@@ -87,6 +88,7 @@ import { buildPlanReviewContext } from "../plan-review-context.js";
 import { normalizePaperclipWakePayload, selectPaperclipTaskMarkdown } from "@paperclipai/adapter-utils/server-utils";
 import type { ProviderResourceDisposition } from "../environment-runtime.js";
 import { stageNativeRuntimeSkillAssets, bindStagedNativeRuntimeSkillAssets } from "../native-runtime/runtime-skill-preservation.js";
+import { configuredSecretGuidance } from "../native-runtime/configured-secret-guidance.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
 type Agent = typeof agents.$inferSelect;
@@ -117,9 +119,7 @@ export interface HeartbeatRuntimeSelectionInput {
   session: {
     persistedNativeExecutionInput: NativeExecutionInput | null;
     persistedRunnerProfile: Record<string, unknown>;
-    taskSessionCredentialCompatible: boolean;
-    taskSessionDecodedParams: Record<string, unknown> | null;
-    taskSessionForRun: { lastRunId: string | null } | null;
+    taskResumeSessionId: string | null;
     isFailedChatRunRetry: boolean;
     getFreshSessionHandoff: (() => Promise<string | null>) | undefined;
   };
@@ -127,7 +127,9 @@ export interface HeartbeatRuntimeSelectionInput {
     persistedExecutionWorkspace: { id: string; metadata?: Record<string, unknown> | null } | null;
     executionWorkspace: Omit<Parameters<typeof buildNativeExecutionInput>[0]["workspace"], "id">;
     executionTarget: Parameters<typeof prepareNativeWorkspaceSync>[0]["target"];
-    activeEnvironmentLease: Pick<Parameters<typeof prepareNativeWorkspaceSync>[0], "lease"> | null;
+    activeEnvironmentLease: (Pick<Parameters<typeof prepareNativeWorkspaceSync>[0], "lease"> & {
+      pluginTaskDescription?: PluginTaskDescription;
+    }) | null;
     isDotRun: boolean;
     projectRepositoryPaths: string[];
     onCheckpoint?: Parameters<typeof prepareNativeWorkspaceSync>[0]["onCheckpoint"];
@@ -138,6 +140,8 @@ export interface HeartbeatRuntimeSelectionInput {
     runtimeConfig: Record<string, unknown>;
     runtimeSkillEntries: Parameters<typeof buildNativeRuntimeContext>[0]["runtimeSkillEntries"];
     runScopedMentionedSkillKeys: string[];
+    /** Configured entries resolved from secrets, by name only. */
+    configuredSecretNames?: readonly string[];
     instructionCopy: Awaited<ReturnType<ReturnType<typeof agentInstructionWorkingCopyService>["prepare"]>>;
     agentIdentity: { keyId: string } | undefined;
     issueAssigneeOverrides: { adapterConfig: Record<string, unknown> | null } | null;
@@ -161,6 +165,8 @@ export type HeartbeatRuntimeSelectionResult = { selected: false } | {
   selected: true;
   nativeExecution: NativeExecutionInput | null;
   nativeRunnerInstanceId: string | null;
+  pluginTaskDescription?: PluginTaskDescription;
+  toolRefreshOnResume?: boolean;
   getNativeFreshSessionHandoff: (() => Promise<string | null>) | undefined;
   nativeWorkspaceSync: Awaited<ReturnType<typeof prepareNativeWorkspaceSync>>;
 };
@@ -313,16 +319,17 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
     onNativeLifecycleSelected, onProviderResourceDisposition, onNativeOwnershipHeld, stopControllerLease } = input;
   const { issueRef, issueContext, context, executionContinuation, safeWakeComments, safeWakeCommentContext,
     paperclipWakePayload, acceptedPlanContinuationWake } = input.task;
-  const { persistedNativeExecutionInput, persistedRunnerProfile, taskSessionCredentialCompatible, taskSessionDecodedParams,
-    taskSessionForRun, isFailedChatRunRetry, getFreshSessionHandoff } = input.session;
+  const { persistedNativeExecutionInput, persistedRunnerProfile, taskResumeSessionId, isFailedChatRunRetry, getFreshSessionHandoff } = input.session;
   const { persistedExecutionWorkspace, executionWorkspace, executionTarget, activeEnvironmentLease, isDotRun, projectRepositoryPaths } = input.workspace;
   const { runtimeConfig, runtimeSkillEntries, runScopedMentionedSkillKeys, instructionCopy, agentIdentity, issueAssigneeOverrides, resolvedConfig, managedAiRuntime } = input.config;
   const runOptions = input.recovery;
   const { providerTraceRequested, providerTraceCapture } = input.trace;
   if (!isDotRun) assertEphemeralNativeRuntime(nativeRuntimeResolution.kind === "native");
   let nativeExecution: NativeExecutionInput | null = null;
+  let toolRefreshOnResume: boolean | undefined;
   let getNativeFreshSessionHandoff: (() => Promise<string | null>) | undefined;
   let nativeRunnerInstanceId: string | null = null;
+  let pluginTaskDescription = activeEnvironmentLease?.pluginTaskDescription;
   let nativeWorkspaceSync: Awaited<ReturnType<typeof prepareNativeWorkspaceSync>> = null;
   let providerResourceDispositionForRun: ProviderResourceDisposition | undefined;
   if (nativeRuntimeResolution.kind === "native") {
@@ -451,9 +458,20 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
             immediateRequests: immediateCompletion.requests,
             immediateRequestSources: immediateCompletion.sources,
           }));
-    const taskNativeSessionId = !taskSessionCredentialCompatible ? null : readNonEmptyString(
-      taskSessionDecodedParams?.sessionId,
-    );
+    const portableLease = activeEnvironmentLease?.lease;
+    const runnerTask = executionTarget?.kind === "remote" && executionTarget.transport === "sandbox" &&
+      executionTarget.leaseId === portableLease?.id ? executionTarget.runnerTask : undefined;
+    const portable = portableLease && runnerTask ? await readPortableTaskReseed(db, {
+      companyId: agent.companyId, runId: run.id, lease: portableLease, description: pluginTaskDescription,
+      runnerTask,
+    }) : null;
+    if (portable) pluginTaskDescription = portable.description;
+    const reseed = portable?.reseed;
+    if (reseed && run.nativeSessionId && (!reseed.previousSessionId || run.nativeSessionId === reseed.previousSessionId ||
+        persistedNativeExecutionInput?.session.normalizedSessionId !== run.nativeSessionId)) {
+      throw new Error("native_portable_reseed_session_already_attached");
+    }
+    const reseedPortableSession = Boolean(reseed);
     // Compatibility for native retry rows created before same-run restart
     // recovery existed. Only an entirely unused replacement row may
     // inherit its source checkpoint; any process/provider evidence on the
@@ -516,15 +534,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
         : null;
     const legacyRetrySessionId =
       compatibleLegacyRetrySource?.nativeSessionId;
-    const taskResumeRunId =
-      taskSessionForRun?.lastRunId &&
-      taskSessionForRun.lastRunId !== run.id &&
-      isNativeSessionId(taskNativeSessionId)
-        ? taskSessionForRun.lastRunId
-        : null;
-    const resumableTaskSessionId = isDotRun ? null : taskResumeRunId
-      ? taskNativeSessionId
-      : (legacyRetrySessionId ?? null);
+    const resumableTaskSessionId = reseedPortableSession || isDotRun ? null : taskResumeSessionId ?? legacyRetrySessionId ?? null;
     const requestedNativeSessionId =
       run.nativeSessionId ?? resumableTaskSessionId;
     // A task-session lastRunId can lag a failed turn or point at an older
@@ -570,6 +580,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
     const persistedProfile = persistedRunnerProfile;
     if (persistedNativeExecutionInput) {
       nativeExecution = persistedNativeExecutionInput;
+      toolRefreshOnResume = persistedProfile.nativeToolRefreshOnResume === true;
       if (
         nativeExecution.binding.companyId !== agent.companyId ||
         nativeExecution.binding.runId !== run.id ||
@@ -817,6 +828,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
                 !["openai_dot_mcp", "grok_bot_mcp", "muse_external", "cursor_cloud_api"].includes(nativeRuntimeResolution.profile.backend) && projectRepositoryPaths.length > 0
                   ? `## Project repositories\nThe task workspace also contains these editable Git repositories:\n${projectRepositoryPaths.map((repo) => `- ${repo}`).join("\n")}`
                   : null,
+                configuredSecretGuidance(input.config.configuredSecretNames ?? []),
               ].filter(Boolean).join("\n\n"),
               initialCommunicationGuidance: nativeReviewRequest ? null : readNonEmptyString(context.paperclipTaskCommunicationGuidance),
               wakePayload: context.paperclipWake,
@@ -896,11 +908,12 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
       const backendDescriptor = await measureRunPhase("runtime_selection.provider_discovery", () => describeRunnerdNativeSessionBackend(buildExecution({
         normalizedSessionId: nativeSessionId, resumedSession: previousNativeRun !== null,
       })));
+      toolRefreshOnResume = backendDescriptor.capabilities.toolRefreshOnResume === true;
       const nativeExecutionWithCheckpoint = buildNativeExecutionWithCheckpoint({
         previousRun: previousNativeRun,
         normalizedSessionId: nativeSessionId,
         executionTargetKind: executionTarget?.kind ?? "local",
-        toolRefreshOnResume: backendDescriptor.capabilities.toolRefreshOnResume === true,
+        toolRefreshOnResume,
         refreshTools: context.refreshTools === true,
         buildExecution,
       });
@@ -1037,6 +1050,8 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
               : {}),
             nativeExecutionInput:
               lockedProfile.nativeExecutionInput ?? nativeExecution,
+            nativeToolRefreshOnResume: lockedProfile.nativeExecutionInput
+              ? lockedProfile.nativeToolRefreshOnResume === true : toolRefreshOnResume === true,
             ...(typeof lockedProfile.inheritedProcessIdentityRunId === "string"
               ? { inheritedProcessIdentityRunId: lockedProfile.inheritedProcessIdentityRunId }
               : lockedRun.processPid == null && lockedRun.processGroupId == null && lockedRun.processStartedAt == null
@@ -1167,5 +1182,5 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
       })
       .where(eq(heartbeatRuns.id, run.id)));
   }
-  return { selected: true, nativeExecution, nativeRunnerInstanceId, getNativeFreshSessionHandoff, nativeWorkspaceSync };
+  return { selected: true, nativeExecution, nativeRunnerInstanceId, pluginTaskDescription, toolRefreshOnResume, getNativeFreshSessionHandoff, nativeWorkspaceSync };
 }

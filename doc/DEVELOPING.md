@@ -148,6 +148,10 @@ GitHub Actions owns every managed pnpm lockfile:
   each lockfile with `pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile`
   and opens one `chore/refresh-lockfile` pull request for all of them. See
   `doc/RELEASE-AUTOMATION-SETUP.md` for when the bot merges it.
+- A local `docker build` installs the Runner with a frozen lockfile. When the
+  root `pnpm-lock.yaml` is behind the Runner's manifests, run that same command
+  in the checkout before the build, and do not commit the result. See "Runner
+  image" in `doc/DOCKER.md`.
 
 The Pi and Kimi distribution lockfiles under `packages/paperclip-runner/scripts/`
 are not on this list. They hold attested provider pins, so change them by hand
@@ -187,14 +191,21 @@ AWS fleet. A stale admission roster can allocate only the short metadata gate;
 the fresh CODEOWNERS check still denies PR execution for a removed owner.
 
 AWS runners are sometimes lost mid-job. `ci-runner-loss-rerun.yml` re-runs the
-failed jobs of a PR's first CI attempt once when every failed job lost its
-runner. A lost runner is recognized by the check-run annotation "lost
-communication with the server" or "received a shutdown signal". When the only
-annotation is "The operation was canceled.", the job log is checked for the
-same messages. The `verify` and `e2e` aggregates are not counted. Any other
-failure, a failed routing gate, or a PR whose head has moved prevents the
-automatic re-run. The workflow job summary lists each failed job and its
-evidence. Like a maintainer's "Re-run failed jobs", the re-run reuses the
+failed jobs of a PR's first CI attempt once when every failed or cancelled job
+lost its runner. A spot reclaim often ends the job, and the run, as
+`cancelled`. A lost runner is recognized by the check-run annotation "lost
+communication with the server" or "received a shutdown signal". When a job has
+the annotation "The operation was canceled.", the job log is checked for the
+same messages. This evidence counts even if the job also has other error
+annotations, so a test that really failed just before a reclaim gets one
+wasted re-run. A cancelled job without this evidence, such as a job a person
+cancelled, counts as a real failure. The `verify` and `e2e` aggregates are not
+counted. Any other failure, a failed or cancelled routing gate, or a PR whose
+head has moved prevents the automatic re-run. The head check runs before any
+job is classified, so a run cancelled by a newer push costs no log reads. It
+runs again just before the re-run, because a re-run of an old run joins the
+PR's `cancel-in-progress` concurrency group and would cancel the newer CI. The
+workflow job summary lists each failed or cancelled job and its evidence. Like a maintainer's "Re-run failed jobs", the re-run reuses the
 gate's successful outputs, including its AWS admission. Attempt 2's
 triggering actor is `github-actions[bot]`, so `profile-ci` does not export
 that attempt. Later attempts are never re-run automatically.
@@ -388,6 +399,26 @@ A maintainer's manual dispatch of `ci-routing.yml` on master exercises the AWS
 metadata gate without launching the test matrix; its non-PR event returns the
 hosted test-runner output.
 
+GitHub starts a limited number of hosted jobs per hour for this repository, and
+every hosted job waits in one first-come queue. Two settings keep community PRs
+from delaying CODEOWNERS work in that queue:
+
+- A PR run on GitHub-hosted runners queues at most four jobs per test matrix
+  (`max-parallel` in `pr-trusted.yml`). It runs the same jobs; the rest wait
+  inside the run instead of in the shared queue. AWS runs are not limited.
+- With `AWS_CI_SHORT_JOBS_ENABLED` set to `true`, the `commitperclip PR Review`
+  job and the `PR merge review notification` job for a CODEOWNER's own
+  same-repository PR use the reserved `paperclip-ci-routing-x64` fleet. Both
+  run only master's scripts, never PR code, and use the same admission
+  variables as the gate. Check-run and commit-status notifications carry no
+  verifiable author and stay GitHub-hosted, as does every community PR.
+  Before setting the variable, allow
+  `paperclipai/paperclip/.github/workflows/commitperclip-review.yml@refs/heads/master`
+  and
+  `paperclipai/paperclip/.github/workflows/pr-merge-review.yml@refs/heads/master`
+  in the `paperclip-ci-routing` runner group. A job routed to a group that
+  does not allow its workflow stays queued.
+
 Keep the `.github/**` rule in `.github/CODEOWNERS` and the active master ruleset's
 code-owner review requirement enabled. This covers the caller, the trusted
 workflow, and CODEOWNERS itself. Existing administrator pull-request bypasses
@@ -442,7 +473,8 @@ Changing that file selects its consumers. Generated/untracked files and unknown
 query loaders retain their consumers conservatively. Other filesystem, process
 and network effects keep their existing fallback.
 
-For a full wall-clock profile of all main PR CI jobs, add `profile-ci` to the PR.
+One in ten CI CODEOWNER PR runs sends its job, step and outside-check timings to
+Honeycomb. For a full wall-clock profile of all main PR CI jobs, add `profile-ci` to the PR.
 See [CI profiling](ci-profiling.md) for the Honeycomb waterfall, coverage,
 operator setup, and activation requirements.
 
@@ -1227,6 +1259,14 @@ graph, exact Vitest specifications, and stable test runner are shared with CI.
 Serialized server tests retain their owner. Native server tests remain in local
 coverage. Selected chat tests retain six sequential isolated line shards.
 
+When the change touches `packages/shared/src`, `packages/plugins/sdk/src`, or an
+SDK build input such as `pnpm-lock.yaml`, the command first checks the committed
+SDK public input pins (`tests/runner-e2e/source-sdk-public-inputs.json`) against
+the working tree. If they are stale it exits 1 and prints the refresh command:
+commit the change, run
+`node tests/runner-e2e/source-sdk-public-inputs.mjs $(git rev-parse HEAD) --write`,
+and commit the updated registry. Otherwise the Runner support suite fails in CI.
+
 Successful selected checks with complete input graphs are reusable in this
 worktree. Opaque filesystem, subprocess, network, generated/untracked-module, and
 unreviewed dependency consumers continue to run fresh. A selected pass never
@@ -1443,6 +1483,11 @@ The server typecheck builds only the Runner's TypeScript output. Use
 `pnpm --filter @paperclipai/paperclip-runner build` when a local check needs the
 Runner binary.
 
+If a compiler child terminates on a signal, the wrapper reports the signal,
+layer, command, and working directory on stderr, then stops with a nonzero exit.
+Compiler stdout and stderr remain visible. A signal such as `SIGKILL` alone does
+not establish that the process ran out of memory.
+
 `src/__tests__/tsconfig.json` holds the options for the test-tree layers, so an
 editor and the typecheck report the same errors. Server tests reach Daytona plugin
 source, but the root install does not install that plugin's dependencies. So this
@@ -1595,6 +1640,15 @@ stamp is only written after a Runner build that passed every step, and both
 the Runner's first build step and the prepare step remove any existing stamp
 before a rebuild starts, so a build that stops partway never leaves a stamp
 that vouches for it.
+
+Set `PAPERCLIP_RUNNER_VENDOR_REQUIRE_CURRENT=1` when the Runner under
+`packages/paperclip-runner/dist` was built elsewhere and this build must not
+build it again, for example because it has no Rust toolchain. The step then
+reuses a current build as usual. When the build is not current it prints the
+reason and fails, without starting a rebuild and without removing the stamp.
+Setting both variables fails. The `build` stage of the `Dockerfile` sets it:
+that stage copies `dist` and the stamp out of the `runner-artifacts` stage
+(see "Runner image" in `doc/DOCKER.md`).
 
 ### Task search evaluation
 
@@ -2178,7 +2232,9 @@ admin can change it in instance settings.
 capabilities a release supports, for the control plane to read at a release
 commit. It must equal `MANAGED_CONFIG_CAPABILITIES` in `managed-config.ts`
 (`managed-config-capabilities.test.ts` checks this), and the parser accepts plugin
-entries only while that list includes `pluginEnvironments`.
+entries only while that list includes `pluginEnvironments`. When sending a plugin
+environment, include `runnerLifecycleMode` only if the target release also lists
+`pluginEnvironmentRunnerLifecycleMode`.
 
 
 ### Experimental native remote workspace storage
@@ -2219,10 +2275,31 @@ S3 multipart uploads stream up to four parts concurrently. One producer reads
 the source in order, and bounded stream buffers preserve backpressure. Failed
 uploads cancel and settle their active requests before multipart cleanup.
 Snapshot publication still requires full object hash and size verification.
-Local snapshot hashing, encryption, and decryption use bounded 1 MiB filesystem
-stream buffers to reduce event-loop handoffs under background load. Each stream
-retains its existing integrity and cancellation checks; archive contents and
-saved snapshot formats are unchanged. Reproduce the scheduling effect with:
+Snapshot hashing, encryption, and decryption run on worker threads
+(`server/src/storage/file-crypto-pool.ts`), so they do not hold the server's
+thread. The Content-MD5 of each uploaded part is computed the same way. At most
+two jobs run at once, each through two reused 1 MiB buffers. A waiting job holds
+file names, not file contents, and a cancelled job stops at its next chunk.
+Every integrity check runs as before, with the same failures; archive contents
+and saved snapshot formats are unchanged. Reproduce the effect on the server's
+thread with:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx scripts/benchmark-workspace-snapshot-crypto.ts --mib=1024
+```
+
+The benchmark saves and restores one synthetic archive through the real storage
+functions and the real S3 client. The object store is a local process that
+checks each part's Content-MD5. A third process requests a trivial route from
+the measured server and times each reply with its own clock. It reports
+main-thread busy time, the longest event-loop delay, process CPU time, wall
+time, peak memory, and the latency of the unrelated requests. To compare two
+revisions, run it from a checkout of each. The result is synthetic: the store
+is on loopback without TLS, and sandbox transfer is excluded.
+
+Archive transfers that still stream on the server's thread use bounded 1 MiB
+filesystem stream buffers to reduce event-loop handoffs under background load.
+Reproduce that scheduling effect with:
 
 ```sh
 node --expose-gc scripts/benchmark-workspace-archive-io.mjs
@@ -3517,6 +3594,21 @@ An upgrade readiness report contains preliminary native evidence, not permission
 to remove a deployment volume. Keep the checkpoint pool bounded and measure all
 pools when qualifying database cost; the current size of two is a default.
 
+Cloud repeats the upgrade readiness probe, so the probe does not read or decrypt
+a checkpoint header that has not changed. The statement that reads each run also
+reads its header's row revision (`xmin`, `ctid`, `updated_at` and stored size)
+and returns the encrypted material only for a revision the process has not
+inspected. The memo in `native-runner-checkpoint.ts` keeps four identifiers per
+header, is bounded in entries and bytes, and forgets a header that the latest
+probe did not inspect. It loads the secrets key again for each answer it reuses, as a direct read
+does for each header, and refuses the answer when the key is missing or changed. It
+never remembers a header that failed to decrypt. Measure a probe with
+`pnpm --filter @paperclipai/server exec tsx scripts/benchmark-upgrade-readiness.ts --baseline-ref=<pre-fix-commit>`.
+The harness runs both revisions over the same PostgreSQL rows, reports bytes
+from the database, decryptions, CPU and sampled allocation per probe, and fails
+unless both give the same answer after a header changes, stops decrypting or is
+deleted.
+
 Committed native Agent Chat turns recover their unanswered final reply through
 the existing response presentation worker. Recovery verifies the accepted result
 and final turn, agent, responsible user, native session and conversation generation.
@@ -3776,9 +3868,10 @@ boundary. `managed-skill-content.test.ts` covers the focused domain behavior;
 `ephemeral-skills-process.test.ts` requires independent disposable Postgres and
 S3 fixtures and starts separate Node processes. The optional
 `PAPERCLIP_TEST_POSTGRES_ADMIN_URL` creates a random test database per suite.
-On hosts with unavailable Tailscale, set `PAPERCLIP_TAILNET_BIND_HOST=127.0.0.1`
-for local fixtures to avoid repeated CLI discovery. Do not use fixture timings
-collected during builds as hosted performance evidence.
+The server starts the `tailscale` command only when the bind configuration reads
+a tailnet address, and at most one time per process, so local fixtures need no
+`PAPERCLIP_TAILNET_BIND_HOST`. Do not use fixture timings collected during
+builds as hosted performance evidence.
 
 ## App-Shipped Skills Catalog
 
@@ -4206,7 +4299,7 @@ CLI configuration support:
 - Provider health is available at `GET /api/companies/:companyId/secret-providers/health` and reports local key permission warnings plus backup guidance.
 
 Per-company provider vaults are configured in the board UI under
-`Company Settings → Secrets → Provider vaults`, backed by
+`Company Settings → Secrets → Vaults`, backed by
 `/api/companies/{companyId}/secret-provider-configs`. The CLI does not own
 vault lifecycle today. See `docs/deploy/secrets.md` (`Provider Vaults` section)
 for the operator model.
@@ -4770,6 +4863,17 @@ under its original key; it is never relabelled as a provider refusal. Legacy
 unowned form drafts remain in browser storage but are not restored into another
 account. Storybook fixtures seed the same account-specific keys.
 
+New-task submissions use `useBackgroundSubmitQueue` around `useDurableSubmit`.
+The account-scoped queue retains each request's original key and draft snapshot
+before the composer closes. The worker sends requests in order. A request with an
+uncertain receipt retains its key; a rejection restores the submitted draft or
+offers a retry beside a newer draft. Submitted files use separate IndexedDB keys
+for the account, company, and request, so finishing an older save cannot remove
+newer files. Each submitted request has its own local-storage entry. A write or
+receipt in one tab cannot replace another tab's queued requests. Legacy queue
+arrays migrate to separate entries before the shared array is removed. Legacy
+single-request recovery records remain readable.
+
 New-task staged file bytes are stored in IndexedDB for the account and company.
 Writes merge the selected files with the current saved list in one read/write
 transaction. Removal and successful creation delete only the files that the
@@ -5152,6 +5256,44 @@ lease and save baseline remain unchanged; current canonical files are never
 uploaded over the retained execution. Remote collection and cleanup serialize
 through Postgres across controller homes. A missing remote collector retains a
 pending save instead of treating an empty local cache as the agent's files.
+A run whose instruction preparation finds another operation on the same
+agent's directory holding that lock does not fail. Before native admission it
+is cancelled as an expected wait and a `agent_directory_busy` retry is
+scheduled 5 to 15 seconds later; this lane spends no failure retries and stops
+after 30 attempts. A native run resuming on its own saved state instead stays
+on the same run and is rescheduled through the same-run retry schedule; its
+count is kept on the run's context so a resume claim does not reset it, and a
+Stop, a lost lease or a moved task leave it to normal settlement. A busy lock
+met while collecting files after a turn is not deferred this way.
+
+Agent configuration writes refuse external instructions on a volume-free
+server. An agent's managed instruction paths are saved as absolute paths under
+the home of the server that wrote them, and each replacement server can have a
+new home. When a configuration change keeps the saved `instructionsFilePath`
+of a managed bundle, the bundle stays managed and its paths are rewritten under
+the current server's managed root. A change that sets a different
+`instructionsFilePath` is classified from that path and is still refused when
+it points outside the managed root.
+
+### Runner controller state on a restarted volume-free server
+
+A volume-free server keeps Runner controller files under
+`runtime/paperclip-runner/durable-sessions/` while it runs. Its durable record is
+the Postgres checkpoint, so those files are disposable. Early in startup, before
+any controller can write, a volume-free server claims an empty (or absent) state
+directory by writing `.volume-free-owner.json` there. A later start that finds
+this marker treats every file in the directory as its own, and the data
+eligibility gate does not count it as legacy volume data; normal restart
+recovery reconciles it as it would after a crash of a volume-backed server. A
+server started without `PAPERCLIP_EPHEMERAL_SERVER` removes the marker, because
+from then on it may write files that exist only on that disk.
+
+A volume-free server that finds files it did not claim (a mounted legacy volume,
+or a directory written before this marker existed) logs a warning and keeps the
+existing protection: if the native controller check finds state the database does
+not prove, startup refuses and the error names the run, the task and the file,
+because that file may be the only copy of the run's progress. Adopt it with the
+native controller migration first.
 
 ## Cloud startup configuration
 

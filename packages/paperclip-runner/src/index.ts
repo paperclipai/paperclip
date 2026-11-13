@@ -51,6 +51,7 @@ export {
   captureLegacyDurablePrpCheckpoint,
   inspectDurablePrpCheckpointHeader,
   inspectUnclaimedBootstrapCheckpoint,
+  inspectUnauthenticatedBootstrapCheckpoint,
   inspectUnclaimedBootstrapState,
   type PrpWireConnection,
   type PrpWireAttachment,
@@ -72,6 +73,7 @@ export * from "./drivers/codex/app-server-transport.js";
 export * from "./drivers/codex/codex-app-server-driver.js";
 export { codexUsageBaselineForNextRun } from "./drivers/codex/codex-usage-baseline.js";
 export { resolveCodexCommand, resolvePinnedCodexCommand } from "./drivers/codex/codex-command.js";
+export { admitToolInputSchema, canonicalToolInputSchema, TOOL_INPUT_SCHEMA_MAX_BYTES, type ToolInputSchemaAdmission } from "./drivers/tool-input-schema.js";
 export { runnerBinaryTarget } from "./live/runner-binary.js";
 export * from "./drivers/opencode/opencode-server-driver.js";
 export * from "./drivers/opencode/mcp-bridge.js";

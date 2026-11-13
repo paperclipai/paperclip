@@ -46,7 +46,7 @@ describe("native session.open the provider rejected before any provider work", (
     message: "error creating thread: failed to load AGENTS.md instructions for environment `local`: fs sandbox helper failed with status exit status: 1: bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted",
     ...fields });
 
-  async function rejectSessionOpen(failure: Error, attempt = 0) {
+  async function rejectSessionOpen(failure: Error, attempt = 0, options: { remote?: boolean; recoveryHistory?: Record<string, unknown>[] } = {}) {
     const issueId = randomUUID();
     await db.insert(issues).values({ id: issueId, companyId, title: "Plan the change", status: "in_progress", workMode: "standard",
       assigneeAgentId: agentId, createdByUserId: "board-user", responsibleUserId: "board-user" });
@@ -58,7 +58,8 @@ describe("native session.open the provider rejected before any provider work", (
     await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
     const native = await prepareNativeHeartbeatRun({ db, run, issue, environmentLeaseId: randomUUID() });
     const [contract] = await db.select().from(completionContracts).where(eq(completionContracts.issueId, issueId));
-    await db.insert(nativeRunFinalizations).values({ runId, companyId, issueId, phase: "observed", attempt });
+    await db.insert(nativeRunFinalizations).values({ runId, companyId, issueId, phase: "observed", attempt,
+      ...(options.recoveryHistory ? { recoveryHistory: options.recoveryHistory } : {}) });
     const execution: NativeExecutionInputV1 = {
       schema: "paperclip.native-execution-input.v1",
       binding: { companyId, runId, issueId, agentId, executionWorkspaceId: runId },
@@ -72,7 +73,9 @@ describe("native session.open the provider rejected before any provider work", (
     };
     await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeExecutionInput: execution } }).where(eq(heartbeatRuns.id, runId));
     provider.execute.mockReset().mockRejectedValue(failure);
-    await executePaperclipNativeSession({ db, execution, runnerInstanceId: native.runnerInstanceId, backend: {
+    await executePaperclipNativeSession({ db, execution, runnerInstanceId: native.runnerInstanceId,
+      ...(options.remote ? { runnerExecutionTarget: { kind: "remote", transport: "sandbox", providerKey: "test", remoteCwd: "/workspace",
+        runner: { execute: vi.fn() } } as never } : {}), backend: {
       descriptor: async () => { throw new Error("Unexpected provider call"); },
       openSession: async () => { throw new Error("Unexpected provider call"); },
     } }).catch(() => undefined);
@@ -115,6 +118,34 @@ describe("native session.open the provider rejected before any provider work", (
     const { issueId, coordinator } = await rejectSessionOpen(rejection(startupFailure({ message: "Query closed before response received" })), 2);
     expect(coordinator).toMatchObject({ phase: "terminal_failure", failureCode: "native_session_retry_exhausted", nextAttemptAt: null,
       failureDetail: expect.objectContaining({ nextAction: expect.stringContaining("retry the task") }) });
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    await expect(taskInterruptionPresentation(db, issue)).resolves.toMatchObject({ state: "failed", canRetry: true });
+  }, 120_000);
+
+  const exitProven = (error: Error) => Object.defineProperty(error, "runnerExitConfirmed", { value: true, enumerable: false });
+
+  it("ends a remote startup rejection at once when the runner exit is not proven", async () => {
+    const { coordinator } = await rejectSessionOpen(rejection(startupFailure()), 0, { remote: true });
+    expect(coordinator).toMatchObject({ phase: "terminal_failure", failureCode: NATIVE_PROVIDER_STARTUP_REJECTED });
+    expect(coordinator.failureDetail).not.toHaveProperty("runnerExitConfirmed");
+  }, 120_000);
+
+  it("retries a remote startup rejection on the same run when the runner exit is proven", async () => {
+    const { coordinator } = await rejectSessionOpen(exitProven(rejection(startupFailure())), 0, { remote: true });
+    expect(coordinator).toMatchObject({ phase: "retryable_failure", failureCode: "native_session_interrupted",
+      failureDetail: expect.objectContaining({ recoveryMode: "bootstrap_retry", originalFailureCode: "provider_session_open_rejected",
+        runnerExitConfirmed: true, providerSessionEstablished: false, providerEventsExist: false, checkpointExists: false }) });
+  }, 120_000);
+
+  it("stops a remote startup rejection that repeats the previous attempt's error, naming it, with Retry", async () => {
+    // The first attempt's own failure write records the signature the second compares with.
+    const first = await rejectSessionOpen(exitProven(rejection(startupFailure())), 0, { remote: true });
+    const { issueId, coordinator } = await rejectSessionOpen(exitProven(rejection(startupFailure())), 1, { remote: true,
+      recoveryHistory: [...(first.coordinator.recoveryHistory as Record<string, unknown>[]),
+        { disposition: "bootstrap_incomplete", reason: "remote_runner_exited_before_provider_work" }] });
+    expect(coordinator).toMatchObject({ phase: "terminal_failure", failureCode: NATIVE_PROVIDER_STARTUP_REJECTED, nextAttemptAt: null,
+      failureDetail: expect.objectContaining({ nextAction: expect.stringContaining("bwrap: loopback: Failed RTM_NEWADDR") }) });
+    expect(coordinator.failureDetail?.nextAction).toContain("Retry starts a new run");
     const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
     await expect(taskInterruptionPresentation(db, issue)).resolves.toMatchObject({ state: "failed", canRetry: true });
   }, 120_000);

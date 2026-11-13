@@ -1,6 +1,6 @@
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { notifyChatInboundWakeNotices } from "./chat-inbound-wake-notice-notifications.js";
-import { resolveProjectEnvironment, type ProjectCreationEnvironment } from "./project-environments.js";
+import { withDefaultProjectStorage, type ProjectCreationEnvironment } from "./project-environments.js";
 import { listProjectWorkspaceProviders, resolveProjectWorkspaceProvider } from "./project-workspace-provider.js";
 import { retireRemovedPluginWorkspaceDependents } from "./plugin-workspaces.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
@@ -57,6 +57,12 @@ type ProjectRow = typeof projects.$inferSelect;
 function legacyProjectEnvironmentId(policy: Record<string, unknown> | null | undefined) {
   const id = policy?.environmentId;
   return typeof id === "string" || id === null ? id : undefined;
+}
+
+function withoutLegacyProjectEnvironment<T extends Record<string, unknown> | null | undefined>(policy: T): T {
+  if (legacyProjectEnvironmentId(policy) === undefined) return policy;
+  const normalized = parseProjectExecutionWorkspacePolicy(policy);
+  return (normalized ? { ...normalized } : null) as T;
 }
 
 type ProjectWorkspaceRow = typeof projectWorkspaces.$inferSelect;
@@ -143,7 +149,7 @@ export async function ensurePersonalPrivateProject(dbOrTx: any, companyId: strin
   return project;
 }
 
-interface ProjectWithGoals extends Omit<ProjectRow, "executionWorkspacePolicy"> {
+interface ProjectWithGoals extends Omit<ProjectRow, "executionWorkspacePolicy" | "legacyEnvironmentId"> {
   urlKey: string;
   goalIds: string[];
   goals: ProjectGoalRef[];
@@ -195,8 +201,9 @@ async function attachGoals(db: Db, rows: ProjectRow[]): Promise<ProjectWithGoals
 
   return rows.map((r) => {
     const g = map.get(r.id) ?? [];
+    const { legacyEnvironmentId: _legacyEnvironmentId, ...project } = r;
     return {
-      ...r,
+      ...project,
       urlKey: deriveProjectUrlKey(r.name, r.id),
       goalIds: g.map((x) => x.id),
       goals: g,
@@ -681,14 +688,8 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
     // skipped validation whenever `goalIds: []` and `goalId` arrive
     // together (goalIds wins resolution, mirroring the update path).
     const legacyGoalId = ids?.[0] ?? null;
-    const legacyEnvironmentId = legacyProjectEnvironmentId(projectData.executionWorkspacePolicy);
-    const workspacePolicy = parseProjectExecutionWorkspacePolicy(projectData.executionWorkspacePolicy);
-    const selected = await resolveProjectEnvironment(db, companyId,
-      legacyEnvironmentId !== undefined ? workspacePolicy : projectData.executionWorkspacePolicy ?? null, {
-        ...environment, environmentId: environment.environmentId ?? projectData.environmentId ?? legacyEnvironmentId ?? undefined,
-      });
-    const executionWorkspacePolicy = selected.executionWorkspacePolicy as typeof projectData.executionWorkspacePolicy;
-    projectData.environmentId = selected.environmentId;
+    const executionWorkspacePolicy = await withDefaultProjectStorage(db, companyId,
+      withoutLegacyProjectEnvironment(projectData.executionWorkspacePolicy) ?? null, environment) as typeof projectData.executionWorkspacePolicy;
 
     return db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
@@ -984,47 +985,27 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
 
     update: async (
       id: string,
-      data: Partial<typeof projects.$inferInsert> & { goalIds?: string[]; expectedStorageProviderPluginId?: string | null },
+      data: Partial<typeof projects.$inferInsert> & { goalIds?: string[] },
     ): Promise<ProjectWithGoals | null> => db.transaction(async tx => {
       const db = tx as unknown as Db;
-      const { goalIds: inputGoalIds, expectedStorageProviderPluginId, ...projectData } = data;
+      const { goalIds: inputGoalIds, ...projectData } = data;
       const ids = resolveGoalIds({ goalIds: inputGoalIds, goalId: projectData.goalId });
       const existingProject = await db
-        .select({ id: projects.id, companyId: projects.companyId, name: projects.name, archivedAt: projects.archivedAt, environmentId: projects.environmentId, executionWorkspacePolicy: projects.executionWorkspacePolicy })
+        .select({ id: projects.id, companyId: projects.companyId, name: projects.name, archivedAt: projects.archivedAt, executionWorkspacePolicy: projects.executionWorkspacePolicy })
         .from(projects)
         .where(eq(projects.id, id)).for("update")
         .then((rows) => rows[0] ?? null);
       if (!existingProject) return null;
-      const legacyEnvironmentId = legacyProjectEnvironmentId(projectData.executionWorkspacePolicy);
-      if (projectData.environmentId === undefined && legacyEnvironmentId !== undefined) {
-        projectData.environmentId = legacyEnvironmentId;
-      }
-      if (legacyEnvironmentId !== undefined) {
-        const normalized = parseProjectExecutionWorkspacePolicy(projectData.executionWorkspacePolicy);
-        projectData.executionWorkspacePolicy = normalized ? { ...normalized } : null;
-      }
+      projectData.executionWorkspacePolicy = withoutLegacyProjectEnvironment(projectData.executionWorkspacePolicy);
       const currentStorage = parseProjectExecutionWorkspacePolicy(existingProject.executionWorkspacePolicy)?.storageProviderPluginId;
-      if (currentStorage && projectData.executionWorkspacePolicy !== undefined) {
+      if (projectData.executionWorkspacePolicy !== undefined) {
         const requestedStorage = parseProjectExecutionWorkspacePolicy(projectData.executionWorkspacePolicy)?.storageProviderPluginId;
-        if (requestedStorage !== undefined && requestedStorage !== currentStorage) {
-          throw conflict("A plugin-backed project stays attached to its storage plugin");
+        if (requestedStorage !== undefined && requestedStorage !== (currentStorage ?? null)) {
+          throw conflict("A project stays on the workspace storage chosen when it was created", { code: "project_storage_locked" });
         }
-        if (requestedStorage === undefined) {
+        if (requestedStorage === undefined && currentStorage) {
           projectData.executionWorkspacePolicy = { enabled: true, ...projectData.executionWorkspacePolicy, storageProviderPluginId: currentStorage };
         }
-      }
-      const requestedStorage = parseProjectExecutionWorkspacePolicy(projectData.executionWorkspacePolicy)?.storageProviderPluginId;
-      const storageChanged = requestedStorage !== undefined && requestedStorage !== currentStorage;
-      const selectedEnvironmentId = projectData.environmentId === undefined && storageChanged
-        ? existingProject.environmentId : projectData.environmentId;
-      if (selectedEnvironmentId && (selectedEnvironmentId !== existingProject.environmentId || storageChanged || expectedStorageProviderPluginId !== undefined)) {
-        const selected = await resolveProjectEnvironment(db, existingProject.companyId,
-          projectData.executionWorkspacePolicy ?? existingProject.executionWorkspacePolicy,
-          { environmentId: selectedEnvironmentId, expectedStorageProviderPluginId });
-        projectData.executionWorkspacePolicy = selected.executionWorkspacePolicy as typeof projectData.executionWorkspacePolicy;
-      }
-      if (!currentStorage && requestedStorage) {
-        await retireRemovedPluginWorkspaceDependents(db, id);
       }
       if (ids && ids.length > 0) {
         await assertGoalsBelongToCompany(db, existingProject.companyId, ids);
@@ -1101,7 +1082,6 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
       const rows = await db
         .select({
           id: projects.id,
-          environmentId: projects.environmentId,
           executionWorkspacePolicy: projects.executionWorkspacePolicy,
         })
         .from(projects)
@@ -1109,12 +1089,10 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
 
       let cleared = 0;
       for (const row of rows) {
-        const policy = parseProjectExecutionWorkspacePolicy(row.executionWorkspacePolicy);
-        if (row.environmentId !== environmentId && legacyProjectEnvironmentId(row.executionWorkspacePolicy) !== environmentId) continue;
+        if (legacyProjectEnvironmentId(row.executionWorkspacePolicy) !== environmentId) continue;
 
         await projectService(db).update(row.id, {
-          environmentId: null,
-          ...(legacyProjectEnvironmentId(row.executionWorkspacePolicy) === environmentId ? { executionWorkspacePolicy: policy ? { ...policy } : null } : {}),
+          executionWorkspacePolicy: withoutLegacyProjectEnvironment(row.executionWorkspacePolicy),
         });
         cleared += 1;
       }
@@ -1138,7 +1116,9 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
       await notifyStatusCardIssueChange(tx, project.companyId);
       const [row] = await tx.delete(projects).where(eq(projects.id, id)).returning();
-      return row ? { ...row, urlKey: deriveProjectUrlKey(row.name, row.id) } : null;
+      if (!row) return null;
+      const { legacyEnvironmentId: _legacyEnvironmentId, ...publicProject } = row;
+      return { ...publicProject, urlKey: deriveProjectUrlKey(row.name, row.id) };
     }),
 
     listWorkspaces: async (projectId: string): Promise<ProjectWorkspace[]> => {

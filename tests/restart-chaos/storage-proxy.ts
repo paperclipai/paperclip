@@ -14,7 +14,8 @@ export type StorageFault =
   | { kind: "expired_credentials"; code?: CredentialErrorCode }
   | { kind: "credential_rotation" }
   | { kind: "truncate"; afterBytes: number }
-  | { kind: "read_after_write_lag"; lagMs: number };
+  | { kind: "read_after_write_lag"; lagMs: number }
+  | { kind: "throttle" };
 
 export const CREDENTIAL_ERROR_CODES = ["ExpiredToken", "InvalidAccessKeyId", "SignatureDoesNotMatch"] as const;
 export type CredentialErrorCode = typeof CREDENTIAL_ERROR_CODES[number];
@@ -25,7 +26,7 @@ const CREDENTIAL_ERROR_MESSAGES: Record<CredentialErrorCode, string> = {
 };
 
 export interface StorageFaultRule { fault: StorageFault; methods?: readonly string[]; pathIncludes?: string; remaining?: number;
-  operations?: readonly S3Operation[]; partNumbers?: readonly number[] }
+  operations?: readonly S3Operation[]; partNumbers?: readonly number[]; firstObjectOnly?: boolean; pinnedObject?: string }
 
 export type StorageRequestListener = (incoming: IncomingMessage, outgoing: ServerResponse) => number | void;
 
@@ -54,6 +55,7 @@ export function matches(rule: StorageFaultRule, method: string, url: string): bo
   if (rule.methods && !rule.methods.includes(method)) return false;
   if (rule.operations && !rule.operations.includes(s3Operation(method, url))) return false;
   if (rule.partNumbers && !rule.partNumbers.includes(partNumberOf(url) ?? 0)) return false;
+  if (rule.pinnedObject !== undefined && url.split("?")[0] !== rule.pinnedObject) return false;
   return !rule.pathIncludes || url.includes(rule.pathIncludes);
 }
 
@@ -101,6 +103,7 @@ export async function startStorageFaultProxy(endpoint: string, random: () => num
     const heldMs = listener?.(incoming, outgoing) || 0;
     const rule = heldMs ? undefined : rules.find(candidate => matches(candidate, method, incoming.url ?? "/"));
     if (rule?.remaining !== undefined) rule.remaining -= 1;
+    if (rule?.firstObjectOnly && rule.pinnedObject === undefined) rule.pinnedObject = (incoming.url ?? "/").split("?")[0];
     const fault: StorageFault = heldMs ? { kind: "latency", ms: heldMs } : rule?.fault ?? { kind: "pass" };
     if (fault.kind === "latency") {
       const delay = fault.ms + Math.round((fault.jitterMs ?? 0) * random());
@@ -126,7 +129,8 @@ export async function startStorageFaultProxy(endpoint: string, random: () => num
       forward(incoming, outgoing);
       return;
     }
-    const injected = fault.kind === "errors"
+    const injected = fault.kind === "throttle" ? { status: 503, body: s3Error("SlowDown", "Please reduce your request rate.") }
+      : fault.kind === "errors"
       ? { status: fault.status ?? 503, body: fault.slowDown ? s3Error("SlowDown", "Please reduce your request rate.") : s3Error("InternalError", "Injected storage error") }
       : fault.kind === "read_after_write_lag" ? { status: 404, body: s3Error("NoSuchKey", "The specified key does not exist.") }
       : faultResponse(fault);

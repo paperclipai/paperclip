@@ -16,9 +16,16 @@
  *
  * Runtime arming (one booted server, many points), instead of PAPERCLIP_CRASH_POINT:
  *
- *   PAPERCLIP_CRASH_POINT_CONTROL=<file>        each hit reads "<token> <name>[:<nth>]" from the file;
+ *   PAPERCLIP_CRASH_POINT_CONTROL=<file>        each hit reads "<token> <name>[:<nth>] [fail]" from the file;
  *                                               no file or an empty one means disarmed. Hits count per
  *                                               token, so writing a new token re-arms with a fresh count.
+ *
+ * Fail mode (control file only): a trailing `fail` makes the nth hit throw instead of
+ * killing the process, once. An optional `pid=<n>` binds a line to one process, so a
+ * server started earlier (still draining) never counts its hits. The call site may name the error its real step throws
+ * (`crashPoint(name, { fail: () => conflict("...") })`); otherwise it throws
+ * `CrashPointInjectedFailure`. The restart-chaos harness uses it to fail the Nth
+ * attempt of a recovery step (`--fail-recovery-step`), so recovery chains are exercised.
  *
  * The variable is read once, when this module is first imported. It is ignored
  * when `NODE_ENV=production`, and an unknown name throws at import so a typo
@@ -47,6 +54,10 @@ export const CRASH_POINT_CONTROL_ENV = "PAPERCLIP_CRASH_POINT_CONTROL";
 export const CRASH_POINT_LOG_PREFIX = "[crash-point]";
 
 export type CrashPointSpec = { name: CrashPointName; nth: number };
+/** `kill` (default) SIGKILLs the process at the hit; `fail` throws once (control file only). */
+export type CrashPointMode = "kill" | "fail";
+/** What the call site's real step throws when it fails; used in fail mode. */
+export type CrashPointOptions = { fail?: () => Error };
 
 export type CrashPointReceipt = {
   point: CrashPointName;
@@ -55,7 +66,17 @@ export type CrashPointReceipt = {
   at: string;
   /** Runtime arming only: the control file token the hit counted under. */
   token?: string;
+  /** Present for fail mode: the hit threw instead of killing the process. */
+  mode?: "fail";
 };
+
+/** Thrown at a point armed in fail mode whose call site names no error of its own. */
+export class CrashPointInjectedFailure extends Error {
+  constructor(readonly point: CrashPointName, readonly hit: number) {
+    super(`injected failure at ${point} (hit ${hit})`);
+    this.name = "CrashPointInjectedFailure";
+  }
+}
 
 /** Thrown by a point armed with `armCrashPointForTest`. */
 export class CrashPointReached extends Error {
@@ -84,7 +105,7 @@ export function parseCrashPointSpec(raw: string | undefined): CrashPointSpec | n
 type Armed = {
   spec: CrashPointSpec;
   hits: number;
-  mode: "kill" | "throw";
+  mode: "kill" | "throw" | "fail";
   receiptPath: string | null;
   /** Hits count only once this file exists; null when ungated. */
   gatePath: string | null;
@@ -93,13 +114,21 @@ type Armed = {
   token?: string | null;
 };
 
-/** Parses a control file line, "<token> <name>[:<nth>]"; null when empty or malformed. */
-export function parseCrashPointControl(text: string): { token: string; spec: CrashPointSpec } | null {
+/** Parses a control file line, "<token> <name>[:<nth>] [fail] [pid=<n>]"; null when empty or malformed. */
+export function parseCrashPointControl(text: string): { token: string; spec: CrashPointSpec; mode: CrashPointMode; pid?: number } | null {
   const [token, raw, ...rest] = text.trim().split(/\s+/);
-  if (!token || !raw || rest.length > 0) return null;
+  if (!token || !raw || rest.length > 2) return null;
+  let mode: CrashPointMode = "kill";
+  let pid: number | undefined;
+  for (const option of rest) {
+    const match = /^pid=([1-9][0-9]{0,9})$/.exec(option);
+    if (option === "fail" && mode === "kill") mode = "fail";
+    else if (match && pid === undefined) pid = Number(match[1]);
+    else return null;
+  }
   try {
     const spec = parseCrashPointSpec(raw);
-    return spec ? { token, spec } : null;
+    return spec ? { token, spec, mode, ...(pid !== undefined ? { pid } : {}) } : null;
   } catch {
     return null;
   }
@@ -132,13 +161,13 @@ let armed: Armed | null = armFromEnvironment();
  * immediately. Armed for this name, the nth hit kills the process with SIGKILL
  * (or throws `CrashPointReached` under `armCrashPointForTest`).
  */
-export function crashPoint(name: CrashPointName): void {
+export function crashPoint(name: CrashPointName, options?: CrashPointOptions): void {
   if (armed === null) return;
   if (armed.controlPath) {
     if (!readControl(armed)) return;
   }
   if (armed.spec.name !== name) return;
-  reach(armed);
+  reach(armed, options);
 }
 
 /** Runtime arming: loads the control file's spec; a new token resets the count. */
@@ -147,15 +176,18 @@ function readControl(current: Armed): boolean {
   try { text = readFileSync(current.controlPath!, "utf8"); } catch { return false; }
   const control = parseCrashPointControl(text);
   if (!control) return false;
+  // A line bound to another process is disarmed here.
+  if (control.pid !== undefined && control.pid !== process.pid) return false;
   if (control.token !== current.token) {
     current.token = control.token;
     current.spec = control.spec;
+    current.mode = control.mode;
     current.hits = 0;
   }
   return true;
 }
 
-function reach(current: Armed): void {
+function reach(current: Armed, options?: CrashPointOptions): void {
   if (current.gatePath !== null) {
     if (!existsSync(current.gatePath)) return;
     current.gatePath = null;
@@ -166,9 +198,14 @@ function reach(current: Armed): void {
   const receipt: CrashPointReceipt = {
     point: current.spec.name, hit: current.hits, pid: process.pid, at: new Date().toISOString(),
     ...(current.token ? { token: current.token } : {}),
+    ...(current.mode === "fail" ? { mode: "fail" as const } : {}),
   };
   if (current.receiptPath) {
     try { appendFileSync(current.receiptPath, `${JSON.stringify(receipt)}\n`); } catch { /* the log line below still records it */ }
+  }
+  if (current.mode === "fail") {
+    try { process.stderr.write(`${CRASH_POINT_LOG_PREFIX} FAIL ${JSON.stringify(receipt)}\n`); } catch { /* ignore */ }
+    throw options?.fail?.() ?? new CrashPointInjectedFailure(current.spec.name, current.hits);
   }
   try { process.stderr.write(`${CRASH_POINT_LOG_PREFIX} SIGKILL ${JSON.stringify(receipt)}\n`); } catch { /* ignore */ }
   process.kill(process.pid, "SIGKILL");

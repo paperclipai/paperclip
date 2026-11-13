@@ -315,9 +315,8 @@ function resolveIssueQueryRefs(
   const detailIssue = queryClient.getQueryData<Issue>(
     queryKeys.issues.detail(issueId),
   );
-  const listIssues = queryClient.getQueryData<Issue[]>(
-    queryKeys.issues.list(companyId),
-  );
+  const listIssues = queryClient.getQueryData<Issue[]>(queryKeys.issues.list(companyId))
+    ?? queryClient.getQueryData<Issue[]>(queryKeys.issues.listIndex(companyId));
   const detailsIdentifier =
     readString(details?.identifier) ?? readString(details?.issueIdentifier);
 
@@ -375,8 +374,8 @@ function resolveIssueToastContext(
   const detailIssue = issueRefs
     .map((ref) => queryClient.getQueryData<Issue>(queryKeys.issues.detail(ref)))
     .find((issue): issue is Issue => !!issue);
-  const listIssue = queryClient
-    .getQueryData<Issue[]>(queryKeys.issues.list(companyId))
+  const listIssue = (queryClient.getQueryData<Issue[]>(queryKeys.issues.list(companyId))
+    ?? queryClient.getQueryData<Issue[]>(queryKeys.issues.listIndex(companyId)))
     ?.find((issue) =>
       issueRefs.some((ref) => issue.id === ref || issue.identifier === ref),
     );
@@ -1066,6 +1065,42 @@ function refreshMentionPoolForActivity(
   }, wait);
 }
 
+const TASK_INDEX_REFRESH_WINDOW_MS = 30_000;
+const taskIndexRefreshes = new WeakMap<
+  object,
+  Map<string, { lastRequestedAt: number; timer: ReturnType<typeof setTimeout> | null }>
+>();
+
+function refreshTaskIndexForActivity(queryClient: QueryClient, companyId: string, ownActivity: boolean) {
+  const queryKey = queryKeys.issues.listIndex(companyId);
+  if (queryClient.getQueryData(queryKey) === undefined) return;
+  if (ownActivity) {
+    queryClient.invalidateQueries({ queryKey, exact: true });
+    return;
+  }
+  const query = queryClient.getQueryCache().find({ queryKey, exact: true });
+  if (!query) return;
+  if (query.getObserversCount() === 0) {
+    queryClient.invalidateQueries({ queryKey, exact: true, refetchType: "none" });
+    return;
+  }
+  let refresh = taskIndexRefreshes.get(queryClient);
+  if (!refresh) {
+    refresh = new Map();
+    taskIndexRefreshes.set(queryClient, refresh);
+  }
+  const state = refresh.get(companyId) ?? { lastRequestedAt: 0, timer: null };
+  refresh.set(companyId, state);
+  if (state.timer !== null) return;
+  const lastRefresh = Math.max(query.state.dataUpdatedAt, state.lastRequestedAt);
+  const wait = Math.max(0, lastRefresh + TASK_INDEX_REFRESH_WINDOW_MS - Date.now());
+  state.timer = setTimeout(() => {
+    state.timer = null;
+    state.lastRequestedAt = Date.now();
+    queryClient.invalidateQueries({ queryKey, exact: true });
+  }, wait);
+}
+
 const ISSUE_DOCUMENT_ACTIVITY_ACTIONS = new Set([
   "issue.document_created",
   "issue.document_updated",
@@ -1326,7 +1361,7 @@ function buildRunStatusToast(
   // feedback; the terminal event must not announce a cancelled/failed run.
   if (errorCode === "operator_interrupted") return null;
   // Workspace contention is ordinary scheduling, not a failed user action.
-  if (errorCode === "workspace_busy") return null;
+  if (errorCode === "workspace_busy" || errorCode === "agent_directory_busy") return null;
   const contextSource = readString(payload.contextSource);
   const triggerDetail = readString(payload.triggerDetail);
   const name = nameOf(agentId) ?? "Agent";
@@ -1498,6 +1533,43 @@ function invalidateHeartbeatProgressQueries(
   }
 }
 
+// Actions that can change the status, retry or recovery fields that related
+// tasks embed in their `blockedBy`/`blocks` summaries.
+const ISSUE_RELATION_SUMMARY_ACTIVITY_ACTIONS = new Set([
+  "issue.updated",
+  "issue.deleted",
+  "issue.status_decision_recorded",
+  "issue.checked_out",
+  "issue.released",
+  "issue.recovery_action_resolved",
+  "issue.recovery_generation_replaced",
+  "issue.retry_requested",
+  "issue.scheduled_retry_retry_now",
+]);
+
+/**
+ * A task detail embeds summaries of its blockers and the tasks it blocks. When
+ * one of those changes, refresh every cached detail that embeds it so the
+ * dependent page does not keep showing the old blocker status.
+ */
+function invalidateIssueDetailsEmbeddingRelation(queryClient: QueryClient, refs: Iterable<string>) {
+  const changed = new Set(refs);
+  if (changed.size === 0) return;
+  const embeds = (summaries: unknown) =>
+    Array.isArray(summaries) &&
+    summaries.some((summary) => {
+      const record = readRecord(summary);
+      return !!record && (changed.has(readString(record.id) ?? "") || changed.has(readString(record.identifier) ?? ""));
+    });
+  queryClient.invalidateQueries({
+    queryKey: ["issues", "detail"],
+    predicate: (query) => {
+      const cached = readRecord(query.state.data);
+      return !!cached && !changed.has(readString(cached.id) ?? "") && (embeds(cached.blockedBy) || embeds(cached.blocks));
+    },
+  });
+}
+
 function invalidateActivityQueries(
   queryClient: ReturnType<typeof useQueryClient>,
   companyId: string,
@@ -1534,7 +1606,16 @@ function invalidateActivityQueries(
   queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(companyId) });
   queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) });
   const decisionProjectionChanged = entityType === "decision" ||
+    // Approvals are cards too: a decision by another person must leave every open list.
+    entityType === "approval" ||
+    // So are budget stops. Signed-in sessions get no `details`, so the
+    // `handledForUserId` check below never sees a budget receipt (PAP-771).
+    entityType === "budget_incident" || entityType === "budget_policy" ||
     ["inbox.dismissed", "inbox.snoozed", "inbox.restored"].includes(action ?? "") ||
+    // A claim moves a card between people's views (PAP-749), so open pages refetch.
+    action?.startsWith("attention.") ||
+    // A receipt for the person a card was for (PAP-749 plan §6): their For you updates without a reload.
+    typeof details?.handledForUserId === "string" ||
     action?.startsWith("issue.thread_interaction_") ||
     action === "issue.status_decision_recorded" ||
     action === "issue.conversation_session_started" ||
@@ -1598,8 +1679,9 @@ function invalidateActivityQueries(
     }
     queryClient.invalidateQueries({
       queryKey: queryKeys.issues.list(companyId),
-      predicate: excludingQueryKeys(queryKeys.issues.mentionPool(companyId)),
+      predicate: excludingQueryKeys(queryKeys.issues.mentionPool(companyId), queryKeys.issues.listIndex(companyId)),
     });
+    refreshTaskIndexForActivity(queryClient, companyId, ownActorActivity);
     refreshMentionPoolForActivity(
       queryClient,
       companyId,
@@ -1649,6 +1731,9 @@ function invalidateActivityQueries(
         details,
         options,
       );
+      if (action && ISSUE_RELATION_SUMMARY_ACTIVITY_ACTIONS.has(action)) {
+        invalidateIssueDetailsEmbeddingRelation(queryClient, [entityId, ...issueRefs]);
+      }
       const taskDocumentsChanged = !!action && ISSUE_DOCUMENT_ACTIVITY_ACTIONS.has(action);
       const caseWorkChanged = !!action && ISSUE_CASE_WORK_ACTIVITY_ACTIONS.has(action);
       if (caseWorkChanged) {
@@ -1671,6 +1756,11 @@ function invalidateActivityQueries(
           },
         });
       }
+      const visibleConversation = !!options?.pathname && action === "issue.updated"
+        && (() => {
+          const context = resolveVisibleIssueRouteContext(queryClient, options.pathname!, { isForegrounded: options.isForegrounded });
+          return !!context?.conversation && context.issueRefs.has(entityId);
+        })();
       for (const ref of issueRefs) {
         const invalidationOptions =
           selfCommentActivity ||
@@ -1680,8 +1770,8 @@ function invalidateActivityQueries(
             : undefined;
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(ref), ...invalidationOptions });
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(ref), ...invalidationOptions });
-        if (action === "issue.comment_added" || action === "issue.conversation_session_started") {
-          queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(ref), ...invalidationOptions });
+        if (action === "issue.comment_added" || action === "issue.conversation_session_started" || visibleConversation) {
+          queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(ref), ...(visibleConversation ? undefined : invalidationOptions) });
         }
         if (action?.startsWith("issue.attachment_") || action?.startsWith("issue.work_product_")) {
           // These cards are durable API objects, not streamed text. Refresh the
@@ -1733,6 +1823,11 @@ function invalidateActivityQueries(
               : ["issues", "document-annotations", ref],
             ...invalidationOptions,
           });
+        }
+        if (action === "attention.claimed" || action === "attention.transferred") {
+          // A claim or transfer stores a new addressee (PAP-749), so the
+          // audience line in task detail, chat and the card resolver changes.
+          queryClient.invalidateQueries({ queryKey: queryKeys.issues.interactions(ref) });
         }
         if (
           action?.startsWith("issue.thread_interaction_") ||
@@ -1816,6 +1911,27 @@ function invalidateActivityQueries(
     queryClient.invalidateQueries({
       queryKey: queryKeys.approvals.list(companyId),
     });
+    if (entityId) {
+      // An open approval page shows the answer given from Needs You or a task.
+      queryClient.invalidateQueries({ queryKey: queryKeys.approvals.detail(entityId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.approvals.comments(entityId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.approvals.issues(entityId) });
+    }
+    return;
+  }
+
+  if (entityType === "decision") {
+    // Detail is keyed outside the `["decisions", companyId]` prefix above.
+    if (entityId) queryClient.invalidateQueries({ queryKey: queryKeys.decisions.detail(entityId) });
+    return;
+  }
+
+  if (entityType === "budget_incident" || entityType === "budget_policy") {
+    queryClient.invalidateQueries({ queryKey: queryKeys.budgets.overview(companyId) });
+    // Raise limit and Keep paused also answer the hard stop's override
+    // approval (PAP-768). The live payload has no approval ID.
+    queryClient.invalidateQueries({ queryKey: ["approvals", companyId] });
+    queryClient.invalidateQueries({ queryKey: ["approvals", "detail"] });
     return;
   }
 
@@ -2240,6 +2356,7 @@ export const __liveUpdatesTestUtils = {
   createLiveInvalidationBatcher,
   isAmbientCompanyQueryKey,
   MENTION_POOL_REFRESH_WINDOW_MS,
+  TASK_INDEX_REFRESH_WINDOW_MS,
   buildActivityToast,
   applyRunLifecycleToCompanyLiveRuns,
   buildAgentStatusToast,

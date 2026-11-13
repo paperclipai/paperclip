@@ -394,6 +394,45 @@ describe("decideReleaseRecovery", () => {
       expected: { kind: "blocked", notice: "immediate_execution_path" },
     },
     {
+      name: "released: an automatic retry failed before provider work and the stranded sweep owns its bounded budget",
+      facts: {
+        ...baseReleaseRecoveryFacts,
+        immediate: {
+          ...baseReleaseRecoveryFacts.immediate,
+          applies: true,
+          automaticRecoveryAlreadyFailed: true,
+          automaticRecoveryRetryableBeforeProviderWork: true,
+        },
+      },
+      expected: { kind: "released" },
+    },
+    {
+      name: "blocked: an automatic retry failed and provider work may have started",
+      facts: {
+        ...baseReleaseRecoveryFacts,
+        immediate: {
+          ...baseReleaseRecoveryFacts.immediate,
+          applies: true,
+          automaticRecoveryAlreadyFailed: true,
+        },
+      },
+      expected: { kind: "blocked", notice: "immediate_execution_path" },
+    },
+    {
+      name: "blocked: a pre-provider retry failure still blocks when the recovery agent is not invokable",
+      facts: {
+        ...baseReleaseRecoveryFacts,
+        immediate: {
+          ...baseReleaseRecoveryFacts.immediate,
+          applies: true,
+          automaticRecoveryAlreadyFailed: true,
+          automaticRecoveryRetryableBeforeProviderWork: true,
+        },
+        shared: { ...baseReleaseRecoveryFacts.shared, recoveryAgentInvokable: false },
+      },
+      expected: { kind: "blocked", notice: "immediate_execution_path" },
+    },
+    {
       name: "blocked: immediate recovery applies and the run failed workspace validation",
       facts: {
         ...baseReleaseRecoveryFacts,

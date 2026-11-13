@@ -729,7 +729,8 @@ export const commandV3Schema = {
         "session.goal.get",
         "session.goal.set",
         "session.goal.clear",
-        "external_provider.operation"
+        "external_provider.operation",
+        "runner.attachment.download"
       ]
     },
     "issuedAt": {
@@ -3596,6 +3597,12 @@ export const usageSchema = {
       ],
       "maxLength": 240
     },
+    "upstreamProvider": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240,
+      "description": "Host that served the request when the provider routes across hosts, such as an OpenRouter upstream provider."
+    },
     "cumulative": {
       "$ref": "#/$defs/measurement"
     },
@@ -6240,6 +6247,7 @@ export const eventV3Schema = {
         "external_provider.dispatch_requested",
         "external_provider.operation_settled",
         "external_provider.input_available",
+        "runner.attachment.settled",
         "auth.credentials.updated",
         "runtime.activity.recorded"
       ]

@@ -9,7 +9,7 @@ import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, authUsers, companies, companyMemberships, companySkills, companySkillTestRuns, createDb, executionWorkspaces, heartbeatRunEvents, heartbeatRuns, issues, projects, plugins, environments } from "@paperclipai/db";
 import { companySkillService } from "../services/company-skills.js";
-import { withSkillVersionCacheLock } from "../services/skill-version-cache.js";
+import { skillVersionCachePaths, withSkillVersionCacheLock } from "../services/skill-version-cache.js";
 import { registerServerAdapter, unregisterServerAdapter, type AdapterExecutionContext } from "../adapters/index.js";
 import { HttpError } from "../errors.js";
 import { heartbeatService } from "../services/heartbeat.js";
@@ -333,7 +333,7 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
     }
   });
 
-  async function configuration(f: Awaited<ReturnType<typeof seed>>, config: Record<string, unknown>, snapshot: Record<string, unknown> = {}, type = "paperclip_runner", explicitTaskDirectory = false, requestedExecutionWorkspaceMode: HeartbeatExecutionConfigurationInput["policy"]["requestedExecutionWorkspaceMode"] = "shared_workspace", selectedEnvironmentForConfig: HeartbeatExecutionConfigurationInput["environment"]["selectedEnvironmentForConfig"] = null, pinnedSkillTest?: HeartbeatExecutionConfigurationInput["task"]["pinnedSkillTest"]) {
+  async function configuration(f: Awaited<ReturnType<typeof seed>>, config: Record<string, unknown>, snapshot: Record<string, unknown> = {}, type = "paperclip_runner", explicitTaskDirectory = false, requestedExecutionWorkspaceMode: HeartbeatExecutionConfigurationInput["policy"]["requestedExecutionWorkspaceMode"] = "shared_workspace", selectedEnvironmentForConfig: HeartbeatExecutionConfigurationInput["environment"]["selectedEnvironmentForConfig"] = null, pinnedSkillTest?: HeartbeatExecutionConfigurationInput["task"]["pinnedSkillTest"], adoptingLiveRunner = false) {
     const [agent] = await db.update(agents).set({ adapterType: type, adapterConfig: config }).where(eq(agents.id, f.agentId)).returning();
     const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, issueId: f.issueId, scopeKind: "issue", status: "running", contextSnapshot: snapshot }).returning();
     const resolvedInstanceSettings = await instanceSettingsService(db).get();
@@ -341,13 +341,16 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
     const environment = selectedEnvironmentForConfig ?? await environmentService(db).ensureLocalEnvironment();
     return { run, appendRunEvent, prepare: () => prepareHeartbeatExecutionConfiguration(db, {
       run, agent,
-      task: { issueId: f.issueId, context: { ...snapshot, issueId: f.issueId }, responsibleUserId: null, pinnedSkillTest,
+      task: { issueId: f.issueId, context: { ...snapshot, issueId: f.issueId }, responsibleUserId: null, pinnedSkillTest, adoptingLiveRunner,
         acceptedPlanContinuationWake: false, acceptedPlanWakeRoutingDecision: null,
         taskProjectContext: null, routineEnvContext: { routineId: null, env: null, responsibleUserId: null } },
       config: { sourceWorkspaceConfig: config, aiBinding: undefined },
       policy: { trustPreset: { kind: "standard", preset: "standard", boundary: null, sourcePresets: {} }, useIsolatedTaskDirectory: false, explicitTaskDirectory, requestedExecutionWorkspaceMode },
       environment: { selectedEnvironmentId: environment.id, selectedEnvironmentForConfig: environment,
-        resolvedInstanceSettings, persistedNativeExecutionInput: null },
+        resolvedInstanceSettings, persistedNativeExecutionInput: adoptingLiveRunner
+          // Preparation reads only whether the admitted input carries its runtime context.
+          ? { schema: "paperclip.native-execution-input.v7", runtimeContext: {} } as unknown as HeartbeatExecutionConfigurationInput["environment"]["persistedNativeExecutionInput"]
+          : null },
       services: { secretsSvc: secretService(db), companySkills: companySkillService(db), appendRunEvent, finalizeAiConnectionBusyDeferral: vi.fn() },
       onFailureSecretsResolved: () => {}, onManagedAiRuntimeAcquired: () => {}, onIdentityRedactorPrepared: () => {},
     }) };
@@ -673,6 +676,62 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
     if (result.prepared) expect(result.runtimeSkillEntries.some(entry => entry.key === (kind === "selected native" ? selected.key : "paperclipai/paperclip/paperclip"))).toBe(true);
   });
 
+  it("reconnects to a live remote Runner with its admitted skills without re-downloading them or waiting on the cache", async () => {
+    const f = await seed(), skills = companySkillService(db);
+    const selected = await skills.createLocalSkill(f.companyId, { name: "Admitted skill", markdown: "# Admitted\nOriginal bytes.\n" });
+    const config = { provider: "codex", model: "gpt-6.1-sol", homeMode: "isolated", paperclipSkillSync: { desiredSkills: [selected.key] } };
+    const admitted = await configuration(f, config);
+    const first = await admitted.prepare();
+    if (!first.prepared) throw new Error("Admission did not finish");
+    const [saved] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, admitted.run.id));
+    const versionId = (saved.contextSnapshot!.skillVersions as Record<string, string>)[selected.key]!;
+    expect(versionId).toBeTruthy();
+    // A newly deployed server starts with an empty skill cache.
+    const cached = skillVersionCachePaths(f.companyId, selected.id, versionId).directory;
+    await rm(cached, { recursive: true, force: true });
+    const fingerprint = (entries: typeof first.runtimeSkillEntries) => buildEffectiveRunSessionConfigMetadata({
+      adapterType: "paperclip_runner", effectiveAdapterConfig: {}, agentRuntimeConfig: {}, issueOverrides: null,
+      workspaceConfig: {}, environment: null, environmentEnv: null, projectEnv: null, routineEnv: null, runtimeSkills: entries,
+    }).then(metadata => metadata.fingerprint);
+
+    let release!: () => void;
+    let acquired!: () => void;
+    const ready = new Promise<void>(resolve => { acquired = resolve; });
+    const barrier = new Promise<void>(resolve => { release = resolve; });
+    const holder = withSkillVersionCacheLock(db, f.companyId, async () => { acquired(); await barrier; });
+    await ready;
+    const adopting = await configuration(f, config, saved.contextSnapshot!, "paperclip_runner", false, "shared_workspace", null, undefined, true);
+    const normal = await configuration(f, config, saved.contextSnapshot!, "paperclip_runner");
+    let normalSettled = false;
+    const normalPending = normal.prepare().finally(() => { normalSettled = true; });
+    const adoptingPending = adopting.prepare();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const result = await Promise.race([adoptingPending, new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), 5000); })]);
+      expect(result, "A live Runner reattach must not queue behind skill downloads").not.toBeNull();
+      if (!result?.prepared) throw new Error("Reattach preparation did not finish");
+      expect(result.runtimeSkillEntries).toEqual([expect.objectContaining({ key: selected.key, versionId, sourceStatus: "available",
+        runtimeName: first.runtimeSkillEntries[0]!.runtimeName })]);
+      expect(await fingerprint(result.runtimeSkillEntries)).toBe(await fingerprint(first.runtimeSkillEntries));
+      expect(await access(cached).then(() => true, () => false)).toBe(false);
+      expect(adopting.appendRunEvent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        payload: { skillPreparation: "reused_admitted", skills: 1 } }));
+      // An ordinary start of the same saved selection still waits for the cache and materializes.
+      expect(normalSettled).toBe(false);
+    } finally {
+      if (timer) clearTimeout(timer);
+      release();
+      await holder;
+      await adoptingPending.catch(() => undefined);
+    }
+    const restored = await normalPending;
+    if (!restored.prepared) throw new Error("Normal preparation did not finish");
+    expect(await readFile(path.join(restored.runtimeSkillEntries[0]!.source, "SKILL.md"), "utf8")).toContain("Original bytes.");
+    expect(await fingerprint(restored.runtimeSkillEntries)).toBe(await fingerprint(first.runtimeSkillEntries));
+    expect(normal.appendRunEvent).not.toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      payload: expect.objectContaining({ skillPreparation: "reused_admitted" }) }));
+  });
+
   it("applies project environment and issue overrides and replaces caller-supplied runtime fields", async () => {
     const f = await seed();
     const { finished, input } = await execute(f);
@@ -714,6 +773,7 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
         "configuration_mentions", "configuration_github_identity", "configuration_secrets", "configuration_ai_runtime",
         "configuration_skills", "configuration_connector_assignments", "configuration_connector_skills",
         "configuration_connector_delivery", "configuration_connection_instructions", "configuration_agent_identity",
+        "configuration_mcp_skills", "configuration_mcp_app_context",
       ].map(step => `heartbeat.prepare.${step}`).sort());
       for (const span of steps) {
         expect(span.status).toEqual({ code: 0 });

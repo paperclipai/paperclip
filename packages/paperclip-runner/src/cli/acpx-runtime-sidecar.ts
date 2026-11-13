@@ -49,7 +49,7 @@ import {
   normalizeAcpFormElicitation,
   type NormalizedAcpForm,
 } from "../drivers/acpx/acp-question-adapter.js";
-import { openCodexAcpxRuntime, AcpxProviderProcessLostError } from "../drivers/acpx/codex-runtime-adapter.js";
+import { openCodexAcpxRuntime, AcpxProviderProcessLostError } from "../drivers/acpx/acpx-runtime-adapter.js";
 import { AcpxApprovalRequiredError } from "../drivers/acpx/permission-policy.js";
 import { normalizeAcpxPermission, type NormalizedAcpxPermission } from "../drivers/acpx/acp-permission-adapter.js";
 import { acpxGoalProjection } from "../drivers/acpx/session-goals.js";
@@ -72,7 +72,7 @@ import {
   frameAcpxToolClassification,
   parseAcpxSidecarRequest,
   record,
-  sanitizeAcpxPlanEntries,
+  acpxPlanSnapshot,
   stringifyAcpxSidecarFrame,
   text,
   type AcpxExpectedSessionIdentity,
@@ -938,15 +938,17 @@ async function waitForTool(call: RunnerToolCall): Promise<unknown> {
       if (call.signal.aborted) abort();
     });
   }
-  emit(
-    "runtime.tool_called",
-    {
-      callId,
-      operationId,
-      input: boundedSidecarValue(record(call.arguments)),
-    },
-    activeTurnId,
-  );
+  const toolCall = { callId, operationId, input: record(call.arguments) };
+  let encodedToolCall: string;
+  try { encodedToolCall = stringifyAcpxSidecarFrame(toolCall); } catch {
+    throw new Error("ACPX tool arguments cannot be encoded for the Runner");
+  }
+  if (Buffer.byteLength(encodedToolCall) > MAX_EVENT_PAYLOAD_BYTES) {
+    throw new Error(`ACPX tool arguments exceed the ${MAX_EVENT_PAYLOAD_BYTES / 1024} KiB tool-call limit`);
+  }
+  if (!emit("runtime.tool_called", toolCall, activeTurnId)) {
+    throw new Error("ACPX tool call exceeds the sidecar frame limit");
+  }
   return await new Promise((settle, reject) => {
     const abort = () => {
       const pending = tools.get(callId);
@@ -1208,12 +1210,8 @@ function boundRuntimeEventForNormalization(
 
 function sanitizeRuntimeEvent(event: PiProjectedMessageEvent<AcpRuntimeEvent> & KimiProjectedMessageEvent<AcpRuntimeEvent>): Record<string, unknown> {
   const runtimeType = text(record(event).type);
-  if (runtimeType === "plan") {
-    return {
-      type: "plan",
-      entries: sanitizeAcpxPlanEntries(record(event).entries),
-    };
-  }
+  const planEntries = acpxPlanSnapshot(event);
+  if (planEntries) return { type: "plan", entries: planEntries };
   const statusNotice = claudeStatusBannerNotice(event);
   if (statusNotice) return statusNotice;
   if (event.type === "text_delta") {

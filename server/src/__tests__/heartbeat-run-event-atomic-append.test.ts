@@ -115,6 +115,145 @@ describeEmbeddedPostgres("atomic ordinary run events", () => {
     expect((await readRun(runId)).nextEventSeq).toBe(41);
   });
 
+  /** Every statement the driver sends, transaction control included. */
+  const sentStatements = async <T>(client: typeof db.$client, action: () => Promise<T>) => {
+    const statements: string[] = [];
+    const options = client.options as { debug?: unknown };
+    const previous = options.debug;
+    options.debug = (_connection: number, text: string) => { statements.push(text.trim().replace(/\s+/g, " ")); };
+    try { return { result: await action(), statements }; } finally { options.debug = previous; }
+  };
+  const nativeEvent = (runId: string, sourceSeq: number, eventType = "item.delta") => ({
+    companyId, agentId, runId, eventType, stream: "system", level: "info", payload: { prpEvent: { sourceSeq } },
+    nativeSource: { sourceInstanceId: "native-writer", sourceEventId: `native-writer:${sourceSeq}`, sourceSeq,
+      protocolSchemaVersion: 1, canonicalPayload: { sourceSeq } },
+  });
+
+  it("appends a native source event with one lock read and one write statement", async () => {
+    const runId = await makeRun();
+    const first = await sentStatements(db.$client, () => appendHeartbeatRunEvent(db, nativeEvent(runId, 1)));
+    // BEGIN, the run lock, the append, COMMIT. The lock is a statement of its
+    // own so that the append reads a snapshot taken after the lock was granted.
+    expect(first.statements).toHaveLength(4);
+    expect(first.statements[0]).toMatch(/^begin/i);
+    expect(first.statements[1]).toMatch(/^select "company_id", "agent_id" from "heartbeat_runs" .* for no key update$/);
+    expect(first.statements[2]).toMatch(/^with existing as .* insert into heartbeat_run_events /);
+    expect(first.statements[3]).toMatch(/^commit/i);
+    expect(first.result).toMatchObject({ disposition: "committed", highestContiguousSourceSeq: 1 });
+    expect(first.result.row.createdAt).toBeInstanceOf(Date);
+    expect(await readEvents(runId)).toEqual([first.result.row]);
+
+    const replay = await sentStatements(db.$client, () => appendHeartbeatRunEvent(db, nativeEvent(runId, 1)));
+    expect(replay.statements).toHaveLength(4);
+    expect(replay.result).toEqual({ row: first.result.row, disposition: "duplicate", highestContiguousSourceSeq: 1 });
+    expect((await readRun(runId)).nextEventSeq).toBe(2);
+
+    // A caller's transaction adds only its SAVEPOINT; a writer check adds nothing.
+    const nested = await sentStatements(db.$client, () => db.transaction(tx =>
+      appendHeartbeatRunEvent(tx as unknown as typeof db, nativeEvent(runId, 2))));
+    expect(nested.statements).toHaveLength(5);
+    let checks = 0;
+    const checked = await sentStatements(db.$client, () => appendHeartbeatRunEvent(db, {
+      ...nativeEvent(runId, 3), assertWritable: () => { checks += 1; },
+    }));
+    expect(checked.statements).toHaveLength(4);
+    expect(checks).toBe(2);
+    expect(checked.result).toMatchObject({ disposition: "committed", highestContiguousSourceSeq: 3 });
+    expect((await readEvents(runId)).map(row => [row.seq, row.sourceSeq])).toEqual([[1, 1], [2, 2], [3, 3]]);
+  });
+
+  it("registers a native event's wakes before its write and only when the event is new", async () => {
+    const runId = await makeRun();
+    const [issue] = await db.insert(issues).values({ companyId, title: "Progress task" }).returning();
+    await db.update(heartbeatRuns).set({ nativeIssueId: issue!.id, runtimeMode: "native" }).where(eq(heartbeatRuns.id, runId));
+    const first = await sentStatements(db.$client, () => appendHeartbeatRunEvent(db, nativeEvent(runId, 1, "item.completed")));
+    // BEGIN, lock, duplicate probe, the wake's transaction id, the append, COMMIT.
+    expect(first.statements).toHaveLength(6);
+    const wake = first.statements.findIndex(text => text.includes("pg_current_xact_id"));
+    expect(wake).toBeGreaterThan(0);
+    expect(wake).toBeLessThan(first.statements.findIndex(text => text.includes("insert into heartbeat_run_events")));
+    expect(first.result).toMatchObject({ disposition: "committed", highestContiguousSourceSeq: 1 });
+    const replay = await sentStatements(db.$client, () => appendHeartbeatRunEvent(db, nativeEvent(runId, 1, "item.completed")));
+    expect(replay.statements.some(text => text.includes("pg_current_xact_id"))).toBe(false);
+    expect(replay.result).toEqual({ row: first.result.row, disposition: "duplicate", highestContiguousSourceSeq: 1 });
+    expect(await readEvents(runId)).toEqual([first.result.row]);
+  });
+
+  it("keeps one ordered row per source event when two servers append the same stream", async () => {
+    const runId = await makeRun();
+    const stream = async (connection: typeof db) => {
+      const receipts = [];
+      for (let sourceSeq = 1; sourceSeq <= 40; sourceSeq += 1) {
+        receipts.push(await appendHeartbeatRunEvent(connection, nativeEvent(runId, sourceSeq)));
+      }
+      return receipts;
+    };
+    const [ours, theirs] = await Promise.all([stream(db), stream(otherDb)]);
+    const rows = await readEvents(runId);
+    // Each writer appends in source order, so the stored order is the source order.
+    expect(rows.map(row => [row.seq, row.sourceSeq])).toEqual(Array.from({ length: 40 }, (_, index) => [index + 1, index + 1]));
+    expect((await readRun(runId)).nextEventSeq).toBe(41);
+    for (let index = 0; index < 40; index += 1) {
+      expect([ours[index]!.disposition, theirs[index]!.disposition].sort()).toEqual(["committed", "duplicate"]);
+      for (const receipt of [ours[index]!, theirs[index]!]) {
+        expect(receipt.row).toEqual(rows[index]);
+        // An acknowledgement covers the event and never passes what is stored.
+        expect(receipt.highestContiguousSourceSeq).toBeGreaterThanOrEqual(index + 1);
+        expect(receipt.highestContiguousSourceSeq).toBeLessThanOrEqual(40);
+      }
+    }
+    const conflicting = nativeEvent(runId, 7);
+    await expect(appendHeartbeatRunEvent(otherDb, { ...conflicting,
+      nativeSource: { ...conflicting.nativeSource, canonicalPayload: { sourceSeq: 999 } } }))
+      .rejects.toThrow("native_event_replay_conflict");
+    expect(await readEvents(runId)).toEqual(rows);
+    expect((await readRun(runId)).nextEventSeq).toBe(41);
+  });
+
+  it("leaves no sequence or row behind when a native append fails in the middle of a stream", async () => {
+    const runId = await makeRun();
+    const failing = { ...nativeEvent(runId, 3), message: "force-native-event-failure" };
+    await appendHeartbeatRunEvent(db, nativeEvent(runId, 1));
+    await appendHeartbeatRunEvent(db, nativeEvent(runId, 2));
+    await db.execute(sql`alter table heartbeat_run_events add constraint atomic_native_event_failure
+      check (message is distinct from 'force-native-event-failure') not valid`);
+    try {
+      const before = await readRun(runId);
+      await expect(appendHeartbeatRunEvent(db, failing)).rejects.toThrow();
+      // A writer revoked while its append ran rolls the append back before the commit.
+      let checks = 0;
+      await expect(appendHeartbeatRunEvent(db, { ...nativeEvent(runId, 3),
+        assertWritable: () => { if (++checks === 2) throw new Error("writer revoked"); } })).rejects.toThrow("writer revoked");
+      expect(await readRun(runId)).toEqual(before);
+      expect((await readEvents(runId)).map(row => row.sourceSeq)).toEqual([1, 2]);
+      // The stream continues past the failed event. Later events are stored
+      // and the acknowledgement stays below the gap.
+      expect((await appendHeartbeatRunEvent(db, nativeEvent(runId, 4))).highestContiguousSourceSeq).toBe(2);
+      expect((await appendHeartbeatRunEvent(db, nativeEvent(runId, 5))).highestContiguousSourceSeq).toBe(2);
+    } finally {
+      await db.execute(sql`alter table heartbeat_run_events drop constraint atomic_native_event_failure`);
+    }
+    expect(await appendHeartbeatRunEvent(db, failing)).toMatchObject({ disposition: "committed", highestContiguousSourceSeq: 5 });
+    expect((await readEvents(runId)).map(row => [row.seq, row.sourceSeq])).toEqual([[1, 1], [2, 2], [3, 4], [4, 5], [5, 3]]);
+    expect((await readRun(runId)).nextEventSeq).toBe(6);
+  });
+
+  it("never reuses a retained sequence when history is ahead of the run cursor", async () => {
+    const runId = await makeRun();
+    // An older writer stored events without advancing the run's cursor.
+    await db.insert(heartbeatRunEvents).values([1, 2].map(seq => ({ companyId, agentId, runId, seq, eventType: "stdout",
+      message: `retained-${seq}` })));
+    const retained = await readEvents(runId);
+    for (const input of [nativeEvent(runId, 1), { companyId, agentId, runId, eventType: "stdout", message: "ordinary" }]) {
+      const seq = await appendHeartbeatRunEvent(db, input).then(receipt => receipt.row.seq, () => null);
+      const rows = await readEvents(runId);
+      expect(rows.slice(0, 2)).toEqual(retained);
+      expect(new Set(rows.map(row => row.seq)).size).toBe(rows.length);
+      if (seq === null) expect(rows).toHaveLength(2);
+      else expect(seq).toBeGreaterThan(2);
+    }
+  });
+
   it.each(["native", "retry-exhaustion"])("locks only run bindings for %s events with large run payloads", async (kind) => {
     const runId = await makeRun();
     await db.update(heartbeatRuns).set({

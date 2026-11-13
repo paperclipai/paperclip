@@ -48,7 +48,8 @@ import {
   isUuidLike,
 } from "@paperclipai/shared";
 import { formatAttachmentSize, MAX_ATTACHMENT_BYTES, normalizeContentType } from "../attachment-types.js";
-import { HttpError, badRequest, conflict, forbidden, notFound, unprocessable } from "../errors.js";
+import { HttpError, badRequest, conflict, notFound, unprocessable } from "../errors.js";
+import { casesDisabledError } from "../services/cases-disabled.js";
 import { validate } from "../middleware/validate.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { documentAnnotationService, logActivity } from "../services/index.js";
@@ -80,7 +81,7 @@ function eventActorValues(actor: CaseActor) {
 async function assertCasesEnabled(db: Db) {
   const experimental = await instanceSettingsService(db).getExperimental();
   if (!experimental.enableCases) {
-    throw forbidden("Cases are disabled");
+    throw casesDisabledError();
   }
 }
 

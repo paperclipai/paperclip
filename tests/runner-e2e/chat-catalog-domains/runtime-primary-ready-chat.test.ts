@@ -5,7 +5,7 @@ vi.mock("@playwright/test", () => ({ expect: (target: any) => ({
   toBeEditable: async () => { if (!target.editable()) throw Error("Chat composer is not ready"); },
   toHaveURL: async (matches: (url: URL) => boolean) => { if (!matches(new URL(target.url()))) throw Error("Wrong selected Chat route"); },
 }) }));
-import { runtimePrimaryCases } from "./runtime-primary.js";
+import { runtimePrimaryCases, settledReadyChatChecks } from "./runtime-primary.js";
 afterEach(() => { vi.restoreAllMocks(); });
 function fixture(options: { loadingForever?: boolean; extraRun?: boolean; extraChat?: boolean; wrongPrimary?: boolean; wrongPerson?: boolean;
   wrongChat?: boolean; noReply?: boolean; wrongRequest?: boolean; missingRenderedReply?: boolean; readOnly?: boolean; expired?: boolean; lateReady?: boolean } = {}) {
@@ -52,4 +52,19 @@ it.each([{ loadingForever: true }, { extraRun: true }, { extraChat: true }, { wr
   { noReply: true }, { wrongRequest: true }, { missingRenderedReply: true }, { readOnly: true }, { expired: true }, { lateReady: true }])("actual final verifier rejects incomplete or changed settled state %j", async options => {
   const f = fixture(options); await expect(runtimePrimaryCases[0]!.verifyResult(f.ctx, f.state, f.observation)).rejects.toThrow();
   expect(f.evidence.mock.calls.some(row => row[0] === "chat-primary-ready-conversation.json")).toBe(false);
+});
+// Full cohort 4: the combined throw could not say whether the primary readback, the chat count or the run count changed.
+it("names each failing settled-Chat clause with its values", async () => {
+  const f = fixture({ extraChat: true });
+  await expect(runtimePrimaryCases[0]!.verifyResult(f.ctx, f.state, f.observation)).rejects.toThrow(/chat-count-unchanged \(2 chats/);
+  expect(f.evidence).toHaveBeenCalledWith("chat-primary-ready-conversation-failure.json", expect.objectContaining({ failed: [expect.objectContaining({ id: "chat-count-unchanged" })] }));
+  const run = fixture({ extraRun: true });
+  await expect(runtimePrimaryCases[0]!.verifyResult(run.ctx, run.state, run.observation)).rejects.toThrow(/no-extra-run/);
+  const primary = fixture({ wrongPrimary: true });
+  await expect(runtimePrimaryCases[0]!.verifyResult(primary.ctx, primary.state, primary.observation)).rejects.toThrow(/primary-readback \(primary ceo/);
+});
+it("passes every clause on the settled landing", () => {
+  const checks = settledReadyChatChecks({ currentIssueId: "source", sourceId: "source", companyId: "company", userId: "person", workerId: "morgan", leadId: "ceo",
+    primary: { companyId: "company", userId: "person", primaryAgentId: "morgan" }, chats: [{ id: "source" }], chatCountBefore: 1, runs: [{ id: "native", agentId: "ceo", status: "succeeded" }], nativeRunId: "native" });
+  expect(checks.map(check => [check.id, check.passed])).toEqual([["same-conversation-open", true], ["primary-readback", true], ["chat-count-unchanged", true], ["no-extra-run", true]]);
 });

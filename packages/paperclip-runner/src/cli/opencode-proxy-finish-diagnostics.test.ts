@@ -91,10 +91,26 @@ it("retains the actual MCP producer's offered schema and rejected shape records"
     const report={reportedWorkDisposition:"done",summary:"Synthetic complete response",completionClaim:{contractRevision:"1",objectiveSatisfied:true,criteria:[],remainingWork:[]},evidence:[],verification:[]};
     const result=await rpc(2,"tools/call",{name:"paperclip_finish",arguments:{...report,continuation:"SYNTHETIC_PRIVATE_INPUT"}});
     expect(result.result.isError).toBe(true);
-    expect(frames).toHaveLength(2);
-    const [actualOffered,actualRejected]=frames.map(frame=>JSON.parse(frame.params.message));
+    const finishFrames=frames.filter(frame=>frame.params.message.includes("finish-input-diagnostic"));
+    expect(finishFrames).toHaveLength(2);
+    const [actualOffered,actualRejected]=finishFrames.map(frame=>JSON.parse(frame.params.message));
     expect(actualOffered).toEqual({...offered,schemaSha256:createHash("sha256").update(JSON.stringify(schema)).digest("hex")});
     expect(actualRejected).toEqual({...actualOffered,stage:"input_rejected",callIdSha256:createHash("sha256").update("2").digest("hex"),validationCategory:"continuation",rootShape:"object",continuationShape:"string"});
     expect(JSON.stringify(frames)).not.toContain("SYNTHETIC_PRIVATE_INPUT");
   } finally {await bridge.close();}
+});
+
+it("forwards closed tool delivery records after binding and drops any record that could carry tool data", () => {
+  const frames: unknown[] = [], forward = createOpenCodeFinishDiagnosticForwarder(frame => frames.push(frame));
+  const delivery = { schema: "paperclip.opencode.tool-delivery-diagnostic/v1", callIdSha256: "d".repeat(64),
+    socketRequestIndex: 1, socketIdleMs: null, handlerMs: 512, outcome: "result", written: true };
+  forward.diagnostic(JSON.stringify(delivery));
+  expect(frames).toEqual([]);
+  expect(forward.bind("actual-session")).toBe(true);
+  for (const invalid of [{ ...delivery, result: "private" }, { ...delivery, callIdSha256: "3" }, { ...delivery, outcome: "private" }, { ...delivery, outcome: ["result"] },
+    { ...delivery, socketIdleMs: -1 }, { ...delivery, handlerMs: "512" }, { ...delivery, written: "yes" }]) forward.diagnostic(JSON.stringify(invalid));
+  expect(frames).toEqual([]);
+  forward.diagnostic(JSON.stringify({ ...delivery, socketRequestIndex: 2, socketIdleMs: 5270 }));
+  expect(frames).toEqual([{ method: "warning", params: { threadId: "actual-session",
+    message: JSON.stringify({ ...delivery, socketRequestIndex: 2, socketIdleMs: 5270 }) } }]);
 });

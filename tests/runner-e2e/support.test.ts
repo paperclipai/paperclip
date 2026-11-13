@@ -990,6 +990,32 @@ describe("runner E2E server isolation", () => {
     ).not.toThrow();
   });
 
+  it("admits only the wave's own generated secrets master key", () => {
+    const expected = {
+      temporaryRoot: "/tmp/cell",
+      paperclipHome: "/tmp/cell/paperclip-home",
+      configPath: "/tmp/cell/paperclip-home/instances/e2e/config.json",
+    };
+    const env = (extra: NodeJS.ProcessEnv) => ({
+      PAPERCLIP_HOME: expected.paperclipHome,
+      PAPERCLIP_CONFIG: expected.configPath,
+      XDG_CACHE_HOME: "/tmp/cell/xdg-cache",
+      PAPERCLIP_AGENT_JWT_SECRET: "generated-agent-jwt",
+      PAPERCLIP_DECISION_SIGNING_SECRET: "generated-decision-key",
+      PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: "generated-tool-key",
+      BETTER_AUTH_SECRET: "generated-auth-key",
+      ...extra,
+    });
+    expect(() => assertIsolatedServerEnvironment(env({ PAPERCLIP_SECRETS_MASTER_KEY: "wave-key" }),
+      { ...expected, generatedSecretsMasterKey: "wave-key" })).not.toThrow();
+    expect(() => assertIsolatedServerEnvironment(env({ PAPERCLIP_SECRETS_MASTER_KEY: "ambient-key" }), expected))
+      .toThrow("PAPERCLIP_SECRETS_MASTER_KEY");
+    expect(() => assertIsolatedServerEnvironment(env({ PAPERCLIP_SECRETS_MASTER_KEY: "ambient-key" }),
+      { ...expected, generatedSecretsMasterKey: "wave-key" })).toThrow("PAPERCLIP_SECRETS_MASTER_KEY");
+    expect(() => assertIsolatedServerEnvironment(env({ PAPERCLIP_SECRETS_MASTER_KEY: "wave-key", PAPERCLIP_SECRETS_MASTER_KEY_FILE: "/tmp/cell/key" }),
+      { ...expected, generatedSecretsMasterKey: "wave-key" })).toThrow("PAPERCLIP_SECRETS_MASTER_KEY_FILE");
+  });
+
   it("uses absolute repository paths for the Playwright web server", () => {
     const command = runnerE2EWebServerCommand("/workspace/paperclip");
     expect(command).toContain(

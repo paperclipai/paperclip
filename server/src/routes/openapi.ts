@@ -1,4 +1,4 @@
-import { catalogTeamInstallSchema, catalogTeamPreviewSchema } from "@paperclipai/shared";
+import { catalogTeamInstallSchema, catalogTeamPreviewSchema, updateWorkspacePreferenceSchema } from "@paperclipai/shared";
 import { MUSE_ASSET_VERSION, museStopBoundarySchema, museDetectorCleanupAttestationSchema, createGrokInvitationSchema, configureGrokRoutineSchema, verifyGrokRoutineSchema, recoverGrokRoutineSchema, pairGrokBindingSchema, stopGrokWorkSchema, retryGrokDeliverySchema, updateFastResponseSchema } from "@paperclipai/shared";
 import { slackTestMessageSchema, slackTestMessageResultSchema, slackManagerAuthorizationSchema, slackSetupOptionsSchema, slackManagedProvisionSchema, slackManagedResultSchema, slackRegistrationSchema, slackSetupActionSchema, slackInstallAuthorizationSchema, slackRegistrationStateSchema, slackAppConfigurationSchema, slackAvatarStateSchema, slackAccountStateSchema } from "@paperclipai/shared";
 import { experimentalApiMetadata } from "./experimental-api-metadata.js";
@@ -36,6 +36,11 @@ import {
   browserUseSettingsSchema,
   browserUseViewportSchema,
   browserUseViewerSchema,
+  mcpAppToolCallSchema,
+  mcpAppMessageSentSchema,
+  mcpAppModelContextUpdateSchema,
+  approveCompanyMcpSkillSchema,
+  mcpSkillFileQuerySchema,
   startVoiceSessionSchema, voiceCallbackPreferenceSchema, voicePhoneConfigurationSchema, voiceInboundDecisionSchema, VOICE_SESSION_STATES,
   slackToolCallSchema,
   slackSearchConfigSchema,
@@ -150,8 +155,12 @@ import {
   createApprovalSchema,
   resolveApprovalSchema,
   requestApprovalRevisionSchema,
+  cancelApprovalSchema,
   resubmitApprovalSchema,
   addApprovalCommentSchema,
+  // Attention
+  attentionCloseSchema,
+  attentionTransferSchema,
   // Cost / budget
   createCostEventSchema,
   createFinanceEventSchema,
@@ -1435,6 +1444,24 @@ const browserUseOperations = [
   ["put", "/api/companies/{companyId}/browser-use-cloud/grants/{grantId}/settings", "Update browser credential settings", browserUseSettingsSchema],
 ] as const;
 
+// MCP Apps views in the task chat. Board only; reads follow task read access.
+const mcpAppsOperations = [
+  ["get", "/api/issues/{issueId}/mcp-app-views", "List a task's MCP Apps views", undefined],
+  ["get", "/api/issues/{issueId}/mcp-app-views/{viewId}", "Read an MCP Apps view with its document", undefined],
+  ["post", "/api/issues/{issueId}/mcp-app-views/{viewId}/tool-calls", "Call a tool from an MCP Apps view", mcpAppToolCallSchema],
+  ["put", "/api/issues/{issueId}/mcp-app-views/{viewId}/model-context", "Store an MCP Apps view's context for the task's next run", mcpAppModelContextUpdateSchema],
+  ["post", "/api/issues/{issueId}/mcp-app-views/{viewId}/messages", "Record that a viewer sent an MCP Apps view's message", mcpAppMessageSentSchema],
+] as const;
+
+// MCP Skills from connected apps. Review is board only; agents in an active
+// run read an approved skill's files.
+const mcpSkillsBoardOperations = [
+  ["get", "/api/companies/{companyId}/mcp-skills", "List skills from connected apps", undefined],
+  ["get", "/api/companies/{companyId}/mcp-skills/{skillId}/content", "Read a connected app skill's instructions for review", undefined],
+  ["post", "/api/companies/{companyId}/mcp-skills/{skillId}/approve", "Approve a connected app skill for its manifest", approveCompanyMcpSkillSchema],
+  ["post", "/api/companies/{companyId}/mcp-skills/{skillId}/decline", "Decline or turn off a connected app skill", undefined],
+] as const;
+
 const BOARD_ONLY_OPERATIONS = new Set([
   "PATCH /api/agents/{id}/permission-grants",
   // Budget changes are board-only (assertBoard in routes/costs.ts).
@@ -1453,7 +1480,14 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "GET /api/companies/{companyId}/attention/history",
   "GET /api/companies/{companyId}/attention/summary",
   "GET /api/companies/{companyId}/attention/tasks",
+  "POST /api/companies/{companyId}/attention/{sourceKind}/{sourceId}/claim",
+  "POST /api/companies/{companyId}/attention/{sourceKind}/{sourceId}/close",
+  "POST /api/companies/{companyId}/attention/{sourceKind}/{sourceId}/transfer",
+  "POST /api/approvals/{id}/cancel",
   "POST /api/issues/{id}/interactions/{interactionId}/dismiss",
+  // Cancelling a question is board-only (routes/issues.ts rejects agent actors). Withdraw is not listed here: its
+  // route admits the card's creator agent and the task's assignee, so agents withdraw their own pending card there.
+  "POST /api/issues/{id}/interactions/{interactionId}/cancel",
   "POST /api/issues/{id}/retry",
   "GET /api/companies/{companyId}/prompt-injection-prevention",
   "PUT /api/companies/{companyId}/prompt-injection-prevention",
@@ -1475,6 +1509,8 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "DELETE /api/companies/{companyId}/observability",
   "POST /api/companies/{companyId}/observability/test",
   ...browserUseOperations.map(([method, path]) => `${method.toUpperCase()} ${path}`),
+  ...mcpAppsOperations.map(([method, path]) => `${method.toUpperCase()} ${path}`),
+  ...mcpSkillsBoardOperations.map(([method, path]) => `${method.toUpperCase()} ${path}`),
   "POST /api/companies/{companyId}/ai-connections/local/attempts/{sessionId}/code",
 
   "GET /api/companies/{companyId}/project-repositories",
@@ -1549,7 +1585,6 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/issues/{id}/interactions/{interactionId}/reject",
   "POST /api/issues/{id}/interactions/{interactionId}/respond",
   "POST /api/issues/{id}/interactions/{interactionId}/skip",
-  "POST /api/issues/{id}/interactions/{interactionId}/withdraw",
   "POST /api/companies/{companyId}/tools/examples/{id}/smoke",
   "POST /api/agents/me/connections/{connectionId}/token",
   "GET /api/tools/oauth/callback",
@@ -1705,6 +1740,8 @@ function resolveOperationAuthLevel(
   if (PUBLIC_OPERATIONS.has(key)) return "public";
   if (key === "POST /api/companies/{companyId}/agent-commentary") return "agent_heartbeat";
   if (key === "POST /api/agents/me/chat/messages") return "agent_heartbeat";
+  // An approved connected-app skill's file: an agent in an active run only.
+  if (key === "GET /api/agents/me/mcp-skills/{skillId}/files") return "agent_heartbeat";
   // Agents may read their own commentary, or all of it with commentary:view; the routes enforce that.
   if (method.toUpperCase() === "GET" && path.startsWith("/api/companies/{companyId}/agent-commentary")) return "authenticated";
   if (key === "POST /api/mcp/project-tools" || key === "POST /api/companies/{companyId}/slack/tasks/{issueId}/tools") return "agent_run";
@@ -2251,6 +2288,26 @@ registry.registerPath({
     body: jsonBody(companyPortabilityImportSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+for (const [method, path, summary, body] of mcpAppsOperations) {
+  registerCurrentRoute({
+    method, path, summary, body, tags: ["MCP Apps"],
+    responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 502: r.serverError },
+  });
+}
+
+for (const [method, path, summary, body] of mcpSkillsBoardOperations) {
+  registerCurrentRoute({
+    method, path, summary, body, tags: ["MCP Skills"],
+    responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+  });
+}
+registerCurrentRoute({
+  method: "get", path: "/api/agents/me/mcp-skills/{skillId}/files", tags: ["MCP Skills"],
+  summary: "Read a file of an approved connected app skill (agent in an active run)",
+  query: mcpSkillFileQuerySchema,
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 
 for (const [method, path, summary, body] of browserUseOperations) {
@@ -3238,7 +3295,7 @@ registry.registerPath({
   path: "/api/agent-avatars/{version}/{palette}/{file}",
   tags: ["agents"],
   summary: "Render or retrieve a public preset agent portrait",
-  description: "On-demand PNG artwork; no agent or company lookup. Logical size determines face detail independently of density. Background defaults to transparent; paperclip-dark supplies the opaque Paperclip dark-mode background for Slack exports. Successful URLs are immutable for one year and return a content-derived ETag. Cache entries regenerate after deletion.",
+  description: "On-demand PNG artwork; no agent or company lookup. Logical size determines face detail independently of density. View defaults to front; portrait tilts the character upward and slightly to the side for larger card artwork. Background defaults to transparent; paperclip-dark supplies the opaque Paperclip dark-mode background for Slack exports. Successful URLs are immutable for one year and return a content-derived ETag. Cache entries regenerate after deletion.",
   request: {
     params: z.object({
       version: z.literal("cap-v1"),
@@ -3249,6 +3306,7 @@ registry.registerPath({
       size: z.enum(AGENT_AVATAR_SIZES.map(String)).optional().default("512"),
       scale: z.enum(["1", "2"]).optional().default("1"),
       background: z.enum(["transparent", "paperclip-dark"]).optional().default("transparent"),
+      view: z.enum(["front", "portrait"]).optional().default("front"),
     }).strict(),
   },
   responses: {
@@ -3686,7 +3744,9 @@ registry.registerPath({
   method: "post",
   path: "/api/agents/me/secret-proposals",
   tags: ["secrets"],
-  summary: "Propose a company secret or agent secret binding",
+  summary: "Bind an existing company secret to an agent's environment variable, or propose a new company secret, for board approval",
+  description:
+    "This is how an agent gives itself or an agent in its reporting line (targetAgentId) access to a company secret: send kind \"binding\" with the secret's id from the secrets catalog and the agent configuration path (configPath, e.g. env.DEPLOY_API_KEY). Agents cannot PATCH agent configuration with secret refs; a board member approves the proposal, which applies the binding. Send kind \"secret\" to propose storing a new value.",
   request: { body: jsonBody(createAgentSecretProposalSchema) },
   responses: {
     201: r.ok(),
@@ -3956,7 +4016,7 @@ registry.registerPath({
   method: "put",
   path: "/api/agents/{id}/instructions-bundle/file",
   tags: ["agents"],
-  summary: "Upsert agent instructions file",
+  summary: "Save or rename a managed agent instructions file with a source hash guard",
   request: {
     params: z.object({ id: z.string() }),
     body: jsonBody(upsertAgentInstructionsFileSchema),
@@ -4281,6 +4341,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/adapters/{type}/login-sessions",
   tags: ["adapters"],
   summary: "Start a company-scoped adapter device login",
+  description: "For a managed AI Connection, omit agentId to select an eligible computer in the sign-in environment.",
   request: {
     params: z.object({ companyId: z.string(), type: z.string() }),
     body: jsonBody(startAdapterLoginSessionSchema),
@@ -5273,7 +5334,9 @@ registry.registerPath({
   path: "/api/projects/{id}",
   tags: ["projects"],
   summary: "Update project properties and defaults",
-  description: "Save project properties and defaults. The description holds shared project context and guidance, including checklists; goalIds links the project to its goals. Read the project back to verify the saved fields. Updating description or goalIds does not rewrite existing tasks or the inputs already admitted to active native runs; changing existing work is a separate operation. Environment and executionWorkspacePolicy fields configure separate project settings and are not required to save description or goalIds.",
+  description: "Save project properties and defaults. The description holds shared project context and guidance, including checklists; goalIds links the project to its goals. Read the project back to verify the saved fields. Updating description or goalIds does not rewrite existing tasks or the inputs already admitted to active native runs; changing existing work is a separate operation. Environment and executionWorkspacePolicy fields configure separate project settings and are not required to save description or goalIds. "
+    + "Archiving a project (archivedAt set to the current time) hides it from the sidebar and project selectors and keeps the project, its tasks and their history; no data is removed. Restoring sets archivedAt to null. "
+    + "A person unarchives a project on that project's own Configuration page, /<prefix>/projects/<projectId>/configuration, with the Unarchive button; give them that page as a Markdown link. Archived projects are not restored from the company Status page.",
   request: {
     params: z.object({ id: z.string() }),
     body: jsonBody(updateProjectSchema),
@@ -5422,12 +5485,21 @@ const PLUGIN_MANAGED_ROUTINE_OPERATOR_GUIDANCE =
   + "Do not rewrite, detach or duplicate a plugin-managed routine to imitate a change, and do not search for another route: "
   + "reply now that the hosting operator controls this plugin's settings, with the routine's page link.";
 
-/** Picks the plugin-managed routine guidance that matches plugin settings visibility. */
+/** Picks the plugin-managed routine and experimental settings guidance that matches settings visibility. */
 export function applyPluginSettingsVisibility(document: any, hidden: ReadonlySet<string> = getHiddenSettings()): any {
-  if (!hidden.has("instance.plugins")) return document;
-  for (const operation of [document.paths?.["/api/routines/{id}"]?.get, document.paths?.["/api/routines/{id}"]?.patch]) {
-    if (typeof operation?.description === "string") {
-      operation.description = operation.description.replace(PLUGIN_MANAGED_ROUTINE_GUIDANCE, PLUGIN_MANAGED_ROUTINE_OPERATOR_GUIDANCE);
+  if (hidden.has("instance.plugins")) {
+    for (const operation of [document.paths?.["/api/routines/{id}"]?.get, document.paths?.["/api/routines/{id}"]?.patch]) {
+      if (typeof operation?.description === "string") {
+        operation.description = operation.description.replace(PLUGIN_MANAGED_ROUTINE_GUIDANCE, PLUGIN_MANAGED_ROUTINE_OPERATOR_GUIDANCE);
+      }
+    }
+  }
+  if (hidden.has("instance.experimental")) {
+    const experimental = document.paths?.["/api/instance/settings/experimental"];
+    for (const operation of [experimental?.get, experimental?.patch]) {
+      if (typeof operation?.description === "string") {
+        operation.description = operation.description.replace(EXPERIMENTAL_SETTINGS_PAGE, EXPERIMENTAL_SETTINGS_OPERATOR_GUIDANCE);
+      }
     }
   }
   return document;
@@ -5482,11 +5554,19 @@ registry.registerPath({
   },
 });
 
+const ROUTINE_WEBHOOK_SECRET_GUIDANCE = "A webhook response includes secretMaterial.webhookUrl and secretMaterial.webhookSecret. "
+  + "The webhookSecret is a credential: never write its value, or a header containing it, in a chat reply, comment, document or task. "
+  + "For a signed or bearer trigger, the URL and signing mode may be shared in chat. With signingMode none the URL alone starts the routine, so treat that URL as a credential too and do not write it in chat. "
+  + "Instead link the person to the routine's Triggers page, /<prefix>/routines/<routineId>/triggers, as a Markdown link, where Paperclip shows a key once: "
+  + "for a trigger still awaiting setup, link /<prefix>/routines/<routineId>/triggers?triggerSetup=<triggerId> and tell them to choose Generate new key; "
+  + "otherwise tell them to choose Edit webhook, then Replace key. Replacing the key invalidates the earlier one.";
+
 registry.registerPath({
   method: "post",
   path: "/api/routines/{id}/triggers",
   tags: ["routines"],
   summary: "Create a routine trigger",
+  description: ROUTINE_WEBHOOK_SECRET_GUIDANCE,
   request: {
     params: z.object({ id: z.string() }),
     body: jsonBody(createRoutineTriggerSchema),
@@ -5520,6 +5600,7 @@ registry.registerPath({
   path: "/api/routine-triggers/{id}/rotate-secret",
   tags: ["routines"],
   summary: "Rotate a routine trigger secret",
+  description: ROUTINE_WEBHOOK_SECRET_GUIDANCE,
   request: {
     params: z.object({ id: z.string() }),
     body: jsonBody(rotateRoutineTriggerSecretSchema),
@@ -5658,6 +5739,10 @@ registry.registerPath({
       status: z
         .enum(["pending", "approved", "rejected", "withdrawn", "expired"])
         .optional(),
+      order: z
+        .enum(["created", "resolved"])
+        .optional()
+        .describe("created (default) lists the newest proposals first; resolved lists the most recent decisions first."),
     }),
   },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
@@ -5972,6 +6057,20 @@ registry.registerPath({
 
 registry.registerPath({
   method: "post",
+  path: "/api/approvals/{id}/cancel",
+  tags: ["approvals"],
+  summary: "Withdraw an out-of-date approval",
+  description:
+    "Requires a board user. Cancels an open approval without a decision: it is never an approval, so the gate stays closed. Records the user and reason, writes approval.cancelled and wakes the requesting agent. Hire requests are rejected instead (422). 409 with code attention_already_closed when it was already resolved.",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(cancelApprovalSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "post",
   path: "/api/approvals/{id}/resubmit",
   tags: ["approvals"],
   summary: "Revise and resubmit a changes-requested approval",
@@ -6090,12 +6189,17 @@ const costSummaryPaths = [
   "data-quality",
 ] as const;
 
+/** Reports whose rows count usage that has no known price. */
+const UNPRICED_COUNT_COST_REPORTS = new Set<string>(["summary", "by-agent", "by-user", "by-agent-model", "by-provider", "by-biller", "by-project"]);
+export const UNPRICED_COST_REPORT_DESCRIPTION = "costCents counts priced usage only. A row whose unpricedEventCount is above 0 includes usage with no known price, so its real cost is unknown, not zero: report that usage as unpriced and its total as incomplete, never as $0.00. To find that usage, list the agent's runs with GET /api/companies/{companyId}/heartbeat-runs?agentId=<agentId>: a run whose usageJson.costStatus is \"unpriced\" is one, and its usageJson.ledgerScope.issueId names its task. Link each run you cite at /<prefix>/agents/<agentId>/runs/<runId>, or its task.";
+
 for (const segment of costSummaryPaths) {
   registry.registerPath({
     method: "get",
     path: `/api/companies/{companyId}/costs/${segment}`,
     tags: ["costs"],
     summary: `Cost report: ${segment}`,
+    ...(UNPRICED_COUNT_COST_REPORTS.has(segment) ? { description: UNPRICED_COST_REPORT_DESCRIPTION } : {}),
     request: {
       params: z.object({ companyId: z.string() }),
       ...(!["window-spend", "quota-windows"].includes(segment) ? {
@@ -6108,7 +6212,7 @@ for (const segment of costSummaryPaths) {
 
 registry.registerPath({ method: "post", path: "/api/companies/{companyId}/costs/retry-accounting", tags: ["costs"],
   summary: "Retry recording a run's saved cost data",
-  description: "Requires company cost-read and board write access. Viewers and agents cannot retry. Replays accounting evidence only; never starts provider work or invents missing usage.",
+  description: "Requires company cost-read and board write access. Viewers and agents cannot retry. Replays accounting evidence only; never starts provider work or invents missing usage. A board user retries with Retry cost recording on the run's row on the [Costs page](/<prefix>/activity/costs).",
   request: { params: z.object({ companyId: z.string() }), body: jsonBody(retryAccountingSchema) },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
@@ -6452,6 +6556,8 @@ registry.registerPath({
       includeDismissed: z.enum(["true", "false"]).optional(),
       archived: z.enum(["true", "false"]).optional(),
       all: z.enum(["true", "false"]).optional(),
+      view: z.enum(["mine", "unassigned", "company", "archived", "all"]).optional()
+        .describe("Audience slice (PAP-749). `all` (default) keeps the full feed; `viewCounts` and the For you badge `deskBadgeCount` ignore it. `mine` also returns `receipts`: what a different person did with your cards in the last 7 days. `archived` returns only the open cards you archived or snoozed for yourself, whatever their audience; `viewCounts.archived` counts them and is never in the badge. `viewCounts.all` counts the Everyone tab (every person's open cards, board members only) and is never in the badge."),
       activitySince: z.string().datetime().optional(),
       activityUntil: z.string().datetime().optional(),
       queue: z.string().min(1).optional(),
@@ -6468,6 +6574,13 @@ const attentionSummaryResponseSchema = z.object({
   generatedAt: z.string().datetime(),
   totalCount: z.number().int().nonnegative(),
   deskBadgeCount: z.number().int().nonnegative(),
+  viewCounts: z.object({
+    mine: z.number().int().nonnegative(),
+    unassigned: z.number().int().nonnegative(),
+    company: z.number().int().nonnegative(),
+    archived: z.number().int().nonnegative(),
+    all: z.number().int().nonnegative(),
+  }).strict(),
   countsBySourceKind: z.record(z.enum(ATTENTION_SOURCE_KINDS), z.number().int().nonnegative()),
 }).strict();
 
@@ -6485,6 +6598,68 @@ for (const [projection, responseSchema] of [
     responses: { 200: r.ok(responseSchema), 401: r.unauthorized, 403: r.forbidden },
   });
 }
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/attention/{sourceKind}/{sourceId}/claim",
+  tags: ["inbox"],
+  summary: "Claim an ownerless attention card",
+  description:
+    "Requires a board user with company access. Makes the caller the addressee of an ownerless card, so it leaves every other person's Unassigned pool and joins the caller's For you view. Placement only: the resolver policy still decides who may answer. Only issue_thread_interaction cards can be claimed (422 otherwise); a card already for another person or a runnable agent returns 409; claiming your own card again returns alreadyClaimed=true. Writes an attention.claimed activity entry.",
+  request: { params: z.object({ companyId: z.string(), sourceKind: z.string(), sourceId: z.string().uuid() }) },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/attention/{sourceKind}/{sourceId}/close",
+  tags: ["inbox"],
+  summary: "Close an attention card: withdraw, archive or snooze",
+  description:
+    "Requires a board user with company write access. mode=withdraw closes the request for everyone because it is out of date; it is never an approval. It runs the source's own withdraw (interactions, including on a closed task) or cancel (decisions, approvals except hire requests), which writes its own activity entry and tells the agent. mode=archive and mode=snooze hide the card for the caller only, until its content changes or until `until`; the source stays open. Cards without a request to withdraw (budget, review, blocker, recovery, failed run, agent error, join request) return 422 for withdraw with the control to use instead. 404 when the caller cannot see the card; 409 with code attention_already_closed and the resolver when someone else answered first. Writes one attention.closed activity entry.",
+  request: {
+    params: z.object({ companyId: z.string(), sourceKind: z.string(), sourceId: z.string().uuid() }),
+    body: jsonBody(attentionCloseSchema),
+  },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/attention/{sourceKind}/{sourceId}/transfer",
+  tags: ["inbox"],
+  summary: "Transfer an attention card to a different person",
+  description:
+    "Requires a board user with company write access. Routes the card to another person (\"Route to @x\"): they become its addressee, so it joins their For you view and only they may answer it. The new owner must be able to answer requests on the task (422 otherwise). Only issue_thread_interaction cards can be transferred (422 otherwise); chat questions stay with the person in the chat (422); a runnable agent's request or an answered card returns 409; routing to the current addressee returns alreadyTransferred=true. Writes an attention.transferred activity entry.",
+  request: {
+    params: z.object({ companyId: z.string(), sourceKind: z.string(), sourceId: z.string().uuid() }),
+    body: jsonBody(attentionTransferSchema),
+  },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
+});
 
 // ─── Decisions ──────────────────────────────────────────────────────────────
 
@@ -6494,18 +6669,22 @@ registry.registerPath({
   tags: ["inbox"],
   summary: "List recorded decisions visible to the current board user",
   description:
-    "Requires a board user with company access. Returns a DecisionHistoryPage with current task and decision audience access enforced. Only the declared filters are accepted. The default page size is 40, sorted newest first.",
+    "Requires a board user with company access. Returns a DecisionHistoryPage of closed interactions, decisions and approvals, with current task and decision audience access enforced. Only the declared filters are accepted. The default page size is 40, sorted newest first.",
   request: {
     params: z.object({ companyId: z.string() }),
     query: z.object({
       cursor: z.string().max(1000).optional(),
       limit: z.coerce.number().int().min(1).max(100).optional(),
       search: z.string().trim().max(200).optional(),
-      outcome: z.string().max(40).optional(),
+      outcome: z.string().max(40).optional()
+        .describe("Outcome filter: accepted, answered, rejected, decided, withdrawn, expired (time-outs and supersedes, not task closes), issue_closed (closed with task) or cancelled. Other values match the stored status."),
       agentId: z.string().uuid().optional(),
       projectId: z.string().uuid().optional(),
       sort: z.enum(["newest", "oldest"]).optional(),
       since: z.string().datetime().optional(),
+      handledForMe: z.enum(["true", "false"]).optional().describe("Only cards for you that a different person answered, withdrew or transferred."),
+      scope: z.enum(["mine", "all"]).optional()
+        .describe("Whose history (PAP-768). `mine` is \"Handled by me or for me\": what you answered, withdrew or transferred, what a different person handled for you, and cards whose audience is you (addressee or requester, else the task's chat user, human assignee or instigator). `all` (default) is every person's history. Outcome filters apply within either scope."),
     }).strict(),
   },
   responses: {
@@ -7061,8 +7240,8 @@ registerCurrentRoute({
   method: "put",
   path: "/api/companies/{companyId}/workspace-preferences/me",
   tags: ["workspace-preferences"],
-  summary: "Update your personal workspace; active company membership provides audit context",
-  body: z.object({ coordinatorWorkspaceEnabled: z.boolean() }).strict(),
+  summary: "Update your personal workspace or time zone; active company membership provides audit context",
+  body: updateWorkspacePreferenceSchema,
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 
@@ -7244,6 +7423,7 @@ registry.registerPath({
           ),
         kind: z.enum(["dismiss", "snooze"]).optional(),
         snoozedUntil: z.string().datetime().optional(),
+        fingerprint: z.string().max(200).optional(),
       }),
     ),
   },
@@ -7260,6 +7440,15 @@ registry.registerPath({
 });
 
 // ─── Instance settings ────────────────────────────────────────────────────────
+
+// Agents cannot read or write experimental settings; the person turns a feature on in the UI.
+const EXPERIMENTAL_SETTINGS_PAGE = "Instance experimental features (for example Cases via enableCases) are turned on or off by an instance admin in "
+  + "Experimental settings at /<prefix>/company/settings/instance/experimental. Agent credentials cannot read or change these settings, "
+  + "so do not claim a change: link that page as [Experimental settings](/<prefix>/company/settings/instance/experimental), name the feature's setting, and reply.";
+// When the hosting operator hides the Experimental page, it redirects away, so name the operator instead.
+const EXPERIMENTAL_SETTINGS_OPERATOR_GUIDANCE = "Instance experimental features (for example Cases via enableCases) are controlled by the hosting operator on this instance, "
+  + "so no Paperclip page offers that change. Agent credentials cannot read or change these settings, "
+  + "so do not claim a change or search for another route: reply that the hosting operator controls it.";
 
 registry.registerPath({
   method: "get",
@@ -7300,7 +7489,7 @@ registry.registerPath({
   path: "/api/instance/settings/experimental",
   tags: ["instance"],
   summary: "Get experimental instance settings",
-  description: "Agent Chat is always on for every person on every instance and needs no setup. enableAgentChat is a retired compatibility key: it always reads true and written values are ignored. If someone asks to enable Agent Chat, tell them it is already on, since they are using it now; do not send them to a settings toggle.",
+  description: `${EXPERIMENTAL_SETTINGS_PAGE} Agent Chat is always on for every person on every instance and needs no setup. enableAgentChat is a retired compatibility key: it always reads true and written values are ignored. If someone asks to enable Agent Chat, tell them it is already on, since they are using it now; do not send them to a settings toggle.`,
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
@@ -7309,7 +7498,7 @@ registry.registerPath({
   path: "/api/instance/settings/experimental",
   tags: ["instance"],
   summary: "Update experimental instance settings",
-  description: "Requires instance-admin access or a trusted Cloud stack admin. Operator-hidden settings and Cloud-managed feature restrictions still apply. This does not grant access to other instance administration operations. Agent Chat is always on for every person on every instance and needs no setup. enableAgentChat is a retired compatibility key: it always reads true and written values are ignored. If someone asks to enable Agent Chat, tell them it is already on, since they are using it now; do not send them to a settings toggle.",
+  description: `${EXPERIMENTAL_SETTINGS_PAGE} Requires instance-admin access or a trusted Cloud stack admin. Operator-hidden settings and Cloud-managed feature restrictions still apply. This does not grant access to other instance administration operations. Agent Chat is always on for every person on every instance and needs no setup. enableAgentChat is a retired compatibility key: it always reads true and written values are ignored. If someone asks to enable Agent Chat, tell them it is already on, since they are using it now; do not send them to a settings toggle.`,
   request: { body: jsonBody(patchInstanceExperimentalSettingsSchema) },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
 });
@@ -7321,7 +7510,7 @@ registry.registerPath({
   summary:
     "Get process task-drain status, with optional bounded upgrade-readiness or idle-safety reports for instance operators",
   description: "With idleSleepSafety=1, the exact current idle owner can retire idle native sessions before a fresh safety inspection. Busy or failed retirement prevents sleep. Native retirement is skipped for diagnostic inspection. scheduledWake=domain-deadlines-v1 requires signed Cloud authority with idleCapabilities.deadlineCatalog=domain_deadlines_v1 and returns a mandatory deadlineProof even when no wake is scheduled. Cloud must acknowledge any returned durable alarm and revalidate the report before stopping the instance.",
-  request: { query: z.object({ upgradeReadiness: z.literal("1").optional().describe("Instance operators can request a bounded aggregate report of current remote-runner recovery eligibility. This read does not hold admission or detach runners."), ownerId: z.string().uuid().optional(), idleSleepSafety: z.literal("1").optional().describe("Instance admins can request a conservative durable-work report while admission and ingress are held. Unknown or present work must prevent automatic sleep."), scheduledWake: z.enum(["1", "2", "domain-deadlines-v1"]).optional().describe("Cloud control callers may request routine deadlines (1), routines and issue monitors (2), or the domain deadline catalog (domain-deadlines-v1). The domain catalog requires signed Cloud authority with idleCapabilities.deadlineCatalog=domain_deadlines_v1 and returns a deadlineProof even when no wake is scheduled. Cloud must acknowledge any returned durable alarm and revalidate this report before stopping the instance.") }) },
+  request: { query: z.object({ upgradeReadiness: z.literal("1").optional().describe("Instance operators can request a bounded aggregate report of current remote-runner recovery eligibility. This read does not hold admission or detach runners. The version 1 report also carries an additive handoff object (version, ready, recoverableRuns, restartableRuns, blockingRuns, pendingWakes, unsavedWakes) for a graceful server replacement: restartable runs have launched no agent work and are started again by restart recovery, and unsavedWakes counts wake admissions that have not committed their queued run. Only handoff.blockingRuns, handoff.unsavedWakes, draining or an incomplete census make handoff.ready false. The top-level version 1 fields keep their meaning."), ownerId: z.string().uuid().optional(), idleSleepSafety: z.literal("1").optional().describe("Instance admins can request a conservative durable-work report while admission and ingress are held. Unknown or present work must prevent automatic sleep."), scheduledWake: z.enum(["1", "2", "domain-deadlines-v1"]).optional().describe("Cloud control callers may request routine deadlines (1), routines and issue monitors (2), or the domain deadline catalog (domain-deadlines-v1). The domain catalog requires signed Cloud authority with idleCapabilities.deadlineCatalog=domain_deadlines_v1 and returns a deadlineProof even when no wake is scheduled. Cloud must acknowledge any returned durable alarm and revalidate this report before stopping the instance.") }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
 
@@ -7881,6 +8070,15 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/companies/{companyId}/assigned-work-invariant",
+  tags: ["runs"],
+  summary: "Report open agent tasks without a live run, pending start or wait on a person (board only)",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/companies/{companyId}/live-runs",
   tags: ["runs"],
   summary: "List live runs for a company",
@@ -8327,6 +8525,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/setup-token-login-sessions",
   tags: ["companies"],
   summary: "Start a company-and-environment Claude setup-token login session",
+  description: "For a managed AI Connection, omit agentId to select an eligible computer in the sign-in environment.",
   request: {
     params: z.object({ companyId: z.string() }),
     body: jsonBody(startClaudeSetupTokenSessionRequestSchema),
@@ -8552,7 +8751,7 @@ registry.registerPath({
   method: "post",
   path: "/api/issues/{id}/interactions/{interactionId}/resolve-from-comment",
   tags: ["issues"],
-  summary: "Record a user's conversational confirmation answer",
+  summary: "Record a user's conversational confirmation answer, including a decline of a card the person created",
   description: "An eligible active agent run resolves a confirmation on its own task using the latest user comment. Resolver permissions, target staleness and conversation reset boundaries remain enforced. Matching retries are idempotent. No new wake is scheduled.",
   request: {
     params: z.object({ id: z.string(), interactionId: z.string() }),
@@ -8634,7 +8833,7 @@ registry.registerPath({
   method: "post",
   path: "/api/issues/{id}/interactions/{interactionId}/withdraw",
   tags: ["issues"],
-  summary: "Withdraw a pending issue thread interaction",
+  summary: "Withdraw a pending issue thread interaction. For agents, withdraw is only for the agent's own obsolete card; to accept or decline a confirmation card on the person's explicit instruction, an agent records the person's comment with POST /api/issues/{id}/interactions/{interactionId}/resolve-from-comment when the card's resolver policy allows (not for question forms or governed approvals)",
   request: {
     params: z.object({ id: z.string(), interactionId: z.string() }),
     body: jsonBody(withdrawIssueThreadInteractionSchema),
@@ -11365,7 +11564,7 @@ registerCurrentRoute({
   method: "post",
   path: "/api/issues/{id}/interactions/{interactionId}/cancel",
   tags: ["issues"],
-  summary: "Cancel an issue question interaction",
+  summary: "Cancel an issue question interaction (board users only). Agents: POST /api/issues/{id}/interactions/{interactionId}/withdraw is only for the agent's own obsolete card; to accept or decline a confirmation card on the person's explicit instruction, an agent records the person's comment with POST /api/issues/{id}/interactions/{interactionId}/resolve-from-comment when the card's resolver policy allows (not for question forms or governed approvals)",
   body: cancelIssueThreadInteractionSchema,
 });
 
@@ -11388,7 +11587,7 @@ registerCurrentRoute({
   method: "post",
   path: "/api/issues/{id}/interactions/{interactionId}/withdraw",
   tags: ["issues"],
-  summary: "Withdraw a pending issue thread interaction",
+  summary: "Withdraw a pending issue thread interaction. For agents, withdraw is only for the agent's own obsolete card; to accept or decline a confirmation card on the person's explicit instruction, an agent records the person's comment with POST /api/issues/{id}/interactions/{interactionId}/resolve-from-comment when the card's resolver policy allows (not for question forms or governed approvals)",
   body: withdrawIssueThreadInteractionSchema,
 });
 
@@ -11808,6 +12007,17 @@ registerCurrentRoute({
   method: "get", path: "/api/companies/{companyId}/observability", tags: ["agent-observability"],
   summary: "Read masked company agent export settings; board connection managers only",
   responses: { 200: r.ok(observabilitySettingsEnvelopeSchema), 401: r.unauthorized, 403: r.forbidden },
+});
+registerCurrentRoute({
+  method: "get", path: "/api/companies/{companyId}/observability/status", tags: ["agent-observability"],
+  summary: "Read whether the company's agent trace export (observability to an OTLP collector or Braintrust) is configured and enabled",
+  description: "Readable by the company's agents and members. Reports whether company agent trace export to an OpenTelemetry (OTLP) collector or Braintrust is configured, enabled, has saved credentials, and the result of its latest delivery test. It never returns the destination or any credential. "
+    + "Use it to answer what is saved for the company's trace export or test collector; agent configuration and company secrets do not hold these settings. Board connection managers change them in Company settings, Agent observability, at /<prefix>/company/settings.",
+  responses: { 200: r.ok(z.object({
+    configured: z.boolean(), enabled: z.boolean(), provider: z.enum(["otlp", "braintrust"]).nullable(),
+    credentialsConfigured: z.boolean(), updatedAt: z.string().datetime().nullable(),
+    lastTest: z.object({ status: z.enum(["accepted", "partial", "failed"]), finishedAt: z.string().datetime() }).strict().nullable(),
+  }).strict()), 401: r.unauthorized, 403: r.forbidden },
 });
 registerCurrentRoute({
   method: "put", path: "/api/companies/{companyId}/observability", tags: ["agent-observability"],
@@ -12474,6 +12684,14 @@ registerCurrentRoute({
   path: "/api/tool-connections/{connectionId}/profile-configuration",
   tags: ["tool-access"],
   summary: "Read connection Permissions profile configuration without summaries or review counts",
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  method: "get",
+  path: "/api/companies/{companyId}/tool-icons",
+  tags: ["tool-access"],
+  summary: "List provider icons for the company's connected tools",
 });
 
 registerCurrentRoute({

@@ -162,7 +162,9 @@ import {
   ISSUE_DETAIL_HEADER_PAINT_MARK,
   reportIssueDetailWebVitals,
   scheduleIssueDetailPaintMeasure,
+  useIssueDetailContentPaintedAt,
 } from "../lib/issue-detail-performance";
+import { usePageContentReady } from "../hooks/usePageContentReady";
 import {
   beginLocalInboxArchive,
   boundLocalInboxArchive,
@@ -206,6 +208,7 @@ import {
 } from "../lib/optimistic-issue-runs";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { recordRecentTask } from "../lib/recent-tasks";
+import { modelStillUnavailableToast } from "../lib/model-retry-refusal";
 import {
   relativeTime,
   cn,
@@ -411,7 +414,10 @@ import {
   type WorkspaceFileRef,
   workspaceFileRefSchema,
   isUuidLike,
+  type ExecutionAgentQueue,
 } from "@paperclipai/shared";
+import { AgentQueueWaitChip } from "@/components/AgentQueueWait";
+import { agentQueueWaitOf, isWaitingToStart } from "@/lib/agent-queue-wait";
 import { taskStatusIconProps } from "@/lib/task-status-presentation";
 
 // Stable empty array for React Query `data` defaults. A literal `= []` default
@@ -516,6 +522,20 @@ export function shouldScrollIssueDetailToTopOnNavigation(input: {
 }): boolean {
   if (input.navigationType === "POP") return false;
   return input.previousIssueId !== input.nextIssueId;
+}
+
+type LiveRunSummary = { count: number; waitingOnly: boolean; agentQueue: ExecutionAgentQueue | null };
+const EMPTY_LIVE_RUN_SUMMARY: LiveRunSummary = { count: 0, waitingOnly: false, agentQueue: null };
+
+function summarizeLiveRuns(
+  runs: ReadonlyArray<Pick<LiveRunForIssue | ActiveRunForIssue, "status" | "startedAt" | "execution">>,
+): LiveRunSummary {
+  if (!runs.length) return EMPTY_LIVE_RUN_SUMMARY;
+  return {
+    count: runs.length,
+    waitingOnly: runs.every(run => isWaitingToStart(run)),
+    agentQueue: runs.map(run => agentQueueWaitOf(run.execution)).find(Boolean) ?? null,
+  };
 }
 
 function resolveInterruptibleIssueRun(
@@ -1685,8 +1705,9 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         queryKey: queryKeys.issues.activeRun(issueQueryRef),
       });
     },
-    onError: (error) => {
-      pushToast({
+    onError: (error, runId) => {
+      const failedRun = resolvedLinkedRuns.find((run) => run.runId === runId);
+      pushToast(modelStillUnavailableToast(error, failedRun ? agentMap.get(failedRun.agentId) : undefined) ?? {
         title: "Run retry failed",
         body: error instanceof Error ? error.message : "Unable to retry run",
         tone: "error",
@@ -1849,6 +1870,26 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         anchorMs,
         kind: "steer",
         queueIds: inputPlacementByCommentId.get(commentId)?.queueIds ?? new Set(),
+      });
+    }
+    // A run that is still starting (a booting sandbox, say) cannot be steered,
+    // but its first turn takes these messages. They are sent: show them at
+    // their submission time in the conversation, not in the queue.
+    const firstTurnRunId = authoritativeQueuedCommentQueue?.targetRunId ?? null;
+    if (firstTurnRunId) {
+      const createdAtById = new Map(comments.map((comment) => [comment.id, comment.createdAt]));
+      authoritativeQueuedCommentQueue?.firstTurnCommentIds?.forEach((commentId, sequence) => {
+        const createdAt = createdAtById.get(commentId);
+        if (inputPlacementByCommentId.has(commentId) || !createdAt) return;
+        const anchorAt = new Date(createdAt).toISOString();
+        inputPlacementByCommentId.set(commentId, {
+          runId: firstTurnRunId,
+          anchorAt,
+          sequence,
+          anchorMs: new Date(anchorAt).getTime(),
+          kind: "run_start",
+          queueIds: new Set(authoritativeQueuedCommentQueue.queueId ? [authoritativeQueuedCommentQueue.queueId] : []),
+        });
       });
     }
     for (const [commentId, placement] of localSteeringPlacements) {
@@ -2136,6 +2177,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         });
     return [...projectedComments, ...responseComments];
   }, [
+    authoritativeQueuedCommentQueue,
     comments,
     classicTaskInterfaceEnabled,
     interactions,
@@ -2194,6 +2236,11 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
           : comment.queueState === "queued"
             ? (comment.queueTargetRunId ?? null)
             : null);
+      // A saved message the server queue never listed (a run's first turn
+      // took it) is not pending once that run settles. Keeping it would
+      // withhold the queue id, and with it Steer and Discard, from every
+      // later message. A request still in flight keeps its original target.
+      if (targetRunId && !liveRunIds.has(targetRunId) && !comment.id.startsWith("optimistic-")) return [];
       return targetRunId ? [{ comment, targetRunId }] : [];
     });
     const fallbackProtocol =
@@ -2213,6 +2260,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     consumedQueuedCommentIds,
     discardedQueuedCommentIds,
     issueId,
+    liveRunIds,
     liveRuntimeRun,
     assigneeUsesPaperclipRunner,
     locallyQueuedCommentRunIds,
@@ -2319,9 +2367,17 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
           "The queued messages are awaiting server acknowledgement.",
         );
       try {
+        // The server orders its whole queue. Messages this view hides (inputs
+        // a starting run already admitted, or ones its first turn takes) keep
+        // their place; the person reorders only the rest.
+        const firstTurnIds = new Set(authoritativeQueuedCommentQueue?.firstTurnCommentIds ?? []);
+        const hidden = (id: string) => startingCommentIds.has(id) || firstTurnIds.has(id);
+        const serverEntries = authoritativeQueuedCommentQueue?.queueId === queueId
+          ? authoritativeQueuedCommentQueue.entries
+          : effectiveQueuedCommentQueue.entries;
         let nextPosition = 0;
-        const fullOrder = effectiveQueuedCommentQueue.entries.map(entry =>
-          startingCommentIds.has(entry.comment.id) ? entry.comment.id : orderedCommentIds[nextPosition++]!);
+        const fullOrder = serverEntries.map(entry =>
+          hidden(entry.comment.id) ? entry.comment.id : orderedCommentIds[nextPosition++]!);
         storeQueuedCommentQueue(
           await issuesApi.reorderQueuedComments(issueId, {
             orderedCommentIds: fullOrder,
@@ -2334,6 +2390,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
       }
     },
     [
+      authoritativeQueuedCommentQueue,
       effectiveQueuedCommentQueue,
       startingCommentIds,
       issueId,
@@ -3490,6 +3547,11 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   useLayoutEffect(() => {
     beginIssueDetailNavigation();
   }, [issueId]);
+  // The task page is loaded when its conversation content has painted: the
+  // same point as the `issue-detail:navigate→content-paint` measure. An agent
+  // chat with no saved task never records that mark, so it uses the generic rule.
+  const contentPaintedAt = useIssueDetailContentPaintedAt();
+  usePageContentReady(contentPaintedAt !== null, contentPaintedAt, { enabled: Boolean(issueId) });
 
   useEffect(() => {
     if (!(import.meta.env.DEV || import.meta.env.MODE === "qa")) return;
@@ -3577,38 +3639,45 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     recordIssueDetailReadiness({ issue: !!loadedIssue, comments: !commentsLoading, interactions: !interactionsLoading, attachments: !attachmentsLoading, "work-products": !workProductsLoading });
   }, [issueId, loadedIssue, commentsLoading, interactionsLoading, attachmentsLoading, workProductsLoading]);
 
-  const { data: liveRunCount = 0 } = useQuery<LiveRunForIssue[], Error, number>(
+  const { data: liveRunSummary = EMPTY_LIVE_RUN_SUMMARY } = useQuery<LiveRunForIssue[], Error, LiveRunSummary>(
     {
       queryKey: queryKeys.issues.liveRuns(issueId!),
       queryFn: () => heartbeatsApi.liveRunsForIssue(issueId!),
       enabled: !!issueId,
       refetchInterval: (query) => liveRunRefetchInterval(hasLiveConnection, query.state, 3000),
-      select: (runs) => runs.length,
+      select: summarizeLiveRuns,
       placeholderData: keepPreviousDataForSameQueryTail<LiveRunForIssue[]>(
         issueId ?? "pending",
       ),
     },
   );
 
-  const { data: hasActiveRun = false } = useQuery<
+  const liveRunCount = liveRunSummary.count;
+  const { data: activeRunSummary = EMPTY_LIVE_RUN_SUMMARY } = useQuery<
     ActiveRunForIssue | null,
     Error,
-    boolean
+    LiveRunSummary
   >({
     queryKey: queryKeys.issues.activeRun(issueId!),
     queryFn: () => heartbeatsApi.activeRunForIssue(issueId!),
     enabled:
       !!issueId && (!!issue?.executionRunId || issue?.status === "in_progress"),
     refetchInterval: (query) => liveRunCount > 0 ? false : liveRunRefetchInterval(hasLiveConnection, query.state, 3000),
-    select: (run) => !!run,
+    select: (run) => summarizeLiveRuns(run ? [run] : []),
     placeholderData: keepPreviousDataForSameQueryTail<ActiveRunForIssue | null>(
       issueId ?? "pending",
     ),
   });
+  const hasActiveRun = activeRunSummary.count > 0;
   const resolvedHasActiveRun = issue
     ? shouldTrackIssueActiveRun(issue) && hasActiveRun
     : hasActiveRun;
   const hasLiveRuns = liveRunCount > 0 || resolvedHasActiveRun;
+  // Every live run is still waiting to start: say so instead of "Live".
+  const headerWaiting = hasLiveRuns
+    && (liveRunCount === 0 || liveRunSummary.waitingOnly)
+    && (!resolvedHasActiveRun || activeRunSummary.waitingOnly);
+  const headerAgentQueue = liveRunSummary.agentQueue ?? (resolvedHasActiveRun ? activeRunSummary.agentQueue : null);
   useEffect(() => {
     if (!hasLiveRuns && locallyQueuedCommentRunIds.size > 0) {
       setLocallyQueuedCommentRunIds(new Map());
@@ -7693,7 +7762,11 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
             {issue.identifier ?? issue.id.slice(0, 8)}
           </span>
         ) : null}
-        {hasLiveRuns && (
+        {headerWaiting ? (
+          <span className="shrink-0" data-testid="issue-header-waiting">
+            <AgentQueueWaitChip queue={headerAgentQueue} />
+          </span>
+        ) : hasLiveRuns && (
           <Badge
             variant="outline"
             className={cn("gap-1.5 text-(length:--text-nano)", liveBlueBadge)}

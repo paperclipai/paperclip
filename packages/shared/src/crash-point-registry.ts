@@ -47,6 +47,13 @@ export const CRASH_POINTS = {
     kinds: ["sandbox_creation_intent", "environment_run_lease_active"],
     invariants: ["I2", "I7"],
   },
+  "native.provider_artifacts.before_capture": {
+    description: "A remote OpenCode session opened and the controller ledger holds no turn command; the launch-artifact capture gate has not saved its receipt. Fail mode throws the typed transfer timeout, so the task must continue on a fresh sandbox without a Retry.",
+    environments: ["daytona"],
+    kinds: ["native_executor_claim"],
+    invariants: ["I2", "I7"],
+    prerequisite: "an OpenCode agent on a sandbox environment, in a run that starts a new provider session (not a continuation that carries saved launch artifacts)",
+  },
   "native.process_start.after_requested_before_spawn": {
     description: "native.process_start_requested is in the run log; runnerd has not been spawned. No provider work started, so a resumed attempt must not be charged.",
     environments: ["local", "daytona"],
@@ -120,6 +127,13 @@ export const CRASH_POINTS = {
     kinds: ["environment_run_lease_active", "environment_retained_hold"],
     invariants: ["I2"],
     prerequisite: "A reuse_by_environment lease that expires or is replaced (destroyReusableSandboxLease). The chaos Daytona environment's leases are ephemeral by default.",
+  },
+  "agent_directory.operation_lock.before_acquire": {
+    description: "A remote agent-directory operation (collect, checkpoint, release) is about to take its per-company-and-agent Postgres lock; no agent file has been read or written. In fail mode the call site throws the lock's own conflict (\"Agent directory operation is already active\"), staging class A's terminal step, so a recovery that collects a stopped run's agent files meets a held lock.",
+    environments: ["daytona"],
+    kinds: ["copyback_owner_hold"],
+    invariants: ["I2", "I7"],
+    prerequisite: "A remote (Daytona) agent directory copy: a task whose run materialized the agent's files in a sandbox.",
   },
   "environment.stop_retain.after_claim_before_stop": {
     description: "A stop-and-retain intent and its claim are committed; the provider stop has not been retried.",

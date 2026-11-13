@@ -12,6 +12,7 @@ import type {
   PrpTerminalState,
 } from "../protocol/replay-contract.js";
 import type {
+  DownloadRunnerAttachment,
   HarnessRuntimeRequest,
   HarnessRuntimeRequestHandoff,
   HarnessRuntimeRequestResolution,
@@ -86,6 +87,8 @@ export interface NativeSessionRecoveryResult {
   session?: NativeSession;
   reason?: string;
   failureClass?: HarnessSessionRecoveryResult["failureClass"];
+  resumeStateUnavailable?: HarnessSessionRecoveryResult["resumeStateUnavailable"];
+  runnerExitConfirmed?: HarnessSessionRecoveryResult["runnerExitConfirmed"];
 }
 
 /** Runner-owned cause: the process was restored, but its active turn was lost. */
@@ -181,6 +184,20 @@ export class NativeSessionCloseUnrecoverableError extends Error {
   }
 }
 
+/** The provider recovery deadline ended a recovery that was still waiting on its Runner. */
+export class NativeProviderRecoveryDeadlineError extends Error {
+  readonly code = "native_provider_recovery_deadline";
+
+  constructor(readonly timeoutMs: number) {
+    super(`native session provider recovery timed out after ${timeoutMs}ms`);
+    this.name = "NativeProviderRecoveryDeadlineError";
+  }
+}
+
+export function isNativeProviderRecoveryDeadlineError(error: unknown): error is NativeProviderRecoveryDeadlineError {
+  return error instanceof Error && "code" in error && error.code === "native_provider_recovery_deadline";
+}
+
 /** An authenticated, exactly bound runner event failed permanent integrity checks. */
 export class NativeSessionProtocolIntegrityError extends Error {
   readonly code = "native_event_replay_conflict";
@@ -220,6 +237,7 @@ export class NativeSessionCleanupQuarantinedError extends Error {
 export interface NativeSession {
   identity(): NativeRunIdentity;
   capabilities(): Promise<NativeSessionCapabilities>;
+  downloadAttachment?: DownloadRunnerAttachment;
   /** completionContract is the attaching run's own contract; a retained session must not keep the prior run's. */
   attachRun?(input: { identity: NativeRunIdentity; currentRunGrant?: NativeRunRuntimeGrant; completionContract?: { revision: string; criterionIds: readonly string[] } }): Promise<void>;
   beginRunAttachment?(input: { identity: NativeRunIdentity }): boolean;
@@ -266,6 +284,7 @@ export interface NativeSession {
   cancel?(input: {
     reason: string;
     signal: AbortSignal;
+    failureCleanup?: boolean;
   }): NativeSessionCancellation;
   settleCancelledTurn?(input: { turnId: string; reason: string }): Promise<CancelledTurnSettlement | null>;
   resolveRuntimeRequest?(input: {

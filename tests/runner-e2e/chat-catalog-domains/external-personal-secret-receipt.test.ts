@@ -86,3 +86,14 @@ it("does not enable the personal receipt option for other credential cases", asy
   const ctx = await context(); ctx.scenario.id = "secrets.least-scope-delivery";
   await expect(secretTestEndpoint(ctx, "morgan", "synthetic-personal-value", "PUBLISHING_API_KEY", undefined, { personalWorkerReceipt: true })).rejects.toThrow("dedicated personal-secret endpoint");
 });
+it("reads the receipt object out of output that carries other text, still requiring the endpoint's receipt", () => {
+  const receipt = JSON.stringify({ ok: true, status: 200, check: "publishing endpoint", receiptId: "a".repeat(48) });
+  const withOutput = (output: string) => { const f = delivery(); f.evidence.events[0]!.payload.prpEvent.payload.output = output; return personalSecretWorkerReceipt(f.run, f.evidence, f.expected); };
+  expect(withOutput(`${receipt}EXIT_CODE=0\n`)).toMatchObject({ receiptId: "a".repeat(48) });
+  expect(withOutput(`checking publishing endpoint...\n${JSON.stringify(JSON.parse(receipt), null, 2)}\nexit: 0 {done}\n`)).toMatchObject({ receiptId: "a".repeat(48) });
+  expect(withOutput(`${receipt.replace("a".repeat(48), "b".repeat(48))}EXIT_CODE=0\n`)).toBeUndefined();
+  expect(withOutput(`${JSON.stringify({ ok: false, status: 403, check: "publishing endpoint", receiptId: "a".repeat(48) })}EXIT_CODE=1\n`)).toBeUndefined();
+  expect(withOutput(`${receipt}\n${receipt.replace("a".repeat(48), "b".repeat(48))}`)).toBeUndefined();
+  expect(withOutput("EXIT_CODE=0\n")).toBeUndefined();
+  expect(withOutput(`receiptId=${"a".repeat(48)} ok=true status=200`)).toBeUndefined();
+});

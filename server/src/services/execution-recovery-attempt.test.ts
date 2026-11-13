@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { accountingForScheduledRetry, executionFailureRetryCount, executionRetryAttemptCount, INTERRUPTED_PREPARATION_RETRY_MAX_ATTEMPTS, INTERRUPTED_PREPARATION_RETRY_REASON } from "./execution-recovery-attempt.js";
+import { accountingForScheduledRetry, AGENT_DIRECTORY_WAIT_RETRY_REASON, executionFailureRetryCount, executionRetryAttemptCount, INTERRUPTED_PREPARATION_RETRY_MAX_ATTEMPTS, INTERRUPTED_PREPARATION_RETRY_REASON } from "./execution-recovery-attempt.js";
+import { AGENT_DIRECTORY_BUSY_MAX_DEFERRALS } from "./heartbeat/agent-directory-busy.js";
 import { RUNNER_REVISION_WAIT_RETRY_REASON } from "./runner-revision-mismatch.js";
 import { RUNNER_REVISION_WAIT_RETRY_REASON as DISPATCH_RUNNER_REVISION_WAIT_RETRY_REASON } from "../modules/run-dispatch/index.js";
 
@@ -119,5 +120,26 @@ describe("storage outage waits", () => {
     expect(executionRetryAttemptCount(afterWorkspaceWait, "storage_unavailable_wait")).toBe(7);
     expect(accountingForScheduledRetry(afterWorkspaceWait, "storage_unavailable_wait", 8)).toMatchObject({ storageWaits: 8, failureRetries: 1 });
     expect(executionFailureRetryCount(afterWorkspaceWait)).toBe(1);
+  });
+});
+
+describe("agent directory waits", () => {
+  it("keep their count through alternating workspace waits and stop at the bound", () => {
+    let run: { scheduledRetryReason: string; scheduledRetryAttempt: number; contextSnapshot: Record<string, unknown> } = {
+      scheduledRetryReason: "transient_failure", scheduledRetryAttempt: 1,
+      contextSnapshot: { executionRetryAccounting: { version: 1, failureRetries: 1, maxTurnContinuations: 0 } } };
+    let directoryWaits = 0;
+    while (executionRetryAttemptCount(run, AGENT_DIRECTORY_WAIT_RETRY_REASON) < AGENT_DIRECTORY_BUSY_MAX_DEFERRALS) {
+      const attempt = executionRetryAttemptCount(run, AGENT_DIRECTORY_WAIT_RETRY_REASON) + 1;
+      run = { scheduledRetryReason: AGENT_DIRECTORY_WAIT_RETRY_REASON, scheduledRetryAttempt: attempt,
+        contextSnapshot: { executionRetryAccounting: accountingForScheduledRetry(run, AGENT_DIRECTORY_WAIT_RETRY_REASON, attempt) } };
+      directoryWaits++;
+      const workspaceAttempt = executionRetryAttemptCount(run, "workspace_busy") + 1;
+      run = { scheduledRetryReason: "workspace_busy", scheduledRetryAttempt: workspaceAttempt,
+        contextSnapshot: { executionRetryAccounting: accountingForScheduledRetry(run, "workspace_busy", workspaceAttempt) } };
+      expect(executionRetryAttemptCount(run, AGENT_DIRECTORY_WAIT_RETRY_REASON)).toBe(directoryWaits);
+    }
+    expect(directoryWaits).toBe(AGENT_DIRECTORY_BUSY_MAX_DEFERRALS);
+    expect(executionFailureRetryCount(run)).toBe(1);
   });
 });

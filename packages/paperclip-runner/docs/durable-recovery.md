@@ -126,7 +126,10 @@ schema). When it starts a turn, before any provider work, it truncates the file
 and writes a `received` record. Immediately before ACPX writes the turn's first
 `session/prompt` request to the provider, it appends a `dispatched` record and
 fsyncs it. ACPX calls the host's `onAcpMessage("outbound")` hook synchronously
-before it writes the bytes, so a failed journal write aborts the prompt write.
+before it writes the bytes. ACPX 0.22 ignores errors from that hook, so the port
+keeps a failed journal write and throws it from the turn's `assertActive`, which
+ACPX calls next, before the write. A failed journal write therefore aborts the
+prompt write.
 
 The Runner reads the journal only after it acquires the provider lifetime fence,
 which proves that the sidecar and the provider are gone.
@@ -156,10 +159,13 @@ which proves that the sidecar and the provider are gone.
   `authentication`, `permission` or `invalid_request` records
   `native_provider_startup_rejected`. No provider work began, so the
   controller stops same-run bootstrap retries and the board offers Retry at once
-  with the provider message. On a remote execution target, every definite
-  `session.open` failure with a startup `providerFailure` records the same code,
-  because a remote same-run bootstrap after the runner launched cannot prove
-  ownership and would stop on `ambiguous_remote_recovery_evidence`. On a local
+  with the provider message. On a remote execution target, a definite
+  `session.open` failure with a startup `providerFailure` keeps a same-run
+  bootstrap retry only when the transport's close settled the runner and
+  observed its exit (`runnerExitConfirmed`); restart recovery accepts that proof
+  as it accepts a runner's own exit. Without it, or when the failure repeats the
+  previous attempt's startup error, it records the same code, because a remote
+  same-run bootstrap cannot then prove ownership. On a local
   target, other startup failures (unknown, transient, rate limit, quota, model)
   keep the bounded same-run startup retries and end as
   `native_session_retry_exhausted` with Retry. A run an older release held on
@@ -204,16 +210,24 @@ Restore re-binds a saved session to the current launch profile, and keeps the
 conversation, only when all of these are true:
 
 - The session is in one of these two states:
-  - **Suspended.** It has no active turn, pending runtime request, undelivered
-    provider event, or unconfirmed provider exit.
-  - **An interrupted turn or open session of the same heartbeat run.** The
-    deploy restarted the runner and the same run resumes. There is no accepted
-    semantic result, no pending runtime request, no unconfirmed provider exit,
-    and no active goal. Same-build recovery then runs unchanged. It reopens an
-    open session. For an active turn it uses lost-turn recovery: the
+  - **Settled.** This is the same rule `run.attach` uses to admit a session.
+    The warm-attach readiness probe reports the same guards, and also waits
+    until a restore notice is acknowledged. The session is not closed, has a provider identity, has no active turn and no
+    unconfirmed provider exit, and has no undelivered provider event except a
+    `session.resumed` restore notice. The lifecycle, the run that saved the
+    session, and an accepted semantic result do not matter. A Runner that is
+    retired or parked without `runner.suspend` leaves an open session, often
+    with the finished turn's result. The next run attaches to it on the
+    upgraded build, as it would on the same build. Same-build recovery then
+    runs unchanged.
+  - **An interrupted turn of the same heartbeat run.** The deploy restarted
+    the runner mid-turn and the same run resumes. There is no accepted
+    semantic result, no unconfirmed provider exit, and no active goal.
+    Lost-turn recovery then runs as it does after a same-build restart: the
     conversation is restored once the original provider lifetime loses its
-    fence quorum, and otherwise the lost turn is closed. An active turn or open
-    session saved by a different run stays strict.
+    fence quorum, and otherwise the lost turn is closed. An active turn saved
+    by a different run stays strict.
+- No runtime request is pending.
 - The startup has no candidate admission.
 - The saved descriptor names the same launch as this startup: the same
   executable and sidecar file names, and identical non-path arguments. The
@@ -228,7 +242,10 @@ identity. Candidate grants and run bindings keep their own checks.
 
 Any other launch-profile mismatch, and a saved descriptor that names a release
 this build does not qualify, fails restore with the closed command-result
-classification `provider_state_incompatible`. The controller reads the classification from the
+classification `provider_state_incompatible`. A launch-profile mismatch names
+each condition that prevented the re-bind, for example `ACPX durable launch
+profile digest does not match runner startup (not re-bound:
+durable_active_turn)` or `(not re-bound: launch_shape_changed)`. The controller reads the classification from the
 authenticated result, not from the message. If the run allows a replacement
 after a failed resume, it opens a fresh provider session as before. Otherwise the
 run fails with `native_provider_state_incompatible` and is not retried. A board
@@ -357,8 +374,13 @@ Each provider declares how in `ACPX_RELEASE_ATTESTATIONS`
 
 `generate:acpx-profiles` writes the computed digests and `check:acpx-profiles`
 refuses a stale one, so a digest changes only with its upstream release. Every
-ACPX harness binds the shared ACPX layer the same way: saved inputs must match
-the current ACPX version, and the provider pack's `contractDigest` binds the
+ACPX harness binds the shared ACPX layer the same way. Saved sessions carry
+forward across an ACPX upgrade when the new ACPX loads the records the old one
+wrote: Runner moves a saved descriptor that names a release in
+`CARRIED_ACPX_RELEASES` to the current one, and the session identity keeps its
+original ACPX value, so the saved session key and identity record still match.
+A session saved by any other ACPX release is refused as
+`provider_state_incompatible`. The provider pack's `contractDigest` binds the
 Runner's ACPX patch with the other Runner contracts. Runner source changes
 change no provider digest.
 

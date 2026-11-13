@@ -154,6 +154,14 @@ describe("execution workspace policy helpers", () => {
     ).toEqual({ type: "git_worktree", existingBranch: "PAP-14754-run-redaction" });
   });
 
+  it("admits a fresh isolated continuation of a projectless task whose binding the fallback cleared", () => {
+    const issue = { projectId: null, projectWorkspaceId: null, executionWorkspaceId: null,
+      executionWorkspacePreference: "reuse_existing" };
+    expect(isUnrunnableWorktreeCombo({ issue, resolvedMode: "isolated_workspace", resolvedStrategy: "git_worktree" })).toBe(true);
+    expect(isUnrunnableWorktreeCombo({ issue, resolvedMode: "isolated_workspace", resolvedStrategy: "git_worktree",
+      freshIsolatedContinuation: true })).toBe(false);
+  });
+
   it("centralizes unrunnable isolated worktree detection", () => {
     expect(
       isUnrunnableWorktreeCombo({
@@ -777,15 +785,6 @@ describe("operator default isolated execution workspaces", () => {
         resolvedStrategy: resolveEffectiveWorkspaceStrategyType(mode, config),
       }),
     ).toBe(false);
-  });
-});
-
-describe("project-owned environment", () => {
-  it("gives the project priority while keeping task trust and managed-only restrictions", () => {
-    const defaults = { agentDefaultEnvironmentId: "agent-env", instanceDefaultEnvironmentId: "instance-env", localDefaultEnvironmentId: "local-env" };
-    expect(resolveExecutionWorkspaceEnvironmentId({ ...defaults, projectEnvironmentId: "project-env" })).toEqual({ environmentId: "project-env", source: "project" });
-    expect(resolveExecutionWorkspaceEnvironmentId({ ...defaults, projectEnvironmentId: "project-env", lowTrustIssueEnvironmentId: "task-sandbox" })).toEqual({ environmentId: "task-sandbox", source: "issue" });
-    expect(resolveExecutionWorkspaceEnvironmentId({ ...defaults, projectEnvironmentId: "local-env", managedSandboxOnly: true, managedSandboxEnvironmentId: "managed-env" })).toEqual({ environmentId: "managed-env", source: "managed" });
   });
 });
 

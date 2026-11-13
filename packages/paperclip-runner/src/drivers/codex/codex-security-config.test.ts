@@ -1,6 +1,6 @@
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { resolvePinnedCodexCommand } from "./codex-command.js";
@@ -8,6 +8,7 @@ import { evalProviderTransportOptions } from "../../cli/eval-provider-runtime.js
 import { describe, expect, it } from "vitest";
 
 import {
+  CODEX_PROVIDER_CREDENTIAL_ENVIRONMENT_KEYS,
   CODEX_UPDATE_PLAN_TOOL_CONFIG,
   codexExecutableReadOnlyRoots,
   codexNetworkReadOnlyRoots,
@@ -509,6 +510,37 @@ describe("Codex security configuration", () => {
     });
   });
 
+  it("lets externally sandboxed commands inherit the Runner environment except Codex credentials", () => {
+    const source = { PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: "1", PAPERCLIP_CONFIGURED_ENV_KEYS: '["STRIPE_SECRET_KEY"]', STRIPE_SECRET_KEY: "fixture-secret-value" };
+    const args = createIsolatedCodexAppServerArgs(source);
+    const serialized = args.join("\n");
+    expect(serialized).not.toContain("shell_environment_policy.include_only=");
+    expect(args).toContain('shell_environment_policy.inherit="all"');
+    expect(args).toContain("shell_environment_policy.ignore_default_excludes=true");
+    const exclude = JSON.parse(args.find(arg => arg.startsWith("shell_environment_policy.exclude="))!.split("=").slice(1).join("="));
+    expect(exclude).toEqual([...CODEX_PROVIDER_CREDENTIAL_ENVIRONMENT_KEYS]);
+    expect(serialized).not.toContain("fixture-secret-value");
+    expect(createIsolatedCodexAppServerArgs({ PAPERCLIP_CONFIGURED_ENV_KEYS: '["STRIPE_SECRET_KEY"]', STRIPE_SECRET_KEY: "fixture-secret-value" }).join("\n"))
+      .toContain('shell_environment_policy.include_only=["STRIPE_SECRET_KEY"]');
+  });
+
+  it("excludes every credential the Runner passes to Codex", () => {
+    const source = readFileSync(resolve(import.meta.dirname, "../../../runner/crates/runner-core/src/codex_provider.rs"), "utf8");
+    const block = /const CODEX_PROVIDER_ENVIRONMENT_KEYS: &\[&str\] = &\[([^\]]*)\];/u.exec(source)?.[1];
+    expect(block).toBeDefined();
+    const runnerKeys = [...block!.matchAll(/"([A-Z0-9_]+)"/gu)].map(match => match[1]);
+    const commandVisible = new Set([
+      "OTEL_EXPORTER_OTLP_LOGS_TIMEOUT", "OTEL_EXPORTER_OTLP_TRACES_TIMEOUT",
+      "PAPERCLIP_AGENT_KEY_ID", "PAPERCLIP_AGENT_PUBLIC_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY",
+      "PAPERCLIP_RUNNER_HOME_MODE", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "CODEX_HOME",
+      "PAPERCLIP_RUNNER_EXTERNAL_SANDBOX",
+    ]);
+    expect(runnerKeys.length).toBeGreaterThan(0);
+    for (const key of runnerKeys) {
+      expect(commandVisible.has(key) || CODEX_PROVIDER_CREDENTIAL_ENVIRONMENT_KEYS.includes(key), `${key} must be classified`).toBe(true);
+    }
+  });
+
   it("uses the outer sandbox for default-mode commands only when the controller authorizes it", () => {
     const source = { PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: "1", PAPERCLIP_RUNNER_NETWORK_ACCESS: "enabled" };
     const externalArgs = createIsolatedCodexAppServerArgs(source);
@@ -550,5 +582,45 @@ describe("Codex security configuration", () => {
     expect(createIsolatedCodexAppServerArgs({})).not.toContain(
       "--dangerously-bypass-approvals-and-sandbox",
     );
+  });
+
+  it("keeps planning read-only inside an external sandbox without Codex's network-isolated helpers", () => {
+    const planningArgs = (source: NodeJS.ProcessEnv) => {
+      const args = createIsolatedCodexAppServerArgs(source);
+      return {
+        filesystem: args.find(arg => arg.startsWith("permissions.paperclip-runner-workspace-read-only.filesystem=")),
+        network: args.find(arg => arg.startsWith("permissions.paperclip-runner-workspace-read-only.network.enabled=")),
+      };
+    };
+    const external = planningArgs({
+      PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: "1",
+      PAPERCLIP_RUNNER_NETWORK_ACCESS: "enabled",
+      HOME: "/home/daytona/.paperclip/codex-home",
+      CODEX_HOME: "/home/daytona/.paperclip/codex-home",
+      PAPERCLIP_GITHUB_BROKER_TOKEN: "broker-capability",
+      GH_CONFIG_DIR: "/home/daytona/.paperclip/gh",
+    });
+    expect(external).toEqual({
+      filesystem: 'permissions.paperclip-runner-workspace-read-only.filesystem={":root"="read","/home/daytona/.paperclip/gh"="write"}',
+      network: "permissions.paperclip-runner-workspace-read-only.network.enabled=true",
+    });
+    expect(external.filesystem).not.toContain('="none"');
+    expect(external.filesystem).not.toContain(":workspace_roots");
+    expect(planningArgs({
+      PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: "1",
+      PAPERCLIP_RUNNER_NETWORK_ACCESS: "disabled",
+      CODEX_HOME: "/home/daytona/.paperclip/codex-home",
+    })).toEqual({
+      filesystem: 'permissions.paperclip-runner-workspace-read-only.filesystem={":root"="read"}',
+      network: "permissions.paperclip-runner-workspace-read-only.network.enabled=false",
+    });
+
+    const local = planningArgs({ HOME: "/home/user", CODEX_HOME: "/home/user/.codex" });
+    expect(local.filesystem).toContain('":root"="none"');
+    expect(local.filesystem).toContain('"/home/user/.codex"="none"');
+    expect(local.filesystem).toContain('":workspace_roots"={"."="read"}');
+    expect(local.network).toBe("permissions.paperclip-runner-workspace-read-only.network.enabled=false");
+    expect(planningArgs({ PAPERCLIP_RUNNER_NETWORK_ACCESS: "enabled" }).network)
+      .toBe("permissions.paperclip-runner-workspace-read-only.network.enabled=true");
   });
 });

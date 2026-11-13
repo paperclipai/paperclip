@@ -1,6 +1,6 @@
-import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Children, createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Agent } from "@paperclipai/shared";
-import { AlertTriangle, ArrowUpRight, Bot, Check, CheckCircle2, ChevronDown, ChevronRight, CircleDashed, Clock, ExternalLink, FileText, GitBranch, ImagePlus, KeyRound, Loader2, MessageSquareQuote, MinusCircle, ShieldAlert, ThumbsUp, TriangleAlert, Wrench, X, XCircle } from "lucide-react";
+import { AlertTriangle, ArrowUpRight, Bot, Check, CheckCircle2, ChevronDown, ChevronRight, CircleDashed, Clock, ExternalLink, FileText, GitBranch, ImagePlus, KeyRound, Loader2, Lock, MessageSquareQuote, MinusCircle, ShieldAlert, ThumbsUp, TriangleAlert, Wrench, X, XCircle } from "lucide-react";
 import { Link } from "@/lib/router";
 import { appTabHref } from "@/pages/apps/app-tabs";
 import { formatAssigneeUserLabel } from "../lib/assignees";
@@ -37,6 +37,7 @@ import { cn, formatDateTime, formatShortDate } from "../lib/utils";
 import { InteractionPreparationNotice } from "./InteractionPreparationNotice";
 import { InteractionAudienceLine } from "./InteractionAudienceLine";
 import { MarkdownBody, type MarkdownExternalReferenceMap } from "./MarkdownBody";
+import { PromptText } from "./PromptText";
 import { Button } from "./ui/button";
 import { Checkbox } from "./ui/checkbox";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./ui/collapsible";
@@ -55,6 +56,8 @@ import { CoordinatorTaskCommitment } from "./coordinator/CoordinatorTaskCommitme
 
 import { DecisionCardFooter } from "./DecisionCardFooter";
 import { ToolActionAuditHashCopy } from "./ToolActionAuditHashCopy";
+import { NeedsYouPanel, NeedsYouPanelNote, NeedsYouPanelRow } from "./coordinator/NeedsYouCardKit";
+import { claimReviseDraftWork, clearReviseDraft, releaseReviseDraftWork, reviseDraftKey, useReviseDraft, type ReviseDraftWork } from "@/lib/revise-draft-store";
 
 const OTHER_ANSWER_ID = "__paperclip_other__";
 
@@ -105,6 +108,14 @@ interface IssueThreadInteractionCardProps {
   /** Reuse the resolver without the task timeline's audit/header chrome. */
   footerSlot?: ReactNode;
   presentationVariant?: "default" | "coordinator-decision";
+  /**
+   * The Needs You card's audience line already says who may answer, so the
+   * compact decision keeps its own clause for screen readers only (PAP-767).
+   */
+  audienceStated?: boolean;
+  /** The Needs You page's artifact row ("Plan · Open in sidebar ↗"): the first
+   * row of a compact decision's context panel (PAP-775). */
+  artifactRow?: ReactNode;
   agentMap?: Map<string, Agent>;
   currentUserId?: string | null;
   userLabelMap?: ReadonlyMap<string, string> | null;
@@ -133,6 +144,9 @@ interface IssueThreadInteractionCardProps {
   ) => Promise<void> | void;
   /** Render confirmation CTAs with the primary action rightmost (task-chat grammar). */
   primaryActionOnRight?: boolean;
+  /** This decision is also rendered in another view (Needs You card + Review
+   * side panel): share one Revise… draft between them (PAP-773). */
+  shareReviseDraft?: boolean;
   onSubmitInteractionVerdicts?: (
     interaction: RequestItemVerdictsInteraction,
     verdicts: { id: string; verdict: RequestItemVerdictValue; reason?: string }[],
@@ -203,6 +217,60 @@ function statusLabel(status: IssueThreadInteraction["status"]) {
     default:
       return status;
   }
+}
+
+/**
+ * The agent's one-line note on a compact decision (PAP-775, UI1): it explains
+ * the ask, so it sits under the prompt, never above it, and is left out when
+ * it only repeats the prompt.
+ */
+function compactDecisionNote(interaction: IssueThreadInteraction, prompts: ReadonlyArray<string | null | undefined>): string | null {
+  const note = interaction.summary?.trim();
+  if (!note) return null;
+  return prompts.some(text => text?.trim() === note) ? null : note;
+}
+
+function CompactDecisionNote({ note }: { note: string | null }) {
+  return note ? <p data-decision-note className="text-sm text-muted-foreground">{note}</p> : null;
+}
+
+/** The ask on a compact decision: the largest text on the card (UI1). */
+function CompactDecisionAsk({ children }: { children: ReactNode }) {
+  return <div role="heading" aria-level={2} data-decision-prompt className="text-base font-medium text-foreground">{children}</div>;
+}
+
+/** The Needs You page's ready-made artifact row ("Plan · Open in sidebar ↗"). */
+const CompactArtifactRowContext = createContext<ReactNode>(null);
+
+/**
+ * A compact decision's inset context panel (PAP-775, Paper "A · Compact
+ * cards"). The artifact row the page passes in is always its first row.
+ */
+function DecisionPanel({ children }: { children?: ReactNode }) {
+  const artifactRow = useContext(CompactArtifactRowContext);
+  const rows = Children.toArray(children);
+  if (!artifactRow && rows.length === 0) return null;
+  return <NeedsYouPanel>{artifactRow}{rows}</NeedsYouPanel>;
+}
+
+/** Markdown inside a panel: the first line reads as the panel's title, the rest as its note. */
+function DecisionPanelMarkdown({ markdown, lead = true, externalReferences }: {
+  markdown: string;
+  lead?: boolean;
+  externalReferences?: MarkdownExternalReferenceMap;
+}) {
+  const text = markdown.trim();
+  const breakAt = lead ? text.indexOf("\n") : 0;
+  const first = lead ? (breakAt < 0 ? text : text.slice(0, breakAt)).trim() : "";
+  const rest = lead ? (breakAt < 0 ? "" : text.slice(breakAt + 1)).trim() : text;
+  return <>
+    {first ? <div className="text-(length:--text-compact) leading-5 text-foreground">
+      <MarkdownBody className="paperclip-markdown-on-accent" externalReferences={externalReferences}>{first}</MarkdownBody>
+    </div> : null}
+    {rest ? <div className="text-xs leading-4.5 text-muted-foreground">
+      <MarkdownBody className="paperclip-markdown-on-accent" externalReferences={externalReferences}>{rest}</MarkdownBody>
+    </div> : null}
+  </>;
 }
 
 function interactionKindLabel(kind: IssueThreadInteraction["kind"]) {
@@ -734,6 +802,7 @@ function TaskTreeNode({
 function SuggestTasksCard({
   footerSlot,
   interaction,
+  compact = false,
   agentMap,
   currentUserId,
   userLabelMap,
@@ -741,6 +810,7 @@ function SuggestTasksCard({
   onRejectInteraction,
 }: {
   footerSlot?: ReactNode;
+  compact?: boolean;
   interaction: SuggestTasksInteraction;
   agentMap?: Map<string, Agent>;
   currentUserId?: string | null;
@@ -857,6 +927,62 @@ function SuggestTasksCard({
     });
   }
 
+  if (compact && interaction.status === "pending") {
+    // Paper "Accept suggested tasks": a checklist with each owner under its task.
+    const rows: { node: SuggestedTaskTreeNode; depth: number }[] = [];
+    const visit = (node: SuggestedTaskTreeNode, depth: number) => {
+      rows.push({ node, depth });
+      for (const child of node.children) if (!child.task.hiddenInPreview) visit(child, depth + 1);
+    };
+    roots.forEach((root) => visit(root, 0));
+    const hiddenCount = totalTasks - rows.length;
+    const ownersShown = rows.some(({ node }) => node.task.assigneeAgentId || node.task.assigneeUserId);
+    return (
+      <div className="space-y-4">
+        <DecisionPanel>
+          <div role="group" aria-label="Suggested tasks" className="flex flex-col gap-2">
+            {rows.map(({ node, depth }) => {
+              const task = node.task;
+              const owner = task.assigneeAgentId || task.assigneeUserId
+                ? resolveActorLabel({ agentId: task.assigneeAgentId, userId: task.assigneeUserId, agentMap, currentUserId, userLabelMap })
+                : null;
+              const meta = [owner, task.billingCode, ...(task.labels ?? [])].filter(Boolean).join(" · ");
+              return (
+                <div key={task.clientKey} className="flex items-start gap-2.5" style={depth > 0 ? { paddingLeft: `calc(var(--spacing) * 6 * ${depth})` } : undefined}>
+                  <Checkbox
+                    checked={selectedClientKeys.has(task.clientKey)}
+                    onCheckedChange={(checked) => handleToggleSelection(node, checked === true)}
+                    disabled={working !== null}
+                    aria-label={`Include ${task.title}`}
+                    className="mt-0.5"
+                  />
+                  <span className="flex min-w-0 flex-col gap-0.5">
+                    <span className="text-(length:--text-compact) font-medium leading-5 text-foreground">{task.title}</span>
+                    {meta ? <span className="text-xs leading-4.5 text-muted-foreground">{meta}</span> : null}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+          <NeedsYouPanelNote>
+            {selectedCount} of {totalTasks} selected
+            {hiddenCount > 0 ? ` · ${hiddenCount} follow-on ${hiddenCount === 1 ? "task" : "tasks"} not shown` : ""}
+            {ownersShown ? " · Creates tasks with the owners shown" : ""}
+          </NeedsYouPanelNote>
+        </DecisionPanel>
+        <DecisionCardFooter leading={footerSlot}>
+          <Button size="sm" variant="ghost" disabled={!onRejectInteraction || working !== null} onClick={() => void handleReject()}>
+            {working === "reject" ? <><Loader2 className="h-3.5 w-3.5 animate-spin" />Declining…</> : "Decline all"}
+          </Button>
+          <Button size="sm" disabled={!onAcceptInteraction || working !== null || selectedCount === 0} onClick={() => void handleAccept()}>
+            {working === "accept" ? <><Loader2 className="h-3.5 w-3.5 animate-spin" />Creating…</> : `Create ${selectedCount} ${selectedCount === 1 ? "task" : "tasks"}`}
+          </Button>
+        </DecisionCardFooter>
+        <InteractionActionError message={actionError} />
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
@@ -928,6 +1054,25 @@ function SuggestTasksCard({
 
             <DecisionCardFooter leading={footerSlot} className="w-full">
               <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+                {/* The primary action sits right-most (PAP-775, UI4). */}
+                {selectedCount < totalTasks ? (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={working !== null}
+                    onClick={() => setSelectedClientKeys(new Set(interaction.payload.tasks.map((task) => task.clientKey)))}
+                  >
+                    Reset selection
+                  </Button>
+                ) : null}
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={!onRejectInteraction || working !== null}
+                  onClick={() => setRejecting((current) => !current)}
+                >
+                  Reject
+                </Button>
                 <Button
                   size="sm"
                   disabled={!onAcceptInteraction || working !== null || selectedCount === 0}
@@ -942,24 +1087,6 @@ function SuggestTasksCard({
                     selectedCount === totalTasks ? "Accept drafts" : "Accept selected drafts"
                   )}
                 </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={!onRejectInteraction || working !== null}
-                  onClick={() => setRejecting((current) => !current)}
-                >
-                  Reject
-                </Button>
-                {selectedCount < totalTasks ? (
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    disabled={working !== null}
-                    onClick={() => setSelectedClientKeys(new Set(interaction.payload.tasks.map((task) => task.clientKey)))}
-                  >
-                    Reset selection
-                  </Button>
-                ) : null}
               </div>
             </DecisionCardFooter>
           </div>
@@ -1022,8 +1149,8 @@ function QuestionOptionButton({
       role={selectionMode === "single" ? "radio" : "checkbox"}
       aria-checked={selected}
       className={cn(
-        compact ? "flex w-full items-start gap-3 rounded-md px-3 py-2 text-left transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring" : "w-full rounded-sm border px-4 py-3 text-left transition-colors outline-none focus-visible:border-ring focus-visible:ring-(length:--rad-3) focus-visible:ring-ring/50",
-        compact ? (selected ? "bg-muted text-foreground" : "text-foreground hover:bg-muted/50") : selected
+        compact ? "flex w-full items-start gap-2.5 rounded-sm px-1 py-1 text-left transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring" : "w-full rounded-sm border px-4 py-3 text-left transition-colors outline-none focus-visible:border-ring focus-visible:ring-(length:--rad-3) focus-visible:ring-ring/50",
+        compact ? (selected ? "text-foreground" : "text-muted-foreground hover:text-foreground") : selected
           ? "border-sky-500/80 bg-sky-500/10 text-sky-950 dark:border-sky-400/80 dark:bg-sky-400/15 dark:text-sky-50"
           : "border-border/70 bg-transparent text-foreground hover:border-sky-500/70 hover:bg-sky-500/10 dark:hover:border-sky-400/70 dark:hover:bg-sky-400/10",
       )}
@@ -1036,8 +1163,8 @@ function QuestionOptionButton({
       <div className={compact ? "min-w-0" : "contents"}>
       <div
         className={cn(
-          "text-sm font-medium",
-          selected && !compact ? "text-sky-950 dark:text-sky-50" : "text-foreground",
+          compact ? "text-(length:--text-compact) leading-5" : "text-sm font-medium",
+          compact ? undefined : selected ? "text-sky-950 dark:text-sky-50" : "text-foreground",
         )}
       >
         {label}
@@ -1045,7 +1172,7 @@ function QuestionOptionButton({
       {description ? (
         <div
           className={cn(
-            "mt-1 text-sm leading-6",
+            compact ? "text-xs leading-4.5" : "mt-1 text-sm leading-6",
             selected && !compact
               ? "text-sky-900/80 dark:text-sky-100/80"
               : "text-muted-foreground",
@@ -1154,7 +1281,7 @@ function AskUserQuestionsCard({
     if (optionId === OTHER_ANSWER_ID || isFreeText) {
       setOtherActiveQuestions((current) => ({
         ...current,
-        [questionId]: !current[questionId],
+        [questionId]: selectionMode === "single" || !current[questionId],
       }));
       if (selectionMode === "single") {
         setDraftAnswers((current) => ({ ...current, [questionId]: [] }));
@@ -1196,6 +1323,7 @@ function AskUserQuestionsCard({
         }),
       );
     } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
       setActionError(resolutionErrorMessage(error));
     } finally {
       setWorking(false);
@@ -1215,6 +1343,15 @@ function AskUserQuestionsCard({
     }
   }
 
+  // A compact card asks once (its title, or the only question) and lists the
+  // questions in its panel, numbered when there are several (PAP-775).
+  const questionSet = interaction.payload.questionSet;
+  const onlyPrompt = (questionSet ? questionSet.questions : questions).length === 1
+    ? (questionSet ? questionSet.questions[0]?.prompt : questions[0]?.prompt) ?? null
+    : null;
+  const compactAsk = questionSet?.title ?? interaction.payload.title ?? interaction.title ?? onlyPrompt ?? "Answer these questions";
+  const promptStated = compactAsk === onlyPrompt;
+
   return (
     <div className="space-y-4">
       {!compact ? <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
@@ -1227,6 +1364,9 @@ function AskUserQuestionsCard({
             ? "1 question"
             : `${questions.length} questions`}
         </span>
+      </div> : interaction.status === "pending" ? <div className="space-y-3">
+        <CompactDecisionAsk><PromptText>{compactAsk}</PromptText></CompactDecisionAsk>
+        <CompactDecisionNote note={compactDecisionNote(interaction, [compactAsk, questionSet?.description, ...questions.flatMap(entry => [entry.prompt, entry.helpText])])} />
       </div> : null}
 
       {interaction.status === "pending" && interaction.payload.questionSet ? (
@@ -1234,6 +1374,7 @@ function AskUserQuestionsCard({
           footerSlot={footerSlot}
           id={interaction.id}
           presentation={compact ? "decision" : "default"}
+          promptStated={compact && promptStated}
           questionSet={interaction.payload.questionSet}
           draftKey={`issue-question:${interaction.companyId}:${interaction.id}`}
           disabled={!onSubmitInteractionAnswers}
@@ -1259,6 +1400,7 @@ function AskUserQuestionsCard({
             try {
               await onSubmitInteractionAnswers?.(interaction, answers);
             } catch (error) {
+              if (error instanceof DOMException && error.name === "AbortError") throw error;
               throw new Error(resolutionErrorMessage(error));
             }
           }}
@@ -1272,26 +1414,84 @@ function AskUserQuestionsCard({
         />
       ) : interaction.status === "pending" ? (
         <div className="space-y-4">
-          {questions.map((question, index) => {
+          {compact ? <DecisionPanel>{questions.map((question, index) => (
+            <div key={question.id} className="flex flex-col gap-1.5">
+              <div className={cn("text-(length:--text-compact) leading-5", promptStated && "sr-only")}>
+                <div id={`${interaction.id}-${question.id}-prompt`} className="font-medium text-foreground">
+                  {questions.length > 1 ? `${index + 1}. ` : ""}<PromptText>{question.prompt}</PromptText>
+                </div>
+                <span aria-hidden className="text-muted-foreground"> · {question.required ? "Required" : "Optional"}</span>
+              </div>
+              {question.helpText ? <span className="text-xs leading-4.5 text-muted-foreground">{question.helpText}</span> : null}
+              <span className="sr-only" id={`${interaction.id}-${question.id}-requirements`}>
+                {question.selectionMode === "single" ? "Choose one answer." : "Choose one or more answers."} {question.required ? "Required." : "Optional."}
+              </span>
+              <div
+                className="flex flex-col"
+                role={question.selectionMode === "single" ? "radiogroup" : "group"}
+                aria-labelledby={`${interaction.id}-${question.id}-prompt`}
+                aria-describedby={`${interaction.id}-${question.id}-requirements`}
+                aria-required={question.selectionMode === "single" && question.required ? true : undefined}
+              >
+                {question.options.map((option) => {
+                  const isFreeText = option.freeText === true;
+                  const optionSelected = isFreeText
+                    ? otherActiveQuestions[question.id] === true
+                    : (draftAnswers[question.id] ?? []).includes(option.id);
+                  return (
+                    <QuestionOptionButton
+                      key={option.id}
+                      compact
+                      id={`${interaction.id}-${question.id}-${option.id}`}
+                      label={option.label}
+                      description={option.description}
+                      selected={optionSelected}
+                      selectionMode={question.selectionMode}
+                      onClick={() => toggleOption(question.id, option.id, question.selectionMode, isFreeText)}
+                    />
+                  );
+                })}
+                {question.options.some((option) => option.freeText === true) || question.allowOther === false ? null : (
+                  <QuestionOptionButton
+                    compact
+                    id={`${interaction.id}-${question.id}-other`}
+                    label="Other"
+                    selected={otherActiveQuestions[question.id] === true}
+                    selectionMode={question.selectionMode}
+                    onClick={() => toggleOption(question.id, OTHER_ANSWER_ID, question.selectionMode)}
+                  />
+                )}
+              </div>
+              {otherActiveQuestions[question.id] ? (
+                <Textarea
+                  aria-label={`Describe your answer for ${question.prompt}`}
+                  value={draftOtherAnswers[question.id] ?? ""}
+                  onChange={(event) =>
+                    setDraftOtherAnswers((current) => ({ ...current, [question.id]: event.target.value }))}
+                  placeholder="Add context for the agent…"
+                  className="min-h-16 bg-card text-(length:--text-compact)"
+                />
+              ) : null}
+            </div>
+          ))}</DecisionPanel> : questions.map((question, index) => {
             const hasFreeTextOption = question.options.some(
               (option) => option.freeText === true,
             );
             return (
             <div
               key={question.id}
-              className={compact ? "space-y-3" : "rounded-2xl border border-border/70 bg-background/82 p-4 shadow-(--shadow-extract-9)"}
+              className="rounded-2xl border border-border/70 bg-background/82 p-4 shadow-(--shadow-extract-9)"
             >
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  {!compact ? <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
+                  <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
                     Question {index + 1}
-                  </div> : null}
+                  </div>
                   <div
                     id={`${interaction.id}-${question.id}-prompt`}
-                    data-decision-prompt={compact ? true : undefined}
-                    className={compact ? "text-lg font-medium leading-relaxed text-foreground" : "mt-1 text-sm font-semibold text-foreground"}
+                    className="mt-1 text-sm font-semibold text-foreground"
                   >
-                    {question.prompt}
+                    <PromptText>{question.prompt}</PromptText>
                   </div>
                   {question.helpText ? (
                     <p className="mt-1 text-sm leading-6 text-muted-foreground">
@@ -1299,13 +1499,11 @@ function AskUserQuestionsCard({
                     </p>
                   ) : null}
                 </div>
-                {compact ? <span className="sr-only" id={`${interaction.id}-${question.id}-requirements`}>
-                  {question.selectionMode === "single" ? "Choose one answer." : "Choose one or more answers."} {question.required ? "Required." : "Optional."}
-                </span> : <TaskField
+                <TaskField
                   label={question.selectionMode === "single" ? "Pick" : "Pick many"}
                   value={question.required ? "Required" : "Optional"}
                   tone="subtle"
-                />}
+                />
               </div>
 
               <div className="mt-3 space-y-3">
@@ -1313,7 +1511,6 @@ function AskUserQuestionsCard({
                   className="grid gap-3"
                   role={question.selectionMode === "single" ? "radiogroup" : "group"}
                   aria-labelledby={`${interaction.id}-${question.id}-prompt`}
-                  aria-describedby={compact ? `${interaction.id}-${question.id}-requirements` : undefined}
                   aria-required={question.selectionMode === "single" && question.required ? true : undefined}
                 >
                   {question.options.map((option) => {
@@ -1324,7 +1521,6 @@ function AskUserQuestionsCard({
                     return (
                       <div key={option.id} className="space-y-2">
                         <QuestionOptionButton
-                          compact={compact}
                           id={`${interaction.id}-${question.id}-${option.id}`}
                           label={option.label}
                           description={option.description}
@@ -1350,30 +1546,22 @@ function AskUserQuestionsCard({
                       </div>
                     );
                   })}
-                </div>
                 {/*
-                 * The built-in "Other" link is the fallback free-text affordance.
+                 * The built-in "Other" option is the fallback free-text affordance.
                  * Suppress it when the agent already authored a first-class
                  * free-text option so the card never shows two ways to type an
                  * answer (PAP-419).
                  */}
                 {hasFreeTextOption || question.allowOther === false ? null : (
-                  <>
-                    <button
-                      type="button"
+                  <div className="space-y-2">
+                    <QuestionOptionButton
                       id={`${interaction.id}-${question.id}-other`}
-                      aria-expanded={otherActiveQuestions[question.id] === true}
-                      className={cn(
-                        "text-sm font-medium underline underline-offset-4 transition-colors outline-none focus-visible:ring-(length:--rad-3) focus-visible:ring-ring/50",
-                        otherActiveQuestions[question.id]
-                          ? "text-sky-700 hover:text-sky-800 dark:text-sky-300 dark:hover:text-sky-200"
-                          : "text-muted-foreground hover:text-foreground",
-                      )}
+                      label="Other"
+                      selected={otherActiveQuestions[question.id] === true}
+                      selectionMode={question.selectionMode}
                       onClick={() =>
                         toggleOption(question.id, OTHER_ANSWER_ID, question.selectionMode)}
-                    >
-                      Other
-                    </button>
+                    />
                     {otherActiveQuestions[question.id] ? (
                       <Textarea
                         aria-label={`Other answer for ${question.prompt}`}
@@ -1387,8 +1575,9 @@ function AskUserQuestionsCard({
                         className="min-h-24 bg-background text-sm"
                       />
                     ) : null}
-                  </>
+                  </div>
                 )}
+                </div>
               </div>
             </div>
             );
@@ -1805,15 +1994,32 @@ function ToolActionResolution({
   );
 }
 
+/** The redacted arguments as one line ("repo: acme/onboarding · tag: pilot-v1"). */
+function toolArgumentsLine(json: string): string | null {
+  try {
+    const parsed: unknown = JSON.parse(json);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const parts = Object.entries(parsed as Record<string, unknown>)
+      .filter(([, value]) => ["string", "number", "boolean"].includes(typeof value))
+      .slice(0, 3)
+      .map(([key, value]) => `${key}: ${String(value)}`);
+    return parts.length > 0 ? parts.join(" · ") : null;
+  } catch {
+    return null;
+  }
+}
+
 function RequestToolActionCard({
   footerSlot,
   interaction,
   state,
+  compact = false,
   onAcceptInteraction,
   onRejectInteraction,
   externalReferences,
 }: {
   footerSlot?: ReactNode;
+  compact?: boolean;
   interaction: RequestConfirmationInteraction;
   state: ToolActionCardState;
   onAcceptInteraction?: IssueThreadInteractionCardProps["onAcceptInteraction"];
@@ -1848,6 +2054,65 @@ function RequestToolActionCard({
     } finally {
       setWorking(null);
     }
+  }
+
+  if (compact) {
+    // Paper "Approve tool or secret access": the tool and its target in the
+    // panel, Deny and Allow once in the footer.
+    const appName = payload.appDisplayName || null;
+    const ask = interaction.title ?? `Allow ${appName ? `${appName} · ` : ""}${payload.toolDisplayName}?`;
+    // A one-line preview names the target, so it is the row's meta.
+    const preview = payload.previewMarkdown?.trim() ?? "";
+    const previewIsLine = Boolean(preview) && !preview.includes("\n") && preview.length <= 120;
+    return (
+      <div className="space-y-4 text-foreground">
+        <div className="space-y-3">
+          <CompactDecisionAsk>{ask}</CompactDecisionAsk>
+          <CompactDecisionNote note={compactDecisionNote(interaction, [ask, payload.previewMarkdown])} />
+          <DecisionPanel>
+            <NeedsYouPanelRow icon={<Lock />} title={appName ? `${appName} · ${payload.toolDisplayName}` : payload.toolDisplayName} meta={previewIsLine ? preview.replace(/[*_`]/g, "") : toolArgumentsLine(payload.argumentsSummaryJson)} />
+            {preview && !previewIsLine ? <DecisionPanelMarkdown markdown={preview} lead={false} externalReferences={externalReferences} /> : null}
+            {isPending ? inspectableArguments ? <details>
+              <summary className="cursor-pointer text-xs font-medium text-muted-foreground">Arguments</summary>
+              <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-xs text-foreground">{payload.argumentsSummaryJson}</pre>
+              <ToolActionAuditHashCopy hash={payload.argumentsHash} />
+            </details> : <p className="text-xs text-muted-foreground">Request arguments are unavailable.</p> : null}
+            {isPending ? (
+              <NeedsYouPanelNote>
+                {payload.risk === "destructive" ? "Destructive action. " : ""}Runs once when you allow it · {payload.expiresAt ? <>Expires {formatShortDate(payload.expiresAt)}</> : null}
+              </NeedsYouPanelNote>
+            ) : null}
+          </DecisionPanel>
+        </div>
+        {isPending ? (
+          <DecisionCardFooter leading={footerSlot}>
+            <Button size="sm" variant="ghost" disabled={!onRejectInteraction || working !== null} onClick={() => void decide("reject")}>
+              {working === "reject" ? "Denying…" : "Deny"}
+            </Button>
+            <div className="inline-flex" role="group" aria-label="Approve request">
+              <Button size="sm" variant={payload.risk === "destructive" ? "destructive" : "default"} className={payload.rememberActionScope ? "rounded-r-none" : undefined} disabled={!onAcceptInteraction || working !== null} onClick={() => void decide("accept")}>
+                {working === "accept" || working === "always" ? <><Loader2 className="h-3.5 w-3.5 animate-spin" />{working === "always" ? "Saving…" : "Allowing…"}</> : "Allow once"}
+              </Button>
+              {payload.rememberActionScope ? (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button size="icon-sm" variant={payload.risk === "destructive" ? "destructive" : "default"} className="rounded-l-none border-l border-background/30" aria-label="Approval options" disabled={!onAcceptInteraction || working !== null}>
+                      <ChevronDown className="h-4 w-4" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem onSelect={() => void decide("always")} title={payload.rememberActionScope} aria-description={payload.rememberActionScope}>
+                      Always allow
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              ) : null}
+            </div>
+          </DecisionCardFooter>
+        ) : <ToolActionResolution state={state} interaction={interaction} />}
+        <InteractionActionError message={actionError} />
+      </div>
+    );
   }
 
   return (
@@ -2097,11 +2362,13 @@ function RequestSecretProposalCard({
   footerSlot,
   interaction,
   state,
+  compact = false,
   resolvedByLabel,
   onAcceptInteraction,
   onRejectInteraction,
 }: {
   footerSlot?: ReactNode;
+  compact?: boolean;
   interaction: RequestConfirmationInteraction;
   state: SecretProposalCardState;
   resolvedByLabel: string | null;
@@ -2146,6 +2413,43 @@ function RequestSecretProposalCard({
     } finally {
       setWorking(null);
     }
+  }
+
+  if (compact) {
+    const denyLabel = interaction.payload.rejectLabel ?? "Deny";
+    return (
+      <div className="space-y-4">
+        <DecisionPanel>
+          <NeedsYouPanelRow icon={<Lock />} title={`Bind ${payload.sourceSecretLabel}`} meta={`${payload.targetAgentName} · ${payload.configPath}`} />
+          <NeedsYouPanelNote>
+            Credential: {payload.sourceSecretLabel} (hidden). Reason given: “{payload.justification}” · {payload.expiresAt ? <>Expires {formatShortDate(payload.expiresAt)}</> : null}
+          </NeedsYouPanelNote>
+        </DecisionPanel>
+        {isPending ? (
+          <ConfirmationActionRow
+            footerSlot={footerSlot}
+            resetKey={`${interaction.id}:${interaction.status}`}
+            approveLabel={interaction.payload.acceptLabel ?? "Approve & bind"}
+            rejectLabel={denyLabel}
+            reviseLabel={`${denyLabel}…`}
+            sendLabel={denyLabel}
+            compact
+            allowRevise={interaction.payload.rejectRequiresReason === true}
+            rejectRequiresReason={interaction.payload.rejectRequiresReason === true}
+            reasonPlaceholder={interaction.payload.declineReasonPlaceholder ?? "Optional: explain why this binding should not be created."}
+            working={working}
+            actionError={actionError}
+            preparingApproval={isInteractionPreparingApproval(interaction)}
+            canApprove={Boolean(onAcceptInteraction)}
+            canReject={Boolean(onRejectInteraction)}
+            onApprove={() => void handleAccept()}
+            onReject={(reason) => void handleReject(reason)}
+          />
+        ) : (
+          <SecretProposalResolution interaction={interaction} state={state} resolvedByLabel={resolvedByLabel} />
+        )}
+      </div>
+    );
   }
 
   return (
@@ -2232,11 +2536,23 @@ function ConfirmationActionRow({
   extraReasonSatisfied = false,
   revisePanelChildren,
   stackActionsOnMobile = false,
+  draftKey = null,
+  compact = false,
+  showReject = true,
+  sendLabel = "Send revision",
 }: {
   footerSlot?: ReactNode;
+  /** A Needs You card (PAP-775): ghost, outline, then the one primary on the right. */
+  compact?: boolean;
+  /** Offer the bare reject; a card can route every "no" through the reason box instead. */
+  showReject?: boolean;
+  sendLabel?: string;
   /** Changing this (interaction id + status) collapses the revise panel and
    * clears its draft text — the row is reused across interaction updates. */
   resetKey: string;
+  /** Share the Revise… open state and text with every other view of the same
+   * decision (PAP-773: the Needs You card and its Review side panel). */
+  draftKey?: string | null;
   approveLabel: string;
   reviseLabel?: string;
   rejectLabel: string;
@@ -2245,7 +2561,7 @@ function ConfirmationActionRow({
   allowRevise: boolean;
   rejectRequiresReason: boolean;
   reasonPlaceholder: string;
-  working: "accept" | "reject" | null;
+  working: ReviseDraftWork | null;
   actionError: string | null;
   approveDisabled?: boolean;
   preparingApproval?: boolean;
@@ -2265,14 +2581,19 @@ function ConfirmationActionRow({
    * hierarchy instead of relying on opportunistic flex wrapping. */
   stackActionsOnMobile?: boolean;
 }) {
-  const [revising, setRevising] = useState(false);
+  const [localRevising, setLocalRevising] = useState(false);
   const { enabled: coordinatorEnabled } = useCoordinatorWorkspaceEnabled();
-  const [reason, setReason] = useState("");
+  const [localReason, setLocalReason] = useState("");
   const [attempted, setAttempted] = useState(false);
+  const [sharedDraft, updateSharedDraft] = useReviseDraft(draftKey);
+  const revising = draftKey ? sharedDraft.revising : localRevising;
+  const reason = draftKey ? sharedDraft.reason : localReason;
+  const setRevising = (next: boolean) => draftKey ? updateSharedDraft({ revising: next }) : setLocalRevising(next);
+  const setReason = (next: string) => draftKey ? updateSharedDraft({ reason: next }) : setLocalReason(next);
 
   useEffect(() => {
-    setRevising(false);
-    setReason("");
+    setLocalRevising(false);
+    setLocalReason("");
     setAttempted(false);
   }, [resetKey]);
 
@@ -2285,8 +2606,59 @@ function ConfirmationActionRow({
     onReject(composeReason ? composeReason(reason) : trimmed || undefined);
   }
 
+  const approveButton = (
+    <Button
+      size="sm"
+      variant={revising ? "outline" : compact && approveVariant === "cta" ? "default" : approveVariant}
+      className={stackActionsOnMobile && !compact ? "col-span-2 w-full sm:col-auto sm:w-auto" : undefined}
+      disabled={!canApprove || working !== null || approveDisabled || preparingApproval}
+      onClick={onApprove}
+    >
+      {working === "accept" ? (
+        <>
+          <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+          Approving…
+        </>
+      ) : (
+        approveLabel
+      )}
+    </Button>
+  );
+  const reviseButton = allowRevise ? (
+    <Button
+      size="sm"
+      variant="outline"
+      className={stackActionsOnMobile && !compact ? "w-full sm:w-auto" : undefined}
+      disabled={!canReject || working !== null}
+      onClick={() => {
+        setAttempted(false);
+        setRevising(!revising);
+      }}
+    >
+      {reviseLabel}
+    </Button>
+  ) : null;
+  const rejectButton = !rejectRequiresReason && showReject ? (
+    <Button
+      size="sm"
+      variant="ghost"
+      className={stackActionsOnMobile && !compact ? "w-full sm:w-auto" : undefined}
+      disabled={!canReject || working !== null}
+      onClick={() => onReject(undefined)}
+    >
+      {working === "reject" && !revising ? (
+        <>
+          <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+          Rejecting…
+        </>
+      ) : (
+        rejectLabel
+      )}
+    </Button>
+  ) : null;
+
   return (
-    <div className="space-y-3">
+    <div className="space-y-3" data-decision-action-row>
       {preparingApproval ? <InteractionPreparationNotice /> : null}
       <DecisionCardFooter leading={footerSlot} className={coordinatorEnabled && revising ? "hidden" : undefined}>
         <div
@@ -2294,73 +2666,27 @@ function ConfirmationActionRow({
           hidden={coordinatorEnabled && revising}
           data-mobile-layout={stackActionsOnMobile ? "stacked" : "inline"}
           className={cn(
-            stackActionsOnMobile
+            stackActionsOnMobile && !compact
               ? "grid grid-cols-2 items-stretch gap-2 sm:flex sm:flex-wrap sm:items-center sm:justify-end"
               : "flex flex-wrap items-center justify-end gap-2",
-            primaryActionOnRight && "flex-row-reverse justify-start",
+            primaryActionOnRight && !compact && "flex-row-reverse justify-start",
             coordinatorEnabled && revising && "hidden",
           )}
         >
-          <Button
-            size="sm"
-            variant={revising ? "outline" : approveVariant}
-            className={stackActionsOnMobile ? "col-span-2 w-full sm:col-auto sm:w-auto" : undefined}
-            disabled={!canApprove || working !== null || approveDisabled || preparingApproval}
-            onClick={onApprove}
-          >
-            {working === "accept" ? (
-              <>
-                <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-                Approving…
-              </>
-            ) : (
-              approveLabel
-            )}
-          </Button>
-          {allowRevise ? (
-            <Button
-              size="sm"
-              variant="outline"
-              className={stackActionsOnMobile ? "w-full sm:w-auto" : undefined}
-              disabled={!canReject || working !== null}
-              onClick={() => {
-                setAttempted(false);
-                setRevising((current) => !current);
-              }}
-            >
-              {reviseLabel}
-            </Button>
-          ) : null}
-          {!rejectRequiresReason ? (
-            <Button
-              size="sm"
-              variant="ghost"
-              className={stackActionsOnMobile ? "w-full sm:w-auto" : undefined}
-              disabled={!canReject || working !== null}
-              onClick={() => onReject(undefined)}
-            >
-              {working === "reject" && !revising ? (
-                <>
-                  <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-                  Rejecting…
-                </>
-              ) : (
-                rejectLabel
-              )}
-            </Button>
-          ) : null}
+          {compact ? <>{rejectButton}{reviseButton}{approveButton}</> : <>{approveButton}{reviseButton}{rejectButton}</>}
         </div>
       </DecisionCardFooter>
 
       {revising ? (
-        <div className="space-y-3 rounded-sm border border-border/70 bg-background/75 p-3">
+        <div className={compact ? "space-y-3" : "space-y-3 rounded-sm border border-border/70 bg-background/75 p-3"}>
           <Textarea
             value={reason}
             onChange={(event) => setReason(event.target.value)}
             placeholder={reasonPlaceholder}
             aria-invalid={attempted && reasonMissing}
             className={cn(
-              "min-h-24 bg-background text-sm",
+              "min-h-24 text-sm",
+              compact ? "bg-card" : "bg-background",
               attempted && reasonMissing && "border-rose-500 focus-visible:ring-rose-500/25",
             )}
           />
@@ -2375,7 +2701,10 @@ function ConfirmationActionRow({
                 variant="ghost"
                 disabled={working !== null}
                 onClick={() => {
-                  setRevising(false);
+                  // A shared draft is cleared on Cancel so neither view keeps
+                  // stale text; a local one keeps its text like before.
+                  if (draftKey) updateSharedDraft({ revising: false, reason: "" });
+                  else setRevising(false);
                   setAttempted(false);
                 }}
               >
@@ -2383,7 +2712,7 @@ function ConfirmationActionRow({
               </Button>
               <Button
                 size="sm"
-                variant="outline"
+                variant={compact ? "default" : "outline"}
                 disabled={!canReject || working !== null}
                 onClick={submitRevision}
               >
@@ -2393,7 +2722,7 @@ function ConfirmationActionRow({
                     Sending…
                   </>
                 ) : (
-                  "Send revision"
+                  sendLabel
                 )}
               </Button>
             </div>
@@ -2482,6 +2811,7 @@ function RequestConnectionAuthorizationCard({
   footerSlot,
   interaction,
   state,
+  compact = false,
   isAddressee,
   providerName,
   addresseeLabel,
@@ -2493,6 +2823,7 @@ function RequestConnectionAuthorizationCard({
   footerSlot?: ReactNode;
   interaction: RequestConfirmationInteraction;
   state: ConnectionAuthorizationCardState;
+  compact?: boolean;
   /** Is the signed-in reader the person the server addressed? */
   isAddressee: boolean;
   providerName: string;
@@ -2545,6 +2876,42 @@ function RequestConnectionAuthorizationCard({
   // Only the actionable state needs the consent boundary spelled out; the other
   // states carry it in their own status line.
   const consentSentence = state === "actionable" ? "No one else can complete this step." : null;
+
+  if (compact && state === "actionable") {
+    // Paper "Connect a service": only the addressed person ever sees this state.
+    const connectionName = interaction.payload.connectionAuthorization?.connectionName;
+    return (
+      <div className="space-y-4">
+        <div className="space-y-3">
+          <p className="text-sm text-muted-foreground" data-testid="connection-authorization-body">{lead}</p>
+          <DecisionPanel>
+            <NeedsYouPanelRow icon={<Lock />} title={connectionName && connectionName !== providerName ? `${providerName} · ${connectionName}` : providerName} meta="Not connected" />
+            <NeedsYouPanelNote>{consentSentence}</NeedsYouPanelNote>
+          </DecisionPanel>
+        </div>
+        {href ? (
+          <DecisionCardFooter leading={footerSlot}>
+            <div data-testid="connection-authorization-actions" className="flex flex-wrap items-center justify-end gap-1.5">
+              <Button size="sm" variant="ghost" disabled={!onRejectInteraction || working} onClick={() => void handleNotNow()}>
+                {working ? <><Loader2 className="h-3.5 w-3.5 animate-spin" />Saving…</> : "Not now"}
+              </Button>
+              <Button asChild size="sm">
+                <a href={href} target="_blank" rel="noreferrer">Connect {providerName}<ArrowUpRight className="h-3.5 w-3.5" /></a>
+              </Button>
+            </div>
+          </DecisionCardFooter>
+        ) : (
+          <ConnectionAuthorizationStatusLine
+            Icon={TriangleAlert}
+            testId="connection-authorization-no-target"
+            headline="This authorization link is unavailable"
+            detail={`Ask ${requestingAgentLabel ?? "the agent"} to send a fresh ${providerName} authorization link.`}
+          />
+        )}
+        <InteractionActionError message={actionError} />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4">
@@ -2676,12 +3043,16 @@ function RequestConfirmationCard({
   onRejectInteraction,
   onUploadImage,
   externalReferences,
+  shareReviseDraft = false,
 }: {
   footerSlot?: ReactNode;
   interaction: RequestConfirmationInteraction;
   compact?: boolean;
   isPlan?: boolean;
   primaryActionOnRight?: boolean;
+  /** Another view renders this same decision (PAP-773): share the Revise…
+   * draft and the in-flight action with it. */
+  shareReviseDraft?: boolean;
   onAcceptInteraction?: (
     interaction: RequestConfirmationInteraction,
   ) => Promise<void> | void;
@@ -2692,9 +3063,17 @@ function RequestConfirmationCard({
   onUploadImage?: (file: File) => Promise<string>;
   externalReferences?: MarkdownExternalReferenceMap;
 }) {
-  const [working, setWorking] = useState<"accept" | "reject" | null>(null);
+  const [localWorking, setWorking] = useState<"accept" | "reject" | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const resolutionErrorMessage = useResolutionErrorMessage();
+  const target = interaction.payload.target;
+  // Keyed by the plan revision under review: a newer revision starts clean.
+  const draftKey = shareReviseDraft
+    ? reviseDraftKey(interaction.id, target?.type === "issue_document" ? target.revisionId : null)
+    : null;
+  const [sharedDraft] = useReviseDraft(draftKey);
+  // Either view sending disables both, so one decision can't be sent twice.
+  const working = localWorking ?? sharedDraft.working;
   const [shots, setShots] = useState<{ name: string; url: string }[]>([]);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
@@ -2718,6 +3097,10 @@ function RequestConfirmationCard({
       setWorking(null);
     }
   }, [interaction.id, interaction.result?.reason, interaction.status]);
+
+  useEffect(() => {
+    if (draftKey && interaction.status !== "pending") clearReviseDraft(draftKey);
+  }, [draftKey, interaction.status]);
 
   async function handleAddScreenshots(files: FileList | null) {
     if (!onUploadImage || !files || files.length === 0) return;
@@ -2746,50 +3129,77 @@ function RequestConfirmationCard({
   }
 
   async function handleAccept() {
-    if (!onAcceptInteraction) return;
+    if (!onAcceptInteraction || working) return;
+    if (draftKey && !claimReviseDraftWork(draftKey, "accept")) return;
     setWorking("accept");
     setActionError(null);
     try {
       await onAcceptInteraction(interaction);
+      if (draftKey) clearReviseDraft(draftKey);
     } catch (error) {
       setActionError(resolutionErrorMessage(error));
     } finally {
       setWorking(null);
+      if (draftKey) releaseReviseDraftWork(draftKey);
     }
   }
 
   async function handleReject(reason: string | undefined) {
-    if (!onRejectInteraction) return;
+    if (!onRejectInteraction || working) return;
+    if (draftKey && !claimReviseDraftWork(draftKey, "reject")) return;
     setWorking("reject");
     setActionError(null);
     try {
       await onRejectInteraction(interaction, reason);
+      if (draftKey) clearReviseDraft(draftKey);
     } catch (error) {
       setActionError(resolutionErrorMessage(error));
     } finally {
       setWorking(null);
+      if (draftKey) releaseReviseDraftWork(draftKey);
     }
   }
 
+  // Paper "Review a plan" / "Review a deliverable" / "Confirm or decline":
+  // the panel carries the artifact and the details, the footer the verbs.
+  const artifactRow = useContext(CompactArtifactRowContext);
+  const deliverable = !isPlan && (target?.type === "issue_attachment" || target?.type === "issue_document");
+  const compactActions = isPlan
+    ? { approveLabel: interaction.payload.acceptLabel ?? "Approve plan", rejectLabel: CONFIRMATION_REJECT_LABEL, reviseLabel: CONFIRMATION_REVISE_LABEL, allowRevise, showReject: true, sendLabel: "Send revision" }
+    : deliverable
+      ? { approveLabel: interaction.payload.acceptLabel ?? CONFIRMATION_APPROVE_LABEL, rejectLabel: interaction.payload.rejectLabel ?? CONFIRMATION_REJECT_LABEL, reviseLabel: "Request changes", allowRevise, showReject: !allowRevise, sendLabel: "Request changes" }
+      : { approveLabel: interaction.payload.acceptLabel ?? "Confirm", rejectLabel: interaction.payload.rejectLabel ?? "Decline", reviseLabel: `${interaction.payload.rejectLabel ?? "Decline"}…`, allowRevise: rejectRequiresReason, showReject: true, sendLabel: interaction.payload.rejectLabel ?? "Decline" };
+  const compactAsk = interaction.title?.trim() || interaction.payload.prompt;
+  const targetHref = target && isDisplayableRequestConfirmationTarget(target) ? requestConfirmationTargetHref({ interaction, target }) : null;
+  const targetMeta = target?.type === "issue_attachment" ? "Attachment"
+    : target?.type === "issue_document" ? [isPlan ? "Plan" : "Document", target.revisionNumber ? `v${target.revisionNumber}` : null].filter(Boolean).join(" · ")
+    : null;
+
   return (
     <div className="space-y-4">
-      {interaction.status === "pending" ? (
-        <div className={compact ? "space-y-3" : "space-y-3 rounded-sm border border-border/70 bg-background/75 p-4"}>
-          <div data-decision-prompt={compact ? true : undefined} className={compact ? "text-lg font-medium leading-relaxed text-foreground" : "text-sm leading-6 text-foreground"}>
-            <MarkdownBody className={compact ? "text-lg" : undefined} externalReferences={externalReferences} mediaMode="reference">
-              {interaction.payload.prompt}
-            </MarkdownBody>
+      {interaction.status === "pending" && compact ? (
+        <div className="space-y-3">
+          {/* The card header no longer names the request, so its title is the
+              ask and the prompt the one line under it. */}
+          <CompactDecisionAsk><PromptText>{compactAsk}</PromptText></CompactDecisionAsk>
+          {compactAsk !== interaction.payload.prompt ? <div data-decision-note className="text-sm text-muted-foreground"><PromptText>{interaction.payload.prompt}</PromptText></div>
+            : <CompactDecisionNote note={compactDecisionNote(interaction, [interaction.payload.prompt, interaction.payload.detailsMarkdown])} />}
+          <DecisionPanel>
+            {!artifactRow && target && isDisplayableRequestConfirmationTarget(target) ? (
+              <NeedsYouPanelRow icon={<FileText />} title={requestConfirmationTargetLabel(target)} meta={targetMeta} href={targetHref ?? undefined} />
+            ) : null}
+            {interaction.payload.detailsMarkdown ? (
+              <DecisionPanelMarkdown markdown={interaction.payload.detailsMarkdown} lead={!isPlan && !deliverable} externalReferences={externalReferences} />
+            ) : null}
+          </DecisionPanel>
+        </div>
+      ) : interaction.status === "pending" ? (
+        <div className="space-y-3 rounded-sm border border-border/70 bg-background/75 p-4">
+          <div className="text-sm leading-6 text-foreground">
+            <PromptText>{interaction.payload.prompt}</PromptText>
           </div>
           {interaction.payload.detailsMarkdown ? (
-            compact ? <details className="group/confirmation-details">
-              <summary className="flex cursor-pointer list-none items-center gap-1 rounded-sm text-xs font-medium text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-                <ChevronRight aria-hidden className="h-3.5 w-3.5 transition-transform group-open/confirmation-details:rotate-90 motion-reduce:transition-none" />
-                Details
-              </summary>
-              <div className="mt-2 rounded-sm bg-muted/40 px-2.5 py-2 text-sm text-muted-foreground">
-                <MarkdownBody externalReferences={externalReferences}>{interaction.payload.detailsMarkdown}</MarkdownBody>
-              </div>
-            </details> : <div className="border-t border-border/60 pt-3 text-sm">
+            <div className="border-t border-border/60 pt-3 text-sm">
               <MarkdownBody externalReferences={externalReferences}>{interaction.payload.detailsMarkdown}</MarkdownBody>
             </div>
           ) : null}
@@ -2804,11 +3214,13 @@ function RequestConfirmationCard({
         <ConfirmationActionRow
           footerSlot={footerSlot}
           resetKey={`${interaction.id}:${interaction.status}`}
-          approveLabel={interaction.payload.acceptLabel ?? CONFIRMATION_APPROVE_LABEL}
-          rejectLabel={CONFIRMATION_REJECT_LABEL}
+          approveLabel={compact ? compactActions.approveLabel : interaction.payload.acceptLabel ?? CONFIRMATION_APPROVE_LABEL}
+          rejectLabel={compact ? compactActions.rejectLabel : CONFIRMATION_REJECT_LABEL}
           approveVariant={isPlan ? "cta" : "default"}
           primaryActionOnRight={primaryActionOnRight}
-          allowRevise={allowRevise}
+          compact={compact}
+          {...(compact ? { reviseLabel: compactActions.reviseLabel, showReject: compactActions.showReject, sendLabel: compactActions.sendLabel } : {})}
+          allowRevise={compact ? compactActions.allowRevise : allowRevise}
           rejectRequiresReason={rejectRequiresReason}
           reasonPlaceholder={reasonPlaceholder}
           working={working}
@@ -2819,6 +3231,7 @@ function RequestConfirmationCard({
           onApprove={() => void handleAccept()}
           onReject={(reason) => void handleReject(reason)}
           composeReason={composeReason}
+          draftKey={draftKey}
           extraReasonSatisfied={shots.length > 0}
           revisePanelChildren={
             allowScreenshots ? (
@@ -3016,6 +3429,7 @@ function CheckboxOptionRow({
 function RequestCheckboxConfirmationCard({
   footerSlot,
   interaction,
+  compact = false,
   primaryActionOnRight = false,
   onAcceptInteraction,
   onRejectInteraction,
@@ -3023,6 +3437,7 @@ function RequestCheckboxConfirmationCard({
 }: {
   footerSlot?: ReactNode;
   interaction: RequestCheckboxConfirmationInteraction;
+  compact?: boolean;
   primaryActionOnRight?: boolean;
   onAcceptInteraction?: (
     interaction: RequestCheckboxConfirmationInteraction,
@@ -3152,6 +3567,77 @@ function RequestCheckboxConfirmationCard({
     : minSelected > 0
       ? `Pick at least ${minSelected}.`
       : null;
+
+  if (compact) {
+    return (
+      <div className="space-y-4">
+        <DecisionPanel>
+          {/* Without a title the prompt is the card's ask. */}
+          {interaction.payload.prompt === (interaction.title ?? interaction.payload.prompt) ? null : (
+            <div className="text-(length:--text-compact) leading-5 text-foreground"><PromptText>{interaction.payload.prompt}</PromptText></div>
+          )}
+          {interaction.payload.detailsMarkdown ? (
+            <DecisionPanelMarkdown markdown={interaction.payload.detailsMarkdown} lead={false} externalReferences={externalReferences} />
+          ) : null}
+          <div role="group" aria-label="Selectable options" className="flex max-h-80 flex-col gap-2 overflow-y-auto">
+            {options.map((option) => {
+              const checked = selectedOptionIds.has(option.id);
+              const disabled = working !== null || (!checked && atMax);
+              return (
+                <label key={option.id} htmlFor={`${interaction.id}-${option.id}`} className={cn("flex cursor-pointer items-start gap-2.5", disabled && "cursor-not-allowed opacity-60")}>
+                  <Checkbox
+                    id={`${interaction.id}-${option.id}`}
+                    checked={checked}
+                    disabled={disabled}
+                    onCheckedChange={(value) => toggleOption(option.id, value === true)}
+                    aria-label={option.label}
+                    className="mt-0.5"
+                  />
+                  <span className="flex min-w-0 flex-col gap-0.5">
+                    <span className="text-(length:--text-compact) font-medium leading-5 text-foreground">{option.label}</span>
+                    {option.description ? <span className="text-xs leading-4.5 text-muted-foreground">{option.description}</span> : null}
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+          <div className="flex flex-wrap items-center gap-x-2 text-xs leading-4.5 text-muted-foreground">
+            <span>{selectionSummary}{boundsHint ? ` · ${boundsHint}` : ""}</span>
+            <button type="button" className="rounded-sm underline-offset-4 hover:text-foreground hover:underline disabled:pointer-events-none disabled:opacity-50"
+              disabled={working !== null || selectedCount === totalOptions || (maxSelected != null && selectedCount >= maxSelected)} onClick={handleSelectAll}>
+              Select all
+            </button>
+            <button type="button" className="rounded-sm underline-offset-4 hover:text-foreground hover:underline disabled:pointer-events-none disabled:opacity-50"
+              disabled={working !== null || selectedCount === 0} onClick={handleClearSelection}>
+              Clear selection
+            </button>
+          </div>
+          {acceptAttempted && validationMessage ? (
+            <span className="text-xs text-destructive">{validationMessage}</span>
+          ) : null}
+        </DecisionPanel>
+        <ConfirmationActionRow
+          footerSlot={footerSlot}
+          resetKey={`${interaction.id}:${interaction.status}`}
+          approveLabel={interaction.payload.acceptLabel ?? "Confirm"}
+          rejectLabel={interaction.payload.rejectLabel ?? "Decline"}
+          reviseLabel={`${interaction.payload.rejectLabel ?? "Decline"}…`}
+          sendLabel={interaction.payload.rejectLabel ?? "Decline"}
+          compact
+          allowRevise={rejectRequiresReason}
+          rejectRequiresReason={rejectRequiresReason}
+          reasonPlaceholder={reasonPlaceholder}
+          working={working}
+          actionError={actionError}
+          preparingApproval={isInteractionPreparingApproval(interaction)}
+          canApprove={Boolean(onAcceptInteraction)}
+          canReject={Boolean(onRejectInteraction)}
+          onApprove={() => void handleAccept()}
+          onReject={(reason) => void handleReject(reason)}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4">
@@ -3319,8 +3805,10 @@ function ItemVerdictSegmentedControl({
   verdicts,
   value,
   disabled,
+  compact = false,
   onSelect,
 }: {
+  compact?: boolean;
   itemId: string;
   verdicts: RequestItemVerdictValue[];
   value: RequestItemVerdictValue | null;
@@ -3335,7 +3823,10 @@ function ItemVerdictSegmentedControl({
     >
       {verdicts.map((verdict) => {
         const active = value === verdict;
-        const variant = verdict === "reject"
+        // A Needs You card keeps one filled button, its primary (PAP-775).
+        const variant = compact
+          ? (active ? "secondary" : "ghost")
+          : verdict === "reject"
           ? (active ? "destructive" : "outline")
           : verdict === "approve"
             ? (active ? "default" : "outline")
@@ -3350,7 +3841,7 @@ function ItemVerdictSegmentedControl({
             disabled={disabled}
             aria-pressed={active}
             aria-label={`${VERDICT_LABEL[verdict]} this item`}
-            className="min-h-11 min-w-24"
+            className={compact ? undefined : "min-h-11 min-w-24"}
             onClick={() => onSelect(verdict)}
             data-verdict={verdict}
             data-item-id={itemId}
@@ -3373,10 +3864,12 @@ interface VerdictDraft {
 function RequestItemVerdictsCard({
   footerSlot,
   interaction,
+  compact = false,
   onSubmitInteractionVerdicts,
   externalReferences,
 }: {
   footerSlot?: ReactNode;
+  compact?: boolean;
   interaction: RequestItemVerdictsInteraction;
   onSubmitInteractionVerdicts?: (
     interaction: RequestItemVerdictsInteraction,
@@ -3507,12 +4000,83 @@ function RequestItemVerdictsCard({
     ? "Apply 0 decisions"
     : `Apply ${draftCount} decision${draftCount === 1 ? "" : "s"}`;
 
+  if (compact && !isTerminal) {
+    return (
+      <div className="space-y-4">
+        <DecisionPanel>
+          {payload.prompt === (interaction.title ?? payload.prompt) ? null : (
+            <div className="text-(length:--text-compact) leading-5 text-foreground"><PromptText>{payload.prompt}</PromptText></div>
+          )}
+          {payload.detailsMarkdown ? (
+            <DecisionPanelMarkdown markdown={payload.detailsMarkdown} lead={false} externalReferences={externalReferences} />
+          ) : null}
+          <ul className="flex flex-col gap-3" aria-label="Items to review">
+            {items.map((item) => {
+              const resolved = resolvedById.get(item.id);
+              const applying = applyingItemIds.has(item.id);
+              const draft = drafts.get(item.id);
+              return (
+                <li key={item.id} className="flex flex-col gap-2" data-item-id={item.id}
+                  data-item-state={resolved ? "resolved" : applying ? "applying" : draft ? "draft" : "pending"}>
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <span className="flex min-w-0 flex-1 basis-48 flex-col gap-0.5">
+                      <span className="flex flex-wrap items-center gap-2">
+                        <span className="text-(length:--text-compact) font-medium leading-5 text-foreground">{item.label}</span>
+                        <ItemVerdictDeepLink item={item} interaction={interaction} />
+                      </span>
+                      {item.description ? <span className="text-xs leading-4.5 text-muted-foreground">{item.description}</span> : null}
+                    </span>
+                    {resolved ? <VerdictConsequenceChip verdict={resolved.verdict} />
+                      : applying ? <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground"><Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" aria-hidden />Applying…</span>
+                      : <ItemVerdictSegmentedControl compact itemId={item.id} verdicts={enabledVerdicts} value={draft?.verdict ?? null} disabled={working} onSelect={(verdict) => toggleDraft(item.id, verdict)} />}
+                  </div>
+                  {!resolved && !applying && draft && requireReasonOn.has(draft.verdict) ? (
+                    <div className="flex flex-col gap-1.5">
+                      <label htmlFor={`${interaction.id}-${item.id}-reason`} className="text-xs font-medium text-foreground">{reasonLabel}</label>
+                      <Textarea
+                        id={`${interaction.id}-${item.id}-reason`}
+                        value={draft.reason}
+                        onChange={(event) => setDraftReason(item.id, event.target.value)}
+                        placeholder="Give the agent a reason so it can act on this item."
+                        aria-invalid={attempted && invalidDraftIds.has(item.id)}
+                        className={cn("min-h-16 bg-card text-sm", attempted && invalidDraftIds.has(item.id) && "border-rose-500 focus-visible:ring-rose-500/25")}
+                      />
+                      {attempted && invalidDraftIds.has(item.id) ? (
+                        <span className="text-xs text-destructive">A reason is required to {VERDICT_LABEL[draft.verdict].toLowerCase()} this item.</span>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </li>
+              );
+            })}
+          </ul>
+          <NeedsYouPanelNote>
+            {progress.decided} of {progress.total} decided{draftCount > 0 ? ` · ${draftCount} ready to submit` : ""}
+          </NeedsYouPanelNote>
+        </DecisionPanel>
+        {progress.pendingItemIds.length > 0 ? (
+          <DecisionCardFooter leading={footerSlot}>
+            {allowBulkApprove ? (
+              <Button type="button" size="sm" variant="outline" disabled={working || progress.pendingItemIds.length === 0} onClick={handleApproveAll}>
+                Approve all
+              </Button>
+            ) : null}
+            <Button type="button" size="sm" aria-disabled={!canApply} disabled={!hasDrafts} onClick={() => void handleApply()}>
+              {working ? <><Loader2 className="h-4 w-4 motion-safe:animate-spin" aria-hidden />Submitting…</> : "Submit verdicts"}
+            </Button>
+          </DecisionCardFooter>
+        ) : null}
+        <InteractionActionError message={actionError} />
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-4">
       {/* Prompt + details (S1) */}
       <div className="space-y-3 rounded-sm border border-border/70 bg-background/75 p-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="text-sm leading-6 text-foreground">{payload.prompt}</div>
+          <div className="min-w-0 text-sm leading-6 text-foreground"><PromptText>{payload.prompt}</PromptText></div>
           <VerdictProgressBadge progress={progress} pendingReason={invalidDraftIds.size > 0} />
         </div>
         {payload.detailsMarkdown ? (
@@ -3740,6 +4304,8 @@ function VerdictProgressBadge({
 export function IssueThreadInteractionCard({
   interaction,
   presentationVariant = "default",
+  audienceStated = false,
+  artifactRow,
   footerSlot,
   agentMap,
   currentUserId,
@@ -3749,6 +4315,7 @@ export function IssueThreadInteractionCard({
   onSubmitInteractionAnswers,
   onCancelInteraction,
   primaryActionOnRight,
+  shareReviseDraft = false,
   onSubmitInteractionVerdicts,
   onUploadImage,
   externalReferences,
@@ -3878,7 +4445,7 @@ export function IssueThreadInteractionCard({
       </CoordinatorTaskCommitment>
     </InteractionAudienceContext.Provider>;
   }
-  if (interaction.kind === "connection_intent" && interaction.payload.accessRequest) {
+  if (!compactDecision && interaction.kind === "connection_intent" && interaction.payload.accessRequest) {
     return (
       <div id={`interaction-${interaction.id}`}>
         <ConnectionIntentInteractionBody
@@ -3890,7 +4457,7 @@ export function IssueThreadInteractionCard({
       </div>
     );
   }
-  if (isToolAction && interaction.kind === "request_confirmation" && toolActionState) {
+  if (!compactDecision && isToolAction && interaction.kind === "request_confirmation" && toolActionState) {
     return (
       <InteractionAudienceContext.Provider value={audience}>
         <RequestToolActionCard
@@ -3920,7 +4487,37 @@ export function IssueThreadInteractionCard({
   const bodyContext = interaction.kind === "ask_user_questions"
     ? [interaction.payload.questionSet?.description, ...interaction.payload.questions.flatMap(question => [question.prompt, question.helpText])]
     : interaction.kind === "request_confirmation" ? [interaction.payload.prompt, interaction.payload.detailsMarkdown] : [];
-  const summaryIsRepeated = bodyContext.some(text => text?.trim() === interaction.summary?.trim());
+  const fallbackTitle = interaction.kind === "suggest_tasks"
+    ? "Suggested task tree"
+    : interaction.kind === "ask_user_questions"
+      // Only a human-only card is genuinely "for the operator";
+      // an open card is answerable by any teammate (PAP-17280).
+      ? interaction.payload.title
+        ?? (audience.policy === "human_only"
+          ? "Questions for the operator"
+          : "Questions to answer")
+    : interaction.kind === "request_checkbox_confirmation"
+      ? "Checkbox confirmation requested"
+      : isSecretProposal
+        ? "Secret binding requested"
+      : connectionAuthorization
+        ? `Connect your ${connectionAuthorization.providerName} to continue`
+      : isToolAction
+        ? "Tool approval requested"
+        : interaction.kind === "request_item_verdicts"
+          ? "Review these items"
+          : isPlan
+            ? "Plan review"
+            : "Confirmation requested";
+  // A Needs You card's ask says what to decide, not what kind of record it is.
+  const compactTitle = interaction.title ?? (
+    interaction.kind === "suggest_tasks" ? "Choose tasks to create"
+      : interaction.kind === "request_checkbox_confirmation" || interaction.kind === "request_item_verdicts" ? interaction.payload.prompt
+      : interaction.kind === "connection_intent" ? interaction.payload.accessRequest
+        ? `Grant ${interaction.payload.requestingAgentName} access to “${interaction.payload.accessRequest.connectionName}”?`
+        : `Connect ${interaction.payload.serviceName}`
+      : fallbackTitle);
+  const summaryIsRepeated = [...bodyContext, ...(compactDecision ? [compactTitle] : [])].some(text => text?.trim() === interaction.summary?.trim());
   const addressedElsewhere = Boolean(interaction.addresseeAgentId
     || (interaction.addresseeUserId && interaction.addresseeUserId !== currentUserId));
 
@@ -3928,11 +4525,13 @@ export function IssueThreadInteractionCard({
     // Every nested subcard resolves the same interaction, so they all explain a
     // denial with the same audience the header states (PAP-17287).
     <InteractionAudienceContext.Provider value={audience}>
+      <CompactArtifactRowContext.Provider value={compactDecision ? artifactRow : null}>
       <div data-presentation={presentationVariant} className={compactDecision ? "coordinator-decision-content space-y-4" : cn("rounded-lg border p-5 shadow-none", styles.shell)}>
         {compactDecision ? <>
-          {!bodyNamesDecision && interaction.title ? <h2 className="text-lg font-medium">{interaction.title}</h2> : null}
-          {interaction.summary && !summaryIsRepeated && !connectionAuthorization && interaction.kind !== "connection_intent" ? <p className="text-sm text-muted-foreground">{interaction.summary}</p> : null}
-          {interaction.status === "pending" ? <div className={addressedElsewhere ? undefined : "sr-only"}><InteractionAudienceLine audience={audience} variant="compact" /></div> : null}
+          {!bodyNamesDecision ? <CompactDecisionAsk><PromptText>{compactTitle}</PromptText></CompactDecisionAsk> : null}
+          {/* Questions and confirmations put the note under their ask (UI1). */}
+          {interaction.summary && !summaryIsRepeated && !bodyNamesDecision && !connectionAuthorization && interaction.kind !== "connection_intent" ? <p className="text-sm text-muted-foreground">{interaction.summary}</p> : null}
+          {interaction.status === "pending" ? <div className={addressedElsewhere && !audienceStated ? undefined : "sr-only"}><InteractionAudienceLine audience={audience} variant="compact" /></div> : null}
         </> : <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0 flex-1 basis-64">
             <div className="flex flex-wrap items-center gap-2">
@@ -3983,29 +4582,7 @@ export function IssueThreadInteractionCard({
             </div>
 
             <div className="mt-3 text-lg font-bold text-foreground">
-              {interaction.title
-                ?? (interaction.kind === "suggest_tasks"
-                  ? "Suggested task tree"
-                  : interaction.kind === "ask_user_questions"
-                    // Only a human-only card is genuinely "for the operator";
-                    // an open card is answerable by any teammate (PAP-17280).
-                    ? interaction.payload.title
-                      ?? (audience.policy === "human_only"
-                        ? "Questions for the operator"
-                        : "Questions to answer")
-                  : interaction.kind === "request_checkbox_confirmation"
-                    ? "Checkbox confirmation requested"
-                    : isSecretProposal
-                      ? "Secret binding requested"
-                    : connectionAuthorization
-                      ? `Connect your ${connectionAuthorization.providerName} to continue`
-                    : isToolAction
-                      ? "Tool approval requested"
-                      : interaction.kind === "request_item_verdicts"
-                        ? "Review these items"
-                        : isPlan
-                          ? "Plan review"
-                          : "Confirmation requested")}
+              {interaction.title ?? fallbackTitle}
             </div>
             {/* A connection-authorization card composes its own single body
                 below, because the closing sentence depends on whether the
@@ -4039,6 +4616,7 @@ export function IssueThreadInteractionCard({
             <SuggestTasksCard
               footerSlot={footerSlot}
               interaction={interaction}
+              compact={compactDecision}
               agentMap={agentMap}
               currentUserId={currentUserId}
               userLabelMap={userLabelMap}
@@ -4058,6 +4636,7 @@ export function IssueThreadInteractionCard({
             <RequestCheckboxConfirmationCard
               footerSlot={footerSlot}
               interaction={interaction}
+              compact={compactDecision}
               primaryActionOnRight={primaryActionOnRight}
               onAcceptInteraction={onAcceptInteraction}
               onRejectInteraction={onRejectInteraction}
@@ -4070,6 +4649,7 @@ export function IssueThreadInteractionCard({
               footerSlot={footerSlot}
               interaction={interaction}
               state={connectionAuthorizationState}
+              compact={compactDecision}
               isAddressee={isConnectionAddressee}
               providerName={connectionAuthorization.providerName}
               addresseeLabel={addresseeLabel ?? "the addressed person"}
@@ -4078,11 +4658,22 @@ export function IssueThreadInteractionCard({
               resolvedByAgent={resolvedByAgent}
               onRejectInteraction={onRejectInteraction}
             />
+          ) : isToolAction && interaction.kind === "request_confirmation" && toolActionState ? (
+            <RequestToolActionCard
+              footerSlot={footerSlot}
+              interaction={interaction}
+              state={toolActionState}
+              compact={compactDecision}
+              onAcceptInteraction={onAcceptInteraction}
+              onRejectInteraction={onRejectInteraction}
+              externalReferences={externalReferences}
+            />
           ) : isSecretProposal && interaction.kind === "request_confirmation" && secretProposalState ? (
             <RequestSecretProposalCard
               footerSlot={footerSlot}
               interaction={interaction}
               state={secretProposalState}
+              compact={compactDecision}
               resolvedByLabel={resolvedByLabel}
               onAcceptInteraction={onAcceptInteraction}
               onRejectInteraction={onRejectInteraction}
@@ -4091,6 +4682,8 @@ export function IssueThreadInteractionCard({
             <ConnectionIntentInteractionBody
               footerSlot={footerSlot}
               interaction={interaction}
+              compact={compactDecision}
+              artifactRow={compactDecision ? artifactRow : undefined}
               currentUserId={currentUserId}
               addresseeLabel={addresseeLabel ?? "the addressed person"}
               addresseeName={interaction.addresseeUserId ? userLabelMap?.get(interaction.addresseeUserId) : undefined}
@@ -4099,6 +4692,7 @@ export function IssueThreadInteractionCard({
             <RequestItemVerdictsCard
               footerSlot={footerSlot}
               interaction={interaction}
+              compact={compactDecision}
               onSubmitInteractionVerdicts={onSubmitInteractionVerdicts}
               externalReferences={externalReferences}
             />
@@ -4113,6 +4707,7 @@ export function IssueThreadInteractionCard({
               onRejectInteraction={onRejectInteraction}
               onUploadImage={onUploadImage}
               externalReferences={externalReferences}
+              shareReviseDraft={shareReviseDraft}
             />
           )}
         </div>
@@ -4157,6 +4752,7 @@ export function IssueThreadInteractionCard({
           </div>
         ) : null}
       </div>
+      </CompactArtifactRowContext.Provider>
     </InteractionAudienceContext.Provider>
   );
 }

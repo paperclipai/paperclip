@@ -22,15 +22,17 @@ describe("workspace preference authorization", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.findCompany.mockResolvedValue({ id: companyId });
-    mocks.get.mockImplementation(async userId => ({ userId, coordinatorWorkspaceEnabled: false, updatedAt: null }));
-    mocks.set.mockImplementation(async (_companyId, userId, enabled) => ({ userId, coordinatorWorkspaceEnabled: enabled, updatedAt: null }));
+    mocks.get.mockImplementation(async userId => ({ userId, coordinatorWorkspaceEnabled: false, timeZone: null, updatedAt: null }));
+    mocks.set.mockImplementation(async (_companyId, userId, update) => ({ userId, coordinatorWorkspaceEnabled: update.coordinatorWorkspaceEnabled ?? true, timeZone: update.timeZone ?? null, updatedAt: null }));
   });
   it("reads only the caller and allows a non-admin viewer to save their own choice", async () => {
     const response = await request(app()).get("/api/workspace-preferences/me").expect(200);
     expect(response.headers["cache-control"]).toBe("private, no-store");
     expect(mocks.get).toHaveBeenCalledWith("alice");
     await request(app()).put(url).send({ coordinatorWorkspaceEnabled: true }).expect(200);
-    expect(mocks.set).toHaveBeenCalledWith(companyId, "alice", true);
+    expect(mocks.set).toHaveBeenCalledWith(companyId, "alice", { coordinatorWorkspaceEnabled: true, timeZone: undefined });
+    await request(app()).put(url).send({ timeZone: "America/Chicago" }).expect(200);
+    expect(mocks.set).toHaveBeenLastCalledWith(companyId, "alice", { coordinatorWorkspaceEnabled: undefined, timeZone: "America/Chicago" });
   });
   it.each([
     { type: "none", source: "none" },
@@ -42,7 +44,7 @@ describe("workspace preference authorization", () => {
     expect(mocks.get).not.toHaveBeenCalled(); expect(mocks.set).not.toHaveBeenCalled();
   });
   it("does not accept someone else's identity or silently coerce the preference", async () => {
-    for (const body of [{ coordinatorWorkspaceEnabled: true, userId: "bob" }, { coordinatorWorkspaceEnabled: "true" }, {}]) {
+    for (const body of [{ coordinatorWorkspaceEnabled: true, userId: "bob" }, { coordinatorWorkspaceEnabled: "true" }, {}, { timeZone: "Not/A_Zone" }]) {
       await request(app()).put(url).send(body).expect(400);
     }
     expect(mocks.set).not.toHaveBeenCalled();
@@ -58,7 +60,7 @@ describe("workspace preference authorization", () => {
   it("accepts the existing local implicit principal", async () => {
     await request(app({ type: "board", source: "local_implicit", userId: "local-board", isInstanceAdmin: true }))
       .put(url).send({ coordinatorWorkspaceEnabled: false }).expect(200);
-    expect(mocks.set).toHaveBeenCalledWith(companyId, "local-board", false);
+    expect(mocks.set).toHaveBeenCalledWith(companyId, "local-board", { coordinatorWorkspaceEnabled: false, timeZone: undefined });
   });
   it("reports a failed save rather than claiming the shell changed", async () => {
     mocks.set.mockRejectedValue(new Error("Database unavailable"));

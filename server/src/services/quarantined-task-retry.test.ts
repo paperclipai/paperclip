@@ -42,7 +42,7 @@ describe("task Retry after inherited native cleanup quarantine", () => {
     const execution = (runId: string) => parseNativeExecutionInput({
       schema: "paperclip.native-execution-input.v1",
       provider: provider === "acpx" ? { kind: "acpx", agent: "claude", model: "claude-sonnet-5", permissionPolicy: "interactive",
-        profile: { driverKind: "acpx_runtime", protocolVersion: 1, acpxVersion: "0.13.1", agent: "claude", agentProfileVersion: 1,
+        profile: { driverKind: "acpx_runtime", protocolVersion: 1, acpxVersion: "0.22.0", agent: "claude", agentProfileVersion: 1,
           agentServerPackage: "@zed-industries/claude-agent-acp", agentServerVersion: "1", agentRuntimePackage: null,
           agentRuntimeVersion: null, commandDigest: "fixture" } } : { kind: "codex", model: null },
       binding: { companyId, agentId, issueId, runId, executionWorkspaceId: transient ? runId : workspaceId },
