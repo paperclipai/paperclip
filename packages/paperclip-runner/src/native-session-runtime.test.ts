@@ -311,6 +311,57 @@ describe("executeNativeSession recovery", () => {
     } finally { abort.abort(); await completion.catch(() => undefined); }
   });
 
+  it("starts text delta appends without waiting and settles them before any other event", async () => {
+    const capabilities = { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true };
+    const delta = (sourceSeq: number) => ({ ...runnerEvent(sourceSeq, "item.delta", { kind: "agentMessage", text: `chunk ${sourceSeq}` }),
+      itemId: "message-1", priority: 1 as const });
+    const session: NativeSession = {
+      identity: () => identity,
+      async capabilities() { return capabilities; },
+      async *events() {
+        for (const sourceSeq of [1, 2, 3]) yield delta(sourceSeq);
+        yield runnerEvent(4, "run.result.proposed", result);
+        yield runnerEvent(5, "turn.completed");
+      },
+      async startTurn() { return { turnId: "turn-recovery" }; },
+      async result() { return { result, terminal, turnId: "turn-recovery" }; },
+      async snapshot() {
+        return { backendKind: "mock", sessionId: "driver-recovery", identity, providerSessionId: "provider-recovery",
+          cursor: null, activeTurnId: null, semanticResult: null, terminal: null, terminalTurns: [], pendingRuntimeRequests: [], lineage: [] };
+      },
+      async close() {},
+    };
+    const backend: NativeSessionBackend = {
+      async descriptor() { return { kind: "mock", name: "delta-fixture", version: "1", capabilities,
+        runtimeContextCapabilities: { instructions: "native", skills: "native", mcp: "native" } }; },
+      async openSession() { return session; },
+    };
+    const log: string[] = [];
+    const port: ControlPlanePort = {
+      pipelinesStreamingEvents: true,
+      async openRun() {}, async checkpointSession() { log.push("checkpoint"); },
+      async appendEvent(event: PrpEvent) {
+        if (event.sourceKind !== "runner") return { cursor: 0, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" };
+        log.push(`append:${event.sourceSeq}`);
+        if (event.eventType === "item.delta") {
+          // A batch commits later; the caller must not wait for it before the next delta.
+          await new Promise<void>(resolve => setImmediate(resolve));
+          await new Promise<void>(resolve => setImmediate(resolve));
+          log.push(`committed:${event.sourceSeq}`);
+        }
+        return { cursor: event.sourceSeq, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" };
+      },
+      async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; },
+      async completeRun() { log.push("complete"); },
+    };
+    const execution = await executeNativeSession({ input: preparedInput(), backend, controlPlane: port,
+      runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery" });
+    const runnerLog = log.filter(entry => /^(append|committed):/.test(entry));
+    expect(runnerLog.slice(0, 3)).toEqual(["append:1", "append:2", "append:3"]);
+    expect(runnerLog.indexOf("append:4")).toBeGreaterThan(Math.max(...[1, 2, 3].map(seq => runnerLog.indexOf(`committed:${seq}`))));
+    expect(execution).toMatchObject({ nativeEventCount: 7, highestContiguousSourceSeq: 5 });
+  });
+
   it.each([false, true].flatMap(recovered => [
     { recovered, cwd: "/home/agent" },
     { recovered, cwd: "/projects/repository/worktrees/task" },
