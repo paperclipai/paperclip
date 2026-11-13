@@ -9,6 +9,8 @@ import {
 import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
 import { taskHistoryReadsForRun } from "./queued-comment-delivery.js";
+import { undeliveredLegacyUserCommentIds } from "./explicit-native-continuation.js";
+import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
 import { FRESH_CONTINUATION_SUPERSEDED_KEY } from "../agent-run-cancellation.js";
 import { isAcknowledgedNativeReassignmentStop, isAcknowledgedNativeStop } from "./acknowledged-native-stop.js";
 import { adapterExecutionControls } from "./adapter-execution-control.js";
@@ -367,6 +369,40 @@ export async function readFreshContinuationReadiness(db: Db, run: Pick<typeof he
   return { mode: "fresh_isolated_workspace" as const, retryIntentId: recordId, sourceRunId, retainedSourceIds: [] as string[] };
 }
 
+/**
+ * True when a wake continues a cut-off run in a new isolated workspace. The
+ * fallback cleared the task's workspace binding on purpose, and the run
+ * prepares a new workspace itself, so admission must not refuse the wake for
+ * lacking that binding (it would refuse it forever).
+ */
+export async function isFreshIsolatedContinuationWake(db: Db, input: { companyId: string; issueId: string;
+  contextSnapshot: Record<string, unknown> | null | undefined }) {
+  if (typeof object(input.contextSnapshot).freshContinuationIsolation !== "string") return false;
+  return (await readFreshContinuationReadiness(db, { id: "", companyId: input.companyId,
+    contextSnapshot: input.contextSnapshot ?? {} }, input.issueId)) !== null;
+}
+
+/**
+ * True when the fallback replaced this run and its continuation reuses none of
+ * the run's workspace: a new isolated workspace or an abandoned remote epoch.
+ * Holds that only protect the old executor's resources then no longer stand
+ * between the task and its next turn.
+ */
+export async function freshContinuationIsolatesRun(db: Db, input: { companyId: string; runId: string }): Promise<false | {
+  /** The isolated continuation is recorded but not yet delivered as a run. */
+  continuationPending: boolean;
+}> {
+  const [record] = await db.select({ isolation: sql<string>`${issueRecoveryActions.evidence}#>>'{freshContinuation,isolation}'`,
+    delivery: sql<string | null>`${issueRecoveryActions.evidence}->>'continuationDelivery'` }).from(issueRecoveryActions).where(and(
+    eq(issueRecoveryActions.companyId, input.companyId),
+    sql`${issueRecoveryActions.evidence}#>>'{freshContinuation,sourceRunId}' = ${input.runId}`,
+    sql`${issueRecoveryActions.evidence}#>>'{freshContinuation,isolation}' in ('fresh_isolated_workspace', 'remote_epoch')`)).limit(1);
+  if (!record) return false;
+  // Only the recorded continuation carries the isolation marker that prepares
+  // the new workspace, so while it is pending it must be the task's next run.
+  return { continuationPending: record.isolation === "fresh_isolated_workspace" && record.delivery === "pending" };
+}
+
 export async function ensureFreshContinuation(db: Db, input: Input): Promise<FreshContinuationResult> {
   return db.transaction(tx => continueFreshInTransaction(tx as unknown as Db, input));
 }
@@ -536,9 +572,20 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
   // Saved user input (a message or a Retry the person pressed) continues the
   // task through normal admission once nothing blocks it; a second, automatic
   // continuation would run after it.
-  const [savedInput] = await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
+  const savedWakes = await tx.select({ id: agentWakeupRequests.id, payload: agentWakeupRequests.payload }).from(agentWakeupRequests).where(and(
     eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.status, "deferred_issue_execution"),
-    eq(agentWakeupRequests.requestedByActorType, "user"), sql`${agentWakeupRequests.payload}->>'issueId' = ${issue.id}`)).limit(1);
+    eq(agentWakeupRequests.requestedByActorType, "user"), sql`${agentWakeupRequests.payload}->>'issueId' = ${issue.id}`)).limit(5);
+  // Saved input continues the task only while it still holds something the
+  // agent has not received: a message the cut-off run already took into its
+  // turn is settled as delivered when promoted, and then nothing would run.
+  let savedInput: { id: string } | undefined;
+  for (const wake of savedWakes) {
+    const commentIds = queuedCommentIdsFromWakePayload(wake.payload);
+    if (!commentIds.length || (await undeliveredLegacyUserCommentIds(tx, companyId, issue.id, run.agentId, commentIds)).length) {
+      savedInput = wake;
+      break;
+    }
+  }
   let delivery: "recorded" | "caller_owns" | "saved_input" = input.delivery === "caller_owns" ? "caller_owns"
     : savedInput ? "saved_input" : "recorded";
 
@@ -554,10 +601,12 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
   // Never claim a stop that was not proven: record what isolates the successor.
   const isolation: FreshContinuationIsolation = fenced || remoteSource ? "remote_epoch"
     : writer === "ended" && !waitBounded ? "writer_ended" : "fresh_isolated_workspace";
-  // With no task workspace binding to move, only a run that carries the
-  // isolation in its context can avoid the shared directory: the recorded
-  // continuation runs first, and saved input follows it.
-  if (isolation === "fresh_isolated_workspace" && !issue.executionWorkspaceId && delivery === "saved_input") delivery = "recorded";
+  // Only a run that carries the isolation in its context prepares the new
+  // workspace (create_new). Saved input carries no such marker: on a task with
+  // no project it would be refused at admission once the binding is cleared,
+  // and otherwise could resolve the old directory. So the recorded
+  // continuation runs first, binds the new workspace, and saved input follows.
+  if (isolation === "fresh_isolated_workspace" && delivery === "saved_input") delivery = "recorded";
   const unverified = await unverifiedActions(tx, run);
   const created = await createdObjects(tx, run);
   const note = freshContinuationNote({ runId: run.id, unverified, created,
