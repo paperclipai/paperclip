@@ -1,4 +1,4 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import {
   executionWorkspaceRepositories, executionWorkspaces, heartbeatRunEvents, heartbeatRuns, nativeRunnerCheckpoints,
   nativeRunResults, workspaceOperations, type Db,
@@ -7,6 +7,10 @@ import { remoteWorkspaceRunReferenceSchema, type RemoteWorkspaceAuthority } from
 import { executionStartedEventPredicate } from "./pre-dispatch-execution-evidence.js";
 import { runOwnerFenceHeldSql } from "./remote-workspace-writer-hold.js";
 import { carriesInheritedRunnerIdentity } from "./native-runtime/native-inherited-runner-retry.js";
+import { readFailedBeforeProviderTurnRecord } from "./native-runtime/failed-before-provider-turn.js";
+
+const PROVIDER_TURN_EVENT_TYPES = ["turn.started", "turn.completed", "turn.failed", "provider.event", "provider.rpc_result",
+  "tool.execution.started", "item.started", "item.completed"];
 
 /**
  * A writer's prepared files equal its saved version only while nothing ran in
@@ -48,7 +52,7 @@ const ENDED_WITHOUT_RESULT = ["failed", "cancelled", "interrupted", "timed_out"]
 export type UnchangedProofRefusal =
   | "baseline_missing" | "authority_mismatch" | "writer_not_ended" | "writer_owner_live" | "process_recorded"
   | "reference_mismatch" | "provider_session_started" | "execution_recorded" | "result_recorded"
-  | "runner_commanded" | "workspace_operation_recorded" | "repository_unsaved";
+  | "runner_commanded" | "workspace_operation_recorded" | "repository_unsaved" | "predecessor_save_unsettled";
 
 /**
  * Whether the ended writer of `authority` provably left its files exactly as
@@ -78,8 +82,9 @@ export async function proveRemoteWorkspaceUnchanged(tx: Pick<Db, "select">, inpu
     .where(and(eq(heartbeatRuns.companyId, workspace.companyId), eq(heartbeatRuns.id, runId)));
   if (!run || !ENDED_WITHOUT_RESULT.includes(run.status)) return { proven: false, reason: "writer_not_ended" };
   if (!input.callerOwnsWriter && run.ownerFenceHeld) return { proven: false, reason: "writer_owner_live" };
+  const beforeProviderTurn = readFailedBeforeProviderTurnRecord(run.runnerProfileJson) !== null;
   if (run.sessionIdAfter !== null) return { proven: false, reason: "process_recorded" };
-  if ((run.processPid !== null || run.processGroupId !== null || run.processStartedAt !== null)
+  if (!beforeProviderTurn && (run.processPid !== null || run.processGroupId !== null || run.processStartedAt !== null)
     && !await carriesInheritedRunnerIdentity(tx, run)) return { proven: false, reason: "process_recorded" };
   const profile = object(run.runnerProfileJson);
   const reference = remoteWorkspaceRunReferenceSchema.safeParse(profile.remoteWorkspace);
@@ -97,7 +102,7 @@ export async function proveRemoteWorkspaceUnchanged(tx: Pick<Db, "select">, inpu
 
   const [event] = await tx.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
     eq(heartbeatRunEvents.companyId, workspace.companyId), eq(heartbeatRunEvents.runId, runId),
-    executionStartedEventPredicate())).limit(1);
+    beforeProviderTurn ? inArray(heartbeatRunEvents.eventType, PROVIDER_TURN_EVENT_TYPES) : executionStartedEventPredicate())).limit(1);
   if (event) return { proven: false, reason: "execution_recorded" };
   const [result] = await tx.select({ id: nativeRunResults.id }).from(nativeRunResults).where(and(
     eq(nativeRunResults.companyId, workspace.companyId), eq(nativeRunResults.runId, runId))).limit(1);
@@ -105,13 +110,19 @@ export async function proveRemoteWorkspaceUnchanged(tx: Pick<Db, "select">, inpu
   // The controller writes this checkpoint before every runner command.
   const [commanded] = await tx.select({ runId: nativeRunnerCheckpoints.runId }).from(nativeRunnerCheckpoints).where(and(
     eq(nativeRunnerCheckpoints.companyId, workspace.companyId), eq(nativeRunnerCheckpoints.runId, runId))).limit(1);
-  if (commanded) return { proven: false, reason: "runner_commanded" };
+  if (commanded && !beforeProviderTurn) return { proven: false, reason: "runner_commanded" };
   // Provisioning and saves record their operation before they touch files.
   const [operation] = await tx.select({ id: workspaceOperations.id }).from(workspaceOperations).where(and(
     eq(workspaceOperations.companyId, workspace.companyId), eq(workspaceOperations.heartbeatRunId, runId),
     sql`(${workspaceOperations.executionWorkspaceId} is null or ${workspaceOperations.executionWorkspaceId} = ${workspace.id})`,
     sql`${workspaceOperations.phase} not in (${sql.join(FILE_NEUTRAL_OPERATION_PHASES.map(phase => sql`${phase}`), sql`, `)})`)).limit(1);
   if (operation) return { proven: false, reason: "workspace_operation_recorded" };
+  if (beforeProviderTurn) {
+    const [unsettled] = await tx.select({ id: workspaceOperations.id }).from(workspaceOperations).where(and(
+      eq(workspaceOperations.companyId, workspace.companyId), eq(workspaceOperations.executionWorkspaceId, workspace.id),
+      eq(workspaceOperations.status, "running"), sql`${workspaceOperations.heartbeatRunId} is distinct from ${runId}`)).limit(1);
+    if (unsettled) return { proven: false, reason: "predecessor_save_unsettled" };
+  }
   // A requested repository is cloned before its save is recorded. Only
   // repositories already in the saved version are proven untouched.
   const repositories = await tx.select().from(executionWorkspaceRepositories).where(and(

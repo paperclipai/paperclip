@@ -1,5 +1,5 @@
 import { savedDesignInstruction, withRenderedCommentReference, validRenderedCommentReference } from "./internal-comment-reference.js";
-import { linkedQuestionTakeover, observeLinkedTaskQuestion } from "../chat-linked-question.js";
+import { linkedQuestionTakeover, observeLinkedTaskQuestion, questionCardNamesCandidates, type ClarificationObservation } from "../chat-linked-question.js";
 import { withEditOwnership } from "./internal-edit-ownership.js";
 import { verifyDistinctTaskFixtures } from "./internal-distinct-fixtures.js";
 import { delegatedTaskCases } from "./internal-task-creation.js";
@@ -34,10 +34,13 @@ export function grade_tasks(value: unknown) {
     case "tasks.ambiguous-task": {
       const other = entity(o.state, "otherTask");
       const first = observation(o.state.clarification);
+      // The candidates are identified by rendered links to both tasks, or by the run's saved question card offering
+      // each task as its own choice: card options render as plain-text choice buttons, which cannot hold links.
+      const linked = !!first && !!before && hasLink(first, "issues", before) && hasLink(first, "issues", other);
+      const offered = !!first && !!before && questionCardNamesCandidates((first as ClarificationObservation).questionCards ?? [], [before, other], first.runs[0]?.id, o.leadId);
       c.add("clarify-before-write", !!first && !!before && sameTask(before, first.tasks.find(row => row.id === before.id))
-        && sameTask(other, first.tasks.find(row => row.id === other.id))
-        && hasLink(first, "issues", before) && hasLink(first, "issues", other),
-        "The first completed turn changes neither task and gives the person links to both candidates.");
+        && sameTask(other, first.tasks.find(row => row.id === other.id)) && (linked || offered),
+        "The first completed turn changes neither task and identifies both candidates with links or as separate saved question choices.");
       c.add("only-selected-task-changed", !!before && current?.priority === "high" && sameTask(before, current, ["priority"])
         && sameTask(other, o.tasks.find(row => row.id === other.id)) && o.tasks.length === 2,
         "After the explicit Launch selection, only that task's requested priority changes.");
@@ -91,7 +94,7 @@ function ambiguousTask(): ChatCatalogCase {
     await verifyDistinctTaskFixtures(ctx, [t, otherTask]);
     return { project: p, task: t, otherProject, otherTask };
   });
-  return { ...base, oracleVersion: "paperclip.chat-catalog.internal.ambiguous-task.v4", sourceFiles: [...base.sourceFiles, "chat-catalog-domains/internal-distinct-fixtures.ts", "chat-linked-question.ts", "chat-catalog-domains/identity-support.ts", "chat-rendered-links.ts"], expectedRunCount: 2, expectedHumanMessageCount: 2, attemptTimeoutMs: 420_000,
+  return { ...base, oracleVersion: "paperclip.chat-catalog.internal.ambiguous-task.v5", sourceFiles: [...base.sourceFiles, "chat-catalog-domains/internal-distinct-fixtures.ts", "chat-linked-question.ts", "chat-catalog-domains/identity-support.ts", "chat-rendered-links.ts"], expectedRunCount: 2, expectedHumanMessageCount: 2, attemptTimeoutMs: 420_000,
     async act(ctx, state) {
       await pollUntil({ label: "Task ambiguity clarification", deadlineAt: Date.now() + 150_000,
         load: () => observeInternal(ctx, state), accept: o => o.runs.length === 1 && o.runs.every(row => row.status === "succeeded")

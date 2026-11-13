@@ -512,7 +512,8 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
   }
 
   it.each([
-    ["issue_continuation_needed", "cancelled"], ["issue_recovery_action_restored", "cancelled"], ["issue_commented", "running"],
+    ["issue_continuation_needed", "cancelled"], ["issue_recovery_action_restored", "cancelled"], ["issue_children_completed", "cancelled"],
+    ["issue_commented", "running"],
   ] as const)("does not start a %s run whose task another run already finished (expected %s)", async (wakeReason, expected) => {
     // Release-swap wave t011: a delivered continuation queued while its task was open started after
     // another run marked the task done, and took an extra turn on a finished task.

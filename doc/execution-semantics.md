@@ -1472,7 +1472,21 @@ so the cleanup sweep destroys the old sandbox later and no provider delete delay
 the first turn. It creates a new sandbox, records the acquisition as
 `replacement` with reason `resume_failed`, and workspace preparation restores the
 saved snapshot into it. Leases saved by older releases have the same fields and
-follow the same rule; one without a verified backup stays strict.
+follow the same rule.
+
+A native runner session without a verified harness backup is replaced only when
+the provider has proven it cannot start the sandbox: the lease is idle and every
+resume call timed out (no rate limit, reset, or other failure in between) through
+the whole extended start deadline (for example a
+Daytona sandbox stuck in `archiving`). The other conditions above still apply, so
+the task's files come from the committed saved snapshot. The new sandbox starts a
+fresh runner session. The old lease keeps its status and its sandbox, and is never
+destroyed: one guarded write marks it `reusableSandboxKeptAfterReplacement`, and
+later runs no longer offer it for resume. Every automatic teardown path skips a
+marked lease: obsolete-lease cleanup, run and workspace teardown, expiry,
+retained-orphan settlement, recovered-workspace cleanup, and abandoned-file
+release. Only an operator-consented environment delete destroys it. Without that proof, a lease without a
+verified backup stays strict.
 
 Otherwise (unsaved work, a live owner, a workspace with no committed saved
 version, an access refusal, or an unavailable worker) the refusal keeps the strict
@@ -1634,6 +1648,8 @@ timeout retries still require a fresh allocation under the policy above.
 
 A person's task Retry on a connected task first asks the chat retry owner to repeat the exact failed chat request. When the latest run is that person's own saved board turn that cannot be certified for replay, when no chat retry owner is available, or when that owner refuses (`chat_failed_run_retry_not_authorized`), the refusal and any writes it made are rolled back and the same Retry receipt becomes an ordinary board continuation: the clicking person is the responsible user, the run starts a fresh session from saved work, and no chat action, chat authority, or output replay is created. This is the same authority as a new message from that person. When the conversation still holds saved or unadmitted chat input for the task, Retry keeps the exact-replay path and its refusal, because that input continues through its own admission. Dispatch keeps every normal gate (current task access, executor containment, recovery holds, unadmitted chat input). Projection and the route therefore agree: a shown Retry on a connected task is accepted. Retry that Paperclip requests by itself on a person's behalf (restart recovery, provider limit reset) keeps the exact-replay requirement and still settles on the refusal. A budget resume continues the person's own Retry, so it takes the board continuation too. No migration is needed; tasks blocked by an earlier release become retryable at the next click.
 
+A task whose run was interrupted and whose fresh continuation is recorded reads as continuing (`working`, no Retry) while the continuation waits to be delivered and while it waits in the agent's queue. Once the delivered continuation run has waited in the queue for 15 minutes, the task also offers Retry with `retryAction: "move_forward"`, labelled "Move it forward now". The Retry names that queued run as its observed run, so admission joins it to the run (`coalesced`) and starts no second run; a run that a person joined starts ahead of system recovery work. The offer ends once a person has joined the run or the run starts. While the continuation is still waiting to be delivered, no Retry is offered: a Retry there would start its own run beside the recorded continuation.
+
 The exact replay can also be refused after the click is accepted. This happens when chat source authorization was deferred by a busy identity or endpoint lock, or when it later fails, so the chat retry action settles `failed` with no admitted run. The task Retry receipt is then not failed. If it is a person's Retry, its source run is still the latest run, its chat wake has no run, and no saved or unadmitted chat input remains, the same receipt drops its chat action and becomes the board continuation described above, recorded as `issue.retry_continued_from_saved_work`. Saved chat input whose source comment was written no later than the failed run's stop boundary (the user's recorded Stop request, otherwise `finishedAt`, the same boundary admission uses) does not block this: admission holds such input as `message_predates_stop`, so it can never start alone. The continuation adopts it (the input receipt is coalesced into the Retry receipt) and the task continues from saved work. Saved input that arrived after the stop keeps its own admission path, and the Retry still settles as failed. When the latest run is an admission that the recovery hold cancelled before dispatch (`execution_reconciliation_required`), the saved work that counts is the recovered work of the run whose recovery action held it. The deferred-receipt worker dispatches it with every normal gate. Retry that Paperclip requests by itself still settles as failed. When a failed run's saved work is recovered, the task's execution blocker offers Retry (also on a connected task) and says "Saved work recovered. Retry continues from it." A stopped (cancelled) run keeps "Send a message to continue."
 
 ### Saved chat Retry preparation
@@ -1761,6 +1777,18 @@ starts by itself once the gate clears. A Retry accepted during the pre-deploy
 drain stays saved and is dispatched by the deferred-receipt worker after the
 restart.
 
+After the provider accepts a turn, the transport waits for that turn's
+`turn/started` before it reports the turn identity. Codex starts its MCP
+servers before it starts the turn, so a healthy cold start in a loaded sandbox
+can take most of a minute: on staging, submit to `turn/started` measured p50
+25 s, p90 50 s and max 76 s across 68 successful starts, while a fixed 30 s wait
+hit 52 of 198 recent runs with `runnerd did not report the provider turn identity`.
+The default wait is 90 s. Each provider notice, or runner diagnostic naming the
+accepted turn, restarts that window, up to 180 s in all. A provider relaunch
+does not count as progress. A silent start with no proof that the accepted turn
+is still live fails when its window ends, and a Runner exit or a runner
+failure of the pending turn still fails at once.
+
 When a remote native run fails and its close cannot prove that the Runner
 suspended (for example, the Runner is unreachable after `provider_transport_failed`
 or a `turn.start` timeout), the controller no longer force-stops that Runner. It
@@ -1778,9 +1806,24 @@ needs an operator, still stops the Runner. A reattachment after a restart whose 
 times out or loses its transport (for example
 `PRP command session.snapshot timed out`) detaches from the Runner the same way a server restart does: it sends no turn
 stop and no suspend and does not signal the process. The Runner and its
-in-flight turn stay for the next same-run reattachment. An abort (a Stop or the
-recovery deadline), any identity or authority refusal, any other recovery
-failure, and a protocol integrity fault still stop it.
+in-flight turn stay for the next same-run reattachment. The provider recovery
+deadline (`native session provider recovery timed out after 900000ms`) detaches
+the same way. On staging, every Codex Runner that a reattachment later found
+gone (`process_not_running`) had been stopped by this deadline's cleanup, not
+by the deploy, and the task then lost its session to a fresh one. A Stop, any
+identity or authority refusal, any other recovery failure, and a protocol
+integrity fault still stop it.
+
+The failed attempt's close keeps the session quarantined in the server process,
+and later close retries only replay that failed close, so they never settle it.
+The same run's reattachment to that Runner (in the same remote sandbox) takes
+over the quarantine instead of waiting for it: it lets any close attempt still
+in flight settle, then retires the attempt's cleanup and adopts the Runner.
+Before this, the reattachment was refused with `native_session_cleanup_quarantined`
+(`prior session cleanup remains incomplete` while retries were scheduled, or
+`the previous session is still shutting down` once the close was
+operator-required), each refusal spent a same-run attempt, and the task needed
+Retry. Other runs of the task and other sandboxes stay gated as before.
 
 A kept Runner can answer its WebSocket pings but no recovery command. On
 staging, a reattached Codex Runner authenticated and restored its session, then
@@ -1788,7 +1831,8 @@ left `session.snapshot` unanswered (`pending ahead 0; last runner event seq 338
 76s ago`), and each later attempt adopted the same Runner and failed the same
 way until the attempt budget ended the run. When a same-run reattachment fails
 because its Runner left a recovery command unanswered (`PRP command <type> timed
-out`, or `runnerd exited while waiting for <type>`), and the failure is not an
+out`, `runnerd exited while waiting for <type>`, or the provider recovery
+deadline), and the failure is not an
 identity, authority or integrity refusal, the run records
 `adoptedRunnerUnanswered` on its failure and the next claim carries
 `replaceUnansweredRunner`. That attempt does not adopt the Runner again. After
@@ -5612,8 +5656,22 @@ on the controller. The MCP bridge preserves exact declared operation names,
 including names that start with `paperclip_`; only a catalog-bound transport
 prefix may resolve to that declared name. Shortened or unknown names do not
 gain authority. OpenCode sessions with the former direct catalog rotate their
-provider checkpoint before reuse; other providers retain their existing tool
-contract fingerprints.
+provider checkpoint before reuse.
+
+Every native Runner harness, local or remote, receives its assigned gateway
+tools through this relay. The controller lists them with the run's gateway
+token, offers them as dynamic tools on the Runner's task bridge (the
+`paperclip` MCP server for ACPX agents), and executes each call through the
+gateway on the controller. The provider process never receives
+`PAPERCLIP_NATIVE_MCP_*` or the gateway token. Grok Bot and Muse runs, which
+cannot advertise app tools, skip the listing. Relayed names are
+`app_<connection>_<tool>_<digest>`, at most 64 characters, and follow each
+harness's existing permission rules for task-bridge tools. Local provider
+checkpoints saved with the former direct gateway rotate before reuse, so the
+next run starts a fresh provider session with full task context in the same
+workspace. Remote checkpoints, which already used the relay for Codex, keep
+their fingerprint. A run recovered after its Runner died during the cutover
+continues with the tool set it saved and has no app tools until it ends.
 
 
 ### Use real connection requests (2026-09-14)
@@ -5959,6 +6017,25 @@ The final admitted provider attempt may use this path; attempts above the limit
 cannot. Process verification and the final state read share one recovery
 deadline. A timeout, command failure, transport failure or invalid saved JSON on
 that final read keeps its closed recovery stage and reason in the diagnostic.
+
+A Runner that no controller reaches before its connection lease expires, or
+before its reconnect grace or deadline ends, stops its provider, saves its state
+with lifecycle `recoverable_failure` and `lease_expired_requires_bootstrap`,
+`transport_reconnect_grace_exceeded` or `transport_reconnect_deadline_exceeded`,
+and exits. Only a new process with a fresh bootstrap ticket can reconnect, and
+that process continues from the same cursor. A reattachment that finds this exit
+re-reads the state after the process is proven gone. When it has the same six
+identity fields, the same lifecycle and code, and no pending terminal delivery
+or warm transition, the reattachment launches a Runner from that state, even
+mid-turn and with events still in the outbox. Sandbox preparation reads that
+state once more and keeps it in place, as it does for an adopted live Runner;
+it does not require a `suspended` state or an idle provider checkpoint for this
+exit. The new Runner restores the
+conversation: it continues the turn, or reports the lost turn as recoverable
+after it proves that the old provider process ended. This path admits the same
+attempts as a reattachment, including the extra attempt of an unanswered-Runner
+replacement. On staging, a deploy that kept a reattachment from reconnecting for
+more than the lease ended these runs with `runner_remote_process_identity_unavailable`.
 
 Reattachment keeps the complete durable PRP binding, including its turn and item
 attachment IDs. A healthy warm handoff can create new attachment IDs within the

@@ -101,6 +101,7 @@ import {
   workspaceOperations,
 } from "@paperclipai/db";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
+import { STRANDED_KIND, strandedRunCauseIsTemporary, type StrandedHoldRun } from "./stranded-hold-continuation.js";
 import { runningProcesses } from "../../adapters/index.js";
 import {
   isNativeRunnerOwnershipHeld,
@@ -174,6 +175,8 @@ import {
   buildExecutionReviewParticipantRecoveryNoticeSeed,
   buildExecutionReviewParticipantUnavailableNoticeSeed,
   buildStrandedRecoveryEscalationNotice,
+  buildNoRunningExecutionNoticeSeed,
+  RETRY_FROM_SAVED_WORK_NEXT_ACTION,
   type StrandedRecoveryNoticeSeed,
 } from "./stranded-notice.js";
 import {
@@ -240,6 +243,8 @@ const RESOLVED_DEPENDENCY_WAKE_BACKSTOP_CANDIDATE_LIMIT = 500;
 // every heartbeat and would otherwise trigger a recovery issue after just two
 // productive heartbeats. Floor the override at 60s to keep the exemption from
 // being effectively disabled by misconfiguration.
+const RECOVERY_TASK_NOT_NESTED = "This task was created to recover another task, so Paperclip does not create another recovery task for it.";
+
 export const STRANDED_RECENT_PROGRESS_EXEMPTION_MS = Math.max(
   60_000,
   Number(process.env.STRANDED_RECENT_PROGRESS_EXEMPTION_MS) || 30 * 60 * 1000,
@@ -530,7 +535,7 @@ function summarizeRunFailureForIssueComment(run: LatestIssueRun) {
   if (!run) return null;
 
   if (readNonEmptyString(run.error) || readNonEmptyString(run.errorCode)) {
-    return " Latest retry failure details were withheld from the issue thread; inspect the linked run for evidence.";
+    return " The failure details are kept with the run.";
   }
   return null;
 }
@@ -893,12 +898,11 @@ function isOperatorCancelledRun(
   );
 }
 
-function nonRetryableContinuationNotice(errorCode: string | null) {
+function nonRetryableContinuationNotice() {
   return {
     body:
-      "Paperclip detected a non-retryable failure on this issue's continuation run " +
-      `(\`${errorCode}\`). Skipping automatic retries and moving it to \`blocked\` ` +
-      "so it is visible for intervention.",
+      "The agent's run stopped for a reason that retrying alone would not fix, so Paperclip did not retry it. " +
+      "Fix the reason shown in the details, then press Retry.",
     title: "Continuation failed",
     tone: "danger" as const,
   };
@@ -2506,16 +2510,14 @@ export function recoveryService(
           .then((rows) => rows[0] ?? null)
       : null;
     const sourceLine = sourceIssue
-      ? `- Original source issue: ${issueUiLink(sourceIssue, prefix)}`
-      : sourceIssueId
-        ? `- Original source issue: \`${sourceIssueId}\``
-        : "- Original source issue: unknown";
+      ? `- Original task: ${issueUiLink(sourceIssue, prefix)}`
+      : "- Original task: not found";
 
     return [
       "",
-      "- Nested recovery: suppressed because this issue is already a `stranded_issue_recovery` issue.",
+      `- ${RECOVERY_TASK_NOT_NESTED}`,
       sourceLine,
-      "- Next action: the assigned recovery owner or board operator should fix the runtime/adapter problem, resolve or reassign the original source issue, then mark this recovery issue done or cancelled.",
+      "- Next action: press Retry on the original task to start it again from the saved work, then close this task.",
     ].join("\n");
   }
 
@@ -2679,43 +2681,43 @@ export function recoveryService(
         : { routingPolicy: STRANDED_BOARD_ESCALATION_POLICY },
       nextAction:
         recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON
-          ? "Board operator: inspect the run evidence, then explicitly choose a valid issue disposition, retry the original owner, reassign, or intentionally resolve the task."
+          ? "The agent finished without saying whether the task is done. Mark the task done if it is, or press Retry to let the agent continue from the saved work."
           : recoveryCause === "process_lost"
-            ? "Board operator: inspect the retry history, then explicitly retry the original owner, reassign, or intentionally resolve the task."
+            ? RETRY_FROM_SAVED_WORK_NEXT_ACTION
             : recoveryCause === "provider_quota"
-              ? "Wait for provider quota recovery, then retry the original assignee; do not wake a takeover owner."
+              ? "The AI provider's usage limit was reached. The same agent continues the task once the limit resets."
               : isEnvironmentProviderWait
-              ? "No agent work started. Retry the task once the environment provider is available."
+              ? "The sandbox service was unavailable, so no agent work started. Press Retry once it is available again."
               : recoveryCause === "codex_output_inactivity_monitor"
-                ? "Board operator: inspect the inactivity evidence, then explicitly retry the original owner, reassign, or intentionally resolve the task."
+                ? "The agent stopped responding, so this attempt was ended. Press Retry to start it again from the saved work."
                 : recoveryCause === "workspace_validation_failed"
                   ? readWorkspaceValidationPayload(input.latestRun)?.reason ===
                     "git_worktree_branch_incoherence"
-                    ? "Board operator: repair the source task git worktree branch incoherence or choose a new execution workspace, then explicitly retry or reassign."
+                    ? "The task's workspace no longer matches its branch, so the agent did not start. Press Retry to start it again."
                     : readWorkspaceValidationPayload(input.latestRun)
                           ?.reason ===
                         "git_worktree_base_materialization_failed"
-                      ? "Board operator: repair the project workspace repository URL or clone access, or configure a local checkout cwd, then explicitly retry or reassign."
-                      : "Board operator: repair the source task workspace link, project workspace cwd, or git checkout, then explicitly retry or reassign."
+                      ? "Paperclip could not copy the project's repository into the task's workspace. Restore access to the repository in the project settings, then press Retry."
+                      : "The task's workspace could not be used, so the agent did not start. Press Retry to start it again."
                   : recoveryCause === "configuration_incomplete"
                     ? readConfigurationIncompletePayload(input.latestRun)?.reason === "workspace_base_ref_unresolved"
-                      ? "Check the starting branch and repository access, then repair the task’s branch and retry the original assignee."
+                      ? "The starting branch for this task's workspace was not found in the repository. Set a starting branch that exists, then press Retry."
                       : readConfigurationIncompletePayload(input.latestRun)?.reason === "ai_connection_unavailable"
                       ? "Reconnect the selected AI account or choose an available connection, then continue the task."
                       : readConfigurationIncompletePayload(input.latestRun)?.reason === RESTRICTED_WORKSPACE_SOURCE_REASON
                       ? "Retry the task."
                       : readConfigurationIncompletePayload(input.latestRun)
                         ?.reason === SANDBOX_PROVIDER_PLUGIN_NOT_READY_REASON
-                      ? `Board operator: the sandbox provider plugin named in the run failure is not ready; ${sandboxProviderPluginRemedy(
+                      ? `The plugin that starts this agent's sandbox is not running. To fix it, ${sandboxProviderPluginRemedy(
                           readNonEmptyString(
                             readConfigurationIncompletePayload(input.latestRun)
                               ?.pluginStatus,
                           ) ?? "error",
-                        )}, then explicitly retry the original owner or reassign.`
-                      : "Board operator: bind the missing secret(s) named in the run failure, then explicitly retry the original owner or reassign."
+                        )}, then press Retry.`
+                      : "A secret this agent needs is not set. Add it in the agent's settings, then press Retry."
                     : recoveryCause === "execution_review_participant_recovery"
-                      ? "Board operator: repair the failed review participant path, restore a live reviewer, explicitly reassign, or record an intentional resolution."
-                      : "Board operator: inspect the evidence, repair the runtime if appropriate, then explicitly retry the original owner, reassign, or intentionally resolve the task.",
+                      ? "The reviewer did not finish the review. Choose a reviewer, or press Retry to ask the same reviewer again."
+                      : RETRY_FROM_SAVED_WORK_NEXT_ACTION,
       wakePolicy: isProviderQuotaWait
         ? {
             type: "monitor_only",
@@ -2872,26 +2874,22 @@ export function recoveryService(
           input.prefix,
         )
       : "none";
-    const retryReason =
-      readNonEmptyString(
-        parseObject(input.latestRun?.contextSnapshot)?.retryReason,
-      ) ?? "none";
     const failureSummary = summarizeRunFailureForIssueComment(input.latestRun);
+    const plain = (value: string) => value.replaceAll("_", " ");
 
     return [
-      "Paperclip stopped automatic stranded-work recovery for this recovery issue.",
+      "Paperclip stopped trying to recover this task automatically.",
       "",
-      `- Recovery issue: ${issueUiLink({ identifier: input.issue.identifier, id: input.issue.id }, input.prefix)}`,
-      `- Previous status: \`${input.previousStatus}\``,
+      `- Recovery task: ${issueUiLink({ identifier: input.issue.identifier, id: input.issue.id }, input.prefix)}`,
+      `- Previous status: ${plain(input.previousStatus)}`,
       `- Latest run: ${runLink}`,
-      `- Latest run status: \`${input.latestRun?.status ?? "unknown"}\``,
-      `- Retry reason: \`${retryReason}\``,
+      `- Latest run status: ${plain(input.latestRun?.status ?? "unknown")}`,
       failureSummary
         ? `- Failure: ${failureSummary.trim()}`
         : "- Failure: none recorded",
-      "- Guard: recovery issues do not create nested `stranded_issue_recovery` issues.",
+      `- ${RECOVERY_TASK_NOT_NESTED}`,
       "",
-      "Next action: the current recovery owner should inspect the failed run evidence, restore a live execution path or record the manual resolution, then move this recovery issue out of `blocked`.",
+      "Next action: press Retry to start this task again from the saved work.",
     ].join("\n");
   }
 
@@ -3790,7 +3788,7 @@ export function recoveryService(
           routingPolicy: STRANDED_BOARD_ESCALATION_POLICY,
         },
         nextAction:
-          "Inspect the evidence and choose whether to repair, retry the original owner, explicitly reassign, or resolve the source issue.",
+          "The agent stopped without saying what happens next with this task. Mark the task done if it is, or press Retry to let the agent continue from the saved work.",
         wakePolicy: {
           type: "board_escalation",
           reason: input.terminalReason,
@@ -3825,7 +3823,7 @@ export function recoveryService(
         "- Recovery owner: board",
         "- Source ownership: unchanged; reassignment requires an explicit decision or a policy-defined serious failure.",
         "",
-        "Next action: repair the liveness disposition or request an explicit source-owner decision.",
+        "Next action: mark the task done if it is, or press Retry to let the agent continue from the saved work.",
       ].join("\n"),
       {},
       {
@@ -4292,6 +4290,14 @@ export function recoveryService(
       fallbackBody: input.comment,
       recoveryCause,
       recoveryActionId: recoveryAction.id,
+      continuesAutomatically: Boolean(input.latestRun) && recoveryAction.kind === STRANDED_KIND
+        && recoveryAction.ownerType === "board" && input.latestRun?.agentId === input.issue.assigneeAgentId
+        && strandedRunCauseIsTemporary({
+          status: input.latestRun?.status ?? "",
+          errorCode: input.latestRun?.errorCode ?? null,
+          error: input.latestRun?.error ?? null,
+          executionRecovery: (parseObject(input.latestRun?.resultJson).executionRecovery ?? null) as StrandedHoldRun["executionRecovery"],
+        }),
       recoveryOwner:
         recoveryAction.ownerAgentId && recoveryOwner
           ? { id: recoveryOwner.id, name: recoveryOwner.name }
@@ -5338,9 +5344,8 @@ export function recoveryService(
               previousStatus: issue.status as StrandedPreviousStatus,
               latestRun: latestPostResolutionRun,
               comment:
-                `Paperclip stopped requeueing accepted interaction \`${acceptedContinuationInteraction.id}\` after ` +
-                `${consecutive} consecutive continuation wakes were cancelled while waiting on review. ` +
-                "Moving the issue to `blocked` so the missing execution path is visible for intervention.",
+                `Paperclip stopped trying to continue this task after ${consecutive} attempts in a row were cancelled ` +
+                "while it waited for review. Press Retry to start it again.",
             });
             if (updated) {
               result.escalated += 1;
@@ -5623,14 +5628,7 @@ export function recoveryService(
             issue,
             previousStatus: "todo",
             latestRun,
-            notice: {
-              body:
-                "Paperclip automatically retried dispatch for this assigned `todo` issue after a lost wake/run, " +
-                "but it still has no live execution path. " +
-                "Moving it to `blocked` so it is visible for intervention.",
-              title: "No live execution path",
-              tone: "danger",
-            },
+            notice: buildNoRunningExecutionNoticeSeed({ status: "todo" }),
           });
           if (updated) {
             result.escalated += 1;
@@ -5672,14 +5670,7 @@ export function recoveryService(
             issue,
             previousStatus: "todo",
             latestRun,
-            notice: {
-              body:
-                "Paperclip automatically retried dispatch for this assigned `todo` issue after a lost wake/run, " +
-                "but the bounded retry budget is spent and it still has no live execution path. " +
-                "Moving it to `blocked` so it is visible for intervention.",
-              title: "No live execution path",
-              tone: "danger",
-            },
+            notice: buildNoRunningExecutionNoticeSeed({ status: "todo" }),
           });
           if (updated) {
             result.escalated += 1;
@@ -5806,9 +5797,7 @@ export function recoveryService(
               issue,
               previousStatus: "in_progress",
               latestRun: successfulRun,
-              comment:
-                "Paperclip automatically retried continuation for this assigned `in_progress` issue and the retry " +
-                "made progress, but it still has no live execution path. Moving it to `blocked` so it is visible for intervention.",
+              notice: buildNoRunningExecutionNoticeSeed({ status: "in_progress" }),
             });
             if (updated) {
               result.escalated += 1;
@@ -5885,7 +5874,7 @@ export function recoveryService(
             issue,
             previousStatus: "in_progress",
             latestRun,
-            notice: nonRetryableContinuationNotice(classification.errorCode),
+            notice: nonRetryableContinuationNotice(),
           });
           if (updated) {
             result.escalated += 1;
@@ -5905,20 +5894,11 @@ export function recoveryService(
               classification.errorCode,
             );
           if (consecutive >= classification.maxAttempts) {
-            const attemptCopy =
-              consecutive <= 1 ? "" : ` (${consecutive}× attempts)`;
             const updated = await escalateStrandedAssignedIssue({
               issue,
               previousStatus: "in_progress",
               latestRun,
-              notice: {
-                body:
-                  "Paperclip automatically retried continuation for this assigned `in_progress` issue after its live " +
-                  `execution disappeared, but it still has no live execution path${attemptCopy}. ` +
-                  "Moving it to `blocked` so it is visible for intervention.",
-                title: "No live execution path",
-                tone: "danger",
-              },
+              notice: buildNoRunningExecutionNoticeSeed({ status: "in_progress", attempts: consecutive }),
             });
             if (updated) {
               result.escalated += 1;
@@ -5975,18 +5955,9 @@ export function recoveryService(
           issue,
           previousStatus: "in_progress",
           latestRun,
-          notice: recoveryOutcome.retryExhausted ? {
-            body:
-              "Paperclip retried this issue's run after it ended without finishing, but the bounded retry budget " +
-              "is spent and it still has no live execution path. " +
-              "Moving it to `blocked` so it is visible for intervention.",
-            title: "No live execution path",
-            tone: "danger",
-          } : recoveryOutcome.continuationRefused ? CONTINUATION_REFUSED_NOTICE
-            // The scheduler declined the preparation retry for another
-            // reason (for example a durable owner or a permanent refusal):
-            // escalate it as a non-retryable failure, as before.
-            : nonRetryableContinuationNotice(latestRun?.errorCode ?? null),
+          notice: recoveryOutcome.retryExhausted ? buildNoRunningExecutionNoticeSeed({ status: "in_progress" })
+            : recoveryOutcome.continuationRefused ? CONTINUATION_REFUSED_NOTICE
+            : nonRetryableContinuationNotice(),
         });
         if (updated) {
           result.escalated += 1;

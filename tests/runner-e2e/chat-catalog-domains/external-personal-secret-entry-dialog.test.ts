@@ -29,3 +29,20 @@ it.skipIf(process.env.PAPERCLIP_CHAT_EVAL_SECRET_ROUTE_CANARY !== "1")("observes
     expect(persisted).toBe(false);
   } finally { await browser.close(); }
 }, 10000);
+it.skipIf(process.env.PAPERCLIP_CHAT_EVAL_SECRET_ROUTE_CANARY !== "1")("binds the private entry form to the fixture definition by the dialog heading the product renders", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const ui = await readFile(new URL("../../../ui/src/pages/secrets/SetMyUserSecretDialog.tsx", import.meta.url), "utf8");
+  const worker = await readFile(new URL("./external-private-browser-worker.ts", import.meta.url), "utf8");
+  expect(ui).toContain('{existingSecret ? "Replace your value" : "Set your value"}');
+  expect(ui).toContain('{definition ? ` for ${definition.name}` : ""}');
+  const check = worker.match(/dialog\.getByRole\('heading',\{name:'([^']+)',exact:true\}\)\.isVisible\(\)\)throw new Error\('Wrong personal credential form'\)/);
+  expect(check?.[1]).toBe("Set your value for Personal publishing credential");
+  const browser = await chromium.launch({ headless: true, ...process.env.PAPERCLIP_RUNNER_E2E_CHROMIUM_EXECUTABLE ? { executablePath: process.env.PAPERCLIP_RUNNER_E2E_CHROMIUM_EXECUTABLE } : {} }), page = await browser.newPage();
+  try {
+    for (const [heading, bound] of [["Set your value for Personal publishing credential", true], ["Set your value for Shared publishing credential", false], ["Replace your value for Personal publishing credential", false]] as const) {
+      await page.setContent(`<section role="dialog"><h2>${heading}</h2><textarea aria-label="Your value"></textarea></section>`);
+      const dialog = personalSecretEntryDialog(page);
+      expect(await dialog.getByRole("heading", { name: check![1], exact: true }).isVisible()).toBe(bound);
+    }
+  } finally { await browser.close(); }
+}, 10000);

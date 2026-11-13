@@ -1513,18 +1513,17 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       routingPolicy: "board_escalation_no_takeover_v1",
     });
     if (input.cause === "execution_review_participant_recovery") {
-      expect(action.nextAction).toContain("failed review participant path");
+      expect(action.nextAction).toContain("The reviewer did not finish the review");
     } else if (input.cause === "process_lost") {
-      expect(action.nextAction).toContain(
-        "explicitly retry the original owner",
-      );
+      expect(action.nextAction).toContain("Press Retry to start it again from the saved work");
     } else {
       expect(action.nextAction).toContain(
-        input.kind === "deliberate_wait_without_target" ? "repair, retry the original owner" : input.kind === "missing_disposition"
-          ? "valid issue disposition"
-          : "Board operator",
+        input.kind === "deliberate_wait_without_target" ? "without saying what happens next" : input.kind === "missing_disposition"
+          ? "without saying whether the task is done"
+          : "Press Retry to start it again from the saved work",
       );
     }
+    expect(action.nextAction).not.toMatch(/Board operator|inspect/i);
 
     const recoveryIssues = await db
       .select()
@@ -6589,7 +6588,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       status: "active",
       ownerType: "board",
     });
-    expect(recoveryAction?.nextAction).toContain("sandbox provider plugin");
+    expect(recoveryAction?.nextAction).toContain("plugin that starts this agent's sandbox is not running");
     expect(recoveryAction?.nextAction).toContain("enable the plugin");
 
     const notice = await waitForValue(async () => {
@@ -7144,14 +7143,14 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       recoveryCause: "workspace_validation_failed",
     });
     expect(recoveryAction?.nextAction).toContain(
-      "repair the source task workspace link",
+      "The task's workspace could not be used",
     );
 
     const validationComment = await waitForValue(async () => {
       const rows = await selectRecoveryCommentsForIssue(issueId);
       return (
         rows.find((comment) =>
-          comment.body.includes("workspace failed validation"),
+          comment.body.includes("workspace could not be used"),
         ) ?? null
       );
     });
@@ -7199,7 +7198,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       expect(action).toMatchObject({ status: "active", kind: "workspace_validation", ownerType: "board" });
       expect(action.nextAction).toContain("workspace");
       const comments = await selectRecoveryCommentsForIssue(issueId);
-      expect(comments.some((comment) => comment.body.includes("workspace failed validation"))).toBe(true);
+      expect(comments.some((comment) => comment.body.includes("workspace could not be used"))).toBe(true);
       expect(mockCaptureRunFailure.mock.calls.filter(([event]) => event.runId === runId)).toEqual([]);
     } finally {
       await heartbeat.waitForRunExecutionDrain(runId);
@@ -7293,7 +7292,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       expect(action).toMatchObject({ status: "active", kind: "workspace_validation", ownerType: "board" });
       expect(action.nextAction).toContain("workspace");
       const comments = await selectRecoveryCommentsForIssue(issueId);
-      expect(comments.some((comment) => comment.body.includes("workspace failed validation"))).toBe(true);
+      expect(comments.some((comment) => comment.body.includes("workspace could not be used"))).toBe(true);
       expect(mockCaptureRunFailure.mock.calls.filter(([event]) => event.runId === runId)).toHaveLength(report ? 1 : 0);
       const calls = (await fs.readFile(callsPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as string[]);
       expect(calls).toHaveLength(failures.length);
@@ -7516,13 +7515,13 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       ownerAgentId: null,
       recoveryIssueId: null,
     });
-    expect(recoveryAction?.nextAction).toContain("bind the missing secret");
+    expect(recoveryAction?.nextAction).toContain("A secret this agent needs is not set");
 
     const configurationComment = await waitForValue(async () => {
       const rows = await selectRecoveryCommentsForIssue(issueId);
       return (
         rows.find((comment) =>
-          comment.body.includes("secret/env bindings are missing"),
+          comment.body.includes("a secret it needs is not set"),
         ) ?? null
       );
     });
@@ -7881,7 +7880,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
             expect.objectContaining({
               type: "key_value",
               label: "Recovery owner",
-              value: "Board decision required",
+              value: "Waiting for you",
             }),
           ]),
         }),
@@ -8133,8 +8132,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
     const comments = await selectRecoveryCommentsForIssue(issueId);
     expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toContain("bounded retry budget");
-    expect(comments[0]?.body).toContain("no live execution path");
+    expect(comments[0]?.body).toContain("Paperclip tried to continue this task again, but it still could not continue");
+    expect(comments[0]?.body).toContain("Press Retry");
     expect(comments[0]?.authorType).toBe("system");
     expect(comments[0]?.presentation).toMatchObject({
       kind: "system_notice",
@@ -8230,7 +8229,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(sourceIssue?.status).toBe("blocked");
     expect(sourceIssue?.assigneeAgentId).toBe(agentId);
     const comments = await selectRecoveryCommentsForIssue(issueId);
-    expect(comments[0]?.body).toContain("bounded retry budget");
+    expect(comments[0]?.body).toContain("Paperclip tried to start this task again, but it still could not start. Press Retry");
   });
 
   it("escalates an exhausted successful handoff run that still leaves no disposition", async () => {
@@ -11573,7 +11572,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         comments.find(
           (comment) =>
             comment.body.includes(
-              "pending execution-review participant once",
+              "did not finish the review, even after Paperclip asked again",
             ) &&
             noticeMetadataReferencesRecoveryAction(
               comment.metadata,
@@ -12371,7 +12370,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const comments = await selectRecoveryCommentsForIssue(issueId);
     expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toContain("retried dispatch");
+    expect(comments[0]?.body).toContain("tried to start this task again");
     expect(comments[0]?.body).not.toContain("sk-test-recovery-secret");
     expect(JSON.stringify(comments[0]?.metadata)).not.toContain(
       "sk-test-recovery-secret",
@@ -12401,7 +12400,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         (row) =>
           row.type === "key_value" &&
           row.label === "Recovery owner" &&
-          row.value === "Board decision required",
+          row.value === "Waiting for you",
       ),
     ).toBe(true);
   });
@@ -12475,13 +12474,14 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const comments = await selectRecoveryCommentsForIssue(issueId);
     expect(comments).toHaveLength(1);
     expect(comments[0]?.body).toContain(
-      "stopped automatic stranded-work recovery",
+      "Paperclip stopped trying to recover this task automatically.",
     );
     expect(comments[0]?.body).toContain(
-      "recovery issues do not create nested `stranded_issue_recovery` issues",
+      "This task was created to recover another task, so Paperclip does not create another recovery task for it.",
     );
+    expect(comments[0]?.body).not.toMatch(/stranded_issue_recovery|Retry reason|assignment_recovery/);
     expect(comments[0]?.body).toContain(
-      `Recovery issue: [${recoveryIssues[0]?.identifier}]`,
+      `Recovery task: [${recoveryIssues[0]?.identifier}]`,
     );
     expect(comments[0]?.body).toContain("Next action:");
     expect(comments[0]?.presentation).toMatchObject({
@@ -12861,7 +12861,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const comments = await selectRecoveryCommentsForIssue(issueId);
     expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toContain("retried continuation");
+    expect(comments[0]?.body).toContain("tried to continue this task again");
     expect(comments[0]?.presentation).toMatchObject({
       kind: "system_notice",
       tone: "danger",
@@ -12877,7 +12877,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         (row) =>
           row.type === "key_value" &&
           row.label === "Recovery owner" &&
-          row.value === "Board decision required",
+          row.value === "Waiting for you",
       ),
     ).toBe(true);
   });
@@ -13015,8 +13015,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const comments = await selectRecoveryCommentsForIssue(issueId);
     expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toContain("retried continuation");
-    expect(comments[0]?.body).toContain("3× attempts");
+    expect(comments[0]?.body).toContain("tried to continue this task again");
+    expect(comments[0]?.body).toContain("after 3 tries");
     expect(commentMetadataRows(comments[0])).toContainEqual({
       type: "key_value",
       label: "Failure code",
@@ -13080,8 +13080,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const comments = await selectRecoveryCommentsForIssue(issueId);
     expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toContain("non-retryable failure");
-    expect(comments[0]?.body).toContain("`budget_blocked`");
+    expect(comments[0]?.body).toContain("retrying alone would not fix");
+    expect(comments[0]?.body).not.toContain("budget_blocked");
 
     const followupRuns = await selectRecoveryRunsByAgent(agentId);
     const continuationRetryRun = followupRuns.find((row) => {
@@ -14932,13 +14932,13 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const comments = await selectRecoveryCommentsForIssue(issueId);
     expect(comments).toHaveLength(1);
     expect(comments[0]?.body).toContain(
-      "stopped automatic stranded-work recovery",
+      "Paperclip stopped trying to recover this task automatically.",
     );
     expect(comments[0]?.body).toContain(
-      "Latest retry failure details were withheld from the issue thread",
+      "The failure details are kept with the run",
     );
     expect(comments[0]?.body).toContain(
-      "recovery issues do not create nested `stranded_issue_recovery` issues",
+      "This task was created to recover another task, so Paperclip does not create another recovery task for it.",
     );
     await expect(
       sourceBlockerIssueIds(companyId, sourceIssueId),

@@ -6,12 +6,16 @@ import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
 import { createUuid } from "../lib/uuid";
 
-type RetryRequest = { issueId: string; identifier?: string | null; idempotencyKey: string; observedRunId: string | null };
+type RetryRequest = { issueId: string; identifier?: string | null; idempotencyKey: string; observedRunId: string | null;
+  retryAction?: "move_forward" };
 type RetryResult = Awaited<ReturnType<typeof issuesApi.retryTask>>;
 
 export const STALE_TASK_RETRY_MESSAGE = "This attempt was already replaced, so Retry did not start new work. The task now shows its current state.";
 
+export const ALREADY_MOVED_ON_MESSAGE = "The task already moved on, so nothing new was started. It now shows its current state.";
+
 export function taskRetryNotStartedReason(result: RetryResult): string | null {
+  if (!result.accepted && result.alreadyMovedOn) return ALREADY_MOVED_ON_MESSAGE;
   if (!result.accepted) return STALE_TASK_RETRY_MESSAGE;
   const outcome = result.scheduledRetry?.outcome;
   if (outcome && outcome !== "promoted" && outcome !== "already_promoted") return result.scheduledRetry!.message;
@@ -95,7 +99,8 @@ export function useTaskRetry(issue: Issue | undefined) {
     setNotStarted(null);
     mutation.reset();
     request.current ??= { issueId: issue.id, identifier: issue.identifier, idempotencyKey: createUuid(),
-      observedRunId: issue.interruption?.observedRunId ?? issue.executionBlocker?.runId ?? null };
+      observedRunId: issue.interruption?.observedRunId ?? issue.executionBlocker?.runId ?? null,
+      ...(issue.interruption?.retryAction === "move_forward" ? { retryAction: "move_forward" as const } : {}) };
     setOptimistic(true);
     setTakingLonger(false);
     mutation.mutate(request.current);
