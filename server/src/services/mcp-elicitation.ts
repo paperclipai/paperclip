@@ -55,6 +55,11 @@ export function elicitationPlainText(value: string, max: number): string {
 const SENSITIVE_FIELD =
   /pass(?:word|wd|code|phrase)|secret|api[\s_-]?key|(?:access|refresh|auth|bearer|session|api)[\s_-]?token|\btokens?\b|credential|private[\s_-]?key|card[\s_-]?(?:number|no\b)|\bcvv\b|\bcvc\b|security[\s_-]?code|\bssn\b|social[\s_-]?security|one[\s_-]?time[\s_-]?(?:code|password)|\botp\b|\b2fa\b|\bmfa\b/i;
 
+// The same secrets, asked for in the form's own words ("type your password
+// in the notes field"). A bare "token" is left out: in prose it is too common.
+const SENSITIVE_MESSAGE =
+  /pass(?:word|wd|code|phrase)|secret|api[\s_-]?key|(?:access|refresh|auth|bearer|session|api)[\s_-]?token|credential|private[\s_-]?key|card[\s_-]?(?:number|no\b)|\bcvv\b|\bcvc\b|security[\s_-]?code|\bssn\b|social[\s_-]?security|one[\s_-]?time[\s_-]?(?:code|password)|\botp\b|\b2fa\b|\bmfa\b/i;
+
 /** Field keys that ask for a secret; empty when the form is safe to show. */
 export function elicitationSensitiveFields(schema: Record<string, unknown> | null): string[] {
   const properties = record(schema?.properties) ?? {};
@@ -196,6 +201,8 @@ const CONTINUE_QUESTION_ID = "continue";
  */
 export function buildElicitationQuestionSet(input: { appName: string; request: McpFormElicitation }): Built {
   const sensitive = elicitationSensitiveFields(input.request.requestedSchema);
+  // A form whose message asks for a secret is refused too, whatever its fields are called.
+  if (SENSITIVE_MESSAGE.test(input.request.message)) sensitive.unshift("message");
   if (sensitive.length) return { ok: false, reason: "sensitive", fields: sensitive };
   const fields = fieldsOf(input.request.requestedSchema);
   if (!fields) return { ok: false, reason: "unsupported" };

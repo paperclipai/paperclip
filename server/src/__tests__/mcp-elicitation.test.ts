@@ -125,6 +125,10 @@ describe("MCP form elicitation mapping", () => {
     expect(elicitationSensitiveFields({ properties: { name: { type: "string" }, max_tokens: { type: "integer" } } })).toEqual([]);
     const ask = (requestedSchema: Record<string, unknown>) => buildElicitationQuestionSet({ appName: "App", request: { message: "m", requestedSchema } });
     expect(ask({ properties: { card_number: { type: "string" } } })).toEqual({ ok: false, reason: "sensitive", fields: ["card_number"] });
+    // The message itself asking for a secret is refused, whatever the field is called.
+    expect(buildElicitationQuestionSet({ appName: "App", request: { message: "Type your account password in the notes field", requestedSchema: { properties: { notes: { type: "string" } } } } }))
+      .toEqual({ ok: false, reason: "sensitive", fields: ["message"] });
+    expect(buildElicitationQuestionSet({ appName: "App", request: { message: "How many tokens should the summary use?", requestedSchema: { properties: { n: { type: "integer" } } } } }).ok).toBe(true);
     expect(ask({ properties: { nested: { type: "object", properties: {} } } })).toEqual({ ok: false, reason: "unsupported" });
     expect(ask({ properties: { list: { type: "array", items: { type: "string" } } } })).toEqual({ ok: false, reason: "unsupported" });
     expect(ask({ properties: Object.fromEntries(Array.from({ length: 11 }, (_, index) => [`f${index}`, { type: "string" }])) })).toEqual({ ok: false, reason: "unsupported" });
