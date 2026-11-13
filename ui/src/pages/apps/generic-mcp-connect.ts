@@ -174,13 +174,20 @@ export function genericConnectGuidance(
  * The API validates these too; checking here means the operator finds out before a
  * round trip rather than after one.
  */
-export function customHeaderError(rows: CustomHeaderRow[]): string | null {
+export function genericAuthModeTakesHeaders(mode: GenericMcpAuthMode): boolean {
+  return mode === "custom_headers" || mode === "oauth";
+}
+
+export function customHeaderError(rows: CustomHeaderRow[], authMode?: GenericMcpAuthMode): string | null {
   const seen = new Set<string>();
   for (const row of rows) {
     const name = row.name.trim();
     if (!name && !row.value.trim()) continue;
     const nameCheck = checkMcpRemoteHeaderName(name);
     if (!nameCheck.ok) return mcpRemoteHeaderRejectionMessage(name, nameCheck.reason!);
+    if (authMode === "oauth" && name.toLowerCase() === "authorization") {
+      return "Browser sign-in sends the Authorization header. Use a different header name.";
+    }
     const valueCheck = checkMcpRemoteHeaderValue(row.value);
     if (!valueCheck.ok) return mcpRemoteHeaderRejectionMessage(name, valueCheck.reason!);
     if (!row.value.trim()) return `Add a value for "${name}", or remove the row.`;
@@ -224,7 +231,7 @@ export function genericConnectPayload(draft: GenericConnectDraft): GenericConnec
   const bearerKey = draft.keyValue.trim();
   const useBearer = draft.authMode === "bearer" || (draft.authMode === "auto" && draft.needsKey);
   if (useBearer && bearerKey) credentialValues["credentials.authorization"] = bearerKey;
-  if (draft.authMode === "custom_headers") {
+  if (genericAuthModeTakesHeaders(draft.authMode)) {
     for (const row of draft.headers) {
       const name = row.name.trim();
       if (!name || !row.value.trim()) continue;
@@ -256,5 +263,6 @@ export function canSubmitGenericConnect(draft: GenericConnectDraft): boolean {
   }
   // "oauth" here means the operator is supplying a preregistered client, and
   // "none" means they are asserting the server is public — neither needs a value.
+  if (draft.authMode === "oauth") return customHeaderError(draft.headers, draft.authMode) === null;
   return true;
 }
