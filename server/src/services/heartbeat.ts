@@ -1774,6 +1774,24 @@ export function heartbeatService(
     return recovery.buildRunOutputSilence(run, now);
   }
 
+  async function buildRunOutputSilences(
+    runs: ReadonlyArray<Pick<
+      typeof heartbeatRuns.$inferSelect,
+      | "id"
+      | "companyId"
+      | "status"
+      | "lastOutputAt"
+      | "lastOutputSeq"
+      | "lastOutputStream"
+      | "processStartedAt"
+      | "startedAt"
+      | "createdAt"
+    >>,
+    now = new Date(),
+  ) {
+    return recovery.buildRunOutputSilences(runs, now);
+  }
+
   async function reconcileResolvedDependencyWakes(opts?: Parameters<typeof recovery.reconcileResolvedDependencyWakeBackstop>[0]) {
     return recovery.reconcileResolvedDependencyWakeBackstop(opts);
   }
@@ -4294,6 +4312,7 @@ export function heartbeatService(
       } finally {
         controllerLease.stop();
         activeRunExecutions.delete(run.id);
+        heartbeatQueue.releaseClaimBackoffsForTask(run);
         if (restartClaimLapsed || detachedWithoutHandoff) scheduleNativeSessionResumeDispatch(run.id, new Date(), "restart");
         // A failed owned Stop remains visible until this exact executor settles,
         // including a graceful exit result arriving after the cancellation error.
@@ -4727,6 +4746,7 @@ export function heartbeatService(
     reconcileCostAccounting,
 
     buildRunOutputSilence,
+    buildRunOutputSilences,
 
     tickTimers,
     tickAgentTimers,

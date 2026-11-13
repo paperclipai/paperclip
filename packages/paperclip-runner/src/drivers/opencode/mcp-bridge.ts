@@ -4,6 +4,8 @@ import type { Socket } from "node:net";
 import type { ValidateFunction } from "ajv/dist/2020.js";
 import { admitToolInputSchema } from "../tool-input-schema.js";
 import { toolInputError } from "../tool-input-error.js";
+import { RepeatedToolInputRejectionGuard } from "../repeated-tool-input-rejection.js";
+import { toolInputVariantError } from "../../contracts/tool-input-variants.js";
 
 import {
   PRP_BLOCK_RESULT_PROVIDER_INPUT_SCHEMA,
@@ -87,6 +89,7 @@ export async function startOpenCodeMcpBridge(
   const privateTools = normalizeTools(options.privateTools ?? [], false);
   const admittedTools = [...tools, ...privateTools.filter((candidate) => !tools.some((tool) => tool.name === candidate.name))];
   const validators = compileValidators(admittedTools);
+  const rejections = new RepeatedToolInputRejectionGuard();
   const finishSchema = admittedTools.find(tool => tool.name === PRP_COMPLETION_TOOL_NAME)?.inputSchema;
   const finishSchemaSha256 = finishSchema && options.onDiagnostic
     ? createHash("sha256").update(JSON.stringify(finishSchema)).digest("hex") : undefined;
@@ -145,6 +148,7 @@ export async function startOpenCodeMcpBridge(
       tools,
       admittedTools,
       validators,
+      rejections,
       calls,
       controllers,
       handler: options.handler,
@@ -234,6 +238,7 @@ async function handleRequest(
     tools: OpenCodeMcpToolDefinition[];
     admittedTools: OpenCodeMcpToolDefinition[];
     validators: Map<string, ValidateFunction>;
+    rejections: RepeatedToolInputRejectionGuard;
     calls: Map<string, { fingerprint: string; promise: Promise<unknown>; waiting: Set<ServerResponse> }>;
     controllers: Map<string, AbortController>;
     handler: OpenCodeMcpBridgeOptions["handler"];
@@ -339,14 +344,18 @@ async function handleRequest(
   }
   const args = params.arguments ?? {};
   const validator = context.validators.get(tool);
-  if (validator === undefined || !validator(args)) {
+  const schemaValid = validator !== undefined && validator(args);
+  // The completion tool's yielded-only continuation rule is not part of its
+  // advertised schema; some hosts hide a root conditional's arguments.
+  const variantError = schemaValid && tool === PRP_COMPLETION_TOOL_NAME ? toolInputVariantError(tool, args) : null;
+  if (!schemaValid || variantError !== null) {
     if (tool === PRP_COMPLETION_TOOL_NAME) {
-      const errors = validator?.errors ?? [];
-      const validationCategory = errors.some(error => error.instancePath === "/continuation" || error.instancePath.startsWith("/continuation/"))
+      const errors = schemaValid ? [] : validator?.errors ?? [];
+      const validationCategory = variantError !== null || errors.some(error => error.instancePath === "/continuation" || error.instancePath.startsWith("/continuation/"))
         ? "continuation" : errors.some(error => error.instancePath === "") ? "root" : "other";
       context.diagnoseFinishInput({ input: params.arguments, callId, validationCategory });
     }
-    const error = toolInputError(validator, args);
+    const error = context.rejections.reject({ tool, args, error: variantError ?? toolInputError(validator, args), schema: validator?.schema });
     try { context.onRejectedCall?.({ tool, callId, arguments: args }, error); } catch {}
     outcome = "error";
     writeRpc(response, id, {

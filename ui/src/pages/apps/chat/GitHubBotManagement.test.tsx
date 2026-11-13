@@ -35,6 +35,7 @@ const mocks = vi.hoisted(() => ({
   reviews: vi.fn(),
   review: vi.fn(),
   members: vi.fn(),
+  boardAccess: vi.fn(),
   links: vi.fn(),
   setBreadcrumbs: vi.fn(),
 }));
@@ -58,7 +59,7 @@ vi.mock("@/api/chatEndpoints", () => ({
 }));
 vi.mock("@/api/projects", () => ({ projectsApi: { list: mocks.projects } }));
 vi.mock("@/api/execution-workspaces", () => ({ executionWorkspacesApi: { listSummaries: mocks.workspaces } }));
-vi.mock("@/api/access", () => ({ accessApi: { listMembers: mocks.members } }));
+vi.mock("@/api/access", () => ({ accessApi: { listMembers: mocks.members, getCurrentBoardAccess: mocks.boardAccess } }));
 vi.mock("@/api/agents", () => ({ agentsApi: { get: vi.fn() } }));
 vi.mock("@/context/BreadcrumbContext", () => ({
   useBreadcrumbs: () => ({ setBreadcrumbs: mocks.setBreadcrumbs }),
@@ -141,6 +142,8 @@ describe("GitHub bot management", () => {
     vi.clearAllMocks();
     mocks.tab = "settings";
     mocks.reviewId = undefined;
+    mocks.boardAccess.mockResolvedValue({ userId: "member", source: "session", isInstanceAdmin: false,
+      memberships: [{ companyId: "company", status: "active", membershipRole: "owner" }] });
     mocks.get.mockResolvedValue(endpoint);
     mocks.projects.mockResolvedValue([]);
     mocks.workspaces.mockResolvedValue([]);
@@ -566,6 +569,21 @@ describe("GitHub bot management", () => {
     await click("Allow mentions from @maya");
     await click("Save changes");
     expect(mocks.save.mock.calls[0][2].people).toEqual([{ kind: "member", userId: "member", githubUserId: "42", login: "maya" }]);
+  });
+  it("defaults a new guest's sponsor to the signed-in person instead of the saved responsible member", async () => {
+    mocks.boardAccess.mockResolvedValue({ userId: "member", source: "session", isInstanceAdmin: false,
+      memberships: [{ companyId: "company", status: "active", membershipRole: "operator" }] });
+    mocks.members.mockResolvedValue({ members: [
+      { principalId: "member", companyId: "company", status: "active", membershipRole: "operator", user: { name: "Maya" } },
+      { principalId: "other", companyId: "company", status: "active", membershipRole: "admin", user: { name: "Another Person" } },
+    ] });
+    mocks.config.mockResolvedValue({ revision: 4, configuration: { ...base, responsibleUserId: "other" } });
+    await render("access");
+    await click("Add external contributor");
+    const sponsor = document.querySelector('[aria-label="Sponsor"]');
+    expect(sponsor?.textContent).toContain("Maya");
+    expect(sponsor?.textContent).not.toContain("Another Person");
+    expect(mocks.save).not.toHaveBeenCalled();
   });
   it("does not show an off switch or silently enable a retained disabled bot", async () => {
     mocks.config.mockResolvedValue({

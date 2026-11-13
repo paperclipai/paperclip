@@ -127,6 +127,8 @@ export type SemanticInputAdmission = import("@paperclipai/paperclip-runner").Sem
 export const PaperclipSemanticDispatcher = runner.PaperclipSemanticDispatcher;
 export const CAPABILITY_SEMANTIC_TOOL_CATALOG =
   runner.CAPABILITY_SEMANTIC_TOOL_CATALOG;
+export const toolInputVariantError = runner.toolInputVariantError;
+export const providerToolSchemaShapeIssues = runner.providerToolSchemaShapeIssues;
 export const CAPABILITY_CANONICAL_OPERATIONS = runner.CAPABILITY_CANONICAL_OPERATIONS;
 export const HarnessRuntimeRequestResolutionError =
   runner.HarnessRuntimeRequestResolutionError;

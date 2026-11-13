@@ -148,6 +148,10 @@ GitHub Actions owns every managed pnpm lockfile:
   each lockfile with `pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile`
   and opens one `chore/refresh-lockfile` pull request for all of them. See
   `doc/RELEASE-AUTOMATION-SETUP.md` for when the bot merges it.
+- A local `docker build` installs the Runner with a frozen lockfile. When the
+  root `pnpm-lock.yaml` is behind the Runner's manifests, run that same command
+  in the checkout before the build, and do not commit the result. See "Runner
+  image" in `doc/DOCKER.md`.
 
 The Pi and Kimi distribution lockfiles under `packages/paperclip-runner/scripts/`
 are not on this list. They hold attested provider pins, so change them by hand
@@ -1479,6 +1483,11 @@ The server typecheck builds only the Runner's TypeScript output. Use
 `pnpm --filter @paperclipai/paperclip-runner build` when a local check needs the
 Runner binary.
 
+`node server/scripts/typecheck-layers.mjs --layer <name>` checks one layer
+against the configs and declarations that an earlier `--declarations-only` run
+left in that directory. It does not write them again. Stale declarations pass
+silently, so use it only straight after `--declarations-only` on the same commit.
+
 If a compiler child terminates on a signal, the wrapper reports the signal,
 layer, command, and working directory on stderr, then stops with a nonzero exit.
 Compiler stdout and stderr remain visible. A signal such as `SIGKILL` alone does
@@ -1521,8 +1530,9 @@ available to the task is limited, add `--low-memory`, or set
 
 The command fails if a project loads server source, because that is what makes
 these programs large. It does not limit memory. CI runs it with
-`--reuse-declarations` straight after the server typecheck, so it does not build
-the declarations again. Do not use that option when the declarations can be stale.
+`--reuse-declarations` after the server declarations of the same run, so it does
+not build the declarations again. Do not use that option when the declarations
+can be stale.
 
 Add each new test project that imports server source to `PROJECTS` in
 `scripts/typecheck-test-projects.mjs`.
@@ -1533,6 +1543,49 @@ that file, and it fails when a referenced config does not exist yet. The
 `tests/runner-e2e/native-completion-checks.mjs` still checks that project as one
 program. That program peaks at about 15 GiB at default settings and about 8 GiB on
 one thread.
+
+#### Typecheck lane in CI
+
+The required `Typecheck + Release Registry` job runs one command:
+
+```sh
+node scripts/ci-typecheck-lane.mjs [--concurrency <n>]
+```
+
+It first runs the steps that write shared outputs, one at a time:
+
+1. Link the workspace packages and build the plugin SDK.
+2. Build the server with `PAPERCLIP_TSC_EMIT_ONLY=1`, then check that the
+   server runtime assets are in `dist`. The server build no longer checks types
+   here: the server layers check the same files, and the `Build` job runs the
+   full `pnpm build`. The full program peaked at about 13.5 GiB, which left this
+   16 GiB runner swapping.
+3. Install the sandbox providers for the test programs
+   (`typecheck-test-programs.mjs --prepare-only`).
+4. Typecheck the Runner. Its typecheck rebuilds the eval kernel, which other
+   checks read, so it cannot run beside them.
+5. Run the CLI guidance test. It runs here, before the parallel checks, because
+   one of its cases took 17 seconds beside them against a 15 second timeout.
+
+Then it runs the remaining checks in parallel, as many as the machine has CPUs
+(default) or `--concurrency`. Each `tsc` uses one thread. The server
+declaration layers start first, because the test layers and the test projects
+read them. The test programs and the other build-gap workspaces run at a lower
+CPU priority, so they use only the CPU that the server layers and the release
+registry tests leave free.
+
+A passing check prints its output in a collapsed log group. A failing check
+prints its output in full, between `=== FAILED ...` and `=== end of ...`
+lines, with an error annotation. When the server declarations fail, the test
+layers and test projects are reported as skipped. The lane ends with a table
+of each check's start time, duration and result. If a preparation step fails,
+nothing else runs.
+
+To add a check to the job, add it to `planLane` in the script.
+
+PR runs take the workflow from `master` but check out the PR's merge commit. A
+stacked PR, whose base is another branch, can have a merge commit without this
+script. The job then runs the six earlier commands one after another instead.
 
 #### Typecheck test files outside the build
 
@@ -1546,7 +1599,9 @@ node scripts/typecheck-test-programs.mjs --low-memory
 node scripts/typecheck-test-programs.mjs packages/paperclip-runner/tsconfig.test.json
 ```
 
-The first form runs in the required `Typecheck + Release Registry` job. It checks
+The first form runs in the required `Typecheck + Release Registry` job, split in
+two: `--prepare-only` installs the sandbox providers and builds what the programs
+read, and `--skip-prepare` then only checks. It checks
 one program at a time and the largest peaks below 2 GiB. It then fails if a tracked
 `*.test.ts(x)` or `*.spec.ts(x)` file is in no program. The compiler's file list
 decides that, because `include` silently drops `foo.test.tsx` when `foo.test.ts`
@@ -1642,7 +1697,9 @@ Set `PAPERCLIP_RUNNER_VENDOR_REQUIRE_CURRENT=1` when the Runner under
 build it again, for example because it has no Rust toolchain. The step then
 reuses a current build as usual. When the build is not current it prints the
 reason and fails, without starting a rebuild and without removing the stamp.
-Setting both variables fails.
+Setting both variables fails. The `build` stage of the `Dockerfile` sets it:
+that stage copies `dist` and the stamp out of the `runner-artifacts` stage
+(see "Runner image" in `doc/DOCKER.md`).
 
 ### Task search evaluation
 
@@ -4856,6 +4913,17 @@ before any subsequent upload. An interrupted account-bound request stays pending
 under its original key; it is never relabelled as a provider refusal. Legacy
 unowned form drafts remain in browser storage but are not restored into another
 account. Storybook fixtures seed the same account-specific keys.
+
+New-task submissions use `useBackgroundSubmitQueue` around `useDurableSubmit`.
+The account-scoped queue retains each request's original key and draft snapshot
+before the composer closes. The worker sends requests in order. A request with an
+uncertain receipt retains its key; a rejection restores the submitted draft or
+offers a retry beside a newer draft. Submitted files use separate IndexedDB keys
+for the account, company, and request, so finishing an older save cannot remove
+newer files. Each submitted request has its own local-storage entry. A write or
+receipt in one tab cannot replace another tab's queued requests. Legacy queue
+arrays migrate to separate entries before the shared array is removed. Legacy
+single-request recovery records remain readable.
 
 New-task staged file bytes are stored in IndexedDB for the account and company.
 Writes merge the selected files with the current saved list in one read/write
