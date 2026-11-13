@@ -668,8 +668,11 @@ describeEmbeddedPostgres("companySkillService.list", () => {
   });
 
   it("keeps folder classification and stored content while narrowing inventory refresh reads", async () => {
-    const companyId = randomUUID();
-    await db.insert(companies).values({ id: companyId, name: "Inventory projections", issuePrefix: "IVP" });
+    const companyId = randomUUID(), catalogOnlyCompanyId = randomUUID();
+    await db.insert(companies).values([
+      { id: companyId, name: "Inventory projections", issuePrefix: "IVP" },
+      { id: catalogOnlyCompanyId, name: "Catalog only", issuePrefix: "IVC" },
+    ]);
     const unused = "unused".repeat(11_000);
     const savedMarkdown = "# Required detail content\n".repeat(2_000);
     const inserted = await db.insert(companySkills).values(Array.from({ length: 10 }, (_, index) => ({
@@ -679,14 +682,25 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     }))).returning();
     const before = await svc.list(companyId);
     expect(before.find(item => item.id === inserted[0]!.id)?.folderPath).toBe("bundled/paperclip-core");
-    const events: Record<string, unknown>[] = [], now = Date.now();
-    const capture = createFullDatabaseResponseCapture({ start: now - 1, end: now + 59_000 }, event => events.push(event));
-    installDatabaseResponseCapture(db, { companySkills }, capture);
-    let after: Awaited<ReturnType<typeof svc.list>>;
-    try { after = await svc.list(companyId); } finally { capture.flush(); }
+    const catalogBefore = await svc.list(catalogOnlyCompanyId);
+    async function listWithReadBytes(targetCompanyId: string) {
+      const events: Record<string, unknown>[] = [], now = Date.now();
+      const capture = createFullDatabaseResponseCapture({ start: now - 1, end: now + 59_000 }, event => events.push(event));
+      installDatabaseResponseCapture(db, { companySkills }, capture);
+      let listed: Awaited<ReturnType<typeof svc.list>>;
+      try { listed = await svc.list(targetCompanyId); } finally { capture.flush(); }
+      const bytes = events.filter(event => event.event === "paperclip.test_db_response_capture.entry.v1"
+        && event.table === "company_skills").reduce((sum, event) => sum + Number(event.responseValueBytes), 0);
+      return { listed, bytes };
+    }
+    const catalogOnly = await listWithReadBytes(catalogOnlyCompanyId);
+    expect(catalogOnly.listed).toEqual(catalogBefore);
+    const { listed: after, bytes: catalogAndFixtureBytes } = await listWithReadBytes(companyId);
     expect(after).toEqual(before);
-    const reads = events.filter(event => event.event === "paperclip.test_db_response_capture.entry.v1" && event.table === "company_skills");
-    expect(reads.reduce((sum, event) => sum + Number(event.responseValueBytes), 0)).toBeLessThan(950_000);
+    expect(after).toHaveLength(catalogBefore.length + inserted.length);
+    const fixtureRowReadBytes = catalogAndFixtureBytes - catalogOnly.bytes;
+    const fixtureRowBudgetWithoutUnusedMetadataOrMarkdownRereads = 950_000;
+    expect(fixtureRowReadBytes).toBeLessThan(fixtureRowBudgetWithoutUnusedMetadataOrMarkdownRereads);
     const stored = await svc.getById(companyId, inserted[0]!.id);
     expect(stored?.markdown).toBe(savedMarkdown);
     expect(stored?.metadata).toEqual({ unused, sourceKind: " paperclip_bundled " });

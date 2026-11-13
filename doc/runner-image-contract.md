@@ -10,9 +10,6 @@ two variants:
 - slim, the `runner-artifacts-slim` target: the same without the two paths
   marked "full only", the provider pack's transport archives.
 
-Nothing publishes it yet: `.github/workflows/runner-image.yml` builds and
-checks it.
-
 ## Layout
 
 Every path a consumer may copy (`RUNNER_IMAGE_PATHS` in
@@ -40,8 +37,9 @@ is the same file in both variants:
 
 - `inputsDigest` (the identity below) and `buildInputsDigest` (the digest in
   the Runner's build stamp);
-- `sourceRevision`: the commit given to the build, also in the pack as
-  `payload.runnerSourceRevision`;
+- `sourceRevision`: the commit that built the image, also in the pack as
+  `payload.runnerSourceRevision`. An image is published once for its
+  inputs, so later commits with the same inputs keep this revision;
 - `publication`: `true` only for a build with the build argument
   `PAPERCLIP_RUNNER_IMAGE_PUBLICATION=1`. Only then does the pack carry the
   identity, as `payload.runnerInputsDigest`. Another image build that runs
@@ -70,8 +68,10 @@ lists the dependency files first, so their names do not depend on `dist`.
 
 ## Identity
 
-Both variants are named by one digest, `inputs-<digest>`: the variant is not
-part of the identity. `scripts/runner-image-identity.mjs` computes it from:
+Both variants are named by one digest: the variant is not part of the
+identity. The full image has the tag `inputs-<digest>` and the slim image
+`inputs-<digest>-slim`. `scripts/runner-image-identity.mjs` computes the
+digest from:
 
 - every file under the paths the build copies from the build context
   (`RUNNER_IMAGE_CONTEXT_INPUTS`, which include `pnpm-lock.yaml`): path,
@@ -144,6 +144,41 @@ its own, as in this repository, can take a built image or tree in its place
 with `--build-context <stage>=<image or directory>`. The stage is then not
 built.
 
+## Publication
+
+`.github/workflows/runner-image.yml` publishes on a `master` push in this
+repository and nowhere else. Other runs build and check, and publish nothing.
+
+- **Lockfile.** A `master` push builds from the committed `pnpm-lock.yaml`,
+  so the digest is a function of the commit. When that file is behind the
+  Runner's manifests, the run writes a notice, publishes nothing and stays
+  green. The commit that merges the lockfile refresh publishes the image.
+- **Once.** The build runs only when `inputs-<digest>` does not exist.
+- **Verified bytes.** The build legs cannot write to the registry. The
+  publish job pushes the images they checked by digest and joins each
+  variant into a multi-platform index under a `candidate-` tag. It attests
+  both indexes, and only then writes the two `inputs-` tags. `candidate-`
+  tags are internal: one can name an index that is not attested, and the
+  next run overwrites it. Do not consume them.
+- **Order.** It writes `inputs-<digest>-slim` first and `inputs-<digest>`
+  last, so the full tag marks a complete publication. The full index names
+  its slim index in the annotation `io.paperclip.runner.slim-digest`.
+- **Pairing.** Resolve the full tag first. Take the slim digest from that
+  annotation of the full index, and pull the slim image by that digest. Never
+  resolve `inputs-<digest>-slim` by tag on its own: while a publication is
+  incomplete, that tag can name the slim image of another run.
+- **Recovery.** A run that stops between the two tags leaves a slim tag
+  alone. Those inputs are not published. The next run for them builds again,
+  replaces that tag with its own slim image and then writes the full tag. A
+  full tag whose slim tag is missing or names another image fails every run
+  for those inputs. An operator must then delete both package versions and
+  re-run the workflow run of a `master` push with those inputs.
+- **Create-only.** The workflow never moves a tag of a complete publication,
+  but the registry does not enforce that. Pin the index digest and verify it:
+  `gh attestation verify oci://ghcr.io/paperclipai/paperclip-runner@sha256:<digest> --repo paperclipai/paperclip --signer-workflow paperclipai/paperclip/.github/workflows/runner-image.yml --source-ref refs/heads/master`
+- **First publication.** GitHub creates the package private. A maintainer
+  must make it public once.
+
 ## Known limits
 
 - A build without `PAPERCLIP_RUNNER_SOURCE_REVISION` or
@@ -157,3 +192,6 @@ built.
   does not change the identity.
 - The archive check does not tell a directory with its own archive member
   from one created only as a file's parent.
+- A lockfile that the lockfile refresh cannot bring up to the Runner's
+  manifests leaves every `master` run green with only a notice, for as long
+  as it lasts. No image is published in that time, and nothing fails.
