@@ -7150,7 +7150,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       const rows = await selectRecoveryCommentsForIssue(issueId);
       return (
         rows.find((comment) =>
-          comment.body.includes("workspace could not be used") /* changed deliberately */,
+          comment.body.includes("workspace could not be used"),
         ) ?? null
       );
     });
@@ -7198,7 +7198,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       expect(action).toMatchObject({ status: "active", kind: "workspace_validation", ownerType: "board" });
       expect(action.nextAction).toContain("workspace");
       const comments = await selectRecoveryCommentsForIssue(issueId);
-      expect(comments.some((comment) => comment.body.includes("workspace could not be used") /* changed deliberately */)).toBe(true);
+      expect(comments.some((comment) => comment.body.includes("workspace could not be used"))).toBe(true);
       expect(mockCaptureRunFailure.mock.calls.filter(([event]) => event.runId === runId)).toEqual([]);
     } finally {
       await heartbeat.waitForRunExecutionDrain(runId);
@@ -7292,7 +7292,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       expect(action).toMatchObject({ status: "active", kind: "workspace_validation", ownerType: "board" });
       expect(action.nextAction).toContain("workspace");
       const comments = await selectRecoveryCommentsForIssue(issueId);
-      expect(comments.some((comment) => comment.body.includes("workspace could not be used") /* changed deliberately */)).toBe(true);
+      expect(comments.some((comment) => comment.body.includes("workspace could not be used"))).toBe(true);
       expect(mockCaptureRunFailure.mock.calls.filter(([event]) => event.runId === runId)).toHaveLength(report ? 1 : 0);
       const calls = (await fs.readFile(callsPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as string[]);
       expect(calls).toHaveLength(failures.length);
@@ -7521,7 +7521,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       const rows = await selectRecoveryCommentsForIssue(issueId);
       return (
         rows.find((comment) =>
-          comment.body.includes("a secret it needs is not set"), // changed deliberately
+          comment.body.includes("a secret it needs is not set"),
         ) ?? null
       );
     });
@@ -7880,7 +7880,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
             expect.objectContaining({
               type: "key_value",
               label: "Recovery owner",
-              value: "Waiting for you", // changed deliberately from "Board decision required"
+              value: "Waiting for you",
             }),
           ]),
         }),
@@ -11572,7 +11572,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         comments.find(
           (comment) =>
             comment.body.includes(
-              "did not finish the review, even after Paperclip asked again", // changed deliberately
+              "did not finish the review, even after Paperclip asked again",
             ) &&
             noticeMetadataReferencesRecoveryAction(
               comment.metadata,
@@ -12400,7 +12400,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         (row) =>
           row.type === "key_value" &&
           row.label === "Recovery owner" &&
-          row.value === "Waiting for you", // changed deliberately from "Board decision required"
+          row.value === "Waiting for you",
       ),
     ).toBe(true);
   });
@@ -12876,7 +12876,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         (row) =>
           row.type === "key_value" &&
           row.label === "Recovery owner" &&
-          row.value === "Waiting for you", // changed deliberately from "Board decision required"
+          row.value === "Waiting for you",
       ),
     ).toBe(true);
   });
@@ -14934,7 +14934,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       "stopped automatic stranded-work recovery",
     );
     expect(comments[0]?.body).toContain(
-      "The failure details are kept with the run", // changed deliberately: no "inspect the linked run"
+      "The failure details are kept with the run",
     );
     expect(comments[0]?.body).toContain(
       "recovery issues do not create nested `stranded_issue_recovery` issues",
