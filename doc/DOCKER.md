@@ -84,7 +84,8 @@ package's build output, the remote provider pack and its transport archives.
 The `runner-artifacts-slim` target is the same image without the transport
 archives. Neither depends on the server or UI build, and no other target
 depends on them yet. `.github/workflows/runner-image.yml` builds and checks
-both on pull requests, for Linux AMD64 and ARM64. See
+both on pull requests, for Linux AMD64 and ARM64, and publishes them from
+`master` as `ghcr.io/paperclipai/paperclip-runner`. See
 [`doc/runner-image-contract.md`](runner-image-contract.md) for the layout, the
 identity rules and how to consume the image.
 
