@@ -13,9 +13,10 @@ import { isInterruptedNativePreparationCandidate } from "./cancelled-native-star
 import { persistActivity } from "./activity-log.js";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { logger } from "../middleware/logger.js";
-import { and, eq, exists, inArray, isNull, not, or, sql } from "drizzle-orm";
+import { and, asc, eq, exists, inArray, isNull, not, or, sql } from "drizzle-orm";
 import {
   agentWakeupRequests,
+  agents,
   chatActions,
   environmentLeases,
   heartbeatRuns,
@@ -39,6 +40,10 @@ import { provenGoneLegacyControllerBootId } from "./legacy-controller-lease.js";
 import { continueFreshInTransaction, continueHeldExecutions, freshContinuationCheckDue, recordFreshContinuationCheck,
   settleCoalescedFreshContinuationHolds } from "./fresh-continuation-fallback.js";
 import { alias } from "drizzle-orm/pg-core";
+import { RECOVERY_WAKE_REASONS } from "./heartbeat/queued-run-dispatch-order.js";
+import { parseHeartbeatPolicy } from "./heartbeat/timer-policy.js";
+
+export const RECOVERY_CONTINUATIONS_PER_COMPANY_PER_PASS = 5;
 
 /** An operator records observed outcomes; this is not permission to blindly retry. */
 /**
@@ -357,16 +362,40 @@ export async function deliverReconciledExecutions(
   db: Db,
   wake: ReturnType<typeof import("./heartbeat.js").heartbeatService>["wakeup"],
 ) {
-  const pending = await db
-    .select()
+  const recoveryReasons = [...RECOVERY_WAKE_REASONS];
+  const sourceRun = alias(heartbeatRuns, "continuation_source_run");
+  const pendingRows = await db
+    .select({ action: issueRecoveryActions })
     .from(issueRecoveryActions)
+    .leftJoin(sourceRun, and(
+      eq(sourceRun.companyId, issueRecoveryActions.companyId),
+      sql`${sourceRun.id}::text = ${issueRecoveryActions.evidence}#>>'{executionReconciliation,runId}'`,
+    ))
     .where(
       and(
         eq(issueRecoveryActions.status, "resolved"),
         sql`${issueRecoveryActions.evidence}->>'continuationDelivery' = 'pending'`,
+        sql`not exists (select 1 from ${heartbeatRuns} queued_recovery
+          where queued_recovery.company_id = ${issueRecoveryActions.companyId}
+            and queued_recovery.agent_id = ${issueRecoveryActions.returnOwnerAgentId}
+            and queued_recovery.status = 'queued'
+            and queued_recovery.context_snapshot->>'wakeReason' in (${sql.join(recoveryReasons.map(reason => sql`${reason}`), sql`, `)}))`,
       ),
     )
+    .orderBy(sql`${sourceRun.finishedAt} desc nulls last`, asc(issueRecoveryActions.updatedAt))
     .limit(25);
+  const pending = pendingRows.map(row => row.action);
+  const admittedByCompany = new Map<string, number>();
+  const admittedAgents = new Set<string>();
+  const agentHasRoom = async (companyId: string, agentId: string) => {
+    if (admittedAgents.has(agentId)) return false;
+    if ((admittedByCompany.get(companyId) ?? 0) >= RECOVERY_CONTINUATIONS_PER_COMPANY_PER_PASS) return false;
+    const [agent] = await db.select().from(agents).where(and(eq(agents.companyId, companyId), eq(agents.id, agentId)));
+    if (!agent) return true;
+    const [queued] = await db.select({ count: sql<number>`count(*)::int` }).from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "queued")));
+    return Number(queued?.count ?? 0) < parseHeartbeatPolicy(agent).maxConcurrentRuns;
+  };
   for (const action of pending) {
     try {
       const decision = action.evidence.executionReconciliation as
@@ -421,6 +450,9 @@ export async function deliverReconciledExecutions(
           continue;
         }
       }
+      if (!await agentHasRoom(action.companyId, action.returnOwnerAgentId)) continue;
+      admittedAgents.add(action.returnOwnerAgentId);
+      admittedByCompany.set(action.companyId, (admittedByCompany.get(action.companyId) ?? 0) + 1);
       const run = await wake(action.returnOwnerAgentId, {
         source: "automation",
         triggerDetail: "system",
