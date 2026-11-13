@@ -1,7 +1,10 @@
 import {
   buildMcpAppCsp,
   MCP_APPS_PROTOCOL_VERSION,
+  normalizeMcpAppModelContext,
+  readMcpAppMessageText,
   type McpAppCallToolResult,
+  type McpAppModelContext,
   type McpAppResourceCsp,
 } from "@paperclipai/shared";
 
@@ -11,11 +14,19 @@ import {
  * it answers through `post`.
  */
 
+export type McpAppDisplayMode = "inline" | "fullscreen";
+/** Display modes Paperclip can show a view in. Picture-in-picture is not supported. */
+export const MCP_APP_HOST_DISPLAY_MODES: readonly McpAppDisplayMode[] = ["inline", "fullscreen"];
+
+export type McpAppContainerDimensions =
+  | { maxHeight: number; width?: number }
+  | { height: number; width: number };
+
 export interface McpAppHostContext {
   theme: "light" | "dark";
-  displayMode: "inline";
-  availableDisplayModes: ["inline"];
-  containerDimensions: { maxHeight: number; width?: number };
+  displayMode: McpAppDisplayMode;
+  availableDisplayModes: McpAppDisplayMode[];
+  containerDimensions: McpAppContainerDimensions;
   locale: string;
   timeZone: string;
   platform: "web";
@@ -33,6 +44,19 @@ export interface McpAppHostOptions {
   openLink: (url: string) => void;
   onSizeChanged: (size: { width?: number; height?: number }) => void;
   onLog?: (entry: unknown) => void;
+  /**
+   * `ui/message`: shows the proposed text to the viewer. Resolves once the
+   * viewer sent it, rejects when they dismissed it or sending failed. Never
+   * sends on its own. Without it, `ui/message` is not supported.
+   */
+  proposeMessage?: (text: string) => Promise<void>;
+  /** `ui/update-model-context`: stores the view's latest context for the agent (null clears it). */
+  updateModelContext?: (context: McpAppModelContext | null) => Promise<void>;
+  /**
+   * `ui/request-display-mode`: switches the view to a mode both sides support.
+   * Without it, the view stays inline.
+   */
+  setDisplayMode?: (mode: McpAppDisplayMode) => void;
 }
 
 type JsonRpcId = string | number;
@@ -77,6 +101,12 @@ export function createMcpAppHost(options: McpAppHostOptions) {
   let toolDataSent = false;
   let nextRequestId = 1;
   let disposed = false;
+  // One proposal at a time per view: a view cannot queue messages behind the viewer's back.
+  let messagePending = false;
+  let lastModelContext: string | undefined;
+  let contextQueue: Promise<void> = Promise.resolve();
+  // Display modes the view declared in `ui/initialize`; undefined means it did not say.
+  let appDisplayModes: McpAppDisplayMode[] | undefined;
 
   const respond = (id: JsonRpcId, result: unknown) => options.post({ jsonrpc: "2.0", id, result });
   const fail = (id: JsonRpcId, code: number, message: string) => options.post({ jsonrpc: "2.0", id, error: { code, message } });
@@ -99,8 +129,12 @@ export function createMcpAppHost(options: McpAppHostOptions) {
       return;
     }
     switch (message.method) {
-      case "ui/initialize":
+      case "ui/initialize": {
         handshakeStarted = true;
+        const declared = record(params.appCapabilities)?.availableDisplayModes;
+        appDisplayModes = Array.isArray(declared)
+          ? declared.filter((mode): mode is McpAppDisplayMode => mode === "inline" || mode === "fullscreen")
+          : undefined;
         respond(message.id, {
           protocolVersion: MCP_APPS_PROTOCOL_VERSION,
           hostInfo: { name: "Paperclip", version: "1.0.0" },
@@ -108,11 +142,14 @@ export function createMcpAppHost(options: McpAppHostOptions) {
             openLinks: {},
             serverTools: {},
             logging: {},
+            ...(options.proposeMessage ? { message: { text: {} } } : {}),
+            ...(options.updateModelContext ? { updateModelContext: { text: {}, structuredContent: {} } } : {}),
             sandbox: { permissions: {}, csp: {} },
           },
           hostContext: options.hostContext(),
         });
         return;
+      }
       case "ping":
         respond(message.id, {});
         return;
@@ -140,13 +177,78 @@ export function createMcpAppHost(options: McpAppHostOptions) {
         respond(message.id, {});
         return;
       }
-      case "ui/request-display-mode":
-        respond(message.id, { mode: "inline" });
+      case "ui/request-display-mode": {
+        const current = options.hostContext().displayMode;
+        const requested = params.mode;
+        const allowed = (requested === "inline" || requested === "fullscreen")
+          && options.setDisplayMode !== undefined
+          && (requested === "inline" || appDisplayModes === undefined || appDisplayModes.includes(requested));
+        if (!allowed || requested === current) {
+          respond(message.id, { mode: current });
+          return;
+        }
+        options.setDisplayMode!(requested);
+        respond(message.id, { mode: requested });
         return;
-      case "ui/update-model-context":
-        // Accepted; Paperclip does not yet feed view context back to the agent.
-        respond(message.id, {});
+      }
+      case "ui/message": {
+        if (!options.proposeMessage) {
+          fail(message.id, METHOD_NOT_FOUND, "ui/message is not supported by Paperclip");
+          return;
+        }
+        const text = readMcpAppMessageText(params);
+        if (!text) {
+          fail(message.id, INVALID_PARAMS, "Invalid message format");
+          return;
+        }
+        if (messagePending) {
+          fail(message.id, SERVER_ERROR, "A message from this view is already waiting for the user");
+          return;
+        }
+        messagePending = true;
+        try {
+          await options.proposeMessage(text);
+          respond(message.id, {});
+        } catch {
+          fail(message.id, SERVER_ERROR, "Message sending denied");
+        } finally {
+          messagePending = false;
+        }
         return;
+      }
+      case "ui/update-model-context": {
+        if (!options.updateModelContext) {
+          respond(message.id, {});
+          return;
+        }
+        let context: McpAppModelContext | null;
+        try {
+          context = normalizeMcpAppModelContext(params);
+        } catch {
+          fail(message.id, INVALID_PARAMS, "Invalid content format");
+          return;
+        }
+        // Updates are applied in order, so a slow earlier write never lands
+        // after a later one. Identical updates are deduped.
+        const serialized = JSON.stringify(context);
+        const update = options.updateModelContext;
+        const id = message.id;
+        contextQueue = contextQueue.then(async () => {
+          if (serialized === lastModelContext) {
+            respond(id, {});
+            return;
+          }
+          try {
+            await update(context);
+            lastModelContext = serialized;
+            respond(id, {});
+          } catch {
+            fail(id, SERVER_ERROR, "Context update denied");
+          }
+        });
+        await contextQueue;
+        return;
+      }
       default:
         fail(message.id, METHOD_NOT_FOUND, `${message.method} is not supported by Paperclip`);
     }

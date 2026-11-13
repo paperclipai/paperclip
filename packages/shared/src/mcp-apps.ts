@@ -254,7 +254,8 @@ export function readMcpAppMessageText(params: unknown): string | null {
  * this records that it came from the view.
  */
 export const mcpAppMessageSentSchema = z.object({
-  commentId: z.string().uuid(),
+  /** The `clientRequestId` the viewer's comment was sent with. */
+  clientRequestId: z.string().uuid(),
 }).strict();
 
 export type McpAppMessageSentRequest = z.infer<typeof mcpAppMessageSentSchema>;
