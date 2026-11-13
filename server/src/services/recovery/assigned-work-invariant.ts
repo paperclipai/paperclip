@@ -63,6 +63,7 @@ export const VIOLATION_REASONS = [
   "recovery_block",
   /** Blocked, and nothing recorded says why. */
   "unknown_block",
+  "blocked_with_live_run",
 ] as const;
 export type ViolationReason = (typeof VIOLATION_REASONS)[number];
 
@@ -100,6 +101,7 @@ const PROVIDER_LIMIT_CAUSES = new Set(["provider_quota", "native_provider_usage_
 export const SETTLING_GRACE_MS = 90_000;
 /** Upper bound on how long another server's lease can keep a finished run settling. */
 export const SETTLING_MAX_MS = 5 * 60_000;
+export const SYSTEM_RECOVERY_WORKING_BOUND_MS = 17 * 60_000;
 /** Blocked tasks older than this are reported, never continued automatically. */
 export const STALE_BLOCK_MS = 7 * 24 * 60 * 60_000;
 /** Automatic continuations per task, shared with the server-restart lane. */
@@ -157,7 +159,8 @@ export type AssignedWorkFacts = {
   lastBlockerResolvedAt?: Date | null;
   openChildren: number;
   reviewPending: boolean;
-  activeRecoveryAction: { cause: string; ownerType: string; resumeAt: Date | null } | null;
+  activeRecoveryAction: { cause: string; ownerType: string; resumeAt: Date | null;
+    continuedBySweep?: boolean; id?: string } | null;
   agent: { status: string; invokable: boolean } | null;
   companyPaused: boolean;
   pauseHold: boolean;
@@ -186,7 +189,12 @@ export function evaluateAssignedWork(facts: AssignedWorkFacts, now: Date = new D
   // fails closed: during a deploy overlap another server may still own it.
   const live = facts.activeRuns.find(run => (run.status === "queued" || run.status === "running")
     && run.owner !== "gone" && run.owner !== "stalled");
-  if (live) return { kind: "ok", clause: "live_run", runId: live.id };
+  if (live) {
+    if (issue.status === "blocked" && !waitingReason(facts, now)) {
+      return { kind: "violation", reason: "blocked_with_live_run", runId: live.id, stale: false };
+    }
+    return { kind: "ok", clause: "live_run", runId: live.id };
+  }
 
   // A run row still says running but its server is proven gone. It holds the
   // task's execution lock, so nothing pending can start until it is settled.
@@ -231,7 +239,8 @@ function pendingIntent(facts: AssignedWorkFacts, now: Date): PendingIntent | nul
   if (facts.issue.monitorNextCheckAt && facts.issue.monitorNextCheckAt.getTime() > now.getTime()) return "scheduled_monitor";
   const interruption = facts.interruption;
   if (interruption?.responsibility === "system") {
-    if (interruption.state === "working") return "system_recovery_working";
+    if (interruption.state === "working" && !(facts.latestRun?.finishedAt
+      && now.getTime() - facts.latestRun.finishedAt.getTime() > SYSTEM_RECOVERY_WORKING_BOUND_MS)) return "system_recovery_working";
     if (interruption.state === "retry_scheduled" && interruption.nextRetryAt
       && Date.parse(interruption.nextRetryAt) > now.getTime()) return "scheduled_retry";
   }
@@ -334,6 +343,8 @@ export function continuationActivityMessage(reason: ViolationReason): string {
       return "Continued automatically after an interruption. Nothing needed you, so Paperclip queued the task again.";
     case "retry_offered":
       return "Continued automatically after an interruption. Paperclip queued the task again, so you don't need to press Retry.";
+    case "blocked_with_live_run":
+      return "No longer blocked: this task is already queued to continue, so nothing needs you.";
     default:
       return "Continued automatically after an interruption. Nothing was running or scheduled, so Paperclip queued the task again.";
   }

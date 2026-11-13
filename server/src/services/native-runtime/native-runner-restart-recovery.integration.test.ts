@@ -1575,6 +1575,42 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
     expect(run?.processPid).toBe(remotePid);
   });
 
+  it.each([true, false])("gives a Runner whose first unanswered read came on the last attempt one replacement attempt: %s", async (unanswered) => {
+    const fixture = await seedRun(`remote-final-unanswered-${unanswered}`);
+    const now = new Date();
+    await fixture.db.update(heartbeatRuns).set({ status: "failed", finishedAt: now,
+      nativePhase: "retryable_failure", runnerProfileJson: { ...fixture.preparedProfile,
+        nativeWorkspaceSync: remotePreparedWorkspace(),
+        sessionCheckpoint: { identity: { companyId, agentId, issueId: fixture.issueId, runId: fixture.runId,
+          sessionId: fixture.native.normalizedSessionId }, providerSessionId: "final-unanswered-session" },
+      } }).where(eq(heartbeatRuns.id, fixture.runId));
+    await fixture.db.update(nativeRunFinalizations).set({ controllerBootId: successor.bootId,
+      leaseOwner: "predecessor-final-unanswered", leaseExpiresAt: new Date(now.getTime() + 60_000) })
+      .where(eq(nativeRunFinalizations.runId, fixture.runId));
+    const authority = new DurablePrpControlPlane({ stateDirectory: resolve(runtimeRoot, fixture.runId),
+      identity: transportOptions(fixture, runtimeRoot).prpIdentity,
+      expectedRunnerVersion: "final-unanswered-fixture", expectedRunnerDigest: `sha256:${"a".repeat(64)}` });
+    try {
+      await registerNativeRunnerCheckpoint({ db: fixture.db,
+        binding: { companyId, issueId: fixture.issueId, runId: fixture.runId }, bootId: successor.bootId, authority });
+    } finally { await authority.stop(); }
+    await fixture.db.update(nativeRunFinalizations).set({ phase: "retryable_failure", attempt: 3,
+      leaseOwner: null, leaseExpiresAt: null, nextAttemptAt: new Date(0), failureCode: "native_session_interrupted",
+      failureDetail: { message: "native_session_recovery_failed: HarnessCapabilityUnavailableError: read is unavailable: Error: provider_transport_failed: PRP command session.snapshot timed out (runner connected; pending ahead 0; last runner event seq 412 84s ago)",
+        recoveryMode: "exact_checkpoint_resume", checkpointExists: true, recoverable: true,
+        providerSessionEstablished: true, providerEventsExist: true,
+        ...(unanswered ? { adoptedRunnerUnanswered: true } : {}) } })
+      .where(eq(nativeRunFinalizations.runId, fixture.runId));
+    const [claim] = await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
+      restartKind: "hard", runIds: [fixture.runId], now });
+    if (unanswered) {
+      expect(claim).toMatchObject({ kind: "reattach_remote_runner", runId: fixture.runId, providerAttempt: 4,
+        replaceUnansweredRunner: true });
+    } else {
+      expect(claim?.kind).not.toBe("reattach_remote_runner");
+    }
+  });
+
   it.each([true, false])("asks the same-run reattachment to replace a Runner that left its recovery read unanswered: %s", async (unanswered) => {
     const fixture = await seedRun(`remote-unanswered-${unanswered}`);
     await fixture.db.update(heartbeatRuns).set({

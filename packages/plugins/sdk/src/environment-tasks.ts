@@ -28,6 +28,34 @@ const githubBroker = z.object({ url: z.string().url().max(2000).refine(value => 
 const claudeCredentialEnvironment = z.object({
   CLAUDE_CODE_OAUTH_TOKEN: credentialValue.optional(), ANTHROPIC_API_KEY: credentialValue.optional(),
 }).strict().refine(env => Object.values(env).filter(Boolean).length === 1, "Select one Claude credential");
+export const MAX_CONFIGURED_ENVIRONMENT_KEYS = 128;
+export const MAX_CONFIGURED_ENVIRONMENT_ENTRY_BYTES = 65_536;
+export const MAX_CONFIGURED_ENVIRONMENT_BYTES = 262_144;
+const utf8 = new TextEncoder();
+const utf8Bytes = (value: string) => utf8.encode(value).byteLength;
+export const environmentTaskConfiguredEnvironmentSchema = z.record(
+  z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,127}$/),
+  z.string().refine(value => !value.includes("\0"), "Expected a NUL-free value"),
+).superRefine((environment, ctx) => {
+  const entries = Object.entries(environment);
+  if (entries.length > MAX_CONFIGURED_ENVIRONMENT_KEYS) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Too many configured environment variables" });
+    return;
+  }
+  let total = 0;
+  for (const [name, value] of entries) {
+    const size = utf8Bytes(name) + utf8Bytes(value);
+    total += size;
+    if (size > MAX_CONFIGURED_ENVIRONMENT_ENTRY_BYTES) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Configured environment variable is too large", path: [name] });
+    }
+  }
+  if (total > MAX_CONFIGURED_ENVIRONMENT_BYTES) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Configured environment is too large" });
+  }
+});
+export type PluginEnvironmentTaskConfiguredEnvironment = z.infer<typeof environmentTaskConfiguredEnvironmentSchema>;
+
 /** Only provider authentication is transferred. Paths and executable settings remain provider-owned. */
 export const environmentTaskCredentialSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("codex-auth-json"), authJson: credentialValue }).strict(),
@@ -89,6 +117,7 @@ export const environmentTaskOperationSchema = z.discriminatedUnion("kind", [
     /** Stable account selection; distinct from its current credential revision. */
     accountIdentity: z.string().min(1).max(1024).optional(),
     credential: environmentTaskCredentialSchema.optional(),
+    configuredEnvironment: environmentTaskConfiguredEnvironmentSchema.optional(),
     /** Core supplies these protected launch inputs for native agent runs. */
     launch: z.object({
       runnerVersion: z.string().min(1), runnerDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
@@ -117,6 +146,8 @@ export const environmentTaskOperationSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("release"), identity: durableIdentity }).strict(),
   z.object({ kind: z.literal("resume"), identity: durableIdentity, bootstrapTicket: credentialValue,
     handoffCredential: z.object({ accountIdentity: z.string().min(1).max(1024), environment: claudeCredentialEnvironment }).strict().optional(),
+    credential: environmentTaskCredentialSchema.optional(),
+    configuredEnvironment: environmentTaskConfiguredEnvironmentSchema.optional(),
   }).strict(),
   z.object({
     kind: z.literal("ensure_ownership"),
@@ -172,6 +203,8 @@ export const environmentTaskResultSchema = z.discriminatedUnion("kind", [
     projectAuthCheckVersion: z.literal(1).optional(),
     workspaceFileReadVersion: z.literal(1).optional(),
     githubCredentialBrokerVersion: z.literal(1).optional(),
+    configuredEnvironmentVersion: z.literal(1).optional(),
+    resumeCredentialVersion: z.literal(1).optional(),
   }).strict(),
   z.object({
     kind: z.literal("status"), taskId: providerId,

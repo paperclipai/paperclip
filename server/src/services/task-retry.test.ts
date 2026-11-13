@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agents, agentTaskSessions, agentWakeupRequests, chatActions, chatConversations, chatEndpoints, companies, budgetPolicies, costEvents, createDb, type Db, environmentLeases, environments, executionWorkspaces, executionWorkspaceSnapshots, workspaceOperations, heartbeatRunEvents, heartbeatRuns, issueComments, issues, approvals, issueApprovals, issueRecoveryActions, nativeRunFinalizations, toolApplications, toolConnections, toolInvocations, applyPendingMigrations } from "@paperclipai/db";
+import { activityLog, agents, agentTaskSessions, agentWakeupRequests, chatActions, chatConversations, chatEndpoints, companies, budgetPolicies, costEvents, createDb, type Db, environmentLeases, environments, executionWorkspaces, executionWorkspaceSnapshots, workspaceOperations, heartbeatRunEvents, heartbeatRuns, issueComments, issueRelations, issues, approvals, issueApprovals, issueRecoveryActions, nativeRunFinalizations, toolApplications, toolConnections, toolInvocations, applyPendingMigrations } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { priorRecoveryApiReceipt, unresolvedRecoveryToolInvocation } from "./recovery-effect-receipts.js";
 import { requestTaskRetry } from "./task-retry.js";
@@ -738,6 +738,33 @@ describe("durable task Retry admission", () => {
     expect(queued[0].contextSnapshot).toMatchObject({ previousRunId: refused.id,
       explicitUserContinuation: { previousRunId: refused.id, taskRetryRequestId: receipt.requestId } });
     await expect(dispatchRun(input, queued[0])).resolves.toMatchObject({ interruptedRunId: refused.id });
+  });
+
+  it("lifts the failure's block once the Retry's run is queued, and keeps a block made for another reason", async () => {
+    for (const reason of ["failure", "declared", "dependency", "newer", "person"] as const) {
+      const { input, source, refused, hold } = await seedRefusedRetry();
+      if (reason === "newer") await db.update(issueRecoveryActions).set({ evidence: { ...hold.evidence,
+        nativeFailureBlock: { runId: source.id, statusVersion: 2 } } }).where(eq(issueRecoveryActions.id, hold.id));
+      await db.update(issues).set({ blockedTransitionAt: new Date(), statusVersion: 3,
+        ...(reason === "declared" ? { unblockDescriptor: { owner: { userId: "someone" }, action: "Add the key" } } : {}),
+      }).where(eq(issues.id, input.issueId));
+      if (reason === "person") await db.insert(activityLog).values({ companyId: input.companyId, actorType: "user", actorId: "board-user",
+        action: "issue.updated", entityType: "issue", entityId: input.issueId, details: { status: "blocked", previousStatus: "todo" } });
+      if (reason === "dependency") {
+        const [blocker] = await db.insert(issues).values({ companyId: input.companyId, title: "Blocker", status: "todo" }).returning();
+        await db.insert(issueRelations).values({ companyId: input.companyId, issueId: blocker.id, relatedIssueId: input.issueId, type: "blocks" });
+      }
+      await db.update(agents).set({ runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } }).where(eq(agents.id, source.agentId));
+      await db.insert(heartbeatRuns).values({ companyId: input.companyId, agentId: source.agentId, status: "running" });
+      const receipt = await requestTaskRetry(input);
+      await heartbeatService(db).resumeTaskRetry(input.companyId, receipt.requestId!);
+      const queued = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.status, "queued")));
+      const [task] = await db.select().from(issues).where(eq(issues.id, input.issueId));
+      if (reason === "failure") {
+        expect(queued[0]?.contextSnapshot).toMatchObject({ explicitUserContinuation: { previousRunId: refused.id } });
+        expect(task).toMatchObject({ status: "todo", blockedTransitionAt: null });
+      } else expect(task.status, reason).toBe("blocked");
+    }
   });
 
   it("serializes concurrent clicks and remembers each key after completion", async () => {
