@@ -13,7 +13,7 @@
     "packages/plugins/sdk/src/environment-stop-error.ts": "b0e03f8aa2b2170ba095da5c7138050fced3f3cb",
     "packages/plugins/sdk/src/environment-sync-error.ts": "7d6a51a95da49a7da4525aebbab6382dc5c44ae8",
     "packages/plugins/sdk/src/environment-task-error.ts": "98aae8a06743b38884b68cb9a3ec44c57b34c0e4",
-    "packages/plugins/sdk/src/environment-tasks.ts": "318915dd6f2f6c86e875bfcb3a87a52b21afba1d",
+    "packages/plugins/sdk/src/environment-tasks.ts": "1534cca17be5b8c924b2b6be44339dc6faf493c1",
     "packages/plugins/sdk/src/host-client-factory.ts": "e0301c390ea13f2340b669383f07af2455e48c8a",
     "packages/plugins/sdk/src/idle-drain.test.ts": "cc59f7881e7d46c89395a1d93d74f6c6b9b0a64a",
     "packages/plugins/sdk/src/idle-drain.ts": "ae6e4c6be4657a3d541396922b3bc551b8db557f",
