@@ -7,7 +7,7 @@ import {
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import {
-  RECOVERY_CONTINUATIONS_PER_COMPANY_PER_PASS, deliverReconciledExecutions,
+  RECOVERY_CONTINUATIONS_PER_COMPANY_PER_PASS, RECOVERY_CONTINUATION_MAX_HOLD_MS, deliverReconciledExecutions,
 } from "../services/execution-recovery-resolution.js";
 import { assignedWorkSweep } from "../services/recovery/assigned-work-sweep.js";
 import { evaluateAssignedWork } from "../services/recovery/assigned-work-invariant.js";
@@ -175,6 +175,41 @@ suite("recovery wake herd", () => {
     await finishQueued(agentId);
     await deliverReconciledExecutions(db, wake as never);
     expect(wake).toHaveBeenCalledTimes(1);
+  }, 60_000);
+
+  it("admits a continuation held past the bound even while ordinary work keeps the queue full", async () => {
+    const agentId = await seedCompany(1);
+    const busy = await task(agentId);
+    await db.insert(heartbeatRuns).values({ companyId, agentId, issueId: busy.id, invocationSource: "on_demand", status: "queued",
+      contextSnapshot: { issueId: busy.id, wakeReason: "task_retry" } });
+    const record = await pendingContinuation(agentId, 30);
+    const wake = fakeWake();
+    await deliverReconciledExecutions(db, wake as never);
+    expect(wake).not.toHaveBeenCalled();
+    const heldSince = new Date(Date.now() - RECOVERY_CONTINUATION_MAX_HOLD_MS - 1_000).toISOString();
+    await db.update(issueRecoveryActions).set({ evidence: { ...record.action.evidence,
+      freshContinuation: { ...(record.action.evidence.freshContinuation as object), recordedAt: heldSince } } })
+      .where(eq(issueRecoveryActions.id, record.action.id));
+    await deliverReconciledExecutions(db, wake as never);
+    expect(wake).toHaveBeenCalledTimes(1);
+    expect(await deliveryOf(record.action.id)).toBe("delivered");
+  }, 60_000);
+
+  it("does not let continuations for busy agents hide other agents' continuations", async () => {
+    const busyAgents = [await seedCompany(1)];
+    for (let index = 1; index < 4; index += 1) busyAgents.push(await addAgent(1));
+    for (const agentId of busyAgents) {
+      const busy = await task(agentId);
+      await db.insert(heartbeatRuns).values({ companyId, agentId, issueId: busy.id, invocationSource: "assignment", status: "queued",
+        contextSnapshot: { issueId: busy.id, wakeReason: "issue_assigned" } });
+      for (let index = 0; index < 8; index += 1) await pendingContinuation(agentId, 2 + index);
+    }
+    const idleAgent = await addAgent(1);
+    const idle = await pendingContinuation(idleAgent, 600);
+    const wake = fakeWake();
+    await deliverReconciledExecutions(db, wake as never);
+    expect(wake.mock.calls.map(call => call[0])).toEqual([idleAgent]);
+    expect(await deliveryOf(idle.action.id)).toBe("delivered");
   }, 60_000);
 
   it("caps the continuations one pass delivers per company and delivers the freshest interruption first", async () => {

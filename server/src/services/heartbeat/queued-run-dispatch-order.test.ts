@@ -69,6 +69,13 @@ describe("queued run dispatch order", () => {
     expect(started.filter(entry => entry.wakeReason === "task_retry").length).toBe(steps - burst.length);
   });
 
+  it("keeps recovery's share when one dispatch fills many slots", () => {
+    const people = Array.from({ length: 12 }, () => personRetry());
+    const recovery = Array.from({ length: 6 }, () => backlogRecovery());
+    const batch = orderQueuedRunsForDispatch([...recovery, ...people], { now, startsSinceRecovery: 0 }).slice(0, 8);
+    expect(batch.map(entry => entry.wakeReason === "task_retry" ? "P" : "R").join("")).toBe("PPPRPPPR");
+  });
+
   it("does not put a fresh interruption's continuation behind old-backlog recovery wakes", () => {
     const backlog = Array.from({ length: 12 }, (_, index) => backlogRecovery(50 - index));
     const fresh = run({ wakeReason: "issue_recovery_action_restored", createdAt: minutesAgo(1), sourceEndedAt: minutesAgo(3) });

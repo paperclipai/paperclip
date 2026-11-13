@@ -56,11 +56,15 @@ export function orderQueuedRunsForDispatch<T extends QueuedRunDispatchFacts>(
     || left.readinessRank - right.readinessRank
     || left.priorityRank - right.priorityRank
     || left.createdAt.getTime() - right.createdAt.getTime());
-  const recoveryIndex = ordered.findIndex(run => run.readinessRank < NOT_READY_RANK && isSystemRecoveryRun(run));
-  if (recoveryIndex < 0) return ordered;
-  const sharePosition = Math.max(0, RECOVERY_DISPATCH_SHARE - 1 - input.startsSinceRecovery);
-  if (recoveryIndex <= sharePosition) return ordered;
-  const [recovery] = ordered.splice(recoveryIndex, 1);
-  ordered.splice(sharePosition, 0, recovery!);
-  return ordered;
+  const result: T[] = [];
+  let sinceRecovery = input.startsSinceRecovery;
+  while (ordered.length) {
+    const recoveryIndex = sinceRecovery >= RECOVERY_DISPATCH_SHARE - 1
+      ? ordered.findIndex(run => run.readinessRank < NOT_READY_RANK && isSystemRecoveryRun(run))
+      : -1;
+    const [next] = ordered.splice(recoveryIndex < 0 ? 0 : recoveryIndex, 1);
+    result.push(next!);
+    sinceRecovery = isSystemRecoveryRun(next!) ? 0 : sinceRecovery + 1;
+  }
+  return result;
 }
