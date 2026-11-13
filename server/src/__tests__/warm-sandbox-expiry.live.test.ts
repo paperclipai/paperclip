@@ -4,11 +4,16 @@
 // production environment cleanup worker on a real delivery coordinator, which
 // must wake itself at the warm-window deadline.
 //
+// Prerequisite: the Daytona provider is outside the root workspace, so install
+// and build it on its own first (this test loads its dist/ and its own SDK):
+//   pnpm --dir packages/plugins/sandbox-providers/daytona install
+//   pnpm --dir packages/plugins/sandbox-providers/daytona build
+// Then, from server/:
 //   PAPERCLIP_LIVE_WARM_EXPIRY=1 DAYTONA_API_KEY=... \
 //     pnpm exec vitest run src/__tests__/warm-sandbox-expiry.live.test.ts
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
-import { writeFile } from "node:fs/promises";
+import { access, writeFile } from "node:fs/promises";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { agents, companies, createDb, environmentLeases, environments, heartbeatRuns, issues, plugins } from "@paperclipai/db";
@@ -126,6 +131,11 @@ describeLive("live Daytona warm sandbox expiry", () => {
 
   beforeAll(async () => {
     if (!process.env.DAYTONA_API_KEY) throw new Error("DAYTONA_API_KEY required");
+    for (const url of [pluginUrl, manifestUrl]) {
+      await access(new URL(url)).catch(() => {
+        throw new Error("Build the Daytona provider first: pnpm --dir packages/plugins/sandbox-providers/daytona install && pnpm --dir packages/plugins/sandbox-providers/daytona build");
+      });
+    }
     temporary = await startEmbeddedPostgresTestDatabase("live-warm-expiry-");
     db = createDb(temporary.connectionString);
     plugin = (await import(pluginUrl)).default.definition;
@@ -143,6 +153,7 @@ describeLive("live Daytona warm sandbox expiry", () => {
   }, 120_000);
 
   afterAll(async () => {
+    const leftBehind: string[] = [];
     for (const id of sandboxIds) {
       try {
         const sandbox = await daytona.get(id);
@@ -151,12 +162,21 @@ describeLive("live Daytona warm sandbox expiry", () => {
         }
         await sandbox.delete(60);
         timeline.push({ at: new Date().toISOString(), step: "cleanup: sandbox deleted", providerLeaseId: id });
-      } catch (error) { timeline.push({ at: new Date().toISOString(), step: "cleanup failed", providerLeaseId: id, error: (error as Error).message }); }
+      } catch (error) {
+        leftBehind.push(id);
+        timeline.push({ at: new Date().toISOString(), step: "cleanup failed", providerLeaseId: id, error: (error as Error).message });
+      }
     }
     if (process.env.PAPERCLIP_LIVE_WARM_EXPIRY_EVIDENCE) {
       await writeFile(process.env.PAPERCLIP_LIVE_WARM_EXPIRY_EVIDENCE, JSON.stringify({ windowMs: WINDOW_MS, timeline, methods }, null, 2));
     }
     await temporary?.cleanup();
+    if (leftBehind.length) {
+      // The stop path disables provider auto-delete, so a sandbox left here
+      // would never be reaped: fail loudly with the exact IDs to delete.
+      console.error(`Live fixture sandboxes left behind: ${leftBehind.join(", ")}`);
+      throw new Error(`Live fixture cleanup failed for ${leftBehind.length} sandbox(es): ${leftBehind.join(", ")}`);
+    }
   }, 180_000);
 
   it("keeps a warm sandbox inside its window, stops it after, resumes it, and stops it again after a restart", async () => {
@@ -173,6 +193,7 @@ describeLive("live Daytona warm sandbox expiry", () => {
       const afterStop = await note("turn 1: stopped by cleanup worker", first.providerLeaseId,
         { secondsAfterWindowEnd: stoppedAt === null ? null : Math.round((stoppedAt - first.windowEndsAt) / 1000) });
       expect(stoppedAt).not.toBeNull();
+      expect(stoppedAt!).toBeGreaterThanOrEqual(first.windowEndsAt);
       expect(afterStop.autoDeleteInterval).toBe(-1);
       const [kept] = (await leaseRows()).filter(row => row.heartbeatRunId === first.runId);
       expect(kept).toMatchObject({ status: "released", cleanupStatus: "success", metadata: { remoteExecutionTermination: { state: "stopped" } } });
