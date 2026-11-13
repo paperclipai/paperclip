@@ -935,6 +935,13 @@ async function waitForWarmNativeSessionSettled(scope: string): Promise<void> {
   while (settlingNativeSessionScopes.has(scope) && Date.now() < deadline) {
     await new Promise(resolve => setTimeout(resolve, warmSessionReleaseWait.pollMs));
   }
+  const closing = closingWarmNativeSessions.get(scope);
+  if (!closing) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    closing.catch(() => undefined),
+    new Promise<void>(resolve => { timer = setTimeout(resolve, Math.max(0, deadline - Date.now())); }),
+  ]).finally(() => clearTimeout(timer));
 }
 
 /** Reserve the existing physical copy before heartbeat composes AGENT_HOME and
@@ -961,7 +968,7 @@ export async function claimWarmNativeInstructionCopy(input: {
     })) || prior.workspace.cwd !== input.workspace.cwd) return null;
   const scope = nativeSessionScopeKey(prior);
   const busyEntry = warmNativeSessions.get(scope);
-  if (busyEntry?.busy || settlingNativeSessionScopes.has(scope)) await waitForWarmNativeSessionSettled(scope);
+  if (busyEntry?.busy || settlingNativeSessionScopes.has(scope) || closingWarmNativeSessions.has(scope)) await waitForWarmNativeSessionSettled(scope);
   // Re-read after the wait: the release may have retired or replaced the session.
   const entry = warmNativeSessions.get(scope);
   if (!entry || !entry.instructionWorkingCopy?.runId || entry.environmentId !== input.environmentId) return null;
