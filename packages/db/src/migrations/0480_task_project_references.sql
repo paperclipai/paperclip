@@ -1,4 +1,5 @@
-CREATE TABLE "issue_project_references" (
+-- paperclip:migration-compat online_compatible: The previous release never reads issue_project_references, and the new functions have new names. The triggers write only that new table, so the previous release's writes keep their behaviour. The migrator runs this file statement by statement outside a transaction: each CREATE OR REPLACE TRIGGER holds its table's lock only to install the trigger, and the backfill runs last, holding only read locks on live tables. Every statement is idempotent, so a failed run starts again safely.
+CREATE TABLE IF NOT EXISTS "issue_project_references" (
 	"company_id" uuid NOT NULL,
 	"issue_id" uuid NOT NULL,
 	"source_kind" text NOT NULL,
@@ -8,7 +9,7 @@ CREATE TABLE "issue_project_references" (
 	CONSTRAINT "issue_project_references_source_kind_check" CHECK ("issue_project_references"."source_kind" in ('issue', 'comment', 'document', 'annotation', 'interaction', 'case', 'accepted_plan'))
 );
 --> statement-breakpoint
-CREATE INDEX "issue_project_references_company_project_idx" ON "issue_project_references" USING btree ("company_id","project_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "issue_project_references_company_project_idx" ON "issue_project_references" USING btree ("company_id","project_id");--> statement-breakpoint
 -- Task project references (C1b). Triggers rewrite the candidate rows of each
 -- changed source in the statement of its write, whatever performs it. They take
 -- no lock beyond those rows (the writer already holds the source row), so they
@@ -47,7 +48,7 @@ BEGIN
 	RETURN NULL;
 END;
 $$;--> statement-breakpoint
-CREATE TRIGGER paperclip_issue_project_references_trigger
+CREATE OR REPLACE TRIGGER paperclip_issue_project_references_trigger
 AFTER INSERT OR UPDATE OF "title", "description", "project_id" ON "issues"
 FOR EACH ROW EXECUTE FUNCTION paperclip_issue_project_references();--> statement-breakpoint
 -- No foreign key (its check would lock the task inside source writes): task deletion removes the rows.
@@ -58,7 +59,7 @@ BEGIN
 	RETURN NULL;
 END;
 $$;--> statement-breakpoint
-CREATE TRIGGER paperclip_deleted_issue_project_references AFTER DELETE ON "issues"
+CREATE OR REPLACE TRIGGER paperclip_deleted_issue_project_references AFTER DELETE ON "issues"
 REFERENCING OLD TABLE AS old_rows FOR EACH STATEMENT EXECUTE FUNCTION paperclip_deleted_issue_project_references();--> statement-breakpoint
 -- Issue documents of every key, by latest body. A document's source ID is its document ID.
 -- A new or moved link share-locks its documents before reading their bodies, so
@@ -91,11 +92,11 @@ BEGIN
 	RETURN NULL;
 END;
 $$;--> statement-breakpoint
-CREATE TRIGGER paperclip_issue_document_project_references_insert AFTER INSERT ON "issue_documents"
+CREATE OR REPLACE TRIGGER paperclip_issue_document_project_references_insert AFTER INSERT ON "issue_documents"
 REFERENCING NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION paperclip_issue_document_project_references();--> statement-breakpoint
-CREATE TRIGGER paperclip_issue_document_project_references_update AFTER UPDATE ON "issue_documents"
+CREATE OR REPLACE TRIGGER paperclip_issue_document_project_references_update AFTER UPDATE ON "issue_documents"
 REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION paperclip_issue_document_project_references();--> statement-breakpoint
-CREATE TRIGGER paperclip_issue_document_project_references_delete AFTER DELETE ON "issue_documents"
+CREATE OR REPLACE TRIGGER paperclip_issue_document_project_references_delete AFTER DELETE ON "issue_documents"
 REFERENCING OLD TABLE AS old_rows FOR EACH STATEMENT EXECUTE FUNCTION paperclip_issue_document_project_references();--> statement-breakpoint
 CREATE OR REPLACE FUNCTION paperclip_document_body_project_references() RETURNS trigger
 LANGUAGE plpgsql AS $$
@@ -108,7 +109,7 @@ BEGIN
 	RETURN NULL;
 END;
 $$;--> statement-breakpoint
-CREATE TRIGGER paperclip_document_body_project_references AFTER UPDATE ON "documents"
+CREATE OR REPLACE TRIGGER paperclip_document_body_project_references AFTER UPDATE ON "documents"
 REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION paperclip_document_body_project_references();--> statement-breakpoint
 -- Comments, plan-review annotation comments, thread interactions, workflow
 -- case facts and accepted plan revisions. Arguments: source kind, task column,
@@ -128,39 +129,42 @@ BEGIN
 	RETURN NULL;
 END;
 $$;--> statement-breakpoint
-CREATE TRIGGER paperclip_comment_project_references_insert AFTER INSERT ON "issue_comments"
+CREATE OR REPLACE TRIGGER paperclip_comment_project_references_insert AFTER INSERT ON "issue_comments"
 REFERENCING NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION paperclip_row_project_references('comment', 'issue_id', 't.id', 'CASE WHEN t.deleted_at IS NULL THEN t.body END', 'WHERE true');--> statement-breakpoint
-CREATE TRIGGER paperclip_comment_project_references_update AFTER UPDATE ON "issue_comments"
+CREATE OR REPLACE TRIGGER paperclip_comment_project_references_update AFTER UPDATE ON "issue_comments"
 REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION paperclip_row_project_references('comment', 'issue_id', 't.id', 'CASE WHEN t.deleted_at IS NULL THEN t.body END', 'WHERE true');--> statement-breakpoint
-CREATE TRIGGER paperclip_comment_project_references_delete AFTER DELETE ON "issue_comments"
+CREATE OR REPLACE TRIGGER paperclip_comment_project_references_delete AFTER DELETE ON "issue_comments"
 REFERENCING OLD TABLE AS old_rows FOR EACH STATEMENT EXECUTE FUNCTION paperclip_row_project_references('comment', 'issue_id', 't.id', 'CASE WHEN t.deleted_at IS NULL THEN t.body END', 'WHERE true');--> statement-breakpoint
-CREATE TRIGGER paperclip_annotation_project_references_insert AFTER INSERT ON "document_annotation_comments"
+CREATE OR REPLACE TRIGGER paperclip_annotation_project_references_insert AFTER INSERT ON "document_annotation_comments"
 REFERENCING NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION paperclip_row_project_references('annotation', 'issue_id', 't.id', 't.body', 'WHERE true');--> statement-breakpoint
-CREATE TRIGGER paperclip_annotation_project_references_update AFTER UPDATE ON "document_annotation_comments"
+CREATE OR REPLACE TRIGGER paperclip_annotation_project_references_update AFTER UPDATE ON "document_annotation_comments"
 REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION paperclip_row_project_references('annotation', 'issue_id', 't.id', 't.body', 'WHERE true');--> statement-breakpoint
-CREATE TRIGGER paperclip_annotation_project_references_delete AFTER DELETE ON "document_annotation_comments"
+CREATE OR REPLACE TRIGGER paperclip_annotation_project_references_delete AFTER DELETE ON "document_annotation_comments"
 REFERENCING OLD TABLE AS old_rows FOR EACH STATEMENT EXECUTE FUNCTION paperclip_row_project_references('annotation', 'issue_id', 't.id', 't.body', 'WHERE true');--> statement-breakpoint
-CREATE TRIGGER paperclip_interaction_project_references_insert AFTER INSERT ON "issue_thread_interactions"
+CREATE OR REPLACE TRIGGER paperclip_interaction_project_references_insert AFTER INSERT ON "issue_thread_interactions"
 REFERENCING NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION paperclip_row_project_references('interaction', 'issue_id', 't.id', 'concat_ws('' '', t.title, t.summary, t.payload::text, t.result::text)', 'WHERE true');--> statement-breakpoint
-CREATE TRIGGER paperclip_interaction_project_references_update AFTER UPDATE ON "issue_thread_interactions"
+CREATE OR REPLACE TRIGGER paperclip_interaction_project_references_update AFTER UPDATE ON "issue_thread_interactions"
 REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION paperclip_row_project_references('interaction', 'issue_id', 't.id', 'concat_ws('' '', t.title, t.summary, t.payload::text, t.result::text)', 'WHERE true');--> statement-breakpoint
-CREATE TRIGGER paperclip_interaction_project_references_delete AFTER DELETE ON "issue_thread_interactions"
+CREATE OR REPLACE TRIGGER paperclip_interaction_project_references_delete AFTER DELETE ON "issue_thread_interactions"
 REFERENCING OLD TABLE AS old_rows FOR EACH STATEMENT EXECUTE FUNCTION paperclip_row_project_references('interaction', 'issue_id', 't.id', 'concat_ws('' '', t.title, t.summary, t.payload::text, t.result::text)', 'WHERE true');--> statement-breakpoint
 -- Every accepted plan confirmation's immutable target revision, for reverse lookup of queued historical plans.
-CREATE TRIGGER paperclip_accepted_plan_project_references_insert AFTER INSERT ON "issue_thread_interactions"
+CREATE OR REPLACE TRIGGER paperclip_accepted_plan_project_references_insert AFTER INSERT ON "issue_thread_interactions"
 REFERENCING NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION paperclip_row_project_references('accepted_plan', 'issue_id', 't.id', 'r.body', 'JOIN document_revisions r ON r.id = CASE WHEN t.payload #>> ''{target,revisionId}'' ~* ''^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'' THEN (t.payload #>> ''{target,revisionId}'')::uuid END WHERE t.kind = ''request_confirmation'' AND t.status = ''accepted'' AND t.payload #>> ''{target,key}'' = ''plan''');--> statement-breakpoint
-CREATE TRIGGER paperclip_accepted_plan_project_references_update AFTER UPDATE ON "issue_thread_interactions"
+CREATE OR REPLACE TRIGGER paperclip_accepted_plan_project_references_update AFTER UPDATE ON "issue_thread_interactions"
 REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION paperclip_row_project_references('accepted_plan', 'issue_id', 't.id', 'r.body', 'JOIN document_revisions r ON r.id = CASE WHEN t.payload #>> ''{target,revisionId}'' ~* ''^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'' THEN (t.payload #>> ''{target,revisionId}'')::uuid END WHERE t.kind = ''request_confirmation'' AND t.status = ''accepted'' AND t.payload #>> ''{target,key}'' = ''plan''');--> statement-breakpoint
-CREATE TRIGGER paperclip_accepted_plan_project_references_delete AFTER DELETE ON "issue_thread_interactions"
+CREATE OR REPLACE TRIGGER paperclip_accepted_plan_project_references_delete AFTER DELETE ON "issue_thread_interactions"
 REFERENCING OLD TABLE AS old_rows FOR EACH STATEMENT EXECUTE FUNCTION paperclip_row_project_references('accepted_plan', 'issue_id', 't.id', 'r.body', 'JOIN document_revisions r ON r.id = CASE WHEN t.payload #>> ''{target,revisionId}'' ~* ''^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'' THEN (t.payload #>> ''{target,revisionId}'')::uuid END WHERE t.kind = ''request_confirmation'' AND t.status = ''accepted'' AND t.payload #>> ''{target,key}'' = ''plan''');--> statement-breakpoint
-CREATE TRIGGER paperclip_case_project_references_insert AFTER INSERT ON "cases"
+CREATE OR REPLACE TRIGGER paperclip_case_project_references_insert AFTER INSERT ON "cases"
 REFERENCING NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION paperclip_row_project_references('case', 'work_issue_id', 't.id', 'concat_ws('' '', t.title, t.summary, t.fields::text)', 'WHERE true');--> statement-breakpoint
-CREATE TRIGGER paperclip_case_project_references_update AFTER UPDATE ON "cases"
+CREATE OR REPLACE TRIGGER paperclip_case_project_references_update AFTER UPDATE ON "cases"
 REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION paperclip_row_project_references('case', 'work_issue_id', 't.id', 'concat_ws('' '', t.title, t.summary, t.fields::text)', 'WHERE true');--> statement-breakpoint
-CREATE TRIGGER paperclip_case_project_references_delete AFTER DELETE ON "cases"
+CREATE OR REPLACE TRIGGER paperclip_case_project_references_delete AFTER DELETE ON "cases"
 REFERENCING OLD TABLE AS old_rows FOR EACH STATEMENT EXECUTE FUNCTION paperclip_row_project_references('case', 'work_issue_id', 't.id', 'concat_ws('' '', t.title, t.summary, t.fields::text)', 'WHERE true');
 --> statement-breakpoint
--- Backfill: the projection is complete on upgrade. Only text containing a project link is scanned.
+-- Backfill: the projection is complete on upgrade. It runs after every trigger is
+-- installed: a write that committed earlier is in its snapshot, and a later write
+-- runs its trigger. A row it reads just before a concurrent edit can leave a stale
+-- extra candidate, never a missing one. Only text containing a project link is scanned.
 INSERT INTO issue_project_references (company_id, issue_id, source_kind, source_id, project_id)
 SELECT company_id, id, 'issue', id, candidate FROM issues CROSS JOIN LATERAL unnest(array_remove(
 	paperclip_project_reference_candidates(CASE WHEN title || coalesce(description, '') ILIKE '%project://%' THEN title || ' ' || coalesce(description, '') END)
@@ -178,4 +182,5 @@ UNION SELECT t.company_id, t.issue_id, 'accepted_plan', t.id, candidate FROM iss
 	CROSS JOIN LATERAL unnest(paperclip_project_reference_candidates(r.body)) candidate
 	WHERE t.kind = 'request_confirmation' AND t.status = 'accepted' AND t.payload #>> '{target,key}' = 'plan'
 UNION SELECT company_id, work_issue_id, 'case', id, candidate FROM cases
-	CROSS JOIN LATERAL unnest(paperclip_project_reference_candidates(concat_ws(' ', title, summary, fields::text))) candidate WHERE work_issue_id IS NOT NULL;
+	CROSS JOIN LATERAL unnest(paperclip_project_reference_candidates(concat_ws(' ', title, summary, fields::text))) candidate WHERE work_issue_id IS NOT NULL
+ON CONFLICT DO NOTHING;

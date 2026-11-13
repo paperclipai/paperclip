@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { applyPendingMigrations, inspectMigrations } from "./client.js";
 import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./test-embedded-postgres.js";
 
-const migrationName = "0439_task_project_references.sql";
+const migrationName = "0480_task_project_references.sql";
 const migrationHash = createHash("sha256").update(await readFile(new URL(`./migrations/${migrationName}`, import.meta.url), "utf8")).digest("hex");
 const support = await getEmbeddedPostgresTestSupport();
 
@@ -45,6 +45,11 @@ describe.skipIf(!support.supported)("task project references migration", () => {
 
       const rows = async () => (await sql`SELECT issue_id, source_kind, project_id FROM issue_project_references`)
         .map(row => `${row.issue_id}:${row.source_kind}:${row.project_id}`).sort();
+      expect(await rows()).toEqual([`${primaryOnly}:issue:${a}`, `${mentioned}:issue:${b}`, `${mentioned}:comment:${c}`,
+        `${mentioned}:accepted_plan:${d}`].sort());
+      // The migrator runs it outside a transaction: a failed run starts again from the first statement.
+      await sql`DELETE FROM drizzle.__drizzle_migrations WHERE hash = ${migrationHash}`;
+      await applyPendingMigrations(database.connectionString);
       expect(await rows()).toEqual([`${primaryOnly}:issue:${a}`, `${mentioned}:issue:${b}`, `${mentioned}:comment:${c}`,
         `${mentioned}:accepted_plan:${d}`].sort());
       // Another transaction holds the task FOR UPDATE; a source write still projects without waiting on it.

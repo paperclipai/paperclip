@@ -1331,13 +1331,17 @@ The caller describes the rest of the supplied context in a required
 not covered yet: selecting either returns `unprojected_context_source`, never a
 smaller set.
 
-Migration `0439` adds triggers that run in the statement of every source write,
+Migration `0480` adds triggers that run in the statement of every source write,
 whatever service, route, tool, import or direct SQL performs it. They rewrite
 that source's rows in `issue_project_references`: company-scoped candidates
 indexed by `(company_id, project_id)` for reverse lookup, including
 primaryless and `accepted_plan` rows from accepted plan confirmations. The SQL
 extractor returns every UUID inside a `project://` link, a tested superset of
-the shared parser. The migration backfills existing tasks.
+the shared parser. The migration backfills existing tasks. It runs outside a
+transaction, one idempotent statement at a time: each trigger holds its table's
+lock only while it is installed, and the backfill runs after the last trigger
+with read locks only. A concurrent edit can leave a stale extra candidate, which
+the full-source parse discards, but never a missing one.
 
 The triggers lock nothing but the changed source's own candidate rows, except
 that a new or moved document link share-locks its document before reading the
