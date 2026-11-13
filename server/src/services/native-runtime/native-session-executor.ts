@@ -12319,6 +12319,8 @@ async function executePaperclipNativeSessionAttempt(
             input: runnerExecution,
             startup: executionContext && (!usesPluginTask || executionContext.pluginSupported) ? executionContext : undefined,
             remoteCleanupScope: remoteCleanupLease ? remoteLeaseCleanupScope(remoteCleanupLease) : undefined,
+            retainedRunnerReattachment: input.restartRecovery?.kind === "reattach_remote_runner"
+              && input.restartRecovery.runId === input.execution.binding.runId,
             turnTimeoutMs: input.turnTimeoutMs,
             backend:
               input.backend ??

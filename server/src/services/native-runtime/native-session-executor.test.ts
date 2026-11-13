@@ -12626,6 +12626,7 @@ describe("native warm session supervision", () => {
         expect(state.stageNativeRunnerWakeAttachments).not.toHaveBeenCalled();
         expect(cancel).toHaveBeenCalledTimes(invalidated ? 0 : 1);
         expect(submit).not.toHaveBeenCalled();
+        expect(state.execute.mock.calls.at(-1)?.[0].retainedRunnerReattachment).toBe(true);
       } finally {
         state.stageNativeRunnerWakeAttachments.mockReset().mockImplementation(originalStaging);
         close.mockImplementation(async () => undefined);
@@ -12929,6 +12930,7 @@ describe("native warm session supervision", () => {
       expect(state.execute).toHaveBeenCalledTimes(2);
       expect(state.execute.mock.calls.at(-1)?.[0].existingSession).toBeUndefined();
       expect(close).toHaveBeenCalledTimes(closes);
+      expect(state.execute.mock.calls.at(-1)?.[0].retainedRunnerReattachment).toBe(false);
     });
 
     it.each(["companyId", "agentId", "issueId", "executionWorkspaceId"] as const)(
