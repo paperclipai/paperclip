@@ -3712,7 +3712,7 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
       expect(await claimNativeRestartRecoveries({ db: fixture.db, controller: await currentNativeControllerIdentity(),
         restartKind: "hard", runIds: [fixture.runId], liveRunExecutions: new Set(),
         handedOffForShutdown: runId => runId === fixture.runId }))
-        .toEqual([expect.objectContaining({ kind: "awaiting_evidence", reason: "controller_still_alive" })]);
+        .toEqual([expect.objectContaining({ kind: "blocked", reason: "handed_off_to_next_controller" })]);
     });
 
     it("keeps waiting for a different live controller in this process space", async () => {
