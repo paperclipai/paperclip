@@ -1863,6 +1863,75 @@ it("answers lease renewal while an earlier event commit is still in flight", asy
   }
 });
 
+function replayBacklogCore(root: string, commitMs: number) {
+  let stopped = false;
+  const commits = vi.fn(async () => {
+    if (stopped) throw new Error("replay_test_stopped");
+    await new Promise<void>(resolveCommit => setTimeout(resolveCommit, commitMs));
+  });
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity,
+    expectedRunnerVersion, expectedRunnerDigest, onCommittedEvent: commits });
+  return { core, commits, stop: () => { stopped = true; } };
+}
+
+function commandResultFrame(client: AuthenticatedClient, command: { commandId: string; type: string; controllerSeq: number },
+  result: Record<string, unknown> = { status: "completed" }, status = "completed"): Record<string, unknown> {
+  return { protocol: "paperclip.runner", version: client.welcome.version, kind: "command_result",
+    payload: { commandId: command.commandId, commandType: command.type, controllerSeq: command.controllerSeq, status, result } };
+}
+
+async function receiveCommand(client: AuthenticatedClient): Promise<Record<string, unknown>> {
+  for (;;) {
+    const frame = await receiveSecure(client);
+    if (frame === null) throw new Error("connection closed before the command arrived");
+    if (frame.kind === "command") return frame;
+  }
+}
+
+it("answers a command issued during a 1,000-event replay within its deadline", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-command-under-replay-"));
+  const { core, commits, stop } = replayBacklogCore(root, 50);
+  try {
+    await core.start();
+    const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+    for (let seq = 1; seq <= 1_000; seq++) sendSecure(client, ordinaryOutput(seq));
+    await vi.waitFor(() => expect(commits).toHaveBeenCalled());
+    const snapshot = core.queueCommand("session.snapshot", {}, "snapshot-during-replay", true);
+    expect((await receiveCommand(client)).payload).toMatchObject({ commandId: snapshot.commandId });
+    sendSecure(client, commandResultFrame(client, snapshot));
+    await vi.waitFor(() => expect(core.commandOutcome(snapshot.commandId)?.status).toBe("completed"),
+      { timeout: 30_000, interval: 10 });
+    expect(core.store.state.ackedSourceSeq).toBeLessThan(1_000);
+    client.socket.destroy();
+  } finally {
+    stop();
+    await core.stop();
+    await core.drainPendingConnectionProcessing();
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 60_000);
+
+it("keeps a failed command result behind the events the Runner sent before it", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-failed-result-order-"));
+  const { core, stop } = replayBacklogCore(root, 20);
+  try {
+    await core.start();
+    const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+    const snapshot = core.queueCommand("session.snapshot", {}, "failed-after-evidence", true);
+    await receiveCommand(client);
+    for (let seq = 1; seq <= 20; seq++) sendSecure(client, ordinaryOutput(seq));
+    sendSecure(client, commandResultFrame(client, snapshot, { code: "command_execution_failed" }, "failed"));
+    await vi.waitFor(() => expect(core.commandOutcome(snapshot.commandId)?.status).toBe("failed"), { timeout: 10_000 });
+    expect(core.store.state.ackedSourceSeq).toBe(20);
+    client.socket.destroy();
+  } finally {
+    stop();
+    await core.stop();
+    await core.drainPendingConnectionProcessing();
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 30_000);
+
 it("keeps a staged tool-progress write when a lease renewal lands mid-write", async () => {
   const root = mkdtempSync(resolve(tmpdir(), "runner-lease-renewal-staged-write-"));
   let release!: () => void;

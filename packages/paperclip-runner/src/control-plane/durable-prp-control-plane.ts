@@ -83,6 +83,13 @@ const runnerDigestPattern = /^sha256:[0-9a-f]{64}$/;
 export function isRunnerRecoveryMaintenanceCommand(type: string): boolean {
   return ["session.snapshot", "session.goal.get", "runner.drain", "runner.suspend", "runner.shutdown", "turn.stop"].includes(type);
 }
+const orderIndependentResultTypes = new Set(["session.snapshot", "session.goal.get", "runner.drain", "semantic_tool.result"]);
+function answersAheadOfEvents(command: DurableRecoveryCoreCommand | undefined, result: unknown): boolean {
+  if (command === undefined || command.status !== "pending" || !orderIndependentResultTypes.has(command.type)) return false;
+  if (command.type === "session.snapshot" && command.payload.quiesceForWarmAttach === true) return false;
+  const status = isRecord(result) ? result.status : undefined;
+  return status === "completed" || status === "rejected";
+}
 
 /** The Runner journaled this command before its effect, then died. It sends
  * that `indeterminate` entry as `failed` with `execution_indeterminate`, never
@@ -3139,6 +3146,7 @@ export class DurablePrpControlPlane {
             }
             return;
           }
+          if (decrypted.kind === "command_result" && this.#answerOnArrival(connection, decrypted)) return;
           frame = { decrypted };
         } else {
           undecryptedFrames += 1;
@@ -3235,6 +3243,31 @@ export class DurablePrpControlPlane {
     if (!this.#admitEnvelopeVersion(connection, envelope)) return;
     if (!this.#admitAuthenticatedFrame(connection)) return;
     if (envelope.kind === "lease_renew") this.#renewLease(connection, envelope);
+  }
+
+  #answerOnArrival(
+    connection: AuthorityConnection,
+    envelope: Record<string, unknown>,
+  ): boolean {
+    const result = envelope.payload;
+    const commandId = isRecord(result) ? result.commandId : undefined;
+    if (
+      typeof commandId !== "string" ||
+      connection.replayOnly ||
+      this.#store.state.warmTransition !== undefined ||
+      !answersAheadOfEvents(this.#store.state.commands.find(command => command.commandId === commandId), result)
+    ) return false;
+    try {
+      this.#store.assertWritable();
+      if (!this.#admitEnvelopeVersion(connection, envelope) || !this.#admitAuthenticatedFrame(connection)
+        || connection.lease === null) return true;
+      this.#commandResult(connection, envelope);
+    } catch {
+      connection.close();
+      return true;
+    }
+    void this.flushCheckpoint().catch(() => connection.close());
+    return true;
   }
 
   #admitEnvelopeVersion(
