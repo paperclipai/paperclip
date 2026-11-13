@@ -76,7 +76,7 @@ describe("assertProbeDestinationAllowed", () => {
   });
 
   it("rejects gateway URLs that are or resolve to private addresses", async () => {
-    for (const hostname of ["127.0.0.1", "10.1.2.3", "192.168.1.10", "169.254.169.254", "172.20.0.5", "[::1]", "[fe80::1]"]) {
+    for (const hostname of ["127.0.0.1", "10.1.2.3", "192.168.1.10", "169.254.169.254", "172.20.0.5", "[::1]", "[fe80::1]", "[::]"]) {
       await expect(
         assertProbeDestinationAllowed(route({ kind: "gateway", protocol: "chat", baseUrl: `https://${hostname}/v1`, auth: "none" }), true),
       ).rejects.toMatchObject({ status: 422, details: { code: "ai_routing_models_probe_private_target" } });
@@ -85,9 +85,21 @@ describe("assertProbeDestinationAllowed", () => {
       assertProbeDestinationAllowed(
         route({ kind: "gateway", protocol: "chat", baseUrl: "https://internal.example.test/v1", auth: "none" }),
         true,
-        async () => ["10.0.0.9"],
+        async () => [{ address: "10.0.0.9", family: 4 }],
       ),
     ).rejects.toMatchObject({ status: 422, details: { code: "ai_routing_models_probe_private_target" } });
+  });
+
+  it("rejects the IPv6 unspecified address as a gateway target before any request", async () => {
+    const { request, calls } = captureRequest();
+    await expect(
+      probeAiRoutingModels(
+        route({ kind: "gateway", protocol: "chat", baseUrl: "https://[::]/v1", auth: "bearer" }),
+        "key",
+        { request: request as unknown as typeof fetch, isLocalOperator: true },
+      ),
+    ).rejects.toMatchObject({ status: 422, details: { code: "ai_routing_models_probe_private_target" } });
+    expect(calls).toHaveLength(0);
   });
 
   it("accepts public IPv6 gateway literals and maps DNS failures to unreachable", async () => {
@@ -113,7 +125,7 @@ describe("assertProbeDestinationAllowed", () => {
       assertProbeDestinationAllowed(
         route({ kind: "gateway", protocol: "chat", baseUrl: "https://gw.example.com/v1", auth: "none" }),
         false,
-        async () => ["93.184.216.34", "2606:2800:220:1:248:1893:25c8:1946"],
+        async () => [{ address: "93.184.216.34", family: 4 }, { address: "2606:2800:220:1:248:1893:25c8:1946", family: 6 }],
       ),
     ).resolves.toBeUndefined();
     await expect(
@@ -151,7 +163,7 @@ function captureRequest() {
 const publicGateway = { kind: "gateway", protocol: "chat", baseUrl: "https://gw.example.com/v1", auth: "bearer" } as const;
 const localChat = { kind: "local", protocol: "chat", baseUrl: "http://localhost:11434/v1", auth: "none" } as const;
 /** The fake-fetch tests use a non-resolvable hostname; resolve it to a public address. */
-const publicLookup = async () => ["93.184.216.34"];
+const publicLookup = async () => [{ address: "93.184.216.34", family: 4 }];
 
 describe("probeAiRoutingModels request shape", () => {
   it("sends a bearer token, no-redirect, and a timeout signal", async () => {
@@ -163,7 +175,8 @@ describe("probeAiRoutingModels request shape", () => {
     });
     expect(models).toEqual([{ id: "m", label: "m" }]);
     expect(calls[0]?.url).toBe("https://gw.example.com/v1/models");
-    expect(calls[0]?.init.redirect).toBe("error");
+    // The guarded transport never follows redirects; manual is its contract.
+    expect(calls[0]?.init.redirect).toBe("manual");
     expect(calls[0]?.init.signal).toBeInstanceOf(AbortSignal);
     expect(calls[0]?.init.headers).toEqual({ Authorization: "Bearer gateway-key" });
   });
