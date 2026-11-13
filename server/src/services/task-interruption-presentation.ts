@@ -481,6 +481,7 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
     // Keep at most two candidates per task: latest Retry and latest other input.
     // A new message must not hide an existing Retry's admission explanation.
     db.selectDistinctOn([wakeIssue, isRetryWait], { issueId: wakeIssue, id: agentWakeupRequests.id, requestedAt: agentWakeupRequests.requestedAt,
+      requestedByActorId: agentWakeupRequests.requestedByActorId,
       sourceRunId: boundedJsonString(sql`${agentWakeupRequests.payload}#>'{taskRetry,sourceRunId}'`, 160),
       executionWaitReason: boundedJsonString(sql`to_jsonb(${unpricedUsageWait(sql`${agentWakeupRequests.payload}#>>'{executionWait,reason}'`,
         sql`${agentWakeupRequests.payload}#>>'{executionWait,message}'`)})`, 80),
@@ -602,6 +603,14 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
   // that authority, even before dispatch retires the old receipt. Retained
   // ordinary input is independent and must still be shown as waiting.
   const currentWaits = waits.filter(wait => !wait.sourceRunId || wait.sourceRunId === runMap.get(wait.issueId)?.id);
+  const decisionWaits = currentWaits.filter(wait => wait.executionWaitReason === "decision_pending");
+  if (decisionWaits.length) {
+    const { hasPendingContinuationDecision } = await import("./explicit-native-continuation.js");
+    await Promise.all(decisionWaits.map(async wait => {
+      if (!wait.requestedByActorId || !await hasPendingContinuationDecision(db, { companyId, issueId: wait.issueId,
+        actorId: wait.requestedByActorId, taskRetrySourceRunId: wait.sourceRunId })) wait.executionWaitReason = null;
+    }));
+  }
   const retryWaitMap = byIssue(currentWaits.filter(wait => wait.sourceRunId));
   const retryIssueIds = [...retryWaitMap.keys()];
   const retryDependencyMap = new Map<string, RetryDependencies>();

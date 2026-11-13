@@ -52,3 +52,16 @@ export async function writeDeferredExecutionWait(db: Db, scope: { companyId: str
   else for (const publication of pending) publishActivity(publication);
   return saved;
 }
+
+export async function releaseDecisionHeldExecution(tx: object, scope: { companyId: string; issueId?: string | null }) {
+  if (!scope.issueId) return;
+  const db = tx as Pick<Db, "update">;
+  const released = await db.update(agentWakeupRequests).set({
+    payload: sql`${agentWakeupRequests.payload} - 'executionWait'`,
+    updatedAt: new Date(),
+  }).where(and(eq(agentWakeupRequests.companyId, scope.companyId), eq(agentWakeupRequests.status, "deferred_issue_execution"),
+    sql`${agentWakeupRequests.payload}->>'issueId' = ${scope.issueId}`,
+    sql`${agentWakeupRequests.payload}#>>'{executionWait,reason}' = 'decision_pending'`))
+    .returning({ id: agentWakeupRequests.id });
+  for (const { id } of released) await notifyDeferredExecutionWork(tx, { companyId: scope.companyId, requestId: id });
+}
