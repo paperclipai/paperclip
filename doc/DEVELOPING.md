@@ -148,6 +148,10 @@ GitHub Actions owns every managed pnpm lockfile:
   each lockfile with `pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile`
   and opens one `chore/refresh-lockfile` pull request for all of them. See
   `doc/RELEASE-AUTOMATION-SETUP.md` for when the bot merges it.
+- A local `docker build` installs the Runner with a frozen lockfile. When the
+  root `pnpm-lock.yaml` is behind the Runner's manifests, run that same command
+  in the checkout before the build, and do not commit the result. See "Runner
+  image" in `doc/DOCKER.md`.
 
 The Pi and Kimi distribution lockfiles under `packages/paperclip-runner/scripts/`
 are not on this list. They hold attested provider pins, so change them by hand
@@ -1642,7 +1646,9 @@ Set `PAPERCLIP_RUNNER_VENDOR_REQUIRE_CURRENT=1` when the Runner under
 build it again, for example because it has no Rust toolchain. The step then
 reuses a current build as usual. When the build is not current it prints the
 reason and fails, without starting a rebuild and without removing the stamp.
-Setting both variables fails.
+Setting both variables fails. The `build` stage of the `Dockerfile` sets it:
+that stage copies `dist` and the stamp out of the `runner-artifacts` stage
+(see "Runner image" in `doc/DOCKER.md`).
 
 ### Task search evaluation
 

@@ -22,6 +22,8 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 const dockerfile = readFileSync(path.join(repoRoot, "Dockerfile"), "utf8");
 const workflow = readFileSync(path.join(repoRoot, ".github", "workflows", "docker.yml"), "utf8");
 const previewWorkflow = readFileSync(path.join(repoRoot, ".github", "workflows", "release.yml"), "utf8");
+const mergeGroupWorkflow = readFileSync(path.join(repoRoot, ".github", "workflows", "docker-merge-group.yml"), "utf8");
+const appCheckWorkflow = readFileSync(path.join(repoRoot, ".github", "workflows", "docker-app-check.yml"), "utf8");
 
 /**
  * Return the text of the Dockerfile stage that starts at the named target.
@@ -77,31 +79,43 @@ describe("docker build-stamp wiring", () => {
 });
 
 
-describe("Docker Rust dependency cache", () => {
-  it("caches the locked dependency recipe separately from source and per-build metadata", () => {
-    const chef = stageBody(dockerfile, "rust-chef");
-    const planner = stageBody(dockerfile, "runner-plan");
-    const dependencies = stageBody(dockerfile, "runner-deps");
-    expect(chef).toContain("FROM rust-toolchain AS rust-chef");
-    expect(chef).toMatch(/cargo install cargo-chef --version \d+\.\d+\.\d+ --locked/);
-    expect(planner).toContain("COPY packages/paperclip-runner/runner ./runner");
-    expect(planner).toContain("cargo chef prepare --recipe-path /tmp/runner-recipe.json");
-    expect(dependencies).toContain("FROM rust-chef AS runner-deps");
-    expect(dependencies).toContain("COPY --from=runner-plan /tmp/runner-recipe.json /tmp/runner-recipe.json");
-    expect(dependencies).toContain("cargo chef cook --release --locked --package paperclip-runner-core --bin paperclip-runnerd");
-    expect(dependencies).not.toMatch(/COPY .*\.\/runner|COPY .*\.\/protocol|COPY \. \.|PAPERCLIP_BUILD_COMMIT/);
+describe("Application image Runner", () => {
+  it("takes the Runner build and its stamp from runner-artifacts, and checks them before any application build", () => {
+    const build = stageBody(dockerfile, "build");
+    expect(build).toContain("FROM base AS build");
+    const source = build.search(/^COPY \. \.$/m);
+    const output = build.search(/^COPY --from=runner-artifacts \/runner-package\/dist \/app\/packages\/paperclip-runner\/dist$/m);
+    const stamp = build.search(
+      /^COPY --from=runner-artifacts \/runner-package\/node_modules\/\.cache\/paperclip-runner-build-inputs\.json \/app\/packages\/paperclip-runner\/node_modules\/\.cache\/paperclip-runner-build-inputs\.json$/m,
+    );
+    const required = build.search(/^ENV PAPERCLIP_RUNNER_VENDOR_REQUIRE_CURRENT=1$/m);
+    const check = build.search(/^RUN node server\/scripts\/prepare-runner-vendor\.mjs$/m);
+    const firstBuild = build.search(/^RUN pnpm /m);
+    expect(source).toBeGreaterThanOrEqual(0);
+    expect(output).toBeGreaterThan(source);
+    expect(stamp).toBeGreaterThan(source);
+    expect(required).toBeGreaterThan(Math.max(output, stamp));
+    expect(check).toBeGreaterThan(required);
+    expect(firstBuild).toBeGreaterThan(check);
   });
 
-  it("rebuilds real workspace code and embedded protocol inputs after cooking dependencies", () => {
-    const native = stageBody(dockerfile, "runner-build");
-    expect(native).toContain("FROM runner-deps AS runner-build");
-    for (const source of ["runner", "protocol"]) {
-      expect(native.indexOf(`COPY packages/paperclip-runner/${source} ./${source}`))
-        .toBeLessThan(native.indexOf("cargo build --release"));
-      expect(native).toContain(`COPY packages/paperclip-runner/${source} ./${source}`);
+  it("compiles the Runner only in the runner-artifacts stages", () => {
+    const names = [...dockerfile.matchAll(/^FROM \S+ AS (\S+)$/gm)].map((match) => match[1]);
+    const application = names.filter((name) => !name.startsWith("runner-artifacts"));
+    expect(application).toEqual(["base", "deps", "build", "runner-provider-pack", "production", "cloud-plugins", "cloud-server-deps", "cloud"]);
+    for (const name of application) {
+      expect(stageBody(dockerfile, name), name).not.toMatch(/\b(?:cargo|rustup|rustc|gcc)\b/);
     }
-    expect(native).toContain("cargo build --release --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core --bin paperclip-runnerd");
-    expect(stageBody(dockerfile, "build")).toContain("FROM runner-build AS build");
+  });
+
+  it("gives an inline Runner the build commit as its revision and no publication argument", () => {
+    const runner = stageBody(dockerfile, "runner-artifacts-build");
+    expect(runner).toContain('revision="${PAPERCLIP_RUNNER_SOURCE_REVISION:-${PAPERCLIP_BUILD_COMMIT}}";');
+    for (const [name, source] of [["standard", workflow], ["preview", previewWorkflow], ["merge group", mergeGroupWorkflow], ["pull request", appCheckWorkflow]]) {
+      expect(source, name).toContain("PAPERCLIP_BUILD_COMMIT=");
+      expect(source, name).not.toMatch(/PAPERCLIP_RUNNER_(?:SOURCE_REVISION|IMAGE_PUBLICATION)/);
+      expect(source, name).not.toMatch(/runner-artifacts|build-contexts?\b/);
+    }
   });
 });
 
@@ -110,17 +124,25 @@ describe("Standard image remote provider pack", () => {
   it("ships the build-owned pack in the production base used by downstream images", () => {
     const pack = stageBody(dockerfile, "runner-provider-pack");
     const production = stageBody(dockerfile, "production");
-    expect(pack).toContain("FROM build AS runner-provider-pack");
-    expect(pack).toContain('PAPERCLIP_RUNNER_SOURCE_REVISION="${PAPERCLIP_BUILD_COMMIT}"');
-    expect(pack).toContain("build-provider-pack.mjs /provider-pack");
-    expect(pack).toContain('if [ -n "${PAPERCLIP_BUILD_COMMIT}" ]; then');
+    const runner = stageBody(dockerfile, "runner-artifacts-build");
+    expect(pack).toContain("FROM base AS runner-provider-pack");
+    expect(pack).toContain("RUN --mount=type=bind,from=runner-artifacts,target=/runner-artifacts \\\n");
+    expect(pack).toContain("if [ -f /runner-artifacts/provider-pack/provider-pack.json ]; then");
+    expect(pack).toContain("cp -a /runner-artifacts/provider-pack/. /provider-pack/");
+    expect(pack).toContain("cp -a /runner-artifacts/provider-pack.archives /runner-artifacts/provider-pack.archive.json /provider-pack-transport/;");
     expect(pack).toContain("mkdir -p /provider-pack");
     expect(pack).toContain("Skipping remote provider pack");
+    expect(production.match(/^COPY .*--from=runner-provider-pack .*$/gm)).toEqual([
+      "COPY --link --chown=0:0 --from=runner-provider-pack /provider-pack-large/ /opt/paperclip-runner/provider-pack/",
+      "COPY --chown=0:0 --from=runner-provider-pack /provider-pack /opt/paperclip-runner/provider-pack",
+      "COPY --from=runner-provider-pack /provider-pack-transport/ /opt/paperclip-runner/",
+    ]);
     expect(production).toContain("--from=runner-provider-pack /provider-pack /opt/paperclip-runner/provider-pack");
     expect(production).not.toContain("--chown=node:node --from=runner-provider-pack");
     // Modes are granted in the layer that writes the pack. A recursive chmod
     // after the COPY duplicates every changed file into another image layer.
-    expect(pack).toMatch(/build-provider-pack\.mjs[\s\S]*&& chmod -R a\+rX \/provider-pack$/m);
+    expect(runner).toMatch(/build-provider-pack\.mjs \/out\/provider-pack;[\s\S]*chmod -R a\+rX \/out;/);
+    expect(pack).not.toContain("chmod");
     expect(production).not.toMatch(/chmod -R [^\n]*\/opt\/paperclip-runner\/provider-pack/);
     expect(production).toContain("gosu 65534:65534 node");
     expect(production).toContain("Object.values(manifest.payload.artifacts)");
@@ -134,7 +156,7 @@ describe("Standard image remote provider pack", () => {
     expect(cloud).toContain("FROM production AS cloud");
     expect(cloud).not.toContain("/opt/paperclip-runner/provider-pack");
     expect(cloud).not.toContain("PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH");
-    expect(dockerfile.match(/build-provider-pack\.mjs \/provider-pack/g)).toHaveLength(1);
+    expect(dockerfile.match(/build-provider-pack\.mjs/g)).toHaveLength(1);
     expect(previewWorkflow).toMatch(/^\s*target: cloud$/m);
   });
 });

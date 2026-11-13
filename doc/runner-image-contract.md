@@ -2,9 +2,10 @@
 
 The Runner image is the Runner built alone, as a plain file tree with no
 entrypoint and no operating system. An image build copies paths out of it
-instead of compiling the Runner again. Nothing in this repository consumes it
-yet. Its name is `ghcr.io/paperclipai/paperclip-runner`, and one build makes
-two variants:
+instead of compiling the Runner again. The application image of this
+repository takes its Runner from the stage that builds it (see "The
+application image"); no build reads the published image yet. Its name is
+`ghcr.io/paperclipai/paperclip-runner`, and one build makes two variants:
 
 - full, the `runner-artifacts` target of the `Dockerfile`: every path below;
 - slim, the `runner-artifacts-slim` target: the same without the two paths
@@ -131,7 +132,8 @@ uses it.
 
 ## Consuming the image
 
-Read the image only with `COPY --from`, and pin it by digest:
+Read the image only with `COPY --from` or a read-only bind mount
+(`RUN --mount=type=bind,from=`), and pin it by digest:
 
 ```dockerfile
 FROM ghcr.io/paperclipai/paperclip-runner@sha256:<digest> AS runner-artifacts
@@ -143,6 +145,36 @@ A Dockerfile with a `runner-artifacts` or `runner-artifacts-slim` stage of
 its own, as in this repository, can take a built image or tree in its place
 with `--build-context <stage>=<image or directory>`. The stage is then not
 built.
+
+### The application image
+
+The `production` and `cloud` targets of the `Dockerfile` read only the
+`runner-artifacts` stage, in two stages:
+
+- `build` copies `/runner-package/dist` and the build stamp into
+  `packages/paperclip-runner` and sets
+  `PAPERCLIP_RUNNER_VENDOR_REQUIRE_CURRENT=1`. The server build then vendors
+  that output, and fails when the stamp does not match the Runner inputs of
+  the tree it builds. The lockfile is one of those inputs.
+- `runner-provider-pack` copies `/provider-pack`, the receipt and the
+  archives, and moves each pack file of 1 MiB or more to a tree of its own.
+  `production` copies the three trees with the same three instructions as
+  before, so the paths under `/opt/paperclip-runner/` and the layers are the
+  same. A deployed server finds the transport layer of an application image
+  by the text of the instruction
+  `COPY --from=runner-provider-pack /provider-pack-transport/ /opt/paperclip-runner/`
+  in the image history (`retained-provider-pack-oci.ts`). Do not change it.
+
+No workflow replaces the stage yet, so every application image build runs
+the Runner stages itself: an inline Runner. An inline Runner is not this
+image, and an application image says so in three ways:
+
+- its pack names the build commit of the application image as
+  `payload.runnerSourceRevision`, the value of `PAPERCLIP_BUILD_COMMIT`;
+- its pack has no `payload.runnerInputsDigest`;
+- the image has neither label of "Choosing the Runner for an image build".
+
+A build without `PAPERCLIP_BUILD_COMMIT` has no pack, as before.
 
 ### Choosing the Runner for an image build
 
