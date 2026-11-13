@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  OLDEST_DISPATCH_SHARE,
+  QUEUED_RUN_AGING_MS,
   RECOVERY_BACKLOG_AGE_MS,
   createQueuedRunDispatcher,
   RECOVERY_DISPATCH_SHARE,
@@ -121,5 +123,88 @@ describe("queued run dispatch order", () => {
     const todo = run({ wakeReason: "issue_assigned", readinessRank: 1, priorityRank: 0, createdAt: minutesAgo(9) });
     const ordered = orderQueuedRunsForDispatch([todo, later, earlier, urgent, inProgress], { now, startsSinceRecovery: 0 });
     expect(ordered.map(entry => entry.id)).toEqual([urgent.id, earlier.id, later.id, inProgress.id, todo.id]);
+  });
+
+  it("starts an old queued continuation within a bounded number of starts while fresh person and system work keeps arriving", () => {
+    const continuation = run({ wakeReason: "issue_continuation_needed", createdAt: minutesAgo(150), sourceEndedAt: minutesAgo(152) });
+    const started: QueuedRunDispatchFacts[] = [];
+    let pending: QueuedRunDispatchFacts[] = [continuation];
+    const steps = 40;
+    for (let step = 0; step < steps; step += 1) {
+      pending.push(personRetry(), run({ wakeReason: "issue_assigned", createdAt: minutesAgo(1) }),
+        run({ wakeReason: "issue_continuation_needed", createdAt: minutesAgo(1), sourceEndedAt: minutesAgo(2) }));
+      const recent = started.slice(-RECOVERY_DISPATCH_SHARE).reverse();
+      const lastRecovery = recent.findIndex(entry => isRecoveryWakeReason(entry.wakeReason));
+      const oldest = pending.reduce((left, right) => left.createdAt <= right.createdAt ? left : right);
+      const recentForOldest = started.slice(-OLDEST_DISPATCH_SHARE).reverse();
+      const lastOldest = recentForOldest.findIndex(entry => entry.createdAt <= oldest.createdAt);
+      const [next] = orderQueuedRunsForDispatch(pending, { now,
+        startsSinceRecovery: lastRecovery < 0 ? recent.length : lastRecovery,
+        startsSinceOldest: lastOldest < 0 ? recentForOldest.length : lastOldest });
+      started.push(next!);
+      pending = pending.filter(entry => entry.id !== next!.id);
+    }
+    const position = started.findIndex(entry => entry.id === continuation.id);
+    expect(position).toBeGreaterThanOrEqual(0);
+    expect(position).toBeLessThan(OLDEST_DISPATCH_SHARE);
+    expect(started.slice(0, position).every(entry => entry.wakeReason === "task_retry" || entry.wakeReason === "issue_continuation_needed")).toBe(true);
+  });
+
+  it("serves the longest-waiting run once every share even when fresher work outranks it", () => {
+    const people = Array.from({ length: 8 }, () => personRetry());
+    const old = run({ wakeReason: "issue_monitor_due", priorityRank: 3, createdAt: minutesAgo(200) });
+    const ordered = orderQueuedRunsForDispatch([...people, old], { now, startsSinceRecovery: 0, startsSinceOldest: 0 });
+    expect(ordered.findIndex(entry => entry.id === old.id)).toBe(OLDEST_DISPATCH_SHARE - 1);
+    const due = orderQueuedRunsForDispatch([...people, old], { now, startsSinceRecovery: 0, startsSinceOldest: OLDEST_DISPATCH_SHARE - 1 });
+    expect(due[0]!.id).toBe(old.id);
+  });
+
+  it("does not use the oldest-run share for a run that has not waited past the aging bound", () => {
+    const people = Array.from({ length: 3 }, () => personRetry());
+    const recent = run({ wakeReason: "issue_assigned", createdAt: new Date(now.getTime() - QUEUED_RUN_AGING_MS + 60_000) });
+    const ordered = orderQueuedRunsForDispatch([...people, recent], { now, startsSinceRecovery: 0, startsSinceOldest: OLDEST_DISPATCH_SHARE - 1 });
+    expect(ordered[0]!.wakeReason).toBe("task_retry");
+  });
+
+  it("lets an old-backlog recovery run age into the work tier", () => {
+    const aged = run({ wakeReason: "issue_continuation_needed", createdAt: new Date(now.getTime() - QUEUED_RUN_AGING_MS),
+      sourceEndedAt: minutesAgo(200) });
+    const fresh = run({ wakeReason: "issue_assigned", createdAt: minutesAgo(1) });
+    const ordered = orderQueuedRunsForDispatch([fresh, aged], { now, startsSinceRecovery: 0 });
+    expect(ordered.map(entry => entry.id)).toEqual([aged.id, fresh.id]);
+  });
+
+  it("passes the oldest-run share to the next oldest run while the oldest one keeps failing to claim", () => {
+    const people = Array.from({ length: 3 }, () => personRetry());
+    const stuck = run({ wakeReason: "issue_continuation_needed", createdAt: minutesAgo(300), shareDeferred: true });
+    const next = run({ wakeReason: "issue_monitor_due", priorityRank: 3, createdAt: minutesAgo(200) });
+    const ordered = orderQueuedRunsForDispatch([...people, stuck, next], { now, startsSinceRecovery: 0,
+      startsSinceOldest: OLDEST_DISPATCH_SHARE - 1 });
+    expect(ordered[0]!.id).toBe(next.id);
+    expect(ordered.slice(1, 3).every(entry => entry.wakeReason === "task_retry")).toBe(true);
+  });
+
+  it("starts the oldest continuations of a long backlog within a bound while later assignments and fresh recovery keep arriving", () => {
+    const continuations = [278, 245, 243].map(age => run({ wakeReason: "issue_continuation_needed", createdAt: minutesAgo(age),
+      sourceEndedAt: minutesAgo(age + 2) }));
+    const assignments = Array.from({ length: 80 }, (_, index) => run({ wakeReason: "issue_assigned", readinessRank: 1,
+      createdAt: minutesAgo(230 - index * 2) }));
+    const started: QueuedRunDispatchFacts[] = [];
+    let pending: QueuedRunDispatchFacts[] = [...continuations, ...assignments];
+    for (let step = 0; step < 3 * OLDEST_DISPATCH_SHARE; step += 1) {
+      pending.push(run({ wakeReason: "issue_recovery_action_restored", createdAt: minutesAgo(1), sourceEndedAt: minutesAgo(2) }),
+        run({ wakeReason: "issue_assigned", readinessRank: 1, createdAt: minutesAgo(1) }));
+      const recent = started.slice(-RECOVERY_DISPATCH_SHARE).reverse();
+      const lastRecovery = recent.findIndex(entry => isRecoveryWakeReason(entry.wakeReason));
+      const oldest = pending.reduce((left, right) => left.createdAt <= right.createdAt ? left : right);
+      const recentForOldest = started.slice(-OLDEST_DISPATCH_SHARE).reverse();
+      const lastOldest = recentForOldest.findIndex(entry => entry.createdAt <= oldest.createdAt);
+      const [next] = orderQueuedRunsForDispatch(pending, { now,
+        startsSinceRecovery: lastRecovery < 0 ? recent.length : lastRecovery,
+        startsSinceOldest: lastOldest < 0 ? recentForOldest.length : lastOldest });
+      started.push(next!);
+      pending = pending.filter(entry => entry.id !== next!.id);
+    }
+    for (const continuation of continuations) expect(started.map(entry => entry.id)).toContain(continuation.id);
   });
 });
