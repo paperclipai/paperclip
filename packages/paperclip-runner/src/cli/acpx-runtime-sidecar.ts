@@ -192,7 +192,6 @@ let turnStartedInProcess = false;
  * this process's ids to keep them distinct from calls earlier in the run.
  */
 let callIdNamespace: string | null = null;
-/** Claude only: admits a tool call only when the active turn announced its tool use. */
 let toolUseAdmission: ClaudeToolUseAdmission | null = null;
 let activeCopilotEvidence: CopilotToolEvidence | undefined;
 let sequence = 0;
@@ -742,7 +741,7 @@ async function pumpTurn(
       ? createClaudeSubagentLineageTracker<AcpRuntimeEventShape>((id) => stableProviderIdentity(id, "tool"))
       : null;
     for await (const event of runtimeTurn.events) {
-      if (event.type === "tool_call" && event.tag === "tool_call") toolUseAdmission?.announce(currentTurnId, event.toolCallId);
+      toolUseAdmission?.observe(currentTurnId, event);
       toolEvidence?.tool(event);
       // Claude hook lifecycle rides on session_info_update `_meta`; publish it
       // as schema-validated display activity rather than a raw status event.

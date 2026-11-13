@@ -31,8 +31,6 @@ it("names each MCP tool call by the tool use the pinned Claude client received",
       return;
     }
     const body = JSON.parse(raw || "{}") as { messages?: Message[]; tools?: Array<{ name: string }> };
-    // The client may append a trailing system-role message; only the
-    // conversation decides whether the tool step has already run.
     const conversation = (body.messages ?? []).filter(message => message.role === "user" || message.role === "assistant");
     const last = conversation.at(-1)?.content;
     const answered = Array.isArray(last) && last.some(block => block.type === "tool_result");

@@ -33,8 +33,6 @@ export interface RunnerToolCall {
   callId: string;
   arguments: unknown;
   signal: AbortSignal;
-  /** Provider-assigned tool-use identity read from `params._meta`, present only
-   * when the bridge was started with `providerToolUseIdMetaKey`. */
   providerToolUseId?: string;
   /** Internal, invocation-owned evidence. Snapshot before forwarding; commit only
    * after that exact normalized input is forwarded. Never supplied by the model. */
@@ -46,8 +44,6 @@ export interface RunnerToolBridgeOptions {
   /** Claude-only: avoid tool search for task naming and terminal disposition. */
   preloadClaudeTaskTools?: boolean;
   preserveToolNames?: boolean;
-  /** `params._meta` key naming the provider's tool use behind a call. When set,
-   * a valid id is passed to the handler and identifies the call for replay. */
   providerToolUseIdMetaKey?: string;
   /** Runner-owned operations that are callable but never model-visible. */
   privateTools?: readonly Readonly<Record<string, unknown>>[];
