@@ -162,7 +162,8 @@ suite("held interrupted preparations on the shared ownership path", () => {
   // copy-back, so the hold never settled, every automatic continuation was
   // refused ("could not start yet"), and the person's Retry waited forever on
   // previous_execution_unverified.
-  async function shutdownPreparationWithUnchangedWorkspace(options: { released?: boolean } = {}) {
+  async function shutdownPreparationWithUnchangedWorkspace(options: { released?: boolean;
+    receipt?: (runId: string, snapshotId: string) => Record<string, unknown> } = {}) {
     const released = options.released !== false;
     const f = await interruptedPreparation({ run: { scheduledRetryAttempt: 1, scheduledRetryReason: "transient_failure" } });
     const workspaceId = randomUUID(), leaseId = randomUUID(), snapshotId = randomUUID();
@@ -174,7 +175,8 @@ suite("held interrupted preparations on the shared ownership path", () => {
         remoteWorkspace: { schema: "paperclip.remote-workspace.v1", epoch: 4, source, location: null, snapshotId,
           dirty: !released, writerRunId: released ? null : f.runId },
         remoteWorkspaceUnchangedBaseline: { schema: "paperclip.remote-workspace-unchanged-baseline.v1", epoch: 4,
-          runId: f.runId, snapshotId, ...(released ? { releasedAt: new Date().toISOString() } : {}) },
+          runId: f.runId, snapshotId, ...(released ? { releasedAt: new Date().toISOString() } : {}),
+          ...options.receipt?.(f.runId, snapshotId) },
       } });
     await db.update(heartbeatRuns).set({
       contextSnapshot: { issueId: f.issueId, retryReason: "transient_failure",
@@ -202,6 +204,19 @@ suite("held interrupted preparations on the shared ownership path", () => {
   it("keeps the hold while the interrupted preparation still holds its remote workspace unsaved", async () => {
     heartbeatService(db);
     const f = await shutdownPreparationWithUnchangedWorkspace({ released: false });
+    const before = await hold(f.holdId);
+    expect((await pass())?.settled ?? 0).toBe(0);
+    expect(await hold(f.holdId)).toEqual(before);
+  });
+
+  it.each([
+    ["the receipt names another run", () => ({ runId: randomUUID() })],
+    ["the receipt is for another epoch", () => ({ epoch: 3 })],
+    ["the receipt is for another saved version", () => ({ snapshotId: randomUUID() })],
+    ["the receipt has no release time", () => ({ releasedAt: undefined })],
+  ] as const)("keeps the hold of a handed-on preparation when %s", async (_label, receipt) => {
+    heartbeatService(db);
+    const f = await shutdownPreparationWithUnchangedWorkspace({ receipt });
     const before = await hold(f.holdId);
     expect((await pass())?.settled ?? 0).toBe(0);
     expect(await hold(f.holdId)).toEqual(before);

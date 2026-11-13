@@ -2,7 +2,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { executionWorkspaces, heartbeatRuns, type Db } from "@paperclipai/db";
 import { readRemoteWorkspaceAuthority, remoteWorkspaceRunReferenceSchema } from "@paperclipai/shared";
 import { REMOTE_WORKSPACE_ABANDONED_EPOCH_SCHEMA } from "./remote-workspace-epoch-abandonment.js";
-import { readUnchangedBaseline } from "./remote-workspace-unchanged-proof.js";
+import { readUnchangedBaseline } from "./remote-workspace-unchanged-baseline.js";
 
 type Run = Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "runnerProfileJson">;
 
