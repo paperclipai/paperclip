@@ -7262,7 +7262,9 @@ export function agentRoutes(
           inArray(heartbeatRuns.status, ["queued", "running"]),
         ),
       )
-      .orderBy(desc(heartbeatRuns.createdAt));
+      // Running runs first: a deep queue must not push the work actually
+      // running past the limit.
+      .orderBy(sql`case when ${heartbeatRuns.status} = 'running' then 0 else 1 end`, desc(heartbeatRuns.createdAt));
 
     const liveRuns = distinctTasks ? [] : await liveRunsQuery.limit(limit);
     let rows = liveRuns;
@@ -7302,13 +7304,17 @@ export function agentRoutes(
     }
 
     const projections = await executionProjectionsForRuns(db, companyId, rows.map(run => run.id));
-    res.json(await runRedactions.redactForRuns(companyId, await Promise.all(rows.map(async (run) => !(await actorCanReadRun(req, run)) ? redactHeartbeatRunListRow(run) : ({
+    const readDecisions = await getHeartbeatRunReadDecisions(db, access, req.actor, rows);
+    const readableRuns = rows.filter((_, index) => readDecisions[index]);
+    const silences = await heartbeat.buildRunOutputSilences(readableRuns);
+    const silenceByRun = new Map(readableRuns.map((run, index) => [run.id, silences[index]!]));
+    res.json(await runRedactions.redactForRuns(companyId, rows.map((run, index) => !readDecisions[index] ? redactHeartbeatRunListRow(run) : ({
       ...heartbeat.decorateActiveRunStatus(run),
       agentAppearance: resolveAgentAppearance(run.agentAppearance, run.agentId),
       avatarUrl: agentAvatarUrl(resolveAgentAppearance(run.agentAppearance, run.agentId), 512),
       execution: projections.get(run.id) ?? null,
-      outputSilence: await heartbeat.buildRunOutputSilence(run),
-    }))), req.actor.type === "board" ? getActorInfo(req).actorId : null));
+      outputSilence: silenceByRun.get(run.id)!,
+    })), req.actor.type === "board" ? getActorInfo(req).actorId : null));
   });
 
   function readHeartbeatRunId(req: Request): string {

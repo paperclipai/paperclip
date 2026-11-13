@@ -4,7 +4,7 @@
 // The server build used to run the Runner's full `build`
 // unconditionally here. That is what lets a standalone
 // `pnpm --filter @paperclipai/server build` produce a current vendored Runner
-// on its own, which the Dockerfile relies on. But inside `pnpm -r build` the
+// on its own. But inside `pnpm -r build` the
 // Runner has just been built by the same command, and repeating it cost
 // 12-16s on the CI Build job's critical path (six master runs, 2026-10-11)
 // and the same again in every other `pnpm build`.

@@ -787,6 +787,134 @@ it.each([false, true])("recovers checkpoint persistence and the same connection 
   }
 });
 
+it("keeps one waiting checkpoint behind a slow write and saves every queued command before resolving", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-checkpoint-coalesce-"));
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest });
+  const stored = new Map<string, string>();
+  const writes: DurablePrpCheckpoint[] = [];
+  let release!: () => void;
+  let gate: Promise<void> = Promise.resolve();
+  core.setCheckpointPersistence(async snapshot => {
+    writes.push(snapshot);
+    await gate;
+    if (snapshot.reset) stored.clear();
+    for (const key of snapshot.removedRecords) stored.delete(key);
+    for (const [key, value] of snapshot.changedRecords) stored.set(key, value);
+  });
+  try {
+    await core.flushCheckpoint();
+    gate = new Promise<void>(resolveWrite => { release = resolveWrite; });
+    core.queueCommand("session.snapshot", {}, "in-flight-command");
+    const inFlight = core.flushCheckpoint();
+    await vi.waitFor(() => expect(writes).toHaveLength(2));
+    const settled: string[] = [];
+    const waiting = Array.from({ length: 40 }, (_, index) => {
+      const commandId = `waiting-command-${index}`;
+      core.queueCommand("session.snapshot", {}, commandId);
+      return core.flushCheckpoint().then(() => {
+        expect([...stored.values()].join("\n")).toContain(commandId);
+        settled.push(commandId);
+      });
+    });
+    await new Promise<void>(resolveTurn => setImmediate(resolveTurn));
+    expect(writes).toHaveLength(2);
+    expect(settled).toEqual([]);
+    release();
+    await inFlight;
+    await Promise.all(waiting);
+    expect(writes).toHaveLength(3);
+    expect(settled).toHaveLength(40);
+    expect(stored).toEqual(writes.at(-1)!.records);
+    expect(decodeDurablePrpCheckpoint(stored).records).toEqual(writes.at(-1)!.records);
+    await core.flushCheckpoint();
+    expect(writes).toHaveLength(3);
+  } finally {
+    release?.();
+    await core.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it("writes a waiting checkpoint for each run in order when the run changes behind a slow write", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-checkpoint-coalesce-handoff-"));
+  const target = { ...identity, runId: "00000000-0000-4000-8000-000000000002", turnId: "next-turn", itemId: "next-item" };
+  const template = { provider: { provider: "codex", command: "fixture" }, authorizedTools: {} };
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest });
+  const writes: DurablePrpCheckpoint[] = [];
+  let release!: () => void;
+  let gate: Promise<void> = Promise.resolve();
+  core.setCheckpointPersistence(async snapshot => { writes.push(snapshot); await gate; });
+  const contents = (checkpoint: DurablePrpCheckpoint) => [...checkpoint.records.values()].join("\n");
+  try {
+    await core.flushCheckpoint();
+    gate = new Promise<void>(resolveWrite => { release = resolveWrite; });
+    core.queueCommand("session.snapshot", {}, "source-in-flight");
+    const inFlight = core.flushCheckpoint();
+    await vi.waitFor(() => expect(writes).toHaveLength(2));
+    core.queueCommand("session.snapshot", {}, "source-waiting");
+    const sourceWaiting = core.flushCheckpoint();
+    core.stageRunAttachment(target, template);
+    const targetWaiting = core.flushCheckpoint();
+    core.queueCommand("session.snapshot", {}, "target-later");
+    const targetLater = core.flushCheckpoint();
+    expect(targetLater).toBe(targetWaiting);
+    expect(sourceWaiting).not.toBe(targetWaiting);
+    release();
+    await Promise.all([inFlight, sourceWaiting, targetWaiting, targetLater]);
+    expect(writes.map(write => write.runId)).toEqual([identity.runId, identity.runId, identity.runId, target.runId]);
+    expect(contents(writes[2]!)).toContain("source-waiting");
+    expect(contents(writes[2]!)).not.toContain("target-later");
+    expect(writes[2]!.records.has("staged-attachment-template")).toBe(false);
+    expect(writes[3]).toMatchObject({ reset: true, predecessor: { runId: identity.runId } });
+    expect(contents(writes[3]!)).toContain("target-later");
+    expect(writes[3]!.records.has("staged-attachment-template")).toBe(true);
+    await core.flushCheckpoint();
+    expect(writes).toHaveLength(4);
+  } finally {
+    release?.();
+    await core.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it("rejects every caller waiting on a coalesced checkpoint whose write fails", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-checkpoint-coalesce-failure-"));
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest });
+  const writes: DurablePrpCheckpoint[] = [];
+  let release!: () => void;
+  let gate: Promise<void> = Promise.resolve();
+  let fail = true;
+  core.setCheckpointPersistence(async snapshot => {
+    writes.push(snapshot);
+    await gate;
+    if (fail && [...snapshot.records.values()].join("\n").includes("second-waiting")) throw new Error("coalesced write failed");
+  });
+  try {
+    await core.flushCheckpoint();
+    gate = new Promise<void>(resolveWrite => { release = resolveWrite; });
+    core.queueCommand("session.snapshot", {}, "in-flight-command");
+    const inFlight = core.flushCheckpoint();
+    await vi.waitFor(() => expect(writes).toHaveLength(2));
+    const waiting = ["first-waiting", "second-waiting"].map(commandId => {
+      core.queueCommand("session.snapshot", {}, commandId);
+      return core.flushCheckpoint();
+    });
+    const rejected = waiting.map(promise => expect(promise).rejects.toThrow("coalesced write failed"));
+    release();
+    await inFlight;
+    await Promise.all(rejected);
+    expect(writes).toHaveLength(3);
+    fail = false;
+    await core.flushCheckpoint();
+    expect(writes.at(-1)!.reset).toBe(true);
+    expect([...writes.at(-1)!.records.values()].join("\n")).toContain("second-waiting");
+  } finally {
+    release?.();
+    await core.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 it("rebuilds a queued checkpoint after the preceding write fails", async () => {
   const root = mkdtempSync(resolve(tmpdir(), "runner-checkpoint-queued-retry-"));
   const core = new DurablePrpControlPlane({ stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest });

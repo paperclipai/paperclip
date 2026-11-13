@@ -3160,6 +3160,9 @@ function toCompactIssue(issue: any): CompactIssue {
     ...(issue.liveDescendantCount !== undefined
       ? { liveDescendantCount: issue.liveDescendantCount }
       : {}),
+    ...(issue.runningDescendantCount !== undefined
+      ? { runningDescendantCount: issue.runningDescendantCount }
+      : {}),
     ...(issue.myLastTouchAt !== undefined
       ? { myLastTouchAt: issue.myLastTouchAt }
       : {}),
