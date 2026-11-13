@@ -893,6 +893,17 @@ function isOperatorCancelledRun(
   );
 }
 
+function nonRetryableContinuationNotice(errorCode: string | null) {
+  return {
+    body:
+      "Paperclip detected a non-retryable failure on this issue's continuation run " +
+      `(\`${errorCode}\`). Skipping automatic retries and moving it to \`blocked\` ` +
+      "so it is visible for intervention.",
+    title: "Continuation failed",
+    tone: "danger" as const,
+  };
+}
+
 function isUnsuccessfulTerminalIssueRun(latestRun: LatestIssueRun) {
   return Boolean(
     latestRun &&
@@ -963,6 +974,14 @@ export function recoveryService(
      * run" (leave alone).
      */
     transientRetryBudgetSpent?: (
+      run: typeof heartbeatRuns.$inferSelect,
+    ) => boolean;
+    /**
+     * Whether a failed run stopped before provider work with a transient
+     * preparation failure that its own bounded retry continues. The sweep
+     * offers such a run to `scheduleRecoveryRetry` instead of escalating it.
+     */
+    ownsPreparationRetry?: (
       run: typeof heartbeatRuns.$inferSelect,
     ) => boolean;
     liveRunExecutions?: Readonly<{ has(id: string): boolean }>;
@@ -1131,6 +1150,13 @@ export function recoveryService(
         sql`${heartbeatRuns.controllerBootId} <> ${legacyControllerBootId}`,
         sql`${heartbeatRuns.controllerLeaseExpiresAt} > now()`));
     return run?.leaseExpiresAt ?? null;
+  }
+
+  async function failedRunOwnsPreparationRetry(companyId: string, runId: string): Promise<boolean> {
+    if (!deps.ownsPreparationRetry || !deps.scheduleRecoveryRetry) return false;
+    const [run] = await db.select().from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, runId)));
+    return Boolean(run && deps.ownsPreparationRetry(run));
   }
 
   async function hasActiveExecutionPath(
@@ -5814,6 +5840,7 @@ export function recoveryService(
         }
         continue;
       }
+      let preparationRetry = false;
       if (isUnsuccessfulTerminalIssueRun(latestRun)) {
         const classification = classifyContinuationFailure(latestRun);
 
@@ -5841,19 +5868,22 @@ export function recoveryService(
           continue;
         }
 
-        if (classification.kind === "non_retryable") {
+        // A failed run that stopped before provider work with a transient
+        // preparation failure is continued by its own bounded retry. Its
+        // executor schedules that retry after the failed write, and a slow
+        // settlement or a stopped server can leave it unscheduled once the
+        // settling check above lapses. Offer it to the same idempotent
+        // scheduler below (one successor, the same budget); only exhaustion
+        // or a refused continuation escalates it, and any other refusal
+        // escalates it as before.
+        preparationRetry = latestRun!.agentId === agentId
+          && await failedRunOwnsPreparationRetry(issue.companyId, latestRun!.id);
+        if (classification.kind === "non_retryable" && !preparationRetry) {
           const updated = await escalateStrandedAssignedIssue({
             issue,
             previousStatus: "in_progress",
             latestRun,
-            notice: {
-              body:
-                "Paperclip detected a non-retryable failure on this issue's continuation run " +
-                `(\`${classification.errorCode}\`). Skipping automatic retries and moving it to \`blocked\` ` +
-                "so it is visible for intervention.",
-              title: "Continuation failed",
-              tone: "danger",
-            },
+            notice: nonRetryableContinuationNotice(classification.errorCode),
           });
           if (updated) {
             result.escalated += 1;
@@ -5864,7 +5894,7 @@ export function recoveryService(
           continue;
         }
 
-        if (didAutomaticRecoveryFail(latestRun, "issue_continuation_needed")) {
+        if (!preparationRetry && didAutomaticRecoveryFail(latestRun, "issue_continuation_needed")) {
           const { consecutive, latestFinishedAt } =
             await summarizeRecentContinuationRetries(
               issue.companyId,
@@ -5930,7 +5960,7 @@ export function recoveryService(
         result.continuationRequeued += 1;
         result.issueIds.push(issue.id);
       } else if (
-        (recoveryOutcome.retryExhausted || recoveryOutcome.continuationRefused) &&
+        (recoveryOutcome.retryExhausted || recoveryOutcome.continuationRefused || preparationRetry) &&
         !(await hasActiveExecutionPath(issue.companyId, issue.id, null))
       ) {
         // The failed run's bounded transient retries are all spent, so no
@@ -5950,7 +5980,11 @@ export function recoveryService(
               "Moving it to `blocked` so it is visible for intervention.",
             title: "No live execution path",
             tone: "danger",
-          } : CONTINUATION_REFUSED_NOTICE,
+          } : recoveryOutcome.continuationRefused ? CONTINUATION_REFUSED_NOTICE
+            // The scheduler declined the preparation retry for another
+            // reason (for example a durable owner or a permanent refusal):
+            // escalate it as a non-retryable failure, as before.
+            : nonRetryableContinuationNotice(latestRun?.errorCode ?? null),
         });
         if (updated) {
           result.escalated += 1;

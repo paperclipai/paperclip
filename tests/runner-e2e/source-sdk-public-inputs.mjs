@@ -94,19 +94,60 @@ export async function synchronizeSdkPublicInputs(root, revision, { write = false
  */
 export async function staleSdkPublicInputs(root, revision = "HEAD") {
   const registry = JSON.parse(await readFile(path.join(root, registryPath), "utf8"));
-  const pinned = registry.inputs ?? {};
   const committed = {};
   for (const entry of git(root, ["ls-tree", "-rz", revision, "--", ...sourceRoots, ...buildInputs]).split("\0").filter(Boolean)) {
     const match = /^\d+ blob ([a-f0-9]{40})\t(.+)$/.exec(entry);
     if (match) committed[match[2]] = match[1];
   }
-  const stale = [...new Set([...Object.keys(pinned), ...Object.keys(committed)])].sort()
-    .filter(file => pinned[file] !== committed[file])
-    .map(file => ({ file, change: !pinned[file] ? "unpinned" : !committed[file] ? "removed" : "changed" }));
   // A lockfile refresh rewrites report-lock.json; lockSha256 must follow its output hash.
   const policy = JSON.parse(git(root, ["show", `${revision}:${reportLockPath}`]));
+  return compareSdkPublicInputs(registry, committed, policy);
+}
+
+function compareSdkPublicInputs(registry, actual, policy) {
+  const pinned = registry.inputs ?? {};
+  const stale = [...new Set([...Object.keys(pinned), ...Object.keys(actual)])].sort()
+    .filter(file => pinned[file] !== actual[file])
+    .map(file => ({ file, change: !pinned[file] ? "unpinned" : !actual[file] ? "removed" : "changed" }));
   if (registry.lockSha256 !== policy.outputSha256) stale.push({ file: `${reportLockPath} outputSha256`, change: "lockSha256 changed" });
   return stale;
+}
+
+const committedLockBlob = root => {
+  try { return git(root, ["rev-parse", "--verify", "--quiet", "HEAD:pnpm-lock.yaml"]).trim(); }
+  catch { return null; }
+};
+
+/** True when a repository path is one of the inputs the registry pins. */
+export const isSdkPublicInput = file => sourcePath(file) || buildInputs.includes(file);
+
+/**
+ * The same drift guard over the working tree (tracked and untracked, non-ignored
+ * files), so local verification reports a missing registry refresh before the
+ * change is pushed. CI runs the committed-tree guard in the Runner support suite.
+ */
+export async function staleSdkPublicInputsInWorkingTree(root) {
+  const registry = JSON.parse(await readFile(path.join(root, registryPath), "utf8"));
+  const actual = {};
+  const listed = git(root, ["ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", ...sourceRoots, ...buildInputs]);
+  for (const file of [...new Set(listed.split("\0").filter(Boolean))]) {
+    try {
+      const bytes = await readFile(path.join(root, file));
+      // Preserve the authenticated restored-lock exception: prepare-report-lock.mjs may leave the
+      // reviewed output lock in the working tree while the registry keeps the committed input pin.
+      // It applies only as an uncommitted overlay over a committed lock that matches its pin.
+      actual[file] = file === "pnpm-lock.yaml" && hex64(registry.lockSha256) && sha256(bytes) === registry.lockSha256
+        && committedLockBlob(root) === registry.inputs?.[file] ? registry.inputs[file] : blob(bytes);
+    } catch (error) { if (error.code !== "ENOENT") throw error; }
+  }
+  const policy = JSON.parse(await readFile(path.join(root, reportLockPath), "utf8"));
+  return compareSdkPublicInputs(registry, actual, policy);
+}
+
+/** The actionable failure text shared by the CI drift guard and local verification. */
+export function staleSdkPublicInputsMessage(stale) {
+  return `${registryPath} is stale for ${stale.length} pinned input(s): ${stale.slice(0, 10).map(row => `${row.file} (${row.change})`).join(", ")}${stale.length > 10 ? ", ..." : ""}. `
+    + "Commit your change, run `node tests/runner-e2e/source-sdk-public-inputs.mjs $(git rev-parse HEAD) --write`, and commit the updated registry.";
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
