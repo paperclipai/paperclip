@@ -675,6 +675,31 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(await service.nextTerminalWorkspaceSweepAt()).toBeNull();
   });
 
+  it("inspects only the workspaces a hint reaches, however many trees stay open", async () => {
+    const open = [await seedTerminalWorkspace({ childStatus: "todo" }), await seedTerminalWorkspace({ childStatus: "todo" }),
+      await seedTerminalWorkspace({ childStatus: "todo" })];
+    const seed = await seedTerminalWorkspace({ mergedPr: true, childStatus: "done" });
+    const [child] = await db.select().from(issues).where(eq(issues.parentId, seed.sourceIssueId));
+    const service = executionWorkspaceService(db, {
+      workspaceReaperCooldownDays: 0,
+      resolvePullRequestDetails: async () => ({ state: "merged", headRef: "PAP-16015-delivery", headSha: seed.headSha }),
+    });
+    const original = db.select.bind(db);
+    let treeReads = 0;
+    const select = vi.spyOn(db, "select").mockImplementation(((fields: any) => {
+      if (fields?.completedAt && fields?.cancelledAt) treeReads += 1;
+      return original(fields);
+    }) as typeof db.select);
+    try {
+      expect(await service.sweepTerminalWorkspaces(50, undefined, { targets: { workspaceIds: [], issueIds: [child!.id] } }))
+        .toMatchObject({ checked: 1, archived: 1 });
+      expect(treeReads).toBe(1);
+      expect(await service.sweepTerminalWorkspaces(50, undefined, {
+        targets: { workspaceIds: [open[0]!.executionWorkspaceId], issueIds: [] } })).toMatchObject({ checked: 1, skippedNonTerminalTree: 1 });
+      expect(treeReads).toBe(2);
+    } finally { select.mockRestore(); }
+  });
+
   it("retries unread rows from a failed full page before it can park recovery", async () => {
     const seed = await seedTerminalWorkspace({ mergedPr: true });
     await seedTerminalWorkspace({ childStatus: "todo" });
