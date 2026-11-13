@@ -3340,6 +3340,13 @@
       "when": 1794569536058,
       "tag": "0478_natural_wolfsbane",
       "breakpoints": true
+    },
+    {
+      "idx": 479,
+      "version": "7",
+      "when": 1794588602955,
+      "tag": "0479_early_nighthawk",
+      "breakpoints": true
     }
   ]
 }

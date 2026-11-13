@@ -63,8 +63,10 @@ The host’s existing Tailscale connection is never a fallback.
 The connection uses the Cloud OAuth broker profile `tailscale.tailnet`, with
 `auth_keys:create:once`. It is a network connector on the Connectors surface;
 it does not publish agent tools or enter MCP discovery. Management requires an
-instance administrator with access to the company. Existing SSH environment
-access governs which agents can execute there. Self-hosted local
+instance administrator with access to the company. The catalog and setup page
+check that access before requesting network data; other company members are
+directed to an instance administrator. Existing SSH environment access governs
+which agents can execute there. Self-hosted local
 instances first complete the existing Paperclip Cloud enrollment and return to
 their company's Tailscale connector page to continue network consent. Cloud
 stacks use their existing broker identity and handoff.
@@ -81,6 +83,20 @@ both fields together, with a compare-and-set guard so an older save cannot
 replace a newer state. Reads keep using the previous trusted version until the
 new version is committed. Tokens, private node state, digests and client secrets
 never appear in connection or environment responses.
+
+Enrollment tokens and node state are server-owned secrets with a durable
+`system_purpose` classification. Generic company catalogs omit them. Generic
+bindings, environment injection, and agent value reads reject them, including
+bindings saved before the restriction. Renaming or rotating a secret cannot
+remove this classification. Disconnecting or replacing a connection leaves its
+old credential protected. Only the connector's server consumer can resolve its
+trusted value; an SSH environment binds its private key, never the node state.
+Unclassified legacy node-state values are also rejected by generic reads,
+including state left behind by an earlier connection replacement.
+Migration `0479_early_nighthawk` classifies existing connector-referenced secrets.
+Apply it before running the updated server. If node state was copied before
+this restriction, revoke that enrolled device in Tailscale; a local disconnect
+cannot stop a copy outside Paperclip.
 
 Connections created before migration `0478_natural_wolfsbane` have no trusted version
 and digest. They fail closed and require a fresh **Connect Tailscale Network**

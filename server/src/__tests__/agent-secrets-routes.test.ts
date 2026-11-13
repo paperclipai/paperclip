@@ -119,6 +119,47 @@ describeEmbeddedPostgres("agent secret routes", () => {
     return app;
   }
 
+  it("rejects an unclassified legacy node-state secret even through an existing agent binding", async () => {
+    const fixture = await seedAgentRun();
+    const svc = secretService(db);
+    const value = "paperclip-tailscale-state-v1:fixture-legacy-node-state";
+    const legacy = await svc.create(fixture.companyId, { name: "Legacy network", key: "LEGACY_NETWORK", provider: "local_encrypted", value });
+    await svc.createBinding({ companyId: fixture.companyId, secretId: legacy.id,
+      targetType: "agent", targetId: fixture.agentId, configPath: "env.ANTHROPIC_AUTH_TOKEN" });
+    const response = await request(createApp(fixture)).post("/api/agents/me/secrets/legacy_network/value");
+    expect(response.status).toBe(403);
+    expect(JSON.stringify(response.body)).not.toContain(value);
+  });
+
+  it("never returns server-owned network state through generic catalog, binding, runtime, or agent API reads", async () => {
+    const fixture = await seedAgentRun();
+    const svc = secretService(db);
+    const value = "paperclip-tailscale-state-v1:fixture-network-state";
+    const secret = await svc.createSystemSecret(fixture.companyId, {
+      key: "NETWORK_STATE", name: "Network fixture", provider: "local_encrypted", value,
+    }, "tailscale_network");
+    const app = createApp(fixture);
+    const catalog = await request(app).get(`/api/companies/${fixture.companyId}/secrets/catalog`);
+    expect(catalog.status).toBe(200);
+    expect(catalog.body).not.toEqual(expect.arrayContaining([expect.objectContaining({ id: secret.id })]));
+    await expect(svc.createBinding({ companyId: fixture.companyId, secretId: secret.id,
+      targetType: "agent", targetId: fixture.agentId, configPath: "env.ANTHROPIC_AUTH_TOKEN" })).rejects.toMatchObject({ status: 403 });
+    await expect(svc.resolveSecretValue(fixture.companyId, secret.id, "latest")).rejects.toMatchObject({ status: 403 });
+    await expect(svc.resolveAdapterConfigForRuntime(fixture.companyId, {
+      env: { ANTHROPIC_AUTH_TOKEN: { type: "secret_ref", secretId: secret.id, version: "latest" } },
+    })).rejects.toMatchObject({ status: 403 });
+    await db.insert(companySecretBindings).values({ companyId: fixture.companyId, secretId: secret.id,
+      targetType: "agent", targetId: fixture.agentId, configPath: "env.ANTHROPIC_AUTH_TOKEN" });
+    const response = await request(app).post("/api/agents/me/secrets/network_state/value");
+    expect(response.status).toBe(403);
+    expect(JSON.stringify(response.body)).not.toContain(value);
+    await svc.update(secret.id, { name: "Renamed", providerMetadata: {} });
+    await svc.rotate(secret.id, { value: "fixture-rotated-network-state" });
+    expect((await svc.getById(secret.id))?.systemPurpose).toBe("tailscale_network");
+    await expect(svc.resolveSecretValue(fixture.companyId, secret.id, 1)).rejects.toMatchObject({ status: 403 });
+    expect(await svc.resolveSystemSecretValue(fixture.companyId, secret.id, "latest", "tailscale_network", "fixture-network")).toBe("fixture-rotated-network-state");
+  });
+
   it("lists metadata only, reads env and access grants, and audits success and failure", async () => {
     const fixture = await seedAgentRun();
     const svc = secretService(db);

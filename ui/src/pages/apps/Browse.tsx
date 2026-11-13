@@ -640,7 +640,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
       ]),
     );
     const rowsBySlug = new Map<string, ConnectorRowModel>();
-    rowsBySlug.set("tailscale", { key: "network:tailscale", slug: "tailscale", name: "Tailscale",
+    if (tailscaleConnections.canManage) rowsBySlug.set("tailscale", { key: "network:tailscale", slug: "tailscale", name: "Tailscale",
       description: "Connect your tailnet to use its machines in SSH environments.", brandKey: "tailscale", entry: null,
       applications: [], connections: [], chatEndpoints: [], networkConnections: tailscaleConnections.data ?? [] });
     for (const entry of gallery) {
@@ -909,6 +909,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
     githubEnabled,
     connectionsQuery.data,
     tailscaleConnections.data,
+    tailscaleConnections.canManage,
     gallery,
     galleryQuery.data,
     googleWorkspaceConnectorEnabled,

@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TailscaleSshMachine } from "./TailscaleSshMachine";
 
 const pairing = vi.hoisted(() => vi.fn());
+vi.mock("@/api/access", () => ({ accessApi: { getCurrentBoardAccess: async () => ({ source: "local_implicit", isInstanceAdmin: false }) } }));
 vi.mock("@/api/tailscale", () => ({ tailscaleApi: {
   list: async () => [{ id: "connection", companyId: "company", name: "Home tailnet", status: "connected" }],
   devices: async () => [{ id: "device", name: "Workstation", address: "100.64.0.1", os: "linux", online: true }],

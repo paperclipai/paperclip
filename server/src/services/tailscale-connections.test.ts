@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { companies, companySecrets, createDb, tailscaleConnections, type Db } from "@paperclipai/db";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { tailscaleConnectionService } from "./tailscale-connections.js";
 import type { PaperclipCloudConnector } from "./paperclip-cloud-connector.js";
@@ -10,6 +11,7 @@ import { createIsolatedTestHome } from "../__tests__/helpers/isolated-test-home.
 import { tailscaleNetworks } from "./tailscale-network.js";
 import { deleteCompany } from "./company-deletion.js";
 import * as tailscaleDevices from "./tailscale-devices.js";
+import { collectEnvironmentSecretRefs } from "./environment-config.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 describe.skipIf(!support.supported)("durable Tailscale consent state", () => {
@@ -73,8 +75,8 @@ describe.skipIf(!support.supported)("durable Tailscale consent state", () => {
     const entered = deferred(), release = deferred();
     const grant = { accessToken: "fixture-enrollment-token", accessTokenExpiresAt: new Date(clock.getTime() + 60_000).toISOString() };
     claim.mockResolvedValue(grant);
-    const create = vault.create;
-    const created = vi.spyOn(vault, "create");
+    const create = vault.createSystemSecret;
+    const created = vi.spyOn(vault, "createSystemSecret");
     const removed = vi.spyOn(vault, "remove");
     const pause = async () => { entered.resolve(); await release.promise; };
     if (phase === "claim") claim.mockImplementationOnce(async () => { await pause(); return grant; });
@@ -82,8 +84,8 @@ describe.skipIf(!support.supported)("durable Tailscale consent state", () => {
       created.mockImplementationOnce(async (...args) => { const secret = await create(...args); await pause(); return secret; });
     }
     if (phase === "reload") {
-      const read = vault.resolveSecretValue;
-      vi.spyOn(vault, "resolveSecretValue").mockImplementationOnce(async (...args) => { const value = await read(...args); await pause(); return value; });
+      const read = vault.resolveSystemSecretValue;
+      vi.spyOn(vault, "resolveSystemSecretValue").mockImplementationOnce(async (...args) => { const value = await read(...args); await pause(); return value; });
     }
     if (phase === "connect") {
       const connect = connectNetwork.getMockImplementation()!;
@@ -115,7 +117,7 @@ describe.skipIf(!support.supported)("durable Tailscale consent state", () => {
     const entered = deferred(), release = deferred();
     const grant = { accessToken: "fixture-enrollment-token", accessTokenExpiresAt: new Date(clock.getTime() + 60_000).toISOString() };
     claim.mockResolvedValue(grant);
-    const created = vi.spyOn(vault, "create");
+    const created = vi.spyOn(vault, "createSystemSecret");
     const pause = async () => { entered.resolve(); await release.promise; };
     if (phase === "claim") claim.mockImplementationOnce(async () => { await pause(); return grant; });
     if (phase === "connect") {
@@ -148,7 +150,7 @@ describe.skipIf(!support.supported)("durable Tailscale consent state", () => {
     const connected = await service.complete({ state, userId: "fixture-owner", claimId: "fixture-claim", authorizeCompany });
     expect(connected).toEqual({ id: result.connection.id, name: "Home tailnet", companyId, status: "connected" });
     const row = await service.get(companyId, result.connection.id);
-    expect(await vault.resolveSecretValue(companyId, row.secretId!, "latest")).toBe("fixture-enrolled-node-state");
+    expect(await vault.resolveSystemSecretValue(companyId, row.secretId!, "latest", "tailscale_network", "fixture-network")).toBe("fixture-enrolled-node-state");
     expect(row.oauthExpiresAt).toBeNull();
     await expect(service.complete({ state, userId: "fixture-owner", claimId: "fixture-claim", authorizeCompany })).rejects.toMatchObject({ status: 400 });
     expect(claim).toHaveBeenCalledOnce();
@@ -164,6 +166,53 @@ describe.skipIf(!support.supported)("durable Tailscale consent state", () => {
     await service.complete({ state, userId: "fixture-owner", claimId: "fixture-claim", authorizeCompany });
     return service.get(companyId, result.connection.id);
   }
+
+  it("keeps enrolled network state out of generic secret catalogs, bindings, and reads", async () => {
+    const row = await enroll();
+    expect((await vault.list(companyId)).map(secret => secret.id)).not.toContain(row.secretId);
+    await expect(vault.normalizeAdapterConfigForPersistence(companyId, {
+      env: { ANTHROPIC_AUTH_TOKEN: { type: "secret_ref", secretId: row.secretId!, version: "latest" } },
+    })).rejects.toMatchObject({ status: 403 });
+    await expect(vault.resolveSecretValue(companyId, row.secretId!, "latest")).rejects.toMatchObject({ status: 403 });
+  });
+
+  it("binds an SSH environment's private key without projecting its connector credential", async () => {
+    const row = await enroll();
+    const sshKey = await vault.create(companyId, { name: "SSH private key", provider: "local_encrypted", value: "fixture-ssh-key" });
+    const environment = { id: randomUUID(), driver: "ssh" as const, config: {
+      host: "100.64.0.2", username: "fixture-user", remoteWorkspacePath: "/workspace", network: "tailscale",
+      tailscaleConnectionId: row.id, tailscaleDeviceId: "fixture-device",
+      tailscaleAuthKeySecretRef: { type: "secret_ref", secretId: row.secretId!, version: "latest" },
+      privateKeySecretRef: { type: "secret_ref", secretId: sshKey.id, version: "latest" },
+    } };
+    const refs = await collectEnvironmentSecretRefs({ db, environment });
+    expect(refs).toEqual([{ secretId: sshKey.id, configPath: "privateKeySecretRef", versionSelector: "latest" }]);
+    await expect(vault.syncSecretRefsForTarget(companyId, { targetType: "environment", targetId: environment.id }, refs)).resolves.toHaveLength(1);
+  });
+
+  it.each(["disconnected", "replaced"] as const)("keeps %s network credentials server-only", async state => {
+    const row = await enroll();
+    if (state === "disconnected") await service.disconnect(companyId, row.id);
+    else {
+      const newer = await start(row.id);
+      await service.complete({ state: newer.state, userId: "fixture-owner", claimId: "newer-claim", authorizeCompany });
+    }
+    expect((await vault.getById(row.secretId!))?.systemPurpose).toBe("tailscale_network");
+    expect((await vault.list(companyId)).map(secret => secret.id)).not.toContain(row.secretId);
+    await expect(vault.resolveSecretValue(companyId, row.secretId!, "latest")).rejects.toMatchObject({ status: 403 });
+  });
+
+  it("backfills existing connector credentials without classifying ordinary company secrets", async () => {
+    const row = await enroll();
+    await db.update(companySecrets).set({ systemPurpose: null }).where(eq(companySecrets.id, row.secretId!));
+    const ordinary = await vault.create(companyId, { name: "Tailscale connection ordinary fixture", provider: "local_encrypted", value: "fixture-ordinary-secret" });
+    const migration = await readFile(new URL("../../../packages/db/src/migrations/0479_early_nighthawk.sql", import.meta.url), "utf8");
+    await db.execute(sql.raw(migration.split("--> statement-breakpoint")[1]!));
+    expect((await vault.getById(row.secretId!))?.systemPurpose).toBe("tailscale_network");
+    expect((await vault.getById(ordinary.id))?.systemPurpose).toBeNull();
+    await expect(vault.resolveSecretValue(companyId, row.secretId!, "latest")).rejects.toMatchObject({ status: 403 });
+    expect(await vault.resolveSecretValue(companyId, ordinary.id, "latest")).toBe("fixture-ordinary-secret");
+  });
 
   it.each(["starting", "ready"] as const)("does not stop a %s retry when an older network request fails", async phase => {
     const row = await enroll();
@@ -336,8 +385,8 @@ describe.skipIf(!support.supported)("durable Tailscale consent state", () => {
   });
 
   it("pins the enrollment credential even if a member rotates it before installation", async () => {
-    const create = vault.create;
-    const created = vi.spyOn(vault, "create").mockImplementationOnce(async (...args) => {
+    const create = vault.createSystemSecret;
+    const created = vi.spyOn(vault, "createSystemSecret").mockImplementationOnce(async (...args) => {
       const secret = await create(...args);
       await vault.rotate(secret.id, { value: "tskey-auth-member-chosen-tailnet" }, { userId: "fixture-member" });
       return secret;
@@ -359,7 +408,7 @@ describe.skipIf(!support.supported)("durable Tailscale consent state", () => {
     const row = await enroll();
     const devices = vi.spyOn(tailscaleDevices, "readTailscaleDevices").mockResolvedValue([]);
     const calls = connectNetwork.mock.calls.length;
-    const read = vi.spyOn(vault, "resolveSecretValue").mockResolvedValueOnce("tskey-auth-member-chosen-tailnet");
+    const read = vi.spyOn(vault, "resolveSystemSecretValue").mockResolvedValueOnce("tskey-auth-member-chosen-tailnet");
     try {
       await expect(service.environmentBinding(companyId, row.id, "fixture-device")).rejects.toMatchObject({ status: 422, details: { code: "tailscale_credential_untrusted" } });
       expect(connectNetwork).toHaveBeenCalledTimes(calls);
@@ -423,8 +472,8 @@ describe.skipIf(!support.supported)("durable Tailscale consent state", () => {
     expect(await service.environmentBinding(companyId, original.id, "fixture-device", original.secretId!)).toEqual({
       host: "100.64.0.2", secretId: original.secretId, socket: "/private/tailscale-fixture/socket",
     });
-    const read = vault.resolveSecretValue;
-    const credential = vi.spyOn(vault, "resolveSecretValue");
+    const read = vault.resolveSystemSecretValue;
+    const credential = vi.spyOn(vault, "resolveSystemSecretValue");
     if (phase === "credential read") credential.mockImplementationOnce(async (...args) => {
       const value = await read(...args); entered.resolve(); await release.promise; return value;
     });
@@ -453,7 +502,7 @@ describe.skipIf(!support.supported)("durable Tailscale consent state", () => {
   it("removes failed enrollment credentials even when daemon cleanup reports an error", async () => {
     const { result, state } = await start();
     claim.mockResolvedValue({ accessToken: "fixture-enrollment-token", accessTokenExpiresAt: new Date(clock.getTime() + 60_000).toISOString() });
-    const created = vi.spyOn(vault, "create");
+    const created = vi.spyOn(vault, "createSystemSecret");
     connectNetwork.mockRejectedValueOnce(new Error("startup failed"));
     disconnectNetwork.mockRejectedValueOnce(new Error("shutdown state save failed"));
     await expect(service.complete({ state, userId: "fixture-owner", claimId: "fixture-claim", authorizeCompany })).rejects.toMatchObject({

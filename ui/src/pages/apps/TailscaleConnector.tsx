@@ -16,6 +16,7 @@ export function TailscaleConnectorCard({ onNavigate }: { onNavigate: (href: stri
   const { selectedCompanyId } = useCompany();
   const connections = useTailscaleConnections(selectedCompanyId);
   const connected = connections.data?.filter(connection => connection.status === "connected") ?? [];
+  if (!connections.canManage) return null;
   return <div role="listitem" data-app-slug="tailscale" data-connected={String(connected.length > 0)} className="overflow-hidden rounded-xl border border-border">
     <div className="flex flex-wrap items-center gap-3 px-4 py-4">
       <AppLogo name="Tailscale" brandKey="tailscale" size={36} />
@@ -46,6 +47,9 @@ export function TailscaleConnector() {
     return () => setBreadcrumbs([]);
   }, [setBreadcrumbs]);
   if (!selectedCompanyId) return <p className="text-sm text-muted-foreground">Select an organization to connect Tailscale.</p>;
+  if (connections.access.isPending) return <p className="text-sm text-muted-foreground">Checking Tailscale management access…</p>;
+  if (connections.access.error) return <p role="alert" className="text-sm text-destructive">{describeError(connections.access.error, { action: "check Tailscale management access" }).body}</p>;
+  if (!connections.canManage) return <p className="text-sm text-muted-foreground">Ask an instance administrator to connect or manage Tailscale networks.</p>;
   const error = connect.error ?? disconnect.error ?? connections.error;
   return <div className="max-w-3xl space-y-6 pb-8">
     <header className="flex items-center gap-3"><AppLogo name="Tailscale" brandKey="tailscale" size={36} /><h1 className="text-xl font-semibold">Tailscale</h1></header>

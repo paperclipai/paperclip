@@ -15,7 +15,7 @@ const projection = (row: typeof tailscaleConnections.$inferSelect) => ({ id: row
 export function tailscaleConnectionService(db: Db, dependencies: {
   connector?: () => PaperclipCloudConnector | null;
   now?: () => Date;
-  secrets?: Pick<ReturnType<typeof secretService>, "create" | "resolveSecretValue" | "rotate" | "remove">;
+  secrets?: Pick<ReturnType<typeof secretService>, "create" | "createSystemSecret" | "resolveSystemSecretValue" | "rotate" | "remove">;
   networks?: Pick<typeof tailscaleNetworks, "connect" | "disconnect">;
 } = {}) {
   const secrets = dependencies.secrets ?? secretService(db);
@@ -64,9 +64,7 @@ export function tailscaleConnectionService(db: Db, dependencies: {
     };
     const read = async () => {
       const pinned = trusted(await current());
-      const value = await secrets.resolveSecretValue(companyId, secretId, pinned.version, { accessContext: {
-        consumerType: "system", consumerId: `tailscale-connection:${id}`, actorType: "system", actorId: null,
-      } });
+      const value = await secrets.resolveSystemSecretValue(companyId, secretId, pinned.version, "tailscale_network", `tailscale-connection:${id}`);
       if (hash(value) !== pinned.hash) throw untrusted();
       return value;
     };
@@ -130,8 +128,8 @@ export function tailscaleConnectionService(db: Db, dependencies: {
         if (grant.refreshToken || !Number.isFinite(expires) || expires <= now().getTime()) throw unprocessable("Tailscale authorization expired. Connect again.");
         const [active] = await db.select({ id: tailscaleConnections.id }).from(tailscaleConnections).where(owned);
         if (!active) throw cancelled();
-        const secret = await secrets.create(row.companyId, { name: `Tailscale connection ${row.id} ${randomBytes(4).toString("hex")}`,
-          provider: getConfiguredSecretProvider(), value: grant.accessToken }, { userId: input.userId });
+        const secret = await secrets.createSystemSecret(row.companyId, { name: `Tailscale connection ${row.id} ${randomBytes(4).toString("hex")}`,
+          provider: getConfiguredSecretProvider(), value: grant.accessToken }, "tailscale_network", { userId: input.userId });
         secretId = secret.id;
         const [installed] = await db.update(tailscaleConnections).set({ secretId, credentialVersion: secret.latestVersion, credentialHash: hash(grant.accessToken), status: "connecting", updatedAt: now() }).where(owned).returning();
         if (!installed) throw cancelled();

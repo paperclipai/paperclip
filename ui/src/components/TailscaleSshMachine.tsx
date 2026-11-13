@@ -19,12 +19,13 @@ export function TailscaleSshMachine(props: {
   useEffect(() => {
     if (!props.connectionId && onlyConnectionId) props.onChange({ connectionId: onlyConnectionId, deviceId: "", host: "" });
   }, [props.connectionId, onlyConnectionId, props.onChange]);
-  const devices = useQuery({ queryKey: ["tailscale-devices", props.companyId, props.connectionId], queryFn: () => tailscaleApi.devices(props.companyId, props.connectionId), enabled: Boolean(props.connectionId) });
+  const devices = useQuery({ queryKey: ["tailscale-devices", props.companyId, props.connectionId], queryFn: () => tailscaleApi.devices(props.companyId, props.connectionId), enabled: Boolean(props.connectionId) && connections.canManage });
   const pairing = useMutation({ mutationFn: (selection: { companyId: string; connectionId: string; deviceId: string; port: number }) => tailscaleApi.pairing(selection.companyId, selection.connectionId, selection.deviceId, selection.port),
     onSuccess: (result, selection) => {
       if (selection.companyId === props.companyId && selection.connectionId === props.connectionId && selection.deviceId === props.deviceId && selection.port === props.port) props.onPrivateKey(result.privateKeySecretId);
     } });
   const error = pairing.error ?? connections.error ?? devices.error;
+  if (!connections.canManage) return <p className="text-sm text-muted-foreground">An instance administrator must configure this Tailscale machine.</p>;
   return <div className="grid gap-3">
     <p className="text-sm text-muted-foreground"><Link className="underline" to="/apps/tailscale">Manage Tailscale connector</Link></p>
     {showConnectionSelector ? <div className="flex items-center gap-3">

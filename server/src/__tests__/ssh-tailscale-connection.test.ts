@@ -7,7 +7,10 @@ const fixture = vi.hoisted(() => ({
   secrets: { resolveSecretValue: vi.fn(), resolveSecretVersion: vi.fn(), rotate: vi.fn() },
 }));
 vi.mock("../services/tailscale-connections.js", () => ({ tailscaleConnectionService: () => ({ get: fixture.get, environmentBinding: fixture.binding }) }));
-vi.mock("../services/tailscale-network.js", () => ({ tailscaleNetworks: { connect: fixture.connect } }));
+vi.mock("../services/tailscale-network.js", async importOriginal => ({
+  ...await importOriginal<typeof import("../services/tailscale-network.js")>(),
+  tailscaleNetworks: { connect: fixture.connect },
+}));
 vi.mock("../services/secrets.js", () => ({ secretService: () => fixture.secrets }));
 
 const companyId = "11111111-1111-4111-8111-111111111111";

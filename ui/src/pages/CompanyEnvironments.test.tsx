@@ -9,6 +9,7 @@ import { CompanyEnvironments } from "./CompanyEnvironments";
 import { ApiError } from "@/api/client";
 import { tailscaleApi } from "@/api/tailscale";
 
+vi.mock("@/api/access", () => ({ accessApi: { getCurrentBoardAccess: async () => ({ source: "local_implicit", isInstanceAdmin: false }) } }));
 vi.mock("@/api/tailscale", () => ({ tailscaleApi: {
   list: vi.fn(async () => [{ id: "tailnet-connection", companyId: "company-1", name: "Home tailnet", status: "connected" }]),
   devices: vi.fn(async () => [{ id: "stable-device", name: "Home Mac", address: "100.64.0.1", os: "macOS", online: true }]),

@@ -8,6 +8,10 @@ const exec = promisify(execFile);
 const STATE_PREFIX = "paperclip-tailscale-state-v1:";
 const MAX_STATE_BYTES = 2 * 1024 * 1024;
 
+export function isTailscaleNodeState(value: string): boolean {
+  return value.startsWith(STATE_PREFIX);
+}
+
 type Connection = { credential: string; savedCredential?: string; child?: ChildProcess; closed: boolean; discardState: AbortController; closing?: Promise<void>; ready: Promise<string>; close: () => Promise<void> };
 
 export function createTailscaleNetworkManager(commands: { cli?: string; daemon?: string } = {}) {
@@ -61,7 +65,7 @@ export function createTailscaleNetworkManager(commands: { cli?: string; daemon?:
   }
 
   async function start(input: { identity: string; credential: string; persist: (credential: string) => Promise<void> }, connection: Connection) {
-    const restored = input.credential.startsWith(STATE_PREFIX);
+    const restored = isTailscaleNodeState(input.credential);
     const state = restored ? Buffer.from(input.credential.slice(STATE_PREFIX.length), "base64") : null;
     if (state && (state.length > MAX_STATE_BYTES || !state.length)) throw new Error("Invalid state");
     if (state) JSON.parse(state.toString("utf8"));

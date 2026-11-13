@@ -393,10 +393,8 @@ export async function collectEnvironmentSecretRefs(input: {
 }): Promise<Array<{ secretId: string; configPath: string; versionSelector?: SecretVersionSelector }>> {
   const parsed = parseEnvironmentDriverConfig(input.environment);
   if (parsed.driver === "ssh") {
-    return (["privateKeySecretRef", "tailscaleAuthKeySecretRef"] as const).flatMap(configPath => {
-      const binding = parsed.config[configPath];
-      return binding ? [{ secretId: binding.secretId, configPath, versionSelector: binding.version ?? "latest" }] : [];
-    });
+    const binding = parsed.config.privateKeySecretRef;
+    return binding ? [{ secretId: binding.secretId, configPath: "privateKeySecretRef", versionSelector: binding.version ?? "latest" }] : [];
   }
   if (parsed.driver === "sandbox" && parsed.config.provider !== "fake") {
     const schema = await getSandboxProviderConfigSchema(input.db, parsed.config.provider);
