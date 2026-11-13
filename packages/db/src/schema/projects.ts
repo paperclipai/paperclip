@@ -43,7 +43,7 @@ export const projects = pgTable(
     companyIdUq: uniqueIndex("projects_company_id_uq").on(table.companyId, table.id),
     companyIdx: index("projects_company_idx").on(table.companyId),
     visibilityCheck: check("projects_visibility_check", sql`${table.visibility} in ('open', 'private')`),
-    repositoryCheckoutCheck: check("projects_repository_checkout_check", sql`${table.repositoryCheckout} in ('all', 'primary')`),
+    repositoryCheckoutCheck: check("projects_repository_checkout_check", sql`${table.repositoryCheckout} in ('all', 'primary', 'none')`),
     personalOwnerUq: uniqueIndex("projects_company_personal_owner_uq")
       .on(table.companyId, table.personalOwnerUserId)
       .where(sql`${table.personalOwnerUserId} is not null`),

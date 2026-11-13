@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { prepareProjectRepositoryWorkspaces } from "./workspaces.js";
 import { readRequestedProjectRepositoryIds } from "../project-repository-requests.js";
 
@@ -30,7 +30,7 @@ describe("project repository checkout scope", () => {
   }
 
   beforeEach(async () => {
-    root = await fs.mkdtemp(path.join(os.tmpdir(), "project-repository-checkout-"));
+    root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "project-repository-checkout-")));
     taskCwd = path.join(root, "task");
     await fs.mkdir(taskCwd);
     git(taskCwd, "init", "--initial-branch=main");
@@ -44,7 +44,7 @@ describe("project repository checkout scope", () => {
     await fs.rm(root, { recursive: true, force: true });
   });
 
-  const prepare = (input: { repositoryCheckout?: "all" | "primary"; keepWorkspaceIds?: string[] } = {}) =>
+  const prepare = (input: { repositoryCheckout?: "all" | "primary" | "none"; keepWorkspaceIds?: string[]; cwd?: string; sharedBase?: { companyId: string; projectId: string } } = {}) =>
     prepareProjectRepositoryWorkspaces({ cwd: taskCwd, anchorRepoUrl: null, workspaces, resolveGitAuth: async () => null, ...input });
 
   it("checks out every project repository by default", async () => {
@@ -67,6 +67,25 @@ describe("project repository checkout scope", () => {
     await prepare();
     expect((await prepare({ repositoryCheckout: "primary" })).map(repo => repo.workspaceId))
       .toEqual(workspaces.map(workspace => workspace.id));
+  });
+
+  it("checks out no repository in a task directory until one is requested", async () => {
+    const taskDirectory = path.join(root, "task-directory");
+    await fs.mkdir(taskDirectory);
+    expect(await prepare({ cwd: taskDirectory, repositoryCheckout: "none" })).toEqual([]);
+    expect(await fs.readdir(taskDirectory)).toEqual([]);
+  });
+
+  it("adds a requested repository to a task directory as a worktree of the shared project clone", async () => {
+    vi.stubEnv("PAPERCLIP_HOME", path.join(root, "h"));
+    const taskDirectory = path.join(root, "task-directory");
+    await fs.mkdir(taskDirectory);
+    const [requested] = await prepare({ cwd: taskDirectory, repositoryCheckout: "none", keepWorkspaceIds: [workspaces[0]!.id],
+      sharedBase: { companyId: "c", projectId: "p" } });
+    expect(requested).toMatchObject({ workspaceId: workspaces[0]!.id });
+    expect((await fs.lstat(path.join(requested!.cwd, ".git"))).isFile()).toBe(true);
+    expect(await fs.readFile(path.join(requested!.cwd, "api.txt"), "utf8")).toBe("api\n");
+    vi.unstubAllEnvs();
   });
 });
 

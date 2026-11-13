@@ -7,7 +7,7 @@ import { executionWorkspaceService } from "../services/execution-workspaces.js";
 import { issueReadSqlCondition } from "../services/authorization.js";
 import { projectToolContext } from "../services/project-tool-context.js";
 import { logActivity } from "../services/activity-log.js";
-import { readRequestedProjectRepositoryIds, requestProjectRepository } from "../services/project-repository-requests.js";
+import { readProjectRepositoryCheckout, readRequestedProjectRepositoryIds, requestProjectRepository } from "../services/project-repository-requests.js";
 import { forbidden, notFound } from "../errors.js";
 import { assertCompanyAccess, getActorInfo, hasCompanyAccess } from "./authz.js";
 import { validate } from "../middleware/validate.js";
@@ -35,14 +35,16 @@ export function taskWorkspaceRoutes(db: Db) {
     if (!issue.executionWorkspaceId) return null;
     const [workspace] = await db.select({ projectId: executionWorkspaces.projectId, metadata: executionWorkspaces.metadata }).from(executionWorkspaces)
       .where(and(eq(executionWorkspaces.id, issue.executionWorkspaceId), eq(executionWorkspaces.companyId, issue.companyId)));
-    if (!workspace?.projectId) return null;
+    const taskDirectory = !workspace?.projectId && issue.workspaceSelection?.selection.kind === "task_directory";
+    const projectId = workspace?.projectId ?? (taskDirectory ? issue.projectId : null);
+    if (!workspace || !projectId) return null;
     const [project] = await db.select({ repositoryCheckout: projects.repositoryCheckout }).from(projects)
-      .where(and(eq(projects.id, workspace.projectId), eq(projects.companyId, issue.companyId)));
+      .where(and(eq(projects.id, projectId), eq(projects.companyId, issue.companyId)));
     const requested = new Set(readRequestedProjectRepositoryIds(workspace.metadata));
     const sources = await db.select({ id: projectWorkspaces.id, name: projectWorkspaces.name, repoUrl: projectWorkspaces.repoUrl, isPrimary: projectWorkspaces.isPrimary })
-      .from(projectWorkspaces).where(and(eq(projectWorkspaces.projectId, workspace.projectId), eq(projectWorkspaces.companyId, issue.companyId)));
+      .from(projectWorkspaces).where(and(eq(projectWorkspaces.projectId, projectId), eq(projectWorkspaces.companyId, issue.companyId)));
     return {
-      checkout: project?.repositoryCheckout === "primary" ? "primary" : "all",
+      checkout: taskDirectory ? "none" : readProjectRepositoryCheckout(project?.repositoryCheckout),
       repositories: sources.filter(source => source.repoUrl).map(source => ({
         projectWorkspaceId: source.id, name: source.name, repoUrl: source.repoUrl, isPrimary: source.isPrimary, requested: requested.has(source.id),
       })),

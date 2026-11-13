@@ -10891,6 +10891,15 @@ export function issueService(db: Db) {
           return projectPolicyCached;
         };
 
+        if (!workspaceIntent && !executionWorkspaceId && !projectWorkspaceId && issueData.projectId
+          && issueData.executionWorkspaceSettings == null) {
+          const [repositoryProject] = await tx.select({ repositoryCheckout: projects.repositoryCheckout }).from(projects)
+            .where(and(eq(projects.id, issueData.projectId), eq(projects.companyId, companyId)));
+          if (repositoryProject?.repositoryCheckout === "none") {
+            workspaceIntent = { version: 1, source: "project", selection: { kind: "task_directory" } };
+            executionWorkspaceSettings = { mode: "shared_workspace" };
+          }
+        }
         if (
           executionWorkspaceSettings == null &&
           executionWorkspaceId == null &&

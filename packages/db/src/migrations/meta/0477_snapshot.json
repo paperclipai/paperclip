@@ -51373,7 +51373,7 @@
         },
         "projects_repository_checkout_check": {
           "name": "projects_repository_checkout_check",
-          "value": "\"projects\".\"repository_checkout\" in ('all', 'primary')"
+          "value": "\"projects\".\"repository_checkout\" in ('all', 'primary', 'none')"
         }
       },
       "isRLSEnabled": false

@@ -537,7 +537,7 @@ export function ProjectProperties({ project, repositories, onUpdate, onFieldUpda
           </div>
         </PropertyRow>
         {repositories ?? <ProjectRepositories key={project.id} project={project} />}
-        {repositoryWorkspaceCount > 1 ? (
+        {repositoryWorkspaceCount > 0 ? (
           <PropertyRow label={<FieldLabel label="Repository checkout" state={fieldState("repository_checkout")} />} alignStart>
             <div className="space-y-1">
               <NativeSelect
@@ -550,12 +550,15 @@ export function ProjectProperties({ project, repositories, onUpdate, onFieldUpda
                 }
               >
                 <option value="all">All project repositories</option>
-                <option value="primary">Primary repository only</option>
+                {repositoryWorkspaceCount > 1 ? <option value="primary">Primary repository only</option> : null}
+                <option value="none">Only when a task requests one</option>
               </NativeSelect>
               <p className="text-(length:--text-micro) text-muted-foreground">
-                {(project.repositoryCheckout ?? "all") === "primary"
-                  ? "New task workspaces check out only the primary repository. Agents request the other repositories when a task needs them."
-                  : "Every task workspace checks out all of this project's repositories."}
+                {project.repositoryCheckout === "none"
+                  ? "New tasks start in an empty task directory. Agents request a repository when a task needs code."
+                  : project.repositoryCheckout === "primary"
+                    ? "New task workspaces check out only the primary repository. Agents request the other repositories when a task needs them."
+                    : "Every task workspace checks out all of this project's repositories."}
               </p>
             </div>
           </PropertyRow>

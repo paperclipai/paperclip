@@ -1,11 +1,16 @@
 import { and, eq, sql } from "drizzle-orm";
 import { activityLog, executionWorkspaces, issues, projectWorkspaces, type Db } from "@paperclipai/db";
+import { PROJECT_REPOSITORY_CHECKOUTS, type ProjectRepositoryCheckout } from "@paperclipai/shared";
 import { conflict, forbidden, notFound } from "../errors.js";
 import { assertTaskWorkspaceExecutionAccess } from "./task-workspace-access.js";
 import { authorizationService, issueReadSqlCondition, type AuthorizationActor } from "./authorization.js";
 import { taskWorkspaceSelectableCondition } from "./task-workspace-selection.js";
 
 export const REQUESTED_PROJECT_REPOSITORIES_METADATA_KEY = "requestedProjectRepositoryIds";
+
+export function readProjectRepositoryCheckout(value: unknown): ProjectRepositoryCheckout {
+  return PROJECT_REPOSITORY_CHECKOUTS.find(mode => mode === value) ?? "all";
+}
 
 export function readRequestedProjectRepositoryIds(metadata: unknown): string[] {
   if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return [];
@@ -36,10 +41,11 @@ export async function requestProjectRepository(db: Db, input: {
       eq(executionWorkspaces.companyId, input.companyId), taskWorkspaceSelectableCondition())).for("update");
     if (!workspace) throw conflict("Execution workspace is unavailable");
     await assertTaskWorkspaceExecutionAccess(tx as unknown as Db, input.actor, input.companyId, { issueId: issue.id, workspaceId: workspace.id });
-    if (!workspace.projectId) throw conflict("The task workspace does not belong to a project");
+    const projectId = workspace.projectId ?? (issue.workspaceSelection?.selection.kind === "task_directory" ? issue.projectId : null);
+    if (!projectId) throw conflict("The task workspace does not belong to a project");
     const [source] = await tx.select({ id: projectWorkspaces.id, repoUrl: projectWorkspaces.repoUrl }).from(projectWorkspaces).where(and(
       eq(projectWorkspaces.id, input.projectWorkspaceId), eq(projectWorkspaces.companyId, input.companyId),
-      eq(projectWorkspaces.projectId, workspace.projectId)));
+      eq(projectWorkspaces.projectId, projectId)));
     if (!source) throw notFound("Project repository not found");
     if (!source.repoUrl) throw conflict("This project workspace has no repository to check out");
     const requested = readRequestedProjectRepositoryIds(workspace.metadata);

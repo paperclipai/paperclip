@@ -24,6 +24,8 @@ import { instanceSettingsService } from "../services/instance-settings.ts";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import { findNativeChatWorkspaceScope } from "../services/native-runtime/native-chat-workspace.js";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
+import { issueService } from "../services/issues.js";
+import { REQUESTED_PROJECT_REPOSITORIES_METADATA_KEY } from "../services/project-repository-requests.js";
 
 const execute = vi.hoisted(() => vi.fn(async (_input: any) => ({ exitCode: 0, signal: null, timedOut: false })));
 vi.mock("../adapters/index.js", () => ({
@@ -945,4 +947,37 @@ suite("task project repository provisioning", () => {
       expect(execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd: hint!.cwd, encoding: "utf8" }).trim()).toBe(await realpath(hint!.cwd));
     }
   }, 25_000);
+  it("starts a task in a project without repository checkouts in its task directory and adds a requested repository", async () => {
+    const companyId = randomUUID(), projectId = randomUUID(), sourceId = randomUUID(), agentId = randomUUID();
+    const source = path.join(root, companyId, "api");
+    await mkdir(source, { recursive: true });
+    execFileSync("git", ["init", "-b", "main"], { cwd: source, stdio: "ignore" });
+    await writeFile(path.join(source, "api.txt"), "api");
+    execFileSync("git", ["add", "."], { cwd: source, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "seed"], { cwd: source, stdio: "ignore" });
+    await db.insert(companies).values({ id: companyId, name: "On demand", issuePrefix: "D" + companyId.slice(0, 6), defaultResponsibleUserId: "responsible-user" });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "owner" });
+    await db.insert(projects).values({ id: projectId, companyId, name: "Document reviews", repositoryCheckout: "none" });
+    await db.insert(projectWorkspaces).values({ id: sourceId, companyId, projectId, name: "API", sourceType: "git_repo", repoUrl: pathToFileURL(source).href, isPrimary: true });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Reviewer", status: "idle", adapterType: "codex_local", adapterConfig: {}, permissions: {} });
+    const created = await issueService(db).create(companyId, { projectId, title: "Review the document", status: "todo", assigneeAgentId: agentId });
+    expect(created.projectWorkspaceId).toBeNull();
+    expect(created.workspaceSelection).toMatchObject({ source: "project", selection: { kind: "task_directory" } });
+    const taskDirectory = path.join(resolvePaperclipInstanceRoot(), "isolated-workspaces", companyId, created.id);
+    const admit = async () => {
+      await db.update(issues).set({ status: "todo" }).where(eq(issues.id, created.id));
+      const run = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId: created.id } });
+      await vi.waitFor(async () => { expect(await heartbeat.getRun(run!.id)).toMatchObject({ status: "succeeded", error: null }); }, { timeout: 15_000 });
+      await drainHeartbeatRunsToQuiescence(db, heartbeat);
+      return execute.mock.calls.find(([input]) => input.runId === run!.id)![0].context.paperclipWorkspace.cwd as string;
+    };
+    expect(await realpath(await admit())).toBe(await realpath(taskDirectory));
+    expect(await readdir(taskDirectory)).not.toContain(".paperclip-repositories");
+    const [task] = await db.select().from(issues).where(eq(issues.id, created.id));
+    await db.update(executionWorkspaces).set({ metadata: { [REQUESTED_PROJECT_REPOSITORIES_METADATA_KEY]: [sourceId] } })
+      .where(eq(executionWorkspaces.id, task.executionWorkspaceId!));
+    expect(await realpath(await admit())).toBe(await realpath(taskDirectory));
+    const [checkout] = await readdir(path.join(taskDirectory, ".paperclip-repositories"));
+    expect(await readFile(path.join(taskDirectory, ".paperclip-repositories", checkout!, "api.txt"), "utf8")).toBe("api");
+  }, 40_000);
 });

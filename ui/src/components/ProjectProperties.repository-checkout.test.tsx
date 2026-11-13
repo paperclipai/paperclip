@@ -105,9 +105,20 @@ const picker = () => container.querySelector<HTMLSelectElement>("[data-testid='p
 const twoRepositories = [repositoryWorkspace("api", "https://example.test/org/api.git"), repositoryWorkspace("web", "https://example.test/org/web.git")];
 
 describe("ProjectProperties repository checkout", () => {
-  it("is hidden for a project with one repository", async () => {
-    await render(makeProject({ workspaces: [twoRepositories[0]!] as unknown as Project["workspaces"] }), vi.fn());
+  it("is hidden for a project without repositories", async () => {
+    await render(makeProject({ workspaces: [] }), vi.fn());
     expect(picker()).toBeNull();
+  });
+
+  it("offers on-demand checkout without the primary-only choice for a project with one repository", async () => {
+    const onFieldUpdate = vi.fn();
+    await render(makeProject({ workspaces: [twoRepositories[0]!] as unknown as Project["workspaces"] }), onFieldUpdate);
+    expect([...picker()!.options].map(option => option.value)).toEqual(["all", "none"]);
+    act(() => {
+      picker()!.value = "none";
+      picker()!.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(onFieldUpdate).toHaveBeenCalledWith("repository_checkout", { repositoryCheckout: "none" });
   });
 
   it("defaults to all repositories and saves the primary-only choice", async () => {
@@ -126,5 +137,11 @@ describe("ProjectProperties repository checkout", () => {
     await render(makeProject({ workspaces: twoRepositories as unknown as Project["workspaces"], repositoryCheckout: "primary" }), vi.fn());
     expect(picker()!.value).toBe("primary");
     expect(container.textContent).toContain("Agents request the other repositories when a task needs them.");
+  });
+
+  it("shows a saved on-demand choice", async () => {
+    await render(makeProject({ workspaces: twoRepositories as unknown as Project["workspaces"], repositoryCheckout: "none" }), vi.fn());
+    expect(picker()!.value).toBe("none");
+    expect(container.textContent).toContain("New tasks start in an empty task directory.");
   });
 });

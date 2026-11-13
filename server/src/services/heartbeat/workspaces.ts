@@ -536,7 +536,7 @@ export async function prepareProjectRepositoryWorkspaces(input: {
   });
   if (input.restoredContents?.checkouts.some(checkout => !distinct.some(source => source.id === checkout.source.id))) throw new GitCacheRestorationFailure();
   const root = path.join(input.cwd, PROJECT_REPOSITORIES_DIR);
-  const selected = input.repositoryCheckout === "primary"
+  const selected = input.repositoryCheckout && input.repositoryCheckout !== "all"
     ? await keepPresentProjectRepositories(distinct, root, input)
     : distinct;
   if (selected.length === 0 && !(await fs.lstat(root).catch(() => null))) return [];
