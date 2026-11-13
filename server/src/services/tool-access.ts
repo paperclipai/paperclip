@@ -68,7 +68,7 @@ import { createOAuthClientProtocol } from "./tool-access/oauth/client.js";
 
 import type { OAuthClientRegistrationSource } from "./tool-access/oauth/types.js";
 export { OAUTH_CLIENT_ID_METADATA_DOCUMENT_PATH, resolveOAuthClientIdMetadataDocumentUrl, oauthClientIdMetadataDocument } from "./tool-access/oauth/client-metadata.js";
-import { connectionMethodFor, connectionMethodForConnection, credentialFieldsFor, normalizeConnectionMethodConfig, projectedConnectionToolInputSchema } from "./tool-access/connection-methods.js";
+import { connectionMethodFor, connectionMethodForConnection, credentialFieldsFor, normalizeConnectionMethodConfig, projectedConnectionHeaders, projectedConnectionToolInputSchema } from "./tool-access/connection-methods.js";
 export {
   normalizeConnectionMethodConfig,
   projectedConnectionHeaders,
@@ -795,6 +795,9 @@ export function toolAccessService(
     assertRemoteConnectionEndpointsAllowed, ensureDefaultOrganizationGrant, nextAvailableConnectionName,
     checkConnectionHealth: (connectionId, actor) => checkConnectionHealth(connectionId, actor),
     refreshCatalog: (connectionId, actor, refreshOptions) => refreshCatalog(connectionId, actor, refreshOptions),
+    probeServerWithToken: (connection, authorization, actor) => catalogDiscovery.remoteTools(
+      connection, { ...projectedConnectionHeaders(connection), Authorization: authorization }, actor, undefined, [], { live: true },
+    ),
   });
   const { requestClientCredentialsToken } = clientCredentials;
   const maybeRefreshOAuthCredentials = createLegacyOAuthRefresh(db, { now, secrets, store: credentialStore, leases: refreshLeases, getConnectionRow, exchangeOAuthToken, requestClientCredentialsToken });

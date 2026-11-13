@@ -336,7 +336,10 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
     if (
       response.status === 401 &&
       connection.authKind === "oauth" &&
-      connection.credentialSource === "paperclip_vault"
+      connection.credentialSource === "paperclip_vault" &&
+      // A machine sign-in probe with candidate credentials must fail on its own
+      // answer, not succeed by falling back to the stored ones.
+      !(credentialHeaders && usesClientCredentials(connection))
     ) {
       headers = {
         ...projectedConnectionHeaders(connection),

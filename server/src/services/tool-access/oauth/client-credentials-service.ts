@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { toolApplications, toolConnections } from "@paperclipai/db";
+import { connectionGrants, toolApplications, toolConnections } from "@paperclipai/db";
 import type {
   ConnectToolAppResult,
   ToolCatalogRefreshResult,
@@ -65,6 +65,8 @@ type Dependencies = OAuthTransport & {
   ensureDefaultOrganizationGrant: ReturnType<typeof createOrganizationGrantStore>;
   checkConnectionHealth(connectionId: string, actor?: ActorInfo): Promise<ToolConnectionHealthCheckResult>;
   refreshCatalog(connectionId: string, actor?: ActorInfo, options?: { enableAllByDefault?: boolean }): Promise<ToolCatalogRefreshResult>;
+  /** List the server's tools with exactly these credentials, never the stored ones. */
+  probeServerWithToken(connection: typeof toolConnections.$inferSelect, authorization: string, actor?: ActorInfo): Promise<unknown>;
   nextAvailableConnectionName(requestedName: string, existingNames: readonly string[]): string;
 };
 
@@ -495,6 +497,10 @@ export function createClientCredentialsService(db: Db, deps: Dependencies) {
       clientSecret: input.clientSecret,
       scopes,
     });
+    // Prove the server accepts the new client before anything is saved: a client
+    // the sign-in service accepts may still lack access to this server, and a
+    // failed retest must leave a working connection's credentials untouched.
+    await deps.probeServerWithToken(connection, `Bearer ${token.accessToken}`, actor);
     // The settings worked: keep them.
     const credentialSecretRefs = [...connection.credentialSecretRefs];
     if (input.clientSecret) {
@@ -534,8 +540,18 @@ export function createClientCredentialsService(db: Db, deps: Dependencies) {
         { name: "oauth.access_token", secretId: accessRef.secretId, version: "latest", placement: "header", key: "Authorization", prefix: "Bearer " },
       ],
     });
-    // The organization grant is what tool calls run on; give it the token now.
+    // The organization grant is what tool calls run on; give it the token now,
+    // with this token's expiry (the grant's own expiry wins over the connection's).
     await deps.ensureDefaultOrganizationGrant(connection);
+    await db.update(connectionGrants).set({
+      providerTenant: sql`jsonb_set(coalesce(${connectionGrants.providerTenant}, '{}'::jsonb), '{oauth}', (coalesce(${connectionGrants.providerTenant}->'oauth', '{}'::jsonb) || ${JSON.stringify({ accessTokenExpiresAt: expiresAt, tokenType: token.tokenType, refreshedAt: at.toISOString() })}::jsonb) - 'refreshLease')`,
+      updatedAt: now(),
+    }).where(and(
+      eq(connectionGrants.companyId, companyId),
+      eq(connectionGrants.connectionId, connection.id),
+      eq(connectionGrants.kind, "organization"),
+      eq(connectionGrants.isDefault, true),
+    ));
     await deps.checkConnectionHealth(connection.id, actor);
     const before = connection;
     connection = await db.transaction(async (tx) => {

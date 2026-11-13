@@ -80,6 +80,11 @@ function fakeProvider() {
     issued: 0,
     tokenDelayMs: 0,
     rejectAllTokens: false,
+    /** Other clients the sign-in service knows (id → secret). */
+    extraClients: new Map<string, string>(),
+    /** Clients whose tokens the MCP server refuses. */
+    mcpDeniedClients: new Set<string>(),
+    tokenClients: new Map<string, string>(),
   };
   const metadata = (issuer: string) => ({
     issuer,
@@ -109,6 +114,7 @@ function fakeProvider() {
       if (body.get("grant_type") !== "client_credentials") return json({ error: "unsupported_grant_type" }, 400);
       const assertion = body.get("client_assertion");
       let authenticated = false;
+      let clientId = CLIENT_ID;
       if (assertion) {
         const { header, claims } = decodeJwt(assertion);
         const key = state.registeredKeys.get(String(header.kid));
@@ -119,11 +125,18 @@ function fakeProvider() {
         const basic = headers.get("authorization");
         const expected = `Basic ${Buffer.from(`${CLIENT_ID}:${state.clientSecret}`).toString("base64")}`;
         authenticated = basic === expected;
+        for (const [id, secret] of state.extraClients) {
+          if (basic === `Basic ${Buffer.from(`${id}:${secret}`).toString("base64")}`) {
+            authenticated = true;
+            clientId = id;
+          }
+        }
       }
       if (!authenticated) return json({ error: "invalid_client" }, 401);
       state.issued += 1;
       const token = `machine-token-${state.issued}`;
       state.acceptedTokens.add(token);
+      state.tokenClients.set(token, clientId);
       return json({ access_token: token, token_type: "Bearer", expires_in: 3600, scope: body.get("scope") ?? undefined });
     }
     if (url === MCP_URL) {
@@ -131,7 +144,7 @@ function fakeProvider() {
       const authorization = headers.get("authorization");
       state.mcpRequests.push({ authorization, body });
       const bearer = authorization?.replace(/^Bearer /, "") ?? "";
-      if (state.rejectAllTokens || !state.acceptedTokens.has(bearer)) {
+      if (state.rejectAllTokens || !state.acceptedTokens.has(bearer) || state.mcpDeniedClients.has(state.tokenClients.get(bearer) ?? "")) {
         return new Response("", {
           status: 401,
           headers: { "www-authenticate": `Bearer resource_metadata="${new URL(MCP_URL).origin}/.well-known/oauth-protected-resource/mcp"` },
@@ -479,6 +492,35 @@ describeEmbeddedPostgres("machine sign-in connections", () => {
     const grant = await organizationGrant(created.connectionId);
     await svc.refreshOAuthGrantCredentials({ companyId: company.id, connectionId: created.connectionId, grantId: grant.id, forceRefresh: true, actor });
     expect(decodeJwt(provider.state.tokenRequests.at(-1)!.body.get("client_assertion")!).header.kid).toBe(created.machineSignIn.publicKey!.keyId);
+  });
+
+  it("keeps working credentials when a retest's client can't use the server", async () => {
+    const company = await createCompany();
+    const provider = useProvider();
+    const svc = service();
+    const created = await svc.createMachineSignIn(company.id, {
+      link: MCP_URL, method: "client_secret", clientId: CLIENT_ID, clientSecret: CLIENT_SECRET,
+    }, actor);
+    await svc.testMachineSignIn(company.id, created.connectionId, {}, actor);
+    provider.state.extraClients.set("other-client", "other-secret");
+    provider.state.mcpDeniedClients.add("other-client");
+    await expect(svc.testMachineSignIn(company.id, created.connectionId, { clientId: "other-client", clientSecret: "other-secret" }, actor))
+      .rejects.toMatchObject({ details: expect.objectContaining({ code: "client_credentials_rejected" }) });
+    const status = await svc.getMachineSignIn(company.id, created.connectionId);
+    expect(status.clientId).toBe(CLIENT_ID);
+    // The working connection still serves tools with the original client.
+    const health = await svc.checkHealth(created.connectionId, actor);
+    expect(health.connection.healthStatus).toBe("ok");
+    expect(provider.state.tokenClients.get(provider.state.mcpRequests.at(-1)!.authorization!.replace("Bearer ", ""))).toBe(CLIENT_ID);
+
+    // A retest that passes gives the organization grant the new token's expiry.
+    const grant = await organizationGrant(created.connectionId);
+    await db.update(connectionGrants).set({
+      providerTenant: { ...(grant.providerTenant ?? {}), oauth: { ...((grant.providerTenant ?? {}).oauth as object ?? {}), accessTokenExpiresAt: "2000-01-01T00:00:00.000Z" } },
+    }).where(eq(connectionGrants.id, grant.id));
+    await svc.testMachineSignIn(company.id, created.connectionId, {}, actor);
+    const retested = await organizationGrant(created.connectionId);
+    expect(Date.parse(String((retested.providerTenant?.oauth as Record<string, unknown>).accessTokenExpiresAt))).toBeGreaterThan(Date.now() + 3_000_000);
   });
 
   it("tries a new client secret before replacing the old one", async () => {
