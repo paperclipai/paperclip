@@ -29,7 +29,8 @@ import { readLocalAiCredentialFile } from "./local-ai-credential-file.js";
 import { prepareAntigravityCredentialWriteback } from "./native-runtime/antigravity-runner-credentials.js";
 import { quotaCredentialHash, quotaCredentialRecovery, RetiredCredentialRecoveryError } from "./quota-credential-recovery.js";
 import { bindRetainedAiCredentialHome, reconcileRetainedAiCleanup, retainAiCredentialCleanup } from "./retained-ai-credential-cleanup.js";
-import { preserveAgyConversationState, resolveAgyConversationDir, restoreAgyConversationState } from "./antigravity-conversation-state.js";
+import { resolveAgyConversationDir } from "./antigravity-conversation-state.js";
+import { preserveAgyConversationState, restoreAgyConversationState } from "@paperclipai/adapter-agy-local/server";
 
 export function isAiConnectionBusy(error: unknown): error is HttpError {
   return error instanceof HttpError && error.status === 422 &&
@@ -476,7 +477,8 @@ export async function prepareManagedAiRuntime(
     const removeHome = async () => {
       if (home && input.binding.provider === "antigravity") {
         // Preserve conversation state before the temporary home is deleted;
-        // only brain/ moves, never the credential in this same CLI home.
+        // only the conversation state moves, never the credential in this
+        // same CLI home.
         await preserveAgyConversationState(
           agyCliHome,
           resolveAgyConversationDir(input.companyId, selection.grant.id, input.agentId),

@@ -44,6 +44,7 @@ export {
   type CopyBackAgyAuthInput,
   type StageAgyHomeForSyncOptions,
 } from "./credentials.js";
+export { restoreAgyConversationState, preserveAgyConversationState } from "./conversation-state.js";
 export {
   resolveAgyMcpConfigPath,
   resolveUniqueMcpServerName,
