@@ -692,7 +692,7 @@ const MIGRATIONS_WITH_TOP_LEVEL_STATEMENTS = new Set([
   "0472_runner_api_capture_pending_deletes.sql",
   "0476_wakeup_request_run_index.sql",
   "0469_zippy_photon.sql",
-  "0480_heartbeat_runs_wakeup_request_index.sql",
+  "0483_heartbeat_runs_wakeup_request_index.sql",
 
 
   "0384_funny_adam_warlock.sql",
