@@ -45,6 +45,8 @@ import {
 } from "@/components/transcript/useLiveRunTranscripts";
 import { useNativeRunTranscripts } from "@/components/transcript/useNativeRunTranscripts";
 import { TaskChatLiveTail } from "@/components/task-chat/TaskChatLiveTail";
+import { McpAppIssueProvider } from "@/components/mcp-app/McpAppIssueContext";
+import { McpAppTurnViews, mcpAppRunRefreshKey } from "@/components/mcp-app/McpAppTurnViews";
 import { TaskChatRunnerHeader, TaskChatRunnerTurn } from "@/components/task-chat/TaskChatRunnerTurn";
 import { partitionRunHealthItems } from "@/components/task-chat/TaskChatRunHealthBanner";
 import {
@@ -1690,7 +1692,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       const historical = statusRelevance.isHistoricalRun(source.id);
       // A workspace admission attempt never started provider work. Its live
       // successor owns the waiting indicator; retain this attempt in the run log.
-      if (source.status === "cancelled" && meta?.errorCode === "workspace_busy") {
+      if (source.status === "cancelled" && (meta?.errorCode === "workspace_busy" || meta?.errorCode === "agent_directory_busy")) {
         settledRunIds.add(source.id);
         continue;
       }
@@ -3362,6 +3364,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
 
   return (
     <TaskChatRequestHistoryContext.Provider value={issueId ?? "unknown"}>
+    <McpAppIssueProvider issueId={issueId}>
     <TaskChatExpansionState.Provider value={expansionState.current}>
       <TaskChatScrollReady.Provider value={(historyRevealed || !historyPending || historyWaitExpired) && !scrollTargetPending}>
         <TaskChatPresentationProvider
@@ -3535,6 +3538,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                                     />
                                   ) : (
                                     <TaskChatShimmerScope items={tailItems}>
+                                      <McpAppTurnViews runId={tailRunId} refreshKey={mcpAppRunRefreshKey(tailItems, tailStatus)} />
                                       <TaskChatLiveTail
                                         items={tailItems}
                                         emptyMessage={
@@ -3708,6 +3712,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         </TaskChatPresentationProvider>
       </TaskChatScrollReady.Provider>
     </TaskChatExpansionState.Provider>
+    </McpAppIssueProvider>
     </TaskChatRequestHistoryContext.Provider>
   );
 }

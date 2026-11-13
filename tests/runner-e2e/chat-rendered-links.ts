@@ -1,7 +1,7 @@
 import type { Locator, Page } from "@playwright/test";
 import type { ChatRun } from "./chat-flow.js";
 
-interface Row { id: string; companyId?: string; issueId?: string; authorAgentId?: string | null; createdByRunId?: string | null; name?: string; action?: string; entityType?: string; entityId?: string; agentId?: string | null; actorType?: string; actorId?: string; runId?: string | null }
+interface Row { id: string; companyId?: string; issueId?: string; body?: string | null; authorAgentId?: string | null; createdByRunId?: string | null; name?: string; action?: string; entityType?: string; entityId?: string; agentId?: string | null; actorType?: string; actorId?: string; runId?: string | null }
 export interface RenderedConversationLink {
   threadTestId: "task-chat-thread" | "thread-root"; href: string; source: "reply" | "project-created-card"; conversationId: string; anchorCommentId: string;
   commentId?: string; resourceId?: string; cardLabel?: string; createdByRunId?: string;
@@ -9,6 +9,68 @@ export interface RenderedConversationLink {
 export interface ConversationLinkInput {
   origin: string; companyId: string; companyPrefix?: string | null; sourceId: string; leadId: string;
   comments: Row[]; runs: ChatRun[]; projects: Row[]; activity: Row[];
+}
+/** Markdown link targets written in saved text, e.g. a reply body: inline [label](target), reference
+ * definitions ([label]: target) and autolinks (<https://...>). */
+export function markdownLinkTargets(text: string): string[] {
+  const unwrap = (target: string) => target.startsWith("<") && target.endsWith(">") ? target.slice(1, -1) : target;
+  return [
+    ...[...text.matchAll(/\]\(\s*([^)\s]+)/g)].map(match => unwrap(match[1]!)),
+    ...[...text.matchAll(/^[ \t]{0,3}\[[^\]\n]+\]:[ \t]*(\S+)/gm)].map(match => unwrap(match[1]!)),
+    ...[...text.matchAll(/<((?:https?:\/\/|\/)[^>\s]+)>/g)].map(match => match[1]!),
+  ];
+}
+export function mislabeledIssueLinks(text: string, identifierFor: (pathId: string) => string | undefined = () => undefined): string[] {
+  const identifier = /^[A-Za-z][A-Za-z0-9]*-\d+$/;
+  return [...text.matchAll(/\[((?:[^\[\]]|\[[^\]]*\])*)\]\(\s*<?([^)\s>]+)>?[^)]*\)?/g)].flatMap(match => {
+    const label = match[1]!, target = match[2]!;
+    let pathname: string;
+    try { pathname = decodeURIComponent(new URL(target, "http://paperclip.invalid").pathname); } catch { return []; }
+    const parts = pathname.split("/").filter(Boolean); const index = parts.indexOf("issues"); const pathId = index >= 0 ? parts[index + 1] : undefined;
+    if (!pathId) return [];
+    const opened = (identifier.test(pathId) ? pathId : identifierFor(pathId))?.toUpperCase();
+    if (!opened) return [];
+    const prefix = opened.split("-")[0]!;
+    const named = [...label.matchAll(/(?<![\w-])([A-Za-z][A-Za-z0-9]*-\d+)(?![\w-])/g)].map(token => token[1]!.toUpperCase())
+      .filter(token => token.split("-")[0] === prefix);
+    return named.length > 0 && !named.includes(opened) ? [match[0]] : [];
+  });
+}
+/** A link target that still holds a template placeholder such as <prefix> or {companyId}; it opens no real page. */
+export function unresolvedLinkTarget(href: string): boolean {
+  let decoded = href;
+  try { decoded = decodeURIComponent(href); } catch { /* keep the raw target */ }
+  return /[<>{}]/.test(decoded);
+}
+/** First path segments the board app routes, as declared in ui/src/App.tsx. A company-prefixed page is
+ * /<prefix>/<root>/...; the server serves its API only at /api. */
+export const APP_ROUTE_ROOTS: readonly string[] = ["activity", "agents", "approvals", "apps", "artifacts", "assistant-connections", "audit", "auth",
+  "board-chat", "board-claim", "budgets", "cases", "chat-identity", "chats", "cli-auth", "companies", "company", "costs", "dashboard", "decisions",
+  "design-guide", "dev", "dot-connect", "execution-workspaces", "goals", "inbox", "instance", "invite", "issues", "mcp-connect", "mcp-device",
+  "oauth-handoff", "onboarding", "org", "plugins", "projects", "routines", "runs", "search", "settings", "skills", "status", "status-cards", "tasks",
+  "tests", "timeline", "tools", "u", "ux-lab", "workspaces"];
+export type UnservedLinkReason = "protocol-relative" | "not-a-served-route";
+/** Why a rendered same-origin link opens nothing the product serves, or undefined when it does. `savedTargets` are the
+ * Markdown targets of the saved reply that rendered it: the board repairs `//PREFIX/...` to `/PREFIX/...`, but the saved
+ * reply is also what notifications, chat channels and the API deliver, where a protocol-relative target leaves the app. */
+export function unservedLinkReason(href: string, origin: string, savedTargets: readonly string[] = []): UnservedLinkReason | undefined {
+  if (href.trim().startsWith("//") || !savedTargets.includes(href) && savedTargets.some(target => target.startsWith("//") && target.slice(1) === href)) return "protocol-relative";
+  let url: URL;
+  try { url = new URL(href, origin); } catch { return "not-a-served-route"; }
+  if (url.origin !== new URL(origin).origin) return undefined;
+  const parts = url.pathname.split("/").filter(Boolean).map(part => part.toLowerCase());
+  if (!parts.length || parts[0] === "api" || APP_ROUTE_ROOTS.includes(parts[0]!)) return undefined;
+  return parts.length === 1 || APP_ROUTE_ROOTS.includes(parts[1]!) ? undefined : "not-a-served-route";
+}
+/** Split rendered links into those that open a served app page or API route and those that do not. */
+export function partitionServedConversationLinks(rows: readonly RenderedConversationLink[], input: Pick<ConversationLinkInput, "origin" | "comments">) {
+  const links: RenderedConversationLink[] = [], rejected: Array<RenderedConversationLink & { reason: UnservedLinkReason }> = [];
+  for (const row of rows) {
+    const body = row.commentId ? input.comments.find(comment => comment.id === row.commentId)?.body : undefined;
+    const reason = unservedLinkReason(row.href, input.origin, body ? markdownLinkTargets(body) : []);
+    if (reason) rejected.push({ ...row, reason }); else links.push(row);
+  }
+  return { links, rejected };
 }
 export function conversationLinkBindings(input: ConversationLinkInput) {
   const comments = input.comments.filter(row => row.companyId === input.companyId && row.issueId === input.sourceId);
@@ -82,9 +144,15 @@ export function readConversationDomLinks(input: ReturnType<typeof conversationLi
  * saved lead reply to render so rendered links are not read too early. A page
  * that is not showing this conversation is left alone. */
 export const CONVERSATION_REPLY_RENDER_WAIT_MS = 10_000;
-// A reply that did not render within one wait is not waited for again on the same page, so repeated
-// observations in a poll loop pay the wait at most once per reply.
+// A reply that did not render within one wait is not waited for again in the same loaded document, so
+// repeated observations in a poll loop pay the wait at most once per reply. The expiry belongs to the
+// document, not the Playwright page: after a reload or navigation the thread renders again from scratch,
+// and reading it instantly then would capture no links although the reply renders moments later.
 const expiredReplyWaits = new WeakMap<object, Set<string>>();
+export function readConversationDocumentIdentity(): string {
+  const view = window as typeof window & { __paperclipConversationLinkDocument?: string };
+  return view.__paperclipConversationLinkDocument ??= `${performance.timeOrigin}:${Math.random()}`;
+}
 export type ConversationReplyRender = "closed" | "rendered" | "pending";
 export function readLatestConversationReplyRender(input: { anchors: string[]; latest: string }): ConversationReplyRender {
   const threadSelector = '[data-testid="task-chat-thread"], [data-testid="thread-root"]';
@@ -101,21 +169,108 @@ export async function waitForLatestConversationReplyRender(page: Pick<Page, "eva
   timeoutMs = CONVERSATION_REPLY_RENDER_WAIT_MS, intervalMs = 250): Promise<ConversationReplyRender> {
   const latest = bindings.replies.at(-1);
   if (!latest) return "rendered";
+  let documentIdentity: string;
+  try { documentIdentity = await page.evaluate(readConversationDocumentIdentity); } catch { return "closed"; }
+  const waitKey = `${documentIdentity}:${latest}`;
   const expired = expiredReplyWaits.get(page) ?? new Set<string>();
-  if (expired.has(latest)) timeoutMs = 0;
+  if (expired.has(waitKey)) timeoutMs = 0;
   // Bounded by attempts as well as time so a frozen test clock cannot spin.
   for (let attempt = 0, attempts = Math.max(1, Math.ceil(timeoutMs / intervalMs)), deadlineAt = Date.now() + timeoutMs; ; attempt++) {
     let state: unknown;
     try { state = await page.evaluate(readLatestConversationReplyRender, { anchors: bindings.anchors, latest }); } catch { return "closed"; }
     if (state !== "pending") return state === "closed" ? "closed" : "rendered";
-    if (attempt + 1 >= attempts || Date.now() >= deadlineAt) { expired.add(latest); expiredReplyWaits.set(page, expired); return "pending"; }
+    if (attempt + 1 >= attempts || Date.now() >= deadlineAt) { expired.add(waitKey); expiredReplyWaits.set(page, expired); return "pending"; }
     await new Promise(resolve => setTimeout(resolve, intervalMs));
   }
 }
+/** A finished run's reply comment can be saved shortly after the run itself is recorded as finished, and the open
+ * conversation renders it later still. Before acting on a turn's rendered links, wait (bounded) for each finished
+ * lead run's saved reply, then for the latest to render. "unsaved" means no run saved a reply in time. */
+export const TURN_REPLY_SAVE_WAIT_MS = 15_000;
+export async function waitForSavedTurnReplyRender(page: Pick<Page, "evaluate">, input: {
+  comments: () => Promise<Row[]>; leadId: string; runIds: readonly string[];
+}, timeoutMs = TURN_REPLY_SAVE_WAIT_MS, intervalMs = 250): Promise<ConversationReplyRender | "unsaved"> {
+  const deadlineAt = Date.now() + timeoutMs;
+  for (let attempt = 0, attempts = Math.max(1, Math.ceil(timeoutMs / intervalMs)); ; attempt++) {
+    const rows = await input.comments();
+    const replies = rows.filter(row => row.authorAgentId === input.leadId && input.runIds.includes(String(row.createdByRunId)));
+    const saved = input.runIds.length > 0 && input.runIds.every(id => replies.some(row => row.createdByRunId === id));
+    if (saved || attempt + 1 >= attempts || Date.now() >= deadlineAt) {
+      if (!replies.length) return "unsaved";
+      return waitForLatestConversationReplyRender(page, { anchors: rows.map(row => String(row.id)), replies: replies.map(row => String(row.id)) },
+        Math.max(CONVERSATION_REPLY_RENDER_WAIT_MS, deadlineAt - Date.now()), intervalMs);
+    }
+    await new Promise(resolve => setTimeout(resolve, intervalMs));
+  }
+}
+/** What a turn's reply wait saw: the bounded wait in the open document and, when the saved reply was still not
+ * rendered there, the same wait after one reload. */
+export interface TurnReplyRenderWait {
+  result: ConversationReplyRender | "unsaved";
+  attempts: Array<{ phase: "open-document" | "after-reload"; result: ConversationReplyRender | "unsaved"; waitedMs: number }>;
+}
+/** A saved reply that the open conversation still has not rendered after the bounded wait is not waited for
+ * forever: reload once (a fresh document reads the saved conversation) and wait again. Both results are
+ * returned so evidence shows whether the reply needed the reload, which points at a live-update defect. */
+export async function waitForSavedTurnReplyRenderReloadingOnce(page: Pick<Page, "evaluate" | "reload">, input: Parameters<typeof waitForSavedTurnReplyRender>[1],
+  timeoutMs = TURN_REPLY_SAVE_WAIT_MS, intervalMs = 250): Promise<TurnReplyRenderWait> {
+  const attempts: TurnReplyRenderWait["attempts"] = [];
+  const attempt = async (phase: TurnReplyRenderWait["attempts"][number]["phase"]) => {
+    const started = Date.now();
+    const result = await waitForSavedTurnReplyRender(page, input, timeoutMs, intervalMs);
+    attempts.push({ phase, result, waitedMs: Date.now() - started });
+    return result;
+  };
+  const first = await attempt("open-document");
+  if (first !== "pending") return { result: first, attempts };
+  await page.reload({ waitUntil: "domcontentloaded" });
+  // The reloaded app mounts the conversation after the document loads. Until a thread mounts the reply would read as
+  // "closed", so wait (bounded) for one before the second reply wait.
+  const mountedBy = Date.now() + timeoutMs;
+  for (;;) {
+    let mounted = false;
+    try { mounted = await page.evaluate(readConversationThreadMounted); } catch { mounted = false; }
+    if (mounted || Date.now() >= mountedBy) break;
+    await new Promise(resolve => setTimeout(resolve, intervalMs));
+  }
+  return { result: await attempt("after-reload"), attempts };
+}
+export function readConversationThreadMounted(): boolean {
+  return document.querySelector('[data-testid="task-chat-thread"], [data-testid="thread-root"]') !== null;
+}
 export async function collectConversationLinks(page: Page, input: ConversationLinkInput) {
+  return (await collectConversationLinksWithDiagnostics(page, input)).links;
+}
+/** What the page showed when a saved reply yielded no rendered links: each candidate thread root, whether it
+ * is visible, which saved comment anchors it renders, and how many anchors each saved reply carries. */
+export interface ConversationLinkDiagnostics {
+  render: ConversationReplyRender; expectedReplyIds: string[]; savedCommentCount: number;
+  threads: Array<{ testId: string | null; visible: boolean; renderedCommentIds: string[]; foreignCommentIds: string[]; replyAnchorCounts: Record<string, number> }>;
+}
+export function readConversationLinkDiagnostics(input: Pick<ReturnType<typeof conversationLinkBindings>, "anchors" | "replies">): Omit<ConversationLinkDiagnostics, "render"> {
+  const threadSelector = '[data-testid="task-chat-thread"], [data-testid="thread-root"]';
+  return { expectedReplyIds: input.replies, savedCommentCount: input.anchors.length,
+    threads: Array.from(document.querySelectorAll(threadSelector)).map(root => {
+      const ids = Array.from(root.querySelectorAll('[id^="comment-"]')).filter(node => node.closest(threadSelector) === root).map(node => node.id.slice("comment-".length));
+      return { testId: root.getAttribute("data-testid"), visible: root.getClientRects().length > 0,
+        renderedCommentIds: ids.filter(id => input.anchors.includes(id)), foreignCommentIds: ids.filter(id => !input.anchors.includes(id)),
+        replyAnchorCounts: Object.fromEntries(input.replies.map(id => [id, root.querySelector(`[id="comment-${id}"]`)?.querySelectorAll("a[href]").length ?? 0])) };
+    }) };
+}
+export async function collectConversationLinksWithDiagnostics(page: Page, input: ConversationLinkInput): Promise<{ links: RenderedConversationLink[];
+  rejected?: Array<RenderedConversationLink & { reason: UnservedLinkReason }>; diagnostics?: ConversationLinkDiagnostics }> {
   const bindings = conversationLinkBindings(input);
-  await waitForLatestConversationReplyRender(page, bindings);
-  return page.evaluate(readConversationDomLinks, bindings);
+  const render = await waitForLatestConversationReplyRender(page, bindings);
+  const { links, rejected } = partitionServedConversationLinks(await page.evaluate(readConversationDomLinks, bindings), input);
+  if (rejected.length) console.info(`[chat-rendered-links] links that open no served route: ${JSON.stringify(rejected.map(row => ({ href: row.href, reason: row.reason })))}`);
+  const kept = rejected.length ? { rejected } : {};
+  if (links.length || !bindings.replies.length) return { links, ...kept };
+  let diagnostics: ConversationLinkDiagnostics;
+  try { diagnostics = { render, ...await page.evaluate(readConversationLinkDiagnostics, { anchors: bindings.anchors, replies: bindings.replies }) }; }
+  catch { diagnostics = { render, expectedReplyIds: bindings.replies, savedCommentCount: bindings.anchors.length, threads: [] }; }
+  // Logged so an empty capture says whether the thread was closed, another conversation, or the reply had no anchors yet.
+  console.info(`[chat-rendered-links] no rendered reply links: ${JSON.stringify(diagnostics)}`);
+  return { links, ...kept, diagnostics };
 }
 export function conversationLinkLocator(page: Page, link: RenderedConversationLink): Locator {
   const thread = page.getByTestId(link.threadTestId).filter({ has: page.locator(`[id=${JSON.stringify(`comment-${link.anchorCommentId}`)}]`) });

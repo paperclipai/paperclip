@@ -8,7 +8,7 @@
  */
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -28,7 +28,7 @@ import { CREDENTIAL_FOR_ADAPTER, parseCommand, replayCommand, waveIdFor } from "
 import { assertControllerMatchesImage, assertProviderPackMismatch, defaultDaytonaImageCacheRoot, prepareDaytonaImageArtifacts } from "./daytona-image.js";
 import { PLUGIN_BUILD_STAMP, pluginBuildState } from "./plugin-build.js";
 import { DaytonaWaveSweeper, leaksForTask, unattributedLeaks, type DaytonaSweepResult } from "./daytona-sweep.js";
-import { knownSecretValues, redactKnownSecrets, writeEvidenceBundle } from "./evidence.js";
+import { knownSecretValues, redactKnownSecrets, wakeEvidenceOnce, writeEvidenceBundle } from "./evidence.js";
 import { gradeTask } from "./grader.js";
 import { releaseInstance } from "../runner-e2e/instance-retention.js";
 import { checkPlanInvariants, readUniversalDbEvidence, summarizeViolations, type InvariantCheck } from "./invariants.js";
@@ -42,16 +42,22 @@ import { matrixMayLaunch, planMatrixWave } from "./journey-matrix.js";
 import { redeployWave } from "./redeploy.js";
 import { withT1CrossingCheck } from "./workloads.js";
 import { parseRecoveryStepReceipts, withRecoveryStepCheck } from "./recovery-step-faults.js";
-import { captureWaveRunnerLogs } from "./daytona-runner-logs.js";
-import { StormRun, TASK_FAULT_LOG, observedFaultSchedule, planWave, replayOnCurrentBuild, replayRecordFor, replayWave, type TaskFaultLog } from "./scheduler.js";
+import { captureWaveRunnerLogs, executeInWaveSandboxes } from "./daytona-runner-logs.js";
+import { isClassRFault, killedPidsFromOutput, providerKillCommand, watchLabels, withClassRCheck, type ProviderKillRecord } from "./class-r.js";
+import { TASK_FAULT_LOG, observedFaultSchedule, planWave, replayOnCurrentBuild, replayRecordFor, replayWave, type TaskFaultLog } from "./scheduler.js";
 import { chaosLifecycleOverrides, seedChaosLab } from "./seed.js";
 import { ChaosSupervisor } from "./supervisor.js";
+import { planStagingMixWave } from "./staging-mix.js";
+import { StagingMixRun, stagingMixSeedOptions } from "./staging-mix-run.js";
+import { writeStagingMixResults } from "./staging-mix-retry.js";
 import { TimeShiftedApi } from "./time-faults.js";
 import type { RestartStep } from "./repeated-restarts.js";
 import { isBrokenStdoutError, markTimelineEchoBroken, Timeline } from "./timeline.js";
 import { guardedRunnerOutputs, worktreeFingerprint } from "./wave-guard.js";
 import { checkCrossServer, readCrossServerEvidence } from "./multi-server.js";
-import { sessionFaultServerEnvironment } from "./session-faults.js";
+import { ReleaseSwapWave, stormRunFor } from "./release-swap-setup.js";
+import { runnerBindFaultServerEnvironment, sessionFaultServerEnvironment } from "./session-faults.js";
+import { controllerLogNames, gradeWarmShutdown, isWarmWave, warmShutdownMarkdown, type WarmShutdownCleanup } from "./warm-shutdown.js";
 import type { FaultKind, FaultReceipt, OracleArtifacts, TriggerId, WavePlan } from "./types.js";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
@@ -93,7 +99,8 @@ async function loadPlan(): Promise<{ plan: WavePlan; keep: boolean }> {
     return { plan, keep: command.keep };
   }
   const waveId = waveIdFor(command.options.seed);
-  return { plan: command.options.matrix ? planMatrixWave(waveId, command.options) : planWave(waveId, command.options), keep: command.keep };
+  return { plan: command.options.stagingMix ? planStagingMixWave(waveId, command.options) : command.options.matrix ? planMatrixWave(waveId, command.options)
+    : planWave(waveId, command.options), keep: command.keep };
 }
 
 function run(command: string, args: string[], cwd: string, label: string) {
@@ -247,6 +254,7 @@ async function main(): Promise<number> {
   const violationKey = (violation: { rule: string; kind: string; recordId: string }) => `${violation.rule}:${violation.kind}:${violation.recordId}`;
   // `--k15-overlap-seconds`, `--k15-fresh-home`: the staging deploy shape (redeploy.ts).
   supervisor.deployShape = { overlap: plan.options.k15Overlap === true, freshHome: plan.options.k15FreshHome === true };
+  supervisor.ephemeralServer = plan.options.ephemeralServer === true;
   // `--fail-recovery-step`: fail the nth hit of one recovery step once, after the wave's first restart fault.
   const recoveryStepReceipts = path.join(waveDir, "recovery-step-receipts.jsonl");
   if (plan.options.failRecoveryStep) {
@@ -261,10 +269,15 @@ async function main(): Promise<number> {
   let sweeper: DaytonaWaveSweeper | null = null;
   let sandboxSweep: DaytonaSweepResult | null = null;
   let runnerLogTarget: { companyId: string; environmentId: string } | null = null;
-  const captureRunnerLogs = async (label: string) => {
+  // CR1–CR3 get the class R hooks (class-r.ts). Every Daytona wave captures its sandboxes with the class R probe
+  // (daytona-runner-logs.ts): staging's Runner loss also reproduces with no fault at all (W2 re-wake).
+  const classRWave = plan.tasks.some(task => isClassRFault(task.fault) || (task.replayFaults?.some(fault => isClassRFault(fault.kind)) ?? false));
+  const sandboxEvidence = plan.options.env === "daytona";
+  const captureRunnerLogs = async (label: string, deadlineMs?: number) => {
     if (!runnerLogTarget) return;
     const capture = await captureWaveRunnerLogs({ apiKey: process.env.DAYTONA_API_KEY!, ...runnerLogTarget,
-      outDir: path.join(waveDir, "daytona-runner"), label, secrets: knownSecretValues() });
+      outDir: path.join(waveDir, "daytona-runner"), label, secrets: knownSecretValues(),
+      probe: "class_r", ...(deadlineMs ? { deadlineMs } : {}) });
     timeline.add("runner_logs_captured", { label: capture.label, error: capture.error,
       sandboxes: capture.sandboxes.map(sandbox => `${sandbox.id}:${sandbox.state ?? "?"}${sandbox.file ? ":probed" : ""}${sandbox.error ? `:error=${sandbox.error.slice(0, 120)}` : ""}`) });
   };
@@ -296,6 +309,8 @@ async function main(): Promise<number> {
   let diskFullSeam: DiskFullFaultSeam | null = null;
   let speedSection: string | null = null;
   let storageSection: string | null = null;
+  let warmShutdownSection: string | null = null;
+  let daytonaCleanup: WarmShutdownCleanup | null = null;
   let harnessError: unknown;
   process.on("uncaughtException", error => {
     if (isSocketTypeOfServiceRace(error)) { timeline.add("harness_socket_race_ignored", { error: String(error) }); return; }
@@ -306,8 +321,8 @@ async function main(): Promise<number> {
     harnessError ??= error;
     interrupted = true;
   });
-  // Spend is read once per wave: after the tasks, or during cleanup when the wave stopped early.
   let spendTarget: { api: ChaosApi; companyId: string } | null = null;
+  let captureEvidence: (() => Promise<void>) | null = null;
   let spendRecorded = false;
   const recordWaveSpend = async () => {
     if (!spendTarget || spendRecorded) return;
@@ -318,8 +333,61 @@ async function main(): Promise<number> {
     timeline.add("wave_spend", { spend });
     console.info(`Wave spend: ${JSON.stringify(spend)}`);
   };
+  // CR2 and the class R watch read the task's latest run from the observers (set once they exist).
+  let classRObservers: TaskObserver[] = [];
+  const killTaskProvider = async (owned: { companyId: string; environmentId: string }, taskId: string): Promise<ProviderKillRecord> => {
+    const observer = classRObservers.find(candidate => candidate.plan.taskId === taskId);
+    const adapter = observer?.plan.adapter ?? "claude";
+    // The latest sample was taken just before the fault (snapshotBeforeFault); the server may already be down.
+    const runs = [...(observer?.record.samples ?? [])].reverse().find(sample => sample.runs?.length)?.runs ?? [];
+    const runId = runs.find(run => run.status === "running")?.id ?? null;
+    const record: ProviderKillRecord = { runId, adapter, at: Date.now(), sandboxId: null, killedPids: [], attempts: [], error: null };
+    if (!runId) record.error = "no running run for the task";
+    else {
+      const result = await executeInWaveSandboxes({ apiKey: process.env.DAYTONA_API_KEY!, ...owned, command: providerKillCommand(runId, adapter),
+        secrets: knownSecretValues(), done: attempt => attempt.exitCode === 0 || attempt.exitCode === 4 || attempt.exitCode === 5 });
+      record.attempts = result.attempts;
+      // Exit 0 is printed only when every selected provider process is confirmed gone.
+      const hit = result.attempts.find(attempt => attempt.exitCode === 0);
+      record.sandboxId = hit?.sandboxId ?? null;
+      record.killedPids = hit ? killedPidsFromOutput(hit.output) : [];
+      record.error = result.error ?? (hit ? null : result.attempts.some(attempt => attempt.exitCode === 5)
+        ? "a provider process survived the kill" : result.attempts.some(attempt => attempt.exitCode === 4)
+          ? "the run's Runner had no provider process" : "no sandbox runs a Runner for the run");
+    }
+    timeline.add("class_r_provider_killed", { taskId, runId, adapter, sandboxId: record.sandboxId, killedPids: record.killedPids, error: record.error,
+      attempts: record.attempts.map(attempt => `${attempt.sandboxId}:${attempt.exitCode ?? attempt.error?.slice(0, 80)}`) });
+    await writeFile(path.join(waveDir, "daytona-runner", `provider-kill-${taskId}-${record.at}.json`), `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 })
+      .catch(() => undefined);
+    return record;
+  };
+  // After a class R fault the controller is ready again; staging found the provider gone about 40 s later.
+  const watchClassR = async (receipt: FaultReceipt) => {
+    const readyAt = receipt.readyAt ?? Date.now();
+    for (const { label, atMs } of watchLabels(receipt.faultId)) {
+      const owner = classRObservers.find(candidate => candidate.plan.taskId === receipt.requestedBy);
+      // Keep watching through the staging window even after a fast rest; stop early only past it.
+      if (atMs > 60_000 && (owner?.done ?? true)) break;
+      if (interrupted) break;
+      const wait = readyAt + atMs - Date.now();
+      if (wait > 0) await delay(wait);
+      await captureRunnerLogs(label);
+      receipt.classR?.captures.push(label);
+    }
+  };
+  let sandboxWatchStopped = false;
+  const watchSandboxes = async (intervalMs: number) => {
+    const startedAt = Date.now();
+    while (!sandboxWatchStopped && !interrupted) {
+      const started = Date.now();
+      await captureRunnerLogs(`watch+${Math.round((started - startedAt) / 1000)}s`);
+      const wait = intervalMs - (Date.now() - started);
+      for (let left = wait; left > 0 && !sandboxWatchStopped && !interrupted; left -= 1_000) await delay(Math.min(1_000, left));
+    }
+  };
   let faultFailures = 0;
   let faultsQueued = 0;
+  let mix: StagingMixRun | null = null;
   try {
     if (plan.options.storage === "s3") {
       const binary = minioBinary();
@@ -365,6 +433,7 @@ async function main(): Promise<number> {
     if (plan.options.timeAgeMs) supervisor.timeAgeMs = plan.options.timeAgeMs;
     if (plan.options.rrStopOn) supervisor.rrStopOn = plan.options.rrStopOn;
     Object.assign(serverEnvironment, sessionFaultServerEnvironment(plan.options.sessionFaults));
+    Object.assign(serverEnvironment, runnerBindFaultServerEnvironment(plan.options.runnerBindFault));
     await supervisor.start(serverEnvironment);
     // TM2/TM3 age the database; the observer and grader read run times back at their real times.
     const api: ChaosApi = new TimeShiftedApi(supervisor.baseUrl, supervisor.agingShifts);
@@ -378,16 +447,25 @@ async function main(): Promise<number> {
       concurrency: plan.options.concurrency, budgetCents: plan.options.budgetCents, masks: plan.options.masks,
       fixtureRoot: path.join(supervisor.paths.temporaryRoot, "fixtures"), workspaceRepo: plan.options.workspaceRepo,
       workspaceCommit: plan.options.workspaceCommit, workspaceGitUrl: plan.options.workspaceGitUrl, waveId: plan.waveId, timeline,
-      adapterConfigOverrides: chaosLifecycleOverrides(plan.options.lifecycle),
+      adapterConfigOverrides: chaosLifecycleOverrides(plan.options.lifecycle), ...stagingMixSeedOptions(plan.options),
       onEnvironment: owned => {
         sweeper = new DaytonaWaveSweeper({ apiKey: process.env.DAYTONA_API_KEY!, companyId: owned.companyId, environmentId: owned.environmentId, api });
         // K15 on Daytona: the remote Runner's logs, identity and state while the controller is down (daytona-runner-logs.ts).
-        if (redeployWave(plan)) {
+        if (sandboxEvidence) {
           runnerLogTarget = { companyId: owned.companyId, environmentId: owned.environmentId };
-          supervisor.redeployEvidence = (faultId, phase) => captureRunnerLogs(`${faultId}-${phase}`);
+          if (redeployWave(plan)) supervisor.redeployEvidence = (faultId, phase) => captureRunnerLogs(`${faultId}-${phase}`);
+          // `--sandbox-watch-seconds`: capture on a clock too, for Runner exits that no fault announces (W2 re-wake).
+          if (plan.options.sandboxWatchMs) faultWork.push(watchSandboxes(plan.options.sandboxWatchMs));
         }
+        if (classRWave) supervisor.classR = {
+          capture: async (label, deadlineMs) => { await captureRunnerLogs(label, deadlineMs); return label; },
+          killProvider: requestedBy => killTaskProvider(owned, requestedBy),
+          watchAfterReady: receipt => { faultWork.push(watchClassR(receipt)); },
+        };
       } });
     spendTarget = { api, companyId: lab.companyId };
+    captureEvidence = wakeEvidenceOnce({ databaseUrl: waveDatabaseUrl, companyId: lab.companyId, waveDir, observers: () => launched, windows: supervisor.serverWindows, shifts: supervisor.agingShifts, redact: text => redactKnownSecrets(text, knownSecretValues()), note: (kind, data) => timeline.add(kind, data) });
+    const releaseSwap = plan.options.releaseSwap ? await ReleaseSwapWave.start({ plan, lab, api, timeline, supervisor, databaseUrl: waveDatabaseUrl(), cancelled: () => interrupted }) : null;
     // --db-pressure: contend with the wave's running run rows from outside the server (contention.ts).
     if (plan.options.dbPressure) {
       pressure = new RunRowPressure(waveDatabaseUrl(), lab.companyId, plan.options.dbPressure).start();
@@ -399,19 +477,23 @@ async function main(): Promise<number> {
       : new BoardUi(supervisor.baseUrl, undefined, path.join(waveDir, "ui-retry-diagnostics"));
     const observers = plan.tasks.map(task => new TaskObserver(task, api, lab, timeline, supervisor, protectedRoots, board));
     for (const observer of observers) if (isDiskFullFault(observer.plan.fault)) observer.diskFullSeam = diskFullSeam;
+    classRObservers = observers;
     const pending = [...observers];
     const launched: TaskObserver[] = [];
     const active: TaskObserver[] = [];
     const lastPoll = new Map<TaskObserver, number>();
     let lastDoneAt = Date.now();
-    // K13: storm faults fire on their own clock while tasks keep launching; then the storm drains.
-    const storm = plan.storm ? new StormRun(plan.storm, Date.now()) : null;
+    const storm = stormRunFor(plan, Date.now());
     if (storageProxy && (plan.options.storageWindows?.length || plan.options.storageFaults?.length)) {
       const windows = plan.options.storageWindows ?? planStorageFaults({ kinds: plan.options.storageFaults!, seed: plan.seed,
         spanMs: plan.storm?.durationMs ?? plan.tasks.length * 4 * 60_000, ...(plan.options.storageFaultMs ? { durationMs: plan.options.storageFaultMs } : {}) });
       storageChaos = new StorageChaos(windows, Date.now(), credentialRotation?.wrap(storageProxy) ?? storageProxy, (kind, data) => timeline.add(kind, data));
       if (!plan.options.storageWindows) storageChaos.start();
       timeline.add("storage_faults_planned", { windows: windows.map(window => `${window.kind}@${window.startMs}ms+${window.durationMs}ms`) });
+    }
+    if (plan.options.stagingMix && !plan.replayOf) {
+      mix = new StagingMixRun(plan.options.stagingMix, Date.now(), (kind, data) => timeline.add(kind, data), waveDir, plan.stagingMixSlots).start();
+      mix.inFlight = () => active.length;
     }
     if (storm) timeline.add("storm_started", { durationMs: storm.plan.durationMs, plannedFaults: storm.plan.faults.length });
     // Faults are serialized; each one hits every task in flight when it starts.
@@ -560,6 +642,7 @@ async function main(): Promise<number> {
         timeline.add("storm_ended", { faultsFired: storm.state.fired, inFlight: active.length, unlaunched: pending.length });
         pending.length = 0;
       }
+      if (mix?.endIfDue(now, pending.length)) pending.length = 0;
       // A failed fault or an unexpected exit leaves the server not ready.
       // Recover within a bound, or fail the wave instead of waiting forever.
       if (!supervisor.serverReady && !supervisor.faultInProgress) await supervisor.ensureServing();
@@ -571,12 +654,12 @@ async function main(): Promise<number> {
         }
       }
       // Recheck the storm clock per launch: ensureServing or a slow launch can cross the storm's end.
-      while (!crashPoint && active.length < plan.options.concurrency && pending.length && supervisor.serverReady && !supervisor.faultInProgress && !storageTrigger?.busy && !nativeTrigger?.busy
-        && (!storm || storm.mayLaunch(Date.now()))
+      while (!crashPoint && active.length < plan.options.concurrency && pending.length && (supervisor.serverReady && !supervisor.faultInProgress || releaseSwap?.driver.launchOpen === true) && !storageTrigger?.busy && !nativeTrigger?.busy
+        && (!storm || storm.mayLaunch(Date.now())) && (!mix || mix.mayLaunch(Date.now(), pending[0]!.plan))
         // `--matrix`: no-fault baselines never share the server with a fault cell.
         && (!plan.options.matrix || matrixMayLaunch(pending[0]!.plan, active.filter(observer => !observer.done).map(observer => observer.plan)))) {
         const next = pending.shift()!;
-        launched.push(next);
+        launched.push(next); releaseSwap?.noteLaunch(next);
         launching = next.launch().finally(() => { launching = null; });
         await launching;
         if (plan.options.storageWindows && storageChaos && launched.length === 1) storageChaos.start();
@@ -632,12 +715,29 @@ async function main(): Promise<number> {
           }
         }
       }
+      const slot = mix && !faultsQueued && !supervisor.faultInProgress && supervisor.serverReady ? mix.slotDue(Date.now()) : null;
+      const slotExposed = slot ? active.filter(candidate => !candidate.done) : [];
+      if (mix && slot && slotExposed.length) {
+        const exposed = slotExposed;
+        await Promise.all(exposed.map(candidate => candidate.snapshotBeforeFault()));
+        if (mix.commitSlot(slot, exposed.length)) {
+          timeline.add("staging_mix_fault_slot", { ...slot, exposed: exposed.map(candidate => candidate.plan.taskId) });
+          fireFault(slot.kind, slot.holdMs, "staging-mix", exposed, undefined, () => mix?.slotSettled());
+        }
+      }
       for (let index = active.length - 1; index >= 0; index -= 1) {
-        if (active[index]!.done) { active.splice(index, 1); lastDoneAt = Date.now(); }
+        if (!active[index]!.done) continue;
+        // Daytona: the sandboxes as the task rests, before the product releases them (pass or fail).
+        if (runnerLogTarget) faultWork.push(captureRunnerLogs(`${active[index]!.plan.taskId}-rest`));
+        active.splice(index, 1); lastDoneAt = Date.now();
       }
       await delay(1_000);
     }
+    sandboxWatchStopped = true;
+    await mix?.stop();
     await Promise.all(faultWork);
+    harnessError ??= mix && !interrupted ? mix.report(launched.length) ?? undefined : undefined;
+    if (mix && !interrupted && !releaseSwap) await mix.retryAfterSettle(launched, api, () => interrupted);
     if (storageTrigger) {
       const shortfall = storageTriggerShortfall(storageTrigger.finish(faults));
       storageSection = storageTriggerMarkdown(storageTrigger.receipts);
@@ -666,6 +766,7 @@ async function main(): Promise<number> {
       for (const observer of launched) observer.markUnfinished();
     }
 
+    if (releaseSwap && !(await releaseSwap.finish({ board, observers, launched, waveDir }))) anyFailure = true;
     // R6: let finalizers settle, then sweep for anything still pending.
     const quietFor = Date.now() - lastDoneAt;
     if (quietFor < QUIET_BEFORE_SWEEP_MS) await delay(QUIET_BEFORE_SWEEP_MS - quietFor);
@@ -678,8 +779,8 @@ async function main(): Promise<number> {
     }
     const attributed = new Set<string>();
     const secrets = knownSecretValues();
-    // U3 and L1 read the wave database once, before the instance is removed.
     const evidenceDb = createDb(waveDatabaseUrl());
+    await captureEvidence?.();
     const universalByIssue = await readUniversalDbEvidence(evidenceDb, lab.companyId).catch(error => {
       timeline.add("universal_db_evidence_failed", { error: String(error) }); return null; });
     const allRunMessages = new Map([...(universalByIssue?.values() ?? [])].flatMap(entry => [...entry.runMessages]));
@@ -717,8 +818,10 @@ async function main(): Promise<number> {
         : withT1CrossingCheck(oracle, observer.plan, artifacts?.documents.brief, faults);
       // `--fail-recovery-step`: the step failed in the replacement, and no attempt of the task failed (recovery-step-faults.ts).
       const armedStep = faults.find(receipt => receipt.recoveryStep);
-      const toolOracle = withRecoveryStepCheck(t1Oracle, armedStep?.recoveryStep ? { faultId: armedStep.faultId, ...armedStep.recoveryStep } : null,
+      const stepOracle = withRecoveryStepCheck(t1Oracle, armedStep?.recoveryStep ? { faultId: armedStep.faultId, ...armedStep.recoveryStep } : null,
         observer.record.faultIds, parseRecoveryStepReceipts(await readFile(recoveryStepReceipts, "utf8").catch(() => "")), artifacts?.runs ?? []);
+      // CR1–CR3: the task's own fault applied (CR2 killed a provider, CR3 stalled the plugin worker; class-r.ts).
+      const toolOracle = withClassRCheck(stepOracle, observer.plan, faults);
       const grade = gradeTask(observer.record, faults, observer.definition.budgetMs, toolOracle, universalByIssue ? {
         runMessages: allRunMessages, recoveryActions: universalByIssue.get(observer.record.issueId ?? "")?.recoveryActions ?? [] } : undefined);
       let evidence: string | null = null;
@@ -734,6 +837,8 @@ async function main(): Promise<number> {
         rules: Object.fromEntries(Object.entries(grade.rules).map(([id, rule]) => [id, rule.verdict])), T: grade.T.verdict,
         universal: Object.fromEntries(Object.entries(grade.universal ?? {}).map(([id, rule]) => [id, `${rule.verdict}${rule.enforced ? "" : " (warning)"}`])) });
     }
+    if (mix) await writeStagingMixResults({ waveDir, api, companyId: lab.companyId, tasks: launched, timeline: timeline.entries })
+      .catch(error => { harnessError ??= new Error(`Staging-mix results failed: ${String(error)}`); });
     // MS1–MS3: the cross-server invariant over the whole wave (multi-server.ts).
     if (faults.some(receipt => receipt.multiServer)) {
       const crossServer = await readCrossServerEvidence(evidenceDb, lab.companyId)
@@ -798,18 +903,20 @@ async function main(): Promise<number> {
     harnessError = error;
     timeline.add("harness_error", { error: error instanceof Error ? error.stack ?? error.message : String(error) });
   } finally {
+    sandboxWatchStopped = true;
+    await mix?.stop().catch(() => undefined);
     await stopPressure().catch(error => timeline.add("db_pressure_stop_failed", { error: String(error) }));
-    // Best effort for an interrupted or failed wave; the server may already be down.
+    await captureEvidence?.();
     if (supervisor.serverReady) await recordWaveSpend().catch(() => undefined);
     await board?.close().catch(() => undefined);
     await closeJourneyApps();
-    // A failure here (for example writing the report) must not skip stopping the controller and Postgres.
     try { if (sweeper) try {
       const owned = sweeper as DaytonaWaveSweeper;
       // An interrupted wave still reports what it leaked before cleanup.
       sandboxSweep ??= await owned.sweep(0);
       // Cleanup only through Paperclip; the harness never changes a sandbox.
       const cleanup = await owned.cleanUp();
+      daytonaCleanup = cleanup;
       timeline.add("daytona_cleanup", cleanup);
       console.info(`Daytona R6 sweep: ${sandboxSweep.liveSandboxes.length} live, ${sandboxSweep.archivedSandboxes.length} archived after release, `
         + `${sandboxSweep.orphanSandboxes.length} orphaned, `
@@ -841,6 +948,17 @@ async function main(): Promise<number> {
         timeline.add("supervisor_stop_failed", { error: String(error) });
       }
     }
+    if (isWarmWave(plan.options)) {
+      const logDir = path.dirname(supervisor.paths.serverLogPath);
+      const controllerLogs = controllerLogNames(await readdir(logDir).catch(() => [] as string[]));
+      const serverLog = (await Promise.all(controllerLogs.map(name => readFile(path.join(logDir, name), "utf8").catch(() => "")))).join("\n");
+      const warmShutdown = gradeWarmShutdown({ cleanup: daytonaCleanup, serverLog });
+      timeline.add("warm_shutdown", { ...warmShutdown });
+      if (warmShutdown.verdict === "fail") anyFailure = true;
+      warmShutdownSection = warmShutdownMarkdown(warmShutdown);
+      await writeFile(path.join(waveDir, "warm-shutdown.json"), `${JSON.stringify(warmShutdown, null, 2)}\n`, { mode: 0o600 })
+        .catch(error => timeline.add("warm_shutdown_write_failed", { error: String(error) }));
+    }
     storageChaos?.stop();
     await credentialRotation?.settled();
     if (credentialRotation?.failures.length) harnessError ??= new Error(`ST5R credential rotation failed: ${credentialRotation.failures.join("; ")}`);
@@ -867,7 +985,7 @@ async function main(): Promise<number> {
     if (lines.length) {
       await appendLedger(resultsRoot, lines);
       const summary = await writeSummary(resultsRoot, plan.waveId);
-      await writeFile(path.join(waveDir, "SUMMARY.md"), [summary, speedSection, storageSection].filter(Boolean).join("\n"), { mode: 0o600 });
+      await writeFile(path.join(waveDir, "SUMMARY.md"), [...await Promise.all(["staging-mix-summary.md", "release-swap-summary.md"].map(file => readFile(path.join(waveDir, file), "utf8").catch(() => null))), summary, warmShutdownSection, speedSection, storageSection].filter(Boolean).join("\n"), { mode: 0o600 });
       console.info(`\n${summary}`);
     }
   }

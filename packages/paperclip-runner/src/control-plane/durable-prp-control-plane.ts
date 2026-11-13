@@ -105,6 +105,7 @@ const commandTypes = new Set([
   "interaction.receipt",
   "semantic_tool.result",
   "external_provider.operation",
+  "runner.attachment.download",
   "session.snapshot",
   "session.goal.get",
   "session.goal.set",
@@ -596,6 +597,34 @@ export function inspectUnclaimedBootstrapCheckpoint(
   } catch { return null; }
 }
 
+function isUnauthenticatedBootstrapState(state: StoredCoreState, expected: Partial<DurableRecoveryIdentity>): boolean {
+  const history = state.bootstrapHistory;
+  const matches = (candidate: DurableRecoveryIdentity | undefined) => candidate !== undefined
+    && (Object.keys(expected) as Array<keyof DurableRecoveryIdentity>).every(key => candidate[key] === expected[key]);
+  return !(state.schema !== coreStateSchema || state.checkpointEventPolicy !== "control-v1"
+      || !expected.runId || !matches(state.identity)
+      || history?.schema !== "paperclip.runner.bootstrap-history.v1"
+      || canonicalJson(history.originIdentity) !== canonicalJson(state.identity)
+      || history.adopted !== false
+      || state.warmTransition || state.completedWarmTransition || state.stagedRunAttachment
+      || state.connectionCount !== 0 || state.ackedSourceSeq !== 0 || state.committedEvents.length !== 0
+      || Object.values(state.tickets).some(ticket => ticket.usedAt !== null || ticket.warmTransitionId !== undefined)
+      || Object.keys(state.leases).length !== 0 || state.lastLeaseId !== null || state.lastLeaseExpiresAt !== null
+      || state.replayDeliveries !== 0 || state.duplicateCommandResults !== 0
+      || state.commands.length < 2 || state.commands[0]?.type !== "run.prepare"
+      || state.commands[1]?.type !== "session.open"
+      || state.commands.some(command => command.status !== "pending" || command.result !== null));
+}
+
+export function inspectUnauthenticatedBootstrapCheckpoint(
+  records: ReadonlyMap<string, string>, expected: Partial<DurableRecoveryIdentity>,
+): boolean {
+  try {
+    if ([...records.values()].reduce((bytes, value) => bytes + Buffer.byteLength(value), 0) > 8 * 1024 * 1024) return false;
+    return isUnauthenticatedBootstrapState(checkpointState(records).state, expected);
+  } catch { return false; }
+}
+
 export function inspectUnclaimedBootstrapState(
   contents: string, expected: DurableRecoveryIdentity, verifiedArtifact: { version: string; digest: string },
 ): ReturnType<typeof inspectUnclaimedBootstrapCheckpoint> {
@@ -646,6 +675,9 @@ export interface RunnerProcessLaunchSpec {
   args: readonly string[];
   cwd: string;
   environment: NodeJS.ProcessEnv;
+  /** True while the launched Runner holds an authenticated connection to its control plane. */
+  isRunnerConnected?: () => boolean;
+  refreshBootstrapTicket?: () => Promise<string>;
 }
 
 function domainDigest(domain: string, parts: readonly Buffer[]): Buffer {
@@ -2066,6 +2098,8 @@ export class DurablePrpControlPlane {
    * in-flight and failed dispatches remain. */
   #liveDispatchedSemanticCalls = new Set<string>();
   #semanticCallbacksRetired = false;
+  #queuedCommandResults = new Map<string, { count: number; queuedAt: number }>();
+  #inboundFrameSettledAt = 0;
   #semanticResultPersistenceFailed = false;
   #semanticResultFailures: Array<{
     callId: string;
@@ -2083,6 +2117,7 @@ export class DurablePrpControlPlane {
   #beforeAuthenticatedConnection?: DurablePrpControlPlaneOptions["beforeAuthenticatedConnection"];
   #onProtocolIntegrityError?: DurablePrpControlPlaneOptions["onProtocolIntegrityError"];
   #onAuthenticatedConnection?: DurablePrpControlPlaneOptions["onAuthenticatedConnection"];
+  readonly #runnerExitListeners = new Set<() => void>();
   #protocolIntegrityError: NativeSessionProtocolIntegrityError | null = null;
   #eventDeliveryStall: { runId: string; ackedSourceSeq: number; since: number; failures: number } | null = null;
   #connectionLeaseTtlMs: number;
@@ -2163,6 +2198,19 @@ export class DurablePrpControlPlane {
     this.#readableStateListeners.add(listener);
     return () => {
       this.#readableStateListeners.delete(listener);
+    };
+  }
+
+  /**
+   * Notify when the Runner reports a completed suspend or shutdown. The
+   * listener runs after the result is saved and before its acknowledgement;
+   * the Runner exits once acknowledged, so a dropped connection after this
+   * point is that exit, not a transport loss.
+   */
+  onRunnerExitCommitted(listener: () => void): () => void {
+    this.#runnerExitListeners.add(listener);
+    return () => {
+      this.#runnerExitListeners.delete(listener);
     };
   }
 
@@ -2467,6 +2515,10 @@ export class DurablePrpControlPlane {
     for (const connection of connections) connection.close();
   }
 
+  activeRunnerProtocolVersion(): number | null {
+    return this.#eventOwner?.lease?.protocolVersion ?? null;
+  }
+
   activeRunnerConnectionCount(): number {
     return [...this.#connections].filter(
       (connection) => connection.secureChannel !== null,
@@ -2639,6 +2691,27 @@ export class DurablePrpControlPlane {
    * source for a later run.attach. Repeating the same write is idempotent;
    * changing an established seed fails closed.
    */
+  queuedCommandResultProgressAt(commandId: string): number | null {
+    const queued = this.#queuedCommandResults.get(commandId);
+    return queued === undefined ? null : Math.max(queued.queuedAt, this.#inboundFrameSettledAt);
+  }
+
+  withdrawUndeliveredTerminalCommands(): string[] {
+    if (this.#store.state.warmTransition) return [];
+    const commands = this.#store.state.commands;
+    const firstPending = commands.findIndex((command) => command.status === "pending");
+    if (firstPending < 0) return [];
+    const suffix = commands.slice(firstPending);
+    const kept = suffix.filter((command) => !this.#isTerminalLifecycleCommand(command));
+    if (kept.length === suffix.length) return [];
+    const withdrawn = suffix.filter((command) => this.#isTerminalLifecycleCommand(command));
+    for (const command of withdrawn) delete this.#store.state.commandDeliveryCounts[command.commandId];
+    kept.forEach((command, index) => { command.controllerSeq = firstPending + index + 1; });
+    commands.splice(firstPending, suffix.length, ...kept);
+    this.#store.save();
+    return withdrawn.map((command) => command.type);
+  }
+
   persistRunAttachTemplate(runAttachTemplate: Record<string, unknown>): void {
     if (!isRecord(runAttachTemplate.provider)) {
       throw new Error("Durable PRP run attachment template is invalid.");
@@ -2914,12 +2987,18 @@ export class DurablePrpControlPlane {
       }
     }
     const controllerSeq = this.#store.state.commands.length + 1;
+    const sequenceId = `command_prp_${controllerSeq.toString().padStart(8, "0")}`;
+    let generatedId = sequenceId;
+    for (let reuse = 1; this.#store.state.commands.some((candidate) => candidate.commandId === generatedId); reuse += 1) {
+      generatedId = `${sequenceId}_${reuse}`;
+    }
     const command: DurableRecoveryCoreCommand = {
-      schema: type === "external_provider.operation" ? "paperclip.prp.command.v3" : type.startsWith("session.goal.")
-        ? "paperclip.prp.command.v2"
-        : "paperclip.prp.command.v1",
-      commandId:
-        commandId ?? `command_prp_${controllerSeq.toString().padStart(8, "0")}`,
+      schema: type === "external_provider.operation" || type === "runner.attachment.download"
+        ? "paperclip.prp.command.v3"
+        : type.startsWith("session.goal.")
+          ? "paperclip.prp.command.v2"
+          : "paperclip.prp.command.v1",
+      commandId: commandId ?? generatedId,
       controllerSeq,
       type,
       issuedAt: new Date().toISOString(),
@@ -3053,11 +3132,25 @@ export class DurablePrpControlPlane {
           undecryptedFrames += 1;
           frame = { raw: value };
         }
+        const answeredCommandId = "decrypted" in frame && frame.decrypted.kind === "command_result"
+          ? (frame.decrypted.payload as Record<string, unknown> | undefined)?.commandId : undefined;
+        const queuedResult = typeof answeredCommandId === "string" ? answeredCommandId : null;
+        if (queuedResult !== null) {
+          const queued = this.#queuedCommandResults.get(queuedResult);
+          this.#queuedCommandResults.set(queuedResult, { count: (queued?.count ?? 0) + 1, queuedAt: queued?.queuedAt ?? Date.now() });
+        }
         processing = processing
           .then(() => "raw" in frame
             ? this.#handleJson(connection, frame.raw).finally(() => { undecryptedFrames -= 1; })
             : this.#handleDecryptedFrame(connection, frame.decrypted))
-          .catch(() => connection.close());
+          .catch(() => connection.close())
+          .finally(() => {
+            this.#inboundFrameSettledAt = Date.now();
+            if (queuedResult === null) return;
+            const queued = this.#queuedCommandResults.get(queuedResult);
+            if (queued !== undefined && queued.count > 1) queued.count -= 1;
+            else this.#queuedCommandResults.delete(queuedResult);
+          });
         const tail = processing;
         this.#connectionProcessing.set(connection, tail);
         const release = () => {
@@ -4136,6 +4229,15 @@ export class DurablePrpControlPlane {
     command.result = structuredClone(result);
     this.#store.save();
     if (turnStart) crashPoint("runner.turn_start.after_controller_journal_before_db_checkpoint");
+    if (this.#isTerminalLifecycleCommand(command) && status === "completed") {
+      for (const listener of this.#runnerExitListeners) {
+        try {
+          listener();
+        } catch {
+          // An observer can never change the acknowledgement.
+        }
+      }
+    }
     this.#ackTerminalCommandResult(connection, command);
     this.#releaseServingLifecycle(connection, command);
     if (!this.#isTerminalLifecycleCommand(command) || connection.terminalLifecycleCommandId === null) {
@@ -4732,6 +4834,8 @@ export function spawnRunner(options: {
   };
   environment?: NodeJS.ProcessEnv;
   processLauncher?: (spec: RunnerProcessLaunchSpec) => RunnerProcessHandle;
+  isRunnerConnected?: () => boolean;
+  refreshBootstrapTicket?: () => Promise<string>;
   diagnosticsDirectory?: string;
 }): RunnerProcessHandle {
   for (const value of [options.maxRuntimeMs, options.maxLifetimeMs]) {
@@ -4874,13 +4978,15 @@ export function spawnRunner(options: {
         throw new Error("runner_process_termination_unconfirmed");
       }
       if (lifetimeDeadline !== undefined && lifetimeDeadline <= Date.now()) throw new Error("runner_process_lifetime_expired");
-      return spawnRunner({ ...options, ticket,
+      return spawnRunner({ ...options, ticket, refreshBootstrapTicket: undefined,
         ...(lifetimeDeadline === undefined ? {} : { maxLifetimeMs: lifetimeDeadline - Date.now() }) });
     },
   });
   if (options.processLauncher !== undefined) {
     return withRestart(
       options.processLauncher({ command, args, cwd: packageRoot, environment,
+        ...(options.isRunnerConnected ? { isRunnerConnected: options.isRunnerConnected } : {}),
+        ...(options.refreshBootstrapTicket ? { refreshBootstrapTicket: options.refreshBootstrapTicket } : {}),
         nativeRunner: {
           identity: options.identity, ticket: options.ticket, connection, stateDirectory: options.stateDirectory,
           runnerVersion: options.runnerVersion, runnerDigest: options.runnerDigest,

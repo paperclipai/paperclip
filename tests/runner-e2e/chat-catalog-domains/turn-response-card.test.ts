@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { INTERACTION_OWNS_RESPONSE, replyOrCardText, turnResponseCards } from "./turn-response-card.js";
+import { INTERACTION_OWNS_RESPONSE, renderedMarkdownLinks, replyOrCardLinks, replyOrCardText, turnResponseCards } from "./turn-response-card.js";
 import { grade_goals } from "./internal-goals.js";
 import { observation as internalObservation } from "./internal-support.js";
 
@@ -102,5 +102,44 @@ describe("goals.align-existing-work final phase", () => {
       Object.assign(hidden, { finalPhaseCards: cards([row]) });
       expect((hidden as { finalPhaseCards?: unknown[] }).finalPhaseCards).toHaveLength(1); expect(denial(hidden)).toBe(false);
     }
+  });
+});
+
+// Decision after full cohort 4: a question card counts as the turn's reply; its Markdown-rendered fields can carry links.
+describe("links a response card renders", () => {
+  it("reads Markdown links from a question form's description and prompts and a confirmation's prompt and details only", () => {
+    const question = goalQuestion() as ReturnType<typeof goalQuestion> & { payload: Record<string, unknown> };
+    question.payload.questionSet = { schema: "paperclip.question_set.v1", description: "Pick [COM-1](/COM/issues/COM-1) or [COM-2](/COM/issues/COM-2).",
+      questions: [{ id: "goal_choice", prompt: "Which one? [COM-9](/COM/issues/COM-9)", answerMode: "single_select", required: true,
+        options: [{ id: "a", label: "[COM-8](/COM/issues/COM-8)" }, { id: "b", label: "COM-2" }] }] };
+    const [card] = cards([question]);
+    // QuestionForm renders the description and each prompt with MarkdownBody; option labels stay plain text.
+    expect(card!.links).toEqual(["/COM/issues/COM-1", "/COM/issues/COM-2", "/COM/issues/COM-9"]);
+    const review = draftReview(); review.payload.prompt = "Open [the draft](/COM/issues/COM-3#document-draft) first.";
+    expect(cards([review])[0]!.links).toEqual(["/COM/issues/COM-3#document-draft"]);
+    expect(replyOrCardLinks(["/COM/agents/ceo"], [card!])).toEqual(["/COM/agents/ceo", "/COM/issues/COM-1", "/COM/issues/COM-2", "/COM/issues/COM-9"]);
+  });
+  it("reads prompt links from a legacy question form without a questionSet", () => {
+    const question = goalQuestion(); question.payload.questions[0]!.prompt = "Which goal? See [the growth goal](/COM/goals/growth).";
+    expect(cards([question])[0]!.links).toEqual(["/COM/goals/growth"]);
+  });
+  it("finds no link in a card without Markdown links, such as cohort 4's ambiguous-task options", () => {
+    const question = goalQuestion();
+    question.payload.questions[0]!.options = [{ id: "com-1", label: "COM-1 in Launch project" }, { id: "com-2", label: "COM-2 in Experiments project" }];
+    expect(cards([question])[0]!.links).toEqual([]);
+  });
+});
+describe("Markdown a card renders as clickable links", () => {
+  it("counts inline links and autolinks, not code, fenced blocks, images or bare reference definitions", () => {
+    expect(renderedMarkdownLinks("Open [Create organization](/onboarding) or <https://example.test/a>.")).toEqual(["/onboarding", "https://example.test/a"]);
+    expect(renderedMarkdownLinks("Type `[setup](/onboarding)` to see the syntax.")).toEqual([]);
+    expect(renderedMarkdownLinks("```\n[setup](/onboarding)\n```\nThen continue.")).toEqual([]);
+    expect(renderedMarkdownLinks("[setup]: /onboarding")).toEqual([]);
+    // A used reference definition renders a link: full, collapsed and shortcut forms.
+    expect(renderedMarkdownLinks("Open [Create organization][setup].\n\n[setup]: /onboarding")).toEqual(["/onboarding"]);
+    expect(renderedMarkdownLinks("Open [setup][] now.\n[Setup]: </onboarding>")).toEqual(["/onboarding"]);
+    expect(renderedMarkdownLinks("Open [setup].\n[setup]: /onboarding")).toEqual(["/onboarding"]);
+    expect(renderedMarkdownLinks("Open [Create organization][missing].\n[setup]: /onboarding")).toEqual([]);
+    expect(renderedMarkdownLinks("![logo](/logo.png)")).toEqual([]);
   });
 });

@@ -425,6 +425,7 @@ export function ProviderSubscriptionCard({
   mode,
   loading,
   failure,
+  failureMessage,
   onRetry,
   children,
 }: {
@@ -432,6 +433,7 @@ export function ProviderSubscriptionCard({
   authorizationUrl?: string;
   onOpenAuthorization?: () => void;
   failure?: "expired" | "failed";
+  failureMessage?: string;
   onRetry?: () => void;
   mode: "submitted_code" | "displayed_code" | "browser_redirect";
   loading?: boolean;
@@ -465,7 +467,7 @@ export function ProviderSubscriptionCard({
     >
       {failure && (
         <div className="flex flex-col items-start gap-3 px-2">
-          <p role="alert" className="text-sm text-muted-foreground">Retry sign-in to get a fresh code. Your setup is saved.</p>
+          <p role="alert" className="text-sm text-muted-foreground">{failureMessage ?? "Retry sign-in to get a fresh code. Your setup is saved."}</p>
           {onRetry && <Button type="button" variant="outline" onClick={onRetry}>Retry sign-in</Button>}
         </div>
       )}

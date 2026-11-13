@@ -41,6 +41,7 @@ import {
   type TaskViewKey,
 } from "../lib/task-views";
 import { useUpdateIssueMutation } from "../hooks/useUpdateIssueMutation";
+import { usePageContentReady } from "../hooks/usePageContentReady";
 
 const WORKSPACE_FILTER_ISSUE_LIMIT = 1000;
 const ISSUES_PAGE_SIZE = 100;
@@ -313,6 +314,8 @@ function OrganizationIssues({
 
   const { data: issuePages, isFetchingNextPage, hasNextPage, fetchNextPage } = issuesQuery;
   const issuesView = useQueryView(issuesQuery);
+  // The task list is loaded once its first page of rows has rendered.
+  usePageContentReady(!selectedCompanyId || (issuesView.kind !== "loading" && issuesView.kind !== "reconnecting"));
   const issues = useMemo(() => mergeIssuePagesStable(issuePages?.pages ?? []) as Issue[], [issuePages]);
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns, issues), [issues, liveRuns]);
   const hasMoreServerIssues = syncedSearch.trim().length === 0

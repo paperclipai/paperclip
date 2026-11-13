@@ -28,6 +28,7 @@ export const RUNNERD_PATH = "usr/local/bin/paperclip-runnerd";
 export const PROVIDER_PACK_PATH = "opt/paperclip-runner/provider-pack";
 export const CONTENT_ID_LABEL = "io.paperclip.runner.content-id";
 export const REVISION_LABEL = "org.opencontainers.image.revision";
+export const RUNNER_REVISION_LABEL = "io.paperclip.runner.source-revision";
 const RECEIPT_SCHEMA = "paperclip-restart-chaos/daytona-image-artifacts/v1";
 const IMMUTABLE_IMAGE = /^[a-z0-9.-]+(?::[0-9]+)?\/[a-z0-9._/-]+@sha256:([0-9a-f]{64})$/;
 
@@ -416,14 +417,17 @@ export async function prepareDaytonaImageArtifacts(input: { image: string; cache
     if (pack.schema !== "paperclip-runner/remote-provider-pack/v1" || !/^sha256:[0-9a-f]{64}$/.test(pack.digest ?? "")) {
       throw new Error("Image provider-pack.json is not a paperclip-runner/remote-provider-pack/v1 manifest");
     }
-    if (pack.payload?.runnerSourceRevision !== sourceRevision) {
-      throw new Error(`Provider pack was built from ${pack.payload?.runnerSourceRevision ?? "an unknown revision"}, but the image revision label is ${sourceRevision}`);
+    const runnerLabel = config.config?.Labels?.[RUNNER_REVISION_LABEL] ? RUNNER_REVISION_LABEL : REVISION_LABEL;
+    const runnerRevision = config.config?.Labels?.[runnerLabel] ?? "";
+    if (!/^[0-9a-f]{40}$/.test(runnerRevision)) throw new Error(`Image label ${runnerLabel} is not a full commit`);
+    if (pack.payload?.runnerSourceRevision !== runnerRevision) {
+      throw new Error(`Provider pack was built from ${pack.payload?.runnerSourceRevision ?? "an unknown revision"}, but the image label ${runnerLabel} is ${runnerRevision}`);
     }
     const receiptFor = (root: string): DaytonaImageArtifacts => ({
       schema: RECEIPT_SCHEMA, image: input.image, platformManifestDigest: `sha256:${sha256(manifestBytes)}`, contentId, sourceRevision,
       runnerdPath: path.join(root, "rootfs", ...RUNNERD_PATH.split("/")), runnerdSha256: "",
       providerPackPath: path.join(root, "rootfs", ...PROVIDER_PACK_PATH.split("/")), providerPackManifestSha256: sha256(packBytes),
-      providerPackDigest: pack.digest!, providerPackRunnerSourceRevision: sourceRevision, extractedAt: new Date().toISOString(),
+      providerPackDigest: pack.digest!, providerPackRunnerSourceRevision: runnerRevision, extractedAt: new Date().toISOString(),
     });
     const runnerdSha256 = await fileSha256(runnerd);
     const publishTo = async (root: string) => {

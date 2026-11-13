@@ -18,7 +18,9 @@ jobs:
   refresh:
     if: github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Server shard logs are 30-65 MB each and the master lanes alone fetch
+    # about 30 of them, three at a time; 20 minutes left no headroom.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:

@@ -265,6 +265,7 @@ checks. Providers that omit the capability do not support predecessor recovery.
 ## Launch authentication validation
 
 Declare `projectAuthCheckVersion: 1` in `describe` for each native task launch.
+For a new task, Core reads this flag from the same description it uses to set up Runner.
 Core calls `check_project_auth` after preparation and before credential transfer.
 The request names the configuration ID, provider, and authorized project IDs.
 It contains no credential.
@@ -440,8 +441,10 @@ back to reading remote paths on the server. Existing artifact uploads are unchan
 
 A login-capable environment driver can host authorization on a saved agent's
 computer. Core checks the company, environment, agent lifecycle, manifest, and
-live worker hooks before acquisition. The chosen agent is a transport target;
-it does not change the signed-in account's owner or agent grants.
+live worker hooks before acquisition. Managed AI Connection requests can omit
+the agent ID so Core selects an eligible agent from the company and environment.
+Core uses that ID throughout the login. The chosen agent is a transport target
+and the signed-in account retains its own owner and agent grants.
 
 Core acquires this resource with `purpose: "login"`, the fixed command key, and
 an absolute expiry. The returned lease must attest an expiry no later than that

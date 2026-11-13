@@ -119,6 +119,8 @@ export interface CostByAgent {
   /** Ledger events in this group and selected date range, not distinct runs. */
   eventCount: number;
   estimatedEventCount: number;
+  /** Events with usage but no known price; their cost is missing from costCents, not zero. */
+  unpricedEventCount: number;
   costCents: number;
   costCentsExact?: string;
   inputTokens: number;
@@ -183,6 +185,8 @@ export interface CostByAgentModel {
   /** Ledger events in this group and selected date range, not distinct runs. */
   eventCount: number;
   estimatedEventCount: number;
+  /** Events with usage but no known price; their cost is missing from costCents, not zero. */
+  unpricedEventCount: number;
   costCents: number;
   costCentsExact?: string;
   inputTokens: number;
@@ -212,6 +216,8 @@ export interface CostByProject {
   /** Ledger events in this project and selected date range, not distinct runs. */
   eventCount: number;
   estimatedEventCount: number;
+  /** Events with usage but no known price; their cost is missing from costCents, not zero. */
+  unpricedEventCount: number;
   costCents: number;
   costCentsExact?: string;
   inputTokens: number;

@@ -388,12 +388,15 @@ describe("executeNativeSession recovery", () => {
       async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; },
       completeRun,
     };
+    const prepareWakeAttachmentPrompt = vi.fn(async () => "Read the fresh attachment at /run/attachments/restarted.png.");
     const execution = executeNativeSession({
-      input: executionInput, backend, controlPlane: port, persistedSession: checkpoint,
+      input: executionInput, backend, controlPlane: port, persistedSession: checkpoint, prepareWakeAttachmentPrompt,
       runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery", resumeInterruptedTurn: true,
     });
     void execution.catch(() => undefined);
     await vi.waitFor(() => expect(turnStarts()).toHaveLength(1));
+    expect(prepareWakeAttachmentPrompt).toHaveBeenCalledOnce();
+    expect(JSON.stringify(turnStarts()[0]!.params)).toContain("/run/attachments/restarted.png");
     // Like the RC-60 Claude turns: the continuation ends saying it will wait
     // for a background command, with no paperclip_finish.
     recoveredTransport.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-2", status: "completed", items: [] } });
@@ -5958,6 +5961,7 @@ describe("executeNativeSession recovery", () => {
     expect(cancel).toHaveBeenCalledWith({
       reason: "Native session event consumption failed.",
       signal: expect.any(AbortSignal),
+      failureCleanup: true,
     });
     expect(providerResult).not.toHaveBeenCalled();
     expect(events.map((event) => event.eventType)).toEqual([
@@ -8892,6 +8896,105 @@ describe("executeNativeSession recovery", () => {
     ).toEqual(["run.result.accepted", "run.terminal"]);
   });
 
+  it("proves it still owns a recovered session right before starting a turn in it", async () => {
+    // Staging run cd2bf273: a turn nobody can attribute appeared in the same
+    // provider thread across server swaps. The recovery checkpoint is fenced
+    // (controller boot, generation, lease), but preparing the turn's input can
+    // take a while and another generation may take the run over meanwhile.
+    // The fenced checkpoint is repeated right before the submit, so the
+    // replaced server submits nothing.
+    const checkpoint: PersistedNativeSession = {
+      backendKind: "mock", sessionId: "driver-recovery", identity, providerSessionId: "provider-recovery", cursor: "1",
+      activeTurnId: null, terminalTurns: [], pendingRuntimeRequests: [], lineage: [],
+    };
+    const startTurn = vi.fn(async () => ({ turnId: "late-turn" }));
+    const session: NativeSession = {
+      identity: () => identity,
+      async capabilities() { return { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true }; },
+      events: () => (async function* () {})(),
+      startTurn,
+      async result() { return null; },
+      async snapshot() { return structuredClone(checkpoint); },
+      async close() {},
+    };
+    const backend: NativeSessionBackend = {
+      async descriptor() {
+        return { kind: "mock", name: "recovery-backend", version: "1",
+          capabilities: { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true } };
+      },
+      async openSession() { throw new Error("must recover the provider session"); },
+      async recoverSession() { return { recovered: true, session }; },
+    };
+    let takenOver = false;
+    const checkpointSession = vi.fn(async () => { if (takenOver) throw new Error("native_runner_checkpoint_owner_lost"); });
+    const port: ControlPlanePort = {
+      async openRun() {},
+      async loadSessionCheckpoint() { return structuredClone(checkpoint); },
+      checkpointSession,
+      async appendEvent() { return { cursor: 1, highestContiguousSourceSeq: 0, disposition: "committed" }; },
+      async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; },
+      completeRun: vi.fn(async () => undefined),
+    };
+    await executeNativeSession({ input, backend, controlPlane: port, runnerInstanceId: "runner-recovery",
+      controlPlaneInstanceId: "control-recovery",
+      // Another server generation claims the run while this one prepares the turn.
+      prepareWakeAttachmentPrompt: async () => { takenOver = true; return ""; } }).catch(() => undefined);
+    expect(takenOver).toBe(true);
+    expect(startTurn).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { label: "at startup", interruptedAtStartup: true },
+    { label: "when the lost turn's terminal arrives", interruptedAtStartup: false },
+  ])("proves it still owns a recovered session right before a restart continuation $label", async ({ interruptedAtStartup }) => {
+    // Same takeover window as the startup turn, on the restart-continuation
+    // path: steered messages and attachments are prepared before the submit.
+    const failure = { code: "provider_turn_lost_on_restore", recoverable: true };
+    const checkpoint: PersistedNativeSession = {
+      backendKind: "runner", driverKind: "acpx_runtime", sessionId: "record-recovery", identity,
+      providerSessionId: "provider-recovery", cursor: "0", activeTurnId: "turn-recovery",
+      terminalTurns: [], semanticResult: null, pendingRuntimeRequests: [], lineage: [],
+    };
+    const interrupted: PersistedNativeSession = {
+      ...checkpoint, activeTurnId: null,
+      terminalTurns: [{ turnId: "turn-recovery", fingerprint: JSON.stringify({ terminalState: "failed", error: failure, result: null }) }],
+    };
+    const startTurn = vi.fn<NativeSession["startTurn"]>(async () => ({ turnId: "turn-continuation" }));
+    const session: NativeSession = {
+      identity: () => identity,
+      async capabilities() { return { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true }; },
+      async *events() {
+        if (!interruptedAtStartup) yield runnerEvent(1, "turn.failed", { status: "failed", error: failure });
+      },
+      startTurn,
+      async result() { return null; },
+      async snapshot() { return structuredClone(interrupted); },
+      async close() {},
+    };
+    const backend: NativeSessionBackend = {
+      async descriptor() { return { kind: "runner", name: "restart", version: "1", capabilities: await session.capabilities() }; },
+      async openSession() { throw new Error("must preserve the provider session"); },
+      async recoverSession() { return { recovered: true, session }; },
+    };
+    let takenOver = false;
+    const port: ControlPlanePort = {
+      async openRun() {},
+      async checkpointSession() { if (takenOver) throw new Error("native_runner_checkpoint_owner_lost"); },
+      async appendEvent(event: PrpEvent) { return { cursor: event.sourceSeq, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" }; },
+      async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; },
+      async completeRun() {},
+    };
+    const prepareWakeAttachmentPrompt = vi.fn(async () => { takenOver = true; return ""; });
+    await executeNativeSession({
+      input, backend, controlPlane: port, persistedSession: interruptedAtStartup ? interrupted : checkpoint,
+      runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery", resumeInterruptedTurn: true,
+      // Another server generation claims the run while this one prepares the continuation.
+      prepareWakeAttachmentPrompt,
+    }).catch(() => undefined);
+    expect(prepareWakeAttachmentPrompt).toHaveBeenCalledOnce();
+    expect(startTurn).not.toHaveBeenCalled();
+  });
+
   it("resolves a checkpointed result-less disposition without resubmitting when its terminal event is missing", async () => {
     const workProposal: PrpEvent = {
       ...runnerEvent(1, "run.result.proposed", result),
@@ -10968,5 +11071,64 @@ describe("first-turn queued input", () => {
   it("starts the first turn unchanged when nothing is queued", async () => {
     const { sent } = await startFirstTurn(input, null);
     expect((JSON.parse(sent[0]!) as { task: { prompt: string } }).task.prompt).toBe(input.task.prompt);
+  });
+});
+
+describe("remote Runner retention after a failed run", () => {
+  const port = (): ControlPlanePort => ({
+    async openRun() {}, async checkpointSession() {}, async completeRun() {},
+    async appendEvent(event: PrpEvent) {
+      return { cursor: event.sourceSeq, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" };
+    },
+    async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; },
+  });
+  const startCodexRun = (transport: FakeCodexTransport, options: { timeoutMs?: number;
+    onSession?: (session: NativeSession | null) => void } = {}) => {
+    const close = vi.spyOn(transport, "close");
+    const executionInput = { ...input, workspace: { ...input.workspace, cwd: WORKSPACE } };
+    const backend = createCodexNativeSessionBackend(executionInput, {
+      runnerInstanceId: "runner-recovery", transportFactory: () => transport,
+    });
+    const execution = executeNativeSession({ input: executionInput, backend, controlPlane: port(),
+      runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery",
+      timeoutMs: options.timeoutMs ?? 5_000, requireSessionCloseBeforeReturn: true, onSession: options.onSession });
+    void execution.catch(() => undefined);
+    return { execution, close };
+  };
+  const retainedOn = (close: { mock: { calls: unknown[][] } }): Array<boolean | undefined> =>
+    close.mock.calls.map((call: unknown[]) =>
+      (call[1] as { retainUnsettledRemoteRunner?: boolean } | undefined)?.retainUnsettledRemoteRunner);
+
+  it("keeps the Runner for same-run reattachment when the turn start fails", async () => {
+    const transport = new FakeCodexTransport();
+    transport.rejectMethods.set("turn/start", new Error("runnerd did not report the provider turn identity"));
+    const { execution, close } = startCodexRun(transport);
+    await expect(execution).rejects.toThrow("runnerd did not report the provider turn identity");
+    expect(retainedOn(close)).not.toHaveLength(0);
+    expect(retainedOn(close).every(retained => retained === true)).toBe(true);
+  });
+
+  it("keeps the Runner for same-run reattachment when event consumption fails", async () => {
+    const transport = new FakeCodexTransport();
+    const { execution, close } = startCodexRun(transport, { timeoutMs: 100 });
+    await vi.waitFor(() => expect(transport.calls.some(call => call.method === "turn/start")).toBe(true));
+    transport.push("turn/started", { threadId: "thread-1", turn: { id: "turn-1", status: "inProgress" } });
+    await expect(execution).rejects.toThrow("native session timed out after 100ms");
+    expect(retainedOn(close)).not.toHaveLength(0);
+    expect(retainedOn(close).every(retained => retained === true)).toBe(true);
+  });
+
+  it("still stops the Runner after a Stop, even when the stopped run then fails", async () => {
+    const transport = new FakeCodexTransport();
+    let published: NativeSession | null = null;
+    const { execution, close } = startCodexRun(transport, { timeoutMs: 300,
+      onSession: session => { published ??= session; } });
+    await vi.waitFor(() => expect(transport.calls.some(call => call.method === "turn/start")).toBe(true));
+    transport.push("turn/started", { threadId: "thread-1", turn: { id: "turn-1", status: "inProgress" } });
+    await vi.waitFor(() => expect(published).not.toBeNull());
+    void published!.cancel!({ reason: "Stop requested", signal: new AbortController().signal }).cleanup.catch(() => undefined);
+    await expect(execution).rejects.toThrow();
+    expect(retainedOn(close)).not.toHaveLength(0);
+    expect(retainedOn(close).every(retained => retained === false)).toBe(true);
   });
 });

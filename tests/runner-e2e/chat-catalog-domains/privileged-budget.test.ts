@@ -52,16 +52,23 @@ describe("instance settings consume the original observation clock", () => {
   it("actual settings act opts in and forwards only the remaining original budget", async () => {
     vi.useFakeTimers(); vi.setSystemTime(0); const ctx = context();
     const goto = vi.fn(async () => { throw new Error("actual navigation boundary"); });
-    ctx.input = { page: { url: () => "https://fixture.test/RUN/chats/ceo", goto }, fixtures: { company: { issuePrefix: "RUN" } }, api: { baseURL: "https://fixture.test" } } as never;
-    const pending = privilegedConfigurationCases[0]!.act!(ctx, {}).catch(String);
-    await vi.advanceTimersByTimeAsync(151_000); expect(goto).not.toHaveBeenCalled();
+    const get = vi.fn(async (_path: string, _options?: unknown) => ({ enableCases: false }));
+    const settingReads = () => get.mock.calls.filter(([path]) => path === "/api/instance/settings/experimental");
+    ctx.input = { page: { url: () => "https://fixture.test/RUN/chats/ceo", goto }, fixtures: { company: { issuePrefix: "RUN" } }, api: { baseURL: "https://fixture.test", get } } as never;
+    const state: Record<string, unknown> = {};
+    const pending = privilegedConfigurationCases[0]!.act!(ctx, state).catch(String);
+    await vi.advanceTimersByTimeAsync(151_000); expect(goto).not.toHaveBeenCalled(); expect(settingReads()).toEqual([]);
     await vi.advanceTimersByTimeAsync(29_000); expect(await pending).toContain("actual navigation boundary");
-    expect(goto).toHaveBeenCalledExactlyOnceWith("https://fixture.test/RUN/company/settings/instance/experimental", { waitUntil: "domcontentloaded", timeout: 210_000 });
+    // After the settled turn the setting is read once, then the person checks the gated Cases route while it is off.
+    expect(settingReads()).toEqual([["/api/instance/settings/experimental", { timeout: 210_000 }]]);
+    expect(state.settingOffAfterAgent).toBe(true);
+    expect(goto).toHaveBeenCalledExactlyOnceWith("https://fixture.test/RUN/cases", { waitUntil: "domcontentloaded", timeout: 210_000 });
   });
   it("slow navigation cannot start the next mutation or reset the original budget", async () => {
     vi.useFakeTimers(); vi.setSystemTime(389_000); const ctx = context(0); const click = vi.fn();
     const goto = vi.fn(async () => { vi.setSystemTime(391_000); });
-    ctx.input = { page: { url: () => "https://fixture.test/RUN/chats/ceo", goto, getByRole: () => ({ click }) }, fixtures: { company: { issuePrefix: "RUN" } }, api: { baseURL: "https://fixture.test" } } as never;
+    ctx.input = { page: { url: () => "https://fixture.test/RUN/chats/ceo", goto, getByRole: () => ({ click }), getByTestId: () => ({ count: async () => 0 }) },
+      fixtures: { company: { issuePrefix: "RUN" } }, api: { baseURL: "https://fixture.test", get: async () => ({ enableCases: false }) } } as never;
     await expect(privilegedConfigurationCases[0]!.act!(ctx, {})).rejects.toThrow(/exhausted/);
     expect(goto).toHaveBeenCalledOnce(); expect(click).not.toHaveBeenCalled();
   });

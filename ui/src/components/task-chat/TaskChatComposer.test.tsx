@@ -17,6 +17,7 @@ import type { Agent, HeartbeatRun, IssueWorkMode } from "@paperclipai/shared";
 import { agentsApi } from "@/api/agents";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { CoordinatorPresentation } from "@/components/coordinator/CoordinatorPresentation";
+import { ThemeProvider } from "@/context/ThemeContext";
 import { DRAFT_DEBOUNCE_MS } from "../../lib/composer-draft";
 import {
   loadDraftAttachments,
@@ -215,7 +216,7 @@ afterEach(() => {
 });
 
 function render(ui: ReactElement) {
-  flushSync(() => root!.render(ui));
+  flushSync(() => root!.render(<ThemeProvider>{ui}</ThemeProvider>));
 }
 
 async function flushAsync() {

@@ -36,7 +36,7 @@ export interface LedgerLine {
   masks?: string[];
   /** Crash-point suite: the named point this wave armed. */
   crashPoint?: string;
-  /** Universal checks U1–U4 (universal.ts): verdict per rule, and the details of warnings that did not fail the task. */
+  /** Universal checks U1–U5 (universal.ts): verdict per rule, and the details of warnings that did not fail the task. */
   universal?: Record<string, string>;
   universalWarnings?: string[];
   /** DF1: faulted saves, the disk-full rest with a Retry offered, and whether that Retry worked. */

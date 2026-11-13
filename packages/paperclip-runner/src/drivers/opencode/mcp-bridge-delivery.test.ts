@@ -42,7 +42,7 @@ const tools = [
   { name: "list_projects", inputSchema: { type: "object" } },
 ];
 
-it("answers every tool call on its own connection so a pooled socket can never strand a parallel result", async () => {
+it("answers each tool call, including a parallel pair on a pooled keep-alive client, with its own delivery record", async () => {
   const messages: string[] = [];
   const bridge = await startOpenCodeMcpBridge({
     tools,
@@ -69,8 +69,9 @@ it("answers every tool call on its own connection so a pooled socket can never s
     expect(answer.status).toBe(200);
     expect(answer.body.id).toBe(id);
     expect(JSON.parse(answer.body.result!.content![0]!.text)).toEqual({ tool });
-    expect(answer.connection).toBe("close");
-    expect(answer.reusedSocket).toBe(false);
+    // OpenCode's MCP client loses its tools when the bridge closes every
+    // connection, so the bridge must keep the default keep-alive.
+    expect(answer.connection).not.toBe("close");
   }
 
   await expect.poll(() => messages.length).toBe(3);
@@ -78,12 +79,14 @@ it("answers every tool call on its own connection so a pooled socket can never s
   expect(deliveries.map(delivery => delivery.callIdSha256).sort()).toEqual(
     ["2", "3", "4"].map(id => createHash("sha256").update(id).digest("hex")).sort(),
   );
+  // The pooled client reuses a socket for at least one later call.
+  expect(deliveries.some(delivery => delivery.socketRequestIndex > 1)).toBe(true);
   for (const delivery of deliveries) {
     expect(delivery).toEqual({
       schema: "paperclip.opencode.tool-delivery-diagnostic/v1",
       callIdSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
-      socketRequestIndex: 1,
-      socketIdleMs: null,
+      socketRequestIndex: expect.any(Number),
+      socketIdleMs: delivery.socketRequestIndex === 1 ? null : expect.any(Number),
       handlerMs: expect.any(Number),
       outcome: "result",
       written: true,

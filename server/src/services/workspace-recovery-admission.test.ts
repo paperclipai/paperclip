@@ -434,6 +434,36 @@ describe("automatic retained workspace recovery", () => {
     expect(wake.payload?.taskRetry).toMatchObject({ strategy: "continue" });
   }, 30_000);
 
+  it("releases a handed-off run's recovered files hold for the person it handed the task to", async () => {
+    // Shape of a restart that lands after a native run handed its own task to a
+    // person (staging class H): the run recorded the hand-off, the person owns
+    // the task in review, and restart recovery settled the run as failed with
+    // its unsaved files retained.
+    const f = await seed();
+    const person = "handoff-reviewer";
+    await db.update(heartbeatRuns).set({ errorCode: "native_restart_recovery_blocked",
+      resultJson: { ...(await run(f.runId)).resultJson, humanSelfHandoff: { issueId: f.issueId, assigneeUserId: person,
+        recordedAt: new Date().toISOString() } } }).where(eq(heartbeatRuns.id, f.runId));
+    await db.update(issues).set({ assigneeAgentId: null, assigneeUserId: person, status: "in_review" }).where(eq(issues.id, f.issueId));
+
+    // Until its files are saved, the outgoing run's hold stays: nothing may reuse the workspace.
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toMatchObject({ runId: f.runId, workspaceRepairRequired: true });
+
+    await recoverRetainedWorkspace(f.input);
+    expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(true);
+    // Once they are saved, the person's task carries no workspace-repair hold.
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
+  });
+
+  it("keeps the recovered files hold when the person did not receive the task from that run's own hand-off", async () => {
+    const f = await seed();
+    await db.update(heartbeatRuns).set({ resultJson: { ...(await run(f.runId)).resultJson, humanSelfHandoff: {
+      issueId: f.issueId, assigneeUserId: "someone-else", recordedAt: new Date().toISOString() } } }).where(eq(heartbeatRuns.id, f.runId));
+    await db.update(issues).set({ assigneeAgentId: null, assigneeUserId: "handoff-reviewer", status: "in_review" }).where(eq(issues.id, f.issueId));
+    await recoverRetainedWorkspace(f.input);
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toMatchObject({ runId: f.runId });
+  });
+
   it("hands a reassigned task to its new assignee once the previous owner's files are recovered", async () => {
     // Shape of a mid-run reassignment: the old owner's run was cancelled for
     // the reassignment, its copyback was retained, and its no-replay hold was
@@ -939,8 +969,9 @@ describe("automatic retained workspace recovery", () => {
       const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.requestId!));
       expect(wake.payload?.executionWait).toMatchObject({ reason: "remote_cleanup" });
       const [task] = await db.select().from(issues).where(eq(issues.id, f.issueId));
-      expect(await taskInterruptionPresentation(db, task)).toMatchObject({ state: "failed", canRetry: true,
+      expect(await taskInterruptionPresentation(db, task)).toMatchObject({ state: "failed", canRetry: false,
         retryWait: { reason: "remote_cleanup", message: "Retry is waiting for the previous environment to stop. Your message is saved." } });
+      expect((await getExecutionBlocker(db, f.companyId, f.issueId))?.canRetry).toBe(false);
       const commentId = randomUUID(), messageWakeId = randomUUID();
       await db.insert(issueComments).values({ id: commentId, companyId: f.companyId, issueId: f.issueId,
         authorType: "user", authorUserId: "board", body: "Keep my saved message while the previous environment stops." });
@@ -1565,7 +1596,7 @@ describe("automatic retained workspace recovery", () => {
         await expect(db.transaction(async tx => {
           await tx.update(agentWakeupRequests).set({ status: "skipped" }).where(eq(agentWakeupRequests.id, wake.id));
           await recover(tx as unknown as typeof db);
-          expect(scheduleRecoveryRetry).toHaveBeenCalledWith(queued.id);
+          expect(scheduleRecoveryRetry).toHaveBeenCalledWith(queued.id, expect.any(Object));
           throw rollback;
         })).rejects.toBe(rollback);
         scheduleRecoveryRetry.mockClear();

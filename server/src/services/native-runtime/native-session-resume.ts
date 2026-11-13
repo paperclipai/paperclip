@@ -8,7 +8,7 @@ import type {
   NativeExecutionInput,
   PersistedNativeSession,
 } from "../../vendor/paperclip-runner/index.js";
-import { canonicalNativeRuntimeContextDigest, parseNativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
+import { canonicalNativeRuntimeContextDigest, parseNativeExecutionInput, type NativeRuntimeContextSnapshot } from "../../vendor/paperclip-runner/index.js";
 
 export type NativeToolExecutionTargetKind = "local" | "remote";
 
@@ -612,6 +612,15 @@ export function buildNativeExecutionWithCheckpoint(input: {
   };
 }
 
+export function nativeRuntimeContextsMatch(
+  previous: NativeRuntimeContextSnapshot,
+  current: NativeRuntimeContextSnapshot,
+  toolRefreshOnResume?: boolean,
+): boolean {
+  return previous.aggregateDigest === current.aggregateDigest ||
+    (toolRefreshOnResume === true && canonicalNativeRuntimeContextDigest({ ...previous, mcp: current.mcp }) === current.aggregateDigest);
+}
+
 /**
  * Rebind a completed prior run's provider checkpoint to a new heartbeat run.
  * The provider/driver session identity is retained, while every per-turn and
@@ -697,12 +706,7 @@ export function rebindNativeSessionCheckpoint(input: {
     ("homeMode" in previousExecution ? previousExecution.homeMode : "isolated") !== ("homeMode" in current ? current.homeMode : "isolated") ||
     ("runtimeContext" in previousExecution &&
       "runtimeContext" in current &&
-      previousExecution.runtimeContext.aggregateDigest !== current.runtimeContext.aggregateDigest &&
-      !(input.toolRefreshOnResume === true &&
-        canonicalNativeRuntimeContextDigest({
-          ...previousExecution.runtimeContext,
-          mcp: current.runtimeContext.mcp,
-        }) === current.runtimeContext.aggregateDigest))
+      !nativeRuntimeContextsMatch(previousExecution.runtimeContext, current.runtimeContext, input.toolRefreshOnResume))
   )
     return null;
 

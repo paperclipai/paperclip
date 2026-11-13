@@ -29,13 +29,14 @@
  * reservation would still refuse that hold (remoteWorkspaceHoldRefusesStart):
  * its run could only fail the same way. It is woken once the hold settles.
  */
-import { and, desc, eq, gt, inArray, isNull, ne, notInArray, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNull, ne, notInArray, or, sql, type Placeholder } from "drizzle-orm";
 import { agents, agentWakeupRequests, executionWorkspaces, heartbeatRuns, issueRecoveryActions, issueRelations, issues, type Db } from "@paperclipai/db";
 import { ISSUE_BLOCKER_STALLED_WAKE_REASON, readRemoteWorkspaceAuthority, type IssueBlockerStalledWakeContext,
   type IssueBlockerStallRelation } from "@paperclipai/shared";
 import { logActivity } from "../activity-log.js";
 import { parseHeartbeatPolicy } from "../heartbeat/timer-policy.js";
 import { authorizationService } from "../authorization.js";
+import { preparedStatements } from "../prepared-statements.js";
 import { readRemoteWorkspaceWriterHold, REMOTE_WORKSPACE_WRITER_PENDING_MESSAGE,
   remoteWorkspaceHoldRefusesStart } from "../remote-workspace-writer-hold.js";
 
@@ -95,6 +96,9 @@ export function recoveryActionSweepCondition() {
     // The pass returns its retry time, which schedules the company again.
     and(eq(issueRecoveryActions.status, "resolved"),
       sql`${issueRecoveryActions.evidence}#>>'{legacyWorkspaceRehome,wake}' = 'pending'`),
+    // Likewise a task continued once its workspace's writer let go.
+    and(eq(issueRecoveryActions.status, "resolved"),
+      sql`${issueRecoveryActions.evidence}#>>'{releasedWorkspaceWriter,wake}' = 'pending'`),
   )!;
 }
 
@@ -134,6 +138,74 @@ async function readStalls(db: Db, filter: StallFilter, limit = MAX_STALLS_PER_PA
 }
 
 type StallRow = Awaited<ReturnType<typeof readStalls>>[number];
+
+type Bound<Value> = Value | Placeholder;
+export type StallWaiterPageBinding = {
+  companyId: Bound<string>;
+  stalledIssueId: Bound<string>;
+  parentId: Bound<string | null>;
+  hasParent: boolean;
+  onlyIssueId?: Bound<string>;
+  after?: Bound<string>;
+  wakeKeySuffix: Bound<string>;
+};
+
+export function stallWaiterPageQuery(db: Db, bind: StallWaiterPageBinding) {
+  return db.select({ id: issues.id, identifier: issues.identifier, assigneeAgentId: issues.assigneeAgentId,
+    status: issues.status, responsibleUserId: issues.responsibleUserId, executionWorkspaceId: issues.executionWorkspaceId,
+    relation: sql<"child" | "blocker">`case when ${issues.id} = ${bind.parentId} then 'child' else 'blocker' end` })
+    .from(issues)
+    .where(and(
+      eq(issues.companyId, bind.companyId),
+      ne(issues.id, bind.stalledIssueId),
+      inArray(issues.status, WAKEABLE_WAITER_STATUSES),
+      isNull(issues.hiddenAt),
+      sql`${issues.assigneeAgentId} is not null`,
+      bind.onlyIssueId !== undefined ? eq(issues.id, bind.onlyIssueId) : undefined,
+      bind.after !== undefined ? gt(issues.id, bind.after) : undefined,
+      sql`not exists (select 1 from ${agentWakeupRequests} w where w.company_id = ${bind.companyId}
+            and w.idempotency_key = 'issue_blocker_stalled:' || ${issues.id}::text || ${bind.wakeKeySuffix}
+            and w.status in (${sql.join(DELIVERED_OR_PENDING_WAKE_STATUSES.map(status => sql`${status}`), sql`, `)}))`,
+      or(
+        bind.hasParent ? eq(issues.id, bind.parentId as Bound<string>) : sql`false`,
+        sql`exists (select 1 from ${issueRelations} r where r.company_id = ${bind.companyId}
+              and r.type = 'blocks' and r.issue_id = ${bind.stalledIssueId} and r.related_issue_id = ${issues.id})`,
+      ),
+    )).orderBy(issues.id).limit(MAX_WAITERS_PER_STALL);
+}
+
+type StallWaiterPageShape = `${"child" | "blocker"}:${"all" | "one"}:${"first" | "after"}`;
+
+const stallWaiterPageStatements = preparedStatements((db, shape: StallWaiterPageShape) => {
+  const [parent, waiters, page] = shape.split(":");
+  return stallWaiterPageQuery(db, {
+    companyId: sql.placeholder("companyId"), stalledIssueId: sql.placeholder("stalledIssueId"),
+    parentId: sql.placeholder("parentId"), hasParent: parent === "child",
+    onlyIssueId: waiters === "one" ? sql.placeholder("onlyIssueId") : undefined,
+    after: page === "after" ? sql.placeholder("after") : undefined,
+    wakeKeySuffix: sql.placeholder("wakeKeySuffix"),
+  }).prepare(`issue_blocker_stall_waiter_page_${shape.replace(/:/g, "_")}`);
+});
+
+type StallWaiterPageInput = {
+  stall: Pick<StallRow, "companyId" | "issueId" | "actionId" | "parentId">;
+  onlyIssueId: string | null;
+  after: string | null;
+};
+
+export function stallWaiterPageStatement(db: Db, input: StallWaiterPageInput) {
+  const { stall } = input;
+  return {
+    statement: stallWaiterPageStatements(db,
+      `${stall.parentId ? "child" : "blocker"}:${input.onlyIssueId ? "one" : "all"}:${input.after ? "after" : "first"}`),
+    values: {
+      companyId: stall.companyId, stalledIssueId: stall.issueId, parentId: stall.parentId ?? null,
+      wakeKeySuffix: `:${stall.issueId}:${stall.actionId}`,
+      ...(input.onlyIssueId ? { onlyIssueId: input.onlyIssueId } : {}),
+      ...(input.after ? { after: input.after } : {}),
+    },
+  };
+}
 
 /**
  * Whether a run of the waiter's assignee could only fail setup on its bound
@@ -243,29 +315,13 @@ export async function wakeWaitersOfStalledIssues(db: Db, enqueueWakeup: BlockerS
     let after = waiterCursors.get(cursorKey) ?? null;
     let scanned = 0;
     for (;;) {
-      const waiters = await db.select({ id: issues.id, identifier: issues.identifier, assigneeAgentId: issues.assigneeAgentId,
-        status: issues.status, responsibleUserId: issues.responsibleUserId, executionWorkspaceId: issues.executionWorkspaceId,
-        relation: sql<"child" | "blocker">`case when ${issues.id} = ${stall.parentId ?? null} then 'child' else 'blocker' end` })
-        .from(issues)
-        .where(and(
-          eq(issues.companyId, stall.companyId),
-          ne(issues.id, stall.issueId),
-          inArray(issues.status, WAKEABLE_WAITER_STATUSES),
-          isNull(issues.hiddenAt),
-          sql`${issues.assigneeAgentId} is not null`,
+      const page = stallWaiterPageStatement(db, {
+        stall, after, onlyIssueId:
           // A waiter's own sweep wakes only that waiter for its children and
           // blockers; the stalled issue's own pass covers all of its waiters.
-          opts.issueId && stall.issueId !== opts.issueId ? eq(issues.id, opts.issueId) : undefined,
-          after ? gt(issues.id, after) : undefined,
-          sql`not exists (select 1 from ${agentWakeupRequests} w where w.company_id = ${stall.companyId}
-            and w.idempotency_key = 'issue_blocker_stalled:' || ${issues.id}::text || ${`:${stall.issueId}:${stall.actionId}`}
-            and w.status in (${sql.join(DELIVERED_OR_PENDING_WAKE_STATUSES.map(status => sql`${status}`), sql`, `)}))`,
-          or(
-            stall.parentId ? eq(issues.id, stall.parentId) : sql`false`,
-            sql`exists (select 1 from ${issueRelations} r where r.company_id = ${stall.companyId}
-              and r.type = 'blocks' and r.issue_id = ${stall.issueId} and r.related_issue_id = ${issues.id})`,
-          ),
-        )).orderBy(issues.id).limit(MAX_WAITERS_PER_STALL);
+          opts.issueId && stall.issueId !== opts.issueId ? opts.issueId : null,
+      });
+      const waiters = await page.statement.execute(page.values);
       for (const waiter of waiters) {
         const idempotencyKey = issueBlockerStalledWakeKey({ waiterIssueId: waiter.id, stalledIssueId: stall.issueId, recoveryActionId: stall.actionId });
         // (company_id, payload->>'issueId') is indexed; the key narrows to this stall.

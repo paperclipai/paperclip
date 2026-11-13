@@ -7,6 +7,7 @@ import type { EnvironmentLease } from "@paperclipai/shared";
 import { writeEnvironmentCleanup } from "./environment-cleanup-notifications.js";
 import { verifyRecoverableNativeHarnessBackup } from "./native-runtime/native-harness-backup-storage.js";
 import { findPluginWorkerUnavailableError } from "./plugin-worker-unavailable-error.js";
+import { abandonedWorkspaceFilesHeldOnLeaseRowSql, ABANDONED_WORKSPACE_FILES_PARKED_KEY, ABANDONED_WORKSPACE_FILES_PARKED_REASON } from "./remote-workspace-abandoned-files-hold.js";
 import { sandboxProviderFailureLabel } from "./remote-workspace-transport.js";
 
 /**
@@ -16,6 +17,8 @@ import { sandboxProviderFailureLabel } from "./remote-workspace-transport.js";
  * attempt from spending the provider's whole five-minute start deadline.
  */
 export const REUSABLE_SANDBOX_RESUME_BUDGET_MS = 90_000;
+
+export const REUSABLE_SANDBOX_IDLE_RESUME_BUDGET_MS = 330_000;
 
 /** Failure reason recorded on a preserved lease retired in favor of a replacement. */
 export const REUSABLE_SANDBOX_RESUME_REPLACED_REASON = "resume_failed";
@@ -28,9 +31,26 @@ export const REUSABLE_SANDBOX_RESUME_REPLACED_REASON = "resume_failed";
 export function sandboxStateTransitionFailure(error: unknown): boolean {
   for (let cause = error, depth = 0; cause && depth < 4; cause = (cause as { cause?: unknown }).cause, depth++) {
     const message = cause instanceof Error ? cause.message : typeof cause === "string" ? cause : "";
-    if (/state change in progress|\bis still [a-z_]+ at its start deadline\b/i.test(message)) return true;
+    if (/state change in progress|\bis still [a-z_]+ at its start deadline\b|\bis still settling cancelled work\b/i.test(message)) return true;
   }
   return false;
+}
+
+export async function reusableSandboxLeaseIsIdle(input: {
+  db: Db;
+  lease: EnvironmentLease;
+  companyId: string;
+  heartbeatRunId: string | null;
+}): Promise<boolean> {
+  const { db, lease } = input;
+  if (!input.heartbeatRunId || !lease.providerLeaseId || lease.companyId !== input.companyId) return false;
+  if (lease.status !== "released" && lease.status !== "retained") return false;
+  if (lease.heartbeatRunId && lease.heartbeatRunId !== input.heartbeatRunId) {
+    const [owner] = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, lease.heartbeatRunId)));
+    if (owner && ["queued", "scheduled_retry", "running"].includes(owner.status)) return false;
+  }
+  return true;
 }
 
 /**
@@ -59,8 +79,7 @@ export async function reusableSandboxReplacementIsSafe(input: {
   cause: unknown;
 }): Promise<boolean> {
   const { db, lease } = input;
-  if (!input.heartbeatRunId || !lease.providerLeaseId || lease.companyId !== input.companyId) return false;
-  if (lease.status !== "released" && lease.status !== "retained") return false;
+  if (!lease.providerLeaseId || !await reusableSandboxLeaseIsIdle(input)) return false;
   if (!input.executionWorkspaceId || lease.executionWorkspaceId !== input.executionWorkspaceId) return false;
   // A replacement cannot succeed where the resume was refused for access, and
   // an unavailable worker cannot create one either.
@@ -69,12 +88,6 @@ export async function reusableSandboxReplacementIsSafe(input: {
   const status = failure.status ?? readEnvironmentResumeErrorDiagnostic(input.cause)?.httpStatus ?? null;
   if (failure.label === "provider_access_denied" || failure.label === "permission_denied"
     || status === 401 || status === 403) return false;
-  // A run that still holds the sandbox may have work on it.
-  if (lease.heartbeatRunId && lease.heartbeatRunId !== input.heartbeatRunId) {
-    const [owner] = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns)
-      .where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, lease.heartbeatRunId)));
-    if (owner && ["queued", "scheduled_retry", "running"].includes(owner.status)) return false;
-  }
 
   const [workspace] = await db.select({ metadata: executionWorkspaces.metadata }).from(executionWorkspaces)
     .where(and(eq(executionWorkspaces.companyId, input.companyId), eq(executionWorkspaces.id, input.executionWorkspaceId)));
@@ -119,13 +132,17 @@ export async function retireReplacedReusableSandboxLease(input: {
   const { db, lease } = input;
   if (!lease.providerLeaseId) return false;
   const now = new Date();
+  const held = abandonedWorkspaceFilesHeldOnLeaseRowSql();
   const [claimed] = await writeEnvironmentCleanup(db, tx => tx.update(environmentLeases).set({
-    status: "pending_cleanup",
+    status: sql`case when ${held} then 'retained' else 'pending_cleanup' end`,
     cleanupStatus: "failed",
-    failureReason: REUSABLE_SANDBOX_RESUME_REPLACED_REASON,
+    failureReason: sql`case when ${held} then ${ABANDONED_WORKSPACE_FILES_PARKED_REASON} else ${REUSABLE_SANDBOX_RESUME_REPLACED_REASON} end`,
     releasedAt: now,
     lastUsedAt: now,
     updatedAt: now,
+    metadata: sql`case when ${held} then coalesce(${environmentLeases.metadata}, '{}'::jsonb)
+      || ${JSON.stringify({ [ABANDONED_WORKSPACE_FILES_PARKED_KEY]: { parkedAt: now.toISOString() } })}::jsonb
+      else ${environmentLeases.metadata} end`,
   }).where(and(
     eq(environmentLeases.id, lease.id),
     eq(environmentLeases.companyId, input.companyId),

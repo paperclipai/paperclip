@@ -21,8 +21,12 @@ import type { WavePlan } from "./types.js";
 
 /** Whether any server of this wave can be redeployed: a planned, storm or replayed K15. */
 export function redeployWave(plan: Pick<WavePlan, "options" | "tasks" | "storm">): boolean {
-  return plan.options.faults.includes("K15") || (plan.storm?.faults.some(fault => fault.kind === "K15") ?? false)
-    || plan.tasks.some(task => task.fault === "K15" || (task.replayFaults?.some(fault => fault.kind === "K15") ?? false));
+  // CR1 always redeploys; CR2 only when it holds the controller down (class-r.ts). Planned holds decide CR2.
+  const redeploys = (kind: string, holdMs: number) => kind === "K15" || kind === "CR1" || (kind === "CR2" && holdMs > 0);
+  return plan.options.faults.some(kind => kind === "K15" || kind === "CR1")
+    || (plan.storm?.faults.some(fault => redeploys(fault.kind, fault.holdMs)) ?? false)
+    || plan.tasks.some(task => redeploys(task.fault, task.holdMs)
+      || (task.replayFaults?.some(fault => redeploys(fault.kind, fault.holdMs)) ?? false));
 }
 
 /** `--k15-hold-seconds` upper bound: the controller-outage cap (tests/runner-e2e/controller-outage.ts). */

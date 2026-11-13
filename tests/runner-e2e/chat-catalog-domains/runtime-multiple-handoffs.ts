@@ -7,7 +7,7 @@ import { readRegisteredArtifacts } from "../registered-artifact.js";
 import { checks, sameTask, type Entity } from "./internal-support.js";
 import { openStandingChat } from "./identity-support.js";
 import { busyRuntimeWorker, releaseRuntimeWorker } from "./runtime-busy-worker.js";
-import { promptCarriesComment, replyNamesTask, runtimeQueueCases } from "./runtime-queue.js";
+import { handledInTurn, promptCarriesComment, readCurrentRevision, replyNamesTask, runCommentReceipts, runtimeQueueCases, settledQueue, wakeMarksEarlierRead } from "./runtime-queue.js";
 import { runtimeDefinition, runtimeObservation, observeRuntime, runtimeWorker } from "./runtime-support.js";
 export { promptCarriesComment } from "./runtime-queue.js";
 type Artifact = Awaited<ReturnType<typeof readRegisteredArtifacts>>[number];
@@ -16,11 +16,19 @@ export function gradeMultipleHandoffs(value: unknown) {
   c.add("actual-two-task-history-and-delivery-evidence", !!o, "Separate real website/logo work, saved source references and exact consuming native input are required."); if (!o) return c.result();
   const s = o.state, queue = s.queueAtReply as IssueQueuedCommentQueue, target = queue?.entries[0], logoBefore = s.logoBefore as Entity, logo = s.logoAfter as Entity;
   const before = s.logoArtifactBefore as Artifact, after = s.logoArtifactAfter as Artifact;
+  const worker = s.worker as Entity | undefined, websiteRuns = o.runs.filter(row => row.agentId === worker?.id);
+  const continuations = websiteRuns.filter(row => row.id !== s.workerRunId), saved = s.savedComment as { id: string; updatedAt?: unknown } | undefined;
+  const receipts = s.workerCommentReceipts as { reads?: Record<string, string>; cited?: string[] } | undefined;
+  const isTarget = !!saved && saved.id === target?.comment.id;
+  const readInTurn = isTarget && readCurrentRevision(receipts?.reads, saved), handled = isTarget && handledInTurn(receipts, saved);
+  const consumedInTurn = handled && continuations.length === 0 && s.inTurnHeadlineRevision === true;
+  const consumedByContinuation = !handled && continuations.length === 1 && s.nativeDeliveryBound === true && s.finalHeadlineRevision === true
+    && s.originalWebsiteRevisionRetained === true && (!readInTurn || s.continuationWarnedEarlierRead === true);
   c.add("existing-website-worker-receives-one-saved-requirement", s.sourceHistoryBound === true && queue?.issueId === (s.task as Entity).id
     && queue.targetRunId === s.workerRunId && queue.entries.length === 1 && ["queued", "deferred"].includes(queue.state ?? "")
     && target?.comment.authorAgentId === o.leadId && target.comment.createdByRunId === s.canonicalRunId && target.comment.body.includes("Launch sooner")
-    && s.workerRunningAtReply === true && s.nativeDeliveryBound === true && s.queueEmptyAfterDelivery === true,
-  "One CEO-attributed headline instruction is saved against the actual active Website owner, then reaches exactly one ordinary native continuation.");
+    && s.workerRunningAtReply === true && (consumedInTurn || consumedByContinuation) && s.queueEmptyAfterDelivery === true,
+  "One CEO-attributed headline instruction is saved against the actual active Website owner and is consumed once: read at its current revision, applied and cited as handled by the running turn with no continuation, or delivered to exactly one ordinary continuation, which is told when the running turn already read it.");
   c.add("logo-task-and-delivered-logo-unchanged", !!logoBefore && !!logo && sameTask(logoBefore, logo) && logo.status === "done" && logo.assigneeAgentId === (s.logoWorker as Entity).id
     && before?.contentVerified === true && after?.contentVerified === true && before.attachmentId === after.attachmentId && before.sha256 === after.sha256
     && before.content === after.content && after.content.includes(String(s.logoMarker)) && /<svg\b/i.test(after.content) && s.logoRevisionsUnchanged === true,
@@ -28,9 +36,9 @@ export function gradeMultipleHandoffs(value: unknown) {
   // The reply's account of pending versus applied work is free-form; it is read from the evidence, not matched by wording.
   c.add("canonical-reply-identifies-affected-task", replyNamesTask(String(s.queryReply), s.task as Entity),
   "The canonical reply, written while the saved instruction still waits behind active work, names the affected Website task.");
-  c.add("real-final-headline-and-original-work-retained", s.finalHeadlineRevision === true && s.originalWebsiteRevisionRetained === true
-    && o.tasks.length === 2 && o.tasks.some(row => row.id === (s.task as Entity).id && row.status === "done" && row.assigneeAgentId === (s.worker as Entity).id)
-    && o.runs.length === 5 && o.runs.every(row => row.status === "succeeded") && o.runs.filter(row => row.agentId === (s.worker as Entity).id).length === 2
+  c.add("real-final-headline-and-original-work-retained", (consumedInTurn || consumedByContinuation)
+    && o.tasks.length === 2 && o.tasks.some(row => row.id === (s.task as Entity).id && row.status === "done" && row.assigneeAgentId === worker?.id)
+    && o.runs.length === 3 + websiteRuns.length && o.runs.every(row => row.status === "succeeded")
     && o.runs.filter(row => row.agentId === (s.logoWorker as Entity).id).length === 1,
   "The final actual Website revision contains the requested headline, preserves prior work, and no duplicate task, logo run or wrong-worker execution is introduced.");
   return c.result();
@@ -61,7 +69,7 @@ export const runtimeMultipleHandoffCases = [runtimeDefinition("agent-chat.multip
     sourceHistoryBound: comments.filter(row => !row.authorAgentId).length === 1 && comments.some(row => !row.authorAgentId
       && row.body?.includes(busy.task.identifier ?? busy.task.id) && row.body.includes(logo.identifier ?? logo.id) && row.body.includes(artifact.attachmentId)), setupRunIds: saved.runs.map(row => row.id) };
 }, gradeMultipleHandoffs, {
-  setupHumanMessageCount: 1, expectedHumanMessageCount: 2, expectedRunCount: 5, attemptTimeoutMs: 1_020_000, oracleVersion: "paperclip.chat-catalog.runtime-multiple-handoffs.v4",
+  setupHumanMessageCount: 1, expectedHumanMessageCount: 2, expectedRunCount: 5, minimumRunCount: 4, attemptTimeoutMs: 1_020_000, oracleVersion: "paperclip.chat-catalog.runtime-multiple-handoffs.v6",
   sourceFiles: ["chat-catalog-domains/runtime-multiple-handoffs.ts", "chat-catalog-domains/runtime-queue.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-support.ts", "chat-catalog-domains/identity-support.ts", "registered-artifact.ts", "chat-scenarios/agent-chat.yaml"],
   setupPolicy: runtimeQueueCases[0]!.setupPolicy, verifySetup: runtimeQueueCases[0]!.verifySetup,
   async act(ctx, state) {
@@ -74,16 +82,22 @@ export const runtimeMultipleHandoffCases = [runtimeDefinition("agent-chat.multip
     const comments = await ctx.input.api.get<Entity[]>(`/api/issues/${ctx.issue()!.id}/comments?order=asc`);
     state.queryReply = comments.filter(row => row.authorAgentId === ctx.input.fixtures.agent.id && row.createdByRunId === state.canonicalRunId).map(row => row.body).join("\n");
     state.queueAtReply = first.queue; state.workerRunningAtReply = true;
-    await writeFile((state.gate as { gate: string }).gate, "The original human brief is now ready. Save the current website plan as a task document with headline Launch later and accessible labels, then finish this current turn normally. Leave the saved headline follow-up intact for its normal continuation.", "utf8");
-    const final = await pollUntil({ label: "One normal Website continuation consumes the exact saved headline feedback", deadlineAt: Date.now() + 240_000,
+    await writeFile((state.gate as { gate: string }).gate, "The original human brief is now ready. Save the current website plan as a task document with headline Launch later and accessible labels, then finish this current turn normally.", "utf8");
+    const consumedInTurn = settledQueue((v: { runs: Array<{ status: string }>; task: Entity; queue: IssueQueuedCommentQueue }) => v.runs.length === 4
+      && v.runs.every(row => row.status === "succeeded") && v.task.status === "done" && v.queue.entries.length === 0, 30_000);
+    const final = await pollUntil({ label: "The saved headline feedback is consumed once, in the running turn or one ordinary continuation", deadlineAt: Date.now() + 300_000,
       load: async () => ({ runs: await ctx.allRuns(), task: await ctx.input.api.get<Entity>(`/api/issues/${task.id}`), queue: await ctx.input.api.get<IssueQueuedCommentQueue>(queuePath) }),
-      accept: v => v.runs.length === 5 && v.runs.every(row => row.status === "succeeded") && v.task.status === "done" && v.queue.entries.length === 0,
+      accept: v => consumedInTurn(v) || v.runs.length === 5 && v.runs.every(row => row.status === "succeeded") && v.task.status === "done" && v.queue.entries.length === 0,
       reject: v => v.runs.length > 5 || v.runs.some(row => ["failed", "cancelled", "timed_out"].includes(row.status)) ? "Headline continuation failed or duplicated/wrong-task work" : undefined });
-    const consumer = final.runs.find(row => row.agentId === (state.worker as Entity).id && row.id !== state.workerRunId)!;
-    const detail = await ctx.input.api.get<{ contextSnapshot?: { wakeCommentIds?: string[] }; runnerProfileJson?: { nativeExecutionInput?: { task?: { prompt?: string } } } }>(`/api/heartbeat-runs/${consumer.id}`), saved = first.queue.entries[0]!.comment;
-    state.nativeDeliveryBound = detail.contextSnapshot?.wakeCommentIds?.length === 1 && detail.contextSnapshot.wakeCommentIds[0] === saved.id
+    const saved = first.queue.entries[0]!.comment, current = (await ctx.input.api.get<Entity[]>(`/api/issues/${task.id}/comments?order=asc`)).find(row => row.id === saved.id);
+    state.savedComment = current ? { id: current.id, updatedAt: current.updatedAt } : null;
+    state.workerCommentReceipts = await runCommentReceipts(ctx, String(state.workerRunId));
+    const consumer = final.runs.find(row => row.agentId === (state.worker as Entity).id && row.id !== state.workerRunId);
+    const detail = consumer && await ctx.input.api.get<{ contextSnapshot?: { wakeCommentIds?: string[]; paperclipWake?: { comments?: Array<{ id?: string; readByEarlierTurn?: boolean }> } }; runnerProfileJson?: { nativeExecutionInput?: { task?: { prompt?: string } } } }>(`/api/heartbeat-runs/${consumer.id}`);
+    state.continuationWarnedEarlierRead = wakeMarksEarlierRead(detail?.contextSnapshot, saved.id);
+    state.nativeDeliveryBound = detail?.contextSnapshot?.wakeCommentIds?.length === 1 && detail.contextSnapshot.wakeCommentIds[0] === saved.id
       && promptCarriesComment(detail.runnerProfileJson?.nativeExecutionInput?.task?.prompt, saved);
-    state.queueEmptyAfterDelivery = true; state.finalWebsiteRunId = consumer.id;
+    state.queueEmptyAfterDelivery = final.queue.entries.length === 0; state.finalWebsiteRunId = consumer?.id ?? null;
   },
   async observe(ctx, state) {
     const o = await observeRuntime(ctx, state), logo = state.logoBefore as Entity;
@@ -94,8 +108,9 @@ export const runtimeMultipleHandoffCases = [runtimeDefinition("agent-chat.multip
     state.logoRevisionsUnchanged = JSON.stringify(documents.map(doc => [doc.id, doc.latestRevisionId]).sort()) === JSON.stringify((state.logoDocumentsBefore as Entity[]).map(doc => [doc.id, doc.latestRevisionId]).sort())
       && revisions.length === (state.logoRevisionsBefore as Entity[]).length && (state.logoRevisionsBefore as Entity[]).every(prior => revisions.some(row => row.id === prior.id && row.body === prior.body && row.createdByRunId === prior.createdByRunId));
     state.originalWebsiteRevisionRetained = o.revisions.some(row => row.createdByRunId === state.workerRunId && /Launch later/.test(row.body ?? ""));
-    state.finalHeadlineRevision = o.revisions.some(row => row.createdByRunId === state.finalWebsiteRunId && row.createdByAgentId === (state.worker as Entity).id && /Launch sooner/.test(row.body ?? "")
-      && o.documents.some(doc => doc.id === row.documentId && doc.latestRevisionId === row.id)); return o;
+    const latestHeadline = (runId: unknown) => !!runId && o.revisions.some(row => row.createdByRunId === runId && row.createdByAgentId === (state.worker as Entity).id && /Launch sooner/.test(row.body ?? "")
+      && o.documents.some(doc => doc.id === row.documentId && doc.latestRevisionId === row.id));
+    state.finalHeadlineRevision = latestHeadline(state.finalWebsiteRunId); state.inTurnHeadlineRevision = latestHeadline(state.workerRunId); return o;
   },
   async verifyResult(ctx, state) {
     const source = ctx.input.page.url();

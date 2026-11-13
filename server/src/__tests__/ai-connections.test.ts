@@ -1984,6 +1984,23 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       expect(execute).not.toHaveBeenCalled();
     } finally { execute.mockRestore(); }
   });
+  it("defers new and retained plugin task capability checks to native launch", async () => {
+    const runnerTask = vi.fn().mockResolvedValue({ kind: "description", taskId: "task", projectAuthCheckVersion: 1,
+      runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } });
+    const target = { kind: "remote", transport: "sandbox", providerKey: "plugin", remoteCwd: ".", runnerTask,
+      sandboxLeaseAcquisition: { outcome: "created", providerLeaseId: "task" } } as const;
+    const options = { deferRunnerTaskCapabilityCheck: true };
+
+    await expect(assertManagedAiProjectAuth({}, "openai", target, options)).resolves.toBeUndefined();
+    await expect(assertManagedAiProjectAuth({ args: ["--api-key=override"] }, "openai", target, options)).rejects.toThrow("overrides");
+    expect(runnerTask).not.toHaveBeenCalled();
+
+    const retained = { ...target, sandboxLeaseAcquisition: { ...target.sandboxLeaseAcquisition, outcome: "resumed" as const } };
+    await expect(assertManagedAiProjectAuth({}, "openai", retained, options)).resolves.toBeUndefined();
+    expect(runnerTask).not.toHaveBeenCalled();
+    await expect(assertManagedAiProjectAuth({}, "openai", retained)).resolves.toBeUndefined();
+    expect(runnerTask).toHaveBeenCalledExactlyOnceWith({ kind: "describe" });
+  });
   it("keeps personal defaults separate and does not replace the first default", async () => {
     const first = await create("alice", "Alice first");
     await create("alice", "Alice second");

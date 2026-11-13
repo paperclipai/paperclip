@@ -49,6 +49,8 @@ export type BoardControlPage = [label: string, path: string];
 
 /** Budgets are board-only. These pages hold the budget controls behind any route that writes one. */
 export const COMPANY_BUDGETS_PAGE: BoardControlPage = ["budgets", "/<prefix>/activity/budgets"];
+/** Cost recording controls (such as retrying a run's saved-usage cost) are on the Costs page, not Budgets. */
+export const COMPANY_COSTS_PAGE: BoardControlPage = ["costs", "/<prefix>/activity/costs"];
 export function agentBudgetPage(agentId: string): BoardControlPage {
   return [`the agent's ${AGENT_PROFILE_TABS.budgets![0]}`, `/<prefix>/agents/${agentId}/${AGENT_PROFILE_TABS.budgets![1]}`];
 }
@@ -59,7 +61,8 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 
 const BOARD_CONTROL_PAGES: Array<[RegExp, (match: RegExpExecArray, req: Request) => [string, string] | null]> = [
   [/^\/(?:companies\/[^/]+\/)?secrets?(?:[-/]|$)/, () => ["company secrets", "/<prefix>/company/settings/secrets"]],
-  [/^\/companies\/[^/]+\/(?:budgets|budget-incidents|costs)(?:\/|$)/, () => COMPANY_BUDGETS_PAGE],
+  [/^\/companies\/[^/]+\/(?:budgets|budget-incidents)(?:\/|$)/, () => COMPANY_BUDGETS_PAGE],
+  [/^\/companies\/[^/]+\/costs(?:\/|$)/, () => COMPANY_COSTS_PAGE],
   [/^\/companies\/[^/]+\/(?:prompt-injection-prevention|decision-model)(?:\/|$)/, () => ["connection settings", "/<prefix>/company/settings/connections"]],
   [/^\/companies\/[^/]+\/(?:members|invites|join-requests)(?:\/|$)/, () => ["company members", "/<prefix>/company/settings/members"]],
   [/^\/companies\/[^/]+\/(?:tools\/)?gateways(?:\/|$)|^\/tool-gateway\//, () => ["tool gateways", "/<prefix>/apps/gateways"]],
@@ -73,6 +76,9 @@ const BOARD_CONTROL_PAGES: Array<[RegExp, (match: RegExpExecArray, req: Request)
     return tab ? [`the agent's ${tab[0]}`, `/<prefix>/agents/${match[1]}/${tab[1]}`] : ["the agent's profile", `/<prefix>/agents/${match[1]}`];
   }],
   [/^\/companies\/[^/]+(?:\/(?:archive|branding|settings))?\/?$/, () => ["company settings", "/<prefix>/company/settings"]],
+  // An operator can hide the Experimental page, so link it only while it is visible.
+  [/^\/instance\/settings\/experimental\/?$/, () => getHiddenSettings().has("instance.experimental")
+    ? null : ["Experimental settings", "/<prefix>/company/settings/instance/experimental"]],
 ];
 
 // Plugin management pages. A plugin id or key segment opens that plugin's settings

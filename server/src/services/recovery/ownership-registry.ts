@@ -48,7 +48,7 @@ import { legacyShutdownSettlementOwner, settleLegacyShutdownSettlementFence } fr
 import { nativeControllerOwnerStamp, runProcessOwnerStamp } from "../native-runtime/native-owner-stamps.js";
 import { settleIssueLock } from "./issue-lock-settlement.js";
 import { settleAgentLifecycleLease } from "./agent-lifecycle-lease-settlement.js";
-import { legacyControllerOwnerStamp, settleLegacyControllerLease } from "../legacy-controller-lease.js";
+import { finishedLegacyControllerOwnerStamp, legacyControllerOwnerStamp, settleLegacyControllerLease } from "../legacy-controller-lease.js";
 import { heldInterruptedPreparationWhere, settleHeldInterruptedPreparation } from "../interrupted-preparation-hold-settlement.js";
 import { completedTurnCleanupHoldWhere, settleCompletedTurnCleanupHolds } from "../native-runtime/completed-turn-cleanup-hold-settlement.js";
 import {
@@ -273,6 +273,37 @@ function nrfKind(id: string, title: string, obligation: Obligation, where: SQL |
       return records;
     },
   };
+}
+
+/**
+ * A native run whose controller died after another server's startup pass
+ * (a crash mid-overlap, not a graceful drain) has no server re-checking it:
+ * restart recovery only schedules re-checks for runs it saw. When the
+ * reconciler proves such a run's owner gone, this server runs the same restart
+ * recovery for that run now; its bounded wait and re-check schedule then end
+ * or resume the run without waiting for another server to boot.
+ */
+let nativeRestartRecheck: ((runIds: string[]) => Promise<unknown>) | null = null;
+export function registerNativeRestartRecheck(recheck: (runIds: string[]) => Promise<unknown>) {
+  nativeRestartRecheck = recheck;
+  return () => { if (nativeRestartRecheck === recheck) nativeRestartRecheck = null; };
+}
+/** The reconciler re-checks every 30 s; restart recovery schedules its own
+ * follow-ups, so one hand-off per run per minute is enough. */
+const NATIVE_RESTART_RECHECK_SPACING_MS = 60_000;
+const lastNativeRestartRecheck = new Map<string, number>();
+const recheckNativeRunOwnership: SettleRecord = async (_db, record, context) => {
+  if (!nativeRestartRecheck || !record.runId) return { settled: false, reason: "restart_recheck_unavailable" };
+  const last = lastNativeRestartRecheck.get(record.runId);
+  if (last !== undefined && context.now.getTime() - last < NATIVE_RESTART_RECHECK_SPACING_MS)
+    return { settled: false, reason: "restart_recovery_recheck_recent" };
+  if (lastNativeRestartRecheck.size > 10_000) lastNativeRestartRecheck.clear();
+  lastNativeRestartRecheck.set(record.runId, context.now.getTime());
+  await nativeRestartRecheck([record.runId]);
+  return { settled: false, reason: "restart_recovery_rechecked" };
+};
+function withNativeRestartRecheck(kind: OwnableKind): OwnableKind {
+  return { ...kind, settle: recheckNativeRunOwnership };
 }
 
 const notFinalizerOrCleanup = and(notLike(nativeRunFinalizations.leaseOwner, "native-finalizer:%"),
@@ -682,13 +713,13 @@ const acceptedNativeResultLease = nrfKind("native_accepted_result_lease", "Accep
 
 export const OWNABLE_KINDS: readonly OwnableKind[] = [
   // Native runtime and Runner
-  nrfKind("native_executor_claim", "Executor execution claim (fresh run)", "ownership",
+  withNativeRestartRecheck(nrfKind("native_executor_claim", "Executor execution claim (fresh run)", "ownership",
     and(eq(nativeRunFinalizations.phase, "observed"), isNull(nativeRunFinalizations.resultId),
-      isNotNull(nativeRunFinalizations.leaseOwner), notFinalizerOrCleanup, isNull(nativeRunFinalizations.recoveryState))),
-  nrfKind("native_restart_recovery_claim", "Restart-recovery claim", "ownership",
-    inArray(nativeRunFinalizations.recoveryState, ["awaiting_runner_reattach", "resuming_session", "bootstrap_incomplete"])),
-  nrfKind("native_awaiting_evidence", "\"Awaiting evidence\" wait", "ownership",
-    eq(nativeRunFinalizations.recoveryState, "awaiting_evidence"), undefined, [1, 2, 7]),
+      isNotNull(nativeRunFinalizations.leaseOwner), notFinalizerOrCleanup, isNull(nativeRunFinalizations.recoveryState)))),
+  withNativeRestartRecheck(nrfKind("native_restart_recovery_claim", "Restart-recovery claim", "ownership",
+    inArray(nativeRunFinalizations.recoveryState, ["awaiting_runner_reattach", "resuming_session", "bootstrap_incomplete"]))),
+  withNativeRestartRecheck(nrfKind("native_awaiting_evidence", "\"Awaiting evidence\" wait", "ownership",
+    eq(nativeRunFinalizations.recoveryState, "awaiting_evidence"), undefined, [1, 2, 7])),
   {
     // Shared path since Phase 2: a hard kill after `run.result` is accepted
     // leaves the result leased to the dead controller; settle expires that
@@ -1065,7 +1096,8 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
   }, versionLock(heartbeatRuns)),
   {
     // A preparation a shutdown interrupted, held before its no-provider-work
-    // proof could exist. Its owner is the recorded controller process: the
+    // proof could exist, or one the orphan reaper ended as process_lost. Its
+    // owner is the recorded controller process: the
     // shared prover must prove it gone (a missing stamp, or one from another
     // host or PID space, is unprovable and stays held). The settle re-checks
     // the durable proof and replays the preparation exactly once.
@@ -1073,7 +1105,9 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
     // in a pass is released before this kind lists in that same pass.
     ...runKind("legacy_interrupted_preparation_hold", "Interrupted preparation held for replay", "ownership",
       heldInterruptedPreparationWhere(), row => {
-        const stamp = legacyControllerOwnerStamp(row);
+        // A preparation the orphan reaper ended has a revoked lease: its owner
+        // is still the recorded controller process.
+        const stamp = finishedLegacyControllerOwnerStamp(row);
         return stamp ? { kind: "process", stamp } : { kind: "none" };
       }),
     settle: settleHeldInterruptedPreparation,
