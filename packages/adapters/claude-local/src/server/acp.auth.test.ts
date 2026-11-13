@@ -699,6 +699,19 @@ describe("Claude ACP edge rejections", () => {
     expect(mapped.errorFamily).toBe("transient_upstream");
   });
 
+  it("keeps the Retry-After hint when it maps an engine auth label to an edge rejection", () => {
+    const now = new Date("2026-11-13T12:00:00.000Z");
+    const mapped = mapClaudeAcpAuthErrorCode({
+      exitCode: 1, signal: null, timedOut: false, errorCode: "acpx_auth_required",
+      errorMessage: "Failed to authenticate. API Error: 403 Attention Required! | Cloudflare\nRetry-After: 120",
+      resultJson: { status: "failed" },
+    }, now);
+
+    expect(mapped.errorCode).toBe("claude_edge_rejected");
+    expect(mapped.retryNotBefore).toBe("2026-11-13T12:02:00.000Z");
+    expect(mapped.resultJson?.retryNotBefore).toBe("2026-11-13T12:02:00.000Z");
+  });
+
   it("replaces the edge page in an already-classified ACP edge rejection", () => {
     // The engine keeps the typed failure's title and details in the error and
     // in resultJson; the classifier already chose claude_edge_rejected.
