@@ -16443,7 +16443,7 @@ async function createRunnerdBackendWithinSessionClaim(
       configuredEnvironmentVersion: description.configuredEnvironmentVersion,
       configuredEnvironment: taskConfiguredEnvironment,
       releaseResumeVersion: description.releaseResumeVersion,
-      resumeCredentialVersion: description.resumeCredentialVersion,
+      resumeLaunchInputsVersion: description.resumeLaunchInputsVersion,
       authorityRunId: description.releaseResumeVersion === 1 ? input.execution.binding.runId : undefined,
       releasedSource: input.remoteWarmRecovery?.releasedSource,
       sessionHandoff: !!input.remoteWarmRecovery?.portableSourceTaskId,

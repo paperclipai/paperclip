@@ -18415,7 +18415,7 @@ describe("runnerd provider runtime wiring", () => {
     const release = vi.fn(async () => {}), resume = vi.fn(async () => "resumed" as const);
     const owner = vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner").mockReturnValue({ launcher, registration, driver, readWorkspaceFile, release, resume, isRetired: () => false, retireSupersededTask: async () => false, retiredBeforeClaim: () => false, configuredEnvironmentDelivered: () => false, credentialsUpdated: vi.fn(), rebind:vi.fn() });
     const description = { kind: "description" as const, launchPreparationVersion: 1 as const, projectAuthCheckVersion: 1 as const,
-      releaseResumeVersion: 1 as const, resumeCredentialVersion: 1 as const, ...(kind === "codex" ? { workspaceFileReadVersion: 1 as const } : {}),
+      releaseResumeVersion: 1 as const, resumeLaunchInputsVersion: 1 as const, ...(kind === "codex" ? { workspaceFileReadVersion: 1 as const } : {}),
       taskId: "task", runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } };
     const task = vi.fn(async (operation: unknown) => {
       environmentTaskOperationSchema.parse(operation);
@@ -18438,7 +18438,7 @@ describe("runnerd provider runtime wiring", () => {
       expect(state.toolAuthorityDefinitions).toHaveBeenCalledWith(expect.objectContaining({ assignedMcpTools }));
       expect(state.createAssignedMcpTools).toHaveBeenCalledWith(expect.objectContaining({ gatewayPublicId: "assigned-test", bearerToken: "fixture-mcp-secret" }));
       expect(owner).toHaveBeenCalledWith(expect.objectContaining({ task, projectIds: target.runnerTaskProjectIds,
-        credentialIdentity: undefined, releaseResumeVersion: 1, resumeCredentialVersion: 1 }));
+        credentialIdentity: undefined, releaseResumeVersion: 1, resumeLaunchInputsVersion: 1 }));
       expect(state.createBackend.mock.calls.at(-1)![1]).toMatchObject({ workingDirectoryAuthority: "runner_prepared_launch", environment: {} });
       state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
       const options = state.createTransport.mock.calls.at(-1)![0];
