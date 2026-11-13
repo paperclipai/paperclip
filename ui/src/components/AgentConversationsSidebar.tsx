@@ -91,7 +91,10 @@ export function AgentConversationsSidebar({ onConversationOpened }: { onConversa
     historyLoading={historyAgents.some(result => result.isPending)}
     historyError={historyAgents.find(result => queryViewKind(result) === "error")?.error}
     onRetryHistory={() => { historyAgents.filter(result => result.isError).forEach(result => { void result.refetch(); }); }}
-    onAddChat={async (agent, signal) => { await openChat(agent, signal); if (!signal?.aborted) onConversationOpened?.(); }}
+    onAddChat={async (agent, signal) => {
+      // A confirmed new chat opens even after its picker was dismissed, so close the history with it.
+      if (await openChat(agent, signal)) onConversationOpened?.();
+    }}
     onSelect={agent => {
       navigate(`/chats/${encodeURIComponent(agent.status === "terminated" ? agent.id : agentRouteRef(agent))}`);
       if (isMobile) setSidebarOpen(false);

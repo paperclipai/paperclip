@@ -414,11 +414,15 @@ it("opens a confirmed new chat when the picker was dismissed while it was being 
   let finishAlice!: (value: ReturnType<typeof chat>) => void;
   state.ensure.mockImplementation(async (_company, id) => id === "alice"
     ? new Promise(resolve => { finishAlice = resolve; }) : chat(id));
-  await render(); await addChat(); await choose("alice");
+  const opened = vi.fn();
+  await render(opened); await addChat(); await choose("alice");
   await act(async () => document.querySelector<HTMLButtonElement>('[data-slot="dialog-close"]')!.click());
   expect(state.navigate).not.toHaveBeenCalled();
+  expect(opened).not.toHaveBeenCalled();
   await act(async () => finishAlice(chat("alice")));
   expect(state.navigate).toHaveBeenLastCalledWith("/chats/alice/chat-alice");
+  // The surrounding history closes with the confirmed chat, as it does for a picker that stayed open.
+  expect(opened).toHaveBeenCalledOnce();
 });
 it("does not let a dismissed selection override a newer chat", async () => {
   let finishAlice!: (value: ReturnType<typeof chat>) => void;

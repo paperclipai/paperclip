@@ -46,7 +46,7 @@ export function useAgentChatNavigation() {
   return { companyId, userId, enabled, loaded, agents, chats, session };
 }
 
-/** Opens the default conversation or explicitly creates a new one. */
+/** Opens the default conversation or explicitly creates a new one. Resolves to whether it navigated to the chat. */
 export function useOpenAgentChat(companyId: string | null, userId: string | null, createNew = false) {
   const client = useQueryClient();
   const navigate = useNavigate();
@@ -58,7 +58,7 @@ export function useOpenAgentChat(companyId: string | null, userId: string | null
     scope.current = current;
     return () => { current.mounted = false; };
   }, [companyId, userId]);
-  return useCallback(async (agent: Agent, signal?: AbortSignal) => {
+  return useCallback(async (agent: Agent, signal?: AbortSignal): Promise<boolean> => {
     if (!companyId || agent.companyId !== companyId) throw new Error("Choose an agent from this company.");
     const session = client.getQueryData<Awaited<ReturnType<typeof authApi.getSession>>>(queryKeys.auth.session);
     const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
@@ -82,9 +82,10 @@ export function useOpenAgentChat(companyId: string | null, userId: string | null
     // Dismissing the picker cannot stop a create the server may already have committed. Open a
     // confirmed new chat unless a newer selection replaced it; a dismissed default open stays closed.
     const superseded = latestOpen.current !== open;
-    if (!current.mounted || scope.current !== current || (signal?.aborted && (!createNew || superseded))) { completeCreate(); return; }
+    if (!current.mounted || scope.current !== current || (signal?.aborted && (!createNew || superseded))) { completeCreate(); return false; }
     navigate(`/chats/${encodeURIComponent(agentRouteRef(agent))}${createNew ? `/${chat.id}` : ""}`);
     if (isMobile) setSidebarOpen(false);
     completeCreate();
+    return true;
   }, [client, companyId, userId, navigate, isMobile, setSidebarOpen, createNew]);
 }

@@ -10,7 +10,7 @@ export interface AgentChatPickerProps {
   agents: Agent[];
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onSelect: (agent: Agent, signal?: AbortSignal) => void | Promise<void>;
+  onSelect: (agent: Agent, signal?: AbortSignal) => unknown;
   loading?: boolean;
   error?: Error | null;
   onRetry?: () => void;
