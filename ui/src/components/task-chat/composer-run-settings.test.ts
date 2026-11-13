@@ -76,7 +76,7 @@ describe("composer run settings", () => {
   });
 
   it("offers Hermes effort levels for any model and stores them under effort", () => {
-    expect(composerEfforts(agent("hermes_local"), "", [])).toEqual(["minimal", "low", "medium", "high", "xhigh", "max"]);
+    expect(composerEfforts(agent("hermes_local"), "", [])).toEqual(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
     expect(composerEfforts(agent("hermes_local"), "custom/provider-model", [])).toContain("xhigh");
     const hermes = mergeComposerRunSettings({ adapterConfig: { effort: "low" } }, "hermes_local", { model: null, effort: "high", fast: false });
     expect(hermes).toEqual({ adapterConfig: { effort: "high" } });

@@ -13,11 +13,11 @@ export interface ComposerRunSettings {
 
 export const DEFAULT_COMPOSER_RUN_SETTINGS: ComposerRunSettings = { model: null, effort: null, fast: false };
 export const EFFORT_LABELS: Record<string, string> = {
-  off: "Off", minimal: "Minimal", low: "Low", medium: "Medium", high: "High",
+  off: "Off", none: "None", minimal: "Minimal", low: "Low", medium: "Medium", high: "High",
   xhigh: "Extra High", max: "Max", ultra: "Ultra",
 };
 
-const HERMES_EFFORTS = ["minimal", "low", "medium", "high", "xhigh", "max"] as const;
+const HERMES_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] as const;
 
 const MODEL_ADAPTERS = new Set([
   "claude_local", "codex_local", "opencode_local", "pi_local", "kimi_local",
