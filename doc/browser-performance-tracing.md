@@ -79,10 +79,12 @@ starts anyway, so a hard load that ended as `timeout` is still exported.
 
 Because the SDK loads after the first page settles, it cannot trace the hard
 load's API requests live. Instead the main-bundle controller registers one
-`PerformanceObserver` for `resource` entries (with `buffered: true`, so
-requests that finished before tracing started are included, and unaffected by
-the browser's 250-entry resource buffer filling up) and keeps only this
-origin's `/api/` `fetch`/XHR entries, at most 500. When the SDK loads it turns
+`PerformanceObserver` for `resource` entries and keeps only this
+origin's `/api/` `fetch`/XHR entries, at most 500. `buffered: true` delivers
+the requests that finished before tracing started (it starts once the session
+request returns). After that, the observer receives every entry even when the
+browser's resource buffer (250 entries by default) is full; only entries that
+overflowed that buffer before tracing started are missed. When the SDK loads it turns
 those entries into child spans of the `page.load` they belong to (see
 [Backfilled API spans](#backfilled-api-spans)) and the observer stops.
 Measurements taken before the SDK loads are buffered and exported when it
