@@ -640,6 +640,16 @@ admitted once the hold releases, and stops parking at the same cutoff. The
 writer's final save commit and an unchanged release (below) make these waiters
 due immediately instead of at the next re-check.
 
+When the unfinished-writer error was the task's last setup failure and
+stranded-work recovery blocked the task with a board escalation, that block
+belongs to the hold. The active recovery-action sweep settles the escalation
+once the hold releases (the files were saved, or the task continued from its
+last save): the task returns to `todo`, gets one plain notice, and its assignee
+gets one wake. The sweep never changes the workspace. It keeps the task blocked
+while the writer still holds the workspace, while a dependency forbids work,
+after a newer run for the task, or when a later status decision chose the block.
+A decision that only kept the Blocked status it found does not own it.
+
 A writer that ended (failed, cancelled, interrupted or timed out) without
 changing its files releases the hold at once, with no snapshot. Its workspace
 keeps the saved version it started from. Preparation records that starting

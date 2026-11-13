@@ -1,6 +1,7 @@
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { mkdir, readFile, realpath, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
+import type { HeartbeatRun } from "../../../packages/shared/src/types/heartbeat.js";
 import { resolveDefaultAgentWorkspaceDir } from "../../../server/src/home-paths.js";
 import { prepareChatBrief } from "../chat-stories.js";
 import { pollUntil } from "../api.js";
@@ -86,4 +87,24 @@ export async function busyRuntimeWorker(ctx: ChatCatalogContext, options: { work
 export async function releaseRuntimeWorker(state: Record<string, unknown>) {
   const gate = state.gate as { gate?: string } | undefined;
   if (gate?.gate) await writeFile(gate.gate, "The human ended this disposable fixture. Preserve any saved work and finish normally.", "utf8");
+}
+export function retriesOriginalRun(run: Pick<HeartbeatRun, "retryOfRunId" | "contextSnapshot">, originalRunId: string) {
+  if (run.retryOfRunId === originalRunId) return true;
+  const context = (run.contextSnapshot ?? {}) as { previousRunId?: unknown; executionContinuation?: { trigger?: { reason?: unknown; sourceRunId?: unknown } } };
+  const trigger = context.executionContinuation?.trigger;
+  return context.previousRunId === originalRunId && trigger?.reason === "task_retry" && trigger.sourceRunId === originalRunId;
+}
+export async function releasedRetryListener(run: HeartbeatRun, expected: { companyId: string; workerId: string; taskId: string; originalRunId: string; gateName: string },
+  root = process.env.PAPERCLIP_RUNNER_E2E_TEMP_ROOT) {
+  const profile = (run as { runnerProfileJson?: { nativeExecutionInput?: { workspace?: { cwd?: unknown }; binding?: { executionWorkspaceId?: unknown } } } }).runnerProfileJson;
+  const cwd = profile?.nativeExecutionInput?.workspace?.cwd, workspaceId = profile?.nativeExecutionInput?.binding?.executionWorkspaceId;
+  if (!root || run.companyId !== expected.companyId || run.agentId !== expected.workerId || !retriesOriginalRun(run, expected.originalRunId)
+    || ![run.contextSnapshot?.issueId, run.contextSnapshot?.taskId].includes(expected.taskId) || typeof cwd !== "string" || typeof workspaceId !== "string") return null;
+  const real = await realpath(cwd).catch(() => null), ownedRoot = await realpath(root);
+  if (!real || !real.startsWith(`${ownedRoot}${path.sep}`)) return null;
+  const ready = await realpath(path.join(real, `${expected.gateName}.waiting`)).catch(() => null);
+  if (!ready || path.dirname(ready) !== real || (await readFile(ready, "utf8")).trim() !== "waiting") return null;
+  const started = Date.parse(String(run.startedAt ?? ""));
+  if (!Number.isFinite(started) || (await stat(ready)).mtimeMs < started - 1_000) return null;
+  return { gate: path.join(real, expected.gateName), workspaceId };
 }

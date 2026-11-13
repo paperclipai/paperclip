@@ -1844,7 +1844,7 @@ current plugin records and enforce their existing readiness and worker checks.
 
 ### Persistent agent conversations
 
-Migration `0474` (`0474_multiple_agent_chat_conversations`) keeps the existing conversation as the default for its company, agent and user and permits additional conversations. The partial unique index still protects concurrent creation of the default conversation.
+Migration `0475` (`0475_multiple_agent_chat_conversations`) keeps the existing conversation as the default for its company, agent and user and permits additional conversations. The partial unique index still protects concurrent creation of the default conversation.
 
 Migration `0274_agent_chat.sql` adds conversation identity/state and session generation/boundary columns to `issues`, plus idempotent client request IDs and processed session-boundary generations to `issue_comments`. The company/agent/user unique index resolves concurrent first writes to one issue. A check constraint preserves the assigned-agent identity and prevents terminal conversation status. Comment request IDs are unique per issue and user. There is no separate chat/message store. Provider sessions continue to use `agent_task_sessions`; `/new` removes only the matching conversation session, and session writers fence stale generations against the issue row.
 
@@ -2120,6 +2120,26 @@ Use the same root client for in-process writers. New queue insertion paths must
 register before writing, or they can remain unseen until the next startup or
 another notification. Tests should verify both the producer and its outer
 transaction boundary.
+
+## Relational queries inside transactions
+
+Drizzle builds one relational query builder for every schema table when it
+creates a database object, and it creates one for each transaction and each
+savepoint. With the Paperclip schema that is about 100 KB per transaction.
+`createDb` therefore opens transactions through a second Drizzle client on the
+same postgres.js client, created without the schema, and builds `tx.query` the
+first time a transaction reads it (`packages/db/src/lazy-transaction-queries.ts`).
+`db.query`, `tx.query`, and `tx._` keep their contents. `BEGIN`, `SAVEPOINT`,
+commit, rollback, and connection reservation remain Drizzle's and the driver's.
+
+Measure the cost of a transaction and a savepoint with the command below. It
+needs Node.js 25 or later, because Node.js 24 has no V8 allocation counter, and
+it stops with that message on an older runtime:
+
+```sh
+cd packages/db
+TSX_DISABLE_CACHE=1 node --expose-gc --import tsx scripts/benchmark-transaction-allocation.ts
+```
 
 ### Installed skill packages
 

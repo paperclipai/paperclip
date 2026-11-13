@@ -10,6 +10,7 @@ import { deliverReconciledExecutions, settleUnrecoverableExecutions } from "./ex
 import { getExecutionBlocker } from "./execution-blocker.js";
 import {
   FRESH_CONTINUATIONS_PER_HOUR, FRESH_CONTINUATION_SCHEMA, PERSON_OWNED_FAILURE_CODES, continueHeldExecutions, ensureFreshContinuation,
+  resetBacklogContinuationPacingForTests,
   freshContinuationNote, heldExecutionsAwaitingFreshContinuation, nextFreshContinuationCheckAt, recordFreshContinuationCheck, FRESH_CONTINUATION_PENDING_BOUND_MS, FRESH_CONTINUATION_PROGRESS_BOUND_MS, FRESH_CONTINUATION_SAVED_WORK_BOUND_MS,
 } from "./fresh-continuation-fallback.js";
 import { heartbeatService } from "./heartbeat.js";
@@ -55,6 +56,7 @@ suite("fresh-continuation fallback", () => {
   }, 60_000);
 
   afterEach(async () => {
+    resetBacklogContinuationPacingForTests(db);
     await db.execute(sql`truncate table issue_recovery_actions, native_run_finalizations, tool_invocations,
       issue_approvals, approvals, issue_thread_interactions, activity_log, agent_wakeup_requests, environment_leases, execution_workspaces, heartbeat_runs, issues cascade`);
   });
@@ -166,6 +168,35 @@ suite("fresh-continuation fallback", () => {
   // Staging: the person had already pressed Retry, and the automatic successor
   // could not carry that authorization forward. That is the system's failure,
   // not the person's: the task continues under its responsible user.
+  it("starts the continuation when the failed run's exhaustion hold lands after the continuation was recorded", async () => {
+    const f = await unfinishedRun({ runtime: "native", errorCode: "native_runner_process_exited",
+      error: "native_session_recovery_failed: Error: runner_local_connect_failed: runnerd exited unexpectedly" });
+    await settleUnrecoverableExecutions(db);
+    await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: f.issueId, kind: "active_run_watchdog", status: "active",
+      ownerType: "board", returnOwnerAgentId: agentId, cause: "native_session_retry_exhausted", fingerprint: `native-retry:${f.runId}`,
+      nextAction: "Automatic recovery stopped.", maxAttempts: 3,
+      evidence: { runId: f.runId, coordinatorAttempt: 3, recoveryDisposition: "native_session_retry_exhausted" } });
+    await deliver();
+    await continueHeldExecutions(db); await settleUnrecoverableExecutions(db); await deliver();
+    expect(await successors(f.runId)).toHaveLength(1);
+  }, 60_000);
+
+  it("keeps a person's newer block when the failed run's exhaustion hold lands after the continuation was recorded", async () => {
+    const f = await unfinishedRun({ runtime: "native", errorCode: "native_runner_process_exited",
+      error: "native_session_recovery_failed: Error: runner_local_connect_failed: runnerd exited unexpectedly" });
+    await settleUnrecoverableExecutions(db);
+    const decisionId = randomUUID();
+    await db.update(issues).set({ status: "blocked", statusVersion: 9, lastStatusDecisionId: decisionId, blockedTransitionAt: new Date() })
+      .where(eq(issues.id, f.issueId));
+    const [late] = await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: f.issueId, kind: "active_run_watchdog", status: "active",
+      ownerType: "board", returnOwnerAgentId: agentId, cause: "native_session_retry_exhausted", fingerprint: `native-retry:${f.runId}`,
+      nextAction: "Automatic recovery stopped.", maxAttempts: 3,
+      evidence: { runId: f.runId, coordinatorAttempt: 3, recoveryDisposition: "native_session_retry_exhausted", nativeFailureBlock: { runId: f.runId, statusVersion: 4 } } }).returning();
+    await settleUnrecoverableExecutions(db);
+    expect(await issue(f.issueId)).toMatchObject({ status: "blocked", lastStatusDecisionId: decisionId });
+    expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, late!.id)))[0]).toMatchObject({ status: "resolved", ownerType: "system" });
+  }, 60_000);
+
   it("continues a task whose automatic retry lost the person's continuation authorization", async () => {
     expect(PERSON_OWNED_FAILURE_CODES).not.toContain("continuation_user_authorization_missing");
     const f = await unfinishedRun({ runtime: "legacy", errorCode: "continuation_user_authorization_missing",
@@ -210,6 +241,55 @@ suite("fresh-continuation fallback", () => {
     await settleUnrecoverableExecutions(db);
     await expectOneFreshSuccessor(f);
   }, 60_000);
+
+  /** A held record from an older release (settled blocked), its source run ended `ageMs` ago with `errorCode`. */
+  async function heldBacklog(errorCode: string, ageMs: number) {
+    const f = await unfinishedRun({ runtime: "native", errorCode, hold: "settled_blocked" });
+    await db.update(heartbeatRuns).set({ finishedAt: new Date(Date.now() - ageMs) }).where(eq(heartbeatRuns.id, f.runId));
+    return f;
+  }
+  const continuedFrom = async (runId: string) => db.select().from(issueRecoveryActions)
+    .where(sql`${issueRecoveryActions.evidence}#>>'{freshContinuation,sourceRunId}' = ${runId}`);
+  const evidenceOf = async (actionId: string) =>
+    (await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, actionId)))[0]!;
+
+  it("continues only recent interruptions from the held backlog, newest first, and leaves the rest untouched (staging herd)", async () => {
+    // paperclip.staging, 22:53Z: the first release with the fallback continued 176 held tasks in 30 minutes;
+    // 74 had a source run that ended more than 7 days ago, many with configuration or provider failures.
+    const HOUR = 60 * 60_000;
+    const recentOld = await heldBacklog("native_restart_recovery_blocked", 6 * HOUR);
+    const recentNew = await heldBacklog("native_continuation_requires_reconciliation", 1 * HOUR);
+    const weekOld = await heldBacklog("native_restart_recovery_blocked", 3 * 24 * HOUR);
+    const monthOld = await heldBacklog("native_session_interrupted", 28 * 24 * HOUR);
+    const providerFailure = await heldBacklog("runner_remote_provider_artifact_incompatible", 2 * HOUR);
+    const adapterFailure = await heldBacklog("adapter_failed", 2 * HOUR);
+    const untouched = [weekOld, monthOld, providerFailure, adapterFailure];
+    const before = await Promise.all(untouched.map(f => evidenceOf(f.actionId!)));
+
+    expect(await continueHeldExecutions(db, new Date(), 1)).toMatchObject({ continued: 1 });
+    expect(await continuedFrom(recentNew.runId)).toHaveLength(1);
+    expect(await continuedFrom(recentOld.runId)).toHaveLength(0);
+    for (let pass = 0; pass < 3; pass += 1) await continueHeldExecutions(db, new Date());
+    expect(await continuedFrom(recentOld.runId)).toHaveLength(1);
+    for (const [index, f] of untouched.entries()) {
+      expect(await continuedFrom(f.runId)).toHaveLength(0);
+      const after = await evidenceOf(f.actionId!);
+      expect({ status: after.status, evidence: after.evidence, updatedAt: after.updatedAt })
+        .toEqual({ status: before[index]!.status, evidence: before[index]!.evidence, updatedAt: before[index]!.updatedAt });
+    }
+  }, 120_000);
+
+  it("paces the held backlog to ten continuations a minute per server", async () => {
+    const records = [];
+    for (let index = 0; index < 12; index += 1) records.push(await heldBacklog("native_restart_recovery_blocked", (index + 1) * 60_000));
+    const now = new Date();
+    for (let pass = 0; pass < 4; pass += 1) await continueHeldExecutions(db, now);
+    const started = (await Promise.all(records.map(f => continuedFrom(f.runId)))).filter(rows => rows.length > 0).length;
+    expect(started).toBe(10);
+    // The next minute has room again.
+    await continueHeldExecutions(db, new Date(now.getTime() + 61_000));
+    expect((await Promise.all(records.map(f => continuedFrom(f.runId)))).filter(rows => rows.length > 0).length).toBe(12);
+  }, 180_000);
 
   const sweepWake = (issueId: string) => heartbeatService(db).wakeup(agentId, { source: "automation", triggerDetail: "system",
     reason: "issue_continuation_needed", payload: { issueId }, requestedByActorType: "system",
@@ -682,6 +762,19 @@ suite("fresh-continuation fallback", () => {
     expect(await nextFreshContinuationCheckAt(db)).toBeNull();
     expect(await heldExecutionsAwaitingFreshContinuation(db, new Date(), 10)).toEqual([]);
     expect(await executionControlSchedule(db).disposition()).toBeNull();
+  }, 60_000);
+
+  it("schedules no disposition scan for a held record the backlog pass leaves alone, and still does for an eligible one", async () => {
+    const overdueCheck = (actionId: string) => db.update(issueRecoveryActions).set({ evidence: sql`${issueRecoveryActions.evidence} || ${JSON.stringify({
+      freshContinuationCheck: { kind: "backoff", checkedAt: Date.now() - 7_200_000, nextCheckAt: Date.now() - 3_600_000 } })}::jsonb` })
+      .where(eq(issueRecoveryActions.id, actionId));
+    const old = await heldBacklog("native_restart_recovery_blocked", 3 * 24 * 60 * 60_000);
+    await overdueCheck(old.actionId!);
+    expect(await nextFreshContinuationCheckAt(db)).toBeNull();
+    expect(await executionControlSchedule(db).disposition()).toBeNull();
+    const recent = await heldBacklog("native_restart_recovery_blocked", 60 * 60_000);
+    await overdueCheck(recent.actionId!);
+    expect(await nextFreshContinuationCheckAt(db)).not.toBeNull();
   }, 60_000);
 
   it("tells the agent the previous attempt was cut off and which actions are unverified", async () => {

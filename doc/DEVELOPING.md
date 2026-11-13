@@ -462,7 +462,8 @@ Changing that file selects its consumers. Generated/untracked files and unknown
 query loaders retain their consumers conservatively. Other filesystem, process
 and network effects keep their existing fallback.
 
-For a full wall-clock profile of all main PR CI jobs, add `profile-ci` to the PR.
+One in ten CI CODEOWNER PR runs sends its job, step and outside-check timings to
+Honeycomb. For a full wall-clock profile of all main PR CI jobs, add `profile-ci` to the PR.
 See [CI profiling](ci-profiling.md) for the Honeycomb waterfall, coverage,
 operator setup, and activation requirements.
 
@@ -4270,7 +4271,7 @@ CLI configuration support:
 - Provider health is available at `GET /api/companies/:companyId/secret-providers/health` and reports local key permission warnings plus backup guidance.
 
 Per-company provider vaults are configured in the board UI under
-`Company Settings → Secrets → Provider vaults`, backed by
+`Company Settings → Secrets → Vaults`, backed by
 `/api/companies/{companyId}/secret-provider-configs`. The CLI does not own
 vault lifecycle today. See `docs/deploy/secrets.md` (`Provider Vaults` section)
 for the operator model.

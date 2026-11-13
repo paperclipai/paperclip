@@ -7,6 +7,7 @@ import { ReleaseSwapRun, overlapLaunchExtensionMs, type ReleaseSwapOptions } fro
 import { finishReleaseSwap, type ReleaseSwapFinishInput } from "./release-swap-finish.js";
 import { StormRun } from "./scheduler.js";
 import { setOverlapProbe } from "./staging-mix.js";
+import { bannerSink } from "./staging-mix-retry.js";
 import type { ChaosSupervisor } from "./supervisor.js";
 import type { TaskObserver } from "./observer.js";
 import { waitForAgentsReady, type ChaosLab } from "./seed.js";
@@ -87,7 +88,8 @@ export class ReleaseSwapWave {
       const graded = await finishReleaseSwap({ driver: this.driver, settleMs: options.settleMs, companyId: this.lab.companyId, api: this.api, db: this.db, board: input.board,
         drainCapMs: options.drainMs ?? Math.max(0, ...input.observers.map(observer => observer.definition.budgetMs)) + options.settleMs,
         timeline: this.timeline.entries, issueIdForTask: new Map(input.launched.flatMap(observer => observer.record.issueId ? [[observer.plan.taskId, observer.record.issueId] as const] : [])),
-        serverWindows: this.supervisor.serverWindows, waveDir: input.waveDir, cancelled: this.cancelled, record: (kind, data) => { this.timeline.add(kind, data); } });
+        serverWindows: this.supervisor.serverWindows, waveDir: input.waveDir, cancelled: this.cancelled, record: (kind, data) => { this.timeline.add(kind, data); },
+        onView: bannerSink(input.launched) });
       return graded.pass;
     } finally {
       setOverlapProbe(null);

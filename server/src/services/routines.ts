@@ -1728,6 +1728,7 @@ export function routineService(
     assigneeAgentId?: string | null;
     idempotencyKey?: string | null;
     rejectIdempotencyReplay?: boolean;
+    replayAgentApiReceiptsFor?: string | null;
     routineIdempotency?: boolean;
     createdByRunId?: string | null;
     executionWorkspaceId?: string | null;
@@ -1840,7 +1841,16 @@ export function routineService(
             and(
               eq(routineRuns.companyId, input.routine.companyId),
               eq(routineRuns.routineId, input.routine.id),
-              eq(routineRuns.source, input.source),
+              input.replayAgentApiReceiptsFor
+                ? or(eq(routineRuns.source, input.source), and(eq(routineRuns.source, "api"), sql`exists (
+                    select 1 from ${activityLog}
+                    where ${activityLog.companyId} = ${input.routine.companyId}
+                      and ${activityLog.entityType} = 'routine_run'
+                      and ${activityLog.entityId} = ${routineRuns.id}::text
+                      and ${activityLog.action} = 'routine.run_triggered'
+                      and ${activityLog.agentId} = ${input.replayAgentApiReceiptsFor}
+                  )`))
+                : eq(routineRuns.source, input.source),
               eq(routineRuns.idempotencyKey, input.idempotencyKey),
               idempotentRunId ? eq(routineRuns.id, idempotentRunId)
                 : input.trigger ? eq(routineRuns.triggerId, input.trigger.id) : isNull(routineRuns.triggerId),
@@ -2969,6 +2979,7 @@ export function routineService(
         projectWorkspaceId: input.projectWorkspaceId ?? null,
         assigneeAgentId: input.assigneeAgentId ?? null,
         idempotencyKey: input.idempotencyKey,
+        replayAgentApiReceiptsFor: input.source === "manual" ? actor?.agentId ?? null : null,
         executionWorkspaceId: input.executionWorkspaceId ?? null,
         executionWorkspacePreference: input.executionWorkspacePreference ?? null,
         executionWorkspaceSettings:

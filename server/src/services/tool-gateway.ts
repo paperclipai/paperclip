@@ -5,6 +5,7 @@ import { approvalSnapshotsMatch, approvalTargetChangeMessage, oauthApprovalConfi
 import { isToolApprovalConnectionError, toolApprovalConnectionRevision, toolApprovalConnectionCanResume,
   TOOL_APPROVAL_CONNECTION_MESSAGE, TOOL_APPROVAL_CONNECTION_REQUIRED } from "./tool-approval-connection.js";
 import { notifyChatRunMilestones } from "./chat-run-milestone-notifications.js";
+import { McpSkillVerificationError, mcpSkillContentBytes, mcpSkillManifestFile, mcpSkillsService, verifyMcpSkillFileBytes, verifyMcpSkillFrontmatter, type McpSkillRow } from "./mcp-skills.js";
 import { writeToolConnectionHealthChange } from "./tool-connection-health-notifications.js";
 import { writeApprovalChange } from "./approval-work-notifications.js";
 import { toolReviewProjectionService } from "./tool-review-projection.js";
@@ -101,6 +102,7 @@ import {
   toolInvocations,
   toolMcpGateways,
   toolMcpGatewayTokens,
+  toolMcpSkills,
   toolPolicies,
   toolProfileBindings,
   toolProfileEntries,
@@ -130,6 +132,7 @@ import type {
   UpdateToolMcpGateway,
 } from "@paperclipai/shared";
 import {
+  checkOAuthEndpointUrl,
   getConnectableAppDefinition,
   isGitHubConnectorProfileId,
   isGoogleWorkspaceConnectorProfileId,
@@ -145,14 +148,35 @@ import { secretService } from "./secrets.js";
 import { connectionGrantCredentialRef, resolveConnectionGrantSecret } from "./connection-credentials.js";
 import { railwayCommandBudgetMs, createRailwayClient, isRailwayConnection, isRailwayEndpoint, isRailwayToolBlocked, normalizeRailwayToolName, RAILWAY_API_URL, RAILWAY_TOOL_PREFIX, RailwayError } from "./railway.js";
 import { RAILWAY_SSH_SECRET_PATH, runRailwaySshCommand } from "./railway-ssh.js";
+import { saveMcpNegotiation } from "./tool-access/mcp-protocol-config.js";
 import {
   initializeMcpHttpSession,
   getMcpHttpSession,
   forgetMcpHttpSession,
+  forgetMcpProtocolVersion,
+  isModernMcpProtocolVersion,
+  knownMcpProtocolVersion,
+  MCP_ERROR_UNSUPPORTED_PROTOCOL_VERSION,
+  mcpEraKey,
+  mcpHttpRequestInit,
+  mcpInputRequired,
+  mcpProtocolVersionOf,
+  McpResultCache,
+  MCP_MODERN_PROTOCOL_VERSION,
+  MCP_PROTOCOL_VERSION,
+  mcpClientCapabilities,
+  mcpModernErrorOf,
+  mcpCacheHint,
+  mcpCredentialFingerprint,
+  negotiateMcpProtocolVersion,
   readMcpHttpResponse,
+  readMcpModernError,
+  rememberMcpProtocolVersion,
+  selectMcpProtocolVersion,
   McpHttpResponseError,
   McpHttpInitializationError,
   type McpHttpResponseProgress,
+  type McpInputRequired,
   mcpHttpRequestHeaders,
   parseMcpHttpResponseBody,
 } from "./mcp-http.js";
@@ -533,6 +557,8 @@ type RemoteHttpErrorEvidence = {
 const REMOTE_TOOL_CALL_WORKFLOW_REASON_CODES = new Set([
   "elicitation_required",
   "provider_interaction_required",
+  "provider_input_required",
+  "provider_retry_requested",
   "oauth_insufficient_scope",
   "oauth_refreshed_retry_required",
 ]);
@@ -614,6 +640,59 @@ function connectionRequiresMcpSession(connection: { config: unknown }): boolean 
   return getConnectableAppDefinition(sourceTemplateKey)?.methods.some((method) =>
     method.key === connectionMethodKey && method.defaults?.mcpSessionRequired === true
   ) ?? false;
+}
+
+const MCP_CONTINUATION_TTL_MS = 30 * 60_000;
+/** The most provider links one pending step shows (matches the legacy link flow). */
+const MCP_MAX_INPUT_LINKS = 8;
+/**
+ * JSON-RPC errors that show a server refused a call before running it: an
+ * unknown method, an invalid request, or a server that was never initialized.
+ * Anything else (an internal error, invalid params) may come after the tool
+ * ran, so such a call is never replayed.
+ */
+function callNeverRan(error: unknown): boolean {
+  const record = asRecord(error);
+  if (!record || typeof record.code !== "number") return false;
+  if (record.code === -32600 || record.code === -32601) return true;
+  return typeof record.message === "string" && /not\s+(?:been\s+)?initiali[sz]ed/i.test(record.message);
+}
+
+/** How long a stdio server may stay silent on `server/discover` before it is treated as legacy. */
+const STDIO_DISCOVER_PROBE_TIMEOUT_MS = 2_000;
+/** Context reads whose results carry the server's freshness hint. */
+const MCP_CACHEABLE_CONTEXT_METHODS = new Set(["resources/list", "resources/read", "resources/templates/list", "prompts/list"]);
+
+/**
+ * Turn a multi round-trip `input_required` result into what Paperclip can do
+ * with it today. URL requests become the provider link the person opens, as
+ * for older servers. Paperclip never answers them on the person's behalf: no
+ * person action is recorded, so claiming "accept" would assert consent nobody
+ * gave. The next call goes out fresh and the server, which tracks out-of-band
+ * steps itself, decides. A bare `requestState` (try again) is kept for the
+ * retry because it asserts nothing. Form, sampling, and roots are not collected yet.
+ */
+export function mcpInputRequiredPending(inputRequired: McpInputRequired): {
+  answerable: boolean;
+  /** State to send back on the next identical call; never a user answer. */
+  retryState?: string;
+  upstreamPending?: ToolUpstreamPending;
+} {
+  const links: ToolUpstreamPending["links"] = [];
+  let message: string | undefined;
+  for (const request of Object.values(inputRequired.inputRequests)) {
+    if (request.method !== "elicitation/create" || request.params.mode !== "url") return { answerable: false };
+    const checked = checkOAuthEndpointUrl(request.params.url);
+    if (!checked.ok) return { answerable: false };
+    if (!links.some((link) => link.url === checked.url)) links.push({ url: checked.url, host: checked.host });
+    if (!message && typeof request.params.message === "string") message = redactSensitiveText(request.params.message).slice(0, 4000);
+  }
+  if (!links.length) {
+    return inputRequired.requestState ? { answerable: true, retryState: inputRequired.requestState } : { answerable: false };
+  }
+  // The link flow shows up to eight; more is a clear stop, never a partial step.
+  if (links.length > MCP_MAX_INPUT_LINKS) return { answerable: false };
+  return { answerable: true, upstreamPending: { kind: "authorization", links, ...(message ? { message } : {}) } };
 }
 
 async function mapWithConcurrency<T, R>(
@@ -1291,6 +1370,19 @@ export function createToolGatewayService(
   // Authorization links can contain one-time codes. Keep them briefly in memory;
   // persist only the redacted request and execution identifiers for recovery.
   const upstreamHandoffs = new Map<string, { pending: ToolUpstreamPending; expires: number }>();
+  // A server's "try again" state, returned on the next identical call. It is
+  // in memory: after a restart the server simply asks again.
+  // MCP Apps view documents can reach MCP_APP_MAX_HTML_BYTES; larger results are not cached.
+  const mcpContextCache = new McpResultCache<unknown>(500, Date.now, 32 * 1024 * 1024, MCP_APP_MAX_HTML_BYTES + 64 * 1024);
+  const mcpContinuations = new McpResultCache<{ requestState: string }>(512);
+  async function persistMcpProtocolVersion(connection: typeof toolConnections.$inferSelect, protocolVersion: string) {
+    if (asRecord(connection.config)?.mcpProtocolVersion === protocolVersion) return;
+    const saved = await saveMcpNegotiation(db, connection, { mcpProtocolVersion: protocolVersion });
+    if (saved) {
+      connection.config = saved.config;
+      connection.transportConfig = saved.transportConfig;
+    }
+  }
   async function retainUpstreamHandoff(invocationId: string, pending: ToolUpstreamPending) {
     for (const [id, value] of upstreamHandoffs) if (value.expires <= Date.now()) upstreamHandoffs.delete(id);
     while (upstreamHandoffs.size >= 256) upstreamHandoffs.delete(upstreamHandoffs.keys().next().value!);
@@ -5363,7 +5455,10 @@ export function createToolGatewayService(
     protocolMethod?: string;
     protocolParams?: Record<string, unknown>;
     timeoutMs: number;
-  }): Promise<unknown> {
+  },
+  /** One restart and one deadline are shared by every protocol recovery in a call. */
+  recovery: { restarted: boolean; deadline: number } = { restarted: false, deadline: Date.now() + input.timeoutMs },
+  ): Promise<unknown> {
     if (input.template.templateId === "paperclip.cognee-cloud") {
       if (input.protocolMethod === "resources/list") return { resources: [] };
       if (input.protocolMethod === "prompts/list") return { prompts: [] };
@@ -5533,28 +5628,132 @@ export function createToolGatewayService(
       );
       return promise;
     };
-    try {
-      await request("initialize", {
-        protocolVersion: "2024-11-05",
-        capabilities: { extensions: MCP_APPS_CLIENT_CAPABILITY },
-        clientInfo: { name: "paperclip-tool-gateway", version: "0.3.1" },
+    // stdio has no status codes to tell eras apart, so the spec's probe is
+    // `server/discover`: a modern server answers it (or with a modern error);
+    // anything else, or silence, means a legacy server that needs `initialize`.
+    // The answer is remembered, since processes are started for each call.
+    const eraKey = mcpEraKey(input.connection.id, `stdio:${input.template.templateId}`);
+    const clientInfo = { name: "paperclip-tool-gateway", version: "0.3.1" };
+    const withMeta = (protocolVersion: string, params: Record<string, unknown>) => isModernMcpProtocolVersion(protocolVersion)
+      ? { ...params, _meta: { ...asRecord(params._meta), "io.modelcontextprotocol/protocolVersion": protocolVersion,
+          "io.modelcontextprotocol/clientCapabilities": mcpClientCapabilities(protocolVersion), "io.modelcontextprotocol/clientInfo": clientInfo } }
+      : params;
+    const probe = async (): Promise<string> => {
+      const id = nextId;
+      const answer = request("server/discover", withMeta(MCP_MODERN_PROTOCOL_VERSION, {}));
+      let probeTimer: NodeJS.Timeout | undefined;
+      const silent = new Promise<"silent">((resolve) => {
+        probeTimer = setTimeout(() => resolve("silent"), STDIO_DISCOVER_PROBE_TIMEOUT_MS);
+        probeTimer.unref?.();
       });
-      child.stdin.write(
-        `${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized", params: {} })}\n`,
-      );
-      return await request(
-        input.protocolMethod ?? "tools/call",
-        input.protocolParams ?? {
-          name: input.entry?.toolName,
-          arguments: input.parameters ?? {},
-        },
-      );
+      try {
+        const outcome = await Promise.race([answer, silent]);
+        if (outcome === "silent") {
+          pending.delete(id);
+          answer.catch(() => undefined);
+          return MCP_PROTOCOL_VERSION;
+        }
+        const versions = asRecord(outcome)?.supportedVersions;
+        if (!Array.isArray(versions)) return MCP_PROTOCOL_VERSION;
+        const selected = selectMcpProtocolVersion(versions);
+        if (!selected) throw stdioProtocolError("This app uses an MCP version Paperclip does not support yet.", { connectionId: input.connection.id });
+        return selected;
+      } catch (error) {
+        if (!(error instanceof ToolGatewayHttpError) || error.reasonCode !== "local_stdio_protocol_error") throw error;
+        const modernError = mcpModernErrorOf({ error: error.details.error });
+        if (!modernError) return MCP_PROTOCOL_VERSION;
+        if (modernError.code !== MCP_ERROR_UNSUPPORTED_PROTOCOL_VERSION || !modernError.supported) return MCP_MODERN_PROTOCOL_VERSION;
+        const selected = selectMcpProtocolVersion(modernError.supported);
+        if (!selected) throw stdioProtocolError("This app uses an MCP version Paperclip does not support yet.", { connectionId: input.connection.id });
+        return selected;
+      } finally {
+        clearTimeout(probeTimer);
+      }
+    };
+    let probing = false;
+    let probeEndedProcess = false;
+    let rememberedHandshakeRefused = false;
+    let recoveryError: unknown;
+    let result: unknown;
+    try {
+      const remembered = knownMcpProtocolVersion(eraKey);
+      let protocolVersion = remembered;
+      if (!protocolVersion) {
+        probing = true;
+        protocolVersion = await probe();
+        probing = false;
+        rememberMcpProtocolVersion(eraKey, protocolVersion);
+      }
+      if (!isModernMcpProtocolVersion(protocolVersion)) {
+        try {
+          await request("initialize", {
+            protocolVersion,
+            capabilities: mcpClientCapabilities(protocolVersion),
+            clientInfo,
+          });
+        } catch (error) {
+          // A remembered handshake server that now refuses `initialize` may have
+          // moved to stateless MCP (same template, new executable). Probe again.
+          if (remembered && error instanceof ToolGatewayHttpError
+            && (error.reasonCode === "local_stdio_protocol_error" || error.reasonCode === "local_stdio_process_exited")) {
+            rememberedHandshakeRefused = true;
+          }
+          throw error;
+        }
+        child.stdin.write(
+          `${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized", params: {} })}\n`,
+        );
+      }
+      try {
+        result = await request(
+          input.protocolMethod ?? "tools/call",
+          withMeta(protocolVersion, input.protocolParams ?? {
+            name: input.entry?.toolName,
+            arguments: input.parameters ?? {},
+          }),
+        );
+      } catch (error) {
+        // A remembered stateless server replaced by a handshake build answers
+        // a call without a handshake with a JSON-RPC error, before running it.
+        // Probe again. A process exit is not retried: the tool may have run.
+        if (isModernMcpProtocolVersion(remembered) && error instanceof ToolGatewayHttpError
+          && error.reasonCode === "local_stdio_protocol_error" && callNeverRan(error.details.error)) {
+          rememberedHandshakeRefused = true;
+        }
+        throw error;
+      }
+    } catch (error) {
+      // A legacy server may exit on a method it does not know. Start it again
+      // for the handshake rather than failing the call.
+      if (probing && error instanceof ToolGatewayHttpError && error.reasonCode === "local_stdio_process_exited") probeEndedProcess = true;
+      else if (!rememberedHandshakeRefused) throw error;
+      recoveryError = error;
     } finally {
       clearTimeout(timer);
       child.stdin.end();
       child.kill("SIGTERM");
       await exitPromise.catch(() => undefined);
     }
+    if (probeEndedProcess || rememberedHandshakeRefused) {
+      // A legacy server that exited on the probe is remembered as legacy; a
+      // remembered one that refused the handshake is probed again. Either way
+      // the call starts one more process at most, within its original deadline,
+      // so a server that keeps failing reports its error instead of looping.
+      if (probeEndedProcess) rememberMcpProtocolVersion(eraKey, MCP_PROTOCOL_VERSION);
+      else forgetMcpProtocolVersion(eraKey);
+      const remainingMs = recovery.deadline - Date.now();
+      if (recovery.restarted || remainingMs <= 0) throw recoveryError;
+      return callLocalStdioMcp({ ...input, timeoutMs: remainingMs }, { restarted: true, deadline: recovery.deadline });
+    }
+    if (mcpInputRequired(result)) {
+      throw new ToolGatewayHttpError(
+        409,
+        "This app needs information Paperclip can't collect yet. Complete the step in the app, then try again.",
+        "provider_input_required",
+        { connectionId: input.connection.id, catalogEntryId: input.entry?.id ?? null },
+      );
+    }
+    return result;
   }
 
   async function assertApplicationFeatureAvailable(applicationKey: unknown) {
@@ -5628,35 +5827,79 @@ export function createToolGatewayService(
     const dispatch = (init: RequestInit) => options.remoteHttpRequest
       ? options.remoteHttpRequest(endpoint, init)
       : guardedRemoteHttpFetch(endpoint, init, remoteHttpFetchOptions());
-    // Stateful servers need the same MCP session setup as tool calls.
-    const sessionScope = connectionRequiresMcpSession(input.connection)
+    const eraKey = mcpEraKey(input.connection.id, endpoint);
+    const savedProtocolVersion = asRecord(input.connection.config)?.mcpProtocolVersion;
+    if (!knownMcpProtocolVersion(eraKey)) {
+      if (typeof savedProtocolVersion === "string") rememberMcpProtocolVersion(eraKey, savedProtocolVersion);
+      else if (connectionRequiresMcpSession(input.connection)) rememberMcpProtocolVersion(eraKey, MCP_PROTOCOL_VERSION);
+    }
+    let protocolVersion = knownMcpProtocolVersion(eraKey);
+    // Fresh cacheable results (ttlMs/cacheScope) are reused. Private results
+    // stay with the credential that read them; retries carrying multi
+    // round-trip answers are never cached.
+    const cacheable = MCP_CACHEABLE_CONTEXT_METHODS.has(input.method)
+      && input.params.inputResponses === undefined && input.params.requestState === undefined;
+    const cacheKey = (scope: string) => `${eraKey}:${input.method}:${JSON.stringify(input.params)}:${scope}`;
+    const privateScope = mcpCredentialFingerprint(headers);
+    if (cacheable && isModernMcpProtocolVersion(protocolVersion)) {
+      const cached = mcpContextCache.get(cacheKey(privateScope)) ?? mcpContextCache.get(cacheKey("public"));
+      if (cached !== undefined) return structuredClone(cached);
+    }
+    const sendForNegotiation = (init: RequestInit) => dispatch({ ...init, redirect: "manual" });
+    // Stateful (handshake) servers need the same MCP session setup as tool calls.
+    let sessionScope = connectionRequiresMcpSession(input.connection)
       ? `${input.connection.id}:grant:${grant.id}:actor:${input.session.agentId}:${endpoint}`
       : null;
     // The session this read used. On a 400/404 only that session is dropped:
     // other identities' sessions and in-flight initializations are untouched.
     let usedSession: { scope: string; headers: Record<string, string>; sessionId: string } | null = null;
     const send = async (fresh: boolean) => {
-      let requestHeaders: Record<string, string> = headers;
-      if (sessionScope) {
+      let requestHeaders: Record<string, string> = isModernMcpProtocolVersion(protocolVersion)
+        ? { ...headers, "MCP-Protocol-Version": protocolVersion }
+        : headers;
+      if (sessionScope && !isModernMcpProtocolVersion(protocolVersion)) {
         if (fresh && usedSession) forgetMcpHttpSession(usedSession);
-        requestHeaders = await getMcpHttpSession({
-          scope: sessionScope,
-          send: (init) => dispatch({ ...init, redirect: "manual" }),
-          headers,
-          requestId,
-        });
+        requestHeaders = await getMcpHttpSession({ scope: sessionScope, send: sendForNegotiation, headers, requestId, eraKey });
         const sessionId = new Headers(requestHeaders).get("mcp-session-id");
         usedSession = sessionId ? { scope: sessionScope, headers, sessionId } : null;
+        // A handshake server that moved to stateless MCP comes back without a session.
+        const negotiated = mcpProtocolVersionOf(requestHeaders);
+        if (isModernMcpProtocolVersion(negotiated)) {
+          protocolVersion = negotiated;
+          await persistMcpProtocolVersion(input.connection, negotiated);
+        }
       }
       return dispatch({
-        method: "POST",
+        ...mcpHttpRequestInit(requestHeaders, { id: requestId, method: input.method, params: input.params }),
         redirect: "manual",
-        headers: mcpHttpRequestHeaders(requestHeaders),
-        body: JSON.stringify({ jsonrpc: "2.0", id: requestId, method: input.method, params: input.params }),
       });
     };
     let response = await send(false);
-    if (sessionScope && (response.status === 404 || response.status === 400)) {
+    // Context reads are read-only, so a request a stateless server rejected for
+    // its version or shape is retried once with a negotiated version.
+    const modernRejection = await readMcpModernError(response);
+    const rolledBack = !modernRejection && response.status === 400 && isModernMcpProtocolVersion(protocolVersion);
+    if (modernRejection || rolledBack) {
+      const retryVersion = modernRejection?.code === MCP_ERROR_UNSUPPORTED_PROTOCOL_VERSION && modernRejection.supported
+        ? selectMcpProtocolVersion(modernRejection.supported)
+        : rolledBack || !isModernMcpProtocolVersion(protocolVersion)
+          ? (forgetMcpProtocolVersion(eraKey), await negotiateMcpProtocolVersion({ send: sendForNegotiation, headers, requestId: `${requestId}-version`, eraKey }))
+          : null;
+      const usable = retryVersion !== null && retryVersion !== protocolVersion
+        && (isModernMcpProtocolVersion(retryVersion) || isModernMcpProtocolVersion(protocolVersion));
+      if (usable) {
+        rememberMcpProtocolVersion(eraKey, retryVersion!);
+        await persistMcpProtocolVersion(input.connection, retryVersion!);
+        // Back on the handshake, the read needs a session like a tool call.
+        if (!isModernMcpProtocolVersion(retryVersion)) {
+          sessionScope ??= `${input.connection.id}:grant:${grant.id}:actor:${input.session.agentId}:${endpoint}`;
+        }
+        protocolVersion = retryVersion;
+        if (usedSession) forgetMcpHttpSession(usedSession);
+        await response.body?.cancel().catch(() => undefined);
+        response = await send(false);
+      }
+    } else if (sessionScope && !isModernMcpProtocolVersion(protocolVersion) && (response.status === 404 || response.status === 400)) {
       // An expired or unknown session: start a new one once.
       await response.body?.cancel().catch(() => undefined);
       response = await send(true);
@@ -5709,7 +5952,17 @@ export function createToolGatewayService(
         {
           connectionId: input.connection.id,
           method: input.method,
+          // Resource not found is -32602 from stateless servers, -32002 before.
+          code: typeof asRecord(record?.error)?.code === "number" ? asRecord(record?.error)!.code : null,
         },
+      );
+    }
+    if (mcpInputRequired(record.result)) {
+      throw new ToolGatewayHttpError(
+        409,
+        "This app needs information Paperclip can't collect yet. Complete the step in the app, then try again.",
+        "provider_input_required",
+        { connectionId: input.connection.id, method: input.method },
       );
     }
     if (input.markHealth !== false) await markRemoteConnectionHealth(
@@ -5717,6 +5970,8 @@ export function createToolGatewayService(
       "ok",
       `Remote MCP server responded to ${input.method}.`,
     );
+    const hint = cacheable && isModernMcpProtocolVersion(protocolVersion) ? mcpCacheHint(record.result) : null;
+    if (hint) mcpContextCache.set(cacheKey(hint.scope === "public" ? "public" : privateScope), structuredClone(record.result), hint.ttlMs);
     return record.result;
   }
 
@@ -5783,6 +6038,116 @@ export function createToolGatewayService(
           timeoutMs: DEFAULT_TOOL_TIMEOUT_MS,
         }),
     );
+  }
+
+  const mcpSkills = mcpSkillsService(db);
+  /** How long a run waits for connected-app skills before starting without the late ones. */
+  const MCP_SKILL_LOAD_BUDGET_MS = 3_000;
+
+  /**
+   * One verified file of an approved MCP skill, read with this session's own
+   * access to the skill's connection. Only files in the approved manifest are
+   * read; cached bytes are re-hashed. Content that fails verification is never
+   * returned: the entry is refreshed with `skills/get` and leaves use until the
+   * board approves it again.
+   */
+  async function readVerifiedMcpSkillFile(session: ToolGatewaySession, connection: typeof toolConnections.$inferSelect,
+    skill: McpSkillRow, relativePath: string): Promise<Buffer> {
+    const resource = mcpSkillManifestFile(skill, relativePath);
+    if (!resource) {
+      throw new ToolGatewayHttpError(404, "That file is not part of this skill.", "mcp_skill_file_not_listed");
+    }
+    try {
+      const cached = await mcpSkills.cachedFile(skill, resource);
+      if (cached) {
+        // Cached bytes match the digest, but the listed frontmatter may have
+        // changed since; check it on every load, not only on fetch.
+        if (resource.uri === skill.skillUri) verifyMcpSkillFrontmatter(cached.toString("utf8"), skill.frontmatter, skill.skillUri);
+        return cached;
+      }
+      const result = await callAssignedConnectionProtocol({
+        session, connection, method: "resources/read", params: { uri: resource.uri },
+        // JSON or SSE framing escapes the bytes; leave headroom over the listed size.
+        maxResponseBytes: Math.max(256 * 1024, resource.size * 2 + 64 * 1024),
+        markHealth: false,
+      });
+      const bytes = mcpSkillContentBytes(result, resource.uri);
+      if (!bytes) throw new McpSkillVerificationError("The app returned no content for a listed file.", resource.uri);
+      verifyMcpSkillFileBytes(bytes, resource);
+      if (resource.uri === skill.skillUri) verifyMcpSkillFrontmatter(bytes.toString("utf8"), skill.frontmatter, skill.skillUri);
+      await mcpSkills.cacheFile(skill, resource, bytes);
+      return bytes;
+    } catch (error) {
+      if (!(error instanceof McpSkillVerificationError)) throw error;
+      await refreshMcpSkillAfterFailure(session, connection, skill, error.message);
+      throw new ToolGatewayHttpError(409, "This skill changed in its app and needs to be reviewed again.", "mcp_skill_verification_failed");
+    }
+  }
+
+  /**
+   * After a verification failure the skill leaves use unless a refresh shows
+   * a different manifest (which already needs review). Anything else, including
+   * an answer for another URI or no usable entry, takes this skill out of use.
+   */
+  async function refreshMcpSkillAfterFailure(session: ToolGatewaySession, connection: typeof toolConnections.$inferSelect,
+    skill: McpSkillRow, detail: string) {
+    const actor = { actorType: "system" as const, actorId: "mcp-skills", agentId: session.agentId, runId: session.runId };
+    let refreshed: McpSkillRow | null = null;
+    try {
+      const result = asRecord(await callAssignedConnectionProtocol({
+        session, connection, method: "skills/get", params: { uri: skill.skillUri }, markHealth: false,
+      }));
+      const entry = asRecord(result?.skill);
+      if (entry?.uri === skill.skillUri) refreshed = await mcpSkills.applyEntry(connection, entry, actor);
+    } catch (error) {
+      if (error instanceof ToolGatewayHttpError && asRecord(error.details)?.code === -32602) {
+        await mcpSkills.markRemoved(skill, actor);
+        return;
+      }
+    }
+    if (refreshed && refreshed.id === skill.id && refreshed.status !== "approved") return;
+    await mcpSkills.markVerificationFailed(refreshed?.id === skill.id ? refreshed : skill, actor, detail);
+  }
+
+  /** A run-bound session for an agent, as connection instructions use. */
+  async function agentRunSession(binding: { companyId: string; agentId: string; runId: string }) {
+    const runContext = await resolveRunContext(binding);
+    await assertAgentInCompany(binding.companyId, binding.agentId);
+    return captureSessionIdentity({
+      ...binding, ...runContext, id: randomUUID(), token: "", createdAt: new Date(), expiresAt: new Date(Date.now() + 60_000),
+    });
+  }
+
+  /** Connections whose tools this agent may use now (allowed or ask first) and whose grant resolves. */
+  async function usableConnectionsForAgent(session: ToolGatewaySession, candidates: Array<typeof toolConnections.$inferSelect>) {
+    const candidateIds = new Set(candidates.map((connection) => connection.id));
+    const tools = (await connectionToolsForContext(session))
+      .filter((tool) => tool.connectionId && candidateIds.has(tool.connectionId));
+    const decisions = await decideToolsForListing(tools, (tool) => policyInputForTool({ session, tool }));
+    const visible = new Set(decisions.flatMap(({ tool, decision }) =>
+      (decision.allowed || decision.decision === "require_approval") && tool.connectionId ? [tool.connectionId] : [],
+    ));
+    const usable: Array<typeof toolConnections.$inferSelect> = [];
+    for (const connection of candidates) {
+      if (!visible.has(connection.id)) continue;
+      try {
+        await resolveConnectionGrant(session, connection, false);
+        usable.push(connection);
+      } catch (error) {
+        if (!(error instanceof ToolGatewayHttpError) && !(error instanceof HttpError)) throw error;
+        if (error.status >= 500) throw error;
+      }
+    }
+    return usable;
+  }
+
+  async function approvedMcpSkillConnections(companyId: string, connectionId?: string) {
+    return db.select().from(toolConnections).where(and(
+      eq(toolConnections.companyId, companyId), eq(toolConnections.enabled, true), eq(toolConnections.status, "active"),
+      ...(connectionId ? [eq(toolConnections.id, connectionId)] : []),
+      inArray(toolConnections.id, db.select({ id: toolMcpSkills.connectionId }).from(toolMcpSkills)
+        .where(and(eq(toolMcpSkills.companyId, companyId), eq(toolMcpSkills.status, "approved")))),
+    ));
   }
 
   function contextHandle(
@@ -6533,45 +6898,105 @@ export function createToolGatewayService(
           execution,
         };
       }
+      // The version negotiated at catalog refresh is saved on the connection, so
+      // a stateless (2026-07-28) server is called directly: no handshake, no
+      // extra round trip before the tool runs.
+      const eraKey = mcpEraKey(connection.id, endpoint);
+      const savedProtocolVersion = asRecord(connection.config)?.mcpProtocolVersion;
+      if (!knownMcpProtocolVersion(eraKey)) {
+        // A connection saved as needing a session is a handshake server; it is
+        // probed again only if it ever refuses the handshake.
+        if (typeof savedProtocolVersion === "string") rememberMcpProtocolVersion(eraKey, savedProtocolVersion);
+        else if (connectionRequiresMcpSession(connection)) rememberMcpProtocolVersion(eraKey, MCP_PROTOCOL_VERSION);
+      }
+      const sendForNegotiation = (init: RequestInit) =>
+        dispatchRemote(endpoint, { ...init, redirect: "manual", signal: controller.signal });
       let requestHeaders = headers;
-      if (connectionRequiresMcpSession(connection)) {
+      const knownVersion = knownMcpProtocolVersion(eraKey);
+      if (isModernMcpProtocolVersion(knownVersion)) {
+        requestHeaders = { ...headers, "MCP-Protocol-Version": knownVersion };
+      } else if (connectionRequiresMcpSession(connection)) {
         const scope = `${connection.id}:grant:${grant.id}:actor:${session.agentId}:${endpoint}`;
         requestHeaders = await getMcpHttpSession({
           scope,
-          send: (init) =>
-            dispatchRemote(endpoint, {
-              ...init,
-              redirect: "manual",
-              signal: controller.signal,
-            }),
+          send: sendForNegotiation,
           headers,
           requestId,
+          eraKey,
         });
         const sessionId = new Headers(requestHeaders).get("mcp-session-id");
         if (sessionId) mcpSession = { scope, headers, sessionId };
+        const negotiated = mcpProtocolVersionOf(requestHeaders);
+        if (isModernMcpProtocolVersion(negotiated)) await persistMcpProtocolVersion(connection, negotiated);
       }
+      // The server's "try again" state from the previous identical call, if any.
+      // Tied to the server that issued the state: a changed URL starts fresh.
+      const continuationKey = `${connection.id}:${createHash("sha256").update(String(endpoint)).digest("hex")}:${grant.id}:${session.agentId}:${upstreamToolName}:${createHash("sha256").update(JSON.stringify(parameters ?? {})).digest("hex")}`;
+      const continuation = mcpContinuations.get(continuationKey);
+      let callRequestId = requestId;
+      let callParams: Record<string, unknown> = {
+        name: upstreamToolName,
+        arguments: parameters,
+        ...(continuation ? { requestState: continuation.requestState } : {}),
+      };
       // The guard runs inside this call and the connection is pinned to the
       // address it approved, so an operator-supplied hostname cannot be rebound
       // onto a loopback or metadata address between validation and dispatch
       // (PAP-17098).
-      const requestInit: RequestInit = {
-        method: "POST",
-        redirect: "manual",
-        // MCP Streamable HTTP requires the Accept header advertising both a JSON
-        // body and an SSE stream; spec-compliant servers 406 without it.
-        headers: mcpHttpRequestHeaders(requestHeaders),
-        signal: controller.signal,
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          id: requestId,
-          method: "tools/call",
-          params: {
-            name: upstreamToolName,
-            arguments: parameters,
-          },
+      const toolCallInit = (): RequestInit => ({
+        ...mcpHttpRequestInit(requestHeaders, { id: callRequestId, method: "tools/call", params: callParams }, {
+          toolInputSchema: entry.inputSchema ?? undefined,
         }),
-      };
-      let response = await dispatchRemote(endpoint, requestInit);
+        redirect: "manual",
+        signal: controller.signal,
+      });
+      let response = await dispatchRemote(endpoint, toolCallInit());
+      // A stateless server rejects a request it cannot accept before running
+      // anything (wrong version, or legacy request shape), so one retry with a
+      // supported version is safe.
+      // A plain 400 to a stateless request means the server went back to the
+      // handshake (it rejected the request shape before running it).
+      const modernRejection = await readMcpModernError(response);
+      const sentVersion = mcpProtocolVersionOf(requestHeaders);
+      const rolledBack = !modernRejection && response.status === 400 && isModernMcpProtocolVersion(sentVersion);
+      if (modernRejection || rolledBack) {
+        let retryVersion: string | null = null;
+        if (modernRejection?.code === MCP_ERROR_UNSUPPORTED_PROTOCOL_VERSION && modernRejection.supported) {
+          retryVersion = selectMcpProtocolVersion(modernRejection.supported);
+        } else if (rolledBack || !isModernMcpProtocolVersion(sentVersion)) {
+          forgetMcpProtocolVersion(eraKey);
+          retryVersion = await negotiateMcpProtocolVersion({ send: sendForNegotiation, headers, requestId, eraKey });
+        }
+        // A legacy version only helps when the stateless request was the problem.
+        const usable = retryVersion !== null && retryVersion !== sentVersion
+          && (isModernMcpProtocolVersion(retryVersion) || isModernMcpProtocolVersion(sentVersion));
+        if (usable && rolledBack) {
+          // A plain 400 does not prove the tool never ran, so the call is not
+          // sent again. Repair the saved version for the next explicit call:
+          // a server that refused a stateless request needs the handshake.
+          if (!isModernMcpProtocolVersion(retryVersion)) {
+            rememberMcpProtocolVersion(eraKey, retryVersion!);
+            const saved = await saveMcpNegotiation(db, connection, { mcpProtocolVersion: retryVersion!, mcpSessionRequired: true });
+            if (saved) { connection.config = saved.config; connection.transportConfig = saved.transportConfig; }
+          }
+        } else if (usable) {
+          rememberMcpProtocolVersion(eraKey, retryVersion!);
+          await persistMcpProtocolVersion(connection, retryVersion!);
+          if (mcpSession) forgetMcpHttpSession(mcpSession);
+          mcpSession = undefined;
+          await response.body?.cancel().catch(() => undefined);
+          if (isModernMcpProtocolVersion(retryVersion)) {
+            requestHeaders = { ...headers, "MCP-Protocol-Version": retryVersion };
+          } else {
+            const scope = `${connection.id}:grant:${grant.id}:actor:${session.agentId}:${endpoint}`;
+            requestHeaders = await getMcpHttpSession({ scope, send: sendForNegotiation, headers, requestId: `${requestId}-version`, eraKey });
+            const sessionId = new Headers(requestHeaders).get("mcp-session-id");
+            if (sessionId) mcpSession = { scope, headers, sessionId };
+          }
+          callRequestId = `${requestId}-version`;
+          response = await dispatchRemote(endpoint, toolCallInit());
+        }
+      }
       if (isInsufficientConnectionScope(response)) {
         await response.body?.cancel().catch(() => undefined);
         await markCallHealth("degraded", INSUFFICIENT_CONNECTION_SCOPE_MESSAGE);
@@ -6678,7 +7103,7 @@ export function createToolGatewayService(
           response.headers.get("traceparent"),
       };
       const body = response.ok
-        ? JSON.stringify(await readMcpHttpResponse(response, requestId, {
+        ? JSON.stringify(await readMcpHttpResponse(response, callRequestId, {
             maxBytes: MAX_REMOTE_MCP_RESPONSE_BYTES,
             onProgress: (progress) => { execution.stream = progress; },
             onRequest: async (message) => {
@@ -6743,6 +7168,10 @@ export function createToolGatewayService(
       }
       const payloadRecord = asRecord(payload);
       if (!payloadRecord) throw malformedRemoteMcpResponse();
+      // The server has answered this attempt, so saved multi round-trip input is
+      // spent (a new input request saves its own below). A rejected attempt,
+      // such as a 401 before an OAuth refresh, keeps it for the explicit retry.
+      if (continuation) mcpContinuations.delete(continuationKey);
       const upstreamPending = extractRemoteMcpPending(payloadRecord, String(connection.config.sourceTemplateKey ?? ""), entry.toolName);
       if (upstreamPending) {
         await retainUpstreamHandoff(invocationId, upstreamPending);
@@ -6774,6 +7203,31 @@ export function createToolGatewayService(
       }
       if (!Object.prototype.hasOwnProperty.call(payloadRecord, "result")) {
         throw malformedRemoteMcpResponse();
+      }
+      const inputRequired = mcpInputRequired(payloadRecord.result);
+      if (inputRequired) {
+        // Stateless servers ask for input by returning it as a result. The call
+        // is retried later, with the answers and the server's opaque state.
+        const pending = mcpInputRequiredPending(inputRequired);
+        if (!pending.answerable) {
+          throw new ToolGatewayHttpError(
+            409,
+            "This app needs information Paperclip can't collect yet. Complete the step in the app, then try again.",
+            "provider_input_required",
+            { connectionId: connection.id, catalogEntryId: entry.id, execution },
+          );
+        }
+        if (pending.retryState) mcpContinuations.set(continuationKey, { requestState: pending.retryState }, MCP_CONTINUATION_TTL_MS);
+        if (pending.upstreamPending) {
+          await retainUpstreamHandoff(invocationId, pending.upstreamPending);
+          throw new ToolGatewayHttpError(409, "Complete the provider's authorization or approval before continuing. The original call has not been replayed.", "provider_interaction_required", { upstreamPending: pending.upstreamPending, invocationId });
+        }
+        throw new ToolGatewayHttpError(
+          409,
+          "The app asked for this action to be tried again. Retry it to continue.",
+          "provider_retry_requested",
+          { connectionId: connection.id, catalogEntryId: entry.id, execution },
+        );
       }
       const resultElicitation = extractMcpElicitationRequest(
         payloadRecord.result,
@@ -9833,6 +10287,107 @@ export function createToolGatewayService(
         }
       }
       return composeConnectionInstructions(sources);
+    },
+
+    /**
+     * MCP Skills: approved skills of the connections this agent can use, each
+     * with its verified SKILL.md. A skill that cannot be loaded now is left out
+     * with a reason; it never blocks the run. Runs in a company without an
+     * approved MCP skill cost one indexed read.
+     */
+    async resolveConnectionSkillsForRun(binding: { companyId: string; agentId: string; runId: string }, options: { budgetMs?: number } = {}) {
+      const loaded: Array<{ skill: McpSkillRow; appName: string; markdown: string }> = [];
+      const skipped: Array<{ skillName: string; appName: string; reason: string }> = [];
+      if (!(await mcpSkills.hasApproved(binding.companyId))) return { loaded, skipped };
+      // The whole optional step shares one deadline: a slow database or app
+      // must not hold the run back. Reads still in flight at the deadline
+      // finish in the background and fill the cache for later runs.
+      const budgetMs = options.budgetMs ?? MCP_SKILL_LOAD_BUDGET_MS;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const deadline = new Promise<"late">((resolve) => { timer = setTimeout(() => resolve("late"), budgetMs); });
+      try {
+        const prepare = (async () => {
+          const candidates = await approvedMcpSkillConnections(binding.companyId);
+          if (!candidates.length) return null;
+          const session = await agentRunSession(binding);
+          const usable = await usableConnectionsForAgent(session, candidates);
+          const skills = await mcpSkills.approvedForConnections(binding.companyId, usable.map((connection) => connection.id));
+          return { session, skills, byId: new Map(usable.map((connection) => [connection.id, connection])) };
+        })();
+        prepare.catch(() => undefined);
+        const prepared = await Promise.race([prepare, deadline]);
+        if (prepared === "late") {
+          skipped.push({ skillName: "", appName: "", reason: "Skills from connected apps took too long to prepare." });
+          return { loaded, skipped };
+        }
+        if (!prepared) return { loaded, skipped };
+        const { session, skills, byId } = prepared;
+        await Promise.all(skills.map(async (skill) => {
+          const connection = byId.get(skill.connectionId)!;
+          const read = readVerifiedMcpSkillFile(session, connection, skill, "SKILL.md");
+          read.catch(() => undefined);
+          try {
+            const bytes = await Promise.race([read, deadline]);
+            if (bytes === "late") {
+              skipped.push({ skillName: skill.name, appName: connection.name, reason: "The app took too long to answer." });
+              return;
+            }
+            loaded.push({ skill, appName: connection.name, markdown: bytes.toString("utf8") });
+          } catch (error) {
+            skipped.push({ skillName: skill.name, appName: connection.name,
+              reason: error instanceof ToolGatewayHttpError ? error.message : "The app could not be reached." });
+          }
+        }));
+      } finally {
+        clearTimeout(timer);
+      }
+      loaded.sort((a, b) => a.skill.id.localeCompare(b.skill.id));
+      return { loaded, skipped };
+    },
+
+    /**
+     * MCP Skills: one supporting file of an approved skill, for an agent in an
+     * active run. The file must be listed in the approved manifest, and the
+     * read goes only to the skill's own connection.
+     */
+    async readConnectionSkillFile(input: { companyId: string; agentId: string; runId: string; skillId: string; path: string }) {
+      const skill = await mcpSkills.get(input.companyId, input.skillId).catch(() => null);
+      if (!skill || skill.status !== "approved" || skill.approvedManifestDigest !== skill.manifestDigest) {
+        throw new ToolGatewayHttpError(404, "Skill not found", "mcp_skill_not_found");
+      }
+      const [connection] = await approvedMcpSkillConnections(input.companyId, skill.connectionId);
+      if (!connection) throw new ToolGatewayHttpError(404, "Skill not found", "mcp_skill_not_found");
+      const session = await agentRunSession(input);
+      if (!(await usableConnectionsForAgent(session, [connection])).length) {
+        throw new ToolGatewayHttpError(404, "Skill not found", "mcp_skill_not_found");
+      }
+      return readVerifiedMcpSkillFile(session, connection, skill, input.path);
+    },
+
+    /**
+     * MCP Skills: the SKILL.md of any listed skill, for a board member to read
+     * before deciding. It is read with the viewer's own access, verified like
+     * any other read, and never counts as loading the skill.
+     */
+    async readConnectionSkillForReview(input: { companyId: string; userId: string; skillId: string }) {
+      const skill = await mcpSkills.get(input.companyId, input.skillId);
+      if (!skill.manifest) throw new ToolGatewayHttpError(409, "This skill's content can't be checked, so it can't be shown.", "mcp_skill_not_verifiable");
+      const [connection] = await db.select().from(toolConnections)
+        .where(and(eq(toolConnections.id, skill.connectionId), eq(toolConnections.companyId, input.companyId))).limit(1);
+      if (!connection) throw new ToolGatewayHttpError(404, "Skill not found", "mcp_skill_not_found");
+      const session: ToolGatewaySession = {
+        id: "mcp-skill-review", token: "mcp-skill-review", companyId: input.companyId, agentId: null, runId: null,
+        issueId: null, projectId: null, actorType: "user", actorId: input.userId, responsibleUserId: input.userId,
+        createdAt: new Date(), expiresAt: new Date(Date.now() + DEFAULT_SESSION_TTL_MS),
+      };
+      try {
+        await resolveConnectionGrant(session, connection, false);
+      } catch {
+        throw new ToolGatewayHttpError(404, "Skill not found", "mcp_skill_not_accessible");
+      }
+      const bytes = await readVerifiedMcpSkillFile(session, connection, skill, "SKILL.md");
+      // The digest the content was verified against, so the board approves what it read.
+      return { markdown: bytes.toString("utf8"), manifestDigest: skill.manifestDigest! };
     },
 
     async browserUseResources(binding: { companyId: string; agentId: string; runId?: string; issueId?: string }) {
