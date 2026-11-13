@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   costEvents,
@@ -213,6 +213,36 @@ describeEmbeddedPostgres("heartbeat terminalizeRunOnLeaseRelease", () => {
     const row = await db.select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
       .from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).then((rows) => rows[0]);
     expect(row).toEqual({ status: "cancelled", errorCode: null });
+  });
+
+  it("ends a run cancelled when a person's Stop commits while teardown's write waits", async () => {
+    const { companyId, issueId, runId, run: staleRun } = await seed({ issueStatus: "in_progress", runStatus: "running" });
+    const other = createDb(tempDb!.connectionString);
+    let locked!: () => void, release!: () => void;
+    const lockHeld = new Promise<void>(resolve => { locked = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    try {
+      const stop = other.transaction(async tx => {
+        await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).for("update");
+        locked();
+        await gate;
+        await tx.update(heartbeatRuns).set({ nativeIssueId: issueId, resultJson: personCancelRequest({ companyId, issueId, runId }) })
+          .where(eq(heartbeatRuns.id, runId));
+      });
+      await lockHeld;
+      const teardown = heartbeatService(db).terminalizeRunOnLeaseRelease(staleRun);
+      await vi.waitFor(async () => {
+        const waiting = await db.execute(sql`select 1 from pg_stat_activity
+          where wait_event_type = 'Lock' and datname = current_database() and query ilike '%heartbeat_runs%'`);
+        expect(waiting.length).toBeGreaterThan(0);
+      }, { timeout: 10_000 });
+      release();
+      await stop;
+      expect(await teardown).toMatchObject({ status: "cancelled", errorCode: null });
+    } finally {
+      release();
+      await other.$client.end();
+    }
   });
 
   it("still reports interruption when only an agent requested the stop", async () => {
