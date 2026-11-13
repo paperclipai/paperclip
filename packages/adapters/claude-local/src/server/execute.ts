@@ -68,6 +68,7 @@ import {
   claudeModelUsageTotals,
   claudeModelReceipts,
   parseClaudeStreamJson, createClaudeStreamParser,
+  createClaudeTerminalCleanupObserver,
   describeClaudeFailure,
   detectClaudeLoginRequired,
   extractClaudeRetryNotBefore,
@@ -987,6 +988,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       terminalResultCleanup: {
         graceMs: terminalResultCleanupGraceMs,
         hasTerminalResult: ({ stdout }) => parseClaudeStreamJson(stdout).resultJson !== null,
+        observeOutputEvents: createClaudeTerminalCleanupObserver(),
       },
       localProcessSandbox,
     });

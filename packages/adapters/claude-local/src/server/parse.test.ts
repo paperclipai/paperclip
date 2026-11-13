@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   claudeModelUsageTotals,
   parseClaudeStreamJson,
+  createClaudeTerminalCleanupObserver,
   detectClaudeLoginRequired,
   extractClaudeRetryNotBefore,
   isClaudeProviderQuotaError,
@@ -12,6 +13,42 @@ import {
   isClaudeImageProcessingError,
   isClaudeModelNotFoundError,
 } from "./parse.js";
+
+describe("createClaudeTerminalCleanupObserver", () => {
+  const push = (events: unknown[]) =>
+    events.map((event) => JSON.stringify(event)).join("\n") + "\n";
+
+  it("ignores zero-turn task notifications, split records and embedded text", () => {
+    const observe = createClaudeTerminalCleanupObserver();
+    const notification = JSON.stringify({
+      type: "result", subtype: "success", num_turns: 0, result: "",
+      origin: { kind: "task-notification" },
+    }) + "\n";
+    expect(observe({ stdout: notification.slice(0, 30), stderr: "" })).toEqual([]);
+    expect(observe({ stdout: notification.slice(30), stderr: "" })).toEqual([]);
+    expect(observe({ stdout: push([
+      { type: "user", message: { text: '{"type":"result"}' } },
+      { type: "system", subtype: "background_tasks_changed" },
+      { type: "system", subtype: "init" },
+    ]), stderr: "" })).toEqual([]);
+    expect(observe({ stdout: push([{ type: "assistant" }]), stderr: "" })).toEqual([]);
+    expect(observe({ stdout: push([{ type: "result", subtype: "success", num_turns: 2,
+      origin: { kind: "task-notification" } }]), stderr: "" })).toEqual(["terminal_result"]);
+  });
+
+  it("preserves the order of a finished turn, new work and final result", () => {
+    const observe = createClaudeTerminalCleanupObserver();
+    const chunk = push([
+      { type: "assistant" }, { type: "result", subtype: "success" },
+      { type: "system", subtype: "init" }, { type: "assistant" },
+      { type: "result", subtype: "success" },
+    ]);
+    expect(observe({ stdout: chunk, stderr: "" })).toEqual([
+      "terminal_result", "turn_active", "terminal_result",
+    ]);
+    expect(observe({ stdout: "", stderr: "failure" })).toEqual([]);
+  });
+});
 
 describe("detectClaudeLoginRequired", () => {
   it("classifies Claude's invalid API key login prompt as auth required", () => {
