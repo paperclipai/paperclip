@@ -88,6 +88,10 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     { controllerLeaseExpiresAt: new Date("2099-01-01T00:00:00Z") },
     { runnerProfileJson: { adapterDispatch: { adapterType: "claude_local" }, remoteWorkspace: {} } },
     { runnerProfileJson: { adapterDispatch: { adapterType: "claude_local" }, nativeExecutionInput: {} } },
+    // The dispatch gate hands the run to the adapter before adapter.invoke is recorded.
+    { usageJson: { budgetDispatch: { handedOffAt: "2000-01-01T00:00:00Z" } } },
+    { resultJson: { startupCancellation: { requestedAt: "2000-01-01T00:00:01Z" },
+      executionRecovery: { kind: "bootstrap", providerWorkStarted: true } } },
   ])("keeps the stop pending for contradictory run evidence: %j", async patch => {
     const { agent, run } = await fixture();
     await db.update(heartbeatRuns).set(patch).where(eq(heartbeatRuns.id, run.id));

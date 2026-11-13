@@ -58,6 +58,9 @@ export async function isLegacyRunCancelledBeforeDispatch(db: Db, run: Pick<typeo
     isNull(heartbeatRuns.runtimeModeResolvedAt),
     isNull(heartbeatRuns.processPid), isNull(heartbeatRuns.processGroupId), isNull(heartbeatRuns.processStartedAt),
     isNull(heartbeatRuns.nativeIssueId), isNull(heartbeatRuns.nativeSessionId), isNull(heartbeatRuns.sessionIdAfter),
+    // The dispatch gate writes handedOffAt under the run lock before it calls the adapter.
+    sql`${heartbeatRuns.usageJson}#>'{budgetDispatch,handedOffAt}' is null`,
+    sql`coalesce(${heartbeatRuns.resultJson}#>'{executionRecovery,providerWorkStarted}', 'false'::jsonb) = 'false'::jsonb`,
     or(isNull(heartbeatRuns.controllerLeaseExpiresAt), sql`${heartbeatRuns.controllerLeaseExpiresAt} <= now()`),
     sql`coalesce(${heartbeatRuns.resultJson}->>'workspaceRestoreFailure', '') <> 'restore_unsafe_archive'`,
     sql`coalesce(${heartbeatRuns.resultJson}->'workspaceRestoreRecovery'->>'schema', '') <> ${LEGACY_WORKSPACE_RECOVERY_SCHEMA}`,
