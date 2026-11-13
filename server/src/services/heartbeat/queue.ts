@@ -2360,12 +2360,10 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         eq(agentWakeupRequests.requestedByActorType, "user")))
       : [];
     const userRequestIds = new Set(userRequests.map(row => row.id));
-    const oldestQueuedAt = new Date(Math.min(...queuedRuns.map(run => run.createdAt.getTime())));
     const joinedUserRequests = queuedRuns.length > 1
       ? await db.select({ runId: agentWakeupRequests.runId }).from(agentWakeupRequests).where(and(
-        eq(agentWakeupRequests.agentId, agent.id), gte(agentWakeupRequests.updatedAt, oldestQueuedAt),
-        eq(agentWakeupRequests.companyId, agent.companyId), eq(agentWakeupRequests.requestedByActorType, "user"),
-        inArray(agentWakeupRequests.runId, queuedRuns.map(run => run.id))))
+        eq(agentWakeupRequests.companyId, agent.companyId), inArray(agentWakeupRequests.runId, queuedRuns.map(run => run.id)),
+        eq(agentWakeupRequests.agentId, agent.id), eq(agentWakeupRequests.requestedByActorType, "user")))
       : [];
     const userRunIds = new Set(joinedUserRequests.flatMap(row => row.runId ? [row.runId] : []));
     const requestedByUser = (run: typeof heartbeatRuns.$inferSelect) =>
