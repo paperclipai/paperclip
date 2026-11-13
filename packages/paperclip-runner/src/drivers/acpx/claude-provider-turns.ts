@@ -9,6 +9,8 @@ export const CLAUDE_PROVIDER_TURN_PROCESS_LOST = "ACPX_PROVIDER_PROCESS_LOST";
 export const CLAUDE_PROVIDER_TURN_SILENT = "ACPX_PROVIDER_TURN_SILENT";
 
 const START_KINDS = new Set(["usage_update", "tool_call", "tool_call_update", "agent_message_chunk", "agent_thought_chunk", "plan"]);
+const startsCycle = (update: Record<string, unknown>): boolean =>
+  typeof update.sessionUpdate === "string" && START_KINDS.has(update.sessionUpdate);
 const MAX_PENDING_REQUESTS = 256;
 const MAX_DRAIN_BACKLOG = 4_096;
 
@@ -209,6 +211,7 @@ export class ClaudeProviderTurns {
     if (envelope.method !== "session/update" || !ownSession) return false;
     const update = record(params.update);
     if (this.#draining && !this.#active) {
+      if (this.#backlog.length === 0 && !startsCycle(update)) return false;
       if (this.#backlog.length >= MAX_DRAIN_BACKLOG) {
         this.retire();
         return false;
@@ -219,7 +222,7 @@ export class ClaudeProviderTurns {
     let active = this.#active;
     if (!active) {
       if (this.#retired || this.#pending.size > 0 || this.#hooks.promptActive()) return false;
-      if (typeof update.sessionUpdate !== "string" || !START_KINDS.has(update.sessionUpdate)) return false;
+      if (!startsCycle(update)) return false;
       active = this.#open();
       if (!active) return false;
     }

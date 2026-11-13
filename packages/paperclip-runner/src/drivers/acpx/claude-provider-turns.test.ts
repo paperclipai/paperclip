@@ -150,4 +150,22 @@ describe("Claude provider-started turns", () => {
     expect(adopted[1]!.events.map(event => [event.type, (event as { tag?: unknown }).tag])).toEqual([
       ["status", "usage_update"], ["tool_call", "tool_call"], ["status", "usage_update"]]);
   });
+
+  it("ignores a task report that arrives while a cycle drains and does not count it as a declined cycle", async () => {
+    const unadopted = vi.fn();
+    const { turns, adopted } = harness({ unadopted });
+    const progress = update({ sessionUpdate: "async_task_progress", asyncTaskId: "task-2" });
+    turns.observe("inbound", toolCall("toolu_1"));
+    turns.observe("inbound", endMarker());
+    expect(turns.observe("inbound", progress)).toBe(false);
+    expect(await adopted[0]!.done).toMatchObject({ status: "completed" });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(unadopted).not.toHaveBeenCalled();
+    expect(turns.observe("inbound", toolCall("toolu_2"))).toBe(true);
+    expect(turns.observe("inbound", progress)).toBe(true);
+    turns.observe("inbound", endMarker());
+    await vi.waitFor(() => expect(adopted).toHaveLength(2));
+    expect(await adopted[1]!.done).toMatchObject({ status: "completed" });
+    expect(unadopted).not.toHaveBeenCalled();
+  });
 });
