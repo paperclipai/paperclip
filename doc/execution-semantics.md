@@ -1718,7 +1718,7 @@ or the exact provenance inside its verified committed saved snapshot. The latter
 uses one temporary read-only archive verification per preparation when needed.
 Task relationships alone do not authorize importing or retaining files.
 
-When a legacy turn admitted by an explicit user message fails or times out, a bounded transient retry needs its own durable continuation authorization. Initial admission binds the message's exact body digest and revision. Scheduling requires that original binding and revalidates the human author, source task, assignee, and execution ownership, then records the successor's receipt in the same transaction as its run. Historical receipts without a message binding cannot authorize automatic retries and are not backfilled. The parent receipt remains intact. Dispatch checks the exact successor, retry parent, and unchanged message binding again. Deleted or edited input, changed actors or ownership, superseded work, and duplicate successors cannot renew authority. Chat, queued-message and fresh-workspace Retries, failed-run retries, and Interrupt intents retain their separate one-run admission contracts; they are not renewable authority. A plain task Retry that continues in the saved workspace renews the same way: the successor's receipt names the same Retry request and actor, while the Retry request stays bound to the run it admitted. A graceful server shutdown (an upgrade or restart, `server_shutdown_interrupted`) that stops such a turn while it is still preparing, with bootstrap evidence that provider work did not start, is not a failure: the original user authorization still covers the work, so the turn continues automatically in the uncharged `interrupted_preparation` lane (or `server_restart` once its failure budget is spent) with its own receipt. When a release without this rule refused that continuation and released the task's claim, the stranded-task sweep restores the claim to the stopped run and admits the continuation once; it refuses when another run holds the claim. A fresh-workspace Retry (selected at admission, or by its preparation when the saved files could not be restored) is renewable only on this shutdown path: the person asked for that fresh attempt and it never ran, so the successor's receipt records the same workspace selection and the successor prepares the same attempt (a remote fresh workspace is keyed by the Retry, so it is reused). The stranded-task sweep offers every such stopped Retry or message turn to the scheduler before its generic checks, because the person's Retry started a fresh session: state the replaced session left behind (an unfinished session goal, or a native finalization that the Retry already replaced) does not own the task. While a terminal run's own executor still settles it (a live local execution or an unexpired controller lease), the sweep leaves the task alone, so it cannot clear the claim that run's bounded retry needs. When admission refuses, the sweep escalates the task once to `blocked` with a plain notice that asks for Retry, instead of refusing again on every pass. All other checks still apply: a changed assignee or Retry actor, a cancelled or completed task, newer or live work on the task, a revoked or missing receipt, a different interruption cause, and a turn whose provider work started keep refusing. Other retry policies cannot borrow this receipt: their scheduling fails closed. Successful explicit turns do not create a prose-only missing-comment follow-up with spent authority.
+When a legacy turn admitted by an explicit user message fails or times out, a bounded transient retry needs its own durable continuation authorization. Initial admission binds the message's exact body digest and revision. Scheduling requires that original binding and revalidates the human author, source task, assignee, and execution ownership, then records the successor's receipt in the same transaction as its run. Historical receipts without a message binding cannot authorize automatic retries and are not backfilled. The parent receipt remains intact. Dispatch checks the exact successor, retry parent, and unchanged message binding again. Deleted or edited input, changed actors or ownership, superseded work, and duplicate successors cannot renew authority. Chat, queued-message and fresh-workspace Retries, failed-run retries, and Interrupt intents retain their separate one-run admission contracts; they are not renewable authority. A plain task Retry that continues in the saved workspace renews the same way: the successor's receipt names the same Retry request and actor, while the Retry request stays bound to the run it admitted. A graceful server shutdown (an upgrade or restart, `server_shutdown_interrupted`) that stops such a turn while it is still preparing, with bootstrap evidence that provider work did not start, is not a failure: the original user authorization still covers the work, so the turn continues automatically in the uncharged `interrupted_preparation` lane (or `server_restart` once its failure budget is spent) with its own receipt. When a release without this rule refused that continuation and released the task's claim, the stranded-task sweep restores the claim to the stopped run and admits the continuation once; it refuses when another run holds the claim. A fresh-workspace Retry (selected at admission, or by its preparation when the saved files could not be restored) is renewable only on this shutdown path: the person asked for that fresh attempt and it never ran, so the successor's receipt records the same workspace selection and the successor prepares the same attempt (a remote fresh workspace is keyed by the Retry, so it is reused). The stranded-task sweep offers every such stopped Retry or message turn to the scheduler before its generic checks, because the person's Retry started a fresh session: state the replaced session left behind (an unfinished session goal, or a native finalization that the Retry already replaced) does not own the task. While a terminal run's own executor still settles it (a live local execution or an unexpired controller lease), the sweep leaves the task alone, so it cannot clear the claim that run's bounded retry needs. The controller lease stops renewing once the run is written terminal, so a slow settlement, or a server that stops before scheduling, can outlast it. A failed run that stopped before provider work with a transient preparation failure (for example a reusable sandbox that could not be resumed) is then offered to its own bounded retry scheduler, which reuses a successor that already exists; the task escalates only when that retry is exhausted or refused. When admission refuses, the sweep escalates the task once to `blocked` with a plain notice that asks for Retry, instead of refusing again on every pass. All other checks still apply: a changed assignee or Retry actor, a cancelled or completed task, newer or live work on the task, a revoked or missing receipt, a different interruption cause, and a turn whose provider work started keep refusing. Other retry policies cannot borrow this receipt: their scheduling fails closed. Successful explicit turns do not create a prose-only missing-comment follow-up with spent authority.
 
 Explicit retry admission checks the local parent adapter controller and verified environment cleanup. The existing queue-first release policy may retain only its own terminal execution claim while that cleanup is pending; finalization and the periodic stale-lock sweep reconsider the same policy after cleanup. Generic terminal-lock cleanup and stale checkout adoption leave these claims for that settlement. New user input, reassignment, and a successor's claim take precedence. Exhausted retries and revoked or missing authorization release the terminal claim without requesting another retry. Pending or failed environment cleanup cannot mint a successor receipt.
 
@@ -1781,6 +1781,35 @@ stop and no suspend and does not signal the process. The Runner and its
 in-flight turn stay for the next same-run reattachment. An abort (a Stop or the
 recovery deadline), any identity or authority refusal, any other recovery
 failure, and a protocol integrity fault still stop it.
+
+A kept Runner can answer its WebSocket pings but no recovery command. On
+staging, a reattached Codex Runner authenticated and restored its session, then
+left `session.snapshot` unanswered (`pending ahead 0; last runner event seq 338
+76s ago`), and each later attempt adopted the same Runner and failed the same
+way until the attempt budget ended the run. When a same-run reattachment fails
+because its Runner left a recovery command unanswered (`PRP command <type> timed
+out`, or `runnerd exited while waiting for <type>`), and the failure is not an
+identity, authority or integrity refusal, the run records
+`adoptedRunnerUnanswered` on its failure and the next claim carries
+`replaceUnansweredRunner`. That attempt does not adopt the Runner again. After
+the usual identity checks it launches a fresh Runner from the Runner's saved
+journal and resumes the provider session from the saved checkpoint. This applies
+only while the old Runner is alive: the launch fence stops that
+`paperclip-runnerd` on the state folder and its whole process lineage, and fails
+the launch closed when it cannot prove them gone. A Runner that already exited
+mid-turn can leave provider or tool processes that the fence cannot find, so it
+keeps the fail-closed path below, and the task continues in a fresh session from
+the saved work. The fresh Runner
+restores the provider thread; its in-flight turn is reconciled from history and
+never submitted again. The provider attempt budget still bounds these attempts.
+
+A paginated Codex history read (`thread/turns/list`, `thread/items/list`) that
+fails without an answer is reported as `codex_history_read_failed: <method> read
+failed`, with the underlying error. Only a provider answer that refuses the method
+on its first page means the build lacks paginated history. Then the driver reads
+the complete thread once (`thread/read` with `includeTurns: true`) and uses its
+turns and items, failing closed when that read names another thread or omits
+turns, items or turn identities. A refusal on a later page still fails closed.
 
 A failed close can leave its `runner.suspend` (or `runner.shutdown`) pending in
 the saved journal of a Runner it kept alive. The controller sends one command at
@@ -3453,6 +3482,23 @@ completion result. The existing lease-transfer policy must verify the company,
 agent, workspace, retained session, and termination of prior execution. The
 checkpoint must match the exact Runner, lease, run, session, turn, and item.
 A missing restart claim does not remove these checks or authorize a fresh session.
+
+A plugin task records its stop receipt when it settles. When the provider
+reports that the task stopped, completing the task writes a receipt bound to
+the exact company, run, lease, provider and task, even before the lease is
+released. Lease release can be held long after that, for example by a pending
+workspace export. A per-turn follow-up in a later run can then resume the
+retained checkpoint: for continuation, every lease of the predecessor run must
+be released with its termination receipt or still be active with this stop
+receipt and its release not started. Once release or destroy of a lease starts,
+release owns the receipt: the lease does not count until release settles with
+its own receipt, because the provider can be releasing the task's resources
+while the lease is still active. Dispatching new work on a lease removes its
+stop receipt. Resource cleanup gates, and a same-run retry's replacement of earlier
+leases, still require the released termination receipt.
+When the server refuses the resume, the error keeps the message
+`Plugin Runner retained session is not authorized` and names the first failed
+check, for example `(reason: predecessor_not_stopped)`.
 
 These checks can refuse the exact checkpoint before the retry claims a new
 provider attempt. For example, the interrupted attempt can leave the provider
@@ -5910,7 +5956,8 @@ lifecycle `suspended`, an empty outbox and no pending terminal delivery, provide
 cleanup or warm transition, the retry launches a Runner from that state instead
 of adopting one. This matches a settled staged source. Any other exit stays
 fail-closed for reconciliation, and the provider attempt budget still bounds the
-retries.
+retries. A live Runner that left the previous attempt's recovery read unanswered
+is replaced, not adopted (see above).
 The final admitted provider attempt may use this path; attempts above the limit
 cannot. Process verification and the final state read share one recovery
 deadline. A timeout, command failure, transport failure or invalid saved JSON on

@@ -225,6 +225,22 @@ export async function retireSupersededTaskRetry(db: Db, input: {
   return retired.length > 0;
 }
 
+export async function retireTaskRetriesContinuedBy(db: Db, input: {
+  companyId: string; issueId: string; agentId: string; sourceRunIds: string[];
+}) {
+  if (!input.sourceRunIds.length) return;
+  const held = and(eq(agentWakeupRequests.companyId, input.companyId), eq(agentWakeupRequests.agentId, input.agentId),
+    eq(agentWakeupRequests.reason, "task_retry"), eq(agentWakeupRequests.status, "deferred_issue_execution"),
+    isNull(agentWakeupRequests.runId), sql`${agentWakeupRequests.payload}->>'issueId' = ${input.issueId}`,
+    inArray(sql<string>`${agentWakeupRequests.payload}#>>'{taskRetry,sourceRunId}'`, input.sourceRunIds));
+  const [heldRetry] = await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(held).limit(1);
+  if (!heldRetry) return;
+  await notifyStrandedAgentStatus(db, { companyId: input.companyId, agentId: input.agentId });
+  await notifyExternalConversationSettlement(db, { companyId: input.companyId, issueId: input.issueId });
+  await db.update(agentWakeupRequests).set({ status: "skipped", error: "task_retry_superseded",
+    finishedAt: new Date(), updatedAt: new Date() }).where(held);
+}
+
 type TaskRetryRequest = {
   db: Db; companyId: string; issueId: string; actorId: string;
   idempotencyKey: string; observedRunId: string | null; actorSource?: string;

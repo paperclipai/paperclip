@@ -14,15 +14,20 @@
 //   check  verifies a built tree: every documented path, runner-image.json,
 //          the build stamp, the provider pack's integrity and its transport
 //          archives. The image build runs it, and CI runs it again on the
-//          tree it exported. No checked path may resolve outside the tree.
+//          tree of each built image (scripts/runner-image-oci.mjs unpacks
+//          it). No checked path may resolve outside the tree.
 //          It also extracts the transport archives the way a sandbox does and
 //          compares the result with the provider pack, so an archive set that
 //          has the recorded bytes but not the pack's files does not pass.
 //
+// The image has two variants. `slim` is everything but the transport archives
+// and their receipt; `full` adds those. `check` must be told which one it
+// reads: a slim tree with archives fails, and so does a full tree without.
+//
 // Usage:
 //   node scripts/runner-image-layout.mjs write --out DIR --workspace DIR --identity FILE
 //     [--source-revision SHA] [--publication]
-//   node scripts/runner-image-layout.mjs check DIR [--allow-unstamped]
+//   node scripts/runner-image-layout.mjs check DIR --variant slim|full [--allow-unstamped]
 //     [--expect-inputs-digest HEX] [--expect-source-revision SHA] [--expect-architecture ARCH]
 // An unknown flag, a repeated flag or a flag with an empty value is an error:
 // an expectation that was not really given must not pass as one that held.
@@ -88,6 +93,11 @@ export const RUNNER_IMAGE_PATHS = Object.freeze({
   runnerdCodexTransportBundle: "bundles/runnerd-codex-transport.mjs",
   lockfile: "pnpm-lock.yaml",
 });
+
+/** The two variants of the image. `full` is `slim` plus the paths below. */
+export const RUNNER_IMAGE_VARIANTS = Object.freeze(["slim", "full"]);
+/** Names in RUNNER_IMAGE_PATHS that only the full image has: the pack's transport form. */
+export const RUNNER_IMAGE_FULL_ONLY_PATHS = Object.freeze(["providerPackArchiveReceipt", "providerPackArchives"]);
 
 const DIRECTORY_PATHS = new Set(["providerPack", "providerPackArchives", "runnerPackage", "runnerDist"]);
 /** Paths that exist only when the build was given a source revision. */
@@ -311,6 +321,8 @@ export function writeRunnerImageManifest({
     libc: { family: "glibc", baseline: libc.baseline, buildVersion: libc.buildVersion, runnerdRequires: libc.runnerdRequires },
     providerPack: pack === null ? null : { digest: pack.digest, target: pack.payload?.target ?? null },
     paths: { ...RUNNER_IMAGE_PATHS },
+    // This file is the same in both variants, so it names what only one has.
+    fullImageOnly: [...RUNNER_IMAGE_FULL_ONLY_PATHS],
     sha256,
   };
   const manifestPath = resolveIn(outRoot, RUNNER_IMAGE_PATHS.manifest);
@@ -386,6 +398,9 @@ function checkManifestShape(manifest, problems, { allowUnstamped }) {
   }
   if (canonicalJson(manifest.paths ?? null) !== canonicalJson(RUNNER_IMAGE_PATHS)) {
     problems.push("paths does not match the documented layout (RUNNER_IMAGE_PATHS)");
+  }
+  if (canonicalJson(manifest.fullImageOnly ?? null) !== canonicalJson(RUNNER_IMAGE_FULL_ONLY_PATHS)) {
+    problems.push("fullImageOnly does not name the paths only the full image has (RUNNER_IMAGE_FULL_ONLY_PATHS)");
   }
   if (!manifest.sha256 || typeof manifest.sha256 !== "object") problems.push("sha256 must map file paths to their digests");
   return stamped;
@@ -579,7 +594,7 @@ function treeEntries(root) {
 }
 
 /** Up to five examples and the count, so one wrong archive does not print the whole pack. */
-function summarize(problems, label, items) {
+export function summarize(problems, label, items) {
   if (items.length === 0) return;
   const shown = items.slice(0, 5).join(", ");
   problems.push(`${label} (${items.length}): ${shown}${items.length > 5 ? ", ..." : ""}`);
@@ -746,22 +761,27 @@ export async function checkProviderPackArchives(root) {
  * Verifies the tree at `root` against the layout contract. Returns every
  * problem found; an empty list means the tree is a valid Runner image.
  * It reads the transport archives' bytes but does not extract them:
- * checkProviderPackArchives does, and the `check` command runs both.
+ * checkProviderPackArchives does, and the `check` command runs both on a
+ * full image. `variant` has no default: a slim image must not hold the
+ * transport archives, and a full image must.
  * @param {string} root
  * @param {{
+ *   variant: string,
  *   allowUnstamped?: boolean,
  *   expectInputsDigest?: string | null,
  *   expectSourceRevision?: string | null,
  *   expectArchitecture?: string | null,
- * }} [options]
+ * }} options
  * @returns {string[]}
  */
 export function checkRunnerImageLayout(root, {
+  variant,
   allowUnstamped = false,
   expectInputsDigest = null,
   expectSourceRevision = null,
   expectArchitecture = null,
-} = {}) {
+}) {
+  if (!RUNNER_IMAGE_VARIANTS.includes(variant)) throw new Error("the check must be told the variant: slim or full");
   const problems = [];
   const manifestPath = resolveIn(root, RUNNER_IMAGE_PATHS.manifest);
   if (!existsSync(manifestPath)) return ["runner-image.json is missing"];
@@ -790,7 +810,12 @@ export function checkRunnerImageLayout(root, {
     try {
       stat = lstatSync(absolute);
     } catch {
+      if (variant === "slim" && RUNNER_IMAGE_FULL_ONLY_PATHS.includes(name)) continue;
       problems.push(`documented path ${relative} (${name}) is missing`);
+      continue;
+    }
+    if (variant === "slim" && RUNNER_IMAGE_FULL_ONLY_PATHS.includes(name)) {
+      problems.push(`${relative} (${name}) is in a slim image; only the full image has the transport archives`);
       continue;
     }
     if (locate(root, relative).state !== "inside") {
@@ -827,7 +852,7 @@ export function checkRunnerImageLayout(root, {
 
   if (stamped) {
     const pack = checkProviderPack(root, manifest, problems);
-    if (pack) checkArchives(root, pack, problems);
+    if (pack && variant === "full") checkArchives(root, pack, problems);
   } else if (manifest.providerPack !== null) {
     problems.push("an image without a source revision must not record a provider pack");
   }
@@ -837,6 +862,7 @@ export function checkRunnerImageLayout(root, {
 const COMMAND_FLAGS = Object.freeze({
   write: { out: "value", workspace: "value", identity: "value", "source-revision": "value", publication: "boolean" },
   check: {
+    variant: "value",
     "allow-unstamped": "boolean",
     "expect-inputs-digest": "value",
     "expect-source-revision": "value",
@@ -847,11 +873,11 @@ const COMMAND_FLAGS = Object.freeze({
 /**
  * Splits a command line into positional arguments and the flags the command
  * knows. Throws on an unknown or repeated flag and on a missing or empty value.
- * @param {"write" | "check"} command
+ * @param {string} command
  * @param {string[]} argv
+ * @param {Record<string, string>} [known] the command's flags: "value" or "boolean"
  */
-export function parseLayoutArguments(command, argv) {
-  const known = COMMAND_FLAGS[command];
+export function parseLayoutArguments(command, argv, known = COMMAND_FLAGS[command]) {
   /** @type {string[]} */
   const positional = [];
   /** @type {Record<string, string | true>} */
@@ -888,7 +914,7 @@ if (invoked === import.meta.url) {
   try {
     const [command, ...rest] = process.argv.slice(2);
     if (command !== "write" && command !== "check") {
-      throw new Error("Usage: runner-image-layout.mjs write ... | check DIR [...]");
+      throw new Error("Usage: runner-image-layout.mjs write ... | check DIR --variant slim|full [...]");
     }
     const { positional, flags } = parseLayoutArguments(command, rest);
     if (command === "write") {
@@ -909,16 +935,21 @@ if (invoked === import.meta.url) {
     } else {
       if (positional.length !== 1) throw new Error("check takes exactly one directory");
       const root = path.resolve(positional[0]);
+      const variant = flags.variant;
+      if (typeof variant !== "string" || !RUNNER_IMAGE_VARIANTS.includes(variant)) throw new Error("check needs --variant slim or --variant full");
       const problems = checkRunnerImageLayout(root, {
+        variant,
         allowUnstamped: flags["allow-unstamped"] === true,
         expectInputsDigest: expectation(flags, "expect-inputs-digest", HEX_64, "64 hexadecimal characters"),
         expectSourceRevision: expectation(flags, "expect-source-revision", REVISION, "a full Git SHA"),
         expectArchitecture: expectation(flags, "expect-architecture", /^(?:amd64|arm64)$/, "amd64 or arm64"),
       });
-      // Only a tree without a source revision has no archives; the layout
-      // check above has already refused that tree unless it was allowed.
-      let archives = "The tree has no provider pack, so there are no transport archives to extract.";
-      if (existsSync(resolveIn(root, RUNNER_IMAGE_PATHS.providerPackArchiveReceipt))) {
+      // A full tree without a source revision has no archives either; the
+      // layout check above has already refused that tree unless it was allowed.
+      let archives = variant === "slim"
+        ? "A slim image has no transport archives."
+        : "The tree has no provider pack, so there are no transport archives to extract.";
+      if (variant === "full" && existsSync(resolveIn(root, RUNNER_IMAGE_PATHS.providerPackArchiveReceipt))) {
         const roundTrip = await checkProviderPackArchives(root);
         problems.push(...roundTrip.problems);
         archives = roundTrip.tar === "GNU tar"
