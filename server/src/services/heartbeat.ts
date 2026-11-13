@@ -903,6 +903,7 @@ export function heartbeatService(
     getRunIssueControl,
     getActiveRunIssueControlForAgent,
     getActiveRunForAgent,
+    getQueuedAssignmentRunForIssue,
     getActiveRunIssueSummaryForAgent,
   } = createHeartbeatRunState(db);
   const {
@@ -4722,6 +4723,8 @@ export function heartbeatService(
     getActiveRunIssueControlForAgent,
 
     getActiveRunForAgent,
+
+    getQueuedAssignmentRunForIssue,
 
     getActiveRunIssueSummaryForAgent,
   };
