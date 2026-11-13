@@ -3715,7 +3715,7 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
         .where(eq(issueRecoveryActions.companyId, companyId));
       expect(await claimNativeRestartRecoveries({ db: fixture.db, controller: await currentNativeControllerIdentity(),
         restartKind: "hard", runIds: [fixture.runId], liveRunExecutions: new Set(),
-        handedOffForShutdown: runId => runId === fixture.runId }))
+        handedOffForShutdown: runId => runId === fixture.runId, handedOffByThisController: runId => runId === fixture.runId }))
         .toEqual([expect.objectContaining({ kind: "blocked", reason: "handed_off_to_next_controller" })]);
       const [after] = await fixture.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, fixture.runId));
       expect(after).toEqual(before);

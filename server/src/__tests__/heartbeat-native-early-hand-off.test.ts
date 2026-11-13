@@ -61,7 +61,8 @@ describeEmbeddedPostgres("an outgoing server hands live remote runs over at shut
     try {
       const outgoing = heartbeatService(db);
       expect(await outgoing.handOffNativeRunsForShutdown("SIGTERM")).toEqual(runIds);
-      const outgoingPass = await claimNativeRestartRecoveries({ db, handedOffForShutdown: isRunHandedOffForShutdown,
+      await db.update(nativeRunFinalizations).set({ controllerPid: process.pid }).where(inArray(nativeRunFinalizations.runId, runIds));
+      const outgoingPass = await claimNativeRestartRecoveries({ db, handedOffForShutdown: isRunHandedOffForShutdown, handedOffByThisController: isRunHandedOffForShutdown,
         runIds, restartKind: "graceful" });
       expect(outgoingPass).toEqual([expect.objectContaining({ kind: "blocked", runId: runIds[0], reason: "handed_off_to_next_controller" })]);
       const [owner] = await db.select({ leaseOwner: nativeRunFinalizations.leaseOwner }).from(nativeRunFinalizations)

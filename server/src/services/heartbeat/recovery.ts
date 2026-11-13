@@ -377,6 +377,11 @@ function readNonEmptyString(value: unknown): string | null {
 
 /** Restart recovery shares the service lifecycle callbacks and execution ownership. */
 export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryDependencies) {
+  const runsHandedOffByThisController = new Set<string>();
+  const markHandedOffByThisController = (runId: string) => {
+    runsHandedOffByThisController.add(runId);
+    markRunHandedOffForShutdown(runId);
+  };
   const {
     enterShutdown,
     scheduleBoundedRetryForRun,
@@ -609,7 +614,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
           isNativeSessionId(run.nativeSessionId),
       )
       .map(({ run }) => run.id);
-    for (const runId of nativeRunIds) markRunHandedOffForShutdown(runId);
+    for (const runId of nativeRunIds) markHandedOffByThisController(runId);
     const detachedNativeSessions =
       await detachNativeSessionsForRestart(nativeRunIds);
 
@@ -1021,6 +1026,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         db,
         liveRunExecutions: activeRunExecutions,
         handedOffForShutdown: isRunHandedOffForShutdown,
+        handedOffByThisController: runId => runsHandedOffByThisController.has(runId),
         runIds,
         restartKind,
         recoveryRequestId: intent?.recoveryRequestId ?? null,
@@ -1163,7 +1169,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     // hot restart. Leaving the old event consumer attached lets its
     // finalizer interrupt/suspend Claude while the next server is adopting
     // the same turn.
-    markRunHandedOffForShutdown(run.id);
+    markHandedOffByThisController(run.id);
     await detachNativeSessionsForRestart([run.id]);
     const recoveryHistoryEntry = JSON.stringify({
       at: now.toISOString(),
@@ -1312,7 +1318,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       if (agent.adapterType === "paperclip_runner" && run.runtimeMode === "legacy" && run.scopeKind === "issue" &&
           run.issueId && run.executionStage === "preparing" && run.controllerBootId === legacyControllerBootId &&
           await handoffLegacyControllerPreparation(db, run, portableTaskPreparationLeaseId(db, run),
-            () => markRunHandedOffForShutdown(run.id))) {
+            () => markHandedOffByThisController(run.id))) {
         restartSuspendedRunIds.push(run.id);
         return;
       }
