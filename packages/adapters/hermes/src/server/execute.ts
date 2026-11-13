@@ -46,6 +46,7 @@ import {
   DEFAULT_GRACE_SEC,
   DEFAULT_MODEL,
   VALID_PROVIDERS,
+  VALID_REASONING_EFFORTS,
 } from "../shared/constants.js";
 
 import {
@@ -474,6 +475,15 @@ export async function execute(
 
   if (maxTurns && maxTurns > 0) {
     args.push("--max-turns", String(maxTurns));
+  }
+
+  const effort = cfgString(config.effort)?.trim().toLowerCase();
+  if (effort && !extraArgs?.some((arg) => arg === "--reasoning" || arg.startsWith("--reasoning="))) {
+    if ((VALID_REASONING_EFFORTS as readonly string[]).includes(effort)) {
+      args.push("--reasoning", effort);
+    } else {
+      await ctx.onLog("stderr", `[hermes] Ignoring unsupported thinking effort "${effort}".\n`);
+    }
   }
 
   if (worktreeMode) args.push("-w");

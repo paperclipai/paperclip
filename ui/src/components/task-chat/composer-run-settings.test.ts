@@ -74,4 +74,12 @@ describe("composer run settings", () => {
     expect(grok).toEqual({ adapterConfig: { model: "grok-4.7", reasoningEffort: "xhigh" } });
     expect(readComposerRunSettings(grok, "grok_local").effort).toBe("xhigh");
   });
+
+  it("offers Hermes effort levels for any model and stores them under effort", () => {
+    expect(composerEfforts(agent("hermes_local"), "", [])).toEqual(["minimal", "low", "medium", "high", "xhigh", "max"]);
+    expect(composerEfforts(agent("hermes_local"), "custom/provider-model", [])).toContain("xhigh");
+    const hermes = mergeComposerRunSettings({ adapterConfig: { effort: "low" } }, "hermes_local", { model: null, effort: "high", fast: false });
+    expect(hermes).toEqual({ adapterConfig: { effort: "high" } });
+    expect(readComposerRunSettings(hermes, "hermes_local").effort).toBe("high");
+  });
 });

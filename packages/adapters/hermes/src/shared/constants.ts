@@ -8,6 +8,17 @@ export const ADAPTER_TYPE = "hermes_local";
 /** Human-readable label shown in the Paperclip UI. */
 export const ADAPTER_LABEL = "Hermes Agent";
 
+export const VALID_REASONING_EFFORTS = [
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+  "ultra",
+] as const;
+
 /** Default CLI binary name. */
 export const HERMES_CLI = "hermes";
 

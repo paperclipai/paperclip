@@ -69,11 +69,8 @@ export function buildHermesConfig(
     ac.extraArgs = v.extraArgs.split(/\s+/).filter(Boolean);
   }
 
-  // Thinking/reasoning effort
   if (v.thinkingEffort) {
-    const existing = (ac.extraArgs as string[]) || [];
-    existing.push("--reasoning-effort", String(v.thinkingEffort));
-    ac.extraArgs = existing;
+    ac.effort = String(v.thinkingEffort);
   }
 
   // Prompt template
