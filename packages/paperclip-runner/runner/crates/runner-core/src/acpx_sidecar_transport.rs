@@ -917,6 +917,17 @@ impl AcpxSidecarTransport {
         ))
     }
 
+    pub(crate) fn exited_error(&mut self, stage: &str) -> Option<LocalRunnerError> {
+        match self.process.try_wait() {
+            Ok(None) => None,
+            Ok(Some(_)) | Err(_) => {
+                let error = self.closed_error(stage);
+                self.poison();
+                Some(error)
+            }
+        }
+    }
+
     fn closed_error(&mut self, stage: &str) -> LocalRunnerError {
         self.drain_diagnostics(Duration::from_millis(20));
         let suffix = self.diagnostic_suffix();
