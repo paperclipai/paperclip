@@ -53,13 +53,20 @@ const STRANDED_RECOVERY_NOTICE_TITLES_BY_RUN_ERROR_CODE: Record<string, string> 
   acpx_auth_required: "Error: agent login required",
 };
 
+/** A temporary setup failure before any agent work: the sweep continues recent ones itself. */
+const TEMPORARY_SETUP_NEXT_ACTION = "Setting up the workspace took too long, so no agent work started. "
+  + "Paperclip tries again automatically.";
+
+const TEMPORARY_SETUP_CODES = new Set(["remote_workspace_prepare_timeout", "reusable_sandbox_resume_failed"]);
+
 const WORKSPACE_SCAN_NOTICES: Record<string, { title: string; nextAction: string }> = {
   workspace_git_scan_timeout: { title: "Workspace scan timed out", nextAction: "Check repository access and server load, then retry the task." },
-  remote_workspace_prepare_timeout: { title: "Workspace setup timed out", nextAction: "Inspect the failed run and check repository access and sandbox load before retrying the task." },
+  remote_workspace_prepare_timeout: { title: "Workspace setup timed out", nextAction: TEMPORARY_SETUP_NEXT_ACTION },
   remote_workspace_restore_failed: { title: "Saved workspace could not be restored", nextAction: REMOTE_WORKSPACE_RESTORE_NEXT_ACTION },
   plugin_worker_unavailable: { title: "Environment plugin was not running", nextAction: "Check the environment plugin's worker status, then retry the task once it is running." },
   environment_provider_unavailable: { title: "Environment provider was temporarily unavailable", nextAction: "Paperclip retried automatically before the agent started, but the provider was still unavailable. No agent work started. Retry the task once the provider is available." },
-  reusable_sandbox_resume_failed: { title: "Saved sandbox could not be resumed", nextAction: "Inspect the failed run and the sandbox provider; the saved sandbox was kept. Retry the task once the provider can start it." },
+  reusable_sandbox_resume_failed: { title: "Saved sandbox could not be resumed", nextAction: "The sandbox service did not start the saved sandbox in time. "
+    + "The saved sandbox and its files were kept, and no agent work started. Paperclip tries again automatically." },
   workspace_git_scan_saturated: { title: "Workspace scan queue is full", nextAction: "Check server load and the workspace scan queue, then retry the task." },
   workspace_git_scan_output_limit: { title: "Workspace scan exceeded its limit", nextAction: "Check the repository size and workspace scan output limit before retrying the task." },
   workspace_git_scan_failed: { title: "Workspace scan failed", nextAction: "Inspect the failed run and check repository access and integrity before retrying the task." },
@@ -265,7 +272,9 @@ export function buildStrandedRecoveryEscalationNotice(input: {
   const workspaceScan = WORKSPACE_SCAN_NOTICES[input.sourceRun?.errorCode ?? ""];
   const seed = workspaceScan ? {
     ...workspaceScan,
-    body: `Paperclip could not prepare the workspace before the agent started. Automatic recovery could not continue. ${workspaceScan.nextAction}`,
+    body: TEMPORARY_SETUP_CODES.has(input.sourceRun?.errorCode ?? "")
+      ? `Paperclip could not prepare the workspace before the agent started. ${workspaceScan.nextAction}`
+      : `Paperclip could not prepare the workspace before the agent started. Automatic recovery could not continue. ${workspaceScan.nextAction}`,
     tone: "danger" as const,
   } : SETUP_FAILURE_NOTICES[input.sourceRun?.errorCode ?? ""] ?? input.seed;
   const fallbackBody = input.fallbackBody?.trim();

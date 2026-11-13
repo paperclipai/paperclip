@@ -206,10 +206,60 @@ describePostgres("assigned-work invariant sweep", () => {
       .toMatchObject({ outcome: "ok", verdict: { clause: "live_run" } });
   }, 60_000);
 
+  it("continues a recent board escalation of a temporary setup failure itself, and leaves old or lasting ones", async () => {
+    // Staging PAP-4505 / PAP-4776: a person's Retry failed resuming the saved sandbox
+    // (cause=transport_timeout) before any provider work; stranded recovery escalated
+    // to the board, and neither the sweep nor the fallback continued the task.
+    const f = await seedCompany();
+    async function escalated(input: { endedAgoMs: number; cause: string }) {
+      const blockedAt = new Date(Date.now() - input.endedAgoMs + 1_000);
+      const issueId = await f.issue({ status: "blocked", blockedTransitionAt: blockedAt });
+      const run = await f.run(issueId, { status: "failed", errorCode: "reusable_sandbox_resume_failed", livenessState: "failed",
+        error: `Failed to acquire lease: Reusable sandbox lease "x" could not be resumed (cause=${input.cause}); the lease was preserved and no replacement was created.`,
+        resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+        startedAt: new Date(Date.now() - input.endedAgoMs - 60_000), finishedAt: new Date(Date.now() - input.endedAgoMs),
+        createdAt: new Date(Date.now() - input.endedAgoMs - 60_000) });
+      const [hold] = await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: issueId,
+        kind: "stranded_assigned_issue", status: "active", ownerType: "board", cause: "stranded_assigned_issue",
+        fingerprint: `source_scoped_recovery:${f.companyId}:${issueId}:stranded_assigned_issue`,
+        evidence: { previousStatus: "in_progress", latestRunId: run.id, latestRunErrorCode: "reusable_sandbox_resume_failed",
+          routingPolicy: "board_escalation_no_takeover_v1" },
+        nextAction: "Board operator: inspect the evidence, repair the runtime if appropriate.", attemptCount: 1 }).returning();
+      await db.insert(activityLog).values({ companyId: f.companyId, actorType: "system", actorId: "system", action: "issue.updated",
+        entityType: "issue", entityId: issueId, details: { status: "blocked", previousStatus: "in_progress",
+          source: "recovery.reconcile_stranded_assigned_issue" }, createdAt: blockedAt });
+      return { issueId, hold };
+    }
+    const recent = await escalated({ endedAgoMs: 2 * HOUR, cause: "transport_timeout" });
+    const old = await escalated({ endedAgoMs: 30 * HOUR, cause: "transport_timeout" });
+    const lasting = await escalated({ endedAgoMs: 2 * HOUR, cause: "provider_access_denied" });
+    const queue = wakeQueue();
+    const recovery = recoveryService(db, { enqueueWakeup: queue.enqueueWakeup });
+    const suspects = (await recovery.assignedWork.listSuspects({ companyId: f.companyId }, null, 100)).map(row => row.id);
+    expect(suspects).toContain(recent.issueId);
+    expect(suspects).not.toContain(old.issueId);
+
+    expect(await recovery.assignedWork.checkIssue({ companyId: f.companyId, issueId: recent.issueId }))
+      .toMatchObject({ outcome: "repaired", verdict: { reason: "recovery_block" } });
+    expect(queue.calls).toEqual([{ agentId: f.agentId, issueId: recent.issueId, source: "issue.assigned_work_invariant" }]);
+    expect((await db.select().from(issues).where(eq(issues.id, recent.issueId)))[0].status).toBe("in_progress");
+    expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, recent.hold.id)))[0])
+      .toMatchObject({ status: "resolved", outcome: "restored", ownerType: "system", resolutionNote: "stranded_transient_continued" });
+
+    for (const left of [old, lasting]) {
+      expect(await recovery.assignedWork.checkIssue({ companyId: f.companyId, issueId: left.issueId }))
+        .toMatchObject({ outcome: "left_to_hold_owner" });
+      expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, left.hold.id)))[0].status).toBe("active");
+    }
+    expect(queue.calls).toHaveLength(1);
+  }, 60_000);
+
   it("leaves a task blocked under an active recovery hold to the hold's owner and reports it", async () => {
     const f = await seedCompany();
     const issueId = await f.issue({ status: "blocked", blockedTransitionAt: new Date(Date.now() - 2 * HOUR) });
-    const run = await f.run(issueId, { status: "failed", errorCode: "process_lost", livenessState: "failed" });
+    // Older than the 24-hour window: a recent restart-class escalation is the sweep's own (see above).
+    const run = await f.run(issueId, { status: "failed", errorCode: "process_lost", livenessState: "failed",
+      startedAt: new Date(Date.now() - 31 * HOUR), finishedAt: new Date(Date.now() - 30 * HOUR), createdAt: new Date(Date.now() - 31 * HOUR) });
     // Old-shaped row: a board-owned stranded action written by an older release.
     await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: issueId, kind: "stranded_assigned_issue",
       status: "active", ownerType: "board", cause: "stranded_assigned_issue", fingerprint: `source_scoped_recovery:${f.companyId}:${issueId}:stranded_assigned_issue`,

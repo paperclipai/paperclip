@@ -30,6 +30,7 @@ import { taskInterruptionPresentations } from "../task-interruption-presentation
 import { CHAT_CONTROL_RECOVERY_STOP_CODE, CHAT_CONTROL_RECOVERY_UNRESOLVED_CODE } from "../chat-control-recovery-stop.js";
 import { onboardingFirstTaskAwaitingUserSql } from "./onboarding-first-task-wait.js";
 import { PENDING_CONTINUATION_BOUND_MS } from "../recovery-continuation-pacing.js";
+import { STRANDED_CONTINUATION_MAX_AGE_MS, STRANDED_KIND, strandedHoldContinuesAutomatically, type StrandedHoldRun } from "./stranded-hold-continuation.js";
 import {
   continuationActivityMessage,
   continuationAllowance,
@@ -50,6 +51,8 @@ import {
  * durable claim two servers serialize on, and the per-task rate-limit ledger. */
 export const ASSIGNED_WORK_CONTINUED_ACTION = "issue.continued_automatically";
 export const ASSIGNED_WORK_CONTINUATION_SOURCE = "issue.assigned_work_invariant";
+/** Resolution of a recent board escalation of a temporary failure that the sweep continued. */
+export const STRANDED_TRANSIENT_CONTINUED_OUTCOME = "stranded_transient_continued";
 /** Repairs per process per minute, so a deploy with many violations does not
  * start hundreds of runs at once. The rest are deferred, newest first. */
 export const ASSIGNED_WORK_REPAIRS_PER_MINUTE = 10;
@@ -276,6 +279,16 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
     ]);
 
     const rowsOf = <T>(value: unknown): T[] => Array.isArray(value) ? value as T[] : ((value as { rows?: T[] })?.rows ?? []);
+    // The failed run behind each board-owned stranded escalation, to decide
+    // by its cause whether the sweep continues the task (stranded-hold-continuation.ts).
+    const strandedRunIds = [...actionMap.values()].filter(action => action.kind === STRANDED_KIND && action.ownerType === "board")
+      .map(action => action.evidence?.latestRunId).filter((id): id is string => typeof id === "string" && /^[0-9a-f-]{36}$/i.test(id));
+    const strandedRuns = new Map<string, StrandedHoldRun>((strandedRunIds.length ? await database.select({ id: heartbeatRuns.id,
+      agentId: heartbeatRuns.agentId, status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode, error: heartbeatRuns.error,
+      finishedAt: heartbeatRuns.finishedAt,
+      executionRecovery: sql<StrandedHoldRun["executionRecovery"]>`${heartbeatRuns.resultJson}->'executionRecovery'` })
+      .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), inArray(heartbeatRuns.id, strandedRunIds))) : [])
+      .map(({ id, ...run }) => [id, run]));
     const agentsById = new Map<string, typeof agents.$inferSelect & { invokable: boolean }>();
     for (const agent of agentRows as Array<typeof agents.$inferSelect>) {
       // An agent still being set up, or held by a lifecycle hold, takes no work
@@ -372,8 +385,10 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
         lastBlockerResolvedAt: resolvedBlockerAt.get(issue.id) ?? null,
         openChildren: childCounts.get(issue.id) ?? 0,
         reviewPending: executionState.status === "pending" || Boolean(executionState.reviewRequest),
-        activeRecoveryAction: action ? { cause: action.cause, ownerType: action.ownerType,
-          resumeAt: PROVIDER_LIMIT_CAUSES.includes(action.cause) && interruption?.nextRetryAt ? new Date(interruption.nextRetryAt) : null } : null,
+        activeRecoveryAction: action ? { id: action.id, cause: action.cause, ownerType: action.ownerType,
+          resumeAt: PROVIDER_LIMIT_CAUSES.includes(action.cause) && interruption?.nextRetryAt ? new Date(interruption.nextRetryAt) : null,
+          continuedBySweep: strandedHoldContinuesAutomatically(action,
+            strandedRuns.get(String(action.evidence?.latestRunId ?? "")) ?? null, issue.assigneeAgentId, at) } : null,
         agent: agent ? { status: agent.status, invokable: agent.invokable } : null,
         companyPaused: company?.status === "paused",
         pauseHold,
@@ -457,7 +472,11 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       // hold on a blocked task is re-continued by the hold's owner.
       sql`not exists (select 1 from issue_recovery_actions ra where ra.company_id = ${issues.companyId}
         and ra.source_issue_id = ${issues.id} and ra.status in ('active', 'escalated')
-        and (ra.cause in ('configuration_incomplete', 'ownership_owner_unprovable') or ${issues.status} = 'blocked'))`,
+        and (ra.cause in ('configuration_incomplete', 'ownership_owner_unprovable') or ${issues.status} = 'blocked')
+        -- except a recent board escalation, which the predicate judges by its failed run's cause
+        and not (ra.kind = ${STRANDED_KIND} and ra.owner_type = 'board' and exists (select 1 from heartbeat_runs sr
+          where sr.company_id = ra.company_id and sr.id::text = ra.evidence->>'latestRunId'
+            and sr.finished_at > ${new Date(at.getTime() - STRANDED_CONTINUATION_MAX_AGE_MS).toISOString()}::timestamptz)))`,
       // An assignee that cannot take work (paused, being set up, held) is
       // its own wait; the predicate names it when anything else asks.
       sql`exists (select 1 from agents a where a.id = ${issues.assigneeAgentId} and a.company_id = ${issues.companyId}
@@ -494,8 +513,11 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
     // A task blocked under an active recovery hold is re-continued by the
     // hold's owner (the fresh-continuation fallback, same per-task cap). The
     // sweep reports it and repairs only blocks that have no hold at all, so
-    // the two never continue one task twice.
-    if (issue.status === "blocked" && facts.activeRecoveryAction) return { verdict, outcome: "left_to_hold_owner", retryAt: null };
+    // the two never continue one task twice. A recent board escalation of a
+    // temporary failure has no other owner: the sweep settles it and continues.
+    if (issue.status === "blocked" && facts.activeRecoveryAction && !facts.activeRecoveryAction.continuedBySweep) {
+      return { verdict, outcome: "left_to_hold_owner", retryAt: null };
+    }
     // A stalled native run is ended by native recovery, not here: the sweep
     // builds no second ender. It stays a counted violation in the report.
     if (verdict.reason === "native_run_stalled") return { verdict, outcome: "left_to_native_recovery", retryAt: null };
@@ -567,7 +589,7 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       const fresh = (await loadFacts(issue.companyId, [current], { database: tx as unknown as Db, proveOwners: false })).get(current.id)!;
       const verdict = evaluateAssignedWork(fresh, at);
       if (verdict.kind !== "violation" || verdict.stale || verdict.reason === "run_owner_gone" || verdict.reason === "native_run_stalled"
-        || (current.status === "blocked" && fresh.activeRecoveryAction)) return { kind: "changed" as const };
+        || (current.status === "blocked" && fresh.activeRecoveryAction && !fresh.activeRecoveryAction.continuedBySweep)) return { kind: "changed" as const };
       const recent = await tx.select({ createdAt: activityLog.createdAt }).from(activityLog).where(and(
         eq(activityLog.companyId, issue.companyId), eq(activityLog.entityType, "issue"), eq(activityLog.entityId, issue.id),
         eq(activityLog.action, ASSIGNED_WORK_CONTINUED_ACTION),
@@ -584,6 +606,16 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
           sql`(${activityLog.details}->>'status' = 'blocked' or ${activityLog.details}->>'toStatus' = 'blocked')`,
         )).orderBy(desc(activityLog.createdAt)).limit(1);
         restoredTo = recordedPreviousStatus(blocking?.details);
+        // A recent board escalation of a temporary failure: settle it here,
+        // so the continuation's admission sees no hold and no one is asked to act.
+        const hold = fresh.activeRecoveryAction;
+        if (hold?.continuedBySweep && hold.id) {
+          await tx.update(issueRecoveryActions).set({ status: "resolved", outcome: "restored", resolvedAt: at, updatedAt: at,
+            ownerType: "system", ownerAgentId: null, ownerUserId: null, returnOwnerAgentId: issue.assigneeAgentId,
+            resolutionNote: STRANDED_TRANSIENT_CONTINUED_OUTCOME, nextAction: CONTINUATION_PENDING_MESSAGE, wakePolicy: null, monitorPolicy: null })
+            .where(and(eq(issueRecoveryActions.companyId, issue.companyId), eq(issueRecoveryActions.id, hold.id),
+              inArray(issueRecoveryActions.status, ["active", "escalated"])));
+        }
         await issueService(tx as unknown as Db).update(issue.id, { status: restoredTo }, tx);
         const [restored] = await tx.select({ statusVersion: issues.statusVersion }).from(issues).where(eq(issues.id, issue.id));
         restoredStatusVersion = restored?.statusVersion ?? null;
@@ -697,7 +729,8 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
         else if (verdict.kind === "violation") {
           if (verdict.stale) { summary.staleBlocked += 1; continue; }
           summary.violationCount += 1;
-          if (issue.status === "blocked" && facts.get(issue.id)!.activeRecoveryAction) summary.heldByRecoveryOwner += 1;
+          const hold = facts.get(issue.id)!.activeRecoveryAction;
+          if (issue.status === "blocked" && hold && !hold.continuedBySweep) summary.heldByRecoveryOwner += 1;
           summary.violations[verdict.reason] = (summary.violations[verdict.reason] ?? 0) + 1;
           if (summary.sample.length < 20) summary.sample.push({ identifier: issue.identifier, status: issue.status, reason: verdict.reason });
         }

@@ -137,6 +137,18 @@ describe("buildStrandedRecoveryEscalationNotice", () => {
     expect(notice.body).not.toContain("retried continuation");
     expect(JSON.stringify(notice.metadata)).toContain("repository access and server load");
   });
+  it("says a saved sandbox that timed out resuming is retried automatically, without asking anyone to inspect or repair", () => {
+    for (const errorCode of ["reusable_sandbox_resume_failed", "remote_workspace_prepare_timeout"]) {
+      const notice = buildStrandedRecoveryEscalationNotice({
+        seed: buildImmediateExecutionPathRecoveryNoticeSeed({ status: "in_progress" }),
+        recoveryActionId: "sandbox-recovery", recoveryOwner: null,
+        sourceRun: { id: "failed-run", status: "failed", errorCode },
+      });
+      const text = `${notice.body} ${JSON.stringify(notice.metadata)}`;
+      expect(notice.body).toContain("tries again automatically");
+      expect(text).not.toMatch(/inspect|repair|check |could not continue/i);
+    }
+  });
   it("names an environment plugin that was not running after its bounded retries", () => {
     const notice = buildStrandedRecoveryEscalationNotice({
       seed: buildImmediateExecutionPathRecoveryNoticeSeed({ status: "in_progress" }),

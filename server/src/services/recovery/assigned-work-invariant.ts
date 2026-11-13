@@ -161,7 +161,9 @@ export type AssignedWorkFacts = {
   lastBlockerResolvedAt?: Date | null;
   openChildren: number;
   reviewPending: boolean;
-  activeRecoveryAction: { cause: string; ownerType: string; resumeAt: Date | null } | null;
+  activeRecoveryAction: { cause: string; ownerType: string; resumeAt: Date | null;
+    /** A recent, temporary stranded escalation the sweep continues itself (stranded-hold-continuation.ts). */
+    continuedBySweep?: boolean; id?: string } | null;
   agent: { status: string; invokable: boolean } | null;
   companyPaused: boolean;
   pauseHold: boolean;
