@@ -34,7 +34,11 @@ describe("OpenRouter catalog outages", () => {
     const res = await request(createApp()).get("/models");
 
     expect(res.status).toBe(503);
-    expect(res.body).toEqual({ error: "Could not load OpenRouter models. Retry or enter a model ID manually.", code: "openrouter_catalog_unavailable" });
+    expect(res.body).toEqual({
+      error: "Could not load OpenRouter models. Retry or enter a model ID manually.",
+      code: "openrouter_catalog_unavailable",
+      details: { code: "openrouter_catalog_unavailable" },
+    });
     expect(captureExceptionMock).not.toHaveBeenCalled();
   });
 
