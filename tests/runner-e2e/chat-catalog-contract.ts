@@ -257,7 +257,8 @@ export function validChatCatalogHumanCounts(implementation: Pick<ChatCatalogCase
     && total >= setup + (implementation.queryOutcome === "rejected" ? 0 : 1);
 }
 export function chatCatalogAllowsHumanQuestionAnswer(scenarioId: string): boolean {
-  return ["secrets.personal-secret", "secrets.configure-company-secret"].includes(scenarioId);
+  // tasks.ambiguous-task: the person can answer the clarification by choosing one of the card's saved options.
+  return ["secrets.personal-secret", "secrets.configure-company-secret", "tasks.ambiguous-task"].includes(scenarioId);
 }
 export function chatCatalogHumanHistoryMatches(input: {
   implementation: Pick<ChatCatalogCase, "setupHumanMessageCount" | "expectedHumanMessageCount" | "queryOutcome"> & Partial<Pick<ChatCatalogCase, "scenarioId" | "optionalCompanySecretBindingApproval">>;
