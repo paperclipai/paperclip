@@ -322,6 +322,7 @@ export interface AdapterExecutionTargetProcessOptions {
    */
   settleRunDisposition?: (() => DuplexBrokerRunDisposition) | null;
   localProcessSandbox?: LocalProcessSandboxOptions | null;
+  outputReadAheadBytes?: number;
 }
 
 export interface AdapterExecutionTargetShellOptions {
@@ -984,6 +985,7 @@ export async function runAdapterExecutionTargetProcess(
     onSpawn: options.onSpawn,
     terminalResultCleanup: options.terminalResultCleanup,
     localProcessSandbox: target?.kind === "local" || !target ? options.localProcessSandbox : null,
+    outputReadAheadBytes: target?.kind === "local" || !target ? options.outputReadAheadBytes : 0,
     remoteExecution: adapterExecutionTargetToRemoteSpec(target),
   });
   // Closing an SSH client on timeout/disconnect does not prove the remote
