@@ -6,6 +6,7 @@ import { resolveGrokDisableWebSearch } from "./grok-web-search.js";
 import { resolveGrokEffort, createGrokEffortAdmission } from "./grok-effort.js";
 import { createGrokSessionOpenGuard } from "./grok-session-rules.js";
 import { resolveClaudeEffort, createClaudeEffortAdmission } from "./claude-effort.js";
+import { CLAUDE_ASYNC_TASKS_CAPABILITY, ClaudeBackgroundTaskTracker } from "./claude-background-tasks.js";
 import { acpxProviderFailure, acpxTypedSessionFailureClientCapabilities, acpxTypedTerminalSessionFailure, type AcpxTerminalSessionFailure } from "./provider-failure.js";
 import type { ProviderFailure } from "../../contracts/provider-failure.generated.js";
 import { createPiThinkingAdmission, resolvePiThinkingLevel } from "./pi-thinking.js";
@@ -368,6 +369,7 @@ export async function openQualifiedAcpxRuntime(
   const extensionNotifications = new Set(extensionProfile.extensionNotifications);
   const promptUsage = options.profile.agent === "grok" ? createGrokPromptUsageCollector() : undefined;
   const promptReceipts = createAcpxPromptReceiptCollector(options.profile.agent);
+  const backgroundTasks = options.profile.agent === "claude" ? new ClaudeBackgroundTaskTracker() : null;
   const permissionReplies = createAcpxPermissionReplyConfirmations();
   const modelGate = createAcpxEffectiveModelGate(options.profile.reportedModelId);
   // Copilot's admitted permission policy is enforced from the observed wire:
@@ -470,7 +472,10 @@ export async function openQualifiedAcpxRuntime(
       ? "approve-reads"
       : options.permissionMode,
     elicitationModes: ["form"],
-    clientCapabilities: acpxTypedSessionFailureClientCapabilities(options.clientCapabilities),
+    clientCapabilities: acpxTypedSessionFailureClientCapabilities(
+      options.clientCapabilities,
+      backgroundTasks ? [CLAUDE_ASYNC_TASKS_CAPABILITY] : [],
+    ),
     extensionMethods: [...new Set([...extensionRequests, ...extensionNotifications])],
     onExtensionRequest: async (method, params, context) => {
       const active = extensionBoundary.active;
@@ -584,6 +589,7 @@ export async function openQualifiedAcpxRuntime(
       return { outcome: disposition };
     },
     onAcpMessage: (direction, message) => {
+      backgroundTasks?.observe(direction, message);
       observeAgentInitialize(direction, message);
       copilotPolicy?.observe(direction, message);
       modelGate.observe(direction, message);
@@ -831,6 +837,7 @@ export async function openQualifiedAcpxRuntime(
       copilotPolicy,
       modelGate,
       promptReceipts,
+      backgroundTasks,
     );
   } catch (error) {
     const cleanupReason = "ACPX runtime identity validation failed";
@@ -1285,6 +1292,7 @@ function runtimePort(
   copilotPolicy?: CopilotPolicyEnforcement | null,
   modelGate?: AcpxEffectiveModelGate,
   promptReceipts?: ReturnType<typeof createAcpxPromptReceiptCollector>,
+  backgroundTasks?: ClaudeBackgroundTaskTracker | null,
 ): AcpxRuntimePort {
   extensionBoundary.sessionIds = new Set([identity.backendSessionId]);
   let extensionControls: Promise<void> = Promise.resolve();
@@ -1573,6 +1581,9 @@ function runtimePort(
       return goalState.capability === null
         ? null
         : structuredClone(goalState.capability);
+    },
+    backgroundTaskState() {
+      return backgroundTasks?.state() ?? null;
     },
     goalSnapshot() {
       return goalState.snapshot === null
