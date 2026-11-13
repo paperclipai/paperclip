@@ -263,8 +263,6 @@ export function githubChatManagementService(db: Db, fetchImpl = fetch) {
   }
   async function linkObservedIdentity(endpointId: string, userId: string, verified: { githubUserId: string; login: string; avatarUrl?: string | null; grantId?: string; connectionId?: string }) {
     await db.transaction(async (tx) => {
-      // Lock the endpoint before membership or identity writes. SHARE also
-      // serializes with status-only updates, unlike KEY SHARE.
       const [bot] = await tx
         .select()
         .from(chatEndpoints)

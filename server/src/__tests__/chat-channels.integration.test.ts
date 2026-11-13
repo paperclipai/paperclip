@@ -6925,7 +6925,6 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         let ready!: (pid: number) => void;
         const held = new Promise<number>(resolve => { ready = resolve; });
         const archive = db.transaction(async tx => {
-          // A normal status update takes NO KEY UPDATE, which KEY SHARE would not block.
           await tx.update(chatEndpoints).set({ status: "archived" }).where(eq(chatEndpoints.id, f.endpoint.id));
           const [backend] = await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`);
           ready(backend.pid);
