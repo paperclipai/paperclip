@@ -577,6 +577,40 @@ describe("ssh env-lab fixture", () => {
     }
   }, SSH_FIXTURE_TEST_TIMEOUT_MS);
 
+  it("keeps an SSH process stop pending while a same-user process hides its run identity", async () => {
+    const rootDir = await createFixtureRootDir();
+    const statePath = path.join(rootDir, "state.json");
+
+    const started = await startSshEnvLabFixtureOrSkip(statePath, "SSH hidden run process test");
+    if (!started) return;
+    if (process.platform !== "linux") return;
+    const config = await buildSshEnvLabFixtureConfig(started);
+    const runId = "5d4c3b2a-1f0e-4d9c-8b7a-6f5e4d3c2b1a";
+    const remoteCwd = started.workspaceDir;
+    const runDir = path.posix.join(remoteCwd, ".paperclip-runtime", "runs", runId, "workspace");
+
+    // PR_SET_DUMPABLE=0 makes /proc/<pid>/environ and /proc/<pid>/cwd unreadable,
+    // so the scan cannot tell whether this process belongs to the run.
+    const hidden = (await runSshCommand(config, [
+      `mkdir -p ${JSON.stringify(runDir)}`,
+      `(cd ${JSON.stringify(runDir)} && exec env PAPERCLIP_RUN_ID=${runId} nohup python3 -c ` +
+        `'import ctypes, time; ctypes.CDLL(None).prctl(4, 0, 0, 0, 0); time.sleep(300)' >/dev/null 2>&1) & echo $!`,
+    ].join("\n"))).stdout.trim();
+    const readable = async () => (await runSshCommand(config,
+      `for i in 1 2 3 4 5 6 7 8 9 10; do cat /proc/${hidden}/environ >/dev/null 2>&1 || { echo hidden; exit 0; }; sleep 0.2; done; echo readable`)).stdout.trim();
+    expect(await readable()).toBe("hidden");
+
+    try {
+      // An inconclusive scan is not a stop proof, and the unknown process is not killed.
+      await expect(stopSshRunProcesses(config, { runId, remoteCwd })).resolves.toBe("running");
+      expect((await runSshCommand(config, `kill -0 ${hidden} 2>/dev/null && echo alive || echo gone`)).stdout.trim())
+        .toBe("alive");
+    } finally {
+      await runSshCommand(config, `kill -KILL ${hidden} 2>/dev/null; true`);
+    }
+    await expect(stopSshRunProcesses(config, { runId, remoteCwd })).resolves.toBe("stopped");
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
   it("rejects a run id or working directory that an SSH process stop cannot use safely", async () => {
     const config = { ...UNREACHABLE_SSH_SPEC };
     await expect(stopSshRunProcesses(config, { runId: "x; rm -rf /", remoteCwd: "/work" }))
