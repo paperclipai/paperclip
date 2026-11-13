@@ -10,7 +10,7 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 import { createPostgresWakeQueueAdapter, createWakeAdmissionWriter } from "../../modules/wake-queue/adapters/postgres.js";
 import { createReleaseIssueExecution } from "../../modules/wake-queue/application/use-cases.js";
 import { closeProcessRunAdmission, resetProcessRunAdmissionForTests } from "./run-admission.js";
-import { createHeartbeatQueue, DEFERRED_WAKE_CONTEXT_KEY, shouldDeferFollowupWakeForSameIssue, shouldQueueFollowupForRunningIssueWake, type HeartbeatQueueDependencies } from "./queue.js";
+import { createHeartbeatQueue, DEFERRED_WAKE_CONTEXT_KEY, notifyOtherAgentsQueuedOnSettledIssue, shouldDeferFollowupWakeForSameIssue, shouldQueueFollowupForRunningIssueWake, type HeartbeatQueueDependencies } from "./queue.js";
 import { createWakeQueue } from "../../modules/wake-queue/index.js";
 import { TransactionScope } from "../../modules/wake-queue/application/ports.js";
 import { enrichWakeContextSnapshot, mergeCoalescedContextSnapshot } from "./run-preparation.js";
@@ -22,6 +22,7 @@ import { createHeartbeatRunControl } from "./run-control.js";
 import { callbacks as runControlCallbacks } from "./__tests__/run-control-fixtures.js";
 
 import { createHeartbeatQueueTestDependencies as callbacks } from "../../__tests__/helpers/heartbeat-queue.js";
+import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../delivery-work-notifications.js";
 
 function guardedDatabase() {
   const access = vi.fn(() => { throw new Error("Unexpected queue database access"); });
@@ -632,6 +633,56 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
       .where(eq(environmentLeases.id, lease.id));
     expect(await queue.claimQueuedRun(successor)).toMatchObject({ id: successor.id, status: "running" });
     expect(await queue.claimQueuedRun(successor)).toBeNull();
+  });
+
+  async function reassignedPredecessorFixture(previousStatus = "cancelled") {
+    const f = await fixture("queued");
+    await db.update(issues).set({ executionRunId: null, executionAgentNameKey: null, executionLockedAt: null })
+      .where(eq(issues.id, f.issue.id));
+    const [previousAgent] = await db.insert(agents).values({ companyId: f.company.id, name: "Previous owner",
+      role: "engineer", status: "idle", adapterType: "paperclip_runner", adapterConfig: {} }).returning();
+    const [previous] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: previousAgent.id,
+      status: previousStatus, runtimeMode: "native", invocationSource: "assignment", startedAt: new Date(),
+      finishedAt: previousStatus === "running" ? null : new Date(), nativeIssueId: f.issue.id,
+      errorCode: previousStatus === "cancelled" ? "issue_reassigned" : null,
+      contextSnapshot: { issueId: f.issue.id, wakeReason: "issue_assigned" } }).returning();
+    const [next] = await db.update(heartbeatRuns).set({ responsibleUserId: "queue-test-user",
+      contextSnapshot: { issueId: f.issue.id, wakeReason: "issue_assigned" } })
+      .where(eq(heartbeatRuns.id, f.run.id)).returning();
+    const deps = callbacks(db);
+    deps.getAgent.mockResolvedValue(f.agent);
+    deps.activeRunExecutions.add(previous.id);
+    return { ...f, previousAgent, previous, next, deps, queue: createHeartbeatQueue(db, deps) };
+  }
+
+  it("keeps the new owner's run queued while the reassigned owner's stopped run still settles", async () => {
+    const f = await reassignedPredecessorFixture();
+    expect(await f.queue.claimQueuedRun(f.next)).toBeNull();
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.next.id)))[0])
+      .toMatchObject({ status: "queued", startedAt: null });
+    expect(f.deps.executeRun).not.toHaveBeenCalled();
+
+    f.deps.activeRunExecutions.delete(f.previous.id);
+    expect(await f.queue.claimQueuedRun(f.next)).toMatchObject({ id: f.next.id, status: "running" });
+  });
+
+  it("does not hold a run behind another agent's live run on the same task", async () => {
+    const f = await reassignedPredecessorFixture("running");
+    expect(await f.queue.claimQueuedRun(f.next)).toMatchObject({ id: f.next.id, status: "running" });
+  });
+
+  it("wakes queued dispatch for the task's next owner once the previous owner's execution settles", async () => {
+    const f = await reassignedPredecessorFixture();
+    let wakes = 0;
+    const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.queuedRunDispatch, () => { wakes += 1; });
+    try {
+      expect(await notifyOtherAgentsQueuedOnSettledIssue(db, f.previous)).toBe(true);
+      await vi.waitFor(() => expect(wakes).toBeGreaterThan(0));
+      await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, f.next.id));
+      expect(await notifyOtherAgentsQueuedOnSettledIssue(db, f.previous)).toBe(false);
+    } finally {
+      unsubscribe();
+    }
   });
 
   it("keeps a retry queued after failed cleanup and until its local executor releases", async () => {
