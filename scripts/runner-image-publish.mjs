@@ -9,7 +9,9 @@
 //   lock-state    whether pnpm-lock.yaml matches the manifests in an exported
 //                 `runner-artifacts-context` tree: `current` or `behind`. It
 //                 runs the image build's own frozen install as a lockfile-only,
-//                 offline check. Any other failure is an error
+//                 offline check. Any other failure is an error. pnpm can
+//                 rewrite the lockfile of the tree it checks, so the command
+//                 refuses a checkout
 //   record        a build leg, after its checks passed: joins the OCI archives
 //                 of the two variants into one OCI layout, in which their
 //                 shared layers are stored once, and binds it to the image
@@ -42,6 +44,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { RUNNER_IMAGE_NAME, RUNNER_IMAGE_PLATFORMS } from "./runner-image-identity.mjs";
 import { RUNNER_IMAGE_PATHS, RUNNER_IMAGE_VARIANTS } from "./runner-image-layout.mjs";
+import { readOciArchive } from "./runner-image-oci.mjs";
 import { assertIndexUsesVerifiedImages, standardImageDigest } from "./standard-image-contract.mjs";
 
 export const RUNNER_IMAGE_RECORD_SCHEMA = "paperclip.runner-image-leg.v2";
@@ -72,16 +75,6 @@ function tar(args, options = {}) {
   return result.stdout;
 }
 
-/** The one image manifest in an OCI archive, as `docker buildx build --output type=oci` writes it. */
-function readOciArchive(archive) {
-  const index = JSON.parse(tar(["-xOf", archive, "index.json"]).toString("utf8"));
-  assert.ok(Array.isArray(index.manifests) && index.manifests.length === 1, `${archive} must hold exactly one image`);
-  const descriptor = index.manifests[0];
-  const manifest = JSON.parse(tar(["-xOf", archive, `blobs/${descriptor.digest.replace(":", "/")}`]).toString("utf8"));
-  assert.ok(Array.isArray(manifest.layers), `${archive} holds an index, not one platform's image`);
-  return { descriptor: { mediaType: descriptor.mediaType, digest: descriptor.digest, size: descriptor.size }, layers: manifest.layers.map((layer) => layer.digest) };
-}
-
 /**
  * What a build leg hands to the publish job: one OCI layout with both
  * variants, named `slim` and `full`, and a record read from the tree the leg
@@ -101,10 +94,11 @@ export async function createLegRecord({ architecture, archives, metadataFiles, t
   assert.match(manifest.inputsDigest?.digest ?? "", HEX_64);
   assert.match(manifest.sourceRevision ?? "", REVISION);
   assert.equal(manifest.publication, true, "Only a publication build can be recorded");
-  /** @type {Record<string, ReturnType<typeof readOciArchive>>} */
+  /** @type {Record<string, { descriptor: { mediaType: string, digest: string, size: number }, layers: string[] }>} */
   const images = {};
   for (const variant of RUNNER_IMAGE_VARIANTS) {
-    images[variant] = readOciArchive(archives[variant]);
+    const image = readOciArchive(archives[variant]);
+    images[variant] = { descriptor: image.descriptor, layers: image.layers.map((layer) => layer.digest) };
     const reported = JSON.parse(await readFile(metadataFiles[variant], "utf8"))["containerimage.digest"];
     assert.match(reported ?? "", DIGEST, `The ${variant} build reported no image digest`);
     assert.equal(images[variant].descriptor.digest, reported, `The ${variant} archive is not the image its build reported`);
@@ -128,6 +122,13 @@ export async function createLegRecord({ architecture, archives, metadataFiles, t
     tar(["-cf", layout, "-C", directory, "blobs", "index.json", "oci-layout"]);
   } finally {
     await rm(directory, { recursive: true, force: true });
+  }
+  // Read the layout back the way the publish job's push does: each image by
+  // its name, with every blob it needs under its digest.
+  for (const variant of RUNNER_IMAGE_VARIANTS) {
+    const image = readOciArchive(layout, { ref: variant });
+    assert.equal(image.descriptor.digest, images[variant].descriptor.digest, `The layout names another image as ${variant}`);
+    await image.verifyBlobs();
   }
   return {
     schema: RUNNER_IMAGE_RECORD_SCHEMA,
@@ -271,7 +272,11 @@ export function verifyPublishedIndex(bytes, legDigests, { slimDigest = null } = 
   assert.equal(index.manifests.length, ARCHITECTURES.length, `Expected exactly ${ARCHITECTURES.length} manifests in the index, found ${index.manifests.length}`);
   for (const entry of index.manifests) {
     const architecture = entry.platform?.architecture;
-    assert.ok(entry.platform?.os === "linux" && ARCHITECTURES.includes(architecture) && !entry.platform.variant,
+    // BuildKit records linux/arm64 with or without the variant `v8`; both are
+    // the one arm64 platform. No other variant is one of the two platforms.
+    const variant = entry.platform?.variant;
+    assert.ok(entry.platform?.os === "linux" && ARCHITECTURES.includes(architecture)
+      && (variant === undefined || (architecture === "arm64" && variant === "v8")),
       `The index names an unexpected platform: ${JSON.stringify(entry.platform ?? null)}`);
     assert.equal(entry.digest, legDigests[architecture], `linux/${architecture} is not the image its build leg recorded`);
   }
@@ -331,9 +336,12 @@ const LOCK_BEHIND_CODES = ["ERR_PNPM_OUTDATED_LOCKFILE", "ERR_PNPM_LOCKFILE_CONF
 /**
  * Whether pnpm-lock.yaml in an exported `runner-artifacts-context` tree
  * matches the manifests in that tree. This is the image build's frozen,
- * filtered install with --lockfile-only and --offline: it compares and
- * neither downloads nor writes. `behind` means the manifests the Runner build
- * reads were changed after the lockfile was. Every other failure throws.
+ * filtered install with --lockfile-only and --offline: it downloads nothing
+ * and installs nothing. pnpm can still write `pnpm-lock.yaml` in that tree
+ * again, so `context` must be a copy no build reads: the workflow gives it an
+ * export of the build context, and a checkout is refused. `behind` means the
+ * manifests the Runner build reads were changed after the lockfile was. Every
+ * other failure throws.
  * @param {string} context
  * @param {{ run?: (command: string, args: string[], options: object) => { status: number | null, stdout: string, stderr: string, error?: Error } }} [options]
  * @returns {{ state: "current" | "behind", detail: string }}
@@ -341,6 +349,7 @@ const LOCK_BEHIND_CODES = ["ERR_PNPM_OUTDATED_LOCKFILE", "ERR_PNPM_LOCKFILE_CONF
 export function runnerLockState(context, { run = (command, args, options) => spawnSync(command, args, options) } = {}) {
   assert.ok(existsSync(path.join(context, "pnpm-lock.yaml")), `${context} has no pnpm-lock.yaml`);
   assert.ok(existsSync(path.join(context, "packages", "paperclip-runner", "package.json")), `${context} is not a Runner build context`);
+  assert.ok(!existsSync(path.join(context, ".git")), `${context} is a checkout: pnpm can rewrite its pnpm-lock.yaml. Check an exported build context`);
   const result = run("pnpm", ["install", "--frozen-lockfile", "--lockfile-only", "--offline", "--ignore-scripts",
     "--filter", "@paperclipai/paperclip-runner..."], { cwd: context, encoding: "utf8" });
   if (result.error) throw result.error;

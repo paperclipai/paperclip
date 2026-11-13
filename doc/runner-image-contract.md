@@ -68,8 +68,10 @@ lists the dependency files first, so their names do not depend on `dist`.
 
 ## Identity
 
-Both variants are named by one digest, `inputs-<digest>`: the variant is not
-part of the identity. `scripts/runner-image-identity.mjs` computes it from:
+Both variants are named by one digest: the variant is not part of the
+identity. The full image has the tag `inputs-<digest>` and the slim image
+`inputs-<digest>-slim`. `scripts/runner-image-identity.mjs` computes the
+digest from:
 
 - every file under the paths the build copies from the build context
   (`RUNNER_IMAGE_CONTEXT_INPUTS`, which include `pnpm-lock.yaml`): path,
@@ -153,11 +155,18 @@ repository and nowhere else. Other runs build and check, and publish nothing.
   green. The commit that merges the lockfile refresh publishes the image.
 - **Once.** The build runs only when `inputs-<digest>` does not exist.
 - **Verified bytes.** The build legs cannot write to the registry. The
-  publish job pushes the images they checked by digest, joins each variant
-  into a multi-platform index, and attests both before it writes a tag.
+  publish job pushes the images they checked by digest and joins each
+  variant into a multi-platform index under a `candidate-` tag. It attests
+  both indexes, and only then writes the two `inputs-` tags. `candidate-`
+  tags are internal: one can name an index that is not attested, and the
+  next run overwrites it. Do not consume them.
 - **Order.** It writes `inputs-<digest>-slim` first and `inputs-<digest>`
   last, so the full tag marks a complete publication. The full index names
   its slim index in the annotation `io.paperclip.runner.slim-digest`.
+- **Pairing.** Resolve the full tag first. Take the slim digest from that
+  annotation of the full index, and pull the slim image by that digest. Never
+  resolve `inputs-<digest>-slim` by tag on its own: while a publication is
+  incomplete, that tag can name the slim image of another run.
 - **Recovery.** A run that stops between the two tags leaves a slim tag
   alone. Those inputs are not published. The next run for them builds again,
   replaces that tag with its own slim image and then writes the full tag. A
@@ -183,3 +192,6 @@ repository and nowhere else. Other runs build and check, and publish nothing.
   does not change the identity.
 - The archive check does not tell a directory with its own archive member
   from one created only as a file's parent.
+- A lockfile that the lockfile refresh cannot bring up to the Runner's
+  manifests leaves every `master` run green with only a notice, for as long
+  as it lasts. No image is published in that time, and nothing fails.

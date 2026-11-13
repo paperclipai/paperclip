@@ -48,10 +48,15 @@ describe("Runner image workflow", () => {
     expect(jobCondition(jobs.publish).startsWith(`${canonical} && `)).toBe(true);
     expect(jobs.publish).toContain("    needs: [identity, build]\n");
     expect(jobs.build).toContain(`KEEP_IMAGE: \${{ ${canonical} }}`);
-    // Every step that records or uploads the images for the publish job is behind that switch.
-    const keeping = steps(jobs.build).filter((step) => /images\.oci\.tar|runner-image-publish\.mjs record|upload-artifact/.test(step));
-    expect(keeping).toHaveLength(2);
-    for (const step of keeping) expect(step).toMatch(/^ {8}if: env\.KEEP_IMAGE == 'true'/m);
+    // The one step that hands the images to the publish job is behind that switch.
+    const uploading = steps(jobs.build).filter((step) => step.includes("upload-artifact"));
+    expect(uploading).toHaveLength(1);
+    expect(uploading[0]).toMatch(/^ {8}if: env\.KEEP_IMAGE == 'true' && /m);
+    // The record is written on every event, so a pull request exercises it. It needs no credential.
+    const recording = steps(jobs.build).filter((step) => step.includes("runner-image-publish.mjs record"));
+    expect(recording).toHaveLength(1);
+    expect(recording[0]).not.toMatch(/KEEP_IMAGE/);
+    expect(recording[0]).not.toMatch(credential);
     // A fork's own pushes run nothing; no job overrides a skipped or failed dependency.
     expect(jobCondition(jobs.identity)).toBe(`github.event_name != 'push' || (${repository})`);
     expect(workflow).not.toMatch(/always\(\)|!cancelled\(\)|failure\(\)|continue-on-error/);
@@ -114,13 +119,44 @@ describe("Runner image workflow", () => {
     for (const script of scripts) expect(script).not.toContain("${{");
   });
 
+  it("gives every image build one export and a time limit", () => {
+    // A command with two exports stalled on the hosted runners until the job
+    // was cancelled. One export for each command, and a limit on each step,
+    // so a stall fails in minutes.
+    const building = workflow.split(/\n(?= {6}- name: )/).filter((step) => step.includes("docker buildx build"));
+    expect(building.length).toBeGreaterThanOrEqual(4);
+    for (const step of building) {
+      expect(step).toMatch(/^ {8}timeout-minutes: \d+$/m);
+      for (const command of step.split("docker buildx build").slice(1)) expect(command.match(/--output /g) ?? []).toHaveLength(1);
+    }
+    // The trees the checks read come from the archives, not from a second export.
+    expect(workflow).toContain("node scripts/runner-image-oci.mjs unpack");
+    expect(workflow.match(/type=local/g)).toHaveLength(3);
+  });
+
+  it("passes the image build exactly two build arguments", () => {
+    // Build arguments are not part of the image identity, so a new one would
+    // change what is published under an unchanged digest.
+    const image = steps(jobs.build).filter((step) => step.includes("--target \"$target\""));
+    expect(image).toHaveLength(1);
+    expect([...image[0].matchAll(/--build-arg (\S+)/g)].map((match) => match[1])).toEqual([
+      '"PAPERCLIP_RUNNER_SOURCE_REVISION=$GITHUB_SHA"',
+      "PAPERCLIP_RUNNER_IMAGE_PUBLICATION=1",
+    ]);
+    expect(image[0]).toContain("target=runner-artifacts\n");
+    expect(image[0]).toContain('if [ "$variant" = slim ]; then target=runner-artifacts-slim; fi');
+    // No other command passes a build argument, and the identity is computed without one.
+    expect(workflow.match(/--build-arg /g)).toHaveLength(2);
+    expect(workflow).not.toMatch(/build-args:|BUILDX_BUILD_ARG|--build-arg-file/);
+  });
+
   it("runs for a pull request that changes any input of the image identity", () => {
     const paths = [...workflow.matchAll(/^ {6}- (\S+)$/gm)].map((match) => match[1]);
     const covered = (file: string) => paths.some((pattern) => pattern === file
       || (pattern.endsWith("/**") && (file === pattern.slice(0, -3) || file.startsWith(pattern.slice(0, -2)))));
     // .dockerignore is not in the identity, but it decides which files the build receives.
     for (const input of ["Dockerfile", ".dockerignore", ".github/workflows/runner-image.yml", "docker/runner-image/Dockerfile.smoke",
-      "scripts/runner-image-publish.mjs", ...RUNNER_IMAGE_CONTEXT_INPUTS]) {
+      "scripts/runner-image-oci.mjs", "scripts/runner-image-publish.mjs", "scripts/standard-image-contract.mjs", ...RUNNER_IMAGE_CONTEXT_INPUTS]) {
       expect(covered(input), input).toBe(true);
     }
   });

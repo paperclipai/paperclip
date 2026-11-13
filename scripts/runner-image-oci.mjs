@@ -225,13 +225,18 @@ async function readTarStream(source, visit) {
 }
 
 /**
- * The one image in an OCI archive: its manifest descriptor and its layers. A
+ * One image in an OCI archive: its manifest descriptor and its layers. A
  * member is found by its exact name (`index.json`, `blobs/sha256/<hex>`), as
  * buildx writes them. The manifest is checked against its digest here, and
- * each layer when `readLayer` reads it.
+ * each layer when `readLayer` or `verifyBlobs` reads it.
+ *
+ * An archive from buildx holds one image. A layout that holds several names
+ * each with the annotation `org.opencontainers.image.ref.name`; `ref` then
+ * says which one to read.
  * @param {string} archive
+ * @param {{ ref?: string | null }} [options]
  */
-export function readOciArchive(archive) {
+export function readOciArchive(archive, { ref = null } = {}) {
   const members = indexTarFile(archive);
   const located = (name) => {
     const member = members.get(name);
@@ -255,12 +260,23 @@ export function readOciArchive(archive) {
   };
   const sha256 = (data) => `sha256:${createHash("sha256").update(data).digest("hex")}`;
   const index = JSON.parse(bytes("index.json").toString("utf8"));
-  if (!Array.isArray(index.manifests) || index.manifests.length !== 1) throw new Error(`${archive} must hold exactly one image manifest`);
-  const { mediaType, digest, size } = index.manifests[0];
+  if (!Array.isArray(index.manifests)) throw new Error(`${archive} has no list of manifests`);
+  const named = ref === null ? index.manifests : index.manifests.filter((entry) => entry.annotations?.["org.opencontainers.image.ref.name"] === ref);
+  if (named.length !== 1) {
+    throw new Error(ref === null ? `${archive} must hold exactly one image manifest` : `${archive} must hold exactly one image named ${ref}`);
+  }
+  const { mediaType, digest, size } = named[0];
   const manifestBytes = bytes(blobName(digest));
   if (sha256(manifestBytes) !== digest) throw new Error(`${archive}: the manifest does not have the digest the index names`);
   const manifest = JSON.parse(manifestBytes.toString("utf8"));
   if (!Array.isArray(manifest.layers)) throw new Error(`${archive} holds an index, not one platform's image; build without attestations`);
+  /** The digest of a blob's bytes as the archive holds them. */
+  const blobDigest = async (name) => {
+    const { offset, size: length } = located(name);
+    const hash = createHash("sha256");
+    if (length > 0) for await (const chunk of createReadStream(archive, { start: offset, end: offset + length - 1 })) hash.update(chunk);
+    return `sha256:${hash.digest("hex")}`;
+  };
   for (const layer of manifest.layers) {
     if (!GZIP_LAYER.test(layer.mediaType ?? "")) throw new Error(`${archive}: layer ${layer.digest} is ${layer.mediaType}, not a gzip tar`);
     located(blobName(layer.digest));
@@ -270,6 +286,12 @@ export function readOciArchive(archive) {
     descriptor: { mediaType, digest, size },
     /** @type {{ mediaType: string, digest: string, size: number }[]} */
     layers: manifest.layers.map((layer) => ({ mediaType: layer.mediaType, digest: layer.digest, size: layer.size })),
+    /** Fails unless the config and every layer of the image are in the archive with their digests. */
+    async verifyBlobs() {
+      for (const blob of [manifest.config, ...manifest.layers]) {
+        if (await blobDigest(blobName(blob?.digest)) !== blob.digest) throw new Error(`${archive}: blob ${blob.digest} does not have its digest`);
+      }
+    },
     /** Visits every entry of one layer and fails when the blob does not have its digest. */
     async readLayer(layer, visit) {
       const { offset, size: bytesInArchive } = located(blobName(layer.digest));

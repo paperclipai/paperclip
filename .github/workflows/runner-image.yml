@@ -55,8 +55,9 @@ on:
 # runs no build, can write to the registry or sign.
 permissions: {}
 
-# A newer push to a pull request replaces its older run. Master runs are never
-# cancelled: each has its own group, and the publish job serialises per digest.
+# A newer push to a pull request replaces its older run. A master run has a
+# group of its own, so no other run cancels it here. The publish job has a
+# second group, one for each digest; see there for what that group can cancel.
 concurrency:
   group: runner-image-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -134,11 +135,14 @@ jobs:
       # manifest and the manifests of the Runner and the eval kernel are the
       # only ones in it.
       - name: Export the Runner build context
+        timeout-minutes: 10
         run: docker buildx build --target runner-artifacts-context --output "type=local,dest=$RUNNER_TEMP/runner-image-context" .
 
       # The image build installs with a frozen lockfile. This asks the same
       # question first, offline and without installing, so that a lockfile
-      # that is merely behind is told apart from a broken build.
+      # that is merely behind is told apart from a broken build. pnpm can
+      # rewrite the lockfile it checks. It checks the exported copy above,
+      # which no build reads: the builds read the checkout.
       - name: Check the lockfile against the Runner's manifests
         id: lock
         run: node scripts/runner-image-publish.mjs lock-state --context "$RUNNER_TEMP/runner-image-context"
@@ -161,6 +165,7 @@ jobs:
       - name: Compute the identity in the build context
         id: identity
         if: steps.lock.outputs.state == 'current'
+        timeout-minutes: 10
         run: |
           set -euo pipefail
           out="$RUNNER_TEMP/runner-image-identity"
@@ -394,9 +399,14 @@ jobs:
       # Written only after every check passed. The publish job accepts nothing
       # without it. The two archives become one OCI layout that holds both
       # variants and stores the layers they share once, so the upload is the
-      # size of the full image, not of both.
+      # size of the full image, not of both. The command reads the layout
+      # back and checks every blob against its digest.
+      #
+      # On every event, so that a pull request exercises the hand-off on
+      # real build output. Only the upload below is for a master push.
       - name: Record the verified images
-        if: env.KEEP_IMAGE == 'true' && steps.published.outputs.exists != 'true'
+        if: steps.published.outputs.exists != 'true'
+        timeout-minutes: 10
         run: |
           node scripts/runner-image-publish.mjs record \
             --arch "$ARCH" \
@@ -448,6 +458,9 @@ jobs:
       attestations: write
     # One publication per digest at a time, so the strict check below and the
     # tag writes cannot interleave with another run for the same inputs.
+    # GitHub keeps one waiting job for a group. When three runs for one digest
+    # reach this job, the second is cancelled as the third arrives. That does
+    # no harm: the third publishes the digest if the first did not.
     concurrency:
       group: runner-image-publish-${{ needs.identity.outputs.digest }}
       cancel-in-progress: false
@@ -525,6 +538,7 @@ jobs:
       # leg's layout names its two images `slim` and `full`.
       - name: Push the verified images by digest
         if: steps.prepush.outputs.exists == 'false'
+        timeout-minutes: 15
         env:
           SLIM_AMD64: ${{ steps.legs.outputs.slim_amd64 }}
           SLIM_ARM64: ${{ steps.legs.outputs.slim_arm64 }}

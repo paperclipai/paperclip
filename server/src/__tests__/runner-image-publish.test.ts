@@ -16,6 +16,7 @@ import {
   verifyLegRecords,
   verifyPublishedIndex,
 } from "../../../scripts/runner-image-publish.mjs";
+import { readOciArchive } from "../../../scripts/runner-image-oci.mjs";
 
 /**
  * The checks the Runner image workflow runs around publication. The image has
@@ -51,7 +52,8 @@ function ociArchive(directory: string, name: string, layers: string[]) {
   }));
   writeFileSync(path.join(layout, "oci-layout"), '{"imageLayoutVersion":"1.0.0"}');
   const archive = path.join(directory, `${name}.oci.tar`);
-  expect(spawnSync("tar", ["-cf", archive, "-C", layout, "."]).status).toBe(0);
+  // The members buildx writes. `tar -C layout .` would name them ./index.json and ./blobs/...
+  expect(spawnSync("tar", ["-cf", archive, "-C", layout, "blobs", "index.json", "oci-layout"]).status).toBe(0);
   writeFileSync(path.join(directory, `${name}.metadata.json`), JSON.stringify({ "containerimage.digest": manifest.digest }));
   return manifest.digest;
 }
@@ -107,6 +109,35 @@ describe("verified build legs", () => {
     expect(new Set(blobs).size).toBe(8);
     expect(JSON.parse(read(`blobs/sha256/${images.amd64.full.slice(7)}`)).layers.slice(0, 2))
       .toEqual(JSON.parse(read(`blobs/sha256/${images.amd64.slim.slice(7)}`)).layers);
+    // Each image can be read alone by its name, with every blob under its digest: what a push does.
+    for (const variant of ["slim", "full"] as const) {
+      const image = readOciArchive(layout, { ref: variant });
+      expect(image.descriptor.digest).toBe(images.amd64[variant]);
+      await expect(image.verifyBlobs()).resolves.toBeUndefined();
+    }
+    expect(() => readOciArchive(layout)).toThrow(/must hold exactly one image manifest/);
+    expect(() => readOciArchive(layout, { ref: "candidate" })).toThrow(/must hold exactly one image named candidate/);
+  });
+
+  it("does not record an archive that lacks a blob of its image, or whose members have other names", async () => {
+    const directory = path.join(scratch, String(sequence += 1));
+    await leg(directory, "amd64");
+    const root = path.join(directory, "amd64");
+    const input = {
+      architecture: "amd64",
+      archives: { slim: path.join(root, "slim.oci.tar"), full: path.join(root, "full.oci.tar") },
+      metadataFiles: { slim: path.join(root, "slim.metadata.json"), full: path.join(root, "full.metadata.json") },
+      tree: path.join(root, "tree"),
+      layout: path.join(root, "again.oci.tar"),
+    };
+    // The full archive without one of its layers.
+    const layer = readOciArchive(input.archives.full).layers[3].digest;
+    rmSync(path.join(root, "full-layout", "blobs", "sha256", layer.slice(7)));
+    expect(spawnSync("tar", ["-cf", input.archives.full, "-C", path.join(root, "full-layout"), "blobs", "index.json", "oci-layout"]).status).toBe(0);
+    await expect(createLegRecord(input)).rejects.toThrow(/has no member blobs\/sha256\//);
+    // An archive of `.`: the names a registry tool does not find.
+    expect(spawnSync("tar", ["-cf", input.archives.slim, "-C", path.join(root, "slim-layout"), "."]).status).toBe(0);
+    await expect(createLegRecord(input)).rejects.toThrow(/has no member index\.json/);
   });
 
   it("refuses a leg that built other inputs or another commit", async () => {
@@ -278,10 +309,18 @@ describe("published index", () => {
     ["an entry without a platform", [...both, extra(undefined)]],
     ["an image for another operating system", [...both, extra({ os: "windows", architecture: "amd64" })]],
     ["an image for another architecture", [...both, extra({ os: "linux", architecture: "riscv64" })]],
-    ["a platform variant in place of an image", [entry("amd64", legDigests.amd64),
-      { ...entry("arm64", legDigests.arm64), platform: { os: "linux", architecture: "arm64", variant: "v8" } }]],
+    ["a variant on the amd64 image", [{ ...entry("amd64", legDigests.amd64), platform: { os: "linux", architecture: "amd64", variant: "v8" } },
+      entry("arm64", legDigests.arm64)]],
+    ["another arm64 variant", [entry("amd64", legDigests.amd64),
+      { ...entry("arm64", legDigests.arm64), platform: { os: "linux", architecture: "arm64", variant: "v7" } }]],
   ])("refuses an index with %s", (_label, manifests) => {
     expect(() => verifyPublishedIndex(bytes(manifests), legDigests)).toThrow();
+  });
+
+  it("accepts linux/arm64 with the variant v8, which some BuildKit versions record", () => {
+    const index = bytes([entry("amd64", legDigests.amd64),
+      { ...entry("arm64", legDigests.arm64), platform: { os: "linux", architecture: "arm64", variant: "v8" } }]);
+    expect(verifyPublishedIndex(index, legDigests)).toBe(sha256(index));
   });
 
   it("needs a recorded image for each architecture, and no other", () => {
@@ -340,6 +379,14 @@ describe("lockfile state", () => {
     const directory = context();
     rmSync(path.join(directory, "pnpm-lock.yaml"));
     expect(() => runnerLockState(directory, { run: answer(0).run })).toThrow(/no pnpm-lock\.yaml/);
+  });
+
+  it("refuses a checkout, whose lockfile pnpm could rewrite, and does not start pnpm there", () => {
+    const directory = context();
+    mkdirSync(path.join(directory, ".git"));
+    const { calls, run } = answer(0);
+    expect(() => runnerLockState(directory, { run })).toThrow(/is a checkout: pnpm can rewrite its pnpm-lock\.yaml/);
+    expect(calls).toEqual([]);
   });
 });
 
