@@ -4,10 +4,14 @@
  * Each simulated agent drives the real server code at a fixed rate, against an
  * embedded PostgreSQL on loopback, in this one Node process:
  *
- *   deltas  appendHeartbeatRunEvent for an `item.delta` (one per text chunk)
+ *   deltas  an `item.delta` per text chunk, committed as the server's port
+ *           commits them: the first after another event at once, later ones
+ *           in one transaction per DELTA_BATCH_MS or 100 deltas
+ *           (DELTA_BATCH_MS=0: one transaction per delta, as before batching)
  *   events  appendHeartbeatRunEvent for an `item.completed`, then the real
  *           controller checkpoint save, which overlaps the next append
- *   lease   renewNativeSessionExecutionLease (remote runs renew every 20 s)
+ *   lease   every LEASE_S, one renewal of all leases through the shared
+ *           schedule (LEASE_MODE=single: one transaction per run, as before)
  *   api     an HTTP request through actorMiddleware with the run's agent JWT
  *
  * Arrivals are open-loop: operation i of a stream is due at start + i/rate.
@@ -28,7 +32,8 @@
  *
  * Optional: AGENTS (50), SECONDS (20), SOURCES (deltas,events,lease,api),
  * DELTAS_PER_S (20), EVENTS_PER_S (1), API_PER_S (0.3), LEASE_S (20),
- * DELTA_BYTES (120), EVENT_KIB (2), DATABASE_POOL_MAX (driver default 10).
+ * DELTA_BYTES (120), EVENT_KIB (2), DELTA_BATCH_MS (250), LEASE_MODE (batch),
+ * DATABASE_POOL_MAX (driver default 10).
  */
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -40,8 +45,9 @@ import { agents, checkpointDb, companies, createDb, heartbeatRuns, issues, liven
 import { meterDatabaseStatements } from "../server/src/__tests__/helpers/database-statement-meter.js";
 import { createLocalAgentJwt } from "../server/src/agent-auth-jwt.js";
 import { actorMiddleware } from "../server/src/middleware/auth.js";
-import { appendHeartbeatRunEvent } from "../server/src/services/heartbeat-run-events.js";
-import { renewNativeSessionExecutionLease } from "../server/src/services/native-runtime/native-execution-lease.js";
+import { appendHeartbeatRunEvent, appendHeartbeatRunEventBatch, type AppendHeartbeatRunEventInput } from "../server/src/services/heartbeat-run-events.js";
+import { renewNativeExecutionLeasesNow, renewNativeSessionExecutionLease, startNativeSessionExecutionLeaseRenewal }
+  from "../server/src/services/native-runtime/native-execution-lease.js";
 import { nativeRunnerCheckpointWriter } from "../server/src/services/native-runtime/native-runner-checkpoint.js";
 import { initializeRunIdentity } from "../server/src/services/run-identity.js";
 
@@ -56,6 +62,8 @@ type Source = keyof typeof RATES;
 const SOURCES = (process.env.SOURCES ?? "deltas,events,lease,api").split(",").map(value => value.trim()).filter(Boolean) as Source[];
 for (const source of SOURCES) assert(source in RATES, `Unknown source ${source}`);
 const DELTA_BYTES = number("DELTA_BYTES", 120), EVENT_KIB = number("EVENT_KIB", 2);
+const DELTA_BATCH_MS = number("DELTA_BATCH_MS", 250), DELTA_BATCH_MAX = 100;
+const LEASE_BATCHED = (process.env.LEASE_MODE ?? "batch") !== "single";
 process.env.PAPERCLIP_SECRETS_MASTER_KEY ??= randomBytes(32).toString("base64");
 process.env.PAPERCLIP_AGENT_JWT_SECRET ??= randomBytes(32).toString("base64");
 
@@ -102,7 +110,9 @@ try {
     }) as unknown as Parameters<typeof write>[0];
     await write(checkpoint(new Map(records), true));
     fleet.push({ agentId: agent!.id, issueId: issue!.id, runId, leaseOwner, write, records, checkpoint, seq: 0,
-      checkpointTail: Promise.resolve(), appendTail: Promise.resolve() as Promise<unknown>, token: createLocalAgentJwt(agent!.id, companyId, "process", runId, null)! });
+      checkpointTail: Promise.resolve(), appendTail: Promise.resolve() as Promise<unknown>,
+      deltaQueue: [] as Array<{ input: AppendHeartbeatRunEventInput; settle: (error?: unknown) => void }>,
+      deltaTimer: null as ReturnType<typeof setTimeout> | null, streamedSinceBoundary: false, token: createLocalAgentJwt(agent!.id, companyId, "process", runId, null)! });
   }
 
   const app = express();
@@ -117,21 +127,51 @@ try {
   // One runner connection delivers a run's events in order, and the server
   // awaits each append before it reads the next. So deltas and other events
   // of one agent share one queue and never append at the same time.
+  const eventInput = (agent: Agent, eventType: string, bytes: number) => {
+    const seq = ++agent.seq;
+    const event = { sourceSeq: seq, eventType, runId: agent.runId, text: randomBytes(Math.ceil(bytes * 0.75)).toString("base64") };
+    const input: AppendHeartbeatRunEventInput = { companyId, agentId: agent.agentId, runId: agent.runId, eventType, stream: "system",
+      level: "info", payload: { prpEvent: event }, assertWritable: () => {},
+      nativeSource: { sourceInstanceId: "bench-runner", sourceEventId: `event-${seq}`, sourceSeq: seq, protocolSchemaVersion: 1,
+        canonicalPayload: event } };
+    return { seq, event, input };
+  };
+  // The queued deltas of an agent commit in one transaction, in order, before
+  // anything appended after them.
+  const flushDeltas = (agent: Agent) => {
+    if (agent.deltaTimer !== null) clearTimeout(agent.deltaTimer);
+    agent.deltaTimer = null;
+    const batch = agent.deltaQueue;
+    if (batch.length === 0) return;
+    agent.deltaQueue = [];
+    agent.streamedSinceBoundary = true;
+    agent.appendTail = agent.appendTail.then(() => appendHeartbeatRunEventBatch(db, batch.map(item => item.input), () => {}))
+      .then(() => { for (const item of batch) item.settle(); }, error => { for (const item of batch) item.settle(error); });
+  };
+  const appendDelta = (agent: Agent) => {
+    const { input } = eventInput(agent, "item.delta", DELTA_BYTES);
+    if (DELTA_BATCH_MS <= 0) {
+      const queued = agent.appendTail.then(() => appendHeartbeatRunEvent(db, input));
+      agent.appendTail = queued.catch(() => undefined);
+      return queued;
+    }
+    return new Promise<void>((resolve, reject) => {
+      agent.deltaQueue.push({ input, settle: error => error === undefined ? resolve() : reject(error) });
+      // The first text after another event never waits for the timer.
+      if (!agent.streamedSinceBoundary || agent.deltaQueue.length >= DELTA_BATCH_MAX) flushDeltas(agent);
+      else agent.deltaTimer ??= setTimeout(() => flushDeltas(agent), DELTA_BATCH_MS);
+    });
+  };
   const append = (agent: Agent, eventType: string, bytes: number) => {
-    const queued = agent.appendTail.then(() => appendNow(agent, eventType, bytes));
+    const { seq, event, input } = eventInput(agent, eventType, bytes);
+    flushDeltas(agent);
+    agent.streamedSinceBoundary = false;
+    const queued = agent.appendTail.then(() => appendHeartbeatRunEvent(db, input)).then(() => ({ seq, event }));
     agent.appendTail = queued.catch(() => undefined);
     return queued;
   };
-  const appendNow = (agent: Agent, eventType: string, bytes: number) => {
-    const seq = ++agent.seq;
-    const event = { sourceSeq: seq, eventType, runId: agent.runId, text: randomBytes(Math.ceil(bytes * 0.75)).toString("base64") };
-    return appendHeartbeatRunEvent(db, { companyId, agentId: agent.agentId, runId: agent.runId, eventType, stream: "system",
-      level: "info", payload: { prpEvent: event }, assertWritable: () => {},
-      nativeSource: { sourceInstanceId: "bench-runner", sourceEventId: `event-${seq}`, sourceSeq: seq, protocolSchemaVersion: 1,
-        canonicalPayload: event } }).then(() => ({ seq, event }));
-  };
   const operations: Record<Source, (agent: Agent) => Promise<unknown>> = {
-    deltas: agent => append(agent, "item.delta", DELTA_BYTES),
+    deltas: agent => appendDelta(agent),
     events: async agent => {
       const { seq, event } = await append(agent, "item.completed", EVENT_KIB * 1024);
       const changed = new Map([[`event:${seq}`, JSON.stringify(event)], ["cursor", JSON.stringify({ ackedSourceSeq: seq })]]);
@@ -152,7 +192,7 @@ try {
   };
 
   // One warm pass per source, outside the window.
-  for (const source of SOURCES) await operations[source](fleet[0]!);
+  for (const source of SOURCES) if (!(LEASE_BATCHED && source === "lease")) await operations[source](fleet[0]!);
   await fleet[0]!.checkpointTail;
   assert.equal(checkpointFailures, 0, `checkpoint save failed during warm-up: ${firstCheckpointError}`);
 
@@ -167,26 +207,59 @@ try {
   delay.enable();
   const started = performance.now(), deadline = started + SECONDS * 1000;
 
-  await Promise.all(fleet.flatMap(agent => SOURCES.map(async source => {
+  // With the shared schedule every lease of the process renews in one tick,
+  // so the lease source is one stream for the fleet, not one per agent.
+  const pipelined = DELTA_BATCH_MS > 0;
+  const inFlight: Promise<void>[] = [];
+  const sharedLease = LEASE_BATCHED && SOURCES.includes("lease");
+  let leasesLost = 0;
+  const renewals = sharedLease ? fleet.map(agent => startNativeSessionExecutionLeaseRenewal({ db, runId: agent.runId, companyId,
+    issueId: agent.issueId, leaseOwner: agent.leaseOwner, attempt: 0, controller, remote: true,
+    onLost: async () => { leasesLost += 1; } })) : [];
+  const leaseTicks = sharedLease ? (async () => {
+    const interval = 1000 / RATES.lease, offset = Math.random() * interval, stat = stats.lease;
+    for (let index = 0; ; index++) {
+      const due = started + offset + index * interval;
+      if (due >= deadline) return;
+      await sleep(due - performance.now());
+      try { await renewNativeExecutionLeasesNow(db); stat.done += fleet.length; }
+      catch (error) { stat.failed += fleet.length; stat.firstError ||= String((error as Error)?.message ?? error).slice(0, 200); }
+      stat.late.push(performance.now() - due);
+      if (performance.now() > deadline) return;
+    }
+  })() : Promise.resolve();
+  await Promise.all([leaseTicks, ...fleet.flatMap(agent => SOURCES.filter(source => !(sharedLease && source === "lease")).map(async source => {
     const interval = 1000 / RATES[source], offset = Math.random() * interval, stat = stats[source];
     for (let index = 0; ; index++) {
       const due = started + offset + index * interval;
       if (due >= deadline) return;
       await sleep(due - performance.now());
-      try { await operations[source](agent); stat.done += 1; }
-      catch (error) { stat.failed += 1; stat.firstError ||= String((error as Error)?.message ?? error).slice(0, 200); }
-      stat.late.push(performance.now() - due);
+      const settled = operations[source](agent).then(() => { stat.done += 1; },
+        error => { stat.failed += 1; stat.firstError ||= String((error as Error)?.message ?? error).slice(0, 200); })
+        .then(() => { stat.late.push(performance.now() - due); });
+      // The runner does not wait for a batched delta's receipt before it
+      // sends the next one; every other operation is awaited in turn.
+      if (pipelined && source === "deltas") inFlight.push(settled);
+      else await settled;
       // A stream that is still behind at the end of the window stops there:
       // `done` below `offered` is the work the process could not keep up with.
       if (performance.now() > deadline) return;
     }
-  })));
+  }))]);
+  // Deltas still queued at the end commit with their batch; count only those
+  // that settle within one batch time of the window's end.
+  for (const agent of fleet) flushDeltas(agent);
+  await Promise.race([Promise.all(inFlight), sleep(DELTA_BATCH_MS + 250)]);
+  await Promise.all(renewals.map(renewal => renewal.stop()));
+  for (const agent of fleet) if (agent.deltaTimer !== null) clearTimeout(agent.deltaTimer);
   const elapsedMs = performance.now() - started;
   delay.disable();
   clearInterval(sampler);
   const loop = performance.eventLoopUtilization(loopBefore), cpu = process.cpuUsage(cpuBefore), statementsAfter = meter.read(), poolsAfter = poolStatements();
-  await Promise.all(fleet.map(agent => agent.checkpointTail));
+  // Read the commit counter before the checkpoint saves still queued drain,
+  // so it covers the same window as the statement totals.
   const [commitsAfter] = await db.$client.unsafe("select xact_commit::float8 as commits from pg_stat_database where datname = current_database()");
+  await Promise.all(fleet.map(agent => agent.checkpointTail));
   const seconds = elapsedMs / 1000;
 
   console.log(JSON.stringify({
@@ -212,6 +285,7 @@ try {
         donePerSecond: round(stat.done / seconds), lateMs: { p50: quantile(stat.late, 0.5), p99: quantile(stat.late, 0.99),
           max: stat.late.length ? round(stat.late.reduce((max, value) => Math.max(max, value), -Infinity)) : null } }];
     })),
+    deltaBatchMs: DELTA_BATCH_MS, leaseMode: LEASE_BATCHED ? "batch" : "single", leasesLost,
     checkpointSaves: { failed: checkpointFailures, firstError: firstCheckpointError || undefined },
   }, null, 2));
 } finally {

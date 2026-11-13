@@ -1,7 +1,7 @@
 # Plan: 1,000 concurrent agents on one workspace
 
-Date: 2026-11-13. Status: Phase 1 started. When this was written only the
-load model in `scripts/benchmark-agent-scaling-load.ts` existed.
+Date: 2026-11-13. Status: Phase 1 changes 1a to 1e and 1h are merged; 1f, 1g
+and Phase 2 are not started.
 
 ## Finish line
 
@@ -90,6 +90,37 @@ ranges in the 50-agent row are two runs); statement counts do not. A first
 pass under a load average of 40–60 finished only half the deltas at 50 agents;
 that was the machine, not the server code, and it is not shown. Raw output is
 not kept in the repository.
+
+## Load model after Phase 1
+
+Same model and rates, measured 2026-11-13 with the eight Phase 1 fixes below
+(1a to 1e and 1h). The model now commits deltas as the server's port does (the
+first text after another event at once, later deltas in one transaction per
+250 ms or 100 deltas) and renews leases through the shared schedule. Machine
+load average 11–15.
+
+| Agents | Statements/s | Event-loop utilization | Deltas done of offered | Delta lateness p50 / p99 | Other events done of offered | API auth p50 / p99 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 50 | 1,780 | 0.26 | 20,000 of 20,000 | 103 ms / 253 ms | 1,000 of 1,000 | 2 ms / 10 ms |
+| 100 | 3,570 | 0.46 | 40,000 of 40,000 | 105 ms / 258 ms | 2,000 of 2,000 | 2 ms / 69 ms |
+| 200 | 7,110 | 0.73 | 80,000 of 80,000 | 151 ms / 573 ms | 4,000 of 4,000 | 3 ms / 452 ms |
+| 400 | 11,380 | 0.99 | 160,000 of 160,000 | 1.7 s / 2.2 s | 5,473 of 8,000 | 394 ms / 620 ms |
+| 200, deltas and leases as before Phase 1 | 10,220 | 0.90 | 39,425 of 80,000 | 5.1 s / 10.2 s | 4,000 of 4,000 | 165 ms / 1.8 s |
+
+What it shows:
+
+- Statements per agent per second fall from about 95 to about 36.
+- One process now serves 200 agents with every delta committed within its
+  batch time, where before it finished half of them and ran seconds behind. It
+  saturates between 200 and 400 agents, against 100 to 150 before.
+- A batched delta is committed up to 250 ms after it arrives. That is the
+  design, not a backlog; the first text after another event does not wait.
+- The ceiling is still about 12,000 statements/s on one thread. Delta batches
+  are still the largest share: 4 transactions of 5 statements per agent per
+  second. A longer batch time, or one transaction for the deltas of many runs,
+  is the next step on one process; Phase 2 is the step past it.
+- Lease renewal is under 1 statement/s at 400 agents (15/s at 50 before).
+- The model does not measure server memory, so it does not show change 1h.
 
 ## Why more servers do not help today
 
