@@ -16,7 +16,7 @@ import { authorizeInstructionCommit, authorizeInstructionRead } from "./agent-in
 import { assertInstructionPathSafe, instructionPath, instructionBytes, materializeInstructionBytes, readInstructionBytes, MAX_INSTRUCTION_BYTES } from "./agent-instruction-files.js";
 import { agentInstructionsBundleMode, deriveBundleState, resolveManagedInstructionsRoot } from "./agent-instructions.js";
 import type { AuthorizationActor } from "./authorization.js";
-import { durableAgentFilesEnabled, invalidateAgentFileProjection, persistDurableAgentFiles, restoreDurableAgentFiles, uploadAgentFilesBeforeCommit, type PreparedAgentFileObjects } from "./agent-file-durability.js";
+import { agentFileProjectionCurrent, durableAgentFilesEnabled, invalidateAgentFileProjection, persistDurableAgentFiles, restoreDurableAgentFiles, uploadAgentFilesBeforeCommit, type PreparedAgentFileObjects } from "./agent-file-durability.js";
 
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type Agent = typeof agents.$inferSelect;
@@ -237,9 +237,26 @@ export function agentFileStore(db: Db) {
       throw rollback;
     }).catch(error => { if (error !== rollback) throw error; });
   }
+  /**
+   * The save of a run that changed no file. When the locked file-tree step
+   * would change nothing (see `agentFileProjectionCurrent`), only the
+   * read-only authorization runs, without the row lock. Otherwise the locked
+   * write runs as for any save, so it adopts, restores or heals the durable
+   * head exactly as before.
+   */
+  async function saveUnchanged(companyId: string, agentId: string, actor: AuthorizationActor) {
+    const [agent] = await db.select().from(agents).where(and(eq(agents.companyId, companyId), eq(agents.id, agentId)));
+    if (agent && agentInstructionsBundleMode(agent) !== "external"
+      && await agentFileProjectionCurrent(db, agent, resolveManagedInstructionsRoot(agent))) {
+      await authorizeSave(companyId, agentId, actor);
+      return;
+    }
+    await locked(companyId, agentId, actor, true, async () => undefined);
+  }
   return {
     locked,
     authorizeSave,
+    saveUnchanged,
     download: async (companyId: string, agentId: string, relative: string, actor: AuthorizationActor) => {
       const opened: { file: Awaited<ReturnType<typeof openAgentFile>> } = { file: null };
       try {

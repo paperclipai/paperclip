@@ -51,6 +51,28 @@ async function atomicPrivateWrite(filename: string, contents: string) {
   } finally { await fs.rm(temporary, { force: true }); }
 }
 
+/**
+ * True when the locked file-tree step of a save would change nothing for an
+ * unchanged run: the durable head exists and the local projection is marked at
+ * its generation (so restore is a no-op and persist only re-marks it), or
+ * durable files are off, no head exists and the one-time local adoption is
+ * already recorded (so persist returns at once). A false result asks the caller
+ * to take the locked path, which adopts, restores or heals the head.
+ */
+export async function agentFileProjectionCurrent(db: Db, owner: { companyId: string; id: string }, root: string): Promise<boolean> {
+  const [head] = await db.select({ generation: agentFileRoots.generation }).from(agentFileRoots).where(where(owner));
+  const exists = (filename: string) => fs.stat(filename).then(() => true, (error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return false;
+    throw error;
+  });
+  if (!head) return !durableAgentFilesEnabled() && await exists(path.join(path.dirname(root), "file-sync", "adopted.json"));
+  const generation = await fs.readFile(marker(root), "utf8").catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  return generation === head.generation && await fs.stat(root).then(info => info.isDirectory(), () => false);
+}
+
 /** Under the agent row lock. A durable head remains authoritative even after
  * the opt-in is removed; silently falling back would lose acknowledged writes. */
 export async function restoreDurableAgentFiles(tx: Tx, owner: Owner, root: string): Promise<boolean> {

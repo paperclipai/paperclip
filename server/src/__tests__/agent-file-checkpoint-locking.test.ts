@@ -128,7 +128,7 @@ describe("agent file checkpoint locking", () => {
     await fs.rm(home, { recursive: true, force: true });
   });
 
-  it("saves an unchanged warm checkpoint without the agent row lock or a file-tree transaction", async () => {
+  it("saves an unchanged warm checkpoint without the agent row lock or a head write", async () => {
     const copy = await warmRun();
     expect((await copies.checkpointWarm({ companyId, runId: copy.runId }))?.state).toBe("warm_saved");
     const generation = (await head()).generation;
@@ -150,12 +150,34 @@ describe("agent file checkpoint locking", () => {
       expect(result?.state).toBe("warm_saved");
       expect(result?.receipt?.checkpointState).toBe("unchanged");
       expect(statements.filter(statement => /for (update|no key update|share)/i.test(statement))).toEqual([]);
-      expect(statements.filter(statement => statement.includes("agent_file_roots"))).toEqual([]);
+      // One unlocked read of the head generation; no head write.
+      expect(statements.filter(statement => statement.includes("agent_file_roots")).map(statement => statement.trim().split(/\s/)[0]!.toLowerCase())).toEqual(["select"]);
     } finally {
       release();
       await holder;
     }
     expect((await head()).generation).toBe(generation);
+  });
+
+  it("adopts the agent's files into a durable head on an unchanged checkpoint when no head exists", async () => {
+    const copy = await warmRun();
+    expect((await copies.checkpointWarm({ companyId, runId: copy.runId }))?.state).toBe("warm_saved");
+    // Durable files were turned on after this run started: the agent has local files and no head.
+    await db.delete(agentFileRoots).where(and(eq(agentFileRoots.companyId, companyId), eq(agentFileRoots.agentId, agentId)));
+    await fs.rm(path.join(path.dirname(root), "file-sync", "durable-adoption.json"), { force: true });
+    expect((await copies.checkpointWarm({ companyId, runId: copy.runId }))?.state).toBe("warm_saved");
+    expect((await head())?.entries.map(entry => entry.path)).toContain(entryFile);
+    await expectHeadRestorable();
+  });
+
+  it("takes the locked path for an unchanged checkpoint when the local projection is not marked at the head", async () => {
+    const copy = await warmRun();
+    expect((await copies.checkpointWarm({ companyId, runId: copy.runId }))?.state).toBe("warm_saved");
+    await fs.rm(path.join(path.dirname(root), "file-sync", "durable-generation"), { force: true });
+    const { result, statements } = await recordStatements(() => copies.checkpointWarm({ companyId, runId: copy.runId }));
+    expect(result?.state).toBe("warm_saved");
+    expect(statements.some(statement => /for update/i.test(statement))).toBe(true);
+    expect(await fs.readFile(path.join(path.dirname(root), "file-sync", "durable-generation"), "utf8")).toBe((await head()).generation);
   });
 
   it("uploads changed bytes before it takes the agent row lock, then commits the uploaded object", async () => {
