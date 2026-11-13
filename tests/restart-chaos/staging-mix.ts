@@ -50,6 +50,7 @@ export interface StagingMixTask {
 export interface StagingMixRecord {
   followUpErrors?: string[];
   followUp?: { at: number; commentId: string | null; duringRun: boolean; inOverlap: boolean; error: string | null };
+  afterEndFollowUps?: Array<{ afterRunEndAt: number; at: number; delayMs: number; commentId: string }>;
   retrySeenAt?: number | null;
   retries?: Array<{ at: number; inOverlap: boolean }>;
   retryBanner?: RetryBanner;
@@ -71,6 +72,7 @@ export interface StagingMixArtifacts {
   comments?: Array<{ body: string; runId: string | null; createdAt?: number | null }>;
   commentsUnreadable?: boolean;
   completion?: CompletionEvidence;
+  afterEndFollowUps?: NonNullable<StagingMixRecord["afterEndFollowUps"]>;
 }
 
 export const DUPLICATE_CHECKS: ReadonlySet<string> = new Set(["rounds_once", "done_comment_once", "completion_once", "subtasks_once", "subtask_rounds_once"]);
@@ -478,6 +480,15 @@ export function gradeStagingMix(nonce: string, task: StagingMixTask, artifacts: 
     checks.push({ name: "follow_up_posted", ok: Boolean(followUp?.commentId),
       detail: followUp?.commentId ? `comment ${followUp.commentId}` : `never posted${errors.length ? `; errors: ${errors.slice(-3).join(" | ")}` : ""}` });
   }
+  const afterEnd = artifacts.stagingMix?.afterEndFollowUps ?? [];
+  const range = task.followUpAfterMs !== null ? followUpAfterEndRange() : null;
+  if (range || afterEnd.length) {
+    const replies = artifacts.stagingMix?.comments ?? [];
+    const unanswered = afterEnd.filter(entry => !replies.some(comment => comment.createdAt != null && comment.createdAt >= entry.at));
+    checks.push({ name: "after_end_follow_ups_served",
+      ok: afterEnd.length >= (range?.count ?? 1) && unanswered.length === 0 && (ledger ?? "").includes(followUpMarker(nonce)),
+      detail: `posted=${afterEnd.length}/${range?.count ?? afterEnd.length}; unanswered=${unanswered.map(entry => entry.commentId).join(", ") || "none"}` });
+  }
   if (followUp?.commentId && followUp.duringRun) {
     checks.push({ name: "follow_up_served", ok: (ledger ?? "").includes(followUpMarker(nonce)),
       detail: `posted ${new Date(followUp.at).toISOString()}${followUp.inOverlap ? " in overlap" : ""}` });
@@ -503,7 +514,9 @@ export function gradeStagingMix(nonce: string, task: StagingMixTask, artifacts: 
 
 export function stagingMixBudgetMs(task: StagingMixTask): number {
   const turnMs = task.rounds * ROUND_SECONDS * 1_000;
-  return Math.round(turnMs * 1.5) + 20 * 60_000 + (task.subtasks ? 20 * 60_000 : 0);
+  const afterEnd = task.followUpAfterMs !== null ? followUpAfterEndRange() : null;
+  return Math.round(turnMs * 1.5) + 20 * 60_000 + (task.subtasks ? 20 * 60_000 : 0)
+    + (afterEnd ? afterEnd.count * (afterEnd.maxMs + turnMs) : 0);
 }
 
 export function stagingMixDefinition(task: StagingMixTask): WorkloadDefinition {
@@ -559,13 +572,45 @@ export interface StagingMixStepInput {
   note: (kind: string, data: Record<string, unknown>) => void;
 }
 
+export function followUpAfterEndRange(environment: NodeJS.ProcessEnv = process.env): { minMs: number; maxMs: number; count: number } | null {
+  const raw = environment.RESTART_CHAOS_MIX_FOLLOW_UP_AFTER_END_MS;
+  if (!raw) return null;
+  const [low, high] = parseRange(raw, "RESTART_CHAOS_MIX_FOLLOW_UP_AFTER_END_MS", 0, 3_600_000);
+  const count = whole(environment.RESTART_CHAOS_MIX_FOLLOW_UP_COUNT, "RESTART_CHAOS_MIX_FOLLOW_UP_COUNT", 2, 1, 10);
+  return { minMs: low, maxMs: high, count };
+}
+
 export async function stagingMixStep(input: StagingMixStepInput): Promise<void> {
   const { record, task, sample, now } = input;
   const state = record.stagingMix ??= {};
   if (!sample.reachable || !record.issueId || record.createdAt === null) return;
   const overlap = insideOverlapWindow(now, { faultInProgress: input.faultInProgress, reachable: sample.reachable });
   const running = (sample.runs ?? []).some(run => run.status === "running");
-  if (task.followUpAfterMs !== null && !state.followUp && running) {
+  const afterEnd = followUpAfterEndRange();
+  if (afterEnd && task.followUpAfterMs !== null) {
+    const posted = state.afterEndFollowUps ??= [];
+    const runs = sample.runs ?? [];
+    const active = runs.some(run => ACTIVE.has(run.status));
+    const lastEnd = Math.max(0, ...runs.map(run => Date.parse(run.finishedAt ?? "") || 0));
+    if (!active && lastEnd > 0 && posted.length < afterEnd.count && !posted.some(entry => entry.afterRunEndAt === lastEnd)) {
+      const span = afterEnd.maxMs - afterEnd.minMs;
+      const delay = afterEnd.minMs + (span > 0 ? (Number.parseInt(input.nonce.slice(0, 6), 16) * (posted.length + 1)) % (span + 1) : 0);
+      if (now >= lastEnd + delay) {
+        const index = posted.length;
+        let commentId: string | null = null; let error: string | null = null;
+        try {
+          const comment = await input.api.post<{ id?: string }>(`/api/issues/${record.issueId}/comments`, { body: followUpComment(input.nonce),
+            clientRequestId: followUpRequestId(record.issueId, `${input.nonce}-after-end-${index}`) });
+          commentId = typeof comment?.id === "string" ? comment.id : null;
+          if (!commentId) error = "the comment response had no id";
+        } catch (caught) { error = caught instanceof Error ? caught.message : String(caught); }
+        if (commentId) posted.push({ afterRunEndAt: lastEnd, at: now, delayMs: now - lastEnd, commentId });
+        else (state.followUpErrors ??= []).push(error!);
+        input.note("staging_mix_follow_up_after_end", { index, delayMs: now - lastEnd, commentId, error });
+        if (commentId && !state.followUp) state.followUp = { at: now, commentId, duringRun: false, inOverlap: overlap, error: null };
+      }
+    }
+  } else if (task.followUpAfterMs !== null && !state.followUp && running) {
     const plannedAt = record.createdAt + task.followUpAfterMs;
     const latestAt = Math.min(plannedAt + task.holdMs, record.createdAt + Math.round(task.rounds * ROUND_SECONDS * 1_000 * 0.85));
     if (now >= plannedAt && (overlap || now >= latestAt)) {
@@ -626,6 +671,7 @@ export function collectStagingMixArtifacts(record: TaskRecord,
   const time = (value: unknown) => typeof value === "string" && Number.isFinite(Date.parse(value)) ? Date.parse(value) : null;
   return { followUp: record.stagingMix?.followUp ?? null, followUpErrors: record.stagingMix?.followUpErrors ?? [], retries: record.stagingMix?.retries ?? [],
     ...(record.stagingMix?.completion ? { completion: record.stagingMix.completion } : {}),
+    ...(record.stagingMix?.afterEndFollowUps?.length ? { afterEndFollowUps: record.stagingMix.afterEndFollowUps } : {}),
     ...(rows ? { comments: rows.filter(row => row.authorAgentId).map(row => ({ body: String(row.body ?? ""),
       runId: typeof row.createdByRunId === "string" ? row.createdByRunId : null, createdAt: time(row.createdAt) })) }
       : { commentsUnreadable: true }) };
