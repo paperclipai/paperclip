@@ -37,6 +37,7 @@ import type { Db } from "@paperclipai/db";
 import {
   type ExecutionWorkspace,
   type ExecutionWorkspaceConfig,
+  type ProjectRepositoryCheckout,
 } from "@paperclipai/shared";
 import {
   agents,
@@ -497,7 +498,23 @@ export async function ensureManagedProjectWorkspace(input: {
   return result;
 }
 
-/** Keep every distinct project repository inside the task's writable/synced root. */
+async function keepPresentProjectRepositories<T extends { id: string; repoUrl: string | null; repoRef: string | null; cwd?: string | null }>(
+  workspaces: T[],
+  root: string,
+  input: { restoredContents?: GitWorkspaceContents; keepWorkspaceIds?: string[] },
+): Promise<T[]> {
+  const kept: T[] = [];
+  for (const workspace of workspaces) {
+    const restored = input.restoredContents?.checkouts.some(checkout => checkout.source.id === workspace.id) ?? false;
+    const requested = input.keepWorkspaceIds?.includes(workspace.id) ?? false;
+    const key = managedProjectCheckoutName({ id: workspace.id, repoUrl: workspace.repoUrl!, repoRef: workspace.repoRef, cwd: workspace.cwd });
+    const present = restored || requested || Boolean(await fs.lstat(path.join(root, key)).catch(() => null));
+    if (present) kept.push(workspace);
+  }
+  return kept;
+}
+
+/** Keep the task's distinct project repositories inside its writable/synced root. */
 export async function prepareProjectRepositoryWorkspaces(input: {
   cwd: string;
   anchorRepoUrl: string | null;
@@ -507,16 +524,21 @@ export async function prepareProjectRepositoryWorkspaces(input: {
   prepareLocalSource?: (sourceCwd: string, projectWorkspaceId: string) => Promise<() => Promise<void>>;
   restoredContents?: GitWorkspaceContents;
   sharedBase?: { companyId: string; projectId: string };
+  repositoryCheckout?: ProjectRepositoryCheckout;
+  keepWorkspaceIds?: string[];
 }): Promise<Array<{ workspaceId: string; cwd: string; repoUrl: string; repoRef: string | null }>> {
   const identity = projectRepositoryIdentity;
   const seen = new Set(input.anchorRepoUrl ? [identity(input.anchorRepoUrl)] : []);
-  const selected = selectRestoredProjectRepositories(input.workspaces, input.restoredContents).filter((workspace) => {
+  const distinct = selectRestoredProjectRepositories(input.workspaces, input.restoredContents).filter((workspace) => {
     if (!workspace.repoUrl || seen.has(identity(workspace.repoUrl))) return false;
     seen.add(identity(workspace.repoUrl));
     return true;
   });
-  if (input.restoredContents?.checkouts.some(checkout => !selected.some(source => source.id === checkout.source.id))) throw new GitCacheRestorationFailure();
+  if (input.restoredContents?.checkouts.some(checkout => !distinct.some(source => source.id === checkout.source.id))) throw new GitCacheRestorationFailure();
   const root = path.join(input.cwd, PROJECT_REPOSITORIES_DIR);
+  const selected = input.repositoryCheckout === "primary"
+    ? await keepPresentProjectRepositories(distinct, root, input)
+    : distinct;
   if (selected.length === 0 && !(await fs.lstat(root).catch(() => null))) return [];
   await fs.mkdir(root, { recursive: true });
   if (await fs.realpath(root) !== path.join(await fs.realpath(input.cwd), PROJECT_REPOSITORIES_DIR)) {

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { PROJECT_STATUSES, PROJECT_ICON_NAMES } from "../constants.js";
+import { PROJECT_STATUSES, PROJECT_ICON_NAMES, PROJECT_REPOSITORY_CHECKOUTS } from "../constants.js";
 import { envConfigSchema } from "./secret.js";
 import { trustAuthorizationPolicySchema } from "./trust-policy.js";
 import { objectWithoutDefaults } from "./partial.js";
@@ -122,6 +122,7 @@ const projectFields = {
   icon: z.enum(PROJECT_ICON_NAMES).optional().nullable(),
   env: envConfigSchema.optional().nullable(),
   executionWorkspacePolicy: projectExecutionWorkspacePolicySchema.optional().nullable(),
+  repositoryCheckout: z.enum(PROJECT_REPOSITORY_CHECKOUTS).optional(),
   archivedAt: z.string().datetime().optional().nullable(),
 };
 

@@ -477,6 +477,7 @@ export {
   GOAL_LEVELS,
   GOAL_STATUSES,
   PROJECT_STATUSES,
+  PROJECT_REPOSITORY_CHECKOUTS,
   ENVIRONMENT_DRIVERS,
   ENVIRONMENT_STATUSES,
   ENVIRONMENT_LEASE_STATUSES,
@@ -666,6 +667,7 @@ export {
   type GoalLevel,
   type GoalStatus,
   type ProjectStatus,
+  type ProjectRepositoryCheckout,
   type EnvironmentDriver,
   type EnvironmentStatus,
   type EnvironmentLeaseStatus,
@@ -2925,7 +2927,7 @@ export type { AgentLifecycleRequest, AgentLifecycleResult } from "./types/agent-
 export * from "./types/task-workspace.js";
 export * from "./validators/task-workspace.js";
 
-export { prepareWorkspaceRepositorySchema, type PrepareWorkspaceRepository } from "./validators/workspace-repository.js";
+export { prepareWorkspaceRepositorySchema, requestProjectRepositorySchema, type PrepareWorkspaceRepository, type RequestProjectRepository } from "./validators/workspace-repository.js";
 
 export * from "./muse-protocol.js";
 export * from "./muse-invitations.js";

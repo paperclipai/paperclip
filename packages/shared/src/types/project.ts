@@ -1,4 +1,4 @@
-import type { BudgetWindowKind, PauseReason, ProjectStatus } from "../constants.js";
+import type { BudgetWindowKind, PauseReason, ProjectRepositoryCheckout, ProjectStatus } from "../constants.js";
 import type {
   ProjectExecutionWorkspacePolicy,
   ProjectWorkspaceRuntimeConfig,
@@ -158,6 +158,7 @@ export interface Project {
   pauseReason: PauseReason | null;
   pausedAt: Date | null;
   executionWorkspacePolicy: ProjectExecutionWorkspacePolicy | null;
+  repositoryCheckout?: ProjectRepositoryCheckout;
   workspaceProvider?: ProjectWorkspaceProviderConfiguration;
   codebase: ProjectCodebase;
   workspaces: ProjectWorkspace[];

@@ -601,6 +601,9 @@ export const PROJECT_STATUSES = [
 ] as const;
 export type ProjectStatus = (typeof PROJECT_STATUSES)[number];
 
+export const PROJECT_REPOSITORY_CHECKOUTS = ["all", "primary"] as const;
+export type ProjectRepositoryCheckout = (typeof PROJECT_REPOSITORY_CHECKOUTS)[number];
+
 export const ENVIRONMENT_DRIVERS = ["local", "ssh", "sandbox", "plugin"] as const;
 export type EnvironmentDriver = (typeof ENVIRONMENT_DRIVERS)[number];
 
