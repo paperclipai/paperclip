@@ -499,6 +499,19 @@ const support = externalDatabaseUrl
       expect(await freshContinuations(source.issueId)).toHaveLength(0);
       expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, source.issueId))).toHaveLength(0);
     });
+    it("requests a pass when the deadline passes after the sweep checked the run", async () => {
+      const source = await seedUnprovenOwner(60_000);
+      expect(await reconcileSafeNativeReplacements(db)).toMatchObject({ scheduled: 0 });
+      await db.update(heartbeatRuns).set({ finishedAt: sql`now() - interval '5 minutes 1 second'` })
+        .where(eq(heartbeatRuns.id, source.runId));
+      const wakeAt = await executionControlSchedule(db).replacement();
+      expect(wakeAt).not.toBeNull();
+      expect(wakeAt!).toBeLessThanOrEqual(Date.now() + 20_000);
+      await reconcileSafeNativeReplacements(db);
+      const [decision] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, source.runId));
+      expect(decision!.failureDetail).toMatchObject({ replacementDenied: "provider_ownership_unverified" });
+      expect(await executionControlSchedule(db).replacement()).toBeNull();
+    });
     it("still starts the exact replacement when ownership is proven before the deadline", async () => {
       const source = await seedUnprovenOwner(60_000);
       expect(await reconcileSafeNativeReplacements(db)).toMatchObject({ scheduled: 0 });

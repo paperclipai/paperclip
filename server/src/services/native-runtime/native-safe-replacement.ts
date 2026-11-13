@@ -252,6 +252,7 @@ export function nativeReplacementPending() {
 
 export const NATIVE_OWNERSHIP_PROOF_BOUND_MS = RECOVERY_CONTINUATION_MAX_HOLD_MS;
 const OWNERSHIP_UNVERIFIED = "provider_ownership_unverified";
+const OWNERSHIP_PROOF_WAKE_GRACE_MS = 60_000;
 const ownershipProofDeadline = () => sql`(coalesce(${heartbeatRuns.finishedAt}, ${nativeRunFinalizations.updatedAt})
   + ${NATIVE_OWNERSHIP_PROOF_BOUND_MS}::integer * interval '1 millisecond')`;
 const ownershipProofWaiting = () => and(
@@ -277,7 +278,8 @@ async function markOwnershipProofWaiting(db: ReplacementDb, run: typeof heartbea
 export async function nextNativeOwnershipProofDeadlineAt(db: Db): Promise<number | null> {
   const [row] = await db.select({ at: sql<number | null>`(extract(epoch from min(${ownershipProofDeadline()})) * 1000)::float8` })
     .from(heartbeatRuns).innerJoin(nativeRunFinalizations, eq(nativeRunFinalizations.runId, heartbeatRuns.id))
-    .where(and(nativeReplacementPending(), ownershipProofWaiting(), sql`${ownershipProofDeadline()} > now()`,
+    .where(and(nativeReplacementPending(), ownershipProofWaiting(),
+      sql`${ownershipProofDeadline()} > now() - ${OWNERSHIP_PROOF_WAKE_GRACE_MS}::integer * interval '1 millisecond'`,
       sql`${nativeRunFinalizations.failureDetail} ? 'ownershipUnverifiedAt'`));
   return row?.at == null ? null : Math.ceil(Number(row.at));
 }
