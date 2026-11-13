@@ -114,3 +114,27 @@ it("does not suppress zoom panning when the keyboard was already open", () => {
   document.dispatchEvent(new Event("scroll"));
   expect(document.documentElement.scrollTop).toBe(120);
 });
+
+it("releases keyboard sizing when zoom starts and the keyboard closes while zoomed", () => {
+  viewport.height = 358;
+  act(() => root.render(<Host />));
+  const shell = container.firstElementChild as HTMLElement;
+  expect(shell.dataset.keyboardOpen).toBe("true");
+  act(() => {
+    viewport.scale = 2;
+    viewport.height = 179;
+    viewport.dispatchEvent(new Event("resize"));
+  });
+  expect(shell.dataset.keyboardOpen).toBeUndefined();
+  act(() => {
+    viewport.height = 347.5;
+    viewport.dispatchEvent(new Event("resize"));
+  });
+  expect(shell.dataset.keyboardOpen).toBeUndefined();
+  act(() => {
+    viewport.scale = 1;
+    viewport.height = 695;
+    viewport.dispatchEvent(new Event("resize"));
+  });
+  expect(shell.style.getPropertyValue("--mobile-chat-viewport-height")).toBe("695px");
+});

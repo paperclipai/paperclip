@@ -987,6 +987,19 @@ describe("connection management with production default agents", () => {
         const updated = await f.request("PUT", `/chat-endpoints/${result.body.id}/github/configuration`, body);
         expect(updated, JSON.stringify(updated)).toMatchObject({ status: 200, body: { revision: 1, configuration: { memberAccess: "selected" } } });
         expect(await f.request("PUT", `/chat-endpoints/${result.body.id}/github/configuration`, body)).toMatchObject({ status: 409 });
+        const otherUserId = randomUUID();
+        await accessService(server.db).ensureMembership(f.companyId, "user", otherUserId, "operator", "active");
+        for (const token of [f.key.token, f.jwt]) {
+          for (const field of ["responsible", "guest"]) {
+            const configuration = structuredClone(updated.body.configuration);
+            if (field === "responsible") configuration.responsibleUserId = otherUserId;
+            else configuration.people.push({ kind: "guest", githubUserId: "42", login: "guest", sponsorUserId: otherUserId, permissionProfile: "restricted" });
+            const denied = await f.request("PUT", `/chat-endpoints/${result.body.id}/github/configuration`, { expectedRevision: 1, configuration }, token);
+            expect(denied, JSON.stringify(denied)).toMatchObject({ status: 403 });
+            expect(JSON.stringify(denied.body)).toContain("task sponsor");
+          }
+        }
+        expect((await f.request("GET", `/chat-endpoints/${result.body.id}/github/configuration`)).body).toMatchObject({ revision: 1, configuration: updated.body.configuration });
         const handoff = await f.request("POST", `/chat-endpoints/${result.body.id}/github/identity/start`, {});
         expect(handoff).toMatchObject({ status: 200, body: { requiredUserAction: { userId: f.userId, resource: { id: result.body.id } } } });
       }
