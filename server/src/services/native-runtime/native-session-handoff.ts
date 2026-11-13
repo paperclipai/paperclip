@@ -7,7 +7,37 @@ import { fastResponseHistoryBody } from "@paperclipai/shared";
 
 export const NATIVE_HANDOFF_MAX_BYTES = 24_000;
 const ENTRY_MAX_CHARS = 4_000;
+const EXCERPT_HEAD_CHARS = 2_900;
+const EXCERPT_TAIL_CHARS = 900;
+const EXCERPT_MARKER = "\n[content omitted]\n";
+// UTF-8 uses at most four bytes per character, and never the byte 0xff.
+const UTF8_MAX_BYTES_PER_CHAR = 4;
+const EXCERPT_SEPARATOR_BYTE = 0xff;
 const LIMIT = 10;
+
+/**
+ * Keeps the start and the latest direction of a long body. Bounds count code
+ * points, as Postgres does on a UTF8 database, so a cut never splits a
+ * surrogate pair such as an emoji.
+ */
+function excerptBody(head: string, tail = head): string {
+  return `${Array.from(head).slice(0, EXCERPT_HEAD_CHARS).join("")}${EXCERPT_MARKER}${Array.from(tail).slice(-EXCERPT_TAIL_CHARS).join("")}`;
+}
+
+/**
+ * Decodes a byte-bounded SQL excerpt. Legacy SQL_ASCII databases slice text by
+ * bytes, so SQL returns raw UTF-8 bytes and character bounds are applied here.
+ */
+export function decodeNativeHandoffExcerpt(encoded: string | null | undefined): { body: string; truncated: boolean } {
+  if (!encoded) return { body: "", truncated: false };
+  const bytes = Buffer.from(encoded, "base64");
+  const separator = bytes.indexOf(EXCERPT_SEPARATOR_BYTE);
+  if (separator < 0) return { body: bytes.toString("utf8"), truncated: false };
+  // A byte cut can leave one partial character at each inner edge.
+  const head = bytes.subarray(0, separator).toString("utf8").replace(/\uFFFD+$/u, "");
+  const tail = bytes.subarray(separator + 1).toString("utf8").replace(/^\uFFFD+/u, "");
+  return { body: excerptBody(head, tail), truncated: true };
+}
 
 export type HandoffEntry = { kind: string; id: string; body: string; truncated?: boolean; [key: string]: unknown };
 
@@ -30,9 +60,9 @@ export function renderNativeSessionHandoff(input: {
     JSON.stringify({ schema: "paperclip.native-session-handoff.v1", issueId: input.issueId, generation: input.generation, truncated, omittedEntriesAtLeast: omitted, entries }),
   ].join("\n");
   for (const entry of input.entries) {
-    const clipped = entry.body.length > ENTRY_MAX_CHARS;
     // Preserve both the start and latest direction in exceptionally long messages.
-    const body = clipped ? `${entry.body.slice(0, 2_900)}\n[content omitted]\n${entry.body.slice(-900)}` : entry.body;
+    const clipped = entry.body.length > ENTRY_MAX_CHARS && Array.from(entry.body).length > ENTRY_MAX_CHARS;
+    const body = clipped ? excerptBody(entry.body) : entry.body;
     const bounded = { ...entry, body, truncated: entry.truncated === true || clipped };
     entries.push(bounded);
     truncated ||= bounded.truncated;
@@ -67,11 +97,20 @@ export async function buildNativeSessionHandoff(input: {
   if (input.throughCommentId && !cutoff) return null;
   const afterBoundary = (date: typeof issueComments.createdAt | typeof issueThreadInteractions.createdAt | typeof heartbeatRuns.createdAt | typeof issueDocuments.createdAt) =>
     boundary ? sql`${date} > ${boundary.createdAt.toISOString()}::timestamptz` : undefined;
-  const excerpt = (body: SQL) => sql<string>`case when length(${body}) > ${ENTRY_MAX_CHARS}
-    then left(${body}, 2900) || ${"\n[content omitted]\n"} || right(${body}, 900) else ${body} end`;
+  // Bound by bytes in SQL, never by characters: SQL_ASCII databases count
+  // bytes and would split a multibyte character, which Postgres then refuses
+  // to send to a UTF8 client. decodeNativeHandoffExcerpt applies the
+  // character bounds. The 0xff separator cannot occur inside UTF-8 text.
+  const excerpt = (body: SQL) => {
+    const bytes = sql`convert_to(${body}, current_setting('server_encoding'))`;
+    return sql<string>`encode(case when octet_length(${bytes}) <= ${sql.raw(String(ENTRY_MAX_CHARS * UTF8_MAX_BYTES_PER_CHAR))} then ${bytes}
+      else substring(${bytes} from 1 for ${sql.raw(String(EXCERPT_HEAD_CHARS * UTF8_MAX_BYTES_PER_CHAR))})
+        || decode('ff', 'hex')
+        || substring(${bytes} from octet_length(${bytes}) - ${sql.raw(String(EXCERPT_TAIL_CHARS * UTF8_MAX_BYTES_PER_CHAR - 1))}) end, 'base64')`;
+  };
+  const decoded = <T extends { body: string }>(row: T): T & { truncated: boolean } => ({ ...row, ...decodeNativeHandoffExcerpt(row.body) });
   const commentFields = {
     id: issueComments.id, body: excerpt(sql`${issueComments.body}`),
-    truncated: sql<boolean>`length(${issueComments.body}) > ${ENTRY_MAX_CHARS}`,
     authorAgentId: issueComments.authorAgentId, sourceTrust: issueComments.sourceTrust,
     createdAt: issueComments.createdAt, origin: issueComments.origin,
   };
@@ -84,7 +123,7 @@ export async function buildNativeSessionHandoff(input: {
   const runSummaryBody = sql`coalesce(${heartbeatRuns.runnerProfileJson} #>> '{sessionCheckpoint,semanticResult,summary}',
     case when ${heartbeatRuns.runtimeMode} = 'legacy' then coalesce(${heartbeatRuns.resultJson}->>'summary', ${heartbeatRuns.resultJson}->>'result') end,
     ${heartbeatRuns.nextAction}, '')`;
-  const [origin, recent, decisions, replies, savedDocuments, runSummaries] = await Promise.all([
+  const [originRows, recentRows, decisionRows, replyRows, documentRows, runSummaryRows] = await Promise.all([
     db.select(commentFields).from(issueComments).where(and(commentScope, isNull(issueComments.authorAgentId)))
       .orderBy(asc(issueComments.createdAt), asc(issueComments.id)).limit(1),
     db.select(commentFields).from(issueComments).where(commentScope)
@@ -94,7 +133,6 @@ export async function buildNativeSessionHandoff(input: {
     db.select({ id: issueThreadInteractions.id, kind: issueThreadInteractions.kind, status: issueThreadInteractions.status,
       title: sql<string>`left(coalesce(${issueThreadInteractions.title}, ''), 256)`,
       body: excerpt(sql`coalesce(${issueThreadInteractions.result}->>'summaryMarkdown', ${issueThreadInteractions.summary}, '')`),
-      truncated: sql<boolean>`length(coalesce(${issueThreadInteractions.result}->>'summaryMarkdown', ${issueThreadInteractions.summary}, '')) > ${ENTRY_MAX_CHARS}`,
     }).from(issueThreadInteractions).where(and(eq(issueThreadInteractions.companyId, companyId), eq(issueThreadInteractions.issueId, issueId),
       eq(issueThreadInteractions.createdByAgentId, agentId), sql`${issueThreadInteractions.status} <> 'pending'`,
       sql`${issueThreadInteractions.kind} in ('ask_user_questions', 'request_confirmation', 'request_checkbox_confirmation', 'connection_intent')`,
@@ -105,7 +143,6 @@ export async function buildNativeSessionHandoff(input: {
     db.select({ id: sql<string>`${heartbeatRunEvents.id}::text`, runId: heartbeatRuns.id,
       executionPolicy: sql<unknown>`${heartbeatRuns.contextSnapshot}->'executionPolicy'`,
       body: excerpt(sql`${heartbeatRunEvents.payload} #>> '{prpEvent,payload,text}'`),
-      truncated: sql<boolean>`length(${heartbeatRunEvents.payload} #>> '{prpEvent,payload,text}') > ${ENTRY_MAX_CHARS}`,
     }).from(heartbeatRunEvents).innerJoin(heartbeatRuns, and(eq(heartbeatRuns.id, heartbeatRunEvents.runId), eq(heartbeatRuns.companyId, companyId)))
       .where(and(eq(heartbeatRunEvents.companyId, companyId), eq(heartbeatRunEvents.agentId, agentId), eq(heartbeatRuns.agentId, agentId),
         runIssueScope, eq(heartbeatRunEvents.eventType, "item.completed"),
@@ -118,11 +155,10 @@ export async function buildNativeSessionHandoff(input: {
     db.select({ id: documents.id, key: issueDocuments.key, revisionId: documents.latestRevisionId,
       // Workflow instructions have one on-demand document source. Never copy
       // their body into fresh-history packets as another prompt instruction.
-      body: sql<string>`case when ${issueDocuments.key} = 'workflow'
-        then ${'Read this task\'s workflow instructions with read_document using key "workflow" before choosing the next phase.'}
-        else ${excerpt(sql`${documents.latestBody}`)} end`,
-      truncated: sql<boolean>`case when ${issueDocuments.key} = 'workflow' then false
-        else length(${documents.latestBody}) > ${ENTRY_MAX_CHARS} end`, sourceTrust: documents.sourceTrust,
+      body: excerpt(sql`case when ${issueDocuments.key} = 'workflow'
+        then ${'Read this task\'s workflow instructions with read_document using key "workflow" before choosing the next phase.'}::text
+        else ${documents.latestBody} end`),
+      sourceTrust: documents.sourceTrust,
     }).from(issueDocuments).innerJoin(documents, and(eq(documents.id, issueDocuments.documentId), eq(documents.companyId, companyId)))
       .where(and(eq(issueDocuments.companyId, companyId), eq(issueDocuments.issueId, issueId), lte(documents.updatedAt, input.before), afterBoundary(issueDocuments.createdAt),
         cutoff ? lte(documents.updatedAt, cutoff.createdAt) : undefined))
@@ -130,13 +166,14 @@ export async function buildNativeSessionHandoff(input: {
     db.select({ id: heartbeatRuns.id, status: heartbeatRuns.status,
       executionPolicy: sql<unknown>`${heartbeatRuns.contextSnapshot}->'executionPolicy'`,
       body: excerpt(runSummaryBody),
-      truncated: sql<boolean>`length(${runSummaryBody}) > ${ENTRY_MAX_CHARS}`,
     }).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId), runIssueScope,
       lte(heartbeatRuns.finishedAt, input.before), afterBoundary(heartbeatRuns.createdAt),
       issue.conversationAgentId ? sql`${heartbeatRuns.contextSnapshot}->>'conversationSessionGeneration' = ${String(issue.generation)}` : undefined,
       cutoff ? and(lte(heartbeatRuns.createdAt, cutoff.createdAt), lte(heartbeatRuns.finishedAt, cutoff.createdAt)) : undefined,
     )).orderBy(desc(heartbeatRuns.finishedAt), desc(heartbeatRuns.id)).limit(3),
   ]);
+  const [origin, recent, decisions, replies, savedDocuments, runSummaries] = [originRows.map(decoded), recentRows.map(decoded),
+    decisionRows.map(decoded), replyRows.map(decoded), documentRows.map(decoded), runSummaryRows.map(decoded)];
   const entries: HandoffEntry[] = [];
   // Historical output inherits its dispatch policy. Later agent/project/task
   // edits cannot promote it. Invalid retained policy also stays quarantined.
