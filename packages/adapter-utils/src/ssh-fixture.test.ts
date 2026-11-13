@@ -61,6 +61,35 @@ async function createFixtureRootDir(): Promise<string> {
   return rootDir;
 }
 
+// Lists same-user processes whose environment and working directory are
+// unreadable, so a stop that unexpectedly answers "running" shows the cause.
+async function describeHiddenSshProcesses(config: Parameters<typeof runSshCommand>[0]): Promise<string> {
+  const result = await runSshCommand(config, [
+    'uid=$(id -u)',
+    'for d in /proc/[0-9]*; do',
+    '  [ "$(sed -n "s/^Uid:[[:space:]]*\\([0-9]*\\).*/\\1/p" "$d/status" 2>/dev/null)" = "$uid" ] || continue',
+    '  cat "$d/environ" >/dev/null 2>&1 && continue',
+    '  readlink "$d/cwd" >/dev/null 2>&1 && continue',
+    '  p=$(sed -n "s/^PPid:[[:space:]]*//p" "$d/status" 2>/dev/null)',
+    '  echo "pid=${d#/proc/} name=$(sed -n "s/^Name:[[:space:]]*//p" "$d/status" 2>/dev/null)' +
+      ' uid=[$(sed -n "s/^Uid:[[:space:]]*//p" "$d/status" 2>/dev/null)] gid=[$(sed -n "s/^Gid:[[:space:]]*//p" "$d/status" 2>/dev/null)]' +
+      ' ppid=$p parent=$(sed -n "s/^Name:[[:space:]]*//p" "/proc/$p/status" 2>/dev/null)"',
+    'done',
+  ].join("\n")).catch((error: unknown) => ({ stdout: `diagnostic failed: ${String(error)}` }));
+  return `hidden same-user processes:\n${result.stdout.trim() || "(none)"}`;
+}
+
+async function expectSshStop(
+  config: Parameters<typeof runSshCommand>[0],
+  input: Parameters<typeof stopSshRunProcesses>[1],
+  expected: "stopped" | "running" | "unsupported",
+): Promise<void> {
+  const result = await stopSshRunProcesses(config, input);
+  if (result !== expected) {
+    expect(result, await describeHiddenSshProcesses(config)).toBe(expected);
+  }
+}
+
 async function drainFixtureTeardowns(): Promise<void> {
   while (fixtureTeardowns.length > 0) {
     const entry = fixtureTeardowns.pop();
@@ -565,50 +594,57 @@ describe("ssh env-lab fixture", () => {
     expect(await alive(withRunEnv!)).toBe("alive");
 
     try {
-      await expect(stopSshRunProcesses(config, { runId, remoteCwd })).resolves.toBe("stopped");
+      await expectSshStop(config, { runId, remoteCwd }, "stopped");
       expect(await alive(inRunDir!)).toBe("gone");
       expect(await alive(withRunEnv!)).toBe("gone");
       expect(await alive(otherRun!)).toBe("alive");
       expect(await alive(reader!)).toBe("alive");
       // A second check finds nothing more to stop.
-      await expect(stopSshRunProcesses(config, { runId, remoteCwd })).resolves.toBe("stopped");
+      await expectSshStop(config, { runId, remoteCwd }, "stopped");
     } finally {
       await runSshCommand(config, `kill -KILL ${otherRun} ${reader} 2>/dev/null; true`);
     }
   }, SSH_FIXTURE_TEST_TIMEOUT_MS);
 
-  it("keeps an SSH process stop pending while a same-user process hides its run identity", async () => {
+  it("finishes an SSH process stop while an unrelated same-user process is not dumpable", async () => {
     const rootDir = await createFixtureRootDir();
     const statePath = path.join(rootDir, "state.json");
 
-    const started = await startSshEnvLabFixtureOrSkip(statePath, "SSH hidden run process test");
+    const started = await startSshEnvLabFixtureOrSkip(statePath, "SSH non-dumpable process test");
     if (!started) return;
     if (process.platform !== "linux") return;
     const config = await buildSshEnvLabFixtureConfig(started);
     const runId = "5d4c3b2a-1f0e-4d9c-8b7a-6f5e4d3c2b1a";
     const remoteCwd = started.workspaceDir;
     const runDir = path.posix.join(remoteCwd, ".paperclip-runtime", "runs", runId, "workspace");
+    // The test makes a process non-dumpable with python3. Without it the test cannot run.
+    if ((await runSshCommand(config, "command -v python3 >/dev/null && echo yes || echo no")).stdout.trim() !== "yes") {
+      console.warn("Skipping SSH non-dumpable process test: python3 is not available on the SSH host.");
+      return;
+    }
 
-    // PR_SET_DUMPABLE=0 makes /proc/<pid>/environ and /proc/<pid>/cwd unreadable,
-    // so the scan cannot tell whether this process belongs to the run.
+    // PR_SET_DUMPABLE=0 makes /proc/<pid>/environ and /proc/<pid>/cwd unreadable.
+    // Ordinary hosts always have such processes (`systemd --user`, SSH session
+    // processes), so the stop must not wait for them, and must not signal them.
     const hidden = (await runSshCommand(config, [
       `mkdir -p ${JSON.stringify(runDir)}`,
-      `(cd ${JSON.stringify(runDir)} && exec env PAPERCLIP_RUN_ID=${runId} nohup python3 -c ` +
+      `(cd / && exec nohup python3 -c ` +
         `'import ctypes, time; ctypes.CDLL(None).prctl(4, 0, 0, 0, 0); time.sleep(300)' >/dev/null 2>&1) & echo $!`,
     ].join("\n"))).stdout.trim();
     const readable = async () => (await runSshCommand(config,
       `for i in 1 2 3 4 5 6 7 8 9 10; do cat /proc/${hidden}/environ >/dev/null 2>&1 || { echo hidden; exit 0; }; sleep 0.2; done; echo readable`)).stdout.trim();
+    // The process must be alive: a process that already exited is also unreadable.
+    expect((await runSshCommand(config, `sleep 0.5; kill -0 ${hidden} 2>/dev/null && echo alive || echo gone`)).stdout.trim())
+      .toBe("alive");
     expect(await readable()).toBe("hidden");
 
     try {
-      // An inconclusive scan is not a stop proof, and the unknown process is not killed.
-      await expect(stopSshRunProcesses(config, { runId, remoteCwd })).resolves.toBe("running");
+      await expectSshStop(config, { runId, remoteCwd }, "stopped");
       expect((await runSshCommand(config, `kill -0 ${hidden} 2>/dev/null && echo alive || echo gone`)).stdout.trim())
         .toBe("alive");
     } finally {
       await runSshCommand(config, `kill -KILL ${hidden} 2>/dev/null; true`);
     }
-    await expect(stopSshRunProcesses(config, { runId, remoteCwd })).resolves.toBe("stopped");
   }, SSH_FIXTURE_TEST_TIMEOUT_MS);
 
   it("finishes an SSH process stop while another SSH session of the same user is open", async () => {
@@ -632,7 +668,7 @@ describe("ssh env-lab fixture", () => {
         (await runSshCommand(config,
           `for i in $(seq 1 50); do [ -s ${JSON.stringify(marker)} ] && { echo open; exit 0; }; sleep 0.1; done; echo missing`)).stdout.trim();
       expect(await opened()).toBe("open");
-      await expect(stopSshRunProcesses(config, { runId, remoteCwd })).resolves.toBe("stopped");
+      await expectSshStop(config, { runId, remoteCwd }, "stopped");
     } finally {
       await runSshCommand(config, `kill $(cat ${JSON.stringify(marker)}) 2>/dev/null; rm -f ${JSON.stringify(marker)}; true`);
       await otherSession;

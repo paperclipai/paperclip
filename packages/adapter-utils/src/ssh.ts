@@ -1394,42 +1394,17 @@ const SSH_RUN_PROCESS_STOP_SCRIPT = [
   '    case "$cwd/" in "$run_dir"*) echo "$pid" ;; esac',
   '  done',
   '}',
-  // A same-user process that hides both its environment and its working directory
-  // (for example with PR_SET_DUMPABLE=0) can be a run process. The scan cannot
-  // classify it, so it is not a stop proof. Such a process is not signalled.
-  // Two kinds of unreadable processes are no evidence of a run: a process whose
-  // user or group ids differ (a setuid or setgid program such as sudo; the
-  // script could not signal it anyway), and the SSH daemon and agents, which
-  // make themselves non-dumpable. A run process that renames itself to one of
-  // these names is not detected.
-  'uid=$(id -u)',
-  'find_hidden_pids() {',
-  '  for proc_dir in /proc/[0-9]*; do',
-  '    pid=${proc_dir#/proc/}',
-  '    case "$own" in *" $pid "*) continue ;; esac',
-  '    [ "$(parent_of "$pid")" = "$self" ] && continue',
-  '    ids=$(sed -n "s/^[UG]id:[[:space:]]*//p" "$proc_dir/status" 2>/dev/null | tr -s "[:space:]" " ")',
-  '    gid=${ids#* * * * }; gid=${gid%% *}',
-  '    [ "$ids" = "$uid $uid $uid $uid $gid $gid $gid $gid " ] || continue',
-  '    name=$(sed -n "s/^Name:[[:space:]]*//p" "$proc_dir/status" 2>/dev/null)',
-  '    case "$name" in sshd|sshd-session|sshd-auth|ssh-agent|gpg-agent) continue ;; esac',
-  '    cat "$proc_dir/environ" >/dev/null 2>&1 && continue',
-  '    readlink "$proc_dir/cwd" >/dev/null 2>&1 && continue',
-  '    [ -d "$proc_dir" ] && echo "$pid"',
-  '  done',
-  '}',
-  'finish_stopped() { if [ -n "$(find_hidden_pids)" ]; then echo running; else echo stopped; fi; exit 0; }',
   'pids=$(find_run_pids)',
-  'if [ -z "$pids" ]; then finish_stopped; fi',
+  'if [ -z "$pids" ]; then echo stopped; exit 0; fi',
   'kill -TERM $pids 2>/dev/null',
   'for attempt in 1 2 3 4 5; do',
   '  sleep 1',
   '  pids=$(find_run_pids)',
-  '  if [ -z "$pids" ]; then finish_stopped; fi',
+  '  if [ -z "$pids" ]; then echo stopped; exit 0; fi',
   'done',
   'kill -KILL $pids 2>/dev/null',
   'sleep 1',
-  'if [ -z "$(find_run_pids)" ]; then finish_stopped; else echo running; fi',
+  'if [ -z "$(find_run_pids)" ]; then echo stopped; else echo running; fi',
 ].join("\n");
 
 /**
@@ -1438,9 +1413,14 @@ const SSH_RUN_PROCESS_STOP_SCRIPT = [
  * processes can continue after the local SSH client exits.
  *
  * "unsupported" means the host has no Linux `/proc`, so the check cannot prove
- * anything. The caller must not treat it as a stop. "running" also covers a
- * same-user process that hides its environment and working directory: the
- * check cannot classify it, so it does not report a stop.
+ * anything. The caller must not treat it as a stop.
+ *
+ * The check finds processes that a run left behind by accident. It is no
+ * containment: a run process that leaves the run directory and drops
+ * PAPERCLIP_RUN_ID from its environment, or makes itself non-dumpable, is not
+ * found. Same-user processes with an unreadable environment are not treated as
+ * run processes, because ordinary hosts always have some (`systemd --user`,
+ * SSH session processes).
  */
 export async function stopSshRunProcesses(
   config: SshConnectionConfig,
