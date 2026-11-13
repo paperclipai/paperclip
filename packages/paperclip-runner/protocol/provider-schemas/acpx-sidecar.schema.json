@@ -277,6 +277,14 @@
               "payload": { "$ref": "#/$defs/providerTurnStarted" }
             }
           }
+        },
+        {
+          "if": { "properties": { "eventType": { "const": "runtime.diagnostic" }, "payload": {
+            "type": "object",
+            "properties": { "code": { "const": "ACPX_PROVIDER_PROCESS_LOST" } },
+            "required": ["code"]
+          } } },
+          "then": { "properties": { "payload": { "$ref": "#/$defs/providerTurnLost" } } }
         }
       ]
     },
@@ -296,7 +304,7 @@
       "required": ["code", "message"],
       "properties": {
         "code": { "const": "ACPX_PROVIDER_PROCESS_LOST" },
-        "message": { "type": "string", "maxLength": 4000 }
+        "message": { "type": "string", "maxLength": 8192 }
       },
       "additionalProperties": false
     },
