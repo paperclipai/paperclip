@@ -3857,6 +3857,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
         fileInventory: serializeFileInventory(inventory), trustLevel: deriveTrustLevel(inventory),
         ...readSkillStoreMetadata(parsed.frontmatter, skill.metadata),
       }, actor, { ...options.publication, expectedVersionId: input.expectedVersionId, label: input.label,
+        ...(options.fileInventory ? {} : { contentVersionId: selectedId }),
         validate: async tx => {
           await visibility(tx).assertSkill(companyId, skillId);
           await options.publication?.validate?.(tx);

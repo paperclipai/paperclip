@@ -26,6 +26,8 @@ export type SkillContentPublication = {
   beforeLock?: (tx: SkillContentTransaction) => Promise<void>;
   validate?: (tx: SkillContentTransaction) => Promise<void>;
   afterPublish?: (tx: SkillContentTransaction, skill: SkillContentRow, version: StoredSkillVersion) => Promise<void>;
+  /** The version whose content this publication copies, such as a restored older version; its approval travels with it. */
+  contentVersionId?: string | null;
 };
 
 export function managedSkillContent(db: Db, packageDb: Db = db, storage?: StorageService) {
@@ -94,10 +96,12 @@ export function managedSkillContent(db: Db, packageDb: Db = db, storage?: Storag
         return { skill: saved!, version };
       }
     }
-    // A security approval admits exact bytes, so a new managed version keeps the current version's approval:
-    // unchanged approved files stay accepted, and changed ones no longer match it.
-    const [previous] = skill.currentVersionId ? await tx.select({ securityApprovalId: companySkillVersions.securityApprovalId })
-      .from(companySkillVersions).where(and(eq(companySkillVersions.companyId, skill.companyId), eq(companySkillVersions.id, skill.currentVersionId))) : [];
+    // A security approval admits exact bytes, so a new managed version keeps the approval of the version its content
+    // comes from (the current one, or a restored older one): unchanged approved files stay accepted, changed ones no longer match.
+    const approvalSourceId = options.contentVersionId ?? skill.currentVersionId;
+    const [previous] = approvalSourceId ? await tx.select({ securityApprovalId: companySkillVersions.securityApprovalId })
+      .from(companySkillVersions).where(and(eq(companySkillVersions.companyId, skill.companyId), eq(companySkillVersions.companySkillId, skill.id),
+        eq(companySkillVersions.id, approvalSourceId))) : [];
     const [revision] = await tx.select({ next: sql<number>`coalesce(max(${companySkillVersions.revisionNumber}), 0) + 1` })
       .from(companySkillVersions).where(and(eq(companySkillVersions.companyId, skill.companyId), eq(companySkillVersions.companySkillId, skill.id)));
     const [version] = await tx.insert(companySkillVersions).values({
