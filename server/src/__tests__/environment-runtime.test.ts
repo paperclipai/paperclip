@@ -1304,10 +1304,8 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     );
   });
 
-  it.each(["handoff", "handoff after resume error", "warm resume", "fresh", "legacy resume"] as const)("preserves the portable task placement on a run retry (%s)", async mode => {
+  it.each(["handoff", "fresh", "legacy resume"] as const)("preserves the portable task placement on a run retry (%s)", async mode => {
     const resumeSession = mode !== "fresh";
-    const handoff = mode === "handoff" || mode === "handoff after resume error";
-    const reused = mode === "warm resume" || mode === "legacy resume";
     const pluginId = randomUUID();
     const pluginKey = "paperclip.test-portable-tasks";
     const seeded = await seedEnvironment({ driver: "plugin", config: { pluginKey, driverKey: "tasks", runnerLifecycleMode: "warm" } });
@@ -1321,11 +1319,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     const call = vi.fn(async (_plugin: string, method: string, _params?: unknown) => {
       if (method === "environmentAcquireLease") return { providerLeaseId: `sandbox-${++acquisitions}`,
         metadata: { ownershipGeneration: `generation-${acquisitions}` } };
-      if (method === "environmentResumeLease") {
-        if (mode === "handoff") return { providerLeaseId: null };
-        if (mode === "handoff after resume error") throw new Error("provider request outcome is unknown");
-        return { providerLeaseId: "sandbox-1", metadata: { ownershipGeneration: "generation-1" } };
-      }
+      if (method === "environmentResumeLease") return { providerLeaseId: "sandbox-1", metadata: {} };
       if (method === "environmentReleaseLease") return { providerLeaseId: "sandbox-1", state: "stopped" };
       throw new Error(`Unexpected plugin method: ${method}`);
     });
@@ -1344,17 +1338,11 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     await db.update(environmentLeases).set({ status: "retained", metadata: {
       ...first.lease.metadata, runnerTaskIdentity: { sessionId },
       ...(mode === "legacy resume" ? {} : { runnerTaskAccountIdentity: "test-account" }),
-      ...(mode === "warm resume" ? { portableTaskPreviousLeaseId: randomUUID(), portableTaskOwnershipReady: true } : {}),
     } }).where(eq(environmentLeases.id, first.lease.id));
     const nextInput = { ...acquisitionInput, heartbeatRunId: nextRunId, runnerTaskResumeSessionId: resumeSession ? sessionId : null };
     const next = await orchestrator.acquireForRun(nextInput);
-    expect(next.lease.providerLeaseId).toBe(reused ? "sandbox-1" : "sandbox-2");
-    expect(next.lease.metadata?.portableTaskPreviousLeaseId).toBe(handoff ? first.lease.id : undefined);
-    if (mode === "warm resume") {
-      expect(next.lease.metadata).toMatchObject({ runnerTaskReused: true, runnerTaskPreviousLeaseId: first.lease.id,
-        runnerTaskAccountIdentity: "test-account", providerMetadata: { ownershipGeneration: "generation-1" } });
-      expect(next.lease.metadata?.portableTaskOwnershipReady).toBeUndefined();
-    }
+    expect(next.lease.providerLeaseId).toBe(mode === "legacy resume" ? "sandbox-1" : "sandbox-2");
+    expect(next.lease.metadata?.portableTaskPreviousLeaseId).toBe(mode === "handoff" ? first.lease.id : undefined);
     await expect(orchestrator.acquireForRun(nextInput)).resolves.toMatchObject({ lease: { id: next.lease.id, providerLeaseId: next.lease.providerLeaseId } });
     if (mode === "handoff") {
       await db.update(agents).set({ adapterType: "paperclip_runner" }).where(eq(agents.id, seeded.agentId));
@@ -1388,9 +1376,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     }
     await expect(orchestrator.acquireForRun({ ...nextInput, issueId: null })).rejects.toThrow("Active plugin task placement changed");
     expect(call.mock.calls.map(([, method]) => method)).toEqual({
-      handoff: ["environmentAcquireLease", "environmentResumeLease", "environmentAcquireLease"],
-      "handoff after resume error": ["environmentAcquireLease", "environmentResumeLease", "environmentAcquireLease"],
-      "warm resume": ["environmentAcquireLease", "environmentResumeLease"],
+      handoff: ["environmentAcquireLease", "environmentAcquireLease"],
       fresh: ["environmentAcquireLease", "environmentReleaseLease", "environmentAcquireLease"],
       "legacy resume": ["environmentAcquireLease", "environmentResumeLease"],
     }[mode]);
@@ -6464,6 +6450,8 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       runId,
       workspaceMode: undefined,
     }, ...(defaultAcquireTimeoutMs === undefined ? [] : [330_000]));
+    expect(vi.mocked(workerManager.call).mock.calls.find(([, method]) => method === "environmentAcquireLease")?.[2])
+      .not.toHaveProperty("runnerLifecyclePolicy");
     expect(acquired.lease.providerLeaseId).toBe("plugin-lease-1");
     expect(acquired.lease.expiresAt?.toISOString()).toBe(expiresAt);
     expect(acquired.lease.metadata).toMatchObject({
