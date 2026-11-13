@@ -95,6 +95,7 @@ import {
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  agentWakeupRequests,
   approvals,
   companies,
   companyMemberships,
@@ -7345,7 +7346,12 @@ export function createToolGatewayService(
         .where(and(eq(heartbeatRuns.id, row.runId), eq(heartbeatRuns.companyId, row.companyId))).limit(1);
       if (run && ["queued", "running", "scheduled_retry"].includes(run.status)) return "deferred";
     }
-    await wake({ companyId: row.companyId, agentId: row.agentId, issueId: row.issueId, taskRecordId: row.id, toolName: row.catalogToolName, status: row.status, wakeKey });
+    // The wake request row is the durable receipt: a pass that crashed after
+    // waking (before recording it here) finds it and never wakes twice.
+    const [receipt] = await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
+      eq(agentWakeupRequests.companyId, row.companyId), eq(agentWakeupRequests.agentId, row.agentId),
+      eq(agentWakeupRequests.idempotencyKey, wakeKey))).limit(1);
+    if (!receipt) await wake({ companyId: row.companyId, agentId: row.agentId, issueId: row.issueId, taskRecordId: row.id, toolName: row.catalogToolName, status: row.status, wakeKey });
     return "woken";
   }
 
@@ -7669,16 +7675,21 @@ export function createToolGatewayService(
       // A stateless server may answer with a task. The same call (request,
       // grant, agent, and task) attaches to an undelivered one instead of
       // sending tools/call again, so retries and recovered runs never repeat work.
-      const taskProtocolVersion = mcpProtocolVersionOf(requestHeaders);
       const taskArgumentsIdentity = mcpTaskArgumentsIdentity(parameters);
-      const taskIdentity = isModernMcpProtocolVersion(taskProtocolVersion) ? {
-        protocolVersion: taskProtocolVersion,
-        requestHash: mcpTaskRequestHash({
-          connectionId: connection.id, endpoint: String(endpoint), toolName: upstreamToolName,
-          argumentsIdentity: taskArgumentsIdentity,
-        }),
-        endpointHash: mcpTaskEndpointHash(String(endpoint)),
-      } : null;
+      // Built from the version a request actually used: a version retry can
+      // move a saved legacy connection to stateless MCP mid-call.
+      const taskIdentityFor = (headersUsed: Record<string, string>) => {
+        const version = mcpProtocolVersionOf(headersUsed);
+        return isModernMcpProtocolVersion(version) ? {
+          protocolVersion: version,
+          requestHash: mcpTaskRequestHash({
+            connectionId: connection.id, endpoint: String(endpoint), toolName: upstreamToolName,
+            argumentsIdentity: taskArgumentsIdentity,
+          }),
+          endpointHash: mcpTaskEndpointHash(String(endpoint)),
+        } : null;
+      };
+      const taskIdentity = taskIdentityFor(requestHeaders);
       // This call's hold on a task it starts or attaches to.
       const taskOwner = `call:${invocationId}:${randomUUID()}`;
       const taskTransport = (protocolVersion: string) => mcpTaskTransport({
@@ -7971,12 +7982,12 @@ export function createToolGatewayService(
         // Only a stateless call declared tasks, and the server must send a
         // well-formed task; anything else is not a result Paperclip can use.
         const created = mcpCreatedTask(payloadRecord.result);
-        const sentVersion = mcpProtocolVersionOf(requestHeaders);
-        if (!created || !isModernMcpProtocolVersion(sentVersion) || !taskIdentity) throw malformedRemoteMcpResponse();
+        const usedIdentity = taskIdentityFor(requestHeaders);
+        if (!created || !usedIdentity) throw malformedRemoteMcpResponse();
         const row = await createMcpTaskRecord({
           session, connection, grant, catalogToolName: entry.toolName, invocationId,
-          requestHash: taskIdentity.requestHash, argumentsIdentity: taskArgumentsIdentity, endpointHash: taskIdentity.endpointHash,
-          protocolVersion: sentVersion, state: created, owner: taskOwner, leaseMs: ms + 15_000,
+          requestHash: usedIdentity.requestHash, argumentsIdentity: taskArgumentsIdentity, endpointHash: usedIdentity.endpointHash,
+          protocolVersion: usedIdentity.protocolVersion, state: created, owner: taskOwner, leaseMs: ms + 15_000,
         });
         return await completeRemoteMcpCall(await waitOnTask(row, created.taskId, created));
       }

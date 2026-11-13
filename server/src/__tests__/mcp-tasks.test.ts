@@ -4,8 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  agentWakeupRequests,
   agents,
   connectionGrants,
+  toolConnections,
   companies,
   companyMemberships,
   createDb,
@@ -663,6 +665,35 @@ const support = await getEmbeddedPostgresTestSupport();
     await expect(ctx.gateway().executeTool({ sessionToken: session.token, tool: tool.name, parameters: { ref: "main" }, timeoutMs: 400 }))
       .rejects.toMatchObject({ reasonCode: "provider_task_pending" });
     expect((await ctx.rows())[0]).toMatchObject({ responsibleUserId: actor.actorId });
+  });
+
+  it("records a task from a saved legacy connection that turns out to be stateless", async () => {
+    const server = taskServer();
+    const ctx = await setup(server);
+    const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, ctx.connected.connectionId));
+    await db.update(toolConnections).set({ config: { ...connection!.config, mcpProtocolVersion: "2025-11-25" } }).where(eq(toolConnections.id, connection!.id));
+    const fresh = ctx.restart();
+    const tool = (await fresh.listToolsForSession(ctx.session.token)).find((candidate) => candidate.name.endsWith(":build"))!;
+    await expect(fresh.executeTool({ sessionToken: ctx.session.token, tool: tool.name, parameters: { ref: "main" }, timeoutMs: 1_500 }))
+      .rejects.toMatchObject({ reasonCode: "provider_task_pending" });
+    expect((await ctx.rows())[0]).toMatchObject({ protocolVersion: MCP_MODERN_PROTOCOL_VERSION, status: "working" });
+    expect(server.tasks.size).toBe(1);
+  });
+
+  it("never wakes twice when a wake was already requested before a crash", async () => {
+    const server = taskServer();
+    const ctx = await setup(server);
+    await expect(ctx.call("build", { timeoutMs: 400 })).rejects.toMatchObject({ reasonCode: "provider_task_pending" });
+    await db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, ctx.run.id));
+    const [row] = await ctx.rows();
+    server.finish();
+    // A previous pass woke the agent, then crashed before recording it on the task.
+    await db.insert(agentWakeupRequests).values({ companyId: ctx.org.id, agentId: ctx.agent.id, source: "automation", idempotencyKey: `mcp-task:${row!.id}:settled` });
+    await db.update(toolMcpTasks).set({ nextPollAt: new Date(Date.now() - 1_000), leaseExpiresAt: null, leaseOwner: null }).where(eq(toolMcpTasks.id, row!.id));
+    const wake = vi.fn(async () => undefined);
+    await ctx.poll({ wake });
+    expect(wake).not.toHaveBeenCalled();
+    expect((await ctx.rows())[0]!.wakeRequestedAt).toBeInstanceOf(Date);
   });
 
   it("never lets another agent attach to a task", async () => {
