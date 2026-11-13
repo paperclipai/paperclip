@@ -144,18 +144,21 @@ export function assertHarnessMayMutate(sandbox: DaytonaSandboxRow, wave: { compa
   if (selectWaveSandboxes([sandbox], wave).length !== 1) throw new Error(`Refusing to change Daytona sandbox ${sandbox.id}: it is not labelled for this wave`);
 }
 
-export type WaveSandboxDelete = (sandbox: DaytonaSandboxRow) => Promise<void>;
+export type SandboxRemove = (sandboxId: string, signal: AbortSignal) => Promise<void>;
+export type WaveSandboxDelete = (sandbox: DaytonaSandboxRow, signal: AbortSignal) => Promise<void>;
 
-export function waveSandboxDeleter(wave: { companyId: string; environmentId: string }, remove: (sandboxId: string) => Promise<void>): WaveSandboxDelete {
-  return Object.freeze(async (sandbox: DaytonaSandboxRow) => {
+export const SANDBOX_DELETE_MIN_TIMEOUT_MS = 5_000;
+
+export function waveSandboxDeleter(wave: { companyId: string; environmentId: string }, remove: SandboxRemove): WaveSandboxDelete {
+  return Object.freeze(async (sandbox: DaytonaSandboxRow, signal: AbortSignal) => {
     assertHarnessMayMutate(sandbox, wave);
-    await remove(sandbox.id);
+    await remove(sandbox.id, signal);
   });
 }
 
-export function daytonaRestDelete(apiKey: string, apiUrl = "https://app.daytona.io/api", request: typeof fetch = fetch): (sandboxId: string) => Promise<void> {
-  return async sandboxId => {
-    const response = await request(`${apiUrl}/sandbox/${encodeURIComponent(sandboxId)}`, { method: "DELETE", headers: { Authorization: `Bearer ${apiKey}` } });
+export function daytonaRestDelete(apiKey: string, apiUrl = "https://app.daytona.io/api", request: typeof fetch = fetch): SandboxRemove {
+  return async (sandboxId, signal) => {
+    const response = await request(`${apiUrl}/sandbox/${encodeURIComponent(sandboxId)}`, { method: "DELETE", headers: { Authorization: `Bearer ${apiKey}` }, signal });
     if (!response.ok && response.status !== 404) throw new Error(`DELETE sandbox ${sandboxId} returned ${response.status}`);
   };
 }
@@ -173,7 +176,7 @@ export class DaytonaWaveSweeper {
   private client: ReadOnlyDaytona | null = null;
   private readonly deleteSandbox: WaveSandboxDelete;
   constructor(private readonly input: { apiKey: string; companyId: string; environmentId: string; api: ChaosApi;
-    removeSandbox?: (sandboxId: string) => Promise<void> }) {
+    removeSandbox?: SandboxRemove }) {
     this.deleteSandbox = waveSandboxDeleter({ companyId: input.companyId, environmentId: input.environmentId },
       input.removeSandbox ?? daytonaRestDelete(input.apiKey));
   }
@@ -261,9 +264,10 @@ export class DaytonaWaveSweeper {
         return { deletedSandboxes: [...deleted], undeletedSandboxes: ["unlisted"] };
       }
       if (!undeleted.length || (attempt > 0 && Date.now() >= deadline)) break;
+      const pass = AbortSignal.timeout(Math.max(SANDBOX_DELETE_MIN_TIMEOUT_MS, deadline - Date.now()));
       for (const sandbox of undeleted) {
         try {
-          await this.deleteSandbox(sandbox);
+          await this.deleteSandbox(sandbox, pass);
           deleted.add(`${sandbox.id}:${sandbox.state}`);
           failures.delete(sandbox.id);
         } catch (error) {

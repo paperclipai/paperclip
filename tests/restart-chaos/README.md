@@ -595,7 +595,7 @@ node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env daytona
 | `RESTART_CHAOS_K15_FREEZE_NEW_SECONDS` | SIGSTOP the incoming server for this long while the outgoing one stops, then SIGCONT |
 | `RESTART_CHAOS_K15_FREEZE_SWAPS` | swap numbers the freeze applies to; unset means every swap |
 | `RESTART_CHAOS_MIX_BANNER_REST_SECONDS` | a hands-off staging-mix task whose Retry banner has stood this long rests (it is still reported as a banner) instead of waiting out its budget |
-| `RESTART_CHAOS_MIX_FIRST_SLOT_SECONDS` | place the first staging-mix fault slot this early (at most the slot spacing) |
+| `RESTART_CHAOS_MIX_FIRST_SLOT_SECONDS` | place the first staging-mix fault slot this early (at most the slot spacing); the slot count stays the same, so a release swap never gets an extra swap |
 
 A run counts as a success only when `staging-mix-summary.md` shows every started task completed hands-off
 (`completed hands-off / started` equal), `Retry banner shown: 0`, `Retry worked / Retry clicked` equal, `extra turns: 0`
@@ -603,7 +603,8 @@ and `duplicated side effects: 0`, the release-swap headline shows every task com
 Daytona cleanup left no sandbox (`left after deletion: none`). The `follow-up answered in a later run` line is not a
 failure; read its waits. In L1 the queued tasks wait for a slot by design; U1 allows that wait (see "Universal checks").
 
-To regrade a saved wave with the current graders, offline:
+To regrade a saved staging-mix wave with the current graders, offline (other waves are refused, because their time
+budgets come from the workload definitions):
 
 ```sh
 node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/regrade.ts tests/restart-chaos/results/<wave>

@@ -224,9 +224,8 @@ export function slotTimesMs(mix: Pick<StagingMixOptions, "minutes" | "faultSpaci
   firstSlotRaw = process.env.RESTART_CHAOS_MIX_FIRST_SLOT_SECONDS): number[] {
   const spacing = mix.faultSpacingMinutes * 60_000;
   const first = firstSlotRaw && /^[0-9]+$/.test(firstSlotRaw) ? Math.min(Number(firstSlotRaw) * 1000, spacing) : spacing;
-  const times: number[] = [];
-  for (let at = first; at < mix.minutes * 60_000; at += spacing) times.push(at);
-  return times;
+  const count = Math.max(0, Math.ceil((mix.minutes * 60_000 - spacing) / spacing));
+  return Array.from({ length: count }, (_, index) => first + index * spacing);
 }
 
 export function maxSlotHoldMs(options: Pick<WaveOptions, "faults" | "k15HoldMs" | "k4HoldMaxMs">): number {

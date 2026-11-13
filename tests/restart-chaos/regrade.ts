@@ -30,6 +30,7 @@ function oracleFor(record: TaskRecord, saved: OracleResult, artifacts: OracleArt
 export async function regradeWave(waveDir: string): Promise<Regrade> {
   const plan = await readJson<WavePlan>(path.join(waveDir, "plan.json"));
   if (!plan) throw new Error(`${waveDir} has no plan.json`);
+  if (!plan.options.stagingMix) throw new Error(`${waveDir} is not a staging-mix wave; regrade.ts regrades staging-mix waves only`);
   const faults = await readJson<FaultReceipt[]>(path.join(waveDir, "faults.json")) ?? [];
   const inputs = await loadWaveGradeInputs(waveDir, plan.options.stagingMix);
   const saved = await readJson<{ extraTurns?: unknown[] }>(path.join(waveDir, "staging-mix-results.json"));
@@ -43,7 +44,8 @@ export async function regradeWave(waveDir: string): Promise<Regrade> {
     const evidence = await readJson<WakeEvidenceFile>(path.join(waveDir, "wake-evidence", `${taskId}.json`));
     const artifacts = await readJson<OracleArtifacts>(path.join(waveDir, "evidence", taskId, "oracle-artifacts.json"));
     const record = await inputs.prepare(taskId, file.record);
-    const budgetMs = record.plan.stagingMix ? stagingMixBudgetMs(record.plan.stagingMix) : 0;
+    if (!record.plan.stagingMix) throw new Error(`${taskId} has no staging-mix plan; regrade.ts regrades staging-mix tasks only`);
+    const budgetMs = stagingMixBudgetMs(record.plan.stagingMix);
     const grade = gradeTask(record, faults, budgetMs, oracleFor(record, file.grade.T, artifacts, evidence), undefined, inputs.queue);
     result.tasks.push({ taskId, before: file.grade.pass ? null : file.grade.signature, after: grade.pass ? null : grade.signature });
     if (!file.grade.pass) result.failsBefore += 1;

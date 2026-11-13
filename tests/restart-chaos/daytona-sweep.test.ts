@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   assertHarnessMayMutate, daytonaRestDelete, DaytonaWaveSweeper, isProtectedSandbox, leaksForTask, readOnlyDaytona, reconcileSandboxes, selectWaveSandboxes,
-  PENDING_CLEANUP_RETRY_MS, R6_SETTLE_MS, sweepHasLeaks, unattributedLeaks, type DaytonaSandboxRow, type DaytonaSweepResult,
+  PENDING_CLEANUP_RETRY_MS, R6_SETTLE_MS, SANDBOX_DELETE_MIN_TIMEOUT_MS, sweepHasLeaks, unattributedLeaks, type DaytonaSandboxRow, type DaytonaSweepResult,
 } from "./daytona-sweep.js";
 import { ENVIRONMENT_CLEANUP_RETRY_MS } from "../../server/src/services/environment-cleanup-state.js";
 import { gradeWarmShutdown } from "./warm-shutdown.js";
@@ -79,10 +79,26 @@ describe("cleanup through Paperclip", () => {
       calls.push({ url, init });
       return new Response(null, { status: url.endsWith("gone") ? 404 : url.endsWith("bad") ? 500 : 200 });
     }) as typeof fetch);
-    await remove("abc");
-    await remove("gone");
-    await expect(remove("bad")).rejects.toThrow(/returned 500/);
-    expect(calls[0]).toEqual({ url: "https://daytona.test/api/sandbox/abc", init: { method: "DELETE", headers: { Authorization: "Bearer key-1" } } });
+    const signal = new AbortController().signal;
+    await remove("abc", signal);
+    await remove("gone", signal);
+    await expect(remove("bad", signal)).rejects.toThrow(/returned 500/);
+    expect(calls[0]).toEqual({ url: "https://daytona.test/api/sandbox/abc", init: { method: "DELETE", headers: { Authorization: "Bearer key-1" }, signal } });
+  });
+
+  it("aborts a hung delete at the cleanup deadline and reports the sandbox as left", async () => {
+    const rows = waveRows(["archived"]);
+    const client = readOnlyDaytona({ list: () => (async function* () { yield* rows.map(row => ({ ...row })); })() });
+    const removeSandbox = (_id: string, signal: AbortSignal) => new Promise<void>((_resolve, reject) => {
+      signal.addEventListener("abort", () => reject(new Error("delete aborted")), { once: true });
+    });
+    const sweeper = new DaytonaWaveSweeper({ apiKey: "unused", companyId: COMPANY, environmentId: ENVIRONMENT, api: { delete: async () => undefined } as never, removeSandbox });
+    (sweeper as unknown as { client: unknown }).client = client;
+    const started = Date.now();
+    const result = await sweeper.cleanUp(0, 1_000);
+    expect(Date.now() - started).toBeLessThan(SANDBOX_DELETE_MIN_TIMEOUT_MS + 3_000);
+    expect(result.undeletedSandboxes).toEqual(["archived:archived"]);
+    expect(result.errors.join(" ")).toMatch(/sandbox delete archived: delete aborted/);
   });
 
   it("reports other environment delete failures as errors", async () => {

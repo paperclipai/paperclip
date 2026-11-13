@@ -60,5 +60,7 @@ describe("offline regrade of a saved wave", () => {
     expect(regradeMarkdown(waveDir, result).split("\n").slice(0, 2)).toEqual(["Regrade of w-test: per-task FAIL 1 -> 0; extra turns 1 -> 0",
       "extra turns (a run started after completion with no undelivered input): 0"]);
     await expect(regradeWave(path.join(waveDir, "missing"))).rejects.toThrow(/no plan.json/);
+    await writeFile(path.join(waveDir, "plan.json"), JSON.stringify({ options: {}, tasks: [] }));
+    await expect(regradeWave(waveDir)).rejects.toThrow(/not a staging-mix wave/);
   });
 });

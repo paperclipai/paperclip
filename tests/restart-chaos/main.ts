@@ -27,6 +27,7 @@ import { DiskFullFaultSeam, isDiskFullFault, receiptsForIssue, withDiskFullCheck
 import { CREDENTIAL_FOR_ADAPTER, parseCommand, replayCommand, waveIdFor } from "./config.js";
 import { assertControllerMatchesImage, assertProviderPackMismatch, defaultDaytonaImageCacheRoot, prepareDaytonaImageArtifacts } from "./daytona-image.js";
 import { PLUGIN_BUILD_STAMP, pluginBuildState } from "./plugin-build.js";
+import { finishDaytonaCleanup } from "./daytona-cleanup.js";
 import { DaytonaWaveSweeper, leaksForTask, unattributedLeaks, type DaytonaSweepResult } from "./daytona-sweep.js";
 import { knownSecretValues, redactKnownSecrets, wakeEvidenceOnce, writeEvidenceBundle } from "./evidence.js";
 import { gradeTask } from "./grader.js";
@@ -914,31 +915,12 @@ async function main(): Promise<number> {
     await board?.close().catch(() => undefined);
     await closeJourneyApps();
     try { if (sweeper) try {
-      const owned = sweeper as DaytonaWaveSweeper;
-      // An interrupted wave still reports what it leaked before cleanup.
-      sandboxSweep ??= await owned.sweep(0);
-      const cleanup = await owned.cleanUp();
-      daytonaCleanup = cleanup;
-      timeline.add("daytona_cleanup", cleanup);
-      console.info(`Daytona R6 sweep: ${sandboxSweep.liveSandboxes.length} live, ${sandboxSweep.archivedSandboxes.length} archived after release, `
-        + `${sandboxSweep.orphanSandboxes.length} orphaned, `
-        + `${sandboxSweep.heldLeases.length} held leases${sandboxSweep.error ? `, error ${sandboxSweep.error}` : ""}; `
-        + `environment deleted: ${cleanup.environmentDeleted}${cleanup.environmentDeleteBlocked ? " (still blocked by a pending sandbox cleanup)" : ""}; still running after cleanup: ${cleanup.remainingSandboxes.join(", ") || "none"}; `
-        + `archived: ${cleanup.archivedSandboxes.join(", ") || "none"}; deleted by the harness (this wave's labels only): ${cleanup.deletedSandboxes.join(", ") || "none"}; `
-        + `left after deletion: ${cleanup.undeletedSandboxes.join(", ") || "none"}`);
-      if (cleanup.remainingSandboxes.length || cleanup.undeletedSandboxes.length) { anyFailure = true; remoteCleanupPending = true; }
-      // A delete still blocked by pending sandbox cleanup after the settle window
-      // is a leak, not a harness error: fail the wave and keep the instance, whose
-      // database owns that cleanup work.
-      if (cleanup.environmentDeleteBlocked) {
-        anyFailure = true;
-        remoteCleanupPending = true;
-        timeline.add("daytona_environment_delete_blocked", { detail: cleanup.environmentDeleteBlocked });
-      }
-      if (cleanup.errors.length) remoteCleanupPending = true;
-      if (cleanup.errors.length) harnessError ??= new Error(`Daytona cleanup incomplete: ${cleanup.errors.join("; ")}`);
-      await writeFile(path.join(waveDir, "sandbox-sweep.json"), `${JSON.stringify({ sweep: sandboxSweep, cleanup }, null, 2)}\n`, { mode: 0o600 })
-        .catch(error => timeline.add("sandbox_sweep_write_failed", { error: String(error) }));
+      const outcome = await finishDaytonaCleanup({ sweeper: sweeper as DaytonaWaveSweeper, sweep: sandboxSweep, waveDir, timeline });
+      sandboxSweep = outcome.sweep;
+      daytonaCleanup = outcome.cleanup;
+      if (outcome.failed) anyFailure = true;
+      if (outcome.remotePending) remoteCleanupPending = true;
+      if (outcome.error) harnessError ??= outcome.error;
     } catch (error) {
       harnessError ??= error;
       remoteCleanupPending = true;
