@@ -221,9 +221,10 @@ export function agentFileStore(db: Db) {
       runId: origin ? origin.runId : actor.runId, responsibleUserId: origin ? null : actor.type === "board" ? actor.userId : actor.onBehalfOfUserId,
       action: "agent.files_updated", entityType: "agent", entityId: agent.id, details });
   }
-  /** The write authorization of `locked`, for a save that changes no file.
-   * It reads the agent without a row lock and does not touch the file tree. */
-  async function authorizeUnchangedSave(companyId: string, agentId: string, actor: AuthorizationActor) {
+  /** The write authorization of `locked`, without the row lock or the file
+   * tree. It is enough for a save that changes no file, and it stops a save
+   * that will be refused before that save uploads any bytes. */
+  async function authorizeSave(companyId: string, agentId: string, actor: AuthorizationActor) {
     await db.transaction(async tx => {
       await assertAgentInteraction(tx, { companyId, actorAgentId: actor.type === "agent" ? actor.agentId : null,
         operation: "configure", targetAgentId: agentId });
@@ -234,7 +235,7 @@ export function agentFileStore(db: Db) {
   }
   return {
     locked,
-    authorizeUnchangedSave,
+    authorizeSave,
     download: async (companyId: string, agentId: string, relative: string, actor: AuthorizationActor) => {
       const opened: { file: Awaited<ReturnType<typeof openAgentFile>> } = { file: null };
       try {
@@ -337,8 +338,10 @@ export function agentFileStore(db: Db) {
           if (mentions.length) changedMentions.set(name, { hash: fileHash(bytes!), text: mentions.map(id => `[@agent](agent://${id})`).join(" ") });
         }
       }
-      // Upload the run's changed bytes before the row lock. The commit below
-      // still validates the tree and records only objects with matching digests.
+      // Upload the run's changed bytes before the row lock, after the same
+      // write authorization. The commit below repeats that authorization,
+      // validates the tree and records only objects with matching digests.
+      if (input.checkpoint) await authorizeSave(input.companyId, input.agentId, actor);
       const prepared = input.checkpoint ? await uploadAgentFilesBeforeCommit(db, target, input.sourceDir, input.checkpoint.entries
         .filter(([name, entry]) => entry.kind === "file" && JSON.stringify(incoming.entries.get(name)) !== JSON.stringify(input.baseline.entries.get(name)))
         .map(([name, entry]) => ({ path: name, size: entry.size!, sha256: entry.hash! }))) : undefined;

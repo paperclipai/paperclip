@@ -170,6 +170,18 @@ describe("agent file checkpoint locking", () => {
     await expectHeadRestorable();
   });
 
+  it("uploads nothing when the run lost its save permission before the checkpoint", async () => {
+    const copy = await warmRun();
+    const before = await head();
+    objects.uploads.length = 0;
+    await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, companyId));
+    await db.update(companyMemberships).set({ membershipRole: "member" }).where(eq(companyMemberships.companyId, companyId));
+    await fs.writeFile(path.join(copy.localRoot, "refused.md"), "must not upload");
+    expect((await copies.checkpointWarm({ companyId, runId: copy.runId }))?.errorCode).toBe("AGENT_FILES_CHECKPOINT_UNSTABLE");
+    expect(objects.uploads).toEqual([]);
+    expect((await head()).generation).toBe(before.generation);
+  });
+
   it("commits both runs when two warm checkpoints of one agent race", async () => {
     const first = await warmRun();
     const second = await warmRun();

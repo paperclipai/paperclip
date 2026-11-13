@@ -427,7 +427,7 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
         // authorization only, not the row lock and file-tree commit of a save.
         const { storageWarning } = changed
           ? await store.apply({ companyId: row.companyId, agentId: row.agentId, sourceDir: path.join(captured.directory, "files"), baseline: baseline(row), checkpoint: captured.manifest }, actor(row))
-          : await store.authorizeUnchangedSave(row.companyId, row.agentId, actor(row)).then(() => ({
+          : await store.authorizeSave(row.companyId, row.agentId, actor(row)).then(() => ({
             storageWarning: typeof row.receipt?.storageWarning === "string" ? row.receipt.storageWarning : null,
           }));
         row = await patch(row, { state: stopped ? (changed ? "saved" : "unchanged") : "warm_saved", baseHash: nextHash,
