@@ -10,10 +10,15 @@ const serverRoot = fileURLToPath(new URL("../..", import.meta.url));
 const tsx = createRequire(import.meta.url).resolve("tsx/cli");
 
 describe("agent scaling load model", () => {
-  it("drives every source through the real server code and reports each pool", async () => {
+  // The default batches deltas and renews every lease in one tick; the other
+  // mode is the earlier one transaction per delta and per lease.
+  it.each([
+    { mode: "batched deltas and shared lease renewal", env: {} },
+    { mode: "one transaction per delta and per lease", env: { DELTA_BATCH_MS: "0", LEASE_MODE: "single" } },
+  ])("drives every source through the real server code and reports each pool ($mode)", async ({ env }) => {
     const { stdout } = await run(process.execPath, [tsx, script], {
       cwd: serverRoot, maxBuffer: 16 * 1024 * 1024,
-      env: { ...process.env, AGENTS: "2", SECONDS: "2", DELTAS_PER_S: "5", EVENTS_PER_S: "2", API_PER_S: "1", LEASE_S: "1" },
+      env: { ...process.env, AGENTS: "2", SECONDS: "2", DELTAS_PER_S: "5", EVENTS_PER_S: "2", API_PER_S: "1", LEASE_S: "1", ...env },
     });
     const report = JSON.parse(stdout.slice(stdout.indexOf("{"))) as {
       database: { meteredStatementsPerSecondByPool: Record<"main" | "checkpoint" | "lease", number> };
