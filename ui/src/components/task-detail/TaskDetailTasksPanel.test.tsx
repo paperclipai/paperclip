@@ -98,4 +98,30 @@ describe("TaskDetailTasksPanel", () => {
     expect(retry).toHaveBeenCalledOnce();
     expect(container.querySelector('[data-task-id="child"]')).not.toBeNull();
   });
+
+  it("shows the access-checked creation source even when the task has no parent", () => {
+    render({
+      createdFrom: {
+        issue: { id: "source", identifier: "PAP-168", title: "Verify Tailscale fix", status: "in_progress" },
+        run: { id: "run-1", agentId: "qa" },
+        agent: { id: "qa", name: "Paperclip QA" },
+      },
+      subtasks: [], createdTasks: [], projects: [],
+    });
+    const group = container.querySelector('section[aria-label="Created from"]')!;
+    expect(group).not.toBeNull();
+    const note = group.querySelector('[data-testid="issue-created-from"]')!;
+    expect(note.textContent).toContain("Created from");
+    expect(note.textContent).toContain("PAP-168 Verify Tailscale fix");
+    expect(note.textContent).toContain("by Paperclip QA");
+    expect(note.querySelector('a')?.getAttribute("href")).toBe("/issues/PAP-168");
+    expect(container.querySelector('section[aria-label="Ancestors"]')).toBeNull();
+    expect(container.textContent).not.toContain("No tasks yet.");
+  });
+
+  it("omits the creation source when the viewer may not see it", () => {
+    render({ createdFrom: null, subtasks: [], createdTasks: [], projects: [] });
+    expect(container.querySelector('section[aria-label="Created from"]')).toBeNull();
+    expect(container.textContent).toContain("No tasks yet.");
+  });
 });

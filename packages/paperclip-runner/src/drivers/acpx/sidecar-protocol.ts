@@ -1,3 +1,5 @@
+import type { AcpxCandidateStartupAdmission } from "./candidate-admission.js";
+import type { ProviderFailure } from "../../contracts/provider-failure.generated.js";
 import type { QualifiedAcpxAgent } from "./qualified-profiles.js";
 import type { NativeRuntimeContextSnapshot } from "../../contracts/runtime-context.js";
 import type { NativeAcpxPermissionMode } from "../../contracts/native-execution.js";
@@ -26,7 +28,7 @@ export interface AcpxSidecarResponse {
   id: number;
   ok: boolean;
   result?: Record<string, unknown>;
-  error?: { code: string; message: string; retryable: boolean };
+  error?: { code: string; message: string; retryable: boolean; providerFailure?: ProviderFailure };
 }
 
 export interface AcpxSidecarEvent {
@@ -39,6 +41,7 @@ export interface AcpxSidecarEvent {
 }
 
 export interface AcpxSidecarOpenParams {
+  candidateAdmission?: AcpxCandidateStartupAdmission;
   runtimeDirectory: string;
   normalizedSessionId: string;
   workingDirectory: string;
@@ -46,6 +49,10 @@ export interface AcpxSidecarOpenParams {
   model: string;
   permissionMode: NativeAcpxPermissionMode;
   mode?: string;
+  piThinkingLevel?: "off" | "low" | "high" | "max";
+  claudeEffort?: "low" | "medium" | "high" | "xhigh" | "max";
+  grokEffort?: "minimal" | "low" | "medium" | "high" | "xhigh";
+  grokDisableWebSearch?: boolean;
   permissionModePinned: boolean;
   providerPolicy?: { readOnly: boolean };
   systemInstructions: string;
@@ -67,6 +74,10 @@ export interface AcpxExpectedSessionIdentity {
   effectiveModel: string;
   permissionMode?: NativeAcpxPermissionMode;
   mode?: string;
+  piThinkingLevel?: "off" | "low" | "high" | "max";
+  claudeEffort?: "low" | "medium" | "high" | "xhigh" | "max";
+  grokEffort?: "minimal" | "low" | "medium" | "high" | "xhigh";
+  grokDisableWebSearch?: boolean;
   providerLifetimeFenceCandidates: readonly [number, number, number];
 }
 
@@ -282,6 +293,17 @@ export function sanitizeAcpxPlanEntries(value: unknown): Array<{
       },
     ];
   });
+}
+
+/**
+ * Sanitized plan snapshot from an ACPX runtime event, or null when the event
+ * does not replace the plan. ACPX reports plans as `status` events tagged
+ * `plan`; an `entries` array (including [] to clear) is a full snapshot.
+ */
+export function acpxPlanSnapshot(event: unknown): ReturnType<typeof sanitizeAcpxPlanEntries> | null {
+  const candidate = record(event);
+  if (candidate.type !== "status" || candidate.tag !== "plan" || !Array.isArray(candidate.entries)) return null;
+  return sanitizeAcpxPlanEntries(candidate.entries);
 }
 
 export function record(value: unknown): Record<string, unknown> {

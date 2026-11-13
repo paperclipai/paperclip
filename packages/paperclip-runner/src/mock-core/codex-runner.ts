@@ -114,7 +114,7 @@ function dispositionIssues(
   } else if (result.reportedWorkDisposition === "yielded") {
     if (
       result.blocker !== undefined ||
-      !["response_wake", "monitor"].includes(result.continuation?.kind ?? "")
+      !["response_wake", "monitor", "case_handoff"].includes(result.continuation?.kind ?? "")
     ) {
       issues.push({
         code: "invalid_disposition",

@@ -1,3 +1,4 @@
+import { environmentTaskOperationSchema } from "@paperclipai/plugin-sdk";
 import type { Db } from "@paperclipai/db";
 import type { Environment, EnvironmentLease } from "@paperclipai/shared";
 import { adapterSupportsRemoteManagedEnvironments } from "@paperclipai/shared";
@@ -236,6 +237,7 @@ export async function resolveEnvironmentExecutionTarget(input: {
   leaseMetadata: Record<string, unknown> | null;
   lease?: EnvironmentLease | null;
   environmentRuntime?: EnvironmentRuntimeService | null;
+  signal?: AbortSignal;
   // The startup tracer for the provider-exec span. Defaults to the endpoint-
   // gated server tracer, which is a no-op when tracing is off. Tests inject a
   // recording tracer.
@@ -252,6 +254,41 @@ export async function resolveEnvironmentExecutionTarget(input: {
       environmentId: input.environment.id ?? null,
       leaseId: input.leaseId ?? null,
     };
+  }
+
+  if (input.environment.driver === "plugin" && input.adapterType === "paperclip_runner") {
+    const lease = input.lease;
+    const runtime = input.environmentRuntime;
+    if (!lease || !runtime || lease.companyId !== input.companyId ||
+        lease.environmentId !== input.environment.id || !await runtime.supportsTasks({ lease })) {
+      throw new Error("Plugin environment does not provide native Runner task execution");
+    }
+    // The Runner resolves its workspace locally; this is only a relative scope marker.
+    const acquisition:SandboxLeaseAcquisition = {outcome:lease.metadata?.runnerTaskReused === true ? "resumed" : "created",providerLeaseId:lease.providerLeaseId!};
+    const target: Extract<AdapterExecutionTarget,{kind:"remote";transport:"sandbox"}> = {
+      kind: "remote", transport: "sandbox", providerKey: lease.provider ?? "plugin",
+      environmentId: input.environment.id, leaseId: lease.id, remoteCwd: ".",
+      runnerLifecyclePolicy: lease.metadata?.runnerTaskLifecyclePolicy as { mode: "warm"; idleTimeoutMs: number } | undefined ?? { mode: "per_turn", idleTimeoutMs: null },
+      reusableLeaseConfigured: lease.leasePolicy === "reuse_by_environment",
+      effectiveCapabilities: { reusableLeases: lease.leasePolicy === "reuse_by_environment", nativeSyncIn: false, nativeSyncOut: false,
+        persistentProcessSessions: false, independentControlCommands: false, incrementalSessionOutput: false,
+        concurrentSyncOperations: false, duplexCommandStream: false, runnerWebSocketIngress: true },
+      sandboxLeaseAcquisition:acquisition,
+      ...(lease.metadata?.runnerTaskProbe ? { runnerTaskProbe: lease.metadata.runnerTaskProbe as { runId: string; sessionId: string } } : {}),
+      runnerTask: async (operation, context) => {
+        const result = await runtime.task({ companyId: input.companyId, leaseId: lease.id,
+          operation: environmentTaskOperationSchema.parse(operation),
+          ...(context?.executionContext ? { executionContext: context.executionContext } : {}),
+          ...(input.signal ? { ownershipSignal: input.signal } : {}),
+          ...(context?.expectedTaskId !== undefined ? { expectedTaskId: context.expectedTaskId } : {}) });
+        if (result.kind === "description" && result.taskId !== acquisition.providerLeaseId) {
+          acquisition.outcome = "replacement";
+          acquisition.providerLeaseId = result.taskId;
+        }
+        return result;
+      },
+    };
+    return target;
   }
 
   if (input.environment.driver === "sandbox") {
@@ -381,6 +418,7 @@ export async function resolveEnvironmentExecutionTarget(input: {
           : parsed.config.runnerLifecycleMode === "per_turn"
             ? { mode: "per_turn", idleTimeoutMs: null }
             : null,
+      ...(typeof parsed.config.runnerIdleTimeoutMs === "number" ? { runnerIdleTimeoutMs: parsed.config.runnerIdleTimeoutMs } : {}),
       reusableLeaseConfigured: parsed.config.reuseLease === true,
       sandboxLeaseAcquisition: sandboxLeaseAcquisitionFromMetadata(
         input.lease?.metadata?.sandboxLeaseAcquisition,
@@ -484,6 +522,7 @@ export async function resolveEnvironmentExecutionTarget(input: {
                     env: commandInput.env,
                     stdin: commandInput.stdin,
                     timeoutMs: commandInput.timeoutMs,
+                    commandTimeoutMs: commandInput.commandTimeoutMs,
                     onLog: commandInput.onLog ? onIncrementalLog : undefined,
                     // The ACP process session bridge sets `useSession` so its
                     // long-lived agent command opens the persistent session and
@@ -595,17 +634,19 @@ export async function resolveEnvironmentExecutionTarget(input: {
               lease: input.lease,
             })
               ? {
-                  syncIn: (operations) =>
+                  syncIn: (operations, options) =>
                     input.environmentRuntime!.syncIn({
                       environment: input.environment as Environment,
                       lease: input.lease!,
                       operations,
+                      ...(options?.minimumTimeoutMs === undefined ? {} : { minimumTimeoutMs: options.minimumTimeoutMs }),
                     }),
-                  syncOut: (operations) =>
+                  syncOut: (operations, options) =>
                     input.environmentRuntime!.syncOut({
                       environment: input.environment as Environment,
                       lease: input.lease!,
                       operations,
+                      ...(options?.minimumTimeoutMs === undefined ? {} : { minimumTimeoutMs: options.minimumTimeoutMs }),
                     }),
                 }
               : {}),

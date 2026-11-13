@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 
 vi.mock("./plugin.js", () => ({ getPluginTracer: () => undefined }));
+import { environmentSyncErrorData, withEnvironmentSyncErrorCapture, withEnvironmentSyncTransferStep, readEnvironmentSyncErrorDiagnostic } from "@paperclipai/plugin-sdk";
 import { assertTarballEntriesConfined } from "./file-sync.js";
 
 const temporaryDirectories: string[] = [];
@@ -100,18 +101,28 @@ it.each([false, true])("bounds aggregate listing bytes at 64 MiB (over quota: %s
   const line = "-rw-r--r-- 0/0 0 2026-09-27 12:00 ".padEnd(4095, "x") + "\n";
   const count = 64 * 1024 * 1024 / Buffer.byteLength(line) + Number(overQuota);
   const checkReaped = await fakeTar(listingWriter(line, count));
-  const result = assertTarballEntriesConfined("unused.tar");
-  if (overQuota) await expect(result).rejects.toThrow("total listing byte limit");
-  else await expect(result).resolves.toBeUndefined();
+  await withEnvironmentSyncErrorCapture(async () => {
+    const result = assertTarballEntriesConfined("unused.tar");
+    if (overQuota) {
+      const error = await result.catch(error => error);
+      expect(error.message).toContain("total listing byte limit");
+      expect(readEnvironmentSyncErrorDiagnostic({ data: environmentSyncErrorData(error) })?.transferFailureKind).toBe("listing_byte_limit");
+    } else await expect(result).resolves.toBeUndefined();
+  });
   await checkReaped();
 }, 30_000);
 
 it.each([false, true])("bounds aggregate listing entries at 250,000 (over quota: %s)", async (overQuota) => {
   // The over-quota member has no newline: EOF must pass the same admission gate.
   const checkReaped = await fakeTar(listingWriter(safeLine + "\n", 250_000, overQuota ? safeLine : ""));
-  const result = assertTarballEntriesConfined("unused.tar");
-  if (overQuota) await expect(result).rejects.toThrow("listing entry limit");
-  else await expect(result).resolves.toBeUndefined();
+  await withEnvironmentSyncErrorCapture(async () => {
+    const result = assertTarballEntriesConfined("unused.tar");
+    if (overQuota) {
+      const error = await result.catch(error => error);
+      expect(error.message).toContain("listing entry limit");
+      expect(readEnvironmentSyncErrorDiagnostic({ data: environmentSyncErrorData(error) })?.transferFailureKind).toBe("listing_entry_limit");
+    } else await expect(result).resolves.toBeUndefined();
+  });
   await checkReaped();
 }, 30_000);
 
@@ -188,4 +199,27 @@ it("times out and reaps a stalled listing process", async () => {
 it("rejects spawn failures without hanging", async () => {
   vi.stubEnv("PATH", await temporaryDirectory());
   await expect(assertTarballEntriesConfined("unused.tar")).rejects.toThrow("ENOENT");
+});
+
+
+it.each([
+  ["process.exitCode = 2;", "command_failed", 2, "unknown"],
+  ['process.stdout.write("x".repeat(65_537)); setInterval(() => {}, 1_000);', "listing_line_limit", undefined, "unknown"],
+  ['process.stderr.write("x".repeat(65_537)); setInterval(() => {}, 1_000);', "listing_stderr_limit", undefined, "unknown"],
+  ['process.stdout.write("invalid-private-listing");', "unsafe_archive", undefined, "unknown"],
+  ['setInterval(() => {}, 1_000);', "listing_timeout", undefined, "ETIMEDOUT"],
+] as const)("records bounded listing evidence and reaps the child (%s)", async (script, kind, exitCode, errorCode) => {
+  const checkReaped = await fakeTar(script);
+  await withEnvironmentSyncErrorCapture(async () => {
+    let caught: unknown;
+    try { await withEnvironmentSyncTransferStep("archive_validate", () => assertTarballEntriesConfined("private-archive.tar", 2_000)); }
+    catch (error) { caught = error; }
+    expect(caught).toBeInstanceOf(Error);
+    const diagnostic = readEnvironmentSyncErrorDiagnostic({ data: environmentSyncErrorData(caught) });
+    expect(diagnostic).toEqual({ errorCode, transferStep: "archive_validate", transferFailureKind: kind,
+      ...(exitCode !== undefined ? { exitCode } : {}),
+    });
+    expect(JSON.stringify(diagnostic)).not.toContain("private-");
+  });
+  await checkReaped();
 });

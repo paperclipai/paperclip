@@ -52,6 +52,7 @@ describe("generic connection instructions", () => {
         "packages/shared/src/self-serve-mcp-research.json",
         "doc/connections/tool-method-permission-reviews.json",
         "packages/shared/src/app-definitions",
+        "scripts/app-definition-overrides",
       ]) {
         mkdirSync(dirname(join(fixture, source)), { recursive: true });
         cpSync(join(root, source), join(fixture, source), { recursive: true });

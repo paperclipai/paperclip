@@ -156,7 +156,7 @@ describe("plugin install and upgrade authz", () => {
 
     expect(res.status).toBe(200);
     const packageNames = res.body.map((plugin: { packageName: string }) => plugin.packageName);
-    const byPackageName = new Map(
+    const byPackageName = new Map<string, { experimental: boolean; hasBuiltEntrypoints: boolean }>(
       res.body.map((plugin: { packageName: string; experimental: boolean; hasBuiltEntrypoints: boolean }) => [plugin.packageName, plugin]),
     );
     expect(packageNames).toContain("@paperclipai/plugin-workspace-diff");
@@ -671,6 +671,94 @@ describe("plugin tool and bridge authz", () => {
         projectId: projectA,
       },
     );
+  });
+
+  it("allows tool execution for a run with no project and skips the project lookup", async () => {
+    const executeTool = vi.fn().mockResolvedValue({ content: "ok" });
+    const { app } = await createApp(boardActor(), {}, {
+      // Only the agent and run lookups. A project lookup would get no row and fail.
+      db: createSelectQueueDb([
+        [{ companyId: companyA }],
+        [{ companyId: companyA, agentId: agentA }],
+      ]),
+      toolDeps: {
+        toolDispatcher: {
+          listToolsForAgent: vi.fn(),
+          getTool: vi.fn(() => ({ name: "paperclip.example:search" })),
+          executeTool,
+        },
+      },
+    });
+
+    const res = await request(app)
+      .post("/api/plugins/tools/execute")
+      .send({
+        tool: "paperclip.example:search",
+        parameters: {},
+        runContext: { agentId: agentA, runId: runA, companyId: companyA, projectId: "" },
+      });
+
+    expect(res.status).toBe(200);
+    expect(executeTool).toHaveBeenCalledWith(
+      "paperclip.example:search",
+      {},
+      { agentId: agentA, runId: runA, companyId: companyA, projectId: "" },
+    );
+  });
+
+  it.each([
+    ["missing", {}],
+    ["null", { projectId: null }],
+  ])("passes an empty projectId to the plugin when runContext.projectId is %s", async (_label, project) => {
+    const executeTool = vi.fn().mockResolvedValue({ content: "ok" });
+    const { app } = await createApp(boardActor(), {}, {
+      db: createSelectQueueDb([
+        [{ companyId: companyA }],
+        [{ companyId: companyA, agentId: agentA }],
+      ]),
+      toolDeps: {
+        toolDispatcher: {
+          listToolsForAgent: vi.fn(),
+          getTool: vi.fn(() => ({ name: "paperclip.example:search" })),
+          executeTool,
+        },
+      },
+    });
+
+    const res = await request(app)
+      .post("/api/plugins/tools/execute")
+      .send({
+        tool: "paperclip.example:search",
+        parameters: {},
+        runContext: { agentId: agentA, runId: runA, companyId: companyA, ...project },
+      });
+
+    expect(res.status).toBe(200);
+    expect(executeTool).toHaveBeenCalledWith(
+      "paperclip.example:search",
+      {},
+      { agentId: agentA, runId: runA, companyId: companyA, projectId: "" },
+    );
+  });
+
+  it("rejects tool execution when runContext.projectId is not a string", async () => {
+    const executeTool = vi.fn();
+    const { app } = await createApp(boardActor(), {}, {
+      toolDeps: {
+        toolDispatcher: { listToolsForAgent: vi.fn(), getTool: vi.fn(), executeTool },
+      },
+    });
+
+    const res = await request(app)
+      .post("/api/plugins/tools/execute")
+      .send({
+        tool: "paperclip.example:search",
+        parameters: {},
+        runContext: { agentId: agentA, runId: runA, companyId: companyA, projectId: 42 },
+      });
+
+    expect(res.status).toBe(400);
+    expect(executeTool).not.toHaveBeenCalled();
   });
 
   it.each([

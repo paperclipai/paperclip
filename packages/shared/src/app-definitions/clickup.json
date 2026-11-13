@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "slug": "clickup",
+  "name": "ClickUp",
+  "description": "Search ClickUp workspaces and manage tasks, docs, and conversations through the official MCP server.",
+  "categories": [
+    "productivity"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/clickup.png"
+  },
+  "urlPatterns": [
+    "https://mcp.clickup.com/*"
+  ],
+  "docsUrl": "https://developer.clickup.com/docs/connect-an-ai-assistant-to-clickups-mcp-server",
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "label": "Sign in with ClickUp",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "dcr"
+      ],
+      "grantKinds": [
+        "user"
+      ],
+      "whenToUse": "Connect the provider-hosted ClickUp MCP server with browser sign-in.",
+      "defaults": {
+        "serverUrl": "https://mcp.clickup.com/mcp",
+        "scopesHint": [
+          "read",
+          "write"
+        ]
+      },
+      "guidanceMd": "Choose only the ClickUp workspace needed. Confirm the target list and task before changing content, starting a timer, posting a chat message, or deleting anything.",
+      "warnings": [
+        "ClickUp's MCP may expose task, document, and chat writes, time tracking, and task deletion under the signed-in user's permissions. Review the catalog and keep write and destructive actions disabled until explicitly needed.",
+        "Workspace usage may be subject to plan-based rolling daily MCP limits."
+      ],
+      "consoleLinks": {
+        "docs": "https://developer.clickup.com/docs/connect-an-ai-assistant-to-clickups-mcp-server"
+      },
+      "riskTier": "S4",
+      "requiredResourceFilters": [
+        "workspace",
+        "list"
+      ]
+    }
+  ]
+}

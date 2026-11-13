@@ -53,6 +53,19 @@ describe("resolveCoreTrustPreset", () => {
     });
   });
 
+  it("intersects organizational and workspace-source project restrictions", () => {
+    const organization = { companyId, executionWorkspacePolicy: boundaryPolicy(lowTrustBoundary({ projectIds: [projectA, projectB], allowedToolClasses: ["git.read", "tests.local"] })) };
+    const source = { companyId, executionWorkspacePolicy: boundaryPolicy(lowTrustBoundary({ projectIds: [projectB, projectC], allowedToolClasses: ["git.read"] })) };
+    expect(resolveCoreTrustPreset({ companyId, project: organization })).toMatchObject({ kind: "low_trust_review" });
+    expect(resolveCoreTrustPreset({ companyId, workspaceSourceProject: source })).toMatchObject({ kind: "low_trust_review" });
+    expect(resolveCoreTrustPreset({ companyId, project: organization, workspaceSourceProject: source })).toMatchObject({
+      kind: "low_trust_review", boundary: { projectIds: [projectB], allowedToolClasses: ["git.read"] },
+    });
+    expect(resolveCoreTrustPreset({ companyId, project: organization,
+      workspaceSourceProject: { companyId, executionWorkspacePolicy: boundaryPolicy(lowTrustBoundary({ projectIds: [projectC] })) },
+    })).toMatchObject({ kind: "denied", reason: "missing_low_trust_boundary_scope" });
+  });
+
   it("intersects low-trust agent, project, and issue policy boundaries", () => {
     const result = resolveCoreTrustPreset({
       companyId,

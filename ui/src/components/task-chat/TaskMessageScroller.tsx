@@ -5,7 +5,7 @@ import type { IssueChatThreadOrder } from "@/lib/issue-chat-messages";
 import { useStreamlinedTaskChatPresentation } from "./presentation-mode";
 import { ArrowDown, ArrowUp } from "lucide-react";
 import { parseCssTimeMs } from "./motion-tokens";
-import { useTaskChatScrollNavigation } from "./scroll-navigation";
+import { taskChatHashAnchor, useTaskChatScrollNavigation } from "./scroll-navigation";
 
 const PIN_THRESHOLD_PX = 48;
 
@@ -22,14 +22,27 @@ function motionDisabled(): boolean {
   return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
+export interface ScrollingHistory {
+  hasMore: boolean;
+  loading: boolean;
+  error?: boolean;
+  load: () => unknown;
+}
+
 interface TaskMessageScrollerProps {
+  /**
+   * Scroll-driven paging for chronological threads. It loads when the reader
+   * moves toward the top, so it is inactive for `newest_first`, where older
+   * content sits below; those callers page with an explicit control instead.
+   */
+  scrollingHistory?: ScrollingHistory;
   children: ReactNode;
   /** Value that changes whenever content that could grow the thread updates. */
   contentKey: unknown;
   /**
    * Thread display order. `newest_first` treats the TOP as the live edge:
-   * pinning, content follow, and the jump-to-latest pill all target
-   * scrollTop 0 instead of the bottom.
+   * pinning, content follow, cached-return restore and the jump-to-latest
+   * pill all target scrollTop 0 instead of the bottom.
    */
   threadOrder?: IssueChatThreadOrder;
   className?: string;
@@ -51,20 +64,52 @@ interface TaskMessageScrollerProps {
  * the glide cancels it and treats the user as unpinned. Content-driven follow
  * while pinned stays instant, so no reflow/jump happens during streaming.
  */
-export function TaskMessageScroller({ children, contentKey, threadOrder = "oldest_first", className }: TaskMessageScrollerProps) {
+export function TaskMessageScroller({
+  children,
+  contentKey,
+  className,
+  scrollingHistory: requestedScrollingHistory,
+  threadOrder = "oldest_first",
+}: TaskMessageScrollerProps) {
   const streamlined = useStreamlinedTaskChatPresentation();
   const newestFirst = threadOrder === "newest_first";
+  const scrollingHistory = newestFirst ? undefined : requestedScrollingHistory;
   const navigation = useTaskChatScrollNavigation();
   const initialPositionApplied = useRef(false);
   const appliedNavigation = useRef({ key: navigation.key, hash: navigation.hash });
+  const pendingHashTarget = useRef(taskChatHashAnchor(navigation.hash ?? ""));
   const ref = useRef<HTMLDivElement>(null);
   const anchorRef = useRef<ThreadScrollAnchor | null>(null);
   const pinnedRef = useRef(true);
   const easingRef = useRef(false);
   const clientHeightRef = useRef<number | null>(null);
+  const clientWidthRef = useRef<number | null>(null);
   const scrollbarIdleTimerRef = useRef<number | null>(null);
   const scrollbarIdleDelayRef = useRef<number | null>(null);
   const [pillPhase, setPillPhase] = useState<PillPhase>("hidden");
+  const previousScrollTop = useRef(0);
+  const previousScrollHeight = useRef(0);
+  const touchStartY = useRef<number | null>(null);
+  const requestingHistory = useRef(false);
+  // The reader's last wheel gesture pointed away from the live edge (toward
+  // older content): up when chronological, down when newest-first.
+  const historyIntent = useRef(false);
+  const requestEarlierHistory = useCallback(() => {
+    historyIntent.current = false;
+    if (!initialPositionApplied.current || !navigation.ready || !scrollingHistory?.hasMore
+      || scrollingHistory.loading || scrollingHistory.error || requestingHistory.current) return;
+    requestingHistory.current = true;
+    const el = ref.current;
+    if (el?.clientHeight) {
+      const rect = el.getBoundingClientRect();
+      pinnedRef.current = false;
+      anchorRef.current = readThreadScrollAnchor(el, rect.top, rect.bottom);
+      navigation.remember(el.scrollTop, anchorRef.current, false);
+    }
+    Promise.resolve().then(() => scrollingHistory.load()).catch(() => {}).finally(() => {
+      requestingHistory.current = false;
+    });
+  }, [navigation.key, navigation.hash, navigation.ready, scrollingHistory]);
 
   const showScrollbarWhileScrolling = useCallback(() => {
     const el = ref.current;
@@ -94,6 +139,8 @@ export function TaskMessageScroller({ children, contentKey, threadOrder = "oldes
     setPillPhase((phase) => (phase === "hidden" ? phase : motionDisabled() ? "hidden" : "out"));
   }, []);
 
+  // Every follow path reads the current order through these two callbacks, so
+  // the ResizeObserver and content effects re-subscribe when it changes.
   const isPinned = useCallback(() => {
     const el = ref.current;
     if (!el) return true;
@@ -104,16 +151,22 @@ export function TaskMessageScroller({ children, contentKey, threadOrder = "oldes
   const scrollToLiveEdge = useCallback(() => {
     const el = ref.current;
     if (!el) return;
-    // instant, never smooth; the live edge is the top when newest-first
-    el.scrollTop = newestFirst ? 0 : el.scrollHeight;
+    el.scrollTop = newestFirst ? 0 : el.scrollHeight; // instant, never smooth
   }, [newestFirst]);
 
   const followViewportResize = useCallback(() => {
     const el = ref.current;
     if (!el) return false;
     const previousClientHeight = clientHeightRef.current;
+    const previousClientWidth = clientWidthRef.current;
     const nextClientHeight = el.clientHeight;
     clientHeightRef.current = nextClientHeight;
+    clientWidthRef.current = el.clientWidth;
+    if (previousClientWidth != null && previousClientWidth !== el.clientWidth && !pinnedRef.current) {
+      const delta = threadScrollAnchorDelta(el, anchorRef.current, el.getBoundingClientRect().top);
+      if (delta) el.scrollTop += delta;
+      return true;
+    }
     if (
       previousClientHeight == null ||
       previousClientHeight <= 0 ||
@@ -126,17 +179,22 @@ export function TaskMessageScroller({ children, contentKey, threadOrder = "oldes
     return true;
   }, [scrollToLiveEdge]);
 
-  const rememberAnchor = useCallback(() => {
+  const rememberAnchor = useCallback((capture = true) => {
     const el = ref.current;
-    if (!el) return;
-    const rect = el.getBoundingClientRect();
-    anchorRef.current = readThreadScrollAnchor(el, rect.top, rect.bottom);
-    if (initialPositionApplied.current) navigation.remember(el.scrollTop, anchorRef.current);
+    if (!el || el.clientHeight === 0) return;
+    if (pinnedRef.current) {
+      // Following the bottom needs only an offset, not a scan of every old row.
+      anchorRef.current = null;
+    } else if (capture) {
+      const rect = el.getBoundingClientRect();
+      anchorRef.current = readThreadScrollAnchor(el, rect.top, rect.bottom);
+    }
+    if (initialPositionApplied.current) navigation.remember(el.scrollTop, anchorRef.current, pinnedRef.current);
   }, [navigation.key, navigation.hash, navigation.ready]);
 
   const reconcileContent = useCallback(() => {
     const el = ref.current;
-    if (!el) return;
+    if (!el || el.clientHeight === 0) return;
     // Clicking latest is an explicit follow intent. If content or the composer
     // changes during its glide, finish at the new bottom instead of restoring
     // the old reading anchor and cancelling the browser's smooth scroll.
@@ -150,21 +208,38 @@ export function TaskMessageScroller({ children, contentKey, threadOrder = "oldes
       const delta = threadScrollAnchorDelta(el, anchorRef.current, el.getBoundingClientRect().top);
       if (delta) el.scrollTop += delta;
     }
-    rememberAnchor();
+    // Compensation preserves the existing reading anchor. Recapture only when
+    // the reader scrolls or navigation selects a different position.
+    rememberAnchor(false);
+    previousScrollTop.current = el.scrollTop;
+    previousScrollHeight.current = el.scrollHeight;
   }, [rememberAnchor, scrollToLiveEdge, hidePill]);
 
   const handleScroll = useCallback(() => {
-    rememberAnchor();
+    if (!ref.current?.clientHeight) return;
+    const top = ref.current.scrollTop;
+    const moved = top !== previousScrollTop.current;
+    const scrollingUp = top < previousScrollTop.current;
+    const awayFromLiveEdge = newestFirst ? top > previousScrollTop.current : scrollingUp;
+    previousScrollTop.current = top;
+    if (previousScrollHeight.current > 0 && pinnedRef.current && !awayFromLiveEdge && !historyIntent.current &&
+      ref.current.scrollHeight > previousScrollHeight.current) {
+      reconcileContent();
+      hidePill();
+      return;
+    }
+    if (!newestFirst && (scrollingUp || historyIntent.current) && top <= 192 && !easingRef.current) requestEarlierHistory();
     showScrollbarWhileScrolling();
     // A growing composer shrinks this viewport. Some browsers dispatch the
     // resulting scroll event before ResizeObserver, so preserve the previous
     // pinned state here instead of mistaking the layout change for a user
     // scroll away from the bottom.
     if (followViewportResize()) {
-      hidePill();
+      rememberAnchor(false);
+      if (pinnedRef.current) hidePill();
       return;
     }
-    const pinned = isPinned();
+    const pinned = requestingHistory.current ? false : isPinned();
     if (easingRef.current) {
       // Smooth re-follow in flight: intermediate scroll events must not
       // unpin/re-show the pill. Only act once we arrive within the threshold.
@@ -173,25 +248,33 @@ export function TaskMessageScroller({ children, contentKey, threadOrder = "oldes
         pinnedRef.current = true;
         hidePill();
       }
+      rememberAnchor(moved);
       return;
     }
     pinnedRef.current = pinned;
+    if (pinned) historyIntent.current = false;
+    rememberAnchor(moved);
     if (pinned) hidePill();
     else showPill();
   }, [
+    newestFirst,
     rememberAnchor,
     followViewportResize,
     isPinned,
     hidePill,
     showPill,
     showScrollbarWhileScrolling,
+    requestEarlierHistory,
+    reconcileContent,
   ]);
 
   const handleJumpToLatest = useCallback(() => {
+    pendingHashTarget.current = null;
+    historyIntent.current = false;
     const el = ref.current;
     if (!el) return;
     if (isPinned()) {
-      // Already at (or within threshold of) the bottom: no glide needed.
+      // Already at (or within threshold of) the live edge: no glide needed.
       pinnedRef.current = true;
       hidePill();
       return;
@@ -201,12 +284,12 @@ export function TaskMessageScroller({ children, contentKey, threadOrder = "oldes
       el.scrollTo({ top: newestFirst ? 0 : el.scrollHeight, behavior: "smooth" });
     } else {
       // Environments without scrollTo (older jsdom): fall back to instant.
-      el.scrollTop = newestFirst ? 0 : el.scrollHeight;
+      scrollToLiveEdge();
       easingRef.current = false;
       pinnedRef.current = true;
       hidePill();
     }
-  }, [isPinned, hidePill, newestFirst]);
+  }, [isPinned, hidePill, newestFirst, scrollToLiveEdge]);
 
   // A user gesture during the smooth glide cancels the re-follow: stop
   // treating scroll events as easing and consider the user unpinned.
@@ -237,15 +320,16 @@ export function TaskMessageScroller({ children, contentKey, threadOrder = "oldes
     const el = ref.current;
     if (!el) return;
     clientHeightRef.current = el.clientHeight;
+    clientWidthRef.current = el.clientWidth;
     if (typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(() => {
-      if (followViewportResize()) hidePill();
+      if (followViewportResize() && pinnedRef.current) hidePill();
       reconcileContent();
     });
     observer.observe(el);
     // The viewport itself does not resize when an image or historical row
     // grows. Observe the content box too, before the browser paints it.
-    if (el.firstElementChild) observer.observe(el.firstElementChild);
+    for (const child of el.children) observer.observe(child);
     return () => observer.disconnect();
   }, [followViewportResize, hidePill, reconcileContent]);
 
@@ -255,24 +339,51 @@ export function TaskMessageScroller({ children, contentKey, threadOrder = "oldes
     if (appliedNavigation.current.key !== navigation.key || appliedNavigation.current.hash !== navigation.hash) {
       appliedNavigation.current = { key: navigation.key, hash: navigation.hash };
       initialPositionApplied.current = false;
+      pendingHashTarget.current = taskChatHashAnchor(navigation.hash ?? "");
     }
-    if (el && navigation.ready && !initialPositionApplied.current) {
-      const top = navigation.initialPosition(el, el.getBoundingClientRect().top, el.scrollTop);
+    const target = pendingHashTarget.current ? document.getElementById(pendingHashTarget.current) : null;
+    if (el && el.clientHeight > 0 && navigation.ready &&
+      (!initialPositionApplied.current || (target && el.contains(target)))) {
+      const top = navigation.initialPosition(el, el.getBoundingClientRect().top, el.scrollTop, { restore: !initialPositionApplied.current, newestFirst });
       if (top !== null) {
         el.scrollTop = top;
         pinnedRef.current = isPinned();
         rememberAnchor();
+        pendingHashTarget.current = null;
       }
       initialPositionApplied.current = true;
     }
     reconcileContent();
-  }, [contentKey, reconcileContent, navigation.key, navigation.hash, navigation.ready]);
+  }, [contentKey, reconcileContent, isPinned, newestFirst, navigation.key, navigation.hash, navigation.ready]);
 
   return (
     <div className="relative min-h-0 flex-1">
       <div
         ref={ref}
         onScroll={handleScroll}
+        onPointerDown={() => { pendingHashTarget.current = null; }}
+        tabIndex={requestedScrollingHistory ? 0 : undefined}
+        role={requestedScrollingHistory ? "region" : undefined}
+        aria-label={requestedScrollingHistory ? "Conversation messages" : undefined}
+        onKeyDown={event => {
+          if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"].includes(event.key)) pendingHashTarget.current = null;
+          if (["ArrowUp", "PageUp", "Home"].includes(event.key) && ref.current && ref.current.scrollTop <= 192) requestEarlierHistory();
+        }}
+        onTouchStart={event => { pendingHashTarget.current = null; touchStartY.current = event.touches.length === 1 ? event.touches[0]!.clientY : null; }}
+        onTouchMove={event => {
+          const start = touchStartY.current;
+          if (start !== null && event.touches.length === 1 && event.touches[0]!.clientY > start + 16
+            && ref.current && ref.current.scrollTop <= 192) {
+            touchStartY.current = null;
+            requestEarlierHistory();
+          }
+        }}
+        onTouchEnd={() => { touchStartY.current = null; }}
+        onWheel={event => {
+          pendingHashTarget.current = null;
+          historyIntent.current = newestFirst ? event.deltaY > 0 : event.deltaY < 0;
+          if (event.deltaY < 0 && ref.current && ref.current.scrollTop <= 192) requestEarlierHistory();
+        }}
         // Keep the viewport tied to the flex-sized wrapper vertically —
         // percentage heights don't reliably resolve against flex-determined
         // block heights, which let the thread overflow the page. In the
@@ -288,7 +399,17 @@ export function TaskMessageScroller({ children, contentKey, threadOrder = "oldes
         )}
         data-testid="task-chat-scroller"
       >
+        {scrollingHistory ? <>
+        {scrollingHistory && (scrollingHistory.hasMore || scrollingHistory.loading || scrollingHistory.error) ? (
+          <div role="status" className="flex h-8 items-center justify-center gap-2 text-xs text-muted-foreground" data-testid="chat-history-status">
+            {scrollingHistory.error ? <>
+              <span>Earlier messages couldn’t load.</span>
+              <button type="button" className="underline underline-offset-4" onClick={() => scrollingHistory.load()}>Retry</button>
+            </> : scrollingHistory.loading ? "Loading earlier messages…" : "Scroll up for earlier messages"}
+          </div>
+        ) : null}
         {children}
+        </> : children}
       </div>
       {pillPhase !== "hidden" ? (
         <button
@@ -306,11 +427,7 @@ export function TaskMessageScroller({ children, contentKey, threadOrder = "oldes
             pillPhase === "out" ? "tc-scroll-pill-out" : "tc-scroll-pill-in",
           )}
         >
-          {newestFirst ? (
-            <ArrowUp className="h-4 w-4" />
-          ) : (
-            <ArrowDown className="h-4 w-4" />
-          )}
+          {newestFirst ? <ArrowUp className="h-4 w-4" /> : <ArrowDown className="h-4 w-4" />}
         </button>
       ) : null}
     </div>

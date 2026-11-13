@@ -3,7 +3,13 @@ import { claudeLocalReasoningEffortsForModel, DEFAULT_CLAUDE_LOCAL_MODEL, resolv
 import { minimumClaudeCliVersionForModel } from "./server/cli-capabilities.js";
 
 describe("Claude model defaults", () => {
-  it.each(["claude-opus-5-5", "us.anthropic.claude-opus-5-5", "global.anthropic.claude-opus-5-5[1m]"])("requires a current CLI and offers all efforts for %s", (model) => {
+  it.each([
+    "claude-opus-5-5",
+    "us.anthropic.claude-opus-5-5",
+    "global.anthropic.claude-opus-5-5[1m]",
+    "jp.anthropic.claude-opus-5-5",
+    "au.anthropic.claude-opus-5-5",
+  ])("requires a current CLI and offers all efforts for %s", (model) => {
     expect(minimumClaudeCliVersionForModel(model)).toBe("2.1.280");
     expect(claudeLocalReasoningEffortsForModel(model)).toEqual(["low", "medium", "high", "xhigh", "max"]);
   });
@@ -27,9 +33,9 @@ describe("Claude model defaults", () => {
     expect(claudeLocalReasoningEffortsForModel("custom-model")).toEqual(["low", "medium", "high"]);
   });
 
-  it.each([undefined, null, "", "  "])("uses Opus 5 for an unset model (%j)", (model) => {
-    expect(DEFAULT_CLAUDE_LOCAL_MODEL).toBe("claude-opus-5");
-    expect(resolveClaudeModel(model)).toBe("claude-opus-5");
+  it.each([undefined, null, "", "  "])("uses Opus 5.5 for an unset model (%j)", (model) => {
+    expect(DEFAULT_CLAUDE_LOCAL_MODEL).toBe("claude-opus-5-5");
+    expect(resolveClaudeModel(model)).toBe("claude-opus-5-5");
   });
 
   it("keeps explicit model IDs ahead of environment overrides", () => {

@@ -10,8 +10,8 @@ it("keeps native mode/permission choices explicit and artifact export pending", 
   for (const task of cursorNativeTasks) {
     expect(task.flow).toBe("cursor_native"); expect(task.expectedRunCount).toBe(1); expect(task.turnTimeoutMs).toBe(120_000);
   }
-  expect(cursorNativeCaseDesigns.filter(row => row.method !== "session/request_permission").every(row => row.cursorMode === "plan")).toBe(true);
-  expect(cursorNativeCaseDesigns.find(row => row.method === "session/request_permission")).toMatchObject({ cursorMode: "agent", permissionMode: "approve-reads" });
+  expect(cursorNativeCaseDesigns.filter(row => row.method !== "session/request_permission").every(row => row.mode === "plan")).toBe(true);
+  expect(cursorNativeCaseDesigns.find(row => row.method === "session/request_permission")).toMatchObject({ mode: "agent", permissionMode: "approve-reads" });
   expect(cursorNativeTasks.find(task => task.id === "native-write-deny-reconnect")!.expectedTerminalState).toEqual({ issue: "in_progress", run: "failed" });
   expect(cursorNativePlanArtifactGate.status).toBe("pending");
   expect(cursorNativePlanArtifactGate.nativePath).toContain("<private provider HOME>");

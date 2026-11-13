@@ -15,7 +15,6 @@ import { useToastActions } from "../context/ToastContext";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
 import { companiesApi } from "../api/companies";
-import { projectsApi } from "../api/projects";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -58,6 +57,8 @@ import {
   FRONTMATTER_FIELD_LABELS,
   FileTree,
 } from "../components/FileTree";
+import { describeError } from "@/api/errors";
+import { companyProjectsQuery } from "@/lib/company-projects-query";
 
 /**
  * Extract the set of agent/project/task slugs that are "checked" based on
@@ -622,7 +623,7 @@ function isAbortError(error: unknown): boolean {
 }
 
 function previewErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : "Failed to load export data.";
+  return describeError(error).body;
 }
 
 export function CompanyExport() {
@@ -642,8 +643,7 @@ export function CompanyExport() {
     enabled: !!selectedCompanyId,
   });
   const { data: projects = [] } = useQuery({
-    queryKey: queryKeys.projects.list(selectedCompanyId!),
-    queryFn: () => projectsApi.list(selectedCompanyId!),
+    ...companyProjectsQuery(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
   const { data: fidelityReport } = useQuery({
@@ -818,7 +818,7 @@ export function CompanyExport() {
       pushToast({
         tone: "error",
         title: "Export failed",
-        body: err instanceof Error ? err.message : "Failed to build export package.",
+        body: describeError(err).body,
       });
     },
   });
@@ -1044,7 +1044,7 @@ export function CompanyExport() {
     );
   }
 
-  if (exportPreviewMutation.isError && !exportData) {
+  if (exportPreviewMutation.isError && !exportData) { // query-error-ok: preview is a mutation; a loaded preview stays visible below
     return (
       <EmptyState
         icon={Package}
@@ -1276,7 +1276,7 @@ export function CompanyExport() {
                 </Button>
               </div>
             </div>
-          ) : exportPreviewMutation.isError ? (
+          ) : exportPreviewMutation.isError ? ( // query-error-ok: preview is a mutation; the previous preview stays rendered behind this overlay
             <div
               className="absolute inset-0 z-10 flex min-h-(--sz-520px) items-center justify-center bg-background/90 px-6 text-center"
               role="alert"

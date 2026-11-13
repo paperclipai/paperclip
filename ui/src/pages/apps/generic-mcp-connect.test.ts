@@ -38,6 +38,13 @@ describe("endpointHost", () => {
 });
 
 describe("oauthCallbackUrlForBrowser", () => {
+  it("prefers the callback URL advertised by the server", () => {
+    expect(oauthCallbackUrlForBrowser(
+      "http://localhost:3000",
+      "https://paperclip.example.test/api/tools/oauth/callback",
+    )).toBe("https://paperclip.example.test/api/tools/oauth/callback");
+  });
+
   it("uses localhost for local HTTP callbacks to match the API authorization request", () => {
     expect(oauthCallbackUrlForBrowser("http://127.0.0.1:3200")).toBe(
       "http://localhost:3200/api/tools/oauth/callback",

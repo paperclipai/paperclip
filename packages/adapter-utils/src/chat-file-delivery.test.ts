@@ -19,7 +19,7 @@ function chatWake(provider: unknown) {
 }
 
 describe("chat file preparation delivery contract", () => {
-  it.each(["github", "microsoft-teams"])(
+  it.each(["github", "microsoft-teams", "speko"])(
     "describes %s as task-only, never a native attachment",
     (provider) => {
       const delivery = paperclipChatFilePreparationDelivery(provider);
@@ -81,7 +81,7 @@ describe("chat file preparation delivery contract", () => {
     },
   );
 
-  it.each(["github", "microsoft-teams", "slack", "discord", "telegram"])(
+  it.each(["github", "microsoft-teams", "slack", "discord", "telegram", "speko"])(
     "projects %s guidance into both fresh and resumed chat turns, including overflow",
     (provider) => {
       for (const resumedSession of [false, true]) {

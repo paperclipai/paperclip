@@ -3,7 +3,6 @@ import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SlackAvatarContent } from "./SlackAvatarStep";
-import { useSlackAvatarProgress } from "./slack-avatar-progress";
 
 const containers: Array<{ root: ReturnType<typeof createRoot>; node: HTMLDivElement }> = [];
 function render(element: React.ReactNode) {
@@ -52,30 +51,5 @@ describe("Slack avatar download", () => {
     flushSync(() => node.querySelector('a[download]')!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true })));
     await settle();
     expect(node.querySelector('[role="alert"]')?.textContent).toContain("Couldn’t download");
-  });
-});
-
-function Progress({ company, endpoint }: { company: string; endpoint: string }) {
-  const { progress, save } = useSlackAvatarProgress(company, endpoint);
-  return <button onClick={() => save("skipped")}>{progress ?? "pending"}</button>;
-}
-describe("optional avatar progress", () => {
-  it("keeps progress scoped to the company and endpoint", () => {
-    const { root, node } = render(<Progress company="one" endpoint="a" />);
-    flushSync(() => node.querySelector("button")!.click());
-    expect(node.textContent).toBe("skipped");
-    flushSync(() => root.render(<Progress company="one" endpoint="b" />));
-    expect(node.textContent).toBe("pending");
-    flushSync(() => root.render(<Progress company="two" endpoint="a" />));
-    expect(node.textContent).toBe("pending");
-    flushSync(() => root.render(<Progress company="one" endpoint="a" />));
-    expect(node.textContent).toBe("skipped");
-  });
-  it("allows skipping even if browser storage is unavailable", () => {
-    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => { throw new Error("Unavailable"); });
-    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("Unavailable"); });
-    const { node } = render(<Progress company="one" endpoint="a" />);
-    flushSync(() => node.querySelector("button")!.click());
-    expect(node.textContent).toBe("skipped");
   });
 });

@@ -1,3 +1,6 @@
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   ensurePiModelConfiguredAndAvailable,
@@ -29,5 +32,35 @@ describe("pi models", () => {
         model: "xai/grok-4",
       }),
     ).rejects.toThrow();
+  });
+
+  it("does not embed the model catalogue when the configured model is unavailable", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "paperclip-pi-models-"));
+    const command = join(directory, "pi");
+    const modelIds = Array.from({ length: 13 }, (_, index) => `provider/model-${index}`);
+    await writeFile(
+      command,
+      `#!/bin/sh\nprintf 'provider  model\\n';\n${modelIds
+        .map((id) => {
+          const [provider, model] = id.split("/");
+          return `printf '${provider}  ${model}\\n'`;
+        })
+        .join(";\n")}\n`,
+    );
+    await chmod(command, 0o755);
+
+    try {
+      await expect(
+        ensurePiModelConfiguredAndAvailable({
+          command,
+          model: "provider/missing",
+        }),
+      ).rejects.toMatchObject({
+        message:
+          "Configured Pi model is unavailable: provider/missing. 13 models are available; list them with `pi --list-models`.",
+      });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 });

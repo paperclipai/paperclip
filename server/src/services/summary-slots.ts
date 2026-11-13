@@ -24,7 +24,7 @@ import {
   type WriteSummarySlotResponse,
 } from "@paperclipai/shared";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
-import { readBuiltInAgentMarker } from "./built-in-agent-metadata.js";
+import { readBuiltInAgentMarker } from "../lib/built-in-agent-metadata.js";
 import { builtInAgentService } from "./built-in-agents.js";
 import { agentService } from "./agents.js";
 import { issueService } from "./issues.js";

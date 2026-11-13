@@ -1,17 +1,8 @@
-/**
- * The `account.issuer` backfill has to be total. The column lands NOT NULL, so
- * a row the UPDATE misses aborts the whole migration and leaves an upgraded
- * install with no working auth at all. This suite rewinds the migration,
- * seeds the pre-upgrade rows an existing deployment would have, and re-applies
- * it — a backfill narrowed to one provider fails here.
- */
-
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import { getTableConfig } from "drizzle-orm/pg-core";
 import postgres from "postgres";
 import { afterEach, describe, expect, it } from "vitest";
-import { applyPendingMigrations } from "./client.js";
 import { authAccounts } from "./schema/auth.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -21,10 +12,6 @@ import {
 const MIGRATION_FILE = "0230_better_auth_account_issuer.sql";
 const UNIQUE_INDEX = "account_issuer_account_id_uq";
 
-// Better Auth's own issuer helpers: `createLocalAccountIssuer("credential")`
-// for email/password and `createOAuthAccountIssuer(providerId)` for a social
-// provider that declares no issuer of its own. Sign-in looks the credential
-// account up by this exact value.
 const CREDENTIAL_ISSUER = "local:credential";
 const OAUTH_ISSUER_PREFIX = "local:oauth:";
 
@@ -32,33 +19,32 @@ const cleanups: Array<() => Promise<void>> = [];
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
-async function migrationHash() {
-  const content = await fs.promises.readFile(
-    new URL(`./migrations/${MIGRATION_FILE}`, import.meta.url),
-    "utf8",
-  );
-  return createHash("sha256").update(content).digest("hex");
+async function applySqlMigration(sql: postgres.Sql, file: string) {
+  const content = await fs.promises.readFile(new URL(`./migrations/${file}`, import.meta.url), "utf8");
+  await sql.begin(async (transaction) => {
+    for (const statement of content.split("--> statement-breakpoint")) {
+      if (statement.trim()) await transaction.unsafe(statement);
+    }
+  });
 }
 
 describe("account issuer schema", () => {
-  it("declares the column Better Auth requires and the key it indexes on", () => {
+  it("keeps issuer nullable and identifies accounts by provider and account ID", () => {
     const config = getTableConfig(authAccounts);
     const issuer = config.columns.find((column) => column.name === "issuer");
     expect(issuer).toBeDefined();
-    expect(issuer?.notNull).toBe(true);
+    expect(issuer?.notNull).toBe(false);
 
-    // Better Auth declares `(issuer, accountId)` unique on the account model
-    // and resolves accounts by that pair.
-    const unique = config.indexes.find((index) => index.config.name === UNIQUE_INDEX);
+    const unique = config.indexes.find((index) => index.config.name === "account_provider_account_id_uq");
     expect(unique?.config.unique).toBe(true);
     expect(unique?.config.columns.map((column) => (column as { name: string }).name)).toEqual([
-      "issuer",
+      "provider_id",
       "account_id",
     ]);
   });
 });
 
-describeEmbeddedPostgres("account issuer migration", () => {
+describeEmbeddedPostgres("historical issuer migration and patched provider identity upgrade", () => {
   // Reverse registration order, one at a time. The raw `postgres` client is not
   // registered with the module's client registry, so the cluster teardown does
   // not close it. Stopping the cluster while that client is still draining kills
@@ -75,8 +61,7 @@ describeEmbeddedPostgres("account issuer migration", () => {
     const sql = postgres(database.connectionString, { max: 1 });
     cleanups.push(async () => sql.end());
 
-    // Rewind to the pre-upgrade shape: no issuer column, no unique index.
-    await sql`DELETE FROM "drizzle"."__drizzle_migrations" WHERE "hash" = ${await migrationHash()}`;
+    await sql`DROP INDEX IF EXISTS "account_provider_account_id_uq"`;
     await sql`DROP INDEX IF EXISTS ${sql(UNIQUE_INDEX)}`;
     await sql`ALTER TABLE "account" DROP COLUMN IF EXISTS "issuer"`;
 
@@ -101,7 +86,7 @@ describeEmbeddedPostgres("account issuer migration", () => {
         (${googleAccountId}, 'google-subject-1', 'google', ${socialUserId}, NULL, now(), now())
     `;
 
-    await applyPendingMigrations(database.connectionString);
+    await applySqlMigration(sql, MIGRATION_FILE);
 
     const rows = await sql<{ id: string; issuer: string }[]>`
       SELECT "id", "issuer" FROM "account" ORDER BY "id"
@@ -133,5 +118,50 @@ describeEmbeddedPostgres("account issuer migration", () => {
         VALUES (${`account-${randomUUID()}`}, ${CREDENTIAL_ISSUER}, ${credentialUserId}, 'credential', ${credentialUserId}, now(), now())
       `,
     ).rejects.toMatchObject({ code: "23505", constraint_name: UNIQUE_INDEX });
+
+    await applySqlMigration(sql, "0465_better_auth_account_identity.sql");
+    const preserved = await sql`SELECT "id", "issuer" FROM "account" ORDER BY "id"`;
+    expect(preserved).toEqual(rows);
+    const [nullable] = await sql`
+      SELECT "is_nullable" FROM "information_schema"."columns"
+      WHERE "table_schema" = 'public' AND "table_name" = 'account' AND "column_name" = 'issuer'
+    `;
+    expect(nullable?.is_nullable).toBe("YES");
+    await expect(sql`
+      INSERT INTO "account" ("id", "account_id", "provider_id", "user_id", "created_at", "updated_at")
+      VALUES (${randomUUID()}, ${credentialUserId}, 'credential', ${credentialUserId}, now(), now())
+    `).rejects.toMatchObject({ code: "23505", constraint_name: "account_provider_account_id_uq" });
+    await sql`
+      INSERT INTO "account" ("id", "account_id", "provider_id", "user_id", "created_at", "updated_at")
+      VALUES (${randomUUID()}, 'new-subject', 'credential', ${credentialUserId}, now(), now())
+    `;
+  }, 30_000);
+});
+
+describeEmbeddedPostgres("provider identity migration with duplicate legacy keys", () => {
+  it("rejects ambiguous provider/account keys without changing legacy rows", async () => {
+    const database = await startEmbeddedPostgresTestDatabase("paperclip-account-duplicates-");
+    const sql = postgres(database.connectionString, { max: 1 });
+    try {
+      await sql`DROP INDEX "account_provider_account_id_uq"`;
+      await sql`ALTER TABLE "account" ALTER COLUMN "issuer" SET NOT NULL`;
+      await sql`CREATE UNIQUE INDEX "account_issuer_account_id_uq" ON "account" ("issuer", "account_id")`;
+      const userId = randomUUID();
+      await sql`INSERT INTO "user" ("id", "name", "email", "created_at", "updated_at")
+        VALUES (${userId}, 'Legacy User', 'legacy@example.com', now(), now())`;
+      await sql`INSERT INTO "account" ("id", "issuer", "account_id", "provider_id", "user_id", "created_at", "updated_at")
+        VALUES (${randomUUID()}, 'issuer-a', 'same-subject', 'credential', ${userId}, now(), now()),
+               (${randomUUID()}, 'issuer-b', 'same-subject', 'credential', ${userId}, now(), now())`;
+      const before = await sql`SELECT "id", "issuer" FROM "account" ORDER BY "id"`;
+      await expect(applySqlMigration(sql, "0465_better_auth_account_identity.sql"))
+        .rejects.toMatchObject({ code: "23505" });
+      expect(await sql`SELECT "id", "issuer" FROM "account" ORDER BY "id"`).toEqual(before);
+      const [column] = await sql`SELECT "is_nullable" FROM "information_schema"."columns"
+        WHERE "table_schema" = 'public' AND "table_name" = 'account' AND "column_name" = 'issuer'`;
+      expect(column?.is_nullable).toBe("NO");
+    } finally {
+      await sql.end();
+      await database.cleanup();
+    }
   }, 30_000);
 });

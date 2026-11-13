@@ -2,7 +2,7 @@ import path from "node:path";
 import os from "node:os";
 import { promises as fs } from "node:fs";
 import * as tar from "tar";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi, type Mock } from "vitest";
 import { CreateosClient } from "./client.js";
 import { parseConfig } from "./config.js";
 import { assertRemotePath, syncFiles, validateArchive } from "./file-sync.js";
@@ -16,7 +16,7 @@ const params = { driverKey: "createos", companyId: "c", environmentId: "e", conf
 let temp: string;
 let downloads: Buffer;
 let uploads: Buffer[];
-let fetchMock: ReturnType<typeof vi.fn>;
+let fetchMock: Mock<(url: string, init?: RequestInit) => Promise<Response>>;
 
 beforeEach(async () => {
   temp = await fs.mkdtemp(path.join(os.tmpdir(), "createos-sync-test-"));

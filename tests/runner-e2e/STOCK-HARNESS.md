@@ -47,6 +47,16 @@ Vitest reports and required assertions, and the Rust result before creating a
 company. Missing, stale, partial, or failed prerequisites cannot qualify a cell.
 Oracle/admission calibration is itself included in the prerequisite gate.
 
+## Checkout observations
+
+Legacy context-integrity journeys retain `checkout-activity.json` from the public
+issue activity API. Each receipt must match the exact company, issue, agent and
+run. An idempotent agent checkout still records a successful route call; the
+server's pre-dispatch checkout does not. Missing or mismatched evidence is
+unavailable or uncomparable, never a zero. This observation leaves the original
+outcome grades unchanged. It counts successful HTTP checkouts only; inspect
+retained executed commands/results for failed attempts before claiming no calls.
+
 ## Live matrix
 
 There are 24 explicit local cells: these eight existing profiles each run three

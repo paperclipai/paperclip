@@ -235,6 +235,8 @@ export interface AgentRuntimeIdentity {
 }
 
 export interface AdapterExecutionContext {
+  /** Company-owned exporter credentials. Transient; never persist or merge into config. */
+  observability?: import("./agent-observability.js").ProviderObservabilityLaunch;
   /** Server-owned credentials. Never persist this object or merge it into config. */
   agentIdentity?: AgentRuntimeIdentity;
   /** Synchronous, content-free diagnostic scope; never stop or collection authority. */
@@ -306,6 +308,8 @@ export interface AdapterEnvironmentCheck {
   message: string;
   detail?: string | null;
   hint?: string | null;
+  /** The check could not complete because its execution target was unavailable. */
+  retryable?: boolean;
 }
 
 export type AdapterEnvironmentTestStatus = "pass" | "warn" | "fail";
@@ -370,6 +374,7 @@ export interface AdapterEnvironmentTestContext {
   companyId: string;
   adapterType: string;
   config: Record<string, unknown>;
+  managedAiCredentialHome?: string;
   /**
    * Optional execution target the adapter should run probes against.
    *
@@ -602,6 +607,7 @@ export interface ServerAdapterModule {
 
 export type ProviderActivityFamily =
   | "plan"
+  | "plan_proposal"
   | "tool_execution"
   | "research"
   | "delegation"
@@ -614,6 +620,7 @@ export type ProviderActivityFamily =
   | "safety"
   | "terminal"
   | "wait"
+  | "verification"
   | "provider_notice";
 
 export type ProviderActivityStatus =
@@ -631,6 +638,8 @@ export interface TranscriptWorkspaceChangeFile {
   deletions: number | null;
   binary: boolean;
   diff: string | null;
+  /** The producer shortened or omitted this patch; counts still cover all of it. */
+  diffTruncated?: boolean;
 }
 
 export interface TranscriptRunVerification {
@@ -687,18 +696,35 @@ export interface PaperclipQuestionResponse {
   answers: Record<string, { selectedOptionIds?: string[]; text?: string; customText?: string }>;
 }
 
+/**
+ * Canonical facts about one tool execution (from `paperclip.tool.execution.v1`).
+ * When present on a `tool_call`, it is authoritative and replaces earlier
+ * values for the same `toolUseId`; a later lifecycle event may refine it.
+ */
+export interface TranscriptToolDetail {
+  operation?: string;
+  /** Command line, search pattern, URL or query. */
+  subject?: string;
+  /** Workspace-relative file path. */
+  target?: string;
+  description?: string;
+  exitCode?: number | null;
+  durationMs?: number | null;
+  blockedReason?: string;
+}
+
 export type TranscriptEntry =
   | { kind: "assistant"; ts: string; text: string; delta?: boolean; channel?: "progress" | "final" | "unknown"; itemId?: string }
   | { kind: "thinking"; ts: string; text: string; delta?: boolean; lifecycle?: "started" | "completed"; channel?: "summary" | "detail" | "unknown"; itemId?: string }
   | { kind: "user"; ts: string; text: string }
-  | { kind: "tool_call"; ts: string; name: string; input: unknown; toolUseId?: string; invocationId?: string; actionRequestId?: string }
+  | { kind: "tool_call"; ts: string; name: string; input: unknown; toolUseId?: string; invocationId?: string; actionRequestId?: string; /** Delegation (subagent) execution that made this call. */ parentToolUseId?: string; detail?: TranscriptToolDetail }
   | { kind: "tool_result"; ts: string; toolUseId: string; toolName?: string; content: string; isError: boolean; delta?: boolean }
   | { kind: "init"; ts: string; model: string; sessionId: string }
   | { kind: "result"; ts: string; text: string; inputTokens: number; outputTokens: number; cachedTokens: number; costUsd: number; subtype: string; isError: boolean; errors: string[] }
   | { kind: "stderr"; ts: string; text: string }
   | { kind: "system"; ts: string; text: string }
   | { kind: "stdout"; ts: string; text: string }
-  | { kind: "diff"; ts: string; changeType: "add" | "remove" | "context" | "hunk" | "file_header" | "truncation"; text: string }
+  | { kind: "diff"; ts: string; changeType: "add" | "remove" | "context" | "hunk" | "file_header" | "truncation"; text: string; toolUseId?: string; additions?: number; deletions?: number }
   | { kind: "provider_activity"; ts: string; family: ProviderActivityFamily; eventType: string; status: ProviderActivityStatus; title: string; summary: string; payload: Record<string, unknown> }
   | { kind: "workspace_change"; ts: string; changeSetId: string; revision: number; source: "harness_reported" | "runner_verified"; complete: boolean; files: TranscriptWorkspaceChangeFile[]; totals: { files: number; additions: number | null; deletions: number | null }; patchArtifactRef: string | null }
   | { kind: "workspace_file_reference"; ts: string; referenceId: string; source: "harness_reported" | "runner_verified"; path: string; displayName: string; mediaType: string | null; presentation: "document" | "code" | "image" | "generic"; line: number | null; preview: string | null; previewTruncated: boolean; contentDigest: string | null }
@@ -722,8 +748,11 @@ export interface CLIAdapterModule {
 // ---------------------------------------------------------------------------
 
 export interface CreateConfigValues {
+  runner?: "auto" | "paperclip" | "legacy";
+  resolvedRunner?: "paperclip" | "legacy";
   adapterType: string;
   codexPermissionMode?: "never" | "on-request" | "untrusted";
+  codexLegacySandboxBypass?: boolean;
   paperclipRunnerLifecycleMode?: "per_turn" | "warm";
   paperclipRunnerIdleTimeoutMs?: number;
   cwd: string;

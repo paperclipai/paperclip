@@ -41,6 +41,13 @@ describe("native heartbeat cancellation authority", () => {
     );
   });
 
+  it("passes the caller identity into the audited native boundary", async () => {
+    const cancel = vi.fn(async () => ({ decision: {}, auditId: "audit" }));
+    const db = {} as Db, cancellationRequestId = "11111111-1111-4111-8111-111111111111";
+    await cancelHeartbeatNativeRun({ db, runId: "run", reason: "Stop", runtimeMode: "native", cancellationRequestId, cancel });
+    expect(cancel).toHaveBeenCalledWith("run", "Stop", { db, scope: "run", cancellationRequestId });
+  });
+
   it("fails closed when a native cancellation lacks its decision audit", async () => {
     const cancel = vi.fn(async () => ({
       decision: null,

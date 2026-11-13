@@ -220,6 +220,7 @@ export interface RoutineRun {
   routineRevisionId?: string | null;
   idempotencyKey: string | null;
   triggerPayload: Record<string, unknown> | null;
+  createdByRunId?: string | null;
   dispatchFingerprint: string | null;
   linkedIssueId: string | null;
   coalescedIntoRunId: string | null;
@@ -235,6 +236,8 @@ export interface RoutineTriggerSecretMaterial {
 }
 
 export interface RoutineDetail extends Routine {
+  /** Actor-specific affordance. The update route remains authoritative. */
+  canChangeResponsibleUser?: boolean;
   project: RoutineProjectSummary | null;
   assignee: RoutineAgentSummary | null;
   parentIssue: RoutineIssueSummary | null;

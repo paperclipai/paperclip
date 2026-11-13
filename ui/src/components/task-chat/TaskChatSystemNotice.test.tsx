@@ -212,6 +212,28 @@ describe("TaskChatSystemNotice (PAP-443)", () => {
     ).toBe(true);
   });
 
+  it.each([false, true])("preserves retry on a saved Automatic recovery blocked notice (pending: %s)", async (pending) => {
+    const onTryAgain = vi.fn();
+    renderNotice({
+      text: "Paperclip automatically retried continuation for this assigned `in_progress` issue and the retry made progress, but it still has no live execution path. Moving it to `blocked` so it is visible for intervention.",
+      presentation: { kind: "system_notice", title: "Automatic recovery blocked", tone: "danger", detailsDefaultOpen: false },
+      metadata: { version: 1, sourceRunId: "run-1", sections: [{ title: "Recovery", rows: [
+        { type: "key_value", label: "Recovery action", value: "recovery-action-1" },
+      ] }] },
+    }, { onTryAgainNoLiveExecutionPath: onTryAgain, tryAgainNoLiveExecutionPathPending: pending });
+    const retry = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-no-live-path-try-again"]');
+    expect(retry).not.toBeNull();
+    expect(retry!.disabled).toBe(pending);
+    if (!pending) {
+      flushSync(() => retry!.click());
+      await Promise.resolve();
+      expect(onTryAgain).toHaveBeenCalledTimes(1);
+    }
+    flushSync(() => toggleButton().click());
+    expect(container.querySelectorAll('[data-testid="task-chat-no-live-path-try-again"]')).toHaveLength(1);
+    expect(container.querySelector('[data-testid="task-chat-system-notice-details"] [data-testid="task-chat-no-live-path-try-again"]')).not.toBeNull();
+  });
+
   it("moves Try again into the expanded notice footer", () => {
     renderNotice(
       {
@@ -237,6 +259,15 @@ describe("TaskChatSystemNotice (PAP-443)", () => {
     expect(
       container.querySelectorAll('[data-testid="task-chat-no-live-path-try-again"]'),
     ).toHaveLength(1);
+  });
+
+  it.each([
+    { text: "Paperclip retried continuation, but it still has no live execution path.",
+      presentation: { kind: "system_notice" as const, title: "Child task blocked", tone: "warning" as const, detailsDefaultOpen: false } },
+    { text: "Child task has no live execution path. Parent must review its result." },
+  ])("does not attach a parent recovery retry to an unrelated notice: $text", (item) => {
+    renderNotice(item, { onTryAgainNoLiveExecutionPath: vi.fn() });
+    expect(container.querySelector('[data-testid="task-chat-no-live-path-try-again"]')).toBeNull();
   });
 
   it("shows the pending state and omits Try again from unrelated notices", () => {

@@ -11,6 +11,7 @@ import {
 import {
   ensureAdapterExecutionTargetCommandResolvable,
   ensureAdapterExecutionTargetDirectory,
+  isAdapterExecutionTargetUnavailableError,
   maybeRunSandboxInstallCommand,
   runAdapterExecutionTargetProcess,
   describeAdapterExecutionTarget,
@@ -196,6 +197,8 @@ async function prepareCodexHelloProbe(input: {
       workspaceRemoteDir: input.cwd,
       installCommand: SANDBOX_INSTALL_COMMAND,
       detectCommand: input.command,
+      // The probe workspace is a throwaway temp dir; never wait on copy-back retries.
+      workspaceRestoreRetryDelaysMs: [],
       assets: [
         {
           key: "home",
@@ -306,6 +309,7 @@ export async function testEnvironment(
   } catch (err) {
     checks.push({
       code: "codex_cwd_invalid",
+      ...(isAdapterExecutionTargetUnavailableError(err) ? { retryable: true } : {}),
       level: "error",
       message: err instanceof Error ? err.message : "Invalid working directory",
       detail: cwd,
@@ -337,6 +341,7 @@ export async function testEnvironment(
   } catch (err) {
     checks.push({
       code: "codex_command_unresolvable",
+      ...(isAdapterExecutionTargetUnavailableError(err) ? { retryable: true } : {}),
       level: "error",
       message: err instanceof Error ? err.message : "Command is not executable",
       detail: command,
