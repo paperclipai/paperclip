@@ -281,6 +281,7 @@ import {
 } from "./native-runtime/native-cancellation-request.js";
 import {
   prepareChatCompletionTurn,
+  chatCompletionAlreadyReported,
 } from "./chat-completion-delivery.js";
 
 import {
@@ -1777,6 +1778,24 @@ export function heartbeatService(
     return recovery.buildRunOutputSilence(run, now);
   }
 
+  async function buildRunOutputSilences(
+    runs: ReadonlyArray<Pick<
+      typeof heartbeatRuns.$inferSelect,
+      | "id"
+      | "companyId"
+      | "status"
+      | "lastOutputAt"
+      | "lastOutputSeq"
+      | "lastOutputStream"
+      | "processStartedAt"
+      | "startedAt"
+      | "createdAt"
+    >>,
+    now = new Date(),
+  ) {
+    return recovery.buildRunOutputSilences(runs, now);
+  }
+
   async function reconcileResolvedDependencyWakes(opts?: Parameters<typeof recovery.reconcileResolvedDependencyWakeBackstop>[0]) {
     return recovery.reconcileResolvedDependencyWakeBackstop(opts);
   }
@@ -2201,6 +2220,14 @@ export function heartbeatService(
         conversation: isConversation(conversationIdentity),
       })) return;
       run = await timePreparation("chat_completion", () => prepareChatCompletionTurn(db, run));
+      if (chatCompletionAlreadyReported(run)) {
+        // An earlier reply in this conversation already reported each completion.
+        await setRunStatus(run.id, "succeeded", { finishedAt: new Date(), resultJson: { chatCompletionAlreadyReported: true }, issueCommentStatus: "not_applicable" });
+        await setWakeupStatus(run.wakeupRequestId, "completed", { finishedAt: new Date() });
+        await releaseIssueExecutionAndPromote((await getRun(run.id))!, { suppressImmediateRecovery: true });
+        await finalizeAgentStatus(agent.id, "succeeded");
+        return;
+      }
       const preparedConversation = await timePreparation("conversation", () => prepareConversationTurn(db, run));
       run = { ...run, contextSnapshot: preparedConversation.context };
       if (preparedConversation.reset) {
@@ -4723,6 +4750,7 @@ export function heartbeatService(
     reconcileCostAccounting,
 
     buildRunOutputSilence,
+    buildRunOutputSilences,
 
     tickTimers,
     tickAgentTimers,

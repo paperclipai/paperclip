@@ -6,7 +6,6 @@ on:
       - PR
       - Runner Windows
       - Sentry SDK contract
-      - Docker Runner check
       - Runner image
       - commitperclip PR Review
       - Storybook Visual

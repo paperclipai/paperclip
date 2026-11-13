@@ -99,7 +99,7 @@ type ProjectionState = {
   cleanupSettling?: boolean;
   /** The fresh-continuation fallback is continuing this run's task (recorded,
    * not yet started) or will check it again at `nextCheckAt`. */
-  freshContinuation?: { state: "continuing" } | { state: "scheduled"; nextCheckAt: number };
+  freshContinuation?: { state: "continuing"; pendingSince?: number } | { state: "scheduled"; nextCheckAt: number };
   automaticDispositionAt?: number;
   waitingContinuation?: { queuedAt: number; personRequested: boolean };
   recoveryHandedToPerson?: boolean;
@@ -283,7 +283,13 @@ function projectTaskInterruptionState(issue: ProjectionIssue, input: ProjectionS
     return { ...base, state: "working", canRetry: true, retryAction: "move_forward" };
   if (["running", "queued"].includes(run.status)) return { ...base, state: "working" };
   // Paperclip is continuing the task by itself: no failed attempt and no Retry.
-  if (input.freshContinuation?.state === "continuing") return { ...base, state: "working", canRetry: false };
+  if (input.freshContinuation?.state === "continuing") {
+    const pendingSince = input.freshContinuation.pendingSince;
+    if (pendingSince !== undefined && !input.retryWait && run.agentId === issue.assigneeAgentId
+        && now - pendingSince >= WAITING_CONTINUATION_MOVE_FORWARD_MS)
+      return { ...base, state: "working", canRetry: true, retryAction: "move_forward" };
+    return { ...base, state: "working", canRetry: false };
+  }
   if (input.freshContinuation?.state === "scheduled" && input.freshContinuation.nextCheckAt > now)
     return { ...base, state: "retry_scheduled", nextRetryAt: new Date(input.freshContinuation.nextCheckAt).toISOString(), canRetry: false };
   if (input.automaticDispositionAt !== undefined && ["failed", "timed_out", "interrupted", "cancelled"].includes(run.status)
@@ -610,16 +616,26 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
     runId: sql<string>`${issueRecoveryActions.evidence}->>'runId'`,
     delivery: sql<string | null>`${issueRecoveryActions.evidence}->>'continuationDelivery'`,
     recorded: sql<boolean>`${issueRecoveryActions.evidence} ? 'freshContinuation'`,
+    status: issueRecoveryActions.status,
+    schema: sql<string | null>`${issueRecoveryActions.evidence}#>>'{freshContinuation,schema}'`,
+    recordedAt: sql<string | null>`${issueRecoveryActions.evidence}#>>'{freshContinuation,recordedAt}'`,
+    reconciledRunId: sql<string | null>`${issueRecoveryActions.evidence}#>>'{executionReconciliation,runId}'`,
     checkKind: sql<string | null>`${issueRecoveryActions.evidence}#>>'{freshContinuationCheck,kind}'`,
     nextCheckAt: sql<string | null>`${issueRecoveryActions.evidence}#>>'{freshContinuationCheck,nextCheckAt}'` })
     .from(issueRecoveryActions).where(and(eq(issueRecoveryActions.companyId, companyId), inArray(issueRecoveryActions.sourceIssueId, ids),
       inArray(sql`${issueRecoveryActions.evidence}->>'runId'`, runIds),
       sql`(${issueRecoveryActions.evidence} ? 'freshContinuationSettlement' or ${issueRecoveryActions.evidence} ? 'freshContinuationCheck')`)) : [];
+  const pendingSchema = freshRows.some(row => row.delivery === "pending")
+    ? (await import("./fresh-continuation-fallback.js")).FRESH_CONTINUATION_SCHEMA : null;
   const freshContinuationFor = (issueId: string, runId: string | undefined): ProjectionState["freshContinuation"] => {
     const rows = freshRows.filter(row => row.issueId === issueId && row.runId === runId);
     // Only the primary record (it carries `freshContinuation`) says whether a
     // continuation is still on its way; holds coalesced into it never do.
-    if (rows.some(row => row.recorded && ["not_requested", "pending"].includes(row.delivery ?? ""))) return { state: "continuing" };
+    if (rows.some(row => row.recorded && ["not_requested", "pending"].includes(row.delivery ?? ""))) {
+      const pendingSince = Math.max(...rows.filter(row => row.recorded && row.delivery === "pending" && row.status === "resolved"
+        && row.schema === pendingSchema && row.reconciledRunId === runId).map(row => Date.parse(row.recordedAt ?? "")));
+      return Number.isFinite(pendingSince) ? { state: "continuing", pendingSince } : { state: "continuing" };
+    }
     const scheduled = rows.filter(row => ["exact_recovery_pending", "backoff"].includes(row.checkKind ?? "") && row.nextCheckAt)
       .map(row => Number(row.nextCheckAt)).sort((a, b) => a - b)[0];
     return scheduled ? { state: "scheduled", nextCheckAt: scheduled } : undefined;
