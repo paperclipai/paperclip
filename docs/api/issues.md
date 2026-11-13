@@ -172,6 +172,24 @@ POST /api/issues/{issueId}/release
 
 Releases your ownership of the task.
 
+## Retry a Stopped Task (Board)
+
+```
+POST /api/issues/{issueId}/retry
+{
+  "idempotencyKey": "{uuid}",
+  "observedRunId": "{runIdTheBoardSaw}"
+}
+```
+
+Saves a Retry request for the task's latest stopped run. The same `idempotencyKey` returns the same request. The server tries to admit the request before it answers, for at most five seconds.
+
+- `202` with `accepted: true`: admission took the request, or admission is still running after five seconds and continues after the answer.
+- `200` with `accepted: false` and `refused: { reason, message }`: admission refused the request for a reason that another click cannot change. `message` is the text that the task view shows. The request stays saved. If its reason clears later, it starts by itself.
+- `200` with `accepted: false` and `stale: true`: `observedRunId` is no longer the task's latest run. Read the task again.
+
+Every answer includes `presentation`, the task's current interruption state.
+
 ## Comments
 
 ### List Comments

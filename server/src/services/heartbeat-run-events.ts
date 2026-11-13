@@ -98,22 +98,26 @@ export async function allocateHeartbeatRunEventSeq(
   return Number(updated.nextEventSeq) - 1;
 }
 
+function runEventWakes(input: AppendHeartbeatRunEventInput): RunEventWakes {
+  return {
+    // Terminal proof may arrive after controller retirement and a quiet Stop
+    // check. Register the scoped wake before writing it, in the same transaction.
+    recovery: ["native.process_start_requested", "native.process_identity_recorded", "native.local_process_stopped"].includes(input.eventType)
+      || Boolean(input.nativeSource && ["turn.completed", "turn.failed", "turn.cancelled", "turn.interrupted"].includes(input.eventType)),
+    reassessment: readNativeEventEvidenceOutcome(input.payload?.prpEvent) !== null,
+    progress: isSafeNativeChatProgressEventType(input.eventType),
+    response: isNativeResponseEvidence(input.eventType, input.payload?.prpEvent),
+    retention: input.eventType === "lifecycle" && Boolean(input.message?.startsWith(RETRY_EXHAUSTION_MESSAGE_PREFIX)),
+  };
+}
+
 export async function appendHeartbeatRunEvent(
   db: Db,
   input: AppendHeartbeatRunEventInput,
 ): Promise<AppendHeartbeatRunEventResult> {
-  const projectsRetention = input.eventType === "lifecycle" && Boolean(input.message?.startsWith(RETRY_EXHAUSTION_MESSAGE_PREFIX));
-  // Terminal proof may arrive after controller retirement and a quiet Stop
-  // check. Register the scoped wake before writing it, in the same transaction.
-  const projectsRecovery = ["native.process_start_requested", "native.process_identity_recorded", "native.local_process_stopped"].includes(input.eventType)
-    || Boolean(input.nativeSource && ["turn.completed", "turn.failed", "turn.cancelled", "turn.interrupted"].includes(input.eventType));
-  const projectsReassessment = readNativeEventEvidenceOutcome(input.payload?.prpEvent) !== null;
-  const projectsProgress = isSafeNativeChatProgressEventType(input.eventType);
-  const projectsResponse = isNativeResponseEvidence(input.eventType, input.payload?.prpEvent);
   // Deduplicated receipts return without allocating, so they cannot carry run changes.
   if (input.runUpdate && (input.nativeSource || input.retryExhaustion)) throw new Error("heartbeat_run_event_run_update_unsupported");
-  const wakes = { recovery: projectsRecovery, reassessment: projectsReassessment, progress: projectsProgress,
-    response: projectsResponse, retention: projectsRetention };
+  const wakes = runEventWakes(input);
   if (!input.runUpdate && !input.nativeSource && !input.retryExhaustion && !input.assertWritable && !Object.values(wakes).some(Boolean)) {
     const [appended] = await db.execute<Record<string, unknown>>(sql`
       with allocated_run_event as (
@@ -143,6 +147,102 @@ export async function appendHeartbeatRunEvent(
     input.assertWritable?.();
     return receipt;
   });
+}
+
+/**
+ * Appends native source events of one run and one source in one transaction,
+ * in the given order, and returns one receipt per event. A stream that
+ * continues its source's stored cursor with new events takes four statements
+ * for the whole batch: the run lock, a replay probe, one insert of every row,
+ * and the commit. Any other batch (a replay, a gap, an event that registers a
+ * wake, or a run without a cursor) appends its events one by one in the same
+ * transaction, with the checks of a single append.
+ */
+export async function appendHeartbeatRunEventBatch(
+  db: Db,
+  inputs: readonly AppendHeartbeatRunEventInput[],
+  assertWritable?: () => void,
+): Promise<AppendHeartbeatRunEventResult[]> {
+  const first = inputs[0];
+  if (!first) return [];
+  const source = first.nativeSource;
+  if (!source || inputs.some(input => !input.nativeSource || input.runUpdate || input.retryExhaustion
+    || input.companyId !== first.companyId || input.runId !== first.runId || input.agentId !== first.agentId
+    || input.nativeSource.sourceInstanceId !== source.sourceInstanceId)) {
+    throw new Error("heartbeat_run_event_batch_unsupported");
+  }
+  if (inputs.length === 1) return [await appendHeartbeatRunEvent(db, assertWritable ? { ...first, assertWritable } : first)];
+  const wakes = inputs.map(runEventWakes);
+  return db.transaction(async (transaction) => {
+    const tx = transaction as unknown as Db;
+    assertWritable?.();
+    const appendOneByOne = async () => {
+      const receipts: AppendHeartbeatRunEventResult[] = [];
+      for (const [index, input] of inputs.entries()) {
+        receipts.push(await appendNativeSourceEvent(tx, input as NativeSourceEventInput, wakes[index]!));
+      }
+      return receipts;
+    };
+    if (wakes.some(wake => Object.values(wake).some(Boolean))) return finish(await appendOneByOne());
+    const [run] = await tx.execute<{ company_id: string; agent_id: string; source_cursor: string | number | null }>(
+      sql`select "company_id", "agent_id", ("native_source_cursors" ->> ${source.sourceInstanceId})::bigint as "source_cursor"
+        from "heartbeat_runs" where "id" = ${first.runId} for no key update`);
+    if (!run || run.company_id !== first.companyId || run.agent_id !== first.agentId) {
+      throw new Error("heartbeat_run_event_binding_mismatch");
+    }
+    const cursor = run.source_cursor === null || run.source_cursor === undefined ? null : Number(run.source_cursor);
+    const continuesCursor = cursor !== null && inputs.every((input, index) => input.nativeSource!.sourceSeq === cursor + index + 1);
+    if (!continuesCursor) return finish(await appendOneByOne());
+    const eventIds = JSON.stringify(inputs.map(input => input.nativeSource!.sourceEventId));
+    const [replayed] = await tx.execute<{ replayed: boolean }>(sql`select exists (
+      select 1 from heartbeat_run_events where run_id = ${first.runId} and (
+        source_event_id = any(array(select jsonb_array_elements_text(${eventIds}::jsonb)))
+        or (source_instance_id = ${source.sourceInstanceId} and source_seq > ${cursor}::bigint))) as replayed`);
+    if (replayed?.replayed) return finish(await appendOneByOne());
+    const rows = JSON.stringify(inputs.map(input => ({
+      eventType: input.eventType, stream: input.stream ?? null, level: input.level ?? null, color: input.color ?? null,
+      message: input.message ?? null,
+      payload: input.payload ? heartbeatRunEvents.payload.mapToDriverValue(input.payload) : null,
+      sourceEventId: input.nativeSource!.sourceEventId, sourceSeq: input.nativeSource!.sourceSeq,
+      sourcePayloadSha256: nativeSha256(input.nativeSource!.canonicalPayload),
+      protocolSchemaVersion: input.nativeSource!.protocolSchemaVersion,
+    })));
+    const lastSeq = cursor + inputs.length;
+    const inserted = await tx.execute<Record<string, unknown>>(sql`
+      with allocated as (
+        update heartbeat_runs
+        set next_event_seq = next_event_seq + ${inputs.length}::integer,
+            updated_at = ${sql.param(new Date(), heartbeatRuns.updatedAt)},
+            native_source_cursors = jsonb_set(coalesce(native_source_cursors, '{}'::jsonb),
+              array[${source.sourceInstanceId}::text], to_jsonb(${lastSeq}::bigint))
+        where id = ${first.runId}
+        returning next_event_seq - ${inputs.length}::integer as first_seq
+      )
+      insert into heartbeat_run_events
+        (company_id, run_id, agent_id, seq, event_type, stream, level, color, message, payload,
+          source_instance_id, source_event_id, source_seq, source_payload_sha256, protocol_schema_version)
+      select ${first.companyId}::uuid, ${first.runId}::uuid, ${first.agentId}::uuid, allocated.first_seq + event.ordinal - 1,
+        event.value ->> 'eventType', event.value ->> 'stream', event.value ->> 'level', event.value ->> 'color',
+        event.value ->> 'message', (event.value ->> 'payload')::jsonb,
+        ${source.sourceInstanceId}::text, event.value ->> 'sourceEventId', (event.value ->> 'sourceSeq')::bigint,
+        event.value ->> 'sourcePayloadSha256', (event.value ->> 'protocolSchemaVersion')::integer
+      from allocated cross join jsonb_array_elements(${rows}::jsonb) with ordinality as event(value, ordinal)
+      order by event.ordinal
+      returning *
+    `);
+    if (inserted.length !== inputs.length) throw new Error("heartbeat_run_event_not_persisted");
+    const bySourceSeq = new Map(inserted.map(raw => [Number(raw.source_seq), decodeRunEventRow(raw)]));
+    return finish(inputs.map(input => ({
+      row: bySourceSeq.get(input.nativeSource!.sourceSeq)!,
+      disposition: "committed" as const,
+      highestContiguousSourceSeq: input.nativeSource!.sourceSeq,
+    })));
+  });
+
+  function finish(receipts: AppendHeartbeatRunEventResult[]) {
+    assertWritable?.();
+    return receipts;
+  }
 }
 
 const runEventColumns = Object.entries(getTableColumns(heartbeatRunEvents));

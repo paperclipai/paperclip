@@ -2205,12 +2205,13 @@ impl AcpxCommandExecutor {
                 error
             });
         }
-        let (provider_process_will_be_replaced, previous_process_id) = self
+        let previous_process_id = self
             .session
             .as_ref()
-            .map(|session| match session.restarted_after_turn_from() {
-                Some(process_id) => (true, process_id),
-                None => (session.generation_has_run_turn(), session.process_id()),
+            .map(|session| {
+                session
+                    .restarted_after_turn_from()
+                    .unwrap_or_else(|| session.process_id())
             })
             .expect("ACPX session exists after availability check");
         {
@@ -2338,12 +2339,12 @@ impl AcpxCommandExecutor {
             json!({"sessionGoals": state.goal_projection["sessionGoals"], "turnControls":state.turn_controls})
         });
         self.save_state()?;
-        let mut events = Vec::with_capacity(if provider_process_will_be_replaced {
-            2
-        } else {
-            1
-        });
-        if provider_process_will_be_replaced {
+        let provider_process_was_replaced = self
+            .session
+            .as_ref()
+            .is_some_and(AcpxProviderSession::turn_start_replaced_provider);
+        let mut events = Vec::with_capacity(if provider_process_was_replaced { 2 } else { 1 });
+        if provider_process_was_replaced {
             let session = self
                 .session
                 .as_ref()

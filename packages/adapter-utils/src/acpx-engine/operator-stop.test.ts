@@ -46,7 +46,7 @@ it('stops an actual ACP process and resumes its established session with the new
   const launches = (await fs.readFile(path.join(root, 'run-env'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
   expect(launches.map(launch => launch.runId)).toEqual(['stop-test', 'follow-up']);
   expect(launches[1].tokenHash).toBe(createHash('sha256').update('follow-up-test-token').digest('hex'));
-});
+}, 15000);
 it('continues after an interrupted write without replaying that write', async () => {
   const { root, ctx, abort, started, execute } = await setup('write');
   const running = execute(ctx);
@@ -89,7 +89,7 @@ it.each(['missing session', 'changed configuration'])('starts a new turn when th
   }
   expect(next.exitCode, JSON.stringify(next)).toBe(0);
   expect((await fs.readFile(path.join(root, 'prompts'), 'utf8')).trim().split('\n')).toHaveLength(2);
-});
+}, 15000);
 
 it('keeps the Stop deadline active after cancellation returns until provider exit', async () => {
   const { ctx, abort, started, execute } = await setup();

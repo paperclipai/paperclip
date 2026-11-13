@@ -59,8 +59,8 @@ describe("release and resume task contract", () => {
       expect(environmentTaskResultSchema.parse({ ...description, ...capabilities })).toEqual({ ...description, ...capabilities });
     }
     expect(environmentTaskResultSchema.safeParse({ ...description, releaseResumeVersion: 2 }).success).toBe(false);
-    expect(environmentTaskResultSchema.parse({ ...description, resumeCredentialVersion: 1 })).toEqual({ ...description, resumeCredentialVersion: 1 });
-    expect(environmentTaskResultSchema.safeParse({ ...description, resumeCredentialVersion: 2 }).success).toBe(false);
+    expect(environmentTaskResultSchema.parse({ ...description, resumeLaunchInputsVersion: 1 })).toEqual({ ...description, resumeLaunchInputsVersion: 1 });
+    expect(environmentTaskResultSchema.safeParse({ ...description, resumeLaunchInputsVersion: 2 }).success).toBe(false);
   });
 
   it.each(credentials)("validates %s on resume as on submit", (_label, credential, valid) => {
