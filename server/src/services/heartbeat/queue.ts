@@ -3940,8 +3940,15 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             && !executionReconciliationWake;
           // A recorded fresh continuation that has no run yet is this task's
           // next run: another system wake is coalesced into it, never a second run.
-          if (systemWake && !executionBlocker && await hasPendingFreshContinuation(tx as unknown as Db, issue.companyId, issue.id))
+          if (systemWake && !executionBlocker && await hasPendingFreshContinuation(tx as unknown as Db, issue.companyId, issue.id)) {
+            await tx.insert(agentWakeupRequests).values({
+              ...durableReceiptFields, companyId: agent.companyId, agentId, source, triggerDetail,
+              reason: "issue_continuation_pending", payload, status: "skipped",
+              requestedByActorType: opts.requestedByActorType ?? null, requestedByActorId: opts.requestedByActorId ?? null,
+              idempotencyKey: opts.idempotencyKey ?? null, finishedAt: new Date(),
+            });
             return { kind: "skipped" as const };
+          }
           if ((executionBlocker || opts.queuedCommentInterruptId) && !ownsReconstructionContinuation && !(await admitExplicitNativeContinuation({
             db: tx as unknown as Db, companyId: issue.companyId, issueId: issue.id,
             agentId, actorType: taskRetryActorId ? "user" : opts.requestedByActorType, actorId: taskRetryActorId ?? opts.requestedByActorId,
