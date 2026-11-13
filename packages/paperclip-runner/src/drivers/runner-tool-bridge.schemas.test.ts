@@ -3,7 +3,7 @@ import { afterEach, expect, it } from "vitest";
 import { startRunnerToolBridge, type RunnerToolBridge } from "./runner-tool-bridge.js";
 
 type FixtureCase = { name: string; accepted: boolean; schema: Record<string, unknown>; valid?: unknown[]; invalid?: unknown[] };
-const fixtures = JSON.parse(readFileSync(new URL("./tool-input-schema-fixtures.json", import.meta.url), "utf8")) as { cases: FixtureCase[] };
+const fixtures = JSON.parse(readFileSync(new URL("../../test/fixtures/tool-input-schema-fixtures.json", import.meta.url), "utf8")) as { cases: FixtureCase[] };
 const bridges: RunnerToolBridge[] = [];
 afterEach(async () => { await Promise.all(bridges.splice(0).map(bridge => bridge.close())); });
 

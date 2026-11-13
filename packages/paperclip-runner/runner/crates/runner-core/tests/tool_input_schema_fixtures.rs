@@ -4,7 +4,7 @@ use paperclip_runner_core::provider_bridge::{
 };
 use serde_json::{json, Value};
 
-const FIXTURES: &str = include_str!("../../../../src/drivers/tool-input-schema-fixtures.json");
+const FIXTURES: &str = include_str!("../../../../test/fixtures/tool-input-schema-fixtures.json");
 
 fn accepted_cases() -> Vec<Value> {
     let fixtures: Value = serde_json::from_str(FIXTURES).unwrap();

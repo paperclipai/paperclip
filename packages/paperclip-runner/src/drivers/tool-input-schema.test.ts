@@ -12,7 +12,7 @@ type FixtureCase = {
   invalid?: unknown[];
 };
 
-const fixtures = JSON.parse(readFileSync(new URL("./tool-input-schema-fixtures.json", import.meta.url), "utf8")) as { cases: FixtureCase[] };
+const fixtures = JSON.parse(readFileSync(new URL("../../test/fixtures/tool-input-schema-fixtures.json", import.meta.url), "utf8")) as { cases: FixtureCase[] };
 
 describe("tool input schema admission", () => {
   it.each(fixtures.cases.map(fixture => [fixture.name, fixture] as const))("matches the shared fixture for %s", (_name, fixture) => {
