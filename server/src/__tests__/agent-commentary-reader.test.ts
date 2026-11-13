@@ -112,7 +112,13 @@ describe("agent commentary browsing", () => {
       id, companyId, agentId: firstAgentId, runId, issueId: taskId, kind: "complaint",
       body: "Deleted private task feedback", idempotencyKey: "deleted", payloadHash: "hash",
     });
+    await reader.setVote(companyId, id, sql`true`, "operator", true, { actorType: "user", actorId: "operator" });
+    const voteHistory = async () => (await activityService(db).list({
+      companyId, entityType: "agent_commentary", entityId: id, readCondition: eq(issues.id, visibleTaskId),
+    })).map((row) => row.action);
+    expect(await voteHistory()).toEqual([]);
     await db.delete(issues).where(eq(issues.id, taskId));
+    expect(await voteHistory()).toEqual([]);
     expect(await reader.get(companyId, id, eq(issues.id, visibleTaskId))).toBeNull();
     expect((await reader.list(companyId, query({ q: "Deleted private task feedback" }), eq(issues.id, visibleTaskId))).total).toBe(0);
   });

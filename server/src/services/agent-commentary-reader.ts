@@ -1,4 +1,4 @@
-import { and, count, desc, eq, ilike, isNull, or, sql, type SQL } from "drizzle-orm";
+import { and, count, desc, eq, ilike, isNull, or, sql, type AnyColumn, type SQL } from "drizzle-orm";
 import { agentCommentary, agentCommentaryVotes, agents, heartbeatRuns, issues, type Db } from "@paperclipai/db";
 import type {
   AgentCommentaryDetail, AgentCommentaryEntry, AgentCommentaryPage, AgentCommentaryQuery, AgentCommentaryVoteState,
@@ -26,20 +26,28 @@ const entryFields = {
   task: { id: issues.id, identifier: issues.identifier, title: issues.title },
 };
 
+function visible(companyId: string, readCondition: SQL) {
+  return and(
+    eq(agentCommentary.companyId, companyId),
+    or(
+      and(isNull(agentCommentary.issueId), sql`coalesce(
+        ${heartbeatRuns.nativeIssueId}::text,
+        ${heartbeatRuns.contextSnapshot}->>'issueId',
+        ${heartbeatRuns.contextSnapshot}->>'taskId'
+      ) is null`),
+      and(sql`${issues.id} is not null`, readCondition),
+    ),
+  );
+}
+
+export function agentCommentaryActivityVisible(entityId: SQL | AnyColumn, companyId: string, readCondition: SQL) {
+  return sql<boolean>`exists (select 1 from ${agentCommentary}
+    inner join ${heartbeatRuns} on ${heartbeatRuns.id} = ${agentCommentary.runId} and ${heartbeatRuns.companyId} = ${agentCommentary.companyId}
+    left join ${issues} on ${issues.id} = ${agentCommentary.issueId} and ${issues.companyId} = ${agentCommentary.companyId}
+    where ${agentCommentary.id}::text = ${entityId} and ${visible(companyId, readCondition)})`;
+}
+
 export function agentCommentaryReader(db: Db) {
-  function visible(companyId: string, readCondition: SQL) {
-    return and(
-      eq(agentCommentary.companyId, companyId),
-      or(
-        and(isNull(agentCommentary.issueId), sql`coalesce(
-          ${heartbeatRuns.nativeIssueId}::text,
-          ${heartbeatRuns.contextSnapshot}->>'issueId',
-          ${heartbeatRuns.contextSnapshot}->>'taskId'
-        ) is null`),
-        and(sql`${issues.id} is not null`, readCondition),
-      ),
-    );
-  }
 
   function entries(viewerUserId: string | null) {
     return db.select({ ...entryFields, ...voteFields(viewerUserId) }).from(agentCommentary)

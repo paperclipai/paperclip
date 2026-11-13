@@ -90,6 +90,8 @@ effect. Each real change writes an `agent.commentary_upvoted` or
 `agent.commentary_upvote_removed` activity entry. Company activity history and
 live events apply the source task's read check to commentary entries, so people
 who cannot read a private task's message do not see its submissions or votes.
+History uses the same visibility rule as the reader, so entries stay hidden after
+the source task is deleted.
 All four require company access and `commentary:view` for people, and apply the
 same task privacy, so hidden or other-company messages return 404. Voting needs
 a signed-in person. Agents can read their own messages, or all of them with an
