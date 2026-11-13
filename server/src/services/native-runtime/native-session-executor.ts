@@ -1,6 +1,7 @@
 import { currentControllerProcess } from "../controller-process-identity.js";
 import { remoteRecoveryLeaseMismatch } from "./remote-recovery-lease-mismatch.js";
 import { isGovernancePauseStop } from "../governance-pause-stop.js";
+import { retryTransientLockContention } from "../transient-lock-contention.js";
 import { nativeLeaseHolder, notifyNativeTokenLeaseClaimed } from "./native-token-lease-settlement.js";
 import { captureRemoteNativeProviderArtifacts, shareNativeProviderArtifactCapture } from "./native-provider-artifact-capture.js";
 import { NativeSessionDiagnostics, nativeSessionDiagnostics, type NativeDiagnosticLease } from "./native-session-diagnostics.js";
@@ -13099,7 +13100,11 @@ async function executePaperclipNativeSessionAttempt(
       // transitions the run into "failed". Read after the transaction
       // commits, so a rolled-back write never reports a false failure.
       let terminalRunToReport: typeof heartbeatRuns.$inferSelect | null = null;
-      await input.db.transaction(async (tx) => {
+      // A lock timeout rolls this write back whole, so a fresh attempt is safe.
+      // Without it a briefly held row strands the run under its dead lease and
+      // the task needs reconciliation instead of its recorded recovery.
+      await retryTransientLockContention(() => input.db.transaction(async (tx) => {
+        terminalRunToReport = null;
         await tx.execute(
           sql`select set_config('statement_timeout', '15000', true), set_config('lock_timeout', '1000', true)`,
         );
@@ -13494,7 +13499,7 @@ async function executePaperclipNativeSessionAttempt(
           supersedeOnIdentityChange:
             recoveryProjection.supersedeOnIdentityChange,
         });
-      }).catch(async (failure: unknown) => {
+      })).catch(async (failure: unknown) => {
         // Emit after rollback so the diagnostic sink cannot deadlock on the
         // coordinator transaction. Reporting failure cannot change fencing.
         if (failure instanceof NativePostResultFailureError) {
