@@ -1116,9 +1116,11 @@ export function aiConnectionService(db: Db) {
   /**
    * Record a genuine provider authentication failure for one credential
    * generation. A late failure must never invalidate credentials that were
-   * refreshed or reconnected meanwhile, and one failure alone never latches a
-   * shared connection: only repeated failures of the same generation from
-   * distinct runs (or a run and a probe), with no success in between, do.
+   * refreshed or reconnected meanwhile. For runs, one failure alone never
+   * latches a shared connection: only repeated failures of the same generation
+   * from distinct runs, with no success in between, do. An explicit Test or
+   * save probe (no run) latches on one genuine rejection, as before: the probe
+   * classifier already reports edge and HTML rejections under their own codes.
    */
   async function markAuthenticationFailed(input: {
     companyId: string;
@@ -1177,9 +1179,8 @@ export function aiConnectionService(db: Db) {
         // grant and generation only, so on a shared grant every user's runs
         // count together and any user's success resets the count. Other
         // failure kinds (edge, quota, timeout) neither count nor reset, and are
-        // filtered before the scan limit so they cannot crowd out real ones. A
-        // probe has no run row, so its observation is recorded in the activity
-        // log below and counted from there.
+        // filtered before the scan limit so they cannot crowd out real ones.
+        const threshold = input.runId ? AI_AUTHENTICATION_FAILURE_LATCH_THRESHOLD : 1;
         const sameGeneration = and(
           sql`${heartbeatRuns.contextSnapshot}->'aiConnection'->>'identity' like ${`${grant.id}:%`}`,
           sql`${heartbeatRuns.contextSnapshot}->'aiConnection'->>'identity' like ${`%:${generation}`}`,
@@ -1199,23 +1200,16 @@ export function aiConnectionService(db: Db) {
           ),
           sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.createdAt}) >= ${since.toISOString()}::timestamptz`,
         )).limit(AI_AUTHENTICATION_FAILURE_SCAN_LIMIT);
-        const probeObservations = await tx.select({ id: activityLog.id }).from(activityLog).where(and(
-          eq(activityLog.companyId, input.companyId), eq(activityLog.action, "ai_connection.authentication_failure_observed"),
-          eq(activityLog.entityType, "tool_connection"), eq(activityLog.entityId, connection.id),
-          sql`${activityLog.details}->>'generation' = ${generation}`, sql`${activityLog.details}->>'source' = 'probe'`,
-          sql`${activityLog.createdAt} >= ${since.toISOString()}::timestamptz`,
-        )).limit(AI_AUTHENTICATION_FAILURE_SCAN_LIMIT);
         const observed = new Set<string>([input.runId ?? "probe:current"]);
         for (const run of failedRuns) if (isAiAuthenticationFailure(run.errorCode)) observed.add(run.id);
-        for (const probe of probeObservations) observed.add(`probe:${probe.id}`);
-        if (observed.size < AI_AUTHENTICATION_FAILURE_LATCH_THRESHOLD) {
+        if (observed.size < threshold) {
           outcome = "below_threshold";
           await logActivity(tx as unknown as Db, {
-            companyId: input.companyId, actorType: "system", actorId: input.runId ? "heartbeat" : "adapter_test",
+            companyId: input.companyId, actorType: "system", actorId: "heartbeat",
             agentId: input.agentId, runId: input.runId, action: "ai_connection.authentication_failure_observed",
             entityType: "tool_connection", entityId: connection.id,
-            details: { provider: attribution.provider, grantId: grant.id, generation, source: input.runId ? "run" : "probe",
-              observedFailures: observed.size, threshold: AI_AUTHENTICATION_FAILURE_LATCH_THRESHOLD },
+            details: { provider: attribution.provider, grantId: grant.id, generation, source: "run",
+              observedFailures: observed.size, threshold },
           });
           return;
         }
