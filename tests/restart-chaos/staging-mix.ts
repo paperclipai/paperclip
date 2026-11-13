@@ -60,7 +60,7 @@ export interface StagingMixRecord {
 
 export interface CompletionEvidence {
   completedAt: number | null;
-  runs: Array<{ runId: string | null; startedAt: number | null; acceptedDisposition: string | null; acceptedAt: number | null }>;
+  runs: Array<{ runId: string | null; startedAt: number | null; acceptedDisposition: string | null; acceptedAt: number | null; answersFollowUp?: boolean }>;
 }
 
 export interface RetryBanner { firstShownAt: number; lastShownAt: number; shownMs: number; visibleSince: number | null; errorCode: string | null }
@@ -412,8 +412,9 @@ export function completionRunIds(comments: readonly CommentEvidence[], nonce: st
   const summaries = comments.filter(comment => anchor !== null && typeof comment.createdAt === "number" && comment.createdAt >= anchor
     && comment.body.includes(doneMarker(nonce)) && comment.runId).map(comment => comment.runId!);
   if (hasDispositions(completion)) {
+    const followUps = new Set(completion.runs.filter(run => run.answersFollowUp && run.runId).map(run => run.runId!));
     const accepted = completion.runs.filter(run => run.acceptedDisposition === "done" && run.runId).map(run => run.runId!);
-    return [...new Set([...accepted, ...summaries])];
+    return [...new Set([...accepted, ...summaries])].filter(runId => !followUps.has(runId));
   }
   return [...new Set([...comments.filter(comment => isDoneComment(comment.body, nonce) && comment.runId).map(comment => comment.runId!), ...summaries])];
 }

@@ -5,8 +5,8 @@ import {
   stagingMixDescription, type CompletionEvidence, type StagingMixTask,
 } from "./staging-mix.js";
 import {
-  bannerSink, commentEvidence, evidenceCompletion, extraTurnLine, extraTurnsByReason, issueView, readAssignedWorkInvariant, retryAfterSettleStage, runsAfterDone, shouldClickRetryAfterSettle,
-  stagingMixHeadline, summarizeStagingMix, type RetryStageObserver,
+  bannerSink, commentEvidence, evidenceCompletion, extraTurnLine, extraTurnsByReason, followUpLine, followUpsAnsweredLater, issueView, laterAnswerHeadline, readAssignedWorkInvariant,
+  retryAfterSettleStage, runsAfterDone, shouldClickRetryAfterSettle, stagingMixHeadline, summarizeStagingMix, type RetryStageObserver, type WakeEvidenceFile,
 } from "./staging-mix-retry.js";
 import type { OracleArtifacts, TaskPlan, TaskRecord, TaskSample } from "./types.js";
 
@@ -242,8 +242,8 @@ describe("staging-mix runs after the task completed", () => {
     expect(neverStarted.map(turn => turn.runId)).toEqual(["aa11bb22-dddd"]);
     expect(extraTurnLine(neverStarted[0]!)).toContain("never started");
     expect(extraTurnsByReason(started)).toEqual({ issue_children_completed: 1, issue_recovery_action_restored: 1 });
-    expect(runsAfterDone("t001", evidence, { at: null, source: null })).toEqual({ started: [], neverStarted: [] });
-    expect(runsAfterDone("t001", null, { at: 1, source: "completed_at" })).toEqual({ started: [], neverStarted: [] });
+    expect(runsAfterDone("t001", evidence, { at: null, source: null })).toEqual({ started: [], neverStarted: [], answeredFollowUp: [] });
+    expect(runsAfterDone("t001", null, { at: 1, source: "completed_at" })).toEqual({ started: [], neverStarted: [], answeredFollowUp: [] });
   });
 
   it("does not count the run that completed the task as an extra turn (w-20261112T233630-s7201 t005)", () => {
@@ -261,6 +261,55 @@ describe("staging-mix runs after the task completed", () => {
       { issueStatus: "done", documents: { ledger: ledger("c9b1da0f", 10) }, agentComments: [], files: {}, commands: {}, workspacePath: null,
         stagingMix: { followUp: null, followUpErrors: [], retries: [], comments: posted, completion: completion! } });
     expect(grade.checks.find(check => check.name === "completion_once")).toMatchObject({ ok: true, detail: "runs=1" });
+  });
+});
+
+describe("a follow-up the running turn did not receive (w-20261113T052703-s7301 t010)", () => {
+  const nonce = "bd13d3bf";
+  const comment = "fd278a3a-946b-44df-b62f-0e47c982aea1";
+  const first = "0d18f0d9-0550-4f97-8926-0fcf49b43d19", second = "42acaf33-4c75-4d62-8bfe-07053a78cd9f";
+  const t010 = (firstRun: { historyReadCommentIds?: string[]; contextSnapshot?: unknown } = {}): WakeEvidenceFile => ({
+    completedAt: 1_794_550_265_674,
+    runs: [{ runId: first, createdAt: 1_794_548_287_511, startedAt: 1_794_548_287_574, invocationSource: "assignment", triggerDetail: "system",
+      wakeupRequestId: "4816f3b7", acceptedDisposition: "done", acceptedAt: 1_794_549_206_395, contextSnapshot: { wakeReason: "issue_assigned", paperclipWake: { commentIds: [] } },
+      historyReadCommentIds: [], ...firstRun },
+    { runId: second, createdAt: 1_794_549_207_682, startedAt: 1_794_550_224_261, invocationSource: "automation", triggerDetail: "system",
+      wakeupRequestId: "452458ef", acceptedDisposition: "done", acceptedAt: 1_794_550_262_627,
+      contextSnapshot: { wakeReason: "issue_commented", wakeCommentIds: [comment], paperclipWake: { commentIds: [comment] } }, historyReadCommentIds: [] }],
+    wakes: [{ id: "4816f3b7", reason: "issue_assigned", source: "assignment", triggerDetail: "system", requestedByActorType: "user", requestedByActorId: "local-board", createdAt: 1_794_548_287_511 },
+      { id: "452458ef", reason: "issue_execution_promoted", source: "automation", triggerDetail: "system", requestedByActorType: "user", requestedByActorId: "local-board",
+        createdAt: 1_794_548_961_691, payload: { commentId: comment, _paperclipWakeContext: { wakeCommentIds: [comment] } } }],
+  });
+  const posted = commentEvidence([
+    { body: "Done. The follow-up requirement is applied: the `ledger` document now includes `FOLLOWUP-bd13d3bf`; the single `DONE-bd13d3bf` comment was already posted.",
+      authorAgentId: "a", createdByRunId: second, createdAt: "2026-11-13T06:11:05.788Z" },
+    { body: "Task CHA-12 complete. No board comments arrived, so no extra lines were added.", authorAgentId: "a", createdByRunId: first, createdAt: "2026-11-13T05:53:27.608Z" },
+    { body: doneMarker(nonce), authorAgentId: "a", createdByRunId: first, createdAt: "2026-11-13T05:53:19.468Z" }]);
+  const completionOnce = (evidence: WakeEvidenceFile) => gradeStagingMix(nonce, { turnMinutes: 15, rounds: 9, subtasks: 0, followUpAfterMs: 400_000, arriveAtMs: 0, holdMs: 0 },
+    { issueStatus: "done", documents: { ledger: ledger(nonce, 9) }, agentComments: [], files: {}, commands: {}, workspacePath: null,
+      stagingMix: { followUp: null, followUpErrors: [], retries: [], comments: posted, completion: evidenceCompletion(evidence)! } }).checks.find(check => check.name === "completion_once")!;
+  const afterDone = (evidence: WakeEvidenceFile) => runsAfterDone("t010", evidence, completedAtAnchor(evidenceCompletion(evidence), posted, nonce));
+
+  it("counts the run that answered the unreceived comment as required, not as an extra turn or a duplicate completion", () => {
+    const evidence = t010();
+    expect(afterDone(evidence).started).toEqual([]);
+    expect(afterDone(evidence).answeredFollowUp.map(turn => turn.runId)).toEqual([second]);
+    expect(completionOnce(evidence)).toMatchObject({ ok: true, detail: "runs=1" });
+    const answered = followUpsAnsweredLater("t010", evidence);
+    expect(answered).toEqual([{ taskId: "t010", runId: second, commentIds: [comment], postedAt: 1_794_548_961_691, queuedAt: 1_794_549_207_682, startedAt: 1_794_550_224_261 }]);
+    expect(followUpLine(answered[0]!)).toBe("- t010: run 42acaf33 answered fd278a3a 1263 s after it was posted, after 1017 s queued");
+    expect(laterAnswerHeadline(0, answered)).toEqual(["extra turns (a run started after completion with no undelivered input): 0",
+      "follow-up answered in a later run: 1, queued wait p50 1017 s / max 1017 s, posted to answered p50 1263 s / max 1263 s"]);
+  });
+
+  it("still counts an extra turn and a duplicate completion when the first run had already received the comment", () => {
+    for (const firstRun of [{ historyReadCommentIds: [comment] }, { contextSnapshot: { wakeReason: "issue_commented", wakeCommentIds: [comment] } }]) {
+      const evidence = t010(firstRun);
+      expect(afterDone(evidence).started.map(turn => turn.runId)).toEqual([second]);
+      expect(afterDone(evidence).answeredFollowUp).toEqual([]);
+      expect(followUpsAnsweredLater("t010", evidence)).toEqual([]);
+      expect(completionOnce(evidence)).toMatchObject({ ok: false, detail: "duplicate completion: runs 0d18f0d9, 42acaf33 each reported completion" });
+    }
   });
 });
 

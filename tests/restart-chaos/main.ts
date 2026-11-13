@@ -30,6 +30,7 @@ import { PLUGIN_BUILD_STAMP, pluginBuildState } from "./plugin-build.js";
 import { DaytonaWaveSweeper, leaksForTask, unattributedLeaks, type DaytonaSweepResult } from "./daytona-sweep.js";
 import { knownSecretValues, redactKnownSecrets, wakeEvidenceOnce, writeEvidenceBundle } from "./evidence.js";
 import { gradeTask } from "./grader.js";
+import { loadWaveGradeInputs } from "./wave-grade-inputs.js";
 import { releaseInstance } from "../runner-e2e/instance-retention.js";
 import { checkPlanInvariants, readUniversalDbEvidence, summarizeViolations, type InvariantCheck } from "./invariants.js";
 import { collectContentionEvidence, RunRowPressure } from "./contention.js";
@@ -784,6 +785,7 @@ async function main(): Promise<number> {
     const universalByIssue = await readUniversalDbEvidence(evidenceDb, lab.companyId).catch(error => {
       timeline.add("universal_db_evidence_failed", { error: String(error) }); return null; });
     const allRunMessages = new Map([...(universalByIssue?.values() ?? [])].flatMap(entry => [...entry.runMessages]));
+    const gradeInputs = await loadWaveGradeInputs(waveDir, plan.options.stagingMix);
     const costSummary = launched.some(observer => observer.plan.workload === "L1")
       ? await api.get<Record<string, unknown>>(`/api/companies/${lab.companyId}/costs/summary?period=all`)
         .then(summary => typeof summary.spendCents === "number"
@@ -822,8 +824,9 @@ async function main(): Promise<number> {
         observer.record.faultIds, parseRecoveryStepReceipts(await readFile(recoveryStepReceipts, "utf8").catch(() => "")), artifacts?.runs ?? []);
       // CR1–CR3: the task's own fault applied (CR2 killed a provider, CR3 stalled the plugin worker; class-r.ts).
       const toolOracle = withClassRCheck(stepOracle, observer.plan, faults);
+      Object.assign(observer.record, await gradeInputs.prepare(observer.plan.taskId, observer.record));
       const grade = gradeTask(observer.record, faults, observer.definition.budgetMs, toolOracle, universalByIssue ? {
-        runMessages: allRunMessages, recoveryActions: universalByIssue.get(observer.record.issueId ?? "")?.recoveryActions ?? [] } : undefined);
+        runMessages: allRunMessages, recoveryActions: universalByIssue.get(observer.record.issueId ?? "")?.recoveryActions ?? [] } : undefined, gradeInputs.queue);
       let evidence: string | null = null;
       if (!grade.pass) {
         anyFailure = true;

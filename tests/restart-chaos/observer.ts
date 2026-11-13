@@ -519,6 +519,10 @@ export class TaskObserver {
       this.restCandidateSince = null;
       return;
     }
+    if (isStalledSample(sample) && this.definition.collect.childDocuments && this.record.issueId) {
+      const children = await this.collectChildren(this.record.issueId).catch(() => null);
+      if (children?.length && childrenPending(children)) sample.waitingOnChildren = true;
+    }
     // A task waiting on the board (G1's approval, H1's paused company) is in a named wait, not a stall.
     this.stallSince = isStalledSample(sample) && !this.awaitingBoard() ? (this.stallSince ?? now) : null;
     if (this.stallSince !== null && now - this.stallSince > STALL_GIVE_UP_MS) {

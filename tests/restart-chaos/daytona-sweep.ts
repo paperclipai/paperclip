@@ -277,7 +277,7 @@ export class DaytonaWaveSweeper {
   }
 }
 
-export interface WaveCleanup {
+export type WaveCleanup = {
   environmentDeleted: boolean;
   environmentDeleteBlocked: string | null;
   remainingSandboxes: string[];
@@ -285,4 +285,4 @@ export interface WaveCleanup {
   deletedSandboxes: string[];
   undeletedSandboxes: string[];
   errors: string[];
-}
+};
