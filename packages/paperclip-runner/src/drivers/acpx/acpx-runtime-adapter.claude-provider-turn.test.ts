@@ -11,7 +11,7 @@ import { expect, it, vi } from "vitest";
 import { startRunnerToolBridge } from "../runner-tool-bridge.js";
 import { openCodexAcpxRuntime } from "./acpx-runtime-adapter.js";
 import { CLAUDE_TOOL_USE_META_KEY, ClaudeToolUseAdmission } from "./claude-tool-use-admission.js";
-import type { ClaudeProviderTurn, ClaudeProviderTurnResult } from "./claude-provider-turns.js";
+import type { ClaudeProviderTurnResult } from "./claude-provider-turns.js";
 import type { VerifiedAcpxCommandLease } from "./installation-integrity.js";
 import { resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
 import type { AcpxRuntimePortOpenOptions } from "./runtime-host.js";
@@ -118,7 +118,7 @@ it("adopts Claude's own task-notification cycle as a provider-started turn throu
     mcpServers: [{ name: "paperclip", url: bridge.url, bearerToken: bridge.secret, runnerOwned: true }],
     retainFailedAdmissionCleanup: vi.fn(),
   } as AcpxRuntimePortOpenOptions;
-  const adopted: Array<{ turn: ClaudeProviderTurn; events: AcpRuntimeEvent[]; result: Promise<ClaudeProviderTurnResult> }> = [];
+  const adopted: Array<{ requestId: string; events: AcpRuntimeEvent[]; result: Promise<ClaudeProviderTurnResult> }> = [];
   const replay = (id: number, toolUseId: string, tag: string) => fetch(bridge.url, { method: "POST",
     headers: { Authorization: `Bearer ${bridge.secret}`, "Content-Type": "application/json" },
     body: JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call",
@@ -130,22 +130,26 @@ it("adopts Claude's own task-notification cycle as a provider-started turn throu
       awaitProviderOwnership: async () => undefined,
       awaitProviderExit: child => new Promise<void>(resolve => child.once("exit", () => resolve())),
     });
-    port.onProviderTurn!((turn) => {
-      activeTurn = turn.requestId;
-      admission.beginTurn(turn.requestId);
-      const events: AcpRuntimeEvent[] = [];
-      const result = (async () => {
-        for await (const event of turn.events) {
-          events.push(event);
-          admission.observe(turn.requestId, event);
+    const cycles = port.providerCycles!()!;
+    void (async () => {
+      for (let item = await cycles.next(); item !== null; item = await cycles.next()) {
+        if (item.type !== "started") continue;
+        const requestId = item.requestId;
+        activeTurn = requestId;
+        admission.beginTurn(requestId);
+        cycles.adopt({ onPermissionRequest: async () => ({ outcome: "allow_once" }), busy: () => false });
+        const events: AcpRuntimeEvent[] = [];
+        let settle!: (result: ClaudeProviderTurnResult) => void;
+        adopted.push({ requestId, events, result: new Promise((resolve) => { settle = resolve; }) });
+        let next = await cycles.next();
+        for (; next?.type === "event"; next = await cycles.next()) {
+          events.push(next.event);
+          admission.observe(requestId, next.event);
         }
-        const settled = await turn.result;
-        admission.endTurn(turn.requestId);
-        return settled;
-      })();
-      adopted.push({ turn, events, result });
-      return { onPermissionRequest: async () => ({ outcome: "allow_once" }), busy: () => false };
-    });
+        admission.endTurn(requestId);
+        settle(next?.type === "ended" ? next.result : { status: "failed", error: { code: "closed", message: "closed", retryable: false } });
+      }
+    })();
     activeTurn = "turn-1";
     admission.beginTurn("turn-1");
     const turn = port.startTurn({ text: "BACKGROUND-TURN: start the command in the background.", requestId: "turn-1",
@@ -158,16 +162,16 @@ it("adopts Claude's own task-notification cycle as a provider-started turn throu
     await vi.waitFor(() => expect(adopted).toHaveLength(1), { timeout: 20_000, interval: 50 });
     const [cycle] = adopted;
     const result = await cycle!.result;
-    expect(cycle!.turn.requestId).toMatch(/^provider-/);
+    expect(cycle!.requestId).toMatch(/^provider-/);
     expect(result).toMatchObject({ status: "completed", stopReason: "end_turn",
       usage: { tag: "usage_update", text: "terminal prompt usage", breakdown: { inputTokens: expect.any(Number), outputTokens: expect.any(Number) } } });
     expect(cycle!.events.some(event => event.type === "tool_call" && event.toolCallId === cycleToolUseId)).toBe(true);
-    expect(dispatched).toEqual([{ turn: cycle!.turn.requestId, callId: `tool-use:${cycleToolUseId}`, tag: "finished" }]);
+    expect(dispatched).toEqual([{ turn: cycle!.requestId, callId: `tool-use:${cycleToolUseId}`, tag: "finished" }]);
     expect(port.backgroundTaskState?.()).toEqual({ live: 0 });
 
     const conflicting = await replay(901, cycleToolUseId, "replayed");
     expect(conflicting.result.isError).toBe(true);
-    await expect(admission.admit(cycle!.turn.requestId, cycleToolUseId, new AbortController().signal))
+    await expect(admission.admit(cycle!.requestId, cycleToolUseId, new AbortController().signal))
       .rejects.toThrow("not bound to the active turn");
     expect(dispatched).toHaveLength(1);
   } finally {

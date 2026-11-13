@@ -10,7 +10,7 @@ import { piProviderConfiguration } from "./pi-provider-config.js";
 import { withAcpxTurnCancellation } from "./turn-cancellation.js";
 import type { AcpxTerminalSessionFailure } from "./provider-failure.js";
 import type { ClaudeBackgroundTaskState } from "./claude-background-tasks.js";
-import type { ClaudeProviderTurn } from "./claude-provider-turns.js";
+import type { ClaudeProviderCycleItem } from "./claude-provider-turns.js";
 import { resolveAcpxProviderMode } from "./provider-mode.js";
 import { resolvePiThinkingLevel, type PiThinkingLevel } from "./pi-thinking.js";
 import { preparedHarnessHome, preconfiguredHomeEnvironment, usesPreconfiguredHome } from "../preconfigured-home.js";
@@ -164,7 +164,13 @@ export type AcpxProviderTurnBinding = {
   busy(): boolean;
 };
 
-export type AcpxProviderTurnListener = (turn: ClaudeProviderTurn) => AcpxProviderTurnBinding | null;
+export interface AcpxProviderCycleStream {
+  next(): Promise<ClaudeProviderCycleItem | null>;
+  adopt(binding: AcpxProviderTurnBinding): boolean;
+  drop(): void;
+  cancel(): boolean;
+  undecided(): Promise<boolean> | null;
+}
 
 export interface AcpxRuntimePort {
   identity(): Promise<AcpxRuntimePortIdentity>;
@@ -176,9 +182,7 @@ export interface AcpxRuntimePort {
   goalCapability?(): AcpxRuntimeGoalCapability | null;
   goalSnapshot?(): AcpxRuntimeGoalSnapshot | null;
   backgroundTaskState?(): ClaudeBackgroundTaskState | null;
-  onProviderTurn?(listener: AcpxProviderTurnListener | null): void;
-  cancelProviderTurn?(): boolean;
-  onProviderTurnsLost?(listener: (() => void) | null): void;
+  providerCycles?(): AcpxProviderCycleStream | null;
   providerTurnsAvailable?(): boolean;
   controlGoal?(
     action: "set" | "pause" | "resume" | "clear",
@@ -909,16 +913,8 @@ export class AcpxRuntimeHost {
     return this.#runtime.backgroundTaskState?.() ?? null;
   }
 
-  onProviderTurn(listener: AcpxProviderTurnListener | null): void {
-    this.#runtime.onProviderTurn?.(listener);
-  }
-
-  cancelProviderTurn(): boolean {
-    return this.#runtime.cancelProviderTurn?.() ?? false;
-  }
-
-  onProviderTurnsLost(listener: (() => void) | null): void {
-    this.#runtime.onProviderTurnsLost?.(listener);
+  providerCycles(): AcpxProviderCycleStream | null {
+    return this.#runtime.providerCycles?.() ?? null;
   }
 
   providerTurnsAvailable(): boolean {

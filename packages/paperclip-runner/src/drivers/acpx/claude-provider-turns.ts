@@ -3,43 +3,45 @@ import { randomUUID } from "node:crypto";
 import type { AcpRuntimeEvent } from "acpx/runtime";
 
 import { createAcpSessionUpdateEventConverter, type AcpSessionUpdateEventConverter } from "./acp-session-update-event.js";
+import { ClaudeBackgroundTaskTracker, type ClaudeBackgroundTaskState } from "./claude-background-tasks.js";
 
 export const CLAUDE_PROVIDER_TURN_SILENCE_MS = 660_000;
 export const CLAUDE_PROVIDER_TURN_PROCESS_LOST = "ACPX_PROVIDER_PROCESS_LOST";
 export const CLAUDE_PROVIDER_TURN_SILENT = "ACPX_PROVIDER_TURN_SILENT";
+export const CLAUDE_PROVIDER_TURN_CLOSED = "ACPX_PROVIDER_TURN_CLOSED";
+export const CLAUDE_PROVIDER_TURN_OVERFLOW = "ACPX_PROVIDER_TURN_OVERFLOW";
 
 const START_KINDS = new Set(["usage_update", "tool_call", "tool_call_update", "agent_message_chunk", "agent_thought_chunk", "plan"]);
 const startsCycle = (update: Record<string, unknown>): boolean =>
   typeof update.sessionUpdate === "string" && START_KINDS.has(update.sessionUpdate);
 const MAX_PENDING_REQUESTS = 256;
-const MAX_DRAIN_BACKLOG = 4_096;
+const MAX_QUEUED_MESSAGES = 4_096;
 
 export type ClaudeProviderTurnResult =
   | { status: "completed"; stopReason: "end_turn"; usage: Record<string, unknown> | null }
   | { status: "cancelled"; stopReason: "cancelled" }
   | { status: "failed"; error: { code: string; message: string; retryable: false } };
 
-export interface ClaudeProviderTurn {
-  readonly requestId: string;
-  readonly events: AsyncIterable<AcpRuntimeEvent>;
-  readonly result: Promise<ClaudeProviderTurnResult>;
-}
+export type ClaudeProviderCycleItem =
+  | { type: "started"; requestId: string }
+  | { type: "event"; event: AcpRuntimeEvent }
+  | { type: "ended"; result: ClaudeProviderTurnResult }
+  | { type: "lost" };
 
-export interface ClaudeProviderTurnAdmission {
-  busy(): boolean;
-  release(): void;
-}
-
-export interface ClaudeProviderTurnHooks {
+export interface ClaudeProviderCycleSource {
   sessionId(): string | null;
   promptActive(): boolean;
-  admit(turn: ClaudeProviderTurn, fail: (code: string, message: string) => void): ClaudeProviderTurnAdmission | null;
   silenceMs?: number;
   mintTurnId?: () => string;
-  unadopted?: () => void;
-  turnStarted?: () => number;
-  turnEnded?: (startedAt: number | null, completed: boolean) => void;
 }
+
+type Queued =
+  | { type: "started"; requestId: string; at: number; decision: Decision }
+  | { type: "message"; message: unknown }
+  | { type: "ended"; result: ClaudeProviderTurnResult }
+  | { type: "lost" };
+
+type Decision = { promise: Promise<boolean>; settle(adopted: boolean): void };
 
 const ARMING_TURN_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/;
 
@@ -54,6 +56,8 @@ export function parseAcpxProviderTurnArming(params: Record<string, unknown>): { 
 
 const record = (value: unknown): Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+
+const failed = (code: string, message: string): ClaudeProviderTurnResult => ({ status: "failed", error: { code, message, retryable: false } });
 
 export function claudeProviderTurnEndMarker(update: Record<string, unknown>): boolean {
   return update.sessionUpdate === "usage_update" && record(record(update._meta)["_claude/origin"]).kind !== undefined;
@@ -82,117 +86,120 @@ function cycleUsage(update: Record<string, unknown>): Record<string, unknown> | 
   };
 }
 
-class ProviderTurnQueue {
-  readonly #items: AcpRuntimeEvent[] = [];
-  #waiter: (() => void) | null = null;
-  #closed = false;
-
-  push(event: AcpRuntimeEvent): void {
-    if (this.#closed) return;
-    this.#items.push(event);
-    this.#wake();
-  }
-
-  close(): void {
-    this.#closed = true;
-    this.#wake();
-  }
-
-  async *iterate(): AsyncIterable<AcpRuntimeEvent> {
-    for (;;) {
-      const next = this.#items.shift();
-      if (next !== undefined) {
-        yield next;
-        continue;
-      }
-      if (this.#closed) return;
-      await new Promise<void>((resolve) => { this.#waiter = resolve; });
-    }
-  }
-
-  #wake(): void {
-    const waiter = this.#waiter;
-    this.#waiter = null;
-    waiter?.();
-  }
+function decision(): Decision {
+  let settle!: (adopted: boolean) => void;
+  let settled = false;
+  const promise = new Promise<boolean>((resolve) => { settle = resolve; });
+  return { promise, settle: (adopted) => { if (!settled) { settled = true; settle(adopted); } } };
 }
 
-class ActiveProviderTurn implements ClaudeProviderTurn {
-  readonly requestId: string;
-  readonly result: Promise<ClaudeProviderTurnResult>;
-  readonly #queue = new ProviderTurnQueue();
-  readonly #converter: AcpSessionUpdateEventConverter = createAcpSessionUpdateEventConverter();
-  #settle!: (result: ClaudeProviderTurnResult) => void;
-  #chain: Promise<void> = Promise.resolve();
-  #settled = false;
-  admission: ClaudeProviderTurnAdmission | null = null;
-  ended: ((result: ClaudeProviderTurnResult) => void) | null = null;
-
-  constructor(requestId: string) {
-    this.requestId = requestId;
-    this.result = new Promise((resolve) => { this.#settle = resolve; });
-  }
-
-  get events(): AsyncIterable<AcpRuntimeEvent> {
-    return this.#queue.iterate();
-  }
-
-  get settled(): boolean {
-    return this.#settled;
-  }
-
-  accept(message: unknown): void {
-    this.#chain = this.#chain.then(async () => {
-      const event = await this.#converter.convert(message);
-      if (event) this.#queue.push(event);
-    });
-  }
-
-  finishAfterQueued(result: ClaudeProviderTurnResult, done: () => void): void {
-    this.#chain = this.#chain.then(() => this.finish(result, done));
-  }
-
-  finish(result: ClaudeProviderTurnResult, done: () => void): void {
-    if (this.#settled) return;
-    this.#settled = true;
-    this.#converter.close();
-    this.#queue.close();
-    try {
-      this.admission?.release();
-    } finally {
-      try {
-        this.ended?.(result);
-      } finally {
-        done();
-        this.#settle(result);
-      }
-    }
-  }
-}
-
-export class ClaudeProviderTurns {
-  readonly #hooks: ClaudeProviderTurnHooks;
+export class ClaudeProviderCycles {
+  readonly #source: ClaudeProviderCycleSource;
+  readonly #tasks = new ClaudeBackgroundTaskTracker();
   readonly #pending = new Set<string | number>();
-  #active: ActiveProviderTurn | null = null;
-  #draining: ActiveProviderTurn | null = null;
-  readonly #backlog: unknown[] = [];
+  readonly #queue: Queued[] = [];
+  readonly #undecided: Decision[] = [];
+  #queuedMessages = 0;
+  #waiter: (() => void) | null = null;
+  #open = false;
+  #subscribed = false;
   #retired = false;
-  #timer: NodeJS.Timeout | null = null;
+  #closed = false;
+  #current: { at: number; converter: AcpSessionUpdateEventConverter; busy: () => boolean } | null = null;
 
-  constructor(hooks: ClaudeProviderTurnHooks) {
-    this.#hooks = hooks;
+  constructor(source: ClaudeProviderCycleSource) {
+    this.#source = source;
   }
 
   get retired(): boolean {
     return this.#retired;
   }
 
-  get activeTurnId(): string | null {
-    return this.#active?.requestId ?? null;
+  backgroundTasks(): ClaudeBackgroundTaskState | null {
+    return this.#tasks.state();
   }
 
   observe(direction: "inbound" | "outbound", message: unknown): boolean {
-    if (this.#retired && this.#active === null && this.#draining === null) return false;
+    const inCycle = this.#classify(direction, message);
+    this.#tasks.observe(direction, message, inCycle);
+    return inCycle;
+  }
+
+  subscribe(): this {
+    this.#subscribed = true;
+    return this;
+  }
+
+  undecided(): Promise<boolean> | null {
+    return this.#undecided[0]?.promise ?? null;
+  }
+
+  async next(): Promise<ClaudeProviderCycleItem | null> {
+    for (;;) {
+      const item = this.#queue.shift();
+      if (item === undefined) {
+        if (this.#closed) return null;
+        if (await this.#wait()) continue;
+        if (this.#current?.busy()) continue;
+        return this.#end(failed(CLAUDE_PROVIDER_TURN_SILENT, "Claude's own turn sent nothing within the silence bound."));
+      }
+      if (item.type === "started") {
+        this.#current = { at: item.at, converter: createAcpSessionUpdateEventConverter(), busy: () => false };
+        return { type: "started", requestId: item.requestId };
+      }
+      if (item.type === "message") {
+        this.#queuedMessages -= 1;
+        const event = this.#current ? await this.#current.converter.convert(item.message) : null;
+        if (event) return { type: "event", event };
+        continue;
+      }
+      if (item.type === "ended") {
+        const current = this.#current;
+        this.#current = null;
+        current?.converter.close();
+        this.#tasks.providerTurnEnded(current?.at ?? null, item.result.status === "completed");
+        return item;
+      }
+      return item;
+    }
+  }
+
+  adopt(busy: () => boolean): void {
+    if (this.#current) this.#current.busy = busy;
+    this.#undecided.shift()?.settle(true);
+  }
+
+  drop(): void {
+    const current = this.#current;
+    this.#current = null;
+    current?.converter.close();
+    this.#tasks.providerTurnEnded(current?.at ?? null, false);
+    this.#retired = true;
+    this.#open = false;
+    this.#queue.splice(0);
+    this.#close();
+  }
+
+  cancel(): boolean {
+    if (!this.#open) return false;
+    this.#stop({ status: "cancelled", stopReason: "cancelled" });
+    return true;
+  }
+
+  lost(): void {
+    this.#stop(failed(CLAUDE_PROVIDER_TURN_PROCESS_LOST, "The owned ACPX provider exited during Claude's own turn"), true);
+  }
+
+  close(): void {
+    this.#stop(failed(CLAUDE_PROVIDER_TURN_CLOSED, "The ACPX runtime closed during Claude's own turn."));
+  }
+
+  retire(): void {
+    this.#retired = true;
+  }
+
+  #classify(direction: "inbound" | "outbound", message: unknown): boolean {
+    if (this.#closed) return false;
     const envelope = record(message);
     const id = envelope.id;
     const hasId = typeof id === "string" || typeof id === "number";
@@ -208,111 +215,70 @@ export class ClaudeProviderTurns {
       return false;
     }
     const params = record(envelope.params);
-    const ownSession = params.sessionId === undefined || params.sessionId === this.#hooks.sessionId();
-    if (hasId) {
-      const active = this.#active;
-      if (!active || !ownSession || envelope.method !== "session/request_permission") return false;
-      this.#touch();
-      return true;
-    }
+    const ownSession = params.sessionId === undefined || params.sessionId === this.#source.sessionId();
+    if (hasId) return this.#open && ownSession && envelope.method === "session/request_permission";
     if (envelope.method !== "session/update" || !ownSession) return false;
     const update = record(params.update);
-    if (this.#draining && !this.#active) {
-      if (this.#backlog.length === 0 && !startsCycle(update)) return false;
-      if (this.#backlog.length >= MAX_DRAIN_BACKLOG) {
+    if (!this.#open) {
+      if (this.#retired || this.#pending.size > 0 || this.#source.promptActive() || !startsCycle(update)) return false;
+      if (!this.#subscribed) {
         this.retire();
         return false;
       }
-      this.#backlog.push(message);
-      return true;
+      const started = decision();
+      this.#undecided.push(started);
+      this.#open = true;
+      this.#push({ type: "started", requestId: this.#source.mintTurnId?.() ?? `provider-${randomUUID()}`, at: this.#tasks.providerTurnStarted(), decision: started });
     }
-    let active = this.#active;
-    if (!active) {
-      if (this.#retired || this.#pending.size > 0 || this.#hooks.promptActive()) return false;
-      if (!startsCycle(update)) return false;
-      active = this.#open();
-      if (!active) return false;
+    if (this.#queuedMessages >= MAX_QUEUED_MESSAGES) {
+      this.#stop(failed(CLAUDE_PROVIDER_TURN_OVERFLOW, "Claude's own turn outran its bounded queue."));
+      return false;
     }
-    this.#touch();
-    active.accept(message);
+    this.#queuedMessages += 1;
+    this.#push({ type: "message", message });
     if (claudeProviderTurnEndMarker(update)) {
-      const ending = active;
-      this.#clear(ending);
-      this.#draining = ending;
-      ending.finishAfterQueued({ status: "completed", stopReason: "end_turn", usage: cycleUsage(update) }, () => this.#drained(ending));
+      this.#open = false;
+      this.#push({ type: "ended", result: { status: "completed", stopReason: "end_turn", usage: cycleUsage(update) } });
     }
     return true;
   }
 
-  cancel(): boolean {
-    const active = this.#active;
-    if (!active || active.settled) return false;
+  #stop(result: ClaudeProviderTurnResult, lost = false): void {
     this.#retired = true;
-    active.finish({ status: "cancelled", stopReason: "cancelled" }, () => this.#clear(active));
-    return true;
+    if (this.#closed) return;
+    if (this.#open) this.#push({ type: "ended", result });
+    this.#open = false;
+    if (lost) this.#push({ type: "lost" });
+    this.#close();
   }
 
-  fail(code: string, message: string): void {
-    const active = this.#active;
-    this.#retired = true;
-    if (!active || active.settled) return;
-    active.finish({ status: "failed", error: { code, message, retryable: false } }, () => this.#clear(active));
+  #end(result: ClaudeProviderTurnResult): ClaudeProviderCycleItem {
+    this.drop();
+    return { type: "ended", result };
   }
 
-  retire(): void {
-    this.#retired = true;
+  #close(): void {
+    this.#closed = true;
+    for (const pending of this.#undecided.splice(0)) pending.settle(false);
+    this.#wake();
   }
 
-  #open(): ActiveProviderTurn | null {
-    const turn = new ActiveProviderTurn(this.#hooks.mintTurnId?.() ?? `provider-${randomUUID()}`);
-    this.#active = turn;
-    let admission: ClaudeProviderTurnAdmission | null = null;
-    try {
-      admission = this.#hooks.admit(turn, (code, message) => this.fail(code, message));
-    } catch {
-      admission = null;
-    }
-    if (!admission) {
-      this.#active = null;
-      this.#retired = true;
-      turn.finish({ status: "failed", error: { code: "ACPX_PROVIDER_TURN_DECLINED", message: "The provider-started turn was not admitted.", retryable: false } }, () => undefined);
-      return null;
-    }
-    turn.admission = admission;
-    const startedAt = this.#hooks.turnStarted?.() ?? null;
-    turn.ended = (result) => this.#hooks.turnEnded?.(startedAt, result.status === "completed");
-    return turn;
+  #push(item: Queued): void {
+    this.#queue.push(item);
+    this.#wake();
   }
 
-  #touch(): void {
-    if (this.#timer) clearTimeout(this.#timer);
-    const silenceMs = this.#hooks.silenceMs ?? CLAUDE_PROVIDER_TURN_SILENCE_MS;
-    const check = () => {
-      const active = this.#active;
-      if (!active || active.settled) return;
-      if (active.admission?.busy()) {
-        this.#timer = setTimeout(check, silenceMs);
-        this.#timer.unref?.();
-        return;
-      }
-      this.fail(CLAUDE_PROVIDER_TURN_SILENT, "Claude's own turn sent nothing within the silence bound.");
-    };
-    this.#timer = setTimeout(check, silenceMs);
-    this.#timer.unref?.();
+  #wait(): Promise<boolean> {
+    return new Promise<boolean>((resolve) => {
+      const timer = this.#current ? setTimeout(() => { this.#waiter = null; resolve(false); }, this.#source.silenceMs ?? CLAUDE_PROVIDER_TURN_SILENCE_MS) : null;
+      timer?.unref?.();
+      this.#waiter = () => { if (timer) clearTimeout(timer); resolve(true); };
+    });
   }
 
-  #drained(turn: ActiveProviderTurn): void {
-    if (this.#draining !== turn) return;
-    this.#draining = null;
-    for (const message of this.#backlog.splice(0)) {
-      if (!this.observe("inbound", message)) this.#hooks.unadopted?.();
-    }
-  }
-
-  #clear(turn: ActiveProviderTurn): void {
-    if (this.#active !== turn) return;
-    this.#active = null;
-    if (this.#timer) clearTimeout(this.#timer);
-    this.#timer = null;
+  #wake(): void {
+    const waiter = this.#waiter;
+    this.#waiter = null;
+    waiter?.();
   }
 }

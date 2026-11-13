@@ -6,8 +6,8 @@ import { resolveGrokDisableWebSearch } from "./grok-web-search.js";
 import { resolveGrokEffort, createGrokEffortAdmission } from "./grok-effort.js";
 import { createGrokSessionOpenGuard } from "./grok-session-rules.js";
 import { resolveClaudeEffort, createClaudeEffortAdmission } from "./claude-effort.js";
-import { CLAUDE_ASYNC_TASKS_CAPABILITY, ClaudeBackgroundTaskTracker } from "./claude-background-tasks.js";
-import { CLAUDE_PROVIDER_TURN_PROCESS_LOST, ClaudeProviderTurns, type ClaudeProviderTurn, type ClaudeProviderTurnAdmission } from "./claude-provider-turns.js";
+import { CLAUDE_ASYNC_TASKS_CAPABILITY } from "./claude-background-tasks.js";
+import { ClaudeProviderCycles } from "./claude-provider-turns.js";
 import { acpxProviderFailure, acpxTypedSessionFailureClientCapabilities, acpxTypedTerminalSessionFailure, type AcpxTerminalSessionFailure } from "./provider-failure.js";
 import type { ProviderFailure } from "../../contracts/provider-failure.generated.js";
 import { createPiThinkingAdmission, resolvePiThinkingLevel } from "./pi-thinking.js";
@@ -32,7 +32,7 @@ import {
 
 import type {
   AcpxPlanProposal,
-  AcpxProviderTurnListener,
+  AcpxProviderCycleStream,
   AcpxRuntimeGoalCapability,
   AcpxRuntimeGoalSnapshot,
   AcpxRuntimeSteeringCapability,
@@ -371,8 +371,7 @@ export async function openQualifiedAcpxRuntime(
   const extensionNotifications = new Set(extensionProfile.extensionNotifications);
   const promptUsage = options.profile.agent === "grok" ? createGrokPromptUsageCollector() : undefined;
   const promptReceipts = createAcpxPromptReceiptCollector(options.profile.agent);
-  const backgroundTasks = options.profile.agent === "claude" ? new ClaudeBackgroundTaskTracker() : null;
-  const providerTurnAdmission: { admit?: (turn: ClaudeProviderTurn, fail: (code: string, message: string) => void) => ClaudeProviderTurnAdmission | null } = {};
+  const providerCycleTurn: { active: AcpxRuntimeExtensionTurn | null } = { active: null };
   const permissionReplies = createAcpxPermissionReplyConfirmations();
   const modelGate = createAcpxEffectiveModelGate(options.profile.reportedModelId);
   // Copilot's admitted permission policy is enforced from the observed wire:
@@ -387,13 +386,9 @@ export async function openQualifiedAcpxRuntime(
   const extensionBoundary: AcpxRuntimeExtensionBoundary = {
     active: null, sessionIds: new Set(), steering: null, promptDispatch: null,
   };
-  const providerTurns = backgroundTasks ? new ClaudeProviderTurns({
+  const providerCycles = options.profile.agent === "claude" ? new ClaudeProviderCycles({
     sessionId: () => extensionBoundary.sessionIds.values().next().value ?? null,
-    promptActive: () => extensionBoundary.active !== null,
-    admit: (turn, fail) => providerTurnAdmission.admit?.(turn, fail) ?? null,
-    unadopted: () => backgroundTasks.providerTurnEnded(null, false),
-    turnStarted: () => backgroundTasks.providerTurnStarted(),
-    turnEnded: (startedAt, completed) => backgroundTasks.providerTurnEnded(startedAt, completed),
+    promptActive: () => extensionBoundary.active !== null && extensionBoundary.active !== providerCycleTurn.active,
   }) : null;
   const ownsExtensionTurn = (active: AcpxRuntimeExtensionTurn, params: Record<string, unknown>): boolean =>
     extensionBoundary.active === active && !active.signal.aborted
@@ -485,7 +480,7 @@ export async function openQualifiedAcpxRuntime(
     elicitationModes: ["form"],
     clientCapabilities: acpxTypedSessionFailureClientCapabilities(
       options.clientCapabilities,
-      backgroundTasks ? [CLAUDE_ASYNC_TASKS_CAPABILITY] : [],
+      providerCycles ? [CLAUDE_ASYNC_TASKS_CAPABILITY] : [],
     ),
     extensionMethods: [...new Set([...extensionRequests, ...extensionNotifications])],
     onExtensionRequest: async (method, params, context) => {
@@ -542,6 +537,8 @@ export async function openQualifiedAcpxRuntime(
         || (rawSessionId !== undefined && rawSessionId !== request.sessionId)) {
         return { outcome: "reject_once" };
       }
+      const cycleDecision = providerCycles?.undecided();
+      if (cycleDecision && !(await cycleDecision)) return { outcome: "cancel" };
       if ((permissionBoundary.hasAdmittedTurn && !extensionBoundary.active)
         || extensionBoundary.active?.signal.aborted || context.signal.aborted) return { outcome: "cancel" };
       if (options.profile.agent === "claude") {
@@ -600,8 +597,7 @@ export async function openQualifiedAcpxRuntime(
       return { outcome: disposition };
     },
     onAcpMessage: (direction, message) => {
-      const providerTurn = providerTurns?.observe(direction, message) ?? false;
-      backgroundTasks?.observe(direction, message, providerTurn);
+      providerCycles?.observe(direction, message);
       observeAgentInitialize(direction, message);
       copilotPolicy?.observe(direction, message);
       modelGate.observe(direction, message);
@@ -849,8 +845,7 @@ export async function openQualifiedAcpxRuntime(
       copilotPolicy,
       modelGate,
       promptReceipts,
-      backgroundTasks,
-      providerTurns ? { turns: providerTurns, admission: providerTurnAdmission } : null,
+      providerCycles ? { cycles: providerCycles, turn: providerCycleTurn } : null,
     );
   } catch (error) {
     const cleanupReason = "ACPX runtime identity validation failed";
@@ -1305,15 +1300,10 @@ function runtimePort(
   copilotPolicy?: CopilotPolicyEnforcement | null,
   modelGate?: AcpxEffectiveModelGate,
   promptReceipts?: ReturnType<typeof createAcpxPromptReceiptCollector>,
-  backgroundTasks?: ClaudeBackgroundTaskTracker | null,
-  providerTurns?: {
-    turns: ClaudeProviderTurns;
-    admission: { admit?: (turn: ClaudeProviderTurn, fail: (code: string, message: string) => void) => ClaudeProviderTurnAdmission | null };
-  } | null,
+  providerCycles?: { cycles: ClaudeProviderCycles; turn: { active: AcpxRuntimeExtensionTurn | null } } | null,
 ): AcpxRuntimePort {
   extensionBoundary.sessionIds = new Set([identity.backendSessionId]);
-  let providerTurnListener: AcpxProviderTurnListener | null = null;
-  let providerTurnsLost: (() => void) | null = null;
+  let cycleStream: AcpxProviderCycleStream | null = null;
   let extensionControls: Promise<void> = Promise.resolve();
   const controlActiveTurn = (method: "pi/steer" | "pi/follow_up", text: string, requestId: string): Promise<void> => {
     const active = extensionBoundary.active;
@@ -1602,19 +1592,14 @@ function runtimePort(
         : structuredClone(goalState.capability);
     },
     backgroundTaskState() {
-      return backgroundTasks?.state() ?? null;
+      return providerCycles?.cycles.backgroundTasks() ?? null;
     },
-    onProviderTurn(listener) {
-      providerTurnListener = listener;
-    },
-    onProviderTurnsLost(listener) {
-      providerTurnsLost = listener;
-    },
-    cancelProviderTurn() {
-      return providerTurns?.turns.cancel() ?? false;
+    providerCycles() {
+      providerCycles?.cycles.subscribe();
+      return cycleStream;
     },
     providerTurnsAvailable() {
-      return providerTurns !== null && providerTurns !== undefined && !providerTurns.turns.retired
+      return providerCycles !== null && providerCycles !== undefined && !providerCycles.cycles.retired
         && !providerProcessLost && !runtimeClosed && !runtimeCloseAttempt;
     },
     goalSnapshot() {
@@ -1847,47 +1832,58 @@ function runtimePort(
       };
     },
     close: (input) => {
-      providerTurns?.turns.fail("ACPX_PROVIDER_TURN_CLOSED", "The ACPX runtime closed during Claude's own turn.");
+      providerCycles?.cycles.close();
       return closeRuntime(input);
     },
   };
-  if (providerTurns) {
+  if (providerCycles) {
+    const { cycles, turn: cycleTurn } = providerCycles;
+    let started: string | null = null;
+    let approval: AbortController | null = null;
+    const release = (): void => {
+      const extensionTurn = cycleTurn.active;
+      const adopted = approval;
+      cycleTurn.active = null;
+      approval = null;
+      if (!extensionTurn || !adopted) return;
+      extensionTurn.controller.abort(new Error("ACPX provider turn expired"));
+      if (extensionBoundary.active === extensionTurn) extensionBoundary.active = null;
+      if (permissionBoundary.active === adopted) {
+        permissionBoundary.active = null;
+        permissionBoundary.handler = undefined;
+        adopted.abort();
+      }
+    };
     children.watchProviderExit(() => {
-      providerTurns.turns.retire();
-      providerTurnsLost?.();
+      if (cycleTurn.active) providerProcessLost = true;
+      cycles.lost();
     });
-    providerTurns.admission.admit = (turn, fail) => {
-      const listener = providerTurnListener;
-      if (!listener || extensionBoundary.active || providerProcessLost || runtimeClosed || runtimeCloseAttempt) return null;
-      const binding = listener(turn);
-      if (!binding) return null;
-      const approval = new AbortController();
-      const controller = new AbortController();
-      const extensionTurn: AcpxRuntimeExtensionTurn = {
-        requestId: turn.requestId, sessionId: identity.backendSessionId, controller,
-        signal: AbortSignal.any([controller.signal, approval.signal]), promptStarted: Promise.resolve(),
-      };
-      extensionBoundary.active = extensionTurn;
-      permissionBoundary.hasAdmittedTurn = true;
-      permissionBoundary.active = approval;
-      permissionBoundary.handler = binding.onPermissionRequest;
-      const stopWatchingProviderExit = children.watchProviderExit(() => {
-        providerProcessLost = true;
-        fail(CLAUDE_PROVIDER_TURN_PROCESS_LOST, "The owned ACPX provider exited during Claude's own turn");
-      });
-      return {
-        busy: binding.busy,
-        release: () => {
-          stopWatchingProviderExit();
-          controller.abort(new Error("ACPX provider turn expired"));
-          if (extensionBoundary.active === extensionTurn) extensionBoundary.active = null;
-          if (permissionBoundary.active === approval) {
-            permissionBoundary.active = null;
-            permissionBoundary.handler = undefined;
-            approval.abort();
-          }
-        },
-      };
+    cycleStream = {
+      async next() {
+        const item = await cycles.next();
+        if (item?.type === "started") started = item.requestId;
+        else if (item?.type !== "event") release();
+        return item;
+      },
+      adopt(binding) {
+        if (started === null || extensionBoundary.active || providerProcessLost || runtimeClosed || runtimeCloseAttempt) return false;
+        approval = new AbortController();
+        const controller = new AbortController();
+        const extensionTurn: AcpxRuntimeExtensionTurn = {
+          requestId: started, sessionId: identity.backendSessionId, controller,
+          signal: AbortSignal.any([controller.signal, approval.signal]), promptStarted: Promise.resolve(),
+        };
+        cycleTurn.active = extensionTurn;
+        extensionBoundary.active = extensionTurn;
+        permissionBoundary.hasAdmittedTurn = true;
+        permissionBoundary.active = approval;
+        permissionBoundary.handler = binding.onPermissionRequest;
+        cycles.adopt(binding.busy);
+        return true;
+      },
+      drop: () => cycles.drop(),
+      cancel: () => cycles.cancel(),
+      undecided: () => cycles.undecided(),
     };
   }
   return port;

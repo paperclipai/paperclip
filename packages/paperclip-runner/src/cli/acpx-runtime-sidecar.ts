@@ -94,9 +94,9 @@ import {
 import { validatePrpStructuredRunResult } from "../protocol/replay-contract.js";
 import type { RunnerToolCall } from "../drivers/runner-tool-bridge.js";
 import { CLAUDE_TOOL_USE_META_KEY, ClaudeToolUseAdmission } from "../drivers/acpx/claude-tool-use-admission.js";
-import { parseAcpxProviderTurnArming, type ClaudeProviderTurn } from "../drivers/acpx/claude-provider-turns.js";
+import { CLAUDE_PROVIDER_TURN_CLOSED, parseAcpxProviderTurnArming } from "../drivers/acpx/claude-provider-turns.js";
 import { GENERATED_ACPX_PROVIDER_TURN_LOST_CODE, GENERATED_ACPX_PROVIDER_TURN_ORIGIN } from "../drivers/acpx/generated-sidecar-contract.js";
-import type { AcpxProviderTurnBinding } from "../drivers/acpx/runtime-host.js";
+import type { AcpxProviderCycleStream } from "../drivers/acpx/runtime-host.js";
 import {
   acpxBootstrapBlockedError,
   acpxSidecarErrorCode,
@@ -199,7 +199,8 @@ let toolUseAdmission: ClaudeToolUseAdmission | null = null;
 let providerTurnId: string | null = null;
 let providerTurnArmed = false;
 let providerTurnOffer: string | null = null;
-let pendingProviderTurn: { decided: Promise<boolean>; settle(armed: boolean): void } | null = null;
+let providerTurnArming: (() => void) | null = null;
+let providerCycles: AcpxProviderCycleStream | null = null;
 const PROVIDER_TURN_ARMING_WAIT_MS = 5_000;
 let activeCopilotEvidence: CopilotToolEvidence | undefined;
 let sequence = 0;
@@ -409,8 +410,9 @@ async function dispatch(
     host = openedHost;
     openParams = params;
     if (params.agent === "claude") {
-      openedHost.onProviderTurn?.((turn) => admitProviderTurn(openedHost, turn));
-      openedHost.onProviderTurnsLost?.(() => providerTurnsLost(openedHost));
+      const cycles = openedHost.providerCycles?.() ?? null;
+      providerCycles = cycles;
+      if (cycles) void consumeProviderCycles(openedHost, cycles);
     }
     callIdNamespace = params.expectedIdentity === undefined
       ? null
@@ -548,12 +550,12 @@ async function dispatch(
       && runId !== null && turnId === null && providerTurnOffer === arming.turnId;
     providerTurnOffer = null;
     providerTurnArmed = armed;
-    pendingProviderTurn?.settle(armed);
+    providerTurnArming?.();
     return { armed };
   }
   if (request.command === "turn.cancel" && providerTurnId !== null && request.params.turnId === providerTurnId) {
     const activeHost = requireHost();
-    activeHost.cancelProviderTurn();
+    providerCycles?.cancel();
     await activeHost.close({ reason: boundedOptionalText(request.params.reason, "Paperclip cancellation", 4_000) });
     return { cancelled: true, sessionClosed: activeHost.isClosed() };
   }
@@ -909,31 +911,49 @@ function emitTurnTerminal(
   emit("runtime.turn_terminal", terminal, currentTurnId);
 }
 
-function admitProviderTurn(activeHost: AcpxRuntimeHost, turn: ClaudeProviderTurn): AcpxProviderTurnBinding | null {
-  if (host !== activeHost || !runId || closing || pendingProviderTurn) return null;
-  const currentTurnId = boundedIdentity(turn.requestId, "turnId");
-  const binding = (decided: Promise<boolean> | null): AcpxProviderTurnBinding => ({
-    onPermissionRequest: async (request, context) => {
-      if (decided) await decided;
-      return await waitForPermission(currentTurnId, "claude", request, context);
-    },
+async function consumeProviderCycles(activeHost: AcpxRuntimeHost, cycles: AcpxProviderCycleStream): Promise<void> {
+  for (let item = await cycles.next(); item !== null; item = await cycles.next()) {
+    if (item.type === "lost") providerTurnsLost(activeHost);
+    if (item.type !== "started") continue;
+    const currentTurnId = boundedIdentity(item.requestId, "turnId");
+    if (await adoptProviderCycle(activeHost, cycles, currentTurnId)) await pumpProviderTurn(currentTurnId, cycles, activeHost);
+  }
+}
+
+async function adoptProviderCycle(activeHost: AcpxRuntimeHost, cycles: AcpxProviderCycleStream, currentTurnId: string): Promise<boolean> {
+  const admissible = () => host === activeHost && runId !== null && !closing && turnId === null;
+  if (admissible() && !providerTurnArmed && providerTurnOffer !== null) {
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(() => providerTurnArming?.(), PROVIDER_TURN_ARMING_WAIT_MS);
+      timer.unref?.();
+      providerTurnArming = () => {
+        clearTimeout(timer);
+        providerTurnArming = null;
+        resolve();
+      };
+    });
+  }
+  if (!admissible() || !providerTurnArmed) {
+    disarmProviderTurn();
+    cycles.drop();
+    return false;
+  }
+  providerTurnArmed = false;
+  turnId = currentTurnId;
+  providerTurnId = currentTurnId;
+  toolUseAdmission?.beginTurn(currentTurnId);
+  const adopted = cycles.adopt({
+    onPermissionRequest: (request, context) => waitForPermission(currentTurnId, "claude", request, context),
     busy: () => turnId === currentTurnId && (tools.size > 0 || normalizingTools.size > 0 || permissions.size > 0 || inputs.size > 0),
   });
-  if (turnId === null && providerTurnArmed) {
-    beginProviderTurn(currentTurnId);
-    void pumpProviderTurn(currentTurnId, turn, activeHost, null);
-    return binding(null);
+  if (!adopted) {
+    turnId = null;
+    providerTurnId = null;
+    cycles.drop();
+    return false;
   }
-  if (turnId === null && providerTurnOffer === null) return null;
-  let settle!: (armed: boolean) => void;
-  const decided = new Promise<boolean>((resolve) => { settle = resolve; });
-  const timer = setTimeout(() => settle(false), PROVIDER_TURN_ARMING_WAIT_MS);
-  timer.unref?.();
-  const pending = { decided, settle: (armed: boolean) => { clearTimeout(timer); settle(armed); } };
-  pendingProviderTurn = pending;
-  void decided.then(() => { if (pendingProviderTurn === pending) pendingProviderTurn = null; });
-  void pumpProviderTurn(currentTurnId, turn, activeHost, decided);
-  return binding(decided);
+  emit("runtime.turn_started", { origin: GENERATED_ACPX_PROVIDER_TURN_ORIGIN }, currentTurnId);
+  return true;
 }
 
 function providerTurnsLost(activeHost: AcpxRuntimeHost): void {
@@ -945,38 +965,17 @@ function providerTurnsLost(activeHost: AcpxRuntimeHost): void {
 function disarmProviderTurn(): void {
   providerTurnArmed = false;
   providerTurnOffer = null;
-  pendingProviderTurn?.settle(false);
+  providerTurnArming?.();
 }
 
-function beginProviderTurn(currentTurnId: string): void {
-  providerTurnArmed = false;
-  turnId = currentTurnId;
-  providerTurnId = currentTurnId;
-  toolUseAdmission?.beginTurn(currentTurnId);
-  emit("runtime.turn_started", { origin: GENERATED_ACPX_PROVIDER_TURN_ORIGIN }, currentTurnId);
-}
-
-async function pumpProviderTurn(
-  currentTurnId: string,
-  turn: ClaudeProviderTurn,
-  activeHost: AcpxRuntimeHost,
-  decided: Promise<boolean> | null,
-): Promise<void> {
-  if (decided) {
-    const armed = await decided;
-    if (!armed || host !== activeHost || !runId || turnId !== null || !providerTurnArmed) {
-      disarmProviderTurn();
-      activeHost.cancelProviderTurn();
-      for await (const _event of turn.events) void _event;
-      return;
-    }
-    beginProviderTurn(currentTurnId);
-  }
+async function pumpProviderTurn(currentTurnId: string, cycles: AcpxProviderCycleStream, activeHost: AcpxRuntimeHost): Promise<void> {
   let terminal: Record<string, unknown>;
   try {
     const step = createRuntimeEventStep(currentTurnId);
-    for await (const event of turn.events) step.accept(event);
-    const result = await turn.result;
+    let item = await cycles.next();
+    for (; item?.type === "event"; item = await cycles.next()) step.accept(item.event);
+    const result = item?.type === "ended" ? item.result
+      : { status: "failed" as const, error: { code: CLAUDE_PROVIDER_TURN_CLOSED, message: "Claude's own turn ended without its result.", retryable: false } };
     if (result.status === "completed") {
       step.settle();
       if (result.usage) emit("runtime.event", sanitizeRuntimeEvent(result.usage as unknown as AcpRuntimeEvent), currentTurnId);
@@ -1011,7 +1010,8 @@ function claudeBackgroundTasks(activeHost: AcpxRuntimeHost): GeneratedAcpxBackgr
 }
 
 async function waitForTool(call: RunnerToolCall, internal = false): Promise<unknown> {
-  if (!turnId && pendingProviderTurn) await pendingProviderTurn.decided;
+  const cycleDecision = providerCycles?.undecided();
+  if (cycleDecision) await cycleDecision;
   const activeTurnId = turnId;
   const activeRunId = runId;
   if (!activeTurnId || !activeRunId || call.signal.aborted) {

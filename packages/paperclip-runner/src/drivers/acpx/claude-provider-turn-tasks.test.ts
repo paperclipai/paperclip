@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { ClaudeBackgroundTaskTracker, type ClaudeBackgroundTaskState } from "./claude-background-tasks.js";
-import { ClaudeProviderTurns, type ClaudeProviderTurn } from "./claude-provider-turns.js";
+import type { ClaudeBackgroundTaskState } from "./claude-background-tasks.js";
+import { ClaudeProviderCycles } from "./claude-provider-turns.js";
 
 const SESSION = "session-1";
 const air = { jetbrains: { air: { version: 1, capabilities: ["sessionFailure", "asyncTasks"] } } };
@@ -13,27 +13,21 @@ const endMarker = () => update({ sessionUpdate: "usage_update", used: 4, size: 1
   _meta: { "_claude/origin": { kind: "task-notification" }, usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } });
 
 function wiring() {
-  const tracker = new ClaudeBackgroundTaskTracker();
+  const cycles = new ClaudeProviderCycles({ sessionId: () => SESSION, promptActive: () => false }).subscribe();
   const terminals: Array<{ requestId: string; state: ClaudeBackgroundTaskState | null }> = [];
-  const pumps: Promise<void>[] = [];
-  const turns = new ClaudeProviderTurns({
-    sessionId: () => SESSION,
-    promptActive: () => false,
-    admit: (turn: ClaudeProviderTurn) => {
-      pumps.push((async () => {
-        for await (const _event of turn.events) void _event;
-        await turn.result;
-        terminals.push({ requestId: turn.requestId, state: tracker.state() });
-      })());
-      return { busy: () => false, release: () => undefined };
-    },
-    turnStarted: () => tracker.providerTurnStarted(),
-    turnEnded: (start, completed) => tracker.providerTurnEnded(start, completed),
-    unadopted: () => tracker.providerTurnEnded(null, false),
-  });
-  const deliver = (direction: "inbound" | "outbound", message: unknown) => {
-    const adopted = turns.observe(direction, message);
-    tracker.observe(direction, message, adopted);
+  const consumed = (async () => {
+    let requestId = "";
+    for (let item = await cycles.next(); item !== null; item = await cycles.next()) {
+      if (item.type === "started") {
+        requestId = item.requestId;
+        cycles.adopt(() => false);
+      }
+      if (item.type === "ended") terminals.push({ requestId, state: cycles.backgroundTasks() });
+    }
+  })();
+  const deliver = (direction: "inbound" | "outbound", message: unknown) => { cycles.observe(direction, message); };
+  const terminal = async (count: number) => {
+    while (terminals.length < count) await new Promise(resolve => setTimeout(resolve, 1));
   };
   deliver("outbound", { jsonrpc: "2.0", id: 0, method: "initialize", params: { clientCapabilities: { _meta: air } } });
   deliver("inbound", { jsonrpc: "2.0", id: 0, result: { protocolVersion: 1, _meta: air } });
@@ -41,36 +35,50 @@ function wiring() {
   deliver("inbound", spawned("task-1"));
   deliver("inbound", spawned("task-2"));
   deliver("inbound", { jsonrpc: "2.0", id: 1, result: { stopReason: "end_turn" } });
-  return { tracker, terminals, pumps, deliver };
+  return { cycles, terminals, terminal, deliver, consumed };
 }
 
 describe("Claude provider-started turns and background task accounting", () => {
-  it("keeps the second shell live at the first cycle's terminal when the second cycle starts while the first drains", async () => {
-    const { tracker, terminals, pumps, deliver } = wiring();
-    expect(tracker.state()).toEqual({ live: 2 });
+  it("keeps the second shell live at the first cycle's terminal when the second cycle starts before the first is consumed", async () => {
+    const { cycles, terminals, terminal, deliver } = wiring();
+    expect(cycles.backgroundTasks()).toEqual({ live: 2 });
     deliver("inbound", finished("task-1"));
     deliver("inbound", usage());
     deliver("inbound", finished("task-2"));
     deliver("inbound", endMarker());
     deliver("inbound", usage());
-    await pumps[0];
+    await terminal(1);
     expect(terminals[0]).toEqual({ requestId: expect.any(String), state: { live: 1 } });
     deliver("inbound", endMarker());
-    await Promise.all(pumps);
+    await terminal(2);
     expect(terminals[1]!.state).toEqual({ live: 0 });
   });
 
   it("settles each cycle's own finished task when the cycles do not overlap", async () => {
-    const { terminals, pumps, deliver } = wiring();
+    const { terminals, terminal, deliver } = wiring();
     deliver("inbound", finished("task-1"));
     deliver("inbound", usage());
     deliver("inbound", endMarker());
-    await pumps[0];
+    await terminal(1);
     expect(terminals[0]!.state).toEqual({ live: 1 });
     deliver("inbound", finished("task-2"));
     deliver("inbound", usage());
     deliver("inbound", endMarker());
-    await Promise.all(pumps);
+    await terminal(2);
     expect(terminals[1]!.state).toEqual({ live: 0 });
+  });
+
+  it("makes the background state unknown when a cycle is dropped", async () => {
+    const cycles = new ClaudeProviderCycles({ sessionId: () => SESSION, promptActive: () => false }).subscribe();
+    cycles.observe("outbound", { jsonrpc: "2.0", id: 0, method: "initialize", params: { clientCapabilities: { _meta: air } } });
+    cycles.observe("inbound", { jsonrpc: "2.0", id: 0, result: { protocolVersion: 1, _meta: air } });
+    cycles.observe("inbound", spawned("task-1"));
+    cycles.observe("inbound", finished("task-1"));
+    cycles.observe("inbound", usage());
+    expect(cycles.backgroundTasks()).toEqual({ live: 1 });
+    expect(await cycles.next()).toMatchObject({ type: "started" });
+    cycles.drop();
+    expect(cycles.backgroundTasks()).toBeNull();
+    expect(await cycles.next()).toBeNull();
   });
 });

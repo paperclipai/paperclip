@@ -74,7 +74,7 @@ describe("ACPX sidecar provider-started Claude turns", () => {
       await send("turn.start", { turnId: "turn-1", message: "Start a background command." });
       const first = await sidecar.next(frame => frame.eventType === "runtime.turn_terminal" && frame.turnId === "turn-1");
       expect(payload(first)).toEqual({ status: "completed", stopReason: "end_turn", backgroundTasks: { live: 1 } });
-      await expect.poll(() => observed().admitted, { timeout: 5_000 }).toBe(true);
+      await expect.poll(() => observed().offered, { timeout: 5_000 }).toBe(true);
       expect(sidecar.pending(frame => frame.eventType === "runtime.turn_started")).toBe(0);
       expect(await send("session.provider_turn", { turnId: "turn-1", armed: true })).toEqual({ armed: true });
       expect(await sidecar.next(frame => frame.eventType === "runtime.turn_started")).toMatchObject({ runId: "provider-run", turnId: PROVIDER, payload: { origin: "provider" } });
@@ -228,7 +228,7 @@ describe("ACPX sidecar provider-started Claude turns", () => {
       await unarmed.send("turn.start", { turnId: "turn-1", message: "Start." });
       await unarmed.sidecar.next(frame => frame.eventType === "runtime.turn_terminal" && frame.turnId === "turn-1");
       unarmed.release("offer");
-      await expect.poll(() => unarmed.observed().cancelProviderTurn, { timeout: 8_000 }).toBe(true);
+      await expect.poll(() => unarmed.observed().dropped, { timeout: 8_000 }).toBe(true);
       expect(await unarmed.send("session.provider_turn", { turnId: "turn-1", armed: true })).toEqual({ armed: false });
       expect(unarmed.sidecar.pending(frame => frame.eventType === "runtime.turn_started")).toBe(0);
     } finally { await unarmed.cleanup(); }
@@ -238,9 +238,9 @@ describe("ACPX sidecar provider-started Claude turns", () => {
       await disarmed.send("turn.start", { turnId: "turn-1", message: "Start." });
       await disarmed.sidecar.next(frame => frame.eventType === "runtime.turn_terminal" && frame.turnId === "turn-1");
       disarmed.release("offer");
-      await expect.poll(() => disarmed.observed().admitted, { timeout: 5_000 }).toBe(true);
+      await expect.poll(() => disarmed.observed().offered, { timeout: 5_000 }).toBe(true);
       expect(await disarmed.send("session.provider_turn", { turnId: "turn-1", armed: false })).toEqual({ armed: false });
-      await expect.poll(() => disarmed.observed().cancelProviderTurn, { timeout: 2_000 }).toBe(true);
+      await expect.poll(() => disarmed.observed().dropped, { timeout: 2_000 }).toBe(true);
       expect(disarmed.sidecar.pending(frame => frame.eventType === "runtime.turn_started")).toBe(0);
     } finally { await disarmed.cleanup(); }
 
@@ -257,7 +257,7 @@ describe("ACPX sidecar provider-started Claude turns", () => {
         prepare(session.root);
         expect(await session.send("session.provider_turn", arming), name).toEqual({ armed: false });
         session.release("offer");
-        await expect.poll(() => session.observed().admitted, { timeout: 5_000 }).toBeDefined();
+        await expect.poll(() => session.observed().dropped, { timeout: 5_000 }).toBe(true);
         expect(session.sidecar.pending(frame => frame.eventType === "runtime.turn_started"), name).toBe(0);
       } finally { await session.cleanup(); }
     }
@@ -272,7 +272,7 @@ describe("ACPX sidecar provider-started Claude turns", () => {
       await superseded.send("turn.start", { turnId: "turn-2", message: "Paperclip's next turn." });
       await superseded.sidecar.next(frame => frame.eventType === "runtime.turn_terminal" && frame.turnId === "turn-2");
       superseded.release("offer");
-      await expect.poll(() => superseded.observed().admitted, { timeout: 5_000 }).toBe(false);
+      await expect.poll(() => superseded.observed().dropped, { timeout: 5_000 }).toBe(true);
       expect(superseded.sidecar.pending(frame => frame.eventType === "runtime.turn_started")).toBe(0);
     } finally { await superseded.cleanup(); }
   }, 20_000);
@@ -283,7 +283,7 @@ describe("ACPX sidecar provider-started Claude turns", () => {
       await send("turn.start", { turnId: "turn-1", message: "Start." });
       const terminal = await sidecar.next(frame => frame.eventType === "runtime.turn_terminal");
       expect(payload(terminal)).toEqual({ status: "completed", stopReason: "end_turn" });
-      await expect.poll(() => observed().admitted, { timeout: 5_000 }).toBe(false);
+      await expect.poll(() => observed().offered, { timeout: 5_000 }).toBe(true);
       expect(observed().listenerRegistered).toBeUndefined();
       expect(sidecar.pending(frame => frame.eventType === "runtime.turn_started")).toBe(0);
     } finally { await cleanup(); }

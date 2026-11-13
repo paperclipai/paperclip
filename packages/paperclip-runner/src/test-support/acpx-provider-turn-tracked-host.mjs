@@ -2,8 +2,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 
 import { AcpxRuntimeHost as Base } from "./acpx-blocked-output-host.mjs";
-import { ClaudeBackgroundTaskTracker } from "../drivers/acpx/claude-background-tasks.ts";
-import { ClaudeProviderTurns } from "../drivers/acpx/claude-provider-turns.ts";
+import { ClaudeProviderCycles } from "../drivers/acpx/claude-provider-turns.ts";
 
 const SESSION = "blocked-output-backend";
 const air = { jetbrains: { air: { version: 1, capabilities: ["sessionFailure", "asyncTasks"] } } };
@@ -19,34 +18,29 @@ export class AcpxRuntimeHost extends Base {
   static async open(options) {
     const host = await Base.open(options);
     Object.setPrototypeOf(host, this.prototype);
-    host.tracker = new ClaudeBackgroundTaskTracker();
     let minted = 0;
-    host.turns = new ClaudeProviderTurns({
-      sessionId: () => SESSION,
-      promptActive: () => false,
-      mintTurnId: () => `provider-${++minted}`,
-      admit: (turn) => {
-        const binding = host.listener?.(turn) ?? null;
-        return binding ? { busy: binding.busy, release: () => undefined } : null;
-      },
-      turnStarted: () => host.tracker.providerTurnStarted(),
-      turnEnded: (startedAt, completed) => host.tracker.providerTurnEnded(startedAt, completed),
-      unadopted: () => host.tracker.providerTurnEnded(null, false),
-    });
+    host.cycles = new ClaudeProviderCycles({ sessionId: () => SESSION, promptActive: () => false, mintTurnId: () => `provider-${++minted}` }).subscribe();
     host.deliver("outbound", { jsonrpc: "2.0", id: 0, method: "initialize", params: { clientCapabilities: { _meta: air } } });
     host.deliver("inbound", { jsonrpc: "2.0", id: 0, result: { protocolVersion: 1, _meta: air } });
     return host;
   }
 
   deliver(direction, message) {
-    const adopted = this.turns.observe(direction, message);
-    this.tracker.observe(direction, message, adopted);
+    this.cycles.observe(direction, message);
   }
 
-  backgroundTaskState() { return this.tracker.state(); }
-  onProviderTurn(listener) { this.listener = listener; }
-  cancelProviderTurn() { return this.turns.cancel(); }
-  providerTurnsAvailable() { return !this.turns.retired; }
+  backgroundTaskState() { return this.cycles.backgroundTasks(); }
+  providerCycles() {
+    const cycles = this.cycles;
+    return {
+      next: () => cycles.next(),
+      adopt: (binding) => { cycles.adopt(binding.busy); return true; },
+      drop: () => cycles.drop(),
+      cancel: () => cycles.cancel(),
+      undecided: () => cycles.undecided(),
+    };
+  }
+  providerTurnsAvailable() { return !this.cycles.retired; }
   isClosed() { return this.closed; }
 
   startTurn({ requestId }) {
