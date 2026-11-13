@@ -20,6 +20,7 @@ const generalServerShardDurations = loadShardDurations(
 const serializedShardDurations = loadShardDurations(
   path.join(scriptsDir, "serialized-shard-durations.json"),
 );
+const chatShardDurations = loadShardDurations(path.join(scriptsDir, "chat-shard-durations.json"));
 const serverRoot = path.join(repoRoot, "server");
 const serverSrcDir = path.join(repoRoot, "server", "src");
 const serverTestsDir = path.join(repoRoot, "server", "src", "__tests__");
@@ -410,6 +411,8 @@ function selectSerializedSuites(routeTests, shardIndex, shardCount) {
   return shardFiles.map((file) => byRepoPath.get(file));
 }
 
+let experimentEnv = {};
+
 async function runVitest(args, label, testShard = null, exactFiles = false) {
   console.log(`\n[test:run] ${label}`);
   invocationIndex += 1;
@@ -429,6 +432,7 @@ async function runVitest(args, label, testShard = null, exactFiles = false) {
     PAPERCLIP_CONFIG: path.join(testRoot, "h", "config.json"),
     PAPERCLIP_INSTANCE_ID: `vt-${process.pid}-${invocationIndex}`,
     TMPDIR: path.join(testRoot, "t"),
+    ...experimentEnv,
   };
   // The wrapper has already validated and consumed this shard's manifest.
   // Tests may launch independent runner fixtures with a different root/inventory.
@@ -459,7 +463,7 @@ async function runVitest(args, label, testShard = null, exactFiles = false) {
         `[test:run] dropping ${bogusCollected.length} bogus Vitest collection entr${bogusCollected.length === 1 ? "y" : "ies"} with no matching it()/test() call: ${bogusCollected.map((test) => `${test.location.line}:${JSON.stringify(test.name)}`).join(", ")}`,
       );
     }
-    const selected = partitionTestLines(collected, testShard.count, file)[testShard.index];
+    const selected = partitionTestLines(collected, testShard.count, file, chatShardDurations)[testShard.index];
     // Validate shard membership with the same `list`-reported lines that
     // produced `selected`, then switch to the `run`-compatible lines only for
     // the filters handed to the real `vitest run` below (see
@@ -467,7 +471,7 @@ async function runVitest(args, label, testShard = null, exactFiles = false) {
     const validationFilters = selected.lines.map((line) => `${chatSuite}:${line}`);
     const validationArgs = [...args.filter((arg) => arg !== chatSuite), ...validationFilters];
     assertSelectedTests(selected.tests, collect(validationArgs, "selected"), file);
-    console.log(`[test:run] chat shard ${testShard.index + 1}/${testShard.count}: ${selected.tests.length}/${collected.length} tests, ${selected.lines.length} source lines; exact filter coverage verified`);
+    console.log(`[test:run] chat shard ${testShard.index + 1}/${testShard.count}: ${selected.tests.length}/${collected.length} tests, ${selected.lines.length} source lines, ${Math.round(selected.weight / 1000)}s recorded; exact filter coverage verified`);
     const runFilters = selected.lines.map((line) => `${chatSuite}:${chatSuiteRunLine(sourceLines, line)}`);
     args = [...args.filter((arg) => arg !== chatSuite), ...runFilters, "--allowOnly=false"];
   }
@@ -513,7 +517,7 @@ async function runProjectGroup(projects, groupName, shardIndex = null, shardCoun
 }
 
 function serverShardWorkers(shardIndex) {
-  return [3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5][shardIndex ?? 0] ?? 3;
+  return 4;
 }
 
 function chatShardWorkers(index, count) {
@@ -668,6 +672,11 @@ const generalServerTestFiles = [
   .sort((a, b) => a.localeCompare(b));
 
 const options = parseCliOptions(process.argv.slice(2));
+if (generalServerGroups.includes(options.group) && options.shardIndex !== null) {
+  if (options.shardIndex % 2 === 1) experimentEnv.NODE_COMPILE_CACHE = path.join(os.tmpdir(), "paperclip-node-compile-cache");
+  if (options.shardIndex % 4 < 2) experimentEnv.PAPERCLIP_EXPERIMENT_PG_FSYNC_OFF = "1";
+  console.error(`[test:run] experiment ${JSON.stringify(experimentEnv)}`);
+}
 const selectionProjects = options.mode === serializedModeName || generalServerGroups.includes(options.group)
   ? ["@paperclipai/server"]
   : options.group === generalWorkspacesAGroupName ? generalWorkspacesAProjects

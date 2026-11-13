@@ -149,6 +149,7 @@ async function createEmbeddedPostgresTestInstanceAt(dataDir: string) {
     port,
     persistent: true,
     initdbFlags: EMBEDDED_POSTGRES_INITDB_FLAGS,
+    postgresFlags: process.env.PAPERCLIP_EXPERIMENT_PG_FSYNC_OFF === "1" ? ["-c", "fsync=off"] : [],
     onLog: (message) => logBuffer.append(message),
     onError: (message) => logBuffer.append(message),
   }), dataDir);
