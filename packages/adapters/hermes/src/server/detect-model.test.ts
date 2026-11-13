@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
 
-import { parseModelFromConfig, resolveProvider } from "./detect-model.js";
+import { inferProviderFromModel, parseModelFromConfig, resolveProvider } from "./detect-model.js";
 import { testEnvironment } from "./test.js";
 
 const providerEnvKeys = [
@@ -159,6 +159,59 @@ test("testEnvironment describes provider-omitted runtime config without inventin
     expect(apiKeyCheck?.message).toMatch(/without an explicit provider/i);
     expect(apiKeyCheck?.message).not.toMatch(/provider "auto"/i);
   });
+});
+
+test("inferProviderFromModel honours an explicit provider namespace instead of the bare model name", () => {
+  // The namespace states the vendor. It must not be discarded in favour of a
+  // bare-name guess that points at another vendor's base URL.
+  expect(inferProviderFromModel("openrouter/thinkingmachines/inkling-small:free")).toBe("openrouter");
+  expect(inferProviderFromModel("openrouter/gpt-4.1-mini")).toBe("openrouter");
+  expect(inferProviderFromModel("openrouter/claude-3.5-sonnet")).toBe("openrouter");
+});
+
+test("resolveProvider routes a namespaced model id to the namespace provider", () => {
+  expect(resolveProvider({
+    explicitProvider: undefined,
+    model: "openrouter/gpt-4.1-mini",
+  })).toEqual({
+    provider: "openrouter",
+    resolvedFrom: "modelInference",
+  });
+  expect(resolveProvider({
+    explicitProvider: undefined,
+    model: "openrouter/thinkingmachines/inkling-small:free",
+  })).toEqual({
+    provider: "openrouter",
+    resolvedFrom: "modelInference",
+  });
+  expect(resolveProvider({
+    explicitProvider: undefined,
+    model: "openrouter/claude-3.5-sonnet",
+  })).toEqual({
+    provider: "openrouter",
+    resolvedFrom: "modelInference",
+  });
+});
+
+test("resolveProvider prefers the model id namespace over a conflicting Hermes config provider", () => {
+  // The Hermes config points at another vendor's credential, but the model id
+  // states the namespace. The namespace wins so the request is not sent to
+  // the wrong base URL.
+  expect(resolveProvider({
+    explicitProvider: undefined,
+    detectedProvider: "minimax",
+    detectedModel: "openrouter/gpt-4.1-mini",
+    model: "openrouter/gpt-4.1-mini",
+  })).toEqual({
+    provider: "openrouter",
+    resolvedFrom: "modelInference",
+  });
+});
+
+test("inferProviderFromModel still infers a bare model name and an unknown namespace alike", () => {
+  expect(inferProviderFromModel("claude-sonnet-4")).toBe("anthropic");
+  expect(inferProviderFromModel("anthropic/claude-sonnet-4")).toBe("anthropic");
+  expect(inferProviderFromModel("thinkingmachines/inkling-small:free")).toBeUndefined();
 });
 
 test("testEnvironment does not warn about missing API keys when Hermes config provides a custom provider base_url and api_key", async () => {
