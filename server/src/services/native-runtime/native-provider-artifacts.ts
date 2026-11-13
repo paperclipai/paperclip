@@ -37,7 +37,7 @@ import { cp, mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pipeline } from "node:stream/promises";
-import { and, eq, inArray, not, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import {
   environmentLeases,
   heartbeatRuns,
@@ -456,6 +456,38 @@ export async function retainNativeProviderArtifacts(input: {
   }
 }
 
+export const READY_NATIVE_PROVIDER_ARTIFACT_CANDIDATE_LIMIT = 4;
+
+export async function readyNativeProviderArtifactCandidates(
+  tx: Pick<Db, "select">,
+  companyId: string,
+  manifest: ProviderPackIdentity,
+) {
+  const entries = names.map((name) => {
+    const artifact = manifest.payload.artifacts[name];
+    return artifact ? { name, path: artifact.path, sha256: artifact.sha256 } : null;
+  });
+  if (entries.some((entry) => entry === null)) return [];
+  const probe = JSON.stringify({ schema, target: manifest.payload.target, entries });
+  return tx
+    .select({
+      id: nativeProviderArtifacts.id,
+      closureDigest: nativeProviderArtifacts.closureDigest,
+      descriptor: nativeProviderArtifacts.descriptor,
+    })
+    .from(nativeProviderArtifacts)
+    .where(
+      and(
+        eq(nativeProviderArtifacts.companyId, companyId),
+        eq(nativeProviderArtifacts.status, "ready"),
+        sql`${nativeProviderArtifacts.reference} is not null`,
+        sql`${nativeProviderArtifacts.descriptor} @> ${probe}::jsonb`,
+      ),
+    )
+    .orderBy(desc(nativeProviderArtifacts.updatedAt))
+    .limit(READY_NATIVE_PROVIDER_ARTIFACT_CANDIDATE_LIMIT);
+}
+
 export async function retainReadyNativeProviderArtifacts(input: {
   db: Db;
   owner: NativeRunnerCheckpointFenceOwner;
@@ -468,20 +500,7 @@ export async function retainReadyNativeProviderArtifacts(input: {
   const source = { sourceRoot: "", manifest: input.manifest, launchRoot: input.launchRoot, accountUid: input.accountUid };
   return input.db.transaction(async (tx) => {
     await artifactOwnerFence(tx, input.owner, input.manifest);
-    const rows = await tx
-      .select({
-        id: nativeProviderArtifacts.id,
-        closureDigest: nativeProviderArtifacts.closureDigest,
-        descriptor: nativeProviderArtifacts.descriptor,
-      })
-      .from(nativeProviderArtifacts)
-      .where(
-        and(
-          eq(nativeProviderArtifacts.companyId, input.owner.companyId),
-          eq(nativeProviderArtifacts.status, "ready"),
-          sql`${nativeProviderArtifacts.reference} is not null`,
-        ),
-      );
+    const rows = await readyNativeProviderArtifactCandidates(tx, input.owner.companyId, input.manifest);
     for (const row of rows) {
       const receipt = receiptFor(row.id, row.closureDigest, source);
       try {

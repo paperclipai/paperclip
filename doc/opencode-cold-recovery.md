@@ -35,7 +35,9 @@ retired without guessing an object key.
 
 A ready company closure is reused. Before it copies anything, admission looks
 for a ready, verified company object whose descriptor has the same file paths
-and SHA-256 digests as the selected manifest. When one exists, admission pins it
+and SHA-256 digests as the selected manifest. The database matches the target,
+paths and digests, so the lookup reads only matching objects, not every
+version the company keeps. When one exists, admission pins it
 for the run and records the run receipt in one transaction. No file leaves the
 sandbox, and nothing is encrypted, uploaded or downloaded. A durable artifact
 therefore still exists before the first turn. Concurrent first admissions on

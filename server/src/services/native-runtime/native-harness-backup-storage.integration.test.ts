@@ -20,7 +20,7 @@ import { legacyControllerBootId } from "../legacy-controller-lease.js";
 import { DurablePrpControlPlane, captureLegacyDurablePrpCheckpoint } from "../../vendor/paperclip-runner/index.js";
 import { loadNativeRunnerCheckpoint, nativeRunnerCheckpointWriter } from "./native-runner-checkpoint.js";
 import { NativeProviderArtifactTransferTimeoutError, nativeProviderArtifactTransferBounds, restoreNativeProviderArtifacts,
-  retainNativeProviderArtifacts, retainReadyNativeProviderArtifacts } from "./native-provider-artifacts.js";
+  readyNativeProviderArtifactCandidates, retainNativeProviderArtifacts, retainReadyNativeProviderArtifacts } from "./native-provider-artifacts.js";
 import * as backupArchive from "./native-harness-backup-archive.js";
 import { canonicalProviderPackJson } from "./remote-provider-pack-verification.js";
 
@@ -311,6 +311,23 @@ describeEmbeddedPostgres("durable native provider backups", () => {
     const replacement = join(environment.current.runtimeRoot, randomUUID()); ownedHomes.push(replacement); await mkdir(replacement);
     await restoreNativeProviderArtifacts({ ...second, companyId: second.companyId, receipt: receipt!, targetRoot: join(replacement, "provider-artifacts") });
     expect(await readFile(join(replacement, "provider-artifacts/opencodeProxy"), "utf8")).toBe(second.original.opencodeProxy);
+  });
+  it("loads only the ready artifact whose launch files match, however many other versions the company keeps", async () => {
+    const version = randomUUID(), first = await artifactFixture(version), other = await artifactFixture(version);
+    const second = { ...other, storage: first.storage };
+    const stored = await retainNativeProviderArtifacts({ ...first, source: first.providerArtifacts });
+    const [kept] = await first.db.select().from(nativeProviderArtifacts).where(eq(nativeProviderArtifacts.id, stored.artifactId));
+    const descriptor = kept.descriptor as { entries: { name: string; sha256: string }[] };
+    await first.db.insert(nativeProviderArtifacts).values(Array.from({ length: 200 }, (_, index) => ({
+      companyId: second.companyId, status: "ready", reference: { decoy: index },
+      closureDigest: `sha256:${createHash("sha256").update(`decoy ${version} ${index}`).digest("hex")}`,
+      descriptor: { ...descriptor, entries: descriptor.entries.map(entry => entry.name === "opencodeProxy"
+        ? { ...entry, sha256: `sha256:${createHash("sha256").update(`older proxy ${index}`).digest("hex")}` } : entry) },
+    })));
+    const candidates = await readyNativeProviderArtifactCandidates(second.db, second.companyId, second.manifest);
+    expect(candidates.map(row => row.id)).toEqual([stored.artifactId]);
+    await expect(retainReadyNativeProviderArtifacts({ db: second.db, owner: second.owner, manifest: second.manifest,
+      launchRoot: second.launchRoot, accountUid: 1000 })).resolves.toMatchObject({ artifactId: stored.artifactId });
   });
   it("captures a launch artifact whose bytes differ from every ready artifact", async () => {
     const first = await artifactFixture(randomUUID()), second = await artifactFixture(randomUUID());
