@@ -6,7 +6,7 @@ import {
   GitHubPublicationLeaseLost,
   withGitHubPublicationLease,
 } from "./chat-github-publication-lease.js";
-import { and, eq, isNull, or, sql } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, or, sql } from "drizzle-orm";
 import {
   chatActions,
   chatEndpoints,
@@ -150,6 +150,51 @@ export function githubReviewCheckService(db: Db, fetchImpl = fetch) {
             `/pulls/${event.pullNumber}`,
           );
           if (current.head.sha !== event.headSha) {
+            const [assessmentOwner] = await db
+              .select({ id: chatGitHubReviews.id })
+              .from(chatGitHubReviews)
+              .where(
+                and(
+                  eq(chatGitHubReviews.endpointId, action.endpointId),
+                  eq(chatGitHubReviews.repositoryId, event.repositoryId),
+                  eq(chatGitHubReviews.pullNumber, event.pullNumber),
+                  eq(chatGitHubReviews.headSha, event.headSha),
+                  isNotNull(chatGitHubReviews.assessment),
+                ),
+              )
+              .limit(1);
+            if (!assessmentOwner) {
+              const externalId = `${action.endpointId}:${event.pullNumber}:${event.headSha}`;
+              const openChecks = await request<{
+                check_runs: Array<{
+                  id: number;
+                  status?: string;
+                  external_id?: string;
+                  app?: { id?: number };
+                }>;
+              }>(
+                `/commits/${event.headSha}/check-runs?check_name=Paperclip%20Review&per_page=100`,
+              );
+              for (const check of openChecks.check_runs) {
+                if (
+                  check.external_id !== externalId ||
+                  String(check.app?.id) !== source.endpoint.botExternalId ||
+                  check.status === "completed"
+                )
+                  continue;
+                await request(`/check-runs/${check.id}`, {
+                  method: "PATCH",
+                  body: {
+                    status: "completed",
+                    conclusion: "neutral",
+                    output: {
+                      title: "Superseded by a newer commit",
+                      summary: `Superseded by a newer commit.\n\nCommit: ${event.headSha}`,
+                    },
+                  },
+                });
+              }
+            }
             if (review)
               await lease.commit(async (tx) => {
                 await tx
