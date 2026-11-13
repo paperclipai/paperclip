@@ -47,7 +47,7 @@ describePostgres("new task for a manually paused assignee", () => {
     if (home) await rm(home, { recursive: true, force: true });
   });
 
-  async function seed(holds: string[]) {
+  async function seed(holds: string[], status = "todo") {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
     const userId = `paused-user-${companyId}`;
     await db.insert(authUsers).values({ id: userId, name: "Board user", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
@@ -55,7 +55,7 @@ describePostgres("new task for a manually paused assignee", () => {
     await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
     await db.insert(agents).values({ id: agentId, companyId, name: "Morgan", adapterType, adapterConfig: {},
       status: "paused", lifecycleState: "paused", lifecycleHolds: holds, pauseReason: holds[0] ?? null, pausedAt: new Date() });
-    await db.insert(issues).values({ id: issueId, companyId, title: "Task created while Morgan is paused", status: "todo",
+    await db.insert(issues).values({ id: issueId, companyId, title: "Task created while Morgan is paused", status,
       assigneeAgentId: agentId, responsibleUserId: userId, issueNumber: 1 });
     return { companyId, agentId, issueId };
   }
@@ -80,6 +80,26 @@ describePostgres("new task for a manually paused assignee", () => {
     expect(dispatched.filter(id => ids.has(id))).toHaveLength(1);
     const [finished] = await db.select().from(issues).where(eq(issues.id, f.issueId));
     expect(finished.status).toBe("done");
+  }, 180_000);
+
+  it("leaves in-progress work of a manually paused assignee alone instead of blocking it", async () => {
+    const f = await seed(["manual"], "in_progress");
+    await heartbeat.reconcileStrandedAssignedIssues({ companyId: f.companyId });
+    const [saved] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+    expect(saved.status).toBe("in_progress");
+    expect(await db.select().from(issueComments).where(eq(issueComments.issueId, f.issueId))).toHaveLength(0);
+    expect(await runs(f)).toHaveLength(0);
+  }, 180_000);
+
+  it("explains a stopped task in plain words when the assignee cannot run", async () => {
+    const f = await seed(["budget"], "in_progress");
+    await heartbeat.reconcileStrandedAssignedIssues({ companyId: f.companyId });
+    const [saved] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+    expect(saved.status).toBe("blocked");
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, f.issueId));
+    expect(comments.map(comment => comment.body)).toEqual([
+      "Morgan can't run right now, so Paperclip stopped this task instead of retrying it. It is still assigned to them. To continue, resume or fix the agent, or assign the task to someone else.",
+    ]);
   }, 180_000);
 
   it("still escalates a new task whose assignee is paused by something other than a person", async () => {

@@ -541,6 +541,8 @@ export type {
   ToolAuditOutcome,
   ToolCallEvent,
   ToolCatalogEntry,
+  ProviderToolIconEntry,
+  ProviderToolIconsResponse,
   ToolCatalogEntryKind,
   ToolCatalogEntryStatus,
   ToolAppAttentionItem,

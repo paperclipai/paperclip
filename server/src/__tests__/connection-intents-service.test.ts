@@ -1,7 +1,7 @@
 import { subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
 import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { randomUUID } from "node:crypto";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
@@ -201,6 +201,33 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     const serialized = JSON.stringify(result);
     expect(serialized).not.toContain("responsible-user");
     expect(serialized).not.toContain(claims.sub);
+  });
+
+  it("tells the agent to configure a single match only when the person asked to set it up", async () => {
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    const issueId = String(run!.contextSnapshot?.issueId);
+    const say = (body: string) => db.insert(issueComments).values({
+      companyId: claims.company_id, issueId, authorUserId: "responsible-user", body,
+      createdAt: new Date(Date.now() + 1000),
+    }).returning().then(rows => rows[0]!);
+    const said: string[] = [];
+    try {
+      for (const body of ["Read my Notion and tell me the latest on the launch.", "What is the easiest way to connect Notion here?",
+        "Connect Slack, then read my Notion."]) {
+        said.push((await say(body)).id);
+        const result = await connectionIntentService(db).search(claims, "Notion");
+        expect(result.results).toEqual([expect.objectContaining({ service: "notion", state: "available" })]);
+        expect(result.instruction).not.toMatch(/^The person asked you to set up/);
+        expect(result.instruction).toContain("call connection_request with service notion");
+        expect(result.instruction).toMatch(/\[Connect Notion\]\(\/[A-Z0-9]+\/apps\/connect\?source=notion\)/);
+        expect(result.instruction).toContain("Do not create a connection or a saved draft yourself");
+      }
+      said.push((await say("Connect Notion, then continue the launch summary here.")).id);
+      const requested = await connectionIntentService(db).search(claims, "Notion");
+      expect(requested.instruction).toMatch(/^The person asked you to set up this connection\. If method\.management\.allowed, use search_api\/call_api/);
+    } finally {
+      await db.delete(issueComments).where(inArray(issueComments.id, said));
+    }
   });
 
   it("discovers GitHub review bots independently from chat connectors", async () => {

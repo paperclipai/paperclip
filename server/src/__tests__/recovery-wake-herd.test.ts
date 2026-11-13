@@ -14,6 +14,7 @@ import { PENDING_CONTINUATION_BOUND_MS, assignedWorkSweep } from "../services/re
 import { evaluateAssignedWork } from "../services/recovery/assigned-work-invariant.js";
 import { taskInterruptionPresentation } from "../services/task-interruption-presentation.js";
 import { executionControlSchedule } from "../services/execution-control-work.js";
+import { requestTaskRetry } from "../services/task-retry.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const suite = support.supported ? describe : describe.skip;
@@ -535,12 +536,13 @@ suite("recovery wake herd", () => {
     expect(await deliveryOf(healthy.action.id)).toBe("delivered");
   }, 120_000);
 
-  it("shows a task as continuing, never as needing Retry, while its recorded continuation is pending past the delivery bound", async () => {
+  it("shows a task as continuing, never as failed, while its recorded continuation is pending past the delivery bound", async () => {
     const agentId = await seedCompany(1);
     const record = await pendingContinuation(agentId, 240);
     await holdPastBound(record, RECOVERY_CONTINUATION_DELIVERY_BOUND_MS);
     const [issueRow] = await db.select().from(issues).where(eq(issues.id, record.issue.id));
-    expect(await taskInterruptionPresentation(db, issueRow!)).toMatchObject({ state: "working", canRetry: false, responsibility: "system" });
+    expect(await taskInterruptionPresentation(db, issueRow!)).toMatchObject({ state: "working", responsibility: "system",
+      canRetry: true, retryAction: "move_forward", observedRunId: record.source.id });
 
     const wake = fakeWake();
     await deliverReconciledExecutions(db, wake as never);
@@ -702,4 +704,192 @@ suite("recovery wake herd", () => {
       await heartbeat.drainActiveRunExecutions();
     }
   }, 60_000);
+
+  async function continuationWaitingInQueue(agentId: string, queuedMinutesAgo: number) {
+    const record = await pendingContinuation(agentId, queuedMinutesAgo + 2);
+    const wake = fakeWake();
+    await deliverReconciledExecutions(db, wake as never);
+    expect(wake).toHaveBeenCalledTimes(1);
+    const delivered = await wake.mock.results[0]!.value as typeof heartbeatRuns.$inferSelect;
+    const [continuation] = await db.update(heartbeatRuns).set({ createdAt: new Date(Date.now() - queuedMinutesAgo * 60_000) })
+      .where(eq(heartbeatRuns.id, delivered.id)).returning();
+    const busy = await task(agentId);
+    const [olderWork] = await db.insert(heartbeatRuns).values({ companyId, agentId, issueId: busy.id, invocationSource: "assignment",
+      status: "queued", createdAt: new Date(Date.now() - (queuedMinutesAgo + 4) * 60_000),
+      contextSnapshot: { issueId: busy.id, wakeReason: "issue_assigned" } }).returning();
+    const [issueRow] = await db.select().from(issues).where(eq(issues.id, record.issue.id));
+    return { ...record, continuation: continuation!, olderWork: olderWork!, issueRow: issueRow! };
+  }
+
+  const runsOfTask = async (issueId: string, sourceRunId: string) => db.select().from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.issueId, issueId), sql`${heartbeatRuns.id} <> ${sourceRunId}`));
+
+  it("moves a continuation that waited 15 minutes forward on a person's Retry, which joins it and starts no second run", async () => {
+    const agentId = await seedCompany(1);
+    const waiting = await continuationWaitingInQueue(agentId, 16);
+    expect(await deliveryOf(waiting.action.id)).toBe("delivered");
+    const shown = await taskInterruptionPresentation(db, waiting.issueRow);
+    expect(shown).toMatchObject({ responsibility: "system", state: "working", canRetry: true, retryAction: "move_forward",
+      observedRunId: waiting.continuation.id });
+    const heartbeat = heartbeatService(db);
+    try {
+      const receipt = await requestTaskRetry({ db, companyId, issueId: waiting.issue.id, actorId: userId,
+        observedRunId: shown!.observedRunId, retryAction: shown!.retryAction, idempotencyKey: randomUUID() });
+      expect(receipt).toMatchObject({ accepted: true, stale: false });
+      await heartbeat.resumeTaskRetry(companyId, receipt.requestId!);
+      expect((await runsOfTask(waiting.issue.id, waiting.source.id)).map(run => run.id)).toEqual([waiting.continuation.id]);
+      const [retryWake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.requestId!));
+      expect(retryWake).toMatchObject({ status: "coalesced", runId: waiting.continuation.id, requestedByActorType: "user" });
+      const after = await taskInterruptionPresentation(db, waiting.issueRow);
+      expect(after).toMatchObject({ state: "working", canRetry: false });
+      expect(after?.retryAction).toBeUndefined();
+
+      await deliverReconciledExecutions(db, fakeWake() as never);
+      await heartbeat.resumeQueuedRuns();
+      expect((await readRun(waiting.continuation.id)).startedAt).not.toBeNull();
+      expect(await readRun(waiting.olderWork.id)).toMatchObject({ status: "queued", startedAt: null });
+    } finally {
+      await heartbeat.drainActiveRunExecutions();
+    }
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+    expect((await runsOfTask(waiting.issue.id, waiting.source.id)).map(run => run.id)).toEqual([waiting.continuation.id]);
+  }, 120_000);
+
+  it("starts nothing when the continuation ended between showing Move it forward now and the click", async () => {
+    const agentId = await seedCompany(1);
+    const waiting = await continuationWaitingInQueue(agentId, 16);
+    const shown = await taskInterruptionPresentation(db, waiting.issueRow);
+    expect(shown).toMatchObject({ canRetry: true, retryAction: "move_forward", observedRunId: waiting.continuation.id });
+    await db.update(heartbeatRuns).set({ status: "failed", errorCode: "adapter_failed", startedAt: new Date(), finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, waiting.continuation.id));
+    const heartbeat = heartbeatService(db);
+    try {
+      const receipt = await requestTaskRetry({ db, companyId, issueId: waiting.issue.id, actorId: userId,
+        observedRunId: shown!.observedRunId, retryAction: shown!.retryAction, idempotencyKey: randomUUID() });
+      expect(receipt).toMatchObject({ accepted: false, alreadyMovedOn: true, requestId: null });
+      await heartbeat.resumeQueuedRuns();
+      expect((await runsOfTask(waiting.issue.id, waiting.source.id)).map(run => run.id)).toEqual([waiting.continuation.id]);
+      expect(await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.reason, "task_retry"),
+        sql`${agentWakeupRequests.payload}->>'issueId' = ${waiting.issue.id}`))).toEqual([]);
+    } finally {
+      await heartbeat.drainActiveRunExecutions();
+    }
+  }, 120_000);
+
+  async function endContinuationAndRunEveryPass(waiting: Awaited<ReturnType<typeof continuationWaitingInQueue>>,
+    heartbeat: ReturnType<typeof heartbeatService>, retryRequestId?: string) {
+    await heartbeat.cancelRun(waiting.continuation.id);
+    expect(await readRun(waiting.continuation.id)).toMatchObject({ status: "cancelled" });
+    for (let pass = 0; pass < 2; pass += 1) {
+      await heartbeat.resumeExecutionWaitComments({ companyId });
+      if (retryRequestId) await heartbeat.resumeTaskRetry(companyId, retryRequestId);
+      await deliverReconciledExecutions(db, heartbeat.wakeup);
+      await heartbeat.resumeQueuedRuns();
+    }
+    return (await runsOfTask(waiting.issue.id, waiting.source.id)).filter(run => run.id !== waiting.continuation.id)
+      .map(run => run.contextSnapshot?.wakeReason);
+  }
+
+  it("never turns a joined move-forward click into a new run after the continuation it joined ends", async () => {
+    let withoutClick: unknown[] = [];
+    {
+      const agentId = await seedCompany(1);
+      const control = await continuationWaitingInQueue(agentId, 16);
+      const heartbeat = heartbeatService(db);
+      try { withoutClick = await endContinuationAndRunEveryPass(control, heartbeat); }
+      finally { await heartbeat.drainActiveRunExecutions(); }
+    }
+    const agentId = await seedCompany(1);
+    const waiting = await continuationWaitingInQueue(agentId, 16);
+    const shown = await taskInterruptionPresentation(db, waiting.issueRow);
+    const heartbeat = heartbeatService(db);
+    try {
+      const receipt = await requestTaskRetry({ db, companyId, issueId: waiting.issue.id, actorId: userId,
+        observedRunId: shown!.observedRunId, retryAction: shown!.retryAction, idempotencyKey: randomUUID() });
+      expect(receipt).toMatchObject({ accepted: true });
+      await heartbeat.resumeTaskRetry(companyId, receipt.requestId!);
+      await endContinuationAndRunEveryPass(waiting, heartbeat, receipt.requestId!);
+      const [retryWake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.requestId!));
+      expect(retryWake).toMatchObject({ status: "coalesced", runId: waiting.continuation.id });
+      const later = (await runsOfTask(waiting.issue.id, waiting.source.id)).filter(run => run.id !== waiting.continuation.id);
+      expect(later.filter(run => run.wakeupRequestId === receipt.requestId || run.contextSnapshot?.wakeReason === "task_retry"
+        || run.contextSnapshot?.taskRetryRequestId)).toEqual([]);
+      expect(later.map(run => run.contextSnapshot?.wakeReason)).toEqual(withoutClick);
+    } finally {
+      await heartbeat.drainActiveRunExecutions();
+    }
+  }, 120_000);
+
+  it("leaves a continuation that waited under 15 minutes in its place, with no Retry", async () => {
+    const agentId = await seedCompany(1);
+    const waiting = await continuationWaitingInQueue(agentId, 14);
+    const shown = await taskInterruptionPresentation(db, waiting.issueRow);
+    expect(shown).toMatchObject({ state: "working", canRetry: false });
+    expect(shown?.retryAction).toBeUndefined();
+    const heartbeat = heartbeatService(db);
+    try {
+      await heartbeat.resumeQueuedRuns();
+      expect((await readRun(waiting.olderWork.id)).startedAt).not.toBeNull();
+      expect(await readRun(waiting.continuation.id)).toMatchObject({ status: "queued", startedAt: null });
+    } finally {
+      await heartbeat.drainActiveRunExecutions();
+    }
+  }, 120_000);
+  it("starts the assigned-work sweep's continuation of a task whose run was interrupted, ahead of fresher retries", async () => {
+    const agentId = await seedCompany(1);
+    const stranded = await task(agentId);
+    await db.insert(heartbeatRuns).values({ companyId, agentId, issueId: stranded.id, invocationSource: "assignment",
+      status: "interrupted", errorCode: "server_shutdown_interrupted", livenessState: "needs_followup",
+      startedAt: new Date(Date.now() - 4 * 60 * 60_000), finishedAt: new Date(Date.now() - 3 * 60 * 60_000),
+      createdAt: new Date(Date.now() - 4 * 60 * 60_000), contextSnapshot: { issueId: stranded.id, taskId: stranded.id },
+      resultJson: { stopReason: "interrupted", executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } });
+    await db.update(issues).set({ updatedAt: new Date(Date.now() - 3 * 60 * 60_000) }).where(eq(issues.id, stranded.id));
+    const heartbeat = heartbeatService(db);
+    try {
+      const blocker = await queuedRecoveryRun(agentId, 1, 1);
+      await db.update(heartbeatRuns).set({ status: "running", startedAt: new Date() }).where(eq(heartbeatRuns.id, blocker.id));
+      expect(await heartbeat.checkAssignedWorkInvariant({ companyId, issueId: stranded.id }))
+        .toMatchObject({ outcome: "repaired" });
+      const [continuation] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.issueId, stranded.id),
+        eq(heartbeatRuns.status, "queued")));
+      expect(continuation).toBeDefined();
+      await db.update(heartbeatRuns).set({ createdAt: new Date(Date.now() - 2 * 60 * 60_000) })
+        .where(eq(heartbeatRuns.id, continuation!.id));
+      const fresher: Array<typeof heartbeatRuns.$inferSelect> = [];
+      for (let index = 0; index < 4; index += 1) fresher.push(await queuedRecoveryRun(agentId, 10 - index, 5));
+      await db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date() }).where(eq(heartbeatRuns.id, blocker.id));
+      await expect.poll(async () => {
+        await heartbeat.resumeQueuedRuns();
+        return (await readRun(continuation!.id)).startedAt;
+      }, { timeout: 60_000, interval: 250 }).not.toBeNull();
+    } finally {
+      await heartbeat.drainActiveRunExecutions();
+    }
+  }, 120_000);
+  it("gives system recovery its share when the agent's recent starts were a person's recovery restarts", async () => {
+    const agentId = await seedCompany(1);
+    const system = await queuedRecoveryRun(agentId, 20, 5);
+    for (let index = 0; index < 3; index += 1) {
+      const issue = await task(agentId);
+      const [request] = await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "on_demand", triggerDetail: "manual",
+        reason: "issue_recovery_action_restored", status: "completed", requestedByActorType: "user", requestedByActorId: userId,
+        payload: { issueId: issue.id } }).returning();
+      const startedAt = new Date(Date.now() - (10 - index) * 60_000);
+      const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, issueId: issue.id, invocationSource: "on_demand",
+        triggerDetail: "manual", status: "succeeded", wakeupRequestId: request!.id, startedAt, finishedAt: startedAt,
+        createdAt: new Date(startedAt.getTime() - 1_000),
+        contextSnapshot: { issueId: issue.id, taskId: issue.id, wakeReason: "issue_recovery_action_restored" } }).returning();
+      await db.update(agentWakeupRequests).set({ runId: run!.id }).where(eq(agentWakeupRequests.id, request!.id));
+    }
+    const people = [await queuedPersonRetry(agentId), await queuedPersonRetry(agentId)];
+    const heartbeat = heartbeatService(db);
+    try {
+      await heartbeat.resumeQueuedRuns();
+      expect((await readRun(system.id)).startedAt).not.toBeNull();
+      for (const run of people) expect(await readRun(run.id)).toMatchObject({ status: "queued", startedAt: null });
+    } finally {
+      await heartbeat.drainActiveRunExecutions();
+    }
+  }, 120_000);
 });

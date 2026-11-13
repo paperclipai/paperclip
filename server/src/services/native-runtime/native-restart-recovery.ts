@@ -5,7 +5,7 @@ import { CONTROLLER_LEASE_RENEW_MS } from "../controller-instance-lease.js";
 import { currentControllerProcessStamp, UNKNOWN_PROCESS_SPACE } from "../controller-process-identity.js";
 import { readNativeSessionResumptionAgent, restoreNativeSessionExecution } from "./native-session-resumption-admission.js";
 import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
-import { NATIVE_RETAINED_OWNER_WAIT } from "./native-controller-recovery.js";
+import { NATIVE_AGENT_DIRECTORY_BUSY_WAIT, NATIVE_RETAINED_OWNER_WAIT } from "./native-controller-recovery.js";
 import { notifyNativeEnvironmentSettlement } from "../native-environment-settlement-notifications.js";
 import { remoteWorkspaceRunReferenceSchema } from "@paperclipai/shared";
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
@@ -221,6 +221,12 @@ function previousNoProgressRestarts(recoveryHistory: ReadonlyArray<RecoveryClaim
     return typeof count === "number" && Number.isSafeInteger(count) && count >= 0 ? count : 0;
   }
   return 0;
+}
+
+function lastBootstrapRestartWatermark(recoveryHistory: ReadonlyArray<RecoveryClaimProgressEntry>): number | null {
+  const last = [...recoveryHistory].reverse().find(entry => RECOVERY_CLAIM_DISPOSITIONS.has(entry?.disposition));
+  const previous = previousRecoveryClaim(recoveryHistory);
+  return last?.disposition === "bootstrap_incomplete" && typeof previous === "object" ? previous.watermark : null;
 }
 
 /**
@@ -759,7 +765,7 @@ export function classifyNativeRunnerRecoveryEvidence(input: {
   remoteBootstrapProvenIncomplete?: boolean;
   remoteBootstrapIncompleteReason?: "remote_runner_never_launched" | "remote_session_opened_without_turn"
     | "remote_runner_exited_before_provider_work" | "remote_runner_never_received_commands"
-    | "remote_follow_up_never_attached";
+    | "remote_follow_up_never_attached" | "remote_bootstrap_restart_deferred_before_launch";
   processStartMatches: boolean;
   knownProviderProcessAlive?: boolean;
   knownProviderProcessIdentityAmbiguous?: boolean;
@@ -1735,7 +1741,25 @@ export async function claimNativeRestartRecoveries(input: {
         && await carriesSettledPredecessorSession(tx, row.run, checkpointRecord.providerSessionId)
         && !(await hasNativeRunnerOriginatedEvidence(tx, row.run))
         && !(await hasNativeRunEvent(tx, row.run, PROCESS_IDENTITY_RECORDED));
-      if ((remoteRunnerNeverLaunched || remoteRunnerExitedBeforeProviderWork || remoteFollowUpNeverAttached)
+      const bootstrapRestartWatermark = lastBootstrapRestartWatermark(row.coordinator.recoveryHistory);
+      const remoteBootstrapRestartDeferredBeforeLaunch = !unclaimedBootstrap && !remoteRunnerNeverLaunched
+        && !remoteRunnerExitedBeforeProviderWork && !remoteFollowUpNeverAttached
+        && remoteWorkspace?.state === "prepared" && !pluginTask && !durableAuthority && stagedAttachment === null
+        && row.run.runnerProfileJson?.nativePreparationFencingVersion === NATIVE_PREPARATION_FENCING_VERSION
+        && row.coordinator.phase === "retryable_failure" && row.run.status === "running" && !row.coordinator.leaseOwner
+        && row.coordinator.failureCode === NATIVE_AGENT_DIRECTORY_BUSY_WAIT
+        && settledFailure?.recoveryMode === "bootstrap_retry"
+        && settledFailure?.providerSessionEstablished === false && settledFailure?.providerEventsExist === false
+        && !settledFailure?.successorRunId
+        && bootstrapRestartWatermark !== null
+        && providerEvents.length === 0 && (!hasCheckpoint || continuedSessionOnly)
+        && (inheritedRunnerIdentity || (!row.run.processPid && !row.run.processGroupId && !row.run.processStartedAt))
+        && (!row.run.sessionIdBefore || continuedSessionOnly) && !row.run.sessionIdAfter
+        && Boolean(row.run.nativeSessionId && row.run.runnerInstanceId)
+        && !(await nativeExecutionStartedSince(tx, row.run.id, bootstrapRestartWatermark))
+        && !(await hasNativeRunEvent(tx, row.run, PROCESS_IDENTITY_RECORDED));
+      if ((remoteRunnerNeverLaunched || remoteRunnerExitedBeforeProviderWork || remoteFollowUpNeverAttached
+        || remoteBootstrapRestartDeferredBeforeLaunch)
         && row.coordinator.phase === "retryable_failure" && !admission.exhausted
         && !await readNativeSessionResumptionAgent(tx as unknown as Db, { issue, run: row.run, coordinator: row.coordinator })) {
         const deferred = await deferRemoteRetry("native_retry_admission_ineligible", ["done", "cancelled"].includes(issue.status));
@@ -1809,11 +1833,13 @@ export async function claimNativeRestartRecoveries(input: {
         remoteSandbox: remoteSandbox || Boolean(pluginTask && durableAuthority) || portablePreparation,
         unclaimedBootstrap: unclaimedBootstrap || portablePreparation && row.coordinator.attempt === 0,
         remoteBootstrapProvenIncomplete: remoteBootstrapProvenIncomplete || remoteRunnerNeverLaunched
-          || remoteRunnerExitedBeforeProviderWork || remoteRunnerNeverReceivedCommands || remoteFollowUpNeverAttached || portablePreparation,
+          || remoteRunnerExitedBeforeProviderWork || remoteRunnerNeverReceivedCommands || remoteFollowUpNeverAttached || portablePreparation
+          || remoteBootstrapRestartDeferredBeforeLaunch,
         remoteBootstrapIncompleteReason: remoteRunnerNeverLaunched || portablePreparation ? "remote_runner_never_launched"
           : remoteRunnerExitedBeforeProviderWork ? "remote_runner_exited_before_provider_work"
           : remoteRunnerNeverReceivedCommands ? "remote_runner_never_received_commands"
           : remoteFollowUpNeverAttached ? "remote_follow_up_never_attached"
+          : remoteBootstrapRestartDeferredBeforeLaunch ? "remote_bootstrap_restart_deferred_before_launch"
           : remoteBootstrapProof === "session_opened_without_turn" ? "remote_session_opened_without_turn" : undefined,
         runnerPidAlive,
         runnerGroupAlive,
@@ -1822,7 +1848,8 @@ export async function claimNativeRestartRecoveries(input: {
         knownProviderProcessIdentityAmbiguous:
           providerProcesses.ambiguousLivePids.length > 0,
         hasCheckpoint: hasCheckpoint && !portablePreparation && !remoteRunnerNeverReceivedCommands && !(unclaimedBootstrap && inheritedCheckpointOnly)
-          && !remoteRunnerNeverLaunched && !remoteFollowUpNeverAttached && !(remoteBootstrapProvenIncomplete && reboundSessionOnly),
+          && !remoteRunnerNeverLaunched && !remoteFollowUpNeverAttached && !(remoteBootstrapProvenIncomplete && reboundSessionOnly)
+          && !remoteBootstrapRestartDeferredBeforeLaunch,
         stagedAttachmentVerified: stagedAttachment !== null,
         checkpointIdentityMatches:
           checkpointIdentityMatches &&
