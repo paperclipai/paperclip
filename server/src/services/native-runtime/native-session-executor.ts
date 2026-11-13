@@ -998,7 +998,7 @@ export async function claimWarmNativeInstructionCopy(input: {
     const adopted = await input.adopt(entry.instructionWorkingCopy.runId);
     if (!adopted) {
       await retire("warm instruction materialization cannot be handed off");
-      throw new Error("native_instruction_materialization_handoff_unavailable");
+      return null;
     }
     if (adopted.runId !== input.runId || adopted.preparationKey !== input.preparationKey) throw new Error("native_instruction_materialization_handoff_mismatch");
     entry.instructionWorkingCopy = adopted;
