@@ -908,8 +908,11 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
   }
 
   /** System continuations that only make sense for an open task. */
+  // issue_children_completed is a system wake too (native-status-wake-dispatch
+  // after the last child finished): a parent already closed has nothing to
+  // take from it. A person's saved message is never on this list.
   const SYSTEM_CONTINUATION_WAKE_REASONS = new Set(["issue_recovery_action_restored", "issue_continuation_needed",
-    "issue_assignment_recovery", ISSUE_BLOCKER_STALLED_WAKE_REASON]);
+    "issue_assignment_recovery", ISSUE_BLOCKER_STALLED_WAKE_REASON, "issue_children_completed"]);
 
   /**
    * Cancels a system continuation whose task closed while it was queued,
