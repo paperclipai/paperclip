@@ -21,6 +21,7 @@ import {
   heartbeatRuns,
   issueComments,
   issueDocuments,
+  issueRecoveryActions,
   issueThreadInteractions,
   issues,
 } from "@paperclipai/db";
@@ -279,6 +280,38 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(countExecuteCallsForRun(delivered.runId!)).toBe(1);
     expect((await db.select().from(issueComments).where(eq(issueComments.id, comment.id)))[0]?.body).toBe(comment.body);
     expect((await db.select().from(issues).where(eq(issues.id, issue.id)))[0]?.assigneeAgentId).toBe(agentId);
+  });
+
+  it.each(["done", "cancelled"] as const)("writes no delivery receipt for a message saved on a %s task", async status => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const [issue] = await db.insert(issues).values({ companyId, title: "Message saved after the task closed",
+      status: "in_progress", priority: "medium", assigneeAgentId: agentId }).returning();
+    const [owner] = await db.insert(heartbeatRuns).values({ companyId, agentId, invocationSource: "assignment",
+      runtimeMode: "legacy", status: "failed", startedAt: new Date(), finishedAt: new Date(),
+      contextSnapshot: { issueId: issue.id, wakeReason: "issue_assigned" } }).returning();
+    await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issue.id, kind: "active_run_watchdog",
+      cause: "uncertain_provider_action", ownerType: "board", status: "active", nextAction: "Reconcile the stopped run",
+      fingerprint: `saved-message-terminal:${owner.id}`, evidence: { runId: owner.id } });
+    const [comment] = await db.insert(issueComments).values({ companyId, issueId: issue.id,
+      body: "Pick this up when you are back", authorType: "user", authorUserId: "responsible-user" }).returning();
+    const [saved] = await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "automation",
+      triggerDetail: "system", reason: "issue_execution_deferred", status: "deferred_issue_execution",
+      requestedByActorType: "user", requestedByActorId: "responsible-user",
+      payload: withQueuedCommentIdsInWakePayload({ issueId: issue.id, _paperclipWakeContext: {
+        issueId: issue.id, wakeReason: "issue_commented", wakeSource: "automation",
+      } }, [comment.id]),
+    }).returning();
+    await db.update(issues).set({ status, executionRunId: null, checkoutRunId: null }).where(eq(issues.id, issue.id));
+
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.resumeQueuedRuns();
+
+    expect(await db.select({ id: agentWakeupRequests.id, status: agentWakeupRequests.status,
+      reason: agentWakeupRequests.reason, runId: agentWakeupRequests.runId }).from(agentWakeupRequests)).toEqual([
+      { id: saved.id, status: "deferred_issue_execution", reason: "issue_execution_deferred", runId: null },
+    ]);
+    expect(await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)).toEqual([{ id: owner.id }]);
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
   });
 
   it.each(["preparing", "verifying", "resuming"] as const)("keeps assigned work queued through %s, including recovery with timers disabled", async lifecycleState => {
