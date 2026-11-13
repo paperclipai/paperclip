@@ -482,7 +482,12 @@ after every turn. Saved CLI sessions preserve normalized remote identity and
 account-scoped conversation references across server persistence.
 
 ACP SSH sessions use the existing remote process bridge and session reuse
-lifecycle. A compatible session can retain its private remote home; workspace
+lifecycle. Both provider adapters admit managed SSH through their public
+execution entry points when the remote ACP command is available. SSH ACP needs
+an agent-managed account and a copied workspace. Host authentication, in-place
+SSH workspaces, and local filesystem/network confinement require the CLI engine.
+Command availability checks do not send controller credentials to the SSH host.
+A compatible session can retain its private remote home; workspace
 sync and credential refresh run at turn teardown, and the session disposal hook
 removes the home on retirement. Workspace identity includes the company, agent,
 task and execution fingerprint. The fingerprint normalizes temporary managed-home
