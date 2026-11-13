@@ -75,6 +75,7 @@ import { appCopyFor, credentialFieldLabel } from "@/lib/app-gallery-copy";
 import { AgentMultiSelect, type AgentMultiSelectOption } from "@/components/AgentMultiSelect";
 import { describeError } from "@/api/errors";
 import { InlineBanner } from "@/components/InlineBanner";
+import { MachineSignInSetup } from "./MachineSignInSetup";
 import { useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -1469,6 +1470,19 @@ function StandardConnectionSetupFlow({
   };
 
   const effectiveGrantKind = fixedGrantKind ?? grantKind;
+  // A connected result (from the link probe or machine sign-in) goes straight to
+  // review with every discovered action enabled by default.
+  function acceptConnectedResult(result: ConnectToolAppResult) {
+    setLinkGuidance(null);
+    setConnectResult(result);
+    const defaults: Record<string, boolean> = {};
+    for (const a of result.actions.readOnly) defaults[a.catalogEntryId] = true;
+    for (const a of result.actions.canMakeChanges) defaults[a.catalogEntryId] = true;
+    setEnabled(defaults);
+    finishMutation.mutate({ result, enabled: defaults });
+  }
+  const acceptMachineSignInResult = acceptConnectedResult;
+
   const connectMutation = useMutation({
     mutationFn: async (entryOverride?: AppDefinition) => {
       if (requiredAgentId && !resumeConnectionId && !reconnectConnectionId
@@ -1594,13 +1608,7 @@ function StandardConnectionSetupFlow({
       }
       oauthPopupRef.current?.close();
       oauthPopupRef.current = null;
-      setLinkGuidance(null);
-      setConnectResult(result);
-      const defaults: Record<string, boolean> = {};
-      for (const a of result.actions.readOnly) defaults[a.catalogEntryId] = true;
-      for (const a of result.actions.canMakeChanges) defaults[a.catalogEntryId] = true;
-      setEnabled(defaults);
-      finishMutation.mutate({ result, enabled: defaults });
+      acceptConnectedResult(result);
     },
     onError: (error) => {
       oauthPopupRef.current?.close();
@@ -2830,6 +2838,9 @@ function StandardConnectionSetupFlow({
             setLinkGuidance(null);
             connectApp();
           }}
+          machineSignIn={effectiveGrantKind === "organization" && selectedCompanyId && !reconnectConnectionId
+            ? { companyId: selectedCompanyId, onConnected: acceptMachineSignInResult }
+            : null}
         />
       )}
 
@@ -3385,6 +3396,7 @@ function LinkConnectStep({
   defaults,
   onBack,
   onConnect,
+  machineSignIn,
 }: {
   link: string;
   name: string;
@@ -3410,7 +3422,10 @@ function LinkConnectStep({
   defaults?: ReactNode;
   onBack: () => void;
   onConnect: () => void;
+  /** Offered only for organization connections: personal connections sign in as the person. */
+  machineSignIn?: { companyId: string; onConnected: (result: ConnectToolAppResult) => void } | null;
 }) {
+  const [machineSelected, setMachineSelected] = useState(false);
   const host = endpointHost(link);
   const headerError = authMode === "custom_headers" ? customHeaderError(headers) : null;
   const draft: GenericConnectDraft = {
@@ -3496,11 +3511,31 @@ function LinkConnectStep({
                 <SegmentedOption
                   key={option.mode}
                   label={option.label}
-                  selected={authMode === option.mode}
-                  onClick={() => onAuthModeChange(option.mode)}
+                  selected={!machineSelected && authMode === option.mode}
+                  onClick={() => {
+                    setMachineSelected(false);
+                    onAuthModeChange(option.mode);
+                  }}
                 />
               ))}
+              {machineSignIn ? (
+                <SegmentedOption
+                  label="Machine sign-in"
+                  selected={machineSelected}
+                  onClick={() => setMachineSelected(true)}
+                />
+              ) : null}
             </div>
+            {machineSelected && machineSignIn ? (
+              <MachineSignInSetup
+                companyId={machineSignIn.companyId}
+                link={link}
+                name={name}
+                onBack={onBack}
+                onConnected={machineSignIn.onConnected}
+              />
+            ) : (
+            <>
             <p className="text-xs text-muted-foreground">
               {GENERIC_AUTH_MODE_OPTIONS.find((option) => option.mode === authMode)?.hint}
             </p>
@@ -3584,21 +3619,27 @@ function LinkConnectStep({
                 </div>
               </div>
             ) : null}
+            </>
+            )}
           </CollapsibleContent>
         </Collapsible>
       </div>
 
-      {defaults}
+      {machineSelected && machineSignIn ? null : (
+        <>
+          {defaults}
 
-      <div className="mt-8 flex items-center justify-between">
-        <Button variant="ghost" onClick={onBack} disabled={submitting}>
-          Back
-        </Button>
-        <Button onClick={onConnect} disabled={submitting || !canSubmit || Boolean(headerError)}>
-          {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-          {submitting ? "Checking…" : "Check link"}
-        </Button>
-      </div>
+          <div className="mt-8 flex items-center justify-between">
+            <Button variant="ghost" onClick={onBack} disabled={submitting}>
+              Back
+            </Button>
+            <Button onClick={onConnect} disabled={submitting || !canSubmit || Boolean(headerError)}>
+              {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              {submitting ? "Checking…" : "Check link"}
+            </Button>
+          </div>
+        </>
+      )}
     </div>
   );
 }

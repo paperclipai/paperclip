@@ -96,6 +96,9 @@ Collapsed by default. Open it when the server's docs are specific:
 - **Custom headers** — for servers that name their own headers.
 - **Browser sign-in** — optionally with a client ID and secret you registered
   yourself, for providers that require preregistration.
+- **Machine sign-in** — organization connections only. Paperclip signs in as a
+  client you registered with the provider, using a Paperclip key or a client
+  secret, with no person involved. See [Machine sign-in](./MCP-CLIENT-CREDENTIALS.md).
 
 Every value you enter becomes a Paperclip secret. Values are write-only: they
 never appear in stored config JSON, logs, activity details, API responses after
