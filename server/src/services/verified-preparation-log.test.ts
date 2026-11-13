@@ -84,10 +84,21 @@ describe("verified host preparation output", () => {
     expect(await hasVerifiedPreparationLog(f.run)).toBe(true);
   });
 
+  it("accepts two notices of the same attempt", async () => {
+    const f = source();
+    const notice = "[paperclip] Skipping saved session resume because effective run configuration changed: environment.\n";
+    const content = [1, 2].map(seq => JSON.stringify({ ...f.record, chunk: notice, seq }) + "\n").join("");
+    Object.assign(f.run, { lastOutputSeq: 2, stdoutExcerpt: notice + notice, logBytes: Buffer.byteLength(content),
+      lastOutputBytes: Buffer.byteLength(content), logSha256: createHash("sha256").update(content).digest("hex") });
+    fixture.read.mockResolvedValue({ content });
+    expect(await hasVerifiedPreparationLog(f.run)).toBe(true);
+  });
+
   it.each(["provider_line", "other_attempt", "skills_after_notice"] as const)("keeps a log with other output held: %s", async state => {
     const f = source();
     const notice = "[paperclip] Skipping saved session resume because effective run configuration changed: environment.\n";
     const records = [{ ...f.record, chunk: notice, seq: 1 }, { ...f.record, seq: 2 }];
+    if (state !== "skills_after_notice") records[1]!.chunk = notice;
     if (state === "provider_line") records[1]!.chunk = "[paperclip] Provider wrote a file\n";
     if (state === "other_attempt") records[1]!.attemptId = randomUUID();
     const content = records.map(record => JSON.stringify(record) + "\n").join("");

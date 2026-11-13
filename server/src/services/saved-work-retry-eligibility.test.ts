@@ -246,6 +246,25 @@ describe("Retry of a task whose saved work recovery settled", () => {
     expect(interruption).toMatchObject({ canRetry: false, retryWait: { reason: "workspace_repair_required" } });
   });
 
+  it("offers no Retry for a held Retry with the generic wait over a hold waiting for an unconfirmed file copy to stop", async () => {
+    const f = await sourceUnavailable();
+    await db.update(issueRecoveryActions).set({ evidence: sql`${issueRecoveryActions.evidence} || ${JSON.stringify({
+      workspaceOwnerRecovery: { state: "operator_required", owner: { pid: 3, token: randomUUID(), hostname: "previous-host" } } })}::jsonb` })
+      .where(eq(issueRecoveryActions.id, f.actionId));
+    const [agent] = await db.select({ id: agents.id }).from(agents).where(eq(agents.companyId, f.companyId));
+    const requestId = randomUUID();
+    await db.insert(agentWakeupRequests).values({ id: requestId, companyId: f.companyId, agentId: agent.id, source: "on_demand",
+      triggerDetail: "manual", reason: "task_retry", status: "deferred_issue_execution", requestedByActorType: "user",
+      requestedByActorId: actorId, idempotencyKey: `task-retry:${randomUUID()}`,
+      payload: { issueId: f.issueId, executionWait: { reason: "execution_recovery", message: "Waiting for execution recovery. Your message is saved." },
+        taskRetry: { schema: "paperclip.task-retry.v1", generationId: requestId, sourceRunId: f.heldId, actorId,
+          actorSource: "local_implicit", strategy: "evaluate" } } });
+    const blocker = await getExecutionBlocker(db, f.companyId, f.issueId);
+    const interruption = await taskInterruptionPresentation(db, await issue(f.issueId));
+    expect(blocker?.canRetry).toBe(false);
+    expect(interruption).toMatchObject({ canRetry: false, retryWait: { reason: "execution_recovery" } });
+  });
+
   it("continues in a fresh session from the recorded work when saved work is no longer available", async () => {
     const f = await sourceUnavailable();
     const wake = await retry(f, f.heldId);

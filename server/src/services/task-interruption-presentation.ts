@@ -745,7 +745,7 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
         agentAdapter: run.agentAdapter ?? "unknown" });
     }
   }
-  const offered = [...result].flatMap(([issueId, presentation]) => presentation?.canRetry && !presentation.retryWait ? [issueId] : []);
+  const offered = [...result].flatMap(([issueId, presentation]) => presentation?.canRetry ? [issueId] : []);
   if (offered.length) {
     const { executionBlockerPredicate, getExecutionBlocker, restoreHoldPredicate, restoreHoldReleasedForCurrentOwnerPredicate } =
       await import("./execution-blocker.js");
@@ -757,7 +757,7 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
       const presentation = result.get(issueId);
       if (!presentation || !blocker || blocker.canRetry) continue;
       presentation.canRetry = false;
-      if (blocker.workspaceRecovery && blocker.workspaceRecovery.status !== "recovered")
+      if (!presentation.retryWait && blocker.workspaceRecovery && blocker.workspaceRecovery.status !== "recovered")
         presentation.retryWait = { reason: "workspace_repair_required", message: retryWaitMessages.workspace_repair_required! };
     }
   }
