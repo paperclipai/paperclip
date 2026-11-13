@@ -32,7 +32,7 @@ import { onboardingFirstTaskAwaitingUserSql } from "./onboarding-first-task-wait
 import { PENDING_CONTINUATION_BOUND_MS } from "../recovery-continuation-pacing.js";
 import { attributeBlock, BLOCK_ATTRIBUTION_WINDOW_MS, blockedStatusDetailsSql } from "../interruption-block-release.js";
 import { ASSIGNED_WORK_CONTINUED_ACTION, taskAutomaticAttempts } from "./task-automatic-attempts.js";
-import { automaticRunCreationHeldUntil, readAutomaticWorkStatus } from "./automatic-run-brake.js";
+import { readAutomaticWorkStatus, reserveAutomaticRunCreation } from "./automatic-run-brake.js";
 import { STRANDED_CONTINUATION_MAX_AGE_MS, STRANDED_KIND, strandedHoldContinuesAutomatically, type StrandedHoldRun } from "./stranded-hold-continuation.js";
 import {
   continuationActivityMessage,
@@ -527,9 +527,6 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       await deps.settleLostRunProcess?.({ companyId: issue.companyId, runId: verdict.runId! });
       return { verdict, outcome: "settled_lost_run", retryAt: new Date(at.getTime() + 90_000) };
     }
-    const heldUntil = facts.latestRun
-      ? await automaticRunCreationHeldUntil(db, issue.companyId, { issueId: issue.id, sourceRunId: facts.latestRun.id }) : null;
-    if (heldUntil) return { verdict, outcome: "deferred_rate_limit", retryAt: heldUntil };
     // A small process-wide budget keeps a post-deploy backlog from starting
     // hundreds of runs at once. Deferred tasks come back on their deadline.
     const minuteAgo = at.getTime() - 60_000;
@@ -537,13 +534,19 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
     if (repairTimes.length >= ASSIGNED_WORK_REPAIRS_PER_MINUTE) {
       return { verdict, outcome: "deferred_rate_limit", retryAt: new Date(repairTimes[0] + 60_000 + Math.floor(Math.random() * 5_000)) };
     }
-    const claimed = await claimContinuation(issue, at);
+    const slot = facts.latestRun
+      ? await reserveAutomaticRunCreation(db, issue.companyId, { issueId: issue.id, sourceRunId: facts.latestRun.id }) : null;
+    if (slot?.heldUntil) return { verdict, outcome: "deferred_rate_limit", retryAt: slot.heldUntil };
+    const release = async () => { if (slot && !slot.heldUntil) await slot.release(); };
+    const claimed = await claimContinuation(issue, at).catch(async error => { await release(); throw error; });
+    if (claimed.kind !== "claimed") await release();
     if (claimed.kind !== "claimed") return { verdict, outcome: claimed.kind === "capped" ? "deferred_cap" : claimed.kind === "changed" ? "changed" : "deferred_rate_limit",
       retryAt: claimed.kind === "changed" ? null : claimed.retryAt };
     repairTimes.push(at.getTime());
     // A block that interrupted a review goes back to review; the review's own
     // recovery wakes its participant. No agent work starts from here.
     if (claimed.restoredTo === "in_review") {
+      await release();
       await settleContinuationActivity(claimed, claimed.reason, "restored_to_review");
       return { verdict: claimed.verdict, outcome: "repaired", retryAt: null };
     }
@@ -562,6 +565,7 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
     // A refused continuation stays a violation; the claim spaces the next try.
     // A block lifted for it is put back, so the task never sits unblocked
     // with nothing pending.
+    if (!run) await release();
     if (!run && claimed.restoredTo) await revertRestoredBlock(issue, claimed);
     await settleContinuationActivity(claimed, claimed.reason, run ? "queued" : "not_started");
     return { verdict: claimed.verdict, outcome: run ? "repaired" : "enqueue_refused", retryAt: claimed.nextCheckAt };

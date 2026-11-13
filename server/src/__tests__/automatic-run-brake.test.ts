@@ -231,7 +231,7 @@ suite("automatic-run brake", () => {
     expect((await brake.refresh(db, companyId)).state).toBe("closed");
     const continuations = [...await queuedAutomatic(companyId, agentId!, 20), ...await queuedAutomatic(companyId, otherAgent!, 20)];
     expect(await heldCount(createAutomaticRunBrake(), continuations)).toBe(40);
-    expect(await brake.creationHeldUntil(db, companyId, { issueId: randomUUID(), sourceRunId: randomUUID() })).toBeNull();
+    expect((await brake.reserveCreation(db, companyId, { issueId: randomUUID(), sourceRunId: randomUUID() })).heldUntil).toBeNull();
 
     await db.update(heartbeatRuns).set({ status: "failed", errorCode: "environment_provider_unavailable", executionStage: "preparing",
       startedAt: sql`now() - interval '20 seconds'`, finishedAt: sql`now() - interval '5 seconds'`,
@@ -338,6 +338,21 @@ suite("automatic-run brake", () => {
     expect((await brakeRow(companyId))?.probeRunId).toBeNull();
   }, 60_000);
 
+  it("lets another run take the probe when the reserved probe never starts within the claim bound", async () => {
+    const { companyId, agentIds: [agentId, otherAgent] } = await seedCompany();
+    await openBrake(companyId, agentId!);
+    const [first] = await queuedAutomatic(companyId, agentId!, 1);
+    const [second] = await queuedAutomatic(companyId, otherAgent!, 1);
+    expect(await createAutomaticRunBrake().holdAutomaticRunStart(db, first!, { personOrigin: false })).toBe(false);
+    expect(await createAutomaticRunBrake().holdAutomaticRunStart(db, second!, { personOrigin: false })).toBe(true);
+    await ageBrake(companyId, AUTOMATIC_RUN_BRAKE.probeClaimBoundMs + 1_000);
+    expect(await createAutomaticRunBrake().holdAutomaticRunStart(db, second!, { personOrigin: false })).toBe(false);
+    expect((await brakeRow(companyId))?.probeRunId).toBe(second!.id);
+    await db.update(heartbeatRuns).set({ status: "running", startedAt: sql`now()` }).where(eq(heartbeatRuns.id, second!.id));
+    await ageBrake(companyId, AUTOMATIC_RUN_BRAKE.probeClaimBoundMs + 1_000);
+    expect(await createAutomaticRunBrake().holdAutomaticRunStart(db, first!, { personOrigin: false })).toBe(true);
+  }, 60_000);
+
   it("closes by itself when no automatic run started or finished for the quiet bound, even with runs waiting", async () => {
     const { companyId, agentIds: [agentId] } = await seedCompany();
     const failures = await openBrake(companyId, agentId!);
@@ -366,16 +381,16 @@ suite("automatic-run brake", () => {
     await openBrake(companyId, agentId!);
     const work = { issueId: randomUUID(), sourceRunId: randomUUID() };
     const [left, right] = [createAutomaticRunBrake(), createAutomaticRunBrake()];
-    const decisions = await Promise.all([left, right, left, right].map(brake => brake.creationHeldUntil(db, companyId, work)));
+    const decisions = await Promise.all([left, right, left, right].map(async brake => (await brake.reserveCreation(db, companyId, work)).heldUntil));
     expect(decisions.filter(held => held === null)).toHaveLength(1);
     const later = decisions.find(Boolean)!;
     expect(later.getTime()).toBeGreaterThan(Date.now() + 50_000);
     await queuedAutomatic(companyId, agentId!, 3);
     await ageBrake(companyId, AUTOMATIC_RUN_BRAKE.creationIntervalMs);
-    expect(await createAutomaticRunBrake().creationHeldUntil(db, companyId, work)).toBeNull();
+    expect((await createAutomaticRunBrake().reserveCreation(db, companyId, work)).heldUntil).toBeNull();
     await insertRuns(companyId, agentId!, 1, () => ({ status: "running", executionStage: "preparing", startedAt: ago(20_000) }));
     await ageBrake(companyId, AUTOMATIC_RUN_BRAKE.creationIntervalMs);
-    expect(await createAutomaticRunBrake().creationHeldUntil(db, companyId, work)).not.toBeNull();
+    expect((await createAutomaticRunBrake().reserveCreation(db, companyId, work)).heldUntil).not.toBeNull();
   }, 60_000);
 
   it("keeps a pass over hundreds of held runs at a bounded number of queries", async () => {
@@ -386,10 +401,14 @@ suite("automatic-run brake", () => {
     const brake = createAutomaticRunBrake();
     let started = 0;
     for (let pass = 0; pass < 100; pass += 1) {
-      for (const run of queued) if (!await brake.holdAutomaticRunStart(counting.db, run, { personOrigin: false })) started += 1;
+      for (const run of queued) {
+        if (await brake.holdAutomaticRunStart(counting.db, run, { personOrigin: false })) continue;
+        started += 1;
+        await db.update(heartbeatRuns).set({ status: "running", startedAt: sql`now()` }).where(eq(heartbeatRuns.id, run.id));
+      }
     }
     expect(started).toBe(1);
-    expect(counting.queries()).toBeLessThanOrEqual(5);
+    expect(counting.queries()).toBeLessThanOrEqual(6);
 
     const fallback = countingDb();
     const second = createAutomaticRunBrake();
@@ -404,7 +423,7 @@ suite("automatic-run brake", () => {
     const brake = createAutomaticRunBrake({ loadRules });
     const queued = await queuedAutomatic(companyId, agentId!, 3);
     expect((await brake.refresh(db, companyId)).state).toBe("closed");
-    expect(await brake.creationHeldUntil(db, companyId, { issueId: randomUUID(), sourceRunId: randomUUID() })).toBeNull();
+    expect((await brake.reserveCreation(db, companyId, { issueId: randomUUID(), sourceRunId: randomUUID() })).heldUntil).toBeNull();
     expect(await heldCount(brake, queued)).toBe(3);
     expect(await brakeRow(companyId)).toBeUndefined();
   }, 60_000);

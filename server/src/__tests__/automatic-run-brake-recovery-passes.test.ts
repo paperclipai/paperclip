@@ -10,6 +10,7 @@ import { AUTOMATIC_RUN_BRAKE, automaticRunBrake } from "../services/recovery/aut
 import { recoveryService } from "../services/recovery/service.js";
 import { ASSIGNED_WORK_CONTINUED_ACTION } from "../services/recovery/assigned-work-sweep.js";
 import { taskAutomaticAttempts } from "../services/recovery/task-automatic-attempts.js";
+import { CONTINUATION_CAP } from "../services/recovery/assigned-work-invariant.js";
 import { deliverReconciledExecutions } from "../services/execution-recovery-resolution.js";
 import { continueHeldExecutions, resetBacklogContinuationPacingForTests } from "../services/fresh-continuation-fallback.js";
 
@@ -191,15 +192,53 @@ suite("automatic-run brake in the recovery passes", () => {
     expect((await automaticRunBrake.refresh(db, companyId)).state).toBe("closed");
   }, 120_000);
 
-  async function pendingContinuation() {
+  it("a delivery its agent refuses gives the creation slot back to the next continuation in the same pass", async () => {
+    await seedCompany();
+    const otherAgent = randomUUID();
+    await db.insert(agents).values({ id: otherAgent, companyId, name: "Reviewer", role: "engineer", status: "idle", adapterType: "codex_local",
+      adapterConfig: {}, runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } }, permissions: {} });
+    const refused = await pendingContinuation();
+    const accepted = await pendingContinuation(otherAgent, 3 * MINUTE);
+    await openBrake({ startingAutomaticRun: false });
+    const wake = vi.fn(async (wakeAgentId: string, opts: { contextSnapshot: Record<string, unknown> }) => {
+      if (wakeAgentId === agentId) return null;
+      const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: wakeAgentId, invocationSource: "automation",
+        triggerDetail: "system", status: "queued", contextSnapshot: opts.contextSnapshot }).returning();
+      return run!;
+    });
+    await deliverReconciledExecutions(db, wake as never);
+    expect(wake.mock.calls.map(call => call[0])).toEqual([agentId, otherAgent]);
+    const delivery = async (id: string) => (await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, id)))[0]!
+      .evidence.continuationDelivery;
+    expect(await delivery(refused.id)).toBe("pending");
+    expect(await delivery(accepted.id)).toBe("delivered");
+    expect((await db.select().from(automaticRunBrakes))[0]!.nextCreationAt).not.toBeNull();
+  }, 120_000);
+
+  it("a capped task gives the creation slot back to the next task the sweep checks", async () => {
+    await seedCompany();
+    const [capped, next] = [await strandedTask(), await strandedTask()];
+    await openBrake({ startingAutomaticRun: false });
+    await db.insert(activityLog).values(Array.from({ length: CONTINUATION_CAP }, (_, index) => ({ companyId, actorType: "system",
+      actorId: "assigned-work-invariant", action: ASSIGNED_WORK_CONTINUED_ACTION, entityType: "issue", entityId: capped,
+      createdAt: ago(10 * MINUTE + index), details: {} })));
+    const enqueueWakeup = wakeQueue();
+    const recovery = recoveryService(db, { enqueueWakeup, scheduleRecoveryRetry: async () => null });
+    expect(await recovery.assignedWork.checkIssue({ companyId, issueId: capped })).toMatchObject({ outcome: "deferred_cap" });
+    expect((await db.select().from(automaticRunBrakes))[0]!.nextCreationAt).toBeNull();
+    expect(await recovery.assignedWork.checkIssue({ companyId, issueId: next })).toMatchObject({ outcome: "repaired" });
+    expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+  }, 120_000);
+
+  async function pendingContinuation(ownerAgentId = agentId, endedAgoMs = 2 * MINUTE) {
     const issueId = randomUUID();
-    await db.insert(issues).values({ id: issueId, companyId, title: "Continue the work", status: "todo", assigneeAgentId: agentId });
-    const [source] = await db.insert(heartbeatRuns).values({ companyId, agentId, issueId, invocationSource: "assignment", status: "failed",
-      errorCode: "server_shutdown_interrupted", startedAt: ago(3 * MINUTE), finishedAt: ago(2 * MINUTE), createdAt: ago(4 * MINUTE),
+    await db.insert(issues).values({ id: issueId, companyId, title: "Continue the work", status: "todo", assigneeAgentId: ownerAgentId });
+    const [source] = await db.insert(heartbeatRuns).values({ companyId, agentId: ownerAgentId, issueId, invocationSource: "assignment", status: "failed",
+      errorCode: "server_shutdown_interrupted", startedAt: ago(endedAgoMs + MINUTE), finishedAt: ago(endedAgoMs), createdAt: ago(endedAgoMs + 2 * MINUTE),
       contextSnapshot: { issueId, wakeReason: "issue_assigned" } }).returning();
     const recordedAt = new Date().toISOString();
     const [action] = await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issueId, kind: "active_run_watchdog",
-      status: "resolved", outcome: "handed_back", resolvedAt: new Date(), ownerType: "board", returnOwnerAgentId: agentId,
+      status: "resolved", outcome: "handed_back", resolvedAt: new Date(), ownerType: "board", returnOwnerAgentId: ownerAgentId,
       cause: "legacy_execution_requires_reconciliation", fingerprint: `legacy-execution:${source!.id}`, nextAction: "Continue the task.",
       attemptCount: 1, evidence: { runId: source!.id, originalFailureCode: "server_shutdown_interrupted", continuationDelivery: "pending",
         freshContinuation: { schema: "paperclip.fresh-continuation.v1", reason: "exact_resumption_unavailable", recordedAt },

@@ -13,6 +13,7 @@ export const AUTOMATIC_RUN_BRAKE = {
   minOpenMs: 2 * 60_000,
   quietCloseMs: 15 * 60_000,
   probeIntervalMs: 60_000,
+  probeClaimBoundMs: 10_000,
   probeRunningBoundMs: 10 * 60_000,
   probeSuccessesToRelease: 2,
   releaseIntervalMs: 60_000,
@@ -209,6 +210,10 @@ function trips(evidence: Evidence) {
 
 export type AutomaticWork = { issueId: string; sourceRunId: string | null };
 
+export type AutomaticRunCreationSlot = { heldUntil: Date } | { heldUntil: null; release: () => Promise<void> };
+
+const NO_RESERVATION = async () => undefined;
+
 type CacheEntry = { snapshot: AutomaticRunBrakeSnapshot; readAt: number; skewMs: number; heldUntil: number };
 
 export function createAutomaticRunBrake(options: { loadRules?: () => Promise<AutomaticRunOutcomeRules> } = {}) {
@@ -399,26 +404,32 @@ export function createAutomaticRunBrake(options: { loadRules?: () => Promise<Aut
     return !rules || (await rules.listPersonOriginSourceRunIds(db, companyId, [work.sourceRunId])).includes(work.sourceRunId);
   }
 
-  async function creationHeldUntil(db: Db, companyId: string, work: AutomaticWork): Promise<Date | null> {
+  async function reserveCreation(db: Db, companyId: string, work: AutomaticWork): Promise<AutomaticRunCreationSlot> {
     const entry = await current(db, companyId);
-    if (entry.snapshot.state !== "open") return null;
-    if (await isPersonWork(db, companyId, work)) return null;
+    if (entry.snapshot.state !== "open") return { heldUntil: null, release: NO_RESERVATION };
+    if (await isPersonWork(db, companyId, work)) return { heldUntil: null, release: NO_RESERVATION };
     const recheck = new Date(Date.now() + AUTOMATIC_RUN_BRAKE.creationIntervalMs);
     const lastStartAt = entry.snapshot.evidence.lastStartAt;
-    if (lastStartAt !== null && lastStartAt - entry.skewMs > Date.now() - AUTOMATIC_RUN_BRAKE.startProgressMs) return recheck;
+    if (lastStartAt !== null && lastStartAt - entry.skewMs > Date.now() - AUTOMATIC_RUN_BRAKE.startProgressMs) return { heldUntil: recheck };
     const [seeded] = await db.update(automaticRunBrakes).set({
-      nextCreationAt: sql`now() + ${`${AUTOMATIC_RUN_BRAKE.creationIntervalMs} milliseconds`}::interval`, updatedAt: sql`now()`,
+      nextCreationAt: sql`date_trunc('milliseconds', now()) + ${`${AUTOMATIC_RUN_BRAKE.creationIntervalMs} milliseconds`}::interval`,
+      updatedAt: sql`now()`,
     }).where(sql`${automaticRunBrakes.companyId} = ${companyId} and ${automaticRunBrakes.state} = 'open'
       and (${automaticRunBrakes.nextCreationAt} is null or ${automaticRunBrakes.nextCreationAt} <= now())`)
       .returning({ nextCreationAt: automaticRunBrakes.nextCreationAt });
-    if (seeded) {
+    if (seeded?.nextCreationAt) {
+      const token = seeded.nextCreationAt.toISOString();
       entry.snapshot = { ...entry.snapshot, nextCreationAt: seeded.nextCreationAt };
-      return null;
+      return { heldUntil: null, release: async () => {
+        await db.update(automaticRunBrakes).set({ nextCreationAt: null, updatedAt: sql`now()` })
+          .where(sql`${automaticRunBrakes.companyId} = ${companyId} and ${automaticRunBrakes.nextCreationAt} = ${token}::timestamptz`);
+        companies.delete(companyId);
+      } };
     }
     const row = await readRow(db, companyId);
-    if (row?.state !== "open") { companies.delete(companyId); return null; }
+    if (row?.state !== "open") { companies.delete(companyId); return { heldUntil: null, release: NO_RESERVATION }; }
     const at = row.nextCreationAt ? row.nextCreationAt.getTime() - entry.skewMs : recheck.getTime();
-    return new Date(Math.max(Date.now(), at));
+    return { heldUntil: new Date(Math.max(Date.now(), at)) };
   }
 
   async function isPersonOrigin(db: Db, run: AutomaticRunFacts) {
@@ -436,14 +447,18 @@ export function createAutomaticRunBrake(options: { loadRules?: () => Promise<Aut
       probeRunId: run.id, updatedAt: sql`now()`,
       nextProbeAt: sql`now() + ${`${AUTOMATIC_RUN_BRAKE.probeIntervalMs} milliseconds`}::interval`,
     }).where(sql`${automaticRunBrakes.companyId} = ${run.companyId} and ${automaticRunBrakes.state} = 'open'
-      and (${automaticRunBrakes.nextProbeAt} is null or ${automaticRunBrakes.nextProbeAt} <= now())
-      and (${automaticRunBrakes.probeRunId} is null or not exists (select 1 from heartbeat_runs p
-        where p.company_id = ${automaticRunBrakes.companyId} and p.id = ${automaticRunBrakes.probeRunId} and p.status = 'running'
-          and p.started_at > now() - ${`${AUTOMATIC_RUN_BRAKE.probeRunningBoundMs} milliseconds`}::interval))`)
+      and (((${automaticRunBrakes.nextProbeAt} is null or ${automaticRunBrakes.nextProbeAt} <= now())
+        and (${automaticRunBrakes.probeRunId} is null or not exists (select 1 from heartbeat_runs p
+          where p.company_id = ${automaticRunBrakes.companyId} and p.id = ${automaticRunBrakes.probeRunId} and p.status = 'running'
+            and p.started_at > now() - ${`${AUTOMATIC_RUN_BRAKE.probeRunningBoundMs} milliseconds`}::interval)))
+        or (${automaticRunBrakes.probeRunId} is not null
+          and ${automaticRunBrakes.nextProbeAt} <= now() + ${`${AUTOMATIC_RUN_BRAKE.probeIntervalMs - AUTOMATIC_RUN_BRAKE.probeClaimBoundMs} milliseconds`}::interval
+          and not exists (select 1 from heartbeat_runs p where p.company_id = ${automaticRunBrakes.companyId}
+            and p.id = ${automaticRunBrakes.probeRunId} and p.started_at is not null)))`)
       .returning({ nextProbeAt: automaticRunBrakes.nextProbeAt });
     const now = Date.now();
     if (granted) {
-      entry.heldUntil = now + AUTOMATIC_RUN_BRAKE.probeIntervalMs;
+      entry.heldUntil = now + AUTOMATIC_RUN_BRAKE.probeClaimBoundMs;
       entry.snapshot = { ...entry.snapshot, probeRunId: run.id, nextProbeAt: granted.nextProbeAt };
       return true;
     }
@@ -491,7 +506,7 @@ export function createAutomaticRunBrake(options: { loadRules?: () => Promise<Aut
   return {
     read,
     refresh: async (db: Db, companyId: string) => (await refresh(db, companyId)).snapshot,
-    creationHeldUntil,
+    reserveCreation,
     holdAutomaticRunStart,
     cacheSizes: () => ({ companies: companies.size, runs: personOrigin.size }),
     reset: () => { companies.clear(); personOrigin.clear(); },
@@ -500,8 +515,8 @@ export function createAutomaticRunBrake(options: { loadRules?: () => Promise<Aut
 
 export const automaticRunBrake = createAutomaticRunBrake();
 
-export function automaticRunCreationHeldUntil(db: Db, companyId: string, work: AutomaticWork) {
-  return automaticRunBrake.creationHeldUntil(db, companyId, work);
+export function reserveAutomaticRunCreation(db: Db, companyId: string, work: AutomaticWork) {
+  return automaticRunBrake.reserveCreation(db, companyId, work);
 }
 
 export function automaticWorkStatusText(snapshot: AutomaticRunBrakeSnapshot) {
