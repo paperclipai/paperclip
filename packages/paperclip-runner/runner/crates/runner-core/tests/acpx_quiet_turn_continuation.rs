@@ -8,6 +8,7 @@ use paperclip_runner_core::acpx_provider_session::{
 };
 use paperclip_runner_core::acpx_provider_state::AcpxProviderStateEvent;
 use paperclip_runner_core::acpx_sidecar_transport::AcpxSidecarTransportConfig;
+use paperclip_runner_core::generated_acpx_sidecar_contract::read_generated_acpx_background_tasks;
 use paperclip_runner_core::provider_bridge::{
     authorized_tool_catalog_digest, AuthorizedTool, AuthorizedToolSet, ToolResult,
 };
@@ -224,4 +225,26 @@ fn a_full_settled_turn_ledger_still_rotates_through_a_restart() {
     assert_ne!(session.process_id(), first_pid);
     assert!(session.turn_start_replaced_provider());
     session.shutdown("test complete").unwrap();
+}
+
+#[test]
+fn the_generated_reader_matches_the_shared_background_task_vectors() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../protocol/fixtures/provider-boundary/acpx-background-tasks.json");
+    let vectors: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    for vector in vectors["accepted"].as_array().unwrap() {
+        assert_eq!(
+            read_generated_acpx_background_tasks(&vector["value"]),
+            vector["live"].as_u64(),
+            "{vector}"
+        );
+    }
+    for vector in vectors["rejected"].as_array().unwrap() {
+        assert_eq!(
+            read_generated_acpx_background_tasks(&vector["value"]),
+            None,
+            "{vector}"
+        );
+    }
 }
