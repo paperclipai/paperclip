@@ -34,8 +34,14 @@ export function strandedHoldContinuesAutomatically(
 ): boolean {
   if (hold.kind !== STRANDED_KIND || hold.ownerType !== "board") return false;
   if (!run || !assigneeAgentId || run.agentId !== assigneeAgentId || !run.finishedAt) return false;
-  if (!["failed", "timed_out", "interrupted", "cancelled"].includes(run.status)) return false;
   if (now.getTime() - run.finishedAt.getTime() > STRANDED_CONTINUATION_MAX_AGE_MS) return false;
+  return strandedRunCauseIsTemporary(run);
+}
+
+export function strandedRunCauseIsTemporary(
+  run: Pick<StrandedHoldRun, "status" | "errorCode" | "error" | "executionRecovery">,
+): boolean {
+  if (!["failed", "timed_out", "interrupted", "cancelled"].includes(run.status)) return false;
   const code = run.errorCode ?? "";
   if (RESTART_CLASS_CODES.has(code)) return true;
   if (!TRANSIENT_SETUP_CODES.has(code)) return false;

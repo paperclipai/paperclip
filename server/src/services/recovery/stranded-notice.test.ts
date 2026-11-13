@@ -137,16 +137,22 @@ describe("buildStrandedRecoveryEscalationNotice", () => {
     expect(notice.body).not.toContain("retried continuation");
     expect(JSON.stringify(notice.metadata)).toContain("took too long, so no agent work started");
   });
-  it("says a saved sandbox that timed out resuming is retried automatically, without asking anyone to inspect or repair", () => {
+  it("promises an automatic retry for a timed-out sandbox setup only when the sweep will continue it", () => {
     for (const errorCode of ["reusable_sandbox_resume_failed", "remote_workspace_prepare_timeout"]) {
-      const notice = buildStrandedRecoveryEscalationNotice({
-        seed: buildImmediateExecutionPathRecoveryNoticeSeed({ status: "in_progress" }),
-        recoveryActionId: "sandbox-recovery", recoveryOwner: null,
-        sourceRun: { id: "failed-run", status: "failed", errorCode },
-      });
-      const text = `${notice.body} ${JSON.stringify(notice.metadata)}`;
-      expect(notice.body).toContain("tries again automatically");
-      expect(text).not.toMatch(/inspect|repair|check |could not continue/i);
+      for (const continuesAutomatically of [true, false]) {
+        const notice = buildStrandedRecoveryEscalationNotice({
+          seed: buildImmediateExecutionPathRecoveryNoticeSeed({ status: "in_progress" }),
+          recoveryActionId: "sandbox-recovery", recoveryOwner: null, continuesAutomatically,
+          sourceRun: { id: "failed-run", status: "failed", errorCode },
+        });
+        const text = `${notice.body} ${JSON.stringify(notice.metadata)}`;
+        expect(text).not.toMatch(/inspect|repair|check /i);
+        if (continuesAutomatically) expect(text).toContain("tries again automatically");
+        else {
+          expect(text).not.toContain("tries again automatically");
+          expect(notice.body).toContain("Press Retry to start it again.");
+        }
+      }
     }
   });
   it("names an environment plugin that was not running after its bounded retries", () => {

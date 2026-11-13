@@ -193,6 +193,10 @@ describePostgres("assigned-work invariant sweep", () => {
         reason: "native_continuation_requires_reconciliation" }, createdAt: blockedAt });
     const successor = await f.run(issueId, { status: "queued", errorCode: null, livenessState: null, startedAt: null, finishedAt: null,
       createdAt: new Date(blockedAt.getTime() + 19_000) });
+    const [wake] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId, source: "automation",
+      triggerDetail: "system", reason: "issue_continuation_needed", status: "queued", runId: successor.id,
+      payload: { issueId } }).returning();
+    await db.update(heartbeatRuns).set({ wakeupRequestId: wake.id }).where(eq(heartbeatRuns.id, successor.id));
     const queue = wakeQueue();
     const recovery = recoveryService(db, { enqueueWakeup: queue.enqueueWakeup });
     expect((await recovery.assignedWork.listSuspects({ companyId: f.companyId }, null, 100)).map(row => row.id)).toContain(issueId);

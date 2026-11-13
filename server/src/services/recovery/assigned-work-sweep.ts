@@ -427,6 +427,11 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
    */
   async function listSuspects(scope: { companyId?: string; issueId?: string; createdAfter?: Date | null }, cursor: string | null, limit: number) {
     const at = now();
+    const liveRun = sql`exists (select 1 from heartbeat_runs r where r.company_id = ${issues.companyId}
+        and (r.context_snapshot->>'issueId') = ${issues.id}::text
+        and r.status in ('queued', 'running', 'scheduled_retry')
+        and not (r.status = 'running' and r.runtime_mode = 'legacy' and r.controller_lease_expires_at is not null
+          and r.controller_lease_expires_at < ${at.toISOString()}::timestamptz))`;
     return db.select({ id: issues.id, companyId: issues.companyId, updatedAt: issues.updatedAt }).from(issues).where(and(
       scope.companyId ? eq(issues.companyId, scope.companyId) : undefined,
       scope.issueId ? eq(issues.id, scope.issueId) : undefined,
@@ -442,17 +447,13 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       sql`(${issues.monitorNextCheckAt} is null or ${issues.monitorNextCheckAt} <= ${at.toISOString()}::timestamptz)`,
       // A legacy run whose controller lease lapsed may have lost its owner;
       // the predicate judges it with the owner proof. Other active runs are live.
-      sql`(${issues.status} = 'blocked' or not exists (select 1 from heartbeat_runs r where r.company_id = ${issues.companyId}
-        and (r.context_snapshot->>'issueId') = ${issues.id}::text
-        and r.status in ('queued', 'running', 'scheduled_retry')
-        and not (r.status = 'running' and r.runtime_mode = 'legacy' and r.controller_lease_expires_at is not null
-          and r.controller_lease_expires_at < ${at.toISOString()}::timestamptz)))`,
-      sql`not exists (select 1 from agent_wakeup_requests w where w.company_id = ${issues.companyId}
+      sql`(${issues.status} = 'blocked' or not ${liveRun})`,
+      sql`((${issues.status} = 'blocked' and ${liveRun}) or not exists (select 1 from agent_wakeup_requests w where w.company_id = ${issues.companyId}
         and (w.payload->>'issueId') = ${issues.id}::text
         and (w.status = 'queued'
           or (w.status = 'deferred_issue_execution' and w.created_at > ${new Date(at.getTime() - DEFERRED_WAKE_PENDING_BOUND_MS).toISOString()}::timestamptz)
           or (w.status = 'claimed' and (w.run_id is not null
-            or coalesce(w.claimed_at, w.created_at) > ${new Date(at.getTime() - DEFERRED_WAKE_PENDING_BOUND_MS).toISOString()}::timestamptz))))`,
+            or coalesce(w.claimed_at, w.created_at) > ${new Date(at.getTime() - DEFERRED_WAKE_PENDING_BOUND_MS).toISOString()}::timestamptz)))))`,
       sql`not exists (select 1 from issue_thread_interactions t where t.company_id = ${issues.companyId}
         and t.issue_id = ${issues.id} and t.status = 'pending'
         and ${interactionNotSupersededSql(sql`t.company_id`, sql`t.issue_id::text`, sql`t.created_at`)})`,

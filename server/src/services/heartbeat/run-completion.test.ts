@@ -1792,7 +1792,7 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect(actions[0]).toMatchObject({ status: "active", ownerType: "board", cause: "remote_workspace_restore_failed",
       kind: "stranded_assigned_issue", returnOwnerAgentId: f.agent.id });
     expect(actions[0]!.evidence).toMatchObject({ runId: f.run.id, restoreFailure: failed.error });
-    expect(actions[0]!.nextAction).toContain("saved workspace version was kept");
+    expect(actions[0]!.nextAction).toContain("The saved version was kept");
   });
 
   it("keeps an active recovery action that another writer created for the task", async () => {

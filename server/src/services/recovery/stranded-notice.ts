@@ -58,6 +58,9 @@ const STRANDED_RECOVERY_NOTICE_TITLES_BY_RUN_ERROR_CODE: Record<string, string> 
 const TEMPORARY_SETUP_NEXT_ACTION = "Setting up the workspace took too long, so no agent work started. "
   + "Paperclip tries again automatically.";
 
+const AUTOMATIC_RETRY_SENTENCE = "Paperclip tries again automatically.";
+const MANUAL_RETRY_SENTENCE = "Press Retry to start it again.";
+
 const TEMPORARY_SETUP_CODES = new Set(["remote_workspace_prepare_timeout", "reusable_sandbox_resume_failed"]);
 
 const WORKSPACE_SCAN_NOTICES: Record<string, { title: string; nextAction: string }> = {
@@ -258,6 +261,7 @@ export function buildStrandedRecoveryEscalationNotice(input: {
   fallbackBody?: string | null;
   recoveryCause?: string | null;
   recoveryActionId: string;
+  continuesAutomatically?: boolean;
   recoveryOwner: { id: string; name: string | null } | null | undefined;
   sourceRun: {
     id: string;
@@ -267,10 +271,14 @@ export function buildStrandedRecoveryEscalationNotice(input: {
     errorSummary?: string | null;
   } | null | undefined;
 }): StrandedRecoveryEscalationNotice {
-  const workspaceScan = WORKSPACE_SCAN_NOTICES[input.sourceRun?.errorCode ?? ""];
+  const scanNotice = WORKSPACE_SCAN_NOTICES[input.sourceRun?.errorCode ?? ""];
+  const retriesItself = TEMPORARY_SETUP_CODES.has(input.sourceRun?.errorCode ?? "") && input.continuesAutomatically === true;
+  const workspaceScan = scanNotice && TEMPORARY_SETUP_CODES.has(input.sourceRun?.errorCode ?? "") && !retriesItself
+    ? { ...scanNotice, nextAction: scanNotice.nextAction.replace(AUTOMATIC_RETRY_SENTENCE, MANUAL_RETRY_SENTENCE) }
+    : scanNotice;
   const seed = workspaceScan ? {
     ...workspaceScan,
-    body: TEMPORARY_SETUP_CODES.has(input.sourceRun?.errorCode ?? "")
+    body: retriesItself
       ? `Paperclip could not prepare the workspace before the agent started. ${workspaceScan.nextAction}`
       : `Paperclip could not prepare the workspace before the agent started. Automatic recovery could not continue. ${workspaceScan.nextAction}`,
     tone: "danger" as const,

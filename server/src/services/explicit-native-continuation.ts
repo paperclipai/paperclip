@@ -23,7 +23,7 @@ import { hasRecoveredCleanupStopReceipt, hasRemoteTerminationReceipt, remoteLeas
 import { z } from "zod";
 import { and, desc, eq, gt, inArray, isNull, ne, not, or, sql, type SQL } from "drizzle-orm";
 import {
-  agents, agentWakeupRequests, approvals, issueApprovals, issueThreadInteractions,
+  activityLog, agents, agentWakeupRequests, approvals, issueApprovals, issueThreadInteractions,
   environmentLeases, heartbeatRuns, issueComments, issueRecoveryActions, issueRelations,
   issues, nativeRunFinalizations, nativeRunResults, type Db,
 } from "@paperclipai/db";
@@ -766,10 +766,20 @@ async function liftInterruptionBlock(db: Db, task: typeof issues.$inferSelect,
   const sourceFor = (action: typeof issueRecoveryActions.$inferSelect) =>
     sources.find(run => run.id === String(action.evidence.runId ?? action.evidence.sourceRunId));
   const blockedAt = task.blockedTransitionAt?.getTime();
+  const receiptless = actions.every(action =>
+    action.evidence.workspaceFinalizationBlock === undefined && action.evidence.nativeFailureBlock === undefined);
   const owned = actions.some(action => { const run = sourceFor(action); return run && holdOwnsBlockedStatus(action, task, run); })
-    || (task.lastStatusDecisionId === null && blockedAt !== undefined
+    || (receiptless && task.lastStatusDecisionId === null && blockedAt !== undefined
       && sources.some(run => run.finishedAt !== null && blockedAt >= run.finishedAt.getTime() - 1_000));
   if (!owned) return;
+  const [blockEntry] = blockedAt === undefined ? [] : await db.select({ actorType: activityLog.actorType }).from(activityLog).where(and(
+    eq(activityLog.companyId, task.companyId), eq(activityLog.entityType, "issue"), eq(activityLog.entityId, task.id),
+    sql`${activityLog.createdAt} between ${new Date(blockedAt - 10_000).toISOString()}::timestamptz
+      and ${new Date(blockedAt + 10_000).toISOString()}::timestamptz`,
+    sql`(${activityLog.details}->>'status' = 'blocked' or ${activityLog.details}->>'toStatus' = 'blocked'
+      or ${activityLog.details}->'changes'->'status'->>'to' = 'blocked')`,
+  )).orderBy(desc(activityLog.createdAt)).limit(1);
+  if (blockEntry?.actorType === "user") return;
   const [openBlocker] = await db.select({ id: issueRelations.id }).from(issueRelations)
     .innerJoin(issues, and(eq(issues.id, issueRelations.issueId), eq(issues.companyId, issueRelations.companyId)))
     .where(and(eq(issueRelations.companyId, task.companyId), eq(issueRelations.relatedIssueId, task.id),

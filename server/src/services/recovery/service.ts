@@ -101,6 +101,7 @@ import {
   workspaceOperations,
 } from "@paperclipai/db";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
+import { STRANDED_KIND, strandedRunCauseIsTemporary, type StrandedHoldRun } from "./stranded-hold-continuation.js";
 import { runningProcesses } from "../../adapters/index.js";
 import {
   isNativeRunnerOwnershipHeld,
@@ -4293,6 +4294,14 @@ export function recoveryService(
       fallbackBody: input.comment,
       recoveryCause,
       recoveryActionId: recoveryAction.id,
+      continuesAutomatically: Boolean(input.latestRun) && recoveryAction.kind === STRANDED_KIND
+        && recoveryAction.ownerType === "board" && input.latestRun?.agentId === input.issue.assigneeAgentId
+        && strandedRunCauseIsTemporary({
+          status: input.latestRun?.status ?? "",
+          errorCode: input.latestRun?.errorCode ?? null,
+          error: input.latestRun?.error ?? null,
+          executionRecovery: (parseObject(input.latestRun?.resultJson).executionRecovery ?? null) as StrandedHoldRun["executionRecovery"],
+        }),
       recoveryOwner:
         recoveryAction.ownerAgentId && recoveryOwner
           ? { id: recoveryOwner.id, name: recoveryOwner.name }
