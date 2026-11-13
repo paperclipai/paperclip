@@ -31,6 +31,7 @@ describe("leaked tool-call markup", () => {
     ["markup in a tilde fence", `~~~text\n${dsml}\n~~~`],
     ["shorter fence lines inside a longer fence", `\`\`\`\`markdown\n\`\`\`\n${dsml}\n\`\`\`\n\`\`\`\``],
     ["other fence characters inside a fence", `~~~\n\`\`\`\n${dsml}\n~~~`],
+    ["an indented fence line inside a top-level fence", `\`\`\`\n    \`\`\`\n${dsml}\n\`\`\``],
     ["a list-indented fence", `10. Example:\n\n    \`\`\`\n    ${dsml}\n    \`\`\``],
   ])("ignores %s", (_label, text) => {
     expect(containsToolCallMarkup(text)).toBe(false);

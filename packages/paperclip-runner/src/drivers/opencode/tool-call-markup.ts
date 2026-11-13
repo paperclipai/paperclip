@@ -28,26 +28,29 @@ function firstSentinel(line: string): number {
   return first;
 }
 
-function fenceOf(line: string): { char: string; length: number; rest: string } | null {
-  const match = /^[ \t]*(`{3,}|~{3,})(.*)$/.exec(line);
-  return match ? { char: match[1]![0]!, length: match[1]!.length, rest: match[2]! } : null;
+function fenceOf(line: string): { indent: number; char: string; length: number; rest: string } | null {
+  const match = /^([ \t]*)(`{3,}|~{3,})(.*)$/.exec(line);
+  return match
+    ? { indent: match[1]!.replace(/\t/g, "    ").length, char: match[2]![0]!, length: match[2]!.length, rest: match[3]! }
+    : null;
 }
 
 export function toolCallMarkupStart(content: string, options: { streaming?: boolean } = {}): number {
   if (!content.includes("<")) return -1;
   let offset = 0;
-  let openFence: { char: string; length: number } | null = null;
+  let openFence: { indent: number; char: string; length: number } | null = null;
   const lines = content.split("\n");
   for (const [index, line] of lines.entries()) {
     const lineStart = offset;
     offset += line.length + 1;
     const fence = fenceOf(line);
     if (openFence) {
-      if (fence && fence.char === openFence.char && fence.length >= openFence.length && !fence.rest.trim()) openFence = null;
+      if (fence && fence.indent <= openFence.indent + 3 && fence.char === openFence.char && fence.length >= openFence.length && !fence.rest.trim())
+        openFence = null;
       continue;
     }
     if (fence && !(fence.char === "`" && fence.rest.includes("`"))) {
-      openFence = { char: fence.char, length: fence.length };
+      openFence = { indent: fence.indent, char: fence.char, length: fence.length };
       continue;
     }
     if (!line.trim()) continue;
