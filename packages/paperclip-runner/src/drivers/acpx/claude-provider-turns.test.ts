@@ -165,6 +165,28 @@ describe("Claude provider-started turns", () => {
     expect(cycles.undecided()).toBeNull();
   });
 
+  it("binds a tool call or permission request to the decision of the cycle that sent it", async () => {
+    const cycles = new ClaudeProviderCycles({ sessionId: () => SESSION, promptActive: () => false }).subscribe();
+    cycles.observe("inbound", toolCall("toolu_1"));
+    cycles.observe("inbound", endMarker());
+    cycles.observe("inbound", toolCall("toolu_2"));
+    cycles.observe("inbound", { jsonrpc: "2.0", id: 3, method: "session/request_permission", params: { sessionId: SESSION, toolCall: { toolCallId: "toolu_3" }, options: [] } });
+    const first = cycles.decisionFor("toolu_1");
+    const second = cycles.decisionFor("toolu_2");
+    expect(cycles.decisionFor("toolu_3")).toBe(second);
+    expect(cycles.decisionFor("toolu_unknown")).toBe(second);
+    expect(second).not.toBe(first);
+    let secondDecided = false;
+    void second!.then(() => { secondDecided = true; });
+    expect(await cycles.next()).toMatchObject({ type: "started" });
+    cycles.adopt(() => false);
+    expect(await first).toBe(true);
+    for (let item = await cycles.next(); item?.type !== "started"; item = await cycles.next()) void item;
+    expect(secondDecided).toBe(false);
+    cycles.drop();
+    expect(await second).toBe(false);
+  });
+
   it("parses only the closed arming contract runnerd sends", () => {
     expect(parseAcpxProviderTurnArming({ turnId: "turn-1", armed: true })).toEqual({ turnId: "turn-1", armed: true });
     expect(parseAcpxProviderTurnArming({ armed: false, turnId: "provider-1" })).toEqual({ turnId: "provider-1", armed: false });
