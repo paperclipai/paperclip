@@ -83,6 +83,18 @@ describe("agent-named chats", () => {
     expect(await chatAwaitsFirstAgentTurn(server.db, f.companyId, f.issueId)).toBe(false);
   });
 
+  it("names the chat after the first real message when a /new reset came first", async () => {
+    const f = await chatFixture();
+    const svc = issueService(server.db);
+    await svc.addComment(f.issueId, "/new", { userId: f.responsibleUserId! }, { authorType: "user" });
+    expect(await chatAwaitsFirstAgentTurn(server.db, f.companyId, f.issueId)).toBe(false);
+    const first = await svc.addComment(f.issueId, "Plan the Q3 offsite", { userId: f.responsibleUserId! }, { authorType: "user" });
+    await server.db.transaction(tx => setProvisionalChatTitle(tx as never, { companyId: f.companyId, issueId: f.issueId, commentId: first.id,
+      body: "Plan the Q3 offsite", actor: { actorType: "user", actorId: f.responsibleUserId! } }, []));
+    expect(await current(f)).toEqual({ title: "Plan the Q3 offsite", titleNeedsGeneration: true });
+    expect(await chatAwaitsFirstAgentTurn(server.db, f.companyId, f.issueId)).toBe(true);
+  });
+
   it("lets the chat's agent name it once, and logs the rename", async () => {
     const f = await chatFixture();
     await name(f, "Password reset help");

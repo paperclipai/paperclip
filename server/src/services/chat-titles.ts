@@ -1,6 +1,9 @@
-import { and, asc, eq, gt, isNotNull, ne } from "drizzle-orm";
+import { and, asc, eq, gt, isNotNull, ne, sql } from "drizzle-orm";
 import { issueComments, issues, type Db } from "@paperclipai/db";
 import { logActivity, type ActivityPublication, type LogActivityInput } from "./activity-log.js";
+
+/** A message from the person, not a /new session reset; a reset never names or opens the conversation. */
+const personMessage = sql`btrim(${issueComments.body}) <> '/new'`;
 
 /** Longest provisional chat title, in characters, before it is cut at a word boundary. */
 export const PROVISIONAL_CHAT_TITLE_MAX_LENGTH = 50;
@@ -42,6 +45,7 @@ export async function setProvisionalChatTitle(
   if (!chat?.conversationAgentId || !chat.titleNeedsGeneration) return;
   const [earlier] = await tx.select({ id: issueComments.id }).from(issueComments).where(and(
     eq(issueComments.issueId, input.issueId), isNotNull(issueComments.authorUserId), ne(issueComments.id, input.commentId),
+    personMessage,
   )).limit(1);
   if (earlier) return;
   const title = chatTitleFromMessage(input.body);
@@ -62,7 +66,7 @@ export async function setProvisionalChatTitle(
  */
 export async function chatAwaitsFirstAgentTurn(db: Db, companyId: string, issueId: string) {
   const [first] = await db.select({ createdAt: issueComments.createdAt }).from(issueComments).where(and(
-    eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId), isNotNull(issueComments.authorUserId),
+    eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId), isNotNull(issueComments.authorUserId), personMessage,
   )).orderBy(asc(issueComments.createdAt)).limit(1);
   if (!first) return false;
   const [reply] = await db.select({ id: issueComments.id }).from(issueComments).where(and(
