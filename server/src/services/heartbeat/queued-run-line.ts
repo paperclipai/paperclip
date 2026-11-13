@@ -6,10 +6,9 @@ import {
   OLDEST_DISPATCH_SHARE,
   PERSON_WAKE_REASONS,
   RECOVERY_DISPATCH_SHARE,
-  hasQueuedRunAged,
+  dispatchCountersFromStarts,
+  dispatchHistoryStart,
   isRecoveryWakeReason,
-  isSystemRecoveryRun,
-  oldestReadyQueuedRun,
   queuedRunDispatchLine,
   type QueuedRunDispatchFacts,
   type QueuedRunDispatchInput,
@@ -77,7 +76,7 @@ export async function queuedRunDispatchFacts<R extends QueuedRunDispatchRun>(
     agent: Pick<Agent, "id" | "companyId">;
     queuedRuns: R[];
     dependencyReadiness: Map<string, { isDependencyReady: boolean }>;
-    issueById: Map<string, { status: string; priority: string | null }>;
+    issueById: Map<string, { status: string; priority: string | null; createdByUserId?: string | null }>;
     shareDeferred?: (runId: string) => boolean;
     now: Date;
   },
@@ -135,39 +134,23 @@ export async function queuedRunDispatchFacts<R extends QueuedRunDispatchRun>(
       readinessRank: issueId ? (ready ? (issue?.status === "in_progress" ? 0 : 1) : 3) : 2,
       priorityRank: issueRunPriorityRank(issue?.priority),
       shareDeferred: input.shareDeferred?.(run.id) ?? false,
+      personTask: Boolean(issue?.createdByUserId),
     };
   });
-  const recoveryRuns = facts.filter(entry => isSystemRecoveryRun(entry));
-  const oldestReady = oldestReadyQueuedRun(facts);
-  const agedOldest = oldestReady && hasQueuedRunAged(oldestReady, now) ? oldestReady : null;
-  const countsRecovery = recoveryRuns.length > 0 && recoveryRuns.length < facts.length;
-  let startsSinceRecovery = 0;
-  let startsSinceOldest = 0;
-  if (countsRecovery || (agedOldest && facts.length > 1)) {
-    const oldestRecoveryAt = countsRecovery ? Math.min(...recoveryRuns.map(entry => entry.createdAt.getTime())) : Infinity;
-    const since = new Date(Math.min(oldestRecoveryAt, agedOldest?.createdAt.getTime() ?? Infinity));
-    const recentStarts = await db.select({ id: heartbeatRuns.id, wakeReason: sql<string | null>`${heartbeatRuns.contextSnapshot}->>'wakeReason'`,
-      startedAt: heartbeatRuns.startedAt, createdAt: heartbeatRuns.createdAt })
-      .from(heartbeatRuns)
-      .where(and(eq(heartbeatRuns.companyId, agent.companyId), eq(heartbeatRuns.agentId, agent.id),
-        isNotNull(heartbeatRuns.startedAt), gte(heartbeatRuns.startedAt, since)))
-      .orderBy(desc(heartbeatRuns.startedAt))
-      .limit(Math.max(RECOVERY_DISPATCH_SHARE, OLDEST_DISPATCH_SHARE));
-    const startsSince = (at: number) => recentStarts.filter(row => row.startedAt && row.startedAt.getTime() >= at);
-    if (countsRecovery) {
-      const starts = startsSince(oldestRecoveryAt).slice(0, RECOVERY_DISPATCH_SHARE);
-      const recoveryStartIds = starts.flatMap(row => isRecoveryWakeReason(row.wakeReason) ? [row.id] : []);
-      const personStarts = new Set(recoveryStartIds.length
-        ? await listPersonOriginSourceRunIds(db, agent.companyId, recoveryStartIds) : []);
-      const lastRecovery = starts.findIndex(row => isRecoveryWakeReason(row.wakeReason) && !personStarts.has(row.id));
-      startsSinceRecovery = lastRecovery < 0 ? starts.length : lastRecovery;
-    }
-    if (agedOldest && facts.length > 1) {
-      const starts = startsSince(agedOldest.createdAt.getTime()).slice(0, OLDEST_DISPATCH_SHARE);
-      const lastOldest = starts.findIndex(row => row.createdAt.getTime() <= agedOldest.createdAt.getTime());
-      startsSinceOldest = lastOldest < 0 ? starts.length : lastOldest;
-    }
-  }
+  const since = dispatchHistoryStart(facts, now);
+  const startRows = since ? await db.select({ id: heartbeatRuns.id, wakeReason: sql<string | null>`${heartbeatRuns.contextSnapshot}->>'wakeReason'`,
+    startedAt: heartbeatRuns.startedAt, createdAt: heartbeatRuns.createdAt })
+    .from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.companyId, agent.companyId), eq(heartbeatRuns.agentId, agent.id),
+      isNotNull(heartbeatRuns.startedAt), gte(heartbeatRuns.startedAt, since)))
+    .orderBy(desc(heartbeatRuns.startedAt))
+    .limit(Math.max(RECOVERY_DISPATCH_SHARE, OLDEST_DISPATCH_SHARE)) : [];
+  // A person's recovery restart is person work, so it does not use up system recovery's share.
+  const recoveryStartIds = startRows.flatMap(row => isRecoveryWakeReason(row.wakeReason) ? [row.id] : []);
+  const personStarts = new Set(recoveryStartIds.length
+    ? await listPersonOriginSourceRunIds(db, agent.companyId, recoveryStartIds) : []);
+  const recentStarts = startRows.map(row => ({ ...row, personOrigin: personStarts.has(row.id) }));
+  const { startsSinceRecovery, startsSinceOldest } = dispatchCountersFromStarts(facts, recentStarts, now);
   return { facts, dispatchInput: { now, startsSinceRecovery, startsSinceOldest } };
 }
 
@@ -255,7 +238,7 @@ export async function agentQueuedRunLine(
   const [dependencyReadiness, issueRows] = issueIds.length
     ? await Promise.all([
       issuesSvc.listDependencyReadiness(agent.companyId, issueIds),
-      db.select({ id: issues.id, status: issues.status, priority: issues.priority }).from(issues)
+      db.select({ id: issues.id, status: issues.status, priority: issues.priority, createdByUserId: issues.createdByUserId }).from(issues)
         .where(and(eq(issues.companyId, agent.companyId), inArray(issues.id, issueIds))),
     ])
     : [new Map<string, { isDependencyReady: boolean }>(), []];

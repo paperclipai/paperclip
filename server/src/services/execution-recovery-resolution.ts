@@ -42,6 +42,7 @@ import { continueFreshInTransaction, continueHeldExecutions, freshContinuationCh
   settleCoalescedFreshContinuationHolds } from "./fresh-continuation-fallback.js";
 import { alias } from "drizzle-orm/pg-core";
 import { RECOVERY_BACKLOG_AGE_MS, RECOVERY_WAKE_REASONS } from "./heartbeat/queued-run-dispatch-order.js";
+import { agentRecoveryQueueIsFull } from "./recovery-queue-admission.js";
 import { parseHeartbeatPolicy } from "./heartbeat/timer-policy.js";
 
 import { RECOVERY_CONTINUATIONS_PER_COMPANY_PER_PASS, RECOVERY_CONTINUATION_BACKLOG_SHARE_PER_PASS, RECOVERY_CONTINUATION_MAX_HOLD_MS,
@@ -459,6 +460,9 @@ export async function deliverReconciledExecutions(
     ));
   const agentHasRoom = async (action: typeof issueRecoveryActions.$inferSelect, agentId: string, kind: ContinuationClass) => {
     if ((admittedByCompany.get(action.companyId) ?? 0) >= companyLimit) return false;
+    // A few at a time per agent, fresh or not: the rest waits here, durably,
+    // until a queued recovery run starts or is dropped.
+    if (await agentRecoveryQueueIsFull(db, action.companyId, agentId)) return false;
     if (kind === "fresh") return true;
     const [agent] = await db.select().from(agents).where(and(eq(agents.companyId, action.companyId), eq(agents.id, agentId)));
     if (!agent) return true;

@@ -30,6 +30,7 @@ import { taskInterruptionPresentations } from "../task-interruption-presentation
 import { CHAT_CONTROL_RECOVERY_STOP_CODE, CHAT_CONTROL_RECOVERY_UNRESOLVED_CODE } from "../chat-control-recovery-stop.js";
 import { onboardingFirstTaskAwaitingUserSql } from "./onboarding-first-task-wait.js";
 import { PENDING_CONTINUATION_BOUND_MS } from "../recovery-continuation-pacing.js";
+import { queuedRecoveryRunsOf } from "../recovery-queue-admission.js";
 import { attributeBlock, BLOCK_ATTRIBUTION_WINDOW_MS, blockedStatusDetailsSql } from "../interruption-block-release.js";
 import { ASSIGNED_WORK_CONTINUED_ACTION, taskAutomaticAttempts } from "./task-automatic-attempts.js";
 import { STRANDED_CONTINUATION_MAX_AGE_MS, STRANDED_KIND, strandedHoldContinuesAutomatically, type StrandedHoldRun } from "./stranded-hold-continuation.js";
@@ -303,9 +304,11 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       eq(issueRecoveryActions.companyId, companyId), inArray(issueRecoveryActions.sourceIssueId, ids),
       eq(issueRecoveryActions.status, "resolved"),
       sql`${issueRecoveryActions.evidence}->>'continuationDelivery' = 'pending'`,
-      sql`coalesce(${issueRecoveryActions.evidence}#>>'{freshContinuation,recordedAt}', ${issueRecoveryActions.resolvedAt}::text,
+      // Recent, or waiting its turn behind the agent's queued recovery runs.
+      sql`(coalesce(${issueRecoveryActions.evidence}#>>'{freshContinuation,recordedAt}', ${issueRecoveryActions.resolvedAt}::text,
         ${issueRecoveryActions.updatedAt}::text)::timestamptz
-        > ${at.toISOString()}::timestamptz - ${`${PENDING_CONTINUATION_BOUND_MS} milliseconds`}::interval`));
+        > ${at.toISOString()}::timestamptz - ${`${PENDING_CONTINUATION_BOUND_MS} milliseconds`}::interval
+        or exists (${queuedRecoveryRunsOf(sql`${issueRecoveryActions.companyId}`, sql`${issueRecoveryActions.returnOwnerAgentId}`)}))`));
     const wakeCounts = counts(wakes);
     for (const continuation of pendingContinuations) {
       const issue = issueRows.find(row => row.id === continuation.issueId);
