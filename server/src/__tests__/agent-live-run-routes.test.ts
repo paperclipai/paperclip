@@ -28,6 +28,7 @@ const mockIssueService = vi.hoisted(() => ({
   getByIdentifier: vi.fn(),
 }));
 const mockNativeReviewAssignment = vi.hoisted(() => vi.fn());
+const mockRejectedModelRetryRefusal = vi.hoisted(() => vi.fn());
 
 const mockExecutionProjection = vi.hoisted(() => ({
   executionProjectionForRun: vi.fn(async () => null),
@@ -84,6 +85,10 @@ const mockChatRunRetries = vi.hoisted(() => ({
 }));
 
 function registerModuleMocks() {
+  vi.doMock("../services/native-runtime/model-rejected-retry.js", async () => ({
+    ...(await vi.importActual<typeof import("../services/native-runtime/model-rejected-retry.js")>("../services/native-runtime/model-rejected-retry.js")),
+    rejectedModelRetryRefusal: mockRejectedModelRetryRefusal,
+  }));
   vi.doMock("../services/native-runtime/native-review-participant.js", async () => ({
     ...(await vi.importActual<typeof import("../services/native-runtime/native-review-participant.js")>("../services/native-runtime/native-review-participant.js")),
     getNativeReviewAssignment: mockNativeReviewAssignment,
@@ -302,6 +307,7 @@ describe("agent live run routes", () => {
     mockChatRunRetries.prepareFailedChatRunRetry.mockReset();
     mockChatRunRetries.processFailedChatRunRetry.mockReset();
     mockNativeReviewAssignment.mockReset().mockResolvedValue(null);
+    mockRejectedModelRetryRefusal.mockReset().mockResolvedValue(null);
     mockAccessService.canUser.mockResolvedValue(true);
     mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
       allowed: true,
@@ -1142,6 +1148,19 @@ describe("agent live run routes", () => {
         requestedByActorType: "user", contextSnapshot: expect.objectContaining(reviewContext),
       }));
       expect(JSON.stringify(mockHeartbeatService.wakeup.mock.calls)).not.toContain("forged");
+    });
+
+    it("refuses a retry while the rejected model is still selected and starts no run", async () => {
+      const fixture = createFailedChatRetryDb(false);
+      mockRejectedModelRetryRefusal.mockResolvedValue({ message: 'The provider rejected the model "bad/model", and it is still selected.',
+        details: { code: "native_provider_model_still_unavailable", setting: "agent_model", rejectedModel: "bad/model", agentId: routeAgentId, issueId: failedChatIssueId } });
+      const res = await requestApp(await createApp(fixture.db), url => request(url).post(`/api/agents/${routeAgentId}/wakeup`).send(retryBody));
+      expect(res.status, JSON.stringify(res.body)).toBe(409);
+      expect(res.body).toMatchObject({ error: expect.stringContaining("still selected"),
+        details: { code: "native_provider_model_still_unavailable", setting: "agent_model", rejectedModel: "bad/model" } });
+      expect(mockRejectedModelRetryRefusal).toHaveBeenCalledExactlyOnceWith(fixture.db, expect.objectContaining({
+        failedRun: expect.objectContaining({ id: failedChatRunId }), issue: expect.objectContaining({ id: failedChatIssueId }) }));
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
     });
 
     it.each(["agent-caller", "denied-task", "foreign-company", "foreign-agent", "foreign-issue", "legacy", "unknown-error", "missing-context", "stale", "resolved", "changed-reviewer"])(

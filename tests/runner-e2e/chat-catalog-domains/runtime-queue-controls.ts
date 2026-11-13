@@ -8,7 +8,7 @@ import { submitTaskReply } from "../user-actions.js";
 import { checks, hasLink, type Entity } from "./internal-support.js";
 import { probeAgentPermission, cleanupIdentityProbes, waitForTurnReplyLinks } from "./identity-support.js";
 import { busyRuntimeWorker, releaseRuntimeWorker } from "./runtime-busy-worker.js";
-import { keyboardMoveQueuedMessageUp, readCurrentRevision, runHistoryReads, runtimeQueueCases, settledQueue } from "./runtime-queue.js";
+import { handledInTurn, keyboardMoveQueuedMessageUp, readCurrentRevision, runCommentReceipts, runtimeQueueCases, settledQueue, wakeMarksEarlierRead } from "./runtime-queue.js";
 import { observeRuntime, runtimeDefinition, runtimeObservation } from "./runtime-support.js";
 
 const otherText = "Use a readable font with accessible labels.";
@@ -71,21 +71,21 @@ export function gradeQueueEdit(value: unknown) {
   c.add("dispatched-edit-is-visible-new-direction", s.dispatchedStatus === 409 && s.dispatchedWarningVisible === true && s.originalCommentStillReadable === true,
     "After actual dispatch, the old edit rejects and the real composer offers a new message rather than rewriting consumed history.");
   const queued = Array.isArray(s.queuedComments) ? s.queuedComments as Array<{ id: string; updatedAt?: unknown }> : [];
-  const reads = s.workerHistoryReads as Record<string, string> | undefined, worker = s.worker as Entity | undefined;
+  const receipts = s.workerCommentReceipts as { reads?: Record<string, string>; cited?: string[] } | undefined, worker = s.worker as Entity | undefined;
   const continuations = o.runs.filter(row => row.agentId === worker?.id && row.id !== s.workerRunId);
-  const targetRead = readCurrentRevision(reads, queued.find(row => row.id === s.targetId)), unread = queued.filter(row => !readCurrentRevision(reads, row));
-  const consumedInTurn = queued.length === 2 && unread.length === 0 && continuations.length === 0 && o.runs.length === 2 && s.inTurnOutcomeApplied === true;
-  const consumedByContinuation = unread.length > 0 && continuations.length === 1 && s.consumingRunCount === 1 && s.nativeDeliveryBound === true && o.runs.length === 3
-    && (!targetRead || s.inTurnOutcomeSaved === true && s.latestOutcomeKept === true);
+  const targetHandled = handledInTurn(receipts, queued.find(row => row.id === s.targetId)), owed = queued.filter(row => !handledInTurn(receipts, row));
+  const consumedInTurn = queued.length === 2 && owed.length === 0 && continuations.length === 0 && o.runs.length === 2 && s.inTurnOutcomeApplied === true;
+  const consumedByContinuation = owed.length > 0 && continuations.length === 1 && s.consumingRunCount === 1 && s.nativeDeliveryBound === true && o.runs.length === 3
+    && s.continuationWarnedEarlierReads === true && (targetHandled ? s.inTurnOutcomeSaved === true && s.latestOutcomeKept === true : s.finalOutcomeApplied === true);
   c.add("edited-message-consumed-once", queued.length === 2 && queued[0]?.id === s.targetId && (consumedInTurn || consumedByContinuation)
     && s.queueEmptyAfterDelivery === true && s.taskDone === true && o.runs.every(row => row.status === "succeeded") && s.initialRevisionRetained === true,
-  "The edited message is consumed exactly once: the running turn read its current revision and saved the change with no continuation, or one ordinary continuation receives it in its final order.");
+  "The edited message is consumed exactly once: the running turn read its current revision, saved the change and cited it as handled with no continuation, or one ordinary continuation receives every message not handled in turn, in its final order, and that continuation saves the latest revision.");
   return c.result();
 }
 
 export const runtimeQueueControlCases = [runtimeDefinition("steering.edit-queued-message", ctx => humanQueuedRuntime(ctx), gradeQueueEdit, {
   sourceFiles: ["chat-catalog-domains/runtime-queue-controls.ts", "chat-catalog-domains/runtime-queue.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-support.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-support.ts", "chat-rendered-links.ts", "chat-scenarios/steering.yaml"],
-  oracleVersion: "paperclip.chat-catalog.edit-queued-message.structural.v5",
+  oracleVersion: "paperclip.chat-catalog.edit-queued-message.structural.v6",
   authentication: "human-session", expectedRunCount: 3, minimumRunCount: 2, attemptTimeoutMs: 720_000,
   runPolicy: { kind: "terminal-counts", terminalStatusCounts: { succeeded: 2 }, maximumTerminalStatusCounts: { succeeded: 3 } },
   setupPolicy: runtimeQueueCases[0]!.setupPolicy, verifySetup: runtimeQueueCases[0]!.verifySetup,
@@ -128,9 +128,18 @@ export const runtimeQueueControlCases = [runtimeDefinition("steering.edit-queued
     } finally { release(); await ctx.input.page.unroute(pattern); await concurrent.close(); }
     await ctx.input.page.reload({ waitUntil: "domcontentloaded" });
     await edit(ctx.input.page, targetId, `${blueText} ${state.concurrentMarker}`);
+    const saved = ctx.input.page.waitForResponse(response => response.request().method() === "PATCH" && new URL(response.url()).pathname === mutation, { timeout: 15_000 });
     await ctx.input.page.getByRole("button", { name: "Save queued message", exact: true }).click();
+    state.finalEditStatus = (await saved).status();
+    if (state.finalEditStatus !== 200) throw new Error(`The person's final queued edit was not saved (${state.finalEditStatus})`);
+    state.queueAfterEdit = await pollUntil({ label: "The saved edit is the queue's current revision", deadlineAt: Date.now() + 15_000, load: () => queue(ctx, state),
+      accept: q => q.entries.some(row => row.comment.id === targetId && row.comment.body === `${blueText} ${state.concurrentMarker}` && row.position === 1) });
     const handle = ctx.input.page.getByRole("button", { name: `Reorder queued message: ${blueText} ${state.concurrentMarker}`, exact: true });
-    state.reorderRequest = await keyboardMoveQueuedMessageUp(ctx.input.page, handle);
+    await expect(handle).toBeVisible();
+    state.reorderRequest = await keyboardMoveQueuedMessageUp(ctx.input.page, handle, 15_000, 100, { attempts: 2, beforeRetry: async () => {
+      await ctx.input.page.reload({ waitUntil: "domcontentloaded" }); await expect(handle).toBeVisible();
+    } });
+    if ((state.reorderRequest as { status: number }).status !== 200) throw new Error(`The person's reorder was refused (${(state.reorderRequest as { status: number }).status})`);
     state.queueAfter = await pollUntil({ label: "Actual full blue text and first queue position persisted", deadlineAt: Date.now() + 15_000,
       load: () => queue(ctx, state), accept: q => q.entries[0]?.comment.id === targetId && q.entries[0]?.comment.body === `${blueText} ${state.concurrentMarker}` });
     await ctx.input.page.reload({ waitUntil: "domcontentloaded" });
@@ -150,12 +159,13 @@ export const runtimeQueueControlCases = [runtimeDefinition("steering.edit-queued
     state.originalCommentStillReadable = comments.some(row => row.id === targetId && row.body === `${blueText} ${state.concurrentMarker}` && row.authorUserId === state.humanId);
     const otherId = initial.entries.find(row => row.comment.id !== targetId)?.comment.id;
     state.queuedComments = [targetId, otherId].map(id => comments.find(row => row.id === id)).filter(Boolean).map(row => ({ id: row!.id, updatedAt: row!.updatedAt, body: row!.body }));
-    state.workerHistoryReads = await runHistoryReads(ctx, String(state.workerRunId));
-    const unread = (state.queuedComments as Array<{ id: string; updatedAt?: unknown; body?: string }>).filter(row => !readCurrentRevision(state.workerHistoryReads as Record<string, string>, row));
+    const receipts = await runCommentReceipts(ctx, String(state.workerRunId)); state.workerCommentReceipts = receipts;
+    const unread = (state.queuedComments as Array<{ id: string; updatedAt?: unknown; body?: string }>).filter(row => !handledInTurn(receipts, row));
     const consumers = delivered.runs.filter(row => row.agentId === (state.worker as Entity).id && row.id !== state.workerRunId);
-    const run = consumers[0] && await ctx.input.api.get<{ contextSnapshot?: { wakeCommentIds?: string[] }; runnerProfileJson?: { nativeExecutionInput?: { task?: { prompt?: string } } } }>(`/api/heartbeat-runs/${consumers[0].id}`);
+    const run = consumers[0] && await ctx.input.api.get<{ contextSnapshot?: { wakeCommentIds?: string[]; paperclipWake?: { comments?: Array<{ id?: string; readByEarlierTurn?: boolean }> } }; runnerProfileJson?: { nativeExecutionInput?: { task?: { prompt?: string } } } }>(`/api/heartbeat-runs/${consumers[0].id}`);
+    state.continuationWarnedEarlierReads = unread.every(row => !readCurrentRevision(receipts.reads, row) || wakeMarksEarlierRead(run?.contextSnapshot, row.id));
     const ids = run?.contextSnapshot?.wakeCommentIds ?? [], prompt = run?.runnerProfileJson?.nativeExecutionInput?.task?.prompt ?? "";
-    state.consumingRunCount = consumers.length; state.nativeDeliveryBound = unread.length > 0 && JSON.stringify(ids) === JSON.stringify(unread.map(row => row.id))
+    state.consumingRunCount = consumers.length; state.consumerRunId = consumers[0]?.id ?? null; state.nativeDeliveryBound = unread.length > 0 && JSON.stringify(ids) === JSON.stringify(unread.map(row => row.id))
       && unread.every(row => prompt.includes(String(row.body)));
     state.queueEmptyAfterDelivery = delivered.queue.entries.length === 0; state.taskDone = delivered.task.status === "done";
     await ctx.input.capture("actual-queued-edit-stale-dispatch", "Consumed human direction remains history and stale editing offers a new message", "runtime-queued-edit.png");
@@ -167,6 +177,7 @@ export const runtimeQueueControlCases = [runtimeDefinition("steering.edit-queued
     const blue = o.revisions.filter(row => row.createdByRunId === state.workerRunId && row.createdByAgentId === (state.worker as Entity).id && /\bblue\b/i.test(row.body ?? ""));
     const latest = (row: Entity) => o.documents.some(doc => doc.id === row.documentId && doc.latestRevisionId === row.id);
     state.inTurnOutcomeApplied = blue.some(latest); state.inTurnOutcomeSaved = blue.length > 0;
+    state.finalOutcomeApplied = !!state.consumerRunId && o.revisions.some(row => row.createdByRunId === state.consumerRunId && row.createdByAgentId === (state.worker as Entity).id && latest(row));
     state.latestOutcomeKept = blue.some(saved => o.revisions.some(row => row.documentId === saved.documentId && latest(row) && /\bblue\b/i.test(row.body ?? "")));
     return o;
   },

@@ -4,7 +4,7 @@ import { checks, hasLink, project, observation, type Entity, type InternalObserv
 import { chatCompletionFollowUp, runIssueId } from "./run-roles.js";
 import { parseCron } from "../../../server/src/services/cron.js";
 import { fixtureWorker } from "./internal-definition.js";
-import { integratorDefinition, groundedStatement, inspectResult, observeInternal } from "./integrator-support.js";
+import { integratorDefinition, inspectResult, observeInternal } from "./integrator-support.js";
 interface RoutinesObservation extends InternalObservation {
   routines: RoutineDetail[]; histories: Record<string, RoutineRunSummary[]>; routineRevisions: Record<string, RoutineRevision[]>;
   browserTimezone: string; sourceId?: string;
@@ -59,9 +59,10 @@ export function gradeIntegratorRoutines(value: unknown) {
       && /^0\s+9\s+\*\s+\*\s+(?:1-5|MON-FRI|1,2,3,4,5)$/i.test(schedule[0]?.cronExpression ?? "") && schedule[0]?.timezone === "America/Chicago", "One enabled 09:00 weekday schedule uses the genuine browser person's Chicago timezone, never UTC.");
     c.add("saved-agent-revision", !!routine && !!o.routineRevisions[routine.id]?.some(row => row.id === routine.latestRevisionId && row.createdByAgentId === o.leadId
       && row.createdByRunId != null && o.runs.some(run => run.id === row.createdByRunId)), "The current saved revision is independently attributed to a measured agent run.");
-    c.add("schedule-and-work-location-explained", groundedStatement(o.reply, /\b(?:weekday|monday|mon.fri)\b/i, /\b(?:9|nine|09:00)\b/i, /\b(?:9|nine|09:00)\s*(?:a\.?m\.?\s*)?UTC\b/i)
-      && /(?:America\/Chicago|Chicago|Central (?:time|timezone))/i.test(o.reply) && /\b(?:task|routine|work)\b/i.test(o.reply)
-      && !/\b(?:summary (?:is )?(?:complete|ready)|already summarized|all future summaries (?:are )?(?:complete|ready))\b/i.test(o.reply), "The response describes the real saved local schedule and resulting work without claiming future summaries already ran.");
+    c.add("schedule-and-work-location-explained", !!routine && o.links.some(href => linksTo(o, href, "routines", [routine.id]) || linksTo(o, href, "projects", [p?.id, (p as Entity | undefined)?.urlKey]))
+      && !/\b(?:0?9(?::00)?|nine)\s*(?:a\.?m\.?\s*)?UTC\b/i.test(o.reply)
+      && !/\b(?:summary (?:is )?(?:complete|ready)|already summarized|all future summaries (?:are )?(?:complete|ready))\b/i.test(o.reply),
+    "The saved schedule is graded above; the reply links the saved routine or the Launch project where its work lands, never states nine as UTC, and does not claim future summaries already ran.");
   } else if (o.scenarioId === "routines.manage-other-owner") {
     const before = o.state.routine as RoutineDetail; const current = o.routines.find(row => row.id === before?.id); const worker = o.state.worker as Entity;
     const route = ownerRoute(o, worker);
@@ -102,7 +103,7 @@ async function verifyRoutine(ctx: ChatCatalogContext, _state: Record<string, unk
 }
 const define = (id: string, setup: ChatCatalogCase["setup"], extra: Partial<ChatCatalogCase> = {}) => integratorDefinition("routines", id, setup, observeRoutines, gradeIntegratorRoutines, verifyRoutine, extra);
 export const integratorRoutinesCases: readonly ChatCatalogCase[] = [
-  define("routines.create-daily-brief", async ctx => ({ project: await project(ctx, "Launch") }), { browserTimezone: "America/Chicago" }),
+  define("routines.create-daily-brief", async ctx => ({ project: await project(ctx, "Launch") }), { browserTimezone: "America/Chicago", oracleVersion: "paperclip.chat-catalog.integrator.create-daily-brief.v2" }),
   define("routines.manage-other-owner", async ctx => {
     const p = await project(ctx, "Launch"); const worker = await fixtureWorker(ctx);
     const created = await ctx.input.api.post<RoutineDetail>(`${root(ctx)}/routines`, { title: "Morgan's launch summary", description: "Summarize Launch without changing project tasks.", projectId: p.id, assigneeAgentId: worker.id });
