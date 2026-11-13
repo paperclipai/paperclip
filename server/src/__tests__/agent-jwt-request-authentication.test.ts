@@ -97,18 +97,18 @@ const support = await getEmbeddedPostgresTestSupport();
   });
 
   it("refuses the very next write after the run is cancelled, stopped or superseded", async () => {
-    for (const revoke of [
-      { status: "cancelled" },
-      { resultJson: { executionCancellation: { state: "requested" } } },
-      { resultJson: { freshContinuationSupersededAt: new Date().toISOString() } },
-    ] as const) {
+    const cases: Array<{ revoke: Partial<typeof heartbeatRuns.$inferInsert>; code: string }> = [
+      { revoke: { status: "cancelled" }, code: "agent_run_cancelled" },
+      { revoke: { resultJson: { executionCancellation: { state: "requested" } } }, code: "agent_run_cancelled" },
+      { revoke: { resultJson: { freshContinuationSupersededAt: new Date().toISOString() } }, code: "agent_run_superseded" },
+    ];
+    for (const { revoke, code } of cases) {
       const f = await seed();
       expect((await patch(f)).status).toBe(200);
       await db.update(heartbeatRuns).set(revoke).where(eq(heartbeatRuns.id, f.runId));
       const refused = await patch(f);
       expect(refused.status).toBe(403);
-      expect(refused.body.code).toBe("resultJson" in revoke && "freshContinuationSupersededAt" in revoke.resultJson
-        ? "agent_run_superseded" : "agent_run_cancelled");
+      expect(refused.body.code).toBe(code);
     }
   });
 
