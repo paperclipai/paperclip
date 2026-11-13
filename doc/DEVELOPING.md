@@ -187,14 +187,21 @@ AWS fleet. A stale admission roster can allocate only the short metadata gate;
 the fresh CODEOWNERS check still denies PR execution for a removed owner.
 
 AWS runners are sometimes lost mid-job. `ci-runner-loss-rerun.yml` re-runs the
-failed jobs of a PR's first CI attempt once when every failed job lost its
-runner. A lost runner is recognized by the check-run annotation "lost
-communication with the server" or "received a shutdown signal". When the only
-annotation is "The operation was canceled.", the job log is checked for the
-same messages. The `verify` and `e2e` aggregates are not counted. Any other
-failure, a failed routing gate, or a PR whose head has moved prevents the
-automatic re-run. The workflow job summary lists each failed job and its
-evidence. Like a maintainer's "Re-run failed jobs", the re-run reuses the
+failed jobs of a PR's first CI attempt once when every failed or cancelled job
+lost its runner. A spot reclaim often ends the job, and the run, as
+`cancelled`. A lost runner is recognized by the check-run annotation "lost
+communication with the server" or "received a shutdown signal". When a job has
+the annotation "The operation was canceled.", the job log is checked for the
+same messages. This evidence counts even if the job also has other error
+annotations, so a test that really failed just before a reclaim gets one
+wasted re-run. A cancelled job without this evidence, such as a job a person
+cancelled, counts as a real failure. The `verify` and `e2e` aggregates are not
+counted. Any other failure, a failed or cancelled routing gate, or a PR whose
+head has moved prevents the automatic re-run. The head check runs before any
+job is classified, so a run cancelled by a newer push costs no log reads. It
+runs again just before the re-run, because a re-run of an old run joins the
+PR's `cancel-in-progress` concurrency group and would cancel the newer CI. The
+workflow job summary lists each failed or cancelled job and its evidence. Like a maintainer's "Re-run failed jobs", the re-run reuses the
 gate's successful outputs, including its AWS admission. Attempt 2's
 triggering actor is `github-actions[bot]`, so `profile-ci` does not export
 that attempt. Later attempts are never re-run automatically.

@@ -1,6 +1,6 @@
 {
-  "id": "df128dd4-bed3-45e6-97e8-f51d97cac922",
-  "prevId": "2afd2018-d5c1-4b85-aa93-5dca3069b125",
+  "id": "48b150e9-468d-4c08-b06f-68069960732c",
+  "prevId": "ee1f1f66-0cbe-4b18-b364-5e96708a1f0b",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -53942,6 +53942,7 @@
             }
           ],
           "isUnique": true,
+          "where": "\"sandbox_creation_operations\".\"state\" <> 'resolved'",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -55957,18 +55958,6 @@
         "secret_id": {
           "name": "secret_id",
           "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "credential_version": {
-          "name": "credential_version",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "credential_hash": {
-          "name": "credential_hash",
-          "type": "text",
           "primaryKey": false,
           "notNull": false
         },

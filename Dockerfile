@@ -224,8 +224,9 @@ RUN mkdir -p /provider-pack-large \
 # stage, so a change outside the Runner's inputs leaves them cached, and the
 # default targets never build them.
 #
-# Consumers must only `COPY --from=runner-artifacts <path>`. A build can then
-# replace the stage with an image built earlier:
+# Consumers must only `COPY --from=runner-artifacts <path>`, or from
+# `runner-artifacts-slim`, the same tree without the pack's transport
+# archives. A build can then replace the stage with an image built earlier:
 #   --build-context runner-artifacts=docker-image://ghcr.io/paperclipai/paperclip-runner@sha256:<digest>
 #
 # The image identity is a digest of this whole file and of every file under
@@ -320,10 +321,11 @@ COPY --from=runner-artifacts-identity /runner-image-identity.json /runner-image-
 # the Runner build but no provider pack, as in the `runner-provider-pack` stage.
 ARG PAPERCLIP_RUNNER_SOURCE_REVISION=""
 ARG PAPERCLIP_BUILD_COMMIT=""
-# Set to 1 only by the workflow that builds the image for publication. Only
-# then does the pack record `runnerInputsDigest`, the name of the published
-# image. Another image build that runs this stage inline, with
-# PAPERCLIP_BUILD_COMMIT, builds the same Runner but must not claim to be it.
+# Set to 1 only by .github/workflows/runner-image.yml, which builds the
+# publication form of the image. Only then does the pack record
+# `runnerInputsDigest`, the identity of this image. Another image build that
+# runs this stage inline, with PAPERCLIP_BUILD_COMMIT, builds the same Runner
+# but must not claim to be this image.
 ARG PAPERCLIP_RUNNER_IMAGE_PUBLICATION=""
 # One layer: the install tree and the pnpm store are removed before the layer
 # is committed, and the pack is granted a+rX in the layer that writes it (see
@@ -341,6 +343,12 @@ ARG PAPERCLIP_RUNNER_IMAGE_PUBLICATION=""
 # The install is frozen: the identity above covers pnpm-lock.yaml as the build
 # received it, and resolving again here would build from a lockfile the
 # identity never saw.
+#
+# The pack's large dependency files get a fixed timestamp before their
+# transport archives are written, so each archive has the same bytes while its
+# file does. The last commands sort the tree into the layers of the two final
+# stages. `dist` is what the Runner's own build writes: its large files change
+# with the Runner's source, so they stay with the content that does.
 RUN set -eu; \
     revision="${PAPERCLIP_RUNNER_SOURCE_REVISION:-${PAPERCLIP_BUILD_COMMIT}}"; \
     publication="${PAPERCLIP_RUNNER_IMAGE_PUBLICATION}"; \
@@ -358,13 +366,14 @@ RUN set -eu; \
     pnpm run build:binary; \
     node scripts/record-build-inputs.mjs --finish; \
     cd /workspace; \
-    mkdir -p /out; \
+    mkdir -p /out /out-large /out-archives /out-transport; \
     if [ -n "$revision" ]; then \
       if [ -n "$publication" ]; then \
         PAPERCLIP_RUNNER_INPUTS_DIGEST="$(node -p 'require("/runner-image-identity.json").digest')"; \
         export PAPERCLIP_RUNNER_INPUTS_DIGEST; \
       fi; \
       PAPERCLIP_RUNNER_SOURCE_REVISION="$revision" node packages/paperclip-runner/scripts/build-provider-pack.mjs /out/provider-pack; \
+      find /out/provider-pack -path /out/provider-pack/dist -prune -o -type f -size +1048575c -exec touch -d @0 {} +; \
       node scripts/create-provider-pack-archive.mjs /out/provider-pack; \
       node_modules/.bin/esbuild /out/provider-pack/dist/live/runnerd-codex-transport.js \
         --bundle --platform=node --format=esm --log-level=warning \
@@ -372,20 +381,53 @@ RUN set -eu; \
         --outfile=/out/bundles/runnerd-codex-transport.mjs; \
       node scripts/runner-image-layout.mjs write --out /out --workspace /workspace --identity /runner-image-identity.json --source-revision "$revision" ${publication:+--publication}; \
       chmod -R a+rX /out; \
-      node scripts/runner-image-layout.mjs check /out --expect-source-revision "$revision" ${publication:+--expect-inputs-digest "$PAPERCLIP_RUNNER_INPUTS_DIGEST"}; \
+      node scripts/runner-image-layout.mjs check /out --variant full --expect-source-revision "$revision" ${publication:+--expect-inputs-digest "$PAPERCLIP_RUNNER_INPUTS_DIGEST"}; \
       cd / && /out/provider-pack/node_modules/node/bin/node --input-type=module -e 'const transport = await import("/out/bundles/runnerd-codex-transport.mjs"); if (typeof transport.createCapabilityRunnerdCodexTransport !== "function") process.exit(1);'; \
     else \
       echo "Skipping the provider pack: supply a full PAPERCLIP_RUNNER_SOURCE_REVISION or PAPERCLIP_BUILD_COMMIT to build a complete Runner image"; \
       node scripts/runner-image-layout.mjs write --out /out --workspace /workspace --identity /runner-image-identity.json; \
       chmod -R a+rX /out; \
-      node scripts/runner-image-layout.mjs check /out --allow-unstamped; \
+      node scripts/runner-image-layout.mjs check /out --variant full --allow-unstamped; \
     fi; \
     /out/paperclip-runnerd --build-metadata > /dev/null; \
+    cd /out; \
+    find provider-pack -path provider-pack/dist -prune -o -type f -size +1048575c \
+      -exec sh -c 'mkdir -p "/out-large/$(dirname "$1")" && mv "$1" "/out-large/$1"' _ {} \; ; \
+    if [ -f provider-pack.archive.json ]; then \
+      mkdir -p /out-archives/provider-pack.archives /out-transport; \
+      node -e 'for (const [index, file] of require("/out/provider-pack.archive.json").files.entries()) if (!file.path.startsWith("dist/")) console.log(index)' > /tmp/stable-archives; \
+      while read -r index; do mv "provider-pack.archives/$index.tar.zst" /out-archives/provider-pack.archives/; done < /tmp/stable-archives; \
+      rm /tmp/stable-archives; \
+      mv provider-pack.archives provider-pack.archive.json /out-transport/; \
+    fi; \
+    find /out-large /out-archives -exec touch -h -d @0 {} +; \
     cd /; \
     rm -rf /workspace /root/.local/share/pnpm /root/.cache
 
-FROM scratch AS runner-artifacts
-COPY --from=runner-artifacts-build /out/ /
+# Two variants of one build. Both are plain file trees, and each `COPY --link`
+# is one layer, independent of the layers under it. The layers are split by
+# how often their content changes, so a new image shares its large layers with
+# the one before it; the stage above gives the files of layers 1 and 3 a fixed
+# timestamp, so those layers have the same bytes whenever their files do.
+#   1. provider pack dependency files of 1 MiB or more (provider binaries and
+#      Node), which change with a provider version or the Node pin;
+#   2. everything else, which changes with every Runner source change.
+# `runner-artifacts-slim` is these two layers: the Runner without the pack's
+# transport form. `runner-artifacts` is the same two layers, then
+#   3. the transport archive of each file in layer 1, as stable as layer 1;
+#   4. the other transport archives, the overlay archive and the receipt,
+#      which change with layer 2.
+# Layers 3 and 4 hold the transport archives and their receipt and nothing
+# else, so a reader can fetch all of them without the pack.
+# `runner-image-oci.mjs check-layers` checks all of this on built images.
+# Every path is where it would be in a single layer; consumers copy by path.
+FROM scratch AS runner-artifacts-slim
+COPY --link --from=runner-artifacts-build /out-large/ /
+COPY --link --from=runner-artifacts-build /out/ /
+
+FROM runner-artifacts-slim AS runner-artifacts
+COPY --link --from=runner-artifacts-build /out-archives/ /
+COPY --link --from=runner-artifacts-build /out-transport/ /
 
 FROM base AS production
 ARG USER_UID=1000

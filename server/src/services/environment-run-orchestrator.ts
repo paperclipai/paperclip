@@ -20,7 +20,7 @@ import { prepareRemoteWorkspace, readRemoteWorkspaceAuthority, remoteWorkspaceRe
 
 import { environmentLeases, type Db } from "@paperclipai/db";
 import { and, eq } from "drizzle-orm";
-import { remoteExecutionHasStopped } from "./remote-execution-termination.js";
+import { remoteExecutionHasReleased } from "./remote-execution-termination.js";
 import { remoteRecoveryLeaseMismatch, type RemoteRecoveryLeaseMismatchField } from "./native-runtime/remote-recovery-lease-mismatch.js";
 import { EnvironmentProviderUnavailableError, readTransientLeaseAcquisitionFailure } from "./environment-provider-unavailable-error.js";
 import { injectLeaseAcquisitionFault } from "./environment-lease-fault-injection.js";
@@ -347,7 +347,9 @@ export function environmentRunOrchestrator(
           lease.metadata?.agentId !== input.agentId)) throw new Error("native_plugin_recovery_lease_mismatch");
       const errors: unknown[] = [];
       await environmentRuntime.releaseRunLeases(input.heartbeatRunId, "released", (_id, error) => { errors.push(error); });
-      if (errors.length || (prior.length && !await remoteExecutionHasStopped(db, input.companyId, input.heartbeatRunId))) {
+      // Same-run task resume requires every prior lease released with its receipt;
+      // a stop recorded before a held release is not enough here.
+      if (errors.length || (prior.length && !await remoteExecutionHasReleased(db, input.companyId, input.heartbeatRunId))) {
         throw new Error("native_plugin_recovery_termination_unconfirmed", { cause: errors[0] });
       }
     }

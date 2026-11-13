@@ -2867,6 +2867,9 @@ export async function executeNativeSession(
         signal?.throwIfAborted();
         const attachmentPrompt = await options.prepareWakeAttachmentPrompt?.();
         signal?.throwIfAborted();
+        // The fenced checkpoint proves this controller still owns the run
+        // right before the submit; input preparation above may have taken a while.
+        await checkpoint(signal);
         const started = await session.startTurn(restartContinuation(steeredMessages, attachmentPrompt));
         restartContinuationTurnId = started.turnId;
         if (started.borrowedDispositionMarker === true) borrowedContinuationTurnId = started.turnId;
@@ -3208,6 +3211,10 @@ export async function executeNativeSession(
               modelEnvelope.events = `${modelEnvelope.events}\n\n${supplemental}`;
             }
           }
+          // A recovered session is shared provider state: prove ownership with
+          // the fenced checkpoint right before the submit. A new session's
+          // normal path adds nothing before turn.start.
+          if (recovered) await checkpoint();
           await session.startTurn({
             message: { role: "user", text: JSON.stringify(modelEnvelope) },
             ...(recovered && modelEnvelope.schema === "paperclip.native-continuation.v1"

@@ -75,7 +75,7 @@ replace a newer state. Reads keep using the previous trusted version until the
 new version is committed. Tokens, private node state, digests and client secrets
 never appear in connection or environment responses.
 
-Connections created before migration `0476_steady_raider` have no trusted version
+Connections created before migration `0477_glorious_paladin` have no trusted version
 and digest. They fail closed and require a fresh **Connect Tailscale Network**
 consent. The migration leaves these fields empty; it does not trust or backfill a
 generic secret's latest value.

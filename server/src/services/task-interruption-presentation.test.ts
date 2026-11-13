@@ -544,3 +544,25 @@ describe("native cleanup quarantine presentation", () => {
       paused: false, approval: false })).toMatchObject({ state: "failed", canRetry: true });
   });
 });
+
+describe("automatic scheduled retry", () => {
+  const now = Date.parse("2026-11-12T23:00:00Z");
+  const scheduled = { ...run, status: "scheduled_retry", runtimeMode: "legacy", errorCode: null, resultJson: null,
+    scheduledRetryReason: "transient_failure", scheduledRetryAt: new Date(now + 60_000) };
+
+  it("shows a pending transient-failure retry as scheduled without a competing Retry", () => {
+    expect(projectTaskInterruption(issue, { run: scheduled, agent, paused: false, approval: false }, now))
+      .toMatchObject({ state: "retry_scheduled", canRetry: false, nextRetryAt: new Date(now + 60_000).toISOString() });
+  });
+
+  it("offers Retry once the scheduled retry is past due with nothing else pending", () => {
+    expect(projectTaskInterruption(issue, { run: { ...scheduled, scheduledRetryAt: new Date(now - 10 * 60_000) }, agent,
+      paused: false, approval: false }, now)).toMatchObject({ state: "failed", canRetry: true });
+  });
+
+  it("offers Retry once the scheduled retries are exhausted", () => {
+    expect(projectTaskInterruption(issue, { run: { ...scheduled, status: "failed", errorCode: "transient_failure_retry_exhausted",
+      scheduledRetryAt: new Date(now - 60_000) }, agent, paused: false, approval: false }, now))
+      .toMatchObject({ state: "failed", canRetry: true });
+  });
+});
