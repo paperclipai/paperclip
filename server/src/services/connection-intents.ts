@@ -781,6 +781,8 @@ export function connectionIntentService(db: Db) {
       : results[0]!.state === "ready" ? "Use the installed connection. Do not create another connection request."
       : setupRequested
         ? "The person asked you to set up this connection. If method.management.allowed, use search_api/call_api with nextApiOperation to configure it. Reuse a saved draft. Use connection_request only for required human input or access. Do not ask a generic confirmation or silently change policy to bypass a failed tool call."
+        : results[0]!.service.startsWith("connection:")
+        ? `The person has not asked you to set up this connection. Do not create a connection or a saved draft yourself. Call connection_request with service ${results[0]!.service} to show the inline setup card, and until the connection is ready, do not claim access to ${results[0]!.name} or report its data.`
         : `The person has not asked you to set up this connection. Do not create a connection or a saved draft yourself. If they asked how to connect ${results[0]!.name} or about its setup options, answer in plain words from these results, naming each method and any prerequisite, and link its setup page as [Connect ${results[0]!.name}](/${prefix}/apps/connect?${new URLSearchParams({ source: results[0]!.service })}); do not call connection_request for that, because its card ends your turn before your answer is shown. If they need ${results[0]!.name} data for their request, call connection_request with service ${results[0]!.service} to show the inline setup card, which lets them connect or decline. Until the connection is ready, do not claim access to ${results[0]!.name} or report its data.` };
   }
 
