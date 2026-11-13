@@ -11,6 +11,7 @@ import * as workspacePreparation from "../services/heartbeat/workspace-preparati
 import { nativeWorkspaceSyncInternals } from "../services/native-runtime/native-workspace-sync.js";
 import { ensureNativeCompletionContract } from "../services/native-runtime/completion-contracts.js";
 import { readNativePlanWait, hasCommittedNativePlanWait } from "../services/native-runtime/native-plan-wait.js";
+import { hasCommittedNativeConversationTurnWait } from "../services/native-runtime/native-response-wake-wait.js";
 import { nativeSha256 } from "../services/native-runtime/canonical.js";
 import { buildQuestionResponseDeliveryEnvelope } from "../services/question-response-delivery.js";
 import * as aiConnectionRuntime from "../services/ai-connection-runtime.js";
@@ -15273,7 +15274,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   async function seedNativePassiveBoardResponse(
     continuationKind:
       "response_wake" | "same_agent" | "retry" = "response_wake",
-    options: { blockingWork?: boolean; repairUsed?: boolean; assignmentWake?: boolean } = {},
+    options: { blockingWork?: boolean; repairUsed?: boolean; assignmentWake?: boolean; objectiveUnsatisfied?: boolean } = {},
   ) {
     const fixture = await seedStrandedIssueFixture({
       status: "in_progress",
@@ -15381,14 +15382,16 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         },
         completionClaim: {
           contractRevision: "1",
-          objectiveSatisfied: true,
+          objectiveSatisfied: !options.objectiveUnsatisfied,
           criteria: [
-            { criterionId: "objective", status: "satisfied", evidenceRefs: [] },
+            { criterionId: "objective", status: options.objectiveUnsatisfied ? "not_satisfied" : "satisfied",
+              evidenceRefs: options.objectiveUnsatisfied ? ["catalog:launch_export:quarantined"] : [] },
           ],
           remainingWork: options.blockingWork ? [{ description: "Finish icons, screenshots, verification and PR", blocksCompletion: true }] : [],
         },
-        evidence: [],
-        verification: [],
+        evidence: options.objectiveUnsatisfied ? [{ ref: "catalog:launch_export:quarantined" }] : [],
+        verification: options.objectiveUnsatisfied ? [{ commandOrCheck: "GET /api/tool-connections/{connectionId}/catalog",
+          status: "passed", detail: "Catalog shows launch_export with status quarantined." }] : [],
         attentionRequests: [],
         artifacts: [],
       },
@@ -15450,6 +15453,37 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       }),
     ]);
     expect(mockAdapterExecute).not.toHaveBeenCalled();
+  });
+
+  it("leaves a chat turn that yielded to wait for a person without starting another run", async () => {
+    const fixture = await seedNativePassiveBoardResponse("response_wake", { blockingWork: true, objectiveUnsatisfied: true });
+    const previousSettings = await instanceSettingsService(db).getExperimental();
+    await instanceSettingsService(db).updateExperimental({ enableAgentChat: true });
+    try {
+      await db.update(issues).set({ conversationAgentId: fixture.agentId, conversationUserId: "responsible-user",
+        conversationState: "active" }).where(eq(issues.id, fixture.issueId));
+      await finalizeNativeRun({ db, runId: fixture.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+      const [finalized] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+      const { finalizationReasonCode: _reason, decisionId: _decision, assessmentId: _assessment, ...completionResult } =
+        finalized!.resultJson ?? {};
+      await db.update(heartbeatRuns).set({ livenessState: "blocked", livenessReason: "Run output declared a concrete blocker",
+        resultJson: completionResult }).where(eq(heartbeatRuns.id, fixture.runId));
+      const heartbeat = heartbeatService(db);
+      for (let sweep = 0; sweep < 2; sweep += 1) {
+        const recovery = await heartbeat.reconcileStrandedAssignedIssues();
+        expect(recovery.continuationRequeued + recovery.escalated).toBe(0);
+      }
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, fixture.companyId))).toHaveLength(1);
+      expect(await db.select().from(issues).where(eq(issues.id, fixture.issueId))).toEqual([
+        expect.objectContaining({ status: "in_progress", assigneeAgentId: fixture.agentId }),
+      ]);
+      expect(mockAdapterExecute).not.toHaveBeenCalled();
+
+      expect(await hasCommittedNativeConversationTurnWait(db, fixture)).toBe(true);
+      expect(await hasCommittedNativeConversationTurnWait(db, { ...fixture, agentId: randomUUID() })).toBe(false);
+    } finally {
+      await instanceSettingsService(db).updateExperimental({ enableAgentChat: previousSettings.enableAgentChat });
+    }
   });
 
   it("parks a native response_wake that no response admitted instead of waking the same agent again", async () => {

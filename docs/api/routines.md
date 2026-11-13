@@ -89,6 +89,12 @@ PATCH /api/routines/{routineId}
 
 All fields from create are updatable. `baseRevisionId` is optional for backward compatibility; when provided, stale values return `409 Conflict` with the current revision id. **Agents can only update routines assigned to themselves and cannot reassign a routine to another agent.**
 
+When `env` contains a variable that an active plugin environment sets on its
+own tasks (`protectedEnvironmentKeys`), create and update still save it. The
+response then includes `configurationWarnings` entries with code
+`protected_environment_variable`, a `field` such as `env.KEY`, and a `message`
+that names those environments.
+
 ## List Revisions
 
 ```

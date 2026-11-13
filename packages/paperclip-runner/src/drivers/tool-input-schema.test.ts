@@ -1,6 +1,9 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
-import { admitToolInputSchema } from "./tool-input-schema.js";
+import { Ajv } from "ajv";
+import { Ajv2019 } from "ajv/dist/2019.js";
+import { Ajv2020 } from "ajv/dist/2020.js";
+import { describe, expect, it, vi } from "vitest";
+import { admitToolInputSchema, TOOL_INPUT_SCHEMA_MAX_BYTES, toolInputSchemaBytes } from "./tool-input-schema.js";
 
 type FixtureCase = {
   name: string;
@@ -15,6 +18,23 @@ type FixtureCase = {
 const fixtures = JSON.parse(readFileSync(new URL("../../test/fixtures/tool-input-schema-fixtures.json", import.meta.url), "utf8")) as { cases: FixtureCase[] };
 
 describe("tool input schema admission", () => {
+  it.each([Ajv, Ajv2019, Ajv2020].map(compiler => [compiler.name, compiler] as const))("refuses a valid schema over the Runner byte limit before %s compiles it", (_name, compiler) => {
+    const compile = vi.spyOn(compiler.prototype, "compile");
+    try {
+      const $schema = compiler === Ajv ? "http://json-schema.org/draft-07/schema#"
+        : compiler === Ajv2019 ? "https://json-schema.org/draft/2019-09/schema" : "https://json-schema.org/draft/2020-12/schema";
+      const properties = Object.fromEntries(Array.from({ length: 6_000 }, (_, index) => [`field_${index}`, { type: "string", description: "x".repeat(64) }]));
+      const schema = { $schema, type: "object", properties };
+      expect(toolInputSchemaBytes(schema)).toBeGreaterThan(TOOL_INPUT_SCHEMA_MAX_BYTES);
+      expect(admitToolInputSchema(schema)).toEqual({ ok: false, reason: "oversized" });
+      expect(compile).not.toHaveBeenCalled();
+      expect(admitToolInputSchema({ $schema, type: "object", properties: { name: { type: "string" } } }).ok).toBe(true);
+      expect(compile).toHaveBeenCalledOnce();
+    } finally {
+      compile.mockRestore();
+    }
+  });
+
   it.each(fixtures.cases.map(fixture => [fixture.name, fixture] as const))("matches the shared fixture for %s", (_name, fixture) => {
     const admission = admitToolInputSchema(fixture.schema);
     if (!fixture.accepted) {
