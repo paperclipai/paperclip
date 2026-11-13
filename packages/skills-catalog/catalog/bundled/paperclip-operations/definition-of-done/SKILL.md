@@ -111,7 +111,9 @@ requires at creation time — you usually can't add it to another agent's issue 
    unless the issue is a trivial one-step task.
 4. **Decide:**
    - **Approve:** move to `done` with a comment quoting the evidence you checked.
-   - **Request changes:** send it back with a comment naming exactly what is missing.
+   - **Request changes:** send it back with a status update to `in_progress` plus a
+     comment naming exactly what is missing. A comment alone leaves the review pending —
+     the implementer's assignment is restored only when you also change the status.
      Doing this often is normal and expected.
    - **Never leave a review pending.** End every review run with a decision (approve, or
      request changes). A review left open invites the issue to stall with no one driving it.
