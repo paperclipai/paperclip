@@ -7262,7 +7262,9 @@ export function agentRoutes(
           inArray(heartbeatRuns.status, ["queued", "running"]),
         ),
       )
-      .orderBy(desc(heartbeatRuns.createdAt));
+      // Running runs first: a deep queue must not push the work actually
+      // running past the limit.
+      .orderBy(sql`case when ${heartbeatRuns.status} = 'running' then 0 else 1 end`, desc(heartbeatRuns.createdAt));
 
     const liveRuns = distinctTasks ? [] : await liveRunsQuery.limit(limit);
     let rows = liveRuns;
