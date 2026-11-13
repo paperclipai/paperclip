@@ -128,6 +128,8 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
   #streamingBatch: PendingStreamingEvent[] = [];
   #streamingTimer: ReturnType<typeof setTimeout> | null = null;
   #streamingTail: Promise<void> = Promise.resolve();
+  /** Deltas queued or committing. Other operations wait only when some are; otherwise they start at once. */
+  #streamingEventsPending = 0;
   /**
    * False until a delta with text commits after the latest other event. Until
    * then each delta commits at once, so the first text of an item, and the
@@ -273,7 +275,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
 
   async checkpointSession(snapshot: PersistedNativeSession, options?: { signal: AbortSignal }): Promise<void> {
     this.#assertActive(options);
-    await this.#flushStreamingEvents();
+    if (this.#streamingEventsPending > 0) await this.#flushStreamingEvents();
     if (this.#deferredEventObservers.size > 0 || this.#deferredObserverFailure) await this.#settleDeferredObservers(options);
     snapshot = redactRunnerApiPayloads(this.#identityRedactor.redact(snapshot));
     const identity = snapshot.identity;
@@ -469,7 +471,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
         options?.streaming === true);
     }
     // Every other event commits after each delta appended before it.
-    await this.#flushStreamingEvents();
+    if (this.#streamingEventsPending > 0) await this.#flushStreamingEvents();
     this.#streamedSinceBoundary = false;
     this.#assertActive(options);
     const pendingObservation = this.#deferredEventObservers.get(observerKey);
@@ -540,6 +542,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
   #appendStreamingEvent(pending: Omit<PendingStreamingEvent, "resolve" | "reject">, streaming: boolean): Promise<AppendReceipt> {
     return new Promise<AppendReceipt>((resolve, reject) => {
       this.#streamingBatch.push({ ...pending, resolve, reject });
+      this.#streamingEventsPending += 1;
       if (!streaming || !this.#streamedSinceBoundary || this.#streamingBatch.length >= STREAMING_EVENT_BATCH_MAX) {
         void this.#flushStreamingEvents();
       } else {
@@ -562,7 +565,8 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
       if (batch.some(pending => typeof pending.event.payload.text === "string" && pending.event.payload.text.length > 0)) {
         this.#streamedSinceBoundary = true;
       }
-      this.#streamingTail = this.#streamingTail.then(() => this.#commitStreamingEvents(batch));
+      this.#streamingTail = this.#streamingTail.then(() => this.#commitStreamingEvents(batch))
+        .finally(() => { this.#streamingEventsPending -= batch.length; });
     }
     return this.#streamingTail;
   }
@@ -603,7 +607,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     ) {
       throw new Error("native_replay_binding_mismatch");
     }
-    await this.#flushStreamingEvents();
+    if (this.#streamingEventsPending > 0) await this.#flushStreamingEvents();
     const rows = await this.#db
       .select({ payload: heartbeatRunEvents.payload, sourceSeq: heartbeatRunEvents.sourceSeq })
       .from(heartbeatRunEvents)
@@ -634,7 +638,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
    */
   async provesNoRunProviderWork(options: { signal: AbortSignal }): Promise<boolean> {
     options.signal.throwIfAborted();
-    await this.#flushStreamingEvents();
+    if (this.#streamingEventsPending > 0) await this.#flushStreamingEvents();
     const { companyId, runId } = this.#binding;
     const providerEvents = sql.join([...NATIVE_PROVIDER_DURABLE_EVENT_TYPES].map(value => sql`${value}`), sql`, `);
     const result = await this.#db.execute(sql`select
@@ -658,7 +662,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
 
   async completeRun(value: NativeRunResult | CompleteControlPlaneRunInput, options?: { signal: AbortSignal }): Promise<void> {
     this.#assertActive(options);
-    await this.#flushStreamingEvents();
+    if (this.#streamingEventsPending > 0) await this.#flushStreamingEvents();
     if (this.#deferredEventObservers.size > 0 || this.#deferredObserverFailure) await this.#settleDeferredObservers(options);
     value = redactRunnerApiPayloads(this.#identityRedactor.redact(value));
     if (!isCompleteInput(value)) throw new Error("native_structured_result_required");
