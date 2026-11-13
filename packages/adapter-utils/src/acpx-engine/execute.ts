@@ -1,3 +1,4 @@
+import { managedAiSessionFingerprintConfig } from "../managed-ai-runtime-env.js";
 import { createWorkspaceRestoreTeardown } from "../workspace-restore-teardown.js";
 import { isOpenRouterUrl, openRouterClaudeHeaders } from "@paperclipai/shared/openrouter-attribution";
 import { prepareAcpxCodexObservabilityHome } from "../codex-observability-home.js";
@@ -2331,7 +2332,16 @@ async function buildRuntime(input: {
     // that sources the latest env. secretManifestHash alone misses plain-value
     // edits and same-version secret rotations. Per-wake runtime vars never enter
     // resolvedAdapterEnv, so they don't churn the fingerprint every heartbeat.
-    adapterEnvHash: shortHash(resolvedAdapterEnv),
+    // Managed SSH identity uses the selected account's stable session identity;
+    // temporary credential homes and token refreshes affect only the launch env.
+    adapterEnvHash: shortHash(
+      useRemoteProcessSession && executionTarget?.kind === "remote" && executionTarget.transport === "ssh"
+        ? managedAiSessionFingerprintConfig(
+          { env: resolvedAdapterEnv, managedAiConnection: config.managedAiConnection },
+          asString(resolvedAdapterEnv.HOME, "") || undefined,
+        )
+        : resolvedAdapterEnv,
+    ),
   };
   const taskKey = asString(input.ctx.runtime.taskKey, "") || wakeTaskId || workspaceId || "default";
   const sshWorkspaceRunId = useRemoteProcessSession && executionTarget?.kind === "remote" && executionTarget.transport === "ssh"

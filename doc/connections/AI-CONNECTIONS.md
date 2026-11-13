@@ -456,7 +456,9 @@ Credential-bearing launch commands travel through SSH stdin instead of SSH
 process arguments. The existing account-specific refresh merge runs before
 per-turn directories are removed, including after provider or setup failure.
 Environment tests use the selected account and remove their temporary homes
-after probing. A disconnected target can prevent remote cleanup; the run reports
+after probing. Managed Codex probes copy refreshed credentials to that account's
+local home before cleanup, even when the provider request fails. The merge rejects
+credentials from another account. A copyback failure fails the probe. A disconnected target can prevent remote cleanup; the run reports
 the resulting failure rather than silently selecting another account.
 
 Codex CLI runs in an in-place SSH workspace keep conversation files and native
@@ -477,7 +479,11 @@ ACP SSH sessions use the existing remote process bridge and session reuse
 lifecycle. A compatible session can retain its private remote home; workspace
 sync and credential refresh run at turn teardown, and the session disposal hook
 removes the home on retirement. Workspace identity includes the company, agent,
-task and execution fingerprint. Older managed SSH ACP sessions used a different
+task and execution fingerprint. The fingerprint normalizes temporary managed-home
+paths and credential refreshes against the stable account session identity.
+Switching accounts or changing other adapter environment values starts a fresh
+conversation. The launch still receives the current credentials.
+Older managed SSH ACP sessions used a different
 working-directory identity and start fresh after this change. Native runner
 session identities and sandbox staging are unchanged.
 

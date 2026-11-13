@@ -4561,7 +4561,12 @@ describe("ACPX engine remote managed-home seam (PR 2: per-adapter home seed)", (
 
   it.each(["turn", "bridge"])("stages the configured agent account for SSH, resumes it, and copies back before disposal after a %s failure", async failure => {
     const { root, stateDir, localCwd, remoteCwd } = await setupRemoteSandbox();
-    const home = path.join(root, "selected-account");await fs.mkdir(home);
+    const homes = await Promise.all(["first", "second", "third"].map(async name => {
+      const home = path.join(root, `selected-account-${name}`);
+      await fs.mkdir(path.join(home, "provider"), { recursive: true });
+      return home;
+    }));
+    const home = path.join(homes[0]!, "provider");
     const workspace = path.posix.join(remoteCwd, ".paperclip-runtime/runs/run-1/workspace");
     const runtimeRootDir = path.posix.join(workspace, ".paperclip-runtime/custom");
     const executionTarget = { kind: "remote", transport: "ssh", remoteCwd, spec: { useHostAuth: false, host: "ssh.example.test", port: 22, username: "agent", remoteCwd, remoteWorkspacePath: remoteCwd, privateKey: null, knownHosts: null, strictHostKeyChecking: true } };
@@ -4569,18 +4574,21 @@ describe("ACPX engine remote managed-home seam (PR 2: per-adapter home seed)", (
     const stopControl = vi.fn(async () => {}), stopProcess = vi.fn(async () => {});
     const stagedRuntimes: NonNullable<AcpxEngineExecutorOptions["stagedRuntimes"]> = new Map();
     const seam = vi.fn(async (input: Parameters<NonNullable<AcpxEngineExecutorOptions["prepareRemoteManagedHome"]>>[0]) => {
-      const stagedRuntime = await input.stage([{ key: "home", localDir: home }]);
+      const stagedRuntime = await input.stage([{ key: "home", localDir: input.env.CODEX_HOME! }]);
       input.env.CODEX_HOME = stagedRuntime.assetDirs.home!;
       return { stagedRuntime };
     });
     const actual = await vi.importActual<typeof import("@paperclipai/adapter-utils/execution-target")>("@paperclipai/adapter-utils/execution-target");
-    vi.mocked(prepareAdapterExecutionTargetRuntime).mockResolvedValueOnce({ target: executionTarget as never, workspaceRemoteDir: workspace, runtimeRootDir,
+    vi.mocked(prepareAdapterExecutionTargetRuntime).mockResolvedValue({ target: executionTarget as never, workspaceRemoteDir: workspace, runtimeRootDir,
       assetDirs: { home: path.posix.join(runtimeRootDir, "home") }, additionalSourceDirs: {}, additionalSourceFailures: [], workspaceSyncSnapshot: null, restoreWorkspace: restore, disposeRuntime: dispose });
     vi.mocked(startAdapterExecutionTargetPaperclipBridge).mockResolvedValue({ env: { PAPERCLIP_API_URL: "http://127.0.0.1:3210", PAPERCLIP_API_KEY: "bridge-fixture" }, stop: stopControl });
     vi.mocked(startAdapterExecutionTargetProcessSessionBridge).mockResolvedValue({ agentCommand: "/fixture/agent-proxy.cjs", stop: stopProcess });
     try {
-      const config = { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd: localCwd,
-        managedAiConnection: { identity: "selected-agent-account" }, env: { CODEX_HOME: home, HOME: home }, mode: "persistent" };
+      const configForTurn = (turn: number) => ({ agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd: localCwd,
+        managedAiConnection: { identity: `credential-revision-${turn}`, sessionIdentity: "selected-agent-account" },
+        env: { CODEX_HOME: path.join(homes[turn]!, "provider"), HOME: homes[turn]!, XDG_CONFIG_HOME: path.join(homes[turn]!, "config"),
+          XDG_DATA_HOME: path.join(homes[turn]!, "data"), OPENAI_API_KEY: `fixture-token-${turn}`, USER_OPTION: "kept" }, mode: "persistent" });
+      const config = configForTurn(0);
       let failTurn = false;
       const options = { authToken: "run-fixture", executionTarget, prepareRemoteManagedHome: seam, stagedRuntimes,
         onStartTurn: () => { if (failTurn) throw new Error("fixture SSH turn failed"); } };
@@ -4597,16 +4605,20 @@ describe("ACPX engine remote managed-home seam (PR 2: per-adapter home seed)", (
       expect(stopControl).toHaveBeenCalledOnce();
       expect(stopProcess).toHaveBeenCalledOnce();
       expect(dispose).not.toHaveBeenCalled();
-      const resumed = await runExecutor(config, { ...options, runId: "run-2", runtime: { sessionParams: result.result.sessionParams } });
+      const resumed = await runExecutor(configForTurn(1), { ...options, runId: "run-2", runtime: { sessionParams: result.result.sessionParams } });
       expect(resumed.sessionInputs[0]?.cwd).toBe(result.sessionInputs[0]?.cwd);
+      expect(resumed.sessionInputs[0]?.resumeSessionId).toBe(result.result.sessionId);
+      const resumeBridge = vi.mocked(startAdapterExecutionTargetProcessSessionBridge).mock.calls.at(-1)![0];
+      const resumedEnv = typeof resumeBridge.env === "function" ? await resumeBridge.env() : resumeBridge.env;
+      expect(resumedEnv.OPENAI_API_KEY).toBe("fixture-token-1");
       expect(seam).toHaveBeenCalledOnce();
       expect(restore).toHaveBeenCalledTimes(2);
       if (failure === "bridge") {
         vi.mocked(startAdapterExecutionTargetProcessSessionBridge).mockRejectedValueOnce(new Error("fixture SSH bridge unavailable"));
-        await expect(runExecutor(config, { ...options, runId: "run-3", runtime: { sessionParams: resumed.result.sessionParams } })).rejects.toThrow("fixture SSH bridge unavailable");
+        await expect(runExecutor(configForTurn(2), { ...options, runId: "run-3", runtime: { sessionParams: resumed.result.sessionParams } })).rejects.toThrow("fixture SSH bridge unavailable");
       } else {
         failTurn = true;
-        await runExecutor(config, { ...options, runId: "run-3", expectedExitCode: 1, runtime: { sessionParams: resumed.result.sessionParams } });
+        await runExecutor(configForTurn(2), { ...options, runId: "run-3", expectedExitCode: 1, runtime: { sessionParams: resumed.result.sessionParams } });
       }
       expect(restore).toHaveBeenCalledTimes(3);
       expect(stopControl.mock.invocationCallOrder[2]).toBeLessThan(restore.mock.invocationCallOrder[2]!);
@@ -4614,6 +4626,18 @@ describe("ACPX engine remote managed-home seam (PR 2: per-adapter home seed)", (
       expect(dispose).toHaveBeenCalledOnce();
       expect(stopControl).toHaveBeenCalledTimes(3);
       expect(stopProcess).toHaveBeenCalledTimes(failure === "bridge" ? 2 : 3);
+      expect(stagedRuntimes.size).toBe(0);
+      failTurn = true;
+      const changed = configForTurn(0);
+      if (failure === "turn") changed.managedAiConnection.sessionIdentity = "different-agent-account";
+      else changed.env.USER_OPTION = "changed";
+      const reset = await runExecutor(changed, { ...options, runId: "run-4", expectedExitCode: 1,
+        runtime: { sessionParams: resumed.result.sessionParams } });
+      expect(reset.sessionInputs[0]?.cwd).not.toBe(result.sessionInputs[0]?.cwd);
+      expect(reset.sessionInputs[0]?.resumeSessionId).not.toBe(result.result.sessionId);
+      expect(seam).toHaveBeenCalledTimes(2);
+      expect(restore).toHaveBeenCalledTimes(4);
+      expect(dispose).toHaveBeenCalledTimes(2);
       expect(stagedRuntimes.size).toBe(0);
     } finally {
       vi.mocked(prepareAdapterExecutionTargetRuntime).mockReset().mockImplementation(actual.prepareAdapterExecutionTargetRuntime);
