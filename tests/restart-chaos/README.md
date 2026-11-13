@@ -1091,6 +1091,11 @@ gh api -X POST repos/paperclipai/paperclip/actions/runs/<run>/pending_deployment
 The digest is in the "Publish verified Daytona image" job log (`pushing manifest
 for …@sha256:…`), or check out the image's `org.opencontainers.image.revision`.
 
+The harness also requires the image's provider pack to be the one a named
+commit built: the commit in the image's `io.paperclip.runner.source-revision`
+label, or, when the image has no such label, the image's own
+`org.opencontainers.image.revision`.
+
 **Setup** reuses runner-e2e: the bundled Daytona plugin (`installFixtureDaytonaProvider`,
 prepared outside the root workspace as CI does), the `daytona` environment
 fixture from `catalog.ts`, and the native Codex platform-qualification probe.
