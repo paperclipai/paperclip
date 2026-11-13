@@ -55,6 +55,10 @@ export function useAttentionBadge(companyId: string | null | undefined, options:
  * only. Reads the shared board access snapshot; false until it loads.
  */
 export function useAttentionEveryoneView(companyId: string | null | undefined) {
+  return useAttentionEveryoneAccess(companyId).everyone;
+}
+
+export function useAttentionEveryoneAccess(companyId: string | null | undefined) {
   const { userId } = useCoordinatorWorkspaceEnabled();
   const boardAccess = useQuery({
     queryKey: queryKeys.access.currentBoardAccess,
@@ -62,7 +66,10 @@ export function useAttentionEveryoneView(companyId: string | null | undefined) {
     enabled: !!companyId && !!userId,
     staleTime: 30_000,
   });
-  return boardAccess.data?.userId === userId && attentionEveryoneViewAllowed(companyId, boardAccess.data);
+  return {
+    everyone: boardAccess.data?.userId === userId && attentionEveryoneViewAllowed(companyId, boardAccess.data),
+    settled: boardAccess.isSuccess || boardAccess.isError || boardAccess.failureCount > 0,
+  };
 }
 
 /**
