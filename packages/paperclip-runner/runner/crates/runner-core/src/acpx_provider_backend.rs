@@ -1300,16 +1300,7 @@ impl AcpxCommandExecutor {
                 .state
                 .as_ref()
                 .is_some_and(|state| state.descriptor.run_id == self.context.run_id);
-            let held = self
-                .state
-                .as_mut()
-                .and_then(|state| state.provider_turn_wait.take());
-            if let (true, Some(held)) = (same_run, held) {
-                self.state
-                    .as_mut()
-                    .expect("ACPX state holds the provider turn wait")
-                    .push(held.into_run_terminal())?;
-            }
+            self.end_provider_turn_wait(same_run)?;
             self.save_state()?;
         }
         let Some(state) = self.state.as_ref() else {
@@ -3086,7 +3077,7 @@ impl AcpxCommandExecutor {
                 }
                 self.settle_turn_events(accepted, turn_ended, run_terminal)?;
                 if provider_lost {
-                    self.publish_ended_provider_turn_wait()?;
+                    self.end_provider_turn_wait(true)?;
                 }
             }
             if provider_turn_settled {
