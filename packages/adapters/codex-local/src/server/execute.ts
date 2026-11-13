@@ -576,6 +576,15 @@ export async function ensureCodexSkillsInjected(
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+  const externalHome = ctx.config.remoteCodexHomeMode === "empty";
+  if (ctx.config.remoteCodexHomeMode !== undefined && !externalHome) {
+    throw new Error("Invalid remoteCodexHomeMode");
+  }
+  // Engine selection may probe a remote ACP target using host environment.
+  // Reject before that probe: empty mode requires an explicit CLI engine.
+  if (externalHome && (typeof ctx.config.engine !== "string" || ctx.config.engine.trim().toLowerCase() !== "cli")) {
+    throw new Error("remoteCodexHomeMode=empty requires engine=cli; ACP is not supported");
+  }
   const providerStop = createProviderStoppedBoundary(ctx.onProviderStopped);
   const engineSelection = await resolveCodexExecutionEngineForRun(ctx);
   if (engineSelection.unavailableReason) {
@@ -642,7 +651,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ? targetWorkspaceRealization.authoritativeRoot
     : useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
-  const envConfig = parseObject(config.env);
+  const suppliedEnvConfig = parseObject(config.env);
+  // The server injects host-local scratch and git metadata into the adapter
+  // config. They are not meaningful in an independently owned remote home.
+  // Drop them before any consumer can forward or interpret their values.
+  const ignoredRemoteHostEnv = new Set([
+    "PAPERCLIP_RUNNER_NETWORK_ROOTS", "PAPERCLIP_GITHUB_HOST_HOME", "GH_CONFIG_DIR",
+    "PAPERCLIP_RUN_SCRATCH_DIR", "PAPERCLIP_TASK_SCRATCH_DIR", "PAPERCLIP_SCRATCH_DIR",
+    "PAPERCLIP_TMPDIR", "TMPDIR", "TEMP", "TMP", "PAPERCLIP_GIT_METADATA_ROOTS",
+  ]);
+  const envConfig = externalHome
+    ? Object.fromEntries(Object.entries(suppliedEnvConfig).filter(([key]) => !ignoredRemoteHostEnv.has(key)))
+    : suppliedEnvConfig;
   const executionTargetIsRemote = adapterExecutionTargetIsRemote(executionTarget);
   let configuredCodexHome =
     typeof envConfig.CODEX_HOME === "string" && envConfig.CODEX_HOME.trim().length > 0
@@ -652,6 +672,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     typeof envConfig.OPENAI_API_KEY === "string" && envConfig.OPENAI_API_KEY.trim().length > 0
       ? envConfig.OPENAI_API_KEY.trim()
       : null;
+  const safeServerEnv = new Set(["CODEX_HOME", "PAPERCLIP_GITHUB_AUTH_MODE", "PAPERCLIP_RUNNER_NETWORK_ACCESS"]);
+  const extraConfiguredEnv = Object.keys(envConfig).some(key => !safeServerEnv.has(key));
+  if (externalHome && (!executionTargetIsRemote || !configuredCodexHome || configuredOpenAiApiKey || config.managedAiConnection || extraConfiguredEnv || ctx.observability)) {
+    throw new Error("remoteCodexHomeMode=empty requires a remote target, explicit CODEX_HOME and no configured provider credential, extra environment or observability exporter");
+  }
+  if (externalHome && configuredCodexHome && isManagedCodexHomePath(process.env, agent.companyId, configuredCodexHome)) {
+    throw new Error("remoteCodexHomeMode=empty requires a caller-owned CODEX_HOME outside the managed home");
+  }
   const skillSourceHome = configuredCodexHome;
   const connectorSkillDigest = typeof config.paperclipConnectorSkillDigest === "string"
     && /^[a-f0-9]{64}$/.test(config.paperclipConnectorSkillDigest) ? config.paperclipConnectorSkillDigest : null;
@@ -661,12 +689,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const desiredSet = new Set(desiredSkillNames);
   // An explicit inventory is the server's authorized execution selection. Include
   // empty inventories: revocation must not fall back to a previously populated home.
-  let runtimeSkillDigest = Array.isArray(config.paperclipRuntimeSkills)
+  let runtimeSkillDigest = !externalHome && Array.isArray(config.paperclipRuntimeSkills)
     ? createHash("sha256").update(JSON.stringify({ connectorSkillDigest,
       skills: codexSkillEntries.filter(entry => desiredSet.has(entry.key))
         .map(entry => [entry.key, entry.source]).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
     })).digest("hex")
-    : connectorSkillDigest;
+    : externalHome ? null : connectorSkillDigest;
   const runtimeCredentialHome = runtimeSkillDigest
     ? skillSourceHome ?? await prepareManagedCodexHome(process.env, onLog, agent.companyId, { apiKey: configuredOpenAiApiKey })
     : null;
@@ -707,7 +735,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // holds no credential it does nothing (no random pick). This keeps the change
   // additive: the managed home still symlinks the shared `auth.json`, now at its
   // freshest same-identity copy. The off-switch (default on) skips the vend.
-  if (!config.managedAiConnection && isCodexAuthCacheEnabled(process.env)) {
+  if (!externalHome && !config.managedAiConnection && isCodexAuthCacheEnabled(process.env)) {
     const sharedHomeAuthPath = path.join(resolveSharedCodexHomeDir(process.env), "auth.json");
     // This caller reads `process.env` directly and holds no separate `env`
     // object, so `selectVendCredential` falls back to its own `process.env`
@@ -855,7 +883,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           // the single-use `auth.json`) are dereferenced to bytes. This drops the
           // large runtime state (`sessions/`, `*.sqlite`, `plugins/`, …) that the
           // 4-name denylist missed and that a sandbox run never needs.
-          stagedCodexHomeDir = await stageCodexHomeForSync(effectiveCodexHome, { runId, additionalFiles: observabilityProfile ? [observabilityProfile.filename] : [] });
+          stagedCodexHomeDir = await stageCodexHomeForSync(effectiveCodexHome, { runId, empty: externalHome, additionalFiles: observabilityProfile ? [observabilityProfile.filename] : [] });
           return await prepareAdapterExecutionTargetRuntime({
             runId,
             target: executionTarget,
@@ -881,7 +909,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                 // that already carries a Codex `auth.json` keeps whichever
                 // credential is newer. The sandbox runtime core stays adapter-
                 // agnostic — it just invokes this generic `provision` seam.
-                provision: buildCodexAuthInboundProvision(),
+                provision: externalHome ? undefined : buildCodexAuthInboundProvision(),
                 // Outbound (sandbox→host) auth copy-back contribution: at
                 // teardown, read the sandbox's `auth.json` and — guarded by the
                 // same direction-agnostic decision predicate under a directory
@@ -891,7 +919,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                 // generic `restore` seam per asset before destroying the sandbox.
                 // Target is the shared symlink SOURCE (what managed homes point
                 // `auth.json` at), not the in-sandbox symlink.
-                restore: async ({ assetDir, readFile }) =>
+                restore: externalHome ? undefined : async ({ assetDir, readFile }) =>
                   void (await copyBackCodexAuth({
                     readSandboxAuth: () => readFile(path.posix.join(assetDir, "auth.json")),
                     hostAuthPath: path.join(config.managedAiConnection ? effectiveCodexHome : resolveSharedCodexHomeDir(process.env), "auth.json"),
@@ -1074,7 +1102,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       );
     }
     const runtimeEnv = Object.fromEntries(
-      Object.entries(ensurePathInEnv(effectiveEnv)).filter(
+      Object.entries(externalHome ? env : ensurePathInEnv(effectiveEnv)).filter(
         (entry): entry is [string, string] => typeof entry[1] === "string",
       ),
     );
@@ -1089,7 +1117,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       graceSec,
       onLog,
     });
-    await ensureAdapterExecutionTargetCommandResolvable(command, executionTarget, cwd, runtimeEnv);
+    // SSH is launched on the controller; its lookup must use the controller's
+    // PATH without forwarding that PATH to the remote worker.
+    const commandLookupEnv = externalHome && executionTarget?.kind === "remote" && executionTarget.transport === "ssh"
+      ? { ...runtimeEnv, PATH: ensurePathInEnv(process.env).PATH }
+      : runtimeEnv;
+    await ensureAdapterExecutionTargetCommandResolvable(command, executionTarget, cwd, commandLookupEnv);
     const resolvedCommand = await resolveAdapterExecutionTargetCommandForLogs(command, executionTarget, cwd, runtimeEnv);
     if (observabilityProfile) {
       let qualified = false;
