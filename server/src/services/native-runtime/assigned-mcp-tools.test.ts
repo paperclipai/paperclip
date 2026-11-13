@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import type { Db } from "@paperclipai/db";
 import { ToolGatewayHttpError, type ToolGatewayDescriptor, type ToolGatewayService } from "../tool-gateway.js";
@@ -388,6 +389,33 @@ describe("assigned MCP runner tools", () => {
     expect(getAssignedMcpGateway(firstDb)).toBe(first);
     registerAssignedMcpGateway(firstDb, second);
     expect(getAssignedMcpGateway(firstDb)).toBe(second);
+  });
+
+  it.each([undefined, "on_demand"] as const)("offers and executes every app schema the Runner validates and withholds the rest (%s)", async delivery => {
+    const shared = JSON.parse(readFileSync(new URL("../../../../packages/paperclip-runner/src/drivers/tool-input-schema-fixtures.json", import.meta.url), "utf8")) as {
+      cases: Array<{ name: string; accepted: boolean; dialectUri?: string; schema: Record<string, unknown>; valid?: Record<string, unknown>[] }>;
+    };
+    const descriptors = shared.cases.map(entry => ({ ...descriptor(`deploy:${entry.name}`), parametersSchema: entry.schema }) as ToolGatewayDescriptor);
+    const f = fixture(descriptors);
+    const assigned = await createAssignedMcpTools({ ...f, ...(delivery ? { delivery } : {}) });
+    const offered = delivery
+      ? (await assigned.execute({ tool: searchName, arguments: { query: "", limit: 20 } }) as { tools: Array<Record<string, unknown>> }).tools
+      : assigned.definitions();
+    expect(offered.map(tool => tool.description)).toEqual(expect.arrayContaining(
+      shared.cases.filter(entry => entry.accepted).map(entry => expect.stringContaining(entry.name))));
+    expect(offered).toHaveLength(shared.cases.filter(entry => entry.accepted).length);
+    for (const entry of shared.cases) {
+      const tool = offered.find(candidate => String(candidate.description).endsWith(`deploy:${entry.name}`));
+      if (!entry.accepted) {
+        expect(tool).toBeUndefined();
+        continue;
+      }
+      expect((tool!.inputSchema as Record<string, unknown>).$schema).toBe(entry.dialectUri);
+      const args = entry.valid![0]!;
+      await assigned.execute(delivery ? { tool: callName, arguments: { name: tool!.name, arguments: args } } : { tool: String(tool!.name), arguments: args });
+      expect(f.executeTool).toHaveBeenLastCalledWith(expect.objectContaining({ tool: `deploy:${entry.name}`, parameters: args }));
+    }
+    expect(f.executeTool).toHaveBeenCalledTimes(shared.cases.filter(entry => entry.accepted).length);
   });
 
   it("projects only authorized gateway tools with stable bounded collision-resistant names", async () => {
