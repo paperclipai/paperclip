@@ -158,4 +158,45 @@ describe("ClaudeBackgroundTaskTracker", () => {
     }
     expect(tasks.state()).toBeNull();
   });
+
+  it("knows the count again once Claude's own cycle for a finished shell is adopted and ends", () => {
+    const tracker = negotiated();
+    prompt(tracker, 1, [spawned(), backgrounded]);
+    tracker.observe("inbound", update(settled("completed")));
+    expect(tracker.state()).toBeNull();
+    tracker.providerTurnStarted();
+    tracker.observe("inbound", update({ sessionUpdate: "usage_update", used: 1 }), true);
+    tracker.observe("inbound", update({ sessionUpdate: "tool_call", toolCallId: "toolu_9", _meta: { claudeCode: { toolName: "Read" } } }), true);
+    tracker.observe("inbound", { jsonrpc: "2.0", id: 4, method: "session/request_permission", params: {} }, true);
+    expect(tracker.state()).toBeNull();
+    tracker.observe("inbound", update({ sessionUpdate: "usage_update", _meta: { "_claude/origin": { kind: "task-notification" } } }), true);
+    tracker.providerTurnEnded(true);
+    expect(tracker.state()).toEqual({ live: 0 });
+  });
+
+  it("keeps a cycle's newly backgrounded shell live and stays unknown after a cycle that did not complete", () => {
+    const again = negotiated();
+    prompt(again, 1, [spawned(), backgrounded]);
+    again.observe("inbound", update(settled("completed")));
+    again.providerTurnStarted();
+    again.observe("inbound", update({ ...spawned(), asyncTaskId: "task-2" }), true);
+    again.observe("inbound", update({ ...backgrounded, _meta: { claudeCode: { toolName: "Bash", toolResponse: { backgroundTaskId: "task-2" } } } }), true);
+    again.providerTurnEnded(true);
+    expect(again.state()).toEqual({ live: 1 });
+
+    const finishedDuringCycle = negotiated();
+    prompt(finishedDuringCycle, 1, [spawned(), backgrounded, { ...spawned(), asyncTaskId: "task-2" }]);
+    finishedDuringCycle.observe("inbound", update(settled("completed")));
+    finishedDuringCycle.providerTurnStarted();
+    finishedDuringCycle.observe("inbound", update({ ...settled("completed"), asyncTaskId: "task-2" }), true);
+    finishedDuringCycle.providerTurnEnded(true);
+    expect(finishedDuringCycle.state()).toBeNull();
+
+    const failed = negotiated();
+    prompt(failed, 1, [spawned(), backgrounded]);
+    failed.observe("inbound", update(settled("completed")));
+    failed.providerTurnStarted();
+    failed.providerTurnEnded(false);
+    expect(failed.state()).toBeNull();
+  });
 });

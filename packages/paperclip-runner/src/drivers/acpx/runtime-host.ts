@@ -10,6 +10,7 @@ import { piProviderConfiguration } from "./pi-provider-config.js";
 import { withAcpxTurnCancellation } from "./turn-cancellation.js";
 import type { AcpxTerminalSessionFailure } from "./provider-failure.js";
 import type { ClaudeBackgroundTaskState } from "./claude-background-tasks.js";
+import type { ClaudeProviderTurn } from "./claude-provider-turns.js";
 import { resolveAcpxProviderMode } from "./provider-mode.js";
 import { resolvePiThinkingLevel, type PiThinkingLevel } from "./pi-thinking.js";
 import { preparedHarnessHome, preconfiguredHomeEnvironment, usesPreconfiguredHome } from "../preconfigured-home.js";
@@ -159,6 +160,13 @@ export interface AcpxRuntimeTurn {
 }
 
 /** Minimal third-party ACP runtime surface admitted by the host boundary. */
+export type AcpxProviderTurnBinding = {
+  onPermissionRequest: AcpxHostPermissionHandler;
+  busy(): boolean;
+};
+
+export type AcpxProviderTurnListener = (turn: ClaudeProviderTurn) => AcpxProviderTurnBinding | null;
+
 export interface AcpxRuntimePort {
   identity(): Promise<AcpxRuntimePortIdentity>;
   getStatus(): Promise<AcpxModelStatus>;
@@ -169,6 +177,8 @@ export interface AcpxRuntimePort {
   goalCapability?(): AcpxRuntimeGoalCapability | null;
   goalSnapshot?(): AcpxRuntimeGoalSnapshot | null;
   backgroundTaskState?(): ClaudeBackgroundTaskState | null;
+  onProviderTurn?(listener: AcpxProviderTurnListener | null): void;
+  cancelProviderTurn?(): boolean;
   controlGoal?(
     action: "set" | "pause" | "resume" | "clear",
     objective?: string,
@@ -904,6 +914,14 @@ export class AcpxRuntimeHost {
 
   backgroundTaskState(): ClaudeBackgroundTaskState | null {
     return this.#runtime.backgroundTaskState?.() ?? null;
+  }
+
+  onProviderTurn(listener: AcpxProviderTurnListener | null): void {
+    this.#runtime.onProviderTurn?.(listener);
+  }
+
+  cancelProviderTurn(): boolean {
+    return this.#runtime.cancelProviderTurn?.() ?? false;
   }
 
   async controlGoal(

@@ -7,6 +7,7 @@ import { resolveGrokEffort, createGrokEffortAdmission } from "./grok-effort.js";
 import { createGrokSessionOpenGuard } from "./grok-session-rules.js";
 import { resolveClaudeEffort, createClaudeEffortAdmission } from "./claude-effort.js";
 import { CLAUDE_ASYNC_TASKS_CAPABILITY, ClaudeBackgroundTaskTracker } from "./claude-background-tasks.js";
+import { CLAUDE_PROVIDER_TURN_PROCESS_LOST, ClaudeProviderTurns, type ClaudeProviderTurn, type ClaudeProviderTurnAdmission } from "./claude-provider-turns.js";
 import { acpxProviderFailure, acpxTypedSessionFailureClientCapabilities, acpxTypedTerminalSessionFailure, type AcpxTerminalSessionFailure } from "./provider-failure.js";
 import type { ProviderFailure } from "../../contracts/provider-failure.generated.js";
 import { createPiThinkingAdmission, resolvePiThinkingLevel } from "./pi-thinking.js";
@@ -31,6 +32,7 @@ import {
 
 import type {
   AcpxPlanProposal,
+  AcpxProviderTurnListener,
   AcpxRuntimeGoalCapability,
   AcpxRuntimeGoalSnapshot,
   AcpxRuntimeSteeringCapability,
@@ -370,6 +372,7 @@ export async function openQualifiedAcpxRuntime(
   const promptUsage = options.profile.agent === "grok" ? createGrokPromptUsageCollector() : undefined;
   const promptReceipts = createAcpxPromptReceiptCollector(options.profile.agent);
   const backgroundTasks = options.profile.agent === "claude" ? new ClaudeBackgroundTaskTracker() : null;
+  const providerTurnAdmission: { admit?: (turn: ClaudeProviderTurn, fail: (code: string, message: string) => void) => ClaudeProviderTurnAdmission | null } = {};
   const permissionReplies = createAcpxPermissionReplyConfirmations();
   const modelGate = createAcpxEffectiveModelGate(options.profile.reportedModelId);
   // Copilot's admitted permission policy is enforced from the observed wire:
@@ -384,6 +387,11 @@ export async function openQualifiedAcpxRuntime(
   const extensionBoundary: AcpxRuntimeExtensionBoundary = {
     active: null, sessionIds: new Set(), steering: null, promptDispatch: null,
   };
+  const providerTurns = backgroundTasks ? new ClaudeProviderTurns({
+    sessionId: () => extensionBoundary.sessionIds.values().next().value ?? null,
+    promptActive: () => extensionBoundary.active !== null,
+    admit: (turn, fail) => providerTurnAdmission.admit?.(turn, fail) ?? null,
+  }) : null;
   const ownsExtensionTurn = (active: AcpxRuntimeExtensionTurn, params: Record<string, unknown>): boolean =>
     extensionBoundary.active === active && !active.signal.aborted
       && (params.sessionId === undefined || (typeof params.sessionId === "string" && extensionBoundary.sessionIds.has(params.sessionId)));
@@ -589,7 +597,8 @@ export async function openQualifiedAcpxRuntime(
       return { outcome: disposition };
     },
     onAcpMessage: (direction, message) => {
-      backgroundTasks?.observe(direction, message);
+      const providerTurn = providerTurns?.observe(direction, message) ?? false;
+      backgroundTasks?.observe(direction, message, providerTurn);
       observeAgentInitialize(direction, message);
       copilotPolicy?.observe(direction, message);
       modelGate.observe(direction, message);
@@ -838,6 +847,7 @@ export async function openQualifiedAcpxRuntime(
       modelGate,
       promptReceipts,
       backgroundTasks,
+      providerTurns ? { turns: providerTurns, admission: providerTurnAdmission } : null,
     );
   } catch (error) {
     const cleanupReason = "ACPX runtime identity validation failed";
@@ -1293,8 +1303,13 @@ function runtimePort(
   modelGate?: AcpxEffectiveModelGate,
   promptReceipts?: ReturnType<typeof createAcpxPromptReceiptCollector>,
   backgroundTasks?: ClaudeBackgroundTaskTracker | null,
+  providerTurns?: {
+    turns: ClaudeProviderTurns;
+    admission: { admit?: (turn: ClaudeProviderTurn, fail: (code: string, message: string) => void) => ClaudeProviderTurnAdmission | null };
+  } | null,
 ): AcpxRuntimePort {
   extensionBoundary.sessionIds = new Set([identity.backendSessionId]);
+  let providerTurnListener: AcpxProviderTurnListener | null = null;
   let extensionControls: Promise<void> = Promise.resolve();
   const controlActiveTurn = (method: "pi/steer" | "pi/follow_up", text: string, requestId: string): Promise<void> => {
     const active = extensionBoundary.active;
@@ -1585,6 +1600,12 @@ function runtimePort(
     backgroundTaskState() {
       return backgroundTasks?.state() ?? null;
     },
+    onProviderTurn(listener) {
+      providerTurnListener = listener;
+    },
+    cancelProviderTurn() {
+      return providerTurns?.turns.cancel() ?? false;
+    },
     goalSnapshot() {
       return goalState.snapshot === null
         ? null
@@ -1814,8 +1835,48 @@ function runtimePort(
         })(),
       };
     },
-    close: closeRuntime,
+    close: (input) => {
+      providerTurns?.turns.fail("ACPX_PROVIDER_TURN_CLOSED", "The ACPX runtime closed during Claude's own turn.");
+      return closeRuntime(input);
+    },
   };
+  if (providerTurns) {
+    providerTurns.admission.admit = (turn, fail) => {
+      const listener = providerTurnListener;
+      if (!listener || extensionBoundary.active || providerProcessLost || runtimeClosed || runtimeCloseAttempt) return null;
+      const binding = listener(turn);
+      if (!binding) return null;
+      const approval = new AbortController();
+      const controller = new AbortController();
+      const extensionTurn: AcpxRuntimeExtensionTurn = {
+        requestId: turn.requestId, sessionId: identity.backendSessionId, controller,
+        signal: AbortSignal.any([controller.signal, approval.signal]), promptStarted: Promise.resolve(),
+      };
+      extensionBoundary.active = extensionTurn;
+      permissionBoundary.hasAdmittedTurn = true;
+      permissionBoundary.active = approval;
+      permissionBoundary.handler = binding.onPermissionRequest;
+      backgroundTasks?.providerTurnStarted();
+      void turn.result.then((result) => backgroundTasks?.providerTurnEnded(result.status === "completed"));
+      const stopWatchingProviderExit = children.watchProviderExit(() => {
+        providerProcessLost = true;
+        fail(CLAUDE_PROVIDER_TURN_PROCESS_LOST, "The owned ACPX provider exited during Claude's own turn");
+      });
+      return {
+        busy: binding.busy,
+        release: () => {
+          stopWatchingProviderExit();
+          controller.abort(new Error("ACPX provider turn expired"));
+          if (extensionBoundary.active === extensionTurn) extensionBoundary.active = null;
+          if (permissionBoundary.active === approval) {
+            permissionBoundary.active = null;
+            permissionBoundary.handler = undefined;
+            approval.abort();
+          }
+        },
+      };
+    };
+  }
   return port;
 }
 

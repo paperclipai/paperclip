@@ -10,7 +10,7 @@ const SCHEDULING_TOOLS = new Set(["CronCreate", "ScheduleWakeup"]);
 const LIVE_STATES = new Set(["running", "paused"]);
 const TERMINAL_STATES = new Set(["completed", "failed", "stopped"]);
 
-type Task = { shell: boolean; live: boolean };
+type Task = { shell: boolean; live: boolean; finishedAt?: number; settled?: boolean };
 type RequestId = string | number;
 
 const record = (value: unknown): Record<string, unknown> =>
@@ -28,12 +28,15 @@ export class ClaudeBackgroundTaskTracker {
   #observedTask = false;
   readonly #tasks = new Map<string, Task>();
   readonly #pending = new Map<RequestId, { method: string; advertised: boolean }>();
+  #observed = 0;
+  #providerTurnStartedAt: number | null = null;
 
-  observe(direction: "inbound" | "outbound", message: unknown): void {
+  observe(direction: "inbound" | "outbound", message: unknown, providerTurn = false): void {
     if (this.#unknown) return;
+    this.#observed += 1;
     try {
       if (direction === "outbound") this.#outbound(record(message));
-      else this.#inbound(record(message));
+      else this.#inbound(record(message), providerTurn);
     } catch {
       this.#unknown = true;
     }
@@ -44,11 +47,31 @@ export class ClaudeBackgroundTaskTracker {
     if (!this.#observedTask) return { live: 0 };
     let live = 0;
     for (const task of this.#tasks.values()) {
-      if (!task.live) continue;
+      if (!task.live) {
+        if (!task.settled) return null;
+        continue;
+      }
       if (!task.shell) return null;
       live += 1;
     }
-    return live > 0 ? { live } : null;
+    return { live };
+  }
+
+  providerTurnStarted(): void {
+    this.#providerTurnStartedAt = this.#observed;
+  }
+
+  providerTurnEnded(completed: boolean): void {
+    const startedAt = this.#providerTurnStartedAt;
+    this.#providerTurnStartedAt = null;
+    if (!completed) {
+      this.#unknown = true;
+      return;
+    }
+    if (startedAt === null) return;
+    for (const task of this.#tasks.values()) {
+      if (!task.live && task.finishedAt !== undefined && task.finishedAt <= startedAt) task.settled = true;
+    }
   }
 
   #outbound(message: Record<string, unknown>): void {
@@ -63,7 +86,7 @@ export class ClaudeBackgroundTaskTracker {
     this.#pending.set(id, { method: message.method, advertised });
   }
 
-  #inbound(message: Record<string, unknown>): void {
+  #inbound(message: Record<string, unknown>, providerTurn: boolean): void {
     const id = message.id;
     const hasId = typeof id === "string" || typeof id === "number";
     if (hasId && message.method === undefined) {
@@ -79,7 +102,7 @@ export class ClaudeBackgroundTaskTracker {
       return;
     }
     if (hasId) {
-      if (this.#pending.size === 0) this.#unknown = true;
+      if (this.#pending.size === 0 && !providerTurn) this.#unknown = true;
       return;
     }
     if (message.method !== "session/update") return;
@@ -102,7 +125,7 @@ export class ClaudeBackgroundTaskTracker {
       this.#unknown = true;
     }
     const origin = record(update._meta)["_claude/origin"];
-    if (this.#pending.size === 0 && (IDLE_ACTIVITY.has(kind) || (kind === "usage_update" && origin !== undefined))) {
+    if (this.#pending.size === 0 && !providerTurn && (IDLE_ACTIVITY.has(kind) || (kind === "usage_update" && origin !== undefined))) {
       this.#unknown = true;
     }
   }
@@ -120,8 +143,10 @@ export class ClaudeBackgroundTaskTracker {
     if (kind === "async_task_state_update") {
       const state = update.state;
       if (typeof state === "string" && TERMINAL_STATES.has(state)) {
-        if (task) task.live = false;
-        else this.#track(taskId, { shell: false, live: false });
+        if (task) {
+          task.live = false;
+          task.finishedAt ??= this.#observed;
+        } else this.#track(taskId, { shell: false, live: false, finishedAt: this.#observed });
       } else if (!(typeof state === "string" && LIVE_STATES.has(state) && task)) {
         this.#unknown = true;
       }
