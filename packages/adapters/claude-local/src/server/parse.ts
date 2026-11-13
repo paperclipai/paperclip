@@ -66,12 +66,71 @@ export function claudeModelReceipts(modelUsage: unknown) {
   return receipts.every((part) => part !== null) ? receipts : undefined;
 }
 
-export function parseClaudeStreamJson(stdout: string) {
-  return createClaudeStreamParser()(stdout);
+/**
+ * Totals the Claude CLI reported at the end of the previous invocation on a
+ * session. On --resume the CLI's result `total_cost_usd` and `modelUsage` count
+ * the whole session, not this invocation, so the next run subtracts these.
+ */
+export interface ClaudeSessionUsageTotals {
+  sessionId: string;
+  totalCostUsd: number | null;
+  modelUsage: Record<string, unknown>;
+}
+
+const MODEL_USAGE_FIELDS = [
+  "inputTokens",
+  "outputTokens",
+  "cacheReadInputTokens",
+  "cacheCreationInputTokens",
+  "costUSD",
+] as const;
+
+export function parseClaudeSessionUsageTotals(raw: unknown): ClaudeSessionUsageTotals | null {
+  const value = parseObject(raw);
+  const sessionId = asString(value.sessionId, "");
+  if (!sessionId) return null;
+  const cost = value.totalCostUsd;
+  return {
+    sessionId,
+    totalCostUsd: typeof cost === "number" && Number.isFinite(cost) ? cost : null,
+    modelUsage: parseObject(value.modelUsage),
+  };
+}
+
+/**
+ * Per-invocation modelUsage: current session totals minus the baseline. If any
+ * field went down the CLI started a fresh accumulator, so current is returned.
+ */
+export function subtractClaudeModelUsage(current: unknown, baseline: unknown): Record<string, unknown> {
+  const now = parseObject(current);
+  const before = parseObject(baseline);
+  const result: Record<string, unknown> = {};
+  for (const [model, raw] of Object.entries(now)) {
+    const entry = parseObject(raw);
+    const prior = parseObject(before[model]);
+    const next: Record<string, unknown> = { ...entry };
+    for (const field of MODEL_USAGE_FIELDS) {
+      if (typeof entry[field] !== "number") continue;
+      const delta = (entry[field] as number) - asNumber(prior[field], 0);
+      if (delta < 0) return now;
+      next[field] = delta;
+    }
+    result[model] = next;
+  }
+  return result;
+}
+
+export function parseClaudeStreamJson(stdout: string, options: ClaudeStreamParserOptions = {}) {
+  return createClaudeStreamParser(options)(stdout);
+}
+
+export interface ClaudeStreamParserOptions {
+  /** Totals from the previous invocation, applied only when the result is on the same session. */
+  sessionBaseline?: ClaudeSessionUsageTotals | null;
 }
 
 /** Consume complete JSONL records once, retaining protocol accounting state. */
-export function createClaudeStreamParser() {
+export function createClaudeStreamParser(options: ClaudeStreamParserOptions = {}) {
   let sessionId: string | null = null;
   let model = "";
   let finalResult: Record<string, unknown> | null = null;
@@ -138,18 +197,29 @@ export function createClaudeStreamParser() {
         usageBasis: "per_run" as const,
         summary: assistantTexts.join("\n\n").trim(),
         resultJson: null as Record<string, unknown> | null,
+        modelUsage: undefined as Record<string, unknown> | undefined,
+        sessionUsageTotals: null as ClaudeSessionUsageTotals | null,
       };
     }
 
-    const modelUsageTotals = claudeModelUsageTotals(finalResult.modelUsage);
+    const costRaw = finalResult.total_cost_usd;
+    const sessionCostUsd = typeof costRaw === "number" && Number.isFinite(costRaw) ? costRaw : null;
+    const baseline = options.sessionBaseline;
+    const resumedSameSession = Boolean(baseline && sessionId && baseline.sessionId === sessionId);
+    const modelUsage = resumedSameSession
+      ? subtractClaudeModelUsage(finalResult.modelUsage, baseline!.modelUsage)
+      : parseObject(finalResult.modelUsage);
+    const costUsd =
+      resumedSameSession && sessionCostUsd !== null && baseline!.totalCostUsd !== null && sessionCostUsd >= baseline!.totalCostUsd
+        ? sessionCostUsd - baseline!.totalCostUsd
+        : sessionCostUsd;
+    const modelUsageTotals = claudeModelUsageTotals(modelUsage);
     const usageObj = parseObject(finalResult.usage);
     const usage: UsageSummary = modelUsageTotals ?? {
       inputTokens: asNumber(usageObj.input_tokens, 0) + asNumber(usageObj.cache_creation_input_tokens, 0),
       cachedInputTokens: asNumber(usageObj.cache_read_input_tokens, 0),
       outputTokens: asNumber(usageObj.output_tokens, 0),
     };
-    const costRaw = finalResult.total_cost_usd;
-    const costUsd = typeof costRaw === "number" && Number.isFinite(costRaw) ? costRaw : null;
     const summary = asString(finalResult.result, assistantTexts.join("\n\n")).trim();
 
     return {
@@ -157,11 +227,16 @@ export function createClaudeStreamParser() {
       model,
       costUsd,
       usage,
-      // modelUsage covers exactly this CLI invocation, so mark it per-run to
-      // keep the server from applying its session-cumulative delta heuristic.
+      // On --resume the CLI reports session totals; costUsd, usage and
+      // modelUsage above already subtract the previous invocation's totals,
+      // so they cover exactly this invocation and stay per-run.
       usageBasis: "per_run" as const,
       summary,
       resultJson: finalResult,
+      modelUsage,
+      sessionUsageTotals: sessionId
+        ? { sessionId, totalCostUsd: sessionCostUsd, modelUsage: parseObject(finalResult.modelUsage) }
+        : null,
     };
   };
 }

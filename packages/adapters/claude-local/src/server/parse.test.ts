@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   claudeModelUsageTotals,
+  claudeModelReceipts,
+  parseClaudeSessionUsageTotals,
   parseClaudeStreamJson,
   detectClaudeLoginRequired,
   extractClaudeRetryNotBefore,
@@ -579,5 +581,63 @@ describe("interrupted Claude accounting", () => {
     expect(parsed.usage).toEqual({ inputTokens: 35, cachedInputTokens: 40, outputTokens: 9 });
     expect(parsed.usageBasis).toBe("per_run");
     expect(parsed.costUsd).toBeNull();
+  });
+});
+
+describe("resumed session usage", () => {
+  const sessionId = "11111111-1111-4111-8111-111111111111";
+  const result = (cost: number, input: number, output: number, cacheRead: number, session = sessionId) =>
+    [
+      JSON.stringify({ type: "system", subtype: "init", session_id: session, model: "claude-sonnet" }),
+      JSON.stringify({
+        type: "result",
+        subtype: "success",
+        session_id: session,
+        total_cost_usd: cost,
+        modelUsage: {
+          "claude-sonnet": { inputTokens: input, outputTokens: output, cacheReadInputTokens: cacheRead, cacheCreationInputTokens: 0, costUSD: cost },
+        },
+      }),
+    ].join("\n");
+
+  // Shapes taken from three resumed runs on one session: the CLI reports totals that only grow.
+  const first = parseClaudeStreamJson(result(1.6683782, 85179, 16009, 3335551));
+
+  it("reports the first invocation as is and keeps its totals for the next resume", () => {
+    expect(first.costUsd).toBeCloseTo(1.6683782, 6);
+    expect(first.sessionUsageTotals).toEqual({
+      sessionId,
+      totalCostUsd: 1.6683782,
+      modelUsage: first.resultJson?.modelUsage,
+    });
+  });
+
+  it("subtracts the previous totals when the result is on the same session", () => {
+    const second = parseClaudeStreamJson(result(2.8273348, 117469, 26706, 6770234), {
+      sessionBaseline: first.sessionUsageTotals,
+    });
+    expect(second.costUsd).toBeCloseTo(1.1589566, 6);
+    expect(second.usage).toEqual({ inputTokens: 32290, outputTokens: 10697, cachedInputTokens: 3434683 });
+    expect(claudeModelReceipts(second.modelUsage)?.[0]?.costUsd).toBeCloseTo(1.1589566, 6);
+    expect(second.sessionUsageTotals?.totalCostUsd).toBe(2.8273348);
+  });
+
+  it("ignores the baseline when the CLI started a different session", () => {
+    const fresh = parseClaudeStreamJson(result(0.4, 1000, 200, 0, "22222222-2222-4222-8222-222222222222"), {
+      sessionBaseline: first.sessionUsageTotals,
+    });
+    expect(fresh.costUsd).toBe(0.4);
+    expect(fresh.usage?.outputTokens).toBe(200);
+  });
+
+  it("falls back to the reported numbers when a total went down", () => {
+    const reset = parseClaudeStreamJson(result(0.5, 2000, 300, 10), { sessionBaseline: first.sessionUsageTotals });
+    expect(reset.costUsd).toBe(0.5);
+    expect(reset.usage?.inputTokens).toBe(2000);
+  });
+
+  it("round-trips the totals through session params", () => {
+    expect(parseClaudeSessionUsageTotals({ ...first.sessionUsageTotals })).toEqual(first.sessionUsageTotals);
+    expect(parseClaudeSessionUsageTotals({ totalCostUsd: 1 })).toBeNull();
   });
 });
