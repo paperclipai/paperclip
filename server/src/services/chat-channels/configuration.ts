@@ -1,5 +1,6 @@
 import { notifyChatEndpointConfiguration } from "./configuration-work-notifications.js";
 import { notifyChatConnectionHealth } from "./connection-health-notifications.js";
+import { notifyChatCompanyAuthorityChange } from "../chat-run-milestone-notifications.js";
 import type { ConnectionManagementContext } from "../connection-management.js";
 import { CHAT_HUMAN_CREDENTIAL_FIELDS } from "./credentials.js";
 import { preparePhotonConfiguration, createPhotonConfiguration } from "./imessage-photon/setup.js";
@@ -43,6 +44,7 @@ import {
   chatConversations,
   chatDeliveries,
   chatEndpoints,
+  chatIdentityLinks,
   toolApplications,
   toolConnections,
 } from "@paperclipai/db";
@@ -514,6 +516,35 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
             updatedAt: new Date(),
           })
           .where(eq(chatEndpoints.id, endpoint.id));
+        if (endpoint.provider === "github") {
+          const revokedAt = new Date();
+          const revoked = await tx
+            .update(chatIdentityLinks)
+            .set({
+              paperclipUserId: null,
+              status: "revoked",
+              confirmationTokenHash: null,
+              revokedAt,
+              updatedAt: revokedAt,
+            })
+            .where(and(
+              eq(chatIdentityLinks.companyId, endpoint.companyId),
+              eq(chatIdentityLinks.endpointId, endpoint.id),
+              eq(chatIdentityLinks.status, "linked"),
+            ))
+            .returning({ id: chatIdentityLinks.id });
+          if (revoked.length > 0) {
+            await notifyChatCompanyAuthorityChange(tx, { companyId: endpoint.companyId });
+          }
+          await logActivity(tx as unknown as Db, {
+            companyId: endpoint.companyId,
+            ...(managementContext?.audit ?? { actorType: "user" as const, actorId: actorUserId ?? "board" }),
+            action: "chat_github.removed",
+            entityType: "tool_connection",
+            entityId: endpoint.connectionId,
+            details: { endpointId: endpoint.id, revokedLinkCount: revoked.length },
+          });
+        }
         await tx
           .update(chatConversations)
           .set({ state: "endpoint_removed", updatedAt: new Date() })

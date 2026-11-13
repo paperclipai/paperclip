@@ -160,6 +160,7 @@ import {
   companies,
   companyMemberships,
   companySkills,
+  connectionGrants,
   createDb,
   applyPendingMigrations,
   closeCheckpointDb,
@@ -6913,6 +6914,167 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           .where(eq(chatEndpointLeases.endpointId, f.endpoint.id)),
       ).toHaveLength(0);
     });
+    describe("GitHub identity archival", () => {
+      it.each(["new", "revoked"])("rejects a %s identity when a status-only archive wins", async (state) => {
+        const f = await reviewBotFixture();
+        if (state === "revoked") await f.service.revokeLink(f.endpoint.id, f.principal.id);
+        const before = await db.select().from(chatIdentityLinks).where(eq(chatIdentityLinks.endpointId, f.endpoint.id));
+        const githubUserId = state === "revoked" ? "42" : "84";
+        let release!: () => void;
+        const gate = new Promise<void>(resolve => { release = resolve; });
+        let ready!: (pid: number) => void;
+        const held = new Promise<number>(resolve => { ready = resolve; });
+        const archive = db.transaction(async tx => {
+          // A normal status update takes NO KEY UPDATE, which KEY SHARE would not block.
+          await tx.update(chatEndpoints).set({ status: "archived" }).where(eq(chatEndpoints.id, f.endpoint.id));
+          const [backend] = await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`);
+          ready(backend.pid);
+          await gate;
+        });
+        void archive.catch(() => undefined);
+        let linking: Promise<unknown> | undefined;
+        let completed = false;
+        try {
+          const pid = await Promise.race([held, archive.then(() => { throw new Error("Archive ended before its barrier"); })]);
+          linking = f.management.linkObservedIdentity(f.endpoint.id, "owner-user", { githubUserId, login: "octocat" })
+            .then(() => { completed = true; return null; }, error => { completed = true; return error; });
+          await expect.poll(async () => {
+            const [row] = await db.execute<{ blocked: boolean }>(sql`select exists (
+              select 1 from pg_stat_activity where datname = current_database()
+                and ${pid} = any(pg_blocking_pids(pid))
+            ) as blocked`);
+            return completed || row.blocked;
+          }, { timeout: 5_000 }).toBe(true);
+          release();
+          await archive;
+          expect(await linking).toMatchObject({ status: 404 });
+          expect(await db.select().from(chatIdentityLinks).where(eq(chatIdentityLinks.endpointId, f.endpoint.id))).toEqual(before);
+          expect(await db.select().from(chatExternalPrincipals).where(eq(chatExternalPrincipals.companyId, f.companyId)))
+            .toEqual([f.principal]);
+          expect(await db.select().from(activityLog).where(and(eq(activityLog.companyId, f.companyId),
+            eq(activityLog.action, "chat_github.identity_confirmed")))).toEqual([]);
+        } finally {
+          release();
+          await Promise.allSettled([archive, ...(linking ? [linking] : [])]);
+        }
+      });
+
+      it("removal waits for linking and revokes only that endpoint's committed links", async () => {
+        const f = await reviewBotFixture();
+        const peer = await addPeerGitHubBot(f);
+        const [peerLink] = await db.insert(chatIdentityLinks).values({ companyId: f.companyId,
+          endpointId: peer.id, principalId: f.principal.id, paperclipUserId: "owner-user", status: "linked" }).returning();
+        await db.update(chatIdentityLinks).set({ confirmationTokenHash: "pending-token" })
+          .where(eq(chatIdentityLinks.endpointId, f.endpoint.id));
+        let release!: () => void;
+        const gate = new Promise<void>(resolve => { release = resolve; });
+        let ready!: (pid: number) => void;
+        const held = new Promise<number>(resolve => { ready = resolve; });
+        const linking = db.transaction(async tx => {
+          await githubChatManagementService(tx as unknown as Db, f.providerFetch)
+            .linkObservedIdentity(f.endpoint.id, "owner-user", { githubUserId: "84", login: "contributor" });
+          const [backend] = await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`);
+          ready(backend.pid);
+          await gate;
+        });
+        void linking.catch(() => undefined);
+        let removal: Promise<unknown> | undefined;
+        let completed = false;
+        try {
+          const pid = await Promise.race([held, linking.then(() => { throw new Error("Link ended before its barrier"); })]);
+          removal = f.service.configure(f.endpoint.id, { action: "remove" }, "owner-user")
+            .then(value => { completed = true; return value; }, error => { completed = true; return error; });
+          await expect.poll(async () => {
+            const [row] = await db.execute<{ blocked: boolean }>(sql`select exists (
+              select 1 from pg_stat_activity where datname = current_database()
+                and ${pid} = any(pg_blocking_pids(pid)) and query like '%chat_endpoints%'
+            ) as blocked`);
+            return completed || row.blocked;
+          }, { timeout: 5_000 }).toBe(true);
+          expect(completed).toBe(false);
+          release();
+          await linking;
+          expect(await removal).toMatchObject({ status: "archived" });
+          const links = await db.select().from(chatIdentityLinks).where(eq(chatIdentityLinks.endpointId, f.endpoint.id));
+          expect(links).toHaveLength(2);
+          for (const link of links) expect(link).toMatchObject({ status: "revoked", paperclipUserId: null,
+            confirmationTokenHash: null, revokedAt: expect.any(Date), updatedAt: expect.any(Date) });
+          expect(await db.select().from(chatIdentityLinks).where(eq(chatIdentityLinks.endpointId, peer.id))).toEqual([peerLink]);
+          expect(await db.select().from(activityLog).where(and(eq(activityLog.companyId, f.companyId),
+            eq(activityLog.action, "chat_github.removed")))).toMatchObject([{ details: {
+              endpointId: f.endpoint.id, revokedLinkCount: 2,
+            } }]);
+        } finally {
+          release();
+          await Promise.allSettled([linking, ...(removal ? [removal] : [])]);
+        }
+      });
+
+      it.each(["active", "draft", "paused"] as const)("links, reconfirms, and restores on an eligible %s endpoint", async status => {
+        const f = await reviewBotFixture();
+        await db.update(chatEndpoints).set({ status }).where(eq(chatEndpoints.id, f.endpoint.id));
+        const verified = { githubUserId: "84", login: "contributor" };
+        await f.management.linkObservedIdentity(f.endpoint.id, "owner-user", verified);
+        const [created] = await db.select().from(chatIdentityLinks).where(and(eq(chatIdentityLinks.endpointId, f.endpoint.id),
+          ne(chatIdentityLinks.principalId, f.principal.id)));
+        await f.management.linkObservedIdentity(f.endpoint.id, "owner-user", verified);
+        await f.service.revokeLink(f.endpoint.id, created.principalId);
+        await f.management.linkObservedIdentity(f.endpoint.id, "owner-user", verified);
+        expect(await db.select().from(chatIdentityLinks).where(and(eq(chatIdentityLinks.endpointId, f.endpoint.id),
+          ne(chatIdentityLinks.principalId, f.principal.id)))).toMatchObject([{ id: created.id, status: "linked",
+            paperclipUserId: "owner-user", revokedAt: null, confirmationTokenHash: null }]);
+      });
+
+      it.each([
+        ["missing", 404], ["non-GitHub", 404], ["archived", 404], ["unverified", 409],
+        ["inactive", 403], ["viewer", 403], ["revoked grant", 403], ["other member", 409],
+      ] as const)("rejects %s without partial identity writes", async (scenario, status) => {
+        const f = await reviewBotFixture();
+        let endpointId = f.endpoint.id;
+        let grantId: string | undefined;
+        if (scenario === "missing") endpointId = randomUUID();
+        if (scenario === "non-GitHub") await db.update(chatEndpoints).set({ provider: "telegram" }).where(eq(chatEndpoints.id, endpointId));
+        if (scenario === "archived") await db.update(chatEndpoints).set({ status: "archived" }).where(eq(chatEndpoints.id, endpointId));
+        if (scenario === "unverified") await db.update(chatEndpoints).set({ providerAccountId: null }).where(eq(chatEndpoints.id, endpointId));
+        if (scenario === "inactive" || scenario === "viewer") await db.update(companyMemberships)
+          .set(scenario === "inactive" ? { status: "inactive" } : { membershipRole: "viewer" })
+          .where(and(eq(companyMemberships.companyId, f.companyId), eq(companyMemberships.principalId, "owner-user")));
+        if (scenario === "revoked grant") {
+          const [grant] = await db.insert(connectionGrants).values({ companyId: f.companyId,
+            connectionId: f.endpoint.connectionId, kind: "user", subjectUserId: "owner-user", status: "revoked" }).returning();
+          grantId = grant.id;
+        }
+        if (scenario === "other member") await db.update(chatIdentityLinks).set({ paperclipUserId: "another-member" })
+          .where(eq(chatIdentityLinks.endpointId, endpointId));
+        const before = await db.select().from(chatIdentityLinks).where(eq(chatIdentityLinks.endpointId, f.endpoint.id));
+        await expect(f.management.linkObservedIdentity(endpointId, "owner-user", {
+          githubUserId: scenario === "other member" ? "42" : "84", login: "changed-login", grantId,
+        })).rejects.toMatchObject({ status });
+        expect(await db.select().from(chatIdentityLinks).where(eq(chatIdentityLinks.endpointId, f.endpoint.id))).toEqual(before);
+        expect(await db.select().from(chatExternalPrincipals).where(eq(chatExternalPrincipals.companyId, f.companyId))).toEqual([f.principal]);
+        expect(await db.select().from(activityLog).where(and(eq(activityLog.companyId, f.companyId),
+          eq(activityLog.action, "chat_github.identity_confirmed")))).toEqual([]);
+      });
+
+      it("rolls back archival and revocation when the removal audit fails", async () => {
+        const f = await reviewBotFixture();
+        const before = await db.select().from(chatIdentityLinks).where(eq(chatIdentityLinks.endpointId, f.endpoint.id));
+        const logActivity = activityLogModule.logActivity;
+        const audit = vi.spyOn(activityLogModule, "logActivity").mockImplementation(async (database, input) => {
+          await logActivity(database, input);
+          if (input.action === "chat_github.removed") throw new Error("rollback GitHub removal");
+        });
+        try {
+          await expect(f.service.configure(f.endpoint.id, { action: "remove" }, "owner-user"))
+            .rejects.toThrow("rollback GitHub removal");
+          expect((await f.service.get(f.endpoint.id)).status).toBe(f.endpoint.status);
+          expect(await db.select().from(chatIdentityLinks).where(eq(chatIdentityLinks.endpointId, f.endpoint.id))).toEqual(before);
+          expect(await db.select().from(activityLog).where(and(eq(activityLog.companyId, f.companyId),
+            eq(activityLog.action, "chat_github.removed")))).toEqual([]);
+        } finally { audit.mockRestore(); }
+      });
+    });
+
     it("wakes GitHub milestone identity restoration only after outer commit and stays quiet on reconfirmation", async () => {
       const f = await reviewBotFixture();
       await f.service.revokeLink(f.endpoint.id, f.principal.id);
