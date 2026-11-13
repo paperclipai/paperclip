@@ -681,8 +681,12 @@ async function countHeldExecutionsLeftAlone(db: Db, now: Date): Promise<number> 
   return Number(row?.count ?? 0);
 }
 
-const backlogContinuationTimes: number[] = [];
-export function resetBacklogContinuationPacingForTests() { backlogContinuationTimes.length = 0; lastLeftAloneLogAt = 0; }
+/** Per database client: one per server process in production, one per test database in tests. */
+const backlogContinuationTimes = new WeakMap<object, number[]>();
+export function resetBacklogContinuationPacingForTests(db?: Db) {
+  if (db) backlogContinuationTimes.delete(db);
+  lastLeftAloneLogAt = 0;
+}
 let lastLeftAloneLogAt = 0;
 const LEFT_ALONE_LOG_INTERVAL_MS = 10 * 60_000;
 
@@ -748,8 +752,10 @@ export async function continueHeldExecutions(db: Db, now = new Date(), limit = B
       "Held tasks left for a person: older than the backlog window or not an interruption");
   }
   // Per-server pacing: a backlog saved by older releases must not start a herd of runs.
-  while (backlogContinuationTimes.length && backlogContinuationTimes[0]! <= now.getTime() - 60_000) backlogContinuationTimes.shift();
-  const room = Math.min(limit, BACKLOG_CONTINUATIONS_PER_MINUTE - backlogContinuationTimes.length);
+  let times = backlogContinuationTimes.get(db);
+  if (!times) backlogContinuationTimes.set(db, times = []);
+  while (times.length && times[0]! <= now.getTime() - 60_000) times.shift();
+  const room = Math.min(limit, BACKLOG_CONTINUATIONS_PER_MINUTE - times.length);
   if (room <= 0) return { checked: 0, continued: 0 };
   const candidates = await heldExecutionsAwaitingFreshContinuation(db, now, room);
   let continued = 0;
@@ -757,7 +763,7 @@ export async function continueHeldExecutions(db: Db, now = new Date(), limit = B
   for (const candidate of candidates) {
     if (!candidate.runId || seen.has(candidate.runId)) continue;
     seen.add(candidate.runId);
-    backlogContinuationTimes.push(now.getTime());
+    times.push(now.getTime());
     try {
       const result = await ensureFreshContinuation(db, { companyId: candidate.companyId, runId: candidate.runId,
         trigger: "held_recovery", now });
