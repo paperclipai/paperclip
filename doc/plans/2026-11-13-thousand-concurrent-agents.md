@@ -53,43 +53,43 @@ socket is gated on a subscription (`realtime/live-event-delivery.ts`).
 `scripts/benchmark-agent-scaling-load.ts` drives the real append, checkpoint,
 lease-renewal and agent-authentication code for N simulated agents in one
 process against a local PostgreSQL. Assumed per-agent rates: 20 deltas/s,
-1 other event/s, 0.3 API requests/s, one renewal per 20 s. 50 agents, 20 s
-window, main pool of 10 connections unless stated, 2026-11-13.
+1 other event/s, 0.3 API requests/s, one renewal per 20 s. 20 s window, main
+pool of 10 connections unless stated. Measured 2026-11-13 on master before any
+Phase 1 fix, machine load average 11–17.
 
-| Scenario | Statements/s | Event-loop utilization | Deltas done of offered | Delta lateness p50 / p99 | API auth p50 / p99 |
-| --- | --- | --- | --- | --- | --- |
-| All sources | 2,589 | 0.60 | 10,744 of 20,000 | 4.5 s / 9.2 s | 464 ms / 1,084 ms |
-| All sources, deltas at 2/s | 865 | 0.23 | 2,000 of 2,000 | 2 ms / 81 ms | 7 ms / 23 ms |
-| Everything except deltas | 465 | 0.17 | — | — | 7 ms / 37 ms |
-| Deltas only | 3,930 | 0.47 | 19,669 of 20,000 | 9 ms / 1.5 s | — |
-| Deltas only, pool of 30 | 4,000 | 0.54 | 20,000 of 20,000 | 3 ms / 165 ms | — |
+| Agents | Scenario | Statements/s | Event-loop utilization | Deltas done of offered | Delta lateness p50 / p99 | API auth p50 / p99 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 50 | All sources | 4,730 | 0.37–0.50 | 20,000 of 20,000 | 0.8 ms / 4–63 ms | 4–5 ms / 8–196 ms |
+| 50 | All sources, deltas at 2/s | 1,130 | 0.16 | 2,000 of 2,000 | 1.2 ms / 5 ms | 5 ms / 24 ms |
+| 50 | Everything except deltas | 731 | 0.13 | — | — | 5 ms / 13 ms |
+| 50 | Deltas only | 4,000 | 0.39 | 20,000 of 20,000 | 0.9 ms / 22 ms | — |
+| 100 | All sources | 9,460 | 0.72 | 40,000 of 40,000 | 1.2 ms / 24 ms | 6 ms / 93 ms |
+| 150 | All sources | 12,300 | 0.83 | 50,788 of 60,000 | 1.1 s / 3.1 s | 268 ms / 422 ms |
+| 200 | All sources | 12,180 | 0.92 | 50,976 of 80,000 | 3.5 s / 6.4 s | 352 ms / 2.3 s |
+| 200 | All sources, pool of 30 | 12,670 | 0.91 | 49,173 of 80,000 | 4.2 s / 7.6 s | 350 ms / 597 ms |
+| 200 | All sources, deltas at 2/s | 4,520 | 0.51 | 8,000 of 8,000 | 1.0 ms / 29 ms | 5 ms / 42 ms |
 
 What it shows:
 
-- Deltas are about 85% of the statements (3,930/s against 465/s for
-  everything else).
-- With all sources on, the process finishes about half the offered deltas and
-  falls seconds behind. Agent authentication slows from 7 ms to 464 ms because
-  it shares the pool with the delta transactions.
-- Ten times fewer delta transactions removes the backlog and returns
-  authentication to 7 ms. This is the case for change 1a.
-- A larger pool removes the lateness for deltas alone, so in this model the
-  first limit is the pool, each delta holding a connection for four round
-  trips. On a hosted database each round trip is slower, so the same pool
-  saturates sooner.
-- Lease renewal is negligible at 50 agents (about 16 commits/s).
+- Deltas are about 85% of the statements (4,000/s of 4,730/s at 50 agents).
+- The process keeps up at 50 and 100 agents and saturates between 100 and 150,
+  at about 12,300 statements/s. Past that point deltas fall seconds behind and
+  agent authentication slows from 5 ms to hundreds of milliseconds.
+- The limit is the Node main thread, not the pool: event-loop utilization is
+  0.83–0.92 at saturation and a pool of 30 changes nothing.
+- These sources alone use 37–50% of the event loop at 50 agents, with no
+  network latency. A hosted server also runs tool calls, board requests and
+  recovery sweeps on the same thread, which is consistent with staging
+  saturating near 50.
+- Ten times fewer delta transactions serve 200 agents at an event-loop
+  utilization of 0.51. This is the case for change 1a.
+- Lease renewal is negligible at these sizes (15 statements/s at 50 agents).
 
-The table predates two corrections to the model: statement totals now include
-the checkpoint and lease pools, and an agent's deltas and other events now
-share one ordered queue, as one runner connection delivers them. The first
-raises the totals of the rows with events or lease renewals; the second removes
-lock waits between an agent's own appends in the "all sources" rows. Measure
-the baseline again, on a quiet machine, before a fix uses these rows as its
-"before".
-
-Limits: the machine was under other load (load average 13–20), so absolute
-figures are noisy; an earlier pass under heavier load finished fewer deltas.
-Raw output is not kept in the repository.
+Limits: the machine carried other work, so timings vary between runs (the
+ranges in the 50-agent row are two runs); statement counts do not. A first
+pass under a load average of 40–60 finished only half the deltas at 50 agents;
+that was the machine, not the server code, and it is not shown. Raw output is
+not kept in the repository.
 
 ## Why more servers do not help today
 
@@ -168,7 +168,7 @@ turn, so memory per session counts for idle agents too.
 | --- | --- | --- |
 | 1 | May deltas be stored as one row per batch instead of one row per delta? Replay and the transcript stay complete; a crash can lose at most the unacknowledged batch, which the runner resends | yes; approved by the owner 2026-11-13 |
 | 2 | Bus for cross-process events: PostgreSQL notify or a new Redis dependency | PostgreSQL first; revisit above 1,000 |
-| 3 | Order of work: Phase 1 before Phase 2 | yes; several processes at today's cost would need about one process per 25 agents |
+| 3 | Order of work: Phase 1 before Phase 2 | yes; at today's cost one process saturates between 100 and 150 agents in the load model, and near 50 on a hosted server |
 
 ## Not verified
 
