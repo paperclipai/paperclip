@@ -397,4 +397,35 @@ describe("object-backed diagnostic recording", () => {
     expect(row.lastOutputBytes).toBe(10000);
     expect(writes.filter((write) => write.lastOutputSeq !== undefined)).toHaveLength(2);
   });
+
+  it.each([false, true])("lets a reattach start before its existing log is re-verified (deferred %s)", async (deferNativeLogRecovery) => {
+    const row = { ...newRunRow, runtimeMode: "native", logStore: "s3_segments", logRef: "company/agent/run", lastOutputSeq: 4 } as Run;
+    const db = createRunRowDb(row);
+    let releaseRead!: () => void;
+    const readStarted = vi.fn();
+    const read = vi.fn(async () => {
+      readStarted();
+      await new Promise<void>(resolve => { releaseRead = resolve; });
+      return { content: "", nextOffset: 0, eof: true };
+    });
+    const output = createHeartbeatRunOutput(db, {
+      run: row, runId: row.id, issueId: null, secretKeys: new Set(),
+      identityRedactor: { chunk: (_stream, chunk) => chunk, redact: value => value },
+      runLogStore: {
+        begin: async () => ({ store: "s3_segments", logRef: "company/agent/run", initialBytes: 4_000_000, initialSequence: 4,
+          initialSourceCursor: 900 }),
+        append: async () => 0, enqueue: async () => ({ committed: Promise.resolve(0) }), flush: async () => undefined,
+        read: read as never,
+      },
+      appendRunEvent: vi.fn(async () => undefined) as never, getCurrentUserRedactionOptions: async () => ({ enabled: false }),
+      deferNativeLogRecovery,
+    });
+    let begun = false;
+    const beginning = output.begin(row).then(() => { begun = true; });
+    await vi.waitFor(() => expect(readStarted).toHaveBeenCalled());
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(begun).toBe(deferNativeLogRecovery);
+    releaseRead();
+    await beginning.catch(() => undefined);
+  });
 });

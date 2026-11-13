@@ -35,6 +35,7 @@ export interface HeartbeatRunOutputInput {
   getCurrentUserRedactionOptions: () => Promise<CurrentUserRedactionOptions>;
   assertWriterAuthority?: () => Promise<void>;
   runtimeLogSecretValues?: readonly string[];
+  deferNativeLogRecovery?: boolean;
   signal?: AbortSignal;
 }
 
@@ -292,8 +293,11 @@ export function createHeartbeatRunOutput(db: Db, input: HeartbeatRunOutputInput)
         flush: () => runLogStore.flush!(handle!),
       });
     })();
-    if (handle.store === "s3_segments" && run.runtimeMode === "native")
-      await (await getNativeExporter()).recover();
+    if (handle.store === "s3_segments" && run.runtimeMode === "native") {
+      const recovering = getNativeExporter().then(exporter => exporter.recover());
+      if (input.deferNativeLogRecovery) void recovering.catch(reportRecordingFailure);
+      else await recovering;
+    }
     // Output begins before runtime selection persists native mode. Keep the
     // source-aware callback available without querying native sources for
     // ordinary legacy output.

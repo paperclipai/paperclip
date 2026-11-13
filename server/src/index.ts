@@ -1299,6 +1299,7 @@ async function startServerWithDatabaseTeardown(
     runIds?: readonly string[] | null,
   ) => Promise<unknown>) | null = null;
   let drainHeartbeatExecutionFinalizers: (() => Promise<void>) | null = null;
+  let handOffNativeRunsForShutdown: ((signal: "SIGINT" | "SIGTERM") => Promise<string[]>) | null = null;
   let prepareHotRestartShutdown: ((signal: "SIGINT" | "SIGTERM") => Promise<{
     skipDrain: boolean;
     drainRunIds?: string[];
@@ -1635,6 +1636,7 @@ async function startServerWithDatabaseTeardown(
     );
     drainHeartbeatExecutionFinalizers = () =>
       heartbeat.drainActiveRunExecutions();
+    handOffNativeRunsForShutdown = signal => heartbeat.handOffNativeRunsForShutdown(signal);
     prepareHotRestartShutdown = heartbeat.prepareHotRestartShutdown;
     const routines = routineService(db as any, { pluginWorkerManager });
     const statusCardEvaluation = statusCardEvaluationService(db as any, heartbeat);
@@ -2209,6 +2211,13 @@ async function startServerWithDatabaseTeardown(
     const shutdownStartedAt = Date.now();
     logger.info({ signal }, "shutdown signal received; starting ordered shutdown");
     eventLoopStallMonitor.stop();
+    const nativeHandOffStartedAt = Date.now();
+    const nativeHandOff = runStartHandover && handOffNativeRunsForShutdown
+      ? handOffNativeRunsForShutdown(signal).then(runIds => {
+        logger.info({ signal, runs: runIds.length, durationMs: Date.now() - nativeHandOffStartedAt },
+          "handed live native runs to the next server at shutdown start");
+      }, err => { logger.warn({ err, signal }, "early native run hand-off failed; the graceful drain hands them off"); })
+      : null;
     setStartupRecoveryPhase("draining");
     for (const client of liveEventsWebSocketServer.clients) client.close(1012, "Server restarting");
     liveEventsWebSocketServer.close();
@@ -2259,6 +2268,7 @@ async function startServerWithDatabaseTeardown(
     unregisterTerminalWorkspaceProbe?.();
     unsubscribeNativeWorkspaceSyncRetention?.();
 
+    if (nativeHandOff) await preDrain.run("native_run_hand_off", () => nativeHandOff);
     const prepareHotRestart = prepareHotRestartShutdown;
     const heartbeatShutdown = await coordinateHeartbeatSchedulerShutdown({
       signal,
