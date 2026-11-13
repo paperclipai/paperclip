@@ -31,7 +31,13 @@ vi.mock("../telemetry.ts", () => ({ getTelemetryClient: () => mockTelemetryClien
 
 import { heartbeatService } from "../services/heartbeat.ts";
 import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
-import { recoveryService } from "../services/recovery/service.ts";
+import {
+  ISSUE_TERMINAL_MIN_RUN_AGE_MS,
+  recoveryService,
+} from "../services/recovery/service.ts";
+
+const orphanedRunStartedAt = () =>
+  new Date(Date.now() - ISSUE_TERMINAL_MIN_RUN_AGE_MS - 5_000);
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_STALE_LOCK_TEST_DATABASE_URL");
 const embeddedPostgresSupport = external ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
@@ -76,7 +82,7 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     await tempDb?.cleanup();
   });
 
-  async function seed() {
+  async function seed(options?: { runningRunStartedAt?: Date }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const failedRunId = randomUUID();
@@ -114,7 +120,7 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
         agentId,
         status: "running",
         invocationSource: "manual",
-        startedAt: new Date(),
+        startedAt: options?.runningRunStartedAt ?? new Date(),
       },
     ]);
 
@@ -260,7 +266,7 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
   });
 
   it("does not terminalize a session-goal control run solely because its issue is done", async () => {
-    const { companyId, agentId, runningRunId } = await seed();
+    const { companyId, agentId, runningRunId } = await seed({ runningRunStartedAt: orphanedRunStartedAt() });
     const issueId = randomUUID();
     await db
       .update(heartbeatRuns)
@@ -302,7 +308,7 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     runtimeMode?: "native" | "legacy";
     variant?: "ordinary" | "cancelled" | "wrong_child" | "wrong_reason" | "wrong_agent" | "unfinished_child" | "foreign_child";
   } = {}) {
-    const { companyId, agentId, runningRunId } = await seed();
+    const { companyId, agentId, runningRunId } = await seed({ runningRunStartedAt: orphanedRunStartedAt() });
     const issueId = randomUUID();
     const childIssueId = randomUUID();
     const variant = options.variant;
@@ -645,7 +651,7 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
   });
 
   async function seedPendingNativeResult(phase: string, options: { terminalIssue?: boolean; deferCoordinator?: boolean } = {}) {
-    const fixture = await seed();
+    const fixture = await seed(options.terminalIssue ? { runningRunStartedAt: orphanedRunStartedAt() } : undefined);
     const { companyId, agentId, runningRunId } = fixture;
     const issueId = randomUUID();
     const contractId = randomUUID();
@@ -773,7 +779,9 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     // the in-memory handle and the recorded pid can both persist. The
     // process-death authority misses this case. The issue-terminal authority
     // catches it: the issue reached "done" while the run row stayed "running".
-    const { companyId, agentId, runningRunId } = await seed();
+    const { companyId, agentId, runningRunId } = await seed({
+      runningRunStartedAt: orphanedRunStartedAt(),
+    });
     // process.pid is the live test process, so isPidAlive returns true.
     await db
       .update(heartbeatRuns)
@@ -834,7 +842,9 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
   });
 
   it("terminalizes a running run to cancelled when its issue is cancelled (reuse-lease path)", async () => {
-    const { companyId, agentId, runningRunId } = await seed();
+    const { companyId, agentId, runningRunId } = await seed({
+      runningRunStartedAt: orphanedRunStartedAt(),
+    });
     await db
       .update(heartbeatRuns)
       .set({ processPid: process.pid })
@@ -875,6 +885,79 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     );
   });
 
+  it("does not terminalize a freshly started run under a momentarily terminal issue (reassignment hand-off)", async () => {
+    const { companyId, agentId, runningRunId } = await seed();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Hand-off — issue momentarily done while the next run starts",
+      status: "done",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: runningRunId,
+      executionRunId: runningRunId,
+      executionLockedAt: new Date(),
+    });
+
+    const heartbeat = heartbeatService(db);
+    const deadlines: number[] = [];
+    const result = await heartbeat.sweepStaleIssueLocks({ onDeferredDeadline: (at) => deadlines.push(at) });
+
+    expect(result).toEqual({ cleared: 0, issueIds: [], terminalizedRunIds: [] });
+
+    const [run] = await db
+      .select({ status: heartbeatRuns.status, startedAt: heartbeatRuns.startedAt })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runningRunId));
+    expect(run?.status).toBe("running");
+    expect(deadlines).toContain(run!.startedAt!.getTime() + ISSUE_TERMINAL_MIN_RUN_AGE_MS);
+
+    const lock = await db
+      .select({
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(lock).toEqual({
+      checkoutRunId: runningRunId,
+      executionRunId: runningRunId,
+    });
+  });
+
+  it("still settles a freshly started run under a terminal issue once its process is gone", async () => {
+    const { companyId, agentId, runningRunId } = await seed();
+    await db
+      .update(heartbeatRuns)
+      .set({ processPid: 2_000_000_000, processHostHash: currentProcessSpaceHash(), updatedAt: new Date() })
+      .where(eq(heartbeatRuns.id, runningRunId));
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Fresh run, dead process, issue done",
+      status: "done",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: runningRunId,
+      executionRunId: runningRunId,
+      executionLockedAt: new Date(),
+    });
+
+    const result = await heartbeatService(db).sweepStaleIssueLocks();
+
+    expect(result.terminalizedRunIds).toEqual([runningRunId]);
+    const [run] = await db.select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+      .from(heartbeatRuns).where(eq(heartbeatRuns.id, runningRunId));
+    expect(run).toEqual({ status: "failed", errorCode: "process_lost" });
+    const [lock] = await db.select({ checkoutRunId: issues.checkoutRunId, executionRunId: issues.executionRunId })
+      .from(issues).where(eq(issues.id, issueId));
+    expect(lock.checkoutRunId).not.toBe(runningRunId);
+    expect(lock.executionRunId).not.toBe(runningRunId);
+  });
+
   it("does not terminalize a running run whose process is alive and whose issue is not terminal", async () => {
     const { companyId, agentId, runningRunId } = await seed();
     // process.pid is the live test process, so isPidAlive returns true.
@@ -913,7 +996,9 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
   });
 
   it("does not terminalize or clear issue locks when an ownership hold arrives after the sweep snapshot", async () => {
-    const { companyId, agentId, runningRunId } = await seed();
+    const { companyId, agentId, runningRunId } = await seed({
+      runningRunStartedAt: orphanedRunStartedAt(),
+    });
     const issueId = randomUUID();
     await db
       .update(heartbeatRuns)
@@ -1007,7 +1092,7 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     // A stale lock on a terminal issue and the real lock on an active issue can
     // point at the same running run. The terminal reference alone must not
     // terminalize the run, because the run is still live for the active issue.
-    const { companyId, agentId, runningRunId } = await seed();
+    const { companyId, agentId, runningRunId } = await seed({ runningRunStartedAt: orphanedRunStartedAt() });
     // process.pid is the live test process, so isPidAlive returns true.
     await db
       .update(heartbeatRuns)
@@ -1067,7 +1152,7 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     // fallback in terminalizeOrphanedRunningRun could read that terminal status
     // and terminalize the run. An active issue still owns the run, so the sweep
     // must suppress the fallback and keep the run live.
-    const { companyId, agentId, runningRunId } = await seed();
+    const { companyId, agentId, runningRunId } = await seed({ runningRunStartedAt: orphanedRunStartedAt() });
     // process.pid is the live test process, so isPidAlive returns true.
     await db
       .update(heartbeatRuns)

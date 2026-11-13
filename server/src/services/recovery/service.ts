@@ -651,6 +651,8 @@ const CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS = 1;
 const CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS = 60_000;
 export const PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS = PROVIDER_LIMIT_DEFAULT_COOLDOWN_MS;
 
+export const ISSUE_TERMINAL_MIN_RUN_AGE_MS = 60_000;
+
 const PROVIDER_QUOTA_ERROR_RE =
   /(?:you(?:'|’)ve hit your (?:\w+ )?limit|usage limit(?: reached| exceeded)?|provider quota|quota (?:limit )?exceeded|model (?:is )?at capacity)/i;
 const CONFIGURATION_INCOMPLETE_ERROR_RE =
@@ -6458,6 +6460,24 @@ export function recoveryService(
         .then((rows) => rows[0]?.status ?? null);
       if (issueStatus === "done") issueTerminalStatus = "succeeded";
       else if (issueStatus === "cancelled") issueTerminalStatus = "cancelled";
+    }
+
+    if (issueTerminalStatus) {
+      const startedMs = (run.startedAt ?? run.createdAt).getTime();
+      const ageMs = Number.isFinite(startedMs) ? Date.now() - startedMs : null;
+      if (ageMs !== null && ageMs < ISSUE_TERMINAL_MIN_RUN_AGE_MS) {
+        logger.warn(
+          {
+            runId: run.id,
+            issueId,
+            ageMs,
+            minAgeMs: ISSUE_TERMINAL_MIN_RUN_AGE_MS,
+          },
+          "skipped issue-terminal terminalization: run is younger than the grace period and is most likely a fresh reassignment hand-off",
+        );
+        options?.onDeferredDeadline?.(startedMs + ISSUE_TERMINAL_MIN_RUN_AGE_MS);
+        issueTerminalStatus = null;
+      }
     }
 
     // Process-death authority. The run is live while either its adapter process
