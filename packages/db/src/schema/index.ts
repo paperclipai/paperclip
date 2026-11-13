@@ -193,6 +193,7 @@ export {
   toolMcpAppViews,
   toolMcpSkills,
   toolMcpSkillFiles,
+  toolMcpTasks,
   toolActionRequests,
   toolCallEvents,
   toolRateLimitCounters,

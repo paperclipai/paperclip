@@ -6095,6 +6095,16 @@ describe("TaskChatThread composer execution controls", () => {
     render(<TaskChatThread comments={[]} onAdd={async () => {}} issueStatus="in_progress" activeRun={run} onCancelRun={onStop} stopPending />);
     expect(container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-stop"]')?.disabled).toBe(true);
   });
+  it("offers Stop where a running task's Stop lives while its run is still waiting in line", async () => {
+    const onStop = vi.fn(async () => {});
+    const waiting = { id: "waiting-run", status: "queued", invocationSource: "assignment", triggerDetail: null, startedAt: null,
+      finishedAt: null, createdAt: "2026-11-13T12:00:00Z", agentId: "agent-1", agentName: "Codie", adapterType: "codex_local" };
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} issueStatus="todo" liveRuns={[waiting]} onCancelRun={onStop} />);
+    const button = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-stop"]');
+    expect(button).not.toBeNull();
+    await act(async () => { button!.click(); });
+    expect(onStop).toHaveBeenCalledOnce();
+  });
   it("does not offer Stop for settled work even when a callback is available", () => {
     render(<TaskChatThread comments={[]} onAdd={async () => {}} issueStatus="todo" onCancelRun={vi.fn()} />);
     expect(container.querySelector('[data-testid="task-chat-composer-stop"]')).toBeNull();

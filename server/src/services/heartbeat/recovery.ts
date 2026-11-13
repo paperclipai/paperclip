@@ -32,6 +32,7 @@ import { preserveWorkspaceRestoreRecoveryMetadataSql } from "../legacy-workspace
 import { preserveCancelledNativeWorkspaces, preserveOrphanedNativeWorkspace } from "../native-runtime/native-failed-workspace-recovery.js";
 import { nativeWorkspaceExportPendingForLease, pendingNativeWorkspaceFinalizationCondition } from "../native-runtime/native-workspace-finalization-state.js";
 import { expireAbandonedWorkspaceFileHoldsWhenDue, parkAbandonedWorkspaceFilesLease, recordAbandonedWorkspaceFilesRemoved } from "../remote-workspace-abandoned-files-hold.js";
+import { stopWarmSandboxesPastWindowWhenDue } from "../warm-sandbox-expiry.js";
 import { CHAT_COMPLETION_WAKE_REASON } from "../chat-completion-delivery.js";
 import {
   hasStopOnlyCleanup,
@@ -1750,6 +1751,11 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
 
     if (!manualRetry) await expireAbandonedWorkspaceFileHoldsWhenDue(db).catch(() => {
       logger.warn({ errorKind: "abandoned_workspace_files_expiry_failed" }, "abandoned workspace file expiry failed; a later sweep retries");
+    });
+    // A warm sandbox whose warm window ended is handed to the stop-only cleanup
+    // here, so the rows read below already include its first stop.
+    if (!manualRetry) await stopWarmSandboxesPastWindowWhenDue(db).catch(() => {
+      logger.warn({ errorKind: "warm_sandbox_expiry_failed" }, "warm sandbox expiry failed; a later sweep retries");
     });
 
     const rows = await db

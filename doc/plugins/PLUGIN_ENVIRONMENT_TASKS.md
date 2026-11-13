@@ -117,6 +117,21 @@ workspace and current authority before installing the ticket or reserving reuse.
 The ticket is bounded transient authentication input, as on submission. Never
 copy its bytes into status, metadata, logs, results or durable replay records.
 
+A provider can return `resumeCredentialVersion: 1` from `describe`. Core then
+adds `credential` to `resume` when it would add `credential` to `submit` for the
+claimant run. The field has the same shape and validation as on `submit`. Core
+resolves it for the claimant run's selected account, so the value can be newer
+than the credential that started the Runner. When Core has no credential for the
+task, `resume` has no `credential`. An older provider gets no new field.
+
+- A provider that must start the Runner again to resume the session, for example
+  after it moved the session to a new sandbox or after a reboot, can use this
+  credential to start the Runner.
+- A provider with a live Runner ignores the field. The running Runner keeps its
+  own credential.
+- The credential is transient secret input, as on `submit`. Do not save it in
+  task state, lease metadata, journals, logs, results or durable replay records.
+
 The `resume` result has a closed `outcome`:
 
 - `resumed`: the same logical session is exclusively reserved for this claimant,

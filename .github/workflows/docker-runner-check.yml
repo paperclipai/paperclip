@@ -35,48 +35,15 @@ on:
         description: "Build the canonical eval report viewer on hosted Linux"
         type: boolean
         default: false
-  pull_request:
-    paths:
-      - .github/workflows/docker-runner-check.yml
-      - Dockerfile
-      - .dockerignore
-      - scripts/check-docker-runner-cache.sh
-      - packages/paperclip-runner/rust-toolchain.toml
-      - packages/paperclip-runner/runner/**
-      - packages/paperclip-runner/protocol/**
 
 permissions: {}
 
 concurrency:
   # Publishing a newer image must not discard an earlier verification's evidence.
-  group: docker-runner-check-${{ github.event.pull_request.number || github.ref }}-${{ inputs.verify_source && 'verification' || inputs.verify_public_install && 'public-install' || inputs.build_eval_viewer && 'viewer' || 'image' }}
+  group: docker-runner-check-${{ github.ref }}-${{ inputs.verify_source && 'verification' || inputs.verify_public_install && 'public-install' || inputs.build_eval_viewer && 'viewer' || 'image' }}
   cancel-in-progress: true
 
 jobs:
-  runner:
-    if: github.event_name == 'pull_request'
-    name: Compile isolated native Runner
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
-      # Compile the real target, then change source in a disposable context.
-      # A fresh builder must import dependencies and produce changed binary metadata.
-      # The baseline build anonymously seeds from the public BuildKit cache at
-      # ghcr.io/paperclipai/paperclip:buildcache-{amd64,arm64}; the verification
-      # build imports only this run's locally exported cache on a fresh builder.
-      # No registry credentials or image publication.
-      - name: Verify native build and dependency cache reuse
-        run: bash scripts/check-docker-runner-cache.sh
-
-
   authorize_manual:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest

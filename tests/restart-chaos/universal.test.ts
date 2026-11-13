@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { gradeTask } from "./grader.js";
 import type { OracleArtifacts, RunSample, TaskRecord, TaskSample } from "./types.js";
-import { bareCauseMessage, DEFAULT_UNIVERSAL_BOUNDS as BOUNDS, diagnosableFailureCause, gradeU1, gradeU2, gradeU3, gradeU4, gradeU5, gradeUniversal, universalBounds } from "./universal.js";
+import { bareCauseMessage, declaredQueueBoundMs, DEFAULT_UNIVERSAL_BOUNDS as BOUNDS, diagnosableFailureCause, gradeU1, gradeU2, gradeU3, gradeU4, gradeU5, gradeUniversal,
+  universalBounds } from "./universal.js";
+import { slotFreeFrom } from "./agent-slots.js";
 import { workloadDefinitions } from "./workloads.js";
 
 const T0 = Date.parse("2026-11-09T12:00:00Z");
@@ -46,6 +48,33 @@ describe("U1 liveness", () => {
     const result = gradeU1(record(samples, { restAt: null, finalStatus: null, timedOut: true }), BOUNDS);
     expect(result.verdict).toBe("fail");
     expect(result.detail).toMatch(/^no_owner_no_action .* in todo with r1 queued/);
+  });
+
+  it("lets a run wait in a declared queue while its agent's slots are full, and still fails one queued with a free slot (w-20261113T052703-s7301 t030)", () => {
+    const queuedThenStarted = [...polls(0, 486 * SEC, at => sample(at, "todo", [run("r1", "queued", 0)])),
+      ...polls(489 * SEC, 600 * SEC, at => sample(at, "in_progress", [run("r1", "running", 486 * SEC, null, { lastEvidenceAt: iso(at) })]))];
+    const declared = { ...BOUNDS, declaredQueuedMs: declaredQueueBoundMs({ runs: 20, queue: 20, turnMinutes: [12, 22] }) };
+    expect(declared.declaredQueuedMs).toBe(27 * 60 * SEC);
+    expect(gradeU1(record(queuedThenStarted), BOUNDS)).toMatchObject({ verdict: "fail", detail: expect.stringMatching(/^no_owner_no_action .* in todo with r1 queued/) });
+    expect(gradeU1(record(queuedThenStarted), declared, () => false).verdict).toBe("pass");
+    expect(gradeU1(record(queuedThenStarted), declared, () => null).verdict).toBe("pass");
+    const free = gradeU1(record(queuedThenStarted), declared, () => true);
+    expect(free).toMatchObject({ verdict: "fail", detail: expect.stringMatching(/r1 queued \d+s \(\d+s with a free slot, declared queue bound 1620s\)/) });
+    const pastDeclared = polls(0, 31 * 60 * SEC, at => sample(at, "todo", [run("r1", "queued", 0)]));
+    expect(gradeU1(record(pastDeclared, { restAt: null, finalStatus: null, timedOut: true }), declared, () => false).verdict).toBe("fail");
+    expect(declaredQueueBoundMs({ runs: 20, queue: 0, turnMinutes: [12, 22] })).toBeUndefined();
+    expect(declaredQueueBoundMs(undefined)).toBeUndefined();
+  });
+
+  it("reads free slots from the agent's own runs and its run cap", () => {
+    const slotFree = slotFreeFrom({ agents: [{ agentId: "a1", maxConcurrentRuns: 2 }, { agentId: "a2", maxConcurrentRuns: null }],
+      runs: [{ runId: "q", agentId: "a1", startedAt: 500, finishedAt: null }, { runId: "x", agentId: "a1", startedAt: 0, finishedAt: 300 },
+        { runId: "y", agentId: "a1", startedAt: 100, finishedAt: null }, { runId: "z", agentId: "a2", startedAt: 0, finishedAt: null }] });
+    expect(slotFree("q", 200)).toBe(false);
+    expect(slotFree("q", 400)).toBe(true);
+    expect(slotFree("z", 10)).toBeNull();
+    expect(slotFree("unknown", 10)).toBeNull();
+    expect(slotFreeFrom(null)("q", 1)).toBeNull();
   });
 
   it("treats a visible Retry or a waiting question as actionable", () => {

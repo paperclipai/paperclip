@@ -33,7 +33,8 @@ import { PROVIDER_PERFORMANCE_ENV } from "../../contracts/provider-performance.j
 import { annotateOmittedProviderText, parseOpenCodeSseFrames } from "./sse-frames.js";
 import { githubCredentialEnvironment } from "../../github-credential-environment.js";
 import { configuredOpenCodeEnvironment } from "./environment.js";
-import { CONFIGURED_ENVIRONMENT_KEYS } from "../../configured-environment.js";
+import { CONFIGURED_ENVIRONMENT_KEYS, SECRET_ENVIRONMENT_KEYS, configuredSecretEnvironment } from "../../configured-environment.js";
+import { prepareOpenCodeOutputCustody, redactOpenCodeModelRequest } from "./output-custody.js";
 
 import {
   CODEX_SKILLLESS_BASE_INSTRUCTIONS,
@@ -94,6 +95,7 @@ import {
   type OpenCodeMcpBridge,
   type OpenCodeMcpBridgeOptions,
 } from "./mcp-bridge.js";
+import { toolCallMarkupStart, visibleBeforeToolCallMarkup } from "./tool-call-markup.js";
 import {
   materializeNativeRuntimeSkills,
   releaseMaterializedNativeRuntimeSkills,
@@ -565,6 +567,7 @@ class OpenCodeHarnessSession implements HarnessSession {
   #semanticResultTextBoundary: number | null = null;
   #semanticResultProviderMessageId: string | null = null;
   #lastNonTerminalToolSourceSeq = 0;
+  #lastToolCallMarkupSourceSeq = 0;
   #usage: Record<string, unknown> | null = null;
   #upstreamServed: UpstreamServed | null = null;
   readonly #conversationMode: "task" | "prepared";
@@ -573,8 +576,10 @@ class OpenCodeHarnessSession implements HarnessSession {
   #closed = false;
   #completionSettlement: Promise<void> | null = null;
   #turnStartSourceSeq = 0;
+  /** The active turn, once it has reported its own non-terminal tool work. */
+  #toolWorkTurnId: string | null = null;
   #turnReasoningMode: OpenCodeReasoningMode = "default";
-  #emptyResponseRecovery: { turnId: string; priorMessages: Set<string>; responseStarted: boolean; responseFinished: boolean } | null = null;
+  #emptyResponseRecovery: { turnId: string; attempt: 1 | 2; priorMessages: Set<string>; responseStarted: boolean; responseFinished: boolean } | null = null;
   #emptyResponseAckTimer: ReturnType<typeof setTimeout> | undefined;
   #interruptedTurnId: string | null = null;
   #pendingToolCalls = 0;
@@ -701,6 +706,7 @@ class OpenCodeHarnessSession implements HarnessSession {
     this.#semanticResultTextBoundary = null;
     this.#semanticResultProviderMessageId = null;
     this.#lastNonTerminalToolSourceSeq = 0;
+    this.#lastToolCallMarkupSourceSeq = 0;
     this.#completedTextPartIds.clear();
     this.#completedReasoningPartIds.clear();
     this.#reasoningTexts.clear();
@@ -868,7 +874,7 @@ class OpenCodeHarnessSession implements HarnessSession {
     // request. Keep in-flight tool work gated by the checks above.
     if (this.#interruptedTurnId === turnId) return false;
     const recovery = this.#emptyResponseRecovery;
-    const boundary = Math.max(this.#turnStartSourceSeq, this.#lastNonTerminalToolSourceSeq);
+    const boundary = Math.max(this.#turnStartSourceSeq, this.#lastNonTerminalToolSourceSeq, this.#lastToolCallMarkupSourceSeq);
     if (this.#completedTextParts.some(part => part.observedSourceSeq > boundary && !this.#isOutputLimited(part) && !this.#isReasoningEcho(part))) return false;
     // Both idle event forms can remain queued from the empty response. Wait
     // for correction evidence. A completed answer part is sufficient even
@@ -880,22 +886,46 @@ class OpenCodeHarnessSession implements HarnessSession {
         this.#armEmptyResponseAckTimer(turnId, "OpenCode became idle without completing its requested final response.");
       return true;
     }
-    if (recovery) {
-      this.#failEmptyResponse(turnId, "OpenCode ended without a final answer or accepted completion report after one correction.");
+    if (recovery?.attempt === 1 && this.#toolWorkTurnId === turnId) {
+      // The turn already did real tool work, so the person must get an
+      // answer, not a failed run. Some hosts drop a tool-only response (the
+      // completion call) and return nothing. The last request asks for the
+      // answer as text first: a chat reply then arrives even if the call is
+      // dropped again, and an execution task still gets its completion call.
+      this.#requestFinalResponse(turnId, 2);
       return true;
     }
-    this.#emptyResponseRecovery = { turnId, priorMessages: new Set(this.#messageRoles.keys()), responseStarted: false, responseFinished: false };
+    if (recovery) {
+      this.#failEmptyResponse(turnId, `OpenCode ended without a final answer or accepted completion report after ${recovery.attempt === 1 ? "one correction" : "two corrections"}.`);
+      return true;
+    }
+    this.#requestFinalResponse(turnId, 1);
+    return true;
+  }
+
+  /**
+   * Ask for the final response after an empty completion. A turn makes at
+   * most two such requests, and the second only after real tool work.
+   */
+  #requestFinalResponse(turnId: string, attempt: 1 | 2): void {
+    this.#emptyResponseRecovery = { turnId, attempt, priorMessages: new Set(this.#messageRoles.keys()), responseStarted: false, responseFinished: false };
     for (const part of this.#completedTextParts)
       if (this.#echoesReasoning(part.text, true)) this.#reasoningEchoPartIds.add(part.partId);
     this.#reasoningTexts.clear();
-    this.#emit("harness.diagnostic", { code: "opencode_empty_response_correction", message: "Requesting one final response after an empty OpenCode completion." }, { turnId });
+    this.#emit("harness.diagnostic", attempt === 1
+      ? { code: "opencode_empty_response_correction", message: "Requesting one final response after an empty OpenCode completion." }
+      : { code: "opencode_empty_response_text_correction", message: "Requesting a plain-text final answer after the correction also came back empty." }, { turnId });
     this.#armEmptyResponseAckTimer(turnId, "OpenCode did not start its requested final response.");
     const opening = this.#turnHitOutputLimit(turnId)
       ? "Your previous response reached the output limit and was discarded as incomplete."
-      : "Your response ended without a user-visible final answer or an accepted completion report.";
-    void this.#submitPrompt(`${opening} Continue this same request from the work already done. Give the user a concise final answer and submit paperclip_finish (or paperclip_block when blocked) with the current completion contract. Do not repeat completed actions.`, "disabled")
+      : this.#lastToolCallMarkupSourceSeq > this.#turnStartSourceSeq
+        ? "Your previous response wrote a tool call as plain text, so the tool did not run. Call tools only through the tool-calling interface, never as text."
+        : "Your response ended without a user-visible final answer or an accepted completion report.";
+    const prompt = attempt === 1
+      ? `${opening} Continue this same request from the work already done. Give the user a concise final answer and submit paperclip_finish (or paperclip_block when blocked) with the current completion contract. Do not repeat completed actions.`
+      : "Your last response was empty again. Start this response with a short plain-text final answer for the user that says what you did and what, if anything, is left. After that text, submit paperclip_finish (or paperclip_block when blocked) with the current completion contract. Do not repeat completed actions.";
+    void this.#submitPrompt(prompt, "disabled")
       .catch(() => this.#failEmptyResponse(turnId, "OpenCode could not request a final response after an empty completion."));
-    return true;
   }
 
   async interrupt(input: { turnId?: string; reason?: string }): Promise<void> {
@@ -2126,6 +2156,9 @@ class OpenCodeHarnessSession implements HarnessSession {
       )
     ) {
       this.#lastNonTerminalToolSourceSeq = this.#sourceSequence;
+      // A late part from an earlier turn keeps that turn's id, so it never
+      // counts as this turn's work.
+      if (turnId === this.#activeTurnId) this.#toolWorkTurnId = turnId;
     }
     if (partType === "patch") {
       const paths = Array.isArray(part.files) ? part.files : [];
@@ -2177,11 +2210,17 @@ class OpenCodeHarnessSession implements HarnessSession {
     // the start of a completed reasoning part, and release it once it differs.
     if (partType === "reasoning" && content.trim()) this.#reasoningTexts.set(partId, content.trim());
     const reasoningEcho = partType === "text" && this.#echoesReasoning(content, completed);
-    if (!reasoningEcho) this.#partText.set(partId, content);
-    if (partType === "text" && content.length > 0 && !reasoningEcho) {
+    const markupStart = partType === "text" && completed ? toolCallMarkupStart(content) : -1;
+    const visible = partType !== "text"
+      ? content
+      : completed
+        ? markupStart < 0 ? content : content.slice(0, markupStart)
+        : visibleBeforeToolCallMarkup(content);
+    if (!reasoningEcho) this.#partText.set(partId, visible);
+    if (partType === "text" && visible.length > 0 && !reasoningEcho) {
       for (const reference of paperclipWorkspaceFileReferencesFromText(
         this.#workingDirectory,
-        content,
+        visible,
         turnId,
       )) {
         if (this.#emittedFileReferences.has(reference.referenceId)) continue;
@@ -2193,9 +2232,9 @@ class OpenCodeHarnessSession implements HarnessSession {
         );
       }
     }
-    const delta = content.startsWith(previous)
-      ? content.slice(previous.length)
-      : content;
+    const delta = visible.startsWith(previous)
+      ? visible.slice(previous.length)
+      : visible;
     if (delta && !reasoningEcho) {
       // OpenCode calls assistant prose a `text` part, but `text` is not a PRP
       // item identity and is consequently ignored by the task projection.
@@ -2282,6 +2321,15 @@ class OpenCodeHarnessSession implements HarnessSession {
         );
         return;
       }
+      if (markupStart >= 0) {
+        this.#lastToolCallMarkupSourceSeq = this.#sourceSequence;
+        this.#emit(
+          "harness.diagnostic",
+          { code: "opencode_tool_call_markup_discarded", message: "OpenCode returned a tool call as text instead of a tool call; the text was not used as a response." },
+          { turnId },
+        );
+        return;
+      }
       this.#completedTextParts.push({
         partId,
         messageId,
@@ -2307,7 +2355,7 @@ class OpenCodeHarnessSession implements HarnessSession {
     // be a final response. When no such text exists, emit no final agentMessage
     // and let the accepted semantic summary resolve the durable reply.
     const afterLastWorkTool = (part: { observedSourceSeq: number }) =>
-      part.observedSourceSeq > this.#lastNonTerminalToolSourceSeq;
+      part.observedSourceSeq > Math.max(this.#lastNonTerminalToolSourceSeq, this.#lastToolCallMarkupSourceSeq);
     const eligibleText = this.#completedTextParts.filter(part => afterLastWorkTool(part) && !this.#isOutputLimited(part) && !this.#isReasoningEcho(part));
     // OpenCode exposes no prose channel, so final selection must use provider
     // structure rather than text length or content. When OpenCode reports the
@@ -2454,7 +2502,7 @@ class OpenCodeHarnessSession implements HarnessSession {
 }
 
 /** Retain the reusable gateway key in the runner; the harness gets a session-scoped capability. */
-async function startOpenCodeProviderProxy(baseUrl: string, key: string, model: string, environment: NodeJS.ProcessEnv, onServed?: (served: UpstreamServed | null) => void) {
+async function startOpenCodeProviderProxy(baseUrl: string, key: string, model: string, environment: NodeJS.ProcessEnv, onServed?: (served: UpstreamServed | null) => void, secretValues: readonly string[] = []) {
   const upstreamUrl = new URL(`${baseUrl.replace(/\/+$/, "")}/chat/completions`);
   const token = randomBytes(32).toString("base64url");
   // Agent-local settings keep one runtime's transport configuration out of other sessions.
@@ -2510,32 +2558,42 @@ async function startOpenCodeProviderProxy(baseUrl: string, key: string, model: s
       // Keep OpenCode's unreadable-media notice attributed to the tool result
       // instead of a synthetic user message the model mistakes for the person.
       if (attributeUnsupportedToolMedia(payload)) body = Buffer.from(JSON.stringify(payload), "utf8");
-      try { onServed?.(null); } catch { /* Recording never affects the request. */ }
-      const upstream = await new Promise<IncomingMessage>((resolve, reject) => {
-        const outgoing = (upstreamUrl.protocol === "https:" ? requestHttps : requestHttp)(upstreamUrl, {
-          method: "POST",
-          agent,
-          headers: { ...(isOpenRouterUrl(baseUrl) ? OPENROUTER_ATTRIBUTION_HEADERS : {}), "Content-Type": "application/json", "Content-Length": body.length, ...(key ? { Authorization: `Bearer ${key}` } : {}) },
-          signal: AbortSignal.any([controller.signal, AbortSignal.timeout(600_000)]),
-        }, resolve);
-        outgoing.once("error", reject);
-        outgoing.end(body);
-      });
-      // Never forward authentication to a redirect destination.
-      const status = upstream.statusCode ?? 502;
-      if (status >= 300 && status < 400) {
-        upstream.destroy();
-        throw new Error("Provider redirects are not supported");
+      // Defense in depth: no configured secret value leaves for the model.
+      if (secretValues.length > 0) {
+        const redacted = redactOpenCodeModelRequest(body, secretValues, payload);
+        if (redacted) body = redacted;
       }
-      const headers: Record<string, string> = {};
-      for (const name of ["content-type", "content-encoding", "cache-control", "retry-after"]) {
-        const value = upstream.headers[name];
-        if (typeof value === "string") headers[name] = value;
+      let served: UpstreamServed | null = null;
+      try {
+        const upstream = await new Promise<IncomingMessage>((resolve, reject) => {
+          const outgoing = (upstreamUrl.protocol === "https:" ? requestHttps : requestHttp)(upstreamUrl, {
+            method: "POST",
+            agent,
+            headers: { ...(isOpenRouterUrl(baseUrl) ? OPENROUTER_ATTRIBUTION_HEADERS : {}), "Content-Type": "application/json", "Content-Length": body.length, ...(key ? { Authorization: `Bearer ${key}` } : {}) },
+            signal: AbortSignal.any([controller.signal, AbortSignal.timeout(600_000)]),
+          }, resolve);
+          outgoing.once("error", reject);
+          outgoing.end(body);
+        });
+        // Never forward authentication to a redirect destination.
+        const status = upstream.statusCode ?? 502;
+        if (status >= 300 && status < 400) {
+          upstream.destroy();
+          throw new Error("Provider redirects are not supported");
+        }
+        const headers: Record<string, string> = {};
+        for (const name of ["content-type", "content-encoding", "cache-control", "retry-after"]) {
+          const value = upstream.headers[name];
+          if (typeof value === "string") headers[name] = value;
+        }
+        response.writeHead(status, headers);
+        if (onServed && status >= 200 && status < 300) {
+          await pipeline(upstream, createUpstreamServedTap({ contentType: headers["content-type"], contentEncoding: headers["content-encoding"],
+            onServed: value => { served = value; } }), response);
+        } else await pipeline(upstream, response);
+      } finally {
+        try { onServed?.(served); } catch { /* Recording never affects the response. */ }
       }
-      response.writeHead(status, headers);
-      if (onServed && status >= 200 && status < 300) {
-        await pipeline(upstream, createUpstreamServedTap({ contentType: headers["content-type"], contentEncoding: headers["content-encoding"], onServed }), response);
-      } else await pipeline(upstream, response);
     })().catch(() => {
       if (!response.headersSent) response.writeHead(502).end("Provider request failed");
       else response.destroy();
@@ -2624,7 +2682,7 @@ async function startRuntime(input: {
   const sensitiveValues = [
     ...identityValues,
     ...Object.entries(taskEnvironment).flatMap(([key, value]) =>
-      key !== CONFIGURED_ENVIRONMENT_KEYS && value ? [value, JSON.stringify(value).slice(1, -1)] : []),
+      key !== CONFIGURED_ENVIRONMENT_KEYS && key !== SECRET_ENVIRONMENT_KEYS && value ? [value, JSON.stringify(value).slice(1, -1)] : []),
     password,
     authHeader,
     bridge.secret,
@@ -2632,6 +2690,21 @@ async function startRuntime(input: {
     providerEnvironment.PAPERCLIP_AI_PROVIDER_KEY,
   ].filter((value): value is string => Boolean(value));
   input.trace?.addSensitiveValues(sensitiveValues);
+  // Configured secrets must never reach OpenCode's captured tool output, its
+  // session store, or the model. Prepared before launch; a launch that cannot
+  // protect them does not start.
+  const outputCustody = await prepareOpenCodeOutputCustody({
+    directory: join(isolatedHome, ".paperclip-output-custody"),
+    // Shared by every session of this runtime so the wrapper is written once.
+    binDirectory: join(resolve(input.options.runtimeDirectory), "output-custody"),
+    configDirectory: join(configHome, "opencode"),
+    environment: sanitizedEnvironment(input.options.environment, {}),
+    secrets: configuredSecretEnvironment(input.options.environment),
+  }).catch(async error => {
+    await bridge.close().catch(() => {});
+    await removeIsolatedHome(isolatedHome).catch(() => {});
+    throw error;
+  });
   const instructionRoot =
     input.options.runtimeContext?.instructions.bundle.rootPath;
   // OpenCode canonicalizes tool paths (for example /var -> /private/var on
@@ -2651,7 +2724,7 @@ async function startRuntime(input: {
       ? { baseUrl: input.options.environment.PAPERCLIP_AI_PROVIDER_URL, key: input.options.environment.PAPERCLIP_AI_PROVIDER_KEY ?? "" }
       : null;
   const providerProxy = providerRoute
-    ? await startOpenCodeProviderProxy(providerRoute.baseUrl, providerRoute.key, providerModelId, providerEnvironment, input.onUpstreamServed).catch(async error => {
+    ? await startOpenCodeProviderProxy(providerRoute.baseUrl, providerRoute.key, providerModelId, providerEnvironment, input.onUpstreamServed, outputCustody?.values ?? []).catch(async error => {
         await bridge.close().catch(() => {});
         await removeIsolatedHome(isolatedHome).catch(() => {});
         throw error;
@@ -2692,7 +2765,8 @@ async function startRuntime(input: {
       // The configured entry is already composed exactly once into the session
       // system prompt; siblings remain available through the read-only root.
       instructions: [],
-      plugin: [],
+      plugin: outputCustody?.config.plugin ?? [],
+      ...(outputCustody ? { shell: outputCustody.config.shell } : {}),
       // OpenCode's bundled models.dev snapshot can lag behind OpenRouter's live
       // catalog. Bind the already-qualified exact model slug into the built-in
       // provider instead of silently falling back or rejecting a newer model.
@@ -2763,6 +2837,7 @@ async function startRuntime(input: {
         // default plugins before it can submit the first prompt.
         OPENCODE_DISABLE_MODELS_FETCH: "true",
         OPENCODE_DISABLE_DEFAULT_PLUGINS: "true",
+        ...outputCustody?.environment,
         OPENCODE_SERVER_USERNAME: username,
         OPENCODE_SERVER_PASSWORD: password,
         ...performanceDiagnostics?.environment,

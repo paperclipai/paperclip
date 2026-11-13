@@ -6,7 +6,7 @@ import { type DeliveryQueue } from "./delivery-work-notifications.js";
 import { EXECUTION_RECONCILIATION_INTERVAL_MS } from "./execution-control-deadline.js";
 import { obsoleteExecutionConversationHold, unresolvedExecutionDispositions } from "./execution-recovery-resolution.js";
 import { heldExecutionsAwaitingFreshContinuation, nextFreshContinuationCheckAt } from "./fresh-continuation-fallback.js";
-import { hasPendingNativeReplacements } from "./native-runtime/native-safe-replacement.js";
+import { hasPendingNativeReplacements, nextNativeOwnershipProofDeadlineAt } from "./native-runtime/native-safe-replacement.js";
 import { nextAbandonedNativeOwnerReleaseAt } from "./native-runtime/native-failed-run-owner-release.js";
 import { hasPendingPauseResume } from "./issue-tree-resume.js";
 import { hasPendingBudgetResume } from "./budget-resume-continuation.js";
@@ -89,7 +89,9 @@ export function executionControlSchedule(db: Db) {
       return at === null ? null : deadline([new Date(at)]);
     },
     async replacement() {
-      return await hasPendingNativeReplacements(db) ? retry() : null;
+      if (await hasPendingNativeReplacements(db)) return retry();
+      const at = await nextNativeOwnershipProofDeadlineAt(db);
+      return at === null ? null : deadline([new Date(at)]);
     },
     async continuation() {
       const rows = await db.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(and(

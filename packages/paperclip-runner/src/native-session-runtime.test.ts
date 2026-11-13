@@ -11132,3 +11132,137 @@ describe("remote Runner retention after a failed run", () => {
     expect(retainedOn(close).every(retained => retained === false)).toBe(true);
   });
 });
+
+describe("same-run reattachment to a Runner the failed attempt retained", () => {
+  const capabilities = { resume: true, typedEvents: true, steering: false, interruption: false, structuredResult: true };
+  const controlPlane = (): ControlPlanePort => ({
+    openRun: async () => {}, checkpointSession: async () => {},
+    appendEvent: async () => ({ cursor: 0, highestContiguousSourceSeq: 0, disposition: "committed" }),
+    replayEvents: async () => ({ events: [], highestContiguousSourceSeq: 0 }), completeRun: vi.fn(async () => {}),
+  });
+  const attemptSession = (runIdentity: NativeRunIdentity, failure: string, close: () => Promise<void>): NativeSession => ({
+    identity: () => runIdentity,
+    capabilities: async () => capabilities,
+    async *events() { throw new Error(failure); },
+    startTurn: async () => ({ turnId: "retained-turn" }),
+    result: async () => null,
+    async snapshot() { return { backendKind: "mock", sessionId: runIdentity.sessionId, identity: runIdentity,
+      providerSessionId: "retained-provider", cursor: null, activeTurnId: null, pendingRuntimeRequests: [], lineage: [] }; },
+    close: vi.fn(close),
+  });
+  const setup = (name: string) => {
+    const runIdentity = { ...identity, companyId: `${name}-company`, runId: `${name}-run` };
+    const scopedInput = { ...input, binding: { ...input.binding, companyId: runIdentity.companyId, runId: runIdentity.runId } };
+    const block = { companyId: runIdentity.companyId, issueId: scopedInput.binding.issueId };
+    const reattached = attemptSession(runIdentity, "reattached attempt reached the Runner", async () => {});
+    const options = (session: NativeSession, extra: Partial<ExecuteNativeSessionOptions> = {}): ExecuteNativeSessionOptions => ({
+      input: scopedInput,
+      backend: { descriptor: async () => ({ kind: "runner", name: `${name}-backend`, version: "1", capabilities }),
+        openSession: vi.fn(async () => session) },
+      controlPlane: controlPlane(), runnerInstanceId: `${name}-runner`, controlPlaneInstanceId: "control",
+      requireSessionCloseBeforeReturn: true, remoteCleanupScope: `${name}-sandbox`, ...extra,
+    });
+    return { runIdentity, scopedInput, block, reattached, options };
+  };
+
+  it("admits the run's own reattachment after a close that left the remote Runner alive and unsettled", async () => {
+    const { runIdentity, scopedInput, block, reattached, options } = setup("retained-unsettled");
+    const retained = new NativeSessionCloseUnrecoverableError({ runnerSuspended: false, runnerRetained: true });
+    const failed = attemptSession(runIdentity, "runnerd did not report the provider turn identity", async () => { throw retained; });
+    await expect(executeNativeSession(options(failed))).rejects.toMatchObject({
+      message: "runnerd did not report the provider turn identity", cleanupError: retained });
+    expect(nativeSessionCleanupBlock(block)).toBe("operator_required");
+
+    const otherRun = options(reattached, { retainedRunnerReattachment: true,
+      input: { ...scopedInput, binding: { ...scopedInput.binding, runId: "another-run" } } });
+    await expect(executeNativeSession(otherRun)).rejects.toBeInstanceOf(NativeSessionCleanupQuarantinedError);
+
+    const reattachment = options(reattached, { retainedRunnerReattachment: true });
+    await expect(executeNativeSession(reattachment)).rejects.toThrow("reattached attempt reached the Runner");
+    expect(reattachment.backend.openSession).toHaveBeenCalledOnce();
+    expect(failed.close).toHaveBeenCalledOnce();
+    expect(nativeSessionCleanupBlock(block)).toBeNull();
+  });
+
+  it("keeps refusing a run that is not reattaching to its own retained remote Runner", async () => {
+    const remote = setup("retained-without-takeover");
+    const retained = new NativeSessionCloseUnrecoverableError({ runnerSuspended: false, runnerRetained: true });
+    const failed = attemptSession(remote.runIdentity, "transport interrupted", async () => { throw retained; });
+    await expect(executeNativeSession(remote.options(failed))).rejects.toThrow("transport interrupted");
+    const fresh = remote.options(remote.reattached);
+    await expect(executeNativeSession(fresh)).rejects.toBeInstanceOf(NativeSessionCleanupQuarantinedError);
+    expect(fresh.backend.openSession).not.toHaveBeenCalled();
+    expect(nativeSessionCleanupBlock(remote.block)).toBe("operator_required");
+    completeTerminatedRemoteNativeSessionCleanup({ companyId: remote.runIdentity.companyId, runId: remote.runIdentity.runId,
+      remoteCleanupScope: "retained-without-takeover-sandbox" });
+
+    const local = setup("retained-local");
+    const localFailed = attemptSession(local.runIdentity, "local transport interrupted", async () => { throw retained; });
+    await expect(executeNativeSession(local.options(localFailed, { remoteCleanupScope: undefined })))
+      .rejects.toThrow("local transport interrupted");
+    const localReattachment = local.options(local.reattached, { remoteCleanupScope: undefined, retainedRunnerReattachment: true });
+    await expect(executeNativeSession(localReattachment)).rejects.toBeInstanceOf(NativeSessionCleanupQuarantinedError);
+    expect(localReattachment.backend.openSession).not.toHaveBeenCalled();
+    completeTerminatedLocalNativeSessionCleanup({ companyId: local.runIdentity.companyId, runId: local.runIdentity.runId,
+      runnerInstanceId: "retained-local-runner" });
+  });
+
+  it("admits the run's own reattachment instead of waiting out close retries that replay one failed close", async () => {
+    vi.useFakeTimers();
+    try {
+      const { runIdentity, block, reattached, options } = setup("retained-replayed-close");
+      const drainTimedOut = new Error("Controller journal drain timed out; preserve the session before replacing its writer.");
+      const failed = attemptSession(runIdentity, "runnerd did not report the provider turn identity", async () => { throw drainTimedOut; });
+      const first = expect(executeNativeSession(options(failed))).rejects.toThrow("runnerd did not report the provider turn identity");
+      await vi.advanceTimersByTimeAsync(10_000);
+      await first;
+      expect(nativeSessionCleanupBlock(block)).toBe("pending");
+
+      const closesBeforeReattachment = vi.mocked(failed.close).mock.calls.length;
+      const reattachment = options(reattached, { retainedRunnerReattachment: true });
+      const admitted = expect(executeNativeSession(reattachment)).rejects.toThrow("reattached attempt reached the Runner");
+      await vi.advanceTimersByTimeAsync(2_000);
+      await admitted;
+      expect(reattachment.backend.openSession).toHaveBeenCalledOnce();
+      expect(nativeSessionCleanupBlock(block)).toBeNull();
+      await vi.advanceTimersByTimeAsync(600_000);
+      expect(vi.mocked(failed.close).mock.calls.length).toBe(closesBeforeReattachment);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("lets a close that a deploy interrupted settle before the reattachment takes the Runner over", async () => {
+    vi.useFakeTimers();
+    try {
+      const { runIdentity, block, reattached, options } = setup("retained-deploy-mid-cleanup");
+      const interrupted = new Error("runner transport closed by deploy");
+      let rejectClose!: (error: Error) => void;
+      const inFlightClose = new Promise<void>((_resolve, reject) => { rejectClose = reject; });
+      void inFlightClose.catch(() => undefined);
+      const failed = attemptSession(runIdentity, "server restarting for deploy", () => inFlightClose);
+      const first = executeNativeSession(options(failed, { requireSessionCloseBeforeReturn: false }));
+      void first.catch(() => undefined);
+      await vi.waitFor(() => expect(failed.close).toHaveBeenCalledOnce());
+      expect(nativeSessionCleanupBlock(block)).toBe("pending");
+
+      const reattachment = options(reattached, { retainedRunnerReattachment: true });
+      let settled = false;
+      const admitted = executeNativeSession(reattachment).catch((error: unknown) => { settled = true; return error; });
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(settled).toBe(false);
+      expect(reattachment.backend.openSession).not.toHaveBeenCalled();
+
+      rejectClose(interrupted);
+      await vi.advanceTimersByTimeAsync(10_000);
+      await expect(admitted).resolves.toMatchObject({ message: "reattached attempt reached the Runner" });
+      expect(reattachment.backend.openSession).toHaveBeenCalledOnce();
+      expect(nativeSessionCleanupBlock(block)).toBeNull();
+      const closesAfterTakeover = vi.mocked(failed.close).mock.calls.length;
+      await vi.advanceTimersByTimeAsync(600_000);
+      expect(vi.mocked(failed.close).mock.calls.length).toBe(closesAfterTakeover);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
