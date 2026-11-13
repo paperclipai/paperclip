@@ -1775,6 +1775,18 @@ starts by itself once the gate clears. A Retry accepted during the pre-deploy
 drain stays saved and is dispatched by the deferred-receipt worker after the
 restart.
 
+After the provider accepts a turn, the transport waits for that turn's
+`turn/started` before it reports the turn identity. Codex starts its MCP
+servers before it starts the turn, so a healthy cold start in a loaded sandbox
+can take most of a minute: on staging, submit to `turn/started` measured p50
+25 s, p90 50 s and max 76 s across 68 successful starts, while a fixed 30 s wait
+hit 52 of 198 recent runs with `runnerd did not report the provider turn identity`.
+The default wait is 90 s. Each provider notice, or runner diagnostic naming the
+accepted turn, restarts that window, up to 180 s in all. A provider relaunch
+does not count as progress. A silent start with no proof that the accepted turn
+is still live fails when its window ends, and a Runner exit or a runner
+failure of the pending turn still fails at once.
+
 When a remote native run fails and its close cannot prove that the Runner
 suspended (for example, the Runner is unreachable after `provider_transport_failed`
 or a `turn.start` timeout), the controller no longer force-stops that Runner. It
@@ -1792,9 +1804,13 @@ needs an operator, still stops the Runner. A reattachment after a restart whose 
 times out or loses its transport (for example
 `PRP command session.snapshot timed out`) detaches from the Runner the same way a server restart does: it sends no turn
 stop and no suspend and does not signal the process. The Runner and its
-in-flight turn stay for the next same-run reattachment. An abort (a Stop or the
-recovery deadline), any identity or authority refusal, any other recovery
-failure, and a protocol integrity fault still stop it.
+in-flight turn stay for the next same-run reattachment. The provider recovery
+deadline (`native session provider recovery timed out after 900000ms`) detaches
+the same way. On staging, every Codex Runner that a reattachment later found
+gone (`process_not_running`) had been stopped by this deadline's cleanup, not
+by the deploy, and the task then lost its session to a fresh one. A Stop, any
+identity or authority refusal, any other recovery failure, and a protocol
+integrity fault still stop it.
 
 A kept Runner can answer its WebSocket pings but no recovery command. On
 staging, a reattached Codex Runner authenticated and restored its session, then
@@ -1802,7 +1818,8 @@ left `session.snapshot` unanswered (`pending ahead 0; last runner event seq 338
 76s ago`), and each later attempt adopted the same Runner and failed the same
 way until the attempt budget ended the run. When a same-run reattachment fails
 because its Runner left a recovery command unanswered (`PRP command <type> timed
-out`, or `runnerd exited while waiting for <type>`), and the failure is not an
+out`, `runnerd exited while waiting for <type>`, or the provider recovery
+deadline), and the failure is not an
 identity, authority or integrity refusal, the run records
 `adoptedRunnerUnanswered` on its failure and the next claim carries
 `replaceUnansweredRunner`. That attempt does not adopt the Runner again. After

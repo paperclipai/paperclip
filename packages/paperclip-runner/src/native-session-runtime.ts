@@ -26,6 +26,7 @@ import {
   type HarnessThreadGoal,
 } from "./contracts/harness-driver.js";
 import {
+  NativeProviderRecoveryDeadlineError,
   NativeProviderSideEffectPendingError,
   NativeProviderStateIncompatibleError,
   NativeProviderTerminalFailure,
@@ -2548,6 +2549,7 @@ export async function executeNativeSession(
         ? await runAbortableOperationWithin({
             timeoutMs: recoveryTimeoutMs,
             timeoutMessage: `native session provider recovery timed out after ${recoveryTimeoutMs}ms`,
+            timeoutError: () => new NativeProviderRecoveryDeadlineError(recoveryTimeoutMs),
             operation: (signal) =>
               options.backend.recoverSession!(providerRecoveryCheckpoint, {
                 signal,

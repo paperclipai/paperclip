@@ -8895,6 +8895,8 @@ export function nativeRecoveryCommandUnanswered(error: unknown, depth = 0): bool
   if (message.startsWith("native_session_recovery_failed:")
     && /PRP command [\w.]+ timed out|runnerd exited while waiting for [\w.]+/.test(message)
     && !/mismatch|different|identity|authority|integrity|incompatible/i.test(message)) return true;
+  if (value.code === "native_provider_recovery_deadline"
+    || /^native session provider recovery timed out after \d+ms$/.test(message)) return true;
   return nativeRecoveryCommandUnanswered(value.cause, depth + 1);
 }
 
