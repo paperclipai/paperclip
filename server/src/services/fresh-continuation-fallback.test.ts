@@ -6,6 +6,7 @@ import {
   heartbeatRunEvents, issueComments, issues, nativeRunFinalizations, toolInvocations,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
+import { truncateTablesWithDeadlockRetry } from "../__tests__/helpers/truncate-with-deadlock-retry.js";
 import { deliverReconciledExecutions, settleUnrecoverableExecutions } from "./execution-recovery-resolution.js";
 import { PENDING_CONTINUATION_BOUND_MS } from "./recovery-continuation-pacing.js";
 import { getExecutionBlocker } from "./execution-blocker.js";
@@ -24,6 +25,10 @@ import { agentRunWritesRevoked, assertAgentRunWriteAllowed } from "../agent-run-
 import { loadAgentRunAuthentication } from "../middleware/agent-run-authentication.js";
 import { SERVER_RESTART_RETRY_MAX_ATTEMPTS, SERVER_RESTART_RETRY_WINDOW_MS } from "./execution-recovery-attempt.js";
 import { FRESH_CONTINUATION_WINDOW_MS } from "./fresh-continuation-fallback.js";
+import { createPostgresRunDispatchAdapter } from "../modules/run-dispatch/adapters/postgres.js";
+import { createSystemRecovery } from "./system-recovery-state.js";
+import { requestTaskRetry } from "./task-retry.js";
+import { terminalizeLegacyExecution } from "./legacy-execution-recovery.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const suite = support.supported ? describe : describe.skip;
@@ -58,7 +63,8 @@ suite("fresh-continuation fallback", () => {
 
   afterEach(async () => {
     resetBacklogContinuationPacingForTests(db);
-    await db.execute(sql`truncate table issue_recovery_actions, native_run_finalizations, tool_invocations,
+    await heartbeatService(db).drainActiveRunExecutions();
+    await truncateTablesWithDeadlockRetry(db, `truncate table issue_recovery_actions, native_run_finalizations, tool_invocations,
       issue_approvals, approvals, issue_thread_interactions, activity_log, agent_wakeup_requests, environment_leases, execution_workspaces, heartbeat_runs, issues cascade`);
   });
 
@@ -314,6 +320,93 @@ suite("fresh-continuation fallback", () => {
     await deliver();
     expect(await successors(f.runId)).toHaveLength(1);
     expect((await pendingRecord(f.issueId))!.evidence.continuationDelivery).toBe("delivered");
+  }, 60_000);
+
+  it("runs a person's Retry pressed before delivery as the recorded isolated continuation, never in the shared directory", async () => {
+    const f = await unfinishedRun({ runtime: "legacy", errorCode: "controller_lease_lost", error: "Legacy controller lease lost" });
+    await db.update(heartbeatRuns).set({ processPid: 4242, processHostHash: "replaced-server", processStartedAt: new Date(Date.now() - 600_000) })
+      .where(eq(heartbeatRuns.id, f.runId));
+    await db.update(issues).set({ projectId: null, projectWorkspaceId: null, executionWorkspaceId: null }).where(eq(issues.id, f.issueId));
+    expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" }))
+      .toMatchObject({ kind: "continued", isolation: "fresh_isolated_workspace", delivery: "recorded" });
+    await occupySlot();
+    const taskRuns = async () => db.select().from(heartbeatRuns).where(and(
+      sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${f.issueId}`, sql`${heartbeatRuns.id} <> ${f.runId}`));
+    const retry = await requestTaskRetry({ db, companyId, issueId: f.issueId, actorId: userId, observedRunId: f.runId, idempotencyKey: randomUUID() })
+      .catch((error: unknown) => ({ error: String(error) }));
+    await deliver();
+    expect(retry).toMatchObject({ accepted: true });
+    const retryWake = async () => (await db.select().from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, (retry as { requestId: string }).requestId)))[0];
+    const runs = await taskRuns();
+    expect(runs).toHaveLength(1);
+    expect(await retryWake()).toMatchObject({ status: "coalesced", runId: runs[0]!.id });
+    expect(runs[0]!.contextSnapshot).toMatchObject({ freshContinuationIsolation: f.actionId });
+    expect(await readFreshWorkspaceReadiness(db, runs[0]!)).toMatchObject({ mode: "fresh_isolated_workspace", retryIntentId: f.actionId });
+    const endedAt = new Date();
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: endedAt })
+      .where(and(eq(heartbeatRuns.status, "running"), sql`${heartbeatRuns.contextSnapshot}->>'issueId' <> ${f.issueId}`));
+    await heartbeatService(db).cancelRun(runs[0]!.id);
+    await heartbeatService(db).resumeQueuedRuns();
+    await deliver();
+    const later = (await taskRuns()).filter(run => run.id !== runs[0]!.id);
+    expect(later.filter(run => run.wakeupRequestId === (retry as { requestId: string }).requestId
+      || run.contextSnapshot?.wakeReason === "task_retry")).toEqual([]);
+    expect(await retryWake()).toMatchObject({ status: "coalesced", runId: runs[0]!.id });
+  }, 60_000);
+
+  it("consumes a person's Retry exactly once when the server stops right after admitting the isolated continuation", async () => {
+    const f = await unfinishedRun({ runtime: "legacy", errorCode: "controller_lease_lost", error: "Legacy controller lease lost" });
+    await db.update(heartbeatRuns).set({ processPid: 4242, processHostHash: "replaced-server", processStartedAt: new Date(Date.now() - 600_000) })
+      .where(eq(heartbeatRuns.id, f.runId));
+    await db.update(issues).set({ projectId: null, projectWorkspaceId: null, executionWorkspaceId: null }).where(eq(issues.id, f.issueId));
+    expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" }))
+      .toMatchObject({ kind: "continued", isolation: "fresh_isolated_workspace", delivery: "recorded" });
+    await occupySlot();
+    const retry = await requestTaskRetry({ db, companyId, issueId: f.issueId, actorId: userId, observedRunId: f.runId, idempotencyKey: randomUUID() });
+    expect(retry).toMatchObject({ accepted: true });
+    const retryWake = async () => (await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, retry.requestId!)))[0];
+    const taskRuns = async () => db.select().from(heartbeatRuns).where(and(
+      sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${f.issueId}`, sql`${heartbeatRuns.id} <> ${f.runId}`));
+    const admitted = await heartbeatService(db).wakeup(agentId, { source: "automation", triggerDetail: "system",
+      reason: "issue_recovery_action_restored", idempotencyKey: `execution-reconciliation:${f.actionId}`,
+      payload: { issueId: f.issueId, recoveryActionId: f.actionId }, requestedByActorType: "system", requestedByActorId: "execution-recovery",
+      contextSnapshot: { issueId: f.issueId, taskId: f.issueId, recoveryActionId: f.actionId, previousRunId: f.runId, retryOfRunId: f.runId,
+        forceFreshSession: true, wakeReason: "issue_recovery_action_restored", source: "execution.reconciled",
+        freshContinuationIsolation: f.actionId } });
+    expect(admitted).toBeTruthy();
+    expect(await retryWake()).toMatchObject({ status: "coalesced", runId: admitted!.id });
+    await db.update(agentWakeupRequests).set({ status: "deferred_issue_execution", runId: null, finishedAt: null })
+      .where(eq(agentWakeupRequests.id, retry.requestId!));
+    await deliver();
+    expect((await taskRuns()).map(run => run.id)).toEqual([admitted!.id]);
+    expect(await retryWake()).toMatchObject({ status: "coalesced", runId: admitted!.id });
+    expect((await pendingRecord(f.issueId))!.evidence).toMatchObject({ continuationDelivery: "delivered", continuationRunId: admitted!.id });
+  }, 60_000);
+
+  it("never folds a Retry for the admitted continuation's own failure into that ended continuation", async () => {
+    const f = await unfinishedRun({ runtime: "legacy", errorCode: "controller_lease_lost", error: "Legacy controller lease lost" });
+    await db.update(heartbeatRuns).set({ processPid: 4242, processHostHash: "replaced-server", processStartedAt: new Date(Date.now() - 600_000) })
+      .where(eq(heartbeatRuns.id, f.runId));
+    await db.update(issues).set({ projectId: null, projectWorkspaceId: null, executionWorkspaceId: null }).where(eq(issues.id, f.issueId));
+    expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" }))
+      .toMatchObject({ kind: "continued", isolation: "fresh_isolated_workspace", delivery: "recorded" });
+    const admitted = await heartbeatService(db).wakeup(agentId, { source: "automation", triggerDetail: "system",
+      reason: "issue_recovery_action_restored", idempotencyKey: `execution-reconciliation:${f.actionId}`,
+      payload: { issueId: f.issueId, recoveryActionId: f.actionId }, requestedByActorType: "system", requestedByActorId: "execution-recovery",
+      contextSnapshot: { issueId: f.issueId, taskId: f.issueId, recoveryActionId: f.actionId, previousRunId: f.runId, retryOfRunId: f.runId,
+        forceFreshSession: true, wakeReason: "issue_recovery_action_restored", source: "execution.reconciled",
+        freshContinuationIsolation: f.actionId } });
+    await heartbeatService(db).cancelRun(admitted!.id);
+    const retry = await requestTaskRetry({ db, companyId, issueId: f.issueId, actorId: userId, observedRunId: admitted!.id, idempotencyKey: randomUUID() });
+    expect(retry).toMatchObject({ accepted: true });
+    await deliver();
+    await heartbeatService(db).resumeQueuedRuns();
+    await vi.waitFor(async () => {
+      const [retryWake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, retry.requestId!));
+      expect(retryWake!.runId, JSON.stringify(retryWake)).toBeTruthy();
+      expect(retryWake!.runId).not.toBe(admitted!.id);
+    }, { timeout: 20_000, interval: 200 });
   }, 60_000);
 
   it("re-drives an isolated continuation pending past the bound itself; a repair wake never replaces it", async () => {
@@ -1041,5 +1134,193 @@ suite("fresh-continuation fallback", () => {
     expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "held_recovery" }))
       .toMatchObject({ kind: "already_continued" });
     expect(await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests)).toHaveLength(0);
+  }, 60_000);
+
+  async function heldByOlderRun(options: { endedAgoMs?: number; recovery?: "exhausted" | "running"; humanGate?: boolean } = {}) {
+    const f = await unfinishedRun({ runtime: "legacy", errorCode: "process_lost" });
+    const endedAt = new Date(Date.now() - (options.endedAgoMs ?? 60_000));
+    await db.update(heartbeatRuns).set({ finishedAt: endedAt, startedAt: new Date(endedAt.getTime() - 600_000),
+      createdAt: new Date(endedAt.getTime() - 660_000), processPid: 4242, processHostHash: "replaced-server",
+      processStartedAt: new Date(endedAt.getTime() - 600_000) }).where(eq(heartbeatRuns.id, f.runId));
+    const [workspace] = await db.insert(executionWorkspaces).values({ companyId, sourceIssueId: f.issueId, mode: "isolated",
+      strategyType: "git_worktree", name: "Task workspace", providerType: "local_fs", cwd: "/workspaces/old-task-dir" }).returning();
+    await db.update(issues).set({ executionWorkspaceId: workspace!.id }).where(eq(issues.id, f.issueId));
+    const recovery = { ...createSystemRecovery(f.runId), state: options.recovery ?? "exhausted", attempts: 3,
+      failure: { code: "export_interrupted", retryClass: "retry_transient", evidenceFingerprint: "export" } };
+    const [hold] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.actionId!));
+    await db.update(issueRecoveryActions).set({ ownerUserId: options.humanGate ? userId : null,
+      createdAt: endedAt, updatedAt: endedAt,
+      evidence: { ...hold!.evidence, workspaceRestoreFailure: "restore_unsafe_archive", systemRecovery: recovery } })
+      .where(eq(issueRecoveryActions.id, f.actionId!));
+    return { ...f, workspaceId: workspace!.id, endedAt };
+  }
+
+  async function refusedAtDispatch(f: { issueId: string }, options: { createdAt?: Date; wakeReason?: string } = {}) {
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, invocationSource: "automation", issueId: f.issueId,
+      runtimeMode: "legacy", status: "queued", createdAt: options.createdAt ?? new Date(),
+      contextSnapshot: { issueId: f.issueId, wakeReason: options.wakeReason ?? "issue_continuation_needed" } }).returning();
+    const outcome = await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({ companyId, runId: run!.id,
+      expectedStatus: "queued", now: options.createdAt ?? new Date() });
+    return { run: run!, outcome };
+  }
+
+  const holdRow = async (id: string) => (await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, id)))[0]!;
+  const makeDue = (id: string) => db.update(issueRecoveryActions).set({ evidence: sql`jsonb_set(${issueRecoveryActions.evidence},
+    '{freshContinuationCheck,nextCheckAt}', to_jsonb(${Date.now() - 1_000}::bigint))` }).where(eq(issueRecoveryActions.id, id));
+
+  it("continues a task held by an older run's saved-work hold in a new isolated workspace, after it refused a run at dispatch", async () => {
+    const f = await heldByOlderRun();
+    const refused = await refusedAtDispatch(f);
+    expect(refused.outcome).toMatchObject({ outcome: "cancelled", errorCode: "execution_reconciliation_required" });
+    expect((await holdRow(f.actionId!)).evidence.freshContinuationCheck)
+      .toMatchObject({ kind: "exact_recovery_pending", firstPendingAt: expect.any(Number) });
+    expect(await heldExecutionsAwaitingFreshContinuation(db, new Date(Date.now() + 10 * 60_000), 10))
+      .toEqual([expect.objectContaining({ id: f.actionId, runId: f.runId })]);
+    await waitedFor(f.actionId!, FRESH_CONTINUATION_PENDING_BOUND_MS + 1_000);
+    await makeDue(f.actionId!);
+    expect(await continueHeldExecutions(db)).toMatchObject({ continued: 1 });
+    const settled = await holdRow(f.actionId!);
+    expect(settled).toMatchObject({ status: "resolved", ownerType: "system" });
+    expect(settled.evidence).toMatchObject({ workspaceRestoreFailure: "restore_unsafe_archive",
+      systemRecovery: { state: "exhausted" },
+      freshContinuation: { sourceRunId: f.runId, isolation: "fresh_isolated_workspace" },
+      freshContinuationSettlement: { actorType: "system", actorId: "fresh-continuation", heldFiles: "kept_not_applied",
+        refusedAtDispatchRunId: refused.run.id, requestedBy: "system" } });
+    expect((await issue(f.issueId)).executionWorkspaceId).toBeNull();
+    const [old] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.workspaceId));
+    expect(old).toMatchObject({ status: "active", cwd: "/workspaces/old-task-dir" });
+    const [oldRun] = await loadAgentRunAuthentication(db, { runId: f.runId, companyId, agentId });
+    expect(agentRunWritesRevoked(oldRun)).toBe(true);
+    expect(await getExecutionBlocker(db, companyId, f.issueId)).toBeNull();
+    await occupySlot();
+    await deliver();
+    const [next] = await successors(f.runId);
+    expect(next!.contextSnapshot).toMatchObject({ freshContinuationIsolation: f.actionId });
+    expect(await readFreshWorkspaceReadiness(db, next!)).toMatchObject({ mode: "fresh_isolated_workspace", sourceRunId: f.runId });
+    expect(await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({ companyId, runId: next!.id,
+      expectedStatus: "queued", now: new Date() })).not.toMatchObject({ errorCode: "execution_reconciliation_required" });
+  }, 60_000);
+
+  it("keeps the wait of a saved-work recovery that is still advancing, even behind a run it refused", async () => {
+    const f = await heldByOlderRun({ recovery: "running" });
+    await refusedAtDispatch(f);
+    await waitedFor(f.actionId!, FRESH_CONTINUATION_PROGRESS_BOUND_MS + 1_000);
+    await db.update(issueRecoveryActions).set({ updatedAt: new Date(Date.now() + 1_000),
+      evidence: sql`jsonb_set(${issueRecoveryActions.evidence}, '{systemRecovery,attempts}', '4'::jsonb)` })
+      .where(eq(issueRecoveryActions.id, f.actionId!));
+    expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "held_recovery" }))
+      .toMatchObject({ kind: "exact_recovery_pending", reason: "saved_work_recovery_running" });
+    expect((await issue(f.issueId)).executionWorkspaceId).toBe(f.workspaceId);
+    await refusedAtDispatch(f, { wakeReason: "task_retry" });
+    await db.update(issueRecoveryActions).set({ updatedAt: new Date(Date.now() + 2_000),
+      evidence: sql`jsonb_set(${issueRecoveryActions.evidence}, '{systemRecovery,attempts}', '5'::jsonb)` })
+      .where(eq(issueRecoveryActions.id, f.actionId!));
+    expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "held_recovery" }))
+      .toMatchObject({ kind: "exact_recovery_pending" });
+  }, 60_000);
+
+  it("keeps a hold a person owns blocking, behind any number of refused runs", async () => {
+    const f = await heldByOlderRun({ humanGate: true });
+    await refusedAtDispatch(f, { wakeReason: "task_retry" });
+    expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "held_recovery" }))
+      .toMatchObject({ kind: "person_owned" });
+    expect(await getExecutionBlocker(db, companyId, f.issueId)).toMatchObject({ recoveryActionId: f.actionId });
+    expect((await holdRow(f.actionId!)).status).toBe("active");
+  }, 60_000);
+
+  it("leaves an old hold for a person's Retry, and that Retry runs isolated (refused run)", async () => {
+    const f = await heldByOlderRun({ endedAgoMs: 3 * 86_400_000 });
+    await refusedAtDispatch(f, { createdAt: new Date(Date.now() - 30 * 3_600_000) });
+    expect(await continueHeldExecutions(db)).toMatchObject({ continued: 0 });
+    expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "continuation_wake" }))
+      .toEqual({ kind: "person_owned", reason: "retry_needed" });
+    expect((await holdRow(f.actionId!)).status).toBe("active");
+    const retry = await refusedAtDispatch(f, { wakeReason: "task_retry" });
+    expect(retry.outcome).toMatchObject({ outcome: "cancelled" });
+    expect((await holdRow(f.actionId!)).evidence).toMatchObject({
+      freshContinuation: { isolation: "fresh_isolated_workspace" },
+      freshContinuationSettlement: { requestedBy: "person_retry", heldFiles: "kept_not_applied" } });
+    await occupySlot();
+    await deliver();
+    const [next] = await successors(f.runId);
+    expect(await readFreshWorkspaceReadiness(db, next!)).toMatchObject({ mode: "fresh_isolated_workspace" });
+  }, 60_000);
+
+  it("leaves an old hold for a person's Retry, and that Retry runs isolated (waiting Retry)", async () => {
+    const f = await heldByOlderRun({ endedAgoMs: 3 * 86_400_000 });
+    const old = await refusedAtDispatch(f, { createdAt: new Date(Date.now() - 30 * 3_600_000) });
+    expect(await continueHeldExecutions(db)).toMatchObject({ continued: 0 });
+    const receipt = await requestTaskRetry({ db, companyId, issueId: f.issueId, actorId: userId,
+      idempotencyKey: randomUUID(), observedRunId: old.run.id });
+    expect(receipt).toMatchObject({ accepted: true });
+    expect(await continueHeldExecutions(db)).toMatchObject({ continued: 1 });
+    expect((await holdRow(f.actionId!)).evidence).toMatchObject({ freshContinuation: { isolation: "fresh_isolated_workspace" },
+      freshContinuationSettlement: { requestedBy: "person_retry" } });
+    await occupySlot();
+    await deliver();
+    expect(await successors(f.runId)).toHaveLength(1);
+    const [retryWake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.requestId!));
+    expect(retryWake!.status).toBe("coalesced");
+  }, 60_000);
+
+  async function preparedRemoteRunStoppedBeforeDispatch(options: { endedAgoMs?: number } = {}) {
+    const issueId = randomUUID(), runId = randomUUID();
+    const endedAt = new Date(Date.now() - (options.endedAgoMs ?? 60_000));
+    await db.insert(issues).values({ id: issueId, companyId, title: "Ship the release notes", status: "in_progress", assigneeAgentId: agentId });
+    const [workspace] = await db.insert(executionWorkspaces).values({ companyId, sourceIssueId: issueId, mode: "isolated",
+      strategyType: "git_worktree", name: "Task workspace", cwd: "/work/remote-task" }).returning();
+    await db.update(issues).set({ executionWorkspaceId: workspace!.id }).where(eq(issues.id, issueId));
+    const [run] = await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, invocationSource: "assignment", issueId,
+      runtimeMode: "legacy", status: "running", startedAt: new Date(endedAt.getTime() - 120_000),
+      createdAt: new Date(endedAt.getTime() - 180_000), responsibleUserId: userId,
+      contextSnapshot: { issueId, executionWorkspaceId: workspace!.id, wakeReason: "issue_assigned" } }).returning();
+    const [environment] = await db.insert(environments).values({ name: `sandbox-${runId}`, driver: "sandbox" }).returning();
+    const [lease] = await db.insert(environmentLeases).values({ companyId, issueId, executionWorkspaceId: workspace!.id,
+      heartbeatRunId: runId, environmentId: environment!.id, status: "active", leasePolicy: "ephemeral", provider: "daytona",
+      providerLeaseId: `sandbox-${runId}`, metadata: { remoteCwd: "/work/remote-task", driver: "sandbox",
+        workspaceRealization: { authoritativeRoot: "/work/remote-task" } } }).returning();
+    await terminalizeLegacyExecution({ db, run: run!, status: "interrupted", patch: { errorCode: "server_shutdown_interrupted",
+      error: "Interrupted by graceful server shutdown (SIGTERM)", finishedAt: endedAt,
+      resultJson: { workspaceRestoreFailure: "restore_failed" } } });
+    const [hold] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    return { issueId, runId, actionId: hold!.id, leaseId: lease!.id, workspaceId: workspace!.id };
+  }
+
+  it("continues a recent restart-stopped run whose prepared remote workspace could not be restored, in a new isolated workspace", async () => {
+    const f = await preparedRemoteRunStoppedBeforeDispatch();
+    const held = await holdRow(f.actionId);
+    await settleUnrecoverableExecutions(db);
+    await waitedFor(f.actionId, FRESH_CONTINUATION_PENDING_BOUND_MS + 1_000).catch(() => undefined);
+    if ((await holdRow(f.actionId)).evidence.freshContinuationCheck) await makeDue(f.actionId);
+    await settleUnrecoverableExecutions(db);
+    const settled = await holdRow(f.actionId);
+    expect(settled.evidence).toMatchObject({ freshContinuation: { sourceRunId: f.runId, isolation: "fresh_isolated_workspace" },
+      workspaceRestoreRecovery: { leaseIds: [f.leaseId] }, freshContinuationSettlement: { heldFiles: "kept_not_applied" } });
+    const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.leaseId));
+    expect(lease!.leasePolicy).toBe("retain_on_failure");
+    expect((await issue(f.issueId)).executionWorkspaceId).toBeNull();
+    expect(await getExecutionBlocker(db, companyId, f.issueId)).toBeNull();
+    await occupySlot();
+    await deliver();
+    const [next] = await successors(f.runId);
+    expect(await readFreshWorkspaceReadiness(db, next!)).toMatchObject({ mode: "fresh_isolated_workspace", sourceRunId: f.runId });
+    expect(held.nextAction).not.toMatch(/stop receipt|recover the missing files|workspaceRepairEvidence|allocation|repair|inspect|_/i);
+    expect(held.nextAction).toContain("Retry");
+  }, 60_000);
+
+  it("leaves an older restart-stopped remote restore failure for a person's Retry, which then runs isolated", async () => {
+    const f = await preparedRemoteRunStoppedBeforeDispatch({ endedAgoMs: 30 * 3_600_000 });
+    await settleUnrecoverableExecutions(db);
+    await settleUnrecoverableExecutions(db);
+    const kept = await holdRow(f.actionId);
+    expect(kept.evidence.freshContinuation).toBeUndefined();
+    expect(await getExecutionBlocker(db, companyId, f.issueId)).toMatchObject({ recoveryActionId: f.actionId });
+    await refusedAtDispatch(f, { wakeReason: "task_retry" });
+    expect((await holdRow(f.actionId)).evidence).toMatchObject({ freshContinuation: { isolation: "fresh_isolated_workspace" },
+      freshContinuationSettlement: { requestedBy: "person_retry" } });
+    await occupySlot();
+    await deliver();
+    const [next] = await successors(f.runId);
+    expect(await readFreshWorkspaceReadiness(db, next!)).toMatchObject({ mode: "fresh_isolated_workspace" });
   }, 60_000);
 });

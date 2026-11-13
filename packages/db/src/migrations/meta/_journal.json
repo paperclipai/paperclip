@@ -3330,22 +3330,36 @@
     {
       "idx": 477,
       "version": "7",
-      "when": 1794569529145,
-      "tag": "0477_loud_omega_flight",
+      "when": 1794554569782,
+      "tag": "0477_friendly_toro",
       "breakpoints": true
     },
     {
       "idx": 478,
       "version": "7",
-      "when": 1794569536058,
-      "tag": "0478_natural_wolfsbane",
+      "when": 1794577652781,
+      "tag": "0478_jazzy_vertigo",
       "breakpoints": true
     },
     {
       "idx": 479,
       "version": "7",
-      "when": 1794588602955,
-      "tag": "0479_early_nighthawk",
+      "when": 1794589447691,
+      "tag": "0479_careless_frog_thor",
+      "breakpoints": true
+    },
+    {
+      "idx": 480,
+      "version": "7",
+      "when": 1794589460339,
+      "tag": "0480_first_the_fallen",
+      "breakpoints": true
+    },
+    {
+      "idx": 481,
+      "version": "7",
+      "when": 1794589479118,
+      "tag": "0481_third_genesis",
       "breakpoints": true
     }
   ]

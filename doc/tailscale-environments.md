@@ -93,12 +93,12 @@ old credential protected. Only the connector's server consumer can resolve its
 trusted value; an SSH environment binds its private key, never the node state.
 Unclassified legacy node-state values are also rejected by generic reads,
 including state left behind by an earlier connection replacement.
-Migration `0479_early_nighthawk` classifies existing connector-referenced secrets.
+Migration `0481_third_genesis` classifies existing connector-referenced secrets.
 Apply it before running the updated server. If node state was copied before
 this restriction, revoke that enrolled device in Tailscale; a local disconnect
 cannot stop a copy outside Paperclip.
 
-Connections created before migration `0478_natural_wolfsbane` have no trusted version
+Connections created before migration `0480_first_the_fallen` have no trusted version
 and digest. They fail closed and require a fresh **Connect Tailscale Network**
 consent. The migration leaves these fields empty; it does not trust or backfill a
 generic secret's latest value.

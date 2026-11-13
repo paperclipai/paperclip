@@ -424,18 +424,3 @@ input file times are normalized in both stages so fresh checkouts do not force
 Cargo to rebuild unchanged source. Changes made by build scripts still reach
 Cargo's normal validation. The final application copy excludes Cargo's target
 directory as before. Cache misses only cost compilation time.
-
-Pull requests that change the Dockerfile, Docker ignore rules, or Runner native
-inputs also build the isolated `runner-build` target in `Docker Runner check`.
-The check runs `bash scripts/check-docker-runner-cache.sh` against a disposable
-copy of tracked source and the actual Docker ignore rules. It compiles a baseline
-and exports a local cache, removes that builder, changes a Rust metadata constant,
-and rebuilds on a fresh builder using only the exported cache. It requires a
-cached dependency build, an unchanged dependency recipe, and changed metadata
-from the real binary. It also verifies that a dependency declaration change
-alters the recipe. The probe exports small metadata results instead of importing
-a large test image into the Docker daemon. Temporary builders and cache files
-are removed afterward. It catches missing embedded inputs before the post-merge
-build. It uses a GitHub-hosted runner with read-only repository access and never
-publishes images or registry caches. Allow up to 20 minutes for its cold build and
-source rebuild.

@@ -771,10 +771,10 @@ function readWakePolicySummary(action: IssueRecoveryAction): string | null {
   if (type === "bounded_owner_disposition_repair") {
     return "Paperclip is retrying the original owner";
   }
-  if (type === "bounded_recovery_owner") return "A recovery owner is repairing the next step";
-  if (type === "board_escalation") return "Board decision required";
+  if (type === "bounded_recovery_owner") return "An agent is choosing the next step";
+  if (type === "board_escalation") return "Waiting for you";
   if (type === "manual") return "Manual follow-up needed";
-  if (type === "manual_repair_required") return "Repair needed before retry";
+  if (type === "manual_repair_required") return "Needs a fix before Retry";
   if (type === "monitor") {
     const interval = readEvidenceString(policy.intervalLabel);
     return interval ? `Check scheduled · ${interval}` : "Check scheduled";

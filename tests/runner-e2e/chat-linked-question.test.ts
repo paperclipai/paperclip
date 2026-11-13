@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { linkedQuestionBinding, readLinkedQuestionDom } from "./chat-linked-question.js";
+import { chosenTaskOption, linkedQuestionBinding, readLinkedQuestionDom } from "./chat-linked-question.js";
 import { valid, dom, type Input } from "./chat-linked-question.test-fixture.js";
 
 beforeEach(() => { document.body.innerHTML = dom(); vi.spyOn(Element.prototype, "getClientRects").mockReturnValue([{ width: 20, height: 20 }] as unknown as DOMRectList); });
@@ -91,4 +91,26 @@ const domNegatives: Array<[string, () => void]> = [
 it.each(domNegatives)("rejects %s DOM evidence", (_, change) => {
   change();
   expect(collect()).toBeUndefined();
+});
+it("selects the saved choice that offers only the Launch task, by option id and task identifier", () => {
+  const launch = { id: "launch-task", identifier: "COM-1" }, experiments = { id: "experiment-task", identifier: "COM-2" };
+  // The card shape cohort 12's agent asked: one choice per task plus a choice naming both.
+  const card = (options: Array<{ id: string; label: string; description?: string }>, extra: Record<string, unknown> = {}) => [{
+    id: "question", kind: "ask_user_questions",
+    payload: { version: 1, questions: [], questionSet: { schema: "paperclip.question_set.v1", ...extra,
+      questions: [{ id: "which-task", prompt: "Which landing-page task should become high priority?", required: true, answerMode: "single_select", options }] } },
+  }] as unknown as Parameters<typeof chosenTaskOption>[0];
+  const evidence = { interactionId: "question", questionId: "which-task" };
+  const offered = [{ id: "com-1", label: "COM-1 (Launch project)" }, { id: "com-2", label: "COM-2 (Experiments project)" }, { id: "both", label: "Both tasks" }];
+  expect(chosenTaskOption(card(offered), evidence, launch, [launch, experiments]))
+    .toEqual({ optionId: "com-1", domId: "question-which-task-com-1", submitLabel: "Submit answers" });
+  // Wording does not matter; the identifier may sit in the description, and a custom submit label is used.
+  expect(chosenTaskOption(card([{ id: "b", label: "Experiments one", description: "COM-2" }, { id: "a", label: "The other one", description: "COM-1" }], { submitLabel: "Choose" }),
+    evidence, launch, [launch, experiments])).toEqual({ optionId: "a", domId: "question-which-task-a", submitLabel: "Choose" });
+  // No single unambiguous choice: an option naming both tasks, duplicates, or neither.
+  expect(chosenTaskOption(card([{ id: "both", label: "COM-1 and COM-2" }]), evidence, launch, [launch, experiments])).toBeUndefined();
+  expect(chosenTaskOption(card([{ id: "x", label: "COM-1" }, { id: "y", label: "COM-1 again" }]), evidence, launch, [launch, experiments])).toBeUndefined();
+  expect(chosenTaskOption(card([{ id: "x", label: "Launch" }, { id: "y", label: "Experiments" }]), evidence, launch, [launch, experiments])).toBeUndefined();
+  expect(chosenTaskOption(card([{ id: "x", label: "COM-10" }]), evidence, launch, [launch, experiments])).toBeUndefined();
+  expect(chosenTaskOption(card(offered), { ...evidence, interactionId: "other" }, launch, [launch, experiments])).toBeUndefined();
 });

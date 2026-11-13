@@ -87,19 +87,27 @@ const SETUP_FAILURE_NOTICES: Record<string, StrandedRecoveryNoticeSeed> = {
   },
 };
 
+export const NO_RUNNING_EXECUTION_NOTICE_TITLE = "Task could not continue";
+
+export function buildNoRunningExecutionNoticeSeed(input: {
+  status: "todo" | "in_progress";
+  attempts?: number;
+}): StrandedRecoveryNoticeSeed {
+  const tries = input.attempts && input.attempts > 1 ? ` after ${input.attempts} tries` : "";
+  return {
+    body: input.status === "todo"
+      ? `Paperclip tried to start this task again, but it still could not start${tries}. Press Retry to start it again.`
+      : `Paperclip tried to continue this task again, but it still could not continue${tries}. `
+        + "Press Retry to start it again from the saved work.",
+    title: NO_RUNNING_EXECUTION_NOTICE_TITLE,
+    tone: "danger",
+  };
+}
+
 export function buildImmediateExecutionPathRecoveryNoticeSeed(input: {
   status: "todo" | "in_progress";
 }): StrandedRecoveryNoticeSeed {
-  const retryDescription = input.status === "todo"
-    ? "Paperclip automatically retried dispatch for this assigned `todo` issue during terminal run recovery"
-    : "Paperclip automatically retried continuation for this assigned `in_progress` issue during terminal run recovery";
-  return {
-    body:
-      `${retryDescription}, but it still has no live execution path. ` +
-      "Moving it to `blocked` so it is visible for intervention.",
-    title: "No live execution path",
-    tone: "danger",
-  };
+  return buildNoRunningExecutionNoticeSeed(input);
 }
 
 export function buildWorkspaceValidationRecoveryNoticeSeed(): StrandedRecoveryNoticeSeed {
