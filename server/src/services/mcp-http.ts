@@ -679,6 +679,13 @@ export async function readMcpHttpResponse(
     maxBytes?: number;
     onRequest?: (message: Record<string, unknown>) => Promise<void>;
     onProgress?: (progress: McpHttpResponseProgress) => void;
+    /**
+     * Bound an SSE stream per message instead of in total, so handled
+     * notifications (such as progress) do not use up the result's limit. Only
+     * for callers with an overall deadline: a stream of small notifications
+     * could otherwise never end.
+     */
+    limitPerMessage?: boolean;
     /** Notifications sent on this request's stream before its result. Must not block. */
     onNotification?: (message: Record<string, unknown>) => void;
   } = {},
@@ -731,21 +738,22 @@ export async function readMcpHttpResponse(
       progress.bytesReceived = bytes;
       if (value) progress.chunksReceived += 1;
       progress.ended = done;
-      // A JSON body is one message. An SSE stream is bounded per message: events
-      // already handled (such as progress) do not count against the result.
-      if (!isStream && bytes > maxBytes) throw new McpHttpResponseError("too_large", "MCP response exceeded the size limit");
+      // A JSON body is one message. An SSE stream is bounded in total unless the
+      // caller asks for a per-message bound (see limitPerMessage).
+      const perMessage = isStream && options.limitPerMessage === true;
+      if (!perMessage && bytes > maxBytes) throw new McpHttpResponseError("too_large", "MCP response exceeded the size limit");
       buffer += decoder.decode(value, { stream: !done });
       if (isStream) {
         // Normalize CRLF after concatenating chunks, including split CR/LF pairs.
         buffer = buffer.replace(/\r\n/g, "\n");
         let boundary: number;
         while ((boundary = buffer.indexOf("\n\n")) >= 0) {
-          if (Buffer.byteLength(buffer.slice(0, boundary), "utf8") > maxBytes) throw new McpHttpResponseError("too_large", "MCP response exceeded the size limit");
+          if (perMessage && Buffer.byteLength(buffer.slice(0, boundary), "utf8") > maxBytes) throw new McpHttpResponseError("too_large", "MCP response exceeded the size limit");
           const result = await event(buffer.slice(0, boundary));
           buffer = buffer.slice(boundary + 2);
           if (result !== undefined) return result;
         }
-        if (Buffer.byteLength(buffer, "utf8") > maxBytes) throw new McpHttpResponseError("too_large", "MCP response exceeded the size limit");
+        if (perMessage && Buffer.byteLength(buffer, "utf8") > maxBytes) throw new McpHttpResponseError("too_large", "MCP response exceeded the size limit");
       }
       if (done) break;
     }

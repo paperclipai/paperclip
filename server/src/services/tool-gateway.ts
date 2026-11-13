@@ -7934,6 +7934,8 @@ export function createToolGatewayService(
       const body = response.ok
         ? JSON.stringify(await readMcpHttpResponse(response, callRequestId, {
             maxBytes: MAX_REMOTE_MCP_RESPONSE_BYTES,
+            // The call has a deadline (controller), so progress may outlast the total limit.
+            limitPerMessage: true,
             onProgress: (progress) => { execution.stream = progress; },
             onNotification: (message) => {
               const update = mcpProgressNotificationOf(message, progressReporter?.token);

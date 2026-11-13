@@ -193,14 +193,18 @@ describe("MCP progress notifications", () => {
     const note = `data: ${JSON.stringify({ jsonrpc: "2.0", method: "notifications/progress", params: { progressToken: "t", progress: 1, message: "x".repeat(200) } })}\n\n`;
     const text = note.repeat(50) + `data: ${JSON.stringify({ jsonrpc: "2.0", id: 1, result: { ok: true } })}\n\n`;
     expect(Buffer.byteLength(text)).toBeGreaterThan(5_000);
-    const result = await readMcpHttpResponse(new Response(text, { headers: { "content-type": "text/event-stream" } }), 1, { maxBytes: 1_000 });
+    const result = await readMcpHttpResponse(new Response(text, { headers: { "content-type": "text/event-stream" } }), 1, { maxBytes: 1_000, limitPerMessage: true });
     expect(result).toMatchObject({ result: { ok: true } });
+    // Callers without an overall deadline (catalog discovery) keep the total limit,
+    // so a stream of small notifications cannot keep them waiting forever.
+    await expect(readMcpHttpResponse(new Response(text, { headers: { "content-type": "text/event-stream" } }), 1, { maxBytes: 1_000 }))
+      .rejects.toMatchObject({ reason: "too_large" });
   });
 
   it("still rejects one SSE message over the limit, complete or not", async () => {
     const big = `data: ${JSON.stringify({ jsonrpc: "2.0", id: 1, result: { text: "x".repeat(2_000) } })}`;
     for (const text of [`${big}\n\n`, big]) {
-      await expect(readMcpHttpResponse(new Response(text, { headers: { "content-type": "text/event-stream" } }), 1, { maxBytes: 1_000 }))
+      await expect(readMcpHttpResponse(new Response(text, { headers: { "content-type": "text/event-stream" } }), 1, { maxBytes: 1_000, limitPerMessage: true }))
         .rejects.toMatchObject({ reason: "too_large" });
     }
   });
