@@ -393,23 +393,72 @@ function evictionCandidate(state: StoredCoreState): number {
 
 function checkpointChanges(records: ReadonlyMap<string, string>, runId: string, previous?: DurablePrpCheckpoint) {
   const reset = !previous || previous.runId !== runId;
-  return {
-    changedRecords: new Map([...records].filter(([key, value]) => reset || previous.records.get(key) !== value)),
-    removedRecords: reset ? [] : [...previous.records.keys()].filter(key => !records.has(key)),
-    reset,
-  };
+  if (reset) return { changedRecords: new Map(records), removedRecords: [], reset };
+  // Unchanged records keep the same string, so most comparisons are by reference.
+  const changedRecords = new Map<string, string>();
+  for (const [key, value] of records) if (previous.records.get(key) !== value) changedRecords.set(key, value);
+  const removedRecords: string[] = [];
+  for (const key of previous.records.keys()) if (!records.has(key)) removedRecords.push(key);
+  return { changedRecords, removedRecords, reset };
 }
 
-function captureCheckpoint(state: StoredCoreState, runnerVersion: string, runnerDigest: string): DurablePrpCheckpoint {
+/**
+ * Reuses the JSON of a command or event record while the record is unchanged,
+ * so a checkpoint serialises only what changed since the last one, not the
+ * whole journal. Commands and events are flat: their fields are edited in place
+ * (status, result, controllerSeq), but their nested payload, result and
+ * envelope objects are owned copies that are replaced, never edited. The JSON
+ * is therefore reused only while the record has the same keys, in the same
+ * order, with identical values.
+ */
+class CheckpointRecordCache {
+  #entries = new WeakMap<object, CheckpointRecord>();
+
+  /** The record's part name and JSON. The name derives from a field, so it is reused with the JSON. */
+  record(prefix: "command:" | "event:", sequence: number, value: object): CheckpointRecord {
+    const entry = this.#entries.get(value);
+    if (entry && sameRecordFields(value, entry.fields)) return entry;
+    const fields: unknown[] = [];
+    for (const key in value) fields.push(key, (value as Record<string, unknown>)[key]);
+    const created = { key: `${prefix}${sequence}`, json: JSON.stringify(value), fields };
+    this.#entries.set(value, created);
+    return created;
+  }
+}
+
+type CheckpointRecord = { readonly key: string; readonly json: string; readonly fields: readonly unknown[] };
+
+function sameRecordFields(value: object, fields: readonly unknown[]): boolean {
+  let index = 0;
+  for (const key in value) {
+    if (fields[index] !== key || fields[index + 1] !== (value as Record<string, unknown>)[key]) return false;
+    index += 2;
+  }
+  return index === fields.length;
+}
+
+function uncachedRecord(prefix: "command:" | "event:", sequence: number, value: object): Omit<CheckpointRecord, "fields"> {
+  return { key: `${prefix}${sequence}`, json: JSON.stringify(value) };
+}
+
+function captureCheckpoint(state: StoredCoreState, runnerVersion: string, runnerDigest: string,
+  cache?: CheckpointRecordCache): DurablePrpCheckpoint {
   const runId = checkpointRunId(state);
   const records = new Map<string, string>();
+  const record = cache ? cache.record.bind(cache) : uncachedRecord;
   const { commands, committedEvents, ackedSourceSeq: _cursor, replayDeliveries: _replays, stagedRunAttachment, ...metadata } = state;
   const stagedDescriptor = stagedRunAttachment ? (({ runAttachTemplate: _template, ...descriptor }) => descriptor)(stagedRunAttachment) : undefined;
   if (stagedRunAttachment?.commandId === null) records.set("staged-attachment-template", JSON.stringify(stagedRunAttachment.runAttachTemplate));
   const latestUsage = committedEvents.findLast(event => event.eventType === "usage.reported");
   const recoveryEvents = committedEvents.filter(event => !isStreamingEvent(event) || event === latestUsage);
-  for (const command of commands) records.set(`command:${command.controllerSeq}`, JSON.stringify(command));
-  for (const event of recoveryEvents) records.set(`event:${event.sourceSeq}`, JSON.stringify(event));
+  for (const command of commands) {
+    const { key, json } = record("command:", command.controllerSeq, command);
+    records.set(key, json);
+  }
+  for (const event of recoveryEvents) {
+    const { key, json } = record("event:", event.sourceSeq, event);
+    records.set(key, json);
+  }
   const header: CheckpointHeader = { schema: "paperclip.runner.controller-checkpoint.v2",
     runnerVersion, runnerDigest, state: { ...metadata, ...(stagedDescriptor ? { stagedRunAttachment: stagedDescriptor } : {}), checkpointEventPolicy: "control-v1" } };
   records.set("header", JSON.stringify(header));
@@ -417,7 +466,9 @@ function captureCheckpoint(state: StoredCoreState, runnerVersion: string, runner
     commandCount: commands.length, eventCount: recoveryEvents.length }));
   const maintenance = new Set(["turn.stop", "runner.drain", "runner.suspend", "session.snapshot", "session.close"]);
   return {
-    runnerVersion, runnerDigest, runId, records, ...checkpointChanges(records, runId),
+    // The controller replaces this full write set with a delta before it persists.
+    runnerVersion, runnerDigest, runId, records,
+    ...(cache ? { changedRecords: records, removedRecords: [], reset: true } : checkpointChanges(records, runId)),
     recoveryEvidence: { runnerInstanceId: state.identity.runnerInstanceId, normalizedSessionId: state.identity.normalizedSessionId,
       authenticatedConnectionCount: state.connectionCount,
       highestRecordedSourceSeq: state.committedEvents.reduce((highest, event) => Math.max(highest, event.sourceSeq), state.ackedSourceSeq) },
@@ -783,7 +834,12 @@ function canonicalJson(
   }
 }
 
-export const durableRecoveryInternals = Object.freeze({ canonicalJson });
+export const durableRecoveryInternals = Object.freeze({
+  canonicalJson,
+  captureCheckpoint: (state: DurablePrpControlPlaneStore["state"], runnerVersion: string, runnerDigest: string,
+    cache?: CheckpointRecordCache) => captureCheckpoint(state, runnerVersion, runnerDigest, cache),
+  createCheckpointRecordCache: () => new CheckpointRecordCache(),
+});
 
 function canonicalDigest(value: unknown): string {
   return createHash("sha256").update(canonicalJson(value)).digest("hex");
@@ -2125,6 +2181,7 @@ export class DurablePrpControlPlane {
   #persistedRevision = -1;
   #queuedRevision = -1;
   #lastCheckpoint?: DurablePrpCheckpoint;
+  readonly #checkpointRecords = new CheckpointRecordCache();
   #publishedState?: StoredCoreState;
   #publishedStore?: DurablePrpControlPlaneStore;
   #publicationCommands = new Map<string, { record: string; command: DurableRecoveryCoreCommand }>();
@@ -2283,7 +2340,7 @@ export class DurablePrpControlPlane {
     this.#store.useExternalPersistence();
     this.#persistCheckpoint = persist;
     this.#publishedState = this.#capturePublishedState(captureCheckpoint(this.#store.state,
-      this.#expectedRunnerVersion, this.#expectedRunnerDigest));
+      this.#expectedRunnerVersion, this.#expectedRunnerDigest, this.#checkpointRecords));
     const core = this;
     this.#publishedStore = { path: this.#store.path, get state() { return core.#visibleState(); } };
   }
@@ -2294,7 +2351,7 @@ export class DurablePrpControlPlane {
       return this.#persistenceTail;
     }
     const snapshot = captureCheckpoint(this.#store.state,
-      this.#expectedRunnerVersion, this.#expectedRunnerDigest);
+      this.#expectedRunnerVersion, this.#expectedRunnerDigest, this.#checkpointRecords);
     const published = this.#capturePublishedState(snapshot);
     const revision = this.#store.revision;
     this.#queuedRevision = revision;
@@ -3014,7 +3071,9 @@ export class DurablePrpControlPlane {
       controllerSeq,
       type,
       issuedAt: new Date().toISOString(),
-      payload,
+      // The journal owns its copy: checkpoints reuse a command's JSON while
+      // its fields keep the same values, so a caller must not edit it later.
+      payload: structuredClone(payload),
       status: "pending",
       result: null,
     };
