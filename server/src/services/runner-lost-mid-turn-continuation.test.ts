@@ -8,8 +8,8 @@ import { agentWakeupRequests, chatConversations, chatEndpoints, heartbeatRunEven
   toolApplications, toolConnections } from "@paperclipai/db";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { heartbeatService } from "./heartbeat.js";
-import { registerInterruptedTurnChatRetry, requestInterruptedNativeTurnRetry, requestRestartInterruptedTurnRetry }
-  from "./heartbeat/restart-interrupted-turn.js";
+import { MAX_RESTART_CONTINUATIONS, registerInterruptedTurnChatRetry, requestInterruptedNativeTurnRetry,
+  requestRestartInterruptedTurnRetry } from "./heartbeat/restart-interrupted-turn.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
 import { reconcileRetainedWorkspaces } from "./workspace-recovery.js";
 import { useWorkspaceRecoveryFixture, action, db, run, seed } from "./__tests__/workspace-recovery-fixture.js";
@@ -169,6 +169,95 @@ describe("a remote Runner that died in the middle of a provider turn", () => {
     expect((await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, f.companyId),
       eq(agentWakeupRequests.reason, "task_retry")))).filter(retry => retry.id !== hookIntent.id)).toHaveLength(0);
   }, 30_000);
+
+  describe("an automatic continuation that the next deploy interrupted", () => {
+    async function deployDuringRun(f: { companyId: string; runId: string; agentId: string }) {
+      for (const [message, payload] of [
+        ["Server shutdown suspended native controller ownership without cancelling provider work", { signal: "SIGTERM",
+          processPid: 1048, restartKind: "graceful", processGroupId: null, retryRunCreated: false,
+          processStartedAt: "2026-11-13T05:28:12.307Z", runnerDisposition: "awaiting_runner_reattach" }],
+        ["Recovering the existing native runner process after server restart", { restartKind: "hard", providerAttempt: 2,
+          recoveryRequestId: null, runnerDisposition: "reattach_remote_runner", controllerGeneration: 3 }],
+        ["Reattaching to the existing remote runner to resume this run", { trigger: "same_run_retry", restartKind: "hard",
+          providerAttempt: 3, recoveryRequestId: null, runnerDisposition: "reattach_remote_runner", controllerGeneration: 4 }],
+      ] as const) await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId: f.runId, agentId: f.agentId,
+        eventType: "native.recovery.transition", stream: "system", level: "info", message, payload });
+    }
+
+    async function automaticContinuation(input: { deploy: boolean; earlierContinuations?: number }) {
+      const f = await runnerLostMidTurn({ wake: "user_retry", events: ["turn.submitted"], refusalPayload: {
+        remoteRunnerRecovery: { stage: "process_verification", reason: "process_not_running", runnerSettled: false,
+          runnerLifecycle: "ready", runnerDiagnostics: ["WebSocket peer closed the connection"],
+          runnerExitEvidence: "== runnerd.process-stderr.log" } } });
+      let previousRunId: string | null = null;
+      for (let index = 0; index <= (input.earlierContinuations ?? 0); index += 1) {
+        const [lost]: Array<typeof heartbeatRuns.$inferSelect> = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, issueId: f.issueId,
+          status: "failed", runtimeMode: "native", error: "runner_remote_process_identity_unavailable",
+          createdAt: new Date(Date.now() - (120 - index) * 60_000), finishedAt: new Date(Date.now() - (110 - index) * 60_000),
+          errorCode: "native_continuation_requires_reconciliation", contextSnapshot: { issueId: f.issueId,
+            wakeReason: index === 0 ? "issue_assigned" : "task_retry", ...(previousRunId ? { previousRunId } : {}) } }).returning();
+        if (previousRunId) {
+          const [hookIntent] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId,
+            source: "on_demand", triggerDetail: "manual", reason: "task_retry", status: "completed",
+            idempotencyKey: `task-retry:restart-interrupted-turn:${previousRunId}`, requestedByActorType: "user",
+            requestedByActorId: "local-board", payload: { issueId: f.issueId } }).returning();
+          await db.update(heartbeatRuns).set({ contextSnapshot: { ...lost.contextSnapshot, taskRetryRequestId: hookIntent.id } })
+            .where(eq(heartbeatRuns.id, lost.id));
+        }
+        previousRunId = lost.id;
+      }
+      await db.update(agentWakeupRequests).set({ idempotencyKey: `task-retry:restart-interrupted-turn:${previousRunId}` })
+        .where(eq(agentWakeupRequests.id, f.retryIntent!.id));
+      const current = await run(f.runId);
+      await db.update(heartbeatRuns).set({ contextSnapshot: { ...current.contextSnapshot, previousRunId } })
+        .where(eq(heartbeatRuns.id, f.runId));
+      if (input.deploy) await deployDuringRun(f);
+      return f;
+    }
+
+    it("continues again in a fresh session when a deploy took the continuation's Runner mid-turn", async () => {
+      const f = await automaticContinuation({ deploy: true });
+      expect(await requestRestartInterruptedTurnRetry(db, f.claim)).toEqual({ requested: true, requestId: expect.any(String) });
+      expect(await requestInterruptedNativeTurnRetry(db, f.runId)).toMatchObject({ requested: true });
+      expect(await unknownOutcomeEvents(f.runId)).toEqual([expect.objectContaining({ payload: expect.objectContaining({
+        lastTurnEvent: "turn.submitted", replayed: false }) })]);
+      await vi.waitFor(async () => {
+        await Promise.all(await reconcileRetainedWorkspaces(db, f.environmentRuntime, current => f.service.resumeRemoteStopComments(current)) ?? []);
+        expect(readSystemRecovery((await action(f.actionId)).evidence)?.state).toBe("complete");
+      }, { timeout: 10_000, interval: 10 });
+      await vi.waitFor(async () => expect(await queued(f.companyId)).toHaveLength(1), { timeout: 10_000, interval: 50 });
+      const [successor] = await queued(f.companyId);
+      expect(successor.contextSnapshot).toMatchObject({ previousRunId: f.runId, wakeReason: "task_retry", forceFreshSession: true });
+      const retries = await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, f.companyId),
+        eq(agentWakeupRequests.idempotencyKey, `task-retry:restart-interrupted-turn:${f.runId}`)));
+      expect(retries).toEqual([expect.objectContaining({ requestedByActorType: "user", requestedByActorId: "local-board" })]);
+    }, 30_000);
+
+    it("continues a system retry of owed work that inherited the continuation when a deploy took its Runner", async () => {
+      const f = await runnerLostMidTurn({ wake: "system_retry" });
+      const current = await run(f.runId);
+      const [hookIntent] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId,
+        source: "on_demand", triggerDetail: "manual", reason: "task_retry", status: "completed",
+        idempotencyKey: `task-retry:restart-interrupted-turn:${randomUUID()}`, requestedByActorType: "user",
+        requestedByActorId: "local-board", payload: { issueId: f.issueId } }).returning();
+      await db.update(heartbeatRuns).set({ contextSnapshot: { ...current.contextSnapshot, taskRetryRequestId: hookIntent.id } })
+        .where(eq(heartbeatRuns.id, f.runId));
+      await deployDuringRun(f);
+      expect(await requestRestartInterruptedTurnRetry(db, f.claim)).toEqual({ requested: true, requestId: expect.any(String) });
+      expect(await unknownOutcomeEvents(f.runId)).toHaveLength(1);
+    }, 30_000);
+
+    it.each([
+      { title: "no deploy interrupted it", deploy: false, earlierContinuations: 0 },
+      { title: "the chain already used every deploy continuation", deploy: true, earlierContinuations: MAX_RESTART_CONTINUATIONS - 1 },
+    ])("keeps the visible Retry when $title", async ({ deploy, earlierContinuations }) => {
+      const f = await automaticContinuation({ deploy, earlierContinuations });
+      expect(await requestRestartInterruptedTurnRetry(db, f.claim)).toEqual({ requested: false, reason: "automatic_retry_used" });
+      expect(await unknownOutcomeEvents(f.runId)).toHaveLength(0);
+      expect(await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, f.companyId),
+        eq(agentWakeupRequests.idempotencyKey, `task-retry:restart-interrupted-turn:${f.runId}`)))).toHaveLength(0);
+    }, 30_000);
+  });
 
   // The staging chat task runs through a connected Slack conversation, whose
   // endpoint restricts external execution: its Retry goes through the chat service.
