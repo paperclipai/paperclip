@@ -65,7 +65,12 @@ function coreDialedRoute() {
   };
 }
 
-it("quiesces a Core-dialed route once the Runner commits its suspend, so its exit is not a transport loss", async () => {
+it.each([
+  { title: "", stateReadDelayMs: 0 },
+  // A remote durable-state read can outlast the Runner: it exits as soon as
+  // Core acknowledges its suspend result, while the barrier is still reading.
+  { title: " while the barrier is still reading its durable state", stateReadDelayMs: 1_500 },
+])("quiesces a Core-dialed route once the Runner commits its suspend$title, so its exit is not a transport loss", async ({ stateReadDelayMs }) => {
   const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-suspend-route-"));
   const route = coreDialedRoute();
   const port = await route.listen();
@@ -75,6 +80,12 @@ it("quiesces a Core-dialed route once the Runner commits its suspend, so its exi
     codexArgs: fakeCodexArgs(stateDirectory),
     stateDirectory,
     controlPlaneRegistration: route.registration(port),
+    ...(stateReadDelayMs > 0 ? {
+      readRunnerState: async () => {
+        await new Promise(resolveRead => setTimeout(resolveRead, stateReadDelayMs));
+        return JSON.parse(await readFile(join(stateDirectory, "runner", "runner-state.json"), "utf8")) as Record<string, unknown>;
+      },
+    } : {}),
   });
   bundle.transport.setServerRequestHandler(async () => ({ success: true, contentItems: [] }));
   try {

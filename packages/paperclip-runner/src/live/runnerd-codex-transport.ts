@@ -4762,7 +4762,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
 
   /** The Runner's exit is committed: its routes' drops are no longer transport loss. */
   #quiesceControlPlaneRoutes(): void {
-    for (const quiesce of this.#controlPlaneQuiesces) {
+    const routes = [...this.#controlPlaneQuiesces];
+    this.#controlPlaneQuiesces.clear();
+    for (const quiesce of routes) {
       try {
         quiesce();
       } catch (error) {
@@ -5687,24 +5689,32 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       // the next runnerd on this root as a stale terminal command.
       const lostLocalRunner = this.#handle !== null && this.#lostRunnerHandle === this.#handle
         && !this.options.runnerProcessLauncher && !adoptedRunner;
-      runnerSuspended = !lostLocalRunner && await awaitRunnerSuspensionBarrier({
-        commands: () => this.#core?.store.state.commands ?? [],
-        queueSuspend: (commandId) => {
-          this.#core?.queueCommand("runner.suspend", {}, commandId, true);
-        },
-        readRunnerState: async () => {
-          const state = await this.#readDurableRunnerState();
-          lastSuspensionState = state;
-          assertSuspendedRunnerState(state, this.#core!.store.state.identity);
-          return state;
-        },
-        runnerHasExited: () => this.#runnerHasExited(),
-        pump: () => this.#pumpEventsSafely(),
-        // A Core-dialed route would otherwise redial the exiting Runner. The
-        // release path quiesces its route the same way before the Runner goes.
-        onExitCommitted: () => this.#quiesceControlPlaneRoutes(),
-        deadline: closeDeadline,
-      });
+      // Quiesce before the authority acknowledges a completed suspend: the
+      // Runner exits on that acknowledgement, possibly while the barrier is
+      // still reading durable state, and a Core-dialed route would otherwise
+      // redial it. The release path quiesces its route the same way.
+      const stopObservingExit = this.#core.onRunnerExitCommitted(() => this.#quiesceControlPlaneRoutes());
+      try {
+        runnerSuspended = !lostLocalRunner && await awaitRunnerSuspensionBarrier({
+          commands: () => this.#core?.store.state.commands ?? [],
+          queueSuspend: (commandId) => {
+            this.#core?.queueCommand("runner.suspend", {}, commandId, true);
+          },
+          readRunnerState: async () => {
+            const state = await this.#readDurableRunnerState();
+            lastSuspensionState = state;
+            assertSuspendedRunnerState(state, this.#core!.store.state.identity);
+            return state;
+          },
+          runnerHasExited: () => this.#runnerHasExited(),
+          pump: () => this.#pumpEventsSafely(),
+          // Also covers a completed receipt acknowledged before this close.
+          onExitCommitted: () => this.#quiesceControlPlaneRoutes(),
+          deadline: closeDeadline,
+        });
+      } finally {
+        stopObservingExit();
+      }
       runnerLost = !runnerSuspended && this.#handle !== null && this.#lostRunnerHandle === this.#handle;
       if (!runnerSuspended) {
         const command = [...this.#core.store.state.commands].reverse().find(
