@@ -998,7 +998,10 @@ The runner's internal `usage.reported` event carries the same values, using its
 existing `providerRequestId` field and an optional `upstreamProvider` field.
 The run's `usageJson.providerRequestId` and its cost event name the first
 generation ID the run reported. That value stays the same as later turns
-report, so a late usage receipt still matches the charge. Per-call IDs and
+report, so a late usage receipt still matches the charge. Remote Runner runs carry
+the same ID in each saved usage receipt's producer event and in the receipt
+itself. A receipt saved before this field existed still replays when the
+Runner now names an ID. Per-call IDs and
 hosts remain in the run log. Runs whose provider reports no host carry neither
 field, and `usageJson.providerRequestId` stays `null` as before.
 
