@@ -11318,6 +11318,44 @@ describe("native warm session supervision", () => {
     }
   });
 
+  it("a follow-up that arrives while the idle timeout is closing the warm session waits for that close instead of failing busy", async () => {
+    const identity = "warm-idle-close-follow-up";
+    const warmExecution = { ...execution, binding: { ...execution.binding, runId: identity, executionWorkspaceId: `${identity}-workspace` },
+      session: { ...execution.session, normalizedSessionId: identity, lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 50 } },
+    } as NativeExecutionInputV1;
+    let closeStarted!: () => void, finishClose!: () => void;
+    const closing = new Promise<void>(resolve => { closeStarted = resolve; });
+    const closeGate = new Promise<void>(resolve => { finishClose = resolve; });
+    const session = { close: vi.fn(async () => { closeStarted(); await closeGate; }) };
+    state.execute.mockReset().mockImplementation(async (options) => {
+      await options.onSession?.(session);
+      return { result: { summary: "completed" }, terminal: { runTerminalState: "succeeded" },
+        turnId: identity, normalizedSessionId: identity, providerSessionId: identity,
+        driverKind: "test", driverVersion: "1", nativeEventCount: 1, highestContiguousSourceSeq: 1, usage: null };
+    });
+    const copy = (runId: string) => ({ runId, root: `/tmp/${identity}`, preparationKey: "same", hasChanges: async () => false,
+      collectStopped: async () => undefined });
+    try {
+      await executePaperclipNativeSession({ db: leaseDb(warmExecution), execution: warmExecution, runnerInstanceId: identity,
+        runnerExecutionTarget: { kind: "remote", transport: "sandbox", environmentId: identity, remoteCwd: `/tmp/${identity}` },
+        instructionWorkingCopy: copy(identity) });
+      await closing;
+      const followUpRunId = `${identity}-follow-up`;
+      const adopt = vi.fn(async () => copy(followUpRunId));
+      const followUp = claimWarmNativeInstructionCopy({ priorExecution: warmExecution,
+        companyId: warmExecution.binding.companyId, agentId: warmExecution.binding.agentId,
+        executionWorkspaceId: warmExecution.binding.executionWorkspaceId, workspace: warmExecution.workspace,
+        environmentId: identity, runId: followUpRunId, preparationKey: "same", adopt });
+      setTimeout(finishClose, 100);
+      await expect(followUp).resolves.toBeNull();
+      expect(adopt).not.toHaveBeenCalled();
+      expect(session.close).toHaveBeenCalledTimes(1);
+    } finally {
+      finishClose();
+      await closeWarmNativeSessionsForEnvironment({ environmentId: identity, reason: "test cleanup" });
+    }
+  });
+
   it("admits the follow-up's execution only after the previous owner's final cleanup hands its scopes back", async () => {
     const identity = "warm-release-scope-handback";
     const warmExecution = { ...execution, binding: { ...execution.binding, runId: identity, executionWorkspaceId: `${identity}-workspace` },
