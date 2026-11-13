@@ -220,9 +220,12 @@ function meanCycleMs(mix: Pick<StagingMixOptions, "turnMinutes">): number {
   return ((mix.turnMinutes[0] + mix.turnMinutes[1]) / 2 + 5) * 60_000;
 }
 
-export function slotTimesMs(mix: Pick<StagingMixOptions, "minutes" | "faultSpacingMinutes">): number[] {
+export function slotTimesMs(mix: Pick<StagingMixOptions, "minutes" | "faultSpacingMinutes">,
+  firstSlotRaw = process.env.RESTART_CHAOS_MIX_FIRST_SLOT_SECONDS): number[] {
+  const spacing = mix.faultSpacingMinutes * 60_000;
+  const first = firstSlotRaw && /^[0-9]+$/.test(firstSlotRaw) ? Math.min(Number(firstSlotRaw) * 1000, spacing) : spacing;
   const times: number[] = [];
-  for (let at = mix.faultSpacingMinutes * 60_000; at < mix.minutes * 60_000; at += mix.faultSpacingMinutes * 60_000) times.push(at);
+  for (let at = first; at < mix.minutes * 60_000; at += spacing) times.push(at);
   return times;
 }
 

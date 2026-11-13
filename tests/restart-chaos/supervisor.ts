@@ -182,6 +182,7 @@ export class ChaosSupervisor {
   deployShape: { overlap: boolean; freshHome: boolean } = { overlap: false, freshHome: false };
   ephemeralServer = false;
   swapHook: ((info: SwapPhaseInfo) => Promise<string | void>) | null = null;
+  private rollingRedeploys = 0;
   /** `--k15-fresh-home`: the instance home and config of the serving generation (generation 0 uses `paths`). */
   private serverHome: { home: string; configPath: string };
   /** `--k15-overlap-seconds`: the edge on the wave's port, and the serving generation's own port behind it. */
@@ -828,7 +829,10 @@ export class ChaosSupervisor {
     this.edge.target = this.backendPort;
     this.timeline.add("k15_traffic_switched", { faultId: receipt.faultId, fromPort, toPort: this.backendPort, overlapMs });
     await swap("switched", next);
-    const killAfterMs = overlapKillAfterMs(process.env.RESTART_CHAOS_K15_KILL_OLD_AFTER_SECONDS, overlapMs);
+    this.rollingRedeploys += 1;
+    const killSwaps = process.env.RESTART_CHAOS_K15_KILL_OLD_SWAPS?.split(",").map(Number) ?? null;
+    const killAfterMs = killSwaps && !killSwaps.includes(this.rollingRedeploys) ? null
+      : overlapKillAfterMs(process.env.RESTART_CHAOS_K15_KILL_OLD_AFTER_SECONDS, overlapMs);
     for (const until = Date.now() + (killAfterMs ?? overlapMs); Date.now() < until && !this.shuttingDown;) await delay(Math.min(1_000, until - Date.now()));
     await swap("stopping", next);
     const freezeMs = overlapKillAfterMs(process.env.RESTART_CHAOS_K15_FREEZE_NEW_SECONDS, 600_000);
