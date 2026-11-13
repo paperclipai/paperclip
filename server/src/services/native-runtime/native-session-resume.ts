@@ -60,9 +60,7 @@ export function nativeToolContractFingerprintForTarget(
           chatTaskTools: "durable_task_binding_and_accepted_origin.v1",
           githubResponses: "bound_working_comment_progress_and_final.v1",
           githubInstructionSkills: "trusted_configuration_native_selection.v1",
-          ...(executionTargetKind === "remote"
-            ? { assignedMcpTools: "codex_server_gateway_prp_relay.v1" }
-            : {}),
+          assignedMcpTools: "codex_server_gateway_prp_relay.v1",
         },
         tools: [
           { name: "register_deliverable", version: 2 },

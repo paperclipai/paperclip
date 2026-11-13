@@ -4,6 +4,18 @@ pub const GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION: u64 = 2;
 pub const GENERATED_ACPX_TURN_DISPATCH_JOURNAL_FILE: &str = "paperclip-turn-dispatch.jsonl";
 pub const GENERATED_ACPX_TURN_DISPATCH_SCHEMA: &str = "paperclip.acpx-turn-dispatch.v1";
 pub const GENERATED_ACPX_PROVIDER_TURN_ORIGIN: &str = "provider";
+pub const GENERATED_ACPX_BACKGROUND_TASKS_MAX_LIVE: u64 = 9007199254740991;
+
+pub fn read_generated_acpx_background_tasks(value: &serde_json::Value) -> Option<u64> {
+    let tasks = value.as_object()?;
+    if tasks.len() != 1 {
+        return None;
+    }
+    tasks
+        .get("live")?
+        .as_u64()
+        .filter(|live| *live <= GENERATED_ACPX_BACKGROUND_TASKS_MAX_LIVE)
+}
 
 pub const GENERATED_ACPX_TOOL_OPERATION_PRECEDENCE: &[(&str, &[&str])] = &[
     ("edit", &["edit", "write", "patch"]),

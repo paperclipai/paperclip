@@ -1,14 +1,15 @@
 import { collectSecretRefPaths, isUuidSecretRef, parseSecretRefBindingObject, readConfigValueAtPath } from "./json-schema-secret-refs.js";
 import { createHash, randomUUID } from "node:crypto";
-import { and, eq, lte, or, sql } from "drizzle-orm";
+import { and, eq, lte, ne, or, sql } from "drizzle-orm";
 import { currentControllerProcess } from "./controller-process-identity.js";
-import { companies, environments, heartbeatRuns, sandboxCreationOperations, type Db } from "@paperclipai/db";
+import { companies, environmentLeases, environments, heartbeatRuns, sandboxCreationOperations, type Db } from "@paperclipai/db";
 import { readEnvironmentCreationCleanupError, type PluginEnvironmentLease, type PluginEnvironmentLeaseObservation } from "@paperclipai/plugin-sdk";
 import { assertEnvironmentCompanyBinding, environmentService } from "./environments.js";
 import { ENVIRONMENT_CLEANUP_RETRY_MS, recoverableSandboxCreationCondition } from "./environment-cleanup-state.js";
 import { logger } from "../middleware/logger.js";
 import { notifyEnvironmentCleanup, writeEnvironmentCleanup } from "./environment-cleanup-notifications.js";
 import { crashPoint } from "@paperclipai/shared/crash-points";
+import { hasRemoteTerminationReceipt, resolveRemoteTerminationLease } from "./remote-execution-termination.js";
 
 export type SandboxCreationOperation = typeof sandboxCreationOperations.$inferSelect;
 
@@ -70,9 +71,14 @@ export async function createOwnedSandbox(
   const runId = owner.heartbeatRunId ?? randomUUID();
   const settleAt = new Date(Date.now() + Math.max(CREATION_SETTLE_FLOOR_MS, (owner.timeoutMs ?? 0) + 60_000));
   const creationController = await currentControllerProcess();
-  const operation = await db.transaction(async tx => {
+  const admit = (stopped?: SandboxCreationOperation) => db.transaction(async tx => {
     await notifyEnvironmentCleanup(tx, { companyId: owner.companyId, runId: owner.heartbeatRunId ?? undefined });
     await assertEnvironmentCompanyBinding(tx as unknown as Db, owner.environmentId, owner.companyId);
+    // Only one concurrent attempt resolves the stopped operation; any other one
+    // then meets the replacement below and is fenced exactly as before.
+    if (stopped) await tx.update(sandboxCreationOperations).set({ state: "resolved", updatedAt: new Date() }).where(and(
+      eq(sandboxCreationOperations.id, stopped.id), eq(sandboxCreationOperations.state, "attached"),
+      eq(sandboxCreationOperations.leaseId, stopped.leaseId!)));
     const [inserted] = await tx.insert(sandboxCreationOperations).values({
       id, companyId: owner.companyId, environmentId: owner.environmentId, originalEnvironmentId: owner.environmentId,
       runId, requestKey: owner.requestKey ?? "run", issueId: owner.issueId, executionWorkspaceId: owner.executionWorkspaceId,
@@ -85,10 +91,13 @@ export async function createOwnedSandbox(
     const [existing] = await tx.select().from(sandboxCreationOperations).where(and(
       eq(sandboxCreationOperations.companyId, owner.companyId), eq(sandboxCreationOperations.originalEnvironmentId, owner.environmentId),
       eq(sandboxCreationOperations.runId, runId), eq(sandboxCreationOperations.requestKey, owner.requestKey ?? "run"),
+      ne(sandboxCreationOperations.state, "resolved"),
     ));
     if (!existing) throw new Error("Sandbox creation ownership was not recorded");
     return existing;
   });
+  let operation = await admit();
+  if (operation.id !== id && await createdSandboxStopped(db, operation)) operation = await admit(operation);
   if (operation.id !== id) {
     if (operation.state !== "attached" || !operation.leaseId) throw new Error("Sandbox creation requires reconciliation before another attempt");
     const existing = await environmentService(db).getLeaseById(operation.leaseId);
@@ -114,6 +123,20 @@ export async function createOwnedSandbox(
     }
     throw error;
   }
+}
+
+/** An attached operation is finished once its closed lease carries the same
+ * stop proof same-run recovery requires (remoteExecutionHasStopped) for the
+ * sandbox this operation created. A task replacement can leave an earlier
+ * operation attached to a lease that now holds another sandbox; that operation
+ * is not proven and keeps its key. */
+async function createdSandboxStopped(db: Db, operation: SandboxCreationOperation): Promise<boolean> {
+  if (operation.state !== "attached" || !operation.leaseId) return false;
+  const [lease] = await db.select().from(environmentLeases).where(and(
+    eq(environmentLeases.id, operation.leaseId), eq(environmentLeases.companyId, operation.companyId)));
+  if (!lease || lease.status === "active" || !lease.providerLeaseId) return false;
+  const created = operation.metadata.creationProviderLeaseId ?? lease.providerLeaseId;
+  return created === lease.providerLeaseId && hasRemoteTerminationReceipt(await resolveRemoteTerminationLease(db, lease));
 }
 
 /** Keep an already returned resource identity even when task attachment fails.

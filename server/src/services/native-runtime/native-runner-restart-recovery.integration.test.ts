@@ -1328,7 +1328,7 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
     } finally { await authority.stop(); }
   });
 
-  it.each((["idle", "preparing_successor", "unclaimed_successor", "claimed_successor", "expired_preparation", "dispatching_successor", "foreign_preparation", "foreign_native_preparation", "wrong_issue", "new_work", "replaced_controller", "unaccepted"] as const).flatMap(scenario =>
+  it.each((["idle", "preparing_successor", "unclaimed_successor", "claimed_successor", "expired_preparation", "dispatching_successor", "foreign_preparation", "foreign_native_preparation", "wrong_issue", "new_work", "replaced_controller", "unaccepted", "queued_successor", "scheduled_retry_successor", "queued_wrong_issue", "queued_new_work"] as const).flatMap(scenario =>
     (["runner.suspend", "turn.stop"] as const).map(command => ({ scenario, command }))))(
     "settles a completed warm checkpoint during early retirement without granting work: $scenario/$command",
     async ({ scenario, command }) => {
@@ -1365,17 +1365,19 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
         let nextRunId: string | null = null;
         if (scenario !== "idle") {
           nextRunId = randomUUID();
-          const preparing = scenario !== "claimed_successor" && scenario !== "unclaimed_successor";
-          const otherIssue = scenario === "wrong_issue" ? (await seedRun(`WARM-OTHER-ISSUE-${command}`)).issueId : fixture.issueId;
+          const waiting = scenario.startsWith("queued_") || scenario === "scheduled_retry_successor";
+          const preparing = !waiting && scenario !== "claimed_successor" && scenario !== "unclaimed_successor";
+          const otherIssue = scenario === "wrong_issue" || scenario === "queued_wrong_issue" ? (await seedRun(`WARM-OTHER-ISSUE-${scenario}-${command}`)).issueId : fixture.issueId;
           await fixture.db.insert(heartbeatRuns).values({ id: nextRunId, companyId, agentId,
             issueId: otherIssue, scopeKind: "issue", contextSnapshot: { issueId: otherIssue },
-            ...(preparing ? { runtimeMode: "legacy", executionStage: scenario === "dispatching_successor" ? "dispatching" : "preparing",
+            ...(waiting ? { status: scenario === "scheduled_retry_successor" ? "scheduled_retry" : "queued" } : {}),
+            ...(waiting ? {} : preparing ? { runtimeMode: "legacy", executionStage: scenario === "dispatching_successor" ? "dispatching" : "preparing",
               controllerBootId: scenario === "foreign_preparation" ? randomUUID() : legacyControllerBootId,
               controllerLeaseExpiresAt: scenario === "expired_preparation" ? new Date(0) : new Date(Date.now() + 60_000),
               ...(scenario === "foreign_native_preparation" ? { nativeIssueId: fixture.issueId } : {}),
             } : { runtimeMode: "native", nativeIssueId: fixture.issueId, nativeSessionId: randomUUID() }),
-            status: "running", invocationSource: "manual" });
-          if (!preparing || scenario === "foreign_native_preparation") await fixture.db.insert(nativeRunFinalizations).values({ runId: nextRunId, companyId, issueId: fixture.issueId,
+            ...(waiting ? {} : { status: "running" }), invocationSource: "manual" });
+          if ((!preparing && !waiting) || scenario === "foreign_native_preparation") await fixture.db.insert(nativeRunFinalizations).values({ runId: nextRunId, companyId, issueId: fixture.issueId,
               phase: "observed", ...(scenario === "claimed_successor" || scenario === "foreign_native_preparation" ? {
                 controllerBootId: scenario === "foreign_native_preparation" ? randomUUID() : successor.bootId,
                 controllerGeneration: 1, leaseOwner: "next-warm-owner", leaseExpiresAt: new Date(Date.now() + 60_000) } : {}),
@@ -1383,8 +1385,8 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
         }
         await fixture.db.update(issues).set({ executionRunId: nextRunId }).where(eq(issues.id, fixture.issueId));
         const before = (await loadNativeRunnerCheckpoint(fixture.db, binding))!;
-        authority.queueCommand(scenario === "new_work" ? "turn.start" : command, {}, `early-retirement-${scenario}`);
-        if (!["idle", "preparing_successor", "claimed_successor"].includes(scenario)) {
+        authority.queueCommand(scenario === "new_work" || scenario === "queued_new_work" ? "turn.start" : command, {}, `early-retirement-${scenario}`);
+        if (!["idle", "preparing_successor", "claimed_successor", "queued_successor", "scheduled_retry_successor"].includes(scenario)) {
           await expect(authority.flushCheckpoint()).rejects.toThrow("native_runner_checkpoint_owner_lost");
           expect((await loadNativeRunnerCheckpoint(fixture.db, binding))?.records).toEqual(before.records);
         } else {
@@ -1571,6 +1573,39 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
     const [run] = await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
     expect(run?.status).toBe("running");
     expect(run?.processPid).toBe(remotePid);
+  });
+
+  it.each([true, false])("asks the same-run reattachment to replace a Runner that left its recovery read unanswered: %s", async (unanswered) => {
+    const fixture = await seedRun(`remote-unanswered-${unanswered}`);
+    await fixture.db.update(heartbeatRuns).set({
+      processPid: null,
+      processStartedAt: new Date("2020-01-01T00:00:00Z"),
+      runnerProfileJson: {
+        nativeWorkspaceSync: {
+          schema: "paperclip.native-workspace-sync/v1", state: "prepared",
+          descriptorSha256: "a".repeat(64), baselineSha256: "b".repeat(64),
+          workspaceId: "workspace", leaseId: "lease", providerLeaseId: "sandbox",
+          remoteCwd: "/workspace",
+        },
+        sessionCheckpoint: {
+          identity: { companyId, agentId, issueId: fixture.issueId, runId: fixture.runId,
+            sessionId: fixture.native.normalizedSessionId },
+          providerSessionId: "provider-session",
+          process: { providerPid: process.pid },
+        },
+      },
+    }).where(eq(heartbeatRuns.id, fixture.runId));
+    await fixture.db.update(nativeRunFinalizations).set({ attempt: 2, failureDetail: {
+      message: "native_session_recovery_failed: HarnessReconciliationError: codex_history_read_failed: thread/turns/list requires supported paginated history; Error: provider_transport_failed: PRP command session.snapshot timed out (runner connected; pending ahead 0; last runner event seq 337 111s ago)",
+      recoveryMode: "exact_checkpoint_resume", checkpointExists: true,
+      ...(unanswered ? { adoptedRunnerUnanswered: true } : {}),
+    } }).where(eq(nativeRunFinalizations.runId, fixture.runId));
+    const [claim] = await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
+      restartKind: "graceful", runIds: [fixture.runId] });
+    expect(claim).toMatchObject({ kind: "reattach_remote_runner", runId: fixture.runId, providerAttempt: 2,
+      remote: { providerLeaseId: "sandbox", remoteCwd: "/workspace" } });
+    expect(claim?.kind === "reattach_remote_runner" ? claim.replaceUnansweredRunner : "not remote")
+      .toBe(unanswered ? true : undefined);
   });
 
   it("keeps a restart recovery's attempt credit while the agent directory is busy, then resumes at attempt 3", async () => {

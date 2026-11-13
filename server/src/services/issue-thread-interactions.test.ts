@@ -68,6 +68,7 @@ function createFakeDb(args: {
       selectCallCount += 1;
       const rows = selectCallCount === 1 ? [interactionRow] : (args.parentRows ?? []);
       return createSelectChain(table => {
+        if (getTableName(table as never) === "agent_wakeup_requests") return [];
         if (getTableName(table as never) === "issues") return [{
           id: interactionRow.issueId, companyId: interactionRow.companyId, status: "in_progress",
           assigneeAgentId: interactionRow.createdByAgentId, conversationAgentId: null,

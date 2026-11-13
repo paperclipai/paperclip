@@ -88,6 +88,7 @@ describe("live sidecar pending request snapshots", () => {
 import { deliverAcpxResponse } from "../drivers/acpx/response-delivery.js";
 import { normalizeAcpxPermission } from "../drivers/acpx/acp-permission-adapter.js";
 import { ACPX_CAPABILITY_PROFILES } from "../drivers/acpx/capability-profiles.js";
+import { readGeneratedAcpxBackgroundTasks } from "../drivers/acpx/generated-sidecar-contract.js";
 import { resolveQualifiedAcpxProfile } from "../drivers/acpx/qualified-profiles.js";
 import { ACPX_SIDECAR_PROTOCOL_VERSION, ACPX_SIDECAR_MAX_FRAME_BYTES, stringifyAcpxSidecarFrame, parseAcpxSidecarRequest, record, text } from "../drivers/acpx/sidecar-protocol.js";
 import { canonicalProviderEventsFromAcpxRuntimeEvent } from "../provider-events.js";
@@ -1243,9 +1244,9 @@ describe("qualified ACPX runtime sidecar", () => {
     const start = source.indexOf("function claudeBackgroundTasks(");
     const end = source.indexOf("async function waitForTool(", start);
     expect(start).toBeGreaterThan(0);
-    const load = (agent: string, room: boolean | null) => new Function("initializedAgent", "toolUseAdmission",
+    const load = (agent: string, room: boolean | null) => new Function("initializedAgent", "toolUseAdmission", "readGeneratedAcpxBackgroundTasks",
       `${stripTypeScriptTypes(source.slice(start, end))}; return claudeBackgroundTasks;`)(
-      agent, room === null ? null : { hasRoomForAnotherTurn: () => room });
+      agent, room === null ? null : { hasRoomForAnotherTurn: () => room }, readGeneratedAcpxBackgroundTasks);
     const host = { backgroundTaskState: () => ({ live: 0 }) };
     expect(load("claude", true)(host)).toEqual({ live: 0 });
     expect(load("claude", false)(host)).toBeNull();

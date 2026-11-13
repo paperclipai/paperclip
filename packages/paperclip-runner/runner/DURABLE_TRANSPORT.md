@@ -211,7 +211,10 @@ every condition of the turn-end restart holds. Before the next turn it reads
 malformed report, a failed, cancelled or interrupted turn, any other agent, a
 full settled-turn ledger or a full tool replay ledger replaces the sidecar as
 before. A kept sidecar keeps its tool call-ID tombstones and settled turn
-identities.
+identities. The report's shape is `$defs.backgroundTasks` in
+`protocol/provider-schemas/acpx-sidecar.schema.json`; both readers are
+generated from it and tested against
+`protocol/fixtures/provider-boundary/acpx-background-tasks.json`.
 
 When a completed Claude turn's terminal reports `backgroundTasks: {"live": N}`
 with N above zero and the same restart conditions hold, Runner keeps the

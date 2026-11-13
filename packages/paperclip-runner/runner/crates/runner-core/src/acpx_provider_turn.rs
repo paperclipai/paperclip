@@ -3,16 +3,15 @@ use serde_json::{json, Value};
 use super::AcpxProviderSession;
 use crate::acpx_provider_state::AcpxProviderStateEvent;
 use crate::acpx_sidecar_transport::AcpxSidecarEvent;
-use crate::generated_acpx_sidecar_contract::GENERATED_ACPX_PROVIDER_TURN_ORIGIN;
+use crate::generated_acpx_sidecar_contract::{
+    read_generated_acpx_background_tasks, GENERATED_ACPX_PROVIDER_TURN_ORIGIN,
+};
 use crate::local_runner::LocalRunnerError;
 
 pub(super) fn reported_live_background_tasks(payload: &Value) -> Option<u64> {
     payload
         .get("backgroundTasks")
-        .and_then(Value::as_object)
-        .filter(|tasks| tasks.len() == 1)
-        .and_then(|tasks| tasks.get("live"))
-        .and_then(Value::as_u64)
+        .and_then(read_generated_acpx_background_tasks)
 }
 
 impl AcpxProviderSession {
