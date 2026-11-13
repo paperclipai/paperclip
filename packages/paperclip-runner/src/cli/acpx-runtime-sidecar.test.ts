@@ -1154,6 +1154,83 @@ describe("qualified ACPX runtime sidecar", () => {
     } finally { await sidecar.close(); rmSync(root,{recursive:true,force:true}); }
   }, 15000);
 
+  it.each(["claude", "codex"] as const)("reports %s live background tasks only on a completed Claude terminal and snapshot", async agent => {
+    const root = mkdtempSync(join(tmpdir(), "acpx-background-tasks-"));
+    const loader = join(root, "loader.mjs"), fixture = join(root, "host.mjs");
+    const base = new URL("../test-support/acpx-blocked-output-host.mjs", import.meta.url).href;
+    const turns = [
+      { state: { live: 0 }, status: "completed" },
+      { state: { live: 2 }, status: "completed" },
+      { state: null, status: "completed" },
+      { state: { live: 0 }, status: "failed" },
+      { state: { live: 0 }, status: "cancelled", plan: true },
+      { state: { live: -1 }, status: "completed" },
+      { throws: true, status: "completed" },
+    ];
+    writeFileSync(join(root, "turns.json"), JSON.stringify(turns));
+    writeFileSync(fixture, `import { AcpxRuntimeHost as Base } from ${JSON.stringify(base)};
+      import { readFileSync } from "node:fs";
+      import { join } from "node:path";
+      const turns = JSON.parse(readFileSync(join(process.env.PAPERCLIP_TEST_OUTPUT_ROOT, "turns.json"), "utf8"));
+      let turn = -1;
+      export class AcpxRuntimeHost extends Base {
+        static async open(options) { const host = await Base.open(options); Object.setPrototypeOf(host, this.prototype); return host; }
+        backgroundTaskState() {
+          const current = turns[Math.max(turn, 0)];
+          if (current.throws) throw new Error("background task state unavailable");
+          return current.state;
+        }
+        startTurn({ requestId, onPlanProposal }) {
+          const current = turns[++turn];
+          if (current.plan) onPlanProposal({ toolCallId: "toolu_plan", markdown: "# Plan" });
+          return { requestId, promptStarted: Promise.resolve(),
+            result: Promise.resolve(current.status === "failed" ? { status: "failed", error: { message: "provider failed" } } : { status: current.status }),
+            events: (async function* () {})() };
+        }
+      }`);
+    writeFileSync(loader, `import { registerHooks } from "node:module"; import { pathToFileURL } from "node:url";
+      registerHooks({resolve(specifier,context,next){
+        if(context.parentURL?.includes("/acpx-runtime-sidecar.") && specifier.endsWith("/runtime-host.js"))
+          return {url:pathToFileURL(${JSON.stringify(fixture)}).href,shortCircuit:true};
+        return next(specifier,context);
+      }});`);
+    const sidecar = new SidecarProcess({ loader, environment: { PAPERCLIP_TEST_OUTPUT_ROOT: root } });
+    children.add(sidecar);
+    const model = agent === "claude" ? "claude-sonnet-5" : "gpt-5.6-sol";
+    let id = 0;
+    const send = async (command: string, params: Record<string, unknown>) => {
+      sidecar.write({ protocolVersion: ACPX_SIDECAR_PROTOCOL_VERSION, id: ++id, command, params });
+      const sent = id;
+      const reply = await sidecar.next(frame => frame.id === sent);
+      expect(reply).toMatchObject({ ok: true });
+      return reply.result as Record<string, unknown>;
+    };
+    try {
+      sidecar.write(initializeRequest(++id, agent, model));
+      expect(await sidecar.next(frame => frame.id === 1)).toMatchObject({ ok: true });
+      await send("session.open", { agent, model, runtimeDirectory: root, workingDirectory: root,
+        normalizedSessionId: "background-session", permissionMode: "deny-all", systemInstructions: "Test background tasks.", tools: [] });
+      await send("run.attach", { runId: "background-run", catalogRevision: 1, tools: [] });
+      const observed: Array<{ terminal: unknown; snapshot: unknown }> = [];
+      for (const [index] of turns.entries()) {
+        const turnId = `turn-${index + 1}`;
+        await send("turn.start", { turnId, message: "Work." });
+        const terminal = await sidecar.next(frame => frame.eventType === "runtime.turn_terminal" && frame.turnId === turnId);
+        const snapshot = await send("session.snapshot", {});
+        observed.push({ terminal: (terminal.payload as Record<string, unknown>).backgroundTasks, snapshot: snapshot.backgroundTasks });
+      }
+      expect(observed).toEqual(agent === "claude" ? [
+        { terminal: { live: 0 }, snapshot: { live: 0 } },
+        { terminal: { live: 2 }, snapshot: { live: 2 } },
+        { terminal: undefined, snapshot: undefined },
+        { terminal: undefined, snapshot: { live: 0 } },
+        { terminal: undefined, snapshot: { live: 0 } },
+        { terminal: undefined, snapshot: undefined },
+        { terminal: undefined, snapshot: undefined },
+      ] : turns.map(() => ({ terminal: undefined, snapshot: undefined })));
+    } finally { await sidecar.close(); children.delete(sidecar); rmSync(root, { recursive: true, force: true }); }
+  }, 20_000);
+
   it.each(["claude", "codex"] as const)("binds %s tool calls to the turn that announced their tool use", async agent => {
     const root = mkdtempSync(join(tmpdir(), "acpx-tool-use-"));
     const loader = join(root, "loader.mjs"), fixture = join(root, "host.mjs");
