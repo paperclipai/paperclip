@@ -2,9 +2,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const driverFor = vi.hoisted(() => vi.fn());
 vi.mock("./plugin-runner-ai-connection.js", () => ({ pluginEnvironmentRunnerTaskDriver: driverFor }));
+const instanceDefault = vi.hoisted(() => ({ value: null as string | null }));
+vi.mock("./instance-settings.js", () => ({ instanceSettingsService: () => ({ get: async () => ({ defaultEnvironmentId: instanceDefault.value }) }) }));
 
 const {
   assertEnvironmentVariablesNotProtected,
+  checkAgentProtectedEnvironmentKeys,
   assertNoProtectedEnvironmentKeys,
   listProtectedEnvironmentKeyHolders,
   protectedEnvironmentKeyWarnings,
@@ -15,11 +18,14 @@ const holders = [
   { environmentId: "computer-b", environmentName: "Computer B", keys: new Set(["DESKTOP_SESSION", "DESKTOP_DISPLAY"]) },
 ];
 
-function fakeDb(rows: unknown[]) {
-  return { select: () => ({ from: () => ({ where: async () => rows }) }) } as never;
+// Each select returns the next result: environments first, then plugins.
+function fakeDb(...results: unknown[][]) {
+  const selects = { count: 0 };
+  const db = { select: () => ({ from: () => ({ where: async () => results[selects.count++] ?? [] }) }) };
+  return Object.assign(db, { selects }) as never as { selects: { count: number } } & Parameters<typeof listProtectedEnvironmentKeyHolders>[0];
 }
 
-beforeEach(() => { driverFor.mockReset(); });
+beforeEach(() => { driverFor.mockReset(); instanceDefault.value = null; });
 
 describe("protected environment keys", () => {
   it("rejects a key that the selected environment sets itself", () => {
@@ -44,16 +50,31 @@ describe("protected environment keys", () => {
     expect(protectedEnvironmentKeyWarnings(holders, null, "env")).toEqual([]);
   });
 
-  it("lists only plugin environments whose task driver declares keys", async () => {
-    driverFor.mockImplementation(async (_db: unknown, environment: { config: { driverKey: string } }) =>
-      environment.config.driverKey === "computer" ? { protectedEnvironmentKeys: ["DESKTOP_SESSION"] } : { supportsTasks: true });
+  it("lists only plugin environments whose task driver declares keys, reading the registry once", async () => {
+    const drivers = [
+      { driverKey: "computer", supportsTasks: true, protectedEnvironmentKeys: ["DESKTOP_SESSION"] },
+      { driverKey: "plain", supportsTasks: true },
+      { driverKey: "storage", protectedEnvironmentKeys: ["IGNORED"] },
+    ];
     const db = fakeDb([
-      { id: "a", name: "Computer", driver: "plugin", config: { pluginKey: "p", driverKey: "computer" } },
-      { id: "b", name: "Plain", driver: "plugin", config: { pluginKey: "p", driverKey: "plain" } },
+      { id: "a", name: "Computer", config: { pluginKey: "p", driverKey: "computer" } },
+      { id: "b", name: "Plain", config: { pluginKey: "p", driverKey: "plain" } },
+      { id: "c", name: "Second computer", config: { pluginKey: "p", driverKey: "computer" } },
+      { id: "d", name: "Storage", config: { pluginKey: "p", driverKey: "storage" } },
+      { id: "e", name: "Unregistered", config: { pluginKey: "unregistered", driverKey: "computer" } },
+      { id: "f", name: "Missing", config: { pluginKey: "missing", driverKey: "computer" } },
+    ], [
+      { pluginKey: "p", manifestJson: { capabilities: ["environment.drivers.register"], environmentDrivers: drivers } },
+      { pluginKey: "unregistered", manifestJson: { capabilities: [], environmentDrivers: drivers } },
     ]);
     expect(await listProtectedEnvironmentKeyHolders(db)).toEqual([
       { environmentId: "a", environmentName: "Computer", keys: new Set(["DESKTOP_SESSION"]) },
+      { environmentId: "c", environmentName: "Second computer", keys: new Set(["DESKTOP_SESSION"]) },
     ]);
+    expect(db.selects.count).toBe(2);
+    const empty = fakeDb([{ id: "x", name: "No plugin key", config: {} }]);
+    expect(await listProtectedEnvironmentKeyHolders(empty)).toEqual([]);
+    expect(empty.selects.count).toBe(1);
   });
 
   it("rejects an environment's own variable when its driver protects it", async () => {
@@ -64,5 +85,22 @@ describe("protected environment keys", () => {
     await expect(assertEnvironmentVariablesNotProtected(fakeDb([]), { name: "Local", driver: "local", config: {} }, { DESKTOP_SESSION: "x" }))
       .resolves.toBeUndefined();
     expect(driverFor).toHaveBeenCalledTimes(1);
+  });
+
+  it("checks an agent without its own environment against the instance default", async () => {
+    const environmentRows = [{ id: "computer-env", name: "Team Computer", config: { pluginKey: "p", driverKey: "computer" } }];
+    const pluginRows = [{ pluginKey: "p", manifestJson: { capabilities: ["environment.drivers.register"],
+      environmentDrivers: [{ driverKey: "computer", supportsTasks: true, protectedEnvironmentKeys: ["DESKTOP_SESSION"] }] } }];
+    const db = () => fakeDb(environmentRows, pluginRows);
+    const config = { env: { DESKTOP_SESSION: { type: "plain", value: "mine" } } };
+    instanceDefault.value = "computer-env";
+    await expect(checkAgentProtectedEnvironmentKeys(db(), config, null))
+      .rejects.toMatchObject({ status: 422, details: { code: "protected_environment_variable", environmentId: "computer-env" } });
+    await expect(checkAgentProtectedEnvironmentKeys(db(), config, "computer-env")).rejects.toMatchObject({ status: 422 });
+    expect(await checkAgentProtectedEnvironmentKeys(db(), config, "local-env"))
+      .toEqual([expect.objectContaining({ field: "adapterConfig.env.DESKTOP_SESSION" })]);
+    instanceDefault.value = "local-env";
+    expect(await checkAgentProtectedEnvironmentKeys(db(), config, undefined)).toHaveLength(1);
+    expect(await checkAgentProtectedEnvironmentKeys(db(), { env: {} }, null)).toEqual([]);
   });
 });

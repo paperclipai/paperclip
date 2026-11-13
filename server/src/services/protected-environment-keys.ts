@@ -1,8 +1,9 @@
-import { and, eq } from "drizzle-orm";
-import { environments, type Db } from "@paperclipai/db";
+import { and, eq, inArray, ne } from "drizzle-orm";
+import { environments, plugins as pluginsTable, type Db } from "@paperclipai/db";
 import type { AgentConfigurationWarning } from "@paperclipai/shared";
 import { unprocessable } from "../errors.js";
 import { pluginEnvironmentRunnerTaskDriver } from "./plugin-runner-ai-connection.js";
+import { instanceSettingsService } from "./instance-settings.js";
 
 /** An environment whose task-execution plugin sets these variables itself. */
 export interface ProtectedEnvironmentKeyHolder {
@@ -17,11 +18,20 @@ export interface ProtectedEnvironmentKeyHolder {
  * where it would be overridden is rejected or answered with a notice.
  */
 export async function listProtectedEnvironmentKeyHolders(db: Db): Promise<ProtectedEnvironmentKeyHolder[]> {
-  const rows = await db.select({ id: environments.id, name: environments.name, driver: environments.driver, config: environments.config })
+  const rows = await db.select({ id: environments.id, name: environments.name, config: environments.config })
     .from(environments).where(and(eq(environments.driver, "plugin"), eq(environments.status, "active")));
+  const pluginKeys = [...new Set(rows.flatMap(row => typeof row.config?.pluginKey === "string" ? [row.config.pluginKey] : []))];
+  if (pluginKeys.length === 0) return [];
+  // One plugin read for all environments, not one per environment.
+  const plugins = new Map((await db.select({ pluginKey: pluginsTable.pluginKey, manifestJson: pluginsTable.manifestJson }).from(pluginsTable)
+    .where(and(inArray(pluginsTable.pluginKey, pluginKeys), ne(pluginsTable.status, "uninstalled")))).map(plugin => [plugin.pluginKey, plugin]));
   const holders: ProtectedEnvironmentKeyHolder[] = [];
   for (const row of rows) {
-    const driver = await pluginEnvironmentRunnerTaskDriver(db, { driver: "plugin", config: row.config });
+    const config = row.config ?? {};
+    const plugin = typeof config.pluginKey === "string" ? plugins.get(config.pluginKey) : undefined;
+    const driver = plugin?.manifestJson?.capabilities?.includes("environment.drivers.register")
+      ? plugin.manifestJson.environmentDrivers?.find(candidate => candidate.driverKey === config.driverKey && candidate.supportsTasks === true)
+      : undefined;
     const keys = driver?.protectedEnvironmentKeys ?? [];
     if (keys.length > 0) holders.push({ environmentId: row.id, environmentName: row.name, keys: new Set(keys) });
   }
@@ -64,6 +74,25 @@ export async function assertEnvironmentVariablesNotProtected(
   const driver = await pluginEnvironmentRunnerTaskDriver(db, { driver: "plugin", config });
   const keys = driver?.protectedEnvironmentKeys ?? [];
   if (keys.length > 0) rejectProtectedKeys({ environmentId: environment.id, environmentName: environment.name, keys: new Set(keys) }, envVars);
+}
+
+/**
+ * Reject an agent's env keys that its effective environment sets itself, and
+ * warn about keys that another environment protects. An agent without its own
+ * environment runs in the instance default.
+ */
+export async function checkAgentProtectedEnvironmentKeys(
+  db: Db,
+  adapterConfig: unknown,
+  environmentId: string | null | undefined,
+): Promise<AgentConfigurationWarning[]> {
+  const env = adapterConfig !== null && typeof adapterConfig === "object" ? (adapterConfig as { env?: unknown }).env : undefined;
+  if (configuredKeys(env).length === 0) return [];
+  const holders = await listProtectedEnvironmentKeyHolders(db);
+  if (holders.length === 0) return [];
+  const effectiveEnvironmentId = environmentId ?? (await instanceSettingsService(db).get()).defaultEnvironmentId ?? null;
+  assertNoProtectedEnvironmentKeys(holders, effectiveEnvironmentId, env);
+  return protectedEnvironmentKeyWarnings(holders, env, "adapterConfig.env");
 }
 
 /** A friendly notice: the value may be replaced, depending on where the agent runs. */
