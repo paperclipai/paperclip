@@ -1,3 +1,4 @@
+import { resolveIsolatedTaskDirectory } from "../isolated-task-paths.js";
 import { createHash } from "node:crypto";
 import {
   mkdtemp,
@@ -176,12 +177,14 @@ describe("native external chat workspace boundary", () => {
     await writeFile(path.join(original, "retained.txt"), "retained original");
     const fresh = (await findNativeChatWorkspaceScope(db, { ...scopeInput(issueA), freshAttemptId }))!;
     const directory = await materializeNativeChatTaskRoot(fresh);
-    expect(directory).toBe(path.join(instanceRoot, "isolated-workspace-attempts", companyId, issueA, freshAttemptId));
+    expect(directory).toBe(await resolveIsolatedTaskDirectory(instanceRoot, { companyId, issueId: issueA, attemptId: freshAttemptId }));
     expect(path.relative(original, directory).startsWith("..")).toBe(true);
     expect(await readdir(directory)).toEqual([]);
     expect(nativeChatWorkspaceCwd(fresh, null, false)).toBe(directory);
     expect(await readFile(path.join(original, "retained.txt"), "utf8")).toBe("retained original");
     expect(nativeChatWorkspaceCwd({ ...fresh, taskRoot: path.join(original, "attempts", freshAttemptId, "escape") }, null, false)).toBeNull();
+    expect(nativeChatWorkspaceCwd({ ...fresh, taskRoot: path.join(instanceRoot, "isolated-workspace-attempts", companyId, issueA, "not-a-run") }, null, false)).toBeNull();
+    expect(nativeChatWorkspaceCwd({ ...fresh, taskRoot: await resolveIsolatedTaskDirectory(instanceRoot, { companyId, issueId: issueA, attemptId: "01000000-0000-4000-8000-000000000091" }) }, null, false)).toBeNull();
     expect(nativeChatWorkspaceCwd({ ...fresh, taskRoot: path.join(instanceRoot, "isolated-workspace-attempts", companyId, issueB, freshAttemptId) }, null, false)).toBeNull();
   });
 

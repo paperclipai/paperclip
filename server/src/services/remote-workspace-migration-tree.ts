@@ -1,3 +1,4 @@
+import { readIsolatedTaskPath } from "./isolated-task-paths.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -72,10 +73,9 @@ export async function requiresOnlineOrdinarySource(workspace: Workspace): Promis
   for (const cwd of localWorkspaceSourcePaths(workspace)) {
     const root = await physicalPath(cwd);
     const parts = path.relative(instance, root).split(path.sep);
-    const managed = parts[1] === workspace.companyId && Boolean(workspace.sourceIssueId) && (
-      parts[0] === "projects" && parts.length === 4 && /^[a-f0-9-]{36}$/.test(parts[2])
-      || parts[2] === workspace.sourceIssueId && (parts[0] === "isolated-workspaces" && parts.length === 3
-        || parts[0] === "isolated-workspace-attempts" && parts.length === 4));
+    const task = readIsolatedTaskPath(instance, root);
+    const managed = task?.companyId === workspace.companyId && task.issueId === workspace.sourceIssueId && task.rest.length === 0 ||
+      parts[1] === workspace.companyId && parts[0] === "projects" && parts.length === 4 && /^[a-f0-9-]{36}$/.test(parts[2]);
     if (!managed) continue;
     const entry = await fs.lstat(root).catch((error: NodeJS.ErrnoException) => {
       if (error.code === "ENOENT") return null; throw error;
@@ -89,11 +89,9 @@ export async function inspectOnlineOrdinarySource(db: ReadDb, workspace: Workspa
   if (!workspace.cwd || workspace.providerType !== "local_fs" || workspace.repoUrl || workspace.branchName) return null;
   const root = await physicalPath(workspace.cwd);
   const instance = await physicalPath(resolvePaperclipInstanceRoot());
-  const parts = path.relative(instance, root).split(path.sep);
-  const isolated = workspace.sourceIssueId && ["isolated_workspace", "shared_workspace"].includes(workspace.mode)
-    && parts[1] === workspace.companyId && parts[2] === workspace.sourceIssueId
-    && (parts[0] === "isolated-workspaces" && parts.length === 3
-      || parts[0] === "isolated-workspace-attempts" && parts.length === 4 && /^[a-zA-Z0-9_-]+$/.test(parts[3]));
+  const task = readIsolatedTaskPath(instance, root);
+  const isolated = workspace.sourceIssueId && ["isolated_workspace", "shared_workspace"].includes(workspace.mode) &&
+    task?.companyId === workspace.companyId && task.issueId === workspace.sourceIssueId && task.rest.length === 0;
   const projectId = await managedProjectSourceIdentity(workspace.companyId, root);
   if (root !== workspace.cwd || !(isolated || projectId && path.dirname(root) === path.join(
     instance, "projects", workspace.companyId, projectId))) return null;
