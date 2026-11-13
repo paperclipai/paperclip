@@ -1,6 +1,6 @@
 {
   "inputs": {
-    "package.json": "e704ca28508fa7c887f704fc26603cf8fd623867",
+    "package.json": "590fd8f555086a3bdc4dfa41a8016a89be13b977",
     "packages/plugins/sdk/package.json": "b7a4936e2803fd0d3b32dd7f17fc1ea86609ead0",
     "packages/plugins/sdk/src/bundlers.ts": "883bf3d9f2bd42877cfc0c3707cd882a6f6248d0",
     "packages/plugins/sdk/src/define-plugin.ts": "a99e07ce77ef72fcf1df1347346aacb8ba12e284",
@@ -220,7 +220,7 @@
     "packages/shared/src/connection-intent-guidance.test.ts": "ae89f72dff415181d07c29a75d005c229d5c61b8",
     "packages/shared/src/connection-intent-guidance.ts": "c121d7e31f3c44c7b0879db3929c23be20ef7987",
     "packages/shared/src/connection-routing.test.ts": "95f6d30b790a2ef69f409fb72e4ba83256d7771e",
-    "packages/shared/src/connection-routing.ts": "fa29ecccbed3f38497ed7f6eadcb8f7c2b193177",
+    "packages/shared/src/connection-routing.ts": "6c506acd09b75d4f70ecde6cc5b652a244a7eb8a",
     "packages/shared/src/connection-search.test.ts": "fc7a3ee0df22b19afe1d58f4d9bfbf8213ed0092",
     "packages/shared/src/connection-search.ts": "6aa86e3fb28a8e32da1aa99b841aacede055e0bf",
     "packages/shared/src/connection-setup-state.test.ts": "252f1a1627b80f322385a415df4656f8aa9148e9",

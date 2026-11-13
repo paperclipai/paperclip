@@ -1483,6 +1483,11 @@ The server typecheck builds only the Runner's TypeScript output. Use
 `pnpm --filter @paperclipai/paperclip-runner build` when a local check needs the
 Runner binary.
 
+`node server/scripts/typecheck-layers.mjs --layer <name>` checks one layer
+against the configs and declarations that an earlier `--declarations-only` run
+left in that directory. It does not write them again. Stale declarations pass
+silently, so use it only straight after `--declarations-only` on the same commit.
+
 If a compiler child terminates on a signal, the wrapper reports the signal,
 layer, command, and working directory on stderr, then stops with a nonzero exit.
 Compiler stdout and stderr remain visible. A signal such as `SIGKILL` alone does
@@ -1525,8 +1530,9 @@ available to the task is limited, add `--low-memory`, or set
 
 The command fails if a project loads server source, because that is what makes
 these programs large. It does not limit memory. CI runs it with
-`--reuse-declarations` straight after the server typecheck, so it does not build
-the declarations again. Do not use that option when the declarations can be stale.
+`--reuse-declarations` after the server declarations of the same run, so it does
+not build the declarations again. Do not use that option when the declarations
+can be stale.
 
 Add each new test project that imports server source to `PROJECTS` in
 `scripts/typecheck-test-projects.mjs`.
@@ -1537,6 +1543,43 @@ that file, and it fails when a referenced config does not exist yet. The
 `tests/runner-e2e/native-completion-checks.mjs` still checks that project as one
 program. That program peaks at about 15 GiB at default settings and about 8 GiB on
 one thread.
+
+#### Typecheck lane in CI
+
+The required `Typecheck + Release Registry` job runs one command:
+
+```sh
+node scripts/ci-typecheck-lane.mjs [--concurrency <n>]
+```
+
+It first runs the steps that write shared outputs, one at a time:
+
+1. Link the workspace packages and build the plugin SDK.
+2. Build the server with `PAPERCLIP_TSC_EMIT_ONLY=1`, then check that the
+   server runtime assets are in `dist`. The server build no longer checks types
+   here: the server layers check the same files, and the `Build` job runs the
+   full `pnpm build`. The full program peaked at about 13.5 GiB, which left this
+   16 GiB runner swapping.
+3. Install the sandbox providers for the test programs
+   (`typecheck-test-programs.mjs --prepare-only`).
+4. Typecheck the Runner. Its typecheck rebuilds the eval kernel, which other
+   checks read, so it cannot run beside them.
+
+Then it runs the remaining checks in parallel, as many as the machine has CPUs
+(default) or `--concurrency`. Each `tsc` uses one thread. The server
+declaration layers start first, because the test layers and the test projects
+read them. The test programs, the other build-gap workspaces and the CLI
+guidance test run at a lower CPU priority, so they use only the CPU that the
+server layers and the release registry tests leave free.
+
+A passing check prints its output in a collapsed log group. A failing check
+prints its output in full, between `=== FAILED ...` and `=== end of ...`
+lines, with an error annotation. When the server declarations fail, the test
+layers and test projects are reported as skipped. The lane ends with a table
+of each check's start time, duration and result. If a preparation step fails,
+nothing else runs.
+
+To add a check to the job, add it to `planLane` in the script.
 
 #### Typecheck test files outside the build
 
@@ -1550,7 +1593,9 @@ node scripts/typecheck-test-programs.mjs --low-memory
 node scripts/typecheck-test-programs.mjs packages/paperclip-runner/tsconfig.test.json
 ```
 
-The first form runs in the required `Typecheck + Release Registry` job. It checks
+The first form runs in the required `Typecheck + Release Registry` job, split in
+two: `--prepare-only` installs the sandbox providers and builds what the programs
+read, and `--skip-prepare` then only checks. It checks
 one program at a time and the largest peaks below 2 GiB. It then fails if a tracked
 `*.test.ts(x)` or `*.spec.ts(x)` file is in no program. The compiler's file list
 decides that, because `include` silently drops `foo.test.tsx` when `foo.test.ts`

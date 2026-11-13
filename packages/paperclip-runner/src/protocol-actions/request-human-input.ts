@@ -1,4 +1,4 @@
-import { questionPayloadSchema, questionsPayloadRequirement } from "./question-payload-schema.js";
+import { questionPayloadSchema } from "./question-payload-schema.js";
 
 export const requestHumanInputExamples = {
   questions: {
@@ -115,9 +115,6 @@ export const requestHumanInputAction = {
         "skill_test"
       ],
       "inputSchema": {
-        // The pinned Claude client drops a tool with this conditional in root allOf.
-        // Keep the equivalent direct condition on the concrete object root.
-        ...questionsPayloadRequirement,
         "type": "object",
         "properties": {
           "idempotencyKey": {
@@ -251,7 +248,6 @@ export const requestHumanInputAction = {
       "title": "Request human input",
       "description": "Create a typed confirmation, checkbox, question, task suggestion, or item-verdict request.",
       "inputSchema": {
-        ...questionsPayloadRequirement,
         "type": "object",
         "properties": {
           "interactionKind": {
