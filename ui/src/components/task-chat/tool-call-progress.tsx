@@ -101,10 +101,17 @@ export class ToolCallProgressStore {
   /** Keeps the newer of what is known; a finished call stays finished. */
   put(snapshot: ToolCallProgressSnapshot) {
     const previous = this.#entries.get(snapshot.invocationId);
+    // The end of a call this chat never saw has nothing to clear.
+    if (!previous && snapshot.done) return;
     if (previous && (previous.done || (!snapshot.done && previous.updatedAt > snapshot.updatedAt))) return;
     this.#entries.delete(snapshot.invocationId);
     this.#entries.set(snapshot.invocationId, snapshot);
-    while (this.#entries.size > MAX_TRACKED_CALLS) this.#entries.delete(this.#entries.keys().next().value!);
+    // Over the limit, forget finished calls first, then the oldest running ones.
+    while (this.#entries.size > MAX_TRACKED_CALLS) {
+      let evict: string | undefined;
+      for (const [id, entry] of this.#entries) if (entry.done) { evict = id; break; }
+      this.#entries.delete(evict ?? this.#entries.keys().next().value!);
+    }
     for (const listener of this.#listeners) listener();
   }
 }

@@ -90,6 +90,21 @@ describe("tool call progress matching", () => {
     expect([...store.entries()].find((entry) => entry.invocationId === "finished-while-hidden")?.done).toBe(true);
   });
 
+  it("keeps running calls when a read reports many finished ones", () => {
+    const store = new ToolCallProgressStore();
+    for (let i = 0; i < 50; i++) store.put(snapshot({ invocationId: `running-${i}` }));
+    // 50 finished calls this chat never saw, then one it did.
+    for (let i = 0; i < 50; i++) store.put(snapshot({ invocationId: `history-${i}`, done: true }));
+    store.put(snapshot({ invocationId: "running-0", done: true, updatedAt: "2026-11-13T10:00:09.000Z" }));
+    const entries = [...store.entries()];
+    expect(entries).toHaveLength(50);
+    expect(entries.filter((entry) => !entry.done)).toHaveLength(49);
+    expect(entries.some((entry) => entry.invocationId.startsWith("history-"))).toBe(false);
+    // Over the limit, the finished call goes before any running one.
+    store.put(snapshot({ invocationId: "running-new" }));
+    expect([...store.entries()].filter((entry) => !entry.done)).toHaveLength(50);
+  });
+
   it("reads live events defensively", () => {
     expect(readToolCallProgressEvent({ ...snapshot(), message: "x".repeat(500) })?.message).toHaveLength(200);
     expect(readToolCallProgressEvent({ ...snapshot(), runId: undefined })).toBeNull();
