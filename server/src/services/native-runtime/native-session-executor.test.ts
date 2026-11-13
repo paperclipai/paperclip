@@ -2626,6 +2626,34 @@ describe("native incomplete-bootstrap evidence", () => {
     }
   }
 
+  it("proves a failed provider initialization stopped before any turn only when its process is gone", async () => {
+    const pid = await deadPid();
+    const fixture = drainedBeforeSessionOpened();
+    const startup = (processId: number | null, phase: string) => ({ code: "provider_startup_ownership", startup: {
+      schema: "paperclip.provider_startup.v1", phase, failedStage: phase === "initialization_failed" ? "initialize" : null,
+      directChildExitObserved: phase === "initialization_failed", processId, processGroupId: processId, authenticatedThreadId: null,
+      launchId: "launch-1", origin: { runId: (fixture.controlPlane.identity as { runId: string }).runId },
+      command: { commandType: "session.open" },
+    } });
+    const history = (processId: number) => [sessionEvent(1, "harness.diagnostic", startup(null, "intent")),
+      sessionEvent(2, "harness.diagnostic", startup(processId, "spawned")),
+      sessionEvent(3, "harness.diagnostic", startup(processId, "initialization_failed"))];
+    fixture.controlPlane.committedEvents = history(pid);
+    fixture.controlPlane.ackedSourceSeq = 3;
+    fixture.runner.nextSourceSeq = 4;
+    fixture.runner.ackedSourceSeq = 3;
+    expect(await provesLocally(fixture)).toBe(process.platform !== "win32");
+    (fixture.controlPlane.commands as unknown[]).push({ type: "turn.start", status: "pending" });
+    expect(await provesLocally(fixture)).toBe(false);
+    (fixture.controlPlane.commands as unknown[]).pop();
+    fixture.runner.nextSourceSeq = 5;
+    expect(await provesLocally(fixture)).toBe(false);
+    fixture.runner.nextSourceSeq = 4;
+    fixture.controlPlane.committedEvents = history(process.pid);
+    expect(await provesLocally(fixture)).toBe(false);
+    expect(await provesLocally(fixture, false)).toBe(false);
+  });
+
   it("allows a fresh bootstrap after a drain that landed between session.open and the first turn", async () => {
     const pid = await deadPid();
     expect(await provesLocally(drainedAfterSessionOpen(pid))).toBe(true);
@@ -16280,7 +16308,7 @@ describe("runnerd provider runtime wiring", () => {
     expect(await unidentifiedLocalRunnerProvenAbsent({ runId: "another-run", execution: current })).toBe(false);
     const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", "--", "--run-id", runId], { stdio: "ignore" });
     try {
-      await vi.waitFor(async () => expect(await unidentifiedLocalRunnerProvenAbsent({ runId, execution: current })).toBe(false));
+      await vi.waitFor(async () => expect(await unidentifiedLocalRunnerProvenAbsent({ runId, execution: current })).toBe(false), { timeout: 15_000 });
     } finally {
       const exited = once(child, "exit"); child.kill("SIGKILL"); await exited;
     }
