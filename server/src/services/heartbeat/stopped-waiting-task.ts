@@ -1,7 +1,7 @@
 import { and, eq, inArray, isNull, notExists, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { heartbeatRuns, issues } from "@paperclipai/db";
-import { logActivity } from "../activity-log.js";
+import { logActivity, publishActivity, type ActivityPublication } from "../activity-log.js";
 
 type StoppedRun = Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "agentId" | "status" | "startedAt" | "contextSnapshot">;
 
@@ -23,7 +23,10 @@ export async function returnStoppedWaitingTaskToTodo(
   if (run.status !== "cancelled" || run.startedAt) return null;
   const issueId = typeof run.contextSnapshot?.issueId === "string" ? run.contextSnapshot.issueId : null;
   if (!issueId) return null;
-  return db.transaction(async (tx) => {
+  // Publish only after the status change commits, so a viewer that refreshes
+  // on the event reads the new status.
+  const publications: ActivityPublication[] = [];
+  const result = await db.transaction(async (tx) => {
     const otherLiveRun = tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
       eq(heartbeatRuns.companyId, run.companyId),
       inArray(heartbeatRuns.status, LIVE_RUN_STATUSES),
@@ -55,7 +58,9 @@ export async function returnStoppedWaitingTaskToTodo(
       agentId: run.agentId,
       runId: run.id,
       details: { status: "todo", previousStatus: "in_progress", reason: "stopped_while_waiting", _previous: { status: "in_progress" } },
-    });
+    }, publications);
     return { issueId: updated.id };
   });
+  publications.forEach(publishActivity);
+  return result;
 }
