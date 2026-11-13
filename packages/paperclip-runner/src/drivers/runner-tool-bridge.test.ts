@@ -15,6 +15,7 @@ import {
   canonicalRunnerToolName,
   startRunnerToolBridge,
   type RunnerToolBridge,
+  type RunnerToolCall,
 } from "./runner-tool-bridge.js";
 
 const bridges: RunnerToolBridge[] = [];
@@ -549,24 +550,24 @@ describe("provider tool-use identity", () => {
   });
 
   it("carries the provider tool-use id to the handler only when the caller names its meta key", async () => {
-    const handler = vi.fn(async () => ({ ok: true }));
+    const handler = vi.fn(async (_call: RunnerToolCall) => ({ ok: true }));
     const opted = await startRunnerToolBridge({ tools: [tool("documents.read")], providerToolUseIdMetaKey: META_KEY, handler });
     const plain = await startRunnerToolBridge({ tools: [tool("documents.read")], handler });
     bridges.push(opted, plain);
     await rpc(opted, call(2, { n: 1 }, { [META_KEY]: "toolu_01Abc", progressToken: 2 }));
     await rpc(plain, call(2, { n: 1 }, { [META_KEY]: "toolu_01Abc" }));
-    expect(handler.mock.calls.map(([value]) => (value as { providerToolUseId?: string }).providerToolUseId))
+    expect(handler.mock.calls.map(([value]) => value.providerToolUseId))
       .toEqual(["toolu_01Abc", undefined]);
-    expect(handler.mock.calls.map(([value]) => (value as { callId: string }).callId)).toEqual(["2", "2"]);
+    expect(handler.mock.calls.map(([value]) => value.callId)).toEqual(["2", "2"]);
   });
 
   it("passes no id when the provider omits it and refuses a malformed one before dispatch", async () => {
-    const handler = vi.fn(async () => ({ ok: true }));
+    const handler = vi.fn(async (_call: RunnerToolCall) => ({ ok: true }));
     const bridge = await startRunnerToolBridge({ tools: [tool("documents.read")], providerToolUseIdMetaKey: META_KEY, handler });
     bridges.push(bridge);
     await rpc(bridge, call(1, { n: 1 }));
     await rpc(bridge, call(2, { n: 2 }, { progressToken: 2 }));
-    expect(handler.mock.calls.map(([value]) => (value as { providerToolUseId?: string }).providerToolUseId))
+    expect(handler.mock.calls.map(([value]) => value.providerToolUseId))
       .toEqual([undefined, undefined]);
     for (const [index, value] of [7, "", "x".repeat(129), "toolu 01", "toolu_01\n", "_toolu", { id: "toolu_01" }].entries()) {
       expect(await (await rpc(bridge, call(10 + index, { n: 3 }, { [META_KEY]: value }))).json()).toMatchObject({
