@@ -1,13 +1,14 @@
 import { and, asc, desc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import {
-  agentWakeupRequests, agents, approvals, companies, executionWorkspaces, heartbeatRuns, issueApprovals, issueRecoveryActions,
-  issueThreadInteractions, issues, nativeRunFinalizations, toolInvocations, type Db,
+  agentWakeupRequests, agents, approvals, companies, documentRevisions, documents, executionWorkspaces, heartbeatRuns, issueApprovals,
+  issueComments, issueRecoveryActions, issueThreadInteractions, issues, nativeRunFinalizations, toolInvocations, type Db,
 } from "@paperclipai/db";
 import {
   EXECUTION_RECONCILIATION_CAUSES, readRemoteWorkspaceAuthority, remoteWorkspaceRunReferenceSchema, type ExecutionReconciliation,
 } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
+import { taskHistoryReadsForRun } from "./queued-comment-delivery.js";
 import { undeliveredLegacyUserCommentIds } from "./explicit-native-continuation.js";
 import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
 import { FRESH_CONTINUATION_SUPERSEDED_KEY } from "../agent-run-cancellation.js";
@@ -197,8 +198,48 @@ async function unverifiedActions(tx: Db, run: typeof heartbeatRuns.$inferSelect)
   return [...names].slice(0, 20);
 }
 
+export type FreshContinuationCreatedObjects = { subtasks: string[]; comments: string[]; documents: string[]; readFollowUps?: string[];
+  editedFollowUps?: string[] };
+
+async function taskHistoryReadsOfRun(tx: Db, run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId">) {
+  const reads = await taskHistoryReadsForRun(tx, { companyId: run.companyId, runId: run.id });
+  return new Map(reads.map(read => [read.commentId, read]));
+}
+
+const quoted = (value: string, max = 80) => `"${value.replace(/\s+/g, " ").trim().slice(0, max)}${value.length > max ? "..." : ""}"`;
+
+async function createdObjects(tx: Db, run: typeof heartbeatRuns.$inferSelect): Promise<FreshContinuationCreatedObjects> {
+  const [children, comments, revisions] = await Promise.all([
+    tx.select({ identifier: issues.identifier, title: issues.title }).from(issues).where(and(
+      eq(issues.companyId, run.companyId), eq(issues.originRunId, run.id), isNull(issues.hiddenAt)))
+      .orderBy(asc(issues.createdAt)).limit(20),
+    tx.select({ body: issueComments.body }).from(issueComments).where(and(
+      eq(issueComments.companyId, run.companyId), eq(issueComments.createdByRunId, run.id), isNull(issueComments.deletedAt)))
+      .orderBy(asc(issueComments.createdAt)).limit(10),
+    tx.selectDistinct({ title: documents.title }).from(documentRevisions)
+      .innerJoin(documents, eq(documents.id, documentRevisions.documentId))
+      .where(and(eq(documentRevisions.companyId, run.companyId), eq(documentRevisions.createdByRunId, run.id))).limit(10),
+  ]);
+  const reads = await taskHistoryReadsOfRun(tx, run);
+  const readComments = reads.size ? await tx.select({ id: issueComments.id, body: issueComments.body, updatedAt: issueComments.updatedAt })
+    .from(issueComments).where(and(
+      eq(issueComments.companyId, run.companyId), inArray(issueComments.id, [...reads.keys()]),
+      eq(issueComments.authorType, "user"), isNull(issueComments.deletedAt))).limit(10) : [];
+  const unchanged = (comment: (typeof readComments)[number]) => comment.updatedAt.getTime() <= reads.get(comment.id)!.revision.getTime();
+  const edited = readComments.filter(comment => !unchanged(comment));
+  return {
+    readFollowUps: readComments.filter(unchanged)
+      .map(comment => `${quoted(comment.body)} (read at ${reads.get(comment.id)!.readAt.toISOString().slice(11, 16)} UTC)`),
+    ...(edited.length ? { editedFollowUps: edited.map(comment => quoted(comment.body)) } : {}),
+    subtasks: children.map(child => `${child.identifier ?? "subtask"} ${quoted(child.title)}`),
+    comments: comments.map(comment => quoted(comment.body)),
+    documents: revisions.map(revision => quoted(revision.title ?? "untitled document")),
+  };
+}
+
 /** The opening context of the continuation. It names no person who must act. */
-export function freshContinuationNote(input: { runId: string; unverified: string[]; workspace: "restored_last_save" | "kept" }) {
+export function freshContinuationNote(input: { runId: string; unverified: string[]; workspace: "restored_last_save" | "kept";
+  created?: FreshContinuationCreatedObjects }) {
   const actions = input.unverified.length
     ? `These actions of that run have unverified outcomes: ${input.unverified.join(", ")}. For each one, first check whether it took effect.`
     : "No action of that run is recorded with an unknown outcome; check the task's recent history before repeating any side effect.";
@@ -211,7 +252,21 @@ export function freshContinuationNote(input: { runId: string; unverified: string
     + "If an action did not take effect, or repeating it is safe, do it again and continue the task. "
     + "If repeating it would be a governed or irreversible action, request it through the normal approval step. "
     + "Nothing about the previous attempt needs to be restored before you continue.";
-  return `The previous attempt (run ${input.runId}) was cut off before it finished. ${files} ${actions} ${guidance}`;
+  const created = input.created;
+  const read = created?.readFollowUps?.length
+    ? ` That run had already read these messages from a person: ${created.readFollowUps.join(", ")}. Answer each once; what it did after reading is below.`
+    : "";
+  const edited = created?.editedFollowUps?.length
+    ? ` A person edited these messages after that run read them, so it never saw their current text; treat them as new: ${created.editedFollowUps.join(", ")}.`
+    : "";
+  const existing = created &&(created.subtasks.length || created.comments.length || created.documents.length)
+    ? ` That run already did these, and they exist now: ${[
+      created.subtasks.length ? `created subtasks ${created.subtasks.join(", ")}` : null,
+      created.comments.length ? `posted comments ${created.comments.join(", ")}` : null,
+      created.documents.length ? `saved documents ${created.documents.join(", ")}` : null,
+    ].filter(Boolean).join("; ")}. Do not create or post them again; read them and continue from where they leave off.`
+    : "";
+  return `The previous attempt (run ${input.runId}) was cut off before it finished. ${files}${read}${edited}${existing} ${actions} ${guidance}`;
 }
 
 const USER_TEXT = "The previous run was cut off. Paperclip continues the task in a fresh run from its last saved work.";
@@ -546,7 +601,8 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
   // continuation runs first, binds the new workspace, and saved input follows.
   if (isolation === "fresh_isolated_workspace" && delivery === "saved_input") delivery = "recorded";
   const unverified = await unverifiedActions(tx, run);
-  const note = freshContinuationNote({ runId: run.id, unverified,
+  const created = await createdObjects(tx, run);
+  const note = freshContinuationNote({ runId: run.id, unverified, created,
     workspace: isolation === "writer_ended" ? "kept" : "restored_last_save" });
   const decision: ExecutionReconciliation & { providerStopProof: "writer_ended" | "isolated" } = { runId: run.id, providerStopped: true,
     // Only a proven end is a stop. `isolated` means exactly: the old run's agent
@@ -563,7 +619,7 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
   const freshContinuation = { schema: FRESH_CONTINUATION_SCHEMA, sourceRunId: run.id, trigger: input.trigger,
     failureCode: run.errorCode ?? null, delivery, recordedAt: now.toISOString(), isolation,
     stopProof: isolation === "writer_ended" ? "writer_ended" : fenced ? "unproven_epoch_abandoned" : "unproven_isolated",
-    unverifiedActions: unverified, ...(fenced ? { workspace: fenced } : {}) };
+    unverifiedActions: unverified, createdObjects: created, ...(fenced ? { workspace: fenced } : {}) };
   const reconciliation = { ...decision, actorId: FRESH_CONTINUATION_ACTOR, recordedAt: now.toISOString() };
   // Who, what, why and when. A fresh run is not a replay: the interrupted turn
   // is not re-sent, no tool call or write is re-executed, and any governed
@@ -872,14 +928,15 @@ export async function settleCoalescedFreshContinuationHolds(db: Db, input: { com
       sql`${issueRecoveryActions.evidence}->>'continuationDelivery' = 'coalesced'`));
 }
 
-/** A fresh continuation of this task is recorded and its run does not exist yet. */
 export async function hasPendingFreshContinuation(db: Db, companyId: string, issueId: string) {
   const [row] = await db.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(and(
     eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
     eq(issueRecoveryActions.status, "resolved"),
     sql`${issueRecoveryActions.evidence}->>'continuationDelivery' = 'pending'`,
     sql`${issueRecoveryActions.evidence}#>>'{freshContinuation,schema}' = ${FRESH_CONTINUATION_SCHEMA}`)).limit(1);
-  return Boolean(row);
+  if (!row) return false;
+  await notifyDeliveryWork(db, DELIVERY_QUEUES.executionContinuation);
+  return true;
 }
 
 /** Newest-first list of fresh continuations of one task (diagnostics and tests). */

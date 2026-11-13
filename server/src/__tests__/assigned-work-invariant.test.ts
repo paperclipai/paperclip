@@ -105,6 +105,44 @@ describePostgres("assigned-work invariant sweep", () => {
     expect(queue.calls).toHaveLength(1);
   }, 60_000);
 
+  it("a wake deferred behind a run that ended long ago is not a pending path; a fresh one still is", async () => {
+    const f = await seedCompany();
+    const issueId = await f.issue();
+    await f.run(issueId, { status: "failed", errorCode: "native_restart_recovery_blocked" });
+    const deferred = (createdAt: Date) => db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId,
+      source: "automation", triggerDetail: "system", reason: "issue_execution_deferred", status: "deferred_issue_execution",
+      requestedByActorType: "user", requestedByActorId: "local-board", payload: { issueId }, createdAt, updatedAt: new Date() });
+    await deferred(new Date(Date.now() - 30 * 60_000));
+    const queue = wakeQueue();
+    const recovery = recoveryService(db, { enqueueWakeup: queue.enqueueWakeup, scheduleRecoveryRetry: async () => null });
+    expect((await recovery.assignedWork.listSuspects({ companyId: f.companyId }, null, 50)).map(row => row.id)).toContain(issueId);
+    expect(await recovery.assignedWork.checkIssue({ companyId: f.companyId, issueId }))
+      .toMatchObject({ outcome: "repaired", verdict: { kind: "violation", reason: "no_pending_path" } });
+
+    const freshIssue = await f.issue();
+    await f.run(freshIssue, { status: "failed", errorCode: "native_restart_recovery_blocked" });
+    await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId, source: "automation",
+      triggerDetail: "system", reason: "issue_execution_deferred", status: "deferred_issue_execution",
+      payload: { issueId: freshIssue }, createdAt: new Date(Date.now() - 60_000) });
+    expect((await recovery.assignedWork.listSuspects({ companyId: f.companyId }, null, 50)).map(row => row.id)).not.toContain(freshIssue);
+    expect(await recovery.assignedWork.checkIssue({ companyId: f.companyId, issueId: freshIssue }))
+      .toMatchObject({ outcome: "ok", verdict: { clause: "pending_intent", intent: "queued_wake" } });
+  }, 60_000);
+
+  it("a wake claimed long ago that never became a run is not a pending path", async () => {
+    const f = await seedCompany();
+    const issueId = await f.issue();
+    await f.run(issueId, { status: "succeeded", errorCode: null, livenessState: null });
+    await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId, source: "automation",
+      triggerDetail: "system", reason: "issue_children_completed", status: "claimed", payload: { issueId },
+      claimedAt: new Date(Date.now() - 15 * 60_000), createdAt: new Date(Date.now() - 40 * 60_000) });
+    const queue = wakeQueue();
+    const recovery = recoveryService(db, { enqueueWakeup: queue.enqueueWakeup, scheduleRecoveryRetry: async () => null });
+    expect((await recovery.assignedWork.listSuspects({ companyId: f.companyId }, null, 50)).map(row => row.id)).toContain(issueId);
+    expect(await recovery.assignedWork.checkIssue({ companyId: f.companyId, issueId }))
+      .toMatchObject({ verdict: { kind: "violation", reason: "no_pending_path" } });
+  }, 60_000);
+
   it("an in_progress task whose native run failed needing reconciliation (silently skipped today) gets one continuation", async () => {
     const f = await seedCompany();
     const issueId = await f.issue();

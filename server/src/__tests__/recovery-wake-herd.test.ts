@@ -10,7 +10,7 @@ import {
   RECOVERY_CONTINUATIONS_PER_COMPANY_PER_PASS, RECOVERY_CONTINUATION_DELIVERY_BOUND_MS, RECOVERY_CONTINUATION_MAX_HOLD_MS,
   deliverReconciledExecutions,
 } from "../services/execution-recovery-resolution.js";
-import { assignedWorkSweep } from "../services/recovery/assigned-work-sweep.js";
+import { PENDING_CONTINUATION_BOUND_MS, assignedWorkSweep } from "../services/recovery/assigned-work-sweep.js";
 import { evaluateAssignedWork } from "../services/recovery/assigned-work-invariant.js";
 import { taskInterruptionPresentation } from "../services/task-interruption-presentation.js";
 import { executionControlSchedule } from "../services/execution-control-work.js";
@@ -466,5 +466,26 @@ suite("recovery wake herd", () => {
 
     const presentation = await taskInterruptionPresentation(db, issueRow!);
     expect(presentation).toMatchObject({ canRetry: false, state: "working", responsibility: "system" });
+
+    const recordedAt = new Date(Date.now() - PENDING_CONTINUATION_BOUND_MS - 60_000).toISOString();
+    await db.update(issueRecoveryActions).set({ resolvedAt: new Date(recordedAt), evidence: sql`jsonb_set(${issueRecoveryActions.evidence},
+      '{freshContinuation,recordedAt}', to_jsonb(${recordedAt}::text))` }).where(eq(issueRecoveryActions.id, held.action.id));
+    const stale = (await sweep.loadFacts(companyId, [issueRow!])).get(held.issue.id)!;
+    expect(stale.pendingWakes).toBe(facts.pendingWakes - 1);
+  }, 60_000);
+
+  it("re-drives a continuation held past the hold bound even while another recovery run of its agent stays queued", async () => {
+    const agentId = await seedCompany(1);
+    await queuedRecoveryRun(agentId, 1);
+    const held = await pendingContinuation(agentId, 30);
+    const wake = fakeWake();
+    await deliverReconciledExecutions(db, wake as never);
+    expect(wake).not.toHaveBeenCalled();
+    const heldSince = new Date(Date.now() - RECOVERY_CONTINUATION_MAX_HOLD_MS - 1_000).toISOString();
+    await db.update(issueRecoveryActions).set({ evidence: sql`jsonb_set(${issueRecoveryActions.evidence},
+      '{freshContinuation,recordedAt}', to_jsonb(${heldSince}::text))` }).where(eq(issueRecoveryActions.id, held.action.id));
+    await deliverReconciledExecutions(db, wake as never);
+    expect(wake).toHaveBeenCalledTimes(1);
+    expect(await deliveryOf(held.action.id)).toBe("delivered");
   }, 60_000);
 });
