@@ -1,7 +1,7 @@
 import { JsonRpcCallError } from "@paperclipai/plugin-sdk";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import {
   activityLog,
   agents,
@@ -29,7 +29,7 @@ import { nextEnvironmentCleanupAt } from "../services/environment-cleanup-state.
 import { releasableRetainedOrphanCondition, settleRetainedOrphanSandbox } from "../services/environment-retained-orphan-settlement.ts";
 import {
   ABANDONED_WORKSPACE_FILES_PARKED_KEY, ABANDONED_WORKSPACE_FILES_PARKED_REASON, ABANDONED_WORKSPACE_FILES_RETENTION_DAYS,
-  expireAbandonedWorkspaceFileHolds, releaseAbandonedWorkspaceFiles,
+  expireAbandonedWorkspaceFileHolds, nextAbandonedWorkspaceFileHoldExpiryAt, releaseAbandonedWorkspaceFiles,
 } from "../services/remote-workspace-abandoned-files-hold.ts";
 
 vi.mock("../services/native-runtime/native-harness-backup-storage.js", () => ({
@@ -367,6 +367,52 @@ describe.skipIf(!support.supported)("sandbox that holds files from an abandoned 
     expect(ended!.details).toMatchObject({ reason: "retention_expired", leasesHandedToCleanup: 0 });
     expect((ended!.details as { summary: string }).summary).not.toContain("scheduled for removal");
     expect(await entries("workspace.abandoned_files_removed")).toEqual([]);
+  });
+
+  it("releases a receipt whose run was deleted and records it without the run reference", async () => {
+    const seeded = await seed();
+    await abandon(seeded);
+    await setReceipts(seeded, receipt => ({ ...receipt, runId: randomUUID(), retainUntil: new Date(Date.now() - 1_000).toISOString() }));
+    expect(await expireAbandonedWorkspaceFileHolds(db)).toEqual({ expired: 1 });
+    const [ended] = await entries("workspace.abandoned_files_released");
+    expect(ended).toMatchObject({ entityType: "issue", entityId: seeded.issueId, runId: null });
+    expect(await nativeWorkspaceExportPendingForLease(db, seeded.lease)).toBe(false);
+  });
+
+  it("releases a receipt whose task was deleted without writing a task entry", async () => {
+    const seeded = await seed();
+    await abandon(seeded);
+    await setReceipts(seeded, receipt => ({ ...receipt, runId: randomUUID(), retainUntil: new Date(Date.now() - 1_000).toISOString() }));
+    await db.update(executionWorkspaces).set({ sourceIssueId: null }).where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+    expect(await expireAbandonedWorkspaceFileHolds(db)).toEqual({ expired: 1 });
+    expect(await entries("workspace.abandoned_files_released")).toEqual([]);
+    expect(await nativeWorkspaceExportPendingForLease(db, seeded.lease)).toBe(false);
+  });
+
+  it("keeps expiring later receipts when one fails, and retries the failed one after a backoff", async () => {
+    const seeded = await seed();
+    await abandon(seeded);
+    await abandonOnOtherSandbox(seeded, "/later-root");
+    await setReceipts(seeded, receipt => ({ ...receipt, retainUntil: new Date(Date.now() - 1_000).toISOString() }));
+    await db.execute(sql`create function reject_abandoned_epoch_one() returns trigger language plpgsql as $$
+      begin if new.details->>'abandonedEpoch' = '1' then raise exception 'test activity failure'; end if; return new; end $$`);
+    await db.execute(sql`create trigger reject_abandoned_epoch_one before insert on activity_log
+      for each row execute function reject_abandoned_epoch_one()`);
+    try {
+      const before = Date.now();
+      expect(await expireAbandonedWorkspaceFileHolds(db)).toEqual({ expired: 1 });
+      const receipts = (await readWorkspace(seeded)).metadata!.remoteWorkspaceAbandonedEpochs as Array<Record<string, unknown>>;
+      const failed = receipts.find(receipt => receipt.epoch === 1)!;
+      expect(failed.released).toBeUndefined();
+      expect(failed.expiryAttempts).toBe(1);
+      expect(receipts.find(receipt => receipt.epoch !== 1)!.released).toMatchObject({ reason: "retention_expired" });
+      expect(await nativeWorkspaceExportPendingForLease(db, seeded.lease)).toBe(true);
+      expect(await nextAbandonedWorkspaceFileHoldExpiryAt(db)).toBeGreaterThanOrEqual(before + 5 * 60_000);
+    } finally {
+      await db.execute(sql`drop trigger reject_abandoned_epoch_one on activity_log`);
+      await db.execute(sql`drop function reject_abandoned_epoch_one()`);
+    }
+    expect(await expireAbandonedWorkspaceFileHolds(db, new Date(Date.now() + 10 * 60_000))).toEqual({ expired: 1 });
   });
 
   it("wakes the cleanup worker at the receipt's retention end, also after a restart, and then goes quiet", async () => {
