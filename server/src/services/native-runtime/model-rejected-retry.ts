@@ -1,6 +1,7 @@
 import { and, eq, sql } from "drizzle-orm";
 import { heartbeatRuns, type Db } from "@paperclipai/db";
 import { parseIssueAssigneeAdapterOverrides } from "../execution-workspace-policy.js";
+import { resolvePaperclipRunnerProviderProfile } from "./provider-profile.js";
 
 export const NATIVE_PROVIDER_MODEL_STILL_UNAVAILABLE = "native_provider_model_still_unavailable";
 
@@ -20,6 +21,14 @@ function modelOf(value: unknown): string | null {
   return typeof model === "string" && model.trim() ? model.trim() : null;
 }
 
+function effectiveModel(config: Record<string, unknown>, companyId: string): string | null {
+  try {
+    return modelOf({ model: resolvePaperclipRunnerProviderProfile(config, { companyId }).model });
+  } catch {
+    return modelOf(config);
+  }
+}
+
 export async function rejectedModelRetryRefusal(db: Pick<Db, "select">, input: {
   failedRun: { id: string; status: string; errorCode: string | null; runtimeMode?: string | null };
   agent: { id: string; companyId: string; name: string; adapterConfig: unknown };
@@ -34,8 +43,9 @@ export async function rejectedModelRetryRefusal(db: Pick<Db, "select">, input: {
     eq(heartbeatRuns.errorCode, "native_provider_model_rejected")));
   const rejectedModel = modelOf({ model: failed?.rejectedModel });
   if (!rejectedModel) return null;
-  const override = issue?.assigneeAgentId === agent.id ? modelOf(parseIssueAssigneeAdapterOverrides(issue.assigneeAdapterOverrides)?.adapterConfig) : null;
-  const configured = override ?? modelOf(agent.adapterConfig);
+  const overrideConfig = issue?.assigneeAgentId === agent.id ? parseIssueAssigneeAdapterOverrides(issue.assigneeAdapterOverrides)?.adapterConfig ?? null : null;
+  const override = modelOf(overrideConfig);
+  const configured = effectiveModel({ ...record(agent.adapterConfig), ...record(overrideConfig) }, agent.companyId);
   if (configured !== rejectedModel) return null;
   const setting: RejectedModelSetting = override ? "task_model_override" : "agent_model";
   const change = setting === "task_model_override"

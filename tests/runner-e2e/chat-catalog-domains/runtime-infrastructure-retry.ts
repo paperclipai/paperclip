@@ -115,16 +115,16 @@ export const runtimeInfrastructureRetryCases = [runtimeDefinition("recovery.retr
     const linked = await settingsLink.count() === 1;
     await ctx.input.capture("model-still-unavailable-refusal", "Try again names the model setting while the rejected model is still selected", "runtime-retry-model-refused.png");
     const refusalSamples = [await workerRetryRuns()];
-    await ctx.input.page.waitForTimeout(20_000);
-    refusalSamples.push(await workerRetryRuns()); state.refusalRunSamples = refusalSamples;
-    state.noRunWhileModelUnavailable = refusalSamples.every(count => count === 0);
-    state.taskBlockedAfterRefusal = (await ctx.input.api.get<Issue>(`/api/issues/${task.id}`)).status === "blocked";
     if (linked) {
       await settingsLink.click();
       await ctx.input.page.waitForURL(url => MODEL_SETTINGS_PATH.test(url.pathname), { timeout: 15_000 }).catch(() => undefined);
     }
     state.refusalLinksModelSetting = linked && MODEL_SETTINGS_PATH.test(new URL(ctx.input.page.url()).pathname)
       && new URL(ctx.input.page.url()).pathname.includes(`/agents/${worker.urlKey ?? worker.id}/`);
+    await ctx.input.page.waitForTimeout(20_000);
+    refusalSamples.push(await workerRetryRuns()); state.refusalRunSamples = refusalSamples;
+    state.noRunWhileModelUnavailable = refusalSamples.every(count => count === 0);
+    state.taskBlockedAfterRefusal = (await ctx.input.api.get<Issue>(`/api/issues/${task.id}`)).status === "blocked";
     const fixed = await ctx.input.api.patch<RuntimeAgent>(`/api/agents/${worker.id}`, { adapterConfig: { ...(state.originalAdapterConfig as Record<string, unknown>), model: state.workingModel } });
     state.modelFixedByHuman = fixed.adapterConfig?.model === state.workingModel && fixed.adapterConfig?.model !== state.rejectedModel;
     state.modelFixedAt = Date.now();

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { agents, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issues } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -52,6 +53,14 @@ describe.skipIf(!support.supported)("retrying a run whose model the provider rej
     { shape: "the run failed for another reason", agentModel: REJECTED, errorCode: "adapter_failed" },
   ])("allows the retry when $shape", async ({ agentModel, overrideModel, errorCode }) => {
     expect(await check(await seed({ agentModel, overrideModel, errorCode }))).toBeNull();
+  });
+
+  it("compares the model a new run would resolve, including provider defaults", async () => {
+    const f = await seed({ agentModel: "" });
+    await db.update(agents).set({ adapterConfig: { provider: "acpx", acpxAgent: "grok", model: "grok-build" } }).where(eq(agents.id, f.agent.id));
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeExecutionInput: { provider: { kind: "acpx", model: "grok-4.7" } } } }).where(eq(heartbeatRuns.id, f.run.id));
+    const [agent] = await db.select().from(agents).where(eq(agents.id, f.agent.id));
+    expect((await rejectedModelRetryRefusal(db, { failedRun: f.run, agent: agent!, issue: f.issue }))?.details).toMatchObject({ setting: "agent_model", rejectedModel: "grok-4.7" });
   });
 
   it("ignores another company's run with the same id shape", async () => {
