@@ -3967,6 +3967,15 @@ it("keeps reported context-window occupancy on rehydrated usage", () => {
   }
 });
 
+it("keeps the serving host and generation id on rehydrated usage", () => {
+  const base = { cumulative: { inputTokens: 10 }, runDelta: { inputTokens: 3 }, runDeltaAvailable: true };
+  expect(rehydrateRunnerdUsageNotification({ ...base, upstreamProvider: "Novita", providerRequestId: "gen-1" }, "opened-thread-1", "active-turn-1").tokenUsage)
+    .toMatchObject({ upstreamProvider: "Novita", providerRequestId: "gen-1" });
+  const unnamed = rehydrateRunnerdUsageNotification({ ...base, providerRequestId: null }, "opened-thread-1", "active-turn-1").tokenUsage;
+  expect(unnamed).not.toHaveProperty("upstreamProvider");
+  expect(unnamed).not.toHaveProperty("providerRequestId");
+});
+
 it("rehydrates durable cumulative usage for a cold thread read", () => {
   expect(
     rehydrateRunnerdThreadTokenUsage({ inputTokens: 12, outputTokens: 3 }),

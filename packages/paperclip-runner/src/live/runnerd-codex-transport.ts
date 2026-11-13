@@ -2243,7 +2243,21 @@ export function rehydrateRunnerdUsageNotification(
       // durable replay cannot certify an incomplete delta as a free receipt.
       runDeltaComplete: rawParams.runDeltaAvailable === true,
       ...runnerdContextUsage(rawParams.context),
+      ...runnerdUpstreamUsage(rawParams),
     },
+  };
+}
+
+function runnerdUpstreamUsage(rawParams: Record<string, unknown>): { upstreamProvider?: string; providerRequestId?: string } {
+  const value = (name: string) => {
+    const field = rawParams[name];
+    return typeof field === "string" && field.length > 0 && field.length <= 240 ? field : undefined;
+  };
+  const upstreamProvider = value("upstreamProvider");
+  const providerRequestId = value("providerRequestId");
+  return {
+    ...(upstreamProvider ? { upstreamProvider } : {}),
+    ...(providerRequestId ? { providerRequestId } : {}),
   };
 }
 
