@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, lte } from "drizzle-orm";
+import { and, eq, is, lte } from "drizzle-orm";
+import { PgTransaction } from "drizzle-orm/pg-core";
 import { chatEndpointLeases, chatEndpoints, type Db } from "@paperclipai/db";
 import { conflict } from "../errors.js";
 import { logger } from "../middleware/logger.js";
@@ -98,6 +99,12 @@ export function chatCredentialMutationLease(db: Db, options: Pick<ChatChannelSer
         now.getTime() + CREDENTIAL_MUTATION_LEASE_TTL_MS,
       );
       try {
+        const ownershipPredicate = and(
+          eq(chatEndpointLeases.companyId, endpoint.companyId),
+          eq(chatEndpointLeases.endpointId, endpoint.id),
+          eq(chatEndpointLeases.leaseKey, lease.leaseKey),
+          eq(chatEndpointLeases.token, lease.token),
+        );
         const owned = options.renewCredentialMutationLease
           ? await options.renewCredentialMutationLease({
               companyId: endpoint.companyId,
@@ -106,20 +113,21 @@ export function chatCredentialMutationLease(db: Db, options: Pick<ChatChannelSer
               leaseKey: lease.leaseKey,
               token: lease.token,
             })
-          : (
-              await database
-                .update(chatEndpointLeases)
-                .set({ expiresAt, updatedAt: now })
-                .where(
-                  and(
-                    eq(chatEndpointLeases.companyId, endpoint.companyId),
-                    eq(chatEndpointLeases.endpointId, endpoint.id),
-                    eq(chatEndpointLeases.leaseKey, lease.leaseKey),
-                    eq(chatEndpointLeases.token, lease.token),
-                  ),
-                )
-                .returning({ id: chatEndpointLeases.id })
-            ).length > 0;
+          : is(database, PgTransaction)
+            ? (
+                await database
+                  .select({ id: chatEndpointLeases.id })
+                  .from(chatEndpointLeases)
+                  .where(ownershipPredicate)
+                  .for("share")
+              ).length > 0
+            : (
+                await database
+                  .update(chatEndpointLeases)
+                  .set({ expiresAt, updatedAt: now })
+                  .where(ownershipPredicate)
+                  .returning({ id: chatEndpointLeases.id })
+              ).length > 0;
         if (!owned) {
           leaseLoss = lostLeaseError();
           throw leaseLoss;
