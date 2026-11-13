@@ -30,6 +30,8 @@ const SSH_STDIN_COMMAND = "IFS= read -r paperclip_ssh_command_b64 || exit 125; p
 
 export interface SshConnectionConfig {
   useHostAuth?: boolean;
+  tailscaleSocket?: string;
+  tailscaleIdentity?: string;
   host: string;
   port: number;
   username: string;
@@ -178,8 +180,14 @@ export function parseSshRemoteExecutionSpec(value: unknown): SshRemoteExecutionS
   }
   if (parsed.useHostAuth !== undefined && typeof parsed.useHostAuth !== "boolean") return null;
 
+  if (parsed.tailscaleSocket !== undefined && (typeof parsed.tailscaleSocket !== "string" || !/^\/[A-Za-z0-9_./-]+$/.test(parsed.tailscaleSocket))) return null;
+
+  if (parsed.tailscaleIdentity && !parsed.tailscaleSocket) return null;
+
   return {
     ...(typeof parsed.useHostAuth === "boolean" ? { useHostAuth: parsed.useHostAuth } : {}),
+    ...(typeof parsed.tailscaleSocket === "string" ? { tailscaleSocket: parsed.tailscaleSocket } : {}),
+    ...(typeof parsed.tailscaleIdentity === "string" ? { tailscaleIdentity: parsed.tailscaleIdentity } : {}),
     host,
     port: portValue,
     username,
@@ -382,7 +390,7 @@ async function withTempFile(
 }
 
 async function createSshAuthArgs(
-  config: Pick<SshConnectionConfig, "privateKey" | "knownHosts" | "strictHostKeyChecking">,
+  config: Pick<SshConnectionConfig, "privateKey" | "knownHosts" | "strictHostKeyChecking" | "tailscaleSocket" | "tailscaleIdentity" | "host">,
 ): Promise<{ args: string[]; cleanup: () => Promise<void> }> {
   const tempFiles: Array<() => Promise<void>> = [];
   const sshArgs = [
@@ -393,6 +401,15 @@ async function createSshAuthArgs(
     "-o",
     `StrictHostKeyChecking=${config.strictHostKeyChecking ? "yes" : "no"}`,
   ];
+
+  if (config.tailscaleIdentity && !config.tailscaleSocket) throw new Error("Tailscale connection is unavailable");
+  if (config.tailscaleSocket) {
+    if (!net.isIP(config.host) && !/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(config.host)) throw new Error("Invalid Tailscale host");
+    if (!/^\/[A-Za-z0-9_./-]+$/.test(config.tailscaleSocket)) throw new Error("Invalid Tailscale socket path");
+    const configuredCli = process.env.PAPERCLIP_TAILSCALE_CLI?.trim();
+    const cli = configuredCli ? shellQuote(configuredCli).replaceAll("%", "%%") : "tailscale";
+    sshArgs.push("-o", `ProxyCommand=${cli} --socket=${config.tailscaleSocket} nc %h %p`);
+  }
 
   if (config.strictHostKeyChecking) {
     if (config.knownHosts) {
