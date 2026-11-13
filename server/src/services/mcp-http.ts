@@ -32,6 +32,10 @@ export const MCP_ERROR_MISSING_CLIENT_CAPABILITY = -32021;
 export const MCP_ERROR_UNSUPPORTED_PROTOCOL_VERSION = -32022;
 const MODERN_ERROR_CODES = new Set([MCP_ERROR_HEADER_MISMATCH, MCP_ERROR_MISSING_CLIENT_CAPABILITY, MCP_ERROR_UNSUPPORTED_PROTOCOL_VERSION]);
 
+/** MCP Tasks extension; see mcp-tasks.ts. Kept here so request building has no import cycle. */
+export const MCP_TASKS_EXTENSION_ID = "io.modelcontextprotocol/tasks";
+const MCP_TASK_METHODS = new Set(["tasks/get", "tasks/update", "tasks/cancel"]);
+
 const META_PROTOCOL_VERSION = "io.modelcontextprotocol/protocolVersion";
 const META_CLIENT_CAPABILITIES = "io.modelcontextprotocol/clientCapabilities";
 const META_CLIENT_INFO = "io.modelcontextprotocol/clientInfo";
@@ -50,10 +54,15 @@ export function isModernMcpProtocolVersion(version: unknown): version is string 
  * they may then return URL input requests, which Paperclip shows as a link.
  * Legacy sessions keep the handshake capabilities they have always received.
  */
-export function mcpClientCapabilities(protocolVersion: string): Record<string, unknown> {
-  // The skills extension is defined against stateless MCP only.
+export function mcpClientCapabilities(protocolVersion: string, options: { declareTasks?: boolean } = {}): Record<string, unknown> {
+  // The skills and tasks extensions are defined against stateless MCP only.
+  // Tasks are declared only where Paperclip can wait on one: a provider tool
+  // call over HTTP and the task requests themselves (spec: per request).
   return isModernMcpProtocolVersion(protocolVersion)
-    ? { elicitation: { url: {} }, extensions: { ...MCP_APPS_CLIENT_CAPABILITY, ...MCP_SKILLS_CLIENT_CAPABILITY } }
+    ? { elicitation: { url: {} }, extensions: {
+        ...MCP_APPS_CLIENT_CAPABILITY, ...MCP_SKILLS_CLIENT_CAPABILITY,
+        ...(options.declareTasks ? { [MCP_TASKS_EXTENSION_ID]: {} } : {}),
+      } }
     : { extensions: MCP_APPS_CLIENT_CAPABILITY };
 }
 
@@ -191,7 +200,7 @@ export type McpJsonRpcRequest = { id?: string | number; method: string; params?:
 export function mcpHttpRequestInit(
   headers: Record<string, string> | undefined,
   message: McpJsonRpcRequest,
-  options: { toolInputSchema?: unknown } = {},
+  options: { toolInputSchema?: unknown; declareTasks?: boolean } = {},
 ): { method: "POST"; headers: Record<string, string>; body: string } {
   const requestHeaders = mcpHttpRequestHeaders(headers);
   const protocolVersion = mcpProtocolVersionOf(headers);
@@ -202,7 +211,7 @@ export function mcpHttpRequestInit(
       _meta: {
         ...record(params._meta),
         [META_PROTOCOL_VERSION]: protocolVersion,
-        [META_CLIENT_CAPABILITIES]: mcpClientCapabilities(protocolVersion),
+        [META_CLIENT_CAPABILITIES]: mcpClientCapabilities(protocolVersion, { declareTasks: options.declareTasks }),
         [META_CLIENT_INFO]: MCP_CLIENT_INFO,
       },
     };
@@ -210,7 +219,8 @@ export function mcpHttpRequestInit(
   for (const key of Object.keys(requestHeaders)) if (key.toLowerCase().startsWith("mcp-param-")) delete requestHeaders[key];
   setHeader(requestHeaders, "Mcp-Method", message.method);
   const name = message.method === "resources/read" ? params.uri
-    : message.method === "tools/call" || message.method === "prompts/get" ? params.name : undefined;
+    : message.method === "tools/call" || message.method === "prompts/get" ? params.name
+      : MCP_TASK_METHODS.has(message.method) ? params.taskId : undefined;
   if (typeof name === "string") setHeader(requestHeaders, "Mcp-Name", encodeMcpHeaderValue(name));
   else for (const key of Object.keys(requestHeaders)) if (key.toLowerCase() === "mcp-name") delete requestHeaders[key];
   if (message.method === "tools/call" && options.toolInputSchema !== undefined) {
