@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -19,6 +20,7 @@ const { invocationEnv } = await import(new URL("../../scripts/ci-profile/record.
 const env = { ...process.env };
 delete env.NODE_PATH;
 delete env.NODE_OPTIONS;
+env.NODE_COMPILE_CACHE ??= path.join(tmpdir(), "paperclip-runner-e2e-compile-cache");
 const { spawn } = await import("node:child_process");
 const sampler = process.platform === "linux" && process.env.GITHUB_ACTIONS === "true" && !process.env.PAPERCLIP_UNIT_BOUNDARY_PROBE
   ? spawn(process.execPath, [path.join(root, "tests/runner-e2e/cpu-sampler.tmp.mjs")], { stdio: "inherit" })
