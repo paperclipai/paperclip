@@ -5,7 +5,7 @@ import { expect, it, vi } from "vitest";
 import { OpenCodeServerDriver } from "./opencode-server-driver.js";
 import type { PrpEvent } from "../../protocol/replay-contract.js";
 
-it.each(["reply", "reply-no-finish", "reply-tool-finish", "two-turn-idle", "slow-native-tool", "idle-stall", "tool-idle-stall", "empty-again", "request-fails", "normal", "foreign-idle", "queued-tool", "reasoning-echo", "reasoning-echo-text-first", "reasoning-echo-reasoning-after", "reasoning-echo-correction-matches", "tool-call-markup", "tool-work-text", "tool-work-empty"] as const)("handles an empty OpenCode response: %s", async mode => {
+it.each(["reply", "reply-no-finish", "reply-tool-finish", "two-turn-idle", "slow-native-tool", "idle-stall", "tool-idle-stall", "empty-again", "request-fails", "normal", "foreign-idle", "queued-tool", "reasoning-echo", "reasoning-echo-text-first", "reasoning-echo-reasoning-after", "reasoning-echo-correction-matches", "tool-call-markup", "tool-work-text", "tool-work-empty", "stale-tool-work"] as const)("handles an empty OpenCode response: %s", async mode => {
   const root = await mkdtemp(join(tmpdir(), "opencode-empty-response-"));
   const command = join(root, "fake-opencode.mjs");
   await copyFile(resolve("test/fixtures/fake-opencode-server.mjs"), command);
@@ -59,6 +59,11 @@ it.each(["reply", "reply-no-finish", "reply-tool-finish", "two-turn-idle", "slow
           // Recorded from chat-eval cohort 11 (documents-artifacts.write-plan):
           // the turn saved a document with a tool, then the step and its
           // correction both came back with no text and no completion call.
+          // A late tool update from the first turn arrives while the second
+          // turn is empty. It is not the second turn's work.
+          if (mode === "stale-tool-work" && number === 2)
+            emit({ type: "message.part.updated", properties: { part: { id: "native-late", messageID: "assistant-1", sessionID, type: "tool", tool: "bash", callID: "call-late",
+              state: { status: "completed", input: { command: "owned-controlled-command" }, output: "Late.", time: { start: 1, end: 2 } } } } });
           if (mode.startsWith("tool-work") && number === 1)
             emit({ type: "message.part.updated", properties: { part: { id: "native-work", messageID, sessionID, type: "tool", tool: "bash", callID: "call-work",
               state: { status: "completed", input: { command: "owned-controlled-command" }, output: "Saved.", time: { start: 1, end: 2 } } } } });
@@ -100,7 +105,7 @@ it.each(["reply", "reply-no-finish", "reply-tool-finish", "two-turn-idle", "slow
             emit({ type: "session.status", properties: { sessionID, status: { type: "idle" } } });
             return;
           }
-          const answer = mode === "normal" || mode === "foreign-idle" || mode === "queued-tool" || number === 3 && mode === "tool-work-text" || number === 2 && ["reply", "reply-no-finish", "reply-tool-finish", "two-turn-idle", "reasoning-echo", "reasoning-echo-text-first", "reasoning-echo-reasoning-after", "reasoning-echo-correction-matches", "tool-call-markup"].includes(mode);
+          const answer = mode === "normal" || mode === "stale-tool-work" && number === 1 || mode === "foreign-idle" || mode === "queued-tool" || number === 3 && mode === "tool-work-text" || number === 2 && ["reply", "reply-no-finish", "reply-tool-finish", "two-turn-idle", "reasoning-echo", "reasoning-echo-text-first", "reasoning-echo-reasoning-after", "reasoning-echo-correction-matches", "tool-call-markup"].includes(mode);
           emit({ type: "message.part.updated", properties: { sessionID, part: { id: `part-${number}`, messageID,
             type: answer ? "text" : "reasoning", text: answer ? (mode === "reasoning-echo-correction-matches" ? recordedReasoning : "Here is the actual final answer.") : "Synthetic reasoning must not become the answer.", time: { start: 1, end: 2 } } } });
           emit({ type: "session.idle", properties: { sessionID } });
@@ -140,14 +145,14 @@ it.each(["reply", "reply-no-finish", "reply-tool-finish", "two-turn-idle", "slow
     }
     await vi.advanceTimersByTimeAsync(mode.endsWith("idle-stall") ? 20_001 : mode === "slow-native-tool" ? 1_999 : 5_001);
     const events = await completed;
-    const succeeds = ["tool-work-text", "reply", "reply-no-finish", "reply-tool-finish", "two-turn-idle", "slow-native-tool", "normal", "foreign-idle", "queued-tool", "reasoning-echo", "reasoning-echo-text-first", "reasoning-echo-reasoning-after", "reasoning-echo-correction-matches", "tool-call-markup"].includes(mode);
+    const succeeds = ["stale-tool-work", "tool-work-text", "reply", "reply-no-finish", "reply-tool-finish", "two-turn-idle", "slow-native-tool", "normal", "foreign-idle", "queued-tool", "reasoning-echo", "reasoning-echo-text-first", "reasoning-echo-reasoning-after", "reasoning-echo-correction-matches", "tool-call-markup"].includes(mode);
     expect(events.at(-1)?.eventType).toBe(succeeds ? "turn.completed" : "turn.failed");
     expect(events.filter(event => event.eventType === "turn.started")).toHaveLength(1);
     expect(events.every(event => !event.turnId || event.turnId === turnId)).toBe(true);
     const final = events.filter(event => event.eventType === "item.completed" && event.payload.kind === "agentMessage" && event.payload.channel === "final");
     expect(final.map(event => event.payload.text)).toEqual(succeeds ? [mode === "reasoning-echo-correction-matches" ? recordedReasoning : "Here is the actual final answer."] : []);
     // Only a turn that already did tool work gets the second, plain-text request.
-    expect(prompts).toHaveLength(["normal", "foreign-idle", "queued-tool"].includes(mode) ? 1 : mode.startsWith("tool-work") ? 3 : 2);
+    expect(prompts).toHaveLength(["normal", "foreign-idle", "queued-tool", "stale-tool-work"].includes(mode) ? 1 : mode.startsWith("tool-work") ? 3 : 2);
     if (prompts.length === 3) {
       expect(prompts[2]).toMatchObject({ providerID: prompts[0]!.providerID, modelID: prompts[0]!.modelID, system: prompts[0]!.system, variant: "paperclip-no-reasoning" });
       expect(JSON.stringify(prompts[2]!.parts)).toContain("plain-text final answer");
@@ -172,6 +177,17 @@ it.each(["reply", "reply-no-finish", "reply-tool-finish", "two-turn-idle", "slow
       expect(assistantText.join("")).not.toContain("<｜");
       expect(events.some(event => event.eventType === "harness.diagnostic" && event.payload.code === "opencode_tool_call_markup_discarded")).toBe(true);
       expect(JSON.stringify(prompts[1]!.parts)).toContain("wrote a tool call as plain text");
+    }
+    if (mode === "stale-tool-work") {
+      const nextEvents = collect();
+      await session.startTurn({ message: { role: "user", text: "Answer the next request." }, reasoningMode: "disabled" });
+      const nextCompleted = guard(nextEvents, 5_000);
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(5_001);
+      const rows = await nextCompleted;
+      expect(rows.at(-1)?.eventType).toBe("turn.failed");
+      // One prompt and one correction; the earlier turn's tool update earns no plain-text request.
+      expect(prompts).toHaveLength(3);
     }
     if (mode === "two-turn-idle") {
       const nextEvents = collect();

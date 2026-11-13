@@ -577,6 +577,8 @@ class OpenCodeHarnessSession implements HarnessSession {
   #closed = false;
   #completionSettlement: Promise<void> | null = null;
   #turnStartSourceSeq = 0;
+  /** The active turn, once it has reported its own non-terminal tool work. */
+  #toolWorkTurnId: string | null = null;
   #turnReasoningMode: OpenCodeReasoningMode = "default";
   #emptyResponseRecovery: { turnId: string; attempt: 1 | 2; priorMessages: Set<string>; responseStarted: boolean; responseFinished: boolean } | null = null;
   #emptyResponseAckTimer: ReturnType<typeof setTimeout> | undefined;
@@ -885,7 +887,7 @@ class OpenCodeHarnessSession implements HarnessSession {
         this.#armEmptyResponseAckTimer(turnId, "OpenCode became idle without completing its requested final response.");
       return true;
     }
-    if (recovery?.attempt === 1 && this.#lastNonTerminalToolSourceSeq > this.#turnStartSourceSeq) {
+    if (recovery?.attempt === 1 && this.#toolWorkTurnId === turnId) {
       // The turn already did real tool work, so the person must get an
       // answer, not a failed run. Some hosts drop a tool-only response (the
       // completion call) and return nothing, so the last request asks for
@@ -2154,6 +2156,9 @@ class OpenCodeHarnessSession implements HarnessSession {
       )
     ) {
       this.#lastNonTerminalToolSourceSeq = this.#sourceSequence;
+      // A late part from an earlier turn keeps that turn's id, so it never
+      // counts as this turn's work.
+      if (turnId === this.#activeTurnId) this.#toolWorkTurnId = turnId;
     }
     if (partType === "patch") {
       const paths = Array.isArray(part.files) ? part.files : [];
