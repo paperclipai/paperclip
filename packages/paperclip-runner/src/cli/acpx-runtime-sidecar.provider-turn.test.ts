@@ -232,7 +232,7 @@ describe("ACPX sidecar provider-started Claude turns", () => {
     } finally { await unarmed.cleanup(); }
   }, 20_000);
 
-  it("reports the second shell live at the first cycle's terminal when the second cycle starts while the first drains", async () => {
+  it("reports the second shell live at the first cycle's terminal and an unknown state after the second cycle", async () => {
     const { sidecar, send, release, cleanup } = await open({ turns: [], host: "acpx-provider-turn-tracked-host.mjs" });
     try {
       await send("turn.start", { turnId: "turn-1", message: "Start two background commands." });
@@ -243,10 +243,11 @@ describe("ACPX sidecar provider-started Claude turns", () => {
       const cycleOne = await sidecar.next(frame => frame.eventType === "runtime.turn_terminal" && frame.turnId === "provider-1");
       expect(payload(cycleOne)).toMatchObject({ status: "completed", backgroundTasks: { live: 1 } });
       expect(await send("session.provider_turn", { turnId: "provider-1", armed: true })).toEqual({ armed: true });
+      release("second");
       await sidecar.next(frame => frame.eventType === "runtime.turn_started" && frame.turnId === "provider-2");
       release("second-end");
       const cycleTwo = await sidecar.next(frame => frame.eventType === "runtime.turn_terminal" && frame.turnId === "provider-2");
-      expect(payload(cycleTwo)).toMatchObject({ status: "completed", backgroundTasks: { live: 0 } });
+      expect(payload(cycleTwo)).toEqual({ status: "completed", stopReason: "end_turn" });
     } finally { await cleanup(); }
   }, 20_000);
 

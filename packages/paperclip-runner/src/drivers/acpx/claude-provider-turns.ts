@@ -16,6 +16,7 @@ const startsCycle = (update: Record<string, unknown>): boolean =>
   typeof update.sessionUpdate === "string" && START_KINDS.has(update.sessionUpdate);
 const MAX_PENDING_REQUESTS = 256;
 const MAX_QUEUED_MESSAGES = 4_096;
+const EMPTY_RESULT_USAGE = ["input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"];
 
 export type ClaudeProviderTurnResult =
   | { status: "completed"; stopReason: "end_turn"; usage: Record<string, unknown> | null }
@@ -36,7 +37,7 @@ export interface ClaudeProviderCycleSource {
 }
 
 type Queued =
-  | { type: "started"; requestId: string; at: number; decision: Decision }
+  | { type: "started"; requestId: string; decision: Decision }
   | { type: "message"; message: unknown }
   | { type: "ended"; result: ClaudeProviderTurnResult }
   | { type: "lost" };
@@ -105,7 +106,8 @@ export class ClaudeProviderCycles {
   #subscribed = false;
   #retired = false;
   #closed = false;
-  #current: { at: number; converter: AcpSessionUpdateEventConverter; busy: () => boolean } | null = null;
+  #current: { converter: AcpSessionUpdateEventConverter; busy: () => boolean } | null = null;
+  #lastEndMarker: string | null = null;
 
   constructor(source: ClaudeProviderCycleSource) {
     this.#source = source;
@@ -120,6 +122,7 @@ export class ClaudeProviderCycles {
   }
 
   observe(direction: "inbound" | "outbound", message: unknown): boolean {
+    if (direction === "inbound" && this.#repeatsEndMarker(message)) return false;
     const inCycle = this.#classify(direction, message);
     this.#tasks.observe(direction, message, inCycle);
     return inCycle;
@@ -144,7 +147,7 @@ export class ClaudeProviderCycles {
         return this.#end(failed(CLAUDE_PROVIDER_TURN_SILENT, "Claude's own turn sent nothing within the silence bound."));
       }
       if (item.type === "started") {
-        this.#current = { at: item.at, converter: createAcpSessionUpdateEventConverter(), busy: () => false };
+        this.#current = { converter: createAcpSessionUpdateEventConverter(), busy: () => false };
         return { type: "started", requestId: item.requestId };
       }
       if (item.type === "message") {
@@ -157,7 +160,7 @@ export class ClaudeProviderCycles {
         const current = this.#current;
         this.#current = null;
         current?.converter.close();
-        this.#tasks.providerTurnEnded(current?.at ?? null, item.result.status === "completed");
+        this.#tasks.providerTurnEnded(item.result.status === "completed");
         return item;
       }
       return item;
@@ -173,7 +176,7 @@ export class ClaudeProviderCycles {
     const current = this.#current;
     this.#current = null;
     current?.converter.close();
-    this.#tasks.providerTurnEnded(current?.at ?? null, false);
+    this.#tasks.providerTurnEnded(false);
     this.#retired = true;
     this.#open = false;
     this.#queue.splice(0);
@@ -222,13 +225,15 @@ export class ClaudeProviderCycles {
     if (!this.#open) {
       if (this.#retired || this.#pending.size > 0 || this.#source.promptActive() || !startsCycle(update)) return false;
       if (!this.#subscribed) {
+        this.#tasks.providerTurnEnded(false);
         this.retire();
         return false;
       }
       const started = decision();
       this.#undecided.push(started);
       this.#open = true;
-      this.#push({ type: "started", requestId: this.#source.mintTurnId?.() ?? `provider-${randomUUID()}`, at: this.#tasks.providerTurnStarted(), decision: started });
+      this.#tasks.providerTurnStarted();
+      this.#push({ type: "started", requestId: this.#source.mintTurnId?.() ?? `provider-${randomUUID()}`, decision: started });
     }
     if (this.#queuedMessages >= MAX_QUEUED_MESSAGES) {
       this.#stop(failed(CLAUDE_PROVIDER_TURN_OVERFLOW, "Claude's own turn outran its bounded queue."));
@@ -241,6 +246,20 @@ export class ClaudeProviderCycles {
       this.#push({ type: "ended", result: { status: "completed", stopReason: "end_turn", usage: cycleUsage(update) } });
     }
     return true;
+  }
+
+  #repeatsEndMarker(message: unknown): boolean {
+    const envelope = record(message);
+    const params = record(envelope.params);
+    const update = record(params.update);
+    const usage = record(record(update._meta).usage);
+    const marker = envelope.method === "session/update" && claudeProviderTurnEndMarker(update)
+      ? JSON.stringify([params.sessionId, update.used, update.size, update.cost])
+      : null;
+    const empty = EMPTY_RESULT_USAGE.every((key) => usage[key] === 0);
+    const repeated = marker !== null && marker === this.#lastEndMarker && empty && !this.#open;
+    this.#lastEndMarker = marker;
+    return repeated;
   }
 
   #stop(result: ClaudeProviderTurnResult, lost = false): void {

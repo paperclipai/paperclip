@@ -52,8 +52,9 @@ export class AcpxRuntimeHost extends Base {
       await gate("cycles");
       this.deliver("inbound", finished("task-1"));
       this.deliver("inbound", usage());
-      this.deliver("inbound", finished("task-2"));
       this.deliver("inbound", endMarker());
+      await gate("second");
+      this.deliver("inbound", finished("task-2"));
       this.deliver("inbound", usage());
       await gate("second-end");
       this.deliver("inbound", endMarker());

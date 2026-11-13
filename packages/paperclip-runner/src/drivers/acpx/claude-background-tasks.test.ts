@@ -174,44 +174,31 @@ describe("ClaudeBackgroundTaskTracker", () => {
     expect(tasks.state()).toBeNull();
   });
 
-  it("knows the count again once Claude's own cycle for a finished shell is adopted and ends", () => {
-    const tracker = negotiated();
-    prompt(tracker, 1, [spawned(), backgrounded]);
-    tracker.observe("inbound", update(settled("completed")));
-    expect(tracker.state()).toBeNull();
-    const trackerStart = tracker.providerTurnStarted();
-    tracker.observe("inbound", update({ sessionUpdate: "usage_update", used: 1 }), true);
-    tracker.observe("inbound", update({ sessionUpdate: "tool_call", toolCallId: "toolu_9", _meta: { claudeCode: { toolName: "Read" } } }), true);
-    tracker.observe("inbound", { jsonrpc: "2.0", id: 4, method: "session/request_permission", params: {} }, true);
-    expect(tracker.state()).toEqual({ live: 1 });
-    tracker.observe("inbound", update({ sessionUpdate: "usage_update", _meta: { "_claude/origin": { kind: "task-notification" } } }), true);
-    tracker.providerTurnEnded(trackerStart, true);
-    expect(tracker.state()).toEqual({ live: 0 });
+  it("counts only running shells once a shell finished or Claude acted, and is unknown when none runs", () => {
+    const finishedOne = negotiated();
+    prompt(finishedOne, 1, [spawned(), backgrounded, { ...spawned(), asyncTaskId: "task-2" }]);
+    finishedOne.observe("inbound", update(settled("completed")));
+    expect(finishedOne.state()).toEqual({ live: 1 });
+    finishedOne.providerTurnStarted();
+    finishedOne.observe("inbound", update({ sessionUpdate: "tool_call", toolCallId: "toolu_9", _meta: { claudeCode: { toolName: "Read" } } }), true);
+    finishedOne.observe("inbound", { jsonrpc: "2.0", id: 4, method: "session/request_permission", params: {} }, true);
+    finishedOne.providerTurnEnded(true);
+    expect(finishedOne.state()).toEqual({ live: 1 });
+    finishedOne.observe("inbound", update({ ...settled("completed"), asyncTaskId: "task-2" }));
+    expect(finishedOne.state()).toBeNull();
+
+    const acted = negotiated();
+    prompt(acted, 1, []);
+    acted.providerTurnStarted();
+    acted.providerTurnEnded(true);
+    expect(acted.state()).toBeNull();
   });
 
-  it("keeps a cycle's newly backgrounded shell live and stays unknown after a cycle that did not complete", () => {
-    const again = negotiated();
-    prompt(again, 1, [spawned(), backgrounded]);
-    again.observe("inbound", update(settled("completed")));
-    const againStart = again.providerTurnStarted();
-    again.observe("inbound", update({ ...spawned(), asyncTaskId: "task-2" }), true);
-    again.observe("inbound", update({ ...backgrounded, _meta: { claudeCode: { toolName: "Bash", toolResponse: { backgroundTaskId: "task-2" } } } }), true);
-    again.providerTurnEnded(againStart, true);
-    expect(again.state()).toEqual({ live: 1 });
-
-    const finishedDuringCycle = negotiated();
-    prompt(finishedDuringCycle, 1, [spawned(), backgrounded, { ...spawned(), asyncTaskId: "task-2" }]);
-    finishedDuringCycle.observe("inbound", update(settled("completed")));
-    const finishedDuringCycleStart = finishedDuringCycle.providerTurnStarted();
-    finishedDuringCycle.observe("inbound", update({ ...settled("completed"), asyncTaskId: "task-2" }), true);
-    finishedDuringCycle.providerTurnEnded(finishedDuringCycleStart, true);
-    expect(finishedDuringCycle.state()).toBeNull();
-
+  it("stays unknown after a cycle that did not complete, even while a shell runs", () => {
     const failed = negotiated();
     prompt(failed, 1, [spawned(), backgrounded]);
-    failed.observe("inbound", update(settled("completed")));
-    const failedStart = failed.providerTurnStarted();
-    failed.providerTurnEnded(failedStart, false);
+    failed.providerTurnStarted();
+    failed.providerTurnEnded(false);
     expect(failed.state()).toBeNull();
   });
 });

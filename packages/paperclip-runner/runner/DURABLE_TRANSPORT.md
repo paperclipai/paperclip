@@ -216,6 +216,22 @@ identities. The report's shape is `$defs.backgroundTasks` in
 generated from it and tested against
 `protocol/fixtures/provider-boundary/acpx-background-tasks.json`.
 
+The Claude sidecar reports `{"live": N}` with N above zero only while N shell
+tasks are running and nothing has made the count unknown; finished tasks do
+not count. It reports `{"live": 0}` only while its provider process has never
+had a background task and Claude has not acted between prompts. Every other
+case is unknown and the field is omitted: once a background task has finished
+or a provider-started cycle has run and no shell is running, and permanently
+after a dropped, declined, failed or cancelled cycle, a task that is not a
+shell, a malformed task update, a scheduling tool, a full ledger, or idle
+activity that was not adopted. The ACP stream does not say which task a Claude
+cycle reports on, so the sidecar does not guess: after a provider-started turn,
+Runner keeps waiting only while a background command is still running, and a
+command that finishes while Claude is already reporting on an earlier one gets
+no turn of its own. An origin-tagged usage update that directly follows the
+previous one with the same context size and cost and zero usage is an empty
+result, not a cycle, and is ignored.
+
 A controller opts in per turn with `providerStartedTurns: true` on
 `turn.start`. Only then, when that completed Claude turn reported no accepted
 `paperclip_finish` or `paperclip_block` result for the run, its terminal reports
@@ -239,8 +255,9 @@ awaiting disarms and replaces the sidecar first. If the provider exits while arm
 sidecar reports `runtime.diagnostic` with code `ACPX_PROVIDER_PROCESS_LOST`; that,
 or a failed sidecar transport, ends the wait and Runner publishes the
 `run.terminal` it held back for the completed turn. Park is refused while awaiting.
-The awaiting state is in memory only: a Runner
-restart resumes in a fresh process as before.
+Runner saves the wait with its held `run.terminal` in the provider state; a
+Runner restart during the wait publishes that `run.terminal` once and resumes
+in a fresh process.
 
 The check also inspects the live provider
 after that drain, so a late active-goal notification cannot be hidden by the

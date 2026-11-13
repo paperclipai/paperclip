@@ -167,7 +167,7 @@ it("adopts Claude's own task-notification cycle as a provider-started turn throu
       usage: { tag: "usage_update", text: "terminal prompt usage", breakdown: { inputTokens: expect.any(Number), outputTokens: expect.any(Number) } } });
     expect(cycle!.events.some(event => event.type === "tool_call" && event.toolCallId === cycleToolUseId)).toBe(true);
     expect(dispatched).toEqual([{ turn: cycle!.requestId, callId: `tool-use:${cycleToolUseId}`, tag: "finished" }]);
-    expect(port.backgroundTaskState?.()).toEqual({ live: 0 });
+    expect(port.backgroundTaskState?.()).toBeNull();
 
     const conflicting = await replay(901, cycleToolUseId, "replayed");
     expect(conflicting.result.isError).toBe(true);
