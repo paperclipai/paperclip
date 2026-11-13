@@ -12321,7 +12321,8 @@ async function executePaperclipNativeSessionAttempt(
         trace.activate(runnerSessionStartupScope);
         const runExecution = () =>
           executeNativeSession({
-            resumeInterruptedTurn: input.restartRecovery?.kind === "resume_dead_runner" || scheduledResumeContinuation,
+            resumeInterruptedTurn: input.restartRecovery?.kind === "resume_dead_runner"
+              || input.restartRecovery?.kind === "reattach_remote_runner" || scheduledResumeContinuation,
             getFreshSessionHandoff: input.getFreshSessionHandoff,
             // A failed seal commits nothing: the messages stay queued for the
             // turn boundary instead of failing this run before its turn.

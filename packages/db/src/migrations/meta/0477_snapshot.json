@@ -1,5 +1,5 @@
 {
-  "id": "9f814b52-512d-4e79-a05b-d25b28f05517",
+  "id": "d5d69127-12de-4281-9816-c20e013bfeb7",
   "prevId": "82dcdc57-0796-4162-9451-8ea08a72199e",
   "version": "7",
   "dialect": "postgresql",
@@ -43006,13 +43006,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "conversation_default": {
-          "name": "conversation_default",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": true
-        },
         "conversation_state": {
           "name": "conversation_state",
           "type": "text",
@@ -43442,7 +43435,6 @@
             }
           ],
           "isUnique": true,
-          "where": "\"issues\".\"conversation_default\" = true",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -57572,6 +57564,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "icons": {
+          "name": "icons",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "risk_level": {
           "name": "risk_level",
           "type": "text",
@@ -59792,6 +59790,18 @@
           "type": "jsonb",
           "primaryKey": false,
           "notNull": true
+        },
+        "model_context": {
+          "name": "model_context",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "model_context_updated_at": {
+          "name": "model_context_updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         },
         "created_at": {
           "name": "created_at",

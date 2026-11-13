@@ -1845,6 +1845,13 @@ mid-turn can leave provider or tool processes that the fence cannot find, so it
 keeps the fail-closed path below, and the task continues in a fresh session from
 the saved work.
 
+On every `reattach_remote_runner` attempt, a turn the Runner reports as
+`provider_turn_lost_on_restore` with `recoverable: true` continues once in the same
+conversation, as on a local dead-runner resume. The Runner reports that cause only
+after it proved the old process ended and restored the conversation. If the turn
+still ends the run, the run keeps `native_provider_terminal_failed`, and the safe
+replacement lane continues the task.
+
 The first unanswered read can come on the last of the three provider attempts,
 for example when a server restart used the second attempt. The run then gets one
 more attempt for the replacement only: the failure stays retryable, the claim
