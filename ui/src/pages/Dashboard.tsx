@@ -1,4 +1,5 @@
 import { companyProjectsQuery } from "@/lib/company-projects-query";
+import { useAccountIdentity } from "@/api/companies-query";
 import { AgentIdentity } from "../components/AgentIdentity";
 import { TaskSummaryList } from "../components/TaskSummaryList";
 import { useDesignSandbox } from "../context/DesignSandboxContext";
@@ -218,12 +219,13 @@ export function Dashboard() {
     queryFn: ({ signal }) => issuesApi.listCompact(selectedCompanyId!, { projection: "index" }, { signal }),
     enabled: !!selectedCompanyId,
   });
+  const { userId: accountUserId, settled: accountSettled } = useAccountIdentity();
   const recentIndexRows = useMemo(() => recentTaskIndexRows(issues ?? []), [issues]);
   const recentIds = useMemo(() => recentIndexRows.map((issue) => issue.id).sort(), [recentIndexRows]);
   const { data: recentSummaries } = useQuery({
-    queryKey: queryKeys.issues.recentRows(selectedCompanyId!, recentIds),
+    queryKey: queryKeys.issues.summaryBatch(selectedCompanyId!, accountUserId, recentIds),
     queryFn: ({ signal }) => issuesApi.summaries(selectedCompanyId!, recentIds, { signal }),
-    enabled: !!selectedCompanyId && recentIds.length > 0,
+    enabled: !!selectedCompanyId && accountSettled && recentIds.length > 0,
   });
 
   const { data: projects } = useQuery({

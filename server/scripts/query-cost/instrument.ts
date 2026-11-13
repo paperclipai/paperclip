@@ -11,6 +11,9 @@ type Entry = {
 const CALIBRATED = 3, LOOP = 40;
 
 const allocated = () => (v8.getHeapStatistics() as unknown as { total_allocated_bytes: number }).total_allocated_bytes;
+if (typeof allocated() !== "number") {
+  throw new Error(`query-cost needs a Node.js whose v8.getHeapStatistics() reports total_allocated_bytes (Node.js 26 or later); this is ${process.version}`);
+}
 const site = new WeakMap<object, { key: string; operation: string; callers: string[] }>();
 export const entries = new Map<string, Entry>();
 export const totals = { statements: 0, control: 0 };
