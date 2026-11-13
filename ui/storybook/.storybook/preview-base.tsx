@@ -633,9 +633,19 @@ function installStorybookApiFixtures() {
       const [, secretId] = secretUsageMatch;
       return Response.json({
         secretId,
-        bindings: storybookSecretBindings.filter(
-          (binding) => binding.secretId === secretId,
-        ),
+        // The usage endpoint resolves each binding's target; mirror that shape.
+        bindings: storybookSecretBindings
+          .filter((binding) => binding.secretId === secretId)
+          .map((binding) => ({
+            ...binding,
+            target: {
+              type: binding.targetType,
+              id: binding.targetId,
+              label: binding.label ?? binding.targetId,
+              href: null,
+              status: null,
+            },
+          })),
       });
     }
 

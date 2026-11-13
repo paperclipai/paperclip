@@ -5697,6 +5697,10 @@ registry.registerPath({
       status: z
         .enum(["pending", "approved", "rejected", "withdrawn", "expired"])
         .optional(),
+      order: z
+        .enum(["created", "resolved"])
+        .optional()
+        .describe("created (default) lists the newest proposals first; resolved lists the most recent decisions first."),
     }),
   },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
