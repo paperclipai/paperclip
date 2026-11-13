@@ -502,6 +502,17 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     expectCleanup(input);
   });
 
+  it.each([false, true])("masks a bound secret in the failed workspace record and keeps the original error (native: %s)", async native => {
+    const { input, adapter } = await fixture(native);
+    input.output.identityRedactor = createAgentIdentityRedactor(undefined, ["sk_test_synthetic_failure_value"]);
+    const error = new Error("provider failed near sk_test_synthetic_failure_value");
+    if (native) vi.mocked(executePaperclipNativeSession).mockRejectedValueOnce(error);
+    else adapter.execute.mockRejectedValueOnce(error);
+    await expect(executeHeartbeatRuntime(db, input)).rejects.toBe(error);
+    expect(error.message).toBe("provider failed near sk_test_synthetic_failure_value");
+    expect(await finalizations()).toMatchObject([{ status: "failed", metadata: { errorMessage: "provider failed near ***REDACTED***" } }]);
+  });
+
   it.each([
     [new NativeCancellationPendingRecoveryError(), null],
     [new NativeControllerDetachedForRestartError(), "onNativeSessionResumeScheduled"],

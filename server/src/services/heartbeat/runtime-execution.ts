@@ -1166,7 +1166,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
         },
         runGoalControlRequestId,
         adapterErr instanceof Error
-          ? adapterErr.message
+          ? identityRedactor.redact(adapterErr.message)
           : "session_goal_control_failed",
       ).catch(() => undefined);
     }
@@ -1227,10 +1227,11 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
       await recordWorkspaceFinalize(settleAcceptedResult ? "succeeded" : "failed", settleAcceptedResult
         ? { runnerSettlementDiagnostic: postResultFailure }
         : {
-            errorMessage:
+            errorMessage: identityRedactor.redact(
               adapterErr instanceof Error
                 ? adapterErr.message
                 : String(adapterErr),
+            ),
             ...(postResultFailure ? { failureDiagnostic: postResultFailure } : {}),
           });
     } catch (recordErr) {
