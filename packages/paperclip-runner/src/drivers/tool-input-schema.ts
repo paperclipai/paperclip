@@ -42,6 +42,11 @@ export function admitToolInputSchema(schema: Readonly<Record<string, unknown>>):
   } catch {
     return { ok: false, reason: "uncompilable" };
   } finally {
-    ajv.removeSchema(compiled);
+    forgetCompiledSchema(ajv, compiled);
   }
+}
+
+function forgetCompiledSchema(ajv: Ajv | Ajv2019 | Ajv2020, compiled: Record<string, unknown>): void {
+  delete compiled.$id;
+  ajv.removeSchema(compiled);
 }
