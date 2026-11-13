@@ -11,6 +11,11 @@ export { ABANDONED_WORKSPACE_FILES_RETENTION_DAYS, ABANDONED_WORKSPACE_FILES_RET
 export const ABANDONED_WORKSPACE_FILES_PARKED_KEY = "abandonedWorkspaceFilesParked";
 export const ABANDONED_WORKSPACE_FILES_PARKED_REASON = "abandoned_workspace_files_held";
 export const ABANDONED_WORKSPACE_FILES_RELEASED_REASON = "abandoned_workspace_files_released";
+export const ABANDONED_WORKSPACE_FILES_RELEASE_KEY = "abandonedWorkspaceFilesRelease";
+
+function days(count: number) {
+  return `${count} ${count === 1 ? "day" : "days"}`;
+}
 
 export type AbandonedWorkspaceFilesReleaseReason = "recovered" | "discarded" | "retention_expired";
 
@@ -90,26 +95,32 @@ export async function releaseAbandonedWorkspaceFiles(db: Db, input: {
       remoteWorkspaceAbandonedEpochs: receipts.map(receipt => receipt === target ? { ...target, released } : receipt) } })
       .where(and(eq(executionWorkspaces.companyId, input.companyId), eq(executionWorkspaces.id, workspace.id)));
     const providerLeaseId = target.location!.providerLeaseId as string;
+    const runId = typeof target.runId === "string" ? target.runId : undefined;
+    const [run] = runId ? await tx.select({ issueId: heartbeatRuns.issueId }).from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, runId))) : [];
+    const issueId = workspace.sourceIssueId ?? run?.issueId ?? null;
+    const keptDays = Math.max(1, Math.round((now.getTime() - Date.parse(String(target.abandonedAt ?? now.toISOString()))) / 86_400_000));
+    const marker = { issueId, workspaceId: workspace.id, abandonedEpoch: input.epoch, reason: input.reason, keptDays, runId: runId ?? null };
     const unparked = await writeEnvironmentCleanup(tx, write => write.update(environmentLeases).set({
       status: "pending_cleanup", cleanupStatus: "failed", failureReason: ABANDONED_WORKSPACE_FILES_RELEASED_REASON,
       releasedAt: now, updatedAt: now,
-      metadata: sql`${environmentLeases.metadata} - ${ABANDONED_WORKSPACE_FILES_PARKED_KEY}`,
+      metadata: sql`(${environmentLeases.metadata} - ${ABANDONED_WORKSPACE_FILES_PARKED_KEY})
+        || ${JSON.stringify({ [ABANDONED_WORKSPACE_FILES_RELEASE_KEY]: marker })}::jsonb`,
     }).where(and(eq(environmentLeases.companyId, input.companyId), eq(environmentLeases.providerLeaseId, providerLeaseId),
       eq(environmentLeases.status, "retained"), sql`${environmentLeases.metadata} ? ${ABANDONED_WORKSPACE_FILES_PARKED_KEY}`,
       sql`not ${abandonedWorkspaceFilesHeldOnLeaseRowSql()}`)).returning({ id: environmentLeases.id }),
     { companyId: input.companyId });
-    const [run] = typeof target.runId === "string" ? await tx.select({ issueId: heartbeatRuns.issueId }).from(heartbeatRuns)
-      .where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, target.runId))) : [];
-    const issueId = workspace.sourceIssueId ?? run?.issueId ?? null;
-    const kept = Math.max(1, Math.round((now.getTime() - Date.parse(String(target.abandonedAt ?? now.toISOString()))) / 86_400_000));
+    const scheduled = unparked.length > 0;
     const summary = input.reason === "retention_expired"
-      ? `Unsaved files from an interrupted run were kept for ${kept} ${kept === 1 ? "day" : "days"} and have now been removed.`
+      ? scheduled ? `Unsaved files from an interrupted run were kept for ${days(keptDays)}. They are scheduled for removal.` : null
       : input.reason === "discarded"
-        ? "Unsaved files from an interrupted run were discarded and will be removed."
+        ? `Unsaved files from an interrupted run were discarded.${scheduled ? " They are scheduled for removal." : ""}`
         : "Unsaved files from an interrupted run were saved to the task's recovered files.";
-    await logActivity(tx, { companyId: input.companyId, actorType: input.actorType, actorId: input.actorId,
+    logger.info({ companyId: input.companyId, workspaceId: workspace.id, abandonedEpoch: input.epoch, reason: input.reason,
+      actorType: input.actorType, actorId: input.actorId, leasesHandedToCleanup: unparked.length }, "abandoned workspace files released");
+    if (summary) await logActivity(tx, { companyId: input.companyId, actorType: input.actorType, actorId: input.actorId,
       action: "workspace.abandoned_files_released", entityType: issueId ? "issue" : "execution_workspace",
-      entityId: issueId ?? workspace.id, runId: typeof target.runId === "string" ? target.runId : undefined,
+      entityId: issueId ?? workspace.id, runId,
       details: { summary, reason: input.reason, workspaceId: workspace.id, abandonedEpoch: input.epoch,
         retainUntil: new Date(receiptRetainUntil(target)).toISOString(), leasesHandedToCleanup: unparked.length } });
     return true;
@@ -147,12 +158,42 @@ export async function expireAbandonedWorkspaceFileHolds(db: Db, now = new Date()
   return { expired };
 }
 
-const ABANDONED_WORKSPACE_FILES_EXPIRY_INTERVAL_MS = 60 * 60 * 1000;
-const lastExpiryPass = new WeakMap<Db, number>();
+function receiptExpirySql() {
+  return sql`coalesce(case when receipt->>'retainUntil' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T' then (receipt->>'retainUntil')::timestamptz end,
+    case when receipt->>'abandonedAt' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T'
+      then (receipt->>'abandonedAt')::timestamptz + ${`${ABANDONED_WORKSPACE_FILES_RETENTION_DAYS} days`}::interval end,
+    'epoch'::timestamptz)`;
+}
+
+export async function nextAbandonedWorkspaceFileHoldExpiryAt(db: Pick<Db, "execute">): Promise<number | null> {
+  const [row] = await db.execute<{ next: string | Date | null }>(sql`select min(${receiptExpirySql()}) as next
+    from execution_workspaces workspace
+    cross join lateral jsonb_array_elements(case when jsonb_typeof(workspace.metadata->'remoteWorkspaceAbandonedEpochs') = 'array'
+      then workspace.metadata->'remoteWorkspaceAbandonedEpochs' else '[]'::jsonb end) receipt
+    where workspace.metadata ? 'remoteWorkspaceAbandonedEpochs'
+      and receipt->>'schema' = ${REMOTE_WORKSPACE_ABANDONED_EPOCH_SCHEMA}
+      and jsonb_typeof(receipt->'location'->'providerLeaseId') = 'string'
+      and coalesce(jsonb_typeof(receipt->'released'), 'null') = 'null'`);
+  return row?.next ? new Date(row.next).getTime() : null;
+}
 
 export async function expireAbandonedWorkspaceFileHoldsWhenDue(db: Db, now = new Date()): Promise<{ expired: number }> {
-  const last = lastExpiryPass.get(db);
-  if (last !== undefined && now.getTime() - last < ABANDONED_WORKSPACE_FILES_EXPIRY_INTERVAL_MS) return { expired: 0 };
-  lastExpiryPass.set(db, now.getTime());
+  const next = await nextAbandonedWorkspaceFileHoldExpiryAt(db);
+  if (next === null || next > now.getTime()) return { expired: 0 };
   return await expireAbandonedWorkspaceFileHolds(db, now);
+}
+
+export async function recordAbandonedWorkspaceFilesRemoved(db: Db, lease: Pick<typeof environmentLeases.$inferSelect,
+  "id" | "companyId" | "metadata">): Promise<void> {
+  const marker = lease.metadata?.[ABANDONED_WORKSPACE_FILES_RELEASE_KEY] as {
+    issueId?: string | null; workspaceId?: string; abandonedEpoch?: number; reason?: string; keptDays?: number; runId?: string | null;
+  } | undefined;
+  if (!marker || (marker.reason !== "retention_expired" && marker.reason !== "discarded")) return;
+  const summary = marker.reason === "retention_expired"
+    ? `Unsaved files from an interrupted run were kept for ${days(marker.keptDays ?? ABANDONED_WORKSPACE_FILES_RETENTION_DAYS)} and have now been removed.`
+    : "Discarded unsaved files from an interrupted run have now been removed.";
+  await logActivity(db, { companyId: lease.companyId, actorType: "system", actorId: "workspace-retention",
+    action: "workspace.abandoned_files_removed", entityType: marker.issueId ? "issue" : "execution_workspace",
+    entityId: marker.issueId ?? marker.workspaceId ?? lease.id, runId: marker.runId ?? undefined,
+    details: { summary, reason: marker.reason, workspaceId: marker.workspaceId, abandonedEpoch: marker.abandonedEpoch, leaseId: lease.id } });
 }

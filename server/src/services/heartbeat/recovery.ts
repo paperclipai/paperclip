@@ -31,7 +31,7 @@ import { createHeartbeatAgentStatus } from "./agent-status.js";
 import { preserveWorkspaceRestoreRecoveryMetadataSql } from "../legacy-workspace-restore-recovery.js";
 import { preserveCancelledNativeWorkspaces, preserveOrphanedNativeWorkspace } from "../native-runtime/native-failed-workspace-recovery.js";
 import { nativeWorkspaceExportPendingForLease, pendingNativeWorkspaceFinalizationCondition } from "../native-runtime/native-workspace-finalization-state.js";
-import { expireAbandonedWorkspaceFileHoldsWhenDue, parkAbandonedWorkspaceFilesLease } from "../remote-workspace-abandoned-files-hold.js";
+import { expireAbandonedWorkspaceFileHoldsWhenDue, parkAbandonedWorkspaceFilesLease, recordAbandonedWorkspaceFilesRemoved } from "../remote-workspace-abandoned-files-hold.js";
 import { CHAT_COMPLETION_WAKE_REASON } from "../chat-completion-delivery.js";
 import {
   hasStopOnlyCleanup,
@@ -1886,7 +1886,10 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
             failureReason: "pending_cleanup_retry",
             remoteExecutionTermination: remoteTerminationReceipt(lease, receipt),
           });
-          if (released) destroyed += 1;
+          if (released) {
+            destroyed += 1;
+            await recordAbandonedWorkspaceFilesRemoved(db, row);
+          }
         } else if (environment) {
           const result = await environmentRuntime.destroyRunLease({
             environment,
@@ -1895,6 +1898,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
           });
           if (result && result.status !== "pending_cleanup") {
             destroyed += 1;
+            if (result.cleanupStatus === "success") await recordAbandonedWorkspaceFilesRemoved(db, row);
           }
         }
       } catch (error) {

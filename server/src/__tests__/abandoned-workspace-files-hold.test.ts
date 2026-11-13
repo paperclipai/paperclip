@@ -25,6 +25,7 @@ import { abandonUnverifiedRemoteWorkspaceEpoch } from "../services/remote-worksp
 import { nativeWorkspaceExportPendingForLease } from "../services/native-runtime/native-workspace-finalization-state.ts";
 import { retireReplacedReusableSandboxLease } from "../services/reusable-sandbox-resume-replacement.ts";
 import { heartbeatService } from "../services/heartbeat.ts";
+import { nextEnvironmentCleanupAt } from "../services/environment-cleanup-state.ts";
 import { releasableRetainedOrphanCondition, settleRetainedOrphanSandbox } from "../services/environment-retained-orphan-settlement.ts";
 import {
   ABANDONED_WORKSPACE_FILES_PARKED_KEY, ABANDONED_WORKSPACE_FILES_PARKED_REASON, ABANDONED_WORKSPACE_FILES_RETENTION_DAYS,
@@ -153,7 +154,7 @@ describe.skipIf(!support.supported)("sandbox that holds files from an abandoned 
   }
 
   function worker(seeded: Seeded) {
-    const call = vi.fn(async (_pluginId: string, method: string) => {
+    const call = vi.fn(async (_pluginId: string, method: string, _params?: unknown) => {
       if (method === "environmentResumeLease") throw new JsonRpcCallError({ code: -32000, message: REFUSAL });
       if (method === "environmentAcquireLease") {
         return { providerLeaseId: "replacement-sandbox", metadata: { provider: "fake-plugin", image: "fake:test",
@@ -284,7 +285,11 @@ describe.skipIf(!support.supported)("sandbox that holds files from an abandoned 
     expect(await leaseRow(seeded)).toMatchObject({ status: "expired" });
   });
 
-  it("removes the files only after the retention period, with a plain activity entry on the task", async () => {
+  async function entries(action: string) {
+    return await db.select().from(activityLog).where(eq(activityLog.action, action));
+  }
+
+  it("removes the files only after the retention period, and says removed only after the provider confirms it", async () => {
     const seeded = await seed();
     await abandon(seeded);
     const { call, runtime } = worker(seeded);
@@ -294,16 +299,83 @@ describe.skipIf(!support.supported)("sandbox that holds files from an abandoned 
     expect(await expireAbandonedWorkspaceFileHolds(db, new Date(Date.now() + 86_400_000))).toEqual({ expired: 0 });
     await sweep(runtime);
     expect(destroyCalls(call)).toEqual([]);
-    expect(await db.select().from(activityLog).where(eq(activityLog.action, "workspace.abandoned_files_released"))).toEqual([]);
+    expect(await entries("workspace.abandoned_files_released")).toEqual([]);
 
     expect(await expireAbandonedWorkspaceFileHolds(db, new Date(Date.now() + 8 * 86_400_000))).toEqual({ expired: 1 });
-    const [entry] = await db.select().from(activityLog).where(eq(activityLog.action, "workspace.abandoned_files_released"));
-    expect(entry).toMatchObject({ entityType: "issue", entityId: seeded.issueId, actorType: "system", actorId: "workspace-retention" });
-    expect(entry!.details).toMatchObject({ reason: "retention_expired",
-      summary: "Unsaved files from an interrupted run were kept for 8 days and have now been removed." });
+    const [released] = await entries("workspace.abandoned_files_released");
+    expect(released).toMatchObject({ entityType: "issue", entityId: seeded.issueId, actorType: "system", actorId: "workspace-retention" });
+    expect(released!.details).toMatchObject({ reason: "retention_expired",
+      summary: "Unsaved files from an interrupted run were kept for 8 days. They are scheduled for removal." });
+    expect(await entries("workspace.abandoned_files_removed")).toEqual([]);
+
     await sweep(runtime);
     expect(destroyCalls(call)).toHaveLength(1);
     expect(await leaseRow(seeded)).toMatchObject({ status: "expired" });
+    const [removed] = await entries("workspace.abandoned_files_removed");
+    expect(removed).toMatchObject({ entityType: "issue", entityId: seeded.issueId, actorType: "system" });
+    expect(removed!.details).toMatchObject({
+      summary: "Unsaved files from an interrupted run were kept for 8 days and have now been removed." });
+  });
+
+  it("does not report removal when the provider delete fails", async () => {
+    const seeded = await seed();
+    await abandon(seeded);
+    const { call, runtime } = worker(seeded);
+    await acquire(seeded, runtime);
+    vi.restoreAllMocks();
+    await setReceipts(seeded, receipt => ({ ...receipt, retainUntil: new Date(Date.now() - 1_000).toISOString() }));
+    call.mockImplementation(async (_pluginId: string, method: string) => {
+      throw new Error(`provider refused ${method}`);
+    });
+    await sweep(runtime);
+    expect(await entries("workspace.abandoned_files_released")).toHaveLength(1);
+    expect(await entries("workspace.abandoned_files_removed")).toEqual([]);
+    expect(await leaseRow(seeded)).toMatchObject({ status: "pending_cleanup" });
+  });
+
+  it("says nothing on the task when another receipt still holds the sandbox", async () => {
+    const seeded = await seed();
+    await abandon(seeded);
+    const { call, runtime } = worker(seeded);
+    await acquire(seeded, runtime);
+    vi.restoreAllMocks();
+    const workspace = await readWorkspace(seeded);
+    const [first] = workspace.metadata!.remoteWorkspaceAbandonedEpochs as Array<Record<string, unknown>>;
+    await db.update(executionWorkspaces).set({ metadata: { ...workspace.metadata, remoteWorkspaceAbandonedEpochs: [
+      { ...first, retainUntil: new Date(Date.now() - 1_000).toISOString() },
+      { ...first, epoch: 7, location: { ...(first!.location as Record<string, unknown>), remoteCwd: "/other-root" },
+        retainUntil: new Date(Date.now() + 86_400_000).toISOString() },
+    ] } }).where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+    await sweep(runtime);
+    expect(await entries("workspace.abandoned_files_released")).toEqual([]);
+    expect(destroyCalls(call)).toEqual([]);
+    expect(await leaseRow(seeded)).toMatchObject({ status: "retained" });
+  });
+
+  it("wakes the cleanup worker at the receipt's retention end, also after a restart, and then goes quiet", async () => {
+    const seeded = await seed();
+    await abandon(seeded);
+    const { call, runtime } = worker(seeded);
+    await acquire(seeded, runtime);
+    vi.restoreAllMocks();
+    await db.update(environmentLeases).set({ status: "released", cleanupStatus: "success" })
+      .where(eq(environmentLeases.providerLeaseId, "replacement-sandbox"));
+    const [receipt] = (await readWorkspace(seeded)).metadata!.remoteWorkspaceAbandonedEpochs as Array<Record<string, unknown>>;
+    const retainUntil = Date.parse(receipt!.retainUntil as string);
+
+    expect(await nextEnvironmentCleanupAt(db)).toBe(retainUntil);
+    const restarted = createDb(connectionString);
+    try {
+      expect(await nextEnvironmentCleanupAt(restarted)).toBe(retainUntil);
+    } finally {
+      await restarted.$client.end({ timeout: 1 });
+    }
+
+    await setReceipts(seeded, value => ({ ...value, retainUntil: new Date(Date.now() - 1_000).toISOString() }));
+    await sweep(runtime);
+    expect(destroyCalls(call)).toHaveLength(1);
+    expect(await entries("workspace.abandoned_files_removed")).toHaveLength(1);
+    expect(await nextEnvironmentCleanupAt(db)).toBeNull();
   });
 
   async function stoppedWarmOrphan(seeded: Seeded) {
