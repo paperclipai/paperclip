@@ -336,7 +336,7 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
       }
     },
 
-    async getQueuedCommentLiveness({ companyId, issueId, wakeAgentId, finishingRunId, finishingRunAgentId, queuedCommentIds }) {
+    async getQueuedCommentLiveness({ companyId, issueId, wakeAgentId, finishingRunId, finishingRunAgentId, queuedCommentIds, retainDeliveredCommentBindings }) {
       // Malformed ids (for example an 8-char short form written into a wake
       // payload) can never match a comment row, but Postgres rejects the whole
       // `inArray` statement on the first invalid uuid and blocks every queued
@@ -358,7 +358,9 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
       // received would deliver them twice and can reopen finished work.
       const delivered = await deliveredQueuedCommentIds(tx, { companyId, issueId, agentId: wakeAgentId,
         commentIds: liveAndUnauthored });
-      const liveNonSelfCommentIds = liveAndUnauthored.filter(commentId => !delivered.has(commentId));
+      const liveNonSelfCommentIds = retainDeliveredCommentBindings
+        ? liveAndUnauthored
+        : liveAndUnauthored.filter(commentId => !delivered.has(commentId));
       const containedSelfAuthoredComment = rows.some(
         (row) => targetsFinishingRunAgent && !row.deletedAt && row.createdByRunId === finishingRunId,
       );
