@@ -7,7 +7,7 @@ import { randomUUID } from "node:crypto";
 type Listener = (event: "intent" | "settled", hints?: ReadonlySet<string>) => void;
 type Transaction = { topics: Set<string>; hints: Map<string, Set<string>>; xid?: Promise<string>; uncertain: boolean };
 type Scope = { key: object; listeners: Map<string, Set<Listener>>; transactions: Set<Transaction>; root: Connection; notificationOrigin: string; notify: boolean };
-type Context = { scope: Scope; transaction?: Transaction; pending?: Map<string, string> };
+type Context = { scope: Scope; transaction?: Transaction; pending?: Map<string, string>; ended?: boolean };
 type Connection = { transaction: (...args: any[]) => Promise<any>; execute: (...args: any[]) => Promise<any> };
 const contexts = new WeakMap<object, Context>();
 
@@ -38,9 +38,12 @@ function install(connection: Connection, context: Context) {
         const current: Context = { scope: context.scope, transaction: state, pending: new Map() };
         level = current;
         install(tx, current);
-        const value = await callback(tx);
-        if (!context.transaction) await flushNotifications(tx, current.pending!);
-        return value;
+        try {
+          const value = await callback(tx);
+          current.ended = true;
+          if (!context.transaction) await flushNotifications(tx, current.pending!);
+          return value;
+        } finally { current.ended = true; }
       }, ...options);
       if (context.pending && level?.pending) {
         for (const [key, payload] of level.pending) if (!context.pending.has(key)) context.pending.set(key, payload);
@@ -86,6 +89,7 @@ export async function signalDatabaseWork(connection: object, topic: string, hint
 }
 
 function notifyAtCommit(context: Context, payload: string): void {
+  if (context.ended) throw new Error("Database work was signalled after its transaction or savepoint ended");
   const key = `${DATABASE_WORK_CHANNEL}\u0000${payload}`;
   if (!context.pending!.has(key)) context.pending!.set(key, payload);
 }

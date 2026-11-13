@@ -325,6 +325,21 @@ describe("database work scope identity", () => {
     expect(result.delivered).toEqual(names);
   });
 
+  it("rejects a signal recorded after its transaction or savepoint ended instead of losing it", async () => {
+    let outer: Parameters<Parameters<typeof db.transaction>[0]>[0] | undefined;
+    let savepoint: typeof outer;
+    const result = await run(root => root.transaction(async tx => {
+      outer = tx;
+      await signalDatabaseWork(tx, "a");
+      await tx.transaction(async nested => { savepoint = nested; await signalDatabaseWork(nested, "b"); });
+      await expect(signalDatabaseWork(savepoint!, "late-savepoint")).rejects.toThrow("after its transaction or savepoint ended");
+      await expect(notifyDatabaseWorkOnCommit(savepoint!, "late-savepoint")).rejects.toThrow("after its transaction or savepoint ended");
+    }));
+    expect(result).toMatchObject({ statements: 1, delivered: ["a", "b"], failure: null });
+    await expect(signalDatabaseWork(outer!, "late-outer")).rejects.toThrow("after its transaction or savepoint ended");
+    await expect(notifyDatabaseWorkOnCommit(outer!, "late-outer")).rejects.toThrow("after its transaction or savepoint ended");
+  });
+
   it("starts every transaction clean, including concurrent transactions and a retried callback", async () => {
     expect(await run(async root => {
       await root.transaction(async tx => { await signalDatabaseWork(tx, "a"); });
