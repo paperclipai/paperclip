@@ -63,6 +63,7 @@ export function createAgentIdentityRedactor(privateKeyPem?: string, secrets: rea
   const secretValues: string[] = [];
   const pending = new Map<string, string>();
   const seenStreams = new Set<string>();
+  const maskedPending = new Map<string, number>();
   const deltaStreams = new Map<string, {
     scope: string; itemId?: string; payload: Record<string, unknown>; paths: string[];
   }>();
@@ -83,7 +84,12 @@ export function createAgentIdentityRedactor(privateKeyPem?: string, secrets: rea
       const text = (pending.get(stream) ?? "") + chunk;
       const candidates = [...values, ...secretValues].sort((a, b) => b.length - a.length);
       const resumes = options.maskResumedSuffixes === true && !seenStreams.has(stream);
-      const resumed = resumes ? resumedSuffixLength(text, candidates) : 0;
+      const resumed = Math.max(resumes ? resumedSuffixLength(text, candidates) : 0, maskedPending.get(stream) ?? 0);
+      if (resumes && resumed === 0 && text.length > 0 && text.length < MIN_RESUMED_SUFFIX_LENGTH
+        && candidates.some((value) => value.indexOf(text, 1) !== -1)) {
+        pending.set(stream, text);
+        return "";
+      }
       const masked: Array<[number, number]> = resumed > 0 ? [[0, resumed]] : [];
       let end = text.length;
       for (let index = 0; index < text.length;) {
@@ -102,6 +108,8 @@ export function createAgentIdentityRedactor(privateKeyPem?: string, secrets: rea
       }
       if (end < text.length) pending.set(stream, text.slice(end));
       else pending.delete(stream);
+      if (end < Math.min(resumed, text.length)) maskedPending.set(stream, Math.min(resumed, text.length) - end);
+      else maskedPending.delete(stream);
       if (resumes && end > resumed) seenStreams.add(stream);
       const merged: Array<[number, number]> = [];
       for (const [from, to] of masked.sort((left, right) => left[0] - right[0])) {
@@ -121,7 +129,10 @@ export function createAgentIdentityRedactor(privateKeyPem?: string, secrets: rea
     // An interrupted partial secret must not be flushed as plaintext.
     finish(stream: string): string {
       const held = pending.get(stream);
+      const heldMasked = maskedPending.has(stream);
       pending.delete(stream);
+      maskedPending.delete(stream);
+      if (held && heldMasked) return REDACTED_EVENT_VALUE;
       // Ed25519 PEM/PKCS#8 values begin with fixed structural bytes. Preserve
       // ordinary endings such as a dash; longer interrupted fragments stay hidden.
       return held ? (held.length < 8 ? held : REDACTED_EVENT_VALUE) : "";

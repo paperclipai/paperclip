@@ -112,6 +112,19 @@ describe("agent output redactor with secret values", () => {
     const diverging = createAgentIdentityRedactor(undefined, ["old-prefix-XYZabcdefgh", secret], { maskResumedSuffixes: true });
     expect(diverging.chunk("item", "XYZabcdefgh123") + diverging.chunk("item", " other") + diverging.finish("item"))
       .not.toContain("XYZabcdefgh");
+    const ending = createAgentIdentityRedactor(undefined, ["old-prefix-XYZabcdef", "abcdefghij"], { maskResumedSuffixes: true });
+    expect(ending.chunk("item", "XYZabcdef") + ending.finish("item")).toBe(`${REDACTED}${REDACTED}`);
+    const continuing = createAgentIdentityRedactor(undefined, ["old-prefix-XYZabcdef", "abcdefghij"], { maskResumedSuffixes: true });
+    expect(continuing.chunk("item", "XYZabcdef") + continuing.chunk("item", "ghij done") + continuing.finish("item"))
+      .toBe(`${REDACTED}${REDACTED} done`);
+    const shortCarry = createAgentIdentityRedactor(undefined, ["old-prefix-XYZabc", "abcdefghij"], { maskResumedSuffixes: true });
+    expect(shortCarry.chunk("item", "XYZabc") + shortCarry.chunk("item", "x tail") + shortCarry.finish("item"))
+      .toBe(`${REDACTED}${REDACTED}x tail`);
+    const bytes = createAgentIdentityRedactor(undefined, [secret], { maskResumedSuffixes: true });
+    expect(["1", "2", "3", "4", "567890 done"].map((piece) => bytes.chunk("item", piece)).join("") + bytes.finish("item"))
+      .toBe(`${REDACTED}${REDACTED} done`);
+    const shortItem = createAgentIdentityRedactor(undefined, [secret], { maskResumedSuffixes: true });
+    expect(shortItem.chunk("item", "12") + shortItem.finish("item")).toBe("12");
     const local = createAgentIdentityRedactor(undefined, [secret]);
     expect(local.chunk("item", "1234567890 done") + local.finish("item")).toBe("1234567890 done");
   });
