@@ -310,6 +310,7 @@ export async function executeEnvironmentTask(db: Db, workers: Pick<PluginWorkerM
   }
   if (operation.kind === "submit" || operation.kind === "copilot_metadata" || firstPortableResume) {
     // No ticket, headers, environment values, or launch paths belong in metadata.
+    // New execution invalidates this lease's earlier stop receipt with its stop flag.
     const dispatched = {
       runnerTaskLease: true, runnerTaskDispatched: true,
       runnerTaskExecutionStopped: false, runnerTaskSessionRetained: false,
@@ -320,7 +321,7 @@ export async function executeEnvironmentTask(db: Db, workers: Pick<PluginWorkerM
       } : {}),
     };
     const marked = await db.update(environmentLeases).set({
-      metadata: sql`(coalesce(${environmentLeases.metadata}, '{}'::jsonb) - 'runnerTaskAdmissionRejection') || ${JSON.stringify(dispatched)}::jsonb`,
+      metadata: sql`(coalesce(${environmentLeases.metadata}, '{}'::jsonb) - 'runnerTaskAdmissionRejection' - 'remoteExecutionTermination') || ${JSON.stringify(dispatched)}::jsonb`,
     }).where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.companyId, input.companyId),
       eq(environmentLeases.status, "active"), sql`coalesce(${environmentLeases.metadata}->>'runnerTaskRetiring', 'false') != 'true'`,
       requiredProjectAuthProof ? sql`${environmentLeases.metadata}->'runnerTaskProjectAuthValidation' = ${JSON.stringify(requiredProjectAuthProof)}::jsonb` : undefined,
@@ -420,7 +421,7 @@ export async function executeEnvironmentTask(db: Db, workers: Pick<PluginWorkerM
         });
         if (!fresh.providerLeaseId || fresh.providerLeaseId === taskId) throw new Error("Plugin replacement task identity unavailable");
         const {runnerTaskIdentity:_identity,runnerTaskPriorIdentity:_prior,runnerTaskCredentialHandoff:_handoff,
-          runnerTaskResumeFrom:_resume,runnerTaskPreviousLeaseId:_previous,...rest}=metadata;
+          runnerTaskResumeFrom:_resume,runnerTaskPreviousLeaseId:_previous,remoteExecutionTermination:_stopped,...rest}=metadata;
         const replacementMetadata={...rest,providerMetadata:fresh.metadata ?? {},runnerTaskReused:false,runnerTaskDispatched:false,
           runnerTaskExecutionStopped:false,runnerTaskSessionRetained:false};
         try {
@@ -557,10 +558,12 @@ export async function executeEnvironmentTask(db: Db, workers: Pick<PluginWorkerM
     if (operation.kind === "complete") {
       if (freshWorkspace && metadata.runnerTaskExecutionStopped === true)
         await releaseProviderRecoveryTransfers(input.companyId, freshWorkspace);
-      // A physical task can back several run leases. Confirm retirement for every prior owner.
-      if (lease.leasePolicy === "reuse_by_environment" && metadata.runnerTaskExecutionStopped === true) {
-        const owners=await db.select().from(environmentLeases).where(and(eq(environmentLeases.companyId,input.companyId),
-          eq(environmentLeases.provider,lease.provider!),eq(environmentLeases.providerLeaseId,taskId)));
+      // The provider attested this task stopped: record the stop receipt now, not when
+      // the lease's resources are released. A reusable physical task can back several
+      // run leases, so confirm retirement for every owner.
+      if (metadata.runnerTaskExecutionStopped === true) {
+        const owners=lease.leasePolicy === "reuse_by_environment" ? await db.select().from(environmentLeases).where(and(eq(environmentLeases.companyId,input.companyId),
+          eq(environmentLeases.provider,lease.provider!),eq(environmentLeases.providerLeaseId,taskId))) : [lease];
         for(const owner of owners) {
           const receipt=remoteTerminationReceipt(owner,{providerLeaseId:taskId,state:"stopped"});
           if(!receipt) continue;

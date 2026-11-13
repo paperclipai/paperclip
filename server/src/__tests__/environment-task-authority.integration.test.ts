@@ -3,7 +3,8 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { agents, companies, createDb, environmentLeases, environments, heartbeatRuns, plugins, sandboxCreationOperations } from "@paperclipai/db";
 import { resolvePluginTaskResume } from "../services/environment-task-runtime.js";
-import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
+import { hasBoundRemoteStopReceipt, hasRemoteTerminationReceipt, remoteExecutionHasReleased, remoteExecutionHasStopped,
+  remoteTerminationReceipt } from "../services/remote-execution-termination.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { createPluginRunnerTaskOwner } from "../services/native-runtime/plugin-runner-task.js";
@@ -348,6 +349,154 @@ databaseSuite("environment task lease authority", () => {
     await expect(resolvePluginTaskResume(db, { companyId, leaseId: finalLeaseId,
       priorIdentity: { ...priorIdentity, runId: thirdRunId } })).resolves.toBe("retry-task");
 
+  });
+
+  async function seedTaskPlugin(name: string) {
+    const companyId = randomUUID(), agentId = randomUUID(), environmentId = randomUUID(), pluginId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name, issuePrefix: `T${companyId.slice(0, 7).replace(/-/g, "").toUpperCase()}` });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Fixture", adapterType: "paperclip_runner" });
+    await db.insert(environments).values({ id: environmentId, name: `Fixture ${environmentId}`, driver: "plugin",
+      config: { pluginKey: pluginId, driverKey: "tasks", driverConfig: {} } });
+    await db.insert(plugins).values({ id: pluginId, pluginKey: pluginId, packageName: `fixture-${name}`, version: "1.0.0", status: "ready", manifestJson: {
+      capabilities: ["environment.drivers.register"], environmentDrivers: [{ driverKey: "tasks", supportsTasks: true }],
+    } as never });
+    const pin = { driver: "plugin", pluginId, driverKey: "tasks", environmentId, runnerTaskLease: true,
+      runnerTaskProjectAuthValidation: { configurationId: "fixture", provider: "openai", projectIds: [] } };
+    return { companyId, agentId, environmentId, pin };
+  }
+
+  it("records a per-turn task's stop receipt when it settles, before its held lease release", async () => {
+    const { companyId, agentId, environmentId, pin } = await seedTaskPlugin("per-turn-stop");
+    const oldRunId = randomUUID(), nextRunId = randomUUID(), oldLeaseId = randomUUID(), nextLeaseId = randomUUID();
+    await db.insert(heartbeatRuns).values([
+      { id: oldRunId, companyId, agentId, invocationSource: "manual", status: "running" },
+      { id: nextRunId, companyId, agentId, invocationSource: "manual", status: "running" },
+    ]);
+    const prior = { id: oldLeaseId, companyId, environmentId, heartbeatRunId: oldRunId, provider: "plugin:fixture:tasks", providerLeaseId: "old-task" };
+    const oldIdentity = { runnerId: "runner", leaseId: oldLeaseId, runId: oldRunId, sessionId: "session", turnId: "prior-turn", itemId: "prior-item" };
+    await db.insert(environmentLeases).values([
+      { ...prior, status: "active", leasePolicy: "ephemeral", metadata: { ...pin, runnerTaskDispatched: true,
+        runnerTaskExecutionStopped: false, runnerTaskSessionRetained: false, runnerTaskIdentity: oldIdentity } },
+      { id: nextLeaseId, companyId, environmentId, heartbeatRunId: nextRunId, provider: prior.provider, providerLeaseId: "new-task",
+        status: "active", leasePolicy: "ephemeral", metadata: pin },
+    ]);
+    let executionStopped = false;
+    const call = vi.fn(async (_id: string, method: string, params: any) => method !== "environmentTask" ? undefined
+      : ["read_state", "archive_state"].includes(params.operation.kind)
+      ? { kind: "state", taskId: params.taskId, state: { schema: "paperclip.runner.durable.state.v1", lifecycle: "suspended",
+          ...(params.operation.identity ?? params.operation.priorIdentity) } }
+      : params.operation.kind === "status"
+        ? { kind: "status", taskId: params.taskId, phase: executionStopped ? "completed" : "running", executionStopped, sessionStateAvailable: executionStopped }
+        : { kind: "accepted", taskId: params.taskId });
+    const workers = { isRunning: () => true, getWorker: () => ({ supportedMethods: ["environmentTask", "environmentReleaseLease"] }), call } as unknown as PluginWorkerManager;
+    const runtime = environmentRuntimeService(db, { pluginWorkerManager: workers });
+    const readLease = async (id: string) => (await db.select().from(environmentLeases).where(eq(environmentLeases.id, id)))[0]!;
+    const priorIdentity = { runnerInstanceId: "runner", normalizedSessionId: "session", environmentLeaseId: oldLeaseId, runId: oldRunId };
+    const checkpointIdentity = { ...priorIdentity, turnId: "prior-turn", itemId: "prior-item" };
+    const runner = { runnerId: "runner", leaseId: oldLeaseId, sessionId: "session", runId: nextRunId,
+      turnId: "turn", itemId: "item", harness: "codex", protocolMin: 1, protocolMax: 3 };
+    const authorize = (inspectCheckpoint?: boolean) => resolvePluginTaskResume(db, { companyId, leaseId: nextLeaseId, priorIdentity, inspectCheckpoint });
+
+    // Neither a running status nor a completion without a provider stop is stop proof.
+    await runtime.task({ companyId, leaseId: oldLeaseId, operation: { kind: "status" } });
+    await runtime.task({ companyId, leaseId: oldLeaseId, operation: { kind: "complete" } });
+    expect((await readLease(oldLeaseId)).metadata).not.toHaveProperty("remoteExecutionTermination");
+    expect(await remoteExecutionHasStopped(db, companyId, oldRunId)).toBe(false);
+
+    // The turn checkpoint stops and completes the task; release of the lease is still held.
+    executionStopped = true;
+    await runtime.task({ companyId, leaseId: oldLeaseId, operation: { kind: "stop" } });
+    await runtime.task({ companyId, leaseId: oldLeaseId, operation: { kind: "status" } });
+    await runtime.task({ companyId, leaseId: oldLeaseId, operation: { kind: "complete" } });
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, oldRunId));
+    const settled = await readLease(oldLeaseId);
+    expect(settled).toMatchObject({ status: "active", releasedAt: null, cleanupStatus: null, metadata: {
+      runnerTaskExecutionStopped: true, runnerTaskSessionRetained: true, runnerTaskDispatched: false,
+      remoteExecutionTermination: { schema: "paperclip.remote-termination.v1", companyId, runId: oldRunId, leaseId: oldLeaseId,
+        provider: prior.provider, providerLeaseId: "old-task", state: "stopped" } } });
+    expect(hasBoundRemoteStopReceipt(settled)).toBe(true);
+    expect(hasRemoteTerminationReceipt(settled)).toBe(false);
+    expect(await remoteExecutionHasStopped(db, companyId, oldRunId)).toBe(true);
+    expect(await remoteExecutionHasReleased(db, companyId, oldRunId)).toBe(false);
+
+    // The follow-up can inspect and launch from the checkpoint while the predecessor is unreleased.
+    await expect(authorize(true)).resolves.toBe("old-task");
+    await expect(authorize()).resolves.toBe("old-task");
+    await expect(runtime.task({ companyId, leaseId: nextLeaseId, operation: {
+      kind: "read_state", identity: checkpointIdentity, resumeFrom: "old-task",
+    } })).resolves.toMatchObject({ kind: "state", state: { ...checkpointIdentity, lifecycle: "suspended" } });
+
+    // A receipt for another physical task, a second unstopped predecessor lease, or a release
+    // that started without settling still refuses authority.
+    await db.update(environmentLeases).set({ metadata: { ...settled.metadata, remoteExecutionTermination:
+      remoteTerminationReceipt({ ...prior, providerLeaseId: "other-task" }, { providerLeaseId: "other-task", state: "stopped" }) } })
+      .where(eq(environmentLeases.id, oldLeaseId));
+    await expect(authorize(true)).rejects.toThrow("not authorized");
+    await expect(authorize()).rejects.toThrow("not authorized");
+    await db.update(environmentLeases).set({ metadata: settled.metadata }).where(eq(environmentLeases.id, oldLeaseId));
+    const siblingId = randomUUID();
+    await db.insert(environmentLeases).values({ id: siblingId, companyId, environmentId, heartbeatRunId: oldRunId,
+      provider: prior.provider, providerLeaseId: "sibling-task", status: "active", leasePolicy: "ephemeral", metadata: pin });
+    await expect(authorize(true)).rejects.toThrow("not authorized");
+    await expect(authorize()).rejects.toThrow("not authorized");
+    await db.delete(environmentLeases).where(eq(environmentLeases.id, siblingId));
+    await db.update(environmentLeases).set({ status: "pending_cleanup", cleanupStatus: "failed", releasedAt: new Date() })
+      .where(eq(environmentLeases.id, oldLeaseId));
+    await expect(authorize()).rejects.toThrow("not authorized");
+    await db.update(environmentLeases).set({ status: "active", cleanupStatus: null, releasedAt: null }).where(eq(environmentLeases.id, oldLeaseId));
+    await expect(authorize()).resolves.toBe("old-task");
+
+    // Dispatching new execution invalidates a stop receipt on that lease.
+    const next = await readLease(nextLeaseId);
+    await db.update(environmentLeases).set({ metadata: { ...next.metadata, runnerTaskExecutionStopped: true,
+      remoteExecutionTermination: remoteTerminationReceipt(next, { providerLeaseId: "new-task", state: "stopped" }) } })
+      .where(eq(environmentLeases.id, nextLeaseId));
+    expect(await remoteExecutionHasStopped(db, companyId, nextRunId)).toBe(true);
+    await expect(runtime.task({ companyId, leaseId: nextLeaseId, operation: {
+      kind: "submit", preparedLaunchId: "fixture", projectIds: [], bootstrapTicket: "fixture", runner, resumeFrom: "old-task",
+    } })).resolves.toMatchObject({ kind: "accepted" });
+    expect((await readLease(nextLeaseId)).metadata).not.toHaveProperty("remoteExecutionTermination");
+    expect(await remoteExecutionHasStopped(db, companyId, nextRunId)).toBe(false);
+
+    // Release still writes its own receipt over the settlement receipt.
+    const releaseErrors: unknown[] = [];
+    await runtime.releaseRunLeases(oldRunId, "released", (_id, error) => { releaseErrors.push(error); });
+    expect(releaseErrors).toEqual([]);
+    const released = await readLease(oldLeaseId);
+    expect(released).toMatchObject({ status: "released", cleanupStatus: "success",
+      metadata: { remoteExecutionTermination: { leaseId: oldLeaseId, providerLeaseId: "old-task", state: "stopped" } } });
+    expect(hasRemoteTerminationReceipt(released)).toBe(true);
+    expect(await remoteExecutionHasReleased(db, companyId, oldRunId)).toBe(true);
+  });
+
+  it("still records stop receipts for every warm owner and retires retained owners", async () => {
+    const { companyId, agentId, environmentId, pin } = await seedTaskPlugin("warm-stop");
+    const priorRunId = randomUUID(), currentRunId = randomUUID(), priorLeaseId = randomUUID(), currentLeaseId = randomUUID();
+    await db.insert(heartbeatRuns).values([
+      { id: priorRunId, companyId, agentId, invocationSource: "manual", status: "succeeded" },
+      { id: currentRunId, companyId, agentId, invocationSource: "manual", status: "running" },
+    ]);
+    const shared = { companyId, environmentId, provider: "plugin:fixture:tasks", providerLeaseId: "warm-task", leasePolicy: "reuse_by_environment" as const };
+    await db.insert(environmentLeases).values([
+      { ...shared, id: priorLeaseId, heartbeatRunId: priorRunId, status: "retained", metadata: pin },
+      { ...shared, id: currentLeaseId, heartbeatRunId: currentRunId, status: "active", metadata: { ...pin, runnerTaskDispatched: true } },
+    ]);
+    const call = vi.fn(async (_id: string, _method: string, params: any) => params.operation.kind === "status"
+      ? { kind: "status", taskId: params.taskId, phase: "completed", executionStopped: true, sessionStateAvailable: false }
+      : { kind: "accepted", taskId: params.taskId });
+    const runtime = environmentRuntimeService(db, { pluginWorkerManager: { getWorker: () => ({ supportedMethods: ["environmentTask"] }), call } as unknown as PluginWorkerManager });
+    await runtime.task({ companyId, leaseId: currentLeaseId, operation: { kind: "status" } });
+    await runtime.task({ companyId, leaseId: currentLeaseId, operation: { kind: "complete" } });
+    const leases = await db.select().from(environmentLeases).where(eq(environmentLeases.providerLeaseId, "warm-task"));
+    const priorLease = leases.find(lease => lease.id === priorLeaseId)!, currentLease = leases.find(lease => lease.id === currentLeaseId)!;
+    expect(priorLease).toMatchObject({ status: "released", cleanupStatus: "success",
+      metadata: { remoteExecutionTermination: { leaseId: priorLeaseId, runId: priorRunId, state: "stopped" } } });
+    expect(currentLease).toMatchObject({ status: "active",
+      metadata: { remoteExecutionTermination: { leaseId: currentLeaseId, runId: currentRunId, state: "stopped" } } });
+    expect(hasRemoteTerminationReceipt(priorLease)).toBe(true);
+    expect(await remoteExecutionHasStopped(db, companyId, priorRunId)).toBe(true);
+    expect(await remoteExecutionHasStopped(db, companyId, currentRunId)).toBe(true);
+    expect(await remoteExecutionHasReleased(db, companyId, currentRunId)).toBe(false);
   });
 
 });
