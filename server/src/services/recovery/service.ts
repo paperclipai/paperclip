@@ -251,30 +251,6 @@ export const STRANDED_RECENT_PROGRESS_EXEMPTION_MS = Math.max(
   Number(process.env.STRANDED_RECENT_PROGRESS_EXEMPTION_MS) || 30 * 60 * 1000,
 );
 
-// The exemption above is satisfied by any assignee comment in the window, and
-// the comment a run leaves to record its own outcome is the most common one.
-// An assignee that honours the execution contract therefore stays exempt
-// indefinitely: every sweep re-enqueues `issue_continuation_needed`, the next
-// run reports that there is nothing left to do, that report refreshes the
-// exemption, and the issue pays a full adapter session per sweep until a human
-// notices. The rewake throttle does not catch it either, because
-// `issue.comment_added` counts as issue-visible progress there, so the
-// no-progress streak it needs never forms.
-//
-// Keep the exemption — a batch workflow really does advance every heartbeat —
-// but bound it: once this many automatic productive-terminal continuations
-// have run back to back, fall back to the normal escalation so the issue
-// becomes visible for intervention instead of looping forever.
-//
-// The default trades the longest unattended batch against the most sessions a
-// loop can waste. Without the exemption this path escalated on the second
-// productive heartbeat, which is what GGU-809 was raised to fix, so the
-// default is deliberately well clear of it rather than one step above it.
-//
-// The value reaches a `.limit()`, so a fraction or a non-finite override would
-// break the history query rather than retune it. Normalize to a finite integer
-// and keep an explicit `0` at the advertised floor instead of silently
-// restoring the default.
 export function resolveStrandedExemptionStreakCap(
   raw: string | undefined,
   fallback = 8,
@@ -991,11 +967,6 @@ function isProductiveContinuationRun(latestRun: LatestIssueRun) {
   );
 }
 
-/**
- * Whether a run was started by the automatic productive-terminal continuation
- * path, judged from its wake context alone. Shared with the streak counter
- * that bounds the recent-progress exemption so the two cannot drift.
- */
 function isAutomaticContinuationRecoveryContext(contextSnapshot: unknown) {
   const context = parseObject(contextSnapshot);
   return (
@@ -2136,12 +2107,6 @@ export function recoveryService(
     return Boolean(comment || attachment);
   }
 
-  // Bounds `hasRecentVisibleProgress`: how many of the issue's most recent runs
-  // by this assignee were themselves automatic productive-terminal
-  // continuations, counted back from the newest and stopping at the first run
-  // that was not one. Stopping there makes the count consecutive and recent by
-  // construction, so a loop that was interrupted and resumed days ago does not
-  // hold a grudge against work happening now.
   async function countConsecutiveAutomaticContinuations(
     companyId: string,
     issueId: string,
@@ -5932,10 +5897,6 @@ export function recoveryService(
             agentId,
             STRANDED_RECENT_PROGRESS_EXEMPTION_MS,
           );
-          // The exemption is bounded: a run's own outcome comment keeps
-          // renewing it, so without a cap a productive-looking continuation
-          // loop never escalates. See
-          // STRANDED_RECENT_PROGRESS_EXEMPTION_MAX_STREAK.
           const exemptionStreak = exempted
             ? await countConsecutiveAutomaticContinuations(
                 issue.companyId,
@@ -5946,9 +5907,6 @@ export function recoveryService(
             : 0;
           const exemptionCapped =
             exemptionStreak >= STRANDED_RECENT_PROGRESS_EXEMPTION_MAX_STREAK;
-          // The live-path re-read guards the `blocked` write against a run or
-          // wake that started after the loop's check; the escalation itself
-          // re-checks the issue row under its lock.
           if (
             (!exempted || exemptionCapped) &&
             !(await hasActiveExecutionPath(issue.companyId, issue.id, null))
@@ -5971,8 +5929,6 @@ export function recoveryService(
             continue;
           }
           if (!exempted || exemptionCapped) {
-            // The escalation applied, but the issue moved on while this sweep
-            // was reading. Leave it to whoever owns it now.
             result.skipped += 1;
             continue;
           }

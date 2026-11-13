@@ -17373,10 +17373,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(issue?.status).toBe("blocked");
   });
 
-  // The recent-progress exemption is renewed by any assignee comment in the
-  // window, including the comment a run leaves to record its own outcome. These
-  // two cases pin both halves of the bound: the first automatic continuations
-  // still get their grace, and the streak cannot grow without limit.
   async function seedPriorAutomaticContinuationRuns(input: {
     companyId: string;
     agentId: string;
@@ -17384,7 +17380,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     count: number;
   }) {
     for (let index = 0; index < input.count; index += 1) {
-      // Older than the fixture's run so `getLatestIssueRun` keeps picking it.
       const at = new Date(Date.parse("2026-03-18T00:00:00.000Z") + index * 60_000);
       await db.insert(heartbeatRuns).values({
         id: randomUUID(),
@@ -17427,7 +17422,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
     const heartbeat = heartbeatService(db);
 
-    // One automatic continuation so far: a batch workflow keeps its grace.
     const result = await heartbeat.reconcileStrandedAssignedIssues();
     expect(result.recentProgressExempted).toBe(1);
     expect(result.recentProgressExemptionCapped).toBe(0);
@@ -17451,9 +17445,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       livenessState: "advanced",
       runtimeMode: "native",
     });
-    // The assignee's own outcome comment renews the exemption on every sweep,
-    // so before the cap this issue re-enqueued `issue_continuation_needed`
-    // indefinitely, paying one adapter session per sweep.
     await db.insert(issueComments).values({
       companyId,
       issueId,
@@ -17514,10 +17505,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       issueId,
       count: STRANDED_RECENT_PROGRESS_EXEMPTION_MAX_STREAK - 1,
     });
-    // Complete the issue at the first transaction the escalation opens. That
-    // is after the sweep's unlocked re-read and before any row lock, which is
-    // the window a person can use: the `blocked` write must notice the change
-    // under the lock instead of overwriting the person's decision.
     const originalTransaction = db.transaction.bind(db);
     let completed = false;
     const transactionSpy = vi
@@ -17575,8 +17562,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       issueId,
       count: STRANDED_RECENT_PROGRESS_EXEMPTION_MAX_STREAK + 3,
     });
-    // A run that was not an automatic continuation breaks the streak, so the
-    // older loop must not be charged against the work happening now.
     const breakAt = new Date("2026-03-18T12:00:00.000Z");
     await db.insert(heartbeatRuns).values({
       id: randomUUID(),
@@ -17607,9 +17592,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   it("normalizes the automatic-continuation cap setting to a usable integer", () => {
-    // The cap reaches a `.limit()`, so a fraction or a non-finite override must
-    // not survive, and an explicit zero must land on the floor rather than
-    // silently restore the default.
     expect(resolveStrandedExemptionStreakCap(undefined)).toBe(8);
     expect(resolveStrandedExemptionStreakCap("")).toBe(8);
     expect(resolveStrandedExemptionStreakCap("   ")).toBe(8);
