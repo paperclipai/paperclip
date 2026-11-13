@@ -16,14 +16,6 @@ name: Runner image
 # and manual runs, always build and check the image and never publish it.
 # They resolve the lockfile first, because a contributor cannot edit it.
 #
-# The build legs read a registry build cache for the stages that do not
-# change with the commit: the toolchain and the compiled daemon. Only the
-# `cache` job writes it, and only for a master push. Once a week a scheduled
-# run builds with no cache at all, to catch what a cache hides: a download
-# that is gone, or a step that only works from the cache. In every other
-# way it is a manual run: it resolves the lockfile, always builds, and
-# publishes nothing.
-#
 # This is a workflow of its own, not a job in docker.yml: docker.yml has no
 # pull-request trigger and holds one concurrency slot per ref, and the Runner
 # image needs its own signer identity so its attestation cannot stand in for
@@ -62,9 +54,7 @@ on:
     - cron: "23 6 * * 3"
 
 # Least privilege: nothing at the workflow level. Only the publish job, which
-# runs no build, can write images to the registry or sign. Only the cache
-# job can write the build cache; it never runs the install, and it has no
-# signing identity.
+# runs no build, can write images to the registry or sign.
 permissions: {}
 
 # A newer push to a pull request replaces its older run. A master run has a
@@ -76,15 +66,13 @@ concurrency:
 
 env:
   IMAGE: ghcr.io/paperclipai/paperclip-runner
-  # The build cache is a package of its own, with one tag for each
-  # architecture, so the package above holds only attested images.
   BUILD_CACHE: ghcr.io/paperclipai/paperclip-runner-buildcache
 
 jobs:
   identity:
     name: Resolve the Runner image identity
-    # A fork's own pushes and schedule do not run this workflow. Pull requests
-    # and manual runs are not affected.
+    # A fork's own pushes do not run this workflow. Pull requests and manual
+    # runs are not affected.
     if: (github.event_name != 'push' && github.event_name != 'schedule') || (github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064')
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -107,9 +95,7 @@ jobs:
           version: 9.15.4
           run_install: false
 
-      # No dependency cache from the Actions cache. Workflows that handle
-      # pull requests can write that cache, and what they write must not
-      # reach a published image.
+      # No dependency cache: the Actions cache must not reach a published image.
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
@@ -226,15 +212,14 @@ jobs:
   # Multi-arch by native runner, not QEMU, as in docker.yml. GitHub-hosted
   # runners: the protected release fleets admit only docker.yml on master.
   #
-  # These legs cannot write to the registry on any event: not an image, and
-  # not the build cache. They read the cache without a credential. The
-  # install runs dependency lifecycle scripts; the only token in the job can
-  # read packages, and only the lookup step receives it.
+  # These legs cannot write to the registry on any event, and they
+  # write no registry build cache. The install runs dependency lifecycle
+  # scripts; the only token in the job can read packages, and only the lookup
+  # step receives it.
   #
-  # A master push builds only when the image does not exist. A pull request,
-  # a manual run and the weekly scheduled run always build, so a change to
-  # the smoke matrix or to the pipeline is exercised even when the Runner's
-  # inputs did not change.
+  # A master push builds only when the image does not exist. A pull request
+  # and a manual run always build, so a change to the smoke matrix or to the
+  # pipeline is exercised even when the Runner's inputs did not change.
   build:
     name: Build and check (${{ matrix.arch }})
     needs: identity
@@ -318,24 +303,12 @@ jobs:
       # The build itself runs the frozen install, the Runner's own build, the
       # provider pack integrity check and the layout check.
       #
-      # Both variants come from one build: the second command only reads
-      # what the first left in this job's builder. Each is exported once, as
-      # an OCI archive and nothing else. A command with two exports, an
-      # archive and a tree, stalled on these runners when every stage came
-      # from the cache, so a command has one export, and the step has a time
-      # limit: a cold build takes about ten minutes.
-      #
-      # The first command reads the registry build cache. BuildKit takes a
-      # cached step only when the step and the content of every file it
-      # reads are the same, so the cache changes how long the build takes
-      # and not what it builds. The cache holds the stages up to the
-      # compiled daemon. The last stage takes the commit as a build
-      # argument, so it always runs here: the install, the Runner's build
-      # and the pack. A cache that is missing or cannot be read is a line
-      # in the log, not a failure: the build then runs every step.
-      #
-      # The scheduled run reads no cache and passes --no-cache, so every
-      # step runs and every download happens again.
+      # Both variants come from one build: the second command only reads the
+      # cache of the first. Each is exported once, as an OCI archive and
+      # nothing else. A command with two exports, an archive and a tree,
+      # stalled on these runners when every stage came from the cache, so a
+      # command has one export, and the step has a time limit: a cold build
+      # takes about ten minutes.
       #
       # This is the publication form of the build, the only one whose pack
       # names the image (`runnerInputsDigest`), so the check below can bind
@@ -700,24 +673,6 @@ jobs:
         if: steps.early.outputs.exists == 'true' || steps.prepush.outputs.exists == 'true' || steps.gate.outputs.state == 'published'
         run: echo "\`$IMAGE:inputs-$DIGEST\` and its slim variant already exist. Another run published first; this run published nothing." >> "$GITHUB_STEP_SUMMARY"
 
-  # Writes the build cache the build legs read. Only a master push in the
-  # canonical repository reaches this job, and only for inputs that had no
-  # image. When the image exists, nothing was built, and the run that
-  # published it wrote the cache for the same inputs. The Actions cache is
-  # not used: workflows that handle pull requests share it.
-  #
-  # The publish job does not need this job, and this job runs after it, so a
-  # cache write never delays an image and never competes with the jobs that
-  # make one for a runner. When this job fails, the image is published and
-  # the next build is slower.
-  #
-  # It builds the stages up to the compiled daemon and no further. The last
-  # stage can never be reused by another commit, and the install, with its
-  # dependency lifecycle scripts, is in it. So this job, which holds a token
-  # that can write packages, runs the toolchain download and cargo, and
-  # never the install. Those steps run inside the build, which is not handed
-  # the token. The job cannot sign: an image it wrote would have no
-  # attestation.
   cache:
     name: Write the build cache (${{ matrix.arch }})
     needs: [identity, publish]
@@ -737,11 +692,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-    # One write for each architecture at a time, so an older commit's write
-    # and a newer one's never interleave. GitHub keeps one waiting job for a
-    # group and cancels the one that waited before it, so the newest waits.
-    # A write from an older commit that lands last costs time and nothing
-    # else: a cached step is reused only for the same content.
     concurrency:
       group: runner-image-buildcache-${{ matrix.arch }}
       cancel-in-progress: false
@@ -768,9 +718,6 @@ jobs:
             [registry."docker.io"]
               mirrors = ["mirror.gcr.io"]
 
-      # No image leaves this build: the one output is the cache. It reads
-      # the cache it writes, so steps that did not change are not built
-      # again. mode=max keeps every step of the stages, not only the last.
       - name: Build the cached stages and write the cache
         timeout-minutes: 20
         run: |

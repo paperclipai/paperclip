@@ -32,51 +32,42 @@ describe("Runner image workflow", () => {
   const steps = (job: string) => job.slice(job.indexOf("\n    steps:\n")).split(/\n(?= {6}- )/).slice(1);
   const credential = /github\.token|secrets\.|GITHUB_TOKEN|REGISTRY_PASSWORD/;
 
-  it("lets only the publish job write images or sign, and only the cache job write the build cache", () => {
+  it("lets only the publish job write images or sign, and only the cache job write the build cache, never the Actions cache", () => {
     expect(workflow).toMatch(/^permissions: \{\}$/m);
     expect(Object.keys(jobs)).toEqual(["identity", "build", "publish", "cache"]);
     expect(permissions(jobs.identity)).toEqual(["contents: read", "packages: read"]);
     expect(permissions(jobs.build)).toEqual(["contents: read", "packages: read"]);
     expect(permissions(jobs.publish)).toEqual(["contents: read", "packages: write", "id-token: write", "attestations: write"]);
-    // The cache job can write packages. It cannot sign, so nothing it writes is attested.
     expect(permissions(jobs.cache)).toEqual(["contents: read", "packages: write"]);
     for (const job of [jobs.identity, jobs.build]) {
       expect(job).not.toMatch(/docker\/login-action|skopeo|imagetools create|actions\/attest|secrets\.|--push|push=true|cache-to/);
     }
-    // Only the cache job writes a build cache, and it writes nothing else.
     expect(Object.keys(jobs).filter((name) => jobs[name].includes("cache-to"))).toEqual(["cache"]);
     expect(jobs.cache).not.toMatch(/skopeo|imagetools|actions\/attest|--push|push=true|type=image|type=oci|upload-artifact/);
-    // Never the Actions cache: workflows that handle pull requests share it.
     expect(workflow).not.toMatch(/type=gha|actions\/cache/);
     expect(workflow).not.toMatch(/pull_request_target|workflow_run/);
   });
 
-  it("writes the build cache only for a master push in the canonical repository, and never on the way to publication", () => {
-    // `canonical` names the push event, and nothing in either condition is an alternative to it.
+  it("writes the build cache only for a master push in the canonical repository, never on the way to publication, with the token in the login step alone and no stage past the daemon", () => {
     for (const job of [jobs.publish, jobs.cache]) {
       expect(jobCondition(job).startsWith(`${canonical} && `)).toBe(true);
       expect(jobCondition(job)).not.toContain("||");
     }
     expect(jobCondition(jobs.cache)).toContain("needs.identity.outputs.lock == 'current'");
-    // No job waits for the cache job, so its failure cannot hold or fail a publication.
     for (const job of Object.values(jobs)) expect(/^ {4}needs: (.+)$/m.exec(job)?.[1] ?? "").not.toMatch(/\bcache\b/);
-    // The token reaches the registry login and no other step. The build is not handed one.
     const withCredential = steps(jobs.cache).filter((step) => credential.test(step));
     expect(withCredential).toHaveLength(1);
     expect(withCredential[0]).toContain("docker/login-action@");
-    // It builds no further than the compiled daemon: the install and its lifecycle scripts are in a later stage.
     const building = steps(jobs.cache).filter((step) => step.includes("docker buildx build"));
     expect(building).toHaveLength(1);
     expect([...building[0].matchAll(/--target (\S+)/g)].map((match) => match[1])).toEqual(["runner-artifacts-runnerd"]);
     expect(jobs.cache).not.toMatch(/pnpm|setup-node|node scripts/);
   });
 
-  it("neither publishes nor writes the cache from a scheduled run", () => {
+  it("neither publishes nor writes the cache from a scheduled run, and runs nothing on a fork's schedule", () => {
     expect(workflow).toMatch(/^ {2}schedule:\n {4}- cron: /m);
-    // The two writers are held to the push event above. A scheduled run keeps no image for them either.
     expect(canonical).toContain("github.event_name == 'push'");
     expect(jobs.build).toContain(`KEEP_IMAGE: \${{ ${canonical} }}`);
-    // A fork's schedule runs nothing.
     expect(jobCondition(jobs.identity)).toBe(`(github.event_name != 'push' && github.event_name != 'schedule') || (${repository})`);
   });
 
@@ -110,7 +101,6 @@ describe("Runner image workflow", () => {
       expect(step).toContain("runner-image-publish.mjs publication-state");
       expect(step).not.toContain("--strict");
     }
-    // They read the cache with no login, so only what anyone can read. They never write it.
     expect(jobs.build).toContain('--cache-from "type=registry,ref=$BUILD_CACHE:$ARCH"');
     expect(jobs.build).not.toMatch(/cache-to|docker login|docker\/login-action/);
   });

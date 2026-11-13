@@ -220,19 +220,33 @@ repository and nowhere else. Other runs build and check, and publish nothing.
 
 The build legs read a registry build cache,
 `ghcr.io/paperclipai/paperclip-runner-buildcache:<arch>`. It is a package of
-its own and holds no image. It covers the stages that do not take the commit:
-the Rust toolchain and the compiled daemon. The last stage takes the source
-revision as a build argument, so every build runs it: the frozen install, the
-Runner's build and the provider pack.
+its own and holds no image, so the image package holds only attested images.
+It covers the stages that do not take the commit: the Rust toolchain and the
+compiled daemon. The last stage takes the source revision as a build
+argument, so every build runs it: the frozen install, the Runner's build and
+the provider pack. Of the two build commands of a leg, only the first reads
+the registry cache; the second reads what the first left in the job's builder.
 
 - **Effect.** BuildKit reuses a cached step only when the step and the
   content of every file it reads are the same. The cache changes how long a
   build takes, not what it builds, and the identity does not cover it.
 - **Writer.** Only the `cache` job of the workflow writes it: on a `master`
   push in this repository, after the publish job, for inputs that had no
-  image. That job cannot sign, builds no further than the daemon and never
-  runs the install. Every other run reads the cache without a credential
-  and cannot write it.
+  image. When the image exists, nothing was built, and the run that published
+  it wrote the cache for those inputs. That job cannot sign, builds no further
+  than the daemon and never runs the install. Its token reaches the registry
+  login and no other step. It reads the cache it writes and keeps every step
+  of the cached stages (`mode=max`). Every other run reads the cache without
+  a credential and cannot write it.
+- **Not on the way to an image.** No job waits for the `cache` job. When it
+  fails, the image is published and the next build is slower.
+- **One write at a time.** The job holds one concurrency slot for each
+  architecture. GitHub keeps one waiting job in a group and cancels the one
+  that waited before it, so the newest write waits. A write from an older
+  commit that lands last costs time and nothing else.
+- **No Actions cache.** The workflow never uses it: workflows that handle
+  pull requests can write it, and what they write must not reach a published
+  image.
 - **Trust.** The daemon in a published image can come from a cached step
   that an earlier `master` run compiled. Whoever can write the cache package
   can decide what a later build reuses, so write access to it must stay as
@@ -241,8 +255,10 @@ Runner's build and the provider pack.
   toolchain installer, the toolchain, the crates) is not repeated until the
   inputs of that step change.
 - **Weekly cold build.** A scheduled run builds both variants once a week
-  with no cache, runs every check and publishes nothing. It fails when a
-  download is gone or when a step only works from the cache.
+  with no cache: it passes `--no-cache` and reads no registry cache. Like a
+  manual run, it resolves the lockfile, always builds, runs every check and
+  publishes nothing. A fork's schedule runs nothing. It fails when a download
+  is gone or when a step only works from the cache.
 - **Missing cache.** A cache that does not exist or cannot be read is a
   line in the build log, not a failure. The build then runs every step.
 - **First write.** GitHub creates the cache package private. A maintainer
