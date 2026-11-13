@@ -12,6 +12,7 @@ import { conversationRecoveryActionPredicate, getConversationOwnershipBlocker } 
 import { isInterruptedNativePreparationCandidate } from "./cancelled-native-startup.js";
 import { persistActivity } from "./activity-log.js";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
+import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
 import { logger } from "../middleware/logger.js";
 import { and, asc, eq, exists, inArray, isNull, not, or, sql } from "drizzle-orm";
 import {
@@ -363,6 +364,20 @@ export async function markExecutionReconciliation(
   });
 }
 
+async function foldWaitingRetriesIntoContinuation(tx: Db, input: { companyId: string; issueId: string; runId: string }) {
+  const waiting = await tx.select({ id: agentWakeupRequests.id, payload: agentWakeupRequests.payload }).from(agentWakeupRequests).where(and(
+    eq(agentWakeupRequests.companyId, input.companyId), eq(agentWakeupRequests.status, "deferred_issue_execution"),
+    eq(agentWakeupRequests.reason, "task_retry"), eq(agentWakeupRequests.requestedByActorType, "user"),
+    isNull(agentWakeupRequests.runId), sql`${agentWakeupRequests.payload}->>'issueId' = ${input.issueId}`)).for("update");
+  const retries = waiting.filter(wake => queuedCommentIdsFromWakePayload(wake.payload).length === 0).map(wake => wake.id);
+  if (!retries.length) return;
+  const now = new Date();
+  await tx.update(agentWakeupRequests).set({ status: "coalesced", runId: input.runId, finishedAt: now, updatedAt: now,
+    payload: sql`coalesce(${agentWakeupRequests.payload}, '{}'::jsonb) || ${JSON.stringify({ coalescedIntoFreshContinuationRun: input.runId })}::jsonb` })
+    .where(and(eq(agentWakeupRequests.companyId, input.companyId), inArray(agentWakeupRequests.id, retries),
+      eq(agentWakeupRequests.status, "deferred_issue_execution")));
+}
+
 export async function deliverReconciledExecutions(
   db: Db,
   wake: ReturnType<typeof import("./heartbeat.js").heartbeatService>["wakeup"],
@@ -567,6 +582,8 @@ export async function deliverReconciledExecutions(
             .where(pendingDecision);
           await settleCoalescedFreshContinuationHolds(tx as unknown as Db, { companyId: action.companyId, primaryId: action.id,
             delivery: "delivered", continuationRunId: run.id });
+          if ((action.evidence.freshContinuation as { isolation?: unknown } | undefined)?.isolation === "fresh_isolated_workspace")
+            await foldWaitingRetriesIntoContinuation(tx as unknown as Db, { companyId: action.companyId, issueId: task.id, runId: run.id });
         });
       } catch {
         if (action.returnOwnerAgentId) seenAgentIds.add(action.returnOwnerAgentId);

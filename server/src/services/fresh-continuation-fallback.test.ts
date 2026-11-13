@@ -19,7 +19,6 @@ import { buildExecutionContinuation } from "./execution-continuation.js";
 import { currentProcessSpaceHash } from "./controller-process-identity.js";
 import { executionControlSchedule } from "./execution-control-work.js";
 import { readFreshWorkspaceReadiness } from "./fresh-workspace-continuation.js";
-import { requestTaskRetry } from "./task-retry.js";
 import { taskInterruptionPresentation } from "./task-interruption-presentation.js";
 import { agentRunWritesRevoked, assertAgentRunWriteAllowed } from "../agent-run-cancellation.js";
 import { loadAgentRunAuthentication } from "../middleware/agent-run-authentication.js";
@@ -335,12 +334,23 @@ suite("fresh-continuation fallback", () => {
       .catch((error: unknown) => ({ error: String(error) }));
     await deliver();
     expect(retry).toMatchObject({ accepted: true });
-    const [retryWake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, (retry as { requestId: string }).requestId));
-    expect(retryWake).toMatchObject({ status: "deferred_issue_execution", runId: null });
+    const retryWake = async () => (await db.select().from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, (retry as { requestId: string }).requestId)))[0];
     const runs = await taskRuns();
     expect(runs).toHaveLength(1);
+    expect(await retryWake()).toMatchObject({ status: "coalesced", runId: runs[0]!.id });
     expect(runs[0]!.contextSnapshot).toMatchObject({ freshContinuationIsolation: f.actionId });
     expect(await readFreshWorkspaceReadiness(db, runs[0]!)).toMatchObject({ mode: "fresh_isolated_workspace", retryIntentId: f.actionId });
+    const endedAt = new Date();
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: endedAt })
+      .where(and(eq(heartbeatRuns.status, "running"), sql`${heartbeatRuns.contextSnapshot}->>'issueId' <> ${f.issueId}`));
+    await heartbeatService(db).cancelRun(runs[0]!.id);
+    await heartbeatService(db).resumeQueuedRuns();
+    await deliver();
+    const later = (await taskRuns()).filter(run => run.id !== runs[0]!.id);
+    expect(later.filter(run => run.wakeupRequestId === (retry as { requestId: string }).requestId
+      || run.contextSnapshot?.wakeReason === "task_retry")).toEqual([]);
+    expect(await retryWake()).toMatchObject({ status: "coalesced", runId: runs[0]!.id });
   }, 60_000);
 
   it("re-drives an isolated continuation pending past the bound itself; a repair wake never replaces it", async () => {
