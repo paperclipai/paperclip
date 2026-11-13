@@ -17,6 +17,10 @@ Runtime authentication: [AI Connections](./AI-CONNECTIONS.md).
 MCP protocol versions (2026-07-28 stateless MCP and older handshake servers):
 [MCP-PROTOCOL-VERSIONS.md](./MCP-PROTOCOL-VERSIONS.md).
 
+MCP extensions: [MCP Apps](./MCP-APPS.md) (interactive views in the task chat)
+and [MCP Skills](./MCP-SKILLS.md) (skills that connected apps publish, reviewed
+by the board and delivered to agents).
+
 Long-term memory: [Experimental memory connectors](./MEMORY.md).
 
 Provider notes: [Google Workspace](./GOOGLE-WORKSPACE.md),
