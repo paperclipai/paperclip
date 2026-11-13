@@ -198,7 +198,9 @@ wasted re-run. A cancelled job without this evidence, such as a job a person
 cancelled, counts as a real failure. The `verify` and `e2e` aggregates are not
 counted. Any other failure, a failed or cancelled routing gate, or a PR whose
 head has moved prevents the automatic re-run. The head check runs before any
-job is classified, so a run cancelled by a newer push costs no log reads. The
+job is classified, so a run cancelled by a newer push costs no log reads. It
+runs again just before the re-run, because a re-run of an old run joins the
+PR's `cancel-in-progress` concurrency group and would cancel the newer CI. The
 workflow job summary lists each failed or cancelled job and its evidence. Like a maintainer's "Re-run failed jobs", the re-run reuses the
 gate's successful outputs, including its AWS admission. Attempt 2's
 triggering actor is `github-actions[bot]`, so `profile-ci` does not export

@@ -26,9 +26,6 @@ export const AGGREGATE_JOBS = new Set(["ci / verify", "ci / e2e"]);
 // ci-routing.yml checks the attempt's triggering actor. A bot-triggered attempt
 // would move the whole run to GitHub-hosted runners, so leave it to a human.
 export const GATE_JOB_PREFIX = "ci / gate / ";
-// A spot-reclaimed job often concludes `cancelled` rather than `failure`, and
-// then so does the run. A cancelled job counts as lost only with positive
-// runner-loss evidence, so superseded and user-cancelled runs are not re-run.
 export const RERUN_CONCLUSIONS = new Set(["failure", "cancelled"]);
 // A shutdown signal often reaches the check run only as this annotation; the
 // signal itself is logged as an error line in the job log.
@@ -80,27 +77,17 @@ export function logShowsRunnerLoss(log) {
   return log.split("\n").some((line) => line.includes("##[error]") && RUNNER_LOSS_PATTERN.test(line));
 }
 
-/**
- * Classifies one failed or cancelled job. The log is read only when a
- * cancellation annotation may hide the shutdown signal.
- */
+/** Classifies one failed job. Logs are read only when annotations are inconclusive. */
 export async function classifyJob(job, { annotations, readLog }) {
   const failures = annotations.filter((annotation) => annotation.annotation_level === "failure");
   const isRunnerLoss = (annotation) => RUNNER_LOSS_PATTERN.test(annotation.message ?? "");
-  // Runner-loss evidence wins over other failure annotations: a dying job, or
-  // a passing test that prints `::error`, can leave error annotations that are
-  // not why the job ended. If a test really failed before the runner was lost,
-  // the one re-run fails again and attempt 2 is never re-run automatically.
   const match = failures.find(isRunnerLoss);
   if (match) return { lost: true, evidence: firstLine(match.message) };
-  // A shutdown signal often reaches the check run only as a cancellation; the
-  // signal itself is in the log.
   if (failures.some((annotation) => annotation.message === CANCELLED_MESSAGE) && logShowsRunnerLoss(await readLog(job))) {
     return { lost: true, evidence: "job log: runner received a shutdown signal or lost communication" };
   }
   const real = failures.find((annotation) => annotation.message !== CANCELLED_MESSAGE);
   if (real) return { lost: false, evidence: firstLine(real.message) };
-  // A user or concurrency cancel looks like this: no runner-loss evidence.
   if (failures.length > 0) return { lost: false, evidence: `${CANCELLED_MESSAGE} (no runner-loss error in the job log)` };
   return { lost: false, evidence: "no failure annotation" };
 }
@@ -147,14 +134,11 @@ export async function decide(client, run) {
   if (ineligible) return { ...decision, reason: ineligible };
 
   const jobs = await client.paginate(`/repos/${REPOSITORY}/actions/runs/${run.id}/attempts/1/jobs?per_page=100`, "jobs");
-  // "Failed" below means a `failure` or `cancelled` conclusion.
   const failed = jobs.filter((job) => RERUN_CONCLUSIONS.has(job.conclusion) && !AGGREGATE_JOBS.has(job.name));
   if (failed.length === 0) return { ...decision, reason: "no failed jobs other than the verify/e2e aggregates" };
 
-  // Before any annotation or log is read: a run superseded by a new push has
-  // dozens of cancelled jobs and is never re-run.
-  const stale = await staleReason(client, run);
-  if (stale) return { ...decision, reason: stale };
+  const staleBefore = await staleReason(client, run);
+  if (staleBefore) return { ...decision, reason: staleBefore };
 
   for (const job of failed) {
     if (job.name.startsWith(GATE_JOB_PREFIX)) {
@@ -168,6 +152,9 @@ export async function decide(client, run) {
 
   const real = decision.jobs.filter((job) => !job.lost);
   if (real.length) return { ...decision, reason: `${real.length} of ${failed.length} failed jobs did not lose their runner` };
+
+  const stale = await staleReason(client, run);
+  if (stale) return { ...decision, reason: stale };
   return { ...decision, rerun: true, reason: `all ${failed.length} failed jobs lost their runner` };
 }
 

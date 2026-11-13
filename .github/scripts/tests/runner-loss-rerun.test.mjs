@@ -13,16 +13,11 @@ import {
 const fixture = (runId) => JSON.parse(readFileSync(
   new URL(`./fixtures/runner-loss-rerun/run-${runId}.json`, import.meta.url), "utf8",
 ));
-// six lost runners, four shutdowns in the log (three on cancelled jobs), one real test timeout
-const MIXED = 42271918832;
+const MIXED = 42271918832; // six lost runners, four shutdowns in the log, one real test timeout
 const REAL = 42264785415; // a real assertion failure
 const ALL_LOST = 42272083862; // one lost runner
-// shutdown signals visible only in the job logs: one failed job, ten cancelled jobs
-const LOG_ONLY = 42277969418;
-// The run concluded `cancelled`: its one lost job reports `cancelled`, not `failure`.
+const LOG_ONLY = 42277969418; // shutdown signals visible only in the job logs
 const CANCELLED_RUN = 43285064435;
-// The lost Runner support suite also carries `gateway_indexing_incomplete` error
-// annotations that a passing test prints on every run; a second lost job is `cancelled`.
 const NOISY_LOST = 43325855069;
 const CANCELLED_MESSAGE = "The operation was canceled.";
 const workflow = readFileSync(new URL("../../workflows/ci-runner-loss-rerun.yml", import.meta.url), "utf8");
@@ -66,7 +61,7 @@ function fakeGithub(data, {
     if (match) return json(data.annotations[match[1]] ?? []);
     match = route.match(/^\/actions\/jobs\/(\d+)\/logs$/);
     if (match) return new Response(data.logs[match[1]] ?? "", { status: 200 });
-    if (route === `/commits/${run.head_sha}/pulls`) return json(pulls ?? [openPr]);
+    if (route === `/commits/${run.head_sha}/pulls`) return json((typeof pulls === "function" ? pulls(calls) : pulls) ?? [openPr]);
     if (route === "/actions/workflows/pr.yml/runs") {
       const runs = prRuns ?? [{ id: run.id, conclusion: "failure" }];
       return json({ total_count: runs.length, workflow_runs: runs });
@@ -144,14 +139,12 @@ test("runner loss in the log wins over error annotations the workload printed", 
   assert.equal(posted(calls).length, 1);
 });
 
-/** Marks every job after the routing gate cancelled, as a concurrency cancel does. */
 function cancelEverything(data, { log = `2026-11-12T19:03:32.0000000Z ##[error]${CANCELLED_MESSAGE}\n` } = {}) {
   data.annotations = {};
   data.logs = {};
   for (const [index, job] of data.jobs.entries()) {
     if (job.name.startsWith("ci / gate / ")) continue;
     job.conclusion = "cancelled";
-    // Jobs that never started have no annotation and no log.
     if (index % 4 === 3) continue;
     data.annotations[job.id] = [{ annotation_level: "failure", message: CANCELLED_MESSAGE }];
     data.logs[job.id] = log;
@@ -162,13 +155,25 @@ function cancelEverything(data, { log = `2026-11-12T19:03:32.0000000Z ##[error]$
 test("a run superseded by a new push is not re-run, and no job is classified", async () => {
   const data = cancelEverything(fixture(CANCELLED_RUN));
   assert.ok(data.jobs.filter((job) => job.conclusion === "cancelled").length >= 40);
-  // The new push moved the PR head; the cancelled run's commit is no longer it.
   const { decision, calls } = await runMain(data, {
     pulls: [{ state: "open", base: { repo: { id: 1170821064 } }, head: { sha: "0".repeat(40), repo: { id: 1170821064 } } }],
   }, { conclusion: "cancelled" });
   assert.equal(decision.rerun, false);
   assert.match(decision.reason, /no open pull request/);
   assert.equal(calls.some((call) => call.path.includes("/check-runs/") || call.path.endsWith("/logs")), false);
+  assert.equal(posted(calls).length, 0);
+});
+
+test("a push while job logs are read stops the re-run", async () => {
+  const data = fixture(CANCELLED_RUN);
+  const moved = [{ state: "open", base: { repo: { id: 1170821064 } }, head: { sha: "0".repeat(40), repo: { id: 1170821064 } } }];
+  const { decision, calls } = await runMain(data, {
+    pulls: (seen) => (seen.some((call) => call.path.endsWith("/logs")) ? moved : undefined),
+  }, { conclusion: "cancelled" });
+  assert.equal(decision.rerun, false);
+  assert.match(decision.reason, /no open pull request/);
+  assert.equal(decision.jobs[0].lost, true);
+  assert.equal(calls.filter((call) => call.path.endsWith("/pulls")).length, 2);
   assert.equal(posted(calls).length, 0);
 });
 
@@ -318,7 +323,7 @@ test("job listing follows Link pagination across pages", async () => {
   const decision = await decide(github.client, data.run);
   const pages = github.calls.filter((call) => call.path.endsWith("/attempts/1/jobs"));
   assert.deepEqual(pages.map((call) => new URLSearchParams(call.query).get("page")), [null, "2", "3"]);
-  // Failed and cancelled jobs on pages 2 and 3 are all classified.
+  // Failed jobs on pages 2 and 3 are all classified.
   assert.equal(decision.jobs.length, 11);
   assert.equal(decision.rerun, false);
 });
@@ -350,13 +355,11 @@ test("classification is conservative about cancelled jobs", async () => {
   });
   assert.equal(timedOut.lost, false);
   assert.match(timedOut.evidence, /maximum execution time/);
-  // A cancelled job without any annotation (never started) has no evidence and no log to read.
   const notStarted = await classifyJob({ id: 1, conclusion: "cancelled" }, {
     annotations: [],
     readLog: async () => { throw new Error("log must not be read"); },
   });
   assert.equal(notStarted.lost, false);
-  // A real failure with no cancellation is never checked against the log.
   const exitOnly = await classifyJob({ id: 1 }, {
     annotations: [{ annotation_level: "failure", message: "Process completed with exit code 1." }],
     readLog: async () => { throw new Error("log must not be read"); },
@@ -376,9 +379,7 @@ test("classification is conservative about cancelled jobs", async () => {
 test("runner-loss evidence wins over other failure annotations in the same job", async () => {
   const lostMessage = "The self-hosted runner lost communication with the server. Verify the machine is running.";
   const noLog = async () => { throw new Error("log must not be read"); };
-  // A test fails, then the runner is lost during an always() upload step. The
-  // run gets one wasted re-run; attempt 2 then fails for real and is never
-  // re-run automatically.
+  // A test fails, then the runner is lost during an always() upload step.
   const testThenLost = await classifyJob({ id: 1 }, {
     annotations: [
       { annotation_level: "failure", message: "Error: Test timed out in 15000ms." },
@@ -398,7 +399,6 @@ test("runner-loss evidence wins over other failure annotations in the same job",
     readLog: noLog,
   });
   assert.equal(lostThenExit.lost, true);
-  // An error annotation plus a cancellation: the log's shutdown signal decides.
   const noisy = [
     { annotation_level: "failure", message: "gateway_indexing_incomplete" },
     { annotation_level: "failure", message: CANCELLED_MESSAGE },
