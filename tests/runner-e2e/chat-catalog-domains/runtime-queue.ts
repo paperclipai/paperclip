@@ -14,22 +14,28 @@ import type { IssueWorkProduct } from "../../../packages/shared/src/types/work-p
 /** Move a queued message up one place with the drag handle's keyboard gesture, as a keyboard user does.
  * Saving an edit disables every handle until that queue change settles, and a gesture pressed on a disabled
  * handle does nothing, so wait for this handle to be enabled first. The gesture must send the queue order
- * request; its status is returned so the caller can tell an accepted move from a refused one. */
+ * request; its status is returned so the caller can tell an accepted move from a refused one. When a gesture
+ * sends nothing, `beforeRetry` (for example a reload that refetches the queue) runs and the gesture is pressed
+ * again, up to `attempts` gestures in all; every gesture is reported. */
 export async function keyboardMoveQueuedMessageUp(page: Pick<Page, "waitForResponse">, handle: Pick<Locator, "isEnabled" | "focus" | "press">,
-  timeoutMs = 15_000, intervalMs = 100): Promise<{ status: number; waitedForEnabledMs: number }> {
-  const started = Date.now();
-  while (!await handle.isEnabled()) {
-    if (Date.now() - started >= timeoutMs) throw new Error("The queued message's reorder handle stayed disabled");
-    await new Promise(resolve => setTimeout(resolve, intervalMs));
+  timeoutMs = 15_000, intervalMs = 100, options: { attempts?: number; beforeRetry?: () => Promise<void> } = {}): Promise<{ status: number; waitedForEnabledMs: number; gestures: number }> {
+  const attempts = Math.max(1, options.attempts ?? 1);
+  for (let gesture = 1; ; gesture++) {
+    const started = Date.now();
+    while (!await handle.isEnabled()) {
+      if (Date.now() - started >= timeoutMs) throw new Error("The queued message's reorder handle stayed disabled");
+      await new Promise(resolve => setTimeout(resolve, intervalMs));
+    }
+    const waitedForEnabledMs = Date.now() - started;
+    const sent = page.waitForResponse((response: Response) => response.request().method() === "PUT"
+      && new URL(response.url()).pathname.endsWith("/queued-comments/order"), { timeout: timeoutMs });
+    sent.catch(() => undefined);
+    await handle.focus(); await handle.press("Space"); await handle.press("ArrowUp"); await handle.press("Space");
+    const response = await sent.catch(() => null);
+    if (response) return { status: response.status(), waitedForEnabledMs, gestures: gesture };
+    if (gesture >= attempts) throw new Error(`The keyboard reorder gesture sent no queue order request after ${gesture} gesture(s)`);
+    await options.beforeRetry?.();
   }
-  const waitedForEnabledMs = Date.now() - started;
-  const sent = page.waitForResponse((response: Response) => response.request().method() === "PUT"
-    && new URL(response.url()).pathname.endsWith("/queued-comments/order"), { timeout: timeoutMs });
-  sent.catch(() => undefined);
-  await handle.focus(); await handle.press("Space"); await handle.press("ArrowUp"); await handle.press("Space");
-  const response = await sent.catch(() => null);
-  if (!response) throw new Error("The keyboard reorder gesture sent no queue order request");
-  return { status: response.status(), waitedForEnabledMs };
 }
 const MAX_DELIVERABLE_BYTES = 262_144;
 /** Text of each stored or deflated entry in a zip deliverable, read from its central directory; [] when it is not a readable zip. */

@@ -85,7 +85,7 @@ export function gradeQueueEdit(value: unknown) {
 
 export const runtimeQueueControlCases = [runtimeDefinition("steering.edit-queued-message", ctx => humanQueuedRuntime(ctx), gradeQueueEdit, {
   sourceFiles: ["chat-catalog-domains/runtime-queue-controls.ts", "chat-catalog-domains/runtime-queue.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-support.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-support.ts", "chat-rendered-links.ts", "chat-scenarios/steering.yaml"],
-  oracleVersion: "paperclip.chat-catalog.edit-queued-message.structural.v5",
+  oracleVersion: "paperclip.chat-catalog.edit-queued-message.structural.v6",
   authentication: "human-session", expectedRunCount: 3, minimumRunCount: 2, attemptTimeoutMs: 720_000,
   runPolicy: { kind: "terminal-counts", terminalStatusCounts: { succeeded: 2 }, maximumTerminalStatusCounts: { succeeded: 3 } },
   setupPolicy: runtimeQueueCases[0]!.setupPolicy, verifySetup: runtimeQueueCases[0]!.verifySetup,
@@ -128,9 +128,18 @@ export const runtimeQueueControlCases = [runtimeDefinition("steering.edit-queued
     } finally { release(); await ctx.input.page.unroute(pattern); await concurrent.close(); }
     await ctx.input.page.reload({ waitUntil: "domcontentloaded" });
     await edit(ctx.input.page, targetId, `${blueText} ${state.concurrentMarker}`);
+    const saved = ctx.input.page.waitForResponse(response => response.request().method() === "PATCH" && new URL(response.url()).pathname === mutation, { timeout: 15_000 });
     await ctx.input.page.getByRole("button", { name: "Save queued message", exact: true }).click();
+    state.finalEditStatus = (await saved).status();
+    if (state.finalEditStatus !== 200) throw new Error(`The person's final queued edit was not saved (${state.finalEditStatus})`);
+    state.queueAfterEdit = await pollUntil({ label: "The saved edit is the queue's current revision", deadlineAt: Date.now() + 15_000, load: () => queue(ctx, state),
+      accept: q => q.entries.some(row => row.comment.id === targetId && row.comment.body === `${blueText} ${state.concurrentMarker}` && row.position === 1) });
     const handle = ctx.input.page.getByRole("button", { name: `Reorder queued message: ${blueText} ${state.concurrentMarker}`, exact: true });
-    state.reorderRequest = await keyboardMoveQueuedMessageUp(ctx.input.page, handle);
+    await expect(handle).toBeVisible();
+    state.reorderRequest = await keyboardMoveQueuedMessageUp(ctx.input.page, handle, 15_000, 100, { attempts: 2, beforeRetry: async () => {
+      await ctx.input.page.reload({ waitUntil: "domcontentloaded" }); await expect(handle).toBeVisible();
+    } });
+    if ((state.reorderRequest as { status: number }).status !== 200) throw new Error(`The person's reorder was refused (${(state.reorderRequest as { status: number }).status})`);
     state.queueAfter = await pollUntil({ label: "Actual full blue text and first queue position persisted", deadlineAt: Date.now() + 15_000,
       load: () => queue(ctx, state), accept: q => q.entries[0]?.comment.id === targetId && q.entries[0]?.comment.body === `${blueText} ${state.concurrentMarker}` });
     await ctx.input.page.reload({ waitUntil: "domcontentloaded" });
