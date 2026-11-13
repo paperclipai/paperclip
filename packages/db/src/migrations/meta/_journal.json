@@ -3312,6 +3312,13 @@
       "when": 1794524253117,
       "tag": "0474_milky_wolf_cub",
       "breakpoints": true
+    },
+    {
+      "idx": 475,
+      "version": "7",
+      "when": 1794538019715,
+      "tag": "0475_lumpy_the_enforcers",
+      "breakpoints": true
     }
   ]
 }
