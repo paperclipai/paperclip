@@ -112,7 +112,7 @@ it("knows from the real Claude ACP stream when a turn leaves background work run
   const runTurn = async (turnId: string, text: string) => {
     const before = await port!.getStatus();
     const turn = port!.startTurn({ text, requestId: turnId, onPermissionRequest: async () => ({ outcome: "allow_once" }) });
-    for await (const _event of turn.events) { /* drain */ }
+    for await (const _event of turn.events) void _event;
     const result = await turn.result;
     const state = port!.backgroundTaskState?.() ?? null;
     const usage = persistedAcpxTurnUsage(before, await port!.getStatus(), turnId, "claude");
