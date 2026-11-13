@@ -610,4 +610,53 @@ describe("codex remote environment diagnostics", () => {
     expect(stat.isSymbolicLink()).toBe(false);
     expect(await fs.readFile(path.join(externalHome, "auth.json"), "utf8")).toBe(external);
   });
+
+  it("honors CODEX_PATH when command is omitted", async () => {
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "codex_local",
+      config: {
+        engine: "cli",
+        env: {
+          CODEX_PATH: "/custom/bin/codex",
+          OPENAI_API_KEY: "sk-test",
+        },
+      },
+      executionTarget: sandboxTarget(),
+      environmentName: "QA Daytona",
+    });
+
+    expect(result.status).toBe("pass");
+    expect(ensureAdapterExecutionTargetCommandResolvable).toHaveBeenCalledWith(
+      "/custom/bin/codex",
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
+  it("does not use host process.env.CODEX_PATH for remote targets", async () => {
+    vi.stubEnv("CODEX_PATH", "/host/opt/bin/codex");
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "codex_local",
+      config: {
+        engine: "cli",
+        env: {
+          OPENAI_API_KEY: "sk-test",
+        },
+      },
+      executionTarget: sandboxTarget(),
+      environmentName: "QA Daytona",
+    });
+
+    expect(result.status).toBe("pass");
+    expect(ensureAdapterExecutionTargetCommandResolvable).toHaveBeenCalledWith(
+      "codex",
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+    );
+  });
 });

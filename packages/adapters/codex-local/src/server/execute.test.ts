@@ -118,7 +118,7 @@ describe("codex execute — outbound auth copy-back restore contribution", () =>
     );
   }
 
-  async function runTeardown(input: { sandboxAuth: string; hostAuth: string; onProviderStopped?: () => Promise<void>; withIdentity?: boolean; env?: Record<string, string> }) {
+  async function runTeardown(input: { sandboxAuth: string; hostAuth: string; onProviderStopped?: () => Promise<void>; withIdentity?: boolean; env?: Record<string, string>; command?: string | null }) {
     const rootDir = await mkdtemp(
       path.join(os.tmpdir(), "paperclip-codex-copyback-e2e-"),
     );
@@ -155,7 +155,7 @@ describe("codex execute — outbound auth copy-back restore contribution", () =>
       },
       runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
       config: {
-        command: "codex",
+        ...(input.command === null ? {} : { command: input.command ?? "codex" }),
         engine: "cli",
         // External CODEX_HOME (outside the managed company tree) so no managed
         // seeding rewrites auth.json before teardown; equals the shared host home.
@@ -339,5 +339,20 @@ describe("codex execute — outbound auth copy-back restore contribution", () =>
       hostAuth: subscriptionAuth({ accountId: "acct", marker: "host" }),
     });
     expect(result.executionResult.errorMessage).toBe("provider failed first");
+  });
+
+  it("resolves command from CODEX_PATH when config.command is omitted", async () => {
+    await runTeardown({
+      sandboxAuth: subscriptionAuth({ accountId: "acct", marker: "sandbox" }),
+      hostAuth: subscriptionAuth({ accountId: "acct", marker: "host" }),
+      command: null,
+      env: { CODEX_PATH: "/custom/path/to/codex" },
+    });
+    expect(ensureCommandResolvable).toHaveBeenCalledWith(
+      "/custom/path/to/codex",
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+    );
   });
 });

@@ -179,4 +179,85 @@ describe("codex ACP lane model CLI floor", () => {
     expect(runAdapterExecutionTargetProcess).not.toHaveBeenCalled();
     expect(result.checks.some((check) => check.code.startsWith("codex_cli_version_"))).toBe(false);
   });
+
+  it("probes CODEX_PATH on local target when configured in adapter env", async () => {
+    runAdapterExecutionTargetProcess.mockResolvedValueOnce({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: "codex-cli 0.166.0\n",
+      stderr: "",
+      pid: 1,
+      startedAt: new Date().toISOString(),
+    });
+
+    const result = await testCodexAcpEnvironment({
+      companyId: "company-1",
+      adapterType: "codex_local",
+      config: {
+        cwd,
+        model: "gpt-6.1-sol",
+        env: {
+          OPENAI_API_KEY: "sk-test",
+          CODEX_PATH: "/opt/homebrew/bin/codex",
+        },
+      },
+    });
+
+    expect(result.status).toBe("pass");
+    expect(result.checks.find((check) => check.code === "codex_cli_version_compatible")).toMatchObject({
+      message: "Codex CLI 0.166.0 satisfies the 0.159.0 minimum for gpt-6.1-sol.",
+    });
+    expect(runAdapterExecutionTargetProcess).toHaveBeenCalledTimes(1);
+    const call = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as [
+      string,
+      AdapterExecutionTarget | null,
+      string,
+      string[],
+      { env: Record<string, string> },
+    ];
+    expect(call[1]).toBeNull();
+    expect(call[2]).toBe("/opt/homebrew/bin/codex");
+    expect(call[3]).toEqual(["--version"]);
+  });
+
+  it("fails the local Test when CODEX_PATH is older than the model floor", async () => {
+    runAdapterExecutionTargetProcess.mockResolvedValueOnce({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: "codex-cli 0.156.0\n",
+      stderr: "",
+      pid: 1,
+      startedAt: new Date().toISOString(),
+    });
+
+    vi.stubEnv("CODEX_PATH", "/usr/local/bin/codex");
+
+    const result = await testCodexAcpEnvironment({
+      companyId: "company-1",
+      adapterType: "codex_local",
+      config: {
+        cwd,
+        model: "gpt-6.1-sol",
+        env: { OPENAI_API_KEY: "sk-test" },
+      },
+    });
+
+    expect(result.status).toBe("fail");
+    expect(result.checks.find((check) => check.code === "codex_cli_version_incompatible")).toMatchObject({
+      level: "error",
+      message: "gpt-6.1-sol requires Codex CLI 0.159.0 or newer with ChatGPT sign-in.",
+      detail: "Detected Codex CLI 0.156.0.",
+    });
+    expect(runAdapterExecutionTargetProcess).toHaveBeenCalledTimes(1);
+    const call = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as [
+      string,
+      AdapterExecutionTarget | null,
+      string,
+      string[],
+      { env: Record<string, string> },
+    ];
+    expect(call[2]).toBe("/usr/local/bin/codex");
+  });
 });
