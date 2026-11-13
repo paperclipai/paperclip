@@ -265,6 +265,7 @@ import {
 } from "../services/native-runtime/native-restart-recovery.ts";
 import { claimNativeSessionResumptions } from "../services/native-runtime/native-finalization-reconciler.ts";
 import { PaperclipControlPlanePort } from "../services/native-runtime/paperclip-control-plane-port.js";
+import { PaperclipRunnerToolAuthority } from "../services/native-runtime/paperclip-runner-tool-authority.js";
 import { finalizeNativeRun } from "../services/native-runtime/native-run-finalizer.js";
 import { createWakeQueue } from "../modules/wake-queue/index.js";
 import { recordNativeAttentionAssessment } from "../services/native-runtime/work-assessments.js";
@@ -15479,11 +15480,15 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   it.each([
-    ["before", "done", "completion_claim_policy_accepted"],
-    ["after", "in_progress", "native_child_completion_pending"],
-  ] as const)("treats a child result saved %s the parent run started as read when the run finishes the task", async (
-    savedRelativeToStart, expectedStatus, expectedReason,
-  ) => {
+    { saved: "before", read: "none", delivered: true },
+    { saved: "after", read: "none", delivered: false },
+    { saved: "after", read: "after the child finished", delivered: true },
+    { saved: "after", read: "while the child was open", delivered: false },
+  ] as const)("counts a child result as read by the finishing parent run (saved $saved the run started, read: $read)", async ({
+    saved: savedRelativeToStart, read, delivered,
+  }) => {
+    const expectedStatus = delivered ? "done" : "in_progress";
+    const expectedReason = delivered ? "completion_claim_policy_accepted" : "native_child_completion_pending";
     const fixture = await seedStrandedIssueFixture({ status: "in_progress", runStatus: "succeeded", livenessState: "advanced" });
     const { companyId, agentId, issueId, runId } = fixture;
     const childId = randomUUID();
@@ -15516,6 +15521,17 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       startedAt: runStartedAt, finishedAt: new Date(),
     }).where(eq(heartbeatRuns.id, runId));
     await db.update(issues).set({ executionRunId: runId, executionLockedAt: runStartedAt }).where(eq(issues.id, issueId));
+    if (read !== "none") {
+      if (read === "while the child was open") await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, childId));
+      await db.update(heartbeatRuns).set({ status: "running", finishedAt: null }).where(eq(heartbeatRuns.id, runId));
+      const reader = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
+      try {
+        const context = await reader.execute({ tool: "get_task_context", callId: `context-${runId}`, arguments: {} });
+        expect((context as { childTasks: Array<{ id: string }> }).childTasks.map(task => task.id)).toEqual([childId]);
+      } finally { reader.close(); }
+      await db.update(issues).set({ status: "done" }).where(eq(issues.id, childId));
+      await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
+    }
     await db.insert(issueComments).values({ companyId, issueId, authorType: "agent", authorAgentId: agentId,
       createdByRunId: runId, body: "Both children are done; merged their ledgers. Task complete." });
     await new PaperclipControlPlanePort(db, {
@@ -15550,7 +15566,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .toEqual([expect.objectContaining({ status: expectedStatus })]);
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
     const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, childResult!.id));
-    if (savedRelativeToStart === "before") {
+    if (delivered) {
       expect(wake).toMatchObject({ status: "cancelled", runId: null });
       expect(runs).toHaveLength(1);
     } else {
