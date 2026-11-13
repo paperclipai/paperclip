@@ -653,6 +653,9 @@ const activeWakeupPromises = new Set<Promise<unknown>>();
 // before it registers an execution. Track that work too, so a drain cannot
 // return while it is still writing.
 const activeNativeResumeDispatches = new Set<Promise<void>>();
+// When each armed resume timer is due, so a drain can tell a dispatch that is
+// already due (pending work) from one scheduled for later.
+const nativeSessionResumeDispatchDueAt = new WeakMap<object, number>();
 const nativeSessionResumeDispatchTimers = new Map<
   string,
   ReturnType<typeof setTimeout>
@@ -1814,23 +1817,27 @@ export function heartbeatService(
   // activeRunExecutionPromises, and the second await drains that run. A wakeup or
   // a run can add more entries as it settles, so loop until both sets are empty.
   async function drainActiveRunExecutions() {
-    const clearResumeTimers = () => {
-      for (const timer of nativeSessionResumeDispatchTimers.values()) {
-        clearTimeout(timer);
+    for (const timer of nativeSessionResumeDispatchTimers.values()) {
+      clearTimeout(timer);
+    }
+    nativeSessionResumeDispatchTimers.clear();
+    const resumeDispatchDue = () => [...nativeSessionResumeDispatchTimers.values()]
+      .some((timer) => (nativeSessionResumeDispatchDueAt.get(timer) ?? Infinity) <= Date.now());
+    for (;;) {
+      if (
+        activeWakeupPromises.size > 0 ||
+        activeNativeResumeDispatches.size > 0 ||
+        activeRunExecutionPromises.size > 0
+      ) {
+        await Promise.allSettled([...activeWakeupPromises]);
+        await Promise.allSettled([...activeNativeResumeDispatches]);
+        await Promise.all([...activeRunExecutionPromises]);
+        continue;
       }
-      nativeSessionResumeDispatchTimers.clear();
-    };
-    clearResumeTimers();
-    while (
-      activeWakeupPromises.size > 0 ||
-      activeNativeResumeDispatches.size > 0 ||
-      activeRunExecutionPromises.size > 0
-    ) {
-      await Promise.allSettled([...activeWakeupPromises]);
-      await Promise.allSettled([...activeNativeResumeDispatches]);
-      await Promise.all([...activeRunExecutionPromises]);
-      // A failed dispatch re-arms its timer; the drain owns that deadline too.
-      clearResumeTimers();
+      // Work that settled during the drain can arm an immediate resume
+      // dispatch. It is pending work: let it fire, then drain what it starts.
+      if (!resumeDispatchDue()) return;
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
     }
   }
 
@@ -1890,6 +1897,7 @@ export function heartbeatService(
       void dispatchWork.finally(() => activeNativeResumeDispatches.delete(dispatchWork));
     }, delayMs);
     timer.unref?.();
+    nativeSessionResumeDispatchDueAt.set(timer, Date.now() + delayMs);
     nativeSessionResumeDispatchTimers.set(runId, timer);
   }
 
