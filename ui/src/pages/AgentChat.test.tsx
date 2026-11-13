@@ -8,6 +8,7 @@ import type { Agent, Issue } from "@paperclipai/shared";
 import { ApiError } from "@/api/client";
 import { queryKeys } from "@/lib/queryKeys";
 import { AgentChat } from "./AgentChat";
+import { recordAgentChatVisit, recordedAgentChatIssueId } from "@/lib/recent-agent-chats";
 
 const api = vi.hoisted(() => ({ enabled: true, chatId: undefined as string | undefined, list: vi.fn(), get: vi.fn(), getChat: vi.fn(), listChats: vi.fn(), ensure: vi.fn(), session: vi.fn() }));
 const agentId = "18c5ad50-9d70-4e24-bd82-337e1d45a414";
@@ -62,6 +63,15 @@ it("opens the requested owned conversation rather than the default", async () =>
   expect(api.getChat).not.toHaveBeenCalled();
 });
 
+it("keeps the last opened chat when a named chat no longer exists", async () => {
+  recordAgentChatVisit("company-a", "viewer-a", agentId, "second");
+  api.chatId = "deleted";
+  api.list.mockResolvedValue([{ id: agentId, companyId: "company-a", name: "Helper" }]);
+  api.listChats.mockResolvedValue([{ id: "first", conversationAgentId: agentId }, { id: "second", conversationAgentId: agentId }]);
+  render();
+  await waitFor(() => expect(container.textContent).toContain("Conversation not found."));
+  expect(recordedAgentChatIssueId("company-a", "viewer-a", agentId)).toBe("second");
+});
 it("explains when Agent Chat is disabled without creating a conversation", async () => {
   api.enabled = false;
   api.list.mockResolvedValue([{ id: agentId, companyId: "company-a", name: "Helper" }]);

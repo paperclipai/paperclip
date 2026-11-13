@@ -62,9 +62,10 @@ export function AgentChat() {
     creating.current = null;
   }, [selectedCompanyId, userId, agent?.id, chatId]);
   useEffect(() => {
-    if (enabled && agent && session.isSuccess && chat.isSuccess)
+    // A named chat that no longer exists must not replace the last chat this person opened with the agent.
+    if (enabled && agent && session.isSuccess && chat.isSuccess && !(chatId && !chat.data))
       recordAgentChatVisit(agent.companyId, userId, agent.id, chat.data?.id ?? null);
-  }, [enabled, agent?.id, agent?.companyId, userId, session.isSuccess, chat.isSuccess, chat.data?.id]);
+  }, [enabled, agent?.id, agent?.companyId, userId, session.isSuccess, chat.isSuccess, chat.data?.id, chatId]);
   const ensureIssue = useCallback(async () => {
     if (!agent || !selectedCompanyId) throw new Error("Agent not found");
     if (chat.data) return chat.data;

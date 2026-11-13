@@ -379,6 +379,25 @@ UUID; without it the request returns `422`. Retrying with the same
 second chat or another activity entry. Open a specific chat in the board at
 `/chats/{agentRef}/{chatId}`.
 
+### Chat Titles
+
+A new chat starts with a provisional title (`titleNeedsGeneration: true`). When the
+person sends the first message, the server names the chat after it: the first line
+without Markdown, cut at a word boundary to about 50 characters. On its first turn
+the chat's agent is asked to replace that with a short descriptive title in the
+person's language:
+
+```
+PUT /api/issues/{chatId}/title
+{ "title": "Password reset help", "onlyIfProvisional": true }
+```
+
+Only the chat's own agent, during its active run in that chat, can set the title,
+and only while it is provisional; the agent tool for this is `set_task_title`. Renaming
+the chat (`PATCH /api/issues/{chatId}` with a `title`) makes the title final, so neither
+the first message nor the agent changes it afterwards. Each title change is written to
+the activity log. Chats created before this feature keep their titles.
+
 ## Issue Lifecycle
 
 ```

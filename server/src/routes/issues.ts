@@ -29,6 +29,7 @@ import { runRetainsIssueIdentity } from "../services/task-repository-acquisition
 import { withConversationReadState } from "../services/agent-chat-read-state.js";
 import { markIssueReadSchema, createAgentConversationSchema } from "@paperclipai/shared";
 import { enqueueFastResponse } from "../services/fast-responses.js";
+import { setProvisionalChatTitle } from "../services/chat-titles.js";
 import { hasRequiredWorkspaceRecovery, LEGACY_WORKSPACE_RECOVERY_SCHEMA } from "../services/workspace-restore-recovery-state.js";
 import { hasUnverifiedNativeWorkspaceFinalizationOwner } from "../services/native-runtime/native-workspace-finalization-recovery-state.js";
 import { monitorPoliciesEqual, applyActorMonitorScheduledBy, assertCanManageIssueMonitor, summarizeIssueMonitor } from "../services/issue-monitors.js";
@@ -19839,7 +19840,7 @@ export function issueRoutes(
         const issue = await (newChat ? issueService(targetDb) : svc).create(companyId, {
           title: `Chat with ${agent.name}`, assigneeAgentId: agent.id,
           conversationAgentId: agent.id, conversationUserId: userId,
-          conversationDefault: !newChat,
+          conversationDefault: !newChat, titleIsProvisional: true,
           conversationState: "waiting", status: "in_review", createdByUserId: userId,
           ...(idempotencyKey ? {
             idempotencyKey,
@@ -19904,6 +19905,8 @@ export function issueRoutes(
             action: "issue.comment_added", entityType: "issue", entityId: issue.id,
             details: { commentId: saved.id, identifier: issue.identifier },
           }, publications);
+          if (!existing && req.body.body.trim() !== "/new") await setProvisionalChatTitle(tx as unknown as Db, { companyId: issue.companyId, issueId: issue.id,
+            commentId: saved.id, body: req.body.body, actor }, publications);
           if (!existing) await enqueueFastResponse(tx as unknown as Db, { companyId: issue.companyId, issueId: issue.id, agentId: issue.conversationAgentId,
             responsibleUserId: userId, sourceCommentId: saved.id, sourceKey: `comment:${saved.id}`, acceptedAt: new Date(saved.createdAt), sessionGeneration: issue.conversationSessionGeneration });
           return saved;

@@ -3,9 +3,12 @@ import { AGENT_CHAT_DIRECTIVE, CASES_CHAT_DIRECTIVE, CONFERENCE_ROOM_CHAT_DIRECT
 import { publicChatTaskUrl } from "../chat-task-url.js";
 import { slackChatAgentGuidance } from "../connectors/slack/agent-guidance.js";
 import type { ConversationConfirmationContext } from "../conversation-confirmation-context.js";
+import { CHAT_TITLE_DIRECTIVE } from "../chat-titles.js";
 import { TASK_QUESTION_GUIDANCE } from "../issue-question-context.js";
 
 export function buildPaperclipTaskMarkdown(input: {
+  /** A chat's first agent turn while its title is still provisional: ask the agent to name the chat. */
+  chatTitleRequested?: boolean;
   issue: {
     id: string;
     identifier: string | null;
@@ -228,6 +231,9 @@ export function buildPaperclipTaskMarkdown(input: {
         "The current title is a provisional slice of the user's prompt. As one of your first tool calls, use set_task_title with a concise title describing the requested outcome and onlyIfProvisional: true. If that tool is unavailable, PUT /api/issues/" + issue.id + "/title with {title, onlyIfProvisional: true} using your normal Paperclip authentication. Do this in Ask and Plan modes too. Preserve the full task description and any title already chosen by the user; then continue the task.",
         "Check the title tool result before claiming the title was saved. Use a new idempotency key if retrying with changed arguments.",
       );
+    }
+    if (issue.conversationAgentId && issue.titleNeedsGeneration && input.chatTitleRequested) {
+      lines.push("", "Chat title directive:", CHAT_TITLE_DIRECTIVE.replace("<this chat's id>", issue.id));
     }
     if (issue.conversationAgentId) {
       lines.push("", "Chat mode directive:", companyPages(AGENT_CHAT_DIRECTIVE), `Current composer mode: ${issue.workMode ?? "standard"}.`);

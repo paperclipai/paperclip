@@ -27,6 +27,8 @@ vi.mock("@/lib/router", () => ({
   Link: ({ to, children, ...props }: { to: string; children: ReactNode }) => <a href={to} {...props}>{children}</a>,
 }));
 vi.mock("@/api/agents", () => ({ agentsApi: { list: vi.fn(), get: state.getAgent } }));
+const issueUpdates = vi.hoisted(() => vi.fn(async () => ({})));
+vi.mock("@/api/issues", () => ({ issuesApi: { update: issueUpdates } }));
 vi.mock("@/api/agentChats", () => ({ agentChatsApi: { list: vi.fn(), ensure: state.ensure, create: state.ensure } }));
 vi.mock("@/api/auth", () => ({ authApi: { getSession: () => ({ user: { id: "user-a" } }) } }));
 vi.mock("./AgentAvatar", () => ({ AgentAvatar: () => null }));
@@ -327,6 +329,21 @@ it("lists and opens separate chats for the same agent", async () => {
   expect(history.querySelector('a[href="/chats/alice/second"]')?.textContent).toContain("Second chat");
   await act(async () => history.querySelector<HTMLAnchorElement>('a[href="/chats/alice/second"]')!.click());
   expect(state.closeSidebar).toHaveBeenCalledWith(false);
+});
+
+it("renames a chat inline from the history", async () => {
+  client.setQueryData(queryKeys.agentChats.list("company-a", "user-a"), [{ ...chat("alice"), id: "first", title: "How do I reset my password?", createdAt: "2026-09-01T12:00:00Z" }]);
+  await render();
+  const history = container.querySelector('nav[aria-label="Chat history"]')!;
+  await act(async () => history.querySelector<HTMLButtonElement>('button[aria-label="Rename How do I reset my password?"]')!.click());
+  const input = history.querySelector<HTMLInputElement>('input[aria-label="Chat title"]')!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "Password help");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await act(async () => input.form!.requestSubmit());
+  expect(issueUpdates).toHaveBeenCalledWith("first", { title: "Password help" });
+  expect(history.querySelector('input[aria-label="Chat title"]')).toBeNull();
 });
 
 it("shows accessible unread indicators only for the current company and human", async () => {
