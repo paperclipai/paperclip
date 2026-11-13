@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  backupRetentionPolicySchema,
   instanceExperimentalSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
   instanceExperimentalSettingsWithManagedSchema,
@@ -218,5 +219,24 @@ describe("instance experimental settings validators", () => {
     ).toEqual({
       enableApps: true,
     });
+  });
+});
+
+describe("backup retention policy presets", () => {
+  it("accepts dailyDays=1 alongside the existing presets", () => {
+    expect(backupRetentionPolicySchema.parse({ dailyDays: 1, weeklyWeeks: 4, monthlyMonths: 1 })).toEqual({
+      dailyDays: 1,
+      weeklyWeeks: 4,
+      monthlyMonths: 1,
+    });
+    for (const dailyDays of [3, 7, 14]) {
+      expect(backupRetentionPolicySchema.safeParse({ dailyDays, weeklyWeeks: 4, monthlyMonths: 1 }).success).toBe(true);
+    }
+  });
+
+  it("still rejects out-of-preset daily values", () => {
+    for (const dailyDays of [0, 2, 30, "1"]) {
+      expect(backupRetentionPolicySchema.safeParse({ dailyDays, weeklyWeeks: 4, monthlyMonths: 1 }).success).toBe(false);
+    }
   });
 });
