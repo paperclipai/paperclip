@@ -24,7 +24,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { configuredEnvironmentProjection } from "../configured-environment.js";
 import { NativeSessionProtocolIntegrityError } from "../contracts/native-session-backend.js";
-import { createCapabilityRunnerdCodexTransport, createCapabilityRunnerdProviderEnvironment } from "../live/runnerd-codex-transport.js";
+import { createCapabilityRunnerdCodexTransport, createCapabilityRunnerdProviderEnvironment, waitForRunnerCommand } from "../live/runnerd-codex-transport.js";
 import { ACPX_CREDENTIAL_BINDING_ENV, createAcpxSidecarHostEnvironment } from "../drivers/acpx/environment.js";
 import { validatePrpEvent } from "../protocol/replay-contract.js";
 import { digestPaperclipSemanticContent } from "../semantic-tools/receipts.js";
@@ -2059,6 +2059,49 @@ it("still acknowledges a lifecycle event inside a burst before the next frame", 
   }
 }, 60_000);
 
+it("answers a snapshot from a Runner whose provider stays wedged until its whole replay is acknowledged", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-wedged-provider-replay-"));
+  const { core, stop } = replayBacklogCore(root, 20);
+  try {
+    await core.start();
+    const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+    const backlog = 250;
+    for (let seq = 1; seq <= backlog; seq++) sendSecure(client, completedItem(seq));
+    const snapshot = core.queueCommand("session.snapshot", {}, "snapshot-behind-wedged-provider", true);
+    const runner = (async () => {
+      let delivered = false;
+      let acked = 0;
+      while (!delivered || acked < backlog) {
+        const frame = await receiveSecure(client, null);
+        if (frame === null) return;
+        if (frame.kind === "command") delivered = true;
+        if (frame.kind === "ack") acked = (frame.payload as { ackedSourceSeq: number }).ackedSourceSeq;
+      }
+      sendSecure(client, commandResultFrame(client, snapshot));
+    })();
+    await waitForRunnerCommand({
+      type: "session.snapshot",
+      deadline: Date.now() + 2_000,
+      abortOnClose: false,
+      isClosed: () => false,
+      throwIfFailed: () => undefined,
+      command: () => core.getCommand(snapshot.commandId),
+      runnerHasExited: async () => false,
+      failureCode: () => "provider_transport_failed",
+      answeredProgressAt: () => core.queuedCommandResultProgressAt(snapshot.commandId),
+      replayProgressAt: () => core.committedEventProgressAt?.() ?? null,
+    });
+    expect(core.store.state.ackedSourceSeq).toBe(backlog);
+    await runner;
+    client.socket.destroy();
+  } finally {
+    stop();
+    await core.stop();
+    await core.drainPendingConnectionProcessing();
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 60_000);
+
 it("keeps a staged tool-progress write when a lease renewal lands mid-write", async () => {
   const root = mkdtempSync(resolve(tmpdir(), "runner-lease-renewal-staged-write-"));
   let release!: () => void;
@@ -2886,13 +2929,13 @@ class ServerFrameReader {
     socket.once("close", () => this.#publish(null));
   }
 
-  next(): Promise<Record<string, unknown> | null> {
+  next(timeoutMs: number | null = 2_000): Promise<Record<string, unknown> | null> {
     const queued = this.#frames.shift();
     if (queued !== undefined) return Promise.resolve(queued);
     return new Promise((resolveFrame, rejectFrame) => {
-      const timer = setTimeout(
+      const timer = timeoutMs === null ? undefined : setTimeout(
         () => rejectFrame(new Error("Server WebSocket frame timed out.")),
-        2_000,
+        timeoutMs,
       );
       this.#waiters.push((value) => {
         clearTimeout(timer);
@@ -3327,8 +3370,9 @@ function sendSecure(
 
 async function receiveSecure(
   client: AuthenticatedClient,
+  frameTimeoutMs: number | null = 2_000,
 ): Promise<Record<string, unknown> | null> {
-  const frame = await client.reader.next();
+  const frame = await client.reader.next(frameTimeoutMs);
   if (frame === null) return null;
   const counter = BigInt(frame.counter as number);
   expect(counter).toBe(client.receiveCounter);
