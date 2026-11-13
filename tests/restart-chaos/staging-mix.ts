@@ -5,6 +5,7 @@ import type { AdapterId, FaultKind, OracleArtifacts, OracleResult, TaskFaultKind
 import type { WorkloadAgents, WorkloadDefinition } from "./workloads.js";
 
 export const STAGING_MIX = "staging-mix";
+export const MIX_MAX_MINUTES = 600;
 export const ROUND_TICKS = 45;
 export const ROUND_SECONDS = ROUND_TICKS * 2;
 export const SUBTASKS_PER_PARENT = 2;
@@ -60,7 +61,7 @@ export interface StagingMixRecord {
 
 export interface CompletionEvidence {
   completedAt: number | null;
-  runs: Array<{ runId: string | null; startedAt: number | null; acceptedDisposition: string | null; acceptedAt: number | null }>;
+  runs: Array<{ runId: string | null; startedAt: number | null; acceptedDisposition: string | null; acceptedAt: number | null; answersFollowUp?: boolean }>;
 }
 
 export interface RetryBanner { firstShownAt: number; lastShownAt: number; shownMs: number; visibleSince: number | null; errorCode: string | null }
@@ -145,7 +146,7 @@ export function applyStagingMix(options: WaveOptions, values: MixArgs, environme
     throw new Error(`--workload ${STAGING_MIX} takes restart faults only`);
   }
   const turnMinutes = parseRange(String(values["mix-turn-minutes"] ?? "15-45"), "mix-turn-minutes", 1, 60);
-  const minutes = whole(values["mix-minutes"], "mix-minutes", 240, 1, 600);
+  const minutes = whole(values["mix-minutes"], "mix-minutes", 240, 1, MIX_MAX_MINUTES);
   const faultSpacingMinutes = whole(values["mix-fault-spacing-minutes"], "mix-fault-spacing-minutes", 40, 1, 600);
   const arrivalCutoffMinutes = whole(values["mix-arrival-cutoff-minutes"], "mix-arrival-cutoff-minutes", turnMinutes[1], 0, 600);
   const runCapDefault = whole(environment.RESTART_CHAOS_MIX_RUN_CAP, "RESTART_CHAOS_MIX_RUN_CAP", 30, 1, 200);
@@ -220,10 +221,12 @@ function meanCycleMs(mix: Pick<StagingMixOptions, "turnMinutes">): number {
   return ((mix.turnMinutes[0] + mix.turnMinutes[1]) / 2 + 5) * 60_000;
 }
 
-export function slotTimesMs(mix: Pick<StagingMixOptions, "minutes" | "faultSpacingMinutes">): number[] {
-  const times: number[] = [];
-  for (let at = mix.faultSpacingMinutes * 60_000; at < mix.minutes * 60_000; at += mix.faultSpacingMinutes * 60_000) times.push(at);
-  return times;
+export function slotTimesMs(mix: Pick<StagingMixOptions, "minutes" | "faultSpacingMinutes">,
+  firstSlotRaw = process.env.RESTART_CHAOS_MIX_FIRST_SLOT_SECONDS): number[] {
+  const spacing = mix.faultSpacingMinutes * 60_000;
+  const first = firstSlotRaw && /^[0-9]+$/.test(firstSlotRaw) ? Math.min(Number(firstSlotRaw) * 1000, spacing) : spacing;
+  const count = Math.max(0, Math.ceil((mix.minutes * 60_000 - spacing) / spacing));
+  return Array.from({ length: count }, (_, index) => first + index * spacing);
 }
 
 export function maxSlotHoldMs(options: Pick<WaveOptions, "faults" | "k15HoldMs" | "k4HoldMaxMs">): number {
@@ -409,8 +412,16 @@ export function completionRunIds(comments: readonly CommentEvidence[], nonce: st
   const summaries = comments.filter(comment => anchor !== null && typeof comment.createdAt === "number" && comment.createdAt >= anchor
     && comment.body.includes(doneMarker(nonce)) && comment.runId).map(comment => comment.runId!);
   if (hasDispositions(completion)) {
+    const byId = new Map(completion.runs.flatMap(run => run.runId ? [[run.runId, run] as const] : []));
+    const reportedAt = (runId: string) => {
+      const run = byId.get(runId);
+      if (run?.acceptedDisposition === "done" && run.acceptedAt !== null) return run.acceptedAt;
+      const posted = comments.filter(comment => comment.runId === runId && typeof comment.createdAt === "number").map(comment => comment.createdAt!);
+      return posted.length ? Math.min(...posted) : run?.startedAt ?? Number.POSITIVE_INFINITY;
+    };
     const accepted = completion.runs.filter(run => run.acceptedDisposition === "done" && run.runId).map(run => run.runId!);
-    return [...new Set([...accepted, ...summaries])];
+    const ordered = [...new Set([...accepted, ...summaries])].sort((a, b) => reportedAt(a) - reportedAt(b));
+    return ordered.filter((runId, index) => index === 0 || !byId.get(runId)?.answersFollowUp);
   }
   return [...new Set([...comments.filter(comment => isDoneComment(comment.body, nonce) && comment.runId).map(comment => comment.runId!), ...summaries])];
 }
